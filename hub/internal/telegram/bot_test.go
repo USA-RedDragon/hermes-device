@@ -314,3 +314,23 @@ func TestInterruptedAndErrorEvents(t *testing.T) {
 	h.hub.emit(t, sid, hub.KindError, map[string]any{"message": "model <down>"})
 	h.tg.wait(mSend, "<b>Error:</b> model &lt;down&gt;")
 }
+
+func TestSessionsNamesUnreachableBackends(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	h.hub.mu.Lock()
+	h.hub.sessions = []hub.Session{{ID: "old", BackendID: beLaptop, Title: "Old", UpdatedAt: time.Unix(100, 0)}}
+	h.hub.down = map[string]string{beCluster: "dial tcp: connection refused"}
+	h.hub.mu.Unlock()
+	h.tg.say(dm(aliceTG), aliceTG, "/sessions")
+	list := h.tg.wait(mSend, "<b>Sessions</b>")
+	if !strings.Contains(list.text(), "1. Old") || !strings.Contains(list.text(), "Can't reach Cluster right now, so its sessions are missing.") {
+		t.Fatalf("session list = %q", list.text())
+	}
+	h.hub.mu.Lock()
+	h.hub.sessions = nil
+	h.hub.down[beLaptop] = "dial tcp: connection refused"
+	h.hub.mu.Unlock()
+	h.tg.say(dm(aliceTG), aliceTG, "/sessions")
+	h.tg.wait(mSend, "Can't reach Laptop, Cluster right now. It may be restarting; try again in a minute.")
+}

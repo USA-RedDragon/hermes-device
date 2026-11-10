@@ -367,7 +367,12 @@ func (b *Bot) listSessions(ctx context.Context, chatID int64, user string) {
 		return
 	}
 	list = slices.DeleteFunc(list, func(s hub.Session) bool { return s.Archived })
+	down := b.unreachable(cctx, user)
 	if len(list) == 0 {
+		if len(down) > 0 {
+			b.sendText(ctx, chatID, "Can't reach "+strings.Join(down, ", ")+" right now. It may be restarting; try again in a minute.")
+			return
+		}
 		b.sendText(ctx, chatID, "No sessions yet. Send a message or /new to start one.")
 		return
 	}
@@ -395,6 +400,9 @@ func (b *Bot) listSessions(ctx context.Context, chatID int64, user string) {
 			Text:         truncate(fmt.Sprintf("%d. %s", i+1, title), 40),
 			CallbackData: fmt.Sprintf("%s:%d:%d", cbAttach, st.listGen, i+1),
 		}})
+	}
+	if len(down) > 0 {
+		fmt.Fprintf(&sb, "\n\n<i>Can't reach %s right now, so its sessions are missing.</i>", escapeHTML(strings.Join(down, ", ")))
 	}
 	b.sendHTML(ctx, chatID, sb.String(), &InlineKeyboard{InlineKeyboard: rows})
 }
@@ -723,4 +731,37 @@ func sendHTML(ctx context.Context, api *Client, logger *slog.Logger, chatID int6
 		return 0
 	}
 	return id
+}
+
+// statusReporter is the optional part of a hub.Service that reports
+// backend connection errors.
+type statusReporter interface {
+	BackendStatus(ctx context.Context, user string) (map[string]string, error)
+}
+
+// unreachable names user's backends whose last connection attempt failed.
+func (b *Bot) unreachable(ctx context.Context, user string) []string {
+	sr, ok := b.svc.(statusReporter)
+	if !ok {
+		return nil
+	}
+	status, err := sr.BackendStatus(ctx, user)
+	if err != nil {
+		return nil
+	}
+	backends, err := b.svc.Backends(ctx, user)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, be := range backends {
+		if status[be.ID] != "" {
+			name := be.Name
+			if name == "" {
+				name = be.ID
+			}
+			names = append(names, name)
+		}
+	}
+	return names
 }

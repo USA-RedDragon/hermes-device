@@ -248,6 +248,8 @@ type fakeHub struct {
 	approvals   []approvalCall
 	approvalErr error
 	seq         int64
+	// down maps backend ids to their last connection error.
+	down map[string]string
 }
 
 func newFakeHub() *fakeHub {
@@ -508,3 +510,13 @@ func (h *fakeHub) SetModel(context.Context, string, string, string, string, stri
 }
 
 func (h *fakeHub) SetReasoning(context.Context, string, string, string, string) error { return nil }
+
+func (h *fakeHub) BackendStatus(_ context.Context, user string) (map[string]string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := map[string]string{}
+	for _, b := range h.backends[user] {
+		out[b.ID] = h.down[b.ID]
+	}
+	return out, nil
+}
