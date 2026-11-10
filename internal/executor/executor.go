@@ -11,6 +11,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/USA-RedDragon/hermes-device/protocol"
 )
 
 // KillGrace is how long a killed process group gets after SIGTERM before
@@ -24,7 +26,7 @@ const TimeoutGrace = 10 * time.Second
 
 // ExitKilled is the exit code reported for a killed command, the same code
 // Hermes uses for an interrupted command.
-const ExitKilled = 130
+const ExitKilled = protocol.ExitKilled
 
 // Request is one command to run.
 type Request struct {
@@ -60,7 +62,7 @@ func Start(shell string, req Request, out func([]byte)) (*Process, error) {
 		args = append(args, "-l")
 	}
 	args = append(args, "-c", req.Cmd)
-	cmd := exec.Command(shell, args...) //nolint:gosec // running the agent's command is the purpose
+	cmd := exec.Command(shell, args...) //nolint:gosec,noctx // running the agent's command is the purpose; Kill stops its process group
 	cmd.Dir = req.Cwd
 	cmd.Env = req.Env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
