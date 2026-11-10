@@ -24,6 +24,45 @@ const (
 	deviceDir   = "/home/alice/src/app"
 )
 
+const (
+	jsonRPC = "2.0"
+
+	keyCommand     = "command"
+	keyConfigKey   = "key"
+	keyConfigValue = "value"
+	keyCwd         = "cwd"
+	keyError       = "error"
+	keyJSONRPC     = "jsonrpc"
+	keyMCPServers  = "mcp_servers"
+	keyMethod      = "method"
+	keyName        = "name"
+	keyOperation   = "operation"
+	keyParams      = "params"
+	keyPath        = "path"
+	keyPayload     = "payload"
+	keyRequestID   = "request_id"
+	keyRevision    = "revision"
+	keySessionID   = "session_id"
+
+	methodConfigSet  = "config.set"
+	methodFileAttach = "file.attach"
+	methodMutate     = "session.mutate"
+	methodPDFAttach  = "pdf.attach"
+
+	opBranch    = "branch"
+	opWorkspace = "workspace"
+
+	sourceTUI  = "tui"
+	hubOffline = "device_offline"
+
+	holdID        = "hold"
+	sessionReq1   = "s-req-1"
+	childReq1     = "child-s-req-1"
+	busySession   = "s-busy"
+	latestSession = "latest-s"
+	oldSession    = "old"
+)
+
 // msg is a decoded JSON-RPC message.
 type msg struct {
 	ID     json.RawMessage `json:"id,omitempty"`
@@ -84,9 +123,14 @@ func (h *fakeHub) authorized(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(append(b, '\n'))
 }
 
 func (h *fakeHub) whoami(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +142,7 @@ func (h *fakeHub) whoami(w http.ResponseWriter, r *http.Request) {
 	fail := h.whoamiFail
 	h.mu.Unlock()
 	if fail {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "backend_unavailable"})
+		writeJSON(w, http.StatusBadGateway, map[string]string{keyError: "backend_unavailable"})
 		return
 	}
 	writeJSON(w, http.StatusOK, hubapi.Whoami{DeviceID: "d_1", DeviceName: "desktop", User: "alice",
@@ -125,7 +169,7 @@ func (h *fakeHub) bind(w http.ResponseWriter, r *http.Request) {
 	code := h.bindFail[body.Dir]
 	h.mu.Unlock()
 	if code != "" {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": code, "message": "refused"})
+		writeJSON(w, http.StatusConflict, map[string]string{keyError: code, "message": "refused"})
 		return
 	}
 	writeJSON(w, http.StatusOK, hubapi.Binding{SessionID: sid, DeviceID: "d_1", Dir: body.Dir, Generation: "g1"})
@@ -165,14 +209,18 @@ func (h *fakeHub) gateway(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 	ctx := r.Context()
 	send := func(v any) {
-		b, _ := json.Marshal(v)
+		b, err := json.Marshal(v)
+		if err != nil {
+			h.t.Errorf("fake hub: encode %+v: %v", v, err)
+			return
+		}
 		_ = ws.Write(ctx, websocket.MessageText, b)
 	}
 	answer := func(id json.RawMessage, result any) {
-		send(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+		send(map[string]any{keyJSONRPC: jsonRPC, "id": id, "result": result})
 	}
-	send(map[string]any{"jsonrpc": "2.0", "method": "event", "params": map[string]any{
-		"type": "gateway.ready", "payload": map[string]any{"session_authority": true}}})
+	send(map[string]any{keyJSONRPC: jsonRPC, keyMethod: "event", keyParams: map[string]any{
+		"type": "gateway.ready", keyPayload: map[string]any{"session_authority": true}}})
 	waiting := map[string]json.RawMessage{}
 	for {
 		h.mu.Lock()
@@ -204,42 +252,42 @@ func (h *fakeHub) gateway(w http.ResponseWriter, r *http.Request) {
 		p := m.Params
 		switch m.Method {
 		case "session.create":
-			rid, _ := p["request_id"].(string)
-			if rid == "hold" {
+			rid, _ := p[keyRequestID].(string)
+			if rid == holdID {
 				continue
 			}
-			answer(m.ID, map[string]any{"session_id": "s-" + rid, "revision": 1, "execution_generation": 0,
-				"cwd": p["cwd"]})
-		case "session.mutate":
-			sid, _ := p["session_id"].(string)
-			if sid == "hold" {
+			answer(m.ID, map[string]any{keySessionID: "s-" + rid, keyRevision: 1, "execution_generation": 0,
+				keyCwd: p[keyCwd]})
+		case methodMutate:
+			sid, _ := p[keySessionID].(string)
+			if sid == holdID {
 				continue
 			}
-			res := map[string]any{"session_id": sid, "operation": p["operation"], "revision": 2}
-			switch p["operation"] {
-			case "branch":
+			res := map[string]any{keySessionID: sid, keyOperation: p[keyOperation], keyRevision: 2}
+			switch p[keyOperation] {
+			case opBranch:
 				res["branched_session_id"] = "child-" + sid
-			case "workspace":
-				if strings.HasPrefix(sid, "s-busy") {
-					send(map[string]any{"jsonrpc": "2.0", "id": m.ID,
-						"error": map[string]any{"code": 4009, "message": "session_busy"}})
+			case opWorkspace:
+				if strings.HasPrefix(sid, busySession) {
+					send(map[string]any{keyJSONRPC: jsonRPC, "id": m.ID,
+						keyError: map[string]any{"code": 4009, "message": "session_busy"}})
 					continue
 				}
 			}
 			answer(m.ID, res)
 		case "session.resume":
-			sid, _ := p["session_id"].(string)
+			sid, _ := p[keySessionID].(string)
 			if sid == "" {
-				sid = "latest-s"
+				sid = latestSession
 			}
-			answer(m.ID, map[string]any{"session_id": sid, "revision": 3, "params": p})
+			answer(m.ID, map[string]any{keySessionID: sid, keyRevision: 3, keyParams: p})
 		case "test.server_request":
 			sid := fmt.Sprintf("srv-%d", len(waiting)+1)
 			waiting[sid] = m.ID
-			send(map[string]any{"jsonrpc": "2.0", "id": sid, "method": "approval.request",
-				"params": map[string]any{"question": "ok?"}})
+			send(map[string]any{keyJSONRPC: jsonRPC, "id": sid, keyMethod: "approval.request",
+				keyParams: map[string]any{"question": "ok?"}})
 		default:
-			answer(m.ID, map[string]any{"method": m.Method, "params": p})
+			answer(m.ID, map[string]any{keyMethod: m.Method, keyParams: p})
 		}
 	}
 }
@@ -257,7 +305,7 @@ func newEnv(t *testing.T, opts splice.Options) *env {
 	h := newFakeHub(t)
 	opts.Hub = hubapi.New(h.srv.URL, hubToken, "test")
 	s := splice.New(opts)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +419,7 @@ func (c *tui) send(v any) {
 
 func (c *tui) request(id any, method string, params any) {
 	c.t.Helper()
-	c.send(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+	c.send(map[string]any{keyJSONRPC: jsonRPC, "id": id, keyMethod: method, keyParams: params})
 }
 
 var errNoFrame = errors.New("no frame in time")
@@ -408,7 +456,10 @@ func (c *tui) call(id any, method string, params any) msg {
 	c.t.Helper()
 	c.request(id, method, params)
 	m := c.read()
-	want, _ := json.Marshal(id)
+	want, err := json.Marshal(id)
+	if err != nil {
+		c.t.Fatal(err)
+	}
 	if string(m.ID) != string(want) {
 		c.t.Fatalf("answer id %s, want %s (%+v)", m.ID, want, m)
 	}
@@ -416,10 +467,10 @@ func (c *tui) call(id any, method string, params any) msg {
 }
 
 func createParams(requestID, cwd string) map[string]any {
-	p := map[string]any{"request_id": requestID, "source": "tui", "cwd_explicit": true,
+	p := map[string]any{keyRequestID: requestID, "source": sourceTUI, "cwd_explicit": true,
 		"client_env": map[string]string{"PATH": "/usr/bin"}}
 	if cwd != "" {
-		p["cwd"] = cwd
+		p[keyCwd] = cwd
 	}
 	return p
 }
@@ -454,4 +505,14 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// asMap returns v as a JSON object, failing the test when it is not one.
+func asMap(t *testing.T, v any) map[string]any {
+	t.Helper()
+	m, ok := v.(map[string]any)
+	if !ok {
+		t.Fatalf("%v (%T) is not a JSON object", v, v)
+	}
+	return m
 }

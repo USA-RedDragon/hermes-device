@@ -220,7 +220,9 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(map[string]string{"token": token})
+	if err := json.NewEncoder(w).Encode(map[string]string{"token": token}); err != nil {
+		s.log.Debug("token answer not written", "error", err)
+	}
 }
 
 func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {

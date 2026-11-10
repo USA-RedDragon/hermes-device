@@ -23,8 +23,8 @@ func TestCreateRewriteHoldsUntilBind(t *testing.T) {
 
 	waitFor(t, "the create at the gateway", func() bool { _, ok := e.hub.find("session.create", nil); return ok })
 	got, _ := e.hub.find("session.create", nil)
-	if got.Params["cwd"] != placeholder || got.Params["row_cwd"] != deviceDir || got.Params["request_id"] != "req-1" ||
-		got.Params["source"] != "tui" || got.Params["cwd_explicit"] != true || got.Params["client_env"] == nil {
+	if got.Params[keyCwd] != placeholder || got.Params["row_cwd"] != deviceDir || got.Params[keyRequestID] != "req-1" ||
+		got.Params["source"] != sourceTUI || got.Params["cwd_explicit"] != true || got.Params["client_env"] == nil {
 		t.Fatalf("gateway got %+v", got.Params)
 	}
 	// Other traffic flows while the create is held.
@@ -34,10 +34,10 @@ func TestCreateRewriteHoldsUntilBind(t *testing.T) {
 	}
 	close(gate)
 	m := c.read()
-	if string(m.ID) != `"r1"` || resultMap(t, m)["session_id"] != "s-req-1" {
+	if string(m.ID) != `"r1"` || resultMap(t, m)[keySessionID] != sessionReq1 {
 		t.Fatalf("answer %+v", m)
 	}
-	if b := e.hub.bindCalls(); len(b) != 1 || b[0] != (bindCall{"s-req-1", deviceDir}) {
+	if b := e.hub.bindCalls(); len(b) != 1 || b[0] != (bindCall{sessionReq1, deviceDir}) {
 		t.Fatalf("binds %+v", b)
 	}
 }
@@ -45,27 +45,27 @@ func TestCreateRewriteHoldsUntilBind(t *testing.T) {
 func TestCreateBindFailureDeletes(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, splice.Options{})
-	e.hub.bindFail[deviceDir] = "device_offline"
+	e.hub.bindFail[deviceDir] = hubOffline
 	c := e.dialTUI()
 	m := c.call("r1", "session.create", createParams("req-1", deviceDir))
 	if m.Error == nil || m.Error.Code != splice.CodeDevice || m.Error.Data["reason"] != splice.ReasonBind ||
-		m.Error.Data["hub_error"] != "device_offline" {
+		m.Error.Data["hub_error"] != hubOffline {
 		t.Fatalf("answer %+v", m)
 	}
-	del, ok := e.hub.find("session.mutate", func(p map[string]any) bool { return p["operation"] == "delete" })
+	del, ok := e.hub.find(methodMutate, func(p map[string]any) bool { return p[keyOperation] == "delete" })
 	if !ok {
 		t.Fatal("no delete mutate")
 	}
 	var id string
 	_ = json.Unmarshal(del.ID, &id)
 	p := del.Params
-	if p["session_id"] != "s-req-1" || p["request_id"] != "hermes-device-delete-s-req-1" ||
+	if p[keySessionID] != sessionReq1 || p[keyRequestID] != "hermes-device-delete-s-req-1" ||
 		p["expected_revision"] != float64(1) || p["expected_generation"] != float64(0) ||
-		len(p["payload"].(map[string]any)) != 0 || len(id) < len(splice.OwnIDPrefix) || id[:len(splice.OwnIDPrefix)] != splice.OwnIDPrefix {
+		len(asMap(t, p[keyPayload])) != 0 || len(id) < len(splice.OwnIDPrefix) || id[:len(splice.OwnIDPrefix)] != splice.OwnIDPrefix {
 		t.Fatalf("delete %s %+v", del.ID, p)
 	}
 	// The splice consumed the delete's answer: the next frame is the echo.
-	if res := resultMap(t, c.call("r2", "test.echo", map[string]any{})); res["method"] != "test.echo" {
+	if res := resultMap(t, c.call("r2", "test.echo", map[string]any{})); res[keyMethod] != "test.echo" {
 		t.Fatalf("next answer %+v", res)
 	}
 }
@@ -76,8 +76,8 @@ func TestCreateRetryBindsOnce(t *testing.T) {
 	c := e.dialTUI()
 	a := resultMap(t, c.call("r1", "session.create", createParams("req-1", deviceDir)))
 	b := resultMap(t, c.call("r2", "session.create", createParams("req-1", deviceDir)))
-	if a["session_id"] != b["session_id"] {
-		t.Fatalf("sessions %v and %v", a["session_id"], b["session_id"])
+	if a[keySessionID] != b[keySessionID] {
+		t.Fatalf("sessions %v and %v", a[keySessionID], b[keySessionID])
 	}
 	if n := len(e.hub.bindCalls()); n != 1 {
 		t.Fatalf("%d binds, want 1", n)
@@ -117,7 +117,7 @@ func TestWhoamiFailureThenRecovery(t *testing.T) {
 	e.hub.mu.Lock()
 	e.hub.whoamiFail = false
 	e.hub.mu.Unlock()
-	if res := resultMap(t, c.call("r2", "session.create", createParams("req-1", deviceDir))); res["cwd"] != placeholder {
+	if res := resultMap(t, c.call("r2", "session.create", createParams("req-1", deviceDir))); res[keyCwd] != placeholder {
 		t.Fatalf("result %+v", res)
 	}
 }
@@ -128,30 +128,30 @@ func TestWorkspaceRebind(t *testing.T) {
 	c := e.dialTUI()
 	resultMap(t, c.call("r1", "session.create", createParams("req-1", deviceDir)))
 	other := "/home/alice/src/other"
-	resultMap(t, c.call("r2", "session.mutate", map[string]any{"session_id": "s-req-1", "request_id": "m1",
-		"expected_revision": 1, "expected_generation": 0, "operation": "workspace", "payload": map[string]any{"cwd": other}}))
+	resultMap(t, c.call("r2", methodMutate, map[string]any{keySessionID: sessionReq1, keyRequestID: "m1",
+		"expected_revision": 1, "expected_generation": 0, keyOperation: opWorkspace, keyPayload: map[string]any{keyCwd: other}}))
 	binds := e.hub.bindCalls()
-	if len(binds) != 2 || binds[1] != (bindCall{"s-req-1", other}) {
+	if len(binds) != 2 || binds[1] != (bindCall{sessionReq1, other}) {
 		t.Fatalf("binds %+v", binds)
 	}
-	mut, _ := e.hub.find("session.mutate", nil)
-	if mut.Params["payload"].(map[string]any)["cwd"] != placeholder || mut.Params["request_id"] != "m1" {
+	mut, _ := e.hub.find(methodMutate, nil)
+	if asMap(t, mut.Params[keyPayload])[keyCwd] != placeholder || mut.Params[keyRequestID] != "m1" {
 		t.Fatalf("gateway got %+v", mut.Params)
 	}
 
 	e.hub.mu.Lock()
 	e.hub.bindFail["/home/alice/denied"] = "dir_refused"
 	e.hub.mu.Unlock()
-	m := c.call("r3", "session.mutate", map[string]any{"session_id": "s-req-1", "request_id": "m2",
-		"operation": "workspace", "payload": map[string]any{"cwd": "/home/alice/denied"}})
+	m := c.call("r3", methodMutate, map[string]any{keySessionID: sessionReq1, keyRequestID: "m2",
+		keyOperation: opWorkspace, keyPayload: map[string]any{keyCwd: "/home/alice/denied"}})
 	if m.Error == nil || m.Error.Data["hub_error"] != "dir_refused" {
 		t.Fatalf("answer %+v", m)
 	}
-	if _, ok := e.hub.find("session.mutate", func(p map[string]any) bool { return p["request_id"] == "m2" }); ok {
+	if _, ok := e.hub.find(methodMutate, func(p map[string]any) bool { return p[keyRequestID] == "m2" }); ok {
 		t.Fatal("a workspace move whose bind failed reached the gateway")
 	}
-	m = c.call("r4", "session.mutate", map[string]any{"session_id": "s-req-1", "operation": "workspace",
-		"payload": map[string]any{"cwd": "relative"}})
+	m = c.call("r4", methodMutate, map[string]any{keySessionID: sessionReq1, keyOperation: opWorkspace,
+		keyPayload: map[string]any{keyCwd: "relative"}})
 	if m.Error == nil || m.Error.Data["reason"] != splice.ReasonCwd {
 		t.Fatalf("answer %+v", m)
 	}
@@ -162,13 +162,13 @@ func TestWorkspaceRefusedRestoresBinding(t *testing.T) {
 	e := newEnv(t, splice.Options{})
 	c := e.dialTUI()
 	resultMap(t, c.call("r1", "session.create", createParams("busy", deviceDir)))
-	m := c.call("r2", "session.mutate", map[string]any{"session_id": "s-busy", "operation": "workspace",
-		"payload": map[string]any{"cwd": "/home/alice/b"}})
+	m := c.call("r2", methodMutate, map[string]any{keySessionID: busySession, keyOperation: opWorkspace,
+		keyPayload: map[string]any{keyCwd: "/home/alice/b"}})
 	if m.Error == nil {
 		t.Fatalf("answer %+v", m)
 	}
 	waitFor(t, "the restoring bind", func() bool { return len(e.hub.bindCalls()) == 3 })
-	if b := e.hub.bindCalls(); b[1] != (bindCall{"s-busy", "/home/alice/b"}) || b[2] != (bindCall{"s-busy", deviceDir}) {
+	if b := e.hub.bindCalls(); b[1] != (bindCall{busySession, "/home/alice/b"}) || b[2] != (bindCall{busySession, deviceDir}) {
 		t.Fatalf("binds %+v", b)
 	}
 }
@@ -178,26 +178,26 @@ func TestBranchBindsChild(t *testing.T) {
 	e := newEnv(t, splice.Options{})
 	c := e.dialTUI()
 	resultMap(t, c.call("r1", "session.create", createParams("req-1", deviceDir)))
-	res := resultMap(t, c.call("r2", "session.mutate", map[string]any{"session_id": "s-req-1", "request_id": "b1",
-		"expected_revision": 1, "expected_generation": 0, "operation": "branch", "payload": map[string]any{}}))
-	if res["branched_session_id"] != "child-s-req-1" {
+	res := resultMap(t, c.call("r2", methodMutate, map[string]any{keySessionID: sessionReq1, keyRequestID: "b1",
+		"expected_revision": 1, "expected_generation": 0, keyOperation: opBranch, keyPayload: map[string]any{}}))
+	if res["branched_session_id"] != childReq1 {
 		t.Fatalf("result %+v", res)
 	}
 	binds := e.hub.bindCalls()
-	if len(binds) != 2 || binds[1] != (bindCall{"child-s-req-1", deviceDir}) {
+	if len(binds) != 2 || binds[1] != (bindCall{childReq1, deviceDir}) {
 		t.Fatalf("binds %+v", binds)
 	}
 	// A branch of a session this daemon never bound passes without a bind.
-	resultMap(t, c.call("r3", "session.mutate", map[string]any{"session_id": "other", "operation": "branch", "payload": map[string]any{}}))
+	resultMap(t, c.call("r3", methodMutate, map[string]any{keySessionID: "other", keyOperation: opBranch, keyPayload: map[string]any{}}))
 	if n := len(e.hub.bindCalls()); n != 2 {
 		t.Fatalf("%d binds, want 2", n)
 	}
 	// A failed child bind still passes the answer.
 	e.hub.mu.Lock()
-	e.hub.bindFail[deviceDir] = "device_offline"
+	e.hub.bindFail[deviceDir] = hubOffline
 	e.hub.mu.Unlock()
-	if res := resultMap(t, c.call("r4", "session.mutate", map[string]any{"session_id": "s-req-1", "operation": "branch",
-		"payload": map[string]any{}})); res["branched_session_id"] != "child-s-req-1" {
+	if res := resultMap(t, c.call("r4", methodMutate, map[string]any{keySessionID: sessionReq1, keyOperation: opBranch,
+		keyPayload: map[string]any{}})); res["branched_session_id"] != childReq1 {
 		t.Fatalf("result %+v", res)
 	}
 }
@@ -210,18 +210,18 @@ func TestDeniedMethods(t *testing.T) {
 		method string
 		params map[string]any
 	}{
-		{"config.set", map[string]any{"key": "cwd", "value": "/x"}},
-		{"config.set", map[string]any{"key": "terminal.cwd", "value": "/x"}},
-		{"config.set", map[string]any{}},
+		{methodConfigSet, map[string]any{keyConfigKey: keyCwd, keyConfigValue: "/x"}},
+		{methodConfigSet, map[string]any{keyConfigKey: "terminal.cwd", keyConfigValue: "/x"}},
+		{methodConfigSet, map[string]any{}},
 		{"vault.list", nil},
-		{"vault.set", map[string]any{"name": "k"}},
+		{"vault.set", map[string]any{keyName: "k"}},
 		{"model.save_key", map[string]any{}},
 		{"profiles.create", map[string]any{}},
-		{"shell.exec", map[string]any{"command": "id"}},
+		{"shell.exec", map[string]any{keyCommand: "id"}},
 		{"cli.exec", map[string]any{}},
-		{"image.attach", map[string]any{"path": "/etc/passwd"}},
-		{"pdf.attach", map[string]any{"path": "/x.pdf"}},
-		{"file.attach", map[string]any{"path": "/x"}},
+		{"image.attach", map[string]any{keyPath: "/etc/passwd"}},
+		{methodPDFAttach, map[string]any{keyPath: "/x.pdf"}},
+		{methodFileAttach, map[string]any{keyPath: "/x"}},
 		{"input.detect_drop", map[string]any{}},
 		{"clipboard.paste", map[string]any{}},
 		{"mcp.servers.add", map[string]any{}},
@@ -231,7 +231,7 @@ func TestDeniedMethods(t *testing.T) {
 		{"cron.manage", map[string]any{}},
 		{"browser.manage", map[string]any{}},
 		{"prompt.background", map[string]any{}},
-		{"session.mutate", map[string]any{"session_id": "s", "operation": "editor_mcp", "payload": map[string]any{}}},
+		{methodMutate, map[string]any{keySessionID: "s", keyOperation: "editor_mcp", keyPayload: map[string]any{}}},
 		{"mcp.servers.remove", map[string]any{}},
 		{"cron.submit", map[string]any{}},
 		{"kanban.run", map[string]any{}},
@@ -260,22 +260,22 @@ func TestDeniedMethods(t *testing.T) {
 		method string
 		params map[string]any
 	}{
-		{"config.set", map[string]any{"key": "verbose", "value": "all", "session_id": "s"}},
-		{"pdf.attach", map[string]any{"content_base64": "AA=="}},
-		{"file.attach", map[string]any{"data_url": "data:,", "path": nil}},
+		{methodConfigSet, map[string]any{keyConfigKey: "verbose", keyConfigValue: "all", keySessionID: "s"}},
+		{methodPDFAttach, map[string]any{"content_base64": "AA=="}},
+		{methodFileAttach, map[string]any{"data_url": "data:,", keyPath: nil}},
 		{"image.attach_bytes", map[string]any{"data": "AA=="}},
-		{"slash.exec", map[string]any{"command": "/help"}},
-		{"command.dispatch", map[string]any{"name": "help"}},
+		{"slash.exec", map[string]any{keyCommand: "/help"}},
+		{"command.dispatch", map[string]any{keyName: "help"}},
 	}
 	for i, tc := range allowed {
-		if res := resultMap(t, c.call(100+i, tc.method, tc.params)); res["method"] != tc.method {
+		if res := resultMap(t, c.call(100+i, tc.method, tc.params)); res[keyMethod] != tc.method {
 			t.Errorf("%s: result %+v", tc.method, res)
 		}
 	}
 	for _, m := range e.hub.receivedMethods() {
 		for _, tc := range cases {
-			if m.Method == tc.method && m.Method != "session.mutate" && (m.Method != "config.set" || m.Params["key"] != "verbose") &&
-				(m.Method != "pdf.attach" && m.Method != "file.attach" || m.Params["path"] != nil) {
+			if m.Method == tc.method && m.Method != methodMutate && (m.Method != methodConfigSet || m.Params[keyConfigKey] != "verbose") &&
+				(m.Method != methodPDFAttach && m.Method != methodFileAttach || m.Params[keyPath] != nil) {
 				t.Errorf("denied %s reached the gateway: %+v", m.Method, m.Params)
 			}
 		}
@@ -303,7 +303,7 @@ func TestStringAndIntegerIDs(t *testing.T) {
 		c.call(id, "test.echo", map[string]any{})
 	}
 	res := resultMap(t, c.call(42, "session.create", createParams("int-id", deviceDir)))
-	if res["session_id"] != "s-int-id" {
+	if res[keySessionID] != "s-int-id" {
 		t.Fatalf("result %+v", res)
 	}
 	if m := c.call(43, "shell.exec", map[string]any{}); m.Error == nil {
@@ -325,7 +325,7 @@ func TestServerRequestRoundTrip(t *testing.T) {
 	if req.Method != "approval.request" || string(req.ID) != `"srv-1"` {
 		t.Fatalf("server request %+v", req)
 	}
-	c.send(map[string]any{"jsonrpc": "2.0", "id": "srv-1", "result": map[string]any{"choice": "once"}})
+	c.send(map[string]any{keyJSONRPC: jsonRPC, "id": "srv-1", "result": map[string]any{"choice": "once"}})
 	m := c.read()
 	if string(m.ID) != `"r1"` || string(m.Result) != `{"answer":{"choice":"once"}}` {
 		t.Fatalf("answer %+v %s", m, m.Result)
@@ -409,10 +409,10 @@ func TestHubLegDropClosesWithoutAnswers(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, splice.Options{})
 	c := e.dialTUI()
-	c.request("b1", "session.mutate", map[string]any{"session_id": "hold", "operation": "branch", "payload": map[string]any{}})
-	c.request("c1", "session.create", createParams("hold", deviceDir))
+	c.request("b1", methodMutate, map[string]any{keySessionID: holdID, keyOperation: opBranch, keyPayload: map[string]any{}})
+	c.request("c1", "session.create", createParams(holdID, deviceDir))
 	waitFor(t, "both held at the gateway", func() bool {
-		_, a := e.hub.find("session.mutate", nil)
+		_, a := e.hub.find(methodMutate, nil)
 		_, b := e.hub.find("session.create", nil)
 		return a && b
 	})
@@ -453,22 +453,22 @@ func TestEditorMCPServersRemoved(t *testing.T) {
 	e := newEnv(t, splice.Options{})
 	c := e.dialTUI()
 	p := createParams("req-1", deviceDir)
-	p["editor"] = map[string]any{"name": "zed", "mcp_servers": []any{map[string]any{"command": "x"}}}
+	p["editor"] = map[string]any{keyName: "zed", keyMCPServers: []any{map[string]any{keyCommand: "x"}}}
 	resultMap(t, c.call("r1", "session.create", p))
 	got, _ := e.hub.find("session.create", nil)
-	if ed := got.Params["editor"].(map[string]any); ed["name"] != "zed" || ed["mcp_servers"] != nil {
+	if ed := asMap(t, got.Params["editor"]); ed[keyName] != "zed" || ed[keyMCPServers] != nil {
 		t.Fatalf("editor at the gateway %+v", ed)
 	}
-	resultMap(t, c.call("r2", "session.mutate", map[string]any{"session_id": "s-req-1", "operation": "branch",
-		"payload": map[string]any{"title": "t", "mcp_servers": []any{}}}))
-	br, _ := e.hub.find("session.mutate", nil)
-	if pl := br.Params["payload"].(map[string]any); pl["title"] != "t" || pl["mcp_servers"] != nil {
+	resultMap(t, c.call("r2", methodMutate, map[string]any{keySessionID: sessionReq1, keyOperation: opBranch,
+		keyPayload: map[string]any{"title": "t", keyMCPServers: []any{}}}))
+	br, _ := e.hub.find(methodMutate, nil)
+	if pl := asMap(t, br.Params[keyPayload]); pl["title"] != "t" || pl[keyMCPServers] != nil {
 		t.Fatalf("branch payload at the gateway %+v", pl)
 	}
-	resultMap(t, c.call("r3", "session.resume", map[string]any{"session_id": "s-req-1",
-		"editor": map[string]any{"mcp_servers": []any{}}}))
+	resultMap(t, c.call("r3", "session.resume", map[string]any{keySessionID: sessionReq1,
+		"editor": map[string]any{keyMCPServers: []any{}}}))
 	rs, _ := e.hub.find("session.resume", nil)
-	if ed := rs.Params["editor"].(map[string]any); len(ed) != 0 {
+	if ed := asMap(t, rs.Params["editor"]); len(ed) != 0 {
 		t.Fatalf("resume editor at the gateway %+v", ed)
 	}
 }
@@ -477,34 +477,34 @@ func TestResumeBindsToChatDir(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, splice.Options{})
 	c := e.dialTUI()
-	resultMap(t, c.call("r1", "session.resume", map[string]any{"session_id": "old"}))
-	if b := e.hub.bindCalls(); len(b) != 1 || b[0] != (bindCall{"old", deviceDir}) {
+	resultMap(t, c.call("r1", "session.resume", map[string]any{keySessionID: oldSession}))
+	if b := e.hub.bindCalls(); len(b) != 1 || b[0] != (bindCall{oldSession, deviceDir}) {
 		t.Fatalf("binds %+v", b)
 	}
 	// A move, then a resume on the same chat (a reconnect), keeps the move.
 	other := "/home/alice/src/other"
-	resultMap(t, c.call("r2", "session.mutate", map[string]any{"session_id": "old", "operation": "workspace",
-		"payload": map[string]any{"cwd": other}}))
-	resultMap(t, c.call("r3", "session.resume", map[string]any{"session_id": "old"}))
-	if b := e.hub.bindCalls(); len(b) != 2 || b[1] != (bindCall{"old", other}) {
+	resultMap(t, c.call("r2", methodMutate, map[string]any{keySessionID: oldSession, keyOperation: opWorkspace,
+		keyPayload: map[string]any{keyCwd: other}}))
+	resultMap(t, c.call("r3", "session.resume", map[string]any{keySessionID: oldSession}))
+	if b := e.hub.bindCalls(); len(b) != 2 || b[1] != (bindCall{oldSession, other}) {
 		t.Fatalf("binds %+v", b)
 	}
 	// A latest resume binds the session the gateway picked.
-	if res := resultMap(t, c.call("r4", "session.resume", map[string]any{"latest": "tui"})); res["session_id"] != "latest-s" {
+	if res := resultMap(t, c.call("r4", "session.resume", map[string]any{"latest": sourceTUI})); res[keySessionID] != latestSession {
 		t.Fatalf("result %+v", res)
 	}
-	if b := e.hub.bindCalls(); len(b) != 3 || b[2] != (bindCall{"latest-s", deviceDir}) {
+	if b := e.hub.bindCalls(); len(b) != 3 || b[2] != (bindCall{latestSession, deviceDir}) {
 		t.Fatalf("binds %+v", b)
 	}
 	// A failed bind refuses the resume.
 	e.hub.mu.Lock()
 	e.hub.bindFail[deviceDir] = "bound_to_other_device"
 	e.hub.mu.Unlock()
-	m := c.call("r5", "session.resume", map[string]any{"session_id": "theirs"})
+	m := c.call("r5", "session.resume", map[string]any{keySessionID: "theirs"})
 	if m.Error == nil || m.Error.Data["hub_error"] != "bound_to_other_device" {
 		t.Fatalf("answer %+v", m)
 	}
-	if _, ok := e.hub.find("session.resume", func(p map[string]any) bool { return p["session_id"] == "theirs" }); ok {
+	if _, ok := e.hub.find("session.resume", func(p map[string]any) bool { return p[keySessionID] == "theirs" }); ok {
 		t.Fatal("a resume whose bind failed reached the gateway")
 	}
 }
@@ -513,7 +513,7 @@ func TestCaseVariantMembers(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, splice.Options{})
 	c := e.dialTUI()
-	c.send(map[string]any{"jsonrpc": "2.0", "id": "r1", "method": "shell.exec", "METHOD": "test.echo"})
+	c.send(map[string]any{keyJSONRPC: jsonRPC, "id": "r1", keyMethod: "shell.exec", "METHOD": "test.echo"})
 	if m := c.read(); m.Error == nil || m.Error.Code != splice.CodeDenied {
 		t.Fatalf("answer %+v", m)
 	}

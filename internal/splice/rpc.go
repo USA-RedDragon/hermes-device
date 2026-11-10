@@ -109,20 +109,26 @@ type rpcError struct {
 }
 
 func answerError(id json.RawMessage, code int, message string, data map[string]any) []byte {
-	b, _ := json.Marshal(struct {
+	b, err := json.Marshal(struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`
 		Error   rpcError        `json:"error"`
 	}{jsonRPCVersion, id, rpcError{Code: code, Message: message, Data: data}})
+	if err != nil {
+		return nil
+	}
 	return b
 }
 
 func answerResult(id json.RawMessage, result any) []byte {
-	b, _ := json.Marshal(struct {
+	b, err := json.Marshal(struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`
 		Result  any             `json:"result"`
 	}{jsonRPCVersion, id, result})
+	if err != nil {
+		return nil
+	}
 	return b
 }
 
@@ -238,8 +244,12 @@ func rawString(raw json.RawMessage) string {
 	return s
 }
 
+// mustRaw encodes v, or returns nil when v cannot be encoded.
 func mustRaw(v any) json.RawMessage {
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
 	return b
 }
 

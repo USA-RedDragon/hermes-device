@@ -42,7 +42,7 @@ type conn struct {
 	tui   *websocket.Conn
 	hub   *websocket.Conn
 
-	ctx    context.Context
+	ctx    context.Context //nolint:containedctx // per-connection lifetime shared by the copyLoop handlers
 	cancel context.CancelFunc
 
 	mu      sync.Mutex
@@ -65,14 +65,15 @@ func newConn(s *Server, token *tokenEntry, tui, hub *websocket.Conn) *conn {
 }
 
 func (c *conn) run(parent context.Context) {
-	c.ctx, c.cancel = context.WithCancel(parent)
+	ctx, cancel := context.WithCancel(parent)
+	c.ctx, c.cancel = ctx, cancel
 	defer c.cancel()
 	tuiDone := make(chan error, 1)
 	hubDone := make(chan error, 1)
 	go func() { tuiDone <- c.copyLoop(c.tui, c.fromTUI) }()
 	go func() { hubDone <- c.copyLoop(c.hub, c.fromHub) }()
-	go c.pinger(c.tui)
-	go c.pinger(c.hub)
+	go c.pinger(ctx, c.tui)
+	go c.pinger(ctx, c.hub)
 
 	tuiEnded := false
 	select {
@@ -110,20 +111,20 @@ func (c *conn) closeTUI(code websocket.StatusCode, reason string) {
 	c.closeOnce.Do(func() { go func() { _ = c.tui.Close(code, reason) }() })
 }
 
-func (c *conn) pinger(ws *websocket.Conn) {
+func (c *conn) pinger(ctx context.Context, ws *websocket.Conn) {
 	t := time.NewTicker(c.s.opts.PingInterval)
 	defer t.Stop()
 	for {
 		select {
-		case <-c.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
-		ctx, cancel := context.WithTimeout(c.ctx, c.s.opts.PingTimeout)
-		err := ws.Ping(ctx)
+		pingCtx, cancel := context.WithTimeout(ctx, c.s.opts.PingTimeout)
+		err := ws.Ping(pingCtx)
 		cancel()
 		if err != nil {
-			if c.ctx.Err() == nil {
+			if ctx.Err() == nil {
 				c.s.log.Info("no pong; closing", "error", err)
 				go func() { _ = ws.Close(protocol.ClosePingTimeout, "ping timeout") }()
 				time.AfterFunc(c.s.opts.PingTimeout, func() { _ = ws.CloseNow() })
