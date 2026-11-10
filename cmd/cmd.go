@@ -47,6 +47,7 @@ func NewCommand(version, commit string) *cobra.Command {
 		newACPCommand(b),
 		newACPHostCommand(b),
 		newPluginCommand(b),
+		newBrowserCommand(b),
 	)
 	return root
 }
