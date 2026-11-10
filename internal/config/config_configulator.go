@@ -7,8 +7,8 @@ package config
 import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
-	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,13 +20,38 @@ import (
 	"github.com/spf13/pflag"
 )
 
-type serverShadow struct {
+type hubShadow struct {
 	URL *string `json:"url" toml:"url" yaml:"url"`
 }
 
+type storeShadow struct {
+	Keyring   *bool   `json:"keyring"    toml:"keyring"    yaml:"keyring"`
+	TokenFile *string `json:"token-file" toml:"token-file" yaml:"token-file"`
+	StateDir  *string `json:"state-dir"  toml:"state-dir"  yaml:"state-dir"`
+}
+
 type deviceShadow struct {
-	Name  *string `json:"name"  toml:"name"  yaml:"name"`
-	Token *string `json:"token" toml:"token" yaml:"token"`
+	Roots   *[]string `json:"roots"   toml:"roots"   yaml:"roots"`
+	TempDir *string   `json:"tmp-dir" toml:"tmp-dir" yaml:"tmp-dir"`
+	Shell   *string   `json:"shell"   toml:"shell"   yaml:"shell"`
+}
+
+type gatewayShadow struct {
+	Listen *string `json:"listen" toml:"listen" yaml:"listen"`
+}
+
+type chatShadow struct {
+	Hermes *string `json:"hermes" toml:"hermes" yaml:"hermes"`
+}
+
+type aCPHostShadow struct {
+	Listen           *string `json:"listen"              toml:"listen"              yaml:"listen"`
+	BackendID        *string `json:"backend-id"          toml:"backend-id"          yaml:"backend-id"`
+	HubPublicKey     *string `json:"hub-public-key"      toml:"hub-public-key"      yaml:"hub-public-key"`
+	HubPublicKeyFile *string `json:"hub-public-key-file" toml:"hub-public-key-file" yaml:"hub-public-key-file"`
+	Hermes           *string `json:"hermes"              toml:"hermes"              yaml:"hermes"`
+	Placeholder      *string `json:"placeholder"         toml:"placeholder"         yaml:"placeholder"`
+	MaxProcesses     *int    `json:"max-processes"       toml:"max-processes"       yaml:"max-processes"`
 }
 
 type reconnectShadow struct {
@@ -35,13 +60,15 @@ type reconnectShadow struct {
 }
 
 type configShadow struct {
-	LogLevel  *string          `json:"log-level" toml:"log-level" yaml:"log-level"`
-	Server    *serverShadow    `json:"server"    toml:"server"    yaml:"server"`
-	Device    *deviceShadow    `json:"device"    toml:"device"    yaml:"device"`
-	Roots     *[]string        `json:"roots"     toml:"roots"     yaml:"roots"`
-	TempDir   *string          `json:"tmp-dir"   toml:"tmp-dir"   yaml:"tmp-dir"`
-	Shell     *string          `json:"shell"     toml:"shell"     yaml:"shell"`
-	Reconnect *reconnectShadow `json:"reconnect" toml:"reconnect" yaml:"reconnect"`
+	LogLevel     *string          `json:"log-level"     toml:"log-level"     yaml:"log-level"`
+	PingInterval *impl.Duration   `json:"ping-interval" toml:"ping-interval" yaml:"ping-interval"`
+	Hub          *hubShadow       `json:"hub"           toml:"hub"           yaml:"hub"`
+	Store        *storeShadow     `json:"store"         toml:"store"         yaml:"store"`
+	Device       *deviceShadow    `json:"device"        toml:"device"        yaml:"device"`
+	Gateway      *gatewayShadow   `json:"gateway"       toml:"gateway"       yaml:"gateway"`
+	Chat         *chatShadow      `json:"chat"          toml:"chat"          yaml:"chat"`
+	ACPHost      *aCPHostShadow   `json:"acp-host"      toml:"acp-host"      yaml:"acp-host"`
+	Reconnect    *reconnectShadow `json:"reconnect"     toml:"reconnect"     yaml:"reconnect"`
 }
 
 // ConfigSchema returns the generated schema for Config.
@@ -50,15 +77,28 @@ func ConfigSchema() *configulator.Schema[Config] {
 		ApplyDefaults: configApplyDefaults,
 		ApplyEnv:      configApplyEnv,
 		DecodeFile:    configDecodeFile,
-		Required:      []string{"server.url", "device.name", "device.token", "roots"},
 	}
 }
 
 func configApplyDefaults(cfg *Config, _ string, set configulator.SetOrigin) error {
 	cfg.LogLevel = "info"
 	set("log-level", configulator.LayerDefault, "default tag")
-	cfg.Shell = "bash"
-	set("shell", configulator.LayerDefault, "default tag")
+	cfg.PingInterval = time.Duration(int64(25000000000))
+	set("ping-interval", configulator.LayerDefault, "default tag")
+	cfg.Store.Keyring = true
+	set("store.keyring", configulator.LayerDefault, "default tag")
+	cfg.Device.Shell = "bash"
+	set("device.shell", configulator.LayerDefault, "default tag")
+	cfg.Gateway.Listen = "127.0.0.1:0"
+	set("gateway.listen", configulator.LayerDefault, "default tag")
+	cfg.Chat.Hermes = "hermes"
+	set("chat.hermes", configulator.LayerDefault, "default tag")
+	cfg.ACPHost.Listen = ":9130"
+	set("acp-host.listen", configulator.LayerDefault, "default tag")
+	cfg.ACPHost.Hermes = "hermes"
+	set("acp-host.hermes", configulator.LayerDefault, "default tag")
+	cfg.ACPHost.MaxProcesses = 8
+	set("acp-host.max-processes", configulator.LayerDefault, "default tag")
 	cfg.Reconnect.MinBackoff = time.Duration(int64(1000000000))
 	set("reconnect.min-backoff", configulator.LayerDefault, "default tag")
 	cfg.Reconnect.MaxBackoff = time.Duration(int64(30000000000))
@@ -82,33 +122,92 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		cfg.LogLevel = *s.LogLevel
 		set("log-level", configulator.LayerFile, file)
 	}
-	if s.Server != nil {
-		if s.Server.URL != nil {
-			cfg.Server.URL = *s.Server.URL
-			set("server.url", configulator.LayerFile, file)
+	if s.PingInterval != nil {
+		v, ok := s.PingInterval.Value()
+		if !ok {
+			return &configulator.OpaqueSpellingError{
+				Hint: "\"30s\"",
+				Path: "ping-interval",
+			}
+		}
+		cfg.PingInterval = v
+		set("ping-interval", configulator.LayerFile, file)
+	}
+	if s.Hub != nil {
+		if s.Hub.URL != nil {
+			cfg.Hub.URL = *s.Hub.URL
+			set("hub.url", configulator.LayerFile, file)
+		}
+	}
+	if s.Store != nil {
+		if s.Store.Keyring != nil {
+			cfg.Store.Keyring = *s.Store.Keyring
+			set("store.keyring", configulator.LayerFile, file)
+		}
+		if s.Store.TokenFile != nil {
+			cfg.Store.TokenFile = *s.Store.TokenFile
+			set("store.token-file", configulator.LayerFile, file)
+		}
+		if s.Store.StateDir != nil {
+			cfg.Store.StateDir = *s.Store.StateDir
+			set("store.state-dir", configulator.LayerFile, file)
 		}
 	}
 	if s.Device != nil {
-		if s.Device.Name != nil {
-			cfg.Device.Name = *s.Device.Name
-			set("device.name", configulator.LayerFile, file)
+		if s.Device.Roots != nil {
+			cfg.Device.Roots = *s.Device.Roots
+			set("device.roots", configulator.LayerFile, file)
 		}
-		if s.Device.Token != nil {
-			cfg.Device.Token = *s.Device.Token
-			set("device.token", configulator.LayerFile, file)
+		if s.Device.TempDir != nil {
+			cfg.Device.TempDir = *s.Device.TempDir
+			set("device.tmp-dir", configulator.LayerFile, file)
+		}
+		if s.Device.Shell != nil {
+			cfg.Device.Shell = *s.Device.Shell
+			set("device.shell", configulator.LayerFile, file)
 		}
 	}
-	if s.Roots != nil {
-		cfg.Roots = *s.Roots
-		set("roots", configulator.LayerFile, file)
+	if s.Gateway != nil {
+		if s.Gateway.Listen != nil {
+			cfg.Gateway.Listen = *s.Gateway.Listen
+			set("gateway.listen", configulator.LayerFile, file)
+		}
 	}
-	if s.TempDir != nil {
-		cfg.TempDir = *s.TempDir
-		set("tmp-dir", configulator.LayerFile, file)
+	if s.Chat != nil {
+		if s.Chat.Hermes != nil {
+			cfg.Chat.Hermes = *s.Chat.Hermes
+			set("chat.hermes", configulator.LayerFile, file)
+		}
 	}
-	if s.Shell != nil {
-		cfg.Shell = *s.Shell
-		set("shell", configulator.LayerFile, file)
+	if s.ACPHost != nil {
+		if s.ACPHost.Listen != nil {
+			cfg.ACPHost.Listen = *s.ACPHost.Listen
+			set("acp-host.listen", configulator.LayerFile, file)
+		}
+		if s.ACPHost.BackendID != nil {
+			cfg.ACPHost.BackendID = *s.ACPHost.BackendID
+			set("acp-host.backend-id", configulator.LayerFile, file)
+		}
+		if s.ACPHost.HubPublicKey != nil {
+			cfg.ACPHost.HubPublicKey = *s.ACPHost.HubPublicKey
+			set("acp-host.hub-public-key", configulator.LayerFile, file)
+		}
+		if s.ACPHost.HubPublicKeyFile != nil {
+			cfg.ACPHost.HubPublicKeyFile = *s.ACPHost.HubPublicKeyFile
+			set("acp-host.hub-public-key-file", configulator.LayerFile, file)
+		}
+		if s.ACPHost.Hermes != nil {
+			cfg.ACPHost.Hermes = *s.ACPHost.Hermes
+			set("acp-host.hermes", configulator.LayerFile, file)
+		}
+		if s.ACPHost.Placeholder != nil {
+			cfg.ACPHost.Placeholder = *s.ACPHost.Placeholder
+			set("acp-host.placeholder", configulator.LayerFile, file)
+		}
+		if s.ACPHost.MaxProcesses != nil {
+			cfg.ACPHost.MaxProcesses = *s.ACPHost.MaxProcesses
+			set("acp-host.max-processes", configulator.LayerFile, file)
+		}
 	}
 	if s.Reconnect != nil {
 		if s.Reconnect.MinBackoff != nil {
@@ -142,30 +241,101 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.LogLevel = v
 		set("log-level", configulator.LayerEnv, n)
 	}
-	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "server", "url"); ok {
-		cfg.Server.URL = v
-		set("server.url", configulator.LayerEnv, n)
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "ping-interval"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "ping-interval",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.PingInterval = d
+		set("ping-interval", configulator.LayerEnv, n)
 	}
-	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "name"); ok {
-		cfg.Device.Name = v
-		set("device.name", configulator.LayerEnv, n)
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "hub", "url"); ok {
+		cfg.Hub.URL = v
+		set("hub.url", configulator.LayerEnv, n)
 	}
-	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "token"); ok {
-		cfg.Device.Token = v
-		set("device.token", configulator.LayerEnv, n)
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "keyring"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "store.keyring",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Store.Keyring = p
+		set("store.keyring", configulator.LayerEnv, n)
 	}
-	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "roots"); ok {
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "token-file"); ok {
+		cfg.Store.TokenFile = v
+		set("store.token-file", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "state-dir"); ok {
+		cfg.Store.StateDir = v
+		set("store.state-dir", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "roots"); ok {
 		lst := impl.SplitList(v, ec.ArraySeparator)
-		cfg.Roots = lst
-		set("roots", configulator.LayerEnv, n)
+		cfg.Device.Roots = lst
+		set("device.roots", configulator.LayerEnv, n)
 	}
-	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "tmp-dir"); ok {
-		cfg.TempDir = v
-		set("tmp-dir", configulator.LayerEnv, n)
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "tmp-dir"); ok {
+		cfg.Device.TempDir = v
+		set("device.tmp-dir", configulator.LayerEnv, n)
 	}
-	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "shell"); ok {
-		cfg.Shell = v
-		set("shell", configulator.LayerEnv, n)
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "shell"); ok {
+		cfg.Device.Shell = v
+		set("device.shell", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "gateway", "listen"); ok {
+		cfg.Gateway.Listen = v
+		set("gateway.listen", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "chat", "hermes"); ok {
+		cfg.Chat.Hermes = v
+		set("chat.hermes", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "acp-host", "listen"); ok {
+		cfg.ACPHost.Listen = v
+		set("acp-host.listen", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "acp-host", "backend-id"); ok {
+		cfg.ACPHost.BackendID = v
+		set("acp-host.backend-id", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "acp-host", "hub-public-key"); ok {
+		cfg.ACPHost.HubPublicKey = v
+		set("acp-host.hub-public-key", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "acp-host", "hub-public-key-file"); ok {
+		cfg.ACPHost.HubPublicKeyFile = v
+		set("acp-host.hub-public-key-file", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "acp-host", "hermes"); ok {
+		cfg.ACPHost.Hermes = v
+		set("acp-host.hermes", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "acp-host", "placeholder"); ok {
+		cfg.ACPHost.Placeholder = v
+		set("acp-host.placeholder", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "acp-host", "max-processes"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "acp-host.max-processes",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.ACPHost.MaxProcesses = int(p)
+		set("acp-host.max-processes", configulator.LayerEnv, n)
 	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "reconnect", "min-backoff"); ok {
 		d, err := time.ParseDuration(v)
@@ -207,12 +377,23 @@ func ConfigPFlagHooks() cpflag.Hooks[Config] {
 func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	names := []string{
 		"log-level",
-		"server" + o.Separator + "url",
-		"device" + o.Separator + "name",
-		"device" + o.Separator + "token",
-		"roots",
-		"tmp-dir",
-		"shell",
+		"ping-interval",
+		"hub" + o.Separator + "url",
+		"store" + o.Separator + "keyring",
+		"store" + o.Separator + "token-file",
+		"store" + o.Separator + "state-dir",
+		"device" + o.Separator + "roots",
+		"device" + o.Separator + "tmp-dir",
+		"device" + o.Separator + "shell",
+		"gateway" + o.Separator + "listen",
+		"chat" + o.Separator + "hermes",
+		"acp-host" + o.Separator + "listen",
+		"acp-host" + o.Separator + "backend-id",
+		"acp-host" + o.Separator + "hub-public-key",
+		"acp-host" + o.Separator + "hub-public-key-file",
+		"acp-host" + o.Separator + "hermes",
+		"acp-host" + o.Separator + "placeholder",
+		"acp-host" + o.Separator + "max-processes",
 		"reconnect" + o.Separator + "min-backoff",
 		"reconnect" + o.Separator + "max-backoff",
 	}
@@ -231,14 +412,25 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		}
 	}
 	fs.String(names[0], "info", "Log level: debug, info, warn or error")
-	fs.String(names[1], "", "WebSocket URL of the Hermes device plugin, for example ws://127.0.0.1:9119/api/plugins/device/ws")
-	fs.String(names[2], "", "Device name, as used in /device <name> <dir>")
-	fs.String(names[3], "", "Shared token for this device, matching the server's plugin config")
-	fs.StringSlice(names[4], nil, "Absolute directories commands may run in. A command whose working directory is outside all of them is refused")
-	fs.String(names[5], "", "Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory")
-	fs.String(names[6], "bash", "Shell used to run commands")
-	fs.Duration(names[7], time.Duration(int64(1000000000)), "First delay after a lost connection")
-	fs.Duration(names[8], time.Duration(int64(30000000000)), "Longest delay between attempts")
+	fs.Duration(names[1], time.Duration(int64(25000000000)), "Interval of WebSocket pings on every leg. Must be from 5s to 30s")
+	fs.String(names[2], "", "Base URL of hermes-hub, for example https://hub.example.com. Needed by login, run, chat and acp")
+	fs.Bool(names[3], true, "Keep the device token in the OS keyring when one is available")
+	fs.String(names[4], "", "File (mode 0600) for the device token when the keyring is off or unavailable. Defaults to token in the state directory")
+	fs.String(names[5], "", "Directory for the token file and the daemon's state file. Defaults to hermes-device in the user config directory")
+	fs.StringSlice(names[6], nil, "Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Needed by run")
+	fs.String(names[7], "", "Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory")
+	fs.String(names[8], "bash", "Shell used to run commands")
+	fs.String(names[9], "127.0.0.1:0", "Loopback address of the chat splice. Port 0 picks a free port")
+	fs.String(names[10], "hermes", "Local Hermes launcher, the same version as the server's Hermes")
+	fs.String(names[11], ":9130", "Address the ACP host listens on. Only hermes-hub may reach it")
+	fs.String(names[12], "", "This backend's id, the aud the hub puts in its assertions. Needed by acp-host")
+	fs.String(names[13], "", "Hub Ed25519 public keys: PEM PUBLIC KEY blocks or base64 lines of the raw 32 bytes")
+	fs.String(names[14], "", "File holding the hub public keys, in the same format as hub-public-key")
+	fs.String(names[15], "hermes", "Hermes launcher that the host runs as <hermes> acp for each connection")
+	fs.String(names[16], "", "Server directory that stands in for the device directory in ACP session cwds. Must match the device plugin's placeholder. Needed by acp-host")
+	fs.Var(impl.NewInt(8), names[17], "Most hermes acp processes the host runs at once")
+	fs.Duration(names[18], time.Duration(int64(1000000000)), "First delay after a lost connection")
+	fs.Duration(names[19], time.Duration(int64(30000000000)), "Longest delay between attempts")
 	return nil
 }
 
@@ -255,77 +447,209 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.LogLevel = v
 		set("log-level", configulator.LayerCLI, "--"+n)
 	}
-	if n := "server" + o.Separator + "url"; fs.Changed(n) {
+	if n := "ping-interval"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "ping-interval",
+				Source: "--" + n,
+			}
+		}
+		cfg.PingInterval = v
+		set("ping-interval", configulator.LayerCLI, "--"+n)
+	}
+	if n := "hub" + o.Separator + "url"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
 				Err:    err,
-				Path:   "server.url",
+				Path:   "hub.url",
 				Source: "--" + n,
 			}
 		}
-		cfg.Server.URL = v
-		set("server.url", configulator.LayerCLI, "--"+n)
+		cfg.Hub.URL = v
+		set("hub.url", configulator.LayerCLI, "--"+n)
 	}
-	if n := "device" + o.Separator + "name"; fs.Changed(n) {
+	if n := "store" + o.Separator + "keyring"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "store.keyring",
+				Source: "--" + n,
+			}
+		}
+		cfg.Store.Keyring = v
+		set("store.keyring", configulator.LayerCLI, "--"+n)
+	}
+	if n := "store" + o.Separator + "token-file"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
 				Err:    err,
-				Path:   "device.name",
+				Path:   "store.token-file",
 				Source: "--" + n,
 			}
 		}
-		cfg.Device.Name = v
-		set("device.name", configulator.LayerCLI, "--"+n)
+		cfg.Store.TokenFile = v
+		set("store.token-file", configulator.LayerCLI, "--"+n)
 	}
-	if n := "device" + o.Separator + "token"; fs.Changed(n) {
+	if n := "store" + o.Separator + "state-dir"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
 				Err:    err,
-				Path:   "device.token",
+				Path:   "store.state-dir",
 				Source: "--" + n,
 			}
 		}
-		cfg.Device.Token = v
-		set("device.token", configulator.LayerCLI, "--"+n)
+		cfg.Store.StateDir = v
+		set("store.state-dir", configulator.LayerCLI, "--"+n)
 	}
-	if n := "roots"; fs.Changed(n) {
+	if n := "device" + o.Separator + "roots"; fs.Changed(n) {
 		v, err := fs.GetStringSlice(n)
 		if err != nil {
 			return &configulator.ParseError{
 				Err:    err,
-				Path:   "roots",
+				Path:   "device.roots",
 				Source: "--" + n,
 			}
 		}
-		cfg.Roots = v
-		set("roots", configulator.LayerCLI, "--"+n)
+		cfg.Device.Roots = v
+		set("device.roots", configulator.LayerCLI, "--"+n)
 	}
-	if n := "tmp-dir"; fs.Changed(n) {
+	if n := "device" + o.Separator + "tmp-dir"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
 				Err:    err,
-				Path:   "tmp-dir",
+				Path:   "device.tmp-dir",
 				Source: "--" + n,
 			}
 		}
-		cfg.TempDir = v
-		set("tmp-dir", configulator.LayerCLI, "--"+n)
+		cfg.Device.TempDir = v
+		set("device.tmp-dir", configulator.LayerCLI, "--"+n)
 	}
-	if n := "shell"; fs.Changed(n) {
+	if n := "device" + o.Separator + "shell"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
 				Err:    err,
-				Path:   "shell",
+				Path:   "device.shell",
 				Source: "--" + n,
 			}
 		}
-		cfg.Shell = v
-		set("shell", configulator.LayerCLI, "--"+n)
+		cfg.Device.Shell = v
+		set("device.shell", configulator.LayerCLI, "--"+n)
+	}
+	if n := "gateway" + o.Separator + "listen"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "gateway.listen",
+				Source: "--" + n,
+			}
+		}
+		cfg.Gateway.Listen = v
+		set("gateway.listen", configulator.LayerCLI, "--"+n)
+	}
+	if n := "chat" + o.Separator + "hermes"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "chat.hermes",
+				Source: "--" + n,
+			}
+		}
+		cfg.Chat.Hermes = v
+		set("chat.hermes", configulator.LayerCLI, "--"+n)
+	}
+	if n := "acp-host" + o.Separator + "listen"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "acp-host.listen",
+				Source: "--" + n,
+			}
+		}
+		cfg.ACPHost.Listen = v
+		set("acp-host.listen", configulator.LayerCLI, "--"+n)
+	}
+	if n := "acp-host" + o.Separator + "backend-id"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "acp-host.backend-id",
+				Source: "--" + n,
+			}
+		}
+		cfg.ACPHost.BackendID = v
+		set("acp-host.backend-id", configulator.LayerCLI, "--"+n)
+	}
+	if n := "acp-host" + o.Separator + "hub-public-key"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "acp-host.hub-public-key",
+				Source: "--" + n,
+			}
+		}
+		cfg.ACPHost.HubPublicKey = v
+		set("acp-host.hub-public-key", configulator.LayerCLI, "--"+n)
+	}
+	if n := "acp-host" + o.Separator + "hub-public-key-file"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "acp-host.hub-public-key-file",
+				Source: "--" + n,
+			}
+		}
+		cfg.ACPHost.HubPublicKeyFile = v
+		set("acp-host.hub-public-key-file", configulator.LayerCLI, "--"+n)
+	}
+	if n := "acp-host" + o.Separator + "hermes"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "acp-host.hermes",
+				Source: "--" + n,
+			}
+		}
+		cfg.ACPHost.Hermes = v
+		set("acp-host.hermes", configulator.LayerCLI, "--"+n)
+	}
+	if n := "acp-host" + o.Separator + "placeholder"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "acp-host.placeholder",
+				Source: "--" + n,
+			}
+		}
+		cfg.ACPHost.Placeholder = v
+		set("acp-host.placeholder", configulator.LayerCLI, "--"+n)
+	}
+	if n := "acp-host" + o.Separator + "max-processes"; fs.Changed(n) {
+		v, err := fs.GetInt(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "acp-host.max-processes",
+				Source: "--" + n,
+			}
+		}
+		cfg.ACPHost.MaxProcesses = v
+		set("acp-host.max-processes", configulator.LayerCLI, "--"+n)
 	}
 	if n := "reconnect" + o.Separator + "min-backoff"; fs.Changed(n) {
 		v, err := fs.GetDuration(n)
@@ -384,7 +708,23 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 			default:
 				return configJSONError("log-level", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
-		case "server":
+		case "ping-interval":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError("ping-interval", v, err)
+				}
+				s.PingInterval = &slot
+			default:
+				return configJSONError("ping-interval", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		case "hub":
 			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
@@ -395,13 +735,32 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				if open.Kind() != jsontext.KindBeginObject {
-					return configJSONError("server", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+					return configJSONError("hub", open, fmt.Errorf("expected an object, got %v", open.Kind()))
 				}
-				var sub serverShadow
-				if err := sub.decodeJSON(dec, "server"); err != nil {
+				var sub hubShadow
+				if err := sub.decodeJSON(dec, "hub"); err != nil {
 					return err
 				}
-				s.Server = &sub
+				s.Hub = &sub
+			}
+		case "store":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("store", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub storeShadow
+				if err := sub.decodeJSON(dec, "store"); err != nil {
+					return err
+				}
+				s.Store = &sub
 			}
 		case "device":
 			if dec.PeekKind() == jsontext.KindNull {
@@ -422,7 +781,7 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				}
 				s.Device = &sub
 			}
-		case "roots":
+		case "gateway":
 			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
@@ -432,51 +791,52 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				if err != nil {
 					return err
 				}
-				if open.Kind() != jsontext.KindBeginArray {
-					return configJSONError("roots", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("gateway", open, fmt.Errorf("expected an object, got %v", open.Kind()))
 				}
-				out := []string{}
-				for dec.PeekKind() != jsontext.KindEndArray {
-					v, err := dec.ReadToken()
-					if err != nil {
-						return err
-					}
-					if v.Kind() != jsontext.KindString {
-						return configJSONError("roots"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
-					}
-					el := v.String()
-					out = append(out, el)
+				var sub gatewayShadow
+				if err := sub.decodeJSON(dec, "gateway"); err != nil {
+					return err
 				}
+				s.Gateway = &sub
+			}
+		case "chat":
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
-				s.Roots = &out
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("chat", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub chatShadow
+				if err := sub.decodeJSON(dec, "chat"); err != nil {
+					return err
+				}
+				s.Chat = &sub
 			}
-		case "tmp-dir":
-			v, err := dec.ReadToken()
-			if err != nil {
-				return err
-			}
-			switch v.Kind() {
-			case jsontext.KindNull:
-			case jsontext.KindString:
-				str := v.String()
-				s.TempDir = &str
-			default:
-				return configJSONError("tmp-dir", v, fmt.Errorf("expected a string, got %v", v.Kind()))
-			}
-		case "shell":
-			v, err := dec.ReadToken()
-			if err != nil {
-				return err
-			}
-			switch v.Kind() {
-			case jsontext.KindNull:
-			case jsontext.KindString:
-				str := v.String()
-				s.Shell = &str
-			default:
-				return configJSONError("shell", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+		case "acp-host":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("acp-host", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub aCPHostShadow
+				if err := sub.decodeJSON(dec, "acp-host"); err != nil {
+					return err
+				}
+				s.ACPHost = &sub
 			}
 		case "reconnect":
 			if dec.PeekKind() == jsontext.KindNull {
@@ -512,7 +872,7 @@ var _ json.UnmarshalerFrom = (*configShadow)(nil)
 
 // decodeJSON decodes the members of an object whose opening brace has
 // been read. path is the object's dotted path.
-func (s *serverShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+func (s *hubShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
@@ -548,6 +908,68 @@ func (s *serverShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 
 // decodeJSON decodes the members of an object whose opening brace has
 // been read. path is the object's dotted path.
+func (s *storeShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "keyring":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Keyring = &b
+			default:
+				return configJSONError(path+".keyring", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "token-file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.TokenFile = &str
+			default:
+				return configJSONError(path+".token-file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "state-dir":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.StateDir = &str
+			default:
+				return configJSONError(path+".state-dir", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
 func (s *deviceShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
@@ -558,7 +980,37 @@ func (s *deviceShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			return nil
 		}
 		switch key := tok.String(); key {
-		case "name":
+		case "roots":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".roots", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".roots"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.Roots = &out
+			}
+		case "tmp-dir":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
@@ -567,31 +1019,215 @@ func (s *deviceShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			case jsontext.KindNull:
 			case jsontext.KindString:
 				str := v.String()
-				s.Name = &str
+				s.TempDir = &str
 			default:
-				return configJSONError(path+".name", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+				return configJSONError(path+".tmp-dir", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
-		case "token":
-			if err := func() error {
-				v, err := dec.ReadToken()
+		case "shell":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Shell = &str
+			default:
+				return configJSONError(path+".shell", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *gatewayShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "listen":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Listen = &str
+			default:
+				return configJSONError(path+".listen", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *chatShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "hermes":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Hermes = &str
+			default:
+				return configJSONError(path+".hermes", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *aCPHostShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "listen":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Listen = &str
+			default:
+				return configJSONError(path+".listen", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "backend-id":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.BackendID = &str
+			default:
+				return configJSONError(path+".backend-id", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "hub-public-key":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.HubPublicKey = &str
+			default:
+				return configJSONError(path+".hub-public-key", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "hub-public-key-file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.HubPublicKeyFile = &str
+			default:
+				return configJSONError(path+".hub-public-key-file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "hermes":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Hermes = &str
+			default:
+				return configJSONError(path+".hermes", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "placeholder":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Placeholder = &str
+			default:
+				return configJSONError(path+".placeholder", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "max-processes":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".max-processes", v, err)
 				}
-				switch v.Kind() {
-				case jsontext.KindNull:
-				case jsontext.KindString:
-					str := v.String()
-					s.Token = &str
-				default:
-					return configJSONError(path+".token", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".max-processes", v, fmt.Errorf("%d overflows int", raw))
 				}
-				return nil
-			}(); err != nil {
-				return &configulator.ParseError{
-					Err:   errors.New("invalid value"),
-					Path:  path + ".token",
-					Value: "(redacted)",
-				}
+				num := int(raw)
+				s.MaxProcesses = &num
+			default:
+				return configJSONError(path+".max-processes", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -674,12 +1310,23 @@ func configJSONError(path string, v jsontext.Token, err error) error {
 func (c Config) PrintConfig() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "log-level = %v\n", c.LogLevel)
-	fmt.Fprintf(&b, "server.url = %v\n", c.Server.URL)
-	fmt.Fprintf(&b, "device.name = %v\n", c.Device.Name)
-	b.WriteString("device.token = (redacted)\n")
-	fmt.Fprintf(&b, "roots = %v\n", c.Roots)
-	fmt.Fprintf(&b, "tmp-dir = %v\n", c.TempDir)
-	fmt.Fprintf(&b, "shell = %v\n", c.Shell)
+	fmt.Fprintf(&b, "ping-interval = %v\n", c.PingInterval)
+	fmt.Fprintf(&b, "hub.url = %v\n", c.Hub.URL)
+	fmt.Fprintf(&b, "store.keyring = %v\n", c.Store.Keyring)
+	fmt.Fprintf(&b, "store.token-file = %v\n", c.Store.TokenFile)
+	fmt.Fprintf(&b, "store.state-dir = %v\n", c.Store.StateDir)
+	fmt.Fprintf(&b, "device.roots = %v\n", c.Device.Roots)
+	fmt.Fprintf(&b, "device.tmp-dir = %v\n", c.Device.TempDir)
+	fmt.Fprintf(&b, "device.shell = %v\n", c.Device.Shell)
+	fmt.Fprintf(&b, "gateway.listen = %v\n", c.Gateway.Listen)
+	fmt.Fprintf(&b, "chat.hermes = %v\n", c.Chat.Hermes)
+	fmt.Fprintf(&b, "acp-host.listen = %v\n", c.ACPHost.Listen)
+	fmt.Fprintf(&b, "acp-host.backend-id = %v\n", c.ACPHost.BackendID)
+	fmt.Fprintf(&b, "acp-host.hub-public-key = %v\n", c.ACPHost.HubPublicKey)
+	fmt.Fprintf(&b, "acp-host.hub-public-key-file = %v\n", c.ACPHost.HubPublicKeyFile)
+	fmt.Fprintf(&b, "acp-host.hermes = %v\n", c.ACPHost.Hermes)
+	fmt.Fprintf(&b, "acp-host.placeholder = %v\n", c.ACPHost.Placeholder)
+	fmt.Fprintf(&b, "acp-host.max-processes = %v\n", c.ACPHost.MaxProcesses)
 	fmt.Fprintf(&b, "reconnect.min-backoff = %v\n", c.Reconnect.MinBackoff)
 	fmt.Fprintf(&b, "reconnect.max-backoff = %v\n", c.Reconnect.MaxBackoff)
 	return b.String()
