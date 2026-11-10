@@ -2,9 +2,9 @@ cmd/cmd.go	42	0
 internal/config/config.go	66	64
 internal/config/load.go	2	0
 internal/gateway/client.go	149	116
-internal/gateway/gatewaytest/fake.go	309	271
+internal/gateway/gatewaytest/fake.go	312	274
 internal/server/server.go	42	0
-internal/service/live.go	144	106
+internal/service/live.go	165	124
 internal/service/service.go	463	394
 internal/store/store.go	58	46
 internal/telegram/api.go	69	56
