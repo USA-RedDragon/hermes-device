@@ -45,6 +45,24 @@ TYPE_EXIT = "exit"
 TYPE_PING = "ping"
 TYPE_PONG = "pong"
 TYPE_RESUME = "resume"
+TYPE_BROWSER = "browser"
+TYPE_BROWSER_RESULT = "browser_result"
+TYPE_BROWSER_STATUS = "browser_status"
+
+# Capabilities the plugin accepts from a device's hello (section 4.1).
+CAPABILITY_BROWSER = "browser"
+CAPABILITIES = frozenset({CAPABILITY_BROWSER})
+
+BROWSER_NOT_CONNECTED = "not_connected"
+BROWSER_REFUSED = "refused"
+BROWSER_TIMEOUT = "timeout"
+BROWSER_CANCELLED = "cancelled"
+BROWSER_FAILED = "failed"
+BROWSER_DEFAULT_TIMEOUT_S = 60
+BROWSER_MAX_TIMEOUT_S = 300
+MAX_BROWSER_RESULT = 16_777_216
+# How long past its timeout the plugin waits for a browser_result before it gives up and kills it.
+BROWSER_SLACK_S = 10.0
 
 CLOSE_PROTOCOL_ERROR = 1002
 CLOSE_SERVICE_RESTART = 1012
@@ -92,6 +110,14 @@ _BOM = "\ufeff"
 
 class DeviceError(Exception):
     """A request the plugin cannot carry out (unknown device, offline, refused dir)."""
+
+
+class BrowserError(DeviceError):
+    """A browser request that did not succeed. ``code`` is a browser_result code."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 class LineageError(Exception):
@@ -394,6 +420,12 @@ class DeviceConn:
     close: Optional[Callable[[int, str], Any]] = None
     # The negotiated exec leg protocol version (section 4.1).
     version: int = MIN_PROTOCOL_VERSION
+    # The capabilities both sides accepted (section 4.1).
+    capabilities: frozenset = frozenset()
+    # The device's last browser_status, without its type.
+    browser: dict = field(default_factory=dict)
+    # Browser requests waiting for their browser_result. They never wait for a resume.
+    browser_calls: dict[str, "BrowserCall"] = field(default_factory=dict)
     connected_at: float = field(default_factory=time.time)
     conn_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     pending: dict[str, DeviceProcess] = field(default_factory=dict)
@@ -418,9 +450,34 @@ class DeviceConn:
         return any(is_under(path, r) for r in self.roots)
 
     def info(self) -> dict:
-        return {"device_id": self.device_id, "name": self.name, "hostname": self.hostname, "os": self.os,
-                "arch": self.arch, "home": self.home, "roots": list(self.roots),
-                "client_version": self.client_version, "connected_at": int(self.connected_at)}
+        out = {"device_id": self.device_id, "name": self.name, "hostname": self.hostname, "os": self.os,
+               "arch": self.arch, "home": self.home, "roots": list(self.roots),
+               "client_version": self.client_version, "connected_at": int(self.connected_at),
+               "capabilities": sorted(self.capabilities)}
+        if CAPABILITY_BROWSER in self.capabilities:
+            out["browser"] = dict(self.browser) or {"connected": False}
+        return out
+
+
+class BrowserCall:
+    """One browser request waiting for its browser_result."""
+
+    def __init__(self, request_id: str):
+        self.request_id = request_id
+        self._done = threading.Event()
+        self.ok = False
+        self.result: Any = None
+        self.code = ""
+        self.error = ""
+
+    def finish(self, ok: bool, result: Any = None, code: str = "", error: str = "") -> None:
+        if self._done.is_set():
+            return
+        self.ok, self.result, self.code, self.error = ok, result, code, error
+        self._done.set()
+
+    def wait(self, timeout: float) -> bool:
+        return self._done.wait(timeout)
 
 
 def is_under(path: str, root: str) -> bool:
@@ -615,6 +672,7 @@ class Hub:
         if old is not None and old is not conn:
             logger.warning("device: %s connected again; closing the previous connection", conn.device_id)
             self._fail_pending(old, "[device reconnected; command lost]")
+            self._fail_browser(old, f"device {conn.device_id} reconnected during the browser operation")
             if old.close is not None:
                 try:
                     asyncio.run_coroutine_threadsafe(old.close(CLOSE_REPLACED, "replaced by a newer connection"),
@@ -630,6 +688,7 @@ class Hub:
         keeps running), its pending commands wait ``grace_seconds`` for the device to reconnect
         and resume them; otherwise they fail at once with exit 255."""
         grace = grace_seconds() if resumable and conn.version >= RESUME_VERSION else 0.0
+        self._fail_browser(conn, f"device {conn.device_id} disconnected during the browser operation")
         with self._lock:
             current = self._devices.get(conn.device_id) is conn
             if current:
@@ -677,6 +736,14 @@ class Hub:
         for proc in procs:
             proc.finish(EXIT_LOST, note)
 
+    @staticmethod
+    def _fail_browser(conn: DeviceConn, why: str) -> None:
+        with conn.lock:
+            calls = list(conn.browser_calls.values())
+            conn.browser_calls.clear()
+        for call in calls:
+            call.finish(False, code=BROWSER_NOT_CONNECTED, error=why)
+
     def device(self, device_id: str) -> Optional[DeviceConn]:
         with self._lock:
             return self._devices.get(device_id)
@@ -704,6 +771,10 @@ class Hub:
 
     def on_message(self, conn: DeviceConn, msg: dict) -> None:
         kind, rid = msg.get("type"), msg.get("id", "")
+        if kind in (TYPE_BROWSER_RESULT, TYPE_BROWSER_STATUS):
+            if CAPABILITY_BROWSER in conn.capabilities:
+                self._on_browser(conn, msg)
+            return
         if kind not in (TYPE_OUTPUT, TYPE_EXIT) or not isinstance(rid, str):
             return
         with conn.lock:
@@ -731,6 +802,63 @@ class Hub:
         if proc.refused and proc.cwd:
             self._forget_sandbox_dir(conn, proc.cwd)
         proc.finish(code, f"[{error}]" if error else "")
+
+    def _on_browser(self, conn: DeviceConn, msg: dict) -> None:
+        if msg.get("type") == TYPE_BROWSER_STATUS:
+            status = {"connected": msg.get("connected") is True}
+            for key in ("browser", "extension_version"):
+                if isinstance(msg.get(key), str) and msg[key]:
+                    status[key] = msg[key][:64]
+            conn.browser = status
+            logger.info("device: %s browser %s", conn.device_id, "connected" if status["connected"] else "not connected")
+            return
+        rid = msg.get("id")
+        if not isinstance(rid, str):
+            return
+        with conn.lock:
+            call = conn.browser_calls.pop(rid, None)
+        if call is None:
+            return
+        if msg.get("ok") is True:
+            call.finish(True, result=msg.get("result"))
+            return
+        code = msg.get("code") if isinstance(msg.get("code"), str) else BROWSER_FAILED
+        error = msg.get("error") if isinstance(msg.get("error"), str) else "browser operation failed"
+        call.finish(False, code=code, error=error)
+
+    def browser_call(self, device_id: str, op: str, args: dict, timeout: float = BROWSER_DEFAULT_TIMEOUT_S) -> Any:
+        """Run one browser operation on the device (docs/browser.md section 4) and return its
+        result. Raises BrowserError. Call from a worker thread, never the event loop."""
+        conn = self.device(device_id)
+        if conn is None:
+            raise BrowserError(BROWSER_NOT_CONNECTED, f"device {device_id} is not connected")
+        if CAPABILITY_BROWSER not in conn.capabilities:
+            raise BrowserError(BROWSER_NOT_CONNECTED,
+                               f"device {conn.name} [{device_id}] does not offer browser control: set browser.enabled "
+                               f"to true in its hermes-device config, run hermes-device browser install, and restart "
+                               f"hermes-device run")
+        timeout = max(1.0, min(float(timeout), BROWSER_MAX_TIMEOUT_S))
+        rid = uuid.uuid4().hex
+        call = BrowserCall(rid)
+        with conn.lock:
+            conn.browser_calls[rid] = call
+        try:
+            conn.send({"type": TYPE_BROWSER, "id": rid, "op": op, "args": args, "timeout": timeout})
+        except Exception as exc:
+            with conn.lock:
+                conn.browser_calls.pop(rid, None)
+            raise BrowserError(BROWSER_NOT_CONNECTED, f"could not reach device {device_id}: {exc}") from exc
+        if not call.wait(timeout + BROWSER_SLACK_S):
+            with conn.lock:
+                conn.browser_calls.pop(rid, None)
+            try:
+                conn.send({"type": TYPE_KILL, "id": rid})
+            except Exception:
+                logger.debug("device: kill of browser request %s not sent", rid, exc_info=True)
+            raise BrowserError(BROWSER_TIMEOUT, f"device {device_id} did not answer the {op} request in {timeout:g}s")
+        if not call.ok:
+            raise BrowserError(call.code, call.error)
+        return call.result
 
     # sandbox directories (section 8.3, fallback device)
     def note_sandbox_dir(self, device_id: str, directory: str, mkdir_cwd: str) -> None:

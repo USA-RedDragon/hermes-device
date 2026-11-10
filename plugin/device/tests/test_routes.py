@@ -178,7 +178,7 @@ class RouteTests(unittest.TestCase):
         self.assertEqual([(d["device_id"], d["name"], d["roots"]) for d in devices],
                          [("d_8f2c", "desktop", [str(self.root)])])
         self.assertEqual(set(devices[0]), {"device_id", "name", "hostname", "os", "arch", "home", "roots",
-                                           "client_version", "connected_at"})
+                                           "client_version", "connected_at", "capabilities"})
 
     def test_pings_both_ways(self):
         with mock.patch.object(core, "PING_INTERVAL_S", 0.1):

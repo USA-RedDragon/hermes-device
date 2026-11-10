@@ -240,11 +240,14 @@ async def device_socket(ws: WebSocket) -> None:
         async with send_lock:
             await ws.send_text(data)
 
+    offered = hello.get("capabilities")
+    capabilities = frozenset(c for c in offered if isinstance(c, str) and c in core.CAPABILITIES) \
+        if isinstance(offered, list) else frozenset()
     conn = core.DeviceConn(
         device_id=device_id, name=display, send_text=send_text, loop=asyncio.get_running_loop(), roots=roots,
         tmp_dir=text_field("tmp_dir"), home=text_field("home"), hostname=text_field("hostname"),
         os=text_field("os"), arch=text_field("arch"), shell=text_field("shell"),
-        client_version=text_field("client_version"), version=version,
+        client_version=text_field("client_version"), version=version, capabilities=capabilities,
         close=lambda code, reason: _close(ws, code, reason))
     hub = core.hub()
     welcome = {"type": core.TYPE_WELCOME, "version": version, "device_id": device_id, "name": display,
@@ -252,6 +255,8 @@ async def device_socket(ws: WebSocket) -> None:
                "hermes_version": core.hermes_version()}
     if version >= core.RESUME_VERSION:
         welcome["grace_seconds"] = core.grace_seconds()
+    if capabilities:
+        welcome["capabilities"] = sorted(capabilities)
     pinger: Optional[asyncio.Task] = None
     resumable = True
     attached = False
@@ -301,7 +306,7 @@ async def device_socket(ws: WebSocket) -> None:
             kind = msg.get("type")
             if kind == core.TYPE_PING:
                 await send_text(json.dumps({"type": core.TYPE_PONG, "seq": msg.get("seq")}))
-            elif kind in (core.TYPE_OUTPUT, core.TYPE_EXIT):
+            elif kind in (core.TYPE_OUTPUT, core.TYPE_EXIT, core.TYPE_BROWSER_RESULT, core.TYPE_BROWSER_STATUS):
                 hub.on_message(conn, msg)
     except asyncio.CancelledError:
         resumable = False

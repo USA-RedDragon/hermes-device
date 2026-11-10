@@ -51,7 +51,8 @@ def py_name(go_name: str) -> str:
 PROTOCOL_NAMES = {"Version": "PROTOCOL_VERSION", "PingInterval": "PING_INTERVAL_S",
                   "PingTimeout": "PING_TIMEOUT_S", "HelloTimeout": "HELLO_TIMEOUT_S",
                   "ACPHostPath": "ACP_HOST_PATH", "MinVersion": "MIN_PROTOCOL_VERSION",
-                  "DefaultGrace": "DEFAULT_GRACE_S"}
+                  "DefaultGrace": "DEFAULT_GRACE_S", "BrowserDefaultTimeout": "BROWSER_DEFAULT_TIMEOUT_S",
+                  "BrowserMaxTimeout": "BROWSER_MAX_TIMEOUT_S"}
 ASSERTION_NAMES = {"MaxLifetime": "MAX_LIFETIME_S", "ClockSkew": "CLOCK_SKEW_S", "LegACP": "LEG_ACP"}
 
 
