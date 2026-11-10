@@ -132,5 +132,5 @@ The client and `acp-host` read `config.yaml` in the current directory or in `her
 
 ## Tests
 
-- Go: `go test -race ./...`. Set `HERMES_AGENT_SRC` to a Hermes v0.22.7 checkout (default `~/.hermes/hermes-agent`) to run the contract tests against its source.
+- Go: `go test -race ./...`. `protocol/contract_test.go` checks that the Go and Python wire constants agree.
 - Plugin: `scripts/test-plugin.sh`, which runs the plugin tests in the local Hermes install's Python runtime, including contract tests against `HERMES_AGENT_SRC`.
