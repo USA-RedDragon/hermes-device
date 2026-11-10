@@ -503,10 +503,10 @@ func TestACPLeg(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		msg := map[string]any{keyJSONRPC: jsonRPC, "id": 1, keyMethod: "initialize", "params": map[string]any{}}
+		msg := map[string]any{keyJSONRPC: jsonRPC, "id": 1, keyMethod: acpInitialize, "params": map[string]any{}}
 		writeJSON(t, c, msg)
-		if m := readJSON(t, c); m["method"] != "initialize" {
-			t.Fatalf("echo = %v", m)
+		if m := readJSON(t, c); m["id"] != float64(1) || m["result"] == nil {
+			t.Fatalf("initialize = %v", m)
 		}
 		cl := e.acp.Claims()
 		if len(cl) != 1 || cl[0].Leg != assertion.LegACP || cl[0].Path != protocol.ACPHostPath || cl[0].DeviceID != id {
@@ -683,7 +683,7 @@ func TestGatewayLegDenyList(t *testing.T) {
 			method string
 			params map[string]any
 		}{
-			{"shell.exec", map[string]any{keyCommand: "id"}},
+			{methodShell, map[string]any{keyCommand: "id"}},
 			{"vault.list", map[string]any{}},
 			{methodConfigSet, map[string]any{keyKey: "skin", keyValue: "mono"}},
 			{methodConfigSet, map[string]any{keyKey: "personality", keyValue: "pirate"}},
@@ -691,9 +691,9 @@ func TestGatewayLegDenyList(t *testing.T) {
 			{methodConfigSet, map[string]any{keyKey: keyReasoning, keyValue: "show"}},
 			{methodConfigSet, map[string]any{keyKey: "yolo", keyValue: "1", keyScope: "global"}},
 			{methodConfigSet, map[string]any{keyKey: "details_mode", keyValue: "expanded"}},
-			{"session.mutate", map[string]any{keySessionID: "s1", keyOperation: "editor_mcp", keyPayload: map[string]any{}}},
+			{methodMutate, map[string]any{keySessionID: "s1", keyOperation: "editor_mcp", keyPayload: map[string]any{}}},
 			{"file.attach", map[string]any{"path": "/etc/passwd"}},
-			{"prompt.background", map[string]any{keySessionID: "s1", "text": "x"}},
+			{"prompt.background", map[string]any{keySessionID: "s1", keyText: "x"}},
 			{"session.prune", map[string]any{"filters": map[string]any{}}},
 			{"bot_relay.deliver", map[string]any{}},
 			{"cron.cancel", map[string]any{}},
@@ -704,15 +704,37 @@ func TestGatewayLegDenyList(t *testing.T) {
 			{methodSlash, map[string]any{keySessionID: "s1", keyCommand: "/reasoning high --global"}},
 			{methodSlash, map[string]any{keySessionID: "s1", keyCommand: "/reasoning show"}},
 			{methodSlash, map[string]any{keySessionID: "s1", keyCommand: "/busy queue"}},
-			{"command.dispatch", map[string]any{keySessionID: "s1", "name": "personality", "arg": "pirate"}},
+			{"command.dispatch", map[string]any{keySessionID: "s1", keyName: "personality", "arg": "pirate"}},
 			{"session.list", map[string]any{"profile": "other"}},
+			{"session.foo", map[string]any{keySessionID: "s1"}},
+			{"session.events.since", map[string]any{keySessionID: "s1"}},
+			{methodTitle, map[string]any{keySessionID: "s1", "title": "x"}},
+			{"session.save", map[string]any{keySessionID: "s1"}},
+			{"paste.collapse", map[string]any{keyText: "x"}},
+			{"billing.charge", map[string]any{"amount_usd": 5}},
+			{methodMutate, map[string]any{keySessionID: "s1", keyOperation: "import", keyPayload: map[string]any{}}},
+			{methodMutate, map[string]any{keySessionID: "s1", keyPayload: map[string]any{}}},
 		} {
-			if m := g.request("r-"+tc.method, tc.method, tc.params); reason(m) != "hermes_device_denied" {
+			if m := g.request("r-"+tc.method, tc.method, tc.params); reason(m) != reasonDenied {
 				t.Fatalf("%s %v = %v", tc.method, tc.params, m)
 			}
 		}
 		if got := e.called(methodConfigSet); len(got) != 0 {
 			t.Fatalf("denied calls reached the gateway: %v", got)
+		}
+		for method, why := range map[string]string{"session.foo": "the hub allows only the methods", methodShell: "runs programs in the Hermes pod",
+			methodTitle: "refuses it on the hub's connection"} {
+			m := g.request("why-"+method, method, map[string]any{})
+			rpcErr, _ := m["error"].(map[string]any)
+			if msg, _ := rpcErr["message"].(string); !strings.HasPrefix(msg, method+" is not available through hermes-device: ") || !strings.Contains(msg, why) {
+				t.Fatalf("%s message = %v", method, m)
+			}
+		}
+		if m := g.request("resize", "terminal.resize", map[string]any{keySessionID: "s1", "cols": 80}); reason(m) == reasonDenied {
+			t.Fatalf("terminal.resize = %v", m)
+		}
+		if got := e.called("terminal.resize"); len(got) != 1 {
+			t.Fatalf("terminal.resize calls = %v", got)
 		}
 		m := g.request(7, "complete.path", map[string]any{"word": "/"})
 		cres, resOK := m["result"].(map[string]any)
@@ -734,7 +756,7 @@ func TestGatewayLegDenyList(t *testing.T) {
 		if m := g.request("hermes-hub-1", "session.list", map[string]any{}); m["error"] == nil {
 			t.Fatalf("own id = %v", m)
 		}
-		writeJSON(t, g.c, []any{map[string]any{keyJSONRPC: jsonRPC, "id": 1, keyMethod: "shell.exec"}})
+		writeJSON(t, g.c, []any{map[string]any{keyJSONRPC: jsonRPC, "id": 1, keyMethod: methodShell}})
 		if m := readJSON(t, g.c); m["error"] == nil {
 			t.Fatalf("batch = %v", m)
 		}
@@ -802,7 +824,7 @@ func TestGatewayLegCreate(t *testing.T) {
 		if m := g.request("r6", "session.resume", map[string]any{keySessionID: sid}); m["error"] != nil {
 			t.Fatalf("resume own = %v", m)
 		}
-		g.request("r7", "session.mutate", map[string]any{keySessionID: sid, keyRequestID: "w1", keyExpectedRev: 0,
+		g.request("r7", methodMutate, map[string]any{keySessionID: sid, keyRequestID: "w1", keyExpectedRev: 0,
 			keyOperation: opWorkspace, keyPayload: map[string]any{keyCWD: otherDir}})
 		if b := e.plugin.Bindings()[sid]; b.Dir != otherDir {
 			t.Fatalf("workspace binding = %+v", b)
@@ -810,7 +832,7 @@ func TestGatewayLegCreate(t *testing.T) {
 		if s, _ := e.gw.Session(sid); s.CWD != placeholder {
 			t.Fatalf("workspace moved the session to %q", s.CWD)
 		}
-		if m := g.request("r8", "session.mutate", map[string]any{keySessionID: sid, keyRequestID: "w2", keyExpectedRev: 99,
+		if m := g.request("r8", methodMutate, map[string]any{keySessionID: sid, keyRequestID: "w2", keyExpectedRev: 99,
 			keyOperation: opWorkspace, keyPayload: map[string]any{keyCWD: "/home/alice/third"}}); m["error"] == nil {
 			t.Fatalf("stale move = %v", m)
 		}
@@ -821,7 +843,7 @@ func TestGatewayLegCreate(t *testing.T) {
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		for _, c := range e.called("session.mutate") {
+		for _, c := range e.called(methodMutate) {
 			if p, _ := c.Params["payload"].(map[string]any); c.Params[keyOperation] == opWorkspace && p[keyCWD] != placeholder {
 				t.Fatalf("workspace cwd sent = %v", p)
 			}
@@ -857,7 +879,7 @@ func TestGatewayLegOtherDevice(t *testing.T) {
 		if m := g.request(5, "session.resume", map[string]any{keySessionID: "", "latest": sourceTUI}); reason(m) != reasonNotBound {
 			t.Fatalf("resume latest = %v", m)
 		}
-		if m := g.request(6, "session.mutate", map[string]any{keySessionID: sessionPod, "request_id": "a", keyExpectedRev: 0,
+		if m := g.request(6, methodMutate, map[string]any{keySessionID: sessionPod, "request_id": "a", keyExpectedRev: 0,
 			"operation": "archive", "payload": map[string]any{"archived": true}}); reason(m) != reasonNotBound {
 			t.Fatalf("archive pod session = %v", m)
 		}
@@ -868,6 +890,10 @@ const (
 	keyCommand        = "command"
 	keyType           = "type"
 	methodSlash       = "slash.exec"
+	methodShell       = "shell.exec"
+	methodMutate      = "session.mutate"
+	methodTitle       = "session.title"
+	reasonDenied      = "hermes_device_denied"
 	sourceTUI         = "tui"
 	keyExpectedRev    = "expected_revision"
 	sessionPod        = "s-pod"

@@ -262,7 +262,7 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 		g.toDevice(answerResult(f.ID, map[string]any{"items": []any{}}))
 		return
 	case denied(f.Method, params):
-		g.toDevice(deniedAnswer(f.ID, f.Method))
+		g.toDevice(deniedAnswer(f.ID, f.Method, params))
 		return
 	case otherProfile(params):
 		g.toDevice(answerError(f.ID, codeDenied, "hermes-device serves only the device's own Hermes profile",

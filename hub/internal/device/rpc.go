@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"maps"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
@@ -46,10 +48,10 @@ const (
 	methodDetach       = "session.detach"
 	methodConfigSet    = "config.set"
 	methodCompletePath = "complete.path"
+	methodDispatch     = "command.dispatch"
 	opWorkspace        = "workspace"
 	opBranch           = "branch"
 	opDelete           = "delete"
-	opEditorMCP        = "editor_mcp"
 )
 
 // frame is one JSON-RPC message, decoded by exact member names as Python's
@@ -159,8 +161,15 @@ func answerResult(id json.RawMessage, result any) []byte {
 	return b
 }
 
-func deniedAnswer(id json.RawMessage, method string) []byte {
-	return answerError(id, codeDenied, method+" is not available through hermes-device", map[string]any{keyReason: reasonDenied})
+func deniedAnswer(id json.RawMessage, method string, params map[string]json.RawMessage) []byte {
+	why := DeniedReason(method)
+	if _, ok := gatewayRules[method]; ok {
+		why = "these params are refused"
+		if method == methodMutate {
+			why = "operation " + strconv.Quote(rawString(params["operation"])) + " is refused"
+		}
+	}
+	return answerError(id, codeDenied, method+" is not available through hermes-device: "+why, map[string]any{keyReason: reasonDenied})
 }
 
 func cwdAnswer(id json.RawMessage, message string) []byte {
@@ -188,28 +197,118 @@ func notBoundAnswer(id json.RawMessage, sessionID string) []byte {
 		map[string]any{keyReason: reasonNotBound})
 }
 
-// deniedMethods are refused whole: docs/protocol.md 5.4, plus the
-// gateway's methods that stop pod cron jobs, prune sessions in bulk, and
-// relay into the profile's messaging bots (gateway/session_controls.py
-// handlers).
+// Gateway leg method rules: how the hub lets a method through.
+const (
+	// RuleAllowed passes unchanged.
+	RuleAllowed = "allowed"
+	// RuleRewritten passes after the hub rewrites it or holds its answer.
+	RuleRewritten = "rewritten"
+	// RuleChecked passes only when its params pass a check.
+	RuleChecked = "checked"
+	// RuleDenied is refused.
+	RuleDenied = "denied"
+)
+
+// gatewayRules is the gateway leg allowlist: every method the Hermes
+// v0.22.7 Ink TUI and classic CLI send for chatting, except those in
+// deniedWhy. Every other method is refused. Session ids in session_id and
+// parent_session_id are checked for every method.
 //
 //nolint:gochecknoglobals // a fixed table
-var deniedMethods = map[string]bool{
-	"model.save_key": true, "profiles.create": true, "shell.exec": true, "cli.exec": true, "image.attach": true,
-	"input.detect_drop": true, "clipboard.paste": true, "mcp.servers.add": true, "mcp.servers.test": true,
-	"mcp.servers.remove": true, "plugins.manage": true, "skills.manage": true, "cron.manage": true, "cron.submit": true,
-	"kanban.run": true, "browser.manage": true, "display.install": true, "display.start": true, "a2a.forward": true,
-	"process.kill": true, "process.list": true, "rollback.restore": true, "set_api_key": true,
-	"diagnostics.share_nous": true, "free_tier.provision": true, "session.foreign.import": true, "prompt.background": true,
-	"cron.cancel": true, "cron.recover": true, "session.prune": true, "reload.mcp": true, "process.stop": true,
-	"skills.reload": true, "llm.oneshot": true, "session.automation": true, "session.control": true,
-	"connection.respond": true, "preview.restart": true,
+var gatewayRules = map[string]string{
+	"gateway.ping": RuleAllowed, "runtime.describe": RuleAllowed, "setup.status": RuleAllowed,
+	methodCreate: RuleRewritten, methodResume: RuleRewritten, methodMutate: RuleRewritten, methodCompletePath: RuleRewritten,
+	methodDetach: RuleAllowed, "session.list": RuleAllowed, "session.active_list": RuleAllowed, "session.most_recent": RuleAllowed,
+	"session.info": RuleAllowed, "session.stats": RuleAllowed, "session.export": RuleAllowed,
+	"session.context_breakdown": RuleAllowed, "session.control.read": RuleAllowed, "terminal.resize": RuleAllowed,
+	"prompt.submit": RuleAllowed, "prompt.receipt": RuleAllowed, "prompt.cancel": RuleAllowed, "prompt.resolve_unknown": RuleAllowed,
+	"prompt.replace_queued": RuleAllowed, "prompt.btw": RuleAllowed,
+	"session.steer": RuleAllowed, "session.redirect": RuleAllowed, "session.interrupt": RuleAllowed,
+	"approval.respond": RuleAllowed, "clarify.respond": RuleAllowed, "clarify.lock": RuleAllowed,
+	methodConfigSet: RuleChecked, "config.get": RuleAllowed, "model.options": RuleAllowed,
+	"slash.exec": RuleChecked, methodDispatch: RuleChecked, "command.observe": RuleAllowed, "commands.catalog": RuleAllowed,
+	"complete.slash": RuleAllowed, "plugins.list": RuleAllowed, "tools.show": RuleAllowed,
+	"subagent.list": RuleAllowed, "subagent.tail": RuleAllowed, "subagent.steer": RuleAllowed, "subagent.interrupt": RuleAllowed,
+	"delegation.status": RuleAllowed, "spawn_tree.list": RuleAllowed, "spawn_tree.load": RuleAllowed,
+	"image.attach_bytes": RuleAllowed, "image.detach": RuleAllowed, "file.attach": RuleChecked,
+	"learning.frames": RuleAllowed, "learning.detail": RuleAllowed, "pet.info.meta": RuleAllowed, "pet.cells": RuleAllowed,
+	"pet.gallery": RuleAllowed, "i18n.catalog": RuleAllowed, "system.battery": RuleAllowed,
+	"shared_metrics.slash_command": RuleAllowed, "shared_metrics.startup_latency": RuleAllowed,
 }
 
-// deniedPrefixes are method families refused whole.
+// Reasons the hub refuses methods the TUI or CLI send.
+const (
+	whyPodExec    = "it runs programs in the Hermes pod, not on the device"
+	whyPodFiles   = "it reads or writes files of the Hermes pod, not of the device"
+	whyProfile    = "it changes settings or data of the whole Hermes profile"
+	whyAccount    = "it acts on credentials or the account of the Hermes profile"
+	whyHost       = "it uses the Hermes pod's own audio or display"
+	whyLegacy     = "the gateway serves it only to legacy clients and refuses it on the hub's connection"
+	whyOtherSess  = "it acts on many sessions at once"
+	whyBackground = "a background agent has no lineage to its session, so it would run on the pod"
+	whyProfiles   = "it reads or changes other Hermes profiles"
+	whyNotChat    = "it is not part of chatting"
+)
+
+// deniedWhy are the methods the Hermes v0.22.7 TUI or CLI send that the
+// hub refuses, with the reason.
 //
 //nolint:gochecknoglobals // a fixed table
-var deniedPrefixes = []string{"vault.", "worker.", "connectors.", "oauth.", "bot_relay.", "groups.", "onboarding.", "rollback."}
+var deniedWhy = map[string]string{
+	"shell.exec": whyPodExec, "process.list": whyPodExec, "process.stop": whyPodExec, "process.kill": whyPodExec,
+	"reload.mcp": whyPodExec, "browser.manage": whyPodExec, "kanban.run": whyPodExec, "prompt.background": whyBackground,
+	"session.save": whyPodFiles, "spawn_tree.save": whyPodFiles, "image.attach": whyPodFiles, "clipboard.paste": whyPodFiles,
+	"input.detect_drop": whyPodFiles, "paste.collapse": whyPodFiles, "rollback.list": whyPodFiles, "rollback.diff": whyPodFiles,
+	"rollback.restore": whyPodFiles, "rollback.session_diff": whyPodFiles,
+	"tools.configure": whyProfile, "plugins.manage": whyProfile, "skills.manage": whyProfile, "skills.reload": whyProfile,
+	"reload.env": whyProfile, "delegation.pause": whyProfile, "pet.select": whyProfile, "learning.edit": whyProfile,
+	"learning.delete": whyProfile, "wake.start": whyHost, "wake.stop": whyHost, "wake.resume": whyHost, "wake.status": whyHost,
+	"voice.toggle": whyHost, "voice.record": whyHost, "session.automation": whyProfile, "session.prune": whyOtherSess,
+	"model.save_key": whyAccount, "model.disconnect": whyAccount, "connection.respond": whyAccount,
+	"connectors.connect": whyAccount, "connectors.operation.status": whyAccount, "connectors.list": whyAccount,
+	"connectors.accounts": whyAccount, "connectors.accounts.rename": whyAccount, "connectors.accounts.remove": whyAccount,
+	"billing.state": whyAccount, "billing.step_up": whyAccount, "billing.charge": whyAccount, "billing.charge_status": whyAccount,
+	"billing.auto_reload": whyAccount, "billing.keep_going_on_credits": whyAccount, "subscription.state": whyAccount,
+	"subscription.preview": whyAccount, "subscription.change": whyAccount, "subscription.resume": whyAccount,
+	"subscription.upgrade": whyAccount,
+	"session.activate":     whyLegacy, "session.title": whyLegacy, "session.close": whyLegacy, "session.delete": whyLegacy,
+	"session.branch": whyLegacy, "session.compress": whyLegacy, "session.undo": whyLegacy, "session.status": whyLegacy,
+	"session.usage": whyLegacy, "session.archive": whyLegacy,
+	"display.observe": whyHost, "free_tier.status": whyAccount, "onboarding.start": whyProfile, "onboarding.state": whyProfile,
+	"profiles.describe": whyProfiles, "profiles.list": whyProfiles, "projects.tree": whyProfile,
+	"setup.runtime_check": whyNotChat, "shared_metrics.update_run": whyNotChat,
+}
+
+// whyUnknown is the reason for a method in neither table.
+const whyUnknown = "the hub allows only the methods the Hermes TUI and CLI need for chatting"
+
+// mutateOps are the session.mutate operations a device may run. The
+// others are refused: editor_mcp spawns editor MCP programs on the pod,
+// import reads other agents' histories from pod files.
+//
+//nolint:gochecknoglobals // a fixed table
+var mutateOps = []string{"rename", "archive", "sidebar", "model", "reasoning", opWorkspace, "edit_policy", opDelete,
+	"rewind", "reset", opBranch, "compress"}
+
+// GatewayMethods are the methods the gateway leg lets through, in order.
+func GatewayMethods() []string { return slices.Sorted(maps.Keys(gatewayRules)) }
+
+// GatewayRule is how the gateway leg treats method: one of the Rule*
+// values.
+func GatewayRule(method string) string {
+	if r, ok := gatewayRules[method]; ok {
+		return r
+	}
+	return RuleDenied
+}
+
+// DeniedReason says why the gateway leg refuses method.
+func DeniedReason(method string) string {
+	if why, ok := deniedWhy[method]; ok {
+		return why
+	}
+	return whyUnknown
+}
 
 // SessionConfigKeys are the config.set keys that change only the one
 // session, so a device may set them. Every other key writes the profile's
@@ -271,7 +370,7 @@ func SlashCommands() []string {
 // (gateway/session_commands.py _parse).
 func slashAllowed(method string, params map[string]json.RawMessage) bool {
 	var name, arg string
-	if method == "command.dispatch" {
+	if method == methodDispatch {
 		name, arg = rawString(params["name"]), rawString(params["arg"])
 	} else {
 		parts := strings.SplitN(strings.TrimLeft(strings.TrimSpace(rawString(params["command"])), "/"), " ", 2)
@@ -293,24 +392,19 @@ func slashAllowed(method string, params map[string]json.RawMessage) bool {
 
 // denied reports whether a request of method with params is refused.
 func denied(method string, params map[string]json.RawMessage) bool {
-	if deniedMethods[method] {
+	if _, ok := gatewayRules[method]; !ok {
 		return true
 	}
 	switch method {
 	case methodConfigSet:
 		return !configSetAllowed(params)
-	case "slash.exec", "command.dispatch":
+	case "slash.exec", methodDispatch:
 		return !slashAllowed(method, params)
-	case "pdf.attach", "file.attach":
+	case "file.attach":
 		p, ok := params["path"]
 		return ok && !isNull(p)
 	case methodMutate:
-		return rawString(params["operation"]) == opEditorMCP
-	}
-	for _, p := range deniedPrefixes {
-		if strings.HasPrefix(method, p) {
-			return true
-		}
+		return !slices.Contains(mutateOps, rawString(params["operation"]))
 	}
 	return false
 }

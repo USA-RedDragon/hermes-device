@@ -206,6 +206,65 @@ func contract() map[string][]string {
 			"if row.get('source') in INTERNAL_LISTING_SOURCES or entry.closed or (",
 			"'source': row.get('source'), 'started_at': row.get('started_at'),",
 		},
+		// The device gateway leg's allowlist (internal/device gatewayRules): where the gateway registers
+		// every method it lets through. TestClientMethodsAgainstSource in internal/device checks the
+		// other side, the methods the TUI and CLI send.
+		"gateway/session_controls.py#device-allow": {
+			"'runtime.describe': self.describe", "'setup.status': self.setup_status", "'session.create': self.create",
+			"'session.resume': self.resume", "'session.mutate': self.mutate", "'session.detach': self.detach",
+			"'session.list': self.list_sessions", "'session.info': self.info", "'prompt.submit': self.submit",
+			"'prompt.receipt': self.receipt", "'prompt.cancel': self.cancel", "'prompt.resolve_unknown': self.resolve_unknown",
+			"'session.interrupt': self.interrupt", "'approval.respond': self.respond", "'clarify.respond': self.respond_clarify",
+			"'slash.exec': self.slash_exec", "'command.dispatch': self.command_dispatch", "'command.observe': self.command_observe",
+			"'commands.catalog': self.command_catalog", "'complete.slash': self.slash_completions", "'plugins.list': self.plugins_list",
+			"handlers['complete.path'] = partial(complete_path, self)", "handlers['session.stats'] = partial(stats, self)",
+			"handlers['session.active_list'] = partial(active_list, self)",
+			"handlers['image.attach_bytes'] = partial(attach_bytes, self)", "handlers['clarify.lock'] = partial(clarify_lock, self)",
+		},
+		"gateway/session_busy_controls.py#device-allow": {
+			"'session.steer': partial(correct, connection, verb='steer'),",
+			"'session.redirect': partial(correct, connection, verb='redirect'),",
+		},
+		"gateway/session_config.py#device-allow":          {"'config.get': partial(config_get, connection)"},
+		"gateway/session_tui_config.py#device-allow":      {"'config.set': partial(config_set, connection)"},
+		"gateway/session_queued_controls.py#device-allow": {"'prompt.replace_queued': partial(replace_queued, connection)"},
+		"gateway/session_ancillary.py#device-allow": {
+			"'session.control.read': 'control'", "'subagent.list': 'subagents'", "'subagent.tail': 'tail'",
+			"for name in ('subagent.steer', 'subagent.interrupt')", "'file.attach': partial(attach_file, connection)",
+			"'tools.show': partial(show_tools, connection)",
+		},
+		"gateway/session_tui_ops.py#device-allow": {
+			"'session.export': partial(export_session, connection)",
+			"'session.context_breakdown': partial(context_breakdown, connection)",
+		},
+		"gateway/session_tui_side.py#device-allow": {"'prompt.btw': partial(btw, connection)"},
+		"tui_gateway/ws.py#device-allow":           {`if isinstance(req, dict) and req.get("method") == "gateway.ping":`},
+		"apps/shared/src/json-rpc-channel.ts":      {"method: 'gateway.ping', params: {} }"},
+		// Methods the gateway serves through its legacy handlers, which it lets through only outside
+		// these namespaces and for the listed exceptions.
+		"tui_gateway/ws_legacy_fallback.py": {
+			`_SESSION_NAMESPACES = ("session.", "prompt.", "message.")`,
+			`"session.most_recent", "session.active_list", "session.events.stats",`,
+		},
+		"tui_gateway/methods_session.py#device-allow": {
+			`@method("session.most_recent")`, `@method("delegation.status")`, `@_pet_method("pet.cells"`,
+			`@_pet_method("pet.gallery"`, `@_pet_method("pet.info.meta"`, `@method("spawn_tree.list")`,
+			`@method("spawn_tree.load")`, `@_session_method("terminal.resize")`,
+		},
+		"tui_gateway/methods_tools.py#device-allow": {
+			`@method("system.battery")`, `@_rpc("learning.frames"`, `("detail", "node_detail", ("id",)),`,
+		},
+		"tui_gateway/methods_prompt.py#device-allow": {`@method("image.detach")`},
+		"tui_gateway/methods_i18n.py#device-allow":   {`@method("i18n.catalog")`},
+		"tui_gateway/methods_shared_metrics.py#device-allow": {
+			`@method("shared_metrics.slash_command")`, `@method("shared_metrics.startup_latency")`,
+		},
+		// session.mutate operations: the leg allows all but editor_mcp and import.
+		"gateway/session_mutations.py#device-ops": {
+			"_METADATA = frozenset({'rename', 'archive', 'sidebar'})",
+			"_POLICY = frozenset({'model', 'reasoning', 'workspace', 'editor_mcp', 'edit_policy'})",
+			"validate_action('import', params['payload'])",
+		},
 		// The device ACP leg (internal/device acpEditorRules and acpAgentRules): hermes acp runs the
 		// gateway ACP agent, whose handlers are these, on ACP SDK 0.9.0.
 		"acp_adapter/entry.py#device": {"agent = HermesACPAgent()"},
