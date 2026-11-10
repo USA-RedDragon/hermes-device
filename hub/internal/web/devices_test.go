@@ -122,9 +122,20 @@ func pairRevoke(t *testing.T, e *hubEnv, c *http.Client, res hub.PairPoll, revok
 	t.Helper()
 	ctx := context.Background()
 	m := login(t, e, c)
+	opened := time.Unix(1_800_000_000, 0)
+	if err := e.store.ExecLegOpened(ctx, res.Device.ID, opened); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.ExecLegClosed(ctx, res.Device.ID, opened, hub.LegClose{Code: 4426, Reason: "upgrade them together",
+		By: hub.CloseByBackend, At: opened.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
 	resp, body := get(t, c, e.url+"/api/devices")
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"name":"work laptop"`) || !strings.Contains(body, `"paired":true`) {
 		t.Fatalf("devices = %d %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, `"last_close":{"code":4426,"reason":"upgrade them together","by":"backend","at":"`) {
+		t.Fatalf("last close not listed: %s", body)
 	}
 	if !strings.Contains(body, `"kind":"sandbox"`) || !strings.Contains(body, `"online":true`) || !strings.Contains(body, `"kind":"paired"`) {
 		t.Fatalf("sandbox not listed: %s", body)

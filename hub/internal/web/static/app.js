@@ -1251,6 +1251,12 @@
         box.replaceChildren(el("p", "err", "Could not load your computers: " + e.message));
       }
     },
+    // closeText says how a computer's latest connection to Hermes ended.
+    closeText(c) {
+      const who = { device: "The computer", backend: "Hermes", hub: "The hub" }[c.by] || "Something";
+      return "Disconnected " + this.when(c.at) + ". " + who + " closed the connection" +
+        (c.reason ? ": " + c.reason : "") + " (code " + c.code + ").";
+    },
     when(iso) {
       const v = Date.parse(iso);
       return v ? new Date(v).toLocaleString() : "";
@@ -1280,6 +1286,7 @@
         else meta.push("Last used " + this.when(d.last_seen_at) + (d.last_addr ? " from " + d.last_addr : ""));
         if (d.hostname) meta.push("Computer name: " + d.hostname);
         for (const m of meta) row.append(el("div", "dmeta", m));
+        if (d.last_close) row.append(el("div", "dnote", this.closeText(d.last_close)));
         const acts = el("div", "dacts");
         if (d.addr_changed_at) {
           row.append(el("div", "dnote", "Connected from a new address on " + this.when(d.addr_changed_at) +

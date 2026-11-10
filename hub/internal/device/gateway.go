@@ -84,7 +84,7 @@ func (s *Server) handleGateway(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	down.SetReadLimit(maxMessage)
-	l := s.newLeg(d, "gateway", down, up)
+	l := s.newLeg(r.Context(), d, "gateway", down, up)
 	g := &guard{s: s, b: b, dev: d, l: l, pending: map[string]*pending{}, own: map[string]chan frame{},
 		checked: map[string]checkEntry{}, lost: make(chan struct{})}
 	s.log.Info("device leg open", "leg", "gateway", "device", d.ID, "backend", d.BackendID)

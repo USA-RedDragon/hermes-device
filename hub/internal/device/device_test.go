@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -282,7 +283,7 @@ func (e *env) connectExec(r *replica, token string) (*websocket.Conn, *devicetes
 		t.Fatal(err)
 	}
 	writeJSON(t, c, protocol.Hello{Type: protocol.TypeHello, Version: protocol.MinVersion, MaxVersion: protocol.Version,
-		Roots: []string{"/home/alice"}, Home: "/home/alice", Hostname: hostName, OS: osLinux, Arch: archAMD64, Shell: "bash",
+		Roots: []string{homeDir}, Home: homeDir, Hostname: hostName, OS: osLinux, Arch: archAMD64, Shell: "bash",
 		ClientVersion: "v0.3.0"})
 	if w := readJSON(t, c); w["type"] != protocol.TypeWelcome || w["version"] != float64(protocol.Version) {
 		t.Fatalf("welcome = %v", w)
@@ -415,6 +416,45 @@ func TestExecLegCarriesAssertion(t *testing.T) {
 		pc.Close(protocol.CloseReplaced, "replaced")
 		if code := closeCode(t, c); code != protocol.CloseReplaced {
 			t.Fatalf("close = %d", code)
+		}
+	})
+}
+
+func TestExecLegCloseRecorded(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, id := e.pair(e.a)
+		c, _, err := dial(t, e.a, "/api/device/exec", tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeJSON(t, c, protocol.Hello{Type: protocol.TypeHello, Version: 4, MaxVersion: 5, Roots: []string{"/home/alice"},
+			Home: "/home/alice", Hostname: hostName, OS: osLinux, Arch: archAMD64, ClientVersion: "v0.4.0"})
+		_, _, err = c.Read(context.Background())
+		want := "hermes-device v0.4.0 speaks protocol 4 to 5; plugin " + devicetest.PluginVersion + " speaks 2 to 3; upgrade them together"
+		var ce websocket.CloseError
+		if !errors.As(err, &ce) || ce.Code != protocol.CloseUnsupportedVersion || ce.Reason != want {
+			t.Fatalf("close = %v", err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			d, _, err := st.Device(context.Background(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lc := d.LastClose
+			if lc.Code == int(protocol.CloseUnsupportedVersion) && lc.Reason == want && lc.By == hub.CloseByBackend && !lc.At.IsZero() {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("last close = %+v", lc)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		e.connectExec(e.a, tok)
+		if d, _, _ := st.Device(context.Background(), id); !d.LastClose.At.IsZero() {
+			t.Fatalf("last close after a new open = %+v", d.LastClose)
 		}
 	})
 }

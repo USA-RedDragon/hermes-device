@@ -29,7 +29,26 @@ type Device struct {
 	// Service is a device from the hub config (backends[].service_devices),
 	// such as a sandbox pod. It may use only the exec leg.
 	Service bool
+	// LastClose is how the device's latest exec leg ended, when no exec leg
+	// opened since. Its At is zero otherwise.
+	LastClose LegClose
 }
+
+// LegClose is how a device leg ended: the WebSocket close code and reason
+// the device got, the side that ended it (CloseBy*), and when.
+type LegClose struct {
+	Code   int
+	Reason string
+	By     string
+	At     time.Time
+}
+
+// Sides that end a device leg.
+const (
+	CloseByDevice  = "device"
+	CloseByBackend = "backend"
+	CloseByHub     = "hub"
+)
 
 // ServiceUser is the assertion sub of service devices, which belong to a
 // backend, not a user.
@@ -117,6 +136,12 @@ type DeviceStore interface {
 	SeenDevice(ctx context.Context, id, addr string) error
 	// DismissAddressChange clears the address change note of user's device.
 	DismissAddressChange(ctx context.Context, user, id string) error
+	// ExecLegOpened records that an exec leg of the device opened at
+	// opened, and clears its LastClose.
+	ExecLegOpened(ctx context.Context, id string, opened time.Time) error
+	// ExecLegClosed records how the exec leg that opened at opened ended,
+	// unless another exec leg of the device opened since.
+	ExecLegClosed(ctx context.Context, id string, opened time.Time, c LegClose) error
 	// CodeFailure records a wrong pairing code typed by user and returns
 	// how many they typed within window.
 	CodeFailure(ctx context.Context, user string, window time.Duration) (int, error)

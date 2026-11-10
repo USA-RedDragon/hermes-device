@@ -551,3 +551,53 @@ func TestDeviceDirs(t *testing.T) {
 		}
 	})
 }
+
+func TestExecLegClose(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		_, user, err := s.StartPairing(ctx, hub.PairingRequest{Name: deviceName}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, err := s.ApprovePairing(ctx, user, userAlice, "pc", deviceName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, second := time.Unix(1_800_000_000, 0), time.Unix(1_800_000_001, 500_000_000)
+		last := func() hub.LegClose {
+			t.Helper()
+			got, _, err := s.Device(ctx, d.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return got.LastClose
+		}
+		if err := s.ExecLegOpened(ctx, d.ID, first); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ExecLegOpened(ctx, d.ID, second); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ExecLegClosed(ctx, d.ID, first, hub.LegClose{Code: 4409, By: hub.CloseByBackend, At: second}); err != nil {
+			t.Fatal(err)
+		}
+		if c := last(); !c.At.IsZero() {
+			t.Fatalf("close of an older leg kept: %+v", c)
+		}
+		at := time.Unix(1_800_000_002, 0)
+		want := hub.LegClose{Code: 4426, Reason: "upgrade them together", By: hub.CloseByBackend, At: at}
+		if err := s.ExecLegClosed(ctx, d.ID, second, want); err != nil {
+			t.Fatal(err)
+		}
+		if c := last(); c != want {
+			t.Fatalf("close = %+v, want %+v", c, want)
+		}
+		if err := s.ExecLegOpened(ctx, d.ID, at); err != nil {
+			t.Fatal(err)
+		}
+		if c := last(); c != (hub.LegClose{}) {
+			t.Fatalf("close after a new open = %+v", c)
+		}
+	})
+}

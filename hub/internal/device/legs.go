@@ -86,7 +86,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, d hub.Device, leg
 		return
 	}
 	down.SetReadLimit(maxMessage)
-	l := s.newLeg(d, legName, down, up)
+	l := s.newLeg(r.Context(), d, legName, down, up)
 	s.log.Info("device leg open", "leg", legName, "device", d.ID, "backend", d.BackendID)
 	go l.pump(down, up, true)
 	go l.pump(up, down, false)
@@ -111,11 +111,21 @@ type leg struct {
 	cancel context.CancelFunc
 	once   sync.Once
 	done   chan struct{}
+	opened time.Time
+	// closed is how the leg ended, set once by finish.
+	closed legClose
 }
 
-func (s *Server) newLeg(d hub.Device, name string, down, up *websocket.Conn) *leg {
-	ctx, cancel := context.WithCancel(context.Background())
-	l := &leg{s: s, dev: d, name: name, down: down, up: up, ctx: ctx, cancel: cancel, done: make(chan struct{})}
+// legClose is how a leg ended: the close code and reason the device hop
+// got, the code the backend hop got, and which side ended it.
+type legClose struct {
+	code, upCode websocket.StatusCode
+	reason, by   string
+}
+
+func (s *Server) newLeg(ctx context.Context, d hub.Device, name string, down, up *websocket.Conn) *leg {
+	lctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	l := &leg{s: s, dev: d, name: name, down: down, up: up, ctx: lctx, cancel: cancel, done: make(chan struct{}), opened: s.opts.Now()}
 	s.mu.Lock()
 	if s.legs[d.ID] == nil {
 		s.legs[d.ID] = map[*leg]struct{}{}
@@ -123,8 +133,11 @@ func (s *Server) newLeg(d hub.Device, name string, down, up *websocket.Conn) *le
 	s.legs[d.ID][l] = struct{}{}
 	closed := s.closed
 	s.mu.Unlock()
+	if l.records() {
+		s.recordLeg(ctx, d.ID, func(ctx context.Context) error { return s.store.ExecLegOpened(ctx, d.ID, l.opened) })
+	}
 	if closed {
-		l.finish(websocket.StatusGoingAway, websocket.StatusGoingAway, "hub shutting down")
+		l.finish(hub.CloseByHub, websocket.StatusGoingAway, websocket.StatusGoingAway, "hub shutting down")
 	}
 	return l
 }
@@ -143,16 +156,30 @@ func (l *leg) run() {
 		delete(l.s.legs, l.dev.ID)
 	}
 	l.s.mu.Unlock()
-	l.s.log.Info("device leg closed", "leg", l.name, "device", l.dev.ID)
+	c := l.closed
+	l.s.log.Info("device leg closed", "leg", l.name, "device", l.dev.ID, "code", int(c.code), "reason", c.reason,
+		"backend_code", int(c.upCode), "closed_by", c.by)
+	if l.records() && c.code != protocol.CloseReplaced {
+		l.s.recordLeg(l.ctx, l.dev.ID, func(ctx context.Context) error {
+			return l.s.store.ExecLegClosed(ctx, l.dev.ID, l.opened, hub.LegClose{Code: int(c.code), Reason: c.reason, By: c.by,
+				At: l.s.opts.Now()})
+		})
+	}
 }
 
+// records reports whether the leg's opens and closes are kept for the
+// computer list: exec legs of paired devices. A 4409 close is not kept,
+// since the device is connected again on another leg.
+func (l *leg) records() bool { return l.name == assertion.LegExec && !l.dev.Service }
+
 // finish closes both hops once, the device hop with downCode and the
-// backend hop with upCode.
-func (l *leg) finish(downCode, upCode websocket.StatusCode, reason string) {
+// backend hop with upCode. by is the side that ended the leg (hub.CloseBy*).
+func (l *leg) finish(by string, downCode, upCode websocket.StatusCode, reason string) {
 	l.once.Do(func() {
 		if len(reason) > 120 {
 			reason = reason[:120]
 		}
+		l.closed = legClose{code: downCode, upCode: upCode, reason: reason, by: by}
 		var wg sync.WaitGroup
 		wg.Go(func() { _ = l.down.Close(downCode, reason) })
 		wg.Go(func() { _ = l.up.Close(upCode, reason) })
@@ -190,15 +217,17 @@ func closeOf(err error) (websocket.StatusCode, string, bool) {
 // ended relays how one hop ended to the other.
 func (l *leg) ended(err error, fromDevice bool) {
 	code, reason, ok := closeOf(err)
+	by := hub.CloseByBackend
+	if fromDevice {
+		by = hub.CloseByDevice
+	}
 	switch {
-	case ok && fromDevice:
-		l.finish(code, code, reason)
 	case ok:
-		l.finish(code, code, reason)
+		l.finish(by, code, code, reason)
 	case fromDevice:
-		l.finish(websocket.StatusGoingAway, websocket.StatusGoingAway, "device connection lost")
+		l.finish(by, websocket.StatusGoingAway, websocket.StatusGoingAway, "device connection lost")
 	default:
-		l.finish(protocol.CloseBackendUnavailable, websocket.StatusGoingAway, "backend connection lost")
+		l.finish(by, protocol.CloseBackendUnavailable, websocket.StatusGoingAway, "backend connection lost")
 	}
 }
 
@@ -239,7 +268,11 @@ func (l *leg) ping(c *websocket.Conn, device bool) {
 				hop = hopDevice
 			}
 			l.s.log.Info("no pong; closing the device leg", "leg", l.name, "device", l.dev.ID, "hop", hop)
-			l.finish(protocol.ClosePingTimeout, protocol.ClosePingTimeout, "ping timeout")
+			by := hub.CloseByBackend
+			if device {
+				by = hub.CloseByDevice
+			}
+			l.finish(by, protocol.ClosePingTimeout, protocol.ClosePingTimeout, "ping timeout")
 		}
 		return
 	}
@@ -276,7 +309,7 @@ func (l *leg) recheck() {
 		}
 		if !ok {
 			l.s.log.Info("device revoked or no longer allowed; closing its leg", "leg", l.name, "device", l.dev.ID)
-			l.finish(protocol.CloseUnauthorized, websocket.StatusNormalClosure, "device revoked")
+			l.finish(hub.CloseByHub, protocol.CloseUnauthorized, websocket.StatusNormalClosure, "device revoked")
 			return
 		}
 	}

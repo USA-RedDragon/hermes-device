@@ -208,7 +208,7 @@ func (s *Server) Drain() {
 	}
 	s.mu.Unlock()
 	for _, l := range all {
-		l.finish(websocket.StatusGoingAway, websocket.StatusGoingAway, "hub shutting down")
+		l.finish(hub.CloseByHub, websocket.StatusGoingAway, websocket.StatusGoingAway, "hub shutting down")
 	}
 }
 
@@ -222,9 +222,21 @@ func (s *Server) CloseDevice(id string) {
 	}
 	s.mu.Unlock()
 	for _, l := range ls {
-		l.finish(protocol.CloseUnauthorized, websocket.StatusNormalClosure, "device revoked")
+		l.finish(hub.CloseByHub, protocol.CloseUnauthorized, websocket.StatusNormalClosure, "device revoked")
 	}
 }
+
+// recordLeg runs a store write about a leg of device id and logs a
+// failure: the computer list is only a display.
+func (s *Server) recordLeg(ctx context.Context, id string, fn func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
+	defer cancel()
+	if err := fn(ctx); err != nil {
+		s.log.Warn("record exec leg", "device", id, "error", err.Error())
+	}
+}
+
+const recordTimeout = 10 * time.Second
 
 type deviceKey struct{}
 

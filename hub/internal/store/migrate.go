@@ -83,6 +83,23 @@ var migrations = []migration{
 		sqlite:   []string{`CREATE TABLE device_dirs (device_id TEXT NOT NULL, dir TEXT NOT NULL, used_at INTEGER NOT NULL, PRIMARY KEY (device_id, dir))`},
 		postgres: []string{`CREATE TABLE device_dirs (device_id TEXT NOT NULL, dir TEXT NOT NULL, used_at BIGINT NOT NULL, PRIMARY KEY (device_id, dir))`},
 	},
+	{
+		version: 6,
+		sqlite: []string{
+			`ALTER TABLE devices ADD COLUMN exec_opened_ms INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE devices ADD COLUMN close_code INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE devices ADD COLUMN close_reason TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE devices ADD COLUMN close_by TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE devices ADD COLUMN closed_at INTEGER NOT NULL DEFAULT 0`,
+		},
+		postgres: []string{
+			`ALTER TABLE devices ADD COLUMN exec_opened_ms BIGINT NOT NULL DEFAULT 0`,
+			`ALTER TABLE devices ADD COLUMN close_code INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE devices ADD COLUMN close_reason TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE devices ADD COLUMN close_by TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE devices ADD COLUMN closed_at BIGINT NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas

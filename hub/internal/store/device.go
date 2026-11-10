@@ -246,15 +246,16 @@ func (s *Store) issueToken(ctx context.Context, hash string) (hub.PairPoll, erro
 }
 
 const deviceColumns = `id, "user", backend_id, name, hostname, os, arch, client_version, token_hash IS NOT NULL,
-	created_at, last_seen_at, last_addr, prev_addr, addr_changed_at`
+	created_at, last_seen_at, last_addr, prev_addr, addr_changed_at, close_code, close_reason, close_by, closed_at`
 
 type scanner interface{ Scan(dest ...any) error }
 
 func scanDevice(r scanner) (hub.Device, error) {
 	var d hub.Device
-	var created, seen, changed int64
+	var created, seen, changed, closed int64
+	c := &d.LastClose
 	err := r.Scan(&d.ID, &d.User, &d.BackendID, &d.Name, &d.Hostname, &d.OS, &d.Arch, &d.ClientVersion, &d.Paired,
-		&created, &seen, &d.LastAddr, &d.PrevAddr, &changed)
+		&created, &seen, &d.LastAddr, &d.PrevAddr, &changed, &c.Code, &c.Reason, &c.By, &closed)
 	if err != nil {
 		return hub.Device{}, err
 	}
@@ -264,6 +265,11 @@ func scanDevice(r scanner) (hub.Device, error) {
 	}
 	if changed > 0 {
 		d.AddrChangedAt = time.Unix(changed, 0)
+	}
+	if closed > 0 {
+		c.At = time.Unix(closed, 0)
+	} else {
+		*c = hub.LegClose{}
 	}
 	return d, nil
 }
@@ -336,6 +342,18 @@ func (s *Store) SeenDevice(ctx context.Context, id, addr string) error {
 		addr_changed_at = CASE WHEN last_addr <> '' AND last_addr <> ? THEN ? ELSE addr_changed_at END,
 		last_addr = ?
 		WHERE id = ? AND revoked_at = 0`, now, addr, addr, now, addr, id)
+}
+
+// ExecLegOpened records an exec leg open. See hub.DeviceStore.
+func (s *Store) ExecLegOpened(ctx context.Context, id string, opened time.Time) error {
+	return s.exec(ctx, `UPDATE devices SET exec_opened_ms = ?, close_code = 0, close_reason = '', close_by = '', closed_at = 0
+		WHERE id = ?`, opened.UnixMilli(), id)
+}
+
+// ExecLegClosed records how an exec leg ended. See hub.DeviceStore.
+func (s *Store) ExecLegClosed(ctx context.Context, id string, opened time.Time, c hub.LegClose) error {
+	return s.exec(ctx, `UPDATE devices SET close_code = ?, close_reason = ?, close_by = ?, closed_at = ?
+		WHERE id = ? AND exec_opened_ms = ?`, c.Code, c.Reason, c.By, c.At.Unix(), id, opened.UnixMilli())
 }
 
 // DismissAddressChange clears a device's address change note. See

@@ -254,6 +254,16 @@ type deviceJSON struct {
 	LastAddr      string     `json:"last_addr"`
 	PrevAddr      string     `json:"prev_addr,omitempty"`
 	AddrChangedAt *time.Time `json:"addr_changed_at,omitempty"`
+	LastClose     *closeJSON `json:"last_close,omitempty"`
+}
+
+// closeJSON is how a computer's latest connection to its Hermes ended,
+// shown while it has not connected again.
+type closeJSON struct {
+	Code   int       `json:"code"`
+	Reason string    `json:"reason"`
+	By     string    `json:"by"`
+	At     time.Time `json:"at"`
 }
 
 func optTime(t time.Time) *time.Time {
@@ -281,6 +291,9 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 			LastSeenAt: optTime(d.LastSeenAt), LastAddr: d.LastAddr}
 		if !d.AddrChangedAt.IsZero() {
 			j.PrevAddr, j.AddrChangedAt = d.PrevAddr, optTime(d.AddrChangedAt)
+		}
+		if c := d.LastClose; !c.At.IsZero() {
+			j.LastClose = &closeJSON{Code: c.Code, Reason: c.Reason, By: c.By, At: c.At}
 		}
 		if j.BackendName == "" {
 			j.BackendName = d.BackendID
