@@ -357,11 +357,12 @@ func reasoningValue(v string) bool {
 	return v == "reset" || slices.Contains(hub.ReasoningEfforts(), v)
 }
 
-// otherProfile reports whether a request names a profile: the gateway
-// routes those to a sibling profile, which may not run device sessions.
+// otherProfile reports whether a request has a non-null profile member,
+// of any type: the gateway routes those to a sibling profile, which may
+// not run device sessions.
 func otherProfile(params map[string]json.RawMessage) bool {
 	raw, ok := params["profile"]
-	return ok && !isNull(raw) && rawString(raw) != ""
+	return ok && !isNull(raw)
 }
 
 // SlashCommands are the slash commands a device may run through slash.exec

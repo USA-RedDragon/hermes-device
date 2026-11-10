@@ -240,3 +240,75 @@ func TestGatewayLegCreateExisting(t *testing.T) {
 	})
 }
 
+// TestGatewayLegParams covers the smaller param rules: delegation.status
+// and spawn trees (other sessions), config.get with cwd (git in a pod
+// directory), render sizes, model.options refresh, non-string profiles and
+// request_ids in the hub's own form.
+func TestGatewayLegParams(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, id := e.pair(e.a)
+		e.plugin.SetBinding("s1", id, deviceDir)
+		g := e.gatewayLeg(e.b, tok)
+		for _, tc := range []struct {
+			method string
+			params map[string]any
+		}{
+			{"delegation.status", map[string]any{}},
+			{methodSpawnList, map[string]any{keySessionID: "s1", "cross_session": true}},
+			{methodSpawnList, map[string]any{keySessionID: "s1"}},
+			{"spawn_tree.load", map[string]any{keyPath: "/opt/data/spawn-trees/s-other/x.json"}},
+			{methodConfigGet, map[string]any{keyKey: keyProject, keyCWD: podDir}},
+			{methodConfigGet, map[string]any{keySessionID: "s1", keyKey: keyProject, keyCWD: nil}},
+			{methodFileAttach, map[string]any{keySessionID: "s1", "staged_upload": map[string]any{"profile_home": podDir, keyPath: "uploads/x"}}},
+			{methodFileAttach, map[string]any{keySessionID: "s1", keyPath: podDir + "/.env"}},
+			{methodList, map[string]any{keyProfile: 1}},
+			{methodList, map[string]any{keyProfile: []any{nameOther}}},
+			{methodList, map[string]any{keyProfile: ""}},
+			{methodList, map[string]any{keyProfile: map[string]any{"name": nameOther}}},
+		} {
+			if m := g.request("r-"+tc.method, tc.method, tc.params); reason(m) != reasonDenied {
+				t.Fatalf("%s %v = %v", tc.method, tc.params, m)
+			}
+		}
+		if got := len(e.called(methodConfigGet)) + len(e.called(methodList)); got != 0 {
+			t.Fatalf("%d refused calls reached the gateway", got)
+		}
+		if m := g.request("own", methodMutate, map[string]any{keySessionID: "s1", keyRequestID: "hermes-hub-delete-s1",
+			keyOperation: "rename", keyPayload: map[string]any{keyTitle: "x"}}); errCode(m) != codeInvalid {
+			t.Fatalf("own request_id = %v", m)
+		}
+		if m := g.request("cfg", methodConfigGet, map[string]any{keySessionID: "s1", keyKey: keyProject}); reason(m) == reasonDenied {
+			t.Fatalf("config.get = %v", m)
+		}
+		g.request("lf", "learning.frames", map[string]any{keyCols: 1e9, "rows": -5, "frames": 1e300})
+		g.request("pc", "pet.cells", map[string]any{keyCols: 99999999, "state": "idle"})
+		g.request("pc0", "pet.cells", map[string]any{keyCols: nil})
+		g.request("mo", "model.options", map[string]any{keySessionID: "s1", "refresh": true, "explicit_only": true})
+		for _, tc := range []struct {
+			method string
+			want   map[string]any
+		}{
+			{"learning.frames", map[string]any{keyCols: 400.0, "rows": 10.0, "frames": 120.0}},
+			{"model.options", map[string]any{keySessionID: "s1", "explicit_only": true}},
+		} {
+			got := e.called(tc.method)
+			if len(got) != 1 || len(got[0].Params) != len(tc.want) {
+				t.Fatalf("%s reached the gateway as %v", tc.method, got)
+			}
+			for k, v := range tc.want {
+				if got[0].Params[k] != v {
+					t.Fatalf("%s reached the gateway as %v", tc.method, got)
+				}
+			}
+		}
+		if got := e.called("pet.cells"); len(got) != 2 || got[0].Params[keyCols] != 200.0 || got[1].Params[keyCols] != nil {
+			t.Fatalf("pet.cells reached the gateway as %v", got)
+		}
+		if m := g.request("bad", "pet.cells", map[string]any{keyCols: "9999"}); errCode(m) != codeBadParams {
+			t.Fatalf("string cols = %v", m)
+		}
+	})
+}
+
