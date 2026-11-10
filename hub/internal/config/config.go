@@ -92,6 +92,14 @@ var (
 
 var backendIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
+func webURL(raw string) (*url.URL, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, false
+	}
+	return u, true
+}
+
 // Validate checks what tags can't and fills backend defaults.
 func (c *Config) Validate() error {
 	switch c.LogLevel {
@@ -106,8 +114,8 @@ func (c *Config) Validate() error {
 		return ErrShortSecret
 	}
 	if c.HTTP.PublicURL != "" {
-		u, err := url.Parse(c.HTTP.PublicURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.Trim(u.Path, "/") != "" {
+		u, ok := webURL(c.HTTP.PublicURL)
+		if !ok || strings.Trim(u.Path, "/") != "" {
 			return ErrPublicURL
 		}
 		c.HTTP.PublicURL = strings.TrimRight(c.HTTP.PublicURL, "/")
@@ -119,8 +127,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("%w: backends[%d].id %q must be unique lowercase letters, digits and dashes", ErrBackend, i, b.ID)
 		}
 		seen[b.ID] = true
-		u, err := url.Parse(b.URL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		if _, ok := webURL(b.URL); !ok {
 			return fmt.Errorf("%w: backends[%d].url must be an http or https URL", ErrBackend, i)
 		}
 		b.URL = strings.TrimRight(b.URL, "/")

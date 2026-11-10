@@ -385,7 +385,10 @@ func (b *backend) watch(c *gateway.Client) {
 }
 
 // retry reconnects and re-subscribes every session that has a viewer,
-// with backoff, until that works or no viewer is left.
+// with backoff, until that works or no viewer is left. It outlives any
+// request.
+//
+//nolint:contextcheck // see above
 func (b *backend) retry() {
 	b.mu.Lock()
 	if b.retrying || b.closed {
@@ -625,15 +628,21 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	}
 	prompts := make([]json.RawMessage, 0, len(snap.Prompts))
 	for _, p := range snap.Prompts {
-		raw, _ := json.Marshal(p)
-		prompts = append(prompts, raw)
+		raw, err := json.Marshal(p)
+		if err == nil {
+			prompts = append(prompts, raw)
+		}
 	}
 	msgs := snap.Messages
 	if msgs == nil {
 		msgs = []json.RawMessage{}
 	}
-	data, _ := json.Marshal(hub.Snapshot{SessionID: snap.SessionID, BackendID: b.cfg.ID, Title: title,
+	data, err := json.Marshal(hub.Snapshot{SessionID: snap.SessionID, BackendID: b.cfg.ID, Title: title,
 		Running: snap.Running, Messages: msgs, Prompts: prompts})
+	if err != nil {
+		b.log.Warn("encode snapshot", "session", snap.SessionID, "error", err.Error())
+		data = json.RawMessage(`{}`)
+	}
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 	ls.subID, ls.epoch, ls.gwSeq = snap.SubscriptionID, snap.ReplayEpoch, snap.LastSequence
@@ -677,6 +686,9 @@ func (b *backend) call(ctx context.Context, ls *live, method string, params, out
 	return c.Call(cctx, method, params, out)
 }
 
+// detachIdle runs from a timer, with no request behind it.
+//
+//nolint:contextcheck // see above
 func (b *backend) detachIdle(ls *live) {
 	ls.opMu.Lock()
 	defer ls.opMu.Unlock()

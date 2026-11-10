@@ -41,14 +41,19 @@ func load(t *testing.T, env map[string]string, body string) (*config.Config, err
 	return c.Load()
 }
 
-var secrets = map[string]string{
-	"HUB_OIDC_CLIENT_SECRET": "cs",
-	"HUB_SESSION_SECRET":     strings.Repeat("x", 32),
+//nolint:gosec // environment variable names, not credentials
+const (
+	envClientSecret  = "HUB_OIDC_CLIENT_SECRET"
+	envSessionSecret = "HUB_SESSION_SECRET"
+)
+
+func secrets() map[string]string {
+	return map[string]string{envClientSecret: "cs", envSessionSecret: strings.Repeat("x", 32)}
 }
 
 func TestLoad(t *testing.T) {
 	t.Parallel()
-	cfg, err := load(t, secrets, file)
+	cfg, err := load(t, secrets(), file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +76,7 @@ func TestLoadErrors(t *testing.T) {
 	if _, err := load(t, map[string]string{}, file); !errors.As(err, &req) {
 		t.Fatalf("missing secrets: %v", err)
 	}
-	short := map[string]string{"HUB_OIDC_CLIENT_SECRET": "cs", "HUB_SESSION_SECRET": "short"}
+	short := map[string]string{envClientSecret: "cs", envSessionSecret: "short"}
 	if _, err := load(t, short, file); !errors.Is(err, config.ErrShortSecret) {
 		t.Fatalf("short secret: %v", err)
 	}
@@ -81,11 +86,12 @@ func TestLoadErrors(t *testing.T) {
 		strings.Replace(file, "    password: pw\n    users", "    users", 1),
 		strings.Replace(file, "https://hub.example.test/", "https://hub.example.test/sub", 1),
 	} {
-		if _, err := load(t, secrets, bad); err == nil {
+		if _, err := load(t, secrets(), bad); err == nil {
 			t.Fatalf("accepted:\n%s", bad)
 		}
 	}
-	tg := map[string]string{"HUB_OIDC_CLIENT_SECRET": "cs", "HUB_SESSION_SECRET": strings.Repeat("x", 32), "HUB_TELEGRAM_ENABLED": "true"}
+	tg := secrets()
+	tg["HUB_TELEGRAM_ENABLED"] = "true"
 	if _, err := load(t, tg, file); err == nil {
 		t.Fatal("telegram enabled without token accepted")
 	}

@@ -96,14 +96,14 @@ func (s *Server) cookieName(bare string) string {
 }
 
 func (s *Server) setCookie(w http.ResponseWriter, bare, value string, maxAge time.Duration) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure follows http.public_url; only a plain-http public URL turns it off
 		Name: s.cookieName(bare), Value: value, Path: "/", MaxAge: int(maxAge.Seconds()),
 		HttpOnly: true, Secure: s.secure, SameSite: http.SameSiteLaxMode,
 	})
 }
 
 func (s *Server) clearCookie(w http.ResponseWriter, bare string) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // as in setCookie
 		Name: s.cookieName(bare), Value: "", Path: "/", MaxAge: -1,
 		HttpOnly: true, Secure: s.secure, SameSite: http.SameSiteLaxMode,
 	})

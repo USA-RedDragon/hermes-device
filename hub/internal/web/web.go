@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"errors"
+	"html/template"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -63,6 +64,7 @@ type Server struct {
 	usernameClaim string
 	groupsClaim   string
 	keepAlive     time.Duration
+	linkPage      *template.Template
 }
 
 // New returns a Server.
@@ -92,6 +94,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		sessions: sessions, logins: logins, ttl: cfg.Session.TTL,
 		origin: u.Scheme + "://" + u.Host, secure: u.Scheme == "https",
 		usernameClaim: cfg.OIDC.UsernameClaim, groupsClaim: cfg.OIDC.GroupsClaim, keepAlive: opts.KeepAlive,
+		linkPage: template.Must(template.New("link").Parse(linkHTML)),
 	}, nil
 }
 
@@ -156,17 +159,17 @@ func (s *Server) api(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess, ok := s.session(r)
 		if !ok {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "login required"})
+			errorJSON(w, http.StatusUnauthorized, "login required")
 			return
 		}
 		if !s.originOK(r) {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-origin request"})
+			errorJSON(w, http.StatusForbidden, "cross-origin request")
 			return
 		}
 		if r.Method != http.MethodGet {
 			tok := r.Header.Get("X-CSRF-Token")
 			if tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(sess.CSRF)) != 1 {
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": "bad CSRF token"})
+				errorJSON(w, http.StatusForbidden, "bad CSRF token")
 				return
 			}
 		}
@@ -177,17 +180,17 @@ func (s *Server) api(h http.HandlerFunc) http.Handler {
 func (s *Server) fail(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, hub.ErrForbidden):
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not allowed"})
+		errorJSON(w, http.StatusForbidden, "not allowed")
 	case errors.Is(err, hub.ErrUnknownBackend):
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown backend"})
+		errorJSON(w, http.StatusNotFound, "unknown backend")
 	case errors.Is(err, hub.ErrUnknownApproval):
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such pending approval"})
+		errorJSON(w, http.StatusNotFound, "no such pending approval")
 	default:
 		s.log.Warn("request failed", "error", err.Error())
 		msg := err.Error()
 		if i := strings.LastIndex(msg, ": "); i >= 0 && len(msg)-i < 120 {
 			msg = msg[i+2:]
 		}
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": msg})
+		errorJSON(w, http.StatusBadGateway, msg)
 	}
 }

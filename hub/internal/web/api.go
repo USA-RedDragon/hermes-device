@@ -62,11 +62,11 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	if r.Header.Get("Content-Type") != "application/json" {
-		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "JSON body required"})
+		errorJSON(w, http.StatusUnsupportedMediaType, "JSON body required")
 		return false
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(v); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad JSON body"})
+		errorJSON(w, http.StatusBadRequest, "bad JSON body")
 		return false
 	}
 	return true
@@ -95,7 +95,7 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Text == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty prompt"})
+		errorJSON(w, http.StatusBadRequest, "empty prompt")
 		return
 	}
 	if err := s.svc.Prompt(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), body.Text); err != nil {
@@ -127,6 +127,11 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+type sseEvent struct {
+	Kind string          `json:"kind"`
+	Data json.RawMessage `json:"data"`
 }
 
 // handleEvents streams a session as server-sent events. Each event's id is
@@ -173,7 +178,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			data, _ := json.Marshal(map[string]any{"kind": e.Kind, "data": e.Data})
+			data, err := json.Marshal(sseEvent{Kind: e.Kind, Data: e.Data})
+			if err != nil {
+				s.log.Warn("drop unencodable event", "kind", e.Kind, "error", err.Error())
+				continue
+			}
 			if _, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", e.Seq, data); err != nil {
 				return
 			}

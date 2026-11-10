@@ -10,6 +10,8 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/store"
 )
 
+const groupFamily = "family"
+
 func open(t *testing.T) *store.Store {
 	t.Helper()
 	s, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "hub.db"))
@@ -72,9 +74,9 @@ func TestGroups(t *testing.T) {
 	if g, err := s.Groups(ctx, "nobody"); g != nil || err != nil {
 		t.Fatalf("unknown user groups = %v %v", g, err)
 	}
-	_ = s.SetGroups(ctx, "alice", []string{"admins", "family"})
-	_ = s.SetGroups(ctx, "alice", []string{"family"})
-	if g, _ := s.Groups(ctx, "alice"); !slices.Equal(g, []string{"family"}) {
+	_ = s.SetGroups(ctx, "alice", []string{"admins", groupFamily})
+	_ = s.SetGroups(ctx, "alice", []string{groupFamily})
+	if g, _ := s.Groups(ctx, "alice"); !slices.Equal(g, []string{groupFamily}) {
 		t.Fatalf("groups = %v", g)
 	}
 }

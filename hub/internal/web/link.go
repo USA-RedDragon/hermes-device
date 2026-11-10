@@ -2,12 +2,11 @@ package web
 
 import (
 	"crypto/subtle"
-	"html/template"
 	"net/http"
 	"net/url"
 )
 
-var linkPage = template.Must(template.New("link").Parse(`<!doctype html>
+const linkHTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Link Telegram - Hermes Hub</title><link rel="stylesheet" href="/static/app.css"></head>
 <body><main class="page">
@@ -19,7 +18,7 @@ var linkPage = template.Must(template.New("link").Parse(`<!doctype html>
 <form method="post" action="/link/telegram">
 <input type="hidden" name="token" value="{{.Token}}"><input type="hidden" name="csrf" value="{{.CSRF}}">
 <button class="primary" type="submit">Link account</button></form>
-{{end}}</main></body></html>`))
+{{end}}</main></body></html>`
 
 type linkView struct {
 	User, Token, CSRF, Error string
@@ -30,7 +29,9 @@ func (s *Server) renderLink(w http.ResponseWriter, code int, v linkView) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
-	_ = linkPage.Execute(w, v)
+	if err := s.linkPage.Execute(w, v); err != nil {
+		s.log.Debug("render link page", "error", err.Error())
+	}
 }
 
 // handleLinkPage asks a logged-in user to confirm the link. Binding needs

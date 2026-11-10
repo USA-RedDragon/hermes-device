@@ -161,7 +161,10 @@ func (ls *live) broadcast(e hub.Event) {
 }
 
 func (ls *live) status(connected bool) {
-	data, _ := json.Marshal(map[string]bool{"connected": connected})
+	data := json.RawMessage(`{"connected":false}`)
+	if connected {
+		data = json.RawMessage(`{"connected":true}`)
+	}
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 	ls.seq++
@@ -170,6 +173,9 @@ func (ls *live) status(connected bool) {
 
 // attach adds a viewer: the buffered events after sinceSeq when the
 // buffer still has all of them, else the snapshot and everything after it.
+// A fresh snapshot it starts outlives the request.
+//
+//nolint:contextcheck // see above
 func (ls *live) attach(sinceSeq int64) (<-chan hub.Event, func()) {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()

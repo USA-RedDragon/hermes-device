@@ -25,12 +25,11 @@ type issuer struct {
 	clientID string
 	secret   string
 
-	mu        sync.Mutex
-	user      string
-	groups    []string
-	codes     map[string]grant
-	badNonce  bool
-	noVerifer bool
+	mu       sync.Mutex
+	user     string
+	groups   []string
+	codes    map[string]grant
+	badNonce bool
 }
 
 type grant struct {
@@ -43,7 +42,7 @@ func newIssuer(t *testing.T) *issuer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	is := &issuer{key: key, clientID: "hub", secret: "s3cret", user: "alice", groups: []string{"admins"}, codes: map[string]grant{}}
+	is := &issuer{key: key, clientID: clientID, secret: "s3cret", user: userAlice, groups: []string{groupAdmins}, codes: map[string]grant{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		u := is.srv.URL
@@ -67,7 +66,8 @@ func newIssuer(t *testing.T) *issuer {
 		is.mu.Lock()
 		is.codes[code] = grant{nonce: q.Get("nonce"), challenge: q.Get("code_challenge"), redirect: q.Get("redirect_uri")}
 		is.mu.Unlock()
-		http.Redirect(w, r, q.Get("redirect_uri")+"?code="+code+"&state="+url.QueryEscape(q.Get("state")), http.StatusFound)
+		target := q.Get("redirect_uri") + "?code=" + code + "&state=" + url.QueryEscape(q.Get("state"))
+		http.Redirect(w, r, target, http.StatusFound) //nolint:gosec // fake issuer in tests
 	})
 	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()

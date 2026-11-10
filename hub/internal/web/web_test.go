@@ -22,6 +22,12 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/web"
 )
 
+const (
+	userAlice   = "alice"
+	groupAdmins = "admins"
+	clientID    = "hub"
+)
+
 type hubEnv struct {
 	url   string
 	is    *issuer
@@ -32,7 +38,7 @@ type hubEnv struct {
 func setup(t *testing.T) *hubEnv {
 	t.Helper()
 	is := newIssuer(t)
-	gw := gatewaytest.New("hub", "pw")
+	gw := gatewaytest.New(clientID, "pw")
 	t.Cleanup(gw.Close)
 	gw.AddSession(&gatewaytest.Session{ID: "s1", Title: "First", Live: true, StartedAt: 100})
 	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "hub.db"))
@@ -44,11 +50,11 @@ func setup(t *testing.T) *hubEnv {
 	pub := "http://" + srv.Listener.Addr().String()
 	cfg := &config.Config{LogLevel: "info",
 		HTTP:    config.HTTP{PublicURL: pub},
-		OIDC:    config.OIDC{IssuerURL: is.srv.URL, ClientID: "hub", ClientSecret: "s3cret", Scopes: []string{"openid", "profile"}, UsernameClaim: "preferred_username", GroupsClaim: "groups"},
+		OIDC:    config.OIDC{IssuerURL: is.srv.URL, ClientID: clientID, ClientSecret: "s3cret", Scopes: []string{"openid", "profile"}, UsernameClaim: "preferred_username", GroupsClaim: "groups"},
 		Session: config.Session{Secret: strings.Repeat("k", 40), TTL: time.Hour},
 		Backends: []config.Backend{
-			{ID: "pc", URL: gw.URL(), Username: "hub", Password: "pw", Users: []string{"alice"}},
-			{ID: "home", URL: gw.URL(), Username: "hub", Password: "pw", Groups: []string{"family"}},
+			{ID: "pc", URL: gw.URL(), Username: clientID, Password: "pw", Users: []string{userAlice}},
+			{ID: "home", URL: gw.URL(), Username: clientID, Password: "pw", Groups: []string{"family"}},
 		}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -73,7 +79,8 @@ func client(t *testing.T) *http.Client {
 
 func get(t *testing.T, c *http.Client, u string) (*http.Response, string) {
 	t.Helper()
-	resp, err := c.Get(u)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
+	resp, err := c.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +111,10 @@ func login(t *testing.T, e *hubEnv, c *http.Client) me {
 
 func post(t *testing.T, c *http.Client, u, csrf, origin string, body any) (*http.Response, string) {
 	t.Helper()
-	b, _ := json.Marshal(body)
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, u, strings.NewReader(string(b)))
 	req.Header.Set("Content-Type", "application/json")
 	if csrf != "" {
@@ -130,10 +140,10 @@ func TestLoginFlow(t *testing.T) {
 		t.Fatalf("anonymous me = %d", resp.StatusCode)
 	}
 	m := login(t, e, c)
-	if m.User != "alice" || len(m.Groups) != 1 || m.Groups[0] != "admins" || m.CSRF == "" {
+	if m.User != userAlice || len(m.Groups) != 1 || m.Groups[0] != groupAdmins || m.CSRF == "" {
 		t.Fatalf("me = %+v", m)
 	}
-	if g, _ := e.store.Groups(context.Background(), "alice"); len(g) != 1 || g[0] != "admins" {
+	if g, _ := e.store.Groups(context.Background(), userAlice); len(g) != 1 || g[0] != groupAdmins {
 		t.Fatalf("stored groups = %v", g)
 	}
 	resp, _ := post(t, c, e.url+"/auth/logout", m.CSRF, "", nil)
@@ -308,7 +318,7 @@ func TestEventStreamAndResume(t *testing.T) {
 	}
 	evs := readEvents(t, r, "message.complete")
 	stop()
-	var kinds []string
+	kinds := make([]string, 0, len(evs))
 	for _, ev := range evs {
 		kinds = append(kinds, ev.kind)
 	}
@@ -344,7 +354,10 @@ func TestTelegramLink(t *testing.T) {
 		t.Fatal("no csrf field")
 	}
 	form := func(token, csrf string) (*http.Response, string) {
-		resp, err := c.PostForm(e.url+"/link/telegram", url.Values{"token": {token}, "csrf": {csrf}})
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, e.url+"/link/telegram",
+			strings.NewReader(url.Values{"token": {token}, "csrf": {csrf}}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := c.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -358,7 +371,7 @@ func TestTelegramLink(t *testing.T) {
 	if resp, body := form(tok, csrf[1]); resp.StatusCode != http.StatusOK || !strings.Contains(body, "now linked") {
 		t.Fatalf("link = %d %s", resp.StatusCode, body)
 	}
-	if u, ok, _ := e.store.UserForTelegram(ctx, 777); !ok || u != "alice" {
+	if u, ok, _ := e.store.UserForTelegram(ctx, 777); !ok || u != userAlice {
 		t.Fatalf("linked user = %q %v", u, ok)
 	}
 	if resp, body := form(tok, csrf[1]); resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "used or expired") {
