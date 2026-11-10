@@ -67,6 +67,17 @@ type backendShadow struct {
 	ShowReasoning *bool     `json:"show_reasoning" toml:"show_reasoning" yaml:"show_reasoning"`
 }
 
+type telegramShadow struct {
+	Enabled         *bool          `json:"enabled"          toml:"enabled"          yaml:"enabled"`
+	Token           *string        `json:"token"            toml:"token"            yaml:"token"`
+	APIURL          *string        `json:"api_url"          toml:"api_url"          yaml:"api_url"`
+	DefaultBackends *[]string      `json:"default_backends" toml:"default_backends" yaml:"default_backends"`
+	AllowedGroups   *[]int64       `json:"allowed_groups"   toml:"allowed_groups"   yaml:"allowed_groups"`
+	PollTimeout     *impl.Duration `json:"poll_timeout"     toml:"poll_timeout"     yaml:"poll_timeout"`
+	EditInterval    *impl.Duration `json:"edit_interval"    toml:"edit_interval"    yaml:"edit_interval"`
+	MaxRetries      *int           `json:"max_retries"      toml:"max_retries"      yaml:"max_retries"`
+}
+
 type configShadow struct {
 	LogLevel *string          `json:"log_level" toml:"log_level" yaml:"log_level"`
 	HTTP     *hTTPShadow      `json:"http"      toml:"http"      yaml:"http"`
@@ -74,6 +85,7 @@ type configShadow struct {
 	Session  *sessionShadow   `json:"session"   toml:"session"   yaml:"session"`
 	Store    *storeShadow     `json:"store"     toml:"store"     yaml:"store"`
 	Backends *[]backendShadow `json:"backends"  toml:"backends"  yaml:"backends"`
+	Telegram *telegramShadow  `json:"telegram"  toml:"telegram"  yaml:"telegram"`
 }
 
 // ConfigSchema returns the generated schema for Config.
@@ -116,6 +128,16 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("session.ttl", configulator.LayerDefault, "default tag")
 	cfg.Store.Path = "/data/hermes-hub.db"
 	set("store.path", configulator.LayerDefault, "default tag")
+	cfg.Telegram.Enabled = false
+	set("telegram.enabled", configulator.LayerDefault, "default tag")
+	cfg.Telegram.APIURL = "https://api.telegram.org"
+	set("telegram.api_url", configulator.LayerDefault, "default tag")
+	cfg.Telegram.PollTimeout = time.Duration(int64(50000000000))
+	set("telegram.poll_timeout", configulator.LayerDefault, "default tag")
+	cfg.Telegram.EditInterval = time.Duration(int64(1500000000))
+	set("telegram.edit_interval", configulator.LayerDefault, "default tag")
+	cfg.Telegram.MaxRetries = 5
+	set("telegram.max_retries", configulator.LayerDefault, "default tag")
 	return nil
 }
 
@@ -271,6 +293,54 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		cfg.Backends = out
 		set("backends", configulator.LayerFile, file)
 	}
+	if s.Telegram != nil {
+		if s.Telegram.Enabled != nil {
+			cfg.Telegram.Enabled = *s.Telegram.Enabled
+			set("telegram.enabled", configulator.LayerFile, file)
+		}
+		if s.Telegram.Token != nil {
+			cfg.Telegram.Token = *s.Telegram.Token
+			set("telegram.token", configulator.LayerFile, file)
+		}
+		if s.Telegram.APIURL != nil {
+			cfg.Telegram.APIURL = *s.Telegram.APIURL
+			set("telegram.api_url", configulator.LayerFile, file)
+		}
+		if s.Telegram.DefaultBackends != nil {
+			cfg.Telegram.DefaultBackends = *s.Telegram.DefaultBackends
+			set("telegram.default_backends", configulator.LayerFile, file)
+		}
+		if s.Telegram.AllowedGroups != nil {
+			cfg.Telegram.AllowedGroups = *s.Telegram.AllowedGroups
+			set("telegram.allowed_groups", configulator.LayerFile, file)
+		}
+		if s.Telegram.PollTimeout != nil {
+			v, ok := s.Telegram.PollTimeout.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "telegram.poll_timeout",
+				}
+			}
+			cfg.Telegram.PollTimeout = v
+			set("telegram.poll_timeout", configulator.LayerFile, file)
+		}
+		if s.Telegram.EditInterval != nil {
+			v, ok := s.Telegram.EditInterval.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "telegram.edit_interval",
+				}
+			}
+			cfg.Telegram.EditInterval = v
+			set("telegram.edit_interval", configulator.LayerFile, file)
+		}
+		if s.Telegram.MaxRetries != nil {
+			cfg.Telegram.MaxRetries = *s.Telegram.MaxRetries
+			set("telegram.max_retries", configulator.LayerFile, file)
+		}
+	}
 	return nil
 }
 
@@ -384,6 +454,90 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Store.Path = v
 		set("store.path", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "enabled"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.enabled",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Telegram.Enabled = p
+		set("telegram.enabled", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "token"); ok {
+		cfg.Telegram.Token = v
+		set("telegram.token", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "api_url"); ok {
+		cfg.Telegram.APIURL = v
+		set("telegram.api_url", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "default_backends"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Telegram.DefaultBackends = lst
+		set("telegram.default_backends", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "allowed_groups"); ok {
+		lp := impl.SplitList(v, ec.ArraySeparator)
+		lst := make([]int64, len(lp))
+		for li, ls := range lp {
+			pn, err := strconv.ParseInt(ls, 10, 64)
+			if err != nil {
+				return &configulator.ParseError{
+					Err:    err,
+					Path:   "telegram.allowed_groups",
+					Source: n,
+					Value:  v,
+				}
+			}
+			lx := int64(pn)
+			lst[li] = lx
+		}
+		cfg.Telegram.AllowedGroups = lst
+		set("telegram.allowed_groups", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "poll_timeout"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.poll_timeout",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Telegram.PollTimeout = d
+		set("telegram.poll_timeout", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "edit_interval"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.edit_interval",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Telegram.EditInterval = d
+		set("telegram.edit_interval", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "max_retries"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.max_retries",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Telegram.MaxRetries = int(p)
+		set("telegram.max_retries", configulator.LayerEnv, n)
+	}
 	return nil
 }
 
@@ -415,6 +569,14 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"session" + o.Separator + "secret",
 		"session" + o.Separator + "ttl",
 		"store" + o.Separator + "path",
+		"telegram" + o.Separator + "enabled",
+		"telegram" + o.Separator + "token",
+		"telegram" + o.Separator + "api_url",
+		"telegram" + o.Separator + "default_backends",
+		"telegram" + o.Separator + "allowed_groups",
+		"telegram" + o.Separator + "poll_timeout",
+		"telegram" + o.Separator + "edit_interval",
+		"telegram" + o.Separator + "max_retries",
 	}
 	for i, name := range names {
 		if f := fs.Lookup(name); f != nil {
@@ -449,6 +611,14 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[15], "", "Key for the session and login cookies. At least 32 characters")
 	fs.Duration(names[16], time.Duration(int64(604800000000000)), "How long a login lasts")
 	fs.String(names[17], "/data/hermes-hub.db", "Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups")
+	fs.Bool(names[18], false, "Run the Telegram bot")
+	fs.String(names[19], "", "Telegram bot token from BotFather")
+	fs.String(names[20], "https://api.telegram.org", "Telegram Bot API base URL")
+	fs.StringSlice(names[21], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
+	fs.Int64Slice(names[22], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
+	fs.Duration(names[23], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
+	fs.Duration(names[24], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
+	fs.Var(impl.NewInt(5), names[25], "Retries of a Bot API call that Telegram answers with 429")
 	return nil
 }
 
@@ -669,6 +839,102 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.Store.Path = v
 		set("store.path", configulator.LayerCLI, "--"+n)
 	}
+	if n := "telegram" + o.Separator + "enabled"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.enabled",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.Enabled = v
+		set("telegram.enabled", configulator.LayerCLI, "--"+n)
+	}
+	if n := "telegram" + o.Separator + "token"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.token",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.Token = v
+		set("telegram.token", configulator.LayerCLI, "--"+n)
+	}
+	if n := "telegram" + o.Separator + "api_url"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.api_url",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.APIURL = v
+		set("telegram.api_url", configulator.LayerCLI, "--"+n)
+	}
+	if n := "telegram" + o.Separator + "default_backends"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.default_backends",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.DefaultBackends = v
+		set("telegram.default_backends", configulator.LayerCLI, "--"+n)
+	}
+	if n := "telegram" + o.Separator + "allowed_groups"; fs.Changed(n) {
+		v, err := fs.GetInt64Slice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.allowed_groups",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.AllowedGroups = v
+		set("telegram.allowed_groups", configulator.LayerCLI, "--"+n)
+	}
+	if n := "telegram" + o.Separator + "poll_timeout"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.poll_timeout",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.PollTimeout = v
+		set("telegram.poll_timeout", configulator.LayerCLI, "--"+n)
+	}
+	if n := "telegram" + o.Separator + "edit_interval"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.edit_interval",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.EditInterval = v
+		set("telegram.edit_interval", configulator.LayerCLI, "--"+n)
+	}
+	if n := "telegram" + o.Separator + "max_retries"; fs.Changed(n) {
+		v, err := fs.GetInt(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.max_retries",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.MaxRetries = v
+		set("telegram.max_retries", configulator.LayerCLI, "--"+n)
+	}
 	return nil
 }
 
@@ -811,6 +1077,25 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Backends = &out
+			}
+		case "telegram":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("telegram", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub telegramShadow
+				if err := sub.decodeJSON(dec, "telegram"); err != nil {
+					return err
+				}
+				s.Telegram = &sub
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -1428,6 +1713,192 @@ func (s *backendShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	}
 }
 
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *telegramShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "enabled":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Enabled = &b
+			default:
+				return configJSONError(path+".enabled", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "token":
+			if err := func() error {
+				v, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				switch v.Kind() {
+				case jsontext.KindNull:
+				case jsontext.KindString:
+					str := v.String()
+					s.Token = &str
+				default:
+					return configJSONError(path+".token", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+				}
+				return nil
+			}(); err != nil {
+				return &configulator.ParseError{
+					Err:   errors.New("invalid value"),
+					Path:  path + ".token",
+					Value: "(redacted)",
+				}
+			}
+		case "api_url":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.APIURL = &str
+			default:
+				return configJSONError(path+".api_url", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "default_backends":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".default_backends", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".default_backends"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.DefaultBackends = &out
+			}
+		case "allowed_groups":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".allowed_groups", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []int64{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindNumber {
+						return configJSONError(path+".allowed_groups"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a number, got %v", v.Kind()))
+					}
+					el, err := v.Int()
+					if err != nil {
+						return configJSONError(path+".allowed_groups"+"["+strconv.Itoa(len(out))+"]", v, err)
+					}
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.AllowedGroups = &out
+			}
+		case "poll_timeout":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".poll_timeout", v, err)
+				}
+				s.PollTimeout = &slot
+			default:
+				return configJSONError(path+".poll_timeout", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		case "edit_interval":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".edit_interval", v, err)
+				}
+				s.EditInterval = &slot
+			default:
+				return configJSONError(path+".edit_interval", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		case "max_retries":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
+				if err != nil {
+					return configJSONError(path+".max_retries", v, err)
+				}
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".max_retries", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.MaxRetries = &num
+			default:
+				return configJSONError(path+".max_retries", v, fmt.Errorf("expected a number, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // configJSONError returns a ParseError for the JSON token v at path.
 func configJSONError(path string, v jsontext.Token, err error) error {
 	return &configulator.ParseError{
@@ -1461,6 +1932,14 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "session.ttl = %v\n", c.Session.TTL)
 	fmt.Fprintf(&b, "store.path = %v\n", c.Store.Path)
 	b.WriteString("backends = (redacted)\n")
+	fmt.Fprintf(&b, "telegram.enabled = %v\n", c.Telegram.Enabled)
+	b.WriteString("telegram.token = (redacted)\n")
+	fmt.Fprintf(&b, "telegram.api_url = %v\n", c.Telegram.APIURL)
+	fmt.Fprintf(&b, "telegram.default_backends = %v\n", c.Telegram.DefaultBackends)
+	fmt.Fprintf(&b, "telegram.allowed_groups = %v\n", c.Telegram.AllowedGroups)
+	fmt.Fprintf(&b, "telegram.poll_timeout = %v\n", c.Telegram.PollTimeout)
+	fmt.Fprintf(&b, "telegram.edit_interval = %v\n", c.Telegram.EditInterval)
+	fmt.Fprintf(&b, "telegram.max_retries = %v\n", c.Telegram.MaxRetries)
 	return b.String()
 }
 

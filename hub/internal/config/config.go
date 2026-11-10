@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/USA-RedDragon/hermes-hub/internal/telegram"
 )
 
 // Metrics configures the Prometheus metrics server.
@@ -64,6 +66,11 @@ type Backend struct {
 	ShowReasoning *bool    `name:"show_reasoning" description:"Turn on reasoning streaming for each session the hub attaches to. Default true"`
 }
 
+// Telegram is telegram.Config under its own name: configulator names its
+// generated shadow types by bare type name, so a nested type called Config
+// would collide with this package's Config.
+type Telegram telegram.Config
+
 // Config is the hub's configuration.
 type Config struct {
 	LogLevel string    `name:"log_level" default:"info" description:"Log level: debug, info, warn or error"`
@@ -72,6 +79,7 @@ type Config struct {
 	Session  Session   `name:"session"`
 	Store    Store     `name:"store"`
 	Backends []Backend `name:"backends" description:"Hermes backends and who may use them. Only settable in the config file"`
+	Telegram Telegram  `name:"telegram"`
 }
 
 // Validation errors.
@@ -90,6 +98,9 @@ func (c *Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return ErrInvalidLogLevel
+	}
+	if err := telegram.Config(c.Telegram).Validate(); err != nil {
+		return err
 	}
 	if c.Session.Secret != "" && len(c.Session.Secret) < 32 {
 		return ErrShortSecret

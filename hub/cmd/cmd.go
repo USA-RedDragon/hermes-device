@@ -14,6 +14,7 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/server"
 	"github.com/USA-RedDragon/hermes-hub/internal/service"
 	"github.com/USA-RedDragon/hermes-hub/internal/store"
+	"github.com/USA-RedDragon/hermes-hub/internal/telegram"
 	"github.com/USA-RedDragon/hermes-hub/internal/web"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
@@ -77,6 +78,18 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	srv := server.New(&cfg.HTTP, ui.Handler(), prometheus.DefaultRegisterer)
 	if err := srv.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start HTTP server: %w", err)
+	}
+
+	if cfg.Telegram.Enabled {
+		bot, err := telegram.New(telegram.Config(cfg.Telegram), telegram.Options{PublicURL: cfg.HTTP.PublicURL, Service: svc, Links: st, Tokens: st, Logger: slog.Default()})
+		if err != nil {
+			return fmt.Errorf("failed to start Telegram bot: %w", err)
+		}
+		go func() {
+			if err := bot.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Error("Telegram bot stopped", "error", err.Error())
+			}
+		}()
 	}
 
 	<-ctx.Done()
