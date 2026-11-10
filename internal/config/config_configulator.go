@@ -52,6 +52,7 @@ type aCPHostShadow struct {
 	Hermes           *string `json:"hermes"              toml:"hermes"              yaml:"hermes"`
 	Placeholder      *string `json:"placeholder"         toml:"placeholder"         yaml:"placeholder"`
 	MaxProcesses     *int    `json:"max-processes"       toml:"max-processes"       yaml:"max-processes"`
+	BindingsFile     *string `json:"bindings-file"       toml:"bindings-file"       yaml:"bindings-file"`
 }
 
 type reconnectShadow struct {
@@ -208,6 +209,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			cfg.ACPHost.MaxProcesses = *s.ACPHost.MaxProcesses
 			set("acp-host.max-processes", configulator.LayerFile, file)
 		}
+		if s.ACPHost.BindingsFile != nil {
+			cfg.ACPHost.BindingsFile = *s.ACPHost.BindingsFile
+			set("acp-host.bindings-file", configulator.LayerFile, file)
+		}
 	}
 	if s.Reconnect != nil {
 		if s.Reconnect.MinBackoff != nil {
@@ -337,6 +342,10 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.ACPHost.MaxProcesses = int(p)
 		set("acp-host.max-processes", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "acp-host", "bindings-file"); ok {
+		cfg.ACPHost.BindingsFile = v
+		set("acp-host.bindings-file", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "reconnect", "min-backoff"); ok {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -394,6 +403,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"acp-host" + o.Separator + "hermes",
 		"acp-host" + o.Separator + "placeholder",
 		"acp-host" + o.Separator + "max-processes",
+		"acp-host" + o.Separator + "bindings-file",
 		"reconnect" + o.Separator + "min-backoff",
 		"reconnect" + o.Separator + "max-backoff",
 	}
@@ -429,8 +439,9 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[15], "hermes", "Hermes launcher that the host runs as <hermes> acp for each connection")
 	fs.String(names[16], "", "Server directory that stands in for the device directory in ACP session cwds. Must match the device plugin's placeholder. Needed by acp-host")
 	fs.Var(impl.NewInt(8), names[17], "Most hermes acp processes the host runs at once")
-	fs.Duration(names[18], time.Duration(int64(1000000000)), "First delay after a lost connection")
-	fs.Duration(names[19], time.Duration(int64(30000000000)), "Longest delay between attempts")
+	fs.String(names[18], "", "Bindings file the device plugin writes. Defaults to device/bindings.json in $HERMES_HOME")
+	fs.Duration(names[19], time.Duration(int64(1000000000)), "First delay after a lost connection")
+	fs.Duration(names[20], time.Duration(int64(30000000000)), "Longest delay between attempts")
 	return nil
 }
 
@@ -650,6 +661,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.ACPHost.MaxProcesses = v
 		set("acp-host.max-processes", configulator.LayerCLI, "--"+n)
+	}
+	if n := "acp-host" + o.Separator + "bindings-file"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "acp-host.bindings-file",
+				Source: "--" + n,
+			}
+		}
+		cfg.ACPHost.BindingsFile = v
+		set("acp-host.bindings-file", configulator.LayerCLI, "--"+n)
 	}
 	if n := "reconnect" + o.Separator + "min-backoff"; fs.Changed(n) {
 		v, err := fs.GetDuration(n)
@@ -1229,6 +1252,19 @@ func (s *aCPHostShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			default:
 				return configJSONError(path+".max-processes", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
+		case "bindings-file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.BindingsFile = &str
+			default:
+				return configJSONError(path+".bindings-file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
 				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
@@ -1327,6 +1363,7 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "acp-host.hermes = %v\n", c.ACPHost.Hermes)
 	fmt.Fprintf(&b, "acp-host.placeholder = %v\n", c.ACPHost.Placeholder)
 	fmt.Fprintf(&b, "acp-host.max-processes = %v\n", c.ACPHost.MaxProcesses)
+	fmt.Fprintf(&b, "acp-host.bindings-file = %v\n", c.ACPHost.BindingsFile)
 	fmt.Fprintf(&b, "reconnect.min-backoff = %v\n", c.Reconnect.MinBackoff)
 	fmt.Fprintf(&b, "reconnect.max-backoff = %v\n", c.Reconnect.MaxBackoff)
 	return b.String()

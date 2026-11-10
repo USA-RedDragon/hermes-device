@@ -52,6 +52,7 @@ type ACPHost struct {
 	Hermes           string `name:"hermes" default:"hermes" description:"Hermes launcher that the host runs as <hermes> acp for each connection"`
 	Placeholder      string `name:"placeholder" description:"Server directory that stands in for the device directory in ACP session cwds. Must match the device plugin's placeholder. Needed by acp-host"`
 	MaxProcesses     int    `name:"max-processes" default:"8" description:"Most hermes acp processes the host runs at once"`
+	BindingsFile     string `name:"bindings-file" description:"Bindings file the device plugin writes. Defaults to device/bindings.json in $HERMES_HOME"`
 }
 
 // Reconnect controls the backoff between connection attempts.
@@ -108,7 +109,7 @@ func (c Config) Validate() error {
 	}
 	for name, p := range map[string]string{
 		"device.tmp-dir": c.Device.TempDir, "store.token-file": c.Store.TokenFile, "store.state-dir": c.Store.StateDir,
-		"acp-host.placeholder": c.ACPHost.Placeholder,
+		"acp-host.placeholder": c.ACPHost.Placeholder, "acp-host.bindings-file": c.ACPHost.BindingsFile,
 	} {
 		if p != "" && !filepath.IsAbs(p) {
 			return fmt.Errorf("%s %q: %w", name, p, ErrRelativePath)
