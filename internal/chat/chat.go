@@ -35,6 +35,8 @@ const GatewayURLEnv = "HERMES_TUI_GATEWAY_URL"
 const (
 	versionTimeout = 60 * time.Second
 	controlTimeout = 10 * time.Second
+	// lookupTimeout is above the daemon's own bound on a lookup.
+	lookupTimeout = 3 * time.Minute
 )
 
 // Errors from chat.
@@ -145,7 +147,7 @@ type Control struct {
 	HTTP  *http.Client
 }
 
-func (c *Control) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+func (c *Control) do(ctx context.Context, method, path string, body any, timeout time.Duration) (*http.Response, error) {
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -164,9 +166,13 @@ func (c *Control) do(ctx context.Context, method, path string, body any) (*http.
 	req.Header.Set("Authorization", "Bearer "+c.State.ControlSecret)
 	client := c.HTTP
 	if client == nil {
-		client = &http.Client{Timeout: controlTimeout}
+		client = &http.Client{Timeout: timeout}
 	}
 	resp, err := client.Do(req)
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.Timeout() {
+		return nil, fmt.Errorf("the hermes-device run daemon did not answer in time: %w", err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNotRunning, err)
 	}
@@ -176,7 +182,7 @@ func (c *Control) do(ctx context.Context, method, path string, body any) (*http.
 // NewToken asks the daemon for a per-run secret tied to dir, the absolute
 // device directory chat runs in.
 func (c *Control) NewToken(ctx context.Context, dir string) (string, error) {
-	resp, err := c.do(ctx, http.MethodPost, splice.PathControlTokens, map[string]string{"cwd": dir})
+	resp, err := c.do(ctx, http.MethodPost, splice.PathControlTokens, map[string]string{"cwd": dir}, controlTimeout)
 	if err != nil {
 		return "", err
 	}
@@ -195,7 +201,7 @@ func (c *Control) NewToken(ctx context.Context, dir string) (string, error) {
 
 // DeleteToken revokes token and closes the sockets that use it.
 func (c *Control) DeleteToken(ctx context.Context, token string) error {
-	resp, err := c.do(ctx, http.MethodDelete, splice.PathControlTokens+"/"+url.PathEscape(token), nil)
+	resp, err := c.do(ctx, http.MethodDelete, splice.PathControlTokens+"/"+url.PathEscape(token), nil, controlTimeout)
 	if err != nil {
 		return err
 	}
@@ -204,6 +210,153 @@ func (c *Control) DeleteToken(ctx context.Context, token string) error {
 		return fmt.Errorf("daemon refused to delete the chat token: %s", resp.Status)
 	}
 	return nil
+}
+
+// Resume flags of Hermes, as resumeFlag names them.
+const (
+	flagContinue = "continue"
+	flagResume   = "resume"
+)
+
+// ErrNoSession is a resume whose session the server does not have.
+var ErrNoSession = errors.New("no session to resume")
+
+// Lookup asks the daemon for the id of the session name names (a session
+// id or a title), or of the most recent session bound to this device when
+// name is empty.
+func (c *Control) Lookup(ctx context.Context, name string) (string, error) {
+	body := map[string]any{"latest": true}
+	if name != "" {
+		body = map[string]any{"session": name}
+	}
+	resp, err := c.do(ctx, http.MethodPost, splice.PathControlLookup, body, lookupTimeout)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out struct {
+		SessionID string `json:"session_id"`
+		Error     string `json:"error"`
+		Message   string `json:"message"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out)
+	switch {
+	case resp.StatusCode == http.StatusNotFound && name == "":
+		return "", fmt.Errorf("%w: no session on the server is bound to this device", ErrNoSession)
+	case resp.StatusCode == http.StatusNotFound:
+		return "", fmt.Errorf("%w: no session on the server matches %q", ErrNoSession, name)
+	case resp.StatusCode != http.StatusOK || out.SessionID == "":
+		return "", fmt.Errorf("daemon could not look up the session: %s %s", resp.Status, out.Message)
+	}
+	return out.SessionID, nil
+}
+
+// ResumeTarget finds Hermes' resume flags in args: -c/--continue with an
+// optional name and -r/--resume with a session id, a title or latest, in
+// the forms argparse reads them, up to a "--". The local Hermes would look
+// them up in its own local session store, which does not hold the
+// server's sessions. It returns args without those flags, the name to look
+// up ("" for the latest session) and whether args resume at all. --resume
+// wins over --continue, and an empty value resumes nothing, as in Hermes.
+// A --resume with no value, or with one that starts with "-", stays in
+// rest for Hermes to report.
+func ResumeTarget(args []string) (rest []string, name string, resume bool) {
+	var res *string
+	var cont, bare bool
+	var contName string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			rest = append(rest, args[i:]...)
+			break
+		}
+		flag, value, attached := resumeFlag(a)
+		switch flag {
+		case "":
+			rest = append(rest, a)
+		case flagContinue:
+			// The name is optional: argparse takes the next argument
+			// unless it starts with "-".
+			cont, bare, contName = true, false, value
+			switch {
+			case attached:
+			case i+1 < len(args) && !strings.HasPrefix(args[i+1], "-"):
+				i++
+				contName = args[i]
+			default:
+				bare = true
+			}
+		case flagResume:
+			switch {
+			case attached:
+				res = &value
+			case i+1 < len(args) && !strings.HasPrefix(args[i+1], "-"):
+				i++
+				res = &args[i]
+			default:
+				rest = append(rest, a)
+			}
+		}
+	}
+	switch {
+	case res != nil && *res != "":
+		if strings.EqualFold(strings.TrimSpace(*res), "latest") {
+			return rest, "", true
+		}
+		return rest, *res, true
+	case cont && bare:
+		return rest, "", true
+	case cont && contName != "":
+		return rest, contName, true
+	}
+	return rest, "", false
+}
+
+// resumeFlag names the resume flag a is (flagContinue, flagResume or ""),
+// with the value attached to it (-cNAME, -c=NAME, --continue=NAME).
+// argparse takes a unique prefix of a long flag: among Hermes' flags,
+// --co is the shortest for --continue and --res for --resume.
+func resumeFlag(a string) (flag, value string, attached bool) {
+	if long, ok := strings.CutPrefix(a, "--"); ok {
+		name, value, attached := strings.Cut(long, "=")
+		switch {
+		case len(name) >= 2 && strings.HasPrefix(flagContinue, name):
+			return flagContinue, value, attached
+		case len(name) >= 3 && strings.HasPrefix(flagResume, name):
+			return flagResume, value, attached
+		}
+		return "", "", false
+	}
+	if len(a) >= 2 && a[0] == '-' {
+		value, attached := strings.CutPrefix(a[2:], "=")
+		attached = attached || value != ""
+		switch a[1] {
+		case 'c':
+			return flagContinue, value, attached
+		case 'r':
+			return flagResume, value, attached
+		}
+	}
+	return "", "", false
+}
+
+// resolveArgs replaces the resume flags in args with --resume and the id
+// of the server's session they name.
+func resolveArgs(ctx context.Context, c *Control, args []string) ([]string, error) {
+	rest, name, resume := ResumeTarget(args)
+	if !resume {
+		return args, nil
+	}
+	sid, err := c.Lookup(ctx, name)
+	if errors.Is(err, ErrNoSession) && name != "" {
+		// Not a session the lookup finds, such as a messaging session
+		// moved to this device: the splice resumes the name as sent.
+		sid, err = name, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return append([]string{"--resume", sid}, rest...), nil
 }
 
 // Params configure Run.
@@ -269,6 +422,9 @@ func Run(ctx context.Context, p Params) (int, error) {
 			log.Warn("could not revoke the chat token", "error", err)
 		}
 	}()
+	if p.Args, err = resolveArgs(ctx, p.Control, p.Args); err != nil {
+		return 0, err
+	}
 	return runTUI(p, token)
 }
 

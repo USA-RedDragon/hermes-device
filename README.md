@@ -58,6 +58,8 @@ hermes-device chat
 
 `chat` starts your local Hermes Ink TUI, pointed at the `run` daemon's loopback splice. The splice creates the session on the server with this directory as the device directory, binds the session before the TUI sees it, and refuses calls that would act on the pod instead of your PC (pod shell commands, pod path completion, vault and profile changes). `/new` in the TUI starts another session in the same way.
 
+To continue a session, pass Hermes' resume flags after `--`: `hermes-device chat -- -c` continues the most recent session bound to this PC, and `hermes-device chat -- -c "fix the parser"` or `-- --resume <id>` continues the session with that title or id. `chat` looks the session up on the server, not in the local Hermes session store, and the resumed session moves to the current directory. `/resume <title>` in the TUI works the same way.
+
 The local Hermes must be the same release as the server's Hermes. `chat` checks this and refuses to start on a mismatch.
 
 ### VS Code and other ACP editors

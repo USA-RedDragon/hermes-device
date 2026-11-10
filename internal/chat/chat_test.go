@@ -25,6 +25,10 @@ const (
 	token  = "per-run-token" //nolint:gosec // test fixture, not a credential
 
 	hermesVersion = "0.22.7"
+
+	parserTitle = "fix the parser"
+	argResume   = "--resume"
+	argYolo     = "--yolo"
 )
 
 func TestParseVersion(t *testing.T) {
@@ -63,7 +67,7 @@ func TestEnvAndArgv(t *testing.T) {
 	if strings.Join(env, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("env %q", env)
 	}
-	if got := chat.Argv("hermes", []string{"--resume", "s1"}); strings.Join(got, " ") != "hermes --tui --resume s1" {
+	if got := chat.Argv("hermes", []string{argResume, "s1"}); strings.Join(got, " ") != "hermes --tui --resume s1" {
 		t.Fatalf("argv %q", got)
 	}
 }
@@ -95,6 +99,9 @@ type fixture struct {
 	created int
 	cwds    []string
 	deleted []string
+	lookups []string
+	// noLatest makes a latest lookup find nothing.
+	noLatest bool
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -125,6 +132,27 @@ func newFixture(t *testing.T) *fixture {
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]string{"token": token})
+	})
+	mux.HandleFunc("POST /control/lookup", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Session string `json:"session"`
+			Latest  bool   `json:"latest"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.lookups = append(f.lookups, body.Session)
+		noLatest := f.noLatest
+		f.mu.Unlock()
+		sid := map[string]string{"s1": "s1", parserTitle: "s-parser"}[body.Session]
+		if body.Latest && !noLatest {
+			sid = "s-latest"
+		}
+		if sid == "" {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "not_found"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"session_id": sid})
 	})
 	mux.HandleFunc("DELETE /control/tokens/{token}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -160,7 +188,7 @@ exit 7`)
 		t.Fatal(err)
 	}
 	p := f.params(hermes, dir)
-	p.Args = []string{"--resume", "s1"}
+	p.Args = []string{argResume, "s1"}
 	code, err := chat.Run(t.Context(), p)
 	if err != nil || code != 7 {
 		t.Fatalf("Run = %d, %v; want 7", code, err)
@@ -182,6 +210,97 @@ exit 7`)
 	f.mu.Unlock()
 	if len(cwds) != 1 || cwds[0] != dir {
 		t.Fatalf("token cwds %q, want %q", cwds, dir)
+	}
+}
+
+func TestResumeTarget(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		args   []string
+		rest   []string
+		name   string
+		resume bool
+	}{
+		{[]string{argYolo}, []string{argYolo}, "", false},
+		{[]string{"-c"}, nil, "", true},
+		{[]string{"-c", argYolo}, []string{argYolo}, "", true},
+		{[]string{"--continue"}, nil, "", true},
+		{[]string{"-c", parserTitle, argYolo}, []string{argYolo}, parserTitle, true},
+		{[]string{"-cfoo"}, nil, "foo", true},
+		{[]string{"--continue=bar"}, nil, "bar", true},
+		{[]string{"--cont", "baz"}, nil, "baz", true},
+		{[]string{argResume, "s1"}, nil, "s1", true},
+		{[]string{"-r", "s1"}, nil, "s1", true},
+		{[]string{"-rs1"}, nil, "s1", true},
+		{[]string{"--resume=s1"}, nil, "s1", true},
+		{[]string{"--resu", "s1"}, nil, "s1", true},
+		{[]string{argResume, "Latest"}, nil, "", true},
+		{[]string{"-c", "-r", "s1"}, nil, "s1", true},
+		{[]string{"-r", "s1", "-c", "other"}, nil, "s1", true},
+		{[]string{argResume}, []string{argResume}, "", false},
+		{[]string{argYolo, "--", "-c"}, []string{argYolo, "--", "-c"}, "", false},
+		{[]string{"--config", "x"}, []string{"--config", "x"}, "", false},
+	}
+	for _, tc := range cases {
+		rest, name, resume := chat.ResumeTarget(tc.args)
+		if strings.Join(rest, "\x00") != strings.Join(tc.rest, "\x00") || name != tc.name || resume != tc.resume {
+			t.Errorf("ResumeTarget(%q) = %q, %q, %v; want %q, %q, %v", tc.args, rest, name, resume, tc.rest, tc.name, tc.resume)
+		}
+	}
+}
+
+func TestRunResolvesResume(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	out := filepath.Join(t.TempDir(), "out")
+	hermes := fakeHermes(t, hermesVersion, `printf '%s\n' "$*" > '`+out+`'`)
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-c", argYolo}, "--tui --resume s-latest --yolo"},
+		{[]string{"--continue", parserTitle}, "--tui --resume s-parser"},
+		{[]string{argResume, "latest"}, "--tui --resume s-latest"},
+	} {
+		p := f.params(hermes, dir)
+		p.Args = tc.args
+		if code, err := chat.Run(t.Context(), p); err != nil || code != 0 {
+			t.Fatalf("Run(%q) = %d, %v", tc.args, code, err)
+		}
+		data, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(string(data)); got != tc.want {
+			t.Fatalf("Run(%q): TUI saw %q, want %q", tc.args, got, tc.want)
+		}
+	}
+	// A name the lookup does not find goes to the splice as sent.
+	p := f.params(hermes, dir)
+	p.Args = []string{"-c", "no such chat"}
+	if code, err := chat.Run(t.Context(), p); err != nil || code != 0 {
+		t.Fatalf("Run = %d, %v", code, err)
+	}
+	if data, _ := os.ReadFile(out); strings.TrimSpace(string(data)) != "--tui --resume no such chat" {
+		t.Fatalf("TUI saw %q", data)
+	}
+	f.mu.Lock()
+	f.noLatest = true
+	f.mu.Unlock()
+	p = f.params(hermes, dir)
+	p.Args = []string{"-c"}
+	if _, err := chat.Run(t.Context(), p); !errors.Is(err, chat.ErrNoSession) {
+		t.Fatalf("no latest session: %v", err)
+	}
+	f.mu.Lock()
+	lookups := append([]string(nil), f.lookups...)
+	f.mu.Unlock()
+	if strings.Join(lookups, "|") != "|fix the parser||no such chat|" {
+		t.Fatalf("lookups %q", lookups)
+	}
+	if _, deleted := f.counts(); len(deleted) != 5 {
+		t.Fatalf("tokens deleted %d times, want 5", len(deleted))
 	}
 }
 

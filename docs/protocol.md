@@ -327,6 +327,8 @@ The splice dials the hub leg before it accepts the TUI's upgrade and answers HTT
 
 `hermes-device chat` runs `<chat.hermes> --tui` (plus any arguments after `--`) in the current directory with the terminal attached. It leaves SIGINT to the TUI (the terminal sends it to the TUI's process group), forwards SIGTERM and SIGHUP, deletes its per-run secret when the TUI exits, and exits with the TUI's code (`128 + signal` when a signal ended it).
 
+The local Hermes launcher resolves `-c`/`--continue [name]` and `-r`/`--resume <id, title or latest>` in its own local session store, which does not hold the server's sessions, and hands the Ink TUI the result in `HERMES_TUI_RESUME` (hermes_cli/main.py `_resolve_continue_arg`, hermes_cli/main_tui_launch.py); with no local match, bare `-c` exits before the TUI starts. So `chat` takes these flags out of the arguments (every form argparse reads: `-cNAME`, `--continue=NAME`, unambiguous prefixes such as `--cont`, up to a `--`), looks the session up with `POST /control/lookup` (5.5: bare `-c` and `--resume latest` are the latest session, any other value is a name), and starts the TUI with `--resume <id>` first. `--resume` wins over `-c`, as in Hermes. When the lookup finds nothing, `chat` fails before it starts the TUI.
+
 ### 5.3 Rewritten calls
 
 The device directory of a create is the `cwd` the TUI sends, which is the directory `hermes-device chat` ran in. It is a device path.
