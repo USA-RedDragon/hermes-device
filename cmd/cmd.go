@@ -14,9 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// ErrNotImplemented is returned by subcommands that are not built yet.
-var ErrNotImplemented = errors.New("not implemented")
-
 // ErrWindows is returned on Windows, which hermes-device does not support.
 var ErrWindows = errors.New("hermes-device does not support Windows: device paths must be POSIX")
 

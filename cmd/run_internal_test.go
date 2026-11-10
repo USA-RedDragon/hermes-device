@@ -115,7 +115,7 @@ type runSetup struct {
 	hub      *runHub
 }
 
-func setupRun(t *testing.T, hub *runHub, spliceResult error) *runSetup {
+func setupRun(t *testing.T, hub *runHub, spliceResult error) *runSetup { //nolint:unparam // kept for splice failure cases
 	t.Helper()
 	hub.t = t
 	srv := httptest.NewServer(hub)
@@ -237,25 +237,6 @@ func TestRunWhoamiOtherErrorContinues(t *testing.T) {
 		st, err := daemonstate.Read(s.stateDir)
 		return err == nil && st.DeviceID == "d_rec"
 	})
-	cancel()
-	if err := waitErr(t, done); err != nil {
-		t.Errorf("runDaemon = %v", err)
-	}
-}
-
-func TestRunKeepsExecLegWithoutSplice(t *testing.T) {
-	t.Parallel()
-	s := setupRun(t, &runHub{}, splice.ErrNotImplemented)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := s.start(ctx)
-	<-s.splice.ln
-	waitUntil(t, "the exec leg", func() bool { return s.hub.hellos.Load() >= 1 })
-	select {
-	case err := <-done:
-		t.Fatalf("runDaemon returned early: %v", err)
-	case <-time.After(200 * time.Millisecond):
-	}
 	cancel()
 	if err := waitErr(t, done); err != nil {
 		t.Errorf("runDaemon = %v", err)

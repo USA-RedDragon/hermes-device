@@ -128,10 +128,6 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 		<-spliceDone
 		return err
 	case err := <-spliceDone:
-		if errors.Is(err, splice.ErrNotImplemented) {
-			slog.Warn("The chat splice is not available in this build; serving the exec leg only")
-			return <-devDone
-		}
 		stopped := ctx.Err() != nil
 		cancel()
 		devErr := <-devDone
