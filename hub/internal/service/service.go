@@ -167,6 +167,13 @@ func (s *Service) backend(ctx context.Context, user, id string) (*backend, error
 	return b, nil
 }
 
+// Allowed fails with hub.ErrUnknownBackend or hub.ErrForbidden unless user
+// may use the backend.
+func (s *Service) Allowed(ctx context.Context, user, backendID string) error {
+	_, err := s.backend(ctx, user, backendID)
+	return err
+}
+
 // Backends lists the backends user may use.
 func (s *Service) Backends(ctx context.Context, user string) ([]hub.Backend, error) {
 	out := []hub.Backend{}
