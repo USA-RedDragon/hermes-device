@@ -78,6 +78,11 @@ var migrations = []migration{
 			`CREATE INDEX device_code_failures_user ON device_code_failures ("user", at)`,
 		},
 	},
+	{
+		version:  5,
+		sqlite:   []string{`CREATE TABLE device_dirs (device_id TEXT NOT NULL, dir TEXT NOT NULL, used_at INTEGER NOT NULL, PRIMARY KEY (device_id, dir))`},
+		postgres: []string{`CREATE TABLE device_dirs (device_id TEXT NOT NULL, dir TEXT NOT NULL, used_at BIGINT NOT NULL, PRIMARY KEY (device_id, dir))`},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas

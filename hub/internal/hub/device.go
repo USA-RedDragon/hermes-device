@@ -122,4 +122,12 @@ type DeviceStore interface {
 	CodeFailure(ctx context.Context, user string, window time.Duration) (int, error)
 	// CodeFailures counts the wrong pairing codes user typed within window.
 	CodeFailures(ctx context.Context, user string, window time.Duration) (int, error)
+	// UseDeviceDir records that a session started or moved to dir on a
+	// device. A device keeps its RecentDirs latest directories.
+	UseDeviceDir(ctx context.Context, deviceID, dir string) error
+	// DeviceDirs lists a device's recent directories, latest first.
+	DeviceDirs(ctx context.Context, deviceID string) ([]string, error)
 }
+
+// RecentDirs is how many recent directories the hub keeps per device.
+const RecentDirs = 8

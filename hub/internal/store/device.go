@@ -322,7 +322,10 @@ func (s *Store) RevokeDevice(ctx context.Context, user, id string) (bool, error)
 		return false, err
 	}
 	n, err := res.RowsAffected()
-	return n > 0, err
+	if err != nil || n == 0 {
+		return false, err
+	}
+	return true, s.exec(ctx, `DELETE FROM device_dirs WHERE device_id = ?`, id)
 }
 
 // SeenDevice records a request from a device. See hub.DeviceStore.
@@ -355,4 +358,33 @@ func (s *Store) CodeFailures(ctx context.Context, user string, window time.Durat
 	err := s.row(ctx, `SELECT COUNT(*) FROM device_code_failures WHERE "user" = ? AND at > ?`,
 		user, s.now().Add(-window).Unix()).Scan(&n)
 	return n, err
+}
+
+// UseDeviceDir records that a session started or moved to dir on a
+// device. See hub.DeviceStore.
+func (s *Store) UseDeviceDir(ctx context.Context, deviceID, dir string) error {
+	if err := s.exec(ctx, `INSERT INTO device_dirs (device_id, dir, used_at) VALUES (?, ?, ?)
+		ON CONFLICT(device_id, dir) DO UPDATE SET used_at = excluded.used_at`, deviceID, dir, s.now().UnixMilli()); err != nil {
+		return err
+	}
+	return s.exec(ctx, `DELETE FROM device_dirs WHERE device_id = ? AND dir NOT IN
+		(SELECT dir FROM device_dirs WHERE device_id = ? ORDER BY used_at DESC, dir LIMIT ?)`, deviceID, deviceID, hub.RecentDirs)
+}
+
+// DeviceDirs lists a device's recent directories. See hub.DeviceStore.
+func (s *Store) DeviceDirs(ctx context.Context, deviceID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT dir FROM device_dirs WHERE device_id = ? ORDER BY used_at DESC, dir`), deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }

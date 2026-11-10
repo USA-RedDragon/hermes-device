@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -498,6 +499,55 @@ func TestPairingExpiresAndDenies(t *testing.T) {
 		n, _ := s.CodeFailure(ctx, userAlice, time.Minute)
 		if n != 1 {
 			t.Fatalf("failures in window = %d", n)
+		}
+	})
+}
+
+func TestDeviceDirs(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		now := time.Unix(1_800_000_000, 0)
+		s.SetClock(func() time.Time { return now })
+		for i := range hub.RecentDirs + 2 {
+			now = now.Add(time.Second)
+			if err := s.UseDeviceDir(ctx, "d_1", fmt.Sprintf("/home/alice/p%d", i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		now = now.Add(time.Second)
+		if err := s.UseDeviceDir(ctx, "d_1", "/home/alice/p3"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.UseDeviceDir(ctx, "d_2", "/home/bob"); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.DeviceDirs(ctx, "d_1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != hub.RecentDirs || got[0] != "/home/alice/p3" || got[1] != "/home/alice/p9" || slices.Contains(got, "/home/alice/p1") {
+			t.Fatalf("dirs = %v", got)
+		}
+		if got, _ := s.DeviceDirs(ctx, "d_none"); len(got) != 0 {
+			t.Fatalf("unknown device dirs = %v", got)
+		}
+		_, code, err := s.StartPairing(ctx, hub.PairingRequest{Name: deviceName, Hostname: deviceName}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, err := s.ApprovePairing(ctx, code, userAlice, "pc", deviceName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.UseDeviceDir(ctx, d.ID, "/home/alice"); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := s.RevokeDevice(ctx, d.User, d.ID); !ok || err != nil {
+			t.Fatalf("revoke = %v, %v", ok, err)
+		}
+		if got, _ := s.DeviceDirs(ctx, d.ID); len(got) != 0 {
+			t.Fatalf("dirs of a revoked device = %v", got)
 		}
 	})
 }
