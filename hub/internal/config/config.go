@@ -55,7 +55,7 @@ const (
 
 // Store configures the database.
 type Store struct {
-	Driver     string `name:"driver" default:"sqlite" description:"Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups and the Telegram bot's state"`
+	Driver     string `name:"driver" default:"sqlite" description:"Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices"`
 	Path       string `name:"path" default:"/data/hermes-hub.db" description:"Path of the SQLite database (store.driver sqlite)"`
 	DSN        string `name:"dsn" secret:"true" description:"PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session"`
 	ImportPath string `name:"import_path" description:"With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped"`
@@ -102,16 +102,38 @@ func (u UI) DefaultBackendMap() (map[string]string, error) {
 
 // Backend is one Hermes gateway Webapp listener.
 type Backend struct {
-	ID            string   `name:"id" description:"Stable backend ID: lowercase letters, digits and dashes"`
-	Name          string   `name:"name" description:"Display name"`
-	URL           string   `name:"url" description:"Base URL of the Hermes Webapp listener, such as http://desktop:9120"`
-	Provider      string   `name:"provider" description:"Hermes dashboard password provider. Default basic"`
-	Username      string   `name:"username" description:"Hermes dashboard user name"`
-	Password      string   `name:"password" secret:"true" description:"Hermes dashboard password"`
-	Users         []string `name:"users" description:"Hub user names that may use this backend"`
-	Groups        []string `name:"groups" description:"Hub groups whose members may use this backend"`
-	CWD           string   `name:"cwd" description:"Working directory for new sessions. Default: the gateway's own"`
-	ShowReasoning *bool    `name:"show_reasoning" description:"Turn on reasoning streaming for each session the hub attaches to. Default true"`
+	ID             string          `name:"id" description:"Stable backend ID: lowercase letters, digits and dashes"`
+	Name           string          `name:"name" description:"Display name"`
+	URL            string          `name:"url" description:"Base URL of the Hermes Webapp listener, such as http://desktop:9120"`
+	Provider       string          `name:"provider" description:"Hermes dashboard password provider. Default basic"`
+	Username       string          `name:"username" description:"Hermes dashboard user name"`
+	Password       string          `name:"password" secret:"true" description:"Hermes dashboard password"`
+	Users          []string        `name:"users" description:"Hub user names that may use this backend"`
+	Groups         []string        `name:"groups" description:"Hub groups whose members may use this backend"`
+	CWD            string          `name:"cwd" description:"Working directory for new sessions. Default: the gateway's own"`
+	ShowReasoning  *bool           `name:"show_reasoning" description:"Turn on reasoning streaming for each session the hub attaches to. Default true"`
+	Devices        bool            `name:"devices" description:"Let users pair hermes-device devices with this backend. Its Hermes needs the hermes-device plugin, with plugin setting backend_id equal to this backend's id and the hub's public key. Default false"`
+	ACPURL         string          `name:"acp_url" description:"Base URL of this backend's acp-host, such as http://desktop:9130, for editors that connect with hermes-device acp. Only the hub may reach it. Empty: editors cannot connect"`
+	ServiceDevices []ServiceDevice `name:"service_devices" description:"Devices the hub knows from this list instead of pairing, such as each user's sandbox pod that runs hermes-device run. They may use only the exec leg"`
+}
+
+// Device configures hermes-device: computers that users pair with one of
+// their backends, so Hermes runs commands and editors on them.
+type Device struct {
+	Enabled         bool          `name:"enabled" default:"false" description:"Serve the hermes-device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices"`
+	SigningKey      string        `name:"signing_key" secret:"true" description:"Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set"`
+	SigningKeyFile  string        `name:"signing_key_file" description:"File that holds device.signing_key. Wins over signing_key"`
+	PairingTTL      time.Duration `name:"pairing_ttl" default:"10m" description:"How long a pairing code from hermes-device login stays valid"`
+	PollInterval    time.Duration `name:"poll_interval" default:"5s" description:"How often a device may poll while it waits for the user to confirm pairing"`
+	RecheckInterval time.Duration `name:"recheck_interval" default:"10s" description:"How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time"`
+	TrustedProxies  []string      `name:"trusted_proxies" description:"CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer"`
+}
+
+// ServiceDevice is a device defined in the config, pinned to its backend.
+type ServiceDevice struct {
+	ID    string `name:"id" description:"Device id the backend sees: letters, digits, _ and -, at most 64, not starting with d_ (paired devices use that)"`
+	Name  string `name:"name" description:"Name shown for the device. Default: the id"`
+	Token string `name:"token" secret:"true" description:"The device's token, as hermes-device stores it: hdt_ and at least 32 more characters. The hub keeps only its SHA-256"`
 }
 
 // Telegram is telegram.Config under its own name: configulator names its
@@ -132,6 +154,7 @@ type Config struct {
 	Users    []User    `name:"users" description:"Who may log in: each OIDC sub and its hub user name. A login with any other sub is refused. Only settable in the config file"`
 	Backends []Backend `name:"backends" description:"Hermes backends and who may use them. Only settable in the config file"`
 	Telegram Telegram  `name:"telegram"`
+	Device   Device    `name:"device"`
 }
 
 // Validation errors.
@@ -146,6 +169,7 @@ var (
 	ErrStoreDSN        = errors.New("store.dsn is required when store.driver is postgres")
 	ErrImportPath      = errors.New("store.import_path needs store.driver postgres")
 	ErrDuration        = errors.New("shutdown.drain_delay, shutdown.timeout and hold.timeout must not be negative")
+	ErrDevice          = errors.New("invalid device settings")
 )
 
 var backendIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -248,7 +272,14 @@ func (c *Config) Validate() error {
 		}
 		c.HTTP.PublicURL = strings.TrimRight(c.HTTP.PublicURL, "/")
 	}
-	seen := map[string]bool{}
+	if err := c.validateBackends(); err != nil {
+		return err
+	}
+	return c.validateDevices()
+}
+
+func (c *Config) validateBackends() error {
+	seen, seenDevices := map[string]bool{}, map[string]bool{}
 	for i := range c.Backends {
 		b := &c.Backends[i]
 		if !backendIDPattern.MatchString(b.ID) || seen[b.ID] {
@@ -272,6 +303,41 @@ func (c *Config) Validate() error {
 			on := true
 			b.ShowReasoning = &on
 		}
+		if err := validateServiceDevices(i, b, seenDevices); err != nil {
+			return err
+		}
+		if b.ACPURL != "" {
+			if _, ok := webURL(b.ACPURL); !ok {
+				return fmt.Errorf("%w: backends[%d].acp_url must be an http or https URL", ErrBackend, i)
+			}
+			b.ACPURL = strings.TrimRight(b.ACPURL, "/")
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateDevices() error {
+	d := &c.Device
+	if d.PairingTTL < 0 || d.PollInterval < 0 || d.RecheckInterval < 0 {
+		return fmt.Errorf("%w: device.pairing_ttl, poll_interval and recheck_interval must not be negative", ErrDevice)
+	}
+	if d.PairingTTL == 0 {
+		d.PairingTTL = defaultPairingTTL
+	}
+	if d.PollInterval == 0 {
+		d.PollInterval = defaultPollInterval
+	}
+	if d.RecheckInterval == 0 {
+		d.RecheckInterval = defaultRecheckInterval
+	}
+	if _, err := d.Proxies(); err != nil {
+		return err
+	}
+	if !d.Enabled {
+		return nil
+	}
+	if _, err := d.PrivateKey(); err != nil {
+		return err
 	}
 	return nil
 }

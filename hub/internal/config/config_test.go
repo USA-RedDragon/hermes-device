@@ -1,12 +1,17 @@
 package config_test
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/USA-RedDragon/configulator/v2"
+	"github.com/USA-RedDragon/hermes-device/assertion"
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/goccy/go-yaml"
 )
@@ -37,7 +42,11 @@ backends:
     show_reasoning: false
 `
 
-const defaultDB = "/data/hermes-hub.db"
+const (
+	defaultDB        = "/data/hermes-hub.db"
+	envDeviceEnabled = "HUB_DEVICE_ENABLED"
+	valTrue          = "true"
+)
 
 func load(t *testing.T, env map[string]string, body string) (*config.Config, error) {
 	t.Helper()
@@ -146,8 +155,102 @@ func TestLoadErrors(t *testing.T) {
 		}
 	}
 	tg := secrets()
-	tg["HUB_TELEGRAM_ENABLED"] = "true"
+	tg["HUB_TELEGRAM_ENABLED"] = valTrue
 	if _, err := load(t, tg, file); err == nil {
 		t.Fatal("telegram enabled without token accepted")
+	}
+}
+
+// testKey is a throwaway key from openssl genpkey -algorithm ed25519, and
+// testPub its openssl pkey -pubout.
+//
+//nolint:gosec // a test key that signs nothing real
+const (
+	testKey = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIMWpXNQfEB+9EILo9tcvcyxQjkZ4nmD9etkP6FFzgPbL\n-----END PRIVATE KEY-----\n"
+	testPub = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAFdRPWzV70Dz3asm11xo9SeU/pArIg5dNZX+Vo9uYh7g=\n-----END PUBLIC KEY-----\n"
+)
+
+func TestDeviceSettings(t *testing.T) {
+	t.Parallel()
+	env := secrets()
+	env[envDeviceEnabled] = valTrue
+	env["HUB_DEVICE_SIGNING_KEY"] = testKey
+	env["HUB_DEVICE_TRUSTED_PROXIES"] = "10.0.0.0/8,192.0.2.1"
+	body := file + `    devices: true
+    acp_url: http://hermes.hermes.svc:9130/
+`
+	cfg, err := load(t, env, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := cfg.Device
+	if d.PairingTTL != 10*time.Minute || d.PollInterval != 5*time.Second || d.RecheckInterval != 10*time.Second {
+		t.Fatalf("defaults = %+v", d)
+	}
+	if !cfg.Backends[1].Devices || cfg.Backends[1].ACPURL != "http://hermes.hermes.svc:9130" || cfg.Backends[0].Devices {
+		t.Fatalf("backends = %+v", cfg.Backends)
+	}
+	key, err := d.PrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := assertion.ParsePublicKeys(testPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub, _ := key.Public().(ed25519.PublicKey); !pub.Equal(want[0]) {
+		t.Fatal("public key does not match openssl's")
+	}
+	if p, err := d.Proxies(); err != nil || len(p) != 2 || p[1].Bits() != 32 {
+		t.Fatalf("proxies = %v %v", p, err)
+	}
+	seed := base64.StdEncoding.EncodeToString(key.Seed())
+	if k, err := config.ParseSigningKey(seed); err != nil || !k.Equal(key) {
+		t.Fatalf("seed = %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "key.pem")
+	if err := os.WriteFile(path, []byte(testKey), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if k, err := (config.Device{SigningKeyFile: path, SigningKey: "ignored"}).PrivateKey(); err != nil || !k.Equal(key) {
+		t.Fatalf("key file = %v", err)
+	}
+	for _, bad := range []map[string]string{
+		{envDeviceEnabled: valTrue},
+		{envDeviceEnabled: valTrue, "HUB_DEVICE_SIGNING_KEY": testPub},
+		{envDeviceEnabled: valTrue, "HUB_DEVICE_SIGNING_KEY": "c2hvcnQ="},
+		{"HUB_DEVICE_TRUSTED_PROXIES": "not-a-cidr"},
+	} {
+		env := secrets()
+		for k, v := range bad {
+			env[k] = v
+		}
+		if _, err := load(t, env, file); !errors.Is(err, config.ErrDevice) {
+			t.Fatalf("%v: err = %v", bad, err)
+		}
+	}
+}
+
+func TestServiceDevices(t *testing.T) {
+	t.Parallel()
+	ok := file + `    service_devices:
+      - id: sandbox-bob
+        token: hdt_0123456789abcdef0123456789abcdef
+`
+	cfg, err := load(t, secrets(), ok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sd := cfg.Backends[1].ServiceDevices; len(sd) != 1 || sd[0].Name != "sandbox-bob" {
+		t.Fatalf("service devices = %+v", sd)
+	}
+	for _, bad := range []string{
+		"      - id: d_0123\n        token: hdt_0123456789abcdef0123456789abcdef\n",
+		"      - id: sandbox-bob\n        token: short\n",
+		"      - id: sandbox-bob\n        token: hdt_0123456789abcdef0123456789abcdef\n      - id: sandbox-bob\n        token: hdt_0123456789abcdef0123456789abcdeg\n",
+	} {
+		if _, err := load(t, secrets(), file+"    service_devices:\n"+bad); !errors.Is(err, config.ErrBackend) {
+			t.Fatalf("%q: err = %v", bad, err)
+		}
 	}
 }

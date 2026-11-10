@@ -41,7 +41,7 @@ ui:
   # Default backend per user, as user=backend pairs. A user without one gets their first backend
   # default_backends: []
 store:
-  # Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups and the Telegram bot's state
+  # Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices
   driver: "sqlite"
   # Path of the SQLite database (store.driver sqlite)
   path: "/data/hermes-hub.db"
@@ -73,6 +73,12 @@ hold:
 #     groups: []
 #     cwd: ""
 #     show_reasoning: false
+#     devices: false
+#     acp_url: ""
+#     service_devices:
+#       - id: ""
+#         name: ""
+#         token: "(secret)"
 telegram:
   # Run the Telegram bot
   enabled: false
@@ -92,3 +98,18 @@ telegram:
   max_retries: 5
   # With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over
   leader_retry: "2s"
+device:
+  # Serve the hermes-device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices
+  enabled: false
+  # Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set
+  # signing_key: "(secret)"
+  # File that holds device.signing_key. Wins over signing_key
+  # signing_key_file: ""
+  # How long a pairing code from hermes-device login stays valid
+  pairing_ttl: "10m"
+  # How often a device may poll while it waits for the user to confirm pairing
+  poll_interval: "5s"
+  # How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time
+  recheck_interval: "10s"
+  # CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer
+  # trusted_proxies: []

@@ -75,17 +75,26 @@ type userShadow struct {
 	Name *string `json:"name" toml:"name" yaml:"name"`
 }
 
+type serviceDeviceShadow struct {
+	ID    *string `json:"id"    toml:"id"    yaml:"id"`
+	Name  *string `json:"name"  toml:"name"  yaml:"name"`
+	Token *string `json:"token" toml:"token" yaml:"token"`
+}
+
 type backendShadow struct {
-	ID            *string   `json:"id"             toml:"id"             yaml:"id"`
-	Name          *string   `json:"name"           toml:"name"           yaml:"name"`
-	URL           *string   `json:"url"            toml:"url"            yaml:"url"`
-	Provider      *string   `json:"provider"       toml:"provider"       yaml:"provider"`
-	Username      *string   `json:"username"       toml:"username"       yaml:"username"`
-	Password      *string   `json:"password"       toml:"password"       yaml:"password"`
-	Users         *[]string `json:"users"          toml:"users"          yaml:"users"`
-	Groups        *[]string `json:"groups"         toml:"groups"         yaml:"groups"`
-	CWD           *string   `json:"cwd"            toml:"cwd"            yaml:"cwd"`
-	ShowReasoning *bool     `json:"show_reasoning" toml:"show_reasoning" yaml:"show_reasoning"`
+	ID             *string                `json:"id"              toml:"id"              yaml:"id"`
+	Name           *string                `json:"name"            toml:"name"            yaml:"name"`
+	URL            *string                `json:"url"             toml:"url"             yaml:"url"`
+	Provider       *string                `json:"provider"        toml:"provider"        yaml:"provider"`
+	Username       *string                `json:"username"        toml:"username"        yaml:"username"`
+	Password       *string                `json:"password"        toml:"password"        yaml:"password"`
+	Users          *[]string              `json:"users"           toml:"users"           yaml:"users"`
+	Groups         *[]string              `json:"groups"          toml:"groups"          yaml:"groups"`
+	CWD            *string                `json:"cwd"             toml:"cwd"             yaml:"cwd"`
+	ShowReasoning  *bool                  `json:"show_reasoning"  toml:"show_reasoning"  yaml:"show_reasoning"`
+	Devices        *bool                  `json:"devices"         toml:"devices"         yaml:"devices"`
+	ACPURL         *string                `json:"acp_url"         toml:"acp_url"         yaml:"acp_url"`
+	ServiceDevices *[]serviceDeviceShadow `json:"service_devices" toml:"service_devices" yaml:"service_devices"`
 }
 
 type telegramShadow struct {
@@ -100,6 +109,16 @@ type telegramShadow struct {
 	LeaderRetry     *impl.Duration `json:"leader_retry"     toml:"leader_retry"     yaml:"leader_retry"`
 }
 
+type deviceShadow struct {
+	Enabled         *bool          `json:"enabled"          toml:"enabled"          yaml:"enabled"`
+	SigningKey      *string        `json:"signing_key"      toml:"signing_key"      yaml:"signing_key"`
+	SigningKeyFile  *string        `json:"signing_key_file" toml:"signing_key_file" yaml:"signing_key_file"`
+	PairingTTL      *impl.Duration `json:"pairing_ttl"      toml:"pairing_ttl"      yaml:"pairing_ttl"`
+	PollInterval    *impl.Duration `json:"poll_interval"    toml:"poll_interval"    yaml:"poll_interval"`
+	RecheckInterval *impl.Duration `json:"recheck_interval" toml:"recheck_interval" yaml:"recheck_interval"`
+	TrustedProxies  *[]string      `json:"trusted_proxies"  toml:"trusted_proxies"  yaml:"trusted_proxies"`
+}
+
 type configShadow struct {
 	LogLevel *string          `json:"log_level" toml:"log_level" yaml:"log_level"`
 	HTTP     *hTTPShadow      `json:"http"      toml:"http"      yaml:"http"`
@@ -112,6 +131,7 @@ type configShadow struct {
 	Users    *[]userShadow    `json:"users"     toml:"users"     yaml:"users"`
 	Backends *[]backendShadow `json:"backends"  toml:"backends"  yaml:"backends"`
 	Telegram *telegramShadow  `json:"telegram"  toml:"telegram"  yaml:"telegram"`
+	Device   *deviceShadow    `json:"device"    toml:"device"    yaml:"device"`
 }
 
 // ConfigSchema returns the generated schema for Config.
@@ -174,6 +194,14 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("telegram.max_retries", configulator.LayerDefault, "default tag")
 	cfg.Telegram.LeaderRetry = time.Duration(int64(2000000000))
 	set("telegram.leader_retry", configulator.LayerDefault, "default tag")
+	cfg.Device.Enabled = false
+	set("device.enabled", configulator.LayerDefault, "default tag")
+	cfg.Device.PairingTTL = time.Duration(int64(600000000000))
+	set("device.pairing_ttl", configulator.LayerDefault, "default tag")
+	cfg.Device.PollInterval = time.Duration(int64(5000000000))
+	set("device.poll_interval", configulator.LayerDefault, "default tag")
+	cfg.Device.RecheckInterval = time.Duration(int64(10000000000))
+	set("device.recheck_interval", configulator.LayerDefault, "default tag")
 	return nil
 }
 
@@ -397,6 +425,36 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 				e.ShowReasoning = &v
 				set(idx+".show_reasoning", configulator.LayerFile, file)
 			}
+			if esh.Devices != nil {
+				e.Devices = *esh.Devices
+				set(idx+".devices", configulator.LayerFile, file)
+			}
+			if esh.ACPURL != nil {
+				e.ACPURL = *esh.ACPURL
+				set(idx+".acp_url", configulator.LayerFile, file)
+			}
+			if esh.ServiceDevices != nil {
+				out1 := make([]ServiceDevice, len(*esh.ServiceDevices))
+				for i1, esh1 := range *esh.ServiceDevices {
+					var e1 ServiceDevice
+					idx1 := idx + ".service_devices[" + strconv.Itoa(i1) + "]"
+					if esh1.ID != nil {
+						e1.ID = *esh1.ID
+						set(idx1+".id", configulator.LayerFile, file)
+					}
+					if esh1.Name != nil {
+						e1.Name = *esh1.Name
+						set(idx1+".name", configulator.LayerFile, file)
+					}
+					if esh1.Token != nil {
+						e1.Token = *esh1.Token
+						set(idx1+".token", configulator.LayerFile, file)
+					}
+					out1[i1] = e1
+				}
+				e.ServiceDevices = out1
+				set(idx+".service_devices", configulator.LayerFile, file)
+			}
 			out[i] = e
 		}
 		cfg.Backends = out
@@ -459,6 +517,57 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			}
 			cfg.Telegram.LeaderRetry = v
 			set("telegram.leader_retry", configulator.LayerFile, file)
+		}
+	}
+	if s.Device != nil {
+		if s.Device.Enabled != nil {
+			cfg.Device.Enabled = *s.Device.Enabled
+			set("device.enabled", configulator.LayerFile, file)
+		}
+		if s.Device.SigningKey != nil {
+			cfg.Device.SigningKey = *s.Device.SigningKey
+			set("device.signing_key", configulator.LayerFile, file)
+		}
+		if s.Device.SigningKeyFile != nil {
+			cfg.Device.SigningKeyFile = *s.Device.SigningKeyFile
+			set("device.signing_key_file", configulator.LayerFile, file)
+		}
+		if s.Device.PairingTTL != nil {
+			v, ok := s.Device.PairingTTL.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "device.pairing_ttl",
+				}
+			}
+			cfg.Device.PairingTTL = v
+			set("device.pairing_ttl", configulator.LayerFile, file)
+		}
+		if s.Device.PollInterval != nil {
+			v, ok := s.Device.PollInterval.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "device.poll_interval",
+				}
+			}
+			cfg.Device.PollInterval = v
+			set("device.poll_interval", configulator.LayerFile, file)
+		}
+		if s.Device.RecheckInterval != nil {
+			v, ok := s.Device.RecheckInterval.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "device.recheck_interval",
+				}
+			}
+			cfg.Device.RecheckInterval = v
+			set("device.recheck_interval", configulator.LayerFile, file)
+		}
+		if s.Device.TrustedProxies != nil {
+			cfg.Device.TrustedProxies = *s.Device.TrustedProxies
+			set("device.trusted_proxies", configulator.LayerFile, file)
 		}
 	}
 	return nil
@@ -727,6 +836,71 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Telegram.LeaderRetry = d
 		set("telegram.leader_retry", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "enabled"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.enabled",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Device.Enabled = p
+		set("device.enabled", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "signing_key"); ok {
+		cfg.Device.SigningKey = v
+		set("device.signing_key", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "signing_key_file"); ok {
+		cfg.Device.SigningKeyFile = v
+		set("device.signing_key_file", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "pairing_ttl"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.pairing_ttl",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Device.PairingTTL = d
+		set("device.pairing_ttl", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "poll_interval"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.poll_interval",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Device.PollInterval = d
+		set("device.poll_interval", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "recheck_interval"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.recheck_interval",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Device.RecheckInterval = d
+		set("device.recheck_interval", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "trusted_proxies"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Device.TrustedProxies = lst
+		set("device.trusted_proxies", configulator.LayerEnv, n)
+	}
 	return nil
 }
 
@@ -774,6 +948,13 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"telegram" + o.Separator + "edit_interval",
 		"telegram" + o.Separator + "max_retries",
 		"telegram" + o.Separator + "leader_retry",
+		"device" + o.Separator + "enabled",
+		"device" + o.Separator + "signing_key",
+		"device" + o.Separator + "signing_key_file",
+		"device" + o.Separator + "pairing_ttl",
+		"device" + o.Separator + "poll_interval",
+		"device" + o.Separator + "recheck_interval",
+		"device" + o.Separator + "trusted_proxies",
 	}
 	for i, name := range names {
 		if f := fs.Lookup(name); f != nil {
@@ -808,7 +989,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[15], "", "Key for the session and login cookies. At least 32 characters")
 	fs.Duration(names[16], time.Duration(int64(604800000000000)), "How long a login lasts")
 	fs.StringSlice(names[17], nil, "Default backend per user, as user=backend pairs. A user without one gets their first backend")
-	fs.String(names[18], "sqlite", "Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups and the Telegram bot's state")
+	fs.String(names[18], "sqlite", "Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices")
 	fs.String(names[19], "/data/hermes-hub.db", "Path of the SQLite database (store.driver sqlite)")
 	fs.String(names[20], "", "PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session")
 	fs.String(names[21], "", "With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped")
@@ -824,6 +1005,13 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[31], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
 	fs.Var(impl.NewInt(5), names[32], "Retries of a Bot API call that Telegram answers with 429")
 	fs.Duration(names[33], time.Duration(int64(2000000000)), "With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over")
+	fs.Bool(names[34], false, "Serve the hermes-device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
+	fs.String(names[35], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
+	fs.String(names[36], "", "File that holds device.signing_key. Wins over signing_key")
+	fs.Duration(names[37], time.Duration(int64(600000000000)), "How long a pairing code from hermes-device login stays valid")
+	fs.Duration(names[38], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
+	fs.Duration(names[39], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
+	fs.StringSlice(names[40], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
 	return nil
 }
 
@@ -1236,6 +1424,90 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.Telegram.LeaderRetry = v
 		set("telegram.leader_retry", configulator.LayerCLI, "--"+n)
 	}
+	if n := "device" + o.Separator + "enabled"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.enabled",
+				Source: "--" + n,
+			}
+		}
+		cfg.Device.Enabled = v
+		set("device.enabled", configulator.LayerCLI, "--"+n)
+	}
+	if n := "device" + o.Separator + "signing_key"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.signing_key",
+				Source: "--" + n,
+			}
+		}
+		cfg.Device.SigningKey = v
+		set("device.signing_key", configulator.LayerCLI, "--"+n)
+	}
+	if n := "device" + o.Separator + "signing_key_file"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.signing_key_file",
+				Source: "--" + n,
+			}
+		}
+		cfg.Device.SigningKeyFile = v
+		set("device.signing_key_file", configulator.LayerCLI, "--"+n)
+	}
+	if n := "device" + o.Separator + "pairing_ttl"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.pairing_ttl",
+				Source: "--" + n,
+			}
+		}
+		cfg.Device.PairingTTL = v
+		set("device.pairing_ttl", configulator.LayerCLI, "--"+n)
+	}
+	if n := "device" + o.Separator + "poll_interval"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.poll_interval",
+				Source: "--" + n,
+			}
+		}
+		cfg.Device.PollInterval = v
+		set("device.poll_interval", configulator.LayerCLI, "--"+n)
+	}
+	if n := "device" + o.Separator + "recheck_interval"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.recheck_interval",
+				Source: "--" + n,
+			}
+		}
+		cfg.Device.RecheckInterval = v
+		set("device.recheck_interval", configulator.LayerCLI, "--"+n)
+	}
+	if n := "device" + o.Separator + "trusted_proxies"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.trusted_proxies",
+				Source: "--" + n,
+			}
+		}
+		cfg.Device.TrustedProxies = v
+		set("device.trusted_proxies", configulator.LayerCLI, "--"+n)
+	}
 	return nil
 }
 
@@ -1488,6 +1760,25 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Telegram = &sub
+			}
+		case "device":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("device", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub deviceShadow
+				if err := sub.decodeJSON(dec, "device"); err != nil {
+					return err
+				}
+				s.Device = &sub
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -2338,6 +2629,137 @@ func (s *backendShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			default:
 				return configJSONError(path+".show_reasoning", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
 			}
+		case "devices":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Devices = &b
+			default:
+				return configJSONError(path+".devices", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "acp_url":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.ACPURL = &str
+			default:
+				return configJSONError(path+".acp_url", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "service_devices":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".service_devices", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []serviceDeviceShadow{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					ep := path + ".service_devices" + "[" + strconv.Itoa(len(out)) + "]"
+					et, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if et.Kind() != jsontext.KindBeginObject {
+						return configJSONError(ep, et, fmt.Errorf("expected an object, got %v", et.Kind()))
+					}
+					var el serviceDeviceShadow
+					if err := el.decodeJSON(dec, ep); err != nil {
+						return err
+					}
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.ServiceDevices = &out
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *serviceDeviceShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "id":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.ID = &str
+			default:
+				return configJSONError(path+".id", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "name":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Name = &str
+			default:
+				return configJSONError(path+".name", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "token":
+			if err := func() error {
+				v, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				switch v.Kind() {
+				case jsontext.KindNull:
+				case jsontext.KindString:
+					str := v.String()
+					s.Token = &str
+				default:
+					return configJSONError(path+".token", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+				}
+				return nil
+			}(); err != nil {
+				return &configulator.ParseError{
+					Err:   errors.New("invalid value"),
+					Path:  path + ".token",
+					Value: "(redacted)",
+				}
+			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
 				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
@@ -2551,6 +2973,155 @@ func (s *telegramShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	}
 }
 
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *deviceShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "enabled":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Enabled = &b
+			default:
+				return configJSONError(path+".enabled", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "signing_key":
+			if err := func() error {
+				v, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				switch v.Kind() {
+				case jsontext.KindNull:
+				case jsontext.KindString:
+					str := v.String()
+					s.SigningKey = &str
+				default:
+					return configJSONError(path+".signing_key", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+				}
+				return nil
+			}(); err != nil {
+				return &configulator.ParseError{
+					Err:   errors.New("invalid value"),
+					Path:  path + ".signing_key",
+					Value: "(redacted)",
+				}
+			}
+		case "signing_key_file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.SigningKeyFile = &str
+			default:
+				return configJSONError(path+".signing_key_file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "pairing_ttl":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".pairing_ttl", v, err)
+				}
+				s.PairingTTL = &slot
+			default:
+				return configJSONError(path+".pairing_ttl", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		case "poll_interval":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".poll_interval", v, err)
+				}
+				s.PollInterval = &slot
+			default:
+				return configJSONError(path+".poll_interval", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		case "recheck_interval":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".recheck_interval", v, err)
+				}
+				s.RecheckInterval = &slot
+			default:
+				return configJSONError(path+".recheck_interval", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		case "trusted_proxies":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".trusted_proxies", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".trusted_proxies"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.TrustedProxies = &out
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // configJSONError returns a ParseError for the JSON token v at path.
 func configJSONError(path string, v jsontext.Token, err error) error {
 	return &configulator.ParseError{
@@ -2601,6 +3172,13 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "telegram.edit_interval = %v\n", c.Telegram.EditInterval)
 	fmt.Fprintf(&b, "telegram.max_retries = %v\n", c.Telegram.MaxRetries)
 	fmt.Fprintf(&b, "telegram.leader_retry = %v\n", c.Telegram.LeaderRetry)
+	fmt.Fprintf(&b, "device.enabled = %v\n", c.Device.Enabled)
+	b.WriteString("device.signing_key = (redacted)\n")
+	fmt.Fprintf(&b, "device.signing_key_file = %v\n", c.Device.SigningKeyFile)
+	fmt.Fprintf(&b, "device.pairing_ttl = %v\n", c.Device.PairingTTL)
+	fmt.Fprintf(&b, "device.poll_interval = %v\n", c.Device.PollInterval)
+	fmt.Fprintf(&b, "device.recheck_interval = %v\n", c.Device.RecheckInterval)
+	fmt.Fprintf(&b, "device.trusted_proxies = %v\n", c.Device.TrustedProxies)
 	return b.String()
 }
 
