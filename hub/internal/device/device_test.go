@@ -281,10 +281,14 @@ func (e *env) connectExec(r *replica, token string) (*websocket.Conn, *devicetes
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeJSON(t, c, protocol.Hello{Type: protocol.TypeHello, Version: protocol.Version, Roots: []string{"/home/alice"},
-		Home: "/home/alice", Hostname: hostName, OS: osLinux, Arch: archAMD64, Shell: "bash", ClientVersion: "v0.1.0"})
-	if w := readJSON(t, c); w["type"] != protocol.TypeWelcome {
+	writeJSON(t, c, protocol.Hello{Type: protocol.TypeHello, Version: protocol.MinVersion, MaxVersion: protocol.Version,
+		Roots: []string{"/home/alice"}, Home: "/home/alice", Hostname: hostName, OS: osLinux, Arch: archAMD64, Shell: "bash",
+		ClientVersion: "v0.3.0"})
+	if w := readJSON(t, c); w["type"] != protocol.TypeWelcome || w["version"] != float64(protocol.Version) {
 		t.Fatalf("welcome = %v", w)
+	}
+	if r := readJSON(t, c); r["type"] != protocol.TypeResume {
+		t.Fatalf("resume = %v", r)
 	}
 	select {
 	case pc := <-e.plugin.Connected:

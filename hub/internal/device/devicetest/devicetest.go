@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path"
@@ -253,7 +254,7 @@ func gen() string {
 
 func (p *Plugin) info(w http.ResponseWriter, r *http.Request) {
 	p.record(r, nil)
-	answer(w, map[string]any{"plugin_version": "0.2.0", "hermes_version": p.HermesVersion, "protocol_version": protocol.Version,
+	answer(w, map[string]any{"plugin_version": PluginVersion, "hermes_version": p.HermesVersion, "protocol_version": protocol.Version,
 		"backend_id": p.BackendID, "placeholder": p.Placeholder})
 }
 
@@ -444,6 +445,20 @@ func verify(w http.ResponseWriter, r *http.Request, v *assertion.Verifier, aud, 
 	return ws, c, true
 }
 
+// PluginVersion is the release the fake plugin reports.
+const PluginVersion = "0.3.0"
+
+// negotiate picks the newest protocol version both the hello and the fake
+// speak, as the plugin does (docs/protocol.md 4.1).
+func negotiate(h protocol.Hello) (int, bool) {
+	hi := h.MaxVersion
+	if hi == 0 {
+		hi = h.Version
+	}
+	v := min(hi, protocol.Version)
+	return v, v >= max(h.Version, protocol.MinVersion)
+}
+
 func (p *Plugin) exec(w http.ResponseWriter, r *http.Request) {
 	ws, claims, ok := verify(w, r, p.verifier, p.BackendID, assertion.LegExec, func() {
 		p.mu.Lock()
@@ -463,8 +478,10 @@ func (p *Plugin) exec(w http.ResponseWriter, r *http.Request) {
 		_ = ws.Close(websocket.StatusProtocolError, "expected hello")
 		return
 	}
-	if hello.Version != protocol.Version {
-		_ = ws.Close(protocol.CloseUnsupportedVersion, "version")
+	version, ok := negotiate(hello)
+	if !ok {
+		_ = ws.Close(protocol.CloseUnsupportedVersion, fmt.Sprintf("hermes-device %s speaks protocol %d to %d; plugin %s speaks %d to %d; upgrade them together",
+			hello.ClientVersion, hello.Version, max(hello.MaxVersion, hello.Version), PluginVersion, protocol.MinVersion, protocol.Version))
 		return
 	}
 	c := &Conn{Claims: *claims, Hello: hello, ws: ws, Messages: make(chan json.RawMessage, 64)}
@@ -481,9 +498,16 @@ func (p *Plugin) exec(w http.ResponseWriter, r *http.Request) {
 		}
 		p.mu.Unlock()
 	}()
-	_ = c.Send(ctx, protocol.Welcome{Type: protocol.TypeWelcome, Version: protocol.Version, DeviceID: claims.DeviceID,
-		Name: claims.DeviceName, PingInterval: int(protocol.PingInterval.Seconds()), PluginVersion: "0.2.0",
-		HermesVersion: p.HermesVersion})
+	welcome := protocol.Welcome{Type: protocol.TypeWelcome, Version: version, DeviceID: claims.DeviceID,
+		Name: claims.DeviceName, PingInterval: int(protocol.PingInterval.Seconds()), PluginVersion: PluginVersion,
+		HermesVersion: p.HermesVersion}
+	if version >= protocol.ResumeVersion {
+		welcome.GraceSeconds = protocol.DefaultGrace.Seconds()
+	}
+	_ = c.Send(ctx, welcome)
+	if version >= protocol.ResumeVersion {
+		_ = c.Send(ctx, protocol.Resume{Type: protocol.TypeResume, Commands: []protocol.ResumeCommand{}})
+	}
 	p.Connected <- c
 	for {
 		_, data, err := ws.Read(ctx)

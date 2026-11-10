@@ -4,7 +4,7 @@ go 1.27.2
 
 require (
 	github.com/USA-RedDragon/configulator/v2 v2.5.0
-	github.com/USA-RedDragon/hermes-device v0.1.0
+	github.com/USA-RedDragon/hermes-device v0.3.0
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/go-jose/go-jose/v4 v4.1.9
