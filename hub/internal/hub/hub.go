@@ -69,3 +69,25 @@ type TokenStore interface {
 	// token. ok is false for an unknown, used or expired token.
 	ConsumeLinkToken(ctx context.Context, token string) (telegramID int64, ok bool, err error)
 }
+
+// Event kinds the hub adds to the gateway's own.
+const (
+	// KindSnapshot starts a stream and replaces everything a viewer shows:
+	// Data is a Snapshot. It is sent on a fresh attach, when sinceSeq is no
+	// longer in the hub's buffer, and after the backend lost the stream.
+	KindSnapshot = "snapshot"
+	// KindBackendStatus reports the backend connection: Data is
+	// {"connected": bool}.
+	KindBackendStatus = "backend.status"
+)
+
+// Snapshot is the Data of a KindSnapshot event. Messages and Prompts are
+// the gateway's transcript rows and pending prompts, passed through.
+type Snapshot struct {
+	SessionID string            `json:"session_id"`
+	BackendID string            `json:"backend_id"`
+	Title     string            `json:"title"`
+	Running   bool              `json:"running"`
+	Messages  []json.RawMessage `json:"messages"`
+	Prompts   []json.RawMessage `json:"prompts"`
+}
