@@ -76,11 +76,16 @@ dashboard:
 
 ## Telegram
 
-Set `telegram.enabled`, `telegram.token` and `http.public_url`. A Telegram user sends `/link` to the bot and gets a link to `/link/telegram?token=...`. That page needs a hub login and asks the user to confirm; only the confirmation (a POST with the CSRF token) links the account. A link token is valid for <!-- docgen:const pkg=internal/store name=LinkTokenTTL -->`10m0s`<!-- /docgen:const --> and works once. Run one replica only: the bot uses long polling.
+Set `telegram.enabled`, `telegram.token` and `http.public_url`. A Telegram user sends `/link` to the bot and gets a link to `/link/telegram?token=...`. That page needs a hub login and asks the user to confirm; only the confirmation (a POST with the CSRF token) links the account. A link token is valid for <!-- docgen:const pkg=internal/store name=LinkTokenTTL -->`10m0s`<!-- /docgen:const --> and works once.
+
+Telegram lets only one process long-poll a bot token. With `store.driver: postgres`, the replicas elect one leader with a PostgreSQL session advisory lock, held on a connection of its own. Only the leader polls. The other replicas try to take the lock every `telegram.leader_retry` (default 2s), so one of them takes over a few seconds after the leader stops. If the leader dies without closing its connection, PostgreSQL frees the lock when its TCP keepalive gives up, after about 15 seconds. The leader checks its lock every 2 seconds and stops polling when the check fails. With SQLite there is one replica, and it always leads.
+
+The bot streams each chat's session through a subscription in the leader's own process. Hermes sends every session event to every subscriber, so a turn that a page started on another replica still reaches the chat. The store keeps each chat's session and the bot's update offset, so a new leader attaches every chat again and carries on from the last update the old leader finished. A leader that loses its lock stops after the update it is handling. If a turn runs while the leader changes, the new leader can repeat that turn's progress messages in the chat.
 
 ## Deploy
 
 - One replica: the default `store.driver: sqlite` keeps everything in the file `store.path`. Put it on a persistent volume and use the `Recreate` strategy.
+- Two or more replicas: set `store.driver: postgres` and `store.dsn` (environment variable `HUB_STORE_DSN`). Connect to the database directly, not through PgBouncer in transaction mode, because the Telegram leader lock needs a session. Each replica keeps its own gateway subscriptions; a page that reconnects to another replica gets a fresh snapshot.
 - To move from SQLite to PostgreSQL, set `store.import_path` to the old `store.path` for one start with the old volume mounted. The hub copies the rows once and records that in the database; later starts skip the copy, also when the file is still there.
 - Give `http.public_url` the address that users open. It sets the redirect URI, the only allowed `Origin`, and `Secure` cookies (for `https`).
 - The event stream is a long-lived HTTP response. Turn off the request timeout on the route (Gateway API `timeouts.request: 0s`). The hub sends a comment every 15 seconds, so idle timeouts above that are fine.

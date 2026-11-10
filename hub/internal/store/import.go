@@ -27,6 +27,8 @@ var importTables = []struct{ name, columns, key string }{
 	{"telegram_links", `telegram_id, "user", linked_at`, "telegram_id"},
 	{"link_tokens", "token_hash, telegram_id, expires_at", "token_hash"},
 	{"users", `name, "groups", seen_at`, "name"},
+	{"telegram_chats", `chat_id, "user", backend_id, session_id, updated_at`, "chat_id"},
+	{"telegram_offsets", "bot_id, next_offset", "bot_id"},
 }
 
 // ImportSQLite copies every row of the SQLite database at path into the

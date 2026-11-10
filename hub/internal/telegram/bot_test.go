@@ -334,3 +334,45 @@ func TestSessionsNamesUnreachableBackends(t *testing.T) {
 	h.tg.say(dm(aliceTG), aliceTG, "/sessions")
 	h.tg.wait(mSend, "Can't reach Laptop, Cluster right now. It may be restarting; try again in a minute.")
 }
+
+const sOld = "s-old"
+
+func TestRestoresChatsAndOffset(t *testing.T) {
+	t.Parallel()
+	st := newFakeState()
+	st.offset = 41
+	st.chats[aliceTG] = hub.TelegramChat{ChatID: aliceTG, User: userAlice, BackendID: beLaptop, SessionID: sOld}
+	h := startBotState(t, nil, st)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		h.hub.mu.Lock()
+		attached := len(h.hub.attaches) > 0 && h.hub.attaches[0] == sOld
+		h.hub.mu.Unlock()
+		if attached {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("stored chat not attached")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	h.tg.say(dm(aliceTG), aliceTG, "carry on")
+	p := h.hub.waitPrompt(t, 1)
+	if p[0].SessionID != sOld || p[0].BackendID != beLaptop {
+		t.Fatalf("prompt = %+v", p[0])
+	}
+	h.tg.mu.Lock()
+	first := h.tg.offsets[0]
+	h.tg.mu.Unlock()
+	if first != 41 {
+		t.Fatalf("first getUpdates offset = %d", first)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.offset != 2 {
+		t.Fatalf("stored offset = %d, want 2", st.offset)
+	}
+	if c := st.chats[aliceTG]; c.SessionID != sOld {
+		t.Fatalf("stored chat = %+v", c)
+	}
+}

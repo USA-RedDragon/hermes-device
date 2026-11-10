@@ -191,3 +191,21 @@ type Pending struct {
 	Status string `json:"status"`
 	Text   string `json:"text"`
 }
+
+// TelegramChat is the session a Telegram chat is attached to.
+type TelegramChat struct {
+	ChatID    int64
+	User      string
+	BackendID string
+	SessionID string
+}
+
+// TelegramState keeps the Telegram bot's chat attachments and update
+// offset, so the hub replica that takes the bot over carries on where the
+// last one stopped.
+type TelegramState interface {
+	SaveTelegramChat(ctx context.Context, c TelegramChat) error
+	TelegramChats(ctx context.Context) ([]TelegramChat, error)
+	TelegramOffset(ctx context.Context, botID int64) (int64, error)
+	SetTelegramOffset(ctx context.Context, botID, offset int64) error
+}

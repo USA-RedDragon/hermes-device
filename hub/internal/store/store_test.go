@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 	"github.com/USA-RedDragon/hermes-hub/internal/store"
 	"github.com/USA-RedDragon/hermes-hub/internal/store/storetest"
 )
@@ -110,6 +111,41 @@ func TestGroups(t *testing.T) {
 		_ = s.SetGroups(ctx, userAlice, []string{groupFamily})
 		if g, _ := s.Groups(ctx, userAlice); !slices.Equal(g, []string{groupFamily}) {
 			t.Fatalf("groups = %v", g)
+		}
+	})
+}
+
+func TestTelegramState(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		if off, err := s.TelegramOffset(ctx, 123); off != 0 || err != nil {
+			t.Fatalf("offset = %d %v", off, err)
+		}
+		for _, off := range []int64{10, 11} {
+			if err := s.SetTelegramOffset(ctx, 123, off); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if off, err := s.TelegramOffset(ctx, 123); off != 11 || err != nil {
+			t.Fatalf("offset = %d %v", off, err)
+		}
+		chats := []hub.TelegramChat{
+			{ChatID: -500, User: userBob, BackendID: "home", SessionID: "s2"},
+			{ChatID: 1, User: userAlice, BackendID: "desktop", SessionID: "s1"},
+		}
+		for _, c := range chats {
+			if err := s.SaveTelegramChat(ctx, c); err != nil {
+				t.Fatal(err)
+			}
+		}
+		chats[1].SessionID = "s3"
+		if err := s.SaveTelegramChat(ctx, chats[1]); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.TelegramChats(ctx)
+		if err != nil || !slices.Equal(got, chats) {
+			t.Fatalf("chats = %+v %v", got, err)
 		}
 	})
 }
@@ -218,6 +254,81 @@ func TestImportSQLite(t *testing.T) {
 	}
 	if u, _, _ := s.UserForTelegram(ctx, 42); u != "dave" {
 		t.Fatalf("second import changed a row: %q", u)
+	}
+}
+
+func TestSQLiteLockAlwaysHeld(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := openSQLite(t, filepath.Join(t.TempDir(), "hub.db"))
+	l, err := s.TryLock(ctx, 1, time.Second)
+	if l == nil || err != nil {
+		t.Fatalf("sqlite lock = %v %v", l, err)
+	}
+	select {
+	case <-l.Lost():
+		t.Fatal("sqlite lock lost")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := l.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresLockIsExclusive(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dsn := storetest.Postgres(t)
+	a, b := openPostgres(t, dsn), openPostgres(t, dsn)
+	la, err := a.TryLock(ctx, 77, 100*time.Millisecond)
+	if la == nil || err != nil {
+		t.Fatalf("first lock = %v %v", la, err)
+	}
+	if lb, err := b.TryLock(ctx, 77, 100*time.Millisecond); lb != nil || err != nil {
+		t.Fatalf("second holder got the lock: %v %v", lb, err)
+	}
+	if lc, err := b.TryLock(ctx, 78, 100*time.Millisecond); lc == nil || err != nil {
+		t.Fatalf("other key = %v %v", lc, err)
+	}
+	if err := la.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-la.Lost():
+	default:
+		t.Fatal("released lock not marked lost")
+	}
+	lb, err := b.TryLock(ctx, 77, 100*time.Millisecond)
+	if lb == nil || err != nil {
+		t.Fatalf("lock after release = %v %v", lb, err)
+	}
+
+	terminateLockHolders(t, dsn, 77)
+	select {
+	case <-lb.Lost():
+	case <-time.After(5 * time.Second):
+		t.Fatal("lost connection not noticed")
+	}
+	_ = lb.Release(ctx)
+	if la, err := a.TryLock(ctx, 77, time.Second); la == nil || err != nil {
+		t.Fatalf("lock after holder died = %v %v", la, err)
+	}
+}
+
+// terminateLockHolders ends the sessions that hold advisory lock key, as
+// a lost node or a database failover does.
+func terminateLockHolders(t *testing.T, dsn string, key int64) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	err = db.QueryRowContext(context.Background(), `SELECT count(pg_terminate_backend(pid)) FROM pg_locks
+		WHERE locktype = 'advisory' AND granted AND ((classid::bigint << 32) | objid::bigint) = $1`, key).Scan(&n)
+	if err != nil || n != 1 {
+		t.Fatalf("terminate lock holders: %d %v", n, err)
 	}
 }
 

@@ -46,12 +46,25 @@ var ErrMissingPublicURL = errors.New("telegram bot needs the hub public URL")
 type Options struct {
 	// PublicURL is the hub's public base URL (http.public_url); link
 	// messages point at PublicURL + /link/telegram.
-	PublicURL  string
-	Service    hub.Service
-	Links      hub.Links
-	Tokens     hub.TokenStore
+	PublicURL string
+	Service   hub.Service
+	Links     hub.Links
+	Tokens    hub.TokenStore
+	// State keeps chat attachments and the update offset, so a replica
+	// that takes the bot over carries on. Optional.
+	State      hub.TelegramState
 	Logger     *slog.Logger
 	HTTPClient *http.Client
+}
+
+// BotID is the numeric bot ID at the start of a bot token, or 0.
+func BotID(token string) int64 {
+	head, _, _ := strings.Cut(token, ":")
+	id, err := strconv.ParseInt(head, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
 }
 
 // Bot is the Telegram bot.
@@ -62,6 +75,8 @@ type Bot struct {
 	svc      hub.Service
 	links    hub.Links
 	tokens   hub.TokenStore
+	state    hub.TelegramState
+	botID    int64
 	logger   *slog.Logger
 	defaults map[string]string
 	groups   map[int64]bool
@@ -144,6 +159,8 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		svc:       opts.Service,
 		links:     opts.Links,
 		tokens:    opts.Tokens,
+		state:     opts.State,
+		botID:     BotID(cfg.Token),
 		logger:    logger,
 		defaults:  defaults,
 		groups:    make(map[int64]bool, len(cfg.AllowedGroups)),
@@ -157,10 +174,16 @@ func New(cfg Config, opts Options) (*Bot, error) {
 }
 
 // Run long-polls Telegram until ctx ends, then detaches every session.
-// Only one process may poll a bot token at a time.
+// Only one process may poll a bot token at a time. With Options.State it
+// starts from the stored update offset and attaches every stored chat
+// again, so Run may move between replicas. When ctx ends, the update being
+// handled is finished and the rest of its batch is left for the next
+// leader.
 func (b *Bot) Run(ctx context.Context) error {
+	b.chats = make(map[int64]*chatState)
 	defer b.shutdown()
-	var offset int64
+	offset := b.restore(ctx)
+	hctx := context.WithoutCancel(ctx)
 	backoff := time.Second
 	b.logger.Info("Telegram bot polling")
 	for ctx.Err() == nil {
@@ -180,11 +203,66 @@ func (b *Bot) Run(ctx context.Context) error {
 		}
 		backoff = time.Second
 		for _, u := range updates {
+			if ctx.Err() != nil {
+				break
+			}
 			offset = u.UpdateID + 1
-			b.handleUpdate(ctx, u)
+			b.handleUpdate(hctx, u)
+			b.saveOffset(hctx, offset)
 		}
 	}
 	return nil
+}
+
+// restore loads the stored update offset and attaches every stored chat
+// again, from a fresh snapshot. A chat whose session cannot be attached
+// now attaches again on its next message.
+func (b *Bot) restore(ctx context.Context) int64 {
+	if b.state == nil {
+		return 0
+	}
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	offset, err := b.state.TelegramOffset(cctx, b.botID)
+	if err != nil {
+		b.logger.Error("Failed to load the Telegram update offset", "error", err)
+	}
+	chats, err := b.state.TelegramChats(cctx)
+	if err != nil {
+		b.logger.Error("Failed to load Telegram chats", "error", err)
+	}
+	for _, c := range chats {
+		if err := b.attach(ctx, c.ChatID, c.User, c.BackendID, c.SessionID, 0); err != nil {
+			b.logger.Warn("Failed to attach a stored Telegram chat, it attaches on its next message",
+				"chat", c.ChatID, "session", c.SessionID, "error", err)
+			st := b.chat(c.ChatID)
+			st.user, st.att = c.User, detached(c)
+		}
+	}
+	if len(chats) > 0 {
+		b.logger.Info("Restored Telegram chats", "chats", len(chats))
+	}
+	return offset
+}
+
+// detached is an attachment that ended, so the chat's next message
+// attaches its session again.
+func detached(c hub.TelegramChat) *attachment {
+	a := &attachment{chatID: c.ChatID, user: c.User, backendID: c.BackendID, sessionID: c.SessionID,
+		cancel: func() {}, detach: func() {}, done: make(chan struct{})}
+	close(a.done)
+	return a
+}
+
+func (b *Bot) saveOffset(ctx context.Context, offset int64) {
+	if b.state == nil {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	if err := b.state.SetTelegramOffset(cctx, b.botID, offset); err != nil {
+		b.logger.Error("Failed to store the Telegram update offset", "error", err)
+	}
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {
@@ -501,6 +579,14 @@ func (b *Bot) attach(ctx context.Context, chatID int64, user, backendID, session
 	b.logger.Info("Attached Telegram chat", "chat", chatID, "user", user, "backend", backendID, "session", sessionID, "since", since)
 	b.wg.Add(1)
 	go b.pump(a)
+	if b.state != nil {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), callTimeout)
+		defer cancel()
+		err := b.state.SaveTelegramChat(cctx, hub.TelegramChat{ChatID: chatID, User: user, BackendID: backendID, SessionID: sessionID})
+		if err != nil {
+			b.logger.Error("Failed to store the Telegram chat", "chat", chatID, "error", err)
+		}
+	}
 	return nil
 }
 

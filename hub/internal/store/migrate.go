@@ -38,6 +38,17 @@ var migrations = []migration{
 		sqlite:   []string{`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`},
 		postgres: []string{`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`},
 	},
+	{
+		version: 3,
+		sqlite: []string{
+			`CREATE TABLE telegram_chats (chat_id INTEGER PRIMARY KEY, "user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
+			`CREATE TABLE telegram_offsets (bot_id INTEGER PRIMARY KEY, next_offset INTEGER NOT NULL)`,
+		},
+		postgres: []string{
+			`CREATE TABLE telegram_chats (chat_id BIGINT PRIMARY KEY, "user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL, updated_at BIGINT NOT NULL)`,
+			`CREATE TABLE telegram_offsets (bot_id BIGINT PRIMARY KEY, next_offset BIGINT NOT NULL)`,
+		},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas

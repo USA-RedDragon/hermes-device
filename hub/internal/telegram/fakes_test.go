@@ -80,6 +80,7 @@ type fakeTelegram struct {
 	nextUpdate int64
 	fail429    map[string]int
 	rejectHTML int
+	offsets    []int64
 }
 
 func newFakeTelegram(t *testing.T) *fakeTelegram {
@@ -109,6 +110,10 @@ func (f *fakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
 		f.t.Errorf("bad body for %s: %v", method, err)
 	}
 	if method == "getUpdates" {
+		off, _ := params["offset"].(float64)
+		f.mu.Lock()
+		f.offsets = append(f.offsets, int64(off))
+		f.mu.Unlock()
 		f.serveUpdates(w, r)
 		return
 	}
@@ -426,6 +431,49 @@ type harness struct {
 	hub    *fakeHub
 	links  *fakeLinks
 	tokens *fakeTokens
+	state  *fakeState
+}
+
+// fakeState is a hub.TelegramState in memory.
+type fakeState struct {
+	mu     sync.Mutex
+	chats  map[int64]hub.TelegramChat
+	offset int64
+}
+
+func newFakeState() *fakeState { return &fakeState{chats: map[int64]hub.TelegramChat{}} }
+
+func (f *fakeState) SaveTelegramChat(_ context.Context, c hub.TelegramChat) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.chats[c.ChatID] = c
+	return nil
+}
+
+func (f *fakeState) TelegramChats(context.Context) ([]hub.TelegramChat, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]hub.TelegramChat, 0, len(f.chats))
+	for _, c := range f.chats {
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func (f *fakeState) TelegramOffset(_ context.Context, botID int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if botID != 123 {
+		return 0, fmt.Errorf("bot id %d", botID)
+	}
+	return f.offset, nil
+}
+
+func (f *fakeState) SetTelegramOffset(_ context.Context, _, offset int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.offset = offset
+	return nil
 }
 
 func dm(id int64) telegram.Chat { return telegram.Chat{ID: id, Type: "private"} }
@@ -446,11 +494,17 @@ func testConfig(f *fakeTelegram) telegram.Config {
 
 func startBot(t *testing.T, mutate func(*telegram.Config)) *harness {
 	t.Helper()
+	return startBotState(t, mutate, newFakeState())
+}
+
+func startBotState(t *testing.T, mutate func(*telegram.Config), state *fakeState) *harness {
+	t.Helper()
 	h := &harness{
 		tg:     newFakeTelegram(t),
 		hub:    newFakeHub(),
 		links:  &fakeLinks{users: map[int64]string{aliceTG: userAlice, bobTG: userBob}},
 		tokens: &fakeTokens{},
+		state:  state,
 	}
 	cfg := testConfig(h.tg)
 	if mutate != nil {
@@ -458,7 +512,7 @@ func startBot(t *testing.T, mutate func(*telegram.Config)) *harness {
 	}
 	bot, err := telegram.New(cfg, telegram.Options{
 		PublicURL: "https://hub.example/",
-		Service:   h.hub, Links: h.links, Tokens: h.tokens,
+		Service:   h.hub, Links: h.links, Tokens: h.tokens, State: h.state,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {

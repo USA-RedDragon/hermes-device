@@ -8,9 +8,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
+	"github.com/USA-RedDragon/hermes-hub/internal/leader"
 	"github.com/USA-RedDragon/hermes-hub/internal/server"
 	"github.com/USA-RedDragon/hermes-hub/internal/service"
 	"github.com/USA-RedDragon/hermes-hub/internal/store"
@@ -80,20 +83,24 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 		return fmt.Errorf("failed to start HTTP server: %w", err)
 	}
 
+	botCtx, stopBot := context.WithCancel(context.Background())
+	defer stopBot()
+	botDone := make(chan struct{})
 	if cfg.Telegram.Enabled {
-		bot, err := telegram.New(telegram.Config(cfg.Telegram), telegram.Options{PublicURL: cfg.HTTP.PublicURL, Service: svc, Links: st, Tokens: st, Logger: slog.Default()})
+		bot, err := telegram.New(telegram.Config(cfg.Telegram), telegram.Options{PublicURL: cfg.HTTP.PublicURL, Service: svc,
+			Links: st, Tokens: st, State: st, Logger: slog.Default()})
 		if err != nil {
 			return fmt.Errorf("failed to start Telegram bot: %w", err)
 		}
-		go func() {
-			if err := bot.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				slog.Error("Telegram bot stopped", "error", err.Error())
-			}
-		}()
+		go runBot(botCtx, st, bot, cfg.Telegram, botDone)
+	} else {
+		close(botDone)
 	}
 
 	<-ctx.Done()
 	slog.Info("Shutting down")
+	stopBot()
+	<-botDone
 	if err := srv.Stop(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
@@ -120,4 +127,28 @@ func openStore(ctx context.Context, cfg *config.Store) (*store.Store, error) {
 		}
 	}
 	return st, nil
+}
+
+// botCheckInterval is how often the Telegram leader checks that it still
+// holds its lock.
+const botCheckInterval = 2 * time.Second
+
+// runBot runs the Telegram bot in the one replica that holds the bot's
+// leader lock. With SQLite there is one replica, and it always leads.
+func runBot(ctx context.Context, st *store.Store, bot *telegram.Bot, cfg config.Telegram, done chan<- struct{}) {
+	defer close(done)
+	log := slog.Default().With("component", "telegram")
+	key := leader.Key("telegram/" + strconv.FormatInt(telegram.BotID(cfg.Token), 10))
+	try := func(ctx context.Context) (leader.Lease, error) {
+		l, err := st.TryLock(ctx, key, botCheckInterval)
+		if l == nil {
+			return nil, err
+		}
+		return l, nil
+	}
+	leader.Run(ctx, try, cfg.LeaderRetry, log, func(ctx context.Context) {
+		if err := bot.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Error("Telegram bot stopped", "error", err.Error())
+		}
+	})
 }
