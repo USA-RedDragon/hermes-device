@@ -33,11 +33,13 @@ const (
 	methodFork       = "session/fork"
 	methodPrompt     = "session/prompt"
 	methodUpdate     = "session/update"
+	methodClose      = "session/close"
 )
 
 // JSON-RPC error codes the bridge answers with.
 const (
 	CodeParse         = -32700
+	CodeInvalidReq    = -32600
 	CodeInvalidParams = -32602
 	CodeInternal      = -32603
 )
@@ -54,6 +56,9 @@ const (
 	callTimeout = 60 * time.Second
 	bindTimeout = 30 * time.Second
 	maxMessage  = 64 << 20
+	// maxForward keeps editor messages under the 50 MiB line limit of
+	// hermes acp, which acp-host enforces at 48 MiB.
+	maxForward = 48 << 20
 )
 
 // ErrUnsupportedVersion is returned when the hub or acp-host closes the leg
@@ -82,6 +87,9 @@ type Options struct {
 	MinBackoff   time.Duration
 	MaxBackoff   time.Duration
 	PingInterval time.Duration
+	// ReadyTimeout is how long an editor request waits for the ACP leg
+	// before it is answered with MsgLost. It defaults to 30s.
+	ReadyTimeout time.Duration
 	Logger       *slog.Logger
 }
 
@@ -147,6 +155,9 @@ func New(opts Options) *Bridge {
 	}
 	if opts.PingInterval <= 0 {
 		opts.PingInterval = protocol.PingInterval
+	}
+	if opts.ReadyTimeout <= 0 {
+		opts.ReadyTimeout = 30 * time.Second
 	}
 	log := opts.Logger
 	if log == nil {
@@ -242,11 +253,15 @@ func (b *Bridge) editorLoop(ctx context.Context, lines <-chan []byte, readErr <-
 func (b *Bridge) fromEditor(ctx context.Context, data []byte) error {
 	var m object
 	if err := json.Unmarshal(data, &m); err != nil {
-		b.writeEditor(errorMsg(nil, CodeParse, "hermes-device: parse error"))
+		if json.Valid(data) {
+			b.writeEditor(errorMsg(nil, CodeInvalidReq, "hermes-device: a message must be one JSON-RPC object"))
+		} else {
+			b.writeEditor(errorMsg(nil, CodeParse, "hermes-device: parse error"))
+		}
 		return nil
 	}
 	method := str(m["method"])
-	withID := hasID(m)
+	_, withID := m["id"]
 	if method == "" {
 		if withID {
 			b.answerAgent(ctx, m)
@@ -257,6 +272,8 @@ func (b *Bridge) fromEditor(ctx context.Context, data []byte) error {
 	switch method {
 	case methodPrompt:
 		b.inlinePrompt(m)
+	case methodClose:
+		session = str(params(m)["sessionId"])
 	case methodNew, methodFork, methodLoad, methodResume:
 		p := params(m)
 		cwd = str(p["cwd"])
@@ -283,36 +300,47 @@ func (b *Bridge) fromEditor(ctx context.Context, data []byte) error {
 	return b.forward(ctx, m, pendingReq{id: m["id"], method: method, params: m["params"], cwd: cwd, session: session}, withID)
 }
 
-// forward sends m on the current connection once it is ready.
+// forward sends m on the current connection once it is ready, under a
+// request id of the bridge's own. A request that finds no ready
+// connection within ReadyTimeout is answered with MsgLost.
 func (b *Bridge) forward(ctx context.Context, m object, p pendingReq, withID bool) error {
-	data, err := json.Marshal(m)
-	if err != nil {
-		return nil //nolint:nilerr // a decoded message always encodes
+	if data, err := json.Marshal(m); err != nil || len(data) > maxForward {
+		if withID {
+			b.writeEditor(errorMsg(p.id, CodeInvalidReq, "hermes-device: message too large"))
+		}
+		return nil
 	}
-	key := idKey(p.id)
+	wctx, cancel := context.WithTimeout(ctx, b.opts.ReadyTimeout)
+	defer cancel()
 	for {
-		conn, gen, err := b.waitReady(ctx)
+		conn, gen, err := b.waitReady(wctx)
 		if err != nil {
-			return nil //nolint:nilerr // shutdown
+			if ctx.Err() == nil && withID {
+				b.writeEditor(errorMsg(p.id, CodeInternal, MsgLost))
+			}
+			return nil
 		}
 		b.mu.Lock()
 		if !b.ready || b.gen != gen {
 			b.mu.Unlock()
 			continue
 		}
+		var own string
 		if withID {
+			b.nextID++
+			own = fmt.Sprintf("%s%d", IDPrefix, b.nextID)
 			p.gen = gen
-			b.pending[key] = p
+			b.pending[own] = p
+			m["id"] = mustJSON(own)
 		}
 		b.mu.Unlock()
+		data, _ := json.Marshal(m)
 		if err := conn.Write(ctx, websocket.MessageText, data); err != nil && withID {
 			b.mu.Lock()
-			q, ok := b.pending[key]
-			if ok && q.gen == gen {
-				delete(b.pending, key)
-			}
+			_, ok := b.pending[own]
+			delete(b.pending, own)
 			b.mu.Unlock()
-			if ok && q.gen == gen {
+			if ok {
 				b.writeEditor(errorMsg(p.id, CodeInternal, MsgLost))
 			}
 		}
@@ -433,28 +461,29 @@ func (b *Bridge) serve(ctx context.Context, conn *websocket.Conn) error {
 	b.conn = conn
 	b.mu.Unlock()
 
-	msgs := make(chan []byte, 256)
+	// The reader never waits on the processor, which may hold a response
+	// while it binds, so pongs keep being read.
+	msgs := newQueue()
 	var readErr error
 	go func() {
-		defer close(msgs)
 		for {
 			_, data, err := conn.Read(cctx)
 			if err != nil {
 				readErr = err
+				msgs.close()
 				return
 			}
-			select {
-			case msgs <- data:
-			case <-cctx.Done():
-				readErr = cctx.Err()
-				return
-			}
+			msgs.push(data)
 		}
 	}()
 	procDone := make(chan struct{})
 	go func() {
 		defer close(procDone)
-		for data := range msgs {
+		for {
+			data, ok := msgs.pop()
+			if !ok {
+				return
+			}
 			b.fromAgent(cctx, gen, data)
 		}
 	}()
@@ -522,7 +551,7 @@ func (b *Bridge) call(ctx context.Context, conn *websocket.Conn, procDone <-chan
 	b.nextID++
 	id := fmt.Sprintf("%s%d", IDPrefix, b.nextID)
 	rawID := mustJSON(id)
-	b.own[idKey(rawID)] = ownCall{ch: ch, session: session}
+	b.own[id] = ownCall{ch: ch, session: session}
 	if session != "" {
 		b.replaying[session] = true
 	}
@@ -601,7 +630,7 @@ func (b *Bridge) fromAgent(ctx context.Context, gen uint64, data []byte) {
 		}
 		b.writeEditor(mustJSON(m))
 	case withID:
-		key := idKey(m["id"])
+		key := str(m["id"])
 		b.mu.Lock()
 		if oc, ok := b.own[key]; ok {
 			delete(b.own, key)
@@ -621,6 +650,7 @@ func (b *Bridge) fromAgent(ctx context.Context, gen uint64, data []byte) {
 			b.log.Debug("Dropped a response to no known request", "id", string(m["id"]))
 			return
 		}
+		m["id"] = p.id
 		b.finish(ctx, p, m)
 	}
 }
@@ -659,6 +689,10 @@ func (b *Bridge) finish(ctx context.Context, p pendingReq, m object) {
 	case methodLoad, methodResume:
 		if ok {
 			b.addSession(p.session, p.cwd)
+		}
+	case methodClose:
+		if !failed {
+			b.dropSession(p.session)
 		}
 	}
 	b.writeEditor(mustJSON(m))
@@ -755,19 +789,62 @@ func str(raw json.RawMessage) string {
 	return s
 }
 
-// idKey returns a comparable form of a JSON-RPC id.
-func idKey(id json.RawMessage) string {
-	var b bytes.Buffer
-	if err := json.Compact(&b, id); err != nil {
-		return string(id)
-	}
-	return b.String()
-}
-
 func mustJSON(v any) json.RawMessage {
 	b, err := json.Marshal(v)
 	if err != nil {
 		panic(err)
 	}
 	return b
+}
+
+// queue is an unbounded FIFO of messages from one reader to one consumer.
+type queue struct {
+	mu     sync.Mutex
+	items  [][]byte
+	closed bool
+	signal chan struct{}
+}
+
+func newQueue() *queue { return &queue{signal: make(chan struct{}, 1)} }
+
+func (q *queue) push(data []byte) {
+	q.mu.Lock()
+	q.items = append(q.items, data)
+	q.mu.Unlock()
+	q.wake()
+}
+
+func (q *queue) close() {
+	q.mu.Lock()
+	q.closed = true
+	q.mu.Unlock()
+	q.wake()
+}
+
+func (q *queue) wake() {
+	select {
+	case q.signal <- struct{}{}:
+	default:
+	}
+}
+
+// pop returns the next message, waiting for one. It returns false once the
+// queue is closed and empty.
+func (q *queue) pop() ([]byte, bool) {
+	for {
+		q.mu.Lock()
+		if len(q.items) > 0 {
+			data := q.items[0]
+			q.items[0] = nil
+			q.items = q.items[1:]
+			q.mu.Unlock()
+			return data, true
+		}
+		if q.closed {
+			q.mu.Unlock()
+			return nil, false
+		}
+		q.mu.Unlock()
+		<-q.signal
+	}
 }

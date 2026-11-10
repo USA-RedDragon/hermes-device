@@ -32,6 +32,7 @@ type fakeHub struct {
 	binds    []string
 	failBind map[string]int
 	refuse   bool
+	status   int
 }
 
 func newFakeHub(t *testing.T) *fakeHub {
@@ -43,7 +44,11 @@ func newFakeHub(t *testing.T) *fakeHub {
 		refuse := h.refuse
 		h.mu.Unlock()
 		if refuse || r.Header.Get("Authorization") != "Bearer hdt_test" {
-			w.WriteHeader(http.StatusUnauthorized)
+			code := h.status
+			if code == 0 {
+				code = http.StatusUnauthorized
+			}
+			w.WriteHeader(code)
 			return
 		}
 		conn, err := websocket.Accept(w, r, nil)
@@ -139,19 +144,25 @@ func (a *agent) answer(req map[string]any, result any) {
 type editor struct {
 	t     *testing.T
 	in    *io.PipeWriter
-	lines chan map[string]any
+	lines chan edLine
 	done  chan error
+}
+
+type edLine struct {
+	m   map[string]any
+	raw []byte
 }
 
 func startBridge(t *testing.T, hub *fakeHub) *editor {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
-	e := &editor{t: t, in: inW, lines: make(chan map[string]any, 64), done: make(chan error, 1)}
+	e := &editor{t: t, in: inW, lines: make(chan edLine, 64), done: make(chan error, 1)}
 	br := New(Options{
 		Hub: hubapi.New(hub.ts.URL, "hdt_test", "test"), In: inR, Out: outW,
 		MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, PingInterval: 5 * time.Second,
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ReadyTimeout: 300 * time.Millisecond,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	go func() {
 		sc := bufio.NewScanner(outR)
@@ -162,7 +173,7 @@ func startBridge(t *testing.T, hub *fakeHub) *editor {
 				t.Errorf("bridge wrote a line that is not JSON: %q", sc.Text())
 				continue
 			}
-			e.lines <- m
+			e.lines <- edLine{m: m, raw: append([]byte(nil), sc.Bytes()...)}
 		}
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -191,20 +202,25 @@ func (e *editor) send(msg string) {
 
 func (e *editor) recv() map[string]any {
 	e.t.Helper()
+	return e.recvLine().m
+}
+
+func (e *editor) recvLine() edLine {
+	e.t.Helper()
 	select {
-	case m := <-e.lines:
-		return m
+	case l := <-e.lines:
+		return l
 	case <-time.After(10 * time.Second):
 		e.t.Fatal("editor got nothing")
-		return nil
+		return edLine{}
 	}
 }
 
 func (e *editor) none() {
 	e.t.Helper()
 	select {
-	case m := <-e.lines:
-		e.t.Fatalf("editor got unexpected %v", m)
+	case l := <-e.lines:
+		e.t.Fatalf("editor got unexpected %s", l.raw)
 	case <-time.After(100 * time.Millisecond):
 	}
 }
@@ -232,7 +248,7 @@ func TestSessionNewBindsAndIDs(t *testing.T) {
 
 	ed.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
 	req := a.recv()
-	if req["id"] != float64(1) || req["method"] != "initialize" {
+	if id, _ := req["id"].(string); !strings.HasPrefix(id, IDPrefix) || req["method"] != "initialize" {
 		t.Fatalf("agent got %v", req)
 	}
 	a.answer(req, map[string]any{"protocolVersion": 1})
@@ -315,14 +331,16 @@ func TestBindFailures(t *testing.T) {
 	}
 	ed.send(`{"jsonrpc":"2.0","id":3,"method":"session/resume","params":{"sessionId":"local-3","cwd":"/home/alice/src","mcpServers":[]}}`)
 	req := a.recv()
-	if req["id"] != float64(3) {
+	if req["method"] != "session/resume" {
 		t.Fatalf("a failed load was forwarded: %v", req)
 	}
 	if got := hub.bindLog(); got[len(got)-1] != "local-3=/home/alice/src" {
 		t.Errorf("binds %v", got)
 	}
 	a.answer(req, map[string]any{})
-	ed.recv()
+	if r := ed.recv(); r["id"] != float64(3) {
+		t.Errorf("editor got %v", r)
+	}
 }
 
 func TestInlining(t *testing.T) {
@@ -439,7 +457,7 @@ func TestReconnectReplay(t *testing.T) {
 
 	ed.send(`{"jsonrpc":"2.0","id":"` + stale + `","result":{"outcome":{"outcome":"cancelled"}}}`)
 	ed.send(`{"jsonrpc":"2.0","id":6,"method":"session/prompt","params":{"sessionId":"local-1","prompt":[]}}`)
-	if got := b.recv(); got["id"] != float64(6) {
+	if got := b.recv(); got["method"] != "session/prompt" {
 		t.Fatalf("stale answer reached the new agent, or the prompt did not: %v", got)
 	}
 	b.send(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"local-1","update":{"sessionUpdate":"agent_message_chunk"}}}`)
@@ -532,5 +550,65 @@ func TestEditorEOF(t *testing.T) {
 		ed.done <- err
 	case <-time.After(10 * time.Second):
 		t.Fatal("bridge did not stop on EOF")
+	}
+}
+
+func TestEditorIDs(t *testing.T) {
+	t.Parallel()
+	hub := newFakeHub(t)
+	ed := startBridge(t, hub)
+	a := hub.accept()
+	for _, id := range []string{`"hermes-device-1"`, `"\u00e9"`, `1e0`, `null`, `-3`} {
+		ed.send(`{"jsonrpc":"2.0","id":` + id + `,"method":"session/set_mode","params":{"sessionId":"s","modeId":"m"}}`)
+		req := a.recv()
+		ownID, _ := req["id"].(string)
+		if !strings.HasPrefix(ownID, IDPrefix) {
+			t.Fatalf("agent got id %v", req["id"])
+		}
+		a.send(`{"jsonrpc":"2.0","id":"` + ownID + `","result":{}}`)
+		var m map[string]json.RawMessage
+		_ = json.Unmarshal(ed.recvLine().raw, &m)
+		if string(m["id"]) != id {
+			t.Errorf("id %s came back as %s", id, m["id"])
+		}
+	}
+	ed.send(`[{"jsonrpc":"2.0","id":1,"method":"initialize"}]`)
+	if code, _ := errCode(ed.recv()); code != CodeInvalidReq {
+		t.Errorf("batch code %d", code)
+	}
+}
+
+func TestReadyTimeout(t *testing.T) {
+	t.Parallel()
+	hub := newFakeHub(t)
+	hub.refuse = true
+	hub.status = http.StatusBadGateway
+	ed := startBridge(t, hub)
+	ed.send(`{"jsonrpc":"2.0","id":1,"method":"session/list","params":{}}`)
+	if code, msg := errCode(ed.recv()); code != CodeInternal || msg != MsgLost {
+		t.Errorf("got %d %q", code, msg)
+	}
+}
+
+func TestSessionClose(t *testing.T) {
+	t.Parallel()
+	hub := newFakeHub(t)
+	ed := startBridge(t, hub)
+	a := hub.accept()
+	ed.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	a.answer(a.recv(), map[string]any{})
+	ed.recv()
+	ed.send(`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/home/alice","mcpServers":[]}}`)
+	a.answer(a.recv(), map[string]any{"sessionId": "local-1"})
+	ed.recv()
+	ed.send(`{"jsonrpc":"2.0","id":3,"method":"session/close","params":{"sessionId":"local-1"}}`)
+	a.answer(a.recv(), map[string]any{})
+	ed.recv()
+	_ = a.conn.Close(websocket.StatusGoingAway, "")
+	b := hub.accept()
+	b.answer(b.recv(), map[string]any{})
+	ed.send(`{"jsonrpc":"2.0","id":4,"method":"session/list","params":{}}`)
+	if got := b.recv(); got["method"] != "session/list" {
+		t.Errorf("a closed session was loaded again: %v", got)
 	}
 }
