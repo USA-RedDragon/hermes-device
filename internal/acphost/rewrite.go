@@ -26,6 +26,7 @@ const (
 	codeParse         = -32700
 	codeInvalidReq    = -32600
 	codeInvalidParams = -32602
+	codeInternal      = -32603
 )
 
 type object = map[string]json.RawMessage
@@ -102,6 +103,11 @@ func (r *rewriter) fromEditor(data []byte) ([]byte, error) {
 	switch method {
 	case methodNew, methodLoad, methodResume, methodFork:
 		if err := r.rewriteParams(m, func(p object) error {
+			if method != methodNew {
+				if err := r.checkSession(p); err != nil {
+					return err
+				}
+			}
 			p["cwd"] = mustJSON(r.placeholder)
 			p["mcpServers"] = json.RawMessage("[]")
 			delete(p, "mcp_servers")
@@ -113,6 +119,7 @@ func (r *rewriter) fromEditor(data []byte) ([]byte, error) {
 		var dir string
 		if err := r.rewriteParams(m, func(p object) error {
 			raw, ok := p["cwd"]
+			delete(p, "cwd")
 			if !ok || string(raw) == "null" {
 				return nil
 			}
@@ -120,7 +127,6 @@ func (r *rewriter) fromEditor(data []byte) ([]byte, error) {
 				return errors.New("cwd must be an absolute path")
 			}
 			dir = path.Clean(dir)
-			p["cwd"] = mustJSON(r.placeholder)
 			return nil
 		}); err != nil {
 			return nil, err
@@ -129,7 +135,12 @@ func (r *rewriter) fromEditor(data []byte) ([]byte, error) {
 			r.lists[idKey(m["id"])] = listRequest{dir: dir}
 		}
 	case methodPrompt:
-		if err := r.rewriteParams(m, rewritePrompt); err != nil {
+		if err := r.rewriteParams(m, func(p object) error {
+			if err := r.checkSession(p); err != nil {
+				return err
+			}
+			return rewritePrompt(p)
+		}); err != nil {
 			return nil, err
 		}
 	}
@@ -147,11 +158,53 @@ func (r *rewriter) rewriteParams(m object, fn func(object) error) error {
 		}
 	}
 	if err := fn(p); err != nil {
+		switch {
+		case errors.Is(err, errOtherDevice):
+			return &rpcError{id: m["id"], code: codeInvalidParams, message: err.Error()}
+		case errors.Is(err, errBindings):
+			return &rpcError{id: m["id"], code: codeInternal, message: err.Error()}
+		}
 		return &rpcError{id: m["id"], code: codeInvalidParams, message: "hermes-device acp-host: " + err.Error()}
 	}
 	m["params"] = mustJSON(p)
 	return nil
 }
+
+// errOtherDevice refuses a session bound to a device other than the
+// connection's.
+var errOtherDevice = errors.New("session is bound to another device")
+
+// checkSession refuses p when its session is bound to another device. It
+// folds the field name session_id, which the ACP SDK also accepts, into
+// sessionId so the check sees the id Hermes will use.
+func (r *rewriter) checkSession(p object) error {
+	if alias, ok := p["session_id"]; ok {
+		if _, has := p["sessionId"]; !has {
+			p["sessionId"] = alias
+		}
+		delete(p, "session_id")
+	}
+	raw, ok := p["sessionId"]
+	if !ok {
+		return nil
+	}
+	var sid string
+	if err := json.Unmarshal(raw, &sid); err != nil {
+		return errors.New("sessionId must be a string")
+	}
+	bindings, err := readBindings(r.bindingsFile)
+	if err != nil {
+		return errBindings
+	}
+	if b, ok := bindings[sid]; ok && b.DeviceID != r.deviceID {
+		return errOtherDevice
+	}
+	return nil
+}
+
+// errBindings refuses a session call when the bindings file cannot be read,
+// so a broken file never lets a call through.
+var errBindings = errors.New("hermes-device acp-host: cannot read the bindings file")
 
 func rewritePrompt(p object) error {
 	raw, ok := p["prompt"]
@@ -172,45 +225,14 @@ func rewritePrompt(p object) error {
 			continue
 		}
 		var uri string
-		if err := json.Unmarshal(blk["uri"], &uri); err == nil && !readsLocalPath(uri) {
-			continue
-		}
+		_ = json.Unmarshal(blk["uri"], &uri)
 		blocks[i] = mustJSON(map[string]string{
 			"type": "text",
-			"text": fmt.Sprintf("[hermes-device: file link %s removed; the bridge inlines device files]", uri),
+			"text": fmt.Sprintf("[hermes-device: link %s removed; the bridge inlines device files]", uri),
 		})
 	}
 	p["prompt"] = mustJSON(blocks)
 	return nil
-}
-
-// readsLocalPath reports whether hermes acp would read uri from its own
-// filesystem (acp_adapter/content.py _path_from_file_uri): a file: URI, a
-// URI without a scheme, or a Windows drive path. It errs toward true: only
-// a URI that plainly starts with another scheme is kept.
-func readsLocalPath(uri string) bool {
-	u := strings.Map(func(r rune) rune {
-		if r == '\t' || r == '\r' || r == '\n' {
-			return -1
-		}
-		return r
-	}, uri)
-	u = strings.TrimLeft(u, "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f ")
-	scheme, _, ok := strings.Cut(u, ":")
-	if !ok || len(scheme) < 2 {
-		return true
-	}
-	for i := 0; i < len(scheme); i++ {
-		c := scheme[i]
-		alpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-		if i == 0 && !alpha {
-			return true
-		}
-		if !alpha && (c < '0' || c > '9') && c != '+' && c != '-' && c != '.' {
-			return true
-		}
-	}
-	return strings.EqualFold(scheme, "file")
 }
 
 // fromAgent rewrites one stdout line. Only responses to tracked

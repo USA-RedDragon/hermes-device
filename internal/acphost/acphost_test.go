@@ -383,7 +383,7 @@ func TestPromptLinks(t *testing.T) {
 	if len(got) != len(blocks) {
 		t.Fatalf("prompt has %d blocks, want %d", len(got), len(blocks))
 	}
-	kept := map[string]bool{"https://example.com/a": true, "zed://x": true}
+	kept := map[string]bool{}
 	for i, u := range uris {
 		blk := got[i].(map[string]any)
 		if kept[u] {
@@ -392,7 +392,7 @@ func TestPromptLinks(t *testing.T) {
 			}
 			continue
 		}
-		if blk["type"] != "text" || !strings.Contains(blk["text"].(string), "removed; the bridge inlines device files") {
+		if blk["type"] != "text" || blk["text"] != "[hermes-device: link "+u+" removed; the bridge inlines device files]" {
 			t.Errorf("%q: not replaced: %v", u, blk)
 		}
 	}
@@ -491,8 +491,8 @@ func TestListFiltering(t *testing.T) {
 	if want := []string{"s1=/home/alice/src/app", "s2=/home/alice/src/app/sub"}; !slices.Equal(rows(res), want) {
 		t.Errorf("cwd filter: %v, want %v", rows(res), want)
 	}
-	if res.ReceivedCwd == nil || *res.ReceivedCwd != placeholder {
-		t.Errorf("hermes got cwd %v", res.ReceivedCwd)
+	if res.ReceivedCwd != nil {
+		t.Errorf("hermes got cwd %v", *res.ReceivedCwd)
 	}
 	if res.NextCursor != "s5" {
 		t.Errorf("cursor %q", res.NextCursor)
@@ -628,15 +628,35 @@ func TestChildExitClosesLeg(t *testing.T) {
 	}
 }
 
-func TestReadsLocalPath(t *testing.T) {
+func TestOtherDeviceRefused(t *testing.T) {
 	t.Parallel()
-	for uri, want := range map[string]bool{
-		"file:///a": true, "File:/a": true, "/a": true, "a": true, "c:/a": true, "D:\\a": true, "": true,
-		"\x01file:///a": true, "ht tp://x": true, "\u00a0https://x": true,
-		"https://x": false, "zed:x": false, "git+ssh://x": false,
+	h := newHarness(t, nil)
+	writeBindings(t, h)
+	conn := h.dial()
+	for _, msg := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"s4","cwd":"/x","mcpServers":[]}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"session/resume","params":{"sessionId":"s4","cwd":"/x","mcpServers":[]}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"session/fork","params":{"sessionId":"s4","cwd":"/x","mcpServers":[]}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"s4","prompt":[]}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"session_id":"s4","prompt":[]}}`,
 	} {
-		if got := readsLocalPath(uri); got != want {
-			t.Errorf("readsLocalPath(%q) = %v, want %v", uri, got, want)
+		send(t, conn, msg)
+		r, data := recv(t, conn)
+		if r.Error == nil || r.Error.Code != codeInvalidParams || r.Error.Message != "session is bound to another device" {
+			t.Errorf("%s: got %s", msg, data)
 		}
+	}
+	for _, sid := range []string{"s1", "s5", "unknown"} {
+		p := echoed(t, conn, `{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"session_id":"`+sid+`","prompt":[]}}`)
+		if p["sessionId"] != sid || p["session_id"] != nil {
+			t.Errorf("%s: params %v", sid, p)
+		}
+	}
+	if err := os.WriteFile(h.srv.opts.BindingsFile, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	send(t, conn, `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"s1","prompt":[]}}`)
+	if r, data := recv(t, conn); r.Error == nil || r.Error.Code != codeInternal {
+		t.Errorf("broken bindings file: got %s", data)
 	}
 }
