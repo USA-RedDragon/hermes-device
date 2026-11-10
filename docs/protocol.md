@@ -141,7 +141,7 @@ Blank lines and lines starting with `#` are ignored. Several keys allow rotation
 
 Device to hub: `GET wss://<hub>/api/device/exec` with the device token. Hub to plugin: `GET ws://<backend>:9120/api/plugins/device/ws` (<!-- docgen:const pkg=protocol name=PluginExecPath -->`/api/plugins/device/ws`<!-- /docgen:const -->) with the assertion (`leg` `exec`). The hub MUST NOT send an `Origin` header and MUST send a `Host` header the gateway accepts (the gateway binds 0.0.0.0, which accepts any Host).
 
-Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-- /docgen:const -->. The oldest version this release still speaks: <!-- docgen:const pkg=protocol name=MinVersion code=false -->2<!-- /docgen:const -->. Version 3 adds resume (section 4.7) and the output `offset`; everything else is as in version 2.
+Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-- /docgen:const -->. The oldest version this release still speaks: <!-- docgen:const pkg=protocol name=MinVersion code=false -->2<!-- /docgen:const -->. Version 3 adds resume (section 4.7) and the output `offset`; everything else is as in version 2. Capabilities (section 4.1) add optional features without a version bump: browser control (section 4.8).
 
 ### 4.1 Handshake
 
@@ -149,7 +149,8 @@ Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-
 2. The device sends `hello` within <!-- docgen:const pkg=protocol name=HelloTimeout print=config -->`10s`<!-- /docgen:const --> of the upgrade. Otherwise the plugin closes with `1002`.
 3. Version negotiation. `hello.version` is the oldest version the device speaks and `hello.max_version` the newest (absent means equal to `version`). The plugin picks the newest version that both sides speak. A version 2 plugin reads only `version`, so a device that speaks 2 to 3 sends `"version": 2, "max_version": 3` and a version 2 plugin serves it as version 2. When no version is common, the plugin closes with `4426` and a reason that names both ranges and both releases, for example `hermes-device v0.4.0 speaks protocol 4 to 5; plugin 0.3.0 speaks 2 to 3; upgrade them together`. The hub relays the code and the reason (it cuts reasons to 120 bytes; the plugin keeps them shorter), and the client stops and shows the reason. A device that gets a `welcome.version` outside its own range closes with `4426` and a reason of the same form, and stops.
 4. The plugin answers `welcome` with the chosen version. On version 3 it sends `resume` (section 4.7) right after `welcome`, before any other message. From then on either side may send.
-5. If a connection for the same `device_id` exists, the plugin closes it with `4409`. Newest wins. On version 3 its pending commands move to the new connection and are listed in the `resume`; on version 2 they fail with exit 255.
+5. Capabilities. `hello.capabilities` lists the optional features the device serves; today only `browser` (<!-- docgen:const pkg=protocol name=CapabilityBrowser code=false -->browser<!-- /docgen:const -->, section 4.8). The plugin puts the ones it accepts in `welcome.capabilities` and leaves the field out when it accepts none. Each side uses a feature only when `welcome.capabilities` names it, and ignores unknown names. A plugin that does not know capabilities ignores the field and sends none back, so the device does not use them.
+6. If a connection for the same `device_id` exists, the plugin closes it with `4409`. Newest wins. On version 3 its pending commands move to the new connection and are listed in the `resume`; on version 2 they fail with exit 255.
 
 `hello` (device to plugin):
 
@@ -175,6 +176,7 @@ Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-
 | `roots` | Absolute directories, resolved through symlinks, that commands may run in. The device refuses any `exec` whose `cwd` is outside them |
 | `tmp_dir` | Absolute directory Hermes uses on the device for its shell snapshot files |
 | `home` | The device user's `$HOME`. The plugin checks writes against the credential denylist relative to it (section 8.6) |
+| `capabilities` | Optional features the device serves (step 5). Absent means none |
 | `hostname`, `os`, `arch`, `shell`, `client_version` | For display and diagnostics. `os` and `arch` use Go's `GOOS` and `GOARCH` names. `os` MUST NOT be `windows`: the plugin closes with `4427` |
 
 `welcome` (plugin to device):
@@ -184,7 +186,7 @@ Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-
  "plugin_version": "0.3.0", "hermes_version": "v0.22.7", "grace_seconds": 120}
 ```
 
-`device_id` and `name` come from the assertion. `version` is the chosen version. `grace_seconds` (version 3 only) is the plugin's resume grace (section 4.7). `client_version` in `hello` and `plugin_version` and `hermes_version` in `welcome` carry the release versions both ways, for display and for the `4426` reasons.
+`device_id` and `name` come from the assertion. `version` is the chosen version. `grace_seconds` (version 3 only) is the plugin's resume grace (section 4.7). `capabilities`, when present, lists the device's capabilities the plugin accepts (step 5), for example `["browser"]`. `client_version` in `hello` and `plugin_version` and `hermes_version` in `welcome` carry the release versions both ways, for display and for the `4426` reasons.
 
 Dev mode only (section 8.9): with no hub in between, `hello` also carries `"name"` and `"token"`, there is no assertion, and the plugin checks the token against its static device list. `device_id` is then the configured name.
 
@@ -286,6 +288,18 @@ What a restart does:
 | network drop, ping timeout (`4408`) | Same |
 | Hermes gateway, also a rollout to a new pod | The plugin's pending commands live in the gateway process's memory, so they cannot survive it. Hermes stops the running turns before it stops the listener (gateway/run_runtime.py), the plugin fails every command still pending on a connected device at once (point 6 above), and the device, which sees `1012`, kills its commands at once. If the device misses the `1012` (for example a pod that was killed), its next connection gets an empty `resume` from the new plugin process and it kills them then; if it cannot connect at all, it kills them after the grace. Nothing waits for the grace in either case |
 | `hermes-device run` | The daemon kills its commands when it stops. The plugin's `resume` to the new daemon names them, the daemon answers exit 255 for each, and the tool calls end at once |
+
+### 4.8 Browser control (capability `browser`)
+
+On a leg where `welcome.capabilities` names `browser`, three more message types run on the exec leg. docs/browser.md section 4 defines their fields, ops and codes.
+
+| Type | Direction | Meaning |
+|---|---|---|
+| `browser` | plugin to device | Run one browser operation: `{"type", "id", "op", "args", "timeout"}`. `id` is unique per connection; `kill` with the same `id` cancels it |
+| `browser_result` | device to plugin | Exactly one answer per `browser`: `{"type", "id", "ok", "result"}` or `{"type", "id", "ok": false, "code", "error"}`, `code` one of `not_connected`, `refused`, `timeout`, `cancelled`, `failed` |
+| `browser_status` | device to plugin | Whether the browser extension is connected: `{"type", "connected", "browser", "extension_version"}`. Sent after the `welcome` (and the `resume`) and on every change |
+
+Browser requests are never resumed: a drop cancels them on the device, and the plugin fails them with `not_connected` at once. A device without the capability never gets `browser`; a plugin that did not accept it never gets `browser_status`.
 
 ## 5. Gateway leg and the chat splice
 
@@ -551,6 +565,7 @@ The plugin is a Hermes user plugin named `device`, installed into `$HERMES_HOME/
 | `fallback_device` | none | `fallback: device` only: the sandbox device, by device id (preferred) or by the unique name of a connected device |
 | `grace_seconds` | `120` | How long the pending commands of a dropped version 3 exec leg wait for the device to reconnect and resume them (section 4.7). At most 3600. `0` turns resume off |
 | `fallback_root` | `/work` | `fallback: device` only: absolute directory on the sandbox device that holds one working directory per session lineage. Must be inside the sandbox's roots |
+| `browser` | `true` | `false` hides the `device-browser` toolset (docs/browser.md section 3) |
 | `dev_static_tokens` | `false` | Dev mode (section 8.9) |
 | `devices` | `{}` | Dev mode only: `<name>: {token_env: <env var>}` or `{token: <at least 16 chars>}` |
 
@@ -655,7 +670,7 @@ Mounted by the dashboard under `/api/plugins/device/` on the gateway listener (9
 | `DELETE /sessions/{session_id}/binding` | `204`; `404` `not_bound` |
 | `GET /ws` (WebSocket) | The exec leg, section 4 |
 
-Device object: `{"device_id", "name", "hostname", "os", "arch", "home", "roots", "client_version", "connected_at"}` (`connected_at` in Unix seconds).
+Device object: `{"device_id", "name", "hostname", "os", "arch", "home", "roots", "client_version", "connected_at", "capabilities"}` (`connected_at` in Unix seconds; `capabilities` as negotiated, section 4.1). A device with the `browser` capability also has `"browser": {"connected", "browser", "extension_version"}` from its last `browser_status`.
 
 Binding object: `{"session_id", "device_id", "dir", "generation", "bound_at"}`. `dir` is the device's `pwd -P` of the requested directory.
 
@@ -691,3 +706,5 @@ The device client, the plugin and acp-host come from one hermes-device release. 
 | device 0.3.0, plugin 0.3.0 | version 3, with resume |
 | device 0.3.0, plugin 0.2.0 | version 2 (the device's `hello.version` is 2) |
 | device 0.2.0, plugin 0.3.0 | version 2 (`hello` has no `max_version`) |
+
+Browser control needs a device and a plugin that both know the `browser` capability. With an older peer on either side the capability is not negotiated: the leg works as before, and the plugin's browser tools report that the device does not offer browser control.
