@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/client/internal/allowlist"
+	"github.com/USA-RedDragon/hermes-device/internal/allowlist"
 )
 
 func TestCheck(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/USA-RedDragon/hermes-device/client/cmd"
+	"github.com/USA-RedDragon/hermes-device/cmd"
 )
 
 // https://goreleaser.com/cookbooks/using-main.version/

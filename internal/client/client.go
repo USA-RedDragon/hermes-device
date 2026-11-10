@@ -15,10 +15,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/USA-RedDragon/hermes-device/client/internal/allowlist"
-	"github.com/USA-RedDragon/hermes-device/client/internal/config"
-	"github.com/USA-RedDragon/hermes-device/client/internal/executor"
-	"github.com/USA-RedDragon/hermes-device/client/internal/protocol"
+	"github.com/USA-RedDragon/hermes-device/internal/allowlist"
+	"github.com/USA-RedDragon/hermes-device/internal/config"
+	"github.com/USA-RedDragon/hermes-device/internal/executor"
+	"github.com/USA-RedDragon/hermes-device/internal/protocol"
 	"github.com/coder/websocket"
 )
 

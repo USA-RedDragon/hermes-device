@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/USA-RedDragon/hermes-device/client/internal/client"
-	"github.com/USA-RedDragon/hermes-device/client/internal/config"
+	"github.com/USA-RedDragon/hermes-device/internal/client"
+	"github.com/USA-RedDragon/hermes-device/internal/config"
 	"github.com/spf13/cobra"
 )
 

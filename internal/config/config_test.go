@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/USA-RedDragon/configulator/v2"
-	"github.com/USA-RedDragon/hermes-device/client/internal/config"
+	"github.com/USA-RedDragon/hermes-device/internal/config"
 	"github.com/goccy/go-yaml"
 )
 

@@ -1,4 +1,4 @@
-module github.com/USA-RedDragon/hermes-device/client
+module github.com/USA-RedDragon/hermes-device
 
 go 1.27
 

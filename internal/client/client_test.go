@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/client/internal/client"
-	"github.com/USA-RedDragon/hermes-device/client/internal/config"
-	"github.com/USA-RedDragon/hermes-device/client/internal/protocol"
+	"github.com/USA-RedDragon/hermes-device/internal/client"
+	"github.com/USA-RedDragon/hermes-device/internal/config"
+	"github.com/USA-RedDragon/hermes-device/internal/protocol"
 	"github.com/coder/websocket"
 )
 

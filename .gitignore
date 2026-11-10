@@ -1,3 +1,5 @@
-/client/hermes-device
+/hermes-device
+/dist/
 __pycache__/
 *.log
+config.yaml
