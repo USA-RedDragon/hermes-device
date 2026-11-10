@@ -8,7 +8,10 @@ import (
 	"maps"
 	"os"
 	"path"
+	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ACP methods acp-host rewrites.
@@ -23,6 +26,7 @@ const (
 
 // Params members acp-host reads or writes.
 const (
+	blockText         = "text"
 	keySessionID      = "sessionId"
 	keySessionIDField = "session_id"
 	keyMCPServers     = "mcpServers"
@@ -324,12 +328,83 @@ func rewritePrompt(p object) error {
 		var uri string
 		_ = json.Unmarshal(blk["uri"], &uri)
 		blocks[i] = mustJSON(map[string]string{
-			"type": "text",
-			"text": fmt.Sprintf("[hermes-device: link %s removed; the bridge inlines device files]", uri),
+			"type":    blockText,
+			blockText: fmt.Sprintf("[hermes-device: link %s removed; the bridge inlines device files]", uri),
 		})
 	}
 	p["prompt"] = mustJSON(blocks)
+	return checkSlash(blocks)
+}
+
+// slashCommands are the slash commands a prompt may run: the gateway
+// leg's allowlist (docs/protocol.md 5.4), plus discard and tools, which
+// hermes acp answers for the session itself (acp_adapter/gateway_commands.py
+// ROUTES).
+func slashCommands() []string {
+	return []string{"new", "clear", "redraw", "history", "retry", "undo", "title", "compress", "stop", "status",
+		"context", "usage", "help", "commands", "version", "copy", "queue", "steer", "btw", "branch", "diff",
+		"verbose", "fast", "yolo", "reasoning", "model", "goal", "plan", "review", "refine", "whoami",
+		"discard", "tools"}
+}
+
+func reasoningEfforts() []string {
+	return []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+}
+
+// isPySpace reports whether Python's str.isspace holds for r, which
+// unicode.IsSpace misses only for U+001C to U+001F.
+func isPySpace(r rune) bool {
+	return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f)
+}
+
+// checkSlash refuses a prompt that would run a slash command outside
+// slashCommands. hermes acp runs a prompt whose text starts with a
+// registered command as that command, and sends the ones it does not
+// answer itself to the gateway's slash.exec (acp_adapter/gateway_server.py
+// _slash_command and _run_slash), so without this check the ACP leg would
+// reach every command that the hub refuses on the gateway leg, /device
+// among them. The text is the text members of the blocks joined with
+// newlines, as acp_adapter/content.py joins them; other blocks only add
+// text that starts with "[", so this finds every command Hermes finds,
+// and refuses a few prompts Hermes would treat as text.
+func checkSlash(blocks []json.RawMessage) error {
+	var texts []string
+	for _, b := range blocks {
+		var blk object
+		var text string
+		if json.Unmarshal(b, &blk) == nil && json.Unmarshal(blk[blockText], &text) == nil && text != "" {
+			texts = append(texts, text)
+		}
+	}
+	rest, ok := strings.CutPrefix(strings.TrimLeftFunc(strings.Join(texts, "\n"), isPySpace), "/")
+	if !ok {
+		return nil
+	}
+	name, arg := rest, ""
+	if i := strings.IndexFunc(rest, isPySpace); i >= 0 {
+		name, arg = rest[:i], strings.TrimFunc(rest[i:], isPySpace)
+	}
+	if name == "" || strings.Contains(name, "/") {
+		return nil
+	}
+	lower := strings.ToLower(name)
+	allowed := isASCII(name) && slices.Contains(slashCommands(), lower) && !strings.Contains(arg, "--global")
+	if allowed && lower == "reasoning" {
+		allowed = arg == "" || arg == "reset" || slices.Contains(reasoningEfforts(), arg)
+	}
+	if !allowed {
+		return fmt.Errorf("/%s is not available through hermes-device", name)
+	}
 	return nil
+}
+
+func isASCII(s string) bool {
+	for i := range len(s) {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // fromAgent rewrites one stdout line. Only responses to tracked

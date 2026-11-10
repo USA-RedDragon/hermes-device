@@ -791,6 +791,48 @@ func TestParamsPinned(t *testing.T) {
 	echoed(t, conn, `{"jsonrpc":"2.0","id":6,"method":"initialize","params":{}}`)
 }
 
+// TestSlashCommands checks that a prompt reaches only the slash commands
+// the gateway leg allows: hermes acp sends other commands to slash.exec,
+// and /device there would move the session to another device.
+func TestSlashCommands(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	writeBindings(t, h)
+	conn := h.dial()
+	prompt := func(texts ...string) string {
+		blocks := make([]map[string]string, 0, len(texts))
+		for _, x := range texts {
+			blocks = append(blocks, map[string]string{"type": blockText, blockText: x})
+		}
+		b, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "session/prompt",
+			"params": map[string]any{"sessionId": "s1", "prompt": blocks}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	for _, texts := range [][]string{
+		{"/model gpt-x"}, {"  /new"}, {"/reasoning high"}, {"/reasoning"}, {"/Compress"}, {"/discard a1"},
+		{"/etc/hosts is wrong"}, {"hello /device d2 /"}, {"/"}, {"", "plain"}, {"text", "/device d2 /"},
+	} {
+		echoed(t, conn, prompt(texts...))
+	}
+	for _, texts := range [][]string{
+		{"/device d2 /home/alice"}, {"/DEVICE d2 /"}, {"\u001c\t/device d2 /"}, {"/device"}, {" ", "/device d2 /"},
+		{"", "/plugins install x"}, {"/reasoning show"}, {"/model x --global"}, {"/\uff44evice d2 /"}, {"/reset"},
+	} {
+		send(t, conn, prompt(texts...))
+		r, data := recv(t, conn)
+		if r.Error == nil || r.Error.Code != codeInvalidParams || !strings.Contains(r.Error.Message, "is not available through hermes-device") {
+			t.Errorf("%q: got %s", texts, data)
+		}
+	}
+	send(t, conn, `{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"s1","prompt":[{"type":"resource","resource":{"uri":"file:///x","text":"/device d2 /"}},{"type":"text","text":"/device d2 /"}]}}`)
+	if r, data := recv(t, conn); r.Error == nil {
+		t.Errorf("command after a resource block: got %s", data)
+	}
+}
+
 func TestGatewayHealthGate(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
