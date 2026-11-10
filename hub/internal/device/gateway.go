@@ -243,7 +243,8 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 		return
 	}
 	if !f.hasID() {
-		if denied(f.Method, params) || rewritten(f.Method) || f.Method == methodCompletePath || otherProfile(params) {
+		if denied(f.Method, params) || rewritten(f.Method) || f.Method == methodCompletePath || otherProfile(params) ||
+			ownRequestID(params) || !rewriteParams(f.Method, params) {
 			g.s.log.Warn("dropped a device notification", "device", g.dev.ID, "method", f.Method)
 			return
 		}
@@ -268,6 +269,12 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 	case otherProfile(params):
 		g.toDevice(answerError(f.ID, codeDenied, "hermes-device serves only the device's own Hermes profile",
 			map[string]any{keyReason: reasonDenied}))
+		return
+	case ownRequestID(params):
+		g.toDevice(answerError(f.ID, codeInvalid, "request_id values starting with "+OwnIDPrefix+" are the hub's", nil))
+		return
+	case !rewriteParams(f.Method, params):
+		g.toDevice(answerError(f.ID, codeInvalidParams, "size params must be numbers", nil))
 		return
 	}
 	if sid, err := g.checkSessions(params); err != nil {

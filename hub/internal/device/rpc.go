@@ -234,8 +234,8 @@ var gatewayRules = map[string]string{
 	"prompt.replace_queued": RuleAllowed, "prompt.btw": RuleAllowed,
 	"session.steer": RuleAllowed, "session.redirect": RuleAllowed, "session.interrupt": RuleAllowed,
 	"approval.respond": RuleAllowed, "clarify.respond": RuleAllowed, "clarify.lock": RuleAllowed,
-	methodConfigSet: RuleChecked, "config.get": RuleAllowed, "model.options": RuleAllowed,
-	"slash.exec": RuleChecked, methodDispatch: RuleChecked, "command.observe": RuleAllowed, "commands.catalog": RuleAllowed,
+	methodConfigSet: RuleChecked, "config.get": RuleChecked, "model.options": RuleRewritten,
+	methodSlashExec: RuleChecked, methodDispatch: RuleChecked, "command.observe": RuleAllowed, "commands.catalog": RuleAllowed,
 	"complete.slash": RuleAllowed, "plugins.list": RuleAllowed, "tools.show": RuleAllowed,
 	"subagent.list": RuleAllowed, "subagent.tail": RuleAllowed, "subagent.steer": RuleAllowed, "subagent.interrupt": RuleAllowed,
 	"image.attach_bytes": RuleAllowed, "image.detach": RuleAllowed, methodFileAttach: RuleChecked,
@@ -464,6 +464,51 @@ func denied(method string, params map[string]json.RawMessage) bool {
 		return !slices.Contains(mutateOps, rawString(params["operation"]))
 	}
 	return false
+}
+
+// sizeBounds are the bounds the hub clamps the size params of the TUI's
+// render methods to: Hermes renders whatever size it is asked for.
+//
+//nolint:gochecknoglobals // a fixed table
+var sizeBounds = map[string]map[string][2]float64{
+	"learning.frames": {"cols": {20, 400}, "rows": {10, 200}, "frames": {1, 120}},
+	"pet.cells":       {"cols": {4, 200}},
+}
+
+// rewriteParams applies the hub's param rewrites to an allowed method:
+// it clamps render sizes, drops a model.options refresh (it refetches
+// every provider's model list for the whole profile) and drops
+// cwd_explicit from a create (false moves the session to the profile's
+// workspace in the pod). It reports false for a size that is neither
+// null nor a number.
+func rewriteParams(method string, params map[string]json.RawMessage) bool {
+	switch method {
+	case methodSlashExec, methodDispatch:
+		forceSessionModel(method, params)
+	case "model.options":
+		delete(params, "refresh")
+	case methodCreate:
+		delete(params, "cwd_explicit")
+	}
+	for k, b := range sizeBounds[method] {
+		raw, ok := params[k]
+		if !ok || isNull(raw) {
+			continue
+		}
+		var n float64
+		if json.Unmarshal(raw, &n) != nil {
+			return false
+		}
+		params[k] = mustRaw(int(min(max(n, b[0]), b[1])))
+	}
+	return true
+}
+
+// ownRequestID reports whether a request_id param starts with the hub's
+// own prefix, which the hub uses for its own requests.
+func ownRequestID(params map[string]json.RawMessage) bool {
+	s, ok := rawStringOK(params[keyRequestID])
+	return ok && strings.HasPrefix(s, OwnIDPrefix)
 }
 
 func rewritten(method string) bool {
