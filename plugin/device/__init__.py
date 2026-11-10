@@ -2,9 +2,10 @@
 on the user's own device, which dials in through hermes-hub.
 
 Registers the ``device`` terminal environment provider, the ``pre_tool_call`` guard, the
-``/device`` command and the ``@device:`` context reference, and wraps the Hermes internals that
-read server files directly. The exec leg and the HTTP routes live in ``dashboard/plugin_api.py``;
-both halves share ``core.py`` through one module object. docs/protocol.md section 8.
+``/device`` command, the ``@device:`` context reference and the ``device-browser`` toolset, and
+wraps the Hermes internals that read server files directly. The exec leg and the HTTP routes live
+in ``dashboard/plugin_api.py``; both halves share ``core.py`` through one module object.
+docs/protocol.md section 8.
 """
 from __future__ import annotations
 
@@ -107,6 +108,7 @@ def register(ctx) -> None:
     ctx.register_command("device", device_command, description="Bind this session to a device directory",
                          args_hint="<device> <dir> | off | list")
     ctx.register_context_reference(make_reference_provider(core))
+    core._load_sibling("hermes_device_browser", "browser.py").register(ctx, core)
     missing = core.install_hooks()
     if missing:
         core.logger.error("device: Hermes internals not wrapped: %s", ", ".join(missing))
