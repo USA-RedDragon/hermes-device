@@ -94,6 +94,7 @@ class DeviceProcess:
         self._returncode: Optional[int] = None
         self._done = threading.Event()
         self._finished = False
+        self.refused = False
         self._lock = threading.Lock()
         threading.Thread(target=self._pump, name=f"device-pump-{request_id[:8]}", daemon=True).start()
 
@@ -165,8 +166,10 @@ class DeviceConn:
     roots: list[str]
     tmp_dir: str
     hostname: str = ""
+    close: Optional[Callable[[], Any]] = None
     conn_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     pending: dict[str, DeviceProcess] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
     def send(self, msg: dict) -> None:
         """Thread-safe send from any thread except the loop's own."""
@@ -177,7 +180,12 @@ class DeviceConn:
         if running is self.loop:
             raise DeviceError("device send called on the event loop thread")
         fut = asyncio.run_coroutine_threadsafe(self.send_text(json.dumps(msg)), self.loop)
-        fut.result(timeout=SEND_TIMEOUT_S)
+        try:
+            fut.result(timeout=SEND_TIMEOUT_S)
+        except BaseException:
+            # A send that has not started must not go out later with no handle waiting for it.
+            fut.cancel()
+            raise
 
     def within_roots(self, path: str) -> bool:
         path = posixpath.normpath(path)
@@ -227,7 +235,11 @@ class Hub:
             old = self._devices.get(conn.name)
             self._devices[conn.name] = conn
         if old is not None:
+            # Newest connection wins; close the old socket so two machines never share a name.
+            logger.warning("device: %s connected again; closing the previous connection", conn.name)
             self._fail_pending(old, "[device reconnected; command lost]")
+            if old.close is not None:
+                asyncio.run_coroutine_threadsafe(old.close(), old.loop)
         logger.info("device: %s connected (%s) roots=%s", conn.name, conn.hostname, conn.roots)
 
     def detach(self, conn: DeviceConn) -> None:
@@ -239,9 +251,11 @@ class Hub:
 
     @staticmethod
     def _fail_pending(conn: DeviceConn, note: str) -> None:
-        for proc in list(conn.pending.values()):
+        with conn.lock:
+            procs = list(conn.pending.values())
+            conn.pending.clear()
+        for proc in procs:
             proc.finish(EXIT_LOST, note)
-        conn.pending.clear()
 
     def device(self, name: str) -> Optional[DeviceConn]:
         with self._lock:
@@ -253,13 +267,15 @@ class Hub:
 
     def on_message(self, conn: DeviceConn, msg: dict) -> None:
         kind, rid = msg.get("type"), msg.get("id", "")
-        proc = conn.pending.get(rid)
+        with conn.lock:
+            proc = conn.pending.get(rid) if kind == "output" else conn.pending.pop(rid, None) if kind == "exit" else None
         if kind == "output" and proc is not None:
             proc.feed(msg.get("data") or "")
         elif kind == "exit" and proc is not None:
-            conn.pending.pop(rid, None)
             error = msg.get("error") or ""
-            proc.finish(int(msg.get("code", 1)), f"[{error}]" if error else "")
+            code = int(msg.get("code", 1))
+            proc.refused = bool(error) and code == EXIT_REFUSED
+            proc.finish(code, f"[{error}]" if error else "")
 
     # execution
     def start(self, name: str, *, cmd: str, cwd: str, login: bool, timeout: float,
@@ -281,14 +297,16 @@ class Hub:
                 return False
 
         proc = DeviceProcess(rid, kill)
-        conn.pending[rid] = proc
+        with conn.lock:
+            conn.pending[rid] = proc
         msg = {"type": "exec", "id": rid, "cmd": cmd, "cwd": cwd, "login": login, "timeout": timeout}
         if stdin is not None:
             msg["stdin"] = stdin
         try:
             conn.send(msg)
         except Exception as exc:
-            conn.pending.pop(rid, None)
+            with conn.lock:
+                conn.pending.pop(rid, None)
             proc.finish(EXIT_LOST, f"[could not reach device {name}: {exc}]")
         return proc
 
@@ -408,6 +426,7 @@ class DeviceEnvironment(BaseEnvironment):
         self._bound_generation = ""
         self._device_name = ""
         self._device_tmp = "/tmp"  # no-tmp: ok — device-side, replaced by the device's tmp_dir on bind
+        self._last_proc: Optional[DeviceProcess] = None
         self.task_id = task_id
         super().__init__(cwd=cwd, timeout=timeout)
 
@@ -462,8 +481,9 @@ class DeviceEnvironment(BaseEnvironment):
             result = super().execute(command, effective, **kwargs)
         finally:
             _EXEC_CWD.reset(token)
-        if int(result.get("returncode") or 0) == EXIT_REFUSED and "refused" in (result.get("output") or ""):
-            # A refused cwd (outside the device's roots) must not stick for the next command.
+        last = self._last_proc
+        if last is not None and last.refused and effective == self._device_cwd:
+            # A tracked cwd outside the device's roots (after `cd /`) must not stick.
             self._device_cwd = binding.dir
         hub().set_device_cwd(current_session_id(), self._device_cwd)
         return result
@@ -477,7 +497,9 @@ class DeviceEnvironment(BaseEnvironment):
             proc.finish(1, "[no device bound]")
             return proc
         cwd = _EXEC_CWD.get() or self._device_cwd or (binding.dir if binding else "")
-        return hub().start(name, cmd=cmd_string, cwd=cwd, login=login, timeout=float(timeout), stdin=stdin_data)
+        proc = hub().start(name, cmd=cmd_string, cwd=cwd, login=login, timeout=float(timeout), stdin=stdin_data)
+        self._last_proc = proc
+        return proc
 
     def cleanup(self):
         if self._device_name and hub().device(self._device_name):

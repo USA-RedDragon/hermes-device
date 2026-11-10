@@ -58,7 +58,8 @@ async def device_socket(ws: WebSocket) -> None:
     conn = core.DeviceConn(
         name=name, send_text=send_text, loop=asyncio.get_running_loop(),
         roots=[str(r) for r in hello.get("roots") or []], tmp_dir=str(hello.get("tmp_dir") or ""),
-        hostname=str(hello.get("hostname") or ""))
+        hostname=str(hello.get("hostname") or ""),
+        close=lambda: ws.close(code=4409, reason="replaced by a newer connection"))
     hub = core.hub()
     hub.attach(conn)
     try:

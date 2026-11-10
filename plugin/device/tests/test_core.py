@@ -155,6 +155,18 @@ class DeviceTests(unittest.TestCase):
             if p.poll() is None:
                 os.killpg(p.pid, 9)
 
+    def test_new_connection_closes_old(self):
+        closed = threading.Event()
+
+        async def close():
+            closed.set()
+
+        self.device.conn.close = close
+        newer = core.DeviceConn(name="pc", send_text=self.device._recv, loop=self.device.loop, roots=[self.device.root], tmp_dir="")
+        self.hub.attach(newer)
+        self.assertTrue(closed.wait(5))
+        self.assertIs(self.hub.device("pc"), newer)
+
     def test_bindings_persist(self):
         self.hub.bind(self.session, "pc", str(self.root))
         again = core.Hub(Path(self.tmp.name) / "bindings.json")
