@@ -1,0 +1,71 @@
+# Sample configuration
+# Log level: debug, info, warn or error
+log_level: "info"
+http:
+  # HTTP server IPv4 host
+  ipv4_host: "0.0.0.0"
+  # HTTP server IPv6 host
+  ipv6_host: "::"
+  # HTTP server port
+  port: 8080
+  # Public base URL of the hub, such as https://hub.example.com. Sets the OIDC redirect URI (<public_url>/auth/callback), the only allowed Origin and whether cookies are Secure
+  # public_url: ""
+  metrics:
+    # Enable the metrics server
+    enabled: false
+    # Metrics server IPv4 host
+    ipv4_host: "127.0.0.1"
+    # Metrics server IPv6 host
+    ipv6_host: "::1"
+    # Metrics server port
+    port: 8081
+oidc:
+  # OIDC issuer URL, such as https://auth.example.com/application/o/hermes-hub/
+  # issuer_url: ""
+  # OIDC client ID
+  # client_id: ""
+  # OIDC client secret
+  # client_secret: "(secret)"
+  # Scopes to request. Authentik's profile scope carries preferred_username and groups
+  scopes: ["openid", "profile", "email"]
+  # ID token claim that holds the user name that backends[].users lists
+  username_claim: "preferred_username"
+  # ID token claim that holds the group names that backends[].groups lists
+  groups_claim: "groups"
+session:
+  # Key for the session and login cookies. At least 32 characters
+  # secret: "(secret)"
+  # How long a login lasts
+  ttl: "168h"
+store:
+  # Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups
+  path: "/data/hermes-hub.db"
+# Hermes backends and who may use them. Only settable in the config file
+# backends:
+#   - id: ""
+#     name: ""
+#     url: ""
+#     provider: ""
+#     username: ""
+#     password: "(secret)"
+#     users: []
+#     groups: []
+#     cwd: ""
+#     show_reasoning: false
+telegram:
+  # Run the Telegram bot
+  enabled: false
+  # Telegram bot token from BotFather
+  # token: "(secret)"
+  # Telegram Bot API base URL
+  api_url: "https://api.telegram.org"
+  # Default backend per hub user, as user=backend pairs. A user without one gets their first backend
+  # default_backends: []
+  # Group chat IDs the bot answers in. The bot ignores every other group
+  # allowed_groups: []
+  # Long poll timeout for getUpdates
+  poll_timeout: "50s"
+  # Minimum time between edits of one live message
+  edit_interval: "1500ms"
+  # Retries of a Bot API call that Telegram answers with 429
+  max_retries: 5
