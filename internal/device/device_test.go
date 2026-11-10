@@ -38,8 +38,10 @@ type fakeHub struct {
 	version    int
 	grace      float64
 	skipResume bool
-	conns      atomic.Int32
-	handler    func(ctx context.Context, conn *websocket.Conn, hello protocol.Hello)
+	// capabilities are sent in the welcome.
+	capabilities []string
+	conns        atomic.Int32
+	handler      func(ctx context.Context, conn *websocket.Conn, hello protocol.Hello)
 }
 
 func (f *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +79,7 @@ func (f *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !f.skipWelcome {
 		writeJSON(ctx, conn, protocol.Welcome{
 			Type: protocol.TypeWelcome, Version: version, DeviceID: "d_1", Name: testName, PingInterval: 25,
-			GraceSeconds: f.grace,
+			GraceSeconds: f.grace, Capabilities: f.capabilities,
 		})
 		if version >= protocol.ResumeVersion && !f.skipResume {
 			writeJSON(ctx, conn, protocol.Resume{Type: protocol.TypeResume, Commands: []protocol.ResumeCommand{}})

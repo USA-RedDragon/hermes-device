@@ -60,3 +60,8 @@ reconnect:
   min-backoff: "1s"
   # Longest delay between attempts
   max-backoff: "30s"
+browser:
+  # Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run hermes-device browser install once
+  enabled: false
+  # Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs
+  # allow-hosts: []

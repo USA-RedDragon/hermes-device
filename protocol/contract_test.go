@@ -55,6 +55,18 @@ func protocolConstants() []shared {
 		{"PingTimeout", protocol.PingTimeout, []string{"PING_TIMEOUT_S", "PING_TIMEOUT"}},
 		{"HelloTimeout", protocol.HelloTimeout, []string{"HELLO_TIMEOUT_S", "HELLO_TIMEOUT"}},
 		{"PluginExecPath", protocol.PluginExecPath, []string{"PLUGIN_EXEC_PATH", "EXEC_PATH"}},
+		{"TypeBrowser", protocol.TypeBrowser, []string{"TYPE_BROWSER"}},
+		{"TypeBrowserResult", protocol.TypeBrowserResult, []string{"TYPE_BROWSER_RESULT"}},
+		{"TypeBrowserStatus", protocol.TypeBrowserStatus, []string{"TYPE_BROWSER_STATUS"}},
+		{"CapabilityBrowser", protocol.CapabilityBrowser, []string{"CAPABILITY_BROWSER"}},
+		{"BrowserNotConnected", protocol.BrowserNotConnected, []string{"BROWSER_NOT_CONNECTED"}},
+		{"BrowserRefused", protocol.BrowserRefused, []string{"BROWSER_REFUSED"}},
+		{"BrowserTimeout", protocol.BrowserTimeout, []string{"BROWSER_TIMEOUT"}},
+		{"BrowserCancelled", protocol.BrowserCancelled, []string{"BROWSER_CANCELLED"}},
+		{"BrowserFailed", protocol.BrowserFailed, []string{"BROWSER_FAILED"}},
+		{"BrowserDefaultTimeout", protocol.BrowserDefaultTimeout, []string{"BROWSER_DEFAULT_TIMEOUT_S"}},
+		{"BrowserMaxTimeout", protocol.BrowserMaxTimeout, []string{"BROWSER_MAX_TIMEOUT_S"}},
+		{"MaxBrowserResult", protocol.MaxBrowserResult, []string{"MAX_BROWSER_RESULT"}},
 	}
 }
 

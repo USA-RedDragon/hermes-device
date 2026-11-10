@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/hermes-device/internal/allowlist"
+	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
+	"github.com/USA-RedDragon/hermes-device/internal/browser/host"
 	"github.com/USA-RedDragon/hermes-device/internal/config"
 	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
 	"github.com/USA-RedDragon/hermes-device/internal/device"
@@ -125,11 +127,19 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 	if err := os.MkdirAll(tempDir, 0o700); err != nil {
 		return fmt.Errorf("create device.tmp-dir %s: %w", tempDir, err)
 	}
-	dev, err := device.New(device.Options{
+	opts := device.Options{
 		Hub: hub, Allow: allow, Shell: cfg.Device.Shell, TempDir: tempDir, ClientVersion: version, Env: commandEnv(os.Environ()),
 		MinBackoff: cfg.Reconnect.MinBackoff, MaxBackoff: cfg.Reconnect.MaxBackoff, PingInterval: cfg.PingInterval,
 		ResumeBuffer: cfg.Device.ResumeBuffer, MaxGrace: cfg.Device.MaxGrace,
-	})
+	}
+	if cfg.Browser.Enabled {
+		br, err := startBroker(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		opts.Browser = br
+	}
+	dev, err := device.New(opts)
 	if err != nil {
 		return err
 	}
@@ -208,6 +218,25 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 		}
 		return fmt.Errorf("splice: %w", err)
 	}
+}
+
+// startBroker listens on the browser socket and serves it until ctx ends.
+func startBroker(ctx context.Context, cfg *config.Config) (*broker.Broker, error) {
+	sock, err := browserSocket(cfg)
+	if err != nil {
+		return nil, err
+	}
+	br, err := broker.Listen(broker.Options{Path: sock, ExtensionID: host.ExtensionID, AllowHosts: cfg.Browser.AllowHosts})
+	if err != nil {
+		return nil, fmt.Errorf("browser socket: %w", err)
+	}
+	go func() {
+		if err := br.Serve(ctx); err != nil {
+			slog.Error("Browser socket stopped", "error", err)
+		}
+	}()
+	slog.Info("Browser control on", "socket", sock, "allow_hosts", cfg.Browser.AllowHosts)
+	return br, nil
 }
 
 // tokenEnv is the env var of hub.token, which commands must not inherit.

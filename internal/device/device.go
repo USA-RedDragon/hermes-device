@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/USA-RedDragon/hermes-device/internal/allowlist"
+	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
 	"github.com/USA-RedDragon/hermes-device/internal/executor"
 	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
 	"github.com/USA-RedDragon/hermes-device/protocol"
@@ -57,10 +59,29 @@ type Dialer interface {
 	DialLeg(ctx context.Context, path string) (*websocket.Conn, error)
 }
 
+// Browser runs browser operations in the user's browser. *broker.Broker is
+// one.
+type Browser interface {
+	Call(ctx context.Context, op string, args any) (json.RawMessage, error)
+	Connected() (broker.Hello, bool)
+	// Changed is closed the next time the extension connects or goes away.
+	Changed() <-chan struct{}
+}
+
+// BrowserOps are the operations the device passes to the browser
+// extension. Anything else is refused on the device.
+var BrowserOps = map[string]bool{ //nolint:gochecknoglobals // fixed table
+	"tabs_list": true, "tab_open": true, "tab_close": true, "navigate": true, "back": true,
+	"read_text": true, "snapshot": true, "inspect": true, "click": true, "type": true, "screenshot": true,
+}
+
 // Options configure a Client. Zero durations take the protocol defaults.
 type Options struct {
 	Hub   Dialer
 	Allow *allowlist.List
+	// Browser serves browser requests. With it the device offers
+	// protocol.CapabilityBrowser in hello.
+	Browser Browser
 	// Shell runs each command as <shell> -c <cmd>.
 	Shell string
 	// TempDir is sent as hello.tmp_dir.
@@ -161,11 +182,15 @@ func setDefault(d *time.Duration, v time.Duration) {
 
 // Hello returns the hello message the client sends.
 func (c *Client) Hello() protocol.Hello {
-	return protocol.Hello{
+	h := protocol.Hello{
 		Type: protocol.TypeHello, Version: protocol.MinVersion, MaxVersion: c.opts.MaxVersion, Roots: c.opts.Allow.Roots(),
 		TempDir: c.opts.TempDir, Home: c.opts.Home, Hostname: c.opts.Hostname, OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Shell: c.opts.Shell, ClientVersion: c.opts.ClientVersion,
 	}
+	if c.opts.Browser != nil {
+		h.Capabilities = []string{protocol.CapabilityBrowser}
+	}
+	return h
 }
 
 // Run connects and serves until ctx ends or the hub or plugin tells the
@@ -260,6 +285,11 @@ type session struct {
 	pmu      sync.Mutex
 	pings    map[int64]uint64
 	wg       sync.WaitGroup
+	// browser is true when the leg negotiated protocol.CapabilityBrowser.
+	// calls holds the cancel function of each browser request in flight.
+	browser bool
+	bmu     sync.Mutex
+	calls   map[string]context.CancelFunc
 }
 
 func (s *session) write(ctx context.Context, v any) error {
@@ -343,7 +373,8 @@ func (c *Client) serveOnce(ctx context.Context) (time.Duration, error) {
 	defer func() { _ = conn.CloseNow() }()
 
 	connCtx, cancel := context.WithCancel(ctx)
-	s := &session{c: c, conn: conn, ctx: connCtx, cancel: cancel, pings: map[int64]uint64{}}
+	s := &session{c: c, conn: conn, ctx: connCtx, cancel: cancel, pings: map[int64]uint64{},
+		calls: map[string]context.CancelFunc{}}
 	defer func() {
 		cancel()
 		s.wg.Wait()
@@ -384,10 +415,15 @@ func (c *Client) serveOnce(ctx context.Context) (time.Duration, error) {
 	} else {
 		c.killAll("the plugin speaks protocol 2, which cannot resume commands")
 	}
+	s.browser = c.opts.Browser != nil && slices.Contains(welcome.Capabilities, protocol.CapabilityBrowser)
 	connected := time.Now()
 	slog.Info("Exec leg connected", "device_id", welcome.DeviceID, "name", welcome.Name, "protocol", s.version,
-		"plugin_version", welcome.PluginVersion, "hermes_version", welcome.HermesVersion, "roots", c.opts.Allow.Roots())
+		"plugin_version", welcome.PluginVersion, "hermes_version", welcome.HermesVersion, "roots", c.opts.Allow.Roots(),
+		"browser", s.browser)
 
+	if s.browser {
+		s.wg.Go(func() { s.browserStatus(connCtx) })
+	}
 	s.wg.Go(func() { s.controlPings(connCtx) })
 	s.wg.Go(func() { s.appPings(connCtx) })
 	err = s.readLoop(connCtx)
@@ -498,7 +534,19 @@ func (s *session) readLoop(ctx context.Context) error {
 			var req protocol.Kill
 			if err := json.Unmarshal(data, &req); err == nil {
 				s.c.kill(req.ID)
+				s.cancelBrowser(req.ID)
 			}
+		case protocol.TypeBrowser:
+			if !s.browser {
+				slog.Debug("Ignoring browser request on a leg without the browser capability")
+				continue
+			}
+			var req protocol.Browser
+			if err := json.Unmarshal(data, &req); err != nil {
+				slog.Warn("Ignoring malformed browser request", "error", err)
+				continue
+			}
+			s.browserCall(ctx, req)
 		case protocol.TypePing:
 			var p protocol.Ping
 			if err := json.Unmarshal(data, &p); err == nil {
@@ -963,4 +1011,93 @@ func completeUTF8(b []byte) int {
 		}
 	}
 	return len(b)
+}
+
+// browserStatus sends a BrowserStatus now and each time the extension
+// connects or goes away.
+func (s *session) browserStatus(ctx context.Context) {
+	b := s.c.opts.Browser
+	for {
+		changed := b.Changed()
+		st := protocol.BrowserStatus{Type: protocol.TypeBrowserStatus}
+		if h, ok := b.Connected(); ok {
+			st.Connected, st.Browser, st.ExtensionVersion = true, h.Browser, h.Version
+		}
+		if err := s.send(ctx, st); err != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-changed:
+		}
+	}
+}
+
+func (s *session) cancelBrowser(id string) {
+	s.bmu.Lock()
+	cancel := s.calls[id]
+	s.bmu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// browserCall runs one browser request. Browser requests are never kept
+// across a drop: the leg's context ends them, and their results go nowhere.
+func (s *session) browserCall(ctx context.Context, req protocol.Browser) {
+	fail := func(code, msg string) {
+		_ = s.send(ctx, protocol.BrowserResult{Type: protocol.TypeBrowserResult, ID: req.ID, Code: code, Error: msg})
+	}
+	if !BrowserOps[req.Op] {
+		fail(protocol.BrowserRefused, fmt.Sprintf("device %s refused: unknown browser operation %q", s.name, cut(req.Op, 32)))
+		return
+	}
+	timeout := time.Duration(req.Timeout * float64(time.Second))
+	if timeout <= 0 {
+		timeout = protocol.BrowserDefaultTimeout
+	}
+	timeout = min(timeout, protocol.BrowserMaxTimeout)
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	s.bmu.Lock()
+	_, dup := s.calls[req.ID]
+	if !dup {
+		s.calls[req.ID] = cancel
+	}
+	s.bmu.Unlock()
+	if dup {
+		cancel()
+		fail(protocol.BrowserRefused, fmt.Sprintf("device %s refused: request id %q is already running", s.name, req.ID))
+		return
+	}
+	args := req.Args
+	if len(args) == 0 {
+		args = json.RawMessage("{}")
+	}
+	s.wg.Go(func() {
+		defer cancel()
+		res, err := s.c.opts.Browser.Call(cctx, req.Op, args)
+		s.bmu.Lock()
+		delete(s.calls, req.ID)
+		s.bmu.Unlock()
+		out := protocol.BrowserResult{Type: protocol.TypeBrowserResult, ID: req.ID, OK: err == nil, Result: res}
+		var extErr *broker.Error
+		switch {
+		case err == nil && len(res) > protocol.MaxBrowserResult:
+			out = protocol.BrowserResult{Type: protocol.TypeBrowserResult, ID: req.ID, Code: protocol.BrowserFailed,
+				Error: fmt.Sprintf("the %s result is %d bytes, over the %d byte limit", req.Op, len(res), protocol.MaxBrowserResult)}
+		case err == nil:
+		case errors.Is(err, context.DeadlineExceeded):
+			out.Code, out.Error = protocol.BrowserTimeout, fmt.Sprintf("browser operation %s timed out after %s", req.Op, timeout)
+		case errors.Is(err, context.Canceled):
+			out.Code, out.Error = protocol.BrowserCancelled, "browser operation cancelled"
+		case errors.Is(err, broker.ErrNotConnected), errors.Is(err, broker.ErrClosed):
+			out.Code, out.Error = protocol.BrowserNotConnected, err.Error()
+		case errors.As(err, &extErr) && extErr.Refused():
+			out.Code, out.Error = protocol.BrowserRefused, err.Error()
+		default:
+			out.Code, out.Error = protocol.BrowserFailed, err.Error()
+		}
+		_ = s.send(ctx, out)
+	})
 }

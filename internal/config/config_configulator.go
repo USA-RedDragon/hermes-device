@@ -67,6 +67,11 @@ type reconnectShadow struct {
 	MaxBackoff *impl.Duration `json:"max-backoff" toml:"max-backoff" yaml:"max-backoff"`
 }
 
+type browserShadow struct {
+	Enabled    *bool     `json:"enabled"     toml:"enabled"     yaml:"enabled"`
+	AllowHosts *[]string `json:"allow-hosts" toml:"allow-hosts" yaml:"allow-hosts"`
+}
+
 type configShadow struct {
 	LogLevel     *string          `json:"log-level"     toml:"log-level"     yaml:"log-level"`
 	PingInterval *impl.Duration   `json:"ping-interval" toml:"ping-interval" yaml:"ping-interval"`
@@ -77,6 +82,7 @@ type configShadow struct {
 	Chat         *chatShadow      `json:"chat"          toml:"chat"          yaml:"chat"`
 	ACPHost      *aCPHostShadow   `json:"acp-host"      toml:"acp-host"      yaml:"acp-host"`
 	Reconnect    *reconnectShadow `json:"reconnect"     toml:"reconnect"     yaml:"reconnect"`
+	Browser      *browserShadow   `json:"browser"       toml:"browser"       yaml:"browser"`
 }
 
 // ConfigSchema returns the generated schema for Config.
@@ -119,6 +125,8 @@ func configApplyDefaults(cfg *Config, _ string, set configulator.SetOrigin) erro
 	set("reconnect.min-backoff", configulator.LayerDefault, "default tag")
 	cfg.Reconnect.MaxBackoff = time.Duration(int64(30000000000))
 	set("reconnect.max-backoff", configulator.LayerDefault, "default tag")
+	cfg.Browser.Enabled = false
+	set("browser.enabled", configulator.LayerDefault, "default tag")
 	return nil
 }
 
@@ -282,6 +290,16 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			}
 			cfg.Reconnect.MaxBackoff = v
 			set("reconnect.max-backoff", configulator.LayerFile, file)
+		}
+	}
+	if s.Browser != nil {
+		if s.Browser.Enabled != nil {
+			cfg.Browser.Enabled = *s.Browser.Enabled
+			set("browser.enabled", configulator.LayerFile, file)
+		}
+		if s.Browser.AllowHosts != nil {
+			cfg.Browser.AllowHosts = *s.Browser.AllowHosts
+			set("browser.allow-hosts", configulator.LayerFile, file)
 		}
 	}
 	return nil
@@ -469,6 +487,24 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Reconnect.MaxBackoff = d
 		set("reconnect.max-backoff", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "browser", "enabled"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "browser.enabled",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Browser.Enabled = p
+		set("browser.enabled", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "browser", "allow-hosts"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Browser.AllowHosts = lst
+		set("browser.allow-hosts", configulator.LayerEnv, n)
+	}
 	return nil
 }
 
@@ -509,6 +545,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"acp-host" + o.Separator + "gateway-health-url",
 		"reconnect" + o.Separator + "min-backoff",
 		"reconnect" + o.Separator + "max-backoff",
+		"browser" + o.Separator + "enabled",
+		"browser" + o.Separator + "allow-hosts",
 	}
 	for i, name := range names {
 		if f := fs.Lookup(name); f != nil {
@@ -551,6 +589,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[24], "http://127.0.0.1:9120/api/health", "Health URL of the pod's Hermes gateway. The host starts hermes acp only while it answers, because hermes acp starts a gateway of its own when none runs. Empty turns the check off")
 	fs.Duration(names[25], time.Duration(int64(1000000000)), "First delay after a lost connection")
 	fs.Duration(names[26], time.Duration(int64(30000000000)), "Longest delay between attempts")
+	fs.Bool(names[27], false, "Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run hermes-device browser install once")
+	fs.StringSlice(names[28], nil, "Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs")
 	return nil
 }
 
@@ -879,6 +919,30 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.Reconnect.MaxBackoff = v
 		set("reconnect.max-backoff", configulator.LayerCLI, "--"+n)
 	}
+	if n := "browser" + o.Separator + "enabled"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "browser.enabled",
+				Source: "--" + n,
+			}
+		}
+		cfg.Browser.Enabled = v
+		set("browser.enabled", configulator.LayerCLI, "--"+n)
+	}
+	if n := "browser" + o.Separator + "allow-hosts"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "browser.allow-hosts",
+				Source: "--" + n,
+			}
+		}
+		cfg.Browser.AllowHosts = v
+		set("browser.allow-hosts", configulator.LayerCLI, "--"+n)
+	}
 	return nil
 }
 
@@ -1060,6 +1124,25 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Reconnect = &sub
+			}
+		case "browser":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("browser", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub browserShadow
+				if err := sub.decodeJSON(dec, "browser"); err != nil {
+					return err
+				}
+				s.Browser = &sub
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -1609,6 +1692,72 @@ func (s *reconnectShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	}
 }
 
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *browserShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "enabled":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Enabled = &b
+			default:
+				return configJSONError(path+".enabled", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "allow-hosts":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".allow-hosts", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".allow-hosts"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.AllowHosts = &out
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // configJSONError returns a ParseError for the JSON token v at path.
 func configJSONError(path string, v jsontext.Token, err error) error {
 	return &configulator.ParseError{
@@ -1650,6 +1799,8 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "acp-host.gateway-health-url = %v\n", c.ACPHost.GatewayHealthURL)
 	fmt.Fprintf(&b, "reconnect.min-backoff = %v\n", c.Reconnect.MinBackoff)
 	fmt.Fprintf(&b, "reconnect.max-backoff = %v\n", c.Reconnect.MaxBackoff)
+	fmt.Fprintf(&b, "browser.enabled = %v\n", c.Browser.Enabled)
+	fmt.Fprintf(&b, "browser.allow-hosts = %v\n", c.Browser.AllowHosts)
 	return b.String()
 }
 
