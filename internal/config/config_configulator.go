@@ -7,6 +7,7 @@ package config
 import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -21,7 +22,9 @@ import (
 )
 
 type hubShadow struct {
-	URL *string `json:"url" toml:"url" yaml:"url"`
+	URL       *string `json:"url"        toml:"url"        yaml:"url"`
+	Token     *string `json:"token"      toml:"token"      yaml:"token"`
+	TokenFile *string `json:"token-file" toml:"token-file" yaml:"token-file"`
 }
 
 type storeShadow struct {
@@ -38,6 +41,7 @@ type deviceShadow struct {
 
 type gatewayShadow struct {
 	Listen *string `json:"listen" toml:"listen" yaml:"listen"`
+	Splice *bool   `json:"splice" toml:"splice" yaml:"splice"`
 }
 
 type chatShadow struct {
@@ -93,6 +97,8 @@ func configApplyDefaults(cfg *Config, _ string, set configulator.SetOrigin) erro
 	set("device.shell", configulator.LayerDefault, "default tag")
 	cfg.Gateway.Listen = "127.0.0.1:0"
 	set("gateway.listen", configulator.LayerDefault, "default tag")
+	cfg.Gateway.Splice = true
+	set("gateway.splice", configulator.LayerDefault, "default tag")
 	cfg.Chat.Hermes = "hermes"
 	set("chat.hermes", configulator.LayerDefault, "default tag")
 	cfg.ACPHost.Listen = ":9130"
@@ -142,6 +148,14 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			cfg.Hub.URL = *s.Hub.URL
 			set("hub.url", configulator.LayerFile, file)
 		}
+		if s.Hub.Token != nil {
+			cfg.Hub.Token = *s.Hub.Token
+			set("hub.token", configulator.LayerFile, file)
+		}
+		if s.Hub.TokenFile != nil {
+			cfg.Hub.TokenFile = *s.Hub.TokenFile
+			set("hub.token-file", configulator.LayerFile, file)
+		}
 	}
 	if s.Store != nil {
 		if s.Store.Keyring != nil {
@@ -175,6 +189,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		if s.Gateway.Listen != nil {
 			cfg.Gateway.Listen = *s.Gateway.Listen
 			set("gateway.listen", configulator.LayerFile, file)
+		}
+		if s.Gateway.Splice != nil {
+			cfg.Gateway.Splice = *s.Gateway.Splice
+			set("gateway.splice", configulator.LayerFile, file)
 		}
 	}
 	if s.Chat != nil {
@@ -270,6 +288,14 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Hub.URL = v
 		set("hub.url", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "hub", "token"); ok {
+		cfg.Hub.Token = v
+		set("hub.token", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "hub", "token-file"); ok {
+		cfg.Hub.TokenFile = v
+		set("hub.token-file", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "keyring"); ok {
 		p, err := strconv.ParseBool(v)
 		if err != nil {
@@ -307,6 +333,19 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "gateway", "listen"); ok {
 		cfg.Gateway.Listen = v
 		set("gateway.listen", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "gateway", "splice"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "gateway.splice",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Gateway.Splice = p
+		set("gateway.splice", configulator.LayerEnv, n)
 	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "chat", "hermes"); ok {
 		cfg.Chat.Hermes = v
@@ -399,6 +438,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"log-level",
 		"ping-interval",
 		"hub" + o.Separator + "url",
+		"hub" + o.Separator + "token",
+		"hub" + o.Separator + "token-file",
 		"store" + o.Separator + "keyring",
 		"store" + o.Separator + "token-file",
 		"store" + o.Separator + "state-dir",
@@ -406,6 +447,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"device" + o.Separator + "tmp-dir",
 		"device" + o.Separator + "shell",
 		"gateway" + o.Separator + "listen",
+		"gateway" + o.Separator + "splice",
 		"chat" + o.Separator + "hermes",
 		"acp-host" + o.Separator + "listen",
 		"acp-host" + o.Separator + "backend-id",
@@ -436,25 +478,28 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[0], "info", "Log level: debug, info, warn or error")
 	fs.Duration(names[1], time.Duration(int64(25000000000)), "Interval of WebSocket pings on every leg. Must be from 5s to 30s")
 	fs.String(names[2], "", "Base URL of hermes-hub, for example https://hub.example.com. Needed by login, run, chat and acp")
-	fs.Bool(names[3], true, "Keep the device token in the OS keyring when one is available")
-	fs.String(names[4], "", "File (mode 0600) for the device token when the keyring is off or unavailable. Defaults to token in the state directory")
-	fs.String(names[5], "", "Directory for the token file and the daemon's state file. Defaults to hermes-device in the user config directory")
-	fs.StringSlice(names[6], nil, "Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Needed by run")
-	fs.String(names[7], "", "Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory")
-	fs.String(names[8], "bash", "Shell used to run commands")
-	fs.String(names[9], "127.0.0.1:0", "Loopback address of the chat splice. Port 0 picks a free port")
-	fs.String(names[10], "hermes", "Local Hermes launcher, the same version as the server's Hermes")
-	fs.String(names[11], ":9130", "Address the ACP host listens on. Only hermes-hub may reach it")
-	fs.String(names[12], "", "This backend's id, the aud the hub puts in its assertions. Needed by acp-host")
-	fs.String(names[13], "", "Hub Ed25519 public keys: PEM PUBLIC KEY blocks or base64 lines of the raw 32 bytes")
-	fs.String(names[14], "", "File holding the hub public keys, in the same format as hub-public-key")
-	fs.String(names[15], "hermes", "Hermes launcher that the host runs as <hermes> acp for each connection")
-	fs.String(names[16], "", "Server directory that stands in for the device directory in ACP session cwds. Must match the device plugin's placeholder. Needed by acp-host")
-	fs.Var(impl.NewInt(8), names[17], "Most hermes acp processes the host runs at once")
-	fs.String(names[18], "", "Bindings file the device plugin writes. Defaults to device/bindings.json in $HERMES_HOME")
-	fs.String(names[19], "http://127.0.0.1:9120/api/health", "Health URL of the pod's Hermes gateway. The host starts hermes acp only while it answers, because hermes acp starts a gateway of its own when none runs. Empty turns the check off")
-	fs.Duration(names[20], time.Duration(int64(1000000000)), "First delay after a lost connection")
-	fs.Duration(names[21], time.Duration(int64(30000000000)), "Longest delay between attempts")
+	fs.String(names[3], "", "Device token for run, instead of the one login stored, for a service device such as the sandbox pod. Wins over hub.token-file and the token store")
+	fs.String(names[4], "", "File holding only the device token for run, for example a mounted Kubernetes secret. Must not be readable by others. Wins over the token store")
+	fs.Bool(names[5], true, "Keep the device token in the OS keyring when one is available")
+	fs.String(names[6], "", "File (mode 0600) for the device token when the keyring is off or unavailable. Defaults to token in the state directory")
+	fs.String(names[7], "", "Directory for the token file and the daemon's state file. Defaults to hermes-device in the user config directory")
+	fs.StringSlice(names[8], nil, "Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Needed by run")
+	fs.String(names[9], "", "Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory")
+	fs.String(names[10], "bash", "Shell used to run commands")
+	fs.String(names[11], "127.0.0.1:0", "Loopback address of the chat splice. Port 0 picks a free port")
+	fs.Bool(names[12], true, "Run the chat splice in run. false (or run --no-splice) runs only the exec leg: no listener, no daemon state file and no whoami call, for a headless service device such as the sandbox pod")
+	fs.String(names[13], "hermes", "Local Hermes launcher, the same version as the server's Hermes")
+	fs.String(names[14], ":9130", "Address the ACP host listens on. Only hermes-hub may reach it")
+	fs.String(names[15], "", "This backend's id, the aud the hub puts in its assertions. Needed by acp-host")
+	fs.String(names[16], "", "Hub Ed25519 public keys: PEM PUBLIC KEY blocks or base64 lines of the raw 32 bytes")
+	fs.String(names[17], "", "File holding the hub public keys, in the same format as hub-public-key")
+	fs.String(names[18], "hermes", "Hermes launcher that the host runs as <hermes> acp for each connection")
+	fs.String(names[19], "", "Server directory that stands in for the device directory in ACP session cwds. Must match the device plugin's placeholder. Needed by acp-host")
+	fs.Var(impl.NewInt(8), names[20], "Most hermes acp processes the host runs at once")
+	fs.String(names[21], "", "Bindings file the device plugin writes. Defaults to device/bindings.json in $HERMES_HOME")
+	fs.String(names[22], "http://127.0.0.1:9120/api/health", "Health URL of the pod's Hermes gateway. The host starts hermes acp only while it answers, because hermes acp starts a gateway of its own when none runs. Empty turns the check off")
+	fs.Duration(names[23], time.Duration(int64(1000000000)), "First delay after a lost connection")
+	fs.Duration(names[24], time.Duration(int64(30000000000)), "Longest delay between attempts")
 	return nil
 }
 
@@ -494,6 +539,30 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Hub.URL = v
 		set("hub.url", configulator.LayerCLI, "--"+n)
+	}
+	if n := "hub" + o.Separator + "token"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "hub.token",
+				Source: "--" + n,
+			}
+		}
+		cfg.Hub.Token = v
+		set("hub.token", configulator.LayerCLI, "--"+n)
+	}
+	if n := "hub" + o.Separator + "token-file"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "hub.token-file",
+				Source: "--" + n,
+			}
+		}
+		cfg.Hub.TokenFile = v
+		set("hub.token-file", configulator.LayerCLI, "--"+n)
 	}
 	if n := "store" + o.Separator + "keyring"; fs.Changed(n) {
 		v, err := fs.GetBool(n)
@@ -578,6 +647,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Gateway.Listen = v
 		set("gateway.listen", configulator.LayerCLI, "--"+n)
+	}
+	if n := "gateway" + o.Separator + "splice"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "gateway.splice",
+				Source: "--" + n,
+			}
+		}
+		cfg.Gateway.Splice = v
+		set("gateway.splice", configulator.LayerCLI, "--"+n)
 	}
 	if n := "chat" + o.Separator + "hermes"; fs.Changed(n) {
 		v, err := fs.GetString(n)
@@ -943,6 +1024,41 @@ func (s *hubShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			default:
 				return configJSONError(path+".url", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
+		case "token":
+			if err := func() error {
+				v, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				switch v.Kind() {
+				case jsontext.KindNull:
+				case jsontext.KindString:
+					str := v.String()
+					s.Token = &str
+				default:
+					return configJSONError(path+".token", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+				}
+				return nil
+			}(); err != nil {
+				return &configulator.ParseError{
+					Err:   errors.New("invalid value"),
+					Path:  path + ".token",
+					Value: "(redacted)",
+				}
+			}
+		case "token-file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.TokenFile = &str
+			default:
+				return configJSONError(path+".token-file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
 				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
@@ -1119,6 +1235,19 @@ func (s *gatewayShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				s.Listen = &str
 			default:
 				return configJSONError(path+".listen", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "splice":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Splice = &b
+			default:
+				return configJSONError(path+".splice", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -1386,6 +1515,8 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "log-level = %v\n", c.LogLevel)
 	fmt.Fprintf(&b, "ping-interval = %v\n", c.PingInterval)
 	fmt.Fprintf(&b, "hub.url = %v\n", c.Hub.URL)
+	b.WriteString("hub.token = (redacted)\n")
+	fmt.Fprintf(&b, "hub.token-file = %v\n", c.Hub.TokenFile)
 	fmt.Fprintf(&b, "store.keyring = %v\n", c.Store.Keyring)
 	fmt.Fprintf(&b, "store.token-file = %v\n", c.Store.TokenFile)
 	fmt.Fprintf(&b, "store.state-dir = %v\n", c.Store.StateDir)
@@ -1393,6 +1524,7 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "device.tmp-dir = %v\n", c.Device.TempDir)
 	fmt.Fprintf(&b, "device.shell = %v\n", c.Device.Shell)
 	fmt.Fprintf(&b, "gateway.listen = %v\n", c.Gateway.Listen)
+	fmt.Fprintf(&b, "gateway.splice = %v\n", c.Gateway.Splice)
 	fmt.Fprintf(&b, "chat.hermes = %v\n", c.Chat.Hermes)
 	fmt.Fprintf(&b, "acp-host.listen = %v\n", c.ACPHost.Listen)
 	fmt.Fprintf(&b, "acp-host.backend-id = %v\n", c.ACPHost.BackendID)

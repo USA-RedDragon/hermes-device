@@ -10,6 +10,8 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+const hubURL = "https://hub.example.com"
+
 func load(env map[string]string, file string) (*config.Config, error) {
 	c := configulator.New(config.ConfigSchema()).
 		WithEnvironmentVariables(&configulator.EnvironmentVariableOptions{Prefix: config.EnvPrefix, Separator: config.EnvSeparator}).
@@ -21,7 +23,7 @@ func load(env map[string]string, file string) (*config.Config, error) {
 
 func TestLoadFileAndEnv(t *testing.T) {
 	t.Parallel()
-	cfg, err := load(map[string]string{"HERMES_DEVICE_HUB_URL": "https://hub.example.com"}, `
+	cfg, err := load(map[string]string{"HERMES_DEVICE_HUB_URL": hubURL}, `
 device:
   roots: [/home/alice/src, /home/alice/work]
 acp-host:
@@ -30,7 +32,7 @@ acp-host:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Hub.URL != "https://hub.example.com" || len(cfg.Device.Roots) != 2 || cfg.Device.Shell != "bash" ||
+	if cfg.Hub.URL != hubURL || len(cfg.Device.Roots) != 2 || cfg.Device.Shell != "bash" ||
 		cfg.PingInterval != 25*time.Second || !cfg.Store.Keyring || cfg.ACPHost.BackendID != "alice" {
 		t.Errorf("cfg = %+v", cfg)
 	}
@@ -68,5 +70,30 @@ func TestValidate(t *testing.T) {
 	}
 	if err := cfg.ForHub(); !errors.Is(err, config.ErrMissing) {
 		t.Errorf("ForHub: %v", err)
+	}
+	if !cfg.Gateway.Splice {
+		t.Error("gateway.splice defaults to false")
+	}
+}
+
+func TestServiceDeviceFromEnv(t *testing.T) {
+	t.Parallel()
+	cfg, err := load(map[string]string{ //nolint:gosec // a fake token
+		"HERMES_DEVICE_HUB_URL": hubURL, "HERMES_DEVICE_HUB_TOKEN_FILE": "/var/run/secrets/token",
+		"HERMES_DEVICE_HUB_TOKEN": "hdt_x", "HERMES_DEVICE_DEVICE_ROOTS": "/work", "HERMES_DEVICE_GATEWAY_SPLICE": "false",
+		"HERMES_DEVICE_STORE_KEYRING": "false",
+	}, "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Hub.TokenFile != "/var/run/secrets/token" || cfg.Hub.Token != "hdt_x" || cfg.Gateway.Splice ||
+		cfg.Store.Keyring || len(cfg.Device.Roots) != 1 {
+		t.Errorf("cfg = %+v", cfg)
+	}
+	if err := cfg.ForRun(); err != nil {
+		t.Errorf("ForRun: %v", err)
+	}
+	if _, err := load(nil, "hub: {token-file: rel}\n"); !errors.Is(err, config.ErrRelativePath) {
+		t.Errorf("relative token file: %v", err)
 	}
 }

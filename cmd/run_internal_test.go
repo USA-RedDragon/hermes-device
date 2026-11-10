@@ -126,7 +126,7 @@ func setupRun(t *testing.T, hub *runHub, spliceResult error) *runSetup { //nolin
 		Hub:       config.Hub{URL: srv.URL},
 		Store:     config.Store{StateDir: stateDir},
 		Device:    config.Device{Roots: []string{t.TempDir()}, Shell: "bash"},
-		Gateway:   config.Gateway{Listen: "127.0.0.1:0"},
+		Gateway:   config.Gateway{Listen: "127.0.0.1:0", Splice: true},
 		Reconnect: config.Reconnect{MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond},
 	}
 	st, _, err := tokenStore(cfg)
@@ -261,5 +261,109 @@ func TestRunWithoutToken(t *testing.T) {
 	s.cfg.Store.StateDir = t.TempDir()
 	if err := waitErr(t, s.start(context.Background())); !errors.Is(err, tokenstore.ErrNoToken) {
 		t.Errorf("runDaemon = %v", err)
+	}
+}
+
+func TestRunNoSpliceWithTokenFile(t *testing.T) {
+	t.Parallel()
+	s := setupRun(t, &runHub{whoami: http.StatusUnauthorized}, nil)
+	s.cfg.Store.StateDir = filepath.Join(t.TempDir(), "unused")
+	s.cfg.Gateway.Splice = false
+	s.cfg.Device.TempDir = filepath.Join(t.TempDir(), "tmp", "nested")
+	s.cfg.Hub.TokenFile = filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(s.cfg.Hub.TokenFile, []byte(testToken+"\n"), 0o440); err != nil { //nolint:gosec // the group-readable mode a Kubernetes secret gets
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- runDaemon(ctx, s.cfg, "v0.2.0", "hermes-device/test", func(splice.Options) spliceServer {
+			t.Error("splice started with gateway.splice false")
+			return s.splice
+		})
+	}()
+	waitUntil(t, "the exec leg", func() bool { return s.hub.hellos.Load() >= 1 })
+	if fi, err := os.Stat(s.cfg.Device.TempDir); err != nil || !fi.IsDir() {
+		t.Errorf("device.tmp-dir not created: %v", err)
+	}
+	cancel()
+	if err := waitErr(t, done); err != nil {
+		t.Errorf("runDaemon = %v", err)
+	}
+	if _, err := os.Stat(s.cfg.Store.StateDir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("state dir touched: %v", err)
+	}
+}
+
+func TestRunTokenFromConfig(t *testing.T) {
+	t.Parallel()
+	s := setupRun(t, &runHub{}, nil)
+	s.cfg.Store.StateDir = t.TempDir()
+	s.cfg.Gateway.Splice = false
+	s.cfg.Hub.Token = testToken
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := s.start(ctx)
+	waitUntil(t, "the exec leg", func() bool { return s.hub.hellos.Load() >= 1 })
+	cancel()
+	if err := waitErr(t, done); err != nil {
+		t.Errorf("runDaemon = %v", err)
+	}
+}
+
+func TestRunBlankTokenRefused(t *testing.T) {
+	t.Parallel()
+	s := setupRun(t, &runHub{}, nil)
+	s.cfg.Hub.Token = " \n"
+	if err := waitErr(t, s.start(context.Background())); !errors.Is(err, ErrEmptyToken) {
+		t.Errorf("runDaemon = %v", err)
+	}
+}
+
+func TestRunTokenFileRules(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		body string
+		mode os.FileMode
+		want error
+	}{
+		"readable by others": {testToken, 0o644, ErrTokenFileMode},
+		"empty":              {" \n", 0o600, ErrEmptyToken},
+		"missing":            {"", 0, os.ErrNotExist},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s := setupRun(t, &runHub{}, nil)
+			s.cfg.Hub.TokenFile = filepath.Join(t.TempDir(), "token")
+			if tc.mode != 0 {
+				if err := os.WriteFile(s.cfg.Hub.TokenFile, []byte(tc.body), tc.mode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(s.cfg.Hub.TokenFile, tc.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := waitErr(t, s.start(context.Background())); !errors.Is(err, tc.want) {
+				t.Errorf("runDaemon = %v, want %v", err, tc.want)
+			}
+			if n := s.hub.hellos.Load(); n != 0 {
+				t.Errorf("exec leg dialed %d times", n)
+			}
+		})
+	}
+}
+
+func TestCommandEnvDropsToken(t *testing.T) {
+	t.Parallel()
+	got := commandEnv([]string{"HOME=/work", "HERMES_DEVICE_HUB_TOKEN=hdt_x", "HERMES_DEVICE_HUB_TOKEN_FILE=/t", "PATH=/bin"})
+	want := []string{"HOME=/work", "HERMES_DEVICE_HUB_TOKEN_FILE=/t", "PATH=/bin"}
+	if len(got) != len(want) {
+		t.Fatalf("env = %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("env = %v, want %v", got, want)
+		}
 	}
 }

@@ -6,6 +6,10 @@ ping-interval: "25s"
 hub:
   # Base URL of hermes-hub, for example https://hub.example.com. Needed by login, run, chat and acp
   # url: ""
+  # Device token for run, instead of the one login stored, for a service device such as the sandbox pod. Wins over hub.token-file and the token store
+  # token: "(secret)"
+  # File holding only the device token for run, for example a mounted Kubernetes secret. Must not be readable by others. Wins over the token store
+  # token-file: ""
 store:
   # Keep the device token in the OS keyring when one is available
   keyring: true
@@ -23,6 +27,8 @@ device:
 gateway:
   # Loopback address of the chat splice. Port 0 picks a free port
   listen: "127.0.0.1:0"
+  # Run the chat splice in run. false (or run --no-splice) runs only the exec leg: no listener, no daemon state file and no whoami call, for a headless service device such as the sandbox pod
+  splice: true
 chat:
   # Local Hermes launcher, the same version as the server's Hermes
   hermes: "hermes"

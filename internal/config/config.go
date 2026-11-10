@@ -15,7 +15,9 @@ import (
 
 // Hub is where the device connects.
 type Hub struct {
-	URL string `name:"url" description:"Base URL of hermes-hub, for example https://hub.example.com. Needed by login, run, chat and acp"`
+	URL       string `name:"url" description:"Base URL of hermes-hub, for example https://hub.example.com. Needed by login, run, chat and acp"`
+	Token     string `name:"token" secret:"true" description:"Device token for run, instead of the one login stored, for a service device such as the sandbox pod. Wins over hub.token-file and the token store"`
+	TokenFile string `name:"token-file" description:"File holding only the device token for run, for example a mounted Kubernetes secret. Must not be readable by others. Wins over the token store"`
 }
 
 // Store is where the device keeps its token and daemon state.
@@ -36,6 +38,7 @@ type Device struct {
 // Hermes TUI at.
 type Gateway struct {
 	Listen string `name:"listen" default:"127.0.0.1:0" description:"Loopback address of the chat splice. Port 0 picks a free port"`
+	Splice bool   `name:"splice" default:"true" description:"Run the chat splice in run. false (or run --no-splice) runs only the exec leg: no listener, no daemon state file and no whoami call, for a headless service device such as the sandbox pod"`
 }
 
 // Chat runs the local Hermes TUI.
@@ -110,6 +113,7 @@ func (c Config) Validate() error {
 	}
 	for name, p := range map[string]string{
 		"device.tmp-dir": c.Device.TempDir, "store.token-file": c.Store.TokenFile, "store.state-dir": c.Store.StateDir,
+		"hub.token-file":       c.Hub.TokenFile,
 		"acp-host.placeholder": c.ACPHost.Placeholder, "acp-host.bindings-file": c.ACPHost.BindingsFile,
 	} {
 		if p != "" && !filepath.IsAbs(p) {
