@@ -1,8 +1,9 @@
-"""Device WebSocket, mounted at /api/plugins/device/ws by the dashboard in the gateway process.
+"""Device plugin routes, mounted at /api/plugins/device/ by the dashboard in the gateway process
+(docs/protocol.md sections 4 and 9).
 
-The dashboard's plugin gate checks Host, Origin and peer address and that the plugin is
-enabled; it does not check credentials. This route authenticates the device by its name and
-shared token from the first message.
+The HTTP routes sit behind dashboard sign-in. The dashboard's WebSocket gate checks Host, Origin,
+peer and that the plugin is enabled, but no credential, so the exec route verifies the hub
+assertion itself before it reads any message.
 """
 from __future__ import annotations
 
@@ -10,10 +11,13 @@ import asyncio
 import importlib.util
 import json
 import logging
+import posixpath
 import sys
 from pathlib import Path
+from typing import Any, Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket
+from fastapi.responses import JSONResponse, Response
 
 router = APIRouter()
 logger = logging.getLogger("hermes_device")
@@ -30,48 +34,227 @@ def _core():
     return module
 
 
+def _error(status: int, code: str, message: str, **extra: Any) -> JSONResponse:
+    return JSONResponse({"error": code, "message": message, **extra}, status_code=status)
+
+
+# --- HTTP routes (section 9) ------------------------------------------------------------------
+
+@router.get("/info")
+def info() -> dict:
+    core = _core()
+    return {"plugin_version": core.PLUGIN_VERSION, "hermes_version": core.hermes_version(),
+            "protocol_version": core.PROTOCOL_VERSION, "backend_id": core.backend_id(),
+            "placeholder": core.placeholder()}
+
+
 @router.get("/devices")
 def devices() -> dict:
-    return {"devices": [{"name": c.name, "hostname": c.hostname, "roots": c.roots} for c in _core().hub().devices()]}
+    core = _core()
+    conns = sorted(core.hub().devices(), key=lambda c: (c.name, c.device_id))
+    return {"devices": [c.info() for c in conns]}
+
+
+@router.get("/devices/{device_id}/dirs")
+def device_dirs(device_id: str, path: str = ""):
+    core = _core()
+    try:
+        resolved, names = core.list_device_dirs(device_id, path)
+    except core.BindError as exc:
+        return _error(exc.status, exc.code, exc.message)
+    return {"path": resolved, "entries": [{"name": n} for n in names]}
+
+
+@router.get("/bindings")
+def bindings() -> dict:
+    core = _core()
+    return {"bindings": [b.to_json() for b in core.hub().bindings()]}
+
+
+@router.get("/sessions/{session_id}/binding")
+def get_binding(session_id: str):
+    core = _core()
+    res = core.hub().resolve(session_id)
+    if res.state == core.STATE_BOUND:
+        return {**res.binding.to_json(), "resolved": res.to_json()}
+    return _error(404, "not_bound", f"session {session_id} is not bound to a device", resolved=res.to_json())
+
+
+@router.put("/sessions/{session_id}/binding")
+async def put_binding(session_id: str, request: Request):
+    core = _core()
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict) or not isinstance(body.get("device_id"), str) or not body.get("device_id") \
+            or not isinstance(body.get("dir"), str):
+        return _error(400, "bad_request", 'the body must be {"device_id": <string>, "dir": <string>}')
+    try:
+        binding = await asyncio.to_thread(core.hub().bind, session_id, body["device_id"], body["dir"])
+    except core.BindError as exc:
+        return _error(exc.status, exc.code, exc.message)
+    return binding.to_json()
+
+
+@router.delete("/sessions/{session_id}/binding")
+def delete_binding(session_id: str):
+    core = _core()
+    try:
+        removed = core.hub().unbind(session_id)
+    except core.StateUnavailable as exc:
+        return _error(503, "state_unavailable", str(exc))
+    if not removed:
+        return _error(404, "not_bound", f"session {session_id} is not bound to a device")
+    return Response(status_code=204)
+
+
+# --- exec leg (section 4) ---------------------------------------------------------------------
+
+def _header(ws: WebSocket, name: str) -> Optional[bytes]:
+    want = name.lower().encode("latin-1")
+    for key, value in ws.scope.get("headers") or []:
+        if key.lower() == want:
+            return value
+    return None
+
+
+def _request_path(ws: WebSocket) -> str:
+    raw = ws.scope.get("raw_path")
+    if isinstance(raw, (bytes, bytearray)) and raw:
+        return bytes(raw).split(b"?", 1)[0].decode("latin-1")
+    return ws.scope.get("path") or ws.url.path
+
+
+async def _receive_text(ws: WebSocket, timeout: float) -> Optional[str]:
+    """The next text message, "" for a binary one, or None when the peer went away."""
+    msg = await asyncio.wait_for(ws.receive(), timeout)
+    if msg.get("type") == "websocket.disconnect":
+        return None
+    text = msg.get("text")
+    return text if isinstance(text, str) else ""
+
+
+async def _close(ws: WebSocket, code: int, reason: str) -> None:
+    try:
+        await ws.close(code=code, reason=reason)
+    except Exception:
+        logger.debug("device: close %d failed", code, exc_info=True)
 
 
 @router.websocket("/ws")
 async def device_socket(ws: WebSocket) -> None:
     core = _core()
+    header = _header(ws, core.assertion.HEADER)
+    path = _request_path(ws)
     await ws.accept()
+    claims = None
+    if header is not None or not core.dev_static_tokens():
+        if header is None:
+            logger.warning("device: exec upgrade without an assertion refused")
+            await _close(ws, core.CLOSE_ASSERTION_REFUSED, "assertion missing")
+            return
+        want = core.assertion.Expect(audience=core.backend_id(), leg=core.assertion.LEG_EXEC, method="GET",
+                                     path=path)
+        try:
+            claims = core.verifier().verify(header, want)
+        except core.assertion.Refused as exc:
+            logger.warning("device: assertion refused on %s: %s", path, exc)
+            await _close(ws, core.CLOSE_ASSERTION_REFUSED, "assertion refused")
+            return
     try:
-        hello = json.loads(await asyncio.wait_for(ws.receive_text(), core.HELLO_TIMEOUT_S))
-    except (asyncio.TimeoutError, WebSocketDisconnect, ValueError):
-        await ws.close(code=1002)
+        text = await _receive_text(ws, core.HELLO_TIMEOUT_S)
+        hello = json.loads(text) if text else None
+    except (asyncio.TimeoutError, ValueError):
+        hello = None
+        text = ""
+    if text is None:
         return
-    name, token = str(hello.get("name") or ""), str(hello.get("token") or "")
-    if hello.get("type") != "hello" or not core.authenticate(name, token):
-        logger.warning("device: refused hello for %r", name)
-        await ws.close(code=core.CLOSE_UNAUTHORIZED, reason="unknown device or bad token")
+    if not isinstance(hello, dict) or hello.get("type") != core.TYPE_HELLO:
+        await _close(ws, core.CLOSE_PROTOCOL_ERROR, "expected hello")
         return
+    version = hello.get("version")
+    allowed = (1, core.PROTOCOL_VERSION) if claims is None else (core.PROTOCOL_VERSION,)
+    if isinstance(version, bool) or version not in allowed:
+        await _close(ws, core.CLOSE_UNSUPPORTED_VERSION, f"protocol version {core.PROTOCOL_VERSION} required")
+        return
+    if str(hello.get("os") or "").lower() == "windows":
+        await _close(ws, core.CLOSE_UNSUPPORTED_PLATFORM, "windows devices are not supported")
+        return
+    if claims is None:
+        name, token = str(hello.get("name") or ""), str(hello.get("token") or "")
+        if not core.DEVICE_ID_RE.fullmatch(name) or not core.authenticate_static(name, token):
+            logger.warning("device: refused dev hello for %r", name)
+            await _close(ws, core.CLOSE_UNAUTHORIZED, "unknown device or bad token")
+            return
+        device_id = display = name
+    else:
+        device_id, display = claims.device_id, claims.device_name
+
+    def text_field(key: str) -> str:
+        value = hello.get(key)
+        return value if isinstance(value, str) else ""
+
+    roots = [posixpath.normpath(r) for r in (hello.get("roots") or [])
+             if isinstance(r, str) and posixpath.isabs(r)] if isinstance(hello.get("roots"), list) else []
     send_lock = asyncio.Lock()
 
-    async def send_text(text: str) -> None:
+    async def send_text(data: str) -> None:
         async with send_lock:
-            await ws.send_text(text)
+            await ws.send_text(data)
 
     conn = core.DeviceConn(
-        name=name, send_text=send_text, loop=asyncio.get_running_loop(),
-        roots=[str(r) for r in hello.get("roots") or []], tmp_dir=str(hello.get("tmp_dir") or ""),
-        hostname=str(hello.get("hostname") or ""),
-        close=lambda: ws.close(code=4409, reason="replaced by a newer connection"))
+        device_id=device_id, name=display, send_text=send_text, loop=asyncio.get_running_loop(), roots=roots,
+        tmp_dir=text_field("tmp_dir"), home=text_field("home"), hostname=text_field("hostname"),
+        os=text_field("os"), arch=text_field("arch"), shell=text_field("shell"),
+        client_version=text_field("client_version"),
+        close=lambda code, reason: _close(ws, code, reason))
     hub = core.hub()
     hub.attach(conn)
+    pinger: Optional[asyncio.Task] = None
     try:
-        await send_text(json.dumps({"type": "welcome", "name": name}))
+        await send_text(json.dumps({
+            "type": core.TYPE_WELCOME, "version": core.PROTOCOL_VERSION, "device_id": device_id, "name": display,
+            "ping_interval": core.PING_INTERVAL_S, "plugin_version": core.PLUGIN_VERSION,
+            "hermes_version": core.hermes_version()}))
+
+        async def ping_loop() -> None:
+            seq = 0
+            while True:
+                await asyncio.sleep(core.PING_INTERVAL_S)
+                seq += 1
+                await send_text(json.dumps({"type": core.TYPE_PING, "seq": seq}))
+
+        pinger = asyncio.create_task(ping_loop())
+        loop = asyncio.get_running_loop()
+        last = loop.time()
         while True:
-            text = await ws.receive_text()
+            remaining = core.SILENCE_TIMEOUT_S - (loop.time() - last)
             try:
-                msg = json.loads(text)
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                text = await _receive_text(ws, remaining)
+            except asyncio.TimeoutError:
+                logger.warning("device: %s silent for %ss; closing", device_id, core.SILENCE_TIMEOUT_S)
+                await _close(ws, core.CLOSE_PING_TIMEOUT, "no message for 60 seconds")
+                break
+            if text is None:
+                break
+            last = loop.time()
+            try:
+                msg = json.loads(text) if text else None
             except ValueError:
                 continue
-            hub.on_message(conn, msg)
-    except WebSocketDisconnect:
-        pass
+            if not isinstance(msg, dict):
+                continue
+            kind = msg.get("type")
+            if kind == core.TYPE_PING:
+                await send_text(json.dumps({"type": core.TYPE_PONG, "seq": msg.get("seq")}))
+            elif kind in (core.TYPE_OUTPUT, core.TYPE_EXIT):
+                hub.on_message(conn, msg)
+    except Exception:
+        logger.debug("device: exec leg of %s ended", device_id, exc_info=True)
     finally:
+        if pinger is not None:
+            pinger.cancel()
         hub.detach(conn)
