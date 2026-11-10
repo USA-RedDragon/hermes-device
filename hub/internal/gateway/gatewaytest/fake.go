@@ -114,7 +114,7 @@ func New(username, password string) *Gateway {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/password-login", g.login)
-	mux.HandleFunc("POST /api/auth/ws-ticket", g.ticket)
+	mux.HandleFunc("POST /api/webapp/socket-ticket", g.ticket)
 	mux.HandleFunc("GET /api/ws", g.ws)
 	g.Server = httptest.NewServer(mux)
 	return g
@@ -246,6 +246,10 @@ func (g *Gateway) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) ticket(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("socket") != "gateway" {
+		http.Error(w, `{"detail":"Unknown socket"}`, http.StatusBadRequest)
+		return
+	}
 	ck, err := r.Cookie("hermes_session_at")
 	g.mu.Lock()
 	ok := err == nil && g.cookies[ck.Value]
@@ -271,6 +275,10 @@ func (g *Gateway) ExpireLogins() {
 }
 
 func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Origin") != "http://"+r.Host || r.URL.Query().Get("native_dial") != "browser" {
+		http.Error(w, "native ticket dial from a non-loopback peer", http.StatusForbidden)
+		return
+	}
 	var ticket string
 	for _, p := range strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ",") {
 		if t, ok := strings.CutPrefix(strings.TrimSpace(p), gateway.TicketPrefix); ok {

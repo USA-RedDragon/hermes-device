@@ -21,8 +21,17 @@ func contract() map[string][]string {
 		"hermes_cli/gateway_client.py": {`GATEWAY_WS_TICKET_PREFIX = "` + gateway.TicketPrefix + `"`},
 		"tui_gateway/ws.py":            {`"type": "` + gateway.ReadyEvent + `"`, `{"session_authority": True}`},
 		"hermes_cli/dashboard_auth/routes.py": {
-			`@router.post("/auth/password-login"`, `@router.post("/api/auth/ws-ticket"`, `return {"ticket": ticket`,
+			`@router.post("/auth/password-login"`,
 			"provider: str = Field(max_length=128)", "username: str", "password: str",
+		},
+		"hermes_cli/web_routers/webapp.py": {
+			`@router.post("/api/webapp/socket-ticket")`, "GATEWAY_SOCKET: (\"gateway_ticket\", True),",
+			`return JSONResponse({"ticket": ticket, "ttl_seconds": TTL_SECONDS}`,
+		},
+		"hermes_cli/web_session_sockets.py": {`GATEWAY_SOCKET = "gateway"`},
+		"gateway/run_api.py": {
+			"if reason == 'none' or ws.headers.get('origin'):",
+			"or not ws.client or ws.client.host not in {'127.0.0.1', '::1'}):",
 		},
 		"tui_gateway/contracts/canonical_sessions.py": {
 			"('session.create', CanonicalCreateParams, CanonicalSnapshot)",

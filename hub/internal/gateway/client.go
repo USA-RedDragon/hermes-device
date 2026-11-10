@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -59,8 +60,10 @@ func NewDialer(creds Credentials) *Dialer {
 
 const maxFrame = 64 << 20
 
-// Dial signs in if needed, mints a single-use WebSocket ticket and dials
-// /api/ws. onEvent gets every event notification in the order the gateway
+// Dial signs in if needed, mints a single-use gateway socket ticket and dials
+// /api/ws the way the Hermes Webapp page does: native_dial=browser and an
+// Origin naming the listener. Hermes refuses a ticket dial without an Origin
+// unless the peer is loopback. onEvent gets every event notification in the order the gateway
 // sent them, on the connection's reader goroutine.
 func (d *Dialer) Dial(ctx context.Context, onEvent func(Event)) (*Client, error) {
 	ticket, err := d.ticket(ctx)
@@ -73,9 +76,15 @@ func (d *Dialer) Dial(ctx context.Context, onEvent func(Event)) (*Client, error)
 	if err != nil {
 		return nil, err
 	}
-	wsURL := strings.Replace(strings.Replace(d.creds.BaseURL, "https:", "wss:", 1), "http:", "ws:", 1) + "/api/ws"
+	base, err := url.Parse(d.creds.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("gateway url: %w", err)
+	}
+	origin := base.Scheme + "://" + base.Host
+	wsURL := strings.Replace(strings.Replace(d.creds.BaseURL, "https:", "wss:", 1), "http:", "ws:", 1) + "/api/ws?native_dial=browser"
 	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		Subprotocols: []string{Subprotocol, TicketPrefix + ticket},
+		HTTPHeader:   http.Header{"Origin": []string{origin}},
 	})
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
@@ -124,7 +133,7 @@ func (d *Dialer) login(ctx context.Context) error {
 }
 
 func (d *Dialer) ticket(ctx context.Context) (string, error) {
-	resp, err := d.post(ctx, "/api/auth/ws-ticket", nil)
+	resp, err := d.post(ctx, "/api/webapp/socket-ticket?socket=gateway", nil)
 	if err != nil {
 		return "", fmt.Errorf("gateway ticket: %w", err)
 	}
