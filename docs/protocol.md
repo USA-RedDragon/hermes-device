@@ -266,7 +266,11 @@ HERMES_TUI_GATEWAY_URL=ws://127.0.0.1:<port>/api/ws?token=<per-run secret>
 
 The Ink TUI dials that URL as given, with no subprotocol and no custom headers (ui-tui/src/gatewayClient.ts), so the secret rides in the query. The splice accepts an upgrade only on path `/api/ws`, from a loopback peer, with no `Origin` header, and with a live per-run secret (constant-time compare). Otherwise it answers HTTP `403`. For each accepted TUI socket the splice opens one gateway leg to the hub and copies JSON-RPC messages, applying the rules below to messages from the TUI and to the matching responses.
 
-JSON-RPC ids may be strings (the Ink TUI sends `"r1"`, `"r2"`, ...) or integers. The splice keeps them as raw JSON. Requests the splice sends itself use string ids starting with `hermes-device-`, and the splice consumes their responses.
+JSON-RPC ids may be strings (the Ink TUI sends `"r1"`, `"r2"`, ...) or integers. The splice keeps them as raw JSON. Requests the splice sends itself use string ids starting with `hermes-device-`, and the splice consumes their responses. The splice matches JSON member names exactly (`method`, `params`, `id`), as Hermes does. A notification (no `id`) of a denied or rewritten method is dropped. A rewritten method whose `params` is not an object is answered with `4001` `hermes_device_cwd`.
+
+The splice dials the hub leg before it accepts the TUI's upgrade and answers HTTP `502` when that dial fails. It closes TUI sockets with `1000` when their per-run secret is deleted, `1001` when the daemon stops, `1011` when the hub leg drops, and `4408` on a ping timeout.
+
+`hermes-device chat` runs `<chat.hermes> --tui` (plus any arguments after `--`) in the current directory with the terminal attached. It leaves SIGINT to the TUI (the terminal sends it to the TUI's process group), forwards SIGTERM and SIGHUP, deletes its per-run secret when the TUI exits, and exits with the TUI's code (`128 + signal` when a signal ended it).
 
 ### 5.3 Rewritten calls
 
@@ -276,26 +280,27 @@ The device directory of a create is the `cwd` the TUI sends, which is the direct
 
 1. Take `params.cwd` (the device directory). If it is missing or not absolute, answer the TUI with an error (5.6) and send nothing.
 2. If `params.safe_mode` or `params.ignore_user_config` is true, answer the TUI with an error (5.6, reason `hermes_device_bypass`) and send nothing. Such a session runs in a managed worker with the code-default terminal, outside the plugin, so its commands would run in the pod (gateway/session_local.py `_bypass_policy`).
-3. Set `params.row_cwd` to the device directory and `params.cwd` to the placeholder from `whoami` (section 7.3). Remove `params.editor.mcp_servers` if present. Leave every other field, including `request_id`, as sent.
+3. Set `params.row_cwd` to the device directory and `params.cwd` to the placeholder from `whoami` (section 7.3). Remove `params.editor.mcp_servers` if present. Leave every other field, including `request_id`, as sent. The placeholder is cached and refetched after the gateway refuses a create; if whoami fails, the TUI gets the bind error with the hub's code.
 4. Forward. Hold the response.
 5. On a result, bind `result.session_id` to the device directory (`PUT /api/device/sessions/{id}/binding`, section 7.4). Only when the bind succeeds, pass the response to the TUI.
 6. If the bind fails, send `session.mutate` with `{"session_id": <id>, "request_id": "hermes-device-delete-<id>", "expected_revision": result.revision, "expected_generation": result.execution_generation, "operation": "delete", "payload": {}}`, wait for its answer (failure is logged, not retried), then answer the TUI's request with the bind error (5.6).
-7. Retries are idempotent: the TUI resends a timed-out create, or one whose socket dropped, with the same `request_id`; the gateway returns the same session for it, and the bind of the same session to the same directory returns the existing binding. The splice caches successful binds by `request_id` and skips the bind call on a repeat. The TUI treats a JSON-RPC error answer as final and mints a new `request_id` (ui-tui/src/gatewayClient.ts `createCanonical`), so when the hub leg drops while a create is held the splice closes the TUI's socket (code `1011`) instead of answering it. The TUI then redials and retries the same `request_id`.
+7. Retries are idempotent: the TUI resends a timed-out create, or one whose socket dropped, with the same `request_id`; the gateway returns the same session for it, and the bind of the same session to the same directory returns the existing binding. The splice caches successful binds by `request_id` and skips the bind call on a repeat that names the same session and directory. The TUI treats a JSON-RPC error answer as final and mints a new `request_id` (ui-tui/src/gatewayClient.ts `createCanonical`), so when the hub leg drops while a create is held the splice closes the TUI's socket (code `1011`) instead of answering it. The TUI then redials and retries the same `request_id`. Binds already running when the leg drops finish; a create whose bind then fails gets no answer.
 
 `/new` in the TUI is a fresh `session.create` from the client, so it goes through the same steps.
 
 **`session.resume`**
 
-Resuming in `hermes-device chat` means "continue this session here". Before forwarding, bind `params.session_id` to the directory `chat` ran in (from the per-run secret, section 5.5). A session already bound to that directory keeps its binding; one bound to another directory of this device moves to this one. If the bind fails (for example `409` `bound_to_other_device`), answer the TUI with the bind error and forward nothing. Remove `params.editor.mcp_servers` if present.
+Resuming in `hermes-device chat` means "continue this session here". Before forwarding, bind `params.session_id` to the directory `chat` ran in (from the per-run secret, section 5.5). A session already bound to that directory keeps its binding; one bound to another directory of this device moves to this one. If the bind fails (for example `409` `bound_to_other_device`), answer the TUI with the bind error and forward nothing. The bind is skipped when this chat run (the same per-run secret) already bound the session, so a TUI reconnect does not undo a workspace move. A resume with an empty `session_id` (the latest session) is forwarded first, and the session id in its answer is bound before the answer is passed on. Remove `params.editor.mcp_servers` if present.
 
 **`session.mutate` with `operation` `workspace`** (a workspace move)
 
 1. Bind `params.session_id` to `params.payload.cwd` (a device path). On failure, answer the TUI with the bind error and forward nothing.
 2. Set `params.payload.cwd` to the placeholder and forward.
+3. If the gateway refuses the move, bind the session back to its previous directory when the daemon knows it.
 
 **`session.mutate` with `operation` `branch`**
 
-Remove `params.payload.mcp_servers` if present, then forward. On a result with `branched_session_id`, bind that id to the parent's binding directory before passing the response on. (The plugin also inherits bindings through lineage, section 8.3; the explicit bind covers a child whose lineage row is not written yet.) If the bind fails, pass the response on anyway and log the error: lineage still fails the child closed.
+Remove `params.payload.mcp_servers` if present, then forward. On a result with `branched_session_id`, bind that id to the parent's binding directory (one this daemon bound; for a parent it never bound, skip the bind and log it) before passing the response on. (The plugin also inherits bindings through lineage, section 8.3; the explicit bind covers a child whose lineage row is not written yet.) If the bind fails, pass the response on anyway and log the error: lineage still fails the child closed.
 
 ### 5.4 Denied calls
 
@@ -309,7 +314,7 @@ The splice answers these itself with error code `-32601` and message `"<method> 
 | `model.save_key`, `profiles.create` | Writes credentials and profiles on the pod |
 | `shell.exec`, `cli.exec` | Run on the pod, in the placeholder directory |
 | `complete.path` | Lists pod directories. The splice answers `{"items": []}` as a result instead of an error |
-| `image.attach`, `pdf.attach` with `path`, `file.attach` with `path`, `input.detect_drop`, `clipboard.paste` | Read pod paths or the pod clipboard, not the device's |
+| `image.attach`, `pdf.attach` with a non-null `path`, `file.attach` with a non-null `path`, `input.detect_drop`, `clipboard.paste` | Read pod paths or the pod clipboard, not the device's |
 | `mcp.servers.add`, `mcp.servers.test`, `mcp.servers.remove`, `plugins.manage`, `skills.manage`, `cron.manage`, `cron.submit`, `kanban.run`, `browser.manage`, `display.install`, `display.start`, `a2a.forward`, `worker.*`, `process.kill`, `process.list` | Change, spawn or stop programs on the pod |
 | `rollback.restore` | Restores pod checkpoints |
 | `connectors.*`, `set_api_key`, `oauth.*`, `diagnostics.share_nous`, `free_tier.provision`, `session.foreign.import` | Change pod credentials or import pod files |
@@ -329,7 +334,7 @@ This list keeps a well-behaved TUI from acting on the pod by mistake. It is not 
 
 `hermes-device chat` reads it and calls, on the splice address:
 
-- `POST /control/tokens` with `Authorization: Bearer <control_secret>` and `{"cwd": "<absolute device dir chat runs in>"}`: answers `201` with `{"token": "<43 base64url chars>"}`, a new per-run secret tied to that directory (used for `session.resume`, 5.3).
+- `POST /control/tokens` with `Authorization: Bearer <control_secret>` and `{"cwd": "<absolute device dir chat runs in>"}`: answers `201` with `{"token": "<43 base64url chars>"}`, a new per-run secret tied to that directory (used for `session.resume`, 5.3). A missing or relative `cwd` gets `400`; a daemon that is stopping answers `503`.
 - `DELETE /control/tokens/<token>` with the same header when the TUI exits: `204`. Open TUI sockets that used it are closed.
 
 The daemon refuses the control endpoints from non-loopback peers and with a wrong secret (`403`). It removes `daemon.json` on a clean exit.
@@ -343,7 +348,7 @@ The splice answers a request it refuses or fails with `{"jsonrpc": "2.0", "id": 
 | Denied method | `-32601` | `hermes_device_denied` |
 | Missing or relative cwd | `4001` | `hermes_device_cwd` |
 | `safe_mode` or `ignore_user_config` create | `4001` | `hermes_device_bypass` |
-| Bind failed | `4001` | `hermes_device_bind`, plus `data.hub_error` with the hub's error code |
+| Bind failed | `4001` | `hermes_device_bind`, plus `data.hub_error` with the hub's error code (`unauthorized`, or `hub_unreachable` when the hub gave none) |
 
 When the hub leg drops, the splice closes the TUI's socket with code `1011`; it does not answer held requests (5.3 step 7).
 
@@ -432,7 +437,7 @@ The user revokes a device on the hub page. The hub then refuses the token (secti
  "hermes_version": "v0.22.7", "plugin_version": "0.2.0", "placeholder": "/opt/data/hermes/device-placeholder"}
 ```
 
-`hermes_version`, `plugin_version` and `placeholder` come from the plugin's `GET /info` (section 9); if the backend is unreachable the hub answers `502` `{"error": "backend_unavailable"}`. `chat` compares `hermes_version` with the local `hermes --version` and refuses to start on a mismatch (the local TUI and the server must be the same release).
+`hermes_version`, `plugin_version` and `placeholder` come from the plugin's `GET /info` (section 9); if the backend is unreachable the hub answers `502` `{"error": "backend_unavailable"}`. `chat` compares `hermes_version` with the first line of the local `hermes --version` (`Hermes Agent v<version> (<date>)`), exactly after removing a leading `v`, and refuses to start on a mismatch (the local TUI and the server must be the same release).
 
 ### 7.4 Session binding
 
