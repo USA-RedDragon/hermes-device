@@ -206,6 +206,27 @@ func contract() map[string][]string {
 			"if row.get('source') in INTERNAL_LISTING_SOURCES or entry.closed or (",
 			"'source': row.get('source'), 'started_at': row.get('started_at'),",
 		},
+		// The device ACP leg (internal/device acpEditorRules and acpAgentRules): hermes acp runs the
+		// gateway ACP agent, whose handlers are these, on ACP SDK 0.9.0.
+		"acp_adapter/entry.py#device": {"agent = HermesACPAgent()"},
+		"acp_adapter/server.py#device": {
+			"if session_manager is None:\n            from acp_adapter.gateway_server import GatewayACPAgent\n            return GatewayACPAgent()",
+		},
+		"acp_adapter/gateway_server.py#device": {
+			"async def initialize(self, **kwargs):", "async def authenticate(self, method_id, **kwargs):",
+			"async def new_session(self, cwd, mcp_servers=None, **kwargs):",
+			"async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):",
+			"async def resume_session(self, cwd, session_id, mcp_servers=None, **kwargs):",
+			"async def cancel(self, session_id, **kwargs):", "async def fork_session(self, cwd, session_id, mcp_servers=None, **kwargs):",
+			"async def set_session_model(self, model_id, session_id, **kwargs):",
+			"async def set_session_mode(self, mode_id, session_id, **kwargs):",
+			"async def set_config_option(self, config_id, session_id, value=None, **kwargs):",
+			"async def list_sessions(self, cursor=None, cwd=None, **kwargs):", "async def prompt(self, prompt, session_id, **kwargs):",
+			"await self._conn.request_permission(session_id=self._editor_id(session_id),",
+			"await self._conn._conn.send_request(\n                    ELICITATION_METHOD,",
+		},
+		"acp_adapter/elicitation.py": {`ELICITATION_METHOD = "elicitation/create"`},
+		"pyproject.toml":             {`acp = ["agent-client-protocol==0.9.0"]`},
 		"tui_gateway/contracts/events.py": {
 			`event("message.start"`, `event("message.delta"`, `event("reasoning.delta"`, `event("thinking.delta"`,
 			`event("message.complete"`, `event("tool.start"`, `event("tool.progress"`, `event("tool.complete"`,

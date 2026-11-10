@@ -122,7 +122,7 @@ func NewPlugin(gw *gatewaytest.Gateway, backendID string, key ed25519.PublicKey)
 func pluginError(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	encode(w, map[string]string{"error": code, "message": code})
+	encode(w, map[string]string{keyError: code, keyMessage: code})
 }
 
 func encode(w http.ResponseWriter, v any) {
@@ -350,7 +350,7 @@ func (p *Plugin) getBinding(w http.ResponseWriter, r *http.Request) {
 	if res[stateKey] != "bound" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		encode(w, map[string]any{"error": "not_bound", "message": "not bound", "resolved": res})
+		encode(w, map[string]any{keyError: "not_bound", keyMessage: "not bound", "resolved": res})
 		return
 	}
 	answer(w, map[string]any{"session_id": b.SessionID, keyDeviceID: b.DeviceID, "dir": b.Dir, "generation": b.Generation,
@@ -445,6 +445,12 @@ func verify(w http.ResponseWriter, r *http.Request, v *assertion.Verifier, aud, 
 	return ws, c, true
 }
 
+// Members of plugin and JSON-RPC error answers.
+const (
+	keyError   = "error"
+	keyMessage = "message"
+)
+
 // PluginVersion is the release the fake plugin reports.
 const PluginVersion = "0.3.0"
 
@@ -531,8 +537,9 @@ func (p *Plugin) exec(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ACPHost is the fake acp-host: every connection is echoed back, as if a
-// hermes acp process answered each line with itself.
+// ACPHost is the fake acp-host. Each connection acts as a small hermes
+// acp: it answers initialize, the session methods and session/list itself,
+// answers other requests with -32601, and records every message it gets.
 type ACPHost struct {
 	Server    *httptest.Server
 	BackendID string
@@ -541,11 +548,16 @@ type ACPHost struct {
 	mu        sync.Mutex
 	claims    []assertion.Claims
 	closeWith websocket.StatusCode
+	received  []map[string]any
+	sessions  []map[string]any
+	conn      *websocket.Conn
+	nextID    int
+	got       chan struct{}
 }
 
 // NewACPHost starts a fake acp-host for backendID.
 func NewACPHost(backendID string, key ed25519.PublicKey) *ACPHost {
-	h := &ACPHost{BackendID: backendID, verifier: assertion.NewVerifier([]ed25519.PublicKey{key})}
+	h := &ACPHost{BackendID: backendID, verifier: assertion.NewVerifier([]ed25519.PublicKey{key}), got: make(chan struct{}, 1)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+protocol.ACPHostPath, h.acp)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -560,11 +572,18 @@ func (h *ACPHost) URL() string { return h.Server.URL }
 func (h *ACPHost) Close() { h.Server.Close() }
 
 // SetCloseWith makes each new connection close with code after its first
-// message; 0 echoes again.
+// message; 0 answers again.
 func (h *ACPHost) SetCloseWith(code websocket.StatusCode) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.closeWith = code
+}
+
+// SetSessions sets the rows session/list answers with.
+func (h *ACPHost) SetSessions(rows []map[string]any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sessions = rows
 }
 
 // Claims returns the claims of every accepted connection.
@@ -572,6 +591,59 @@ func (h *ACPHost) Claims() []assertion.Claims {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return slices.Clone(h.claims)
+}
+
+// Received returns every message the fake got, in order.
+func (h *ACPHost) Received() []map[string]any {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.received)
+}
+
+// WaitReceived waits until the fake got at least n messages.
+func (h *ACPHost) WaitReceived(ctx context.Context, n int) []map[string]any {
+	for {
+		if got := h.Received(); len(got) >= n {
+			return got
+		}
+		select {
+		case <-h.got:
+		case <-ctx.Done():
+			return h.Received()
+		}
+	}
+}
+
+// Send sends msg to the device on the latest connection, as the agent.
+func (h *ACPHost) Send(ctx context.Context, msg any) error {
+	h.mu.Lock()
+	c := h.conn
+	h.mu.Unlock()
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	return c.Write(ctx, websocket.MessageText, b)
+}
+
+func (h *ACPHost) answer(m map[string]any) map[string]any {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	result := map[string]any{}
+	switch m["method"] {
+	case "initialize":
+		result["protocolVersion"] = 1
+	case "session/new", "session/fork":
+		h.nextID++
+		result["sessionId"] = fmt.Sprintf("acp-%d", h.nextID)
+	case "session/list":
+		result["sessions"] = h.sessions
+	case "authenticate", "session/load", "session/resume", "session/prompt", "session/set_mode", "session/set_model",
+		"session/set_config_option":
+	default:
+		return map[string]any{"jsonrpc": "2.0", "id": m["id"], keyError: map[string]any{"code": -32601, keyMessage: "Method not found"}}
+	}
+	return map[string]any{"jsonrpc": "2.0", "id": m["id"], "result": result}
 }
 
 func (h *ACPHost) acp(w http.ResponseWriter, r *http.Request) {
@@ -582,10 +654,11 @@ func (h *ACPHost) acp(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = ws.CloseNow() }()
 	h.mu.Lock()
 	h.claims = append(h.claims, *c)
+	h.conn = ws
 	closeWith := h.closeWith
 	h.mu.Unlock()
 	for {
-		typ, data, err := ws.Read(r.Context())
+		_, data, err := ws.Read(r.Context())
 		if err != nil {
 			return
 		}
@@ -593,7 +666,24 @@ func (h *ACPHost) acp(w http.ResponseWriter, r *http.Request) {
 			_ = ws.Close(closeWith, "acp exited")
 			return
 		}
-		if err := ws.Write(r.Context(), typ, data); err != nil {
+		var m map[string]any
+		_ = json.Unmarshal(data, &m)
+		h.mu.Lock()
+		h.received = append(h.received, m)
+		h.mu.Unlock()
+		select {
+		case h.got <- struct{}{}:
+		default:
+		}
+		_, isRequest := m["id"]
+		if _, hasMethod := m["method"]; !hasMethod || !isRequest {
+			continue
+		}
+		b, err := json.Marshal(h.answer(m))
+		if err != nil {
+			return
+		}
+		if err := ws.Write(r.Context(), websocket.MessageText, b); err != nil {
 			return
 		}
 	}

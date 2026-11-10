@@ -86,7 +86,7 @@ func (s *Server) handleGateway(w http.ResponseWriter, r *http.Request) {
 	down.SetReadLimit(maxMessage)
 	l := s.newLeg(r.Context(), d, "gateway", down, up)
 	g := &guard{s: s, b: b, dev: d, l: l, pending: map[string]*pending{}, own: map[string]chan frame{},
-		checked: map[string]checkEntry{}, lost: make(chan struct{})}
+		sessions: newSessionCheck(s, b, d, l), lost: make(chan struct{})}
 	s.log.Info("device leg open", "leg", "gateway", "device", d.ID, "backend", d.BackendID)
 	var loops sync.WaitGroup
 	loops.Go(func() { g.loop(down, g.fromDevice, true) })
@@ -127,14 +127,14 @@ type guard struct {
 	dev hub.Device
 	l   *leg
 
-	mu      sync.Mutex
-	pending map[string]*pending
-	own     map[string]chan frame
-	nextOwn uint64
-	checked map[string]checkEntry
-	gone    bool
-	lost    chan struct{}
-	work    sync.WaitGroup
+	mu       sync.Mutex
+	pending  map[string]*pending
+	own      map[string]chan frame
+	nextOwn  uint64
+	sessions *sessionCheck
+	gone     bool
+	lost     chan struct{}
+	work     sync.WaitGroup
 }
 
 func (g *guard) markLost() {
@@ -254,9 +254,8 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 		g.forward(&f, params)
 		return
 	}
-	_, ok := idKey(f.ID)
 	switch {
-	case !ok:
+	case !validID(f.ID):
 		g.toDevice(answerError(nil, codeInvalid, "a request id must be a string or a number", nil))
 		return
 	case f.Method == methodCompletePath:
@@ -297,11 +296,6 @@ var (
 	// gateway refuses those too.
 	errBadSessionParam = errors.New("session id is not a string")
 )
-
-type checkEntry struct {
-	at   time.Time
-	mine bool
-}
 
 func (g *guard) refuseSession(id json.RawMessage, sid string, err error) {
 	switch {
@@ -346,29 +340,7 @@ func (g *guard) checkSessions(params map[string]json.RawMessage) (string, error)
 }
 
 func (g *guard) checkSession(sid string, mine bool) error {
-	now := g.s.opts.Now()
-	g.mu.Lock()
-	e, ok := g.checked[sid]
-	g.mu.Unlock()
-	if ok && now.Sub(e.at) < sessionCheckTTL && (e.mine || !mine) {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(g.l.ctx, guardTimeout)
-	defer cancel()
-	b, bound, err := g.b.plugin.Binding(ctx, sid)
-	if err != nil {
-		return err
-	}
-	if bound && b.DeviceID != g.dev.ID {
-		return errOtherDevice
-	}
-	g.mu.Lock()
-	g.checked[sid] = checkEntry{at: now, mine: bound}
-	g.mu.Unlock()
-	if mine && !bound {
-		return errNotBound
-	}
-	return nil
+	return g.sessions.check(sid, mine)
 }
 
 func (g *guard) placeholder() (string, error) {
@@ -384,9 +356,7 @@ func (g *guard) bindCtx() (context.Context, context.CancelFunc) {
 func (g *guard) bind(ctx context.Context, sid, dir string) error {
 	_, err := g.b.plugin.Bind(ctx, sid, g.dev.ID, dir)
 	if err == nil {
-		g.mu.Lock()
-		g.checked[sid] = checkEntry{at: g.s.opts.Now(), mine: true}
-		g.mu.Unlock()
+		g.sessions.mark(sid)
 	}
 	return err
 }

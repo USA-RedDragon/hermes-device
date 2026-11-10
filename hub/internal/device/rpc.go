@@ -18,6 +18,8 @@ const (
 	codeDenied        = -32601
 	codeInvalid       = -32600
 	codeInvalidParams = -32602
+	codeParse         = -32700
+	codeRPCInternal   = -32603
 	codeDevice        = 4001
 	reasonDenied      = "hermes_device_denied"
 	reasonCwd         = "hermes_device_cwd"
@@ -101,22 +103,19 @@ func (f *frame) encode(params map[string]json.RawMessage) ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// idKey turns a raw JSON id into a map key that is the same for every
-// encoding of the same string or number.
-func idKey(raw json.RawMessage) (string, bool) {
+// validID reports whether a raw JSON id is a string or a number.
+func validID(raw json.RawMessage) bool {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var v any
 	if dec.Decode(&v) != nil {
-		return "", false
+		return false
 	}
-	switch v := v.(type) {
-	case string:
-		return "s:" + v, true
-	case json.Number:
-		return "n:" + v.String(), true
+	switch v.(type) {
+	case string, json.Number:
+		return true
 	}
-	return "", false
+	return false
 }
 
 func ownID(raw json.RawMessage) (string, bool) {

@@ -40,7 +40,7 @@ func (s *Server) Sign(d hub.Device, leg, path string) (string, error) {
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	d := deviceFrom(r)
 	b := s.backends[d.BackendID]
-	s.proxy(w, r, d, assertion.LegExec, gateway.WebSocketURL(b.cfg.URL), protocol.PluginExecPath)
+	s.proxy(w, r, d, assertion.LegExec, gateway.WebSocketURL(b.cfg.URL), protocol.PluginExecPath, (*leg).copyBoth)
 }
 
 func (s *Server) handleACP(w http.ResponseWriter, r *http.Request) {
@@ -50,12 +50,14 @@ func (s *Server) handleACP(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadGateway, codeBackendUnavailable, "this device's Hermes has no acp-host set up in the hub")
 		return
 	}
-	s.proxy(w, r, d, assertion.LegACP, gateway.WebSocketURL(b.cfg.ACPURL), protocol.ACPHostPath)
+	s.proxy(w, r, d, assertion.LegACP, gateway.WebSocketURL(b.cfg.ACPURL), protocol.ACPHostPath, func(l *leg) { //nolint:contextcheck // the leg outlives the upgrade request
+		newACPGuard(s, b, d, l).run()
+	})
 }
 
 // proxy dials the backend with a fresh assertion and, once that upgrade
-// worked, accepts the device's and copies messages both ways.
-func (s *Server) proxy(w http.ResponseWriter, r *http.Request, d hub.Device, legName, base, path string) {
+// worked, accepts the device's and runs carry on the leg until it ends.
+func (s *Server) proxy(w http.ResponseWriter, r *http.Request, d hub.Device, legName, base, path string, carry func(*leg)) {
 	if s.isClosed() {
 		apiError(w, http.StatusServiceUnavailable, codeBackendUnavailable, "the hub is shutting down")
 		return
@@ -88,9 +90,14 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, d hub.Device, leg
 	down.SetReadLimit(maxMessage)
 	l := s.newLeg(r.Context(), d, legName, down, up)
 	s.log.Info("device leg open", "leg", legName, "device", d.ID, "backend", d.BackendID)
-	go l.pump(down, up, true)
-	go l.pump(up, down, false)
-	l.run() //nolint:contextcheck // the leg outlives the upgrade request
+	carry(l)
+}
+
+// copyBoth copies messages unchanged both ways until the leg ends.
+func (l *leg) copyBoth() {
+	go l.pump(l.down, l.up, true)
+	go l.pump(l.up, l.down, false)
+	l.run()
 }
 
 func (s *Server) isClosed() bool {
