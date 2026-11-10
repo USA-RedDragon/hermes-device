@@ -7,7 +7,7 @@ internal/device/computers.go	376	319
 internal/device/device.go	197	158
 internal/device/devicetest/devicetest.go	283	252
 internal/device/gateway.go	339	261
-internal/device/legs.go	146	127
+internal/device/legs.go	146	125
 internal/device/pair.go	52	29
 internal/device/plugin.go	77	60
 internal/device/rpc.go	119	107
@@ -21,7 +21,7 @@ internal/server/server.go	40	0
 internal/service/hold.go	229	198
 internal/service/live.go	196	153
 internal/service/manage.go	121	115
-internal/service/service.go	548	503
+internal/service/service.go	548	502
 internal/store/device.go	183	151
 internal/store/import.go	74	61
 internal/store/lock.go	55	48
@@ -36,7 +36,7 @@ internal/telegram/computers.go	187	146
 internal/telegram/config.go	16	16
 internal/telegram/format.go	114	111
 internal/telegram/render.go	190	145
-internal/web/api.go	155	106
+internal/web/api.go	155	105
 internal/web/auth.go	112	84
 internal/web/computers.go	85	58
 internal/web/cookies.go	40	32
