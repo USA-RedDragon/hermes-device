@@ -28,6 +28,7 @@ const (
 	KindToolStart       = "tool.start"
 	KindToolProgress    = "tool.progress"
 	KindToolComplete    = "tool.complete"
+	KindMessageStart    = "message.start"
 	KindMessageDelta    = "message.delta"
 	KindMessageComplete = "message.complete"
 	KindApprovalRequest = "approval.request"

@@ -48,6 +48,7 @@ type Event struct {
 	ReplayEpoch         string          `json:"replay_epoch"`
 	Seq                 int64           `json:"seq"`
 	ExecutionGeneration *int64          `json:"execution_generation,omitempty"`
+	AdmissionID         string          `json:"admission_id,omitempty"`
 }
 
 // ListParams is session.list's params.
@@ -117,6 +118,15 @@ type PendingAdmission struct {
 	Status              string `json:"status"`
 	ExecutionGeneration *int64 `json:"execution_generation"`
 	Text                string `json:"text"`
+}
+
+// InfoEvent is the session.info event type. Its payload carries the pending
+// list; message.start names the admission it started but not its text.
+const InfoEvent = "session.info"
+
+// InfoPayload is the part of a session.info payload the hub reads.
+type InfoPayload struct {
+	Pending []PendingAdmission `json:"pending"`
 }
 
 // AdmissionParams is prompt.cancel's params.

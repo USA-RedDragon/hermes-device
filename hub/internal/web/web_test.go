@@ -330,13 +330,13 @@ func TestEventStreamAndResume(t *testing.T) {
 	for _, ev := range evs {
 		kinds = append(kinds, ev.kind)
 	}
-	if strings.Join(kinds, ",") != "message.start,reasoning.delta,reasoning.delta,tool.start,tool.progress,tool.complete,message.delta,message.delta,message.complete" {
+	if strings.Join(kinds, ",") != "session.info,message.start,reasoning.delta,reasoning.delta,tool.start,tool.progress,tool.complete,message.delta,message.delta,message.complete" {
 		t.Fatalf("kinds = %v", kinds)
 	}
-	r2, stop2 := stream(t, c, e.url+"/api/sessions/pc/s1/events", evs[5].id)
+	r2, stop2 := stream(t, c, e.url+"/api/sessions/pc/s1/events", evs[6].id)
 	defer stop2()
 	again := readEvents(t, r2, "message.complete")
-	if len(again) != 3 || again[0].id != evs[6].id || again[0].kind != "message.delta" {
+	if len(again) != 3 || again[0].id != evs[7].id || again[0].kind != "message.delta" {
 		t.Fatalf("resumed = %+v", again)
 	}
 }

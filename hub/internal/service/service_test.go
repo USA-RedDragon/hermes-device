@@ -187,10 +187,15 @@ func TestAttachStreamsInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	evs := until(t, ch, hub.KindMessageComplete)
-	want := []string{"message.start", hub.KindReasoningDelta, hub.KindReasoningDelta, hub.KindToolStart,
+	want := []string{"session.info", hub.KindMessageStart, hub.KindReasoningDelta, hub.KindReasoningDelta, hub.KindToolStart,
 		hub.KindToolProgress, hub.KindToolComplete, hub.KindMessageDelta, hub.KindMessageDelta, hub.KindMessageComplete}
 	if !slices.Equal(kinds(evs), want) {
 		t.Fatalf("kinds = %v, want %v", kinds(evs), want)
+	}
+	// Hermes sends message.start without text; the hub adds the input's text
+	// from the pending list so a replay still shows the user's message.
+	if got := text(t, evs[1]); got != "hello" {
+		t.Fatalf("message.start text = %q", got)
 	}
 	last := snap.Seq
 	for _, ev := range evs {

@@ -33,6 +33,9 @@ type live struct {
 	generation int64
 	prompts    map[string]gateway.Prompt
 	inputs     map[string]gateway.PendingAdmission
+	// texts remembers each pending input's text until its turn starts, so
+	// message.start can carry it and a replay shows who said what.
+	texts map[string]string
 	seq        int64
 	snapshot   hub.Event
 	ring       []hub.Event
@@ -131,9 +134,36 @@ func (ls *live) flushEarly() {
 
 func (ls *live) setInputs(ps []gateway.PendingAdmission) {
 	ls.inputs = map[string]gateway.PendingAdmission{}
+	if ls.texts == nil {
+		ls.texts = map[string]string{}
+	}
 	for _, p := range ps {
 		ls.inputs[p.AdmissionID] = p
+		ls.texts[p.AdmissionID] = p.Text
 	}
+}
+
+// withText adds the started input's text to a message.start payload that
+// lacks one. ls.mu is held.
+func (ls *live) withText(ev gateway.Event) json.RawMessage {
+	text, ok := ls.texts[ev.AdmissionID]
+	if !ok || ev.AdmissionID == "" {
+		return ev.Payload
+	}
+	delete(ls.texts, ev.AdmissionID)
+	var p map[string]any
+	if json.Unmarshal(ev.Payload, &p) != nil || p == nil {
+		p = map[string]any{}
+	}
+	if s, _ := p["text"].(string); s != "" {
+		return ev.Payload
+	}
+	p["text"] = text
+	out, err := json.Marshal(p)
+	if err != nil {
+		return ev.Payload
+	}
+	return out
 }
 
 func (ls *live) setPrompts(ps []gateway.Prompt) {
@@ -166,6 +196,13 @@ func (ls *live) apply(ev gateway.Event) {
 		ls.generation = *ev.ExecutionGeneration
 	}
 	switch ev.Type {
+	case gateway.InfoEvent:
+		var p gateway.InfoPayload
+		if json.Unmarshal(ev.Payload, &p) == nil && p.Pending != nil {
+			ls.setInputs(p.Pending)
+		}
+	case hub.KindMessageStart:
+		ev.Payload = ls.withText(ev)
 	case hub.KindApprovalRequest:
 		var p gateway.Prompt
 		if json.Unmarshal(ev.Payload, &p) == nil && p.PromptID != "" {

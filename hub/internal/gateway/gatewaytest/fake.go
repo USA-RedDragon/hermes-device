@@ -216,13 +216,20 @@ func (g *Gateway) PublishOffline(sessionID, typ string, payload any) {
 }
 
 func (g *Gateway) publishLocked(s *Session, typ string, payload any) {
+	g.publishAdmissionLocked(s, typ, "", payload)
+}
+
+// publishAdmissionLocked publishes an event that names the admission it
+// belongs to on the frame, as Hermes does for turn events.
+func (g *Gateway) publishAdmissionLocked(s *Session, typ, admission string, payload any) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		panic(err)
 	}
 	s.seq++
 	gen := s.Generation
-	ev := gateway.Event{Type: typ, SessionID: s.ID, Payload: raw, ReplayEpoch: s.epoch, Seq: s.seq, ExecutionGeneration: &gen}
+	ev := gateway.Event{Type: typ, SessionID: s.ID, Payload: raw, ReplayEpoch: s.epoch, Seq: s.seq, ExecutionGeneration: &gen,
+		AdmissionID: admission}
 	s.ring = append(s.ring, ev)
 	for c := range s.subs {
 		c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: ev})
@@ -523,13 +530,14 @@ func (g *Gateway) hPromptSubmit(c *conn, p map[string]any) (any, string, func())
 	s.Generation++
 	s.Running = true
 	s.Messages = append(s.Messages, map[string]any{"role": "user", kText: str(p, kText)})
-	receipt := map[string]any{"admission_id": randHex(), "ref": map[string]any{kSessionID: s.ID},
+	admission := randHex()
+	receipt := map[string]any{"admission_id": admission, "ref": map[string]any{kSessionID: s.ID},
 		"sequence": 1, kStatus: "started", "outcome": nil, "authority_epoch": 1, kExecGen: s.Generation}
 	if g.HoldTurns {
 		return receipt, "", nil
 	}
 	text := str(p, kText)
-	return receipt, "", func() { g.turn(s.ID, text) }
+	return receipt, "", func() { g.turn(s.ID, admission, text) }
 }
 
 func (g *Gateway) hInterrupt(_ *conn, p map[string]any) (any, string, func()) {
@@ -563,11 +571,15 @@ func (g *Gateway) hApproval(_ *conn, p map[string]any) (any, string, func()) {
 	return map[string]any{kStatus: "resolved"}, "", nil
 }
 
-func (g *Gateway) turn(id, text string) {
+func (g *Gateway) turn(id, admission, text string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	s := g.sessions[id]
-	g.publishLocked(s, "message.start", map[string]any{kText: text})
+	// Like Hermes: session.info lists the input with its text, then
+	// message.start names the admission with an empty payload.
+	g.publishLocked(s, gateway.InfoEvent, map[string]any{"pending": []gateway.PendingAdmission{
+		{AdmissionID: admission, Status: "started", Text: text}}})
+	g.publishAdmissionLocked(s, "message.start", admission, map[string]any{})
 	if s.ShowReasoning {
 		g.publishLocked(s, "reasoning.delta", map[string]any{kText: "thinking about "})
 		g.publishLocked(s, "reasoning.delta", map[string]any{kText: text})
