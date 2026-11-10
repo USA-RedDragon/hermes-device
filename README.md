@@ -123,7 +123,15 @@ The release builds the image `ghcr.io/usa-reddragon/hermes-device-sandbox` (Alpi
 
 ## Versions
 
-Upgrade these together: the server's Hermes and every local Hermes that `chat` runs (same release), and the `hermes-device` image in the pod and the `hermes-device` binary on each PC (same release, protocol version 2).
+The server's Hermes and every local Hermes that `chat` runs must be the same release.
+
+The `hermes-device` image in the pod and the `hermes-device` binary on each PC should be the same release. Release 0.3.0 negotiates the exec leg protocol with its peer (versions 2 and 3), so a 0.2.0 binary still works with a 0.3.0 plugin and the other way round, but only version 3 keeps commands alive across a drop. Upgrade the pod first, then the PCs. When the two sides share no version, the leg closes with code 4426 and a message that names both versions, and `run` stops and prints it.
+
+### Reconnects and restarts
+
+With protocol version 3, a command keeps running when the exec leg drops, for example when the hub restarts or the network goes away. The device keeps the command's output that the plugin has not confirmed (`device.resume-buffer`, 1 MiB per command), and the plugin keeps the tool call waiting, both for the plugin's `grace_seconds` (default 120). When the device reconnects in time, it sends the missing output and the exit code, and the agent sees the command finish as if nothing happened.
+
+A restart of the Hermes gateway (also a rollout) cannot keep commands: they belong to the gateway process. The plugin fails them at once with exit 255 and a note, and the device kills them as soon as it sees the gateway stop, or at the latest when it reconnects to the new gateway. A restart of `run` also loses its commands: they fail with exit 255 when it reconnects.
 
 ## Configuration
 

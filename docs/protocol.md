@@ -1,6 +1,6 @@
 # hermes-device protocol
 
-Status: phase 1, protocol version 2. Pinned to Hermes Agent v0.22.7.
+Status: phase 3, exec leg protocol version 3 (version 2 peers still served). Pinned to Hermes Agent v0.22.7.
 
 This document defines every message and endpoint between the device client (`hermes-device`), hermes-hub and the Hermes side (the device plugin in the gateway process, and `acp-host` in the Hermes pod). The hub implements its side from this document. Where this document and code disagree, fix the code or this document in the same change.
 
@@ -47,7 +47,7 @@ Every WebSocket hop on every leg (device to hub, hub to backend) sends WebSocket
 
 A side that gets no pong within the deadline closes the hop with code `4408` (or drops the TCP connection if the close cannot be sent). The exec leg also has an end-to-end application ping (section 4.6), because a healthy device-to-hub hop says nothing about the plugin.
 
-Any HTTP proxy in front of the hub or the backend (for example a Gateway API HTTPRoute) MUST NOT time out these upgrades: give `/api/device/*` its own route rule with request and idle timeouts off. The client reconnects on any drop; phase 1 loses commands in flight on a drop (section 4.7).
+Any HTTP proxy in front of the hub or the backend (for example a Gateway API HTTPRoute) MUST NOT time out these upgrades: give `/api/device/*` its own route rule with request and idle timeouts off. The client reconnects on any drop. On a version 3 exec leg, commands in flight survive a drop for a grace period (section 4.7).
 
 ### 2.3 Close codes
 
@@ -60,13 +60,14 @@ The hub relays the backend's close code and reason to the device unchanged. Code
 | <!-- docgen:const pkg=protocol name=CloseAssertionRefused code=false -->4403<!-- /docgen:const --> | assertion refused | plugin, acp-host | reconnect with backoff (a hub or pod misconfiguration) |
 | <!-- docgen:const pkg=protocol name=ClosePingTimeout code=false -->4408<!-- /docgen:const --> | ping timeout | any | reconnect |
 | <!-- docgen:const pkg=protocol name=CloseReplaced code=false -->4409<!-- /docgen:const --> | replaced | plugin | `run` stops: another daemon with the same token took over |
-| <!-- docgen:const pkg=protocol name=CloseUnsupportedVersion code=false -->4426<!-- /docgen:const --> | unsupported version | plugin | stop, tell the user to upgrade |
+| <!-- docgen:const pkg=protocol name=CloseUnsupportedVersion code=false -->4426<!-- /docgen:const --> | unsupported version | plugin, device | stop, show the close reason (it names both sides' versions) and tell the user to upgrade |
 | <!-- docgen:const pkg=protocol name=CloseUnsupportedPlatform code=false -->4427<!-- /docgen:const --> | unsupported platform | plugin | stop: the device's OS (Windows) is not supported |
 | <!-- docgen:const pkg=protocol name=CloseBackendUnavailable code=false -->4502<!-- /docgen:const --> | backend unavailable | hub (also when the backend hop drops without a close frame) | reconnect with backoff |
 | `1008` | policy | Hermes plugin gate | reconnect with backoff (plugin disabled) |
 | `1011` | `hermes acp` exited | acp-host | reconnect with backoff |
 | `1013` | try again later | acp-host (process limit, or no gateway) | reconnect with backoff |
-| `1002` | protocol error | plugin (no hello in time) | reconnect with backoff |
+| `1002` | protocol error | plugin (no hello in time), device (no resume in time) | reconnect with backoff |
+| <!-- docgen:const pkg=protocol name=CloseServiceRestart code=false -->1012<!-- /docgen:const --> | service restart | plugin (uvicorn, when the gateway stops) | reconnect with backoff; on the exec leg the device kills its commands at once (section 4.7) |
 
 The hub accepts the device's upgrade only after its own upgrade to the backend succeeded. When the backend refuses or cannot be reached (an HTTP error, a refused connection, a timeout), the hub answers the device's upgrade with HTTP `502` and `{"error": "backend_unavailable"}`, and the client reconnects with backoff. Any HTTP answer other than `401` to an upgrade means reconnect with backoff.
 
@@ -140,15 +141,15 @@ Blank lines and lines starting with `#` are ignored. Several keys allow rotation
 
 Device to hub: `GET wss://<hub>/api/device/exec` with the device token. Hub to plugin: `GET ws://<backend>:9120/api/plugins/device/ws` (<!-- docgen:const pkg=protocol name=PluginExecPath -->`/api/plugins/device/ws`<!-- /docgen:const -->) with the assertion (`leg` `exec`). The hub MUST NOT send an `Origin` header and MUST send a `Host` header the gateway accepts (the gateway binds 0.0.0.0, which accepts any Host).
 
-Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->2<!-- /docgen:const -->.
+Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-- /docgen:const -->. The oldest version this release still speaks: <!-- docgen:const pkg=protocol name=MinVersion code=false -->2<!-- /docgen:const -->. Version 3 adds resume (section 4.7) and the output `offset`; everything else is as in version 2.
 
 ### 4.1 Handshake
 
 1. The plugin verifies the assertion before it reads any message. On failure it closes with `4403`.
 2. The device sends `hello` within <!-- docgen:const pkg=protocol name=HelloTimeout print=config -->`10s`<!-- /docgen:const --> of the upgrade. Otherwise the plugin closes with `1002`.
-3. If `hello.version` is not 2 the plugin closes with `4426`.
-4. The plugin answers `welcome`. From then on either side may send.
-5. If a connection for the same `device_id` exists, the plugin fails its pending commands (exit 255) and closes it with `4409`. Newest wins.
+3. Version negotiation. `hello.version` is the oldest version the device speaks and `hello.max_version` the newest (absent means equal to `version`). The plugin picks the newest version that both sides speak. A version 2 plugin reads only `version`, so a device that speaks 2 to 3 sends `"version": 2, "max_version": 3` and a version 2 plugin serves it as version 2. When no version is common, the plugin closes with `4426` and a reason that names both ranges and both releases, for example `hermes-device v0.4.0 speaks protocol 4 to 5; plugin 0.3.0 speaks 2 to 3; upgrade them together`. The hub relays the code and the reason (it cuts reasons to 120 bytes; the plugin keeps them shorter), and the client stops and shows the reason. A device that gets a `welcome.version` outside its own range closes with `4426` and a reason of the same form, and stops.
+4. The plugin answers `welcome` with the chosen version. On version 3 it sends `resume` (section 4.7) right after `welcome`, before any other message. From then on either side may send.
+5. If a connection for the same `device_id` exists, the plugin closes it with `4409`. Newest wins. On version 3 its pending commands move to the new connection and are listed in the `resume`; on version 2 they fail with exit 255.
 
 `hello` (device to plugin):
 
@@ -156,6 +157,7 @@ Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->2<!-
 {
   "type": "hello",
   "version": 2,
+  "max_version": 3,
   "roots": ["/home/alice/src"],
   "tmp_dir": "/home/alice/.cache/hermes-device/tmp",
   "home": "/home/alice",
@@ -163,12 +165,13 @@ Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->2<!-
   "os": "linux",
   "arch": "amd64",
   "shell": "bash",
-  "client_version": "v0.2.0"
+  "client_version": "v0.3.0"
 }
 ```
 
 | Field | Meaning |
 |---|---|
+| `version`, `max_version` | The oldest and the newest protocol version the device speaks (step 3) |
 | `roots` | Absolute directories, resolved through symlinks, that commands may run in. The device refuses any `exec` whose `cwd` is outside them |
 | `tmp_dir` | Absolute directory Hermes uses on the device for its shell snapshot files |
 | `home` | The device user's `$HOME`. The plugin checks writes against the credential denylist relative to it (section 8.6) |
@@ -177,11 +180,11 @@ Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->2<!-
 `welcome` (plugin to device):
 
 ```json
-{"type": "welcome", "version": 2, "device_id": "d_8f2c", "name": "desktop", "ping_interval": 25,
- "plugin_version": "0.2.0", "hermes_version": "v0.22.7"}
+{"type": "welcome", "version": 3, "device_id": "d_8f2c", "name": "desktop", "ping_interval": 25,
+ "plugin_version": "0.3.0", "hermes_version": "v0.22.7", "grace_seconds": 120}
 ```
 
-`device_id` and `name` come from the assertion.
+`device_id` and `name` come from the assertion. `version` is the chosen version. `grace_seconds` (version 3 only) is the plugin's resume grace (section 4.7). `client_version` in `hello` and `plugin_version` and `hermes_version` in `welcome` carry the release versions both ways, for display and for the `4426` reasons.
 
 Dev mode only (section 8.9): with no hub in between, `hello` also carries `"name"` and `"token"`, there is no assertion, and the plugin checks the token against its static device list. `device_id` is then the configured name.
 
@@ -205,10 +208,10 @@ The device answers each `exec` with zero or more `output` and exactly one `exit`
 ### 4.3 output (device to plugin)
 
 ```json
-{"type": "output", "id": "4b1e...", "data": "README.md\nmain.go\n"}
+{"type": "output", "id": "4b1e...", "data": "README.md\nmain.go\n", "offset": 0}
 ```
 
-Merged stdout and stderr, in order. Each `data` is valid UTF-8: the device never splits a character across messages, and replaces invalid bytes.
+Merged stdout and stderr, in order. Each `data` is valid UTF-8: the device never splits a character across messages, and replaces each invalid byte with U+FFFD. `offset` is the byte offset of the first byte of `data` (UTF-8, after the replacement) in the command's whole output. A version 2 plugin ignores it.
 
 ### 4.4 exit (device to plugin)
 
@@ -223,7 +226,7 @@ Merged stdout and stderr, in order. Each `data` is valid UTF-8: the device never
 | command's own | Normal exit. A command ended by a signal reports `128 + signal` |
 | <!-- docgen:const pkg=protocol name=ExitRefused code=false -->126<!-- /docgen:const --> with `error` | The device refused (cwd outside the roots, missing cwd) or could not start the command. No process ran |
 | <!-- docgen:const pkg=protocol name=ExitKilled code=false -->130<!-- /docgen:const --> with `killed` | Ended by `kill` or the device's own timeout |
-| <!-- docgen:const pkg=protocol name=ExitLost code=false -->255<!-- /docgen:const --> | Used by the plugin only, never sent: the device disconnected or was replaced while the command ran |
+| <!-- docgen:const pkg=protocol name=ExitLost code=false -->255<!-- /docgen:const --> | Set by the plugin when the device disconnected or was replaced while the command ran and no resume brought the command back (section 4.7). The device sends it, with `error`, only in answer to a `resume` that names a command it has no record of |
 
 ### 4.5 kill (plugin to device)
 
@@ -240,13 +243,49 @@ The device sends SIGTERM to the command's process group, then SIGKILL 2 seconds 
 {"type": "pong", "seq": 17}
 ```
 
-The plugin sends `ping` every `ping_interval` seconds; the device answers `pong` with the same `seq`. The device MAY send `ping` too and the plugin answers. A side that receives no message of any kind for 60 seconds closes with `4408`. These pass through the hub like any other message.
+The plugin sends `ping` every `ping_interval` seconds; the device answers `pong` with the same `seq`. The device sends `ping` too and the plugin answers. A side that receives no message of any kind for 60 seconds closes with `4408`. These pass through the hub like any other message.
+
+The plugin MUST handle messages in the order they arrive and answer a `ping` only after it handled every message before it. On version 3 the device uses this as an acknowledgement: the hub relays in order, so a `pong` tells the device that the plugin has every `output` and `exit` the device wrote before that `ping`.
 
 ### 4.7 Disconnects and resume
 
-When the exec leg drops, the plugin finishes every pending command of that device with exit 255 and a note, and the device kills every command it still runs. Bindings survive: the next connection of the same `device_id` serves them.
+Bindings always survive a drop: the next connection of the same `device_id` serves them. What happens to commands in flight depends on the version.
 
-`{"type": "resume"}` is reserved for phase 3 (keeping commands alive across a reconnect, with a grace period). Phase 1 peers MUST NOT send it and MUST ignore it.
+**Version 2.** When the exec leg drops, the plugin finishes every pending command of that device with exit 255 and a note, and the device kills every command it still runs.
+
+**Version 3.** Both sides keep commands for a grace period, so that a hub restart or a network drop does not fail them.
+
+The plugin side:
+
+1. When a version 3 leg drops, the plugin keeps the device's pending commands for `grace_seconds` (plugin setting, default <!-- docgen:const pkg=protocol name=DefaultGrace print=config -->`2m0s`<!-- /docgen:const -->, at most 3600; 0 turns resume off). The tool calls that wait on them keep waiting. New commands for the device fail at once, as for any device that is not connected.
+2. When the device connects again within the grace with version 3, the plugin moves those commands to the new connection and sends, right after `welcome`:
+
+   ```json
+   {"type": "resume", "commands": [{"id": "4b1e...", "offset": 1834}]}
+   ```
+
+   `commands` lists every command the plugin still waits for on this device (it may be empty), each with the number of output bytes it already has. A version 3 plugin always sends `resume`, also when the list is empty.
+3. After the grace, the commands finish with exit 255 and a note. A reconnect with version 2 also fails them.
+4. A killed command is never listed in a `resume`, so the device kills it on the resume. This covers a `kill` sent into a connection that was already dead and a `kill` while the command waits for a resume; in the second case the plugin finishes it at once with exit 130.
+5. When an `output` arrives with an `offset` below the bytes the plugin has, it drops the bytes it already has. When it arrives above, the plugin adds a note to the output that says how many bytes were lost.
+6. A leg that ends with `1012`, or whose handler the server cancels, is not parked: its pending commands fail at once with exit 255. uvicorn ends every socket with `1012` when the gateway stops, and the device kills its commands on `1012`, so nothing would resume them. Commands already parked for other devices keep their grace; in a stopping gateway they end with the process.
+
+The device side:
+
+1. The device keeps each command's output that the plugin has not acknowledged (section 4.6), up to `device.resume-buffer` bytes per command (default 1 MiB). When a command writes more before an acknowledgement, its oldest output goes first. It keeps a finished command's `exit` until it is acknowledged.
+2. When a version 3 leg drops for any reason other than a stop code of section 2.3 or `1012`, the device keeps its commands running for the welcome's `grace_seconds`, capped by `device.max-grace` (default 10 minutes). After that it kills them and forgets them. On `1012` it kills them at once.
+3. A version 3 device waits up to <!-- docgen:const pkg=protocol name=HelloTimeout print=config -->`10s`<!-- /docgen:const --> for the `resume` after `welcome`, answering pings meanwhile. Any other message, or no `resume` in time, closes the leg with `1002`.
+4. On `resume` the device kills and forgets every command it holds that the list does not name. For each named command it knows, it sends the buffered `output` messages that end after the given `offset` (with their original offsets) and then the `exit` if the command ended. For each named command it does not know, it sends `exit` with code 255 and an `error` that says the device has no record of it.
+5. A device that connects with version 2 to a plugin kills every command it still holds from an earlier version 3 leg.
+
+What a restart does:
+
+| Restart | Result |
+|---|---|
+| hub (close `1001`, then upgrades refused with `502` until it is back) | Commands keep running and resume when the device reconnects within the grace |
+| network drop, ping timeout (`4408`) | Same |
+| Hermes gateway, also a rollout to a new pod | The plugin's pending commands live in the gateway process's memory, so they cannot survive it. Hermes stops the running turns before it stops the listener (gateway/run_runtime.py), the plugin fails every command still pending on a connected device at once (point 6 above), and the device, which sees `1012`, kills its commands at once. If the device misses the `1012` (for example a pod that was killed), its next connection gets an empty `resume` from the new plugin process and it kills them then; if it cannot connect at all, it kills them after the grace. Nothing waits for the grace in either case |
+| `hermes-device run` | The daemon kills its commands when it stops. The plugin's `resume` to the new daemon names them, the daemon answers exit 255 for each, and the tool calls end at once |
 
 ## 5. Gateway leg and the chat splice
 
@@ -424,7 +463,7 @@ The bridge runs on the device, so it can read the editor's files and it knows th
 4. Reconnect: when the ACP leg drops, the bridge answers every editor request still waiting with error `-32603`, message `hermes-device: connection to Hermes lost; retry`, and reconnects with backoff. On the new connection it sends the params of the editor's last successful `initialize` and consumes the response, then, for each session the editor opened (a successful new, fork, load or resume), sends `session/load` with `{"sessionId", "cwd", "mcpServers": []}` and drops every `session/update` for that session until the load's response, which it also consumes. Those updates are the replayed history the editor already has. A load that fails is logged and the session is forgotten, and so is a session the editor closed with a successful `session/close`. Editor messages wait until the replay is done, at most 30 seconds; a request still waiting then is answered with the error above.
 5. Ids: the bridge sends every editor request to the agent under a string id of its own, `hermes-device-<n>`, and gives the response the editor's id back. Python re-encodes ids (`1e0` comes back as `1.0`, `"\u00e9"` as `"é"`), so this is the only way to match every response. The bridge's own requests use the same form. An editor message over 48 MiB is answered with `-32600`, because acp-host would close the leg.
 6. Agent requests (`session/request_permission`, `elicitation/create`) reach the editor with a bridge id `hermes-device-<n>`, and the editor's answer goes back under the agent's id. A new `hermes acp` process numbers its requests from the start again, so this keeps an answer meant for a lost connection from reaching a new request with the same id. Answers to requests of a lost connection are dropped.
-7. The bridge stops with a non-zero exit when the hub refuses the token (HTTP `401` on the upgrade or on a bind, or close `4401`) or closes with `4426`. Every other close or dial failure is retried. Stdout carries only JSON-RPC lines; logs go to stderr.
+7. The bridge stops with a non-zero exit when the hub refuses the token (HTTP `401` on the upgrade or on a bind, or close `4401`) or closes with `4426`. Every other close or dial failure is retried with backoff: a close with `1011` (the `hermes acp` child exited, as when acp-host restarts) or `1001` (hub shutdown), a connection that ends without a close, and an upgrade answered with a 5xx status. Each reconnect replays as in point 4. Stdout carries only JSON-RPC lines; logs go to stderr.
 
 ## 7. Hub HTTP API (device side)
 
@@ -510,6 +549,7 @@ The plugin is a Hermes user plugin named `device`, installed into `$HERMES_HOME/
 | `device_write_roots` | `[]` | Device directories the operator added to `HERMES_WRITE_SAFE_ROOT` so file tools can write to devices (section 8.7) |
 | `fallback` | `local` | What an unbound, never-bound session runs on: `local` (the pod shell, as without the plugin), `refuse`, or `device` (the sandbox device, section 8.10). `device` without `fallback_device` acts as `refuse` |
 | `fallback_device` | none | `fallback: device` only: the sandbox device, by device id (preferred) or by the unique name of a connected device |
+| `grace_seconds` | `120` | How long the pending commands of a dropped version 3 exec leg wait for the device to reconnect and resume them (section 4.7). At most 3600. `0` turns resume off |
 | `fallback_root` | `/work` | `fallback: device` only: absolute directory on the sandbox device that holds one working directory per session lineage. Must be inside the sandbox's roots |
 | `dev_static_tokens` | `false` | Dev mode (section 8.9) |
 | `devices` | `{}` | Dev mode only: `<name>: {token_env: <env var>}` or `{token: <at least 16 chars>}` |
@@ -578,7 +618,7 @@ Windows devices are not supported: the plugin needs POSIX absolute device paths,
 
 ### 8.9 Dev mode
 
-With `dev_static_tokens: true` the exec route also accepts version 1 and 2 `hello` messages with `name` and `token` and no assertion, checked against `devices`. It is for local tests without a hub. Never enable it on a pod the hub serves.
+With `dev_static_tokens: true` the exec route also accepts version 1 to 3 `hello` messages with `name` and `token` and no assertion, checked against `devices`. It is for local tests without a hub. Never enable it on a pod the hub serves.
 
 ### 8.10 Sandbox fallback
 
@@ -606,7 +646,7 @@ Mounted by the dashboard under `/api/plugins/device/` on the gateway listener (9
 
 | Route | Answer |
 |---|---|
-| `GET /info` | `200` `{"plugin_version", "hermes_version", "protocol_version": 2, "backend_id", "placeholder"}` |
+| `GET /info` | `200` `{"plugin_version", "hermes_version", "protocol_version": 3, "backend_id", "placeholder"}`. `protocol_version` is the newest exec leg version the plugin speaks |
 | `GET /devices` | `200` `{"devices": [Device]}` |
 | `GET /devices/{device_id}/dirs?path=<abs>` | `200` `{"path": <resolved>, "entries": [{"name": "src"}]}`: subdirectories only, sorted, at most 500, hidden ones included. `path` defaults to the first root |
 | `GET /bindings` | `200` `{"bindings": [Binding]}` |
@@ -644,4 +684,10 @@ Errors from the dirs route: `409` `device_offline` for any device that is not co
 
 ## 11. Versions
 
-The device client, the plugin and acp-host come from one hermes-device release and speak protocol version 2. The local Hermes that `chat` runs must be the same release as the server's Hermes (`chat` checks `hermes_version`). Upgrade both together.
+The device client, the plugin and acp-host come from one hermes-device release. Release 0.3.0 speaks exec leg protocol versions 2 and 3 and negotiates the newest both sides speak (section 4.1), so a 0.3.0 device works with a 0.2.0 plugin and the other way round, without resume. Upgrade the plugin first: devices then get resume as soon as they upgrade. A side that shares no version with its peer closes with `4426` and a reason that names both versions. The ACP and gateway legs did not change. The local Hermes that `chat` runs must be the same release as the server's Hermes (`chat` checks `hermes_version`).
+
+| Peers | Exec leg |
+|---|---|
+| device 0.3.0, plugin 0.3.0 | version 3, with resume |
+| device 0.3.0, plugin 0.2.0 | version 2 (the device's `hello.version` is 2) |
+| device 0.2.0, plugin 0.3.0 | version 2 (`hello` has no `max_version`) |
