@@ -33,12 +33,12 @@ type HTTP struct {
 
 // OIDC configures login through the OpenID Connect provider (Authentik).
 type OIDC struct {
-	IssuerURL     string   `name:"issuer_url" required:"true" description:"OIDC issuer URL, such as https://auth.example.com/application/o/hermes-hub/"`
-	ClientID      string   `name:"client_id" required:"true" description:"OIDC client ID"`
-	ClientSecret  string   `name:"client_secret" required:"true" secret:"true" description:"OIDC client secret"`
-	Scopes        []string `name:"scopes" default:"openid,profile,email" description:"Scopes to request. Authentik's profile scope carries preferred_username and groups"`
-	UsernameClaim string   `name:"username_claim" default:"preferred_username" description:"ID token claim that holds the user name that backends[].users lists"`
-	GroupsClaim   string   `name:"groups_claim" default:"groups" description:"ID token claim that holds the group names that backends[].groups lists"`
+	IssuerURL    string   `name:"issuer_url" required:"true" description:"OIDC issuer URL, such as https://auth.example.com/application/o/hermes-hub/"`
+	ClientID     string   `name:"client_id" required:"true" description:"OIDC client ID"`
+	ClientSecret string   `name:"client_secret" required:"true" secret:"true" description:"OIDC client secret"`
+	Scopes       []string `name:"scopes" default:"openid,profile,email" description:"Scopes to request. Authentik's profile scope carries preferred_username and groups"`
+	DisplayClaim string   `name:"display_claim" default:"preferred_username" description:"ID token claim shown as the user's name. Display only: identity is always the sub claim"`
+	GroupsClaim  string   `name:"groups_claim" default:"groups" description:"ID token claim that holds the group names that backends[].groups lists"`
 }
 
 // Session configures the login cookie.
@@ -50,6 +50,12 @@ type Session struct {
 // Store configures the embedded database.
 type Store struct {
 	Path string `name:"path" default:"/data/hermes-hub.db" description:"Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups"`
+}
+
+// User maps an OIDC subject to a hub user name.
+type User struct {
+	Sub  string `name:"sub" description:"OIDC sub claim of the user. Authentik's default sub mode is the hashed user ID"`
+	Name string `name:"name" description:"Hub user name, used by backends[].users, ui.default_backends and Telegram links"`
 }
 
 // UI configures the web UI per user. It changes only what the page shows
@@ -100,6 +106,7 @@ type Config struct {
 	Session  Session   `name:"session"`
 	UI       UI        `name:"ui"`
 	Store    Store     `name:"store"`
+	Users    []User    `name:"users" description:"Who may log in: each OIDC sub and its hub user name. A login with any other sub is refused. Only settable in the config file"`
 	Backends []Backend `name:"backends" description:"Hermes backends and who may use them. Only settable in the config file"`
 	Telegram Telegram  `name:"telegram"`
 }
@@ -110,6 +117,7 @@ var (
 	ErrShortSecret     = errors.New("session.secret must be at least 32 characters")
 	ErrPublicURL       = errors.New("http.public_url must be an absolute http or https URL with no path")
 	ErrBackend         = errors.New("invalid backend")
+	ErrUser            = errors.New("invalid user")
 	ErrDefaultBackend  = errors.New("ui.default_backends entries must be user=backend")
 )
 
@@ -123,6 +131,45 @@ func webURL(raw string) (*url.URL, bool) {
 	return u, true
 }
 
+// UserMap maps each sub to its hub user name.
+func (c *Config) UserMap() map[string]string {
+	out := make(map[string]string, len(c.Users))
+	for _, u := range c.Users {
+		out[u.Sub] = u.Name
+	}
+	return out
+}
+
+func (c *Config) validateUsers() error {
+	subs, names := map[string]bool{}, map[string]bool{}
+	for i, u := range c.Users {
+		if u.Sub == "" || u.Name == "" || strings.ContainsAny(u.Name, "=, ") {
+			return fmt.Errorf("%w: users[%d] needs sub and a name without spaces, commas or =", ErrUser, i)
+		}
+		if subs[u.Sub] || names[u.Name] {
+			return fmt.Errorf("%w: users[%d] repeats a sub or name", ErrUser, i)
+		}
+		subs[u.Sub], names[u.Name] = true, true
+	}
+	defaults, err := c.UI.DefaultBackendMap()
+	if err != nil {
+		return err
+	}
+	for user := range defaults {
+		if !names[user] {
+			return fmt.Errorf("%w: ui.default_backends names unknown user %q", ErrUser, user)
+		}
+	}
+	for i, b := range c.Backends {
+		for _, user := range b.Users {
+			if !names[user] {
+				return fmt.Errorf("%w: backends[%d].users names unknown user %q", ErrUser, i, user)
+			}
+		}
+	}
+	return nil
+}
+
 // Validate checks what tags can't and fills backend defaults.
 func (c *Config) Validate() error {
 	switch c.LogLevel {
@@ -130,7 +177,7 @@ func (c *Config) Validate() error {
 	default:
 		return ErrInvalidLogLevel
 	}
-	if _, err := c.UI.DefaultBackendMap(); err != nil {
+	if err := c.validateUsers(); err != nil {
 		return err
 	}
 	if err := telegram.Config(c.Telegram).Validate(); err != nil {

@@ -16,6 +16,11 @@ http:
 oidc:
   issuer_url: https://auth.example.test/application/o/hermes-hub/
   client_id: hub
+users:
+  - sub: 0a1b2c
+    name: alice
+  - sub: 3d4e5f
+    name: bob
 backends:
   - id: desktop
     url: http://desktop:9120/
@@ -68,6 +73,9 @@ func TestLoad(t *testing.T) {
 	if d, err := cfg.UI.DefaultBackendMap(); err != nil || len(d) != 0 {
 		t.Fatalf("ui defaults = %v %v", d, err)
 	}
+	if u := cfg.UserMap(); u["0a1b2c"] != "alice" || u["3d4e5f"] != "bob" || len(u) != 2 {
+		t.Fatalf("users = %v", u)
+	}
 	if cfg.Telegram.Enabled {
 		t.Fatal("telegram on by default")
 	}
@@ -89,6 +97,10 @@ func TestLoadErrors(t *testing.T) {
 		strings.Replace(file, "    password: pw\n    users", "    users", 1),
 		strings.Replace(file, "https://hub.example.test/", "https://hub.example.test/sub", 1),
 		file + "ui:\n  default_backends: [bob]\n",
+		file + "ui:\n  default_backends: [nobody=cluster]\n",
+		strings.Replace(file, "users: [alice]", "users: [alice]", 1),
+		strings.Replace(file, "sub: 3d4e5f", "sub: 0a1b2c", 1),
+		strings.Replace(file, "name: bob", "name: alice", 1),
 	} {
 		if _, err := load(t, secrets(), bad); err == nil {
 			t.Fatalf("accepted:\n%s", bad)

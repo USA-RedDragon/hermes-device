@@ -50,23 +50,24 @@ type Options struct {
 
 // Server is the web front end.
 type Server struct {
-	svc           hub.Service
-	links         hub.Links
-	tokens        hub.TokenStore
-	groups        GroupStore
-	log           *slog.Logger
-	oidc          *oidcClient
-	sessions      *sealer
-	logins        *sealer
-	ttl           time.Duration
-	origin        string
-	secure        bool
-	usernameClaim string
-	groupsClaim   string
-	keepAlive     time.Duration
-	linkPage      *template.Template
-	simple        map[string]bool
-	defaults      map[string]string
+	svc          hub.Service
+	links        hub.Links
+	tokens       hub.TokenStore
+	groups       GroupStore
+	log          *slog.Logger
+	oidc         *oidcClient
+	sessions     *sealer
+	logins       *sealer
+	ttl          time.Duration
+	origin       string
+	secure       bool
+	displayClaim string
+	users        map[string]string
+	groupsClaim  string
+	keepAlive    time.Duration
+	linkPage     *template.Template
+	simple       map[string]bool
+	defaults     map[string]string
 }
 
 // New returns a Server.
@@ -103,7 +104,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 			redirect: cfg.HTTP.PublicURL + "/auth/callback", scopes: cfg.OIDC.Scopes, httpClient: opts.HTTPClient},
 		sessions: sessions, logins: logins, ttl: cfg.Session.TTL,
 		origin: u.Scheme + "://" + u.Host, secure: u.Scheme == "https",
-		usernameClaim: cfg.OIDC.UsernameClaim, groupsClaim: cfg.OIDC.GroupsClaim, keepAlive: opts.KeepAlive,
+		displayClaim: cfg.OIDC.DisplayClaim, users: cfg.UserMap(), groupsClaim: cfg.OIDC.GroupsClaim, keepAlive: opts.KeepAlive,
 		simple: simple, defaults: defaults,
 		linkPage: template.Must(template.New("link").Parse(linkHTML)),
 	}, nil

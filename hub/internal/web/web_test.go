@@ -24,6 +24,7 @@ import (
 
 const (
 	userAlice   = "alice"
+	userBob   = "bob"
 	groupAdmins = "admins"
 	clientID    = "hub"
 )
@@ -50,8 +51,9 @@ func setup(t *testing.T) *hubEnv {
 	pub := "http://" + srv.Listener.Addr().String()
 	cfg := &config.Config{LogLevel: "info",
 		HTTP:    config.HTTP{PublicURL: pub},
-		OIDC:    config.OIDC{IssuerURL: is.srv.URL, ClientID: clientID, ClientSecret: "s3cret", Scopes: []string{"openid", "profile"}, UsernameClaim: "preferred_username", GroupsClaim: "groups"},
-		UI:      config.UI{SimpleUsers: []string{"bob"}, DefaultBackends: []string{"bob=home"}},
+		OIDC:    config.OIDC{IssuerURL: is.srv.URL, ClientID: clientID, ClientSecret: "s3cret", Scopes: []string{"openid", "profile"}, DisplayClaim: "preferred_username", GroupsClaim: "groups"},
+		Users:   []config.User{{Sub: "sub-alice", Name: userAlice}, {Sub: "sub-bob", Name: userBob}},
+		UI:      config.UI{SimpleUsers: []string{userBob}, DefaultBackends: []string{"bob=home"}},
 		Session: config.Session{Secret: strings.Repeat("k", 40), TTL: time.Hour},
 		Backends: []config.Backend{
 			{ID: "pc", URL: gw.URL(), Username: clientID, Password: "pw", Users: []string{userAlice}},
@@ -92,6 +94,7 @@ func get(t *testing.T, c *http.Client, u string) (*http.Response, string) {
 
 type me struct {
 	User    string   `json:"user"`
+	Display string   `json:"display"`
 	Groups  []string `json:"groups"`
 	CSRF    string   `json:"csrf"`
 	Simple  bool     `json:"simple"`
@@ -236,7 +239,7 @@ func TestAPIAuthorization(t *testing.T) {
 	e := setup(t)
 	c := client(t)
 	e.is.mu.Lock()
-	e.is.user, e.is.groups = "bob", []string{"family"}
+	e.is.user, e.is.groups = userBob, []string{"family"}
 	e.is.mu.Unlock()
 	m := login(t, e, c)
 	if !m.Simple || m.Default != "home" {
@@ -400,5 +403,45 @@ func TestStaticAndHeaders(t *testing.T) {
 		if resp, _ := get(t, c, e.url+f); resp.StatusCode != http.StatusOK {
 			t.Fatalf("%s = %d", f, resp.StatusCode)
 		}
+	}
+}
+
+func (is *issuer) as(sub, user string, groups ...string) {
+	is.mu.Lock()
+	defer is.mu.Unlock()
+	is.sub, is.user, is.groups = sub, user, groups
+}
+
+func TestIdentityIsSubNotUsername(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+
+	// A user who renamed themselves to alice in the provider is still not alice.
+	c := client(t)
+	e.is.as("sub-bob", userAlice, "family")
+	m := login(t, e, c)
+	if m.User != userBob || m.Display != userAlice {
+		t.Fatalf("renamed bob = %+v", m)
+	}
+	_, body := get(t, c, e.url+"/api/backends")
+	if body != `[{"id":"home","name":"home"}]`+"\n" {
+		t.Fatalf("renamed bob backends = %s", body)
+	}
+	if resp, _ := get(t, c, e.url+"/api/sessions/pc/s1/events"); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("renamed bob stream on alice's backend = %d", resp.StatusCode)
+	}
+
+	// An unknown sub with alice's user name gets no session at all.
+	c2 := client(t)
+	e.is.as("sub-mallory", userAlice, groupAdmins)
+	resp, body := get(t, c2, e.url+"/auth/login?next=/")
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(body, "not set up") {
+		t.Fatalf("unknown sub login = %d %s", resp.StatusCode, body)
+	}
+	if resp, _ := get(t, c2, e.url+"/api/me"); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unknown sub me = %d", resp.StatusCode)
+	}
+	if g, _ := e.store.Groups(context.Background(), userAlice); g != nil {
+		t.Fatalf("unknown sub wrote alice's groups: %v", g)
 	}
 }

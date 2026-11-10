@@ -110,73 +110,93 @@ func (c claims) list(name string) []string {
 
 var errLogin = errors.New("login failed")
 
+// identity is what a verified login says about the user.
+type identity struct {
+	sub, display, next string
+	groups             []string
+}
+
 func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
-	user, groups, next, err := s.finishLogin(r)
+	id, err := s.finishLogin(r)
 	s.clearCookie(w, loginCookie)
 	if err != nil {
 		s.log.Warn("login callback", "error", err.Error())
 		http.Error(w, "login failed", http.StatusUnauthorized)
 		return
 	}
+	user, ok := s.users[id.sub]
+	if !ok {
+		s.log.Warn("login refused: sub is not in users", "sub", id.sub, "display", id.display)
+		s.renderRefused(w)
+		return
+	}
 	if s.groups != nil {
-		if err := s.groups.SetGroups(r.Context(), user, groups); err != nil {
+		if err := s.groups.SetGroups(r.Context(), user, id.groups); err != nil {
 			s.log.Error("save groups", "user", user, "error", err.Error())
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 	}
-	sess := session{User: user, Groups: groups, CSRF: randomToken(), Expires: time.Now().Add(s.ttl).Unix()}
+	sess := session{User: user, Display: id.display, Groups: id.groups, CSRF: randomToken(), Expires: time.Now().Add(s.ttl).Unix()}
 	v, err := s.sessions.seal(sess)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	s.setCookie(w, sessionCookie, v, s.ttl)
-	s.log.Info("login", "user", user, "groups", groups)
-	http.Redirect(w, r, next, http.StatusFound)
+	s.log.Info("login", "user", user, "sub", id.sub, "display", id.display, "groups", id.groups)
+	http.Redirect(w, r, id.next, http.StatusFound)
 }
 
-func (s *Server) finishLogin(r *http.Request) (user string, groups []string, next string, err error) {
+// finishLogin checks the callback against the login cookie, exchanges the
+// code with the PKCE verifier and verifies the ID token and its nonce.
+func (s *Server) finishLogin(r *http.Request) (identity, error) {
+	fail := func(format string, a ...any) (identity, error) {
+		return identity{}, fmt.Errorf("%w: "+format, append([]any{errLogin}, a...)...)
+	}
 	c, cerr := r.Cookie(s.cookieName(loginCookie))
 	var l login
 	if cerr != nil || s.logins.open(c.Value, &l) != nil || time.Now().Unix() >= l.Expires {
-		return "", nil, "", fmt.Errorf("%w: missing or expired login cookie", errLogin)
+		return fail("missing or expired login cookie")
 	}
 	q := r.URL.Query()
 	if q.Get("error") != "" {
-		return "", nil, "", fmt.Errorf("%w: provider error %q", errLogin, q.Get("error"))
+		return fail("provider error %q", q.Get("error"))
 	}
 	if q.Get("state") == "" || q.Get("state") != l.State {
-		return "", nil, "", fmt.Errorf("%w: state mismatch", errLogin)
+		return fail("state mismatch")
 	}
 	provider, oc, err := s.oidc.get(r.Context())
 	if err != nil {
-		return "", nil, "", err
+		return identity{}, err
 	}
 	ctx := s.oidc.ctx(r.Context())
 	tok, err := oc.Exchange(ctx, q.Get("code"), oauth2.VerifierOption(l.Verifier))
 	if err != nil {
-		return "", nil, "", fmt.Errorf("%w: code exchange: %w", errLogin, err)
+		return fail("code exchange: %w", err)
 	}
 	raw, _ := tok.Extra("id_token").(string)
 	if raw == "" {
-		return "", nil, "", fmt.Errorf("%w: no id_token", errLogin)
+		return fail("no id_token")
 	}
 	idt, err := provider.Verifier(&oidc.Config{ClientID: oc.ClientID}).Verify(ctx, raw)
 	if err != nil {
-		return "", nil, "", fmt.Errorf("%w: id_token: %w", errLogin, err)
+		return fail("id_token: %w", err)
 	}
 	if idt.Nonce != l.Nonce {
-		return "", nil, "", fmt.Errorf("%w: nonce mismatch", errLogin)
+		return fail("nonce mismatch")
+	}
+	if idt.Subject == "" {
+		return fail("no sub claim")
 	}
 	cl := claims{}
 	if err := idt.Claims(&cl); err != nil {
-		return "", nil, "", fmt.Errorf("%w: claims: %w", errLogin, err)
+		return fail("claims: %w", err)
 	}
-	if _, ok := cl[s.groupsClaim]; !ok || cl.str(s.usernameClaim) == "" {
-		if info, err := provider.UserInfo(ctx, oauth2.StaticTokenSource(tok)); err == nil {
+	if _, ok := cl[s.groupsClaim]; !ok || cl.str(s.displayClaim) == "" {
+		if info, err := provider.UserInfo(ctx, oauth2.StaticTokenSource(tok)); err == nil && info.Subject == idt.Subject {
 			var extra claims
-			if info.Claims(&extra) == nil && info.Subject == idt.Subject {
+			if info.Claims(&extra) == nil {
 				for k, v := range extra {
 					if _, ok := cl[k]; !ok {
 						cl[k] = v
@@ -185,11 +205,7 @@ func (s *Server) finishLogin(r *http.Request) (user string, groups []string, nex
 			}
 		}
 	}
-	user = cl.str(s.usernameClaim)
-	if user == "" {
-		return "", nil, "", fmt.Errorf("%w: no %s claim", errLogin, s.usernameClaim)
-	}
-	return user, cl.list(s.groupsClaim), l.Next, nil
+	return identity{sub: idt.Subject, display: cl.str(s.displayClaim), groups: cl.list(s.groupsClaim), next: l.Next}, nil
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
@@ -199,7 +215,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	sess, _ := s.session(r)
-	writeJSON(w, http.StatusOK, map[string]any{"user": sess.User, "groups": sess.Groups, "csrf": sess.CSRF,
+	writeJSON(w, http.StatusOK, map[string]any{"user": sess.User, "display": sess.Display, "groups": sess.Groups, "csrf": sess.CSRF,
 		"simple": s.simple[sess.User], "default_backend": s.defaults[sess.User]})
 }
 

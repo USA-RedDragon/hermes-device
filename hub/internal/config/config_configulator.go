@@ -37,12 +37,12 @@ type hTTPShadow struct {
 }
 
 type oIDCShadow struct {
-	IssuerURL     *string   `json:"issuer_url"     toml:"issuer_url"     yaml:"issuer_url"`
-	ClientID      *string   `json:"client_id"      toml:"client_id"      yaml:"client_id"`
-	ClientSecret  *string   `json:"client_secret"  toml:"client_secret"  yaml:"client_secret"`
-	Scopes        *[]string `json:"scopes"         toml:"scopes"         yaml:"scopes"`
-	UsernameClaim *string   `json:"username_claim" toml:"username_claim" yaml:"username_claim"`
-	GroupsClaim   *string   `json:"groups_claim"   toml:"groups_claim"   yaml:"groups_claim"`
+	IssuerURL    *string   `json:"issuer_url"    toml:"issuer_url"    yaml:"issuer_url"`
+	ClientID     *string   `json:"client_id"     toml:"client_id"     yaml:"client_id"`
+	ClientSecret *string   `json:"client_secret" toml:"client_secret" yaml:"client_secret"`
+	Scopes       *[]string `json:"scopes"        toml:"scopes"        yaml:"scopes"`
+	DisplayClaim *string   `json:"display_claim" toml:"display_claim" yaml:"display_claim"`
+	GroupsClaim  *string   `json:"groups_claim"  toml:"groups_claim"  yaml:"groups_claim"`
 }
 
 type sessionShadow struct {
@@ -57,6 +57,11 @@ type uIShadow struct {
 
 type storeShadow struct {
 	Path *string `json:"path" toml:"path" yaml:"path"`
+}
+
+type userShadow struct {
+	Sub  *string `json:"sub"  toml:"sub"  yaml:"sub"`
+	Name *string `json:"name" toml:"name" yaml:"name"`
 }
 
 type backendShadow struct {
@@ -90,6 +95,7 @@ type configShadow struct {
 	Session  *sessionShadow   `json:"session"   toml:"session"   yaml:"session"`
 	UI       *uIShadow        `json:"ui"        toml:"ui"        yaml:"ui"`
 	Store    *storeShadow     `json:"store"     toml:"store"     yaml:"store"`
+	Users    *[]userShadow    `json:"users"     toml:"users"     yaml:"users"`
 	Backends *[]backendShadow `json:"backends"  toml:"backends"  yaml:"backends"`
 	Telegram *telegramShadow  `json:"telegram"  toml:"telegram"  yaml:"telegram"`
 }
@@ -126,8 +132,8 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 		cfg.OIDC.Scopes = lst
 		set("oidc.scopes", configulator.LayerDefault, "default tag")
 	}
-	cfg.OIDC.UsernameClaim = "preferred_username"
-	set("oidc.username_claim", configulator.LayerDefault, "default tag")
+	cfg.OIDC.DisplayClaim = "preferred_username"
+	set("oidc.display_claim", configulator.LayerDefault, "default tag")
 	cfg.OIDC.GroupsClaim = "groups"
 	set("oidc.groups_claim", configulator.LayerDefault, "default tag")
 	cfg.Session.TTL = time.Duration(int64(604800000000000))
@@ -216,9 +222,9 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			cfg.OIDC.Scopes = *s.OIDC.Scopes
 			set("oidc.scopes", configulator.LayerFile, file)
 		}
-		if s.OIDC.UsernameClaim != nil {
-			cfg.OIDC.UsernameClaim = *s.OIDC.UsernameClaim
-			set("oidc.username_claim", configulator.LayerFile, file)
+		if s.OIDC.DisplayClaim != nil {
+			cfg.OIDC.DisplayClaim = *s.OIDC.DisplayClaim
+			set("oidc.display_claim", configulator.LayerFile, file)
 		}
 		if s.OIDC.GroupsClaim != nil {
 			cfg.OIDC.GroupsClaim = *s.OIDC.GroupsClaim
@@ -257,6 +263,24 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			cfg.Store.Path = *s.Store.Path
 			set("store.path", configulator.LayerFile, file)
 		}
+	}
+	if s.Users != nil {
+		out := make([]User, len(*s.Users))
+		for i, esh := range *s.Users {
+			var e User
+			idx := "users[" + strconv.Itoa(i) + "]"
+			if esh.Sub != nil {
+				e.Sub = *esh.Sub
+				set(idx+".sub", configulator.LayerFile, file)
+			}
+			if esh.Name != nil {
+				e.Name = *esh.Name
+				set(idx+".name", configulator.LayerFile, file)
+			}
+			out[i] = e
+		}
+		cfg.Users = out
+		set("users", configulator.LayerFile, file)
 	}
 	if s.Backends != nil {
 		out := make([]Backend, len(*s.Backends))
@@ -441,9 +465,9 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.OIDC.Scopes = lst
 		set("oidc.scopes", configulator.LayerEnv, n)
 	}
-	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "oidc", "username_claim"); ok {
-		cfg.OIDC.UsernameClaim = v
-		set("oidc.username_claim", configulator.LayerEnv, n)
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "oidc", "display_claim"); ok {
+		cfg.OIDC.DisplayClaim = v
+		set("oidc.display_claim", configulator.LayerEnv, n)
 	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "oidc", "groups_claim"); ok {
 		cfg.OIDC.GroupsClaim = v
@@ -590,7 +614,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"oidc" + o.Separator + "client_id",
 		"oidc" + o.Separator + "client_secret",
 		"oidc" + o.Separator + "scopes",
-		"oidc" + o.Separator + "username_claim",
+		"oidc" + o.Separator + "display_claim",
 		"oidc" + o.Separator + "groups_claim",
 		"session" + o.Separator + "secret",
 		"session" + o.Separator + "ttl",
@@ -634,7 +658,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[11], "", "OIDC client secret")
 	fs.StringSlice(names[12], nil, "Scopes to request. Authentik's profile scope carries preferred_username and groups")
 	fs.Lookup(names[12]).DefValue = "[openid,profile,email]"
-	fs.String(names[13], "preferred_username", "ID token claim that holds the user name that backends[].users lists")
+	fs.String(names[13], "preferred_username", "ID token claim shown as the user's name. Display only: identity is always the sub claim")
 	fs.String(names[14], "groups", "ID token claim that holds the group names that backends[].groups lists")
 	fs.String(names[15], "", "Key for the session and login cookies. At least 32 characters")
 	fs.Duration(names[16], time.Duration(int64(604800000000000)), "How long a login lasts")
@@ -809,17 +833,17 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.OIDC.Scopes = v
 		set("oidc.scopes", configulator.LayerCLI, "--"+n)
 	}
-	if n := "oidc" + o.Separator + "username_claim"; fs.Changed(n) {
+	if n := "oidc" + o.Separator + "display_claim"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
 				Err:    err,
-				Path:   "oidc.username_claim",
+				Path:   "oidc.display_claim",
 				Source: "--" + n,
 			}
 		}
-		cfg.OIDC.UsernameClaim = v
-		set("oidc.username_claim", configulator.LayerCLI, "--"+n)
+		cfg.OIDC.DisplayClaim = v
+		set("oidc.display_claim", configulator.LayerCLI, "--"+n)
 	}
 	if n := "oidc" + o.Separator + "groups_claim"; fs.Changed(n) {
 		v, err := fs.GetString(n)
@@ -1116,6 +1140,40 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Store = &sub
+			}
+		case "users":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError("users", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []userShadow{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					ep := "users" + "[" + strconv.Itoa(len(out)) + "]"
+					et, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if et.Kind() != jsontext.KindBeginObject {
+						return configJSONError(ep, et, fmt.Errorf("expected an object, got %v", et.Kind()))
+					}
+					var el userShadow
+					if err := el.decodeJSON(dec, ep); err != nil {
+						return err
+					}
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.Users = &out
 			}
 		case "backends":
 			if dec.PeekKind() == jsontext.KindNull {
@@ -1456,7 +1514,7 @@ func (s *oIDCShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				}
 				s.Scopes = &out
 			}
-		case "username_claim":
+		case "display_claim":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
@@ -1465,9 +1523,9 @@ func (s *oIDCShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			case jsontext.KindNull:
 			case jsontext.KindString:
 				str := v.String()
-				s.UsernameClaim = &str
+				s.DisplayClaim = &str
 			default:
-				return configJSONError(path+".username_claim", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+				return configJSONError(path+".display_claim", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		case "groups_claim":
 			v, err := dec.ReadToken()
@@ -1661,6 +1719,55 @@ func (s *storeShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				s.Path = &str
 			default:
 				return configJSONError(path+".path", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *userShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "sub":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Sub = &str
+			default:
+				return configJSONError(path+".sub", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "name":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Name = &str
+			default:
+				return configJSONError(path+".name", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -2082,13 +2189,14 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "oidc.client_id = %v\n", c.OIDC.ClientID)
 	b.WriteString("oidc.client_secret = (redacted)\n")
 	fmt.Fprintf(&b, "oidc.scopes = %v\n", c.OIDC.Scopes)
-	fmt.Fprintf(&b, "oidc.username_claim = %v\n", c.OIDC.UsernameClaim)
+	fmt.Fprintf(&b, "oidc.display_claim = %v\n", c.OIDC.DisplayClaim)
 	fmt.Fprintf(&b, "oidc.groups_claim = %v\n", c.OIDC.GroupsClaim)
 	b.WriteString("session.secret = (redacted)\n")
 	fmt.Fprintf(&b, "session.ttl = %v\n", c.Session.TTL)
 	fmt.Fprintf(&b, "ui.simple_users = %v\n", c.UI.SimpleUsers)
 	fmt.Fprintf(&b, "ui.default_backends = %v\n", c.UI.DefaultBackends)
 	fmt.Fprintf(&b, "store.path = %v\n", c.Store.Path)
+	fmt.Fprintf(&b, "users = %v\n", c.Users)
 	b.WriteString("backends = (redacted)\n")
 	fmt.Fprintf(&b, "telegram.enabled = %v\n", c.Telegram.Enabled)
 	b.WriteString("telegram.token = (redacted)\n")

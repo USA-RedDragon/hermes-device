@@ -14,7 +14,17 @@ The hub speaks the canonical session protocol of Hermes <!-- docgen:const pkg=in
 
 ## How it works
 
-Each user logs in through the OIDC provider. The hub reads the user name from `oidc.username_claim` and the groups from `oidc.groups_claim`. A user may use a backend when the name is in `backends[].users` or a group is in `backends[].groups`. Every API call and every stream checks this. The hub stores each user's groups from the last login, so the Telegram bot can apply the same rules.
+Each user logs in through the OIDC provider. The hub identifies the user only by the ID token's `sub` claim, which the user cannot change, and maps it to a hub user name with `users[]`. A login whose `sub` is not in `users[]` is refused and gets no session. The `oidc.display_claim` (default `preferred_username`) is shown on screen and never used for access. A user may use a backend when their hub user name is in `backends[].users`, or a group from `oidc.groups_claim` is in `backends[].groups`. Every API call and every stream checks this. The hub stores each user's groups from the last login, so the Telegram bot can apply the same rules. Telegram links and `ui.default_backends` also use the hub user name.
+
+```yaml
+users:
+  - sub: "<sub of the first user>"
+    name: alice
+  - sub: "<sub of the second user>"
+    name: bob
+```
+
+A refused login logs its `sub` (`login refused: sub is not in users`), so you can copy the value from the hub log after a user's first try.
 
 For each backend the hub keeps one WebSocket to the Hermes Webapp listener. It signs in with a dashboard password provider (`POST /auth/password-login`), gets a single-use ticket (`POST /api/auth/ws-ticket`) and dials `/api/ws` with the subprotocols `hermes-gateway-v1` and `hermes-gateway-ticket.<ticket>`. Viewers of the same session share one gateway subscription.
 
@@ -52,7 +62,8 @@ dashboard:
 1. Create an OAuth2/OpenID provider: client type confidential, redirect URI `https://<public host>/auth/callback` (strict), signing key set, scopes `openid`, `profile` and `email`. Authentik's default `profile` scope mapping sends `preferred_username` and `groups`.
 2. Create an application with slug `hermes-hub` that uses the provider. The issuer is then `https://<authentik host>/application/o/hermes-hub/`.
 3. Bind the users or groups that may log in to the application.
-4. Give the hub `oidc.issuer_url`, `oidc.client_id` and `oidc.client_secret`.
+4. Keep the provider's subject mode at "Based on the User's hashed ID" (the default). Put each user's `sub` in the hub's `users[]`; the values belong in the deployment config, not in this repository.
+5. Give the hub `oidc.issuer_url`, `oidc.client_id` and `oidc.client_secret`.
 
 ## Telegram
 
@@ -86,13 +97,16 @@ Configuration is read from `config.yaml` in the working directory, or from the f
 | `oidc.client_id`            | string          |                            | `HUB_OIDC_CLIENT_ID`            | `--oidc.client_id`            | OIDC client ID (required)                                                                                                                                                               |
 | `oidc.client_secret`        | string          |                            | `HUB_OIDC_CLIENT_SECRET`        | `--oidc.client_secret`        | OIDC client secret (required) (secret)                                                                                                                                                  |
 | `oidc.scopes`               | list of string  | `openid,profile,email`     | `HUB_OIDC_SCOPES`               | `--oidc.scopes`               | Scopes to request. Authentik's profile scope carries preferred_username and groups                                                                                                      |
-| `oidc.username_claim`       | string          | `preferred_username`       | `HUB_OIDC_USERNAME_CLAIM`       | `--oidc.username_claim`       | ID token claim that holds the user name that backends[].users lists                                                                                                                     |
+| `oidc.display_claim`        | string          | `preferred_username`       | `HUB_OIDC_DISPLAY_CLAIM`        | `--oidc.display_claim`        | ID token claim shown as the user's name. Display only: identity is always the sub claim                                                                                                 |
 | `oidc.groups_claim`         | string          | `groups`                   | `HUB_OIDC_GROUPS_CLAIM`         | `--oidc.groups_claim`         | ID token claim that holds the group names that backends[].groups lists                                                                                                                  |
 | `session.secret`            | string          |                            | `HUB_SESSION_SECRET`            | `--session.secret`            | Key for the session and login cookies. At least 32 characters (required) (secret)                                                                                                       |
 | `session.ttl`               | string          | `168h`                     | `HUB_SESSION_TTL`               | `--session.ttl`               | How long a login lasts                                                                                                                                                                  |
 | `ui.simple_users`           | list of string  |                            | `HUB_UI_SIMPLE_USERS`           | `--ui.simple_users`           | User names that get the simple view: one chat with their default backend and plain wording. Backends, sessions and details stay one tap away                                            |
 | `ui.default_backends`       | list of string  |                            | `HUB_UI_DEFAULT_BACKENDS`       | `--ui.default_backends`       | Default backend per user, as user=backend pairs. A user without one gets their first backend                                                                                            |
 | `store.path`                | string          | `/data/hermes-hub.db`      | `HUB_STORE_PATH`                | `--store.path`                | Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups                                                                                          |
+| `users`                     | list of objects |                            | —                               | —                             | Who may log in: each OIDC sub and its hub user name. A login with any other sub is refused. Only settable in the config file                                                            |
+| `users[].sub`               | string          |                            | —                               | —                             | OIDC sub claim of the user. Authentik's default sub mode is the hashed user ID                                                                                                          |
+| `users[].name`              | string          |                            | —                               | —                             | Hub user name, used by backends[].users, ui.default_backends and Telegram links                                                                                                         |
 | `backends`                  | list of objects |                            | —                               | —                             | Hermes backends and who may use them. Only settable in the config file                                                                                                                  |
 | `backends[].id`             | string          |                            | —                               | —                             | Stable backend ID: lowercase letters, digits and dashes                                                                                                                                 |
 | `backends[].name`           | string          |                            | —                               | —                             | Display name                                                                                                                                                                            |

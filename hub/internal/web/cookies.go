@@ -65,6 +65,7 @@ func (s *sealer) open(value string, v any) error {
 // session is the content of the session cookie.
 type session struct {
 	User    string   `json:"u"`
+	Display string   `json:"d"`
 	Groups  []string `json:"g"`
 	CSRF    string   `json:"c"`
 	Expires int64    `json:"e"`

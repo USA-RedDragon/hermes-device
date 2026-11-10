@@ -28,8 +28,8 @@ oidc:
   # client_secret: "(secret)"
   # Scopes to request. Authentik's profile scope carries preferred_username and groups
   scopes: ["openid", "profile", "email"]
-  # ID token claim that holds the user name that backends[].users lists
-  username_claim: "preferred_username"
+  # ID token claim shown as the user's name. Display only: identity is always the sub claim
+  display_claim: "preferred_username"
   # ID token claim that holds the group names that backends[].groups lists
   groups_claim: "groups"
 session:
@@ -45,6 +45,10 @@ ui:
 store:
   # Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups
   path: "/data/hermes-hub.db"
+# Who may log in: each OIDC sub and its hub user name. A login with any other sub is refused. Only settable in the config file
+# users:
+#   - sub: ""
+#     name: ""
 # Hermes backends and who may use them. Only settable in the config file
 # backends:
 #   - id: ""

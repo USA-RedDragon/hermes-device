@@ -20,6 +20,21 @@ const linkHTML = `<!doctype html>
 <button class="primary" type="submit">Link account</button></form>
 {{end}}</main></body></html>`
 
+const refusedHTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Not set up - Hermes Hub</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main class="page"><h1>Not set up</h1>
+<p>You are signed in, but your account is not set up for Hermes Hub. Ask the owner to add you.</p></main></body></html>`
+
+// renderRefused answers a login whose sub is not in users. It sets no
+// session.
+func (s *Server) renderRefused(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write([]byte(refusedHTML))
+}
+
 type linkView struct {
 	User, Token, CSRF, Error string
 	Done                     bool

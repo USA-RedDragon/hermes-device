@@ -27,6 +27,7 @@ type issuer struct {
 
 	mu       sync.Mutex
 	user     string
+	sub      string
 	groups   []string
 	codes    map[string]grant
 	badNonce bool
@@ -78,7 +79,7 @@ func newIssuer(t *testing.T) *issuer {
 		is.mu.Lock()
 		g, found := is.codes[r.PostForm.Get("code")]
 		delete(is.codes, r.PostForm.Get("code"))
-		user, groups, badNonce := is.user, is.groups, is.badNonce
+		user, groups, badNonce, sub := is.user, is.groups, is.badNonce, is.sub
 		is.mu.Unlock()
 		sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
 		if id != is.clientID || sec != is.secret || !found || base64.RawURLEncoding.EncodeToString(sum[:]) != g.challenge ||
@@ -86,13 +87,16 @@ func newIssuer(t *testing.T) *issuer {
 			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
 			return
 		}
+		if sub == "" {
+			sub = "sub-" + user
+		}
 		nonce := g.nonce
 		if badNonce {
 			nonce = "other"
 		}
 		signer, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: is.key}, (&jose.SignerOptions{}).WithHeader("kid", "k1"))
 		tok, _ := jwt.Signed(signer).Claims(jwt.Claims{
-			Issuer: is.srv.URL, Subject: "sub-" + user, Audience: jwt.Audience{is.clientID},
+			Issuer: is.srv.URL, Subject: sub, Audience: jwt.Audience{is.clientID},
 			Expiry: jwt.NewNumericDate(time.Now().Add(time.Hour)), IssuedAt: jwt.NewNumericDate(time.Now()),
 		}).Claims(map[string]any{"nonce": nonce, "preferred_username": user, "groups": groups}).Serialize()
 		w.Header().Set("Content-Type", "application/json")

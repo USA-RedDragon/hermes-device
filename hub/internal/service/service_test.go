@@ -21,6 +21,8 @@ const (
 	liveTitle   = "Live one"
 	kText       = "text"
 	sLive       = "s-live"
+	userAlice   = "alice"
+	userBob   = "bob"
 )
 
 type groups map[string][]string
@@ -43,14 +45,14 @@ func setup(t *testing.T, opts service.Options) *env {
 		Messages: []map[string]any{{"role": "user", "text": "hi"}}})
 	gw.AddSession(&gatewaytest.Session{ID: "s-old", Title: "Old one", StartedAt: 1000})
 	gw2.AddSession(&gatewaytest.Session{ID: "w-1", Title: "Home's", Live: true, StartedAt: 3000})
-	cfg := &config.Config{LogLevel: "info", Backends: []config.Backend{
-		{ID: backendPC, Name: "Desktop", URL: gw.URL(), Username: "hub", Password: "pw", Users: []string{"alice"}},
+	cfg := &config.Config{LogLevel: "info", Users: []config.User{{Sub: "s1", Name: userAlice}, {Sub: "s2", Name: userBob}}, Backends: []config.Backend{
+		{ID: backendPC, Name: "Desktop", URL: gw.URL(), Username: "hub", Password: "pw", Users: []string{userAlice}},
 		{ID: backendHome, URL: gw2.URL(), Username: "hub", Password: "pw2", Groups: []string{"home"}},
 	}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	svc := service.New(cfg.Backends, groups{"bob": {"home"}, "alice": {"admins"}}, opts)
+	svc := service.New(cfg.Backends, groups{userBob: {"home"}, userAlice: {"admins"}}, opts)
 	t.Cleanup(svc.Close)
 	return &env{gw: gw, gw2: gw2, svc: svc}
 }
@@ -103,15 +105,15 @@ func TestBackendsAndSessions(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
 	ctx := context.Background()
-	bs, err := e.svc.Backends(ctx, "alice")
+	bs, err := e.svc.Backends(ctx, userAlice)
 	if err != nil || len(bs) != 1 || bs[0].ID != backendPC || bs[0].Name != "Desktop" {
 		t.Fatalf("alice backends = %v, %v", bs, err)
 	}
-	bs, _ = e.svc.Backends(ctx, "bob")
+	bs, _ = e.svc.Backends(ctx, userBob)
 	if len(bs) != 1 || bs[0].ID != backendHome || bs[0].Name != backendHome {
 		t.Fatalf("bob backends = %v", bs)
 	}
-	ss, err := e.svc.Sessions(ctx, "alice")
+	ss, err := e.svc.Sessions(ctx, userAlice)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +129,7 @@ func TestAuthorizationDenied(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
 	ctx := context.Background()
-	for _, user := range []string{"bob", "mallory", ""} {
+	for _, user := range []string{userBob, "mallory", ""} {
 		if _, _, err := e.svc.Attach(ctx, user, backendPC, sLive, 0); !errors.Is(err, hub.ErrForbidden) {
 			t.Fatalf("%q attach: %v", user, err)
 		}
@@ -144,14 +146,14 @@ func TestAuthorizationDenied(t *testing.T) {
 			t.Fatalf("%q new session: %v", user, err)
 		}
 	}
-	ss, _ := e.svc.Sessions(ctx, "bob")
+	ss, _ := e.svc.Sessions(ctx, userBob)
 	if len(ss) != 1 || ss[0].ID != "w-1" {
 		t.Fatalf("bob sessions = %+v", ss)
 	}
-	if _, _, err := e.svc.Attach(ctx, "alice", backendHome, "w-1", 0); !errors.Is(err, hub.ErrForbidden) {
+	if _, _, err := e.svc.Attach(ctx, userAlice, backendHome, "w-1", 0); !errors.Is(err, hub.ErrForbidden) {
 		t.Fatalf("alice on home's backend: %v", err)
 	}
-	if _, _, err := e.svc.Attach(ctx, "alice", "nope", "w-1", 0); !errors.Is(err, hub.ErrUnknownBackend) {
+	if _, _, err := e.svc.Attach(ctx, userAlice, "nope", "w-1", 0); !errors.Is(err, hub.ErrUnknownBackend) {
 		t.Fatalf("unknown backend: %v", err)
 	}
 	for _, c := range e.gw.Calls() {
@@ -165,7 +167,7 @@ func TestAttachStreamsInOrder(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
 	ctx := context.Background()
-	ch, stop, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 0)
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +183,7 @@ func TestAttachStreamsInOrder(t *testing.T) {
 	if !e.gw.ShowReasoning(sLive) {
 		t.Fatal("show_reasoning was not turned on")
 	}
-	if err := e.svc.Prompt(ctx, "alice", backendPC, sLive, "hello"); err != nil {
+	if err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "hello"); err != nil {
 		t.Fatal(err)
 	}
 	evs := until(t, ch, hub.KindMessageComplete)
@@ -200,7 +202,7 @@ func TestAttachStreamsInOrder(t *testing.T) {
 	if text(t, evs[len(evs)-1]) != "echo: hello" {
 		t.Fatalf("final text = %q", text(t, evs[len(evs)-1]))
 	}
-	ch2, stop2, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 0)
+	ch2, stop2, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,16 +226,16 @@ func TestViewerReconnectSinceSeq(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
 	ctx := context.Background()
-	ch, stop, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 0)
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	next(t, ch)
-	_ = e.svc.Prompt(ctx, "alice", backendPC, sLive, "one")
+	_ = e.svc.Prompt(ctx, userAlice, backendPC, sLive, "one")
 	evs := until(t, ch, hub.KindMessageComplete)
 	stop()
 	cut := evs[3].Seq
-	ch2, stop2, err := e.svc.Attach(ctx, "alice", backendPC, sLive, cut)
+	ch2, stop2, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, cut)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +244,7 @@ func TestViewerReconnectSinceSeq(t *testing.T) {
 	if !slices.Equal(kinds(got), kinds(evs[4:])) || got[0].Seq != evs[4].Seq {
 		t.Fatalf("replay = %v, want %v", kinds(got), kinds(evs[4:]))
 	}
-	ch3, stop3, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 1)
+	ch3, stop3, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +258,7 @@ func TestGatewayReconnectReplaysWithEventsSince(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
 	ctx := context.Background()
-	ch, stop, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 0)
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +304,7 @@ func TestAttachMidTurnBackfillsCurrentTurn(t *testing.T) {
 	e.gw.Publish("s-run", "message.complete", map[string]any{kText: "old"})
 	e.gw.Publish("s-run", "message.start", map[string]any{})
 	e.gw.Publish("s-run", "tool.start", map[string]any{"tool_id": "t9", "name": "terminal"})
-	ch, stop, err := e.svc.Attach(ctx, "alice", backendPC, "s-run", 0)
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, "s-run", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,18 +320,18 @@ func TestInterrupt(t *testing.T) {
 	e := setup(t, service.Options{})
 	e.gw.HoldTurns = true
 	ctx := context.Background()
-	ch, stop, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 0)
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stop()
 	next(t, ch)
-	if err := e.svc.Prompt(ctx, "alice", backendPC, sLive, "long job"); err != nil {
+	if err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "long job"); err != nil {
 		t.Fatal(err)
 	}
 	e.gw.Publish(sLive, "message.start", map[string]any{})
 	until(t, ch, "message.start")
-	if err := e.svc.Interrupt(ctx, "alice", backendPC, sLive); err != nil {
+	if err := e.svc.Interrupt(ctx, userAlice, backendPC, sLive); err != nil {
 		t.Fatal(err)
 	}
 	ev := until(t, ch, hub.KindMessageComplete)
@@ -342,30 +344,30 @@ func TestApproval(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
 	ctx := context.Background()
-	ch, stop, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 0)
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stop()
 	next(t, ch)
-	if err := e.svc.RespondApproval(ctx, "alice", backendPC, sLive, "ap-1", true); !errors.Is(err, hub.ErrUnknownApproval) {
+	if err := e.svc.RespondApproval(ctx, userAlice, backendPC, sLive, "ap-1", true); !errors.Is(err, hub.ErrUnknownApproval) {
 		t.Fatalf("unknown approval: %v", err)
 	}
-	_ = e.svc.Prompt(ctx, "alice", backendPC, sLive, "approve me")
+	_ = e.svc.Prompt(ctx, userAlice, backendPC, sLive, "approve me")
 	evs := until(t, ch, hub.KindApprovalRequest)
 	var p gateway.Prompt
 	_ = json.Unmarshal(evs[len(evs)-1].Data, &p)
 	if p.PromptID != "ap-1" || *p.Command != "rm -rf build" {
 		t.Fatalf("approval = %+v", p)
 	}
-	if err := e.svc.RespondApproval(ctx, "alice", backendPC, sLive, "ap-1", false); err != nil {
+	if err := e.svc.RespondApproval(ctx, userAlice, backendPC, sLive, "ap-1", false); err != nil {
 		t.Fatal(err)
 	}
 	evs = until(t, ch, hub.KindMessageComplete)
 	if text(t, evs[len(evs)-1]) != "approved: deny" {
 		t.Fatalf("result = %s", evs[len(evs)-1].Data)
 	}
-	if err := e.svc.RespondApproval(ctx, "alice", backendPC, sLive, "ap-1", true); !errors.Is(err, hub.ErrUnknownApproval) {
+	if err := e.svc.RespondApproval(ctx, userAlice, backendPC, sLive, "ap-1", true); !errors.Is(err, hub.ErrUnknownApproval) {
 		t.Fatalf("settled approval: %v", err)
 	}
 }
@@ -374,11 +376,11 @@ func TestNewSessionAndIdleDetach(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{IdleDetach: 50 * time.Millisecond})
 	ctx := context.Background()
-	s, err := e.svc.NewSession(ctx, "alice", backendPC)
+	s, err := e.svc.NewSession(ctx, userAlice, backendPC)
 	if err != nil || s.ID == "" || !s.Live {
 		t.Fatalf("new session = %+v, %v", s, err)
 	}
-	if err := e.svc.Prompt(ctx, "alice", backendPC, s.ID, "hi"); err != nil {
+	if err := e.svc.Prompt(ctx, userAlice, backendPC, s.ID, "hi"); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -395,7 +397,7 @@ func TestNewSessionAndIdleDetach(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	ch, stop, err := e.svc.Attach(ctx, "alice", backendPC, s.ID, 0)
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, s.ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,20 +411,20 @@ func TestLoginAgainWhenCookieExpires(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
 	ctx := context.Background()
-	if _, err := e.svc.Sessions(ctx, "alice"); err != nil {
+	if _, err := e.svc.Sessions(ctx, userAlice); err != nil {
 		t.Fatal(err)
 	}
 	e.gw.ExpireLogins()
 	e.gw.DropConnections()
 	time.Sleep(50 * time.Millisecond)
-	ss, err := e.svc.Sessions(ctx, "alice")
+	ss, err := e.svc.Sessions(ctx, userAlice)
 	if err != nil || len(ss) != 2 {
 		t.Fatalf("sessions after expiry = %v, %v", ss, err)
 	}
 	if n := e.gw.Logins(); n != 2 {
 		t.Fatalf("logins = %d, want 2", n)
 	}
-	st, _ := e.svc.BackendStatus(ctx, "alice")
+	st, _ := e.svc.BackendStatus(ctx, userAlice)
 	if st[backendPC] != "" {
 		t.Fatalf("status = %v", st)
 	}
@@ -432,7 +434,7 @@ func TestLateViewerGetsWholeBuffer(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{ViewerBuffer: 16})
 	ctx := context.Background()
-	ch, stop, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 0)
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +444,7 @@ func TestLateViewerGetsWholeBuffer(t *testing.T) {
 		e.gw.Publish(sLive, hub.KindMessageDelta, map[string]any{kText: "x"})
 		next(t, ch)
 	}
-	ch2, stop2, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 0)
+	ch2, stop2, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +463,7 @@ func TestReplayGapTakesNewSnapshot(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
 	ctx := context.Background()
-	ch, stop, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 0)
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
