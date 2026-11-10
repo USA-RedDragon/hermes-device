@@ -18,7 +18,10 @@ func TestPlainThinking(t *testing.T) {
 		"Waiting for 2 tools":      "Waiting for 2 tools",
 		"":                         "",
 	} {
-		raw, _ := json.Marshal(map[string]string{"text": in})
+		raw, err := json.Marshal(map[string]string{"text": in})
+		if err != nil {
+			t.Fatal(err)
+		}
 		var got map[string]string
 		if err := json.Unmarshal(plainThinking(raw), &got); err != nil || got["text"] != want {
 			t.Errorf("plainThinking(%q) = %q, want %q", in, got["text"], want)
