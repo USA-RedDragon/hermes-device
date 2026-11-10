@@ -2,6 +2,8 @@ package device
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
@@ -120,7 +122,8 @@ type leg struct {
 	cancel context.CancelFunc
 	once   sync.Once
 	done   chan struct{}
-	opened time.Time
+	// id is unique to the leg, for the store's record of its close.
+	id string
 	// closed is how the leg ended, set once by finish.
 	closed legClose
 }
@@ -134,7 +137,7 @@ type legClose struct {
 
 func (s *Server) newLeg(ctx context.Context, d hub.Device, name string, down, up *websocket.Conn) *leg {
 	lctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	l := &leg{s: s, dev: d, name: name, down: down, up: up, ctx: lctx, cancel: cancel, done: make(chan struct{}), opened: s.opts.Now()}
+	l := &leg{s: s, dev: d, name: name, down: down, up: up, ctx: lctx, cancel: cancel, done: make(chan struct{}), id: legID()}
 	s.mu.Lock()
 	if s.legs[d.ID] == nil {
 		s.legs[d.ID] = map[*leg]struct{}{}
@@ -143,7 +146,7 @@ func (s *Server) newLeg(ctx context.Context, d hub.Device, name string, down, up
 	closed := s.closed
 	s.mu.Unlock()
 	if l.records() {
-		s.recordLeg(ctx, d.ID, func(ctx context.Context) error { return s.store.ExecLegOpened(ctx, d.ID, l.opened) })
+		s.recordLeg(ctx, d.ID, func(ctx context.Context) error { return s.store.ExecLegOpened(ctx, d.ID, l.id) })
 	}
 	if closed {
 		l.finish(hub.CloseByHub, websocket.StatusGoingAway, websocket.StatusGoingAway, "hub shutting down")
@@ -170,7 +173,7 @@ func (l *leg) run() {
 		"backend_code", int(c.upCode), "closed_by", c.by)
 	if l.records() && c.code != protocol.CloseReplaced {
 		l.s.recordLeg(l.ctx, l.dev.ID, func(ctx context.Context) error {
-			return l.s.store.ExecLegClosed(ctx, l.dev.ID, l.opened, hub.LegClose{Code: int(c.code), Reason: c.reason, By: c.by,
+			return l.s.store.ExecLegClosed(ctx, l.dev.ID, l.id, hub.LegClose{Code: int(c.code), Reason: c.reason, By: c.by,
 				At: l.s.opts.Now()})
 		})
 	}

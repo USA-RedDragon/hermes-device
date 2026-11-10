@@ -136,12 +136,12 @@ type DeviceStore interface {
 	SeenDevice(ctx context.Context, id, addr string) error
 	// DismissAddressChange clears the address change note of user's device.
 	DismissAddressChange(ctx context.Context, user, id string) error
-	// ExecLegOpened records that an exec leg of the device opened at
-	// opened, and clears its LastClose.
-	ExecLegOpened(ctx context.Context, id string, opened time.Time) error
-	// ExecLegClosed records how the exec leg that opened at opened ended,
-	// unless another exec leg of the device opened since.
-	ExecLegClosed(ctx context.Context, id string, opened time.Time, c LegClose) error
+	// ExecLegOpened records that the exec leg legID of the device opened,
+	// and clears its LastClose. legID is unique to the leg.
+	ExecLegOpened(ctx context.Context, id, legID string) error
+	// ExecLegClosed records how the exec leg legID ended, unless another
+	// exec leg of the device opened since.
+	ExecLegClosed(ctx context.Context, id, legID string, c LegClose) error
 	// CodeFailure records a wrong pairing code typed by user and returns
 	// how many they typed within window.
 	CodeFailure(ctx context.Context, user string, window time.Duration) (int, error)

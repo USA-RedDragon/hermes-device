@@ -123,10 +123,10 @@ func pairRevoke(t *testing.T, e *hubEnv, c *http.Client, res hub.PairPoll, revok
 	ctx := context.Background()
 	m := login(t, e, c)
 	opened := time.Unix(1_800_000_000, 0)
-	if err := e.store.ExecLegOpened(ctx, res.Device.ID, opened); err != nil {
+	if err := e.store.ExecLegOpened(ctx, res.Device.ID, "leg-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.store.ExecLegClosed(ctx, res.Device.ID, opened, hub.LegClose{Code: 4426, Reason: "upgrade them together",
+	if err := e.store.ExecLegClosed(ctx, res.Device.ID, "leg-1", hub.LegClose{Code: 4426, Reason: "upgrade them together",
 		By: hub.CloseByBackend, At: opened.Add(time.Second)}); err != nil {
 		t.Fatal(err)
 	}

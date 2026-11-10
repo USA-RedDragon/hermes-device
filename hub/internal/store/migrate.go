@@ -86,14 +86,14 @@ var migrations = []migration{
 	{
 		version: 6,
 		sqlite: []string{
-			`ALTER TABLE devices ADD COLUMN exec_opened_ms INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE devices ADD COLUMN exec_leg TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE devices ADD COLUMN close_code INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE devices ADD COLUMN close_reason TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE devices ADD COLUMN close_by TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE devices ADD COLUMN closed_at INTEGER NOT NULL DEFAULT 0`,
 		},
 		postgres: []string{
-			`ALTER TABLE devices ADD COLUMN exec_opened_ms BIGINT NOT NULL DEFAULT 0`,
+			`ALTER TABLE devices ADD COLUMN exec_leg TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE devices ADD COLUMN close_code INTEGER NOT NULL DEFAULT 0`,
 			`ALTER TABLE devices ADD COLUMN close_reason TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE devices ADD COLUMN close_by TEXT NOT NULL DEFAULT ''`,

@@ -345,15 +345,15 @@ func (s *Store) SeenDevice(ctx context.Context, id, addr string) error {
 }
 
 // ExecLegOpened records an exec leg open. See hub.DeviceStore.
-func (s *Store) ExecLegOpened(ctx context.Context, id string, opened time.Time) error {
-	return s.exec(ctx, `UPDATE devices SET exec_opened_ms = ?, close_code = 0, close_reason = '', close_by = '', closed_at = 0
-		WHERE id = ?`, opened.UnixMilli(), id)
+func (s *Store) ExecLegOpened(ctx context.Context, id, legID string) error {
+	return s.exec(ctx, `UPDATE devices SET exec_leg = ?, close_code = 0, close_reason = '', close_by = '', closed_at = 0
+		WHERE id = ?`, legID, id)
 }
 
 // ExecLegClosed records how an exec leg ended. See hub.DeviceStore.
-func (s *Store) ExecLegClosed(ctx context.Context, id string, opened time.Time, c hub.LegClose) error {
+func (s *Store) ExecLegClosed(ctx context.Context, id, legID string, c hub.LegClose) error {
 	return s.exec(ctx, `UPDATE devices SET close_code = ?, close_reason = ?, close_by = ?, closed_at = ?
-		WHERE id = ? AND exec_opened_ms = ?`, c.Code, c.Reason, c.By, c.At.Unix(), id, opened.UnixMilli())
+		WHERE id = ? AND exec_leg = ?`, c.Code, c.Reason, c.By, c.At.Unix(), id, legID)
 }
 
 // DismissAddressChange clears a device's address change note. See

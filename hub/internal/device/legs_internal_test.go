@@ -25,3 +25,15 @@ func TestTruncateUTF8(t *testing.T) {
 		}
 	}
 }
+
+func TestLegIDsDiffer(t *testing.T) {
+	t.Parallel()
+	seen := map[string]bool{}
+	for range 1000 {
+		id := legID()
+		if len(id) != 32 || seen[id] {
+			t.Fatalf("leg id %q repeated or malformed", id)
+		}
+		seen[id] = true
+	}
+}

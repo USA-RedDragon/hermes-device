@@ -564,7 +564,7 @@ func TestExecLegClose(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		first, second := time.Unix(1_800_000_000, 0), time.Unix(1_800_000_001, 500_000_000)
+		first, second := "leg-a", "leg-b"
 		last := func() hub.LegClose {
 			t.Helper()
 			got, _, err := s.Device(ctx, d.ID)
@@ -579,7 +579,7 @@ func TestExecLegClose(t *testing.T) {
 		if err := s.ExecLegOpened(ctx, d.ID, second); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.ExecLegClosed(ctx, d.ID, first, hub.LegClose{Code: 4409, By: hub.CloseByBackend, At: second}); err != nil {
+		if err := s.ExecLegClosed(ctx, d.ID, first, hub.LegClose{Code: 4409, By: hub.CloseByBackend, At: time.Unix(1_800_000_001, 0)}); err != nil {
 			t.Fatal(err)
 		}
 		if c := last(); !c.At.IsZero() {
@@ -593,7 +593,7 @@ func TestExecLegClose(t *testing.T) {
 		if c := last(); c != want {
 			t.Fatalf("close = %+v, want %+v", c, want)
 		}
-		if err := s.ExecLegOpened(ctx, d.ID, at); err != nil {
+		if err := s.ExecLegOpened(ctx, d.ID, "leg-c"); err != nil {
 			t.Fatal(err)
 		}
 		if c := last(); c != (hub.LegClose{}) {
