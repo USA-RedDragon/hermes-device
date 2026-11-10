@@ -3,6 +3,8 @@ package cmd
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +15,8 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
+	"github.com/USA-RedDragon/hermes-hub/internal/device"
+	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
 	"github.com/USA-RedDragon/hermes-hub/internal/leader"
 	"github.com/USA-RedDragon/hermes-hub/internal/server"
 	"github.com/USA-RedDragon/hermes-hub/internal/service"
@@ -71,14 +75,27 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	}
 	defer st.Close()
 
-	opts := service.Options{HoldTimeout: cfg.Hold.Timeout}
+	dialers := map[string]*gateway.Dialer{}
+	for _, b := range cfg.Backends {
+		dialers[b.ID] = gateway.NewDialer(gateway.Credentials{BaseURL: b.URL, Provider: b.Provider, Username: b.Username, Password: b.Password})
+	}
+	opts := service.Options{HoldTimeout: cfg.Hold.Timeout, Dialer: func(b config.Backend) service.Dialer { return dialers[b.ID] }}
 	if st.Postgres() {
 		opts.Relay = st
 	}
 	svc := service.New(cfg.Backends, st, opts)
 	defer svc.Close()
 
-	ui, err := web.New(cfg, web.Options{Service: svc, Links: st, Tokens: st, Groups: st})
+	webOpts := web.Options{Service: svc, Links: st, Tokens: st, Groups: st}
+	devices, err := newDevices(cfg, st, svc, dialers)
+	if err != nil {
+		return err
+	}
+	if devices != nil {
+		webOpts.Devices, webOpts.DeviceAPI, webOpts.OnRevoke = st, devices.Handler(), devices.CloseDevice
+		webOpts.Sandboxes = devices.Sandboxes
+	}
+	ui, err := web.New(cfg, webOpts)
 	if err != nil {
 		return err
 	}
@@ -104,11 +121,39 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 
 	<-ctx.Done()
 	stop()
-	if err := shutdown(cfg.Shutdown, ui, svc, srv, stopBot, botDone); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+	if err := shutdown(cfg.Shutdown, ui, svc, devices, srv, stopBot, botDone); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	slog.Info("Shutdown complete")
 	return nil
+}
+
+// newDevices returns the hermes-device server, or nil when
+// device.enabled is off. Only backends with devices on get device legs.
+func newDevices(cfg *config.Config, st *store.Store, svc *service.Service, dialers map[string]*gateway.Dialer) (*device.Server, error) {
+	if !cfg.Device.Enabled {
+		return nil, nil //nolint:nilnil // nil means devices are off
+	}
+	key, err := cfg.Device.PrivateKey()
+	if err != nil {
+		return nil, err
+	}
+	var backends []config.Backend
+	ds := map[string]device.Dialer{}
+	for _, b := range cfg.Backends {
+		if b.Devices {
+			backends = append(backends, b)
+			ds[b.ID] = dialers[b.ID]
+		}
+	}
+	srv, err := device.New(device.Options{Store: st, Access: svc, Backends: backends, Dialers: ds, Key: key,
+		PublicURL: cfg.HTTP.PublicURL, Config: cfg.Device})
+	if err != nil {
+		return nil, err
+	}
+	pub, _ := key.Public().(ed25519.PublicKey)
+	slog.Info("Devices enabled", "backends", len(backends), "public_key", base64.StdEncoding.EncodeToString(pub))
+	return srv, nil
 }
 
 func openStore(ctx context.Context, cfg *config.Store) (*store.Store, error) {
@@ -161,7 +206,7 @@ func runBot(ctx context.Context, st *store.Store, bot *telegram.Bot, cfg config.
 // replica, stops the Telegram bot, which releases its leader lock, and
 // stops the HTTP server. The steps after the drain delay share one
 // timeout.
-func shutdown(cfg config.Shutdown, ui *web.Server, svc *service.Service, srv *server.Server,
+func shutdown(cfg config.Shutdown, ui *web.Server, svc *service.Service, devices *device.Server, srv *server.Server,
 	stopBot context.CancelFunc, botDone <-chan struct{}) error {
 	slog.Info("Shutting down: not ready, draining", "delay", cfg.DrainDelay)
 	ui.SetReady(false)
@@ -170,6 +215,9 @@ func shutdown(cfg config.Shutdown, ui *web.Server, svc *service.Service, srv *se
 	defer cancel()
 	svc.Drain()
 	ui.Drain()
+	if devices != nil {
+		devices.Drain()
+	}
 	stopBot()
 	select {
 	case <-botDone:
