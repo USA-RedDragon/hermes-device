@@ -51,6 +51,9 @@ const MsgLost = "hermes-device: connection to Hermes lost; retry"
 // IDPrefix starts the ids of requests the bridge sends itself.
 const IDPrefix = "hermes-device-"
 
+// keyMeta is the ACP extension member.
+const keyMeta = "_meta"
+
 // jsonNull is the JSON encoding of null.
 const jsonNull = "null"
 
@@ -271,6 +274,7 @@ func (b *Bridge) fromEditor(ctx context.Context, data []byte) error {
 		}
 		return nil
 	}
+	stripMeta(m)
 	var cwd, session string
 	switch method {
 	case methodPrompt:
@@ -301,6 +305,18 @@ func (b *Bridge) fromEditor(ctx context.Context, data []byte) error {
 		}
 	}
 	return b.forward(ctx, m, pendingReq{id: m["id"], method: method, params: m["params"], cwd: cwd, session: session}, withID)
+}
+
+// stripMeta removes a top-level _meta member from the params of an editor
+// request or notification. The hub refuses it (docs/protocol.md 6.1),
+// because the ACP SDK in Hermes merges it into the handler's arguments.
+func stripMeta(m object) {
+	p := params(m)
+	if _, ok := p[keyMeta]; !ok {
+		return
+	}
+	delete(p, keyMeta)
+	m["params"] = mustJSON(p)
 }
 
 // forward sends m on the current connection once it is ready, under a

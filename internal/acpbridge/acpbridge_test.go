@@ -730,3 +730,44 @@ func asMap(t *testing.T, v any) map[string]any {
 	}
 	return m
 }
+
+func TestStripsTopLevelMeta(t *testing.T) {
+	t.Parallel()
+	hub := newFakeHub(t)
+	ed := startBridge(t, hub)
+	a := hub.accept()
+
+	ed.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"_meta":{"x":1}},"_meta":{"session_id":"other"}}}`)
+	req := a.recv()
+	p := asMap(t, req["params"])
+	if _, ok := p["_meta"]; ok {
+		t.Errorf("initialize kept _meta: %v", p)
+	}
+	if asMap(t, p["clientCapabilities"])["_meta"] == nil {
+		t.Errorf("a nested _meta was removed: %v", p)
+	}
+	a.answer(req, map[string]any{keyProtocolVersion: 1})
+	ed.recv()
+
+	ed.send(`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"s","prompt":[{"type":"text","text":"hi","_meta":{"k":"v"}}],"_meta":{"cwd":"/"}}}`)
+	req = a.recv()
+	p = asMap(t, req["params"])
+	if _, ok := p["_meta"]; ok || p[keySessionID] != "s" {
+		t.Errorf("prompt params %v", p)
+	}
+	blocks, _ := p["prompt"].([]any)
+	if len(blocks) != 1 || asMap(t, blocks[0])["_meta"] == nil {
+		t.Errorf("prompt blocks %v", blocks)
+	}
+	a.answer(req, map[string]any{"stopReason": "end_turn"})
+	ed.recv()
+
+	ed.send(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s","_meta":null}}`)
+	got := a.recv()
+	if got["method"] != "session/cancel" || got["id"] != nil {
+		t.Fatalf("agent got %v", got)
+	}
+	if p := asMap(t, got["params"]); len(p) != 1 || p[keySessionID] != "s" {
+		t.Errorf("cancel params %v", p)
+	}
+}
