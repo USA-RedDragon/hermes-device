@@ -1,0 +1,22 @@
+# Sample configuration
+# Log level: debug, info, warn or error
+log-level: "info"
+server:
+  # WebSocket URL of the Hermes device plugin, for example ws://127.0.0.1:9119/api/plugins/device/ws
+  # url: ""
+device:
+  # Device name, as used in /device <name> <dir>
+  # name: ""
+  # Shared token for this device, matching the server's plugin config
+  # token: "(secret)"
+# Absolute directories commands may run in. A command whose working directory is outside all of them is refused
+# roots: []
+# Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory
+# tmp-dir: ""
+# Shell used to run commands
+shell: "bash"
+reconnect:
+  # First delay after a lost connection
+  min-backoff: "1s"
+  # Longest delay between attempts
+  max-backoff: "30s"
