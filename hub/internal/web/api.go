@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
@@ -226,6 +227,14 @@ func (s *Server) done(w http.ResponseWriter, err error) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// kindReconnect tells the page that the hub is shutting down and its
+// stream should reconnect, to another replica. It carries no event id, so
+// the page sends the last id it got, which another replica reads as 0.
+const kindReconnect = "hub.reconnect"
+
+// reconnectRetry is how soon the page reconnects after kindReconnect.
+const reconnectRetry = 250 * time.Millisecond
+
 type sseEvent struct {
 	Kind string          `json:"kind"`
 	Data json.RawMessage `json:"data"`
@@ -239,7 +248,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if since == "" {
 		since = r.URL.Query().Get("since")
 	}
-	sinceSeq, _ := strconv.ParseInt(since, 10, 64)
+	sinceSeq := s.sinceSeq(since)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -266,6 +275,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-s.draining:
+			s.flushEvents(w, ch)
+			_, _ = fmt.Fprintf(w, "retry: %d\ndata: {\"kind\":%q}\n\n", reconnectRetry.Milliseconds(), kindReconnect)
+			flusher.Flush()
+			return
 		case <-tick.C:
 			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
 				return
@@ -275,15 +289,45 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			data, err := json.Marshal(sseEvent{Kind: e.Kind, Data: e.Data})
-			if err != nil {
-				s.log.Warn("drop unencodable event", "kind", e.Kind, "error", err.Error())
-				continue
-			}
-			if _, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", e.Seq, data); err != nil {
+			if !s.writeEvent(w, e) {
 				return
 			}
 			flusher.Flush()
 		}
 	}
+}
+
+// flushEvents writes the events already waiting on ch.
+func (s *Server) flushEvents(w http.ResponseWriter, ch <-chan hub.Event) {
+	for {
+		select {
+		case e, ok := <-ch:
+			if !ok || !s.writeEvent(w, e) {
+				return
+			}
+		default:
+			return
+		}
+	}
+}
+
+// sinceSeq reads a Last-Event-ID. An id is "<instance>.<seq>": sequences
+// count per hub process, so an id from another replica, or from before a
+// restart, reads as 0 and the stream starts with a fresh snapshot.
+func (s *Server) sinceSeq(id string) int64 {
+	inst, seq, ok := strings.Cut(id, ".")
+	if !ok || inst != s.instance {
+		return 0
+	}
+	n, _ := strconv.ParseInt(seq, 10, 64)
+	return n
+}
+
+func (s *Server) writeEvent(w http.ResponseWriter, e hub.Event) bool {
+	data, err := json.Marshal(sseEvent{Kind: e.Kind, Data: e.Data})
+	if err != nil {
+		return true
+	}
+	_, err = fmt.Fprintf(w, "id: %s.%d\ndata: %s\n\n", s.instance, e.Seq, data)
+	return err == nil
 }

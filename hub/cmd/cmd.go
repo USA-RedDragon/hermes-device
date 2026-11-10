@@ -96,12 +96,11 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	} else {
 		close(botDone)
 	}
+	ui.SetReady(true)
 
 	<-ctx.Done()
-	slog.Info("Shutting down")
-	stopBot()
-	<-botDone
-	if err := srv.Stop(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+	stop()
+	if err := shutdown(cfg.Shutdown, ui, srv, stopBot, botDone); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	slog.Info("Shutdown complete")
@@ -151,4 +150,26 @@ func runBot(ctx context.Context, st *store.Store, bot *telegram.Bot, cfg config.
 			log.Error("Telegram bot stopped", "error", err.Error())
 		}
 	})
+}
+
+// shutdown fails /readyz, keeps serving for the drain delay, ends the
+// event streams so browsers reconnect to another replica, stops the
+// Telegram bot, which releases its leader lock, and stops the HTTP
+// server. The steps after the drain delay share one
+// timeout.
+func shutdown(cfg config.Shutdown, ui *web.Server, srv *server.Server,
+	stopBot context.CancelFunc, botDone <-chan struct{}) error {
+	slog.Info("Shutting down: not ready, draining", "delay", cfg.DrainDelay)
+	ui.SetReady(false)
+	time.Sleep(cfg.DrainDelay)
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+	defer cancel()
+	ui.Drain()
+	stopBot()
+	select {
+	case <-botDone:
+	case <-ctx.Done():
+		slog.Warn("Telegram bot did not stop in time")
+	}
+	return srv.Stop(ctx)
 }

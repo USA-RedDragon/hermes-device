@@ -13,10 +13,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/google/uuid"
 )
 
 //go:embed static
@@ -67,6 +70,10 @@ type Server struct {
 	keepAlive    time.Duration
 	linkPage     *template.Template
 	defaults     map[string]string
+	instance     string
+	ready        atomic.Bool
+	draining     chan struct{}
+	drainOnce    sync.Once
 }
 
 // New returns a Server.
@@ -102,8 +109,18 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		displayClaim: cfg.OIDC.DisplayClaim, users: cfg.UserMap(), groupsClaim: cfg.OIDC.GroupsClaim, keepAlive: opts.KeepAlive,
 		defaults: defaults,
 		linkPage: template.Must(template.New("link").Parse(linkHTML)),
+		draining: make(chan struct{}),
+		instance: uuid.NewString()[:8],
 	}, nil
 }
+
+// SetReady sets what /readyz answers: 200 when ready, else 503, so load
+// balancers stop sending requests before the hub shuts down.
+func (s *Server) SetReady(ready bool) { s.ready.Store(ready) }
+
+// Drain ends every event stream with a request to reconnect, which a
+// browser does to another replica. Streams opened after it end at once.
+func (s *Server) Drain() { s.drainOnce.Do(func() { close(s.draining) }) }
 
 // Handler is the HTTP handler of the whole UI.
 func (s *Server) Handler() http.Handler {
@@ -116,6 +133,13 @@ func (s *Server) Handler() http.Handler {
 		http.ServeFileFS(w, r, static, "index.html")
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !s.ready.Load() {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	})
 	mux.HandleFunc("GET /auth/login", s.handleLogin)
 	mux.HandleFunc("GET /auth/callback", s.handleCallback)
 	mux.Handle("POST /auth/logout", s.api(s.handleLogout))

@@ -933,13 +933,16 @@
     const es = new EventSource(view.base + "/events");
     stream = es;
     const chat = view;
+    let moving = false;
     es.onmessage = (m) => {
       let e;
       try { e = JSON.parse(m.data); } catch (_) { return; }
+      if (e.kind === "hub.reconnect") { moving = true; return; }
       chat.event(e.kind, e.data);
     };
-    es.onopen = () => banner("");
+    es.onopen = () => { moving = false; banner(""); };
     es.onerror = async () => {
+      if (moving && es.readyState === EventSource.CONNECTING) return;
       if (es.readyState === EventSource.CLOSED) {
         try { await api("GET", "/api/me"); } catch (_) { return; }
         banner("Could not open this chat. Pick it again to retry.", true);

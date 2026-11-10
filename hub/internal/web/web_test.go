@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -34,6 +35,7 @@ type hubEnv struct {
 	is    *issuer
 	gw    *gatewaytest.Gateway
 	store *store.Store
+	ui    *web.Server
 }
 
 func setup(t *testing.T) *hubEnv {
@@ -71,7 +73,7 @@ func setup(t *testing.T) *hubEnv {
 	srv.Config.Handler = s.Handler()
 	srv.Start()
 	t.Cleanup(srv.Close)
-	return &hubEnv{url: pub, is: is, gw: gw, store: st}
+	return &hubEnv{url: pub, is: is, gw: gw, store: st, ui: s}
 }
 
 func client(t *testing.T) *http.Client {
@@ -333,6 +335,11 @@ func TestEventStreamAndResume(t *testing.T) {
 	if strings.Join(kinds, ",") != "session.info,message.start,reasoning.delta,reasoning.delta,tool.start,tool.progress,tool.complete,message.delta,message.delta,message.complete" {
 		t.Fatalf("kinds = %v", kinds)
 	}
+	r3, stop3 := stream(t, c, e.url+"/api/sessions/pc/s1/events", "otherreplica."+strings.SplitN(evs[6].id, ".", 2)[1])
+	if got := readEvents(t, r3, "snapshot"); len(got) != 1 {
+		t.Fatalf("id from another replica resumed: %+v", got)
+	}
+	stop3()
 	r2, stop2 := stream(t, c, e.url+"/api/sessions/pc/s1/events", evs[6].id)
 	defer stop2()
 	again := readEvents(t, r2, "message.complete")
@@ -445,3 +452,33 @@ func TestIdentityIsSubNotUsername(t *testing.T) {
 		t.Fatalf("unknown sub wrote alice's groups: %v", g)
 	}
 }
+
+func TestReadinessAndDrain(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	c := client(t)
+	login(t, e, c)
+	if resp, _ := get(t, c, e.url+"/readyz"); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("readyz before ready = %d", resp.StatusCode)
+	}
+	e.ui.SetReady(true)
+	if resp, body := get(t, c, e.url+"/readyz"); resp.StatusCode != http.StatusOK || body != "ok" {
+		t.Fatalf("readyz = %d %q", resp.StatusCode, body)
+	}
+	r, stop := stream(t, c, e.url+"/api/sessions/pc/s1/events", "")
+	defer stop()
+	readEvents(t, r, "snapshot")
+	e.ui.SetReady(false)
+	if resp, _ := get(t, c, e.url+"/readyz"); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("readyz while draining = %d", resp.StatusCode)
+	}
+	e.ui.Drain()
+	evs := readEvents(t, r, "hub.reconnect")
+	if last := evs[len(evs)-1]; last.id != "" {
+		t.Fatalf("reconnect event has id %q", last.id)
+	}
+	if line, err := r.ReadString('\n'); !errors.Is(err, io.EOF) {
+		t.Fatalf("stream still open after drain: %q %v", line, err)
+	}
+}
+

@@ -87,9 +87,10 @@ The bot streams each chat's session through a subscription in the leader's own p
 - One replica: the default `store.driver: sqlite` keeps everything in the file `store.path`. Put it on a persistent volume and use the `Recreate` strategy.
 - Two or more replicas: set `store.driver: postgres` and `store.dsn` (environment variable `HUB_STORE_DSN`). Connect to the database directly, not through PgBouncer in transaction mode, because the Telegram leader lock needs a session. Each replica keeps its own gateway subscriptions; a page that reconnects to another replica gets a fresh snapshot.
 - To move from SQLite to PostgreSQL, set `store.import_path` to the old `store.path` for one start with the old volume mounted. The hub copies the rows once and records that in the database; later starts skip the copy, also when the file is still there.
+- On `SIGTERM` the hub makes `/readyz` fail, keeps serving for `shutdown.drain_delay` (default 5s) so load balancers stop sending it requests, tells every event stream to reconnect, stops the Telegram bot (which frees its lock), and then waits up to `shutdown.timeout` (default 20s) for open requests. Keep the pod's termination grace period above the sum of the two.
 - Give `http.public_url` the address that users open. It sets the redirect URI, the only allowed `Origin`, and `Secure` cookies (for `https`).
 - The event stream is a long-lived HTTP response. Turn off the request timeout on the route (Gateway API `timeouts.request: 0s`). The hub sends a comment every 15 seconds, so idle timeouts above that are fine.
-- `/healthz` answers `ok` without a login.
+- `/healthz` answers `ok` without a login. `/readyz` answers `ok` once the hub has started, and 503 from the moment it starts to shut down; use it as the readiness probe.
 
 ## Configuration
 
