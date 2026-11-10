@@ -17,6 +17,7 @@
       <span class="brand">Hermes</span>
       <button id="newchat" class="primary" type="button">New chat</button>
     </div>
+    <div class="search"><input id="search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off"></div>
     <nav id="sessions" class="sessions"></nav>
     <div class="side-foot">
       <span id="who" class="who"></span>
@@ -30,6 +31,14 @@
       <div class="title"><span id="title">Hermes</span><span id="subtitle" class="sub"></span></div>
       <button id="stop" class="danger" type="button" hidden>Stop</button>
     </header>
+    <details id="info" class="info" hidden>
+      <summary id="infoline" title="Show model and thinking settings"></summary>
+      <div class="info-body">
+        <label>Model <select id="model"></select></label>
+        <label id="effort-row">Thinking <select id="effort" title="How long the model thinks before it replies"></select></label>
+        <div id="settings-note" class="status" aria-live="polite"></div>
+      </div>
+    </details>
     <div id="banner" class="banner" hidden></div>
     <div id="welcome" class="welcome">
       <p>Pick a chat, or start a new one.</p>

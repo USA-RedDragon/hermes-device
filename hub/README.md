@@ -8,6 +8,9 @@ One web front end, behind OpenID Connect login, for many [Hermes Agent](https://
 - Open a session and continue it, also a live session that VS Code or the CLI started. The gateway keeps ownership of the session, so you can go back to VS Code at any time.
 - Reasoning, tool calls (arguments, progress, result) and the reply stream live, with no refresh.
 - New sessions, interrupt, and approval prompts.
+- Replies in Markdown, with colored code blocks and a Copy button. Model output never becomes HTML, and links open only `http`, `https` and `mailto` targets.
+- A line under the chat title with the model, how full its context is, reply speed and the working folder. It opens to pick the model and the thinking level.
+- Rename, archive and delete chats, and search their titles.
 - An optional Telegram bot (`telegram.*`) that uses the same backends and permissions.
 
 The hub speaks the canonical session protocol of Hermes <!-- docgen:const pkg=internal/gateway name=HermesVersion -->`v0.22.7`<!-- /docgen:const -->: JSON-RPC over the gateway's `/api/ws` WebSocket. A contract test (`internal/gateway/contract_test.go`) checks the protocol lines it depends on against a Hermes checkout (`HERMES_AGENT_SRC`, default `~/.hermes/hermes-agent`).
@@ -35,6 +38,12 @@ When the hub attaches to a session, it sets the session's `show_reasoning` contr
 ## The page
 
 Every user gets the same page. It opens one chat with the user's default backend (`ui.default_backends`, as `user=backend`, else their first backend), with live activity in plain words. "New chat" starts a fresh session there. "More" opens all backends and sessions, and each tool step keeps its details behind "details". Users differ only in which backends they may use.
+
+When a reply is done, its tool steps fold into one line ("Read a file, ran a command (3.4s)") that opens to show them. File edits show their diff and commands show their output.
+
+Chat changes use the gateway's `session.mutate` (rename, archive, delete, model), fenced on the session's revision. The model list comes from `model.options` and shows only models of providers that Hermes is signed in to. The thinking level is `config.set` with the key `reasoning`; Hermes applies it from the next turn. A chat that is working or has messages waiting cannot be deleted.
+
+Syntax colors come from [highlight.js](https://highlightjs.org/) 11.11.1 (BSD-3-Clause), in `internal/web/static/vendor`.
 
 ## Set up a Hermes backend
 
