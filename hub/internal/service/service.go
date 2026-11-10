@@ -240,7 +240,19 @@ func (s *Service) NewSession(ctx context.Context, user, backendID string) (hub.S
 	if err != nil {
 		return hub.Session{}, err
 	}
-	return b.create(ctx)
+	return b.create(ctx, b.cfg.CWD, "")
+}
+
+// NewSessionAt starts a session whose tools run in cwd on the backend's
+// server and whose row records rowCWD, as for a session that runs on a
+// device: cwd is the device plugin's placeholder and rowCWD the device
+// directory.
+func (s *Service) NewSessionAt(ctx context.Context, user, backendID, cwd, rowCWD string) (hub.Session, error) {
+	b, err := s.backend(ctx, user, backendID)
+	if err != nil {
+		return hub.Session{}, err
+	}
+	return b.create(ctx, cwd, rowCWD)
 }
 
 // Attach streams a session's events. See hub.Service.
@@ -654,6 +666,9 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 		for _, r := range res.Sessions {
 			s := hub.Session{ID: r.SessionID, BackendID: b.cfg.ID, Title: r.Title, Live: lp.Scope == gateway.ScopeLive,
 				Running: r.Running, MessageCount: r.MessageCount, Archived: lp.IncludeHidden}
+			if r.Source != nil {
+				s.Source = *r.Source
+			}
 			if r.StartedAt != nil {
 				s.UpdatedAt = time.UnixMilli(int64(*r.StartedAt * 1000))
 			}
@@ -667,7 +682,7 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 	return out, nil
 }
 
-func (b *backend) create(ctx context.Context) (hub.Session, error) {
+func (b *backend) create(ctx context.Context, cwd, rowCWD string) (hub.Session, error) {
 	c, err := b.conn(ctx)
 	if err != nil {
 		return hub.Session{}, err
@@ -676,7 +691,7 @@ func (b *backend) create(ctx context.Context) (hub.Session, error) {
 	defer cancel()
 	var snap gateway.Snapshot
 	if err := c.Call(cctx, gateway.MethodSessionCreate, gateway.CreateParams{
-		RequestID: uuid.NewString(), Source: "gui", CWD: b.cfg.CWD,
+		RequestID: uuid.NewString(), Source: gateway.SourceGUI, CWD: cwd, RowCWD: rowCWD,
 	}, &snap); err != nil {
 		return hub.Session{}, err
 	}
@@ -694,7 +709,8 @@ func (b *backend) create(ctx context.Context) (hub.Session, error) {
 	if snap.Info.Title != nil {
 		title = *snap.Info.Title
 	}
-	return hub.Session{ID: snap.SessionID, BackendID: b.cfg.ID, Title: title, Live: true, UpdatedAt: time.Now()}, nil
+	return hub.Session{ID: snap.SessionID, BackendID: b.cfg.ID, Title: title, Live: true, UpdatedAt: time.Now(),
+		Source: gateway.SourceGUI}, nil
 }
 
 // known pins and returns the hub's subscription to a session when it has

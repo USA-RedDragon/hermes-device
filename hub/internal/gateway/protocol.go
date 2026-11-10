@@ -82,6 +82,15 @@ type Event struct {
 	AdmissionID         string          `json:"admission_id,omitempty"`
 }
 
+// Session sources (CanonicalCreateParams.source). A session.list row
+// carries the source of the surface that started the session.
+const (
+	SourceGUI = "gui"
+	SourceCLI = "cli"
+	SourceTUI = "tui"
+	SourceACP = "acp"
+)
+
 // session.list scopes.
 const (
 	ScopeLive   = "live"
@@ -114,10 +123,13 @@ type ListResult struct {
 }
 
 // CreateParams is the subset of session.create's params the hub sends.
+// RowCWD is the cwd recorded on the session's row when it differs from
+// CWD, where the tools run.
 type CreateParams struct {
 	RequestID string `json:"request_id"`
 	Source    string `json:"source"`
 	CWD       string `json:"cwd,omitempty"`
+	RowCWD    string `json:"row_cwd,omitempty"`
 }
 
 // ResumeParams is session.resume's params.

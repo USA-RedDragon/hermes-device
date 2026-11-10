@@ -23,6 +23,7 @@ const (
 	sLive       = "s-live"
 	userAlice   = "alice"
 	userBob     = "bob"
+	roleUser    = "user"
 )
 
 type groups map[string][]string
@@ -43,7 +44,7 @@ func setup(t *testing.T, opts service.Options) *env {
 	t.Cleanup(gw.Close)
 	t.Cleanup(gw2.Close)
 	gw.AddSession(&gatewaytest.Session{ID: sLive, Title: liveTitle, Live: true, StartedAt: 2000,
-		Messages: []map[string]any{{"role": "user", "text": "hi"}}})
+		Messages: []map[string]any{{"role": roleUser, "text": "hi"}}})
 	gw.AddSession(&gatewaytest.Session{ID: "s-old", Title: "Old one", StartedAt: 1000})
 	gw2.AddSession(&gatewaytest.Session{ID: "w-1", Title: "Home", Live: true, StartedAt: 3000})
 	cfg := &config.Config{LogLevel: "info", Users: []config.User{{Sub: "s1", Name: userAlice}, {Sub: "s2", Name: userBob}}, Backends: []config.Backend{
@@ -555,5 +556,71 @@ func TestLostTurnAndQueuedInputs(t *testing.T) {
 	}
 	if !resolved || !cancelled {
 		t.Fatalf("resolve_unknown sent=%v prompt.cancel sent=%v", resolved, cancelled)
+	}
+}
+
+// TestJoinSessionsFromEditorsAndCLI checks that sessions VS Code (source
+// acp) and the CLI started are listed with their source and that the hub
+// joins them live: a viewer sees what the other surface does, and a
+// prompt from the hub goes to the same session.
+func TestJoinSessionsFromEditorsAndCLI(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ctx := context.Background()
+	e.gw.AddSession(&gatewaytest.Session{ID: "s-code", Title: "From VS Code", Live: true, StartedAt: 4000, Source: gateway.SourceACP,
+		Messages: []map[string]any{{"role": roleUser, "text": "fix the build"}}})
+	e.gw.AddSession(&gatewaytest.Session{ID: "s-cli", Title: "From the CLI", Live: true, StartedAt: 5000, Source: gateway.SourceCLI})
+	ss, err := e.svc.Sessions(ctx, userAlice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := map[string]string{}
+	for _, s := range ss {
+		src[s.ID] = s.Source
+	}
+	if src["s-code"] != gateway.SourceACP || src["s-cli"] != gateway.SourceCLI {
+		t.Fatalf("sources = %v", src)
+	}
+	for _, id := range []string{"s-code", "s-cli"} {
+		ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, id, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k := next(t, ch).Kind; k != hub.KindSnapshot {
+			t.Fatalf("%s: first event = %s", id, k)
+		}
+		e.gw.Publish(id, "message.delta", map[string]any{kText: "from the editor"})
+		if ev := until(t, ch, hub.KindMessageDelta); text(t, ev[len(ev)-1]) != "from the editor" {
+			t.Fatalf("%s: live event = %s", id, ev[len(ev)-1].Data)
+		}
+		if _, err := e.svc.Prompt(ctx, userAlice, backendPC, id, "and from the hub"); err != nil {
+			t.Fatal(err)
+		}
+		until(t, ch, hub.KindMessageComplete)
+		stop()
+	}
+}
+
+func TestNewSessionAtSendsRowCWD(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ctx := context.Background()
+	s, err := e.svc.NewSessionAt(ctx, userAlice, backendPC, "/opt/placeholder", "/home/alice/src")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := e.gw.Session(s.ID)
+	if !ok || got.CWD != "/opt/placeholder" || got.RowCWD != "/home/alice/src" || got.Source != gateway.SourceGUI || s.Source != gateway.SourceGUI {
+		t.Fatalf("session = %+v, %+v", got, s)
+	}
+	if _, err := e.svc.NewSessionAt(ctx, userBob, backendPC, "/p", "/home/bob"); !errors.Is(err, hub.ErrForbidden) {
+		t.Fatalf("bob on alice's backend = %v", err)
+	}
+	plain, err := e.svc.NewSession(ctx, userAlice, backendPC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := e.gw.Session(plain.ID); got.RowCWD != "" {
+		t.Fatalf("plain session row_cwd = %q", got.RowCWD)
 	}
 }

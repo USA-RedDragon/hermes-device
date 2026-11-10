@@ -21,6 +21,10 @@ type Session struct {
 	Archived     bool
 	MessageCount int
 	UpdatedAt    time.Time
+	// Source is the surface that started the session, such as "gui" (the
+	// hub or the web app), "cli", "tui" or "acp" (an editor such as VS
+	// Code). "" when the backend did not say.
+	Source string
 }
 
 // Event kinds delivered on an attached session.

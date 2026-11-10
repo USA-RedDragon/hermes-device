@@ -89,6 +89,8 @@ type Session struct {
 	RowCWD string
 	// RequestID is the request_id session.create named.
 	RequestID string
+	// Source is the surface that started the session; "" lists as "acp".
+	Source string
 	// Effort is the reasoning effort; "" is the profile default.
 	Effort string
 
@@ -745,7 +747,11 @@ func (g *Gateway) hSessionList(_ *conn, p map[string]any) (any, string, func()) 
 		if scope == "live" && !s.Live || s.Archived && (scope == "stored" || !hidden) {
 			continue
 		}
-		rows = append(rows, map[string]any{kSessionID: s.ID, "id": s.ID, kTitle: s.Title, "source": "acp",
+		source := s.Source
+		if source == "" {
+			source = gateway.SourceACP
+		}
+		rows = append(rows, map[string]any{kSessionID: s.ID, "id": s.ID, kTitle: s.Title, "source": source,
 			"started_at": s.StartedAt, "message_count": len(s.Messages), "running": s.Running, kModel: s.Model})
 	}
 	return map[string]any{"sessions": rows, kScope: scope}, "", nil
@@ -762,7 +768,7 @@ func (g *Gateway) hSessionCreate(c *conn, p map[string]any) (any, string, func()
 	}
 	s := &Session{ID: "local-" + randHex()[:16], Live: true, StartedAt: float64(time.Now().Unix()), epoch: randHex(),
 		prompts: map[string]gateway.Prompt{}, subs: map[*conn]string{}, Model: kSmall, Provider: kLocal,
-		CWD: str(p, "cwd"), RowCWD: str(p, "row_cwd"), RequestID: str(p, "request_id")}
+		CWD: str(p, "cwd"), RowCWD: str(p, "row_cwd"), RequestID: str(p, "request_id"), Source: str(p, "source")}
 	g.sessions[s.ID] = s
 	return g.snapshotLocked(c, s), "", nil
 }

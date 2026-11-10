@@ -191,6 +191,21 @@ func contract() map[string][]string {
 			"    row_cwd: str | None = None", "    safe_mode: bool = False", "    ignore_user_config: bool = False",
 			"    editor: dict[str, JsonValue] | None = None", "    session_id: str = ''",
 		},
+		// Sessions the hub starts on a computer run in the plugin placeholder and record the device
+		// directory as the row's cwd.
+		"hermes_state_local.py#row_cwd": {
+			"value = request.get('row_cwd') if isinstance(request, dict) else None",
+			"return policy['cwd'] if not isinstance(value, str) else (value or None)",
+		},
+		// Sessions that VS Code (acp) and the CLI started are in the live feed with their source.
+		"tui_gateway/contracts/canonical_sessions.py#list": {
+			"class CanonicalSessionListRow(Result):\n    session_id: str\n    id: str\n    title: str\n    source: str | None",
+		},
+		"hermes_state_sessions.py": {`INTERNAL_LISTING_SOURCES = ("kanban", "tool", "oneshot")`},
+		"gateway/session_controls.py#live": {
+			"if row.get('source') in INTERNAL_LISTING_SOURCES or entry.closed or (",
+			"'source': row.get('source'), 'started_at': row.get('started_at'),",
+		},
 		"tui_gateway/contracts/events.py": {
 			`event("message.start"`, `event("message.delta"`, `event("reasoning.delta"`, `event("thinking.delta"`,
 			`event("message.complete"`, `event("tool.start"`, `event("tool.progress"`, `event("tool.complete"`,
@@ -251,7 +266,10 @@ func TestContractAgainstSource(t *testing.T) {
 	}
 }
 
-const kSessionID = "session_id"
+const (
+	kSessionID = "session_id"
+	kRequestID = "request_id"
+)
 
 func jsonKeys(t *testing.T, v any) []string {
 	t.Helper()
@@ -285,12 +303,14 @@ func TestParamsUseOnlyKeysTheGatewayAccepts(t *testing.T) {
 		{gateway.InterruptParams{SessionID: "s"}, []string{"execution_generation", kSessionID}, true},
 		{gateway.EventsSinceParams{SessionID: "s", ReplayEpoch: "e"}, []string{"last_sequence", "replay_epoch", kSessionID}, true},
 		{gateway.MutateParams{SessionID: "s", RequestID: "r", Operation: "rename", Payload: map[string]string{"title": "t"}},
-			[]string{"expected_revision", "operation", "payload", "request_id", kSessionID}, true},
+			[]string{"expected_revision", "operation", "payload", kRequestID, kSessionID}, true},
 		{gateway.MutateParams{SessionID: "s", ExpectedGeneration: new(int64)},
-			[]string{"expected_generation", "expected_revision", "operation", "payload", "request_id", kSessionID}, true},
+			[]string{"expected_generation", "expected_revision", "operation", "payload", kRequestID, kSessionID}, true},
 		{gateway.ModelPayload{Model: "m", Provider: "p", Confirm: "c"}, []string{"confirm", "model", "provider"}, true},
 		{gateway.ModelOptionsParams{SessionID: "s"}, []string{"explicit_only", "include_unconfigured", "profile", "refresh", kSessionID}, false},
 		{gateway.ListParams{Scope: gateway.ScopeLive, Limit: 200, IncludeHidden: true}, listKeys, false},
+		{gateway.CreateParams{RequestID: "r", Source: gateway.SourceGUI, CWD: "/p", RowCWD: "/home/alice"},
+			[]string{"cwd", kRequestID, "row_cwd", "source"}, true},
 	}
 	for _, c := range cases {
 		got := jsonKeys(t, c.params)
