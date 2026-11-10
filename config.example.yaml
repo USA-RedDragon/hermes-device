@@ -1,20 +1,50 @@
 # Sample configuration
 # Log level: debug, info, warn or error
 log-level: "info"
-server:
-  # WebSocket URL of the Hermes device plugin, for example ws://127.0.0.1:9119/api/plugins/device/ws
+# Interval of WebSocket pings on every leg. Must be from 5s to 30s
+ping-interval: "25s"
+hub:
+  # Base URL of hermes-hub, for example https://hub.example.com. Needed by login, run, chat and acp
   # url: ""
+store:
+  # Keep the device token in the OS keyring when one is available
+  keyring: true
+  # File (mode 0600) for the device token when the keyring is off or unavailable. Defaults to token in the state directory
+  # token-file: ""
+  # Directory for the token file and the daemon's state file. Defaults to hermes-device in the user config directory
+  # state-dir: ""
 device:
-  # Device name, as used in /device <name> <dir>
-  # name: ""
-  # Shared token for this device, matching the server's plugin config
-  # token: "(secret)"
-# Absolute directories commands may run in. A command whose working directory is outside all of them is refused
-# roots: []
-# Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory
-# tmp-dir: ""
-# Shell used to run commands
-shell: "bash"
+  # Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Needed by run
+  # roots: []
+  # Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory
+  # tmp-dir: ""
+  # Shell used to run commands
+  shell: "bash"
+gateway:
+  # Loopback address of the chat splice. Port 0 picks a free port
+  listen: "127.0.0.1:0"
+chat:
+  # Local Hermes launcher, the same version as the server's Hermes
+  hermes: "hermes"
+acp-host:
+  # Address the ACP host listens on. Only hermes-hub may reach it
+  listen: ":9130"
+  # This backend's id, the aud the hub puts in its assertions. Needed by acp-host
+  # backend-id: ""
+  # Hub Ed25519 public keys: PEM PUBLIC KEY blocks or base64 lines of the raw 32 bytes
+  # hub-public-key: ""
+  # File holding the hub public keys, in the same format as hub-public-key
+  # hub-public-key-file: ""
+  # Hermes launcher that the host runs as <hermes> acp for each connection
+  hermes: "hermes"
+  # Server directory that stands in for the device directory in ACP session cwds. Must match the device plugin's placeholder. Needed by acp-host
+  # placeholder: ""
+  # Most hermes acp processes the host runs at once
+  max-processes: 8
+  # Bindings file the device plugin writes. Defaults to device/bindings.json in $HERMES_HOME
+  # bindings-file: ""
+  # Health URL of the pod's Hermes gateway. The host starts hermes acp only while it answers, because hermes acp starts a gateway of its own when none runs. Empty turns the check off
+  gateway-health-url: "http://127.0.0.1:9120/api/health"
 reconnect:
   # First delay after a lost connection
   min-backoff: "1s"
