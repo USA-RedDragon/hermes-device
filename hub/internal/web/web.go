@@ -127,6 +127,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/sessions/{backend}/{session}/prompt", s.api(s.handlePrompt))
 	mux.Handle("POST /api/sessions/{backend}/{session}/interrupt", s.api(s.handleInterrupt))
 	mux.Handle("POST /api/sessions/{backend}/{session}/approvals/{approval}", s.api(s.handleApproval))
+	mux.Handle("POST /api/sessions/{backend}/{session}/inputs/{input}/cancel", s.api(s.handleCancelInput))
+	mux.Handle("POST /api/sessions/{backend}/{session}/inputs/{input}/dismiss", s.api(s.handleDismissLost))
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
 	return headers(mux)
@@ -192,6 +194,8 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		errorJSON(w, http.StatusNotFound, "unknown backend")
 	case errors.Is(err, hub.ErrUnknownApproval):
 		errorJSON(w, http.StatusNotFound, "no such pending approval")
+	case errors.Is(err, hub.ErrUnknownInput):
+		errorJSON(w, http.StatusNotFound, "that message is no longer waiting")
 	default:
 		s.log.Warn("request failed", "error", err.Error())
 		msg := err.Error()

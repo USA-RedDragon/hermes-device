@@ -32,6 +32,7 @@ type live struct {
 	gwSeq      int64
 	generation int64
 	prompts    map[string]gateway.Prompt
+	inputs     map[string]gateway.PendingAdmission
 	seq        int64
 	snapshot   hub.Event
 	ring       []hub.Event
@@ -126,6 +127,13 @@ func (ls *live) flushEarly() {
 		ls.apply(ev)
 	}
 	ls.pending, ls.early = false, nil
+}
+
+func (ls *live) setInputs(ps []gateway.PendingAdmission) {
+	ls.inputs = map[string]gateway.PendingAdmission{}
+	for _, p := range ps {
+		ls.inputs[p.AdmissionID] = p
+	}
 }
 
 func (ls *live) setPrompts(ps []gateway.Prompt) {

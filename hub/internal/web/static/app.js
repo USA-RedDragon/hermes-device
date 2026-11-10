@@ -11,10 +11,11 @@
   let stream = null;
   let view = null;
   let me = {};
-  // One plain set of words for everyone; details stay behind "details".
-  const words = { approval: "Hermes wants to do this. Is that OK?", allow: "Yes, go ahead", deny: "No",
-    args: "details", result: "what happened", running: "working on it", done: "done", failed: "did not work",
-    working: "working on it", idle: "ready", title: "Hermes" };
+  let current = null;
+  const words = { approval: "Hermes asks to run this", allow: "Allow", deny: "Deny",
+    args: "Input", result: "Output", running: "Running", done: "Done", failed: "Failed",
+    working: "Working", queued: "Waiting for Hermes to start", waiting: "Waiting to run", newchat: "New chat",
+    lost: "Hermes restarted before it finished replying to this message. Messages sent after it wait until you dismiss it." };
   const t = (k) => words[k];
 
   async function api(method, path, body) {
@@ -44,76 +45,98 @@
   }
 
   function ago(iso) {
-    const t = Date.parse(iso);
-    if (!t || t < 0) return "";
-    const s = Math.max(0, (Date.now() - t) / 1000);
+    const v = Date.parse(iso);
+    if (!v || v < 0) return "";
+    const s = Math.max(0, (Date.now() - v) / 1000);
     if (s < 60) return "now";
     if (s < 3600) return Math.floor(s / 60) + "m";
     if (s < 86400) return Math.floor(s / 3600) + "h";
     return Math.floor(s / 86400) + "d";
   }
 
+  const chatHash = (b, s) => "#/s/" + encodeURIComponent(b) + "/" + encodeURIComponent(s);
+
+  function openSide(open) {
+    $("side").classList.toggle("open", open);
+    $("scrim").hidden = !open;
+  }
+
+  // Sidebar: every chat on every backend the user may use. Empty chats are
+  // hidden unless open. Backend headings show only when there is more than one.
+  let listing = false;
+  async function refreshList() {
+    if (listing) return;
+    listing = true;
+    try {
+      const [backends, sessions] = await Promise.all([api("GET", "/api/backends"), api("GET", "/api/sessions")]);
+      drawList(backends, sessions);
+    } catch (e) {
+      if (e.message !== "login required") banner("Could not load chats: " + e.message, true);
+    } finally {
+      listing = false;
+    }
+  }
+
+  function drawList(backends, sessions) {
+    const nav = $("sessions");
+    nav.replaceChildren();
+    if (!backends.length) {
+      nav.append(el("p", "none", "No assistant is set up for you yet."));
+      $("newchat").disabled = true;
+      return;
+    }
+    $("newchat").disabled = false;
+    const many = backends.length > 1;
+    for (const b of backends) {
+      const group = el("div", "group");
+      if (many) {
+        const h = el("div", "group-head");
+        h.append(el("span", "grow", b.name));
+        const nb = el("button", "ghost", "+");
+        nb.type = "button";
+        nb.title = "New chat on " + b.name;
+        nb.onclick = () => newChat(b.id);
+        h.append(nb);
+        group.append(h);
+      }
+      if (b.error) group.append(el("p", "err", "Unreachable: " + b.error));
+      const mine = sessions
+        .filter((s) => s.backend_id === b.id)
+        .filter((s) => s.running || s.message_count > 0 || (current && current.b === b.id && current.s === s.id))
+        .sort((x, y) => (y.running - x.running) || (Date.parse(y.updated_at) - Date.parse(x.updated_at)));
+      if (!mine.length && !b.error) group.append(el("p", "none", "No chats yet."));
+      for (const s of mine) {
+        const a = el("a", "item");
+        a.href = chatHash(b.id, s.id);
+        if (current && current.b === b.id && current.s === s.id) a.classList.add("active");
+        if (s.running) { const d = el("span", "dot"); d.title = "Working"; a.append(d); }
+        a.append(el("span", "name", s.title || t("newchat")), el("span", "when", ago(s.updated_at)));
+        a.onclick = () => openSide(false);
+        group.append(a);
+      }
+      nav.append(group);
+    }
+  }
+
+  async function newChat(backendID) {
+    const btn = $("newchat");
+    btn.disabled = true;
+    try {
+      const id = backendID || me.default_backend || (await api("GET", "/api/backends"))[0]?.id;
+      if (!id) { banner("No assistant is set up for you yet.", true); return; }
+      const s = await api("POST", "/api/sessions", { backend_id: id });
+      openSide(false);
+      location.hash = chatHash(id, s.id);
+    } catch (e) {
+      banner("Could not start a chat: " + e.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   function closeStream() {
     if (stream) stream.close();
     stream = null;
-  }
-
-  async function showList() {
-    closeStream();
-    view = null;
-    $("list").hidden = false;
-    $("chat").hidden = true;
-    $("composer").hidden = true;
-    $("back").hidden = false;
-    $("stop").hidden = true;
-    $("title").textContent = "All chats";
-    $("subtitle").textContent = "";
-    $("more").hidden = true;
-    $("newchat").hidden = true;
-    banner("");
-    const list = $("list");
-    let backends, sessions;
-    try {
-      [backends, sessions] = await Promise.all([api("GET", "/api/backends"), api("GET", "/api/sessions")]);
-    } catch (e) {
-      banner("Could not load sessions: " + e.message, true);
-      return;
-    }
-    list.replaceChildren();
-    if (!backends.length) list.append(el("p", "empty", "No Hermes backends are mapped to your account."));
-    for (const b of backends) {
-      const sec = el("section", "backend");
-      const h = el("h2");
-      h.append(el("span", "grow", b.name));
-      const nb = el("button", "", "New session");
-      nb.onclick = async () => {
-        nb.disabled = true;
-        try {
-          const s = await api("POST", "/api/sessions", { backend_id: b.id });
-          location.hash = "#/s/" + encodeURIComponent(b.id) + "/" + encodeURIComponent(s.id);
-        } catch (e) {
-          banner("Could not start a session: " + e.message, true);
-          nb.disabled = false;
-        }
-      };
-      h.append(nb);
-      sec.append(h);
-      if (b.error) sec.append(el("p", "err", "Unreachable: " + b.error));
-      const ul = el("ul", "sessions");
-      const mine = sessions.filter((s) => s.backend_id === b.id);
-      if (!mine.length) ul.append(el("li", "empty", b.error ? "No sessions loaded." : "No sessions yet."));
-      for (const s of mine) {
-        const li = el("li");
-        const a = el("a");
-        a.href = "#/s/" + encodeURIComponent(b.id) + "/" + encodeURIComponent(s.id);
-        a.append(el("span", "dot" + (s.live ? " live" : "")), el("span", "name", s.title || s.id), el("span", "when", ago(s.updated_at)));
-        a.title = s.live ? "Live" : "Stored";
-        li.append(a);
-        ul.append(li);
-      }
-      sec.append(ul);
-      list.append(sec);
-    }
   }
 
   // Chat view state for one session.
@@ -136,64 +159,110 @@
     }
 
     stick() {
-      const d = document.scrollingElement;
-      return d.scrollHeight - d.scrollTop - d.clientHeight < 120;
+      const l = this.log;
+      return l.scrollHeight - l.scrollTop - l.clientHeight < 120;
     }
+
+    bottom() { this.log.scrollTop = this.log.scrollHeight; }
 
     add(node) {
       const stick = this.stick();
       if (this.status && this.status.parentNode === this.log) this.log.insertBefore(node, this.status);
       else this.log.append(node);
-      if (stick) window.scrollTo(0, document.scrollingElement.scrollHeight);
+      if (stick) this.bottom();
       return node;
     }
 
     follow(fn) {
       const stick = this.stick();
       fn();
-      if (stick) window.scrollTo(0, document.scrollingElement.scrollHeight);
+      if (stick) this.bottom();
     }
 
     setRunning(on) {
       $("stop").hidden = !on;
-      $("subtitle").textContent = on ? t("working") : t("idle");
+      $("subtitle").textContent = on ? t("working") : "";
     }
 
-    // newTurn starts the containers for one assistant turn.
     ensureTurn() {
       if (this.turn) return this.turn;
-      this.turn = { reasoning: null, text: null, segment: null };
+      this.turn = { reasoning: null, text: null, raw: "" };
       return this.turn;
     }
 
     reasoning(text) {
-      const t = this.ensureTurn();
-      if (!t.reasoning) {
+      const tn = this.ensureTurn();
+      if (!tn.reasoning) {
         const d = el("details", "reasoning");
         d.open = true;
         d.append(el("summary", "", "Thinking"), el("div", "body"));
-        t.reasoning = this.add(d);
-        t.text = null;
+        tn.reasoning = this.add(d);
+        tn.text = null;
       }
-      this.follow(() => { t.reasoning.lastChild.textContent += text; });
+      this.follow(() => { tn.reasoning.lastChild.textContent += text; });
     }
 
     assistantText(text) {
-      const t = this.ensureTurn();
-      if (text === null) { t.text = null; return; }
-      if (!t.text) {
-        t.text = this.add(el("div", "msg assistant"));
-        t.raw = "";
-        if (t.reasoning) t.reasoning.open = false;
+      const tn = this.ensureTurn();
+      if (!tn.text) {
+        tn.text = this.add(el("div", "msg assistant"));
+        tn.raw = "";
+        if (tn.reasoning) tn.reasoning.open = false;
       }
-      t.raw += text;
-      this.follow(() => render(t.text, t.raw));
+      tn.raw += text;
+      this.follow(() => render(tn.text, tn.raw));
     }
 
     userText(text, pending) {
       const m = this.add(el("div", "msg user" + (pending ? " pending" : ""), text));
-      if (pending) this.pending.push(m);
+      if (pending) this.pending.push({ bubble: m, label: null });
       return m;
+    }
+
+    // queued marks a sent message the backend has accepted but not started.
+    // With an id (from a snapshot) it also offers Cancel.
+    queued(bubble, id, text) {
+      const p = this.pending.find((x) => x.bubble === bubble);
+      if (!p || p.label) return;
+      p.label = el("div", "queued", id ? t("waiting") : t("queued"));
+      if (id) {
+        const c = el("button", "link", "Cancel");
+        c.type = "button";
+        c.onclick = () => this.inputAction(id, "cancel", c);
+        p.label.append(" ", c);
+      }
+      bubble.after(p.label);
+    }
+
+    lost(id, text) {
+      const box = el("div", "lost");
+      box.append(el("div", "", t("lost")));
+      if (text) box.append(el("div", "lost-text", text));
+      const b = el("button", "", "Dismiss");
+      b.type = "button";
+      b.onclick = () => this.inputAction(id, "dismiss", b);
+      box.append(b);
+      this.add(box);
+    }
+
+    async inputAction(id, action, btn) {
+      btn.disabled = true;
+      try {
+        await api("POST", this.base + "/inputs/" + encodeURIComponent(id) + "/" + action);
+      } catch (e) {
+        btn.disabled = false;
+        banner((action === "cancel" ? "Could not cancel: " : "Could not dismiss: ") + e.message, true);
+      }
+    }
+
+    started(text) {
+      const p = this.pending.shift();
+      if (p) {
+        p.bubble.classList.remove("pending");
+        if (p.label) p.label.remove();
+      } else if (text) {
+        this.userText(text);
+      }
     }
 
     toolCard(id, name, args) {
@@ -218,9 +287,9 @@
       card.classList.remove("running");
       const failed = p.error || (p.result && typeof p.result === "object" && p.result.error);
       if (failed) card.classList.add("failed");
-      const dur = typeof p.duration_s === "number" ? " in " + p.duration_s.toFixed(1) + "s" : "";
-      card.querySelector(".state").textContent = (failed ? t("failed") : t("done"));
-      card.title = dur.trim();
+      const state = card.querySelector(".state");
+      state.textContent = failed ? t("failed") : t("done");
+      if (typeof p.duration_s === "number") state.textContent += " in " + p.duration_s.toFixed(1) + "s";
       const prog = card.querySelector("progress, .progress");
       if (prog) prog.remove();
       let out = p.summary || p.result_text;
@@ -245,20 +314,21 @@
       if (p.kind !== "clarify") {
         const ok = el("button", "primary", t("allow"));
         const no = el("button", "danger", t("deny"));
+        ok.type = no.type = "button";
         const answer = async (allow) => {
           ok.disabled = no.disabled = true;
           try {
             await api("POST", this.base + "/approvals/" + encodeURIComponent(id), { allow });
           } catch (e) {
             ok.disabled = no.disabled = false;
-            banner("Approval failed: " + e.message, true);
+            banner("Could not answer: " + e.message, true);
           }
         };
         ok.onclick = () => answer(true);
         no.onclick = () => answer(false);
         actions.append(ok, no);
       } else {
-        actions.append(el("span", "status", "Answer this question in the session's own client."));
+        actions.append(el("span", "status", "Answer this question in the app where the chat started."));
       }
       box.append(actions);
       this.approvals.set(id, box);
@@ -287,12 +357,17 @@
 
     snapshot(s) {
       this.reset();
-      $("title").textContent = s.title || t("title");
+      $("title").textContent = s.title || t("newchat");
+      document.title = (s.title || t("newchat")) + " - Hermes";
       this.setRunning(s.running);
       for (const m of s.messages || []) this.row(m);
       this.turn = null;
+      for (const p of s.pending || []) {
+        if (p.status === "lost") this.lost(p.id, p.text);
+        else this.queued(this.userText(p.text, true), p.id);
+      }
       for (const p of s.prompts || []) this.approval(p);
-      window.scrollTo(0, document.scrollingElement.scrollHeight);
+      this.bottom();
     }
 
     row(m) {
@@ -300,12 +375,13 @@
       const text = m.text != null ? m.text : (typeof m.content === "string" ? m.content : "");
       if (m.role === "user") { this.turn = null; this.userText(text); return; }
       if (m.role === "assistant") {
-        if (m.reasoning) { this.reasoning(m.reasoning); this.turn.reasoning.open = false; }
+        const r = m.reasoning || m.reasoning_content;
+        if (r) { this.reasoning(r); this.turn.reasoning.open = false; }
         if (text) { this.assistantText(text); this.turn.text = null; }
         return;
       }
       if (m.role === "tool") {
-        const card = this.toolCard(m.tool_call_id || ("row" + m.row_id), m.name, m.args);
+        const card = this.toolCard(m.tool_call_id || ("row" + m.row_id), m.name || m.tool_name, m.args);
         this.toolDone(card, { result: m.content != null ? m.content : text });
         return;
       }
@@ -317,15 +393,12 @@
       switch (kind) {
         case "snapshot": this.snapshot(p); break;
         case "backend.status":
-          banner(p.connected ? "" : "Lost the connection to this backend. Reconnecting.", false);
+          banner(p.connected ? "" : "Lost the connection to Hermes. Reconnecting.", false);
           break;
         case "message.start":
           this.turn = null;
           this.setRunning(true);
-          if (p.text) {
-            const m = this.pending.shift();
-            if (m) m.classList.remove("pending"); else this.userText(p.text);
-          }
+          this.started(p.text);
           break;
         case "reasoning.delta": this.reasoning(p.text || ""); break;
         case "reasoning.available":
@@ -352,15 +425,16 @@
         case "message.interim": if (p.text && !p.already_streamed) { this.assistantText(p.text); this.turn.text = null; } break;
         case "message.complete": {
           this.setStatus("");
-          const t = this.ensureTurn();
-          if (!t.text && !t.raw && typeof p.text === "string" && p.text) this.assistantText(p.text);
-          if (t.reasoning) t.reasoning.open = false;
+          const tn = this.ensureTurn();
+          if (!tn.text && !tn.raw && typeof p.text === "string" && p.text) this.assistantText(p.text);
+          if (tn.reasoning) tn.reasoning.open = false;
           if (p.status && p.status !== "complete" && p.status !== "completed") {
             this.add(el("div", "note" + (p.status === "error" || p.status === "failed" ? " bad" : ""), "Turn " + p.status + (p.error ? ": " + p.error : "")));
           }
           for (const card of this.tools.values()) if (card.classList.contains("running")) this.toolDone(card, {});
           this.turn = null;
           this.setRunning(false);
+          refreshList();
           break;
         }
         case "approval.request": case "clarify.request": this.approval(p); break;
@@ -384,15 +458,27 @@
     });
   }
 
+  function showWelcome() {
+    closeStream();
+    view = null;
+    current = null;
+    $("welcome").hidden = false;
+    $("log").hidden = true;
+    $("composer").hidden = true;
+    $("stop").hidden = true;
+    $("title").textContent = "Hermes";
+    $("subtitle").textContent = "";
+    document.title = "Hermes Hub";
+    banner("");
+  }
+
   function showChat(backend, session) {
     closeStream();
-    $("list").hidden = true;
-    $("chat").hidden = false;
+    current = { b: backend, s: session };
+    $("welcome").hidden = true;
+    $("log").hidden = false;
     $("composer").hidden = false;
-    $("back").hidden = true;
-    $("more").hidden = false;
-    $("newchat").hidden = false;
-    $("title").textContent = t("title");
+    $("title").textContent = t("newchat");
     $("subtitle").textContent = "";
     banner("");
     view = new Chat(backend, session);
@@ -408,38 +494,19 @@
     es.onerror = async () => {
       if (es.readyState === EventSource.CLOSED) {
         try { await api("GET", "/api/me"); } catch (_) { return; }
-        banner("Could not open this session. Go back and try again.", true);
+        banner("Could not open this chat. Pick it again to retry.", true);
       } else {
         banner("Connection lost. Reconnecting.", false);
       }
     };
-  }
-
-  const chatHash = (b, s) => "#/s/" + encodeURIComponent(b) + "/" + encodeURIComponent(s);
-
-  // home opens the default chat: the newest session on the
-  // user's default backend, or a new one.
-  async function home(fresh) {
-    closeStream();
-    $("list").hidden = true;
-    try {
-      const [backends, sessions] = await Promise.all([api("GET", "/api/backends"), api("GET", "/api/sessions")]);
-      const b = backends.find((x) => x.id === me.default_backend) || backends[0];
-      if (!b) { banner("No assistant is set up for you yet.", true); return; }
-      const mine = sessions.filter((s) => s.backend_id === b.id);
-      let s = fresh ? null : (mine.find((x) => x.live) || mine[0]);
-      if (!s) s = await api("POST", "/api/sessions", { backend_id: b.id });
-      location.replace(chatHash(b.id, s.id));
-    } catch (e) {
-      banner("Could not open your chat: " + e.message, true);
-    }
+    $("input").focus({ preventScroll: true });
   }
 
   function route() {
     const m = location.hash.match(/^#\/s\/([^/]+)\/(.+)$/);
     if (m) showChat(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
-    else if (location.hash !== "#/all") home(false);
-    else showList();
+    else showWelcome();
+    refreshList();
   }
 
   async function send(ev) {
@@ -449,37 +516,38 @@
     if (!text || !view) return;
     const chat = view;
     const bubble = chat.userText(text, true);
+    chat.bottom();
     input.value = "";
     grow();
     try {
       await api("POST", chat.base + "/prompt", { text });
+      chat.queued(bubble);
     } catch (e) {
       bubble.remove();
-      chat.pending = chat.pending.filter((b) => b !== bubble);
+      chat.pending = chat.pending.filter((p) => p.bubble !== bubble);
       input.value = text;
-      banner("Send failed: " + e.message, true);
+      banner("Could not send: " + e.message, true);
     }
   }
 
   function grow() {
-    const t = $("input");
-    t.style.height = "auto";
-    t.style.height = Math.min(t.scrollHeight, window.innerHeight * 0.4) + "px";
+    const ta = $("input");
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.4) + "px";
   }
 
   async function init() {
     try {
       me = await api("GET", "/api/me");
       csrf = me.csrf;
-      $("logout").title = "Logged in as " + me.user;
+      $("who").textContent = me.display || me.user || "";
     } catch (_) { return; }
-    $("back").onclick = () => { location.hash = "#/"; };
-    $("more").onclick = () => { location.hash = "#/all"; };
-    $("newchat").onclick = () => home(true);
-    $("refresh").onclick = route;
+    $("menu").onclick = () => openSide(true);
+    $("scrim").onclick = () => openSide(false);
+    $("newchat").onclick = () => newChat();
     $("stop").onclick = async () => {
       if (!view) return;
-      try { await api("POST", view.base + "/interrupt"); } catch (e) { banner("Stop failed: " + e.message, true); }
+      try { await api("POST", view.base + "/interrupt"); } catch (e) { banner("Could not stop: " + e.message, true); }
     };
     $("logout").onclick = async () => {
       try { await api("POST", "/auth/logout"); } catch (_) { /* ignore */ }
@@ -496,6 +564,9 @@
     input.onkeydown = (e) => {
       if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer: coarse)").matches) send(e);
     };
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") openSide(false); });
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshList(); });
+    setInterval(() => { if (!document.hidden) refreshList(); }, 20000);
     window.onhashchange = route;
     route();
   }

@@ -478,3 +478,71 @@ func TestReplayGapTakesNewSnapshot(t *testing.T) {
 		t.Fatalf("live after gap = %s %s", ev.Kind, ev.Data)
 	}
 }
+
+// A turn lost in a gateway restart holds back the inputs queued after it.
+// The hub shows both, dismisses the lost one and cancels a queued one.
+func TestLostTurnAndQueuedInputs(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ctx := context.Background()
+	gen := int64(6)
+	e.gw.AddSession(&gatewaytest.Session{ID: "s-stuck", Title: "Stuck", Live: true, StartedAt: 500, Generation: 6,
+		Pending: []gateway.PendingAdmission{
+			{AdmissionID: "a-lost", Sequence: 7, Status: gateway.AdmissionUnknown, ExecutionGeneration: &gen, Text: "lost"},
+			{AdmissionID: "a-wait", Sequence: 39, Status: gateway.AdmissionQueued, Text: "waiting"},
+		}})
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, "s-stuck", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	pending := func(ev hub.Event) []hub.Pending {
+		t.Helper()
+		if ev.Kind != hub.KindSnapshot {
+			t.Fatalf("event = %s, want snapshot", ev.Kind)
+		}
+		var s hub.Snapshot
+		if err := json.Unmarshal(ev.Data, &s); err != nil {
+			t.Fatal(err)
+		}
+		return s.Pending
+	}
+	want := []hub.Pending{{ID: "a-lost", Status: hub.PendingLost, Text: "lost"}, {ID: "a-wait", Status: hub.PendingQueued, Text: "waiting"}}
+	if got := pending(next(t, ch)); !slices.Equal(got, want) {
+		t.Fatalf("pending = %+v", got)
+	}
+	if err := e.svc.CancelInput(ctx, userAlice, backendPC, "s-stuck", "a-lost"); !errors.Is(err, hub.ErrUnknownInput) {
+		t.Fatalf("cancel lost: %v", err)
+	}
+	if err := e.svc.DismissLost(ctx, userAlice, backendPC, "s-stuck", "a-wait"); !errors.Is(err, hub.ErrUnknownInput) {
+		t.Fatalf("dismiss queued: %v", err)
+	}
+	if err := e.svc.DismissLost(ctx, userBob, backendPC, "s-stuck", "a-lost"); !errors.Is(err, hub.ErrForbidden) {
+		t.Fatalf("dismiss by another user: %v", err)
+	}
+	if err := e.svc.DismissLost(ctx, userAlice, backendPC, "s-stuck", "a-lost"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pending(until(t, ch, hub.KindSnapshot)[0]); !slices.Equal(got, want[1:]) {
+		t.Fatalf("after dismiss pending = %+v", got)
+	}
+	if err := e.svc.CancelInput(ctx, userAlice, backendPC, "s-stuck", "a-wait"); err != nil {
+		t.Fatal(err)
+	}
+	evs := until(t, ch, hub.KindSnapshot)
+	if got := pending(evs[len(evs)-1]); len(got) != 0 {
+		t.Fatalf("after cancel pending = %+v", got)
+	}
+	var resolved, cancelled bool
+	for _, c := range e.gw.Calls() {
+		switch c.Method {
+		case gateway.MethodResolveLost:
+			resolved = c.Params["admission_id"] == "a-lost" && c.Params["execution_generation"] == float64(6)
+		case gateway.MethodPromptCancel:
+			cancelled = c.Params["admission_id"] == "a-wait"
+		}
+	}
+	if !resolved || !cancelled {
+		t.Fatalf("resolve_unknown sent=%v prompt.cancel sent=%v", resolved, cancelled)
+	}
+}

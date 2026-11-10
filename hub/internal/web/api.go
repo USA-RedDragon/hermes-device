@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,15 +19,18 @@ type backendJSON struct {
 }
 
 type sessionJSON struct {
-	ID        string    `json:"id"`
-	BackendID string    `json:"backend_id"`
-	Title     string    `json:"title"`
-	Live      bool      `json:"live"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	BackendID    string    `json:"backend_id"`
+	Title        string    `json:"title"`
+	Live         bool      `json:"live"`
+	Running      bool      `json:"running"`
+	MessageCount int       `json:"message_count"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func toJSON(s hub.Session) sessionJSON {
-	return sessionJSON{ID: s.ID, BackendID: s.BackendID, Title: s.Title, Live: s.Live, UpdatedAt: s.UpdatedAt}
+	return sessionJSON{ID: s.ID, BackendID: s.BackendID, Title: s.Title, Live: s.Live,
+		Running: s.Running, MessageCount: s.MessageCount, UpdatedAt: s.UpdatedAt}
 }
 
 func (s *Server) handleBackends(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +127,23 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 	err := s.svc.RespondApproval(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"),
 		r.PathValue("approval"), body.Allow)
 	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleCancelInput(w http.ResponseWriter, r *http.Request) {
+	s.inputAction(w, r, s.svc.CancelInput)
+}
+
+func (s *Server) handleDismissLost(w http.ResponseWriter, r *http.Request) {
+	s.inputAction(w, r, s.svc.DismissLost)
+}
+
+func (s *Server) inputAction(w http.ResponseWriter, r *http.Request,
+	fn func(ctx context.Context, user, backendID, sessionID, inputID string) error) {
+	if err := fn(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), r.PathValue("input")); err != nil {
 		s.fail(w, err)
 		return
 	}

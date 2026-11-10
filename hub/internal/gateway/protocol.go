@@ -22,6 +22,8 @@ const (
 	MethodSessionList   = "session.list"
 	MethodSessionCreate = "session.create"
 	MethodSessionResume = "session.resume"
+	MethodPromptCancel  = "prompt.cancel"
+	MethodResolveLost   = "prompt.resolve_unknown"
 	MethodSessionDetach = "session.detach"
 	MethodEventsSince   = "session.events.since"
 	MethodPromptSubmit  = "prompt.submit"
@@ -100,17 +102,48 @@ type SnapshotInfo struct {
 	Model *string `json:"model,omitempty"`
 }
 
+// Admission statuses in a snapshot's pending list.
+const (
+	AdmissionQueued  = "queued"
+	AdmissionUnknown = "unknown"
+)
+
+// PendingAdmission is one input in a snapshot's pending list: queued behind
+// the running turn, or "unknown" when its turn was lost in a gateway restart.
+// An unknown row holds back every input queued after it until it is resolved.
+type PendingAdmission struct {
+	AdmissionID         string `json:"admission_id"`
+	Sequence            int64  `json:"sequence"`
+	Status              string `json:"status"`
+	ExecutionGeneration *int64 `json:"execution_generation"`
+	Text                string `json:"text"`
+}
+
+// AdmissionParams is prompt.cancel's params.
+type AdmissionParams struct {
+	SessionID   string `json:"session_id"`
+	AdmissionID string `json:"admission_id"`
+}
+
+// ResolveLostParams is prompt.resolve_unknown's params.
+type ResolveLostParams struct {
+	SessionID           string `json:"session_id"`
+	AdmissionID         string `json:"admission_id"`
+	ExecutionGeneration int64  `json:"execution_generation"`
+}
+
 // Snapshot is the result of session.resume and session.create.
 type Snapshot struct {
-	SessionID           string            `json:"session_id"`
-	Messages            []json.RawMessage `json:"messages"`
-	Running             bool              `json:"running"`
-	ReplayEpoch         string            `json:"replay_epoch"`
-	LastSequence        int64             `json:"last_sequence"`
-	SubscriptionID      string            `json:"subscription_id"`
-	ExecutionGeneration int64             `json:"execution_generation"`
-	Prompts             []Prompt          `json:"prompts"`
-	Info                SnapshotInfo      `json:"info"`
+	SessionID           string             `json:"session_id"`
+	Messages            []json.RawMessage  `json:"messages"`
+	Running             bool               `json:"running"`
+	ReplayEpoch         string             `json:"replay_epoch"`
+	LastSequence        int64              `json:"last_sequence"`
+	SubscriptionID      string             `json:"subscription_id"`
+	ExecutionGeneration int64              `json:"execution_generation"`
+	Prompts             []Prompt           `json:"prompts"`
+	Pending             []PendingAdmission `json:"pending"`
+	Info                SnapshotInfo       `json:"info"`
 }
 
 // DetachParams is session.detach's params.

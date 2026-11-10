@@ -56,6 +56,8 @@ type Session struct {
 	Messages      []map[string]any
 	Generation    int64
 	ShowReasoning bool
+	// Pending is the snapshot's pending list: queued inputs and lost (unknown) turns.
+	Pending []gateway.PendingAdmission
 
 	epoch   string
 	seq     int64
@@ -380,11 +382,15 @@ func (g *Gateway) snapshotLocked(c *conn, s *Session) map[string]any {
 	if msgs == nil {
 		msgs = []map[string]any{}
 	}
+	pending := s.Pending
+	if pending == nil {
+		pending = []gateway.PendingAdmission{}
+	}
 	return map[string]any{
 		kSessionID: s.ID, "stored_session_id": s.ID, "messages": msgs, "message_count": len(msgs),
 		"running": s.Running, "authority_epoch": 1, kReplayEpoch: s.epoch, kLastSequence: s.seq,
 		"subscription_id": sub, "revision": 1, kExecGen: s.Generation,
-		"pending": []any{}, "prompts": prompts,
+		"pending": pending, "prompts": prompts,
 		"info": map[string]any{"desktop_protocol": gateway.Subprotocol, "title": s.Title},
 	}
 }
@@ -410,6 +416,10 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 		h = g.hInterrupt
 	case gateway.MethodApproval:
 		h = g.hApproval
+	case gateway.MethodPromptCancel:
+		h = g.hPromptCancel
+	case gateway.MethodResolveLost:
+		h = g.hResolveLost
 	default:
 		return nil, "unknown method: " + method, nil
 	}
@@ -579,4 +589,39 @@ func (g *Gateway) turn(id, text string) {
 	s.Running = false
 	s.Messages = append(s.Messages, map[string]any{"role": "assistant", kText: "echo: " + text})
 	g.publishLocked(s, "message.complete", map[string]any{kText: "echo: " + text, kStatus: "complete"})
+}
+
+// hPromptCancel retires a queued input, as Hermes refuses for any other status.
+func (g *Gateway) hPromptCancel(_ *conn, p map[string]any) (any, string, func()) {
+	if fmt.Sprint(keys(p)) != "[admission_id session_id]" {
+		return nil, errInvalidParams, nil
+	}
+	return g.dropPending(str(p, kSessionID), str(p, "admission_id"), gateway.AdmissionQueued, nil)
+}
+
+// hResolveLost settles a turn lost in a restart; it needs that turn's generation.
+func (g *Gateway) hResolveLost(_ *conn, p map[string]any) (any, string, func()) {
+	if fmt.Sprint(keys(p)) != "[admission_id execution_generation session_id]" {
+		return nil, errInvalidParams, nil
+	}
+	gen, _ := num(p, kExecGen)
+	return g.dropPending(str(p, kSessionID), str(p, "admission_id"), gateway.AdmissionUnknown, &gen)
+}
+
+func (g *Gateway) dropPending(sid, id, status string, gen *int64) (any, string, func()) {
+	s := g.sessions[sid]
+	if s == nil {
+		return nil, "not_found", nil
+	}
+	for i, a := range s.Pending {
+		if a.AdmissionID != id {
+			continue
+		}
+		if a.Status != status || (gen != nil && (a.ExecutionGeneration == nil || *a.ExecutionGeneration != *gen)) {
+			return nil, "stale_generation", nil
+		}
+		s.Pending = slices.Delete(s.Pending, i, i+1)
+		return map[string]any{"admission_id": id, kStatus: "terminal", "outcome": "interrupted"}, "", nil
+	}
+	return nil, "not_found", nil
 }

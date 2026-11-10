@@ -281,6 +281,54 @@ func (s *Service) RespondApproval(ctx context.Context, user, backendID, sessionI
 	}, nil)
 }
 
+// CancelInput drops a queued input before it runs.
+func (s *Service) CancelInput(ctx context.Context, user, backendID, sessionID, inputID string) error {
+	return s.input(ctx, user, backendID, sessionID, inputID, gateway.AdmissionQueued, func(ls *live, _ gateway.PendingAdmission) (string, any) {
+		return gateway.MethodPromptCancel, gateway.AdmissionParams{SessionID: ls.id, AdmissionID: inputID}
+	})
+}
+
+// DismissLost resolves an input whose turn a backend restart cut off. The
+// gateway never re-runs it; the inputs queued after it then run in order.
+func (s *Service) DismissLost(ctx context.Context, user, backendID, sessionID, inputID string) error {
+	return s.input(ctx, user, backendID, sessionID, inputID, gateway.AdmissionUnknown, func(ls *live, p gateway.PendingAdmission) (string, any) {
+		var gen int64
+		if p.ExecutionGeneration != nil {
+			gen = *p.ExecutionGeneration
+		}
+		return gateway.MethodResolveLost, gateway.ResolveLostParams{SessionID: ls.id, AdmissionID: inputID, ExecutionGeneration: gen}
+	})
+}
+
+// input runs one call on a pending input in the given status, then takes a
+// fresh snapshot so every viewer sees the new pending list.
+func (s *Service) input(ctx context.Context, user, backendID, sessionID, inputID, status string,
+	req func(*live, gateway.PendingAdmission) (string, any)) error {
+	b, err := s.backend(ctx, user, backendID)
+	if err != nil {
+		return err
+	}
+	ls, err := b.session(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	defer ls.unpin()
+	ls.mu.Lock()
+	p, ok := ls.inputs[inputID]
+	ls.mu.Unlock()
+	if !ok || p.Status != status {
+		return hub.ErrUnknownInput
+	}
+	method, params := req(ls, p)
+	if err := b.call(ctx, ls, method, params, nil); err != nil {
+		return err
+	}
+	ls.mu.Lock()
+	ls.resnapshotLocked()
+	ls.mu.Unlock()
+	return nil
+}
+
 type backend struct {
 	svc    *Service
 	cfg    config.Backend
@@ -476,7 +524,8 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 			return nil, err
 		}
 		for _, r := range res.Sessions {
-			s := hub.Session{ID: r.SessionID, BackendID: b.cfg.ID, Title: r.Title, Live: scope == "live"}
+			s := hub.Session{ID: r.SessionID, BackendID: b.cfg.ID, Title: r.Title, Live: scope == "live",
+				Running: r.Running, MessageCount: r.MessageCount}
 			if r.StartedAt != nil {
 				s.UpdatedAt = time.UnixMilli(int64(*r.StartedAt * 1000))
 			}
@@ -611,6 +660,7 @@ func (b *backend) ensure(ctx context.Context, ls *live) (*gateway.Client, error)
 			ls.subID = snap.SubscriptionID
 			ls.generation = max(ls.generation, snap.ExecutionGeneration)
 			ls.setPrompts(snap.Prompts)
+			ls.setInputs(snap.Pending)
 			ls.flushEarly()
 			ls.mu.Unlock()
 			ls.setClient(c)
@@ -675,8 +725,17 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	if msgs == nil {
 		msgs = []json.RawMessage{}
 	}
+	pending := make([]hub.Pending, 0, len(snap.Pending))
+	for _, p := range snap.Pending {
+		switch p.Status {
+		case gateway.AdmissionQueued:
+			pending = append(pending, hub.Pending{ID: p.AdmissionID, Status: hub.PendingQueued, Text: p.Text})
+		case gateway.AdmissionUnknown:
+			pending = append(pending, hub.Pending{ID: p.AdmissionID, Status: hub.PendingLost, Text: p.Text})
+		}
+	}
 	data, err := json.Marshal(hub.Snapshot{SessionID: snap.SessionID, BackendID: b.cfg.ID, Title: title,
-		Running: snap.Running, Messages: msgs, Prompts: prompts})
+		Running: snap.Running, Messages: msgs, Prompts: prompts, Pending: pending})
 	if err != nil {
 		b.log.Warn("encode snapshot", "session", snap.SessionID, "error", err.Error())
 		data = json.RawMessage(`{}`)
@@ -686,6 +745,7 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	ls.subID, ls.epoch, ls.gwSeq = snap.SubscriptionID, snap.ReplayEpoch, snap.LastSequence
 	ls.generation = snap.ExecutionGeneration
 	ls.setPrompts(snap.Prompts)
+	ls.setInputs(snap.Pending)
 	ls.ring, ls.truncated = nil, false
 	ls.seq++
 	ls.snapshot = hub.Event{Seq: ls.seq, Kind: hub.KindSnapshot, Data: data}

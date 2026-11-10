@@ -29,6 +29,12 @@ func contract() map[string][]string {
 			`return JSONResponse({"ticket": ticket, "ttl_seconds": TTL_SECONDS}`,
 		},
 		"hermes_cli/web_session_sockets.py": {`GATEWAY_SOCKET = "gateway"`},
+		"tui_gateway/contracts/canonical.py": {
+			`canonical_method("` + gateway.MethodPromptCancel + `", params=PromptCancelParams`,
+			`canonical_method("` + gateway.MethodResolveLost + `", params=PromptResolveUnknownParams`,
+			`status: Literal["queued", "started", "unknown", "terminal"]`,
+			"    admission_id: str\n    execution_generation: int\n",
+		},
 		"gateway/run_api.py": {
 			"if reason == 'none' or ws.headers.get('origin'):",
 			"or not ws.client or ws.client.host not in {'127.0.0.1', '::1'}):",
@@ -45,6 +51,7 @@ func contract() map[string][]string {
 			"scope: Literal['live', 'stored'] = 'live'",
 			"last_sequence: int = 0", "replay_epoch: str | None = None", "snapshot_required: bool",
 			"subscription_id: str", "execution_generation: int", "prompts: list[CanonicalPendingPrompt]",
+			"pending: list[CanonicalPendingAdmission]", "class CanonicalPendingAdmission(AdmissionStatus):\n    input_id: str\n    text: str",
 		},
 		"gateway/session_controls.py": {
 			`if set(params) != {"session_id", "execution_generation", "prompt_id", "choice"}:`,

@@ -484,3 +484,11 @@ func (h *harness) startTurn(t *testing.T) string {
 	h.tg.say(dm(aliceTG), aliceTG, "hello")
 	return h.hub.waitPrompt(t, 1)[0].SessionID
 }
+
+func (h *fakeHub) CancelInput(context.Context, string, string, string, string) error {
+	return hub.ErrUnknownInput
+}
+
+func (h *fakeHub) DismissLost(context.Context, string, string, string, string) error {
+	return hub.ErrUnknownInput
+}

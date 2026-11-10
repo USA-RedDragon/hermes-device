@@ -9,23 +9,35 @@
 <script src="/static/app.js" defer></script>
 </head>
 <body>
-<header class="bar">
-  <button id="back" class="icon" hidden aria-label="Back to chat">&lsaquo;</button>
-  <div class="title"><span id="title">Hermes Hub</span><span id="subtitle" class="sub"></span></div>
-  <button id="newchat" class="ghost" hidden>New chat</button>
-  <button id="more" class="ghost" hidden>More</button>
-  <button id="refresh" class="icon" aria-label="Refresh">&#x21bb;</button>
-  <button id="stop" class="danger" hidden>Stop</button>
-  <button id="logout" class="ghost">Log out</button>
-</header>
-<div id="banner" class="banner" hidden></div>
-<main id="list" class="list"></main>
-<main id="chat" class="chat" hidden>
-  <div id="log" class="log" aria-live="polite"></div>
-</main>
-<form id="composer" class="composer" hidden>
-  <textarea id="input" rows="1" placeholder="Message Hermes" aria-label="Message"></textarea>
-  <button id="send" class="primary" type="submit">Send</button>
-</form>
+<div class="app">
+  <aside id="side" class="side" aria-label="Chats">
+    <div class="side-head">
+      <span class="brand">Hermes</span>
+      <button id="newchat" class="primary" type="button">New chat</button>
+    </div>
+    <nav id="sessions" class="sessions"></nav>
+    <div class="side-foot">
+      <span id="who" class="who"></span>
+      <button id="logout" class="ghost" type="button">Log out</button>
+    </div>
+  </aside>
+  <div id="scrim" class="scrim" hidden></div>
+  <section class="main">
+    <header class="bar">
+      <button id="menu" class="icon menu" type="button" aria-label="Show chats">&#9776;</button>
+      <div class="title"><span id="title">Hermes</span><span id="subtitle" class="sub"></span></div>
+      <button id="stop" class="danger" type="button" hidden>Stop</button>
+    </header>
+    <div id="banner" class="banner" hidden></div>
+    <div id="welcome" class="welcome">
+      <p>Pick a chat, or start a new one.</p>
+    </div>
+    <div id="log" class="log" aria-live="polite" hidden></div>
+    <form id="composer" class="composer" hidden>
+      <textarea id="input" rows="1" placeholder="Message Hermes" aria-label="Message"></textarea>
+      <button id="send" class="primary" type="submit">Send</button>
+    </form>
+  </section>
+</div>
 </body>
 </html>

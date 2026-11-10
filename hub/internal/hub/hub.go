@@ -16,7 +16,8 @@ type Backend struct {
 // Session is one Hermes session on a backend.
 type Session struct {
 	ID, BackendID, Title string
-	Live                 bool
+	Live, Running        bool
+	MessageCount         int
 	UpdatedAt            time.Time
 }
 
@@ -53,6 +54,10 @@ type Service interface {
 	Prompt(ctx context.Context, user, backendID, sessionID, text string) error
 	Interrupt(ctx context.Context, user, backendID, sessionID string) error
 	RespondApproval(ctx context.Context, user, backendID, sessionID, approvalID string, allow bool) error
+	// CancelInput drops a queued input before it runs.
+	CancelInput(ctx context.Context, user, backendID, sessionID, inputID string) error
+	// DismissLost resolves a lost input so the inputs queued after it run.
+	DismissLost(ctx context.Context, user, backendID, sessionID, inputID string) error
 }
 
 // Links maps external identities to hub users.
@@ -90,4 +95,20 @@ type Snapshot struct {
 	Running   bool              `json:"running"`
 	Messages  []json.RawMessage `json:"messages"`
 	Prompts   []json.RawMessage `json:"prompts"`
+	Pending   []Pending         `json:"pending"`
+}
+
+// Pending is an input that has not run yet: "queued" behind the running
+// turn, or "lost" when its turn was cut off by a backend restart. A lost
+// input holds back everything queued after it until it is dismissed.
+// Pending statuses.
+const (
+	PendingQueued = "queued"
+	PendingLost   = "lost"
+)
+
+type Pending struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Text   string `json:"text"`
 }
