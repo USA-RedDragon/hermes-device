@@ -7,7 +7,7 @@ internal/gateway/gatewaytest/mutate.go	104	90
 internal/gateway/protocol.go	15	15
 internal/hub/hub.go	1	1
 internal/server/server.go	42	0
-internal/service/live.go	177	138
+internal/service/live.go	196	153
 internal/service/manage.go	119	114
 internal/service/service.go	473	414
 internal/store/store.go	58	46
