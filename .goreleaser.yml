@@ -29,6 +29,29 @@ dockers_v2:
       "org.opencontainers.image.source": "https://github.com/USA-RedDragon/{{ .ProjectName }}"
     flags:
       - "--pull"
+  - id: sandbox
+    dockerfile: Dockerfile.sandbox
+    images:
+      - "ghcr.io/usa-reddragon/{{ .ProjectName }}-sandbox"
+    tags:
+      - "{{ .Tag }}"
+      - "v{{ .Major }}"
+      - "v{{ .Major }}.{{ .Minor }}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
+      - linux/arm/v7
+    labels:
+      "org.opencontainers.image.created": "{{.Date}}"
+      "org.opencontainers.image.title": "{{.ProjectName}}-sandbox"
+      "org.opencontainers.image.description": "Agent sandbox that runs hermes-device run as a service device"
+      "org.opencontainers.image.revision": "{{.FullCommit}}"
+      "org.opencontainers.image.version": "{{.Version}}"
+      "org.opencontainers.image.url": "https://github.com/USA-RedDragon/{{ .ProjectName }}"
+      "org.opencontainers.image.source": "https://github.com/USA-RedDragon/{{ .ProjectName }}"
+    flags:
+      - "--pull"
 
 builds:
   - main: .

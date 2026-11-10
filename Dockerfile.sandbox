@@ -1,0 +1,32 @@
+# Agent sandbox: one per person, running "hermes-device run" as a service device
+# (docs/protocol.md section 8.10). Works with a read-only root filesystem: HOME,
+# caches and TMPDIR are on the /work volume.
+FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+
+RUN apk add --no-cache \
+      bash build-base ca-certificates coreutils curl fd git gzip jq less nodejs npm \
+      openssh-client py3-pip python3 ripgrep tar tini unzip zstd \
+ && printf '%s\n' 'export PATH="/work/.local/bin:$PATH"' > /etc/profile.d/work-local-bin.sh \
+ && addgroup -g 568 agent \
+ && adduser -D -u 568 -G agent -h /work -s /bin/bash agent
+
+ARG TARGETPLATFORM
+COPY $TARGETPLATFORM/hermes-device /usr/local/bin/hermes-device
+
+ENV HOME=/work \
+    TMPDIR=/work/.cache/tmp \
+    XDG_CACHE_HOME=/work/.cache \
+    XDG_CONFIG_HOME=/work/.config \
+    XDG_DATA_HOME=/work/.local/share \
+    npm_config_prefix=/work/.local \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PATH=/work/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HERMES_DEVICE_DEVICE_ROOTS=/work \
+    HERMES_DEVICE_DEVICE_SHELL=bash \
+    HERMES_DEVICE_STORE_KEYRING=false \
+    HERMES_DEVICE_GATEWAY_SPLICE=false
+
+USER 568:568
+WORKDIR /work
+VOLUME /work
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/hermes-device", "run"]

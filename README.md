@@ -95,6 +95,32 @@ Each editor window costs one `hermes acp` process in the pod.
 
 docs/protocol.md section 8 lists every plugin setting.
 
+## Agent sandbox
+
+With `fallback: local`, sessions that are not bound to a PC run their commands in the Hermes gateway container, which can read the server's secrets, environment, state database and processes. `fallback: device` runs them on a sandbox device instead: one sandbox pod per person, in its own namespace, that runs `hermes-device run` as a service device of the hub.
+
+```yaml
+plugins:
+  entries:
+    device:
+      settings:
+        fallback: device
+        fallback_device: d_sandbox_alice   # the sandbox's device id (a unique name also works)
+        fallback_root: /work               # default
+        device_write_roots: [/home/alice/src, /work]
+```
+
+Each session lineage gets its own directory, `<fallback_root>/<root session id>`, created on first use. Keep `terminal.cwd` an empty directory: Hermes still reads project context files such as `AGENTS.md` from it when it builds the prompt. File tools, edit approval and `@file` references read and write there. When the sandbox is offline, the command fails with a message; it never runs in the gateway container. `/device <device> <dir>` still moves a session to a PC. Add `fallback_root` to `HERMES_WRITE_SAFE_ROOT` if you set that variable.
+
+The release builds the image `ghcr.io/usa-reddragon/hermes-device-sandbox` (Alpine, `linux/amd64`, `linux/arm64`, `linux/arm/v7`). It holds bash, coreutils, git, openssh-client, curl, ca-certificates, python3 with pip and venv, nodejs and npm, build-base, jq, ripgrep, fd, tar, gzip, zstd, unzip and less. It runs as uid and gid 568 with home `/work`, starts `hermes-device run` under tini, and works with a read-only root filesystem: `HOME`, `TMPDIR`, caches, `pip install` (user site) and `npm install -g` all go to the `/work` volume, and `/work/.local/bin` is on `PATH`, also in login shells. The image sets `HERMES_DEVICE_DEVICE_ROOTS=/work`, `HERMES_DEVICE_GATEWAY_SPLICE=false` and `HERMES_DEVICE_STORE_KEYRING=false`. The deployment sets:
+
+| Setting | Value |
+|---|---|
+| `HERMES_DEVICE_HUB_URL` | The hub URL |
+| `HERMES_DEVICE_HUB_TOKEN_FILE` | The mounted service device token, mode `0400` or `0440` (`HERMES_DEVICE_HUB_TOKEN` also works) |
+| Volume | A persistent volume at `/work`, with `fsGroup: 568` |
+| Network | Egress to the internet and the hub only; no ingress |
+
 ## Versions
 
 Upgrade these together: the server's Hermes and every local Hermes that `chat` runs (same release), and the `hermes-device` image in the pod and the `hermes-device` binary on each PC (same release, protocol version 2).
