@@ -53,6 +53,9 @@ const (
 	ReasonInvalidParams    = "invalid_params"
 	ReasonNotFound         = "not_found"
 	ReasonModelResolution  = "model_resolution_failed"
+	// ReasonRuntimeDraining is the retryable refusal of a gateway that is
+	// starting or retiring (gateway/session_authorities.py).
+	ReasonRuntimeDraining = "runtime_draining"
 )
 
 // Session events the hub reads besides the turn events.
@@ -326,6 +329,11 @@ type EventsSinceResult struct {
 }
 
 // SubmitParams is the subset of prompt.submit's params the hub sends.
+// Hermes keys an admission by principal, session and SubmissionID
+// (hermes_state_runtime.py admit_session_input): a retry under the same
+// SubmissionID and text answers the admission it already holds, also
+// after a gateway restart, so the hub can resend a prompt whose answer it
+// lost without running it twice.
 type SubmitParams struct {
 	SessionID    string `json:"session_id"`
 	Text         string `json:"text"`

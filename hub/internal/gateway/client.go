@@ -22,7 +22,29 @@ var (
 	ErrNoAuthority  = errors.New("gateway has no session authority")
 	ErrProtocol     = errors.New("gateway protocol mismatch")
 	ErrUnauthorized = errors.New("gateway login failed")
+	// ErrNotReady is a gateway that is starting or draining for a restart:
+	// it answers HTTP 503 gateway_not_ready, or closes a socket with 1013.
+	ErrNotReady = errors.New("gateway is restarting")
+	// ErrUnreachable is a gateway the hub cannot connect to.
+	ErrUnreachable = errors.New("gateway unreachable")
 )
+
+// statusTryAgainLater is the WebSocket close code Hermes uses while it is
+// not ready.
+const statusTryAgainLater = websocket.StatusCode(1013)
+
+// Retryable reports whether err means the backend is restarting or cannot
+// be reached right now, so the same request may work later: a refused or
+// lost connection, a gateway that is not ready, or a runtime_draining
+// refusal.
+func Retryable(err error) bool {
+	var rerr *RPCError
+	if errors.As(err, &rerr) {
+		return rerr.Message == ReasonRuntimeDraining
+	}
+	return errors.Is(err, ErrNotReady) || errors.Is(err, ErrUnreachable) || errors.Is(err, ErrClosed) ||
+		errors.Is(err, ErrNoAuthority)
+}
 
 // RPCError is a JSON-RPC error answer from the gateway.
 type RPCError struct {
@@ -89,7 +111,12 @@ func (d *Dialer) Dial(ctx context.Context, onEvent func(Event)) (*Client, error)
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
-	if err != nil {
+	switch {
+	case err != nil && resp == nil:
+		return nil, fmt.Errorf("dial gateway: %w: %w", ErrUnreachable, err)
+	case err != nil && resp.StatusCode == http.StatusServiceUnavailable:
+		return nil, fmt.Errorf("dial gateway: %w: %w", ErrNotReady, err)
+	case err != nil:
 		return nil, fmt.Errorf("dial gateway: %w", err)
 	}
 	if conn.Subprotocol() != Subprotocol {
@@ -122,10 +149,13 @@ func (d *Dialer) login(ctx context.Context) error {
 		"provider": d.creds.Provider, "username": d.creds.Username, "password": d.creds.Password,
 	})
 	if err != nil {
-		return fmt.Errorf("gateway login: %w", err)
+		return fmt.Errorf("gateway login: %w: %w", ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		return fmt.Errorf("gateway login: %w", ErrNotReady)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%w: status %d", ErrUnauthorized, resp.StatusCode)
 	}
@@ -135,9 +165,13 @@ func (d *Dialer) login(ctx context.Context) error {
 func (d *Dialer) ticket(ctx context.Context) (string, error) {
 	resp, err := d.post(ctx, "/api/webapp/socket-ticket?socket=gateway", nil)
 	if err != nil {
-		return "", fmt.Errorf("gateway ticket: %w", err)
+		return "", fmt.Errorf("gateway ticket: %w: %w", ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return "", fmt.Errorf("gateway ticket: %w", ErrNotReady)
+	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return "", ErrUnauthorized
@@ -197,7 +231,7 @@ func newClient(ctx context.Context, conn *websocket.Conn, onEvent func(Event)) (
 		_, data, err := conn.Read(readyCtx)
 		if err != nil {
 			_ = conn.CloseNow()
-			return nil, fmt.Errorf("wait for gateway.ready: %w", err)
+			return nil, fmt.Errorf("wait for gateway.ready: %w: %w", ErrNotReady, err)
 		}
 		var f frame
 		if json.Unmarshal(data, &f) != nil || f.Method != "event" {
@@ -259,6 +293,9 @@ func (c *Client) fail(err error) {
 	case <-c.done:
 		return
 	default:
+	}
+	if websocket.CloseStatus(err) == statusTryAgainLater {
+		err = fmt.Errorf("%w: %w", ErrNotReady, err)
 	}
 	c.err = fmt.Errorf("%w: %w", ErrClosed, err)
 	for id, ch := range c.pending {

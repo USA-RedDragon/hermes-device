@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -114,6 +115,50 @@ type Gateway struct {
 	// ConfirmModels need a confirmation token before session.mutate
 	// commits them.
 	ConfirmModels []string
+
+	notReady   bool
+	loseAnswer bool
+	crash      bool
+	refuse     map[string]string
+	down       *gatedListener
+	// submissions are the admissions by session and submission_id, which
+	// outlive a restart as Hermes' session_admissions rows do.
+	submissions map[string]submission
+}
+
+type submission struct {
+	text    string
+	receipt map[string]any
+}
+
+// gatedListener is the fake's listener. While down it accepts and at once
+// closes every connection, as a host with nothing listening on the port.
+type gatedListener struct {
+	net.Listener
+	mu   sync.Mutex
+	shut bool
+}
+
+func (l *gatedListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		l.mu.Lock()
+		shut := l.shut
+		l.mu.Unlock()
+		if !shut {
+			return c, nil
+		}
+		_ = c.Close()
+	}
+}
+
+func (l *gatedListener) set(shut bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.shut = shut
 }
 
 type conn struct {
@@ -158,8 +203,94 @@ func New(username, password string) *Gateway {
 	mux.HandleFunc("POST /auth/password-login", g.login)
 	mux.HandleFunc("POST /api/webapp/socket-ticket", g.ticket)
 	mux.HandleFunc("GET /api/ws", g.ws)
-	g.Server = httptest.NewServer(mux)
+	g.submissions = map[string]submission{}
+	g.Server = httptest.NewUnstartedServer(g.notReadyGate(mux))
+	g.down = &gatedListener{Listener: g.Server.Listener}
+	g.Server.Listener = g.down
+	g.Server.Start()
 	return g
+}
+
+// notReadyGate answers every HTTP request with 503 gateway_not_ready while
+// the gateway restarts, as gateway/run_api.py does. A WebSocket upgrade
+// there is closed with 1013 before it is accepted, which uvicorn sends as
+// HTTP 403; the hub never gets that far, since its ticket mint fails first.
+func (g *Gateway) notReadyGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		notReady := g.notReady
+		g.mu.Unlock()
+		switch {
+		case !notReady:
+			next.ServeHTTP(w, r)
+		case r.Header.Get("Upgrade") != "":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"gateway_not_ready","state":"draining"}`))
+		}
+	})
+}
+
+// BeginRestart makes the gateway drain for a restart: HTTP requests get
+// 503 gateway_not_ready, and each open socket is closed with 1013 when its
+// next frame arrives, which goes unanswered.
+func (g *Gateway) BeginRestart() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.notReady = true
+}
+
+// LoseNextSubmitAnswer makes the next prompt.submit admit its input and
+// run its turn, but drop the connection before the answer goes out.
+func (g *Gateway) LoseNextSubmitAnswer() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.loseAnswer = true
+}
+
+// CrashOnNextSubmit makes the next prompt.submit admit its input, then the
+// gateway stop before the answer goes out.
+func (g *Gateway) CrashOnNextSubmit() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.loseAnswer, g.crash = true, true
+}
+
+// RefuseSubmits makes prompt.submit on a session fail with reason, as
+// Hermes refuses runtime_draining for a profile that is still starting.
+// An empty reason ends it.
+func (g *Gateway) RefuseSubmits(sessionID, reason string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.refuse == nil {
+		g.refuse = map[string]string{}
+	}
+	g.refuse[sessionID] = reason
+}
+
+// Stop makes the gateway's process exit: every connection closes and new
+// ones are cut at once.
+func (g *Gateway) Stop() {
+	g.down.set(true)
+	g.DropConnections()
+	g.Server.CloseClientConnections()
+}
+
+// FinishRestart brings the gateway back as a new process: it is ready,
+// every session has a new replay epoch and an empty replay ring, and no
+// turn runs. Admissions survive, so a retried submission_id still answers
+// its first receipt.
+func (g *Gateway) FinishRestart() {
+	g.mu.Lock()
+	g.notReady = false
+	for _, s := range g.sessions {
+		s.epoch, s.ring, s.Running = randHex(), nil, false
+		s.subs = map[*conn]string{}
+	}
+	g.mu.Unlock()
+	g.down.set(false)
 }
 
 // URL is the fake's base URL.
@@ -193,6 +324,14 @@ func (g *Gateway) Session(id string) (Session, bool) {
 		return Session{}, false
 	}
 	return *s, true
+}
+
+// Submits counts the prompt.submit calls that admitted a new input, so
+// not the retries Hermes answered from an earlier admission.
+func (g *Gateway) Submits() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.submissions)
 }
 
 // Calls returns every request received so far.
@@ -390,13 +529,33 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		g.mu.Lock()
+		if g.notReady {
+			g.mu.Unlock()
+			_ = ws.Close(websocket.StatusCode(1013), "")
+			return
+		}
 		g.calls = append(g.calls, Call{Method: req.Method, Params: req.Params})
 		result, rerr, after := g.dispatch(c, req.Method, req.Params)
 		var errFrame map[string]any
 		if rerr != "" {
 			errFrame = g.refusalLocked(req.Method, req.Params, rerr)
 		}
+		lose := g.loseAnswer && req.Method == gateway.MethodPromptSubmit && rerr == ""
+		crash := lose && g.crash
+		if lose {
+			g.loseAnswer, g.crash = false, false
+		}
 		g.mu.Unlock()
+		if lose {
+			if after != nil {
+				go after()
+			}
+			if crash {
+				go g.Stop()
+			}
+			_ = ws.CloseNow()
+			return
+		}
 		if errFrame != nil {
 			c.send(map[string]any{kJSONRPC: jsonRPCVersion, "id": req.ID, "error": errFrame})
 		} else {
@@ -630,12 +789,23 @@ func (g *Gateway) hPromptSubmit(c *conn, p map[string]any) (any, string, func())
 	if !onlyKeys(p, kSessionID, kText, "submission_id") || str(p, "submission_id") == "" {
 		return nil, errInvalidParams, nil
 	}
+	if r := g.refuse[s.ID]; r != "" {
+		return nil, r, nil
+	}
+	key := s.ID + "\x00" + str(p, "submission_id")
+	if old, ok := g.submissions[key]; ok {
+		if old.text != str(p, kText) {
+			return nil, "admission_conflict", nil
+		}
+		return old.receipt, "", nil
+	}
 	s.Generation++
 	s.Running = true
 	s.Messages = append(s.Messages, map[string]any{"role": "user", kText: str(p, kText)})
 	admission := randHex()
 	receipt := map[string]any{"admission_id": admission, "ref": map[string]any{kSessionID: s.ID},
 		"sequence": 1, kStatus: "started", "outcome": nil, "authority_epoch": 1, kExecGen: s.Generation}
+	g.submissions[key] = submission{text: str(p, kText), receipt: receipt}
 	if g.HoldTurns {
 		return receipt, "", nil
 	}
