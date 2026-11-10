@@ -40,6 +40,7 @@ const (
 	keyCWD            = "cwd"
 	keyRequestID      = "request_id"
 	keyTitle          = "title"
+	keyKey            = "key"
 )
 
 // OwnIDPrefix starts the JSON-RPC id of every request the hub sends on a
@@ -55,6 +56,7 @@ const (
 	methodCompletePath = "complete.path"
 	methodDispatch     = "command.dispatch"
 	methodSlashExec    = "slash.exec"
+	methodConfigGet    = "config.get"
 	methodFileAttach   = "file.attach"
 	opCompress         = "compress"
 	opReset            = "reset"
@@ -240,7 +242,7 @@ var gatewayRules = map[string]string{
 	"prompt.replace_queued": RuleAllowed, "prompt.btw": RuleAllowed,
 	"session.steer": RuleAllowed, "session.redirect": RuleAllowed, "session.interrupt": RuleAllowed,
 	"approval.respond": RuleAllowed, "clarify.respond": RuleAllowed, "clarify.lock": RuleAllowed,
-	methodConfigSet: RuleChecked, "config.get": RuleChecked, "model.options": RuleRewritten,
+	methodConfigSet: RuleChecked, methodConfigGet: RuleChecked, "model.options": RuleRewritten,
 	methodSlashExec: RuleChecked, methodDispatch: RuleChecked, "command.observe": RuleAllowed, "commands.catalog": RuleAllowed,
 	"complete.slash": RuleAllowed, "plugins.list": RuleAllowed, "tools.show": RuleAllowed,
 	"subagent.list": RuleAllowed, "subagent.tail": RuleAllowed, "subagent.steer": RuleAllowed, "subagent.interrupt": RuleAllowed,
@@ -342,7 +344,7 @@ func scopelessKeys() []string {
 
 // configSetAllowed reports whether a config.set changes only its session.
 func configSetAllowed(params map[string]json.RawMessage) bool {
-	key, ok := rawStringOK(params["key"])
+	key, ok := rawStringOK(params[keyKey])
 	if !ok {
 		return false
 	}
@@ -547,10 +549,11 @@ var refusedParams = map[string]map[string]string{
 		"accept_hooks": "it records shell hook consent for the whole profile",
 	},
 	methodResume: {
-		keyTitle: "resume a session by its id: the hub checks the id before the gateway attaches it",
-		"latest": "resume a session by its id: the hub checks the id before the gateway attaches it",
+		keyTitle:  "resume a session by its id: the hub checks the id before the gateway attaches it",
+		"latest":  "resume a session by its id: the hub checks the id before the gateway attaches it",
+		"api_key": "a launch key is not part of a device session",
 	},
-	"config.get":     {keyCWD: "it runs git in a directory of the Hermes pod"},
+	methodConfigGet:  {keyCWD: "it runs git in a directory of the Hermes pod"},
 	methodFileAttach: {"staged_upload": "it copies a browser upload out of the Hermes pod"},
 }
 
@@ -571,6 +574,9 @@ func paramRefusal(method string, params map[string]json.RawMessage) string {
 		if _, ok := params[k]; ok {
 			return "param " + k + " is refused: " + refusedParams[method][k]
 		}
+	}
+	if method == methodConfigGet && rawString(params[keyKey]) == "project" {
+		return "key project runs git in a directory of the Hermes pod"
 	}
 	if method == methodResume {
 		if sid, ok := rawStringOK(params[keySessionID]); !ok || sid == "" {

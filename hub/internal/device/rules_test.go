@@ -31,6 +31,7 @@ const (
 	acpSetMode       = "session/set_mode"
 	keyProject       = "project"
 	methodList       = "session.list"
+	acpResumeGW      = "session.resume"
 	sessionGone      = "s-gone"
 	methodCreate     = "session.create"
 	codeInvalid      = -32600
@@ -261,6 +262,9 @@ func TestGatewayLegParams(t *testing.T) {
 			{"spawn_tree.load", map[string]any{keyPath: "/opt/data/spawn-trees/s-other/x.json"}},
 			{methodConfigGet, map[string]any{keyKey: keyProject, keyCWD: podDir}},
 			{methodConfigGet, map[string]any{keySessionID: "s1", keyKey: keyProject, keyCWD: nil}},
+			{methodConfigGet, map[string]any{keyKey: keyProject}},
+			{methodConfigGet, map[string]any{keySessionID: "s1", keyKey: keyProject}},
+			{acpResumeGW, map[string]any{keySessionID: "s1", "api_key": "sk-x"}},
 			{methodFileAttach, map[string]any{keySessionID: "s1", "staged_upload": map[string]any{"profile_home": podDir, keyPath: "uploads/x"}}},
 			{methodFileAttach, map[string]any{keySessionID: "s1", keyPath: podDir + "/.env"}},
 			{methodList, map[string]any{keyProfile: 1}},
@@ -272,14 +276,14 @@ func TestGatewayLegParams(t *testing.T) {
 				t.Fatalf("%s %v = %v", tc.method, tc.params, m)
 			}
 		}
-		if got := len(e.called(methodConfigGet)) + len(e.called(methodList)); got != 0 {
+		if got := len(e.called(methodConfigGet)) + len(e.called(methodList)) + len(e.called(acpResumeGW)); got != 0 {
 			t.Fatalf("%d refused calls reached the gateway", got)
 		}
 		if m := g.request("own", methodMutate, map[string]any{keySessionID: "s1", keyRequestID: "hermes-hub-delete-s1",
 			keyOperation: "rename", keyPayload: map[string]any{keyTitle: "x"}}); errCode(m) != codeInvalid {
 			t.Fatalf("own request_id = %v", m)
 		}
-		if m := g.request("cfg", methodConfigGet, map[string]any{keySessionID: "s1", keyKey: keyProject}); reason(m) == reasonDenied {
+		if m := g.request("cfg", methodConfigGet, map[string]any{keySessionID: "s1", keyKey: "busy"}); reason(m) == reasonDenied {
 			t.Fatalf("config.get = %v", m)
 		}
 		g.request("lf", "learning.frames", map[string]any{keyCols: 1e9, "rows": -5, "frames": 1e300})
