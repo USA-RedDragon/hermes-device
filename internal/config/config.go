@@ -53,6 +53,7 @@ type ACPHost struct {
 	Placeholder      string `name:"placeholder" description:"Server directory that stands in for the device directory in ACP session cwds. Must match the device plugin's placeholder. Needed by acp-host"`
 	MaxProcesses     int    `name:"max-processes" default:"8" description:"Most hermes acp processes the host runs at once"`
 	BindingsFile     string `name:"bindings-file" description:"Bindings file the device plugin writes. Defaults to device/bindings.json in $HERMES_HOME"`
+	GatewayHealthURL string `name:"gateway-health-url" default:"http://127.0.0.1:9120/api/health" description:"Health URL of the pod's Hermes gateway. The host starts hermes acp only while it answers, because hermes acp starts a gateway of its own when none runs. Empty turns the check off"`
 }
 
 // Reconnect controls the backoff between connection attempts.
