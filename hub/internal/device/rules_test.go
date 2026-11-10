@@ -235,6 +235,9 @@ func TestGatewayLegCreateExisting(t *testing.T) {
 		if got := e.called(methodMutate); len(got) != 0 {
 			t.Fatalf("the hub deleted an existing session: %v", got)
 		}
+		if got := e.called("session.detach"); len(got) != 2 || got[0].Params[keySessionID] != sid || got[1].Params[keySessionID] != gone {
+			t.Fatalf("detaches = %v", got)
+		}
 		if !slices.Contains(e.gw.SessionIDs(), sid) || !slices.Contains(e.gw.SessionIDs(), gone) {
 			t.Fatalf("sessions = %v", e.gw.SessionIDs())
 		}

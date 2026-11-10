@@ -525,9 +525,10 @@ func (g *guard) relay(typ websocket.MessageType, data []byte) {
 }
 
 type createResult struct {
-	SessionID  string          `json:"session_id"`
-	Revision   json.RawMessage `json:"revision"`
-	Generation json.RawMessage `json:"execution_generation"`
+	SessionID      string          `json:"session_id"`
+	SubscriptionID string          `json:"subscription_id"`
+	Revision       json.RawMessage `json:"revision"`
+	Generation     json.RawMessage `json:"execution_generation"`
 }
 
 func (g *guard) createAnswered(h *held, f *frame, data []byte) {
@@ -566,6 +567,7 @@ func (g *guard) createAnswered(h *held, f *frame, data []byte) {
 		}
 		if errors.Is(err, errOtherDevice) {
 			g.s.log.Warn("session.create answered with another device's session", "device", g.dev.ID, "session_id", res.SessionID)
+			g.detach(res.SessionID, res.SubscriptionID)
 			g.toDevice(otherDeviceAnswer(h.id, res.SessionID))
 			return
 		}
@@ -573,6 +575,7 @@ func (g *guard) createAnswered(h *held, f *frame, data []byte) {
 		if rerr != nil || !fresh {
 			g.s.log.Warn("bind after session.create failed; keeping the session, which was or is bound", "device", g.dev.ID,
 				"session_id", res.SessionID, "error", err.Error())
+			g.detach(res.SessionID, res.SubscriptionID)
 			g.toDevice(bindAnswer(h.id, err))
 			return
 		}
@@ -611,11 +614,17 @@ func (g *guard) resumeAnswered(h *held, f *frame, data []byte) {
 			g.toDevice(data)
 			return
 		}
-		if res.SubscriptionID != "" {
-			_, _ = g.call(methodDetach, map[string]any{keySessionID: res.SessionID, "subscription_id": res.SubscriptionID})
-		}
+		g.detach(res.SessionID, res.SubscriptionID)
 		g.refuseSession(h.id, res.SessionID, err)
 	})
+}
+
+// detach ends the hub leg's subscription to a session the device may not
+// see, so the gateway sends no more of its events on the leg.
+func (g *guard) detach(sid, subscription string) {
+	if subscription != "" {
+		_, _ = g.call(methodDetach, map[string]any{keySessionID: sid, "subscription_id": subscription})
+	}
 }
 
 // deleteSession deletes a session whose bind failed and waits for the
