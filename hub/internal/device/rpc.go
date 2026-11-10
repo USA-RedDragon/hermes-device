@@ -6,9 +6,11 @@ import (
 	"errors"
 	"maps"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 )
@@ -52,6 +54,10 @@ const (
 	methodConfigSet    = "config.set"
 	methodCompletePath = "complete.path"
 	methodDispatch     = "command.dispatch"
+	methodSlashExec    = "slash.exec"
+	methodFileAttach   = "file.attach"
+	opCompress         = "compress"
+	opReset            = "reset"
 	opWorkspace        = "workspace"
 	opBranch           = "branch"
 	opDelete           = "delete"
@@ -297,7 +303,7 @@ const whyUnknown = "the hub allows only the methods the Hermes TUI and CLI need 
 //
 //nolint:gochecknoglobals // a fixed table
 var mutateOps = []string{"rename", "archive", "sidebar", "model", "reasoning", opWorkspace, "edit_policy", opDelete,
-	"rewind", "reset", opBranch, "compress"}
+	"rewind", opReset, opBranch, opCompress}
 
 // GatewayMethods are the methods the gateway leg lets through, in order.
 func GatewayMethods() []string { return slices.Sorted(maps.Keys(gatewayRules)) }
@@ -354,7 +360,7 @@ func configSetAllowed(params map[string]json.RawMessage) bool {
 // a session setting. Anything else, such as show or hide with characters
 // Python's strip removes, is refused rather than parsed as Hermes would.
 func reasoningValue(v string) bool {
-	return v == "reset" || slices.Contains(hub.ReasoningEfforts(), v)
+	return v == opReset || slices.Contains(hub.ReasoningEfforts(), v)
 }
 
 // otherProfile reports whether a request has a non-null profile member,
@@ -366,36 +372,163 @@ func otherProfile(params map[string]json.RawMessage) bool {
 }
 
 // SlashCommands are the slash commands a device may run through slash.exec
-// and command.dispatch: ones that act on the session only, or only read.
-// Any argument with --global is refused, and /reasoning takes only an
-// effort or reset.
+// and command.dispatch, or type as prompt text: ones that act on the
+// session only, or only read. Not /verbose (it writes the profile's
+// config.yaml), /diff (it runs git in the pod) or /refine (it reviews into
+// the profile's memory and skills). An argument that Hermes reads as
+// --global is refused, /model always runs as --session, and /reasoning
+// takes only an effort or reset.
 func SlashCommands() []string {
-	return []string{"new", "clear", "redraw", "history", "retry", "undo", "title", "compress", "stop", "status",
-		"context", "usage", "help", "commands", "version", "copy", "queue", "steer", "btw", "branch", "diff",
-		"verbose", keyFast, "yolo", keyReasoning, "model", "goal", "plan", "review", "refine", "whoami"}
+	return []string{"new", "clear", "redraw", "history", "retry", "undo", keyTitle, opCompress, "stop", "status",
+		"context", "usage", "help", "commands", "version", "copy", "queue", "steer", "btw", "branch",
+		keyFast, "yolo", keyReasoning, slashModel, "goal", "plan", "review", "whoami"}
 }
 
-// slashAllowed applies SlashCommands to a slash.exec (command) or
-// command.dispatch (name and arg) request, split as Hermes splits it
-// (gateway/session_commands.py _parse).
-func slashAllowed(method string, params map[string]json.RawMessage) bool {
+const (
+	slashModel     = "model"
+	flagSession    = "--session"
+	flagGlobal     = "--global"
+	keyCommandText = "command"
+	keyText        = "text"
+)
+
+// slashAliases are the Hermes v0.22.7 aliases (hermes_cli/commands.py) of
+// the allowed slash commands.
+//
+//nolint:gochecknoglobals // a fixed table
+var slashAliases = map[string]string{opReset: "new", "fork": "branch", "compact": opCompress, "q": "queue",
+	"s": "steer", "ctx": "context", "v": "version"}
+
+// flagForm is an argument as Hermes' flag parsers may read it: shlex
+// joins quoted pieces, /reasoning and /fast replace an em dash with --,
+// /model a figure, en or em dash before a flag word, and a message's
+// command arguments an en dash with -. Quotes and backslashes are dropped,
+// every such dash becomes --, and the result is lower case, so a flag in
+// any of those forms shows as --<flag>.
+func flagForm(arg string) string {
+	r := strings.NewReplacer(`"`, "", "'", "", `\`, "", "\u2012", "--", "\u2013", "--", "\u2014", "--", "\u2015", "--")
+	return strings.ToLower(r.Replace(arg))
+}
+
+// commandAllowed applies SlashCommands to a command name and argument.
+func commandAllowed(name, arg string) bool {
+	flags := flagForm(arg)
+	if !slices.Contains(SlashCommands(), name) || strings.Contains(flags, flagGlobal) {
+		return false
+	}
+	switch name {
+	case keyReasoning:
+		a := strings.TrimSpace(arg)
+		return a == "" || reasoningValue(a)
+	case slashModel:
+		return !strings.Contains(flags, "--refresh")
+	}
+	return true
+}
+
+// slashParts splits a slash.exec (command) or command.dispatch (name and
+// arg) request as Hermes splits it (gateway/session_commands.py _parse).
+func slashParts(method string, params map[string]json.RawMessage) (string, string) {
 	var name, arg string
 	if method == methodDispatch {
 		name, arg = rawString(params["name"]), rawString(params["arg"])
 	} else {
-		parts := strings.SplitN(strings.TrimLeft(strings.TrimSpace(rawString(params["command"])), "/"), " ", 2)
+		parts := strings.SplitN(strings.TrimLeft(strings.TrimSpace(rawString(params[keyCommandText])), "/"), " ", 2)
 		name = parts[0]
 		if len(parts) == 2 {
 			arg = parts[1]
 		}
 	}
-	name = strings.TrimLeft(strings.TrimSpace(name), "/")
-	if !slices.Contains(SlashCommands(), name) || strings.Contains(arg, "--global") {
+	return strings.TrimLeft(strings.TrimSpace(name), "/"), arg
+}
+
+// slashAllowed applies SlashCommands to a slash.exec or command.dispatch
+// request.
+func slashAllowed(method string, params map[string]json.RawMessage) bool {
+	return commandAllowed(slashParts(method, params))
+}
+
+// forceSessionModel makes a /model of slash.exec or command.dispatch
+// session scoped: without --session Hermes writes the pick to the
+// profile's config.yaml when the profile has no default model or sets
+// model.persist_switch_by_default (hermes_cli/model_switch.py
+// resolve_persist_behavior).
+func forceSessionModel(method string, params map[string]json.RawMessage) {
+	if name, _ := slashParts(method, params); name != slashModel {
+		return
+	}
+	key := keyCommandText
+	if method == methodDispatch {
+		key = "arg"
+	}
+	params[key] = mustRaw(strings.TrimRight(rawString(params[key]), " ") + " " + flagSession)
+}
+
+// textMethods are the methods whose text member Hermes may read as a slash
+// command: prompt.submit and prompt.replace_queued admit it as a message
+// event (gateway/run_inbound.py dispatches its command). The others hand
+// the text to the model, and are checked the same way.
+//
+//nolint:gochecknoglobals // a fixed table
+var textMethods = []string{"prompt.submit", "prompt.replace_queued", "session.steer", "session.redirect", "prompt.btw"}
+
+// attachmentRefs are the leading Desktop attachment refs Hermes strips
+// before it looks for a command (gateway/platforms/event.py
+// _ATTACHMENT_REF_RE). The hub strips every leading line that starts with
+// @, a superset, since Python's IGNORECASE also folds dotless i and
+// others that Go does not.
+var attachmentRefs = regexp.MustCompile(`^(?:@[^\n]*\n?)+`)
+
+// pySpace is Python's str.isspace for one character.
+func pySpace(r rune) bool { return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f) }
+
+// textCommand is the command a message text names, as Hermes reads it
+// (MessageEvent.get_command and get_command_args): ok is false for text
+// that is not a command.
+func textCommand(text string) (name, arg string, ok bool) {
+	t := strings.TrimLeftFunc(text, pySpace)
+	t = strings.TrimLeftFunc(attachmentRefs.ReplaceAllString(t, ""), pySpace)
+	if !strings.HasPrefix(t, "/") {
+		return "", "", false
+	}
+	end := strings.IndexFunc(t, pySpace)
+	if end < 0 {
+		end = len(t)
+	}
+	name, _, _ = strings.Cut(strings.ToLower(t[1:end]), "@")
+	if name == "" || strings.Contains(name, "/") {
+		return "", "", false
+	}
+	return name, strings.TrimLeftFunc(t[end:], pySpace), true
+}
+
+// textAllowed applies SlashCommands to the text of a textMethods request.
+// A name that is not plain ASCII is refused, since Python lowers some
+// characters differently from Go. An alias counts as its command, and a
+// /model needs --session or --once.
+func textAllowed(params map[string]json.RawMessage) bool {
+	text, isString := rawStringOK(params[keyText])
+	if !isString {
+		return true
+	}
+	name, arg, isCommand := textCommand(text)
+	if !isCommand {
+		return true
+	}
+	for _, r := range name {
+		if r > unicode.MaxASCII {
+			return false
+		}
+	}
+	if canonical, ok := slashAliases[name]; ok {
+		name = canonical
+	}
+	if !commandAllowed(name, arg) {
 		return false
 	}
-	if name == keyReasoning {
-		a := strings.TrimSpace(arg)
-		return a == "" || reasoningValue(a)
+	if name == slashModel {
+		tokens := strings.Fields(flagForm(arg))
+		return slices.Contains(tokens, flagSession) || slices.Contains(tokens, "--once")
 	}
 	return true
 }
@@ -456,9 +589,9 @@ func denied(method string, params map[string]json.RawMessage) bool {
 	switch method {
 	case methodConfigSet:
 		return !configSetAllowed(params)
-	case "slash.exec", methodDispatch:
+	case methodSlashExec, methodDispatch:
 		return !slashAllowed(method, params)
-	case "file.attach":
+	case methodFileAttach:
 		p, ok := params["path"]
 		return ok && !isNull(p)
 	case methodMutate:

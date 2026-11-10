@@ -350,3 +350,63 @@ func TestGatewayLegAnswers(t *testing.T) {
 	})
 }
 
+// TestGatewayLegPromptSlash covers slash commands typed as prompt text:
+// Hermes dispatches a prompt.submit text that starts with / as a command
+// (gateway/platforms/event.py get_command), so the hub applies the slash
+// allowlist to it in every form Hermes reads.
+func TestGatewayLegPromptSlash(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, id := e.pair(e.a)
+		e.plugin.SetBinding("s1", id, deviceDir)
+		g := e.gatewayLeg(e.b, tok)
+		refused := []string{
+			"/reload-mcp", "  /reload-mcp", "\t\n/reload-mcp", "\x1c/reload-mcp", " /reload-mcp",
+			"/reload_mcp@hermes_bot", "/RELOAD-MCP", "/Reload-Mcp now", "@file:/tmp/a.txt\n/reload-mcp",
+			"@image:x\n@url:https://example.com\n  /reload-mcp", "@ımage:x\n/reload-mcp", "@FILE:x\n/sethome",
+			"/skills install x", "/my-quick-exec", "/kanban run", "/cron add", "/verbose", "/diff", "/refine", "/personality pirate",
+			"/fast on --global", "/fast on --GLOBAL", "/fast on —global", "/fast on –-global", "/fast on \"--glo\"bal",
+			"/fast on '-'-global", "/yolo ‒global", "/reasoning show", "/reasoning high --global", "/reasoning high x",
+			"/model gpt-5", "/model gpt-5 --global", "/model gpt-5 --session --refresh", "/model@bot gpt-5", "/vıew",
+		}
+		allowed := []string{
+			"hello", "/etc/passwd is odd", "/ hi", "/", "@file:/tmp/a.txt\nsummarize it", "/title A new name", "/fast on",
+			"/compact", "/q next question", "/RESET", "/reasoning high", "/model gpt-5 --session", "/model gpt-5 —session",
+			"/steer@hermes_bot go left", "/btw what is this",
+		}
+		for _, method := range []string{"prompt.submit", "prompt.replace_queued", "session.steer", "session.redirect", "prompt.btw"} {
+			for i, text := range refused {
+				p := map[string]any{keySessionID: "s1", keyText: text, keySubmission: "x"}
+				if m := g.request(fmt.Sprintf("%s-r%d", method, i), method, p); reason(m) != reasonDenied {
+					t.Fatalf("%s %q = %v", method, text, m)
+				}
+			}
+			if got := e.called(method); len(got) != 0 {
+				t.Fatalf("refused %s calls reached the gateway: %v", method, got)
+			}
+			for i, text := range allowed {
+				p := map[string]any{keySessionID: "s1", keyText: text, keySubmission: "x"}
+				if m := g.request(fmt.Sprintf("%s-a%d", method, i), method, p); reason(m) == reasonDenied {
+					t.Fatalf("%s %q = %v", method, text, m)
+				}
+			}
+			if got := e.called(method); len(got) != len(allowed) {
+				t.Fatalf("%s calls = %d, want %d", method, len(got), len(allowed))
+			}
+		}
+		for _, cmd := range []string{"/verbose", "/diff", "/refine", "/fast on —global", "/fast on --GLOBAL", "/model x --refresh"} {
+			if m := g.request("sx-"+cmd, methodSlash, map[string]any{keySessionID: "s1", keyCommand: cmd}); reason(m) != reasonDenied {
+				t.Fatalf("slash.exec %q = %v", cmd, m)
+			}
+		}
+		g.request("sx-model", methodSlash, map[string]any{keySessionID: "s1", keyCommand: "/model gpt-5"})
+		g.request("cd-model", "command.dispatch", map[string]any{keySessionID: "s1", keyName: "model", "arg": "gpt-5"})
+		if got := e.called(methodSlash); len(got) != 1 || got[0].Params[keyCommand] != "/model gpt-5 --session" {
+			t.Fatalf("slash.exec /model reached the gateway as %v", got)
+		}
+		if got := e.called("command.dispatch"); len(got) != 1 || got[0].Params["arg"] != "gpt-5 --session" {
+			t.Fatalf("command.dispatch model reached the gateway as %v", got)
+		}
+	})
+}

@@ -505,7 +505,7 @@ func TestACPLeg(t *testing.T) {
 		}
 		msg := map[string]any{keyJSONRPC: jsonRPC, "id": 1, keyMethod: acpInitialize, "params": map[string]any{}}
 		writeJSON(t, c, msg)
-		if m := readJSON(t, c); m["id"] != float64(1) || m["result"] == nil {
+		if m := readJSON(t, c); m["id"] != float64(1) || m[keyResult] == nil {
 			t.Fatalf("initialize = %v", m)
 		}
 		cl := e.acp.Claims()
@@ -599,7 +599,7 @@ func TestBindAPI(t *testing.T) {
 		if s, out := call(t, http.MethodPut, u, tok, map[string]any{keyDir: "/etc"}); s != http.StatusUnprocessableEntity || out["error"] != "dir_refused" {
 			t.Fatalf("refused bind = %d %v", s, out)
 		}
-		e.plugin.SetBinding("s-other", "d_other", "/home/alice/x")
+		e.plugin.SetBinding(sessionOther, "d_other", "/home/alice/x")
 		if s, out := call(t, http.MethodDelete, e.b.url+"/api/device/sessions/s-other/binding", tok, nil); s != http.StatusForbidden || out["error"] != "forbidden" {
 			t.Fatalf("unbind other = %d %v", s, out)
 		}
@@ -692,7 +692,7 @@ func TestGatewayLegDenyList(t *testing.T) {
 			{methodConfigSet, map[string]any{keyKey: "yolo", keyValue: "1", keyScope: "global"}},
 			{methodConfigSet, map[string]any{keyKey: "details_mode", keyValue: "expanded"}},
 			{methodMutate, map[string]any{keySessionID: "s1", keyOperation: "editor_mcp", keyPayload: map[string]any{}}},
-			{"file.attach", map[string]any{"path": "/etc/passwd"}},
+			{methodFileAttach, map[string]any{keyPath: "/etc/passwd"}},
 			{"prompt.background", map[string]any{keySessionID: "s1", keyText: "x"}},
 			{"session.prune", map[string]any{"filters": map[string]any{}}},
 			{"bot_relay.deliver", map[string]any{}},
@@ -705,10 +705,10 @@ func TestGatewayLegDenyList(t *testing.T) {
 			{methodSlash, map[string]any{keySessionID: "s1", keyCommand: "/reasoning show"}},
 			{methodSlash, map[string]any{keySessionID: "s1", keyCommand: "/busy queue"}},
 			{"command.dispatch", map[string]any{keySessionID: "s1", keyName: "personality", "arg": "pirate"}},
-			{"session.list", map[string]any{"profile": "other"}},
+			{methodList, map[string]any{keyProfile: nameOther}},
 			{"session.foo", map[string]any{keySessionID: "s1"}},
 			{"session.events.since", map[string]any{keySessionID: "s1"}},
-			{methodTitle, map[string]any{keySessionID: "s1", "title": "x"}},
+			{methodTitle, map[string]any{keySessionID: "s1", keyTitle: "x"}},
 			{"session.save", map[string]any{keySessionID: "s1"}},
 			{"paste.collapse", map[string]any{keyText: "x"}},
 			{"billing.charge", map[string]any{"amount_usd": 5}},
@@ -730,14 +730,14 @@ func TestGatewayLegDenyList(t *testing.T) {
 				t.Fatalf("%s message = %v", method, m)
 			}
 		}
-		if m := g.request("resize", "terminal.resize", map[string]any{keySessionID: "s1", "cols": 80}); reason(m) == reasonDenied {
+		if m := g.request("resize", "terminal.resize", map[string]any{keySessionID: "s1", keyCols: 80}); reason(m) == reasonDenied {
 			t.Fatalf("terminal.resize = %v", m)
 		}
 		if got := e.called("terminal.resize"); len(got) != 1 {
 			t.Fatalf("terminal.resize calls = %v", got)
 		}
 		m := g.request(7, "complete.path", map[string]any{"word": "/"})
-		cres, resOK := m["result"].(map[string]any)
+		cres, resOK := m[keyResult].(map[string]any)
 		items, itemsOK := cres["items"].([]any)
 		if m["id"] != float64(7) || !resOK || !itemsOK || len(items) != 0 {
 			t.Fatalf("complete.path = %v", m)
@@ -753,17 +753,17 @@ func TestGatewayLegDenyList(t *testing.T) {
 		if got := e.called(methodConfigSet); len(got) != 4 {
 			t.Fatalf("session config.set calls = %v", got)
 		}
-		if m := g.request("hermes-hub-1", "session.list", map[string]any{}); m["error"] == nil {
+		if m := g.request("hermes-hub-1", methodList, map[string]any{}); m["error"] == nil {
 			t.Fatalf("own id = %v", m)
 		}
 		writeJSON(t, g.c, []any{map[string]any{keyJSONRPC: jsonRPC, "id": 1, keyMethod: methodShell}})
 		if m := readJSON(t, g.c); m["error"] == nil {
 			t.Fatalf("batch = %v", m)
 		}
-		if m := g.request("dup", "session.list", map[string]any{keyScope: "stored"}); m["error"] != nil {
+		if m := g.request("dup", methodList, map[string]any{keyScope: "stored"}); m["error"] != nil {
 			t.Fatalf("session.list = %v", m)
 		}
-		if m := g.request(1.0, "session.list", map[string]any{keyScope: "stored"}); m["id"] != 1.0 || m["error"] != nil {
+		if m := g.request(1.0, methodList, map[string]any{keyScope: "stored"}); m["id"] != 1.0 || m["error"] != nil {
 			t.Fatalf("numeric id = %v", m)
 		}
 		g.request("slash", methodSlash, map[string]any{keySessionID: "s1", keyCommand: "/title new name"})
@@ -780,10 +780,10 @@ func TestGatewayLegCreate(t *testing.T) {
 		tok, id := e.pair(e.a)
 		e.connectExec(e.a, tok)
 		g := e.gatewayLeg(e.b, tok)
-		m := g.request("r1", "session.create", map[string]any{keyRequestID: "q1", "source": sourceTUI, keyCWD: deviceDir,
+		m := g.request("r1", "session.create", map[string]any{keyRequestID: "q1", keySource: sourceTUI, keyCWD: deviceDir,
 			"editor": map[string]any{"mcp_servers": []any{"x"}, keyName: "vim"}})
-		res, _ := m["result"].(map[string]any)
-		sid, _ := res["session_id"].(string)
+		res, _ := m[keyResult].(map[string]any)
+		sid, _ := res[keySessionID].(string)
 		if m["id"] != "r1" || sid == "" {
 			t.Fatalf("create = %v", m)
 		}
@@ -799,10 +799,10 @@ func TestGatewayLegCreate(t *testing.T) {
 			t.Fatalf("binding = %+v", b)
 		}
 		binds := e.plugin.Binds()
-		again := g.request("r2", "session.create", map[string]any{keyRequestID: "q1", "source": sourceTUI,
+		again := g.request("r2", "session.create", map[string]any{keyRequestID: "q1", keySource: sourceTUI,
 			keyCWD: placeholder, "row_cwd": deviceDir})
-		againRes, againOK := again["result"].(map[string]any)
-		if !againOK || againRes["session_id"] != sid || e.plugin.Binds() != binds {
+		againRes, againOK := again[keyResult].(map[string]any)
+		if !againOK || againRes[keySessionID] != sid || e.plugin.Binds() != binds {
 			t.Fatalf("retry = %v, binds %d -> %d", again, binds, e.plugin.Binds())
 		}
 		if m := g.request("r3", "session.create", map[string]any{keyRequestID: "q3", keyCWD: "relative"}); reason(m) != "hermes_device_cwd" {
@@ -856,15 +856,15 @@ func TestGatewayLegOtherDevice(t *testing.T) {
 	stores(t, func(t *testing.T, st *store.Store) {
 		e := setup(t, st)
 		tok, _ := e.pair(e.a)
-		e.gw.AddSession(&gatewaytest.Session{ID: "s-other", Title: "Other", Live: true, StartedAt: 1})
+		e.gw.AddSession(&gatewaytest.Session{ID: sessionOther, Title: titleOther, Live: true, StartedAt: 1})
 		e.gw.AddSession(&gatewaytest.Session{ID: sessionPod, Live: true, StartedAt: 2})
-		e.plugin.SetBinding("s-other", "d_laptop", "/home/alice/x")
-		e.plugin.SetParent("s-other-child", "s-other")
+		e.plugin.SetBinding(sessionOther, "d_laptop", "/home/alice/x")
+		e.plugin.SetParent("s-other-child", sessionOther)
 		g := e.gatewayLeg(e.a, tok)
-		if m := g.request(1, "session.resume", map[string]any{keySessionID: "s-other"}); reason(m) != reasonOtherDevice {
+		if m := g.request(1, "session.resume", map[string]any{keySessionID: sessionOther}); reason(m) != reasonOtherDevice {
 			t.Fatalf("resume other = %v", m)
 		}
-		if m := g.request(2, "prompt.submit", map[string]any{keySessionID: "s-other-child", "text": "hi", "submission_id": "x"}); reason(m) != reasonOtherDevice {
+		if m := g.request(2, "prompt.submit", map[string]any{keySessionID: "s-other-child", "text": "hi", keySubmission: "x"}); reason(m) != reasonOtherDevice {
 			t.Fatalf("submit other = %v", m)
 		}
 		if m := g.request(3, "session.resume", map[string]any{keySessionID: sessionPod}); reason(m) != reasonNotBound {
