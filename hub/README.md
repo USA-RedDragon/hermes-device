@@ -80,7 +80,8 @@ Set `telegram.enabled`, `telegram.token` and `http.public_url`. A Telegram user 
 
 ## Deploy
 
-- Run one replica. Put `store.path` on a persistent volume.
+- One replica: the default `store.driver: sqlite` keeps everything in the file `store.path`. Put it on a persistent volume and use the `Recreate` strategy.
+- To move from SQLite to PostgreSQL, set `store.import_path` to the old `store.path` for one start with the old volume mounted. The hub copies the rows once and records that in the database; later starts skip the copy, also when the file is still there.
 - Give `http.public_url` the address that users open. It sets the redirect URI, the only allowed `Origin`, and `Secure` cookies (for `https`).
 - The event stream is a long-lived HTTP response. Turn off the request timeout on the route (Gateway API `timeouts.request: 0s`). The hub sends a comment every 15 seconds, so idle timeouts above that are fine.
 - `/healthz` answers `ok` without a login.

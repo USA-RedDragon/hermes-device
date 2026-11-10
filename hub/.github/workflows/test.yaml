@@ -16,6 +16,23 @@ jobs:
     permissions:
       contents: read
 
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+        env:
+          POSTGRES_USER: hub
+          POSTGRES_PASSWORD: hub
+          POSTGRES_DB: hub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hub"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      HUB_TEST_POSTGRES_DSN: postgres://hub:hub@localhost:5432/hub?sslmode=disable
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -89,6 +106,23 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+        env:
+          POSTGRES_USER: hub
+          POSTGRES_PASSWORD: hub
+          POSTGRES_DB: hub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hub"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      HUB_TEST_POSTGRES_DSN: postgres://hub:hub@localhost:5432/hub?sslmode=disable
 
     steps:
       - name: Checkout repository

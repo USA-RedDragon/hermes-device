@@ -62,7 +62,7 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
 
-	st, err := store.Open(ctx, cfg.Store.Path)
+	st, err := openStore(ctx, &cfg.Store)
 	if err != nil {
 		return err
 	}
@@ -99,4 +99,25 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	}
 	slog.Info("Shutdown complete")
 	return nil
+}
+
+func openStore(ctx context.Context, cfg *config.Store) (*store.Store, error) {
+	if cfg.Driver != config.DriverPostgres {
+		return store.Open(ctx, cfg.Path)
+	}
+	st, err := store.OpenPostgres(ctx, cfg.DSN)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.ImportPath != "" {
+		n, ran, err := st.ImportSQLite(ctx, cfg.ImportPath)
+		if err != nil {
+			_ = st.Close()
+			return nil, err
+		}
+		if ran {
+			slog.Info("Imported the SQLite store into PostgreSQL", "path", cfg.ImportPath, "rows", n)
+		}
+	}
+	return st, nil
 }
