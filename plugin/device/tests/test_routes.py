@@ -171,7 +171,7 @@ class RouteTests(unittest.TestCase):
     def test_welcome_exec_and_devices(self):
         welcome, device = self.online()
         self.assertEqual(welcome, {"type": "welcome", "version": 2, "device_id": "d_8f2c", "name": "desktop",
-                                   "ping_interval": 25, "plugin_version": "0.2.0", "hermes_version": "v0.22.7"})
+                                   "ping_interval": 25, "plugin_version": "0.3.0", "hermes_version": "v0.22.7"})
         code, out, _ = self.hub.run("d_8f2c", "echo hi; exit 4", str(self.root))
         self.assertEqual((code, out), (4, "hi\n"))
         devices = self.client.get("/api/plugins/device/devices").json()["devices"]
@@ -231,7 +231,7 @@ class RouteTests(unittest.TestCase):
     # HTTP routes
     def test_info(self):
         r = self.client.get("/api/plugins/device/info").json()
-        self.assertEqual(r, {"plugin_version": "0.2.0", "hermes_version": "v0.22.7", "protocol_version": 2,
+        self.assertEqual(r, {"plugin_version": "0.3.0", "hermes_version": "v0.22.7", "protocol_version": 3,
                              "backend_id": "alice", "placeholder": self.cfg["placeholder"]})
 
     def test_binding_routes(self):

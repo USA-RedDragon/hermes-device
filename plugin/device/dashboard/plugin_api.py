@@ -131,13 +131,46 @@ def _request_path(ws: WebSocket) -> str:
     return ws.scope.get("path") or ws.url.path
 
 
-async def _receive_text(ws: WebSocket, timeout: float) -> Optional[str]:
-    """The next text message, "" for a binary one, or None when the peer went away."""
+class _Gone(Exception):
+    """The peer or the server closed the socket; ``code`` is the close code."""
+
+    def __init__(self, code: Any):
+        super().__init__(code)
+        self.code = code
+
+
+async def _receive_text(ws: WebSocket, timeout: float) -> str:
+    """The next text message, or "" for a binary one. Raises _Gone when the socket closed."""
     msg = await asyncio.wait_for(ws.receive(), timeout)
     if msg.get("type") == "websocket.disconnect":
-        return None
+        raise _Gone(msg.get("code"))
     text = msg.get("text")
     return text if isinstance(text, str) else ""
+
+
+def _version_range(hello: dict) -> Optional[tuple[int, int]]:
+    """The device's ``(oldest, newest)`` protocol versions from hello (section 4.1)."""
+    low, high = hello.get("version"), hello.get("max_version", hello.get("version"))
+    if any(isinstance(v, bool) or not isinstance(v, int) for v in (low, high)) or high < low:
+        return None
+    return low, high
+
+
+def negotiate(hello: dict, dev_mode: bool) -> tuple[Optional[int], str]:
+    """The newest version both sides speak, or None and the close reason."""
+    core = _core()
+    lowest = 1 if dev_mode else core.MIN_PROTOCOL_VERSION
+    span = _version_range(hello)
+    if span is not None:
+        chosen = min(span[1], core.PROTOCOL_VERSION)
+        if chosen >= max(span[0], lowest):
+            return chosen, ""
+        theirs = f"{span[0]}" if span[0] == span[1] else f"{span[0]} to {span[1]}"
+    else:
+        theirs = repr(hello.get("version"))
+    client = hello.get("client_version") if isinstance(hello.get("client_version"), str) else "?"
+    return None, (f"hermes-device {client[:16]} speaks protocol {theirs[:12]}; plugin {core.PLUGIN_VERSION} speaks "
+                  f"{lowest} to {core.PROTOCOL_VERSION}; upgrade them together")
 
 
 async def _close(ws: WebSocket, code: int, reason: str) -> None:
@@ -170,18 +203,17 @@ async def device_socket(ws: WebSocket) -> None:
     try:
         text = await _receive_text(ws, core.HELLO_TIMEOUT_S)
         hello = json.loads(text) if text else None
+    except _Gone:
+        return
     except (asyncio.TimeoutError, ValueError):
         hello = None
-        text = ""
-    if text is None:
-        return
     if not isinstance(hello, dict) or hello.get("type") != core.TYPE_HELLO:
         await _close(ws, core.CLOSE_PROTOCOL_ERROR, "expected hello")
         return
-    version = hello.get("version")
-    allowed = (1, core.PROTOCOL_VERSION) if claims is None else (core.PROTOCOL_VERSION,)
-    if isinstance(version, bool) or version not in allowed:
-        await _close(ws, core.CLOSE_UNSUPPORTED_VERSION, f"protocol version {core.PROTOCOL_VERSION} required")
+    version, why = negotiate(hello, claims is None)
+    if version is None:
+        logger.warning("device: refused hello: %s", why)
+        await _close(ws, core.CLOSE_UNSUPPORTED_VERSION, why)
         return
     if str(hello.get("os") or "").lower() == "windows":
         await _close(ws, core.CLOSE_UNSUPPORTED_PLATFORM, "windows devices are not supported")
@@ -212,16 +244,26 @@ async def device_socket(ws: WebSocket) -> None:
         device_id=device_id, name=display, send_text=send_text, loop=asyncio.get_running_loop(), roots=roots,
         tmp_dir=text_field("tmp_dir"), home=text_field("home"), hostname=text_field("hostname"),
         os=text_field("os"), arch=text_field("arch"), shell=text_field("shell"),
-        client_version=text_field("client_version"),
+        client_version=text_field("client_version"), version=version,
         close=lambda code, reason: _close(ws, code, reason))
     hub = core.hub()
-    hub.attach(conn)
+    welcome = {"type": core.TYPE_WELCOME, "version": version, "device_id": device_id, "name": display,
+               "ping_interval": core.PING_INTERVAL_S, "plugin_version": core.PLUGIN_VERSION,
+               "hermes_version": core.hermes_version()}
+    if version >= core.RESUME_VERSION:
+        welcome["grace_seconds"] = core.grace_seconds()
     pinger: Optional[asyncio.Task] = None
+    resumable = True
+    attached = False
     try:
-        await send_text(json.dumps({
-            "type": core.TYPE_WELCOME, "version": core.PROTOCOL_VERSION, "device_id": device_id, "name": display,
-            "ping_interval": core.PING_INTERVAL_S, "plugin_version": core.PLUGIN_VERSION,
-            "hermes_version": core.hermes_version()}))
+        async with send_lock:
+            # attach runs with the send lock held, so no exec reaches the device before the
+            # welcome and the resume.
+            resume = hub.attach(conn)
+            attached = True
+            await ws.send_text(json.dumps(welcome))
+            if version >= core.RESUME_VERSION:
+                await ws.send_text(json.dumps({"type": core.TYPE_RESUME, "commands": resume}))
 
         async def ping_loop() -> None:
             seq = 0
@@ -243,7 +285,11 @@ async def device_socket(ws: WebSocket) -> None:
                 logger.warning("device: %s silent for %ss; closing", device_id, core.SILENCE_TIMEOUT_S)
                 await _close(ws, core.CLOSE_PING_TIMEOUT, "no message for 60 seconds")
                 break
-            if text is None:
+            except _Gone as gone:
+                if gone.code == core.CLOSE_SERVICE_RESTART:
+                    # uvicorn ends every socket with 1012 when the gateway stops, and the device
+                    # kills its commands on 1012, so nothing would resume them.
+                    resumable = False
                 break
             last = loop.time()
             try:
@@ -257,9 +303,13 @@ async def device_socket(ws: WebSocket) -> None:
                 await send_text(json.dumps({"type": core.TYPE_PONG, "seq": msg.get("seq")}))
             elif kind in (core.TYPE_OUTPUT, core.TYPE_EXIT):
                 hub.on_message(conn, msg)
+    except asyncio.CancelledError:
+        resumable = False
+        raise
     except Exception:
         logger.debug("device: exec leg of %s ended", device_id, exc_info=True)
     finally:
         if pinger is not None:
             pinger.cancel()
-        hub.detach(conn)
+        if attached:
+            hub.detach(conn, resumable=resumable)

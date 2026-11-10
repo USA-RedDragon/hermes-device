@@ -31,9 +31,11 @@ from typing import Any, Callable, Iterable, Optional
 logger = logging.getLogger("hermes_device")
 
 PLUGIN_ID = "device"
-PLUGIN_VERSION = "0.2.0"
+PLUGIN_VERSION = "0.3.0"
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
+MIN_PROTOCOL_VERSION = 2
+RESUME_VERSION = 3
 TYPE_HELLO = "hello"
 TYPE_WELCOME = "welcome"
 TYPE_EXEC = "exec"
@@ -45,6 +47,7 @@ TYPE_PONG = "pong"
 TYPE_RESUME = "resume"
 
 CLOSE_PROTOCOL_ERROR = 1002
+CLOSE_SERVICE_RESTART = 1012
 CLOSE_UNAUTHORIZED = 4401
 CLOSE_ASSERTION_REFUSED = 4403
 CLOSE_PING_TIMEOUT = 4408
@@ -61,6 +64,8 @@ PING_INTERVAL_S = 25
 PING_TIMEOUT_S = 15
 HELLO_TIMEOUT_S = 10
 SILENCE_TIMEOUT_S = 60
+DEFAULT_GRACE_S = 120
+MAX_GRACE_S = 3600
 
 PLUGIN_EXEC_PATH = "/api/plugins/device/ws"
 ACP_HOST_PATH = "/acp"
@@ -167,6 +172,16 @@ def fallback_root() -> str:
     return posixpath.normpath(value.strip())
 
 
+def grace_seconds() -> float:
+    """How long a dropped version 3 leg keeps its pending commands for a resume (section 4.7).
+    0 turns resume off."""
+    value = settings().get("grace_seconds", DEFAULT_GRACE_S)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        logger.error("device: grace_seconds %r is not a number of seconds; using %d", value, DEFAULT_GRACE_S)
+        return float(DEFAULT_GRACE_S)
+    return float(min(value, MAX_GRACE_S))
+
+
 def dev_static_tokens() -> bool:
     return settings().get("dev_static_tokens") is True
 
@@ -266,6 +281,8 @@ class DeviceProcess:
     def __init__(self, request_id: str, kill_fn: Callable[[], bool]):
         self.request_id = request_id
         self._kill_fn = kill_fn
+        # Output bytes (UTF-8) received so far; a resume asks the device for the rest.
+        self.received = 0
         read_fd, self._write_fd = os.pipe()
         self._stdout = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")
         self._queue: "queue.SimpleQueue[Any]" = queue.SimpleQueue()
@@ -281,6 +298,22 @@ class DeviceProcess:
     def feed(self, data: str) -> None:
         if data:
             self._queue.put(data)
+
+    def feed_at(self, data: str, offset: Any) -> None:
+        """Feed a version 3 output chunk that starts at byte ``offset`` of the command's output:
+        skip bytes already received, and note bytes the device no longer had."""
+        raw = data.encode("utf-8", errors="surrogatepass")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            offset = self.received
+        if offset > self.received:
+            self.feed(f"\n[hermes-device: {offset - self.received} bytes of output were lost while the device "
+                      f"was disconnected]\n")
+        elif offset < self.received:
+            raw = raw[self.received - offset:]
+            offset = self.received
+        if raw:
+            self.feed(raw.decode("utf-8", errors="replace"))
+        self.received = max(self.received, offset + len(raw))
 
     def finish(self, code: int, note: str = "") -> None:
         with self._lock:
@@ -359,6 +392,8 @@ class DeviceConn:
     shell: str = ""
     client_version: str = ""
     close: Optional[Callable[[int, str], Any]] = None
+    # The negotiated exec leg protocol version (section 4.1).
+    version: int = MIN_PROTOCOL_VERSION
     connected_at: float = field(default_factory=time.time)
     conn_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     pending: dict[str, DeviceProcess] = field(default_factory=dict)
@@ -456,6 +491,10 @@ class Hub:
         self._ever_bound: set[str] = set()
         self._sandbox_dirs: dict[tuple[str, str], str] = {}
         self._sandbox_ready: set[tuple[str, str]] = set()
+        self._parked: dict[str, dict[str, DeviceProcess]] = {}
+        self._park_timers: dict[str, tuple[threading.Timer, object]] = {}
+        # Commands the plugin killed. A resume never lists them, so the device kills them too.
+        self._killed: set[str] = set()
         self._load()
 
     # persistence
@@ -544,11 +583,35 @@ class Hub:
             raise StateUnavailable(self._state_error)
 
     # devices
-    def attach(self, conn: DeviceConn) -> None:
+    def attach(self, conn: DeviceConn) -> list[dict]:
+        """Register ``conn`` as the device's connection. On a version 3 connection the commands
+        that a dropped or replaced connection of the device left pending move to it; the result
+        is the ``resume`` list for them (section 4.7). Otherwise they fail."""
         with self._lock:
             old = self._devices.get(conn.device_id)
             self._devices[conn.device_id] = conn
             self._seen.add(conn.device_id)
+            timer = self._park_timers.pop(conn.device_id, None)
+            carried = self._parked.pop(conn.device_id, {})
+            if old is not None and old is not conn:
+                with old.lock:
+                    if old.version >= RESUME_VERSION:
+                        carried.update(old.pending)
+                        old.pending.clear()
+            killed = {rid: carried.pop(rid) for rid in list(carried) if rid in self._killed}
+            self._killed.difference_update(killed)
+            lost = {}
+            if conn.version < RESUME_VERSION:
+                lost, carried = carried, {}
+            with conn.lock:
+                conn.pending.update(carried)
+        if timer is not None:
+            timer[0].cancel()
+        for proc in killed.values():
+            proc.finish(EXIT_KILLED, "[command killed while the device was disconnected]")
+        for proc in lost.values():
+            proc.finish(EXIT_LOST, "[device reconnected with protocol version 2, which cannot resume; command lost]")
+        resume = [{"id": rid, "offset": proc.received} for rid, proc in carried.items()]
         if old is not None and old is not conn:
             logger.warning("device: %s connected again; closing the previous connection", conn.device_id)
             self._fail_pending(old, "[device reconnected; command lost]")
@@ -558,15 +621,53 @@ class Hub:
                                                      old.loop)
                 except RuntimeError:
                     logger.debug("device: old connection loop is closed", exc_info=True)
-        logger.info("device: %s (%s) connected from %s, roots=%s", conn.device_id, conn.name, conn.hostname,
-                    conn.roots)
+        logger.info("device: %s (%s) connected from %s with protocol %d, roots=%s, resuming %d commands",
+                    conn.device_id, conn.name, conn.hostname, conn.version, conn.roots, len(resume))
+        return resume
 
-    def detach(self, conn: DeviceConn) -> None:
+    def detach(self, conn: DeviceConn, resumable: bool = False) -> None:
+        """Forget ``conn``. With ``resumable`` (a version 3 leg that dropped while the gateway
+        keeps running), its pending commands wait ``grace_seconds`` for the device to reconnect
+        and resume them; otherwise they fail at once with exit 255."""
+        grace = grace_seconds() if resumable and conn.version >= RESUME_VERSION else 0.0
         with self._lock:
-            if self._devices.get(conn.device_id) is conn:
+            current = self._devices.get(conn.device_id) is conn
+            if current:
                 del self._devices[conn.device_id]
+            park = current and grace > 0
+            if park:
+                with conn.lock:
+                    procs = dict(conn.pending)
+                    conn.pending.clear()
+                if procs:
+                    self._parked.setdefault(conn.device_id, {}).update(procs)
+                    old = self._park_timers.pop(conn.device_id, None)
+                    if old is not None:
+                        old[0].cancel()
+                    token = object()
+                    timer = threading.Timer(grace, self._expire, args=(conn.device_id, token))
+                    timer.daemon = True
+                    self._park_timers[conn.device_id] = (timer, token)
+                    timer.start()
+                    logger.info("device: %s disconnected; keeping %d commands for %ss for a resume",
+                                conn.device_id, len(procs), grace)
+                    return
         self._fail_pending(conn, "[device disconnected; command lost]")
         logger.info("device: %s disconnected", conn.device_id)
+
+    def _expire(self, device_id: str, token: object) -> None:
+        with self._lock:
+            current = self._park_timers.get(device_id)
+            if current is None or current[1] is not token:
+                return
+            del self._park_timers[device_id]
+            procs = self._parked.pop(device_id, {})
+            self._killed.difference_update(procs)
+        for proc in procs.values():
+            proc.finish(EXIT_LOST, f"[device {device_id} did not reconnect within {grace_seconds():g}s; "
+                                   "command lost]")
+        if procs:
+            logger.warning("device: %s did not reconnect in time; %d commands lost", device_id, len(procs))
 
     @staticmethod
     def _fail_pending(conn: DeviceConn, note: str) -> None:
@@ -607,11 +708,18 @@ class Hub:
             return
         with conn.lock:
             proc = conn.pending.get(rid) if kind == TYPE_OUTPUT else conn.pending.pop(rid, None)
+        if kind == TYPE_EXIT:
+            with self._lock:
+                self._killed.discard(rid)
         if proc is None:
             return
         if kind == TYPE_OUTPUT:
             data = msg.get("data")
-            proc.feed(data if isinstance(data, str) else "")
+            data = data if isinstance(data, str) else ""
+            if conn.version >= RESUME_VERSION:
+                proc.feed_at(data, msg.get("offset"))
+            else:
+                proc.feed(data)
             return
         error = msg.get("error") if isinstance(msg.get("error"), str) else ""
         try:
@@ -682,17 +790,7 @@ class Hub:
         if failed is not None:
             return failed
         rid = uuid.uuid4().hex
-
-        def kill() -> bool:
-            if self.device(device_id) is not conn:
-                return False
-            try:
-                conn.send({"type": TYPE_KILL, "id": rid})
-                return True
-            except Exception:
-                return False
-
-        proc = DeviceProcess(rid, kill)
+        proc = DeviceProcess(rid, lambda: self._kill(device_id, rid))
         proc.cwd = cwd
         with conn.lock:
             conn.pending[rid] = proc
@@ -706,6 +804,29 @@ class Hub:
                 conn.pending.pop(rid, None)
             proc.finish(EXIT_LOST, f"[could not reach device {device_id}: {exc}]")
         return proc
+
+    def _kill(self, device_id: str, rid: str) -> bool:
+        """Send ``kill`` on the connection that holds the command. The command is also marked
+        killed, so that a resume never lists it, even when this kill went into a socket that was
+        already dead; the device then kills it as a command the plugin no longer waits for. A
+        command parked for a resume is dropped and reported killed at once."""
+        with self._lock:
+            self._killed.add(rid)
+            self._parked.get(device_id, {}).pop(rid, None)
+            conn = self._devices.get(device_id)
+            held = False
+            if conn is not None:
+                with conn.lock:
+                    held = rid in conn.pending
+        if not held:
+            with self._lock:
+                self._killed.discard(rid)
+            return False
+        try:
+            conn.send({"type": TYPE_KILL, "id": rid})
+            return True
+        except Exception:
+            return False
 
     def run(self, device_id: str, cmd: str, cwd: str, timeout: float = 20) -> tuple[int, str, DeviceProcess]:
         """Run a short command synchronously and return ``(code, output, process)``."""
