@@ -1,0 +1,246 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"sync"
+	"time"
+
+	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
+	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+)
+
+// live is the hub's subscription to one gateway session, shared by every
+// viewer of it.
+type live struct {
+	b  *backend
+	id string
+
+	// opMu serializes subscribe, recover and detach.
+	opMu   sync.Mutex
+	client *gateway.Client
+
+	mu         sync.Mutex
+	stale      bool
+	pending    bool
+	early      []gateway.Event
+	subID      string
+	epoch      string
+	gwSeq      int64
+	generation int64
+	prompts    map[string]gateway.Prompt
+	seq        int64
+	snapshot   hub.Event
+	ring       []hub.Event
+	truncated  bool
+	viewers    map[*viewer]struct{}
+	idleTimer  *time.Timer
+}
+
+type viewer struct {
+	ch     chan hub.Event
+	closed bool
+}
+
+func newLive(b *backend, id string) *live {
+	return &live{b: b, id: id, prompts: map[string]gateway.Prompt{}, viewers: map[*viewer]struct{}{},
+		seq: time.Now().UnixMicro()}
+}
+
+func (ls *live) viewerCount() int {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	return len(ls.viewers)
+}
+
+func (ls *live) abort() {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	ls.pending, ls.early = false, nil
+}
+
+func (ls *live) handle(ev gateway.Event) {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	if ls.pending {
+		ls.early = append(ls.early, ev)
+		return
+	}
+	ls.apply(ev)
+}
+
+// flushEarly applies the frames that arrived while a request was in
+// flight. ls.mu is held.
+func (ls *live) flushEarly() {
+	for _, ev := range ls.early {
+		ls.apply(ev)
+	}
+	ls.pending, ls.early = false, nil
+}
+
+func (ls *live) setPrompts(ps []gateway.Prompt) {
+	ls.prompts = map[string]gateway.Prompt{}
+	for _, p := range ps {
+		if p.Kind == "approval" {
+			ls.prompts[p.PromptID] = p
+		}
+	}
+}
+
+// apply passes one gateway frame to viewers once, in order. ls.mu is held.
+func (ls *live) apply(ev gateway.Event) {
+	if ev.ReplayEpoch != ls.epoch {
+		ls.b.log.Info("replay epoch changed", "session", ls.id)
+		ls.epoch, ls.gwSeq = ev.ReplayEpoch, 0
+	}
+	if ev.Seq != 0 {
+		if ev.Seq <= ls.gwSeq {
+			return
+		}
+		ls.gwSeq = ev.Seq
+	}
+	if ev.ExecutionGeneration != nil && *ev.ExecutionGeneration > ls.generation {
+		ls.generation = *ev.ExecutionGeneration
+	}
+	switch ev.Type {
+	case hub.KindApprovalRequest:
+		var p gateway.Prompt
+		if json.Unmarshal(ev.Payload, &p) == nil && p.PromptID != "" {
+			if p.Kind == "" {
+				p.Kind = "approval"
+			}
+			ls.prompts[p.PromptID] = p
+		}
+	case "approval.settled":
+		var p struct {
+			PromptID string `json:"prompt_id"`
+		}
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			delete(ls.prompts, p.PromptID)
+		}
+	case "approval.cancelled":
+		var p struct {
+			RequestIDs []string `json:"request_ids"`
+		}
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			for _, id := range p.RequestIDs {
+				delete(ls.prompts, id)
+			}
+		}
+	}
+	ls.emit(ev.Type, ev.Payload)
+}
+
+// emit records an event and sends it to viewers. ls.mu is held.
+func (ls *live) emit(kind string, data json.RawMessage) {
+	ls.seq++
+	e := hub.Event{Seq: ls.seq, Kind: kind, Data: data}
+	ls.ring = append(ls.ring, e)
+	if n := ls.b.svc.opts.RingSize; len(ls.ring) > n {
+		ls.ring = append([]hub.Event(nil), ls.ring[len(ls.ring)-n/2:]...)
+		ls.truncated = true
+	}
+	ls.broadcast(e)
+}
+
+// broadcast sends e to every viewer, dropping any that is full. ls.mu is held.
+func (ls *live) broadcast(e hub.Event) {
+	for v := range ls.viewers {
+		select {
+		case v.ch <- e:
+		default:
+			ls.b.log.Warn("viewer too slow, dropping it", "session", ls.id)
+			v.closed = true
+			close(v.ch)
+			delete(ls.viewers, v)
+		}
+	}
+	if len(ls.viewers) == 0 {
+		ls.idleLocked()
+	}
+}
+
+func (ls *live) status(connected bool) {
+	data, _ := json.Marshal(map[string]bool{"connected": connected})
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	ls.seq++
+	ls.broadcast(hub.Event{Seq: ls.seq, Kind: hub.KindBackendStatus, Data: data})
+}
+
+// attach adds a viewer: the buffered events after sinceSeq when the
+// buffer still has all of them, else the snapshot and everything after it.
+func (ls *live) attach(sinceSeq int64) (<-chan hub.Event, func()) {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	v := &viewer{ch: make(chan hub.Event, ls.b.svc.opts.ViewerBuffer)}
+	covered := sinceSeq >= ls.snapshot.Seq && sinceSeq <= ls.seq &&
+		(!ls.truncated || len(ls.ring) == 0 || ls.ring[0].Seq <= sinceSeq+1)
+	switch {
+	case covered:
+		ls.send(v, sinceSeq)
+	case ls.truncated:
+		ls.stale = true
+		go func() {
+			if _, err := ls.b.ensure(context.Background(), ls); err != nil {
+				ls.b.log.Warn("re-snapshot", "session", ls.id, "error", err.Error())
+			}
+		}()
+	default:
+		v.ch <- ls.snapshot
+		ls.send(v, 0)
+	}
+	ls.viewers[v] = struct{}{}
+	if ls.idleTimer != nil {
+		ls.idleTimer.Stop()
+		ls.idleTimer = nil
+	}
+	return v.ch, func() { ls.detach(v) }
+}
+
+// send queues the buffered events after sinceSeq. ls.mu is held.
+func (ls *live) send(v *viewer, sinceSeq int64) {
+	for _, e := range ls.ring {
+		if e.Seq <= sinceSeq {
+			continue
+		}
+		select {
+		case v.ch <- e:
+		default:
+			return
+		}
+	}
+}
+
+func (ls *live) detach(v *viewer) {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	if !v.closed {
+		v.closed = true
+		close(v.ch)
+		delete(ls.viewers, v)
+	}
+	if len(ls.viewers) == 0 {
+		ls.idleLocked()
+	}
+}
+
+func (ls *live) idle() {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	if len(ls.viewers) == 0 {
+		ls.idleLocked()
+	}
+}
+
+func (ls *live) idleLocked() {
+	if ls.idleTimer != nil {
+		return
+	}
+	ls.idleTimer = time.AfterFunc(ls.b.svc.opts.IdleDetach, func() {
+		ls.mu.Lock()
+		ls.idleTimer = nil
+		ls.mu.Unlock()
+		ls.b.detachIdle(ls)
+	})
+}
