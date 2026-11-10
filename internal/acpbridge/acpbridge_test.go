@@ -709,13 +709,37 @@ func TestSessionClose(t *testing.T) {
 	ed.send(`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/home/alice","mcpServers":[]}}`)
 	a.answer(a.recv(), map[string]any{keySessionID: localSession})
 	ed.recv()
-	ed.send(`{"jsonrpc":"2.0","id":3,"method":"session/close","params":{"sessionId":"local-1"}}`)
-	a.answer(a.recv(), map[string]any{})
-	ed.recv()
+	ed.send(`{"jsonrpc":"2.0","id":3,"method":"session/close","params":{"sessionId":"local-1","_meta":{}}}`)
+	r := ed.recvLine()
+	if string(r.raw) != `{"id":3,"jsonrpc":"2.0","result":{}}` {
+		t.Errorf("editor got %s", r.raw)
+	}
+	got := a.recv()
+	if got["method"] != "session/cancel" || got["id"] != nil {
+		t.Fatalf("agent got %v", got)
+	}
+	if p := asMap(t, got["params"]); len(p) != 1 || p[keySessionID] != localSession {
+		t.Errorf("cancel params %v", p)
+	}
+
+	ed.send(`{"jsonrpc":"2.0","id":4,"method":"session/close","params":{"sessionId":"local-1"}}`)
+	if r := ed.recv(); r["id"] != float64(4) || len(asMap(t, r["result"])) != 0 {
+		t.Errorf("editor got %v", r)
+	}
+	ed.send(`{"jsonrpc":"2.0","id":5,"method":"session/close","params":{}}`)
+	if code, _ := errCode(ed.recv()); code != acpbridge.CodeInvalidParams {
+		t.Errorf("close without a session: code %d", code)
+	}
+	ed.send(`{"jsonrpc":"2.0","id":6,"method":"session/set_mode","params":{"sessionId":"s","modeId":"m"}}`)
+	if got := a.recv(); got["method"] != "session/set_mode" {
+		t.Errorf("a second close reached the agent: %v", got)
+	}
+
 	_ = a.conn.Close(websocket.StatusGoingAway, "")
+	ed.recv()
 	b := hub.accept()
 	b.answer(b.recv(), map[string]any{})
-	ed.send(`{"jsonrpc":"2.0","id":4,"method":"session/list","params":{}}`)
+	ed.send(`{"jsonrpc":"2.0","id":7,"method":"session/list","params":{}}`)
 	if got := b.recv(); got["method"] != "session/list" {
 		t.Errorf("a closed session was loaded again: %v", got)
 	}

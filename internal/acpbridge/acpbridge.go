@@ -34,6 +34,7 @@ const (
 	methodPrompt     = "session/prompt"
 	methodUpdate     = "session/update"
 	methodClose      = "session/close"
+	methodCancel     = "session/cancel"
 )
 
 // JSON-RPC error codes the bridge answers with.
@@ -53,6 +54,9 @@ const IDPrefix = "hermes-device-"
 
 // keyMeta is the ACP extension member.
 const keyMeta = "_meta"
+
+// keyJSONRPC is the JSON-RPC version member.
+const keyJSONRPC = "jsonrpc"
 
 // jsonNull is the JSON encoding of null.
 const jsonNull = "null"
@@ -280,7 +284,8 @@ func (b *Bridge) fromEditor(ctx context.Context, data []byte) error {
 	case methodPrompt:
 		b.inlinePrompt(m)
 	case methodClose:
-		session = str(params(m)["sessionId"])
+		b.closeSession(ctx, m, withID)
+		return nil
 	case methodNew, methodFork, methodLoad, methodResume:
 		p := params(m)
 		cwd = str(p["cwd"])
@@ -581,7 +586,7 @@ func (b *Bridge) call(ctx context.Context, conn *websocket.Conn, procDone <-chan
 		b.replaying[session] = true
 	}
 	b.mu.Unlock()
-	data, err := json.Marshal(object{"jsonrpc": json.RawMessage(`"2.0"`), "id": rawID, "method": mustJSON(method), "params": params})
+	data, err := json.Marshal(object{keyJSONRPC: json.RawMessage(`"2.0"`), "id": rawID, "method": mustJSON(method), "params": params})
 	if err != nil {
 		return nil, err
 	}
@@ -715,10 +720,6 @@ func (b *Bridge) finish(ctx context.Context, p pendingReq, m object) {
 		if ok {
 			b.addSession(p.session, p.cwd)
 		}
-	case methodClose:
-		if !failed {
-			b.dropSession(p.session)
-		}
 	}
 	b.writeEditor(mustJSON(m))
 }
@@ -735,14 +736,54 @@ func (b *Bridge) addSession(id, cwd string) {
 	b.sessions = append(b.sessions, openSession{id: id, cwd: cwd})
 }
 
-func (b *Bridge) dropSession(id string) {
+// dropSession forgets a session the editor opened. It reports whether the
+// session was open.
+func (b *Bridge) dropSession(id string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for i := range b.sessions {
 		if b.sessions[i].id == id {
 			b.sessions = append(b.sessions[:i], b.sessions[i+1:]...)
-			return
+			return true
 		}
+	}
+	return false
+}
+
+// closeSession answers session/close itself, because the hub refuses it
+// (docs/protocol.md 6.1). ACP asks the agent to cancel the session's work
+// as session/cancel does, so an open session gets a session/cancel on the
+// current connection. A lost connection has no work left: its requests
+// were answered with MsgLost.
+func (b *Bridge) closeSession(ctx context.Context, m object, withID bool) {
+	session := str(params(m)["sessionId"])
+	if session == "" {
+		if withID {
+			b.writeEditor(errorMsg(m["id"], CodeInvalidParams, "hermes-device: sessionId must be a non-empty string"))
+		}
+		return
+	}
+	if b.dropSession(session) {
+		b.cancelOnAgent(ctx, session)
+	}
+	if withID {
+		b.writeEditor(mustJSON(object{keyJSONRPC: json.RawMessage(`"2.0"`), "id": m["id"], "result": json.RawMessage("{}")}))
+	}
+}
+
+func (b *Bridge) cancelOnAgent(ctx context.Context, session string) {
+	b.mu.Lock()
+	conn, ready := b.conn, b.ready
+	b.mu.Unlock()
+	if !ready {
+		return
+	}
+	data := mustJSON(object{
+		keyJSONRPC: json.RawMessage(`"2.0"`), "method": mustJSON(methodCancel),
+		"params": mustJSON(map[string]string{"sessionId": session}),
+	})
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		b.log.Debug("Could not cancel a closed session's work", "session", session, "error", err)
 	}
 }
 
@@ -792,7 +833,7 @@ func errorMsg(id json.RawMessage, code int, message string) []byte {
 	if len(id) == 0 {
 		id = json.RawMessage(jsonNull)
 	}
-	return mustJSON(map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": code, "message": message}})
+	return mustJSON(map[string]any{keyJSONRPC: "2.0", "id": id, "error": map[string]any{"code": code, "message": message}})
 }
 
 func hasID(m object) bool {
