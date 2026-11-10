@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import posixpath
 import stat
 import subprocess
 import sys
@@ -938,6 +939,150 @@ class SandboxTests(Base):
         env = {"HERMES_WRITE_SAFE_ROOT": os.pathsep.join([str(self.placeholder), "/srv/other"])}
         self.assertEqual(core.apply_safe_root_policy(env), [str(self.placeholder)])
         self.assertEqual(env["HERMES_WRITE_SAFE_ROOT"], "/srv/other")
+
+
+class MappedDevice(FakeDevice):
+    """A FakeDevice whose files live in a pod directory (``backing``) but whose paths are device
+    paths under ``prefix``, which does not exist on the pod. Commands, cwds and output are
+    translated, so a reader that opens the device path on the pod finds nothing."""
+
+    def __init__(self, hub, prefix: str, backing: str, root: str, tmp: str, home: str, **kwargs):
+        self.prefix, self.backing = prefix, os.path.realpath(backing)
+        super().__init__(hub, self.to_local(root), tmp, home, **kwargs)
+
+    def to_local(self, text: str) -> str:
+        return text.replace(self.prefix, self.backing)
+
+    def to_device(self, text: str) -> str:
+        return text.replace(self.backing, self.prefix)
+
+    def make_conn(self, device_id, name, tmp, home):
+        conn = super().make_conn(device_id, name, tmp, home)
+        conn.roots = [self.to_device(self.root)]
+        return conn
+
+    def _run(self, msg: dict) -> None:
+        super()._run(dict(msg, cwd=self.to_local(msg["cwd"]), cmd=self.to_local(msg["cmd"])))
+
+    def _reply(self, msg: dict) -> None:
+        super()._reply({k: self.to_device(v) if k in ("data", "error") else v for k, v in msg.items()})
+
+
+class EditApprovalDiffTests(Base):
+    """The diff that ACP edit approval sends to the editor, through Hermes's real dispatch
+    (model_tools.handle_function_call: pre_tool_call guard, then edit approval, then the ACP
+    request_permission tool call), is against the device file, for a bound session and for a
+    sandbox session. The device paths do not exist on the pod, so a pod read would show a
+    whole-file create."""
+
+    OLD = "def f():\n    return 1\n"
+
+    def setUp(self):
+        super().setUp()
+        core.install_hooks()
+        self.prefix = f"/hermes-device-test-{os.urandom(6).hex()}"
+        self.assertFalse(os.path.exists(self.prefix))
+        for p in (mock.patch.object(core, "_record_cwd", lambda task, cwd: None),
+                  mock.patch("tools.file_tools_paths._terminal_env_type_for_task",
+                             lambda task_id="default": "device")):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def mapped(self, device_id: str, name: str, root: str, home: str) -> MappedDevice:
+        backing = self.base / "devfs"
+        dev = MappedDevice(self.hub, self.prefix, str(backing), root, self.prefix + "/tmp", home,
+                           device_id=device_id, name=name)
+        for d in (root, self.prefix + "/tmp"):
+            Path(dev.to_local(d)).mkdir(parents=True, exist_ok=True)
+        self.addCleanup(dev.close)
+        return dev
+
+    def approve(self, tool: str, args: dict):
+        """Run ``tool`` through Hermes's dispatch with an ACP edit requester bound and the plugin's
+        pre_tool_call guard registered. The editor denies, so nothing is written. Returns the
+        tool result and the content of every permission request."""
+        import model_tools
+        from acp.schema import AllowedOutcome, RequestPermissionResponse
+        from acp_adapter import edit_approval
+        from hermes_cli import lifecycle
+
+        requests = []
+
+        async def request_permission(session_id, tool_call, options):
+            requests.append(tool_call)
+            return RequestPermissionResponse(outcome=AllowedOutcome(option_id="deny", outcome="selected"))
+
+        original_hooks = lifecycle._plugin_hooks
+
+        def plugin_hooks(hook_name, **kwargs):
+            if hook_name == "pre_tool_call":
+                return [r for r in (core.pre_tool_call(**kwargs),) if r is not None]
+            return original_hooks(hook_name, **kwargs)
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        token = edit_approval.set_edit_approval_requester(
+            edit_approval.make_acp_edit_approval_requester(request_permission, loop, "acp-1", timeout=20))
+        try:
+            with mock.patch.object(lifecycle, "_plugin_hooks", plugin_hooks):
+                result = model_tools.handle_function_call(tool, dict(args), task_id="t", session_id=self.session)
+        finally:
+            edit_approval.reset_edit_approval_requester(token)
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(5)
+            loop.close()
+        return json.loads(result), [c for r in requests for c in r.content]
+
+    def check_diffs(self, dev: MappedDevice, directory: str):
+        path = posixpath.join(directory, "app.py")
+        local = Path(dev.to_local(path))
+        local.write_text(self.OLD)
+        self.assertFalse(os.path.exists(path))
+        from acp_adapter import edit_approval
+        pod_read = getattr(edit_approval._read_text_if_exists, core._WRAPPED_MARK)
+        self.assertIsNone(pod_read(path))
+
+        v4a = "*** Begin Patch\n*** Update File: app.py\n@@\n def f():\n-    return 1\n+    return 2\n*** End Patch"
+        patched = "def f():\n    return 2\n"
+        cases = [
+            ("write_file", {"path": "app.py", "content": "print(1)\n"}, path, self.OLD, "print(1)\n"),
+            ("write_file", {"path": path, "content": "print(1)\n"}, path, self.OLD, "print(1)\n"),
+            ("patch", {"path": "app.py", "old_string": "return 1", "new_string": "return 2"},
+             path, self.OLD, patched),
+            ("patch", {"mode": "replace", "path": "~/" + posixpath.relpath(path, dev.conn.home),
+                       "old_string": "return 1", "new_string": "return 2"}, path, self.OLD, patched),
+            ("patch", {"mode": "patch", "patch": v4a}, path, self.OLD,
+             v4a.replace("File: app.py", f"File: {path}")),
+            ("write_file", {"path": "new.py", "content": "x\n"}, posixpath.join(directory, "new.py"), None, "x\n"),
+        ]
+        for tool, args, want_path, old, new in cases:
+            with self.subTest(tool=tool, args=args):
+                result, content = self.approve(tool, args)
+                self.assertIn("Edit approval denied by ACP client", result.get("error", ""), result)
+                self.assertEqual([(c.type, c.path, c.oldText, c.newText) for c in content],
+                                 [("diff", want_path, old, new)])
+                self.assertEqual(local.read_text(), self.OLD)
+        self.assertFalse(os.path.exists(self.prefix))
+        self.assertFalse(Path(dev.to_local(posixpath.join(directory, "new.py"))).exists())
+
+    def test_bound_session(self):
+        home = self.prefix + "/home/alice"
+        dev = self.mapped("d_remote", "desktop", home + "/src", home)
+        self.hub.bind(self.session, "d_remote", home + "/src")
+        self.check_diffs(dev, home + "/src")
+
+    def test_sandbox_session(self):
+        work = self.prefix + "/work"
+        self.cfg.update(fallback="device", fallback_device="d_sb", fallback_root=work)
+        dev = self.mapped("d_sb", "sandbox", work, work)
+        directory = posixpath.join(work, self.session)
+        Path(dev.to_local(directory)).mkdir()
+        res = core.resolve_current()
+        self.assertEqual((res.state, res.sandbox, res.binding.dir), (core.STATE_BOUND, True, directory))
+        self.assertIsNone(self.hub.binding(self.session))
+        self.check_diffs(dev, directory)
+        self.assertEqual(self.device.execs, [])
 
 
 class SessionIdTests(unittest.TestCase):
