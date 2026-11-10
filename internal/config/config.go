@@ -29,9 +29,11 @@ type Store struct {
 
 // Device is what the run daemon lets the agent use on this device.
 type Device struct {
-	Roots   []string `name:"roots" description:"Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Needed by run"`
-	TempDir string   `name:"tmp-dir" description:"Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory"`
-	Shell   string   `name:"shell" default:"bash" description:"Shell used to run commands"`
+	Roots        []string      `name:"roots" description:"Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Needed by run"`
+	TempDir      string        `name:"tmp-dir" description:"Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory"`
+	Shell        string        `name:"shell" default:"bash" description:"Shell used to run commands"`
+	ResumeBuffer int           `name:"resume-buffer" default:"1048576" description:"Most output bytes per command that run keeps for a resume of the exec leg until the plugin confirms them. Older output of a command is dropped, and the plugin shows the gap"`
+	MaxGrace     time.Duration `name:"max-grace" default:"10m" description:"Longest time run keeps commands running after the exec leg drops, waiting for a resume. The plugin's grace_seconds applies when it is shorter"`
 }
 
 // Gateway is the run daemon's loopback splice that chat points the local
@@ -88,6 +90,7 @@ var (
 	ErrNotLoopback     = errors.New("gateway.listen must be a loopback address")
 	ErrMissing         = errors.New("missing setting")
 	ErrMaxProcesses    = errors.New("acp-host.max-processes must be at least 1")
+	ErrResume          = errors.New("device.resume-buffer must be at least 4096 and device.max-grace must not be negative")
 )
 
 // Validate checks what the tags can't. Settings only some subcommands need
@@ -125,6 +128,9 @@ func (c Config) Validate() error {
 	}
 	if c.ACPHost.MaxProcesses < 1 {
 		return ErrMaxProcesses
+	}
+	if c.Device.ResumeBuffer < 4096 || c.Device.MaxGrace < 0 {
+		return ErrResume
 	}
 	return checkLoopback(c.Gateway.Listen)
 }

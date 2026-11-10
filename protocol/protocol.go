@@ -6,10 +6,17 @@ package protocol
 
 import "time"
 
-// Version is the exec leg protocol version. Version 1 was the proof of
-// concept (token in hello, no hub); a plugin accepts it only with its
-// dev_static_tokens setting on.
-const Version = 2
+// Version is the newest exec leg protocol version this module speaks, and
+// MinVersion the oldest. Version 3 adds resume (docs/protocol.md section
+// 4.7). Version 1 was the proof of concept (token in hello, no hub); a
+// plugin accepts it only with its dev_static_tokens setting on.
+const (
+	Version    = 3
+	MinVersion = 2
+)
+
+// ResumeVersion is the first version that keeps commands across a drop.
+const ResumeVersion = 3
 
 // Exec leg message types.
 const (
@@ -21,7 +28,7 @@ const (
 	TypeExit    = "exit"
 	TypePing    = "ping"
 	TypePong    = "pong"
-	// TypeResume is reserved for phase 3 and must not be sent.
+	// TypeResume is sent by the plugin right after a version 3 welcome.
 	TypeResume = "resume"
 )
 
@@ -49,6 +56,9 @@ const (
 	// CloseUnsupportedPlatform: the device runs an OS the plugin does not
 	// serve (Windows). The client stops.
 	CloseUnsupportedPlatform = 4427
+	// CloseServiceRestart: the gateway that holds the plugin is stopping.
+	// Its commands cannot be resumed, so the device kills them at once.
+	CloseServiceRestart = 1012
 )
 
 // Exit codes the plugin and device use besides the command's own.
@@ -63,6 +73,9 @@ const (
 	PingInterval = 25 * time.Second
 	PingTimeout  = 15 * time.Second
 	HelloTimeout = 10 * time.Second
+	// DefaultGrace is the plugin's default grace_seconds: how long both
+	// sides keep the commands of a dropped version 3 leg for a resume.
+	DefaultGrace = 120 * time.Second
 )
 
 // Paths on the backend.
@@ -76,10 +89,13 @@ type Envelope struct {
 	Type string `json:"type"`
 }
 
-// Hello is the first message from the device.
+// Hello is the first message from the device. Version is the oldest
+// protocol version the device speaks and MaxVersion the newest (0 means
+// Version), so a plugin that reads only Version still finds one it knows.
 type Hello struct {
 	Type          string   `json:"type"`
 	Version       int      `json:"version"`
+	MaxVersion    int      `json:"max_version,omitempty"`
 	Roots         []string `json:"roots"`
 	TempDir       string   `json:"tmp_dir"`
 	Home          string   `json:"home"`
@@ -103,6 +119,9 @@ type Welcome struct {
 	PingInterval  int    `json:"ping_interval"`
 	PluginVersion string `json:"plugin_version"`
 	HermesVersion string `json:"hermes_version"`
+	// GraceSeconds (version 3) is how long the plugin keeps the commands
+	// of a dropped leg for a resume.
+	GraceSeconds float64 `json:"grace_seconds,omitempty"`
 }
 
 // Exec asks the device to run Cmd with the shell in Cwd.
@@ -122,11 +141,13 @@ type Kill struct {
 	ID   string `json:"id"`
 }
 
-// Output is a chunk of merged stdout and stderr.
+// Output is a chunk of merged stdout and stderr. Offset (version 3) is the
+// byte offset of Data's first byte in the command's output.
 type Output struct {
-	Type string `json:"type"`
-	ID   string `json:"id"`
-	Data string `json:"data"`
+	Type   string `json:"type"`
+	ID     string `json:"id"`
+	Data   string `json:"data"`
+	Offset int64  `json:"offset"`
 }
 
 // Exit reports how a command ended. Error is set when the device refused
@@ -144,4 +165,17 @@ type Exit struct {
 type Ping struct {
 	Type string `json:"type"`
 	Seq  int64  `json:"seq"`
+}
+
+// Resume (version 3) lists the commands the plugin still waits for after a
+// reconnect, each with the number of output bytes it already has.
+type Resume struct {
+	Type     string          `json:"type"`
+	Commands []ResumeCommand `json:"commands"`
+}
+
+// ResumeCommand is one command of a Resume.
+type ResumeCommand struct {
+	ID     string `json:"id"`
+	Offset int64  `json:"offset"`
 }

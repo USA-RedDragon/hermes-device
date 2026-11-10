@@ -78,6 +78,7 @@ func (h *runHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = conn.Write(ctx, websocket.MessageText, b)
+		_ = conn.Write(ctx, websocket.MessageText, []byte(`{"type":"resume","commands":[]}`))
 		if h.closeCode != 0 {
 			_ = conn.Close(h.closeCode, "test")
 			return

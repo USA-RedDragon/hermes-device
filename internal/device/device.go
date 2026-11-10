@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,10 +27,11 @@ import (
 // Errors that stop Run. hubapi.ErrUnauthorized also stops it.
 var (
 	ErrReplaced           = errors.New("another hermes-device run with the same token took over this device (close 4409); stop the other daemon or run login again on one of them")
-	ErrUnsupportedVersion = errors.New("the Hermes device plugin does not speak this protocol version (close 4426); upgrade hermes-device and the plugin together")
+	ErrUnsupportedVersion = errors.New("the Hermes device plugin and this hermes-device share no protocol version (close 4426); upgrade hermes-device and the plugin together")
 	ErrWindows            = errors.New("hermes-device does not support Windows: device paths must be POSIX")
 	ErrUnsupportedOS      = errors.New("the Hermes device plugin does not serve this device's operating system (close 4427)")
 	ErrNoWelcome          = errors.New("no welcome from the device plugin")
+	ErrNoResume           = errors.New("no resume from the device plugin after a version 3 welcome")
 )
 
 // SilenceTimeout is how long the exec leg may go without any message from
@@ -38,6 +40,12 @@ const SilenceTimeout = 60 * time.Second
 
 // StableAfter is how long a connection must stay up to reset the backoff.
 const StableAfter = 30 * time.Second
+
+// Resume defaults.
+const (
+	DefaultResumeBuffer = 1 << 20
+	DefaultMaxGrace     = 10 * time.Minute
+)
 
 const (
 	writeTimeout = 30 * time.Second
@@ -73,11 +81,35 @@ type Options struct {
 	HelloTimeout   time.Duration
 	SilenceTimeout time.Duration
 	StableAfter    time.Duration
+	// ResumeBuffer is the most output bytes per command that the device
+	// keeps for a resume (version 3) until the plugin confirms them.
+	ResumeBuffer int
+	// MaxGrace caps the plugin's grace_seconds: the longest the device
+	// keeps commands running after the exec leg drops.
+	MaxGrace time.Duration
+	// MaxVersion is the newest protocol version to offer. Defaults to
+	// protocol.Version. Tests use it to act as an older client.
+	MaxVersion int
 }
 
-// Client is the device side of the exec leg.
+// Client is the device side of the exec leg. Commands belong to the
+// client, not to one connection, so that a version 3 leg can resume them
+// after a reconnect (docs/protocol.md section 4.7).
 type Client struct {
 	opts Options
+
+	// seq numbers every command message written, across connections.
+	// acked is the highest seq the plugin confirmed by answering a ping
+	// written after it.
+	seq   atomic.Uint64
+	acked atomic.Uint64
+	sweep chan struct{}
+	wg    sync.WaitGroup
+
+	mu        sync.Mutex
+	cmds      map[string]*command
+	parkGen   uint64
+	parkTimer *time.Timer
 }
 
 // New returns a client. It refuses to run on Windows.
@@ -110,8 +142,15 @@ func New(opts Options) (*Client, error) {
 	setDefault(&opts.HelloTimeout, protocol.HelloTimeout)
 	setDefault(&opts.SilenceTimeout, SilenceTimeout)
 	setDefault(&opts.StableAfter, StableAfter)
+	setDefault(&opts.MaxGrace, DefaultMaxGrace)
+	if opts.ResumeBuffer <= 0 {
+		opts.ResumeBuffer = DefaultResumeBuffer
+	}
+	if opts.MaxVersion < protocol.MinVersion || opts.MaxVersion > protocol.Version {
+		opts.MaxVersion = protocol.Version
+	}
 	opts.MaxBackoff = max(opts.MaxBackoff, opts.MinBackoff)
-	return &Client{opts: opts}, nil
+	return &Client{opts: opts, cmds: map[string]*command{}, sweep: make(chan struct{}, 1)}, nil
 }
 
 func setDefault(d *time.Duration, v time.Duration) {
@@ -123,16 +162,24 @@ func setDefault(d *time.Duration, v time.Duration) {
 // Hello returns the hello message the client sends.
 func (c *Client) Hello() protocol.Hello {
 	return protocol.Hello{
-		Type: protocol.TypeHello, Version: protocol.Version, Roots: c.opts.Allow.Roots(), TempDir: c.opts.TempDir,
-		Home: c.opts.Home, Hostname: c.opts.Hostname, OS: runtime.GOOS, Arch: runtime.GOARCH,
+		Type: protocol.TypeHello, Version: protocol.MinVersion, MaxVersion: c.opts.MaxVersion, Roots: c.opts.Allow.Roots(),
+		TempDir: c.opts.TempDir, Home: c.opts.Home, Hostname: c.opts.Hostname, OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Shell: c.opts.Shell, ClientVersion: c.opts.ClientVersion,
 	}
 }
 
 // Run connects and serves until ctx ends or the hub or plugin tells the
 // device to stop: hubapi.ErrUnauthorized, ErrReplaced or
-// ErrUnsupportedVersion. Every other drop is retried with backoff.
+// ErrUnsupportedVersion. Every other drop is retried with backoff. Run
+// kills every command it still holds before it returns.
 func (c *Client) Run(ctx context.Context) error {
+	sctx, stopSweep := context.WithCancel(ctx)
+	c.wg.Go(func() { c.sweeper(sctx) })
+	defer func() {
+		stopSweep()
+		c.killAll("the daemon stopped")
+		c.wg.Wait()
+	}()
 	backoff := c.opts.MinBackoff
 	for {
 		up, err := c.serveOnce(ctx)
@@ -170,35 +217,52 @@ func sleep(ctx context.Context, d time.Duration) bool {
 }
 
 // stopError maps a close code from the hub or plugin that means "stop"
-// (docs/protocol.md section 2.3) to its error, and returns nil for every
-// other close.
+// (docs/protocol.md section 2.3) to its error, with the peer's reason, and
+// returns nil for every other close.
 func stopError(err error) error {
+	var base error
 	switch int(websocket.CloseStatus(err)) {
 	case protocol.CloseUnauthorized:
-		return hubapi.ErrUnauthorized
+		base = hubapi.ErrUnauthorized
 	case protocol.CloseReplaced:
-		return ErrReplaced
+		base = ErrReplaced
 	case protocol.CloseUnsupportedVersion:
-		return ErrUnsupportedVersion
+		base = ErrUnsupportedVersion
 	case protocol.CloseUnsupportedPlatform:
-		return ErrUnsupportedOS
+		base = ErrUnsupportedOS
+	default:
+		return nil
 	}
-	return nil
+	var ce websocket.CloseError
+	if errors.As(err, &ce) && ce.Reason != "" {
+		return fmt.Errorf("%w: %s", base, ce.Reason)
+	}
+	return base
+}
+
+// resumable reports whether the commands of a version 3 leg that ended
+// with err may wait for a resume. A gateway that stops (close 1012) loses
+// its pending commands, so nothing would resume them.
+func resumable(err error) bool {
+	return int(websocket.CloseStatus(err)) != protocol.CloseServiceRestart && stopError(err) == nil
 }
 
 type session struct {
 	c        *Client
 	conn     *websocket.Conn
+	ctx      context.Context //nolint:containedctx // the connection's lifetime, for writes from command goroutines
 	cancel   context.CancelFunc
 	name     string
+	version  int
 	lastSeen atomic.Int64
-	seq      atomic.Int64
-	procsMu  sync.Mutex
-	procs    map[string]*executor.Process
+	pingSeq  atomic.Int64
+	wmu      sync.Mutex
+	pmu      sync.Mutex
+	pings    map[int64]uint64
 	wg       sync.WaitGroup
 }
 
-func (s *session) send(ctx context.Context, v any) error {
+func (s *session) write(ctx context.Context, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -206,6 +270,63 @@ func (s *session) send(ctx context.Context, v any) error {
 	wctx, cancel := context.WithTimeout(ctx, writeTimeout)
 	defer cancel()
 	return s.conn.Write(wctx, websocket.MessageText, data)
+}
+
+func (s *session) send(ctx context.Context, v any) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	return s.write(ctx, v)
+}
+
+// sendCmd writes an output or exit message and returns its seq, which is
+// 0 when the write failed.
+func (s *session) sendCmd(ctx context.Context, v any) uint64 {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	seq := s.c.seq.Add(1)
+	if s.write(ctx, v) != nil {
+		return 0
+	}
+	return seq
+}
+
+// ping writes an application ping and remembers which command messages
+// were written before it: the plugin's pong confirms them, because the hub
+// relays in order and the plugin handles messages in order.
+func (s *session) ping(ctx context.Context) {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	n := s.pingSeq.Add(1)
+	mark := s.c.seq.Load()
+	if s.write(ctx, protocol.Ping{Type: protocol.TypePing, Seq: n}) == nil {
+		s.pmu.Lock()
+		s.pings[n] = mark
+		s.pmu.Unlock()
+	}
+}
+
+func (s *session) pong(n int64) {
+	s.pmu.Lock()
+	mark, ok := s.pings[n]
+	for k := range s.pings {
+		if k <= n {
+			delete(s.pings, k)
+		}
+	}
+	s.pmu.Unlock()
+	if !ok {
+		return
+	}
+	for {
+		old := s.c.acked.Load()
+		if mark <= old || s.c.acked.CompareAndSwap(old, mark) {
+			break
+		}
+	}
+	select {
+	case s.c.sweep <- struct{}{}:
+	default:
+	}
 }
 
 func (s *session) touch() { s.lastSeen.Store(time.Now().UnixNano()) }
@@ -222,10 +343,9 @@ func (c *Client) serveOnce(ctx context.Context) (time.Duration, error) {
 	defer func() { _ = conn.CloseNow() }()
 
 	connCtx, cancel := context.WithCancel(ctx)
-	s := &session{c: c, conn: conn, cancel: cancel, procs: map[string]*executor.Process{}}
+	s := &session{c: c, conn: conn, ctx: connCtx, cancel: cancel, pings: map[int64]uint64{}}
 	defer func() {
 		cancel()
-		s.killAll()
 		s.wg.Wait()
 	}()
 
@@ -234,21 +354,55 @@ func (c *Client) serveOnce(ctx context.Context) (time.Duration, error) {
 	}
 	welcome, err := s.readWelcome(connCtx)
 	if err != nil {
+		if !resumable(err) {
+			c.killAll("the exec leg closed for good")
+		}
 		return 0, err
 	}
+	if welcome.Version < protocol.MinVersion || welcome.Version > c.opts.MaxVersion {
+		reason := fmt.Sprintf("hermes-device %s speaks protocol %d to %d; plugin %s chose %d",
+			c.opts.ClientVersion, protocol.MinVersion, c.opts.MaxVersion, cut(welcome.PluginVersion, 16), welcome.Version)
+		_ = conn.Close(protocol.CloseUnsupportedVersion, reason)
+		return 0, fmt.Errorf("%w: %s", ErrUnsupportedVersion, reason)
+	}
+	s.version = welcome.Version
 	s.name = welcome.Name
 	if s.name == "" {
 		s.name = c.opts.Hostname
 	}
+	grace := min(time.Duration(welcome.GraceSeconds*float64(time.Second)), c.opts.MaxGrace)
+	s.touch()
+	if s.version >= protocol.ResumeVersion {
+		r, err := s.readResume(connCtx)
+		if err != nil {
+			if !resumable(err) {
+				c.killAll("the exec leg closed for good")
+			}
+			return 0, err
+		}
+		c.resume(connCtx, s, r)
+	} else {
+		c.killAll("the plugin speaks protocol 2, which cannot resume commands")
+	}
 	connected := time.Now()
-	slog.Info("Exec leg connected", "device_id", welcome.DeviceID, "name", welcome.Name,
+	slog.Info("Exec leg connected", "device_id", welcome.DeviceID, "name", welcome.Name, "protocol", s.version,
 		"plugin_version", welcome.PluginVersion, "hermes_version", welcome.HermesVersion, "roots", c.opts.Allow.Roots())
 
-	s.touch()
 	s.wg.Go(func() { s.controlPings(connCtx) })
 	s.wg.Go(func() { s.appPings(connCtx) })
 	err = s.readLoop(connCtx)
-	return time.Since(connected), err
+	up := time.Since(connected)
+	_ = conn.CloseNow()
+	cancel()
+	s.wg.Wait()
+	switch {
+	case ctx.Err() != nil:
+	case s.version >= protocol.ResumeVersion && grace > 0 && resumable(err):
+		c.park(s, grace)
+	default:
+		c.killAll("the exec leg closed and the plugin will not resume its commands")
+	}
+	return up, err
 }
 
 func (s *session) readWelcome(ctx context.Context) (*protocol.Welcome, error) {
@@ -278,6 +432,45 @@ func (s *session) readWelcome(ctx context.Context) (*protocol.Welcome, error) {
 	}
 }
 
+// readResume reads the resume that a version 3 plugin sends right after
+// its welcome. Pings before it are answered.
+func (s *session) readResume(ctx context.Context) (*protocol.Resume, error) {
+	hctx, cancel := context.WithTimeout(ctx, s.c.opts.HelloTimeout)
+	defer cancel()
+	for {
+		_, data, err := s.conn.Read(hctx)
+		if err != nil {
+			if se := stopError(err); se != nil {
+				return nil, se
+			}
+			if hctx.Err() != nil && ctx.Err() == nil {
+				_ = s.conn.Close(websocket.StatusProtocolError, "expected resume")
+				return nil, ErrNoResume
+			}
+			return nil, fmt.Errorf("resume: %w", err)
+		}
+		var env protocol.Envelope
+		_ = json.Unmarshal(data, &env)
+		switch env.Type {
+		case protocol.TypeResume:
+			var r protocol.Resume
+			if err := json.Unmarshal(data, &r); err != nil {
+				_ = s.conn.Close(websocket.StatusProtocolError, "malformed resume")
+				return nil, fmt.Errorf("resume: %w", err)
+			}
+			return &r, nil
+		case protocol.TypePing:
+			var p protocol.Ping
+			if json.Unmarshal(data, &p) == nil {
+				_ = s.send(ctx, protocol.Ping{Type: protocol.TypePong, Seq: p.Seq})
+			}
+		default:
+			_ = s.conn.Close(websocket.StatusProtocolError, "expected resume")
+			return nil, fmt.Errorf("%w: got %q", ErrNoResume, env.Type)
+		}
+	}
+}
+
 func (s *session) readLoop(ctx context.Context) error {
 	for {
 		_, data, err := s.conn.Read(ctx)
@@ -300,11 +493,11 @@ func (s *session) readLoop(ctx context.Context) error {
 				slog.Warn("Ignoring malformed exec", "error", err)
 				continue
 			}
-			s.exec(ctx, req)
+			s.c.exec(ctx, s, req)
 		case protocol.TypeKill:
 			var req protocol.Kill
 			if err := json.Unmarshal(data, &req); err == nil {
-				s.kill(req.ID)
+				s.c.kill(req.ID)
 			}
 		case protocol.TypePing:
 			var p protocol.Ping
@@ -312,6 +505,10 @@ func (s *session) readLoop(ctx context.Context) error {
 				_ = s.send(ctx, protocol.Ping{Type: protocol.TypePong, Seq: p.Seq})
 			}
 		case protocol.TypePong:
+			var p protocol.Ping
+			if err := json.Unmarshal(data, &p); err == nil {
+				s.pong(p.Seq)
+			}
 		default:
 			slog.Debug("Ignoring message", "type", env.Type)
 		}
@@ -352,7 +549,7 @@ func (s *session) appPings(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-pingT.C:
-			_ = s.send(ctx, protocol.Ping{Type: protocol.TypePing, Seq: s.seq.Add(1)})
+			s.ping(ctx)
 		case now := <-checkT.C:
 			if silent := now.Sub(time.Unix(0, s.lastSeen.Load())); silent >= s.c.opts.SilenceTimeout {
 				slog.Warn("No message from the device plugin; dropping the exec leg", "silent", silent.Round(time.Millisecond))
@@ -378,72 +575,361 @@ func (s *session) drop(reason string) {
 	s.cancel()
 }
 
-func (s *session) kill(id string) {
-	s.procsMu.Lock()
-	p := s.procs[id]
-	s.procsMu.Unlock()
-	if p != nil {
-		slog.Info("Killing command", "id", id, "pid", p.Pid())
+// command is one command the plugin started, running or finished. A
+// finished command stays until the plugin confirms its exit, so that a
+// resume can send the exit again.
+type command struct {
+	id  string
+	max int
+
+	mu      sync.Mutex
+	proc    *executor.Process
+	link    *session
+	partial []byte
+	next    int64
+	chunks  []chunk
+	size    int
+	exit    *protocol.Exit
+	exitSeq uint64
+}
+
+// chunk is one output message. seq is 0 until it was written.
+type chunk struct {
+	off  int64
+	data string
+	seq  uint64
+}
+
+func (cmd *command) running() bool {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	return cmd.exit == nil && cmd.proc != nil
+}
+
+func (cmd *command) onOutput(b []byte) {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	cmd.partial = append(cmd.partial, b...)
+	cut := completeUTF8(cmd.partial)
+	if cut == 0 {
+		return
+	}
+	cmd.emit(cmd.partial[:cut])
+	cmd.partial = append(cmd.partial[:0], cmd.partial[cut:]...)
+}
+
+// emit buffers and sends one chunk. Call with mu held.
+func (cmd *command) emit(b []byte) {
+	ch := chunk{off: cmd.next, data: validUTF8(b)}
+	cmd.next += int64(len(ch.data))
+	cmd.chunks = append(cmd.chunks, ch)
+	cmd.size += len(ch.data)
+	for cmd.size > cmd.max && len(cmd.chunks) > 1 {
+		cmd.size -= len(cmd.chunks[0].data)
+		cmd.chunks = cmd.chunks[1:]
+	}
+	if cmd.link != nil {
+		cmd.chunks[len(cmd.chunks)-1].seq = cmd.link.sendCmd(cmd.link.ctx, protocol.Output{
+			Type: protocol.TypeOutput, ID: cmd.id, Data: ch.data, Offset: ch.off,
+		})
+	}
+}
+
+// finish records the exit and sends it. It reports whether the command
+// was linked to a version 2 leg, which never resumes it.
+func (cmd *command) finish(exit protocol.Exit) bool {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	if len(cmd.partial) > 0 {
+		cmd.emit(cmd.partial)
+		cmd.partial = nil
+	}
+	cmd.exit = &exit
+	if cmd.link != nil {
+		cmd.exitSeq = cmd.link.sendCmd(cmd.link.ctx, exit)
+		return cmd.link.version < protocol.ResumeVersion
+	}
+	return false
+}
+
+// trim drops chunks the plugin confirmed and reports whether the plugin
+// also confirmed the exit.
+func (cmd *command) trim(acked uint64) bool {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	i := 0
+	for i < len(cmd.chunks) && cmd.chunks[i].seq != 0 && cmd.chunks[i].seq <= acked {
+		cmd.size -= len(cmd.chunks[i].data)
+		i++
+	}
+	cmd.chunks = cmd.chunks[i:]
+	return cmd.exit != nil && cmd.exitSeq != 0 && cmd.exitSeq <= acked
+}
+
+// attach links the command to s and sends the output from offset on, and
+// the exit when the command has ended.
+func (cmd *command) attach(s *session, offset int64) {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	cmd.link = s
+	i := 0
+	for i < len(cmd.chunks) && cmd.chunks[i].off+int64(len(cmd.chunks[i].data)) <= offset {
+		cmd.size -= len(cmd.chunks[i].data)
+		i++
+	}
+	cmd.chunks = cmd.chunks[i:]
+	for i := range cmd.chunks {
+		ch := &cmd.chunks[i]
+		ch.seq = s.sendCmd(s.ctx, protocol.Output{Type: protocol.TypeOutput, ID: cmd.id, Data: ch.data, Offset: ch.off})
+	}
+	if cmd.exit != nil {
+		cmd.exitSeq = s.sendCmd(s.ctx, *cmd.exit)
+	}
+}
+
+func (cmd *command) unlink(s *session) {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	if cmd.link == s {
+		cmd.link = nil
+	}
+}
+
+func (cmd *command) kill() {
+	cmd.mu.Lock()
+	p, done := cmd.proc, cmd.exit != nil
+	cmd.mu.Unlock()
+	if p != nil && !done {
+		slog.Info("Killing command", "id", cmd.id, "pid", p.Pid())
 		p.Kill()
 	}
 }
 
-func (s *session) killAll() {
-	s.procsMu.Lock()
-	defer s.procsMu.Unlock()
-	for _, p := range s.procs {
-		p.Kill()
+// cut shortens s to at most n bytes, on a character boundary, so close
+// reasons stay under the hub's 120-byte cut.
+func cut(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// validUTF8 replaces each invalid byte with U+FFFD, as encoding/json would,
+// so that offsets count the bytes the plugin receives.
+func validUTF8(b []byte) string {
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	var sb strings.Builder
+	for len(b) > 0 {
+		r, n := utf8.DecodeRune(b)
+		if r == utf8.RuneError && n == 1 {
+			sb.WriteRune(utf8.RuneError)
+		} else {
+			sb.Write(b[:n])
+		}
+		b = b[n:]
+	}
+	return sb.String()
+}
+
+func (c *Client) remove(cmd *command) {
+	c.mu.Lock()
+	if c.cmds[cmd.id] == cmd {
+		delete(c.cmds, cmd.id)
+	}
+	c.mu.Unlock()
+}
+
+func (c *Client) snapshot() []*command {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*command, 0, len(c.cmds))
+	for _, cmd := range c.cmds {
+		out = append(out, cmd)
+	}
+	return out
+}
+
+// sweeper drops what the plugin confirmed, after each pong.
+func (c *Client) sweeper(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.sweep:
+		}
+		acked := c.acked.Load()
+		for _, cmd := range c.snapshot() {
+			if cmd.trim(acked) {
+				c.remove(cmd)
+			}
+		}
 	}
 }
 
-func (s *session) refuse(ctx context.Context, id, msg string) {
-	_ = s.send(ctx, protocol.Exit{Type: protocol.TypeExit, ID: id, Code: protocol.ExitRefused, Error: msg})
+// takeAll forgets every command and stops the grace timer.
+func (c *Client) takeAll() map[string]*command {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.takeAllLocked()
 }
 
-func (s *session) exec(ctx context.Context, req protocol.Exec) {
-	cwd, err := s.c.opts.Allow.Check(req.Cwd)
+func (c *Client) takeAllLocked() map[string]*command {
+	cmds := c.cmds
+	c.cmds = map[string]*command{}
+	c.parkGen++
+	if c.parkTimer != nil {
+		c.parkTimer.Stop()
+		c.parkTimer = nil
+	}
+	return cmds
+}
+
+func killEach(cmds map[string]*command, why string) {
+	n := 0
+	for _, cmd := range cmds {
+		if cmd.running() {
+			n++
+		}
+		cmd.kill()
+	}
+	if n > 0 {
+		slog.Warn("Killing commands", "count", n, "why", why)
+	}
+}
+
+// killAll kills every running command and forgets every command.
+func (c *Client) killAll(why string) { killEach(c.takeAll(), why) }
+
+// park keeps the commands of the dropped leg s running for grace, waiting
+// for a resume on the next connection.
+func (c *Client) park(s *session, grace time.Duration) {
+	cmds := c.snapshot()
+	for _, cmd := range cmds {
+		cmd.unlink(s)
+	}
+	c.mu.Lock()
+	c.parkGen++
+	gen := c.parkGen
+	if c.parkTimer != nil {
+		c.parkTimer.Stop()
+	}
+	c.parkTimer = time.AfterFunc(grace, func() { c.expire(gen) })
+	c.mu.Unlock()
+	if len(cmds) > 0 {
+		slog.Info("Keeping commands for a resume", "count", len(cmds), "grace", grace)
+	}
+}
+
+func (c *Client) expire(gen uint64) {
+	c.mu.Lock()
+	if gen != c.parkGen {
+		c.mu.Unlock()
+		return
+	}
+	cmds := c.takeAllLocked()
+	c.mu.Unlock()
+	killEach(cmds, "no resume within the grace period")
+}
+
+// resume answers the plugin's resume on s: it kills and forgets every
+// command the plugin no longer waits for, and sends the rest their missing
+// output and exit.
+func (c *Client) resume(ctx context.Context, s *session, r *protocol.Resume) {
+	want := make(map[string]int64, len(r.Commands))
+	order := make([]string, 0, len(r.Commands))
+	for _, rc := range r.Commands {
+		if _, dup := want[rc.ID]; !dup {
+			want[rc.ID] = rc.Offset
+			order = append(order, rc.ID)
+		}
+	}
+	held := c.takeAll()
+	orphans := map[string]*command{}
+	c.mu.Lock()
+	for id, cmd := range held {
+		if _, ok := want[id]; ok {
+			c.cmds[id] = cmd
+		} else {
+			orphans[id] = cmd
+		}
+	}
+	c.mu.Unlock()
+	killEach(orphans, "the plugin no longer waits for them")
+	for _, id := range order {
+		cmd := held[id]
+		if cmd == nil {
+			s.sendCmd(ctx, protocol.Exit{
+				Type: protocol.TypeExit, ID: id, Code: protocol.ExitLost,
+				Error: fmt.Sprintf("device %s has no record of this command: its daemon restarted or the resume grace ran out", s.name),
+			})
+			continue
+		}
+		cmd.attach(s, want[id])
+	}
+	if len(order) > 0 {
+		slog.Info("Resumed commands", "count", len(order))
+	}
+}
+
+func (c *Client) kill(id string) {
+	c.mu.Lock()
+	cmd := c.cmds[id]
+	c.mu.Unlock()
+	if cmd != nil {
+		cmd.kill()
+	}
+}
+
+func (c *Client) finished(cmd *command, exit protocol.Exit) {
+	if cmd.finish(exit) {
+		c.remove(cmd)
+	}
+}
+
+func (c *Client) exec(ctx context.Context, s *session, req protocol.Exec) {
+	cmd := &command{id: req.ID, link: s, max: c.opts.ResumeBuffer}
+	c.mu.Lock()
+	_, dup := c.cmds[req.ID]
+	if !dup {
+		c.cmds[req.ID] = cmd
+	}
+	c.mu.Unlock()
+	if dup {
+		s.sendCmd(ctx, protocol.Exit{
+			Type: protocol.TypeExit, ID: req.ID, Code: protocol.ExitRefused,
+			Error: fmt.Sprintf("device %s refused: request id %q is already running", s.name, req.ID),
+		})
+		return
+	}
+	refuse := func(msg string) {
+		c.finished(cmd, protocol.Exit{Type: protocol.TypeExit, ID: req.ID, Code: protocol.ExitRefused, Error: msg})
+	}
+	cwd, err := c.opts.Allow.Check(req.Cwd)
 	if err != nil {
 		slog.Warn("Refusing command", "id", req.ID, "cwd", req.Cwd, "error", err)
-		s.refuse(ctx, req.ID, fmt.Sprintf("device %s refused: working directory %s", s.name, err))
+		refuse(fmt.Sprintf("device %s refused: working directory %s", s.name, err))
 		return
-	}
-	s.procsMu.Lock()
-	_, dup := s.procs[req.ID]
-	s.procsMu.Unlock()
-	if dup {
-		s.refuse(ctx, req.ID, fmt.Sprintf("device %s refused: request id %q is already running", s.name, req.ID))
-		return
-	}
-	var pending []byte
-	out := func(b []byte) {
-		pending = append(pending, b...)
-		cut := completeUTF8(pending)
-		if cut > 0 {
-			_ = s.send(ctx, protocol.Output{Type: protocol.TypeOutput, ID: req.ID, Data: string(pending[:cut])})
-		}
-		pending = append(pending[:0], pending[cut:]...)
 	}
 	timeout := time.Duration(req.Timeout * float64(time.Second))
-	p, err := executor.Start(s.c.opts.Shell, executor.Request{
-		Cmd: req.Cmd, Cwd: cwd, Login: req.Login, Timeout: timeout, Stdin: req.Stdin, Env: s.c.opts.Env,
-	}, out)
+	p, err := executor.Start(c.opts.Shell, executor.Request{
+		Cmd: req.Cmd, Cwd: cwd, Login: req.Login, Timeout: timeout, Stdin: req.Stdin, Env: c.opts.Env,
+	}, cmd.onOutput)
 	if err != nil {
-		s.refuse(ctx, req.ID, fmt.Sprintf("device %s could not start the command: %s", s.name, err))
+		refuse(fmt.Sprintf("device %s could not start the command: %s", s.name, err))
 		return
 	}
 	slog.Debug("Started command", "id", req.ID, "pid", p.Pid(), "cwd", cwd, "login", req.Login)
-	s.procsMu.Lock()
-	s.procs[req.ID] = p
-	s.procsMu.Unlock()
-	s.wg.Go(func() {
+	cmd.mu.Lock()
+	cmd.proc = p
+	cmd.mu.Unlock()
+	c.wg.Go(func() {
 		res, _ := p.Wait(context.WithoutCancel(ctx))
-		s.procsMu.Lock()
-		delete(s.procs, req.ID)
-		s.procsMu.Unlock()
-		if len(pending) > 0 {
-			_ = s.send(ctx, protocol.Output{Type: protocol.TypeOutput, ID: req.ID, Data: string(pending)})
-		}
-		_ = s.send(ctx, protocol.Exit{Type: protocol.TypeExit, ID: req.ID, Code: res.Code, Killed: res.Killed})
+		c.finished(cmd, protocol.Exit{Type: protocol.TypeExit, ID: req.ID, Code: res.Code, Killed: res.Killed})
 		slog.Debug("Command ended", "id", req.ID, "code", res.Code, "killed", res.Killed)
 	})
 }

@@ -28,6 +28,10 @@ type shared struct {
 func protocolConstants() []shared {
 	return []shared{
 		{"Version", protocol.Version, []string{"PROTOCOL_VERSION", "VERSION"}},
+		{"MinVersion", protocol.MinVersion, []string{"MIN_PROTOCOL_VERSION"}},
+		{"ResumeVersion", protocol.ResumeVersion, []string{"RESUME_VERSION"}},
+		{"CloseServiceRestart", protocol.CloseServiceRestart, []string{"CLOSE_SERVICE_RESTART"}},
+		{"DefaultGrace", protocol.DefaultGrace, []string{"DEFAULT_GRACE_S"}},
 		{"TypeHello", protocol.TypeHello, []string{"TYPE_HELLO"}},
 		{"TypeWelcome", protocol.TypeWelcome, []string{"TYPE_WELCOME"}},
 		{"TypeExec", protocol.TypeExec, []string{"TYPE_EXEC"}},

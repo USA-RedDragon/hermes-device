@@ -128,6 +128,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 	dev, err := device.New(device.Options{
 		Hub: hub, Allow: allow, Shell: cfg.Device.Shell, TempDir: tempDir, ClientVersion: version, Env: commandEnv(os.Environ()),
 		MinBackoff: cfg.Reconnect.MinBackoff, MaxBackoff: cfg.Reconnect.MaxBackoff, PingInterval: cfg.PingInterval,
+		ResumeBuffer: cfg.Device.ResumeBuffer, MaxGrace: cfg.Device.MaxGrace,
 	})
 	if err != nil {
 		return err

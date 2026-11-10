@@ -34,9 +34,11 @@ type storeShadow struct {
 }
 
 type deviceShadow struct {
-	Roots   *[]string `json:"roots"   toml:"roots"   yaml:"roots"`
-	TempDir *string   `json:"tmp-dir" toml:"tmp-dir" yaml:"tmp-dir"`
-	Shell   *string   `json:"shell"   toml:"shell"   yaml:"shell"`
+	Roots        *[]string      `json:"roots"         toml:"roots"         yaml:"roots"`
+	TempDir      *string        `json:"tmp-dir"       toml:"tmp-dir"       yaml:"tmp-dir"`
+	Shell        *string        `json:"shell"         toml:"shell"         yaml:"shell"`
+	ResumeBuffer *int           `json:"resume-buffer" toml:"resume-buffer" yaml:"resume-buffer"`
+	MaxGrace     *impl.Duration `json:"max-grace"     toml:"max-grace"     yaml:"max-grace"`
 }
 
 type gatewayShadow struct {
@@ -95,6 +97,10 @@ func configApplyDefaults(cfg *Config, _ string, set configulator.SetOrigin) erro
 	set("store.keyring", configulator.LayerDefault, "default tag")
 	cfg.Device.Shell = "bash"
 	set("device.shell", configulator.LayerDefault, "default tag")
+	cfg.Device.ResumeBuffer = 1048576
+	set("device.resume-buffer", configulator.LayerDefault, "default tag")
+	cfg.Device.MaxGrace = time.Duration(int64(600000000000))
+	set("device.max-grace", configulator.LayerDefault, "default tag")
 	cfg.Gateway.Listen = "127.0.0.1:0"
 	set("gateway.listen", configulator.LayerDefault, "default tag")
 	cfg.Gateway.Splice = true
@@ -183,6 +189,21 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		if s.Device.Shell != nil {
 			cfg.Device.Shell = *s.Device.Shell
 			set("device.shell", configulator.LayerFile, file)
+		}
+		if s.Device.ResumeBuffer != nil {
+			cfg.Device.ResumeBuffer = *s.Device.ResumeBuffer
+			set("device.resume-buffer", configulator.LayerFile, file)
+		}
+		if s.Device.MaxGrace != nil {
+			v, ok := s.Device.MaxGrace.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "device.max-grace",
+				}
+			}
+			cfg.Device.MaxGrace = v
+			set("device.max-grace", configulator.LayerFile, file)
 		}
 	}
 	if s.Gateway != nil {
@@ -330,6 +351,32 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Device.Shell = v
 		set("device.shell", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "resume-buffer"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.resume-buffer",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Device.ResumeBuffer = int(p)
+		set("device.resume-buffer", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "max-grace"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.max-grace",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Device.MaxGrace = d
+		set("device.max-grace", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "gateway", "listen"); ok {
 		cfg.Gateway.Listen = v
 		set("gateway.listen", configulator.LayerEnv, n)
@@ -446,6 +493,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"device" + o.Separator + "roots",
 		"device" + o.Separator + "tmp-dir",
 		"device" + o.Separator + "shell",
+		"device" + o.Separator + "resume-buffer",
+		"device" + o.Separator + "max-grace",
 		"gateway" + o.Separator + "listen",
 		"gateway" + o.Separator + "splice",
 		"chat" + o.Separator + "hermes",
@@ -486,20 +535,22 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.StringSlice(names[8], nil, "Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Needed by run")
 	fs.String(names[9], "", "Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory")
 	fs.String(names[10], "bash", "Shell used to run commands")
-	fs.String(names[11], "127.0.0.1:0", "Loopback address of the chat splice. Port 0 picks a free port")
-	fs.Bool(names[12], true, "Run the chat splice in run. false (or run --no-splice) runs only the exec leg: no listener, no daemon state file and no whoami call, for a headless service device such as the sandbox pod")
-	fs.String(names[13], "hermes", "Local Hermes launcher, the same version as the server's Hermes")
-	fs.String(names[14], ":9130", "Address the ACP host listens on. Only hermes-hub may reach it")
-	fs.String(names[15], "", "This backend's id, the aud the hub puts in its assertions. Needed by acp-host")
-	fs.String(names[16], "", "Hub Ed25519 public keys: PEM PUBLIC KEY blocks or base64 lines of the raw 32 bytes")
-	fs.String(names[17], "", "File holding the hub public keys, in the same format as hub-public-key")
-	fs.String(names[18], "hermes", "Hermes launcher that the host runs as <hermes> acp for each connection")
-	fs.String(names[19], "", "Server directory that stands in for the device directory in ACP session cwds. Must match the device plugin's placeholder. Needed by acp-host")
-	fs.Var(impl.NewInt(8), names[20], "Most hermes acp processes the host runs at once")
-	fs.String(names[21], "", "Bindings file the device plugin writes. Defaults to device/bindings.json in $HERMES_HOME")
-	fs.String(names[22], "http://127.0.0.1:9120/api/health", "Health URL of the pod's Hermes gateway. The host starts hermes acp only while it answers, because hermes acp starts a gateway of its own when none runs. Empty turns the check off")
-	fs.Duration(names[23], time.Duration(int64(1000000000)), "First delay after a lost connection")
-	fs.Duration(names[24], time.Duration(int64(30000000000)), "Longest delay between attempts")
+	fs.Var(impl.NewInt(1048576), names[11], "Most output bytes per command that run keeps for a resume of the exec leg until the plugin confirms them. Older output of a command is dropped, and the plugin shows the gap")
+	fs.Duration(names[12], time.Duration(int64(600000000000)), "Longest time run keeps commands running after the exec leg drops, waiting for a resume. The plugin's grace_seconds applies when it is shorter")
+	fs.String(names[13], "127.0.0.1:0", "Loopback address of the chat splice. Port 0 picks a free port")
+	fs.Bool(names[14], true, "Run the chat splice in run. false (or run --no-splice) runs only the exec leg: no listener, no daemon state file and no whoami call, for a headless service device such as the sandbox pod")
+	fs.String(names[15], "hermes", "Local Hermes launcher, the same version as the server's Hermes")
+	fs.String(names[16], ":9130", "Address the ACP host listens on. Only hermes-hub may reach it")
+	fs.String(names[17], "", "This backend's id, the aud the hub puts in its assertions. Needed by acp-host")
+	fs.String(names[18], "", "Hub Ed25519 public keys: PEM PUBLIC KEY blocks or base64 lines of the raw 32 bytes")
+	fs.String(names[19], "", "File holding the hub public keys, in the same format as hub-public-key")
+	fs.String(names[20], "hermes", "Hermes launcher that the host runs as <hermes> acp for each connection")
+	fs.String(names[21], "", "Server directory that stands in for the device directory in ACP session cwds. Must match the device plugin's placeholder. Needed by acp-host")
+	fs.Var(impl.NewInt(8), names[22], "Most hermes acp processes the host runs at once")
+	fs.String(names[23], "", "Bindings file the device plugin writes. Defaults to device/bindings.json in $HERMES_HOME")
+	fs.String(names[24], "http://127.0.0.1:9120/api/health", "Health URL of the pod's Hermes gateway. The host starts hermes acp only while it answers, because hermes acp starts a gateway of its own when none runs. Empty turns the check off")
+	fs.Duration(names[25], time.Duration(int64(1000000000)), "First delay after a lost connection")
+	fs.Duration(names[26], time.Duration(int64(30000000000)), "Longest delay between attempts")
 	return nil
 }
 
@@ -635,6 +686,30 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Device.Shell = v
 		set("device.shell", configulator.LayerCLI, "--"+n)
+	}
+	if n := "device" + o.Separator + "resume-buffer"; fs.Changed(n) {
+		v, err := fs.GetInt(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.resume-buffer",
+				Source: "--" + n,
+			}
+		}
+		cfg.Device.ResumeBuffer = v
+		set("device.resume-buffer", configulator.LayerCLI, "--"+n)
+	}
+	if n := "device" + o.Separator + "max-grace"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "device.max-grace",
+				Source: "--" + n,
+			}
+		}
+		cfg.Device.MaxGrace = v
+		set("device.max-grace", configulator.LayerCLI, "--"+n)
 	}
 	if n := "gateway" + o.Separator + "listen"; fs.Changed(n) {
 		v, err := fs.GetString(n)
@@ -1200,6 +1275,42 @@ func (s *deviceShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			default:
 				return configJSONError(path+".shell", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
+		case "resume-buffer":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
+				if err != nil {
+					return configJSONError(path+".resume-buffer", v, err)
+				}
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".resume-buffer", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.ResumeBuffer = &num
+			default:
+				return configJSONError(path+".resume-buffer", v, fmt.Errorf("expected a number, got %v", v.Kind()))
+			}
+		case "max-grace":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".max-grace", v, err)
+				}
+				s.MaxGrace = &slot
+			default:
+				return configJSONError(path+".max-grace", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
 				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
@@ -1523,6 +1634,8 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "device.roots = %v\n", c.Device.Roots)
 	fmt.Fprintf(&b, "device.tmp-dir = %v\n", c.Device.TempDir)
 	fmt.Fprintf(&b, "device.shell = %v\n", c.Device.Shell)
+	fmt.Fprintf(&b, "device.resume-buffer = %v\n", c.Device.ResumeBuffer)
+	fmt.Fprintf(&b, "device.max-grace = %v\n", c.Device.MaxGrace)
 	fmt.Fprintf(&b, "gateway.listen = %v\n", c.Gateway.Listen)
 	fmt.Fprintf(&b, "gateway.splice = %v\n", c.Gateway.Splice)
 	fmt.Fprintf(&b, "chat.hermes = %v\n", c.Chat.Hermes)

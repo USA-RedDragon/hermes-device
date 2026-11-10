@@ -33,8 +33,13 @@ type fakeHub struct {
 	t           *testing.T
 	status      int
 	skipWelcome bool
-	conns       atomic.Int32
-	handler     func(ctx context.Context, conn *websocket.Conn, hello protocol.Hello)
+	// version is the welcome version, protocol.Version when 0. A version
+	// 3 welcome is followed by an empty resume unless skipResume is set.
+	version    int
+	grace      float64
+	skipResume bool
+	conns      atomic.Int32
+	handler    func(ctx context.Context, conn *websocket.Conn, hello protocol.Hello)
 }
 
 func (f *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -65,10 +70,18 @@ func (f *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.t.Errorf("bad hello %q", data)
 		return
 	}
+	version := f.version
+	if version == 0 {
+		version = protocol.Version
+	}
 	if !f.skipWelcome {
 		writeJSON(ctx, conn, protocol.Welcome{
-			Type: protocol.TypeWelcome, Version: protocol.Version, DeviceID: "d_1", Name: testName, PingInterval: 25,
+			Type: protocol.TypeWelcome, Version: version, DeviceID: "d_1", Name: testName, PingInterval: 25,
+			GraceSeconds: f.grace,
 		})
+		if version >= protocol.ResumeVersion && !f.skipResume {
+			writeJSON(ctx, conn, protocol.Resume{Type: protocol.TypeResume, Commands: []protocol.ResumeCommand{}})
+		}
 	}
 	if f.handler != nil {
 		f.handler(ctx, conn, hello)
@@ -204,7 +217,7 @@ func TestHelloFields(t *testing.T) {
 	}
 	resolved, _ := filepath.EvalSymlinks(root)
 	want := protocol.Hello{
-		Type: protocol.TypeHello, Version: 2, Roots: []string{resolved}, TempDir: "/home/alice/.cache/hermes-device/tmp",
+		Type: protocol.TypeHello, Version: 2, MaxVersion: 3, Roots: []string{resolved}, TempDir: "/home/alice/.cache/hermes-device/tmp",
 		Home: "/home/alice", Hostname: testName, OS: runtime.GOOS, Arch: runtime.GOARCH, Shell: "bash", ClientVersion: "v0.2.0",
 	}
 	if !reflect.DeepEqual(hello, want) {
@@ -531,4 +544,433 @@ func TestDisconnectKillsCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "the command to die", func() bool { return syscall.Kill(pid, 0) != nil })
+}
+
+// resumeHub serves the exec leg with a handler per connection, numbered
+// from 1. Each connection gets a version 3 welcome and then the resume
+// that resumeFor returns.
+type resumeHub struct {
+	t         *testing.T
+	grace     float64
+	n         atomic.Int32
+	resumeFor func(n int32) []protocol.ResumeCommand
+	handle    func(ctx context.Context, n int32, conn *websocket.Conn)
+	refuseAt  int32
+}
+
+func (f *resumeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	n := f.n.Add(1)
+	if f.refuseAt > 0 && n >= f.refuseAt {
+		http.Error(w, `{"error":"backend_unavailable"}`, http.StatusBadGateway)
+		return
+	}
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.CloseNow() }()
+	ctx := r.Context()
+	if _, _, err := conn.Read(ctx); err != nil {
+		return
+	}
+	writeJSON(ctx, conn, protocol.Welcome{
+		Type: protocol.TypeWelcome, Version: protocol.Version, DeviceID: "d_1", Name: testName, GraceSeconds: f.grace,
+	})
+	var cmds []protocol.ResumeCommand
+	if f.resumeFor != nil {
+		cmds = f.resumeFor(n)
+	}
+	writeJSON(ctx, conn, protocol.Resume{Type: protocol.TypeResume, Commands: cmds})
+	if f.handle != nil {
+		f.handle(ctx, n, conn)
+		return
+	}
+	<-ctx.Done()
+}
+
+func readPid(t *testing.T, path string) int {
+	t.Helper()
+	var data []byte
+	waitFor(t, "the pid file", func() bool {
+		var err error
+		data, err = os.ReadFile(path)
+		return err == nil && strings.HasSuffix(string(data), "\n")
+	})
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pid
+}
+
+func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+// waitOutput reads until the output of id holds want.
+func waitOutput(ctx context.Context, t *testing.T, conn *websocket.Conn, id, want string) {
+	t.Helper()
+	var got string
+	for !strings.Contains(got, want) {
+		typ, data, err := readMsg(ctx, conn)
+		if err != nil {
+			t.Errorf("read: %v (output so far %q)", err, got)
+			return
+		}
+		if typ == protocol.TypeOutput {
+			var o protocol.Output
+			_ = json.Unmarshal(data, &o)
+			if o.ID == id {
+				got += o.Data
+			}
+		}
+	}
+}
+
+type resumed struct {
+	outputs []protocol.Output
+	exit    protocol.Exit
+}
+
+func readResumed(ctx context.Context, t *testing.T, conn *websocket.Conn, id string) resumed {
+	t.Helper()
+	var r resumed
+	for {
+		typ, data, err := readMsg(ctx, conn)
+		if err != nil {
+			t.Errorf("read: %v", err)
+			return r
+		}
+		switch typ {
+		case protocol.TypeOutput:
+			var o protocol.Output
+			_ = json.Unmarshal(data, &o)
+			if o.ID == id {
+				r.outputs = append(r.outputs, o)
+			}
+		case protocol.TypeExit:
+			var e protocol.Exit
+			_ = json.Unmarshal(data, &e)
+			if e.ID == id {
+				r.exit = e
+				return r
+			}
+		}
+	}
+}
+
+func TestResumeSendsMissingOutputAndExit(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	gate := filepath.Join(root, "gate")
+	finished := make(chan struct{})
+	f := &resumeHub{grace: 30}
+	f.resumeFor = func(n int32) []protocol.ResumeCommand {
+		if n == 2 {
+			return []protocol.ResumeCommand{{ID: "1", Offset: 6}}
+		}
+		return nil
+	}
+	f.handle = func(ctx context.Context, n int32, conn *websocket.Conn) {
+		switch n {
+		case 1:
+			writeJSON(ctx, conn, protocol.Exec{Type: protocol.TypeExec, ID: "1", Timeout: 60, Cwd: root,
+				Cmd: "echo first; while [ ! -e " + gate + " ]; do sleep 0.02; done; echo second; exit 7"})
+			waitOutput(ctx, t, conn, "1", "first\n")
+			if err := os.WriteFile(gate, nil, 0o600); err != nil {
+				t.Error(err)
+			}
+			time.Sleep(300 * time.Millisecond)
+			_ = conn.Close(websocket.StatusGoingAway, "hub shutting down")
+		case 2:
+			r := readResumed(ctx, t, conn, "1")
+			var out string
+			for _, o := range r.outputs {
+				if o.Offset < 6 {
+					t.Errorf("replayed output at offset %d, before the plugin's offset 6", o.Offset)
+				}
+				out += o.Data
+			}
+			if out != "second\n" || r.exit.Code != 7 || r.outputs[0].Offset != 6 {
+				t.Errorf("resumed = %+v", r)
+			}
+			close(finished)
+			<-ctx.Done()
+		}
+	}
+	f.t = t
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	start(t, options(t, srv.URL, root))
+	wait(t, finished)
+}
+
+func TestResumeUnknownCommandIsLost(t *testing.T) {
+	t.Parallel()
+	finished := make(chan struct{})
+	f := &resumeHub{grace: 30, resumeFor: func(int32) []protocol.ResumeCommand {
+		return []protocol.ResumeCommand{{ID: "gone", Offset: 12}}
+	}}
+	f.handle = func(ctx context.Context, _ int32, conn *websocket.Conn) {
+		defer close(finished)
+		r := readUntilExit(ctx, t, conn, "gone")
+		if r.exit.Code != protocol.ExitLost || !strings.Contains(r.exit.Error, "no record of this command") || r.output != "" {
+			t.Errorf("exit = %+v", r)
+		}
+	}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	start(t, options(t, srv.URL, t.TempDir()))
+	wait(t, finished)
+}
+
+// TestResumeKillsUnlisted is the gateway restart case: the new plugin
+// process knows none of the old commands, so its resume is empty.
+func TestResumeKillsUnlisted(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	pidFile := filepath.Join(root, "pid")
+	f := &resumeHub{grace: 30}
+	f.handle = func(ctx context.Context, n int32, conn *websocket.Conn) {
+		if n == 1 {
+			writeJSON(ctx, conn, protocol.Exec{Type: protocol.TypeExec, ID: "1", Timeout: 60, Cwd: root,
+				Cmd: "echo $$ > " + pidFile + "; sleep 60"})
+			readPid(t, pidFile)
+			_ = conn.Close(websocket.StatusGoingAway, "hub shutting down")
+			return
+		}
+		<-ctx.Done()
+	}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	start(t, options(t, srv.URL, root))
+	pid := readPid(t, pidFile)
+	waitFor(t, "a second connection", func() bool { return f.n.Load() >= 2 })
+	waitFor(t, "the command to die", func() bool { return !alive(pid) })
+}
+
+func TestGraceExpiryKills(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	pidFile := filepath.Join(root, "pid")
+	f := &resumeHub{grace: 0.5, refuseAt: 2}
+	f.handle = func(ctx context.Context, _ int32, conn *websocket.Conn) {
+		writeJSON(ctx, conn, protocol.Exec{Type: protocol.TypeExec, ID: "1", Timeout: 60, Cwd: root,
+			Cmd: "echo $$ > " + pidFile + "; sleep 60"})
+		readPid(t, pidFile)
+		_ = conn.Close(websocket.StatusGoingAway, "hub shutting down")
+	}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	start(t, options(t, srv.URL, root))
+	pid := readPid(t, pidFile)
+	waitFor(t, "a refused reconnect", func() bool { return f.n.Load() >= 2 })
+	dropped := time.Now()
+	time.Sleep(200 * time.Millisecond)
+	if !alive(pid) {
+		t.Fatal("the command died before the grace ran out")
+	}
+	waitFor(t, "the command to die", func() bool { return !alive(pid) })
+	if d := time.Since(dropped); d > 5*time.Second {
+		t.Errorf("killed %s after the drop, grace is 0.5s", d)
+	}
+}
+
+func TestServiceRestartKillsAtOnce(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	pidFile := filepath.Join(root, "pid")
+	f := &resumeHub{grace: 60, refuseAt: 2}
+	f.handle = func(ctx context.Context, _ int32, conn *websocket.Conn) {
+		writeJSON(ctx, conn, protocol.Exec{Type: protocol.TypeExec, ID: "1", Timeout: 60, Cwd: root,
+			Cmd: "echo $$ > " + pidFile + "; sleep 60"})
+		readPid(t, pidFile)
+		_ = conn.Close(protocol.CloseServiceRestart, "service restart")
+	}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	start(t, options(t, srv.URL, root))
+	pid := readPid(t, pidFile)
+	waitFor(t, "the command to die", func() bool { return !alive(pid) })
+}
+
+func TestVersion2PluginKillsOnDrop(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	pidFile := filepath.Join(root, "pid")
+	f := &fakeHub{version: 2, grace: 60}
+	var first atomic.Bool
+	f.handler = func(ctx context.Context, conn *websocket.Conn, hello protocol.Hello) {
+		if hello.Version != 2 || hello.MaxVersion != protocol.Version {
+			t.Errorf("hello versions = %d to %d", hello.Version, hello.MaxVersion)
+		}
+		if !first.CompareAndSwap(false, true) {
+			<-ctx.Done()
+			return
+		}
+		writeJSON(ctx, conn, protocol.Exec{Type: protocol.TypeExec, ID: "1", Timeout: 60, Cwd: root,
+			Cmd: "echo $$ > " + pidFile + "; sleep 60"})
+		readPid(t, pidFile)
+	}
+	srv := serve(t, f)
+	start(t, options(t, srv.URL, root))
+	pid := readPid(t, pidFile)
+	waitFor(t, "a reconnect", func() bool { return f.conns.Load() >= 2 })
+	waitFor(t, "the command to die", func() bool { return !alive(pid) })
+}
+
+func TestWelcomeVersionMismatchStops(t *testing.T) {
+	t.Parallel()
+	closed := make(chan error, 1)
+	f := &fakeHub{version: 9, handler: func(ctx context.Context, conn *websocket.Conn, _ protocol.Hello) {
+		_, _, err := conn.Read(ctx)
+		closed <- err
+	}}
+	srv := serve(t, f)
+	done := start(t, options(t, srv.URL, t.TempDir()))
+	select {
+	case err := <-done:
+		if !errors.Is(err, device.ErrUnsupportedVersion) || !strings.Contains(err.Error(), "speaks protocol 2 to 3") {
+			t.Errorf("Run = %v", err)
+		}
+		done <- err
+	case <-time.After(10 * time.Second):
+		t.Fatal("client kept running")
+	}
+	err := <-closed
+	var ce websocket.CloseError
+	if !errors.As(err, &ce) || int(ce.Code) != protocol.CloseUnsupportedVersion || !strings.Contains(ce.Reason, "chose 9") {
+		t.Errorf("close = %v", err)
+	}
+}
+
+func TestUnsupportedVersionReasonShown(t *testing.T) {
+	t.Parallel()
+	f := &fakeHub{skipWelcome: true, handler: func(_ context.Context, conn *websocket.Conn, _ protocol.Hello) {
+		_ = conn.Close(protocol.CloseUnsupportedVersion, "plugin 0.9.0 speaks protocol 4 to 5")
+	}}
+	srv := serve(t, f)
+	done := start(t, options(t, srv.URL, t.TempDir()))
+	select {
+	case err := <-done:
+		if !errors.Is(err, device.ErrUnsupportedVersion) || !strings.Contains(err.Error(), "plugin 0.9.0 speaks protocol 4 to 5") {
+			t.Errorf("Run = %v", err)
+		}
+		done <- err
+	case <-time.After(10 * time.Second):
+		t.Fatal("client kept running")
+	}
+}
+
+func TestNoResumeAfterWelcome3Retries(t *testing.T) {
+	t.Parallel()
+	f := &fakeHub{skipResume: true, handler: func(ctx context.Context, _ *websocket.Conn, _ protocol.Hello) {
+		<-ctx.Done()
+	}}
+	srv := serve(t, f)
+	opts := options(t, srv.URL, t.TempDir())
+	opts.HelloTimeout = 50 * time.Millisecond
+	start(t, opts)
+	waitFor(t, "a reconnect", func() bool { return f.conns.Load() >= 2 })
+}
+
+// TestPongConfirmsExit checks that an exit the plugin confirmed by a pong
+// is forgotten, and one it did not is sent again on resume.
+func TestPongConfirmsExit(t *testing.T) {
+	t.Parallel()
+	for _, answer := range []bool{true, false} {
+		t.Run(strconv.FormatBool(answer), func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			finished := make(chan struct{})
+			f := &resumeHub{grace: 30}
+			f.resumeFor = func(n int32) []protocol.ResumeCommand {
+				if n == 2 {
+					return []protocol.ResumeCommand{{ID: "1", Offset: 0}}
+				}
+				return nil
+			}
+			f.handle = func(ctx context.Context, n int32, conn *websocket.Conn) {
+				if n == 1 {
+					writeJSON(ctx, conn, protocol.Exec{Type: protocol.TypeExec, ID: "1", Cmd: "echo hi; exit 4", Cwd: root, Timeout: 10})
+					readUntilExit(ctx, t, conn, "1")
+					for {
+						typ, data, err := readMsg(ctx, conn)
+						if err != nil {
+							return
+						}
+						if typ == protocol.TypePing {
+							if answer {
+								var p protocol.Ping
+								_ = json.Unmarshal(data, &p)
+								writeJSON(ctx, conn, protocol.Ping{Type: protocol.TypePong, Seq: p.Seq})
+								time.Sleep(300 * time.Millisecond)
+							}
+							_ = conn.Close(websocket.StatusGoingAway, "hub shutting down")
+							return
+						}
+					}
+				}
+				r := readUntilExit(ctx, t, conn, "1")
+				if answer && (r.exit.Code != protocol.ExitLost || r.output != "") {
+					t.Errorf("confirmed exit sent again: %+v", r)
+				}
+				if !answer && (r.exit.Code != 4 || r.output != "hi\n") {
+					t.Errorf("unconfirmed exit not sent again: %+v", r)
+				}
+				close(finished)
+				<-ctx.Done()
+			}
+			srv := httptest.NewServer(f)
+			t.Cleanup(srv.Close)
+			opts := options(t, srv.URL, root)
+			opts.PingInterval = 50 * time.Millisecond
+			start(t, opts)
+			wait(t, finished)
+		})
+	}
+}
+
+func TestResumeBufferBound(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	gate := filepath.Join(root, "gate")
+	finished := make(chan struct{})
+	f := &resumeHub{grace: 30}
+	f.resumeFor = func(n int32) []protocol.ResumeCommand {
+		if n == 2 {
+			return []protocol.ResumeCommand{{ID: "1", Offset: 6}}
+		}
+		return nil
+	}
+	f.handle = func(ctx context.Context, n int32, conn *websocket.Conn) {
+		if n == 1 {
+			writeJSON(ctx, conn, protocol.Exec{Type: protocol.TypeExec, ID: "1", Timeout: 60, Cwd: root,
+				Cmd: "echo first; while [ ! -e " + gate + " ]; do sleep 0.02; done; for i in $(seq 1 200); do echo line$i; sleep 0.001; done"})
+			waitOutput(ctx, t, conn, "1", "first\n")
+			_ = conn.Close(websocket.StatusGoingAway, "hub shutting down")
+			if err := os.WriteFile(gate, nil, 0o600); err != nil {
+				t.Error(err)
+			}
+			return
+		}
+		defer close(finished)
+		r := readResumed(ctx, t, conn, "1")
+		if len(r.outputs) == 0 || r.outputs[0].Offset <= 6 || r.exit.Code != 0 {
+			t.Fatalf("resumed = %+v", r)
+		}
+		var out string
+		for _, o := range r.outputs {
+			out += o.Data
+		}
+		if len(out) > 64 || !strings.HasSuffix(out, "line200\n") {
+			t.Errorf("resumed output %q, want at most the 64-byte buffer ending in line200", out)
+		}
+	}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	opts := options(t, srv.URL, root)
+	opts.ResumeBuffer = 64
+	opts.MinBackoff = 500 * time.Millisecond
+	opts.MaxBackoff = 500 * time.Millisecond
+	start(t, opts)
+	wait(t, finished)
 }

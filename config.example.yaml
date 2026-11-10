@@ -24,6 +24,10 @@ device:
   # tmp-dir: ""
   # Shell used to run commands
   shell: "bash"
+  # Most output bytes per command that run keeps for a resume of the exec leg until the plugin confirms them. Older output of a command is dropped, and the plugin shows the gap
+  resume-buffer: 1048576
+  # Longest time run keeps commands running after the exec leg drops, waiting for a resume. The plugin's grace_seconds applies when it is shorter
+  max-grace: "10m"
 gateway:
   # Loopback address of the chat splice. Port 0 picks a free port
   listen: "127.0.0.1:0"
