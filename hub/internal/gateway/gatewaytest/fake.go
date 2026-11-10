@@ -26,6 +26,7 @@ const (
 	kJSONRPC         = "jsonrpc"
 	kEvent           = "event"
 	kMethod          = "method"
+	kParams          = "params"
 	kToolID          = "tool_id"
 	kText            = "text"
 	kStatus          = "status"
@@ -193,7 +194,7 @@ func (g *Gateway) RetireSubscriptions(sessionID string) {
 	defer g.mu.Unlock()
 	s := g.sessions[sessionID]
 	for c := range s.subs {
-		c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, "params": map[string]any{
+		c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: map[string]any{
 			"type": gateway.ReplayGapEvent, kSessionID: s.ID,
 			"payload": map[string]any{kReplayEpoch: s.epoch, "latest_seq": s.seq}}})
 	}
@@ -222,7 +223,7 @@ func (g *Gateway) publishLocked(s *Session, typ string, payload any) {
 	ev := gateway.Event{Type: typ, SessionID: s.ID, Payload: raw, ReplayEpoch: s.epoch, Seq: s.seq, ExecutionGeneration: &gen}
 	s.ring = append(s.ring, ev)
 	for c := range s.subs {
-		c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, "params": ev})
+		c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: ev})
 	}
 }
 
@@ -302,7 +303,7 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 		g.mu.Unlock()
 		_ = ws.CloseNow()
 	}()
-	c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, "params": map[string]any{
+	c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: map[string]any{
 		"type": gateway.ReadyEvent, "payload": map[string]any{"session_authority": true, kReplayEpoch: "x"}}})
 	for {
 		_, data, err := ws.Read(r.Context())
