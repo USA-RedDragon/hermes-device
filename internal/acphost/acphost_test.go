@@ -82,6 +82,11 @@ func fakeHermes() {
 			_, _ = out.WriteString("this is not json\n")
 			_, _ = out.WriteString(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1"}}` + "\n")
 			reply(m.ID, map[string]any{"pid": os.Getpid()})
+		case "test/detach":
+			child := exec.Command("sleep", "300")
+			child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+			_ = child.Start()
+			reply(m.ID, map[string]any{"pid": os.Getpid(), "child": child.Process.Pid})
 		case "test/exit":
 			reply(m.ID, map[string]any{})
 			os.Exit(3)
@@ -658,5 +663,53 @@ func TestOtherDeviceRefused(t *testing.T) {
 	send(t, conn, `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"s1","prompt":[]}}`)
 	if r, data := recv(t, conn); r.Error == nil || r.Error.Code != codeInternal {
 		t.Errorf("broken bindings file: got %s", data)
+	}
+}
+
+func TestGatewayHealthGate(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	status := http.StatusServiceUnavailable
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(gw.Close)
+	h := newHarness(t, func(o *Options) { o.GatewayHealthURL = gw.URL + "/api/health" })
+	if got := closeStatus(t, h.dial()); got != CloseTryAgainLater {
+		t.Errorf("gateway down: close %d, want 1013", got)
+	}
+	mu.Lock()
+	status = http.StatusOK
+	mu.Unlock()
+	conn := h.dial()
+	echoed(t, conn, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+}
+
+func TestSweepStopsDetached(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, func(o *Options) { o.SweepInterval = 50 * time.Millisecond })
+	conn := h.dial()
+	send(t, conn, `{"jsonrpc":"2.0","id":1,"method":"test/detach"}`)
+	r, _ := recv(t, conn)
+	var got struct{ Pid, Child int }
+	if err := json.Unmarshal(r.Result, &got); err != nil || got.Child == 0 {
+		t.Fatalf("bad reply %s", r.Result)
+	}
+	waitGone(t, got.Child)
+	if gone(got.Pid) {
+		t.Error("the sweep stopped hermes acp itself")
+	}
+}
+
+func TestParseStat(t *testing.T) {
+	t.Parallel()
+	info, ok := parseStat("123 (we ir) d) S 45 67 67 0 -1")
+	if !ok || info.ppid != 45 || info.pgid != 67 || info.zombie {
+		t.Errorf("parseStat = %+v %v", info, ok)
+	}
+	if info, ok := parseStat("9 (x) Z 1 9 9"); !ok || !info.zombie {
+		t.Errorf("zombie = %+v %v", info, ok)
 	}
 }

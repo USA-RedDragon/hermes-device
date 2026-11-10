@@ -54,17 +54,19 @@ func newACPHostCommand(b *base) *cobra.Command {
 				return err
 			}
 			srv := acphost.New(acphost.Options{
-				Verifier:     assertion.NewVerifier(keys),
-				BackendID:    cfg.ACPHost.BackendID,
-				Hermes:       cfg.ACPHost.Hermes,
-				Placeholder:  cfg.ACPHost.Placeholder,
-				BindingsFile: bindings,
-				MaxProcesses: cfg.ACPHost.MaxProcesses,
-				PingInterval: cfg.PingInterval,
-				Logger:       slog.Default(),
+				Verifier:         assertion.NewVerifier(keys),
+				BackendID:        cfg.ACPHost.BackendID,
+				Hermes:           cfg.ACPHost.Hermes,
+				Placeholder:      cfg.ACPHost.Placeholder,
+				BindingsFile:     bindings,
+				MaxProcesses:     cfg.ACPHost.MaxProcesses,
+				PingInterval:     cfg.PingInterval,
+				GatewayHealthURL: cfg.ACPHost.GatewayHealthURL,
+				Logger:           slog.Default(),
 			})
 			slog.Info("acp-host listening", "addr", ln.Addr().String(), "backend", cfg.ACPHost.BackendID,
-				"hermes", cfg.ACPHost.Hermes, "max_processes", cfg.ACPHost.MaxProcesses, "bindings", bindings)
+				"hermes", cfg.ACPHost.Hermes, "max_processes", cfg.ACPHost.MaxProcesses, "bindings", bindings,
+				"gateway_health", cfg.ACPHost.GatewayHealthURL)
 			ctx, stop := signalContext(cmd.Context())
 			defer stop()
 			return srv.Serve(ctx, ln)

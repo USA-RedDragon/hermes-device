@@ -49,7 +49,14 @@ type Options struct {
 	// They default to 5s each.
 	StopGrace time.Duration
 	KillGrace time.Duration
-	Logger    *slog.Logger
+	// GatewayHealthURL, when set, must answer 2xx before a child starts:
+	// hermes acp starts a gateway of its own when it finds none.
+	GatewayHealthURL string
+	// SweepInterval is how often the host looks for processes that left a
+	// child's process group (a gateway that hermes acp started). It
+	// defaults to 2s.
+	SweepInterval time.Duration
+	Logger        *slog.Logger
 }
 
 // Server hosts hermes acp processes for hub connections.
@@ -60,6 +67,14 @@ type Server struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	nextID atomic.Uint64
+	health *http.Client
+	// orphans is set once the host is a child subreaper. Every process
+	// reparented to it is then an orphan of a hermes acp child.
+	orphans atomic.Bool
+
+	mu       sync.Mutex
+	children map[int]bool
+	killing  map[int]bool
 }
 
 // New returns a server for opts.
@@ -76,11 +91,19 @@ func New(opts Options) *Server {
 	if opts.MaxProcesses < 1 {
 		opts.MaxProcesses = 1
 	}
+	if opts.SweepInterval <= 0 {
+		opts.SweepInterval = 2 * time.Second
+	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Server{opts: opts, slots: make(chan struct{}, opts.MaxProcesses), base: ctx, cancel: cancel}
+	s := &Server{
+		opts: opts, slots: make(chan struct{}, opts.MaxProcesses), base: ctx, cancel: cancel,
+		health: &http.Client{Timeout: 3 * time.Second}, children: map[int]bool{}, killing: map[int]bool{},
+	}
+	go s.sweepLoop()
+	return s
 }
 
 // Handler serves GET /acp and GET /healthz.
@@ -97,6 +120,11 @@ func (s *Server) Handler() http.Handler {
 // Serve serves on ln until ctx ends, then closes every connection and
 // waits for every child to exit.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	if err := becomeSubreaper(); err != nil {
+		s.opts.Logger.Warn("Could not become a child subreaper; orphans of hermes acp go to init", "error", err)
+	} else {
+		s.orphans.Store(true)
+	}
 	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
@@ -146,6 +174,11 @@ func (s *Server) handleACP(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(CloseTryAgainLater, "too many hermes acp processes")
 		return
 	}
+	if !s.gatewayUp(r.Context()) {
+		log.Warn("Refused an ACP connection: the Hermes gateway does not answer", "url", s.opts.GatewayHealthURL)
+		_ = conn.Close(CloseTryAgainLater, "Hermes gateway not running")
+		return
+	}
 	conn.SetReadLimit(maxMessage)
 	c := &connection{
 		srv: s, conn: conn, log: log,
@@ -155,6 +188,23 @@ func (s *Server) handleACP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	c.serve()
+}
+
+func (s *Server) gatewayUp(ctx context.Context) bool {
+	if s.opts.GatewayHealthURL == "" {
+		return true
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.opts.GatewayHealthURL, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := s.health.Do(req)
+	if err != nil {
+		return false
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	_ = resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
 // connection is one WebSocket and its hermes acp child.
@@ -218,6 +268,7 @@ func (c *connection) serve() {
 	_ = stdout.Close()
 	_ = stderr.Close()
 	<-stderrDone
+	c.srv.untrack(cmd.Process.Pid)
 	c.log.Info("hermes acp exited", "status", exitStatus(waitErr))
 	_ = c.conn.Close(CloseChildExited, "hermes acp exited")
 	cancel()
@@ -244,7 +295,12 @@ func (c *connection) start() (*exec.Cmd, *os.File, *os.File, *os.File, error) {
 	cmd := exec.Command(c.srv.opts.Hermes, "acp")
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, errW
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	c.srv.mu.Lock()
 	err = cmd.Start()
+	if err == nil {
+		c.srv.children[cmd.Process.Pid] = true
+	}
+	c.srv.mu.Unlock()
 	closeAll(inR, outW, errW)
 	if err != nil {
 		closeAll(inW, outR, errR)
