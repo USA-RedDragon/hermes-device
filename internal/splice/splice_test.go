@@ -202,6 +202,18 @@ func TestBranchBindsChild(t *testing.T) {
 	}
 }
 
+// deniedConfig reports whether a config.set the gateway got is one the
+// test expects the splice to refuse.
+func deniedConfig(p map[string]any) bool {
+	switch p[keyConfigKey] {
+	case "verbose", "yolo":
+		return false
+	case "reasoning":
+		return p[keyConfigValue] == "show" || p["scope"] == "global"
+	}
+	return true
+}
+
 func TestDeniedMethods(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, splice.Options{})
@@ -213,6 +225,9 @@ func TestDeniedMethods(t *testing.T) {
 		{methodConfigSet, map[string]any{keyConfigKey: keyCwd, keyConfigValue: "/x"}},
 		{methodConfigSet, map[string]any{keyConfigKey: "terminal.cwd", keyConfigValue: "/x"}},
 		{methodConfigSet, map[string]any{}},
+		{methodConfigSet, map[string]any{keyConfigKey: "fast", keyConfigValue: "on", "scope": "global"}},
+		{methodConfigSet, map[string]any{keyConfigKey: "reasoning", keyConfigValue: "show"}},
+		{methodConfigSet, map[string]any{keyConfigKey: "reasoning", keyConfigValue: "high", "scope": "global"}},
 		{"vault.list", nil},
 		{"vault.set", map[string]any{keyName: "k"}},
 		{"model.save_key", map[string]any{}},
@@ -261,6 +276,9 @@ func TestDeniedMethods(t *testing.T) {
 		params map[string]any
 	}{
 		{methodConfigSet, map[string]any{keyConfigKey: "verbose", keyConfigValue: "all", keySessionID: "s"}},
+		{methodConfigSet, map[string]any{keyConfigKey: "yolo", keyConfigValue: "on", keySessionID: "s"}},
+		{methodConfigSet, map[string]any{keyConfigKey: "reasoning", keyConfigValue: "high", "scope": "session"}},
+		{methodConfigSet, map[string]any{keyConfigKey: "reasoning", keyConfigValue: "reset"}},
 		{methodPDFAttach, map[string]any{"content_base64": "AA=="}},
 		{methodFileAttach, map[string]any{"data_url": "data:,", keyPath: nil}},
 		{"image.attach_bytes", map[string]any{"data": "AA=="}},
@@ -274,7 +292,7 @@ func TestDeniedMethods(t *testing.T) {
 	}
 	for _, m := range e.hub.receivedMethods() {
 		for _, tc := range cases {
-			if m.Method == tc.method && m.Method != methodMutate && (m.Method != methodConfigSet || m.Params[keyConfigKey] != "verbose") &&
+			if m.Method == tc.method && m.Method != methodMutate && (m.Method != methodConfigSet || deniedConfig(m.Params)) &&
 				(m.Method != methodPDFAttach && m.Method != methodFileAttach || m.Params[keyPath] != nil) {
 				t.Errorf("denied %s reached the gateway: %+v", m.Method, m.Params)
 			}

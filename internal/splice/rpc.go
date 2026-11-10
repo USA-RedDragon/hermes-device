@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
@@ -187,7 +188,7 @@ func denied(method string, params map[string]json.RawMessage) bool {
 		"diagnostics.share_nous", "free_tier.provision", "session.foreign.import", "prompt.background":
 		return true
 	case methodConfigSet:
-		return rawString(params["key"]) != "verbose"
+		return !configSetAllowed(params)
 	case "pdf.attach", "file.attach":
 		p, ok := params["path"]
 		return ok && !isNull(p)
@@ -195,6 +196,30 @@ func denied(method string, params map[string]json.RawMessage) bool {
 		return rawString(params["operation"]) == opEditorMCP
 	}
 	return deniedPrefix(method)
+}
+
+// configSetAllowed reports whether a config.set changes only its session,
+// as the hub decides (docs/protocol.md 5.4): busy, verbose, show_reasoning,
+// service_tier, fast or yolo without a scope, or reasoning in session scope
+// with exactly an effort level or reset. Every other key writes profile
+// state of the pod.
+func configSetAllowed(params map[string]json.RawMessage) bool {
+	var key string
+	if json.Unmarshal(params["key"], &key) != nil {
+		return false
+	}
+	_, hasScope := params["scope"]
+	switch key {
+	case "busy", "verbose", "show_reasoning", "service_tier", "fast", "yolo":
+		return !hasScope
+	case "reasoning":
+		if hasScope && rawString(params["scope"]) != "session" {
+			return false
+		}
+		v := rawString(params["value"])
+		return v == "reset" || slices.Contains([]string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}, v)
+	}
+	return false
 }
 
 func isNull(raw json.RawMessage) bool {
