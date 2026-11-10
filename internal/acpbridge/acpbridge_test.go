@@ -795,3 +795,42 @@ func TestStripsTopLevelMeta(t *testing.T) {
 		t.Errorf("cancel params %v", p)
 	}
 }
+
+func TestInitializeAdvertisesClose(t *testing.T) {
+	t.Parallel()
+	hub := newFakeHub(t)
+	ed := startBridge(t, hub)
+	a := hub.accept()
+
+	ed.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
+	a.send(`{"jsonrpc":"2.0","id":"` + str(a.recv()["id"]) + `","result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"fork":{},"list":{},"resume":{}}},"authMethods":[]}}`)
+	res := asMap(t, ed.recv()["result"])
+	caps := asMap(t, res["agentCapabilities"])
+	sc := asMap(t, caps["sessionCapabilities"])
+	for _, k := range []string{"close", "fork", "list", "resume"} {
+		if _, ok := sc[k].(map[string]any); !ok {
+			t.Errorf("sessionCapabilities.%s missing: %v", k, sc)
+		}
+	}
+	if caps["loadSession"] != true || res[keyProtocolVersion] != float64(1) || res["authMethods"] == nil {
+		t.Errorf("result changed: %v", res)
+	}
+
+	ed.send(`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":1}}`)
+	a.answer(a.recv(), map[string]any{keyProtocolVersion: 1})
+	sc = asMap(t, asMap(t, asMap(t, ed.recv()["result"])["agentCapabilities"])["sessionCapabilities"])
+	if len(sc) != 1 || sc["close"] == nil {
+		t.Errorf("sessionCapabilities %v", sc)
+	}
+
+	ed.send(`{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":1}}`)
+	a.answer(a.recv(), map[string]any{keyProtocolVersion: 1, "agentCapabilities": "odd"})
+	if r := asMap(t, ed.recv()["result"]); r["agentCapabilities"] != "odd" {
+		t.Errorf("a result that is not ACP changed: %v", r)
+	}
+}
+
+func str(v any) string {
+	s, _ := v.(string)
+	return s
+}

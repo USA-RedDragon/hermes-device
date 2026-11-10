@@ -699,6 +699,7 @@ func (b *Bridge) finish(ctx context.Context, p pendingReq, m object) {
 				b.init = json.RawMessage("{}")
 			}
 			b.mu.Unlock()
+			m["result"] = advertiseClose(result)
 		}
 	case methodNew, methodFork:
 		if !ok {
@@ -722,6 +723,44 @@ func (b *Bridge) finish(ctx context.Context, p pendingReq, m object) {
 		}
 	}
 	b.writeEditor(mustJSON(m))
+}
+
+// advertiseClose adds sessionCapabilities.close to the agentCapabilities of
+// an initialize result, since the bridge answers session/close itself. A
+// result whose members are not objects is left as it is.
+func advertiseClose(result json.RawMessage) json.RawMessage {
+	res, ok := member(result)
+	if !ok {
+		return result
+	}
+	caps, ok := member(res["agentCapabilities"])
+	if !ok {
+		return result
+	}
+	sc, ok := member(caps["sessionCapabilities"])
+	if !ok {
+		return result
+	}
+	if c, has := sc["close"]; has && string(c) != jsonNull {
+		return result
+	}
+	sc["close"] = json.RawMessage("{}")
+	caps["sessionCapabilities"] = mustJSON(sc)
+	res["agentCapabilities"] = mustJSON(caps)
+	return mustJSON(res)
+}
+
+// member decodes a JSON object. A missing member or null is an empty
+// object; any other value is not.
+func member(raw json.RawMessage) (object, bool) {
+	if len(raw) == 0 || string(raw) == jsonNull {
+		return object{}, true
+	}
+	var o object
+	if json.Unmarshal(raw, &o) != nil {
+		return nil, false
+	}
+	return o, true
 }
 
 func (b *Bridge) addSession(id, cwd string) {
