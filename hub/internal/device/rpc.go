@@ -422,6 +422,8 @@ func commandAllowed(name, arg string) bool {
 		return a == "" || reasoningValue(a)
 	case slashModel:
 		return !strings.Contains(flags, "--refresh")
+	case "usage":
+		return strings.TrimSpace(arg) == ""
 	}
 	return true
 }
@@ -449,7 +451,8 @@ func slashAllowed(method string, params map[string]json.RawMessage) bool {
 }
 
 // forceSessionModel makes a /model of slash.exec or command.dispatch
-// session scoped: without --session Hermes writes the pick to the
+// session scoped by putting --session first, where no value flag can take
+// it as its value: without --session Hermes writes the pick to the
 // profile's config.yaml when the profile has no default model or sets
 // model.persist_switch_by_default (hermes_cli/model_switch.py
 // resolve_persist_behavior).
@@ -457,11 +460,12 @@ func forceSessionModel(method string, params map[string]json.RawMessage) {
 	if name, _ := slashParts(method, params); name != slashModel {
 		return
 	}
-	key := keyCommandText
 	if method == methodDispatch {
-		key = "arg"
+		params["arg"] = mustRaw(strings.TrimRight(flagSession+" "+rawString(params["arg"]), " "))
+		return
 	}
-	params[key] = mustRaw(strings.TrimRight(rawString(params[key]), " ") + " " + flagSession)
+	cmd := strings.TrimLeft(strings.TrimSpace(rawString(params[keyCommandText])), "/")
+	params[keyCommandText] = mustRaw("/" + slashModel + " " + flagSession + strings.TrimPrefix(cmd, slashModel))
 }
 
 // textMethods are the methods whose text member Hermes may read as a slash
@@ -504,8 +508,10 @@ func textCommand(text string) (name, arg string, ok bool) {
 
 // textAllowed applies SlashCommands to the text of a textMethods request.
 // A name that is not plain ASCII is refused, since Python lowers some
-// characters differently from Go. An alias counts as its command, and a
-// /model needs --session or --once.
+// characters differently from Go. An alias counts as its command. /model
+// is refused: its value flags can take a --session as their value
+// (hermes_cli/model_switch.py parse_model_flags_detailed), and the TUI
+// sends it through slash.exec.
 func textAllowed(params map[string]json.RawMessage) bool {
 	text, isString := rawStringOK(params[keyText])
 	if !isString {
@@ -526,11 +532,7 @@ func textAllowed(params map[string]json.RawMessage) bool {
 	if !commandAllowed(name, arg) {
 		return false
 	}
-	if name == slashModel {
-		tokens := strings.Fields(flagForm(arg))
-		return slices.Contains(tokens, flagSession) || slices.Contains(tokens, "--once")
-	}
-	return true
+	return name != slashModel
 }
 
 // refusedParams are the params the hub refuses on methods it allows,

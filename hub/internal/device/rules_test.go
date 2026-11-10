@@ -369,10 +369,12 @@ func TestGatewayLegPromptSlash(t *testing.T) {
 			"/fast on --global", "/fast on --GLOBAL", "/fast on —global", "/fast on –-global", "/fast on \"--glo\"bal",
 			"/fast on '-'-global", "/yolo ‒global", "/reasoning show", "/reasoning high --global", "/reasoning high x",
 			"/model gpt-5", "/model gpt-5 --global", "/model gpt-5 --session --refresh", "/model@bot gpt-5", "/vıew",
+			"/model gpt-5 --session", "/model gpt-5 —session", "/model gpt-5 --reasoning --session --reasoning high",
+			"/model x --provider --session --provider p", "/usage reset --force", "/usage reset",
 		}
 		allowed := []string{
 			"hello", "/etc/passwd is odd", "/ hi", "/", "@file:/tmp/a.txt\nsummarize it", "/title A new name", "/fast on",
-			"/compact", "/q next question", "/RESET", "/reasoning high", "/model gpt-5 --session", "/model gpt-5 —session",
+			"/compact", "/q next question", "/RESET", "/reasoning high", "/usage",
 			"/steer@hermes_bot go left", "/btw what is this",
 		}
 		for _, method := range []string{"prompt.submit", "prompt.replace_queued", "session.steer", "session.redirect", "prompt.btw"} {
@@ -395,17 +397,17 @@ func TestGatewayLegPromptSlash(t *testing.T) {
 				t.Fatalf("%s calls = %d, want %d", method, len(got), len(allowed))
 			}
 		}
-		for _, cmd := range []string{"/verbose", "/diff", "/refine", "/fast on —global", "/fast on --GLOBAL", "/model x --refresh"} {
+		for _, cmd := range []string{"/verbose", "/diff", "/refine", "/fast on —global", "/fast on --GLOBAL", "/model x --refresh", "/usage reset"} {
 			if m := g.request("sx-"+cmd, methodSlash, map[string]any{keySessionID: "s1", keyCommand: cmd}); reason(m) != reasonDenied {
 				t.Fatalf("slash.exec %q = %v", cmd, m)
 			}
 		}
-		g.request("sx-model", methodSlash, map[string]any{keySessionID: "s1", keyCommand: "/model gpt-5"})
-		g.request("cd-model", "command.dispatch", map[string]any{keySessionID: "s1", keyName: "model", "arg": "gpt-5"})
-		if got := e.called(methodSlash); len(got) != 1 || got[0].Params[keyCommand] != "/model gpt-5 --session" {
+		g.request("sx-model", methodSlash, map[string]any{keySessionID: "s1", keyCommand: " /model gpt-5 --reasoning"})
+		g.request("cd-model", "command.dispatch", map[string]any{keySessionID: "s1", keyName: "model", "arg": "gpt-5 --provider"})
+		if got := e.called(methodSlash); len(got) != 1 || got[0].Params[keyCommand] != "/model --session gpt-5 --reasoning" {
 			t.Fatalf("slash.exec /model reached the gateway as %v", got)
 		}
-		if got := e.called("command.dispatch"); len(got) != 1 || got[0].Params["arg"] != "gpt-5 --session" {
+		if got := e.called("command.dispatch"); len(got) != 1 || got[0].Params["arg"] != "--session gpt-5 --provider" {
 			t.Fatalf("command.dispatch model reached the gateway as %v", got)
 		}
 	})
