@@ -46,6 +46,9 @@ const (
 	CloseBackendUnavailable = 4502
 	// ClosePingTimeout: no pong within PingTimeout.
 	ClosePingTimeout = 4408
+	// CloseUnsupportedPlatform: the device runs an OS the plugin does not
+	// serve (Windows). The client stops.
+	CloseUnsupportedPlatform = 4427
 )
 
 // Exit codes the plugin and device use besides the command's own.
