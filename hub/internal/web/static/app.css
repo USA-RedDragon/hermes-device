@@ -1,11 +1,15 @@
 :root {
   --bg: #f6f7f9; --fg: #15181c; --muted: #646b75; --card: #fff; --line: #dfe3e8; --side: #eef0f3;
   --accent: #2f6fde; --ok: #1f9d55; --warn: #b7791f; --bad: #d64545; --code: #eef1f5; --hover: rgba(0, 0, 0, .05);
+  --hl-kw: #d73a49; --hl-title: #6f42c1; --hl-num: #005cc5; --hl-str: #032f62; --hl-built: #e36209; --hl-comment: #6a737d;
+  --hl-name: #22863a; --hl-add: #22863a; --hl-add-bg: #f0fff4; --hl-del: #b31d28; --hl-del-bg: #ffeef0;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #111418; --fg: #e7eaee; --muted: #9aa3ad; --card: #1a1f25; --line: #2a313a; --side: #161a1f;
-    --accent: #5b92f0; --code: #222932; --hover: rgba(255, 255, 255, .06); }
+    --accent: #5b92f0; --code: #222932; --hover: rgba(255, 255, 255, .06);
+    --hl-kw: #ff7b72; --hl-title: #d2a8ff; --hl-num: #79c0ff; --hl-str: #a5d6ff; --hl-built: #ffa657; --hl-comment: #8b949e;
+    --hl-name: #7ee787; --hl-add: #aff5b4; --hl-add-bg: #033a16; --hl-del: #ffdcd7; --hl-del-bg: #67060c; }
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -112,3 +116,43 @@ code { background: var(--code); padding: 0 .25rem; border-radius: 4px; }
   .bar .menu { display: inline-block; }
 }
 @media (prefers-reduced-motion: reduce) { .side { transition: none; } }
+
+/* Assistant replies rendered from Markdown. */
+.msg.assistant.md { white-space: normal; }
+.msg.assistant.md.plain { white-space: pre-wrap; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md blockquote, .md .table-wrap, .md .codeblock { margin: .5rem 0; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: .9rem 0 .4rem; line-height: 1.25; }
+.md h1 { font-size: 1.35rem; } .md h2 { font-size: 1.2rem; } .md h3 { font-size: 1.07rem; }
+.md h4, .md h5, .md h6 { font-size: 1rem; }
+.md ul, .md ol { padding-left: 1.4rem; }
+.md li > ul, .md li > ol { margin: .15rem 0; }
+.md li.task { list-style: none; margin-left: -1.2rem; }
+.md blockquote { border-left: 3px solid var(--line); padding: .1rem .7rem; color: var(--muted); }
+.md a { color: var(--accent); overflow-wrap: anywhere; }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: .8rem 0; }
+.md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em; }
+.table-wrap { overflow-x: auto; }
+.md table { border-collapse: collapse; font-size: .92rem; }
+.md th, .md td { border: 1px solid var(--line); padding: .3rem .55rem; vertical-align: top; }
+.md th { background: var(--code); text-align: left; }
+.codeblock { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--code); }
+.codehead { display: flex; align-items: center; justify-content: space-between; padding: .15rem .3rem .15rem .6rem;
+  font-size: .75rem; color: var(--muted); border-bottom: 1px solid var(--line); }
+.codehead .copy { font-size: .75rem; padding: .1rem .5rem; }
+.msg .codeblock pre { margin: 0; border-radius: 0; background: transparent; }
+.codeblock code { background: none; padding: 0; font-size: .85rem; }
+.hljs-doctag, .hljs-keyword, .hljs-meta .hljs-keyword, .hljs-template-tag, .hljs-template-variable, .hljs-type,
+.hljs-variable.language_ { color: var(--hl-kw); }
+.hljs-title, .hljs-title.class_, .hljs-title.function_ { color: var(--hl-title); }
+.hljs-attr, .hljs-attribute, .hljs-literal, .hljs-meta, .hljs-number, .hljs-operator, .hljs-selector-attr,
+.hljs-selector-class, .hljs-selector-id, .hljs-variable, .hljs-section { color: var(--hl-num); }
+.hljs-meta .hljs-string, .hljs-regexp, .hljs-string { color: var(--hl-str); }
+.hljs-built_in, .hljs-symbol, .hljs-bullet { color: var(--hl-built); }
+.hljs-code, .hljs-comment, .hljs-formula { color: var(--hl-comment); }
+.hljs-name, .hljs-quote, .hljs-selector-pseudo, .hljs-selector-tag { color: var(--hl-name); }
+.hljs-section, .hljs-strong { font-weight: 700; }
+.hljs-emphasis { font-style: italic; }
+.hljs-addition { color: var(--hl-add); background: var(--hl-add-bg); }
+.hljs-deletion { color: var(--hl-del); background: var(--hl-del-bg); }

@@ -202,15 +202,30 @@
       this.follow(() => { tn.reasoning.lastChild.textContent += text; });
     }
 
-    assistantText(text) {
+    // assistantText adds to the reply. A streamed delta renders at most
+    // once per frame; anything else renders at once.
+    assistantText(text, streamed) {
       const tn = this.ensureTurn();
       if (!tn.text) {
-        tn.text = this.add(el("div", "msg assistant"));
+        tn.text = this.add(el("div", "msg assistant md"));
         tn.raw = "";
         if (tn.reasoning) tn.reasoning.open = false;
       }
       tn.raw += text;
-      this.follow(() => render(tn.text, tn.raw));
+      const node = tn.text;
+      node.raw = tn.raw;
+      if (!streamed) {
+        node.queued = false;
+        this.follow(() => render(node, node.raw));
+        return;
+      }
+      if (node.queued) return;
+      node.queued = true;
+      requestAnimationFrame(() => {
+        if (!node.queued) return;
+        node.queued = false;
+        this.follow(() => render(node, node.raw));
+      });
     }
 
     userText(text, pending) {
@@ -421,7 +436,7 @@
           break;
         }
         case "tool.complete": this.toolDone(this.toolCard(p.tool_id, p.name, p.args), p); break;
-        case "message.delta": this.setStatus(""); this.assistantText(p.text === undefined ? "" : p.text); break;
+        case "message.delta": this.setStatus(""); this.assistantText(p.text === undefined ? "" : p.text, true); break;
         case "message.interim": if (p.text && !p.already_streamed) { this.assistantText(p.text); this.turn.text = null; } break;
         case "message.complete": {
           this.setStatus("");
@@ -448,15 +463,7 @@
     }
   }
 
-  // render shows text with fenced code blocks as <pre>; everything else stays plain.
-  function render(node, raw) {
-    node.replaceChildren();
-    const parts = raw.split(/```[^\n]*\n?/);
-    parts.forEach((part, i) => {
-      if (i % 2 === 1) node.append(el("pre", "", part.replace(/\n$/, "")));
-      else if (part) node.append(document.createTextNode(part));
-    });
-  }
+  const render = (node, raw) => window.hubMarkdown.render(node, raw);
 
   function showWelcome() {
     closeStream();

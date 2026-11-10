@@ -398,7 +398,7 @@ func TestStaticAndHeaders(t *testing.T) {
 	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "default-src 'self'") || resp.Header.Get("X-Frame-Options") != "DENY" {
 		t.Fatalf("headers = %v", resp.Header)
 	}
-	for _, f := range []string{"/static/app.js", "/static/app.css"} {
+	for _, f := range []string{"/static/app.js", "/static/app.css", "/static/markdown.js", "/static/vendor/highlight.min.js"} {
 		if resp, _ := get(t, c, e.url+f); resp.StatusCode != http.StatusOK {
 			t.Fatalf("%s = %d", f, resp.StatusCode)
 		}
