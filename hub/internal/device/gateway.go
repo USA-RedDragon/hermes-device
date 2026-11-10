@@ -106,6 +106,7 @@ const (
 	heldCreate heldKind = iota
 	heldResume
 	heldWorkspace
+	heldBranch
 )
 
 // held is a forwarded device request whose answer the hub acts on before
@@ -283,7 +284,7 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 		g.rewriteWorkspace(&f, params)
 	case f.Method == methodMutate && rawString(params["operation"]) == opBranch:
 		dropMember(params, "payload", "mcp_servers")
-		g.send(&f, params, nil)
+		g.send(&f, params, &held{kind: heldBranch, id: f.ID})
 	default:
 		g.send(&f, params, nil)
 	}
@@ -465,6 +466,8 @@ func (g *guard) fromGateway(typ websocket.MessageType, data []byte) {
 		g.createAnswered(h, &f, data)
 	case heldResume:
 		g.resumeAnswered(h, &f, data)
+	case heldBranch:
+		g.branchAnswered(&f, data)
 	case heldWorkspace:
 		if f.isError() && h.prevDir != "" {
 			g.work.Go(func() {
@@ -511,8 +514,12 @@ func (g *guard) createAnswered(h *held, f *frame, data []byte) {
 		}
 		ctx, cancel := g.bindCtx()
 		defer cancel()
-		err := g.bind(ctx, res.SessionID, h.dir)
+		err := g.s.bindAllowed(ctx, g.b, g.dev.ID, res.SessionID)
 		if err == nil {
+			err = g.bind(ctx, res.SessionID, h.dir)
+		}
+		if err == nil {
+			g.s.noteCreated(g.dev.ID, res.SessionID)
 			g.s.rememberCreate(g.dev.ID, h.requestID, res.SessionID, h.dir)
 			g.toDevice(data)
 			return
@@ -522,12 +529,36 @@ func (g *guard) createAnswered(h *held, f *frame, data []byte) {
 				"session_id", res.SessionID, "error", err.Error())
 			return
 		}
+		if errors.Is(err, errOtherDevice) {
+			g.s.log.Warn("session.create answered with another device's session", "device", g.dev.ID, "session_id", res.SessionID)
+			g.toDevice(otherDeviceAnswer(h.id, res.SessionID))
+			return
+		}
+		fresh, rerr := g.s.neverBound(ctx, g.b, res.SessionID)
+		if rerr != nil || !fresh {
+			g.s.log.Warn("bind after session.create failed; keeping the session, which was or is bound", "device", g.dev.ID,
+				"session_id", res.SessionID, "error", err.Error())
+			g.toDevice(bindAnswer(h.id, err))
+			return
+		}
 		g.s.log.Warn("bind after session.create failed; deleting the session", "device", g.dev.ID,
 			"session_id", res.SessionID, "error", err.Error())
 		if g.deleteSession(res) {
 			g.toDevice(bindAnswer(h.id, err))
 		}
 	})
+}
+
+// branchAnswered remembers the child of a branch as created by the device,
+// so the device may bind it before its lineage row is written.
+func (g *guard) branchAnswered(f *frame, data []byte) {
+	var res struct {
+		Child string `json:"branched_session_id"`
+	}
+	if !f.isError() && json.Unmarshal(f.Result, &res) == nil && res.Child != "" {
+		g.s.noteCreated(g.dev.ID, res.Child)
+	}
+	g.toDevice(data)
 }
 
 func (g *guard) resumeAnswered(h *held, f *frame, data []byte) {

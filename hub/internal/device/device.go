@@ -106,9 +106,12 @@ type Server struct {
 	// binding of their own, for Places.
 	resolved resolvedCache
 
-	mu      sync.Mutex
-	legs    map[string]map[*leg]struct{}
-	binds   map[string]bindEntry
+	mu    sync.Mutex
+	legs  map[string]map[*leg]struct{}
+	binds map[string]bindEntry
+	// created are the sessions a leg of a device created for it, by
+	// device id and session id, with when.
+	created map[string]time.Time
 	closed  bool
 	stopped chan struct{}
 }
@@ -148,7 +151,7 @@ func New(opts Options) (*Server, error) {
 	}
 	s := &Server{opts: opts, log: opts.Logger.With("component", "device"), store: opts.Store, backends: map[string]*backend{},
 		proxies: proxies, pairs: newLimiter(20, 10*time.Minute), polls: newLimiter(400, 10*time.Minute),
-		legs: map[string]map[*leg]struct{}{}, binds: map[string]bindEntry{}, stopped: make(chan struct{}),
+		legs: map[string]map[*leg]struct{}{}, binds: map[string]bindEntry{}, created: map[string]time.Time{}, stopped: make(chan struct{}),
 		service: map[[32]byte]hub.Device{}}
 	for _, b := range opts.Backends {
 		d := opts.Dialers[b.ID]

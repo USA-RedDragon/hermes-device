@@ -101,3 +101,105 @@ func TestACPLegMeta(t *testing.T) {
 	})
 }
 
+// TestBindTakeover covers PUT /api/device/sessions/<child>/binding taking
+// over a session that only inherits another device's binding, or that was
+// bound before.
+func TestBindTakeover(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, id := e.pair(e.a)
+		e.connectExec(e.a, tok)
+		bind := func(sid string) (int, map[string]any) {
+			t.Helper()
+			return call(t, http.MethodPut, e.a.url+"/api/device/sessions/"+sid+"/binding", tok, map[string]any{keyDir: "/home/x"})
+		}
+		e.plugin.SetBinding(sessionOther, otherDevice, "/home/bob")
+		e.plugin.SetParent("s-other-child", sessionOther)
+		if s, out := bind("s-other-child"); s != http.StatusConflict || out["error"] != "bound_to_other_device" {
+			t.Fatalf("bind of an inherited session = %d %v", s, out)
+		}
+		if s, out := bind(sessionOther); s != http.StatusConflict || out["error"] != "bound_to_other_device" {
+			t.Fatalf("bind of another device's session = %d %v", s, out)
+		}
+		if _, ok := e.plugin.Bindings()["s-other-child"]; ok {
+			t.Fatal("the inherited session was bound")
+		}
+		if s, out := bind(sessionGone); s != http.StatusOK || out[keyDeviceID] != id {
+			t.Fatalf("bind of a never bound session = %d %v", s, out)
+		}
+		if s, _ := call(t, http.MethodDelete, e.b.url+"/api/device/sessions/"+sessionGone+"/binding", tok, nil); s != http.StatusNoContent {
+			t.Fatalf("unbind = %d", s)
+		}
+		if s, out := bind(sessionGone); s != http.StatusConflict || out["error"] != "was_bound" {
+			t.Fatalf("bind of a session bound before = %d %v", s, out)
+		}
+		e.plugin.SetParent("s-gone-child", sessionGone)
+		if s, out := bind("s-gone-child"); s != http.StatusConflict || out["error"] != "was_bound" {
+			t.Fatalf("bind of a child of a session bound before = %d %v", s, out)
+		}
+		e.plugin.SetBinding(sessionMine, id, deviceDir)
+		e.plugin.SetParent("s-mine-child", sessionMine)
+		for _, sid := range []string{sessionMine, "s-mine-child"} {
+			if s, out := bind(sid); s != http.StatusOK || out[keyDeviceID] != id {
+				t.Fatalf("bind of %s = %d %v", sid, s, out)
+			}
+		}
+		a := e.acpLeg(tok)
+		res, _ := a.request(acpNew, map[string]any{keyCWD: deviceDir})[keyResult].(map[string]any)
+		created, _ := res[keySessionACP].(string)
+		e.plugin.SetParent(created, sessionGone)
+		if s, out := bind(created); s != http.StatusOK || out[keyDeviceID] != id {
+			t.Fatalf("bind of a session the device created = %d %v", s, out)
+		}
+		g := e.gatewayLeg(e.a, tok)
+		cres, _ := g.request("c1", methodCreate, map[string]any{keyRequestID: "q1", keyCWD: deviceDir})[keyResult].(map[string]any)
+		sid, _ := cres[keySessionID].(string)
+		if s, out := call(t, http.MethodPut, e.b.url+"/api/device/sessions/"+sid+"/binding", tok, map[string]any{keyDir: otherDir}); s != http.StatusOK ||
+			out[keyDir] != otherDir {
+			t.Fatalf("resume bind of the device's own session = %d %v", s, out)
+		}
+	})
+}
+
+// TestGatewayLegCreateExisting covers a create answered with a session
+// that already exists (a request_id another device used): the hub must
+// neither bind it nor delete it.
+func TestGatewayLegCreateExisting(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tokA, idA := e.pair(e.a)
+		tokB, _ := e.pairAs(e.a, "laptop")
+		e.connectExec(e.a, tokA)
+		e.connectExec(e.a, tokB)
+		a := e.gatewayLeg(e.a, tokA)
+		res, _ := a.request("a1", methodCreate, map[string]any{keyRequestID: "shared", keyCWD: deviceDir})[keyResult].(map[string]any)
+		sid, _ := res[keySessionID].(string)
+		if e.plugin.Bindings()[sid].DeviceID != idA {
+			t.Fatalf("binding = %+v", e.plugin.Bindings()[sid])
+		}
+		b := e.gatewayLeg(e.a, tokB)
+		if m := b.request("b1", methodCreate, map[string]any{keyRequestID: "shared", keyCWD: otherDir}); reason(m) != reasonOtherDevice {
+			t.Fatalf("create of another device's session = %v", m)
+		}
+		if got := e.plugin.Bindings()[sid]; got.DeviceID != idA || got.Dir != deviceDir {
+			t.Fatalf("binding after the other device's create = %+v", got)
+		}
+		res, _ = a.request("a2", methodCreate, map[string]any{keyRequestID: "was-bound", keyCWD: deviceDir})[keyResult].(map[string]any)
+		gone, _ := res[keySessionID].(string)
+		if s, _ := call(t, http.MethodDelete, e.a.url+"/api/device/sessions/"+gone+"/binding", tokA, nil); s != http.StatusNoContent {
+			t.Fatalf("unbind = %d", s)
+		}
+		if m := b.request("b2", methodCreate, map[string]any{keyRequestID: "was-bound", keyCWD: otherDir}); reason(m) != "hermes_device_bind" {
+			t.Fatalf("create of a session bound before = %v", m)
+		}
+		if got := e.called(methodMutate); len(got) != 0 {
+			t.Fatalf("the hub deleted an existing session: %v", got)
+		}
+		if !slices.Contains(e.gw.SessionIDs(), sid) || !slices.Contains(e.gw.SessionIDs(), gone) {
+			t.Fatalf("sessions = %v", e.gw.SessionIDs())
+		}
+	})
+}
+

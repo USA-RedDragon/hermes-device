@@ -453,6 +453,7 @@ func (g *acpGuard) fromAgent(typ websocket.MessageType, data []byte) {
 				g.mu.Lock()
 				g.created[res.SessionID] = true
 				g.mu.Unlock()
+				g.s.noteCreated(g.dev.ID, res.SessionID)
 			}
 		}
 	case acpList:
