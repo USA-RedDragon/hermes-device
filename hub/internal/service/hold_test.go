@@ -366,3 +366,16 @@ func TestNotSentSaysHermesMayHaveIt(t *testing.T) {
 	}
 }
 
+func TestSubmissionIDFromContext(t *testing.T) {
+	t.Parallel()
+	e := setup(t, fastHold())
+	ctx := hub.WithSubmissionID(context.Background(), "fixed-id")
+	for range 2 {
+		if r, err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "same"); err != nil || r.ID != "fixed-id" {
+			t.Fatalf("prompt = %+v %v", r, err)
+		}
+	}
+	if e.gw.Submits() != 1 {
+		t.Fatalf("gateway admitted %d inputs", e.gw.Submits())
+	}
+}

@@ -272,7 +272,10 @@ func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text s
 	if err != nil {
 		return hub.PromptResult{}, err
 	}
-	id := uuid.NewString()
+	id := hub.SubmissionID(ctx)
+	if id == "" {
+		id = uuid.NewString()
+	}
 	release := b.gate(sessionID)
 	defer release()
 	if b.heldCount(sessionID) == 0 {

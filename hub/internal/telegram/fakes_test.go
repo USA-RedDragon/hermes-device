@@ -228,7 +228,7 @@ func (f *fakeTelegram) wait(method, contains string) tgCall {
 	return tgCall{}
 }
 
-type promptCall struct{ User, BackendID, SessionID, Text string }
+type promptCall struct{ User, BackendID, SessionID, Text, SubmissionID string }
 
 type approvalCall struct {
 	User, BackendID, SessionID, ApprovalID string
@@ -319,13 +319,13 @@ func (h *fakeHub) Attach(_ context.Context, user, backendID, sessionID string, _
 	return st.ch, func() { st.once.Do(func() { close(st.ch) }) }, nil
 }
 
-func (h *fakeHub) Prompt(_ context.Context, user, backendID, sessionID, text string) (hub.PromptResult, error) {
+func (h *fakeHub) Prompt(ctx context.Context, user, backendID, sessionID, text string) (hub.PromptResult, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err := h.allowed(user, backendID); err != nil {
 		return hub.PromptResult{}, err
 	}
-	h.prompts = append(h.prompts, promptCall{user, backendID, sessionID, text})
+	h.prompts = append(h.prompts, promptCall{user, backendID, sessionID, text, hub.SubmissionID(ctx)})
 	return hub.PromptResult{ID: fmt.Sprintf("p%d", len(h.prompts)), Held: h.hold}, nil
 }
 

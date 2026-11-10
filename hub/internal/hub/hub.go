@@ -136,6 +136,22 @@ type PromptResult struct {
 	HeldUntil time.Time
 }
 
+type submissionKey struct{}
+
+// WithSubmissionID makes Prompt send its prompt under id, instead of a new
+// one. A front end that may hand the same input to Prompt twice, as the
+// Telegram bot can when another replica takes it over, derives id from the
+// input, so Hermes runs it once.
+func WithSubmissionID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, submissionKey{}, id)
+}
+
+// SubmissionID is the ID WithSubmissionID set, or "".
+func SubmissionID(ctx context.Context) string {
+	id, _ := ctx.Value(submissionKey{}).(string)
+	return id
+}
+
 // Links maps external identities to hub users.
 type Links interface {
 	UserForTelegram(ctx context.Context, telegramID int64) (string, bool, error)

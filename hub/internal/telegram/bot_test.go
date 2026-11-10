@@ -8,6 +8,7 @@ import (
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 	"github.com/USA-RedDragon/hermes-hub/internal/telegram"
+	"github.com/google/uuid"
 )
 
 func TestUnknownUserGetsLink(t *testing.T) {
@@ -376,6 +377,10 @@ func TestRestoresChatsAndOffset(t *testing.T) {
 	p := h.hub.waitPrompt(t, 1)
 	if p[0].SessionID != sOld || p[0].BackendID != beLaptop {
 		t.Fatalf("prompt = %+v", p[0])
+	}
+	want := uuid.NewSHA1(uuid.NameSpaceURL, []byte("hermes-hub:telegram:123:1")).String()
+	if p[0].SubmissionID != want {
+		t.Fatalf("submission id = %q, want %q", p[0].SubmissionID, want)
 	}
 	h.tg.mu.Lock()
 	first := h.tg.offsets[0]

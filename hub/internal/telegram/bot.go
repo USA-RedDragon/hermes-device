@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/google/uuid"
 )
 
 const (
@@ -208,11 +209,18 @@ func (b *Bot) Run(ctx context.Context) error {
 				break
 			}
 			offset = u.UpdateID + 1
-			b.handleUpdate(hctx, u)
+			b.handleUpdate(hub.WithSubmissionID(hctx, b.submissionID(u.UpdateID)), u)
 			b.saveOffset(hctx, offset)
 		}
 	}
 	return nil
+}
+
+// submissionID derives the Hermes submission ID of an update's prompt, so
+// a replica that handles the update again after a takeover or a crash
+// sends the same ID and Hermes runs the prompt once.
+func (b *Bot) submissionID(updateID int64) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, fmt.Appendf(nil, "hermes-hub:telegram:%d:%d", b.botID, updateID)).String()
 }
 
 // restore loads the stored update offset and attaches every stored chat
