@@ -146,7 +146,7 @@ func newDevices(cfg *config.Config, st *store.Store, svc *service.Service, diale
 			ds[b.ID] = dialers[b.ID]
 		}
 	}
-	srv, err := device.New(device.Options{Store: st, Access: svc, Backends: backends, Dialers: ds, Key: key,
+	srv, err := device.New(device.Options{Store: st, Access: svc, Sessions: svc, Backends: backends, Dialers: ds, Key: key,
 		PublicURL: cfg.HTTP.PublicURL, Config: cfg.Device})
 	if err != nil {
 		return nil, err

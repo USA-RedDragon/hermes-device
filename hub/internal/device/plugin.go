@@ -81,10 +81,27 @@ type Binding struct {
 	Resolved   Resolved `json:"resolved"`
 }
 
-// Resolved says which binding serves a session.
+// Binding resolution states.
+const (
+	StateBound      = "bound"
+	StateNeverBound = "never_bound"
+	StateFailClosed = "fail_closed"
+)
+
+// Resolved says which binding serves a session. Sandbox is set only with
+// the plugin's sandbox fallback (protocol.md section 8.10): the literal
+// null when the sandbox cannot serve the session, else a SandboxBinding.
 type Resolved struct {
-	State string  `json:"state"`
-	Via   *string `json:"via"`
+	State   string          `json:"state"`
+	Via     *string         `json:"via"`
+	Sandbox json.RawMessage `json:"sandbox,omitempty"`
+}
+
+// SandboxBinding is the implicit binding of a never-bound session to the
+// sandbox device.
+type SandboxBinding struct {
+	DeviceID string `json:"device_id"`
+	Dir      string `json:"dir"`
 }
 
 // Dirs is the plugin's answer to a directory listing on a device.
@@ -185,6 +202,36 @@ func (p *Plugin) Binding(ctx context.Context, sessionID string) (Binding, bool, 
 		return Binding{}, false, err
 	}
 	return out, true, nil
+}
+
+// Resolve returns how the plugin resolves a session's binding: the
+// binding that serves it, which may be an ancestor's, or none.
+func (p *Plugin) Resolve(ctx context.Context, sessionID string) (Binding, error) {
+	status, data, err := p.Raw(ctx, http.MethodGet, sessionPath(sessionID), nil)
+	if err != nil {
+		return Binding{}, err
+	}
+	var out Binding
+	if status == http.StatusOK || status == http.StatusNotFound {
+		var e PluginError
+		_ = json.Unmarshal(data, &e)
+		if status == http.StatusNotFound && e.Code != "not_bound" {
+			return Binding{}, &PluginError{Status: status, Code: e.Code, Message: e.Message}
+		}
+		if err := json.Unmarshal(data, &out); err != nil || out.Resolved.State == "" {
+			return Binding{}, fmt.Errorf("%w: bad answer to GET %s", ErrUnavailable, sessionPath(sessionID))
+		}
+		if status == http.StatusNotFound {
+			out = Binding{Resolved: out.Resolved}
+		}
+		return out, nil
+	}
+	e := &PluginError{Status: status}
+	_ = json.Unmarshal(data, e)
+	if e.Code == "" {
+		e.Code = http.StatusText(status)
+	}
+	return Binding{}, e
 }
 
 // Bind binds a session to a directory of a device.

@@ -131,3 +131,95 @@ type DeviceStore interface {
 
 // RecentDirs is how many recent directories the hub keeps per device.
 const RecentDirs = 8
+
+// Computer is one of a user's paired computers, as the chat pages offer it
+// for a chat to run on. Home and Roots are known only while it is
+// online.
+type Computer struct {
+	ID, Name, BackendID string
+	Online              bool
+	Hostname, OS        string
+	Home                string
+	Roots               []string
+	// Recent are the latest directories chats started or moved to on it.
+	Recent []string
+}
+
+// Folder is one directory of a computer and its subdirectories.
+type Folder struct {
+	Path string
+	Dirs []string
+}
+
+// Where a session runs its commands and file changes.
+const (
+	// PlaceComputer is a session bound to a computer.
+	PlaceComputer = "computer"
+	// PlaceSandbox is a session that was never bound, which the backend
+	// runs on its sandbox device.
+	PlaceSandbox = "sandbox"
+	// PlaceServer is a session that was never bound, which the backend
+	// runs on its own server (the plugin's fallback is not the sandbox).
+	PlaceServer = "server"
+	// PlaceNone is a session that was bound once and is no longer: it
+	// runs no commands until it is bound again.
+	PlaceNone = "none"
+)
+
+// Place says where a session runs its commands and file changes.
+type Place struct {
+	Kind string `json:"kind"`
+	// DeviceID, Name and Dir name the computer or sandbox and the
+	// directory on it.
+	DeviceID string `json:"device_id,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Dir      string `json:"dir,omitempty"`
+	Online   bool   `json:"online"`
+	// Mine is true for one of the user's own computers.
+	Mine bool `json:"mine,omitempty"`
+	// Inherited is a binding of an earlier part of the chat (a session
+	// it was compressed or branched from), which the chat follows.
+	Inherited bool `json:"inherited,omitempty"`
+}
+
+// SessionRef names one session on one backend.
+type SessionRef struct {
+	BackendID string `json:"backend_id"`
+	SessionID string `json:"session_id"`
+}
+
+// Computers lets users run chats on their paired computers. Every method
+// checks that user may use the backend and owns the computer.
+type Computers interface {
+	// Computers lists user's paired computers, not sandboxes.
+	Computers(ctx context.Context, user string) ([]Computer, error)
+	// Folders lists the subdirectories of path on one of user's
+	// computers; "" is the computer's first root.
+	Folders(ctx context.Context, user, deviceID, path string) (Folder, error)
+	// Places says where each session runs. A session it could not find
+	// out about is left out.
+	Places(ctx context.Context, user string, sessions []SessionRef) map[SessionRef]Place
+	// Place says where one session runs. Kind is "" on a backend without
+	// devices.
+	Place(ctx context.Context, user, backendID, sessionID string) (Place, error)
+	// StartOn starts a session on one of user's computers in dir, bound
+	// before any prompt can reach it. "" is the computer's first root.
+	StartOn(ctx context.Context, user, deviceID, dir string) (Session, Place, error)
+	// MoveTo binds a session to one of user's computers in dir, also when
+	// it ran on the sandbox or another of user's computers.
+	MoveTo(ctx context.Context, user, backendID, sessionID, deviceID, dir string) (Place, error)
+	// Release unbinds a session from user's computer. The session then
+	// runs no commands, also not on the sandbox, until it is moved again.
+	Release(ctx context.Context, user, backendID, sessionID string) error
+}
+
+// Computer errors. ErrFolderRefused and ErrCannotMove wrap a message for
+// the user.
+var (
+	ErrComputerOffline = errors.New("computer offline")
+	ErrFolderRefused   = errors.New("folder refused")
+	ErrCannotMove      = errors.New("session cannot run on a computer")
+	ErrOtherBackend    = errors.New("computer works with another backend")
+	ErrNotOnComputer   = errors.New("session is not on a computer")
+	ErrInheritedPlace  = errors.New("session follows the computer of the session it came from")
+)

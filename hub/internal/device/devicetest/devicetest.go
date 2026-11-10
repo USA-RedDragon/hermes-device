@@ -25,8 +25,10 @@ import (
 )
 
 const (
-	stateKey = "state"
-	keyVia   = "via"
+	stateKey    = "state"
+	keyVia      = "via"
+	keyDeviceID = "device_id"
+	keyName     = "name"
 )
 
 // Binding is a session binding of the fake plugin.
@@ -82,7 +84,15 @@ type Plugin struct {
 	parents  map[string]string
 	conns    map[string]*Conn
 	refuse   map[string]string
-	calls    []Call
+	// refuseDev makes binds to a device fail with a code.
+	refuseDev map[string]string
+	calls     []Call
+	// trees are fake directory trees by device: each directory and its
+	// subdirectories.
+	trees map[string]map[string][]string
+	// sandbox and sandboxRoot are the fallback device and fallback_root
+	// of protocol.md section 8.10; "" is fallback local.
+	sandbox, sandboxRoot string
 	// Connected is sent every new exec connection.
 	Connected chan *Conn
 	// Refused counts refused assertions.
@@ -94,7 +104,8 @@ type Plugin struct {
 func NewPlugin(gw *gatewaytest.Gateway, backendID string, key ed25519.PublicKey) *Plugin {
 	p := &Plugin{BackendID: backendID, Placeholder: "/opt/data/hermes/device-placeholder", HermesVersion: "v0.22.7",
 		verifier: assertion.NewVerifier([]ed25519.PublicKey{key}), bindings: map[string]Binding{}, ever: map[string]bool{},
-		parents: map[string]string{}, conns: map[string]*Conn{}, refuse: map[string]string{}, Connected: make(chan *Conn, 16)}
+		parents: map[string]string{}, conns: map[string]*Conn{}, refuse: map[string]string{}, Connected: make(chan *Conn, 16),
+		trees: map[string]map[string][]string{}, refuseDev: map[string]string{}}
 	base := "/api/plugins/device"
 	gw.Handle("GET "+base+"/info", http.HandlerFunc(p.info), true)
 	gw.Handle("GET "+base+"/devices", http.HandlerFunc(p.devices), true)
@@ -181,6 +192,45 @@ func (p *Plugin) RefuseBinds(sessionID, code string) {
 	p.refuse[sessionID] = code
 }
 
+// Connect connects a device to the exec route without a WebSocket, as
+// if it had sent hello, so its online state and roots show in /devices.
+func (p *Plugin) Connect(deviceID, name string, hello protocol.Hello) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.conns[deviceID] = &Conn{Claims: assertion.Claims{DeviceID: deviceID, DeviceName: name}, Hello: hello}
+}
+
+// Disconnect drops a device that Connect connected.
+func (p *Plugin) Disconnect(deviceID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.conns, deviceID)
+}
+
+// SetDirs gives a device a fake directory tree: each directory and its
+// subdirectories. The dirs route then refuses any other directory with
+// dir_refused, and so does a bind.
+func (p *Plugin) SetDirs(deviceID string, tree map[string][]string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.trees[deviceID] = tree
+}
+
+// SetSandbox turns on the sandbox fallback with device id and root.
+func (p *Plugin) SetSandbox(deviceID, root string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sandbox, p.sandboxRoot = deviceID, root
+}
+
+// RefuseBindsTo makes every PUT binding to a device fail with code (""
+// ends it).
+func (p *Plugin) RefuseBindsTo(deviceID, code string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refuseDev[deviceID] = code
+}
+
 // Conn returns a connected device.
 func (p *Plugin) Conn(deviceID string) *Conn {
 	p.mu.Lock()
@@ -212,7 +262,7 @@ func (p *Plugin) devices(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	out := make([]map[string]any, 0, len(p.conns))
 	for id, c := range p.conns {
-		out = append(out, map[string]any{"device_id": id, "name": c.Claims.DeviceName, "hostname": c.Hello.Hostname,
+		out = append(out, map[string]any{keyDeviceID: id, keyName: c.Claims.DeviceName, "hostname": c.Hello.Hostname,
 			"os": c.Hello.OS, "arch": c.Hello.Arch, "home": c.Hello.Home, "roots": c.Hello.Roots,
 			"client_version": c.Hello.ClientVersion, "connected_at": 1})
 	}
@@ -222,15 +272,40 @@ func (p *Plugin) devices(w http.ResponseWriter, r *http.Request) {
 
 func (p *Plugin) dirs(w http.ResponseWriter, r *http.Request) {
 	p.record(r, nil)
-	if p.Conn(r.PathValue("device")) == nil {
+	id := r.PathValue("device")
+	c := p.Conn(id)
+	if c == nil {
 		pluginError(w, http.StatusConflict, "device_offline")
 		return
 	}
 	dir := r.URL.Query().Get("path")
-	if dir == "" {
-		dir = "/home/alice"
+	p.mu.Lock()
+	tree, ok := p.trees[id]
+	p.mu.Unlock()
+	if !ok {
+		if dir == "" {
+			dir = "/home/alice"
+		}
+		answer(w, map[string]any{"path": dir, "entries": []map[string]string{{keyName: "src"}}})
+		return
 	}
-	answer(w, map[string]any{"path": dir, "entries": []map[string]string{{"name": "src"}}})
+	if dir == "" && len(c.Hello.Roots) > 0 {
+		dir = c.Hello.Roots[0]
+	}
+	if !path.IsAbs(dir) {
+		pluginError(w, http.StatusBadRequest, "bad_dir")
+		return
+	}
+	subs, ok := tree[path.Clean(dir)]
+	if !ok {
+		pluginError(w, http.StatusUnprocessableEntity, "dir_refused")
+		return
+	}
+	entries := make([]map[string]string, 0, len(subs))
+	for _, n := range subs {
+		entries = append(entries, map[string]string{keyName: n})
+	}
+	answer(w, map[string]any{"path": path.Clean(dir), "entries": entries})
 }
 
 func (p *Plugin) listBindings(w http.ResponseWriter, r *http.Request) {
@@ -258,7 +333,14 @@ func (p *Plugin) resolve(sid string) (Binding, map[string]any) {
 	if ever {
 		return Binding{}, map[string]any{stateKey: "fail_closed", keyVia: nil}
 	}
-	return Binding{}, map[string]any{stateKey: "never_bound", keyVia: nil}
+	res := map[string]any{stateKey: "never_bound", keyVia: nil}
+	if p.sandbox != "" {
+		res["sandbox"] = nil
+		if p.conns[p.sandbox] != nil {
+			res["sandbox"] = map[string]string{keyDeviceID: p.sandbox, "dir": path.Join(p.sandboxRoot, sid)}
+		}
+	}
+	return Binding{}, res
 }
 
 func (p *Plugin) getBinding(w http.ResponseWriter, r *http.Request) {
@@ -270,7 +352,7 @@ func (p *Plugin) getBinding(w http.ResponseWriter, r *http.Request) {
 		encode(w, map[string]any{"error": "not_bound", "message": "not bound", "resolved": res})
 		return
 	}
-	answer(w, map[string]any{"session_id": b.SessionID, "device_id": b.DeviceID, "dir": b.Dir, "generation": b.Generation,
+	answer(w, map[string]any{"session_id": b.SessionID, keyDeviceID: b.DeviceID, "dir": b.Dir, "generation": b.Generation,
 		"bound_at": b.BoundAt, "resolved": res})
 }
 
@@ -282,7 +364,7 @@ func (p *Plugin) putBinding(w http.ResponseWriter, r *http.Request) {
 	}
 	p.record(r, body)
 	sid := r.PathValue("session")
-	deviceID, _ := body["device_id"].(string)
+	deviceID, _ := body[keyDeviceID].(string)
 	dir, ok := body["dir"].(string)
 	if deviceID == "" || !ok {
 		pluginError(w, http.StatusBadRequest, "bad_request")
@@ -294,6 +376,10 @@ func (p *Plugin) putBinding(w http.ResponseWriter, r *http.Request) {
 		pluginError(w, http.StatusConflict, code)
 		return
 	}
+	if code := p.refuseDev[deviceID]; code != "" {
+		pluginError(w, http.StatusConflict, code)
+		return
+	}
 	if p.conns[deviceID] == nil {
 		pluginError(w, http.StatusConflict, "device_offline")
 		return
@@ -302,7 +388,12 @@ func (p *Plugin) putBinding(w http.ResponseWriter, r *http.Request) {
 		pluginError(w, http.StatusBadRequest, "bad_dir")
 		return
 	}
-	if !strings.HasPrefix(dir, "/home/") {
+	if tree, ok := p.trees[deviceID]; ok {
+		if _, ok := tree[path.Clean(dir)]; !ok {
+			pluginError(w, http.StatusUnprocessableEntity, "dir_refused")
+			return
+		}
+	} else if !strings.HasPrefix(dir, "/home/") {
 		pluginError(w, http.StatusUnprocessableEntity, "dir_refused")
 		return
 	}

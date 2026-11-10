@@ -58,8 +58,11 @@ type Dialer interface {
 
 // Options are the dependencies of a Server.
 type Options struct {
-	Store    hub.DeviceStore
-	Access   Access
+	Store  hub.DeviceStore
+	Access Access
+	// Sessions starts the sessions the hub starts on computers. Without
+	// it StartOn fails.
+	Sessions Sessions
 	Backends []config.Backend
 	// Dialers by backend id. A backend without one gets none of the legs.
 	Dialers map[string]Dialer
@@ -99,6 +102,9 @@ type Server struct {
 
 	// service maps the SHA-256 of each service device token to its device.
 	service map[[32]byte]hub.Device
+	// resolved caches the plugin's resolution of sessions without a
+	// binding of their own, for Places.
+	resolved resolvedCache
 
 	mu      sync.Mutex
 	legs    map[string]map[*leg]struct{}

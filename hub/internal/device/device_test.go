@@ -23,6 +23,7 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/hermes-hub/internal/service"
 	"github.com/USA-RedDragon/hermes-hub/internal/store"
 	"github.com/USA-RedDragon/hermes-hub/internal/store/storetest"
 	"github.com/coder/websocket"
@@ -88,6 +89,7 @@ type env struct {
 	st     *store.Store
 	key    ed25519.PrivateKey
 	access *access
+	svc    *service.Service
 	a, b   *replica
 }
 
@@ -124,6 +126,8 @@ func setup(t *testing.T, st *store.Store) *env {
 	acp := devicetest.NewACPHost(backendID, pub)
 	t.Cleanup(acp.Close)
 	e := &env{t: t, gw: gw, plugin: devicetest.NewPlugin(gw, backendID, pub), acp: acp, st: st, key: key, access: &access{}}
+	e.svc = service.New([]config.Backend{e.backend()}, nil, service.Options{})
+	t.Cleanup(e.svc.Close)
 	e.a, e.b = e.replica(), e.replica()
 	return e
 }
@@ -132,10 +136,8 @@ func (e *env) replica() *replica {
 	t := e.t
 	srv := httptest.NewUnstartedServer(nil)
 	pub := "http://" + srv.Listener.Addr().String()
-	b := config.Backend{ID: backendID, Name: "Alice's PC", URL: e.gw.URL(), Provider: providerBasic, Username: hubUser, Password: "pw",
-		Users: []string{userAlice}, Devices: true, ACPURL: e.acp.URL(),
-		ServiceDevices: []config.ServiceDevice{{ID: sandboxID, Name: "Alice's sandbox", Token: sandboxToken}}}
-	d, err := device.New(device.Options{Store: e.st, Access: e.access, Backends: []config.Backend{b},
+	b := e.backend()
+	d, err := device.New(device.Options{Store: e.st, Access: e.access, Sessions: e.svc, Backends: []config.Backend{b},
 		Dialers: map[string]device.Dialer{backendID: gateway.NewDialer(gateway.Credentials{BaseURL: b.URL, Provider: providerBasic,
 			Username: hubUser, Password: "pw"})},
 		Key: e.key, PublicURL: pub,
@@ -149,6 +151,12 @@ func (e *env) replica() *replica {
 	t.Cleanup(srv.Close)
 	t.Cleanup(d.Drain)
 	return &replica{dev: d, url: pub}
+}
+
+func (e *env) backend() config.Backend {
+	return config.Backend{ID: backendID, Name: "Alice's PC", URL: e.gw.URL(), Provider: providerBasic, Username: hubUser, Password: "pw",
+		Users: []string{userAlice}, Devices: true, ACPURL: e.acp.URL(),
+		ServiceDevices: []config.ServiceDevice{{ID: sandboxID, Name: sandboxName, Token: sandboxToken}}}
 }
 
 func call(t *testing.T, method, u, token string, body any) (int, map[string]any) {
@@ -190,14 +198,20 @@ func str(t *testing.T, m map[string]any, k string) string {
 
 // pair runs the whole pairing flow and returns the device token.
 func (e *env) pair(r *replica) (string, string) {
+	e.t.Helper()
+	return e.pairAs(r, deviceName)
+}
+
+// pairAs pairs a device of alice's under name.
+func (e *env) pairAs(r *replica, name string) (string, string) {
 	t := e.t
 	t.Helper()
-	status, start := call(t, http.MethodPost, r.url+"/api/device/pair", "", map[string]string{keyName: deviceName,
+	status, start := call(t, http.MethodPost, r.url+"/api/device/pair", "", map[string]string{keyName: name,
 		keyHostname: hostName, "os": osLinux, "arch": archAMD64, "client_version": "v0.1.0"})
 	if status != http.StatusOK || start["verification_uri"] != r.url+"/device/pair" {
 		t.Fatalf("pair = %d %v", status, start)
 	}
-	if _, err := e.st.ApprovePairing(context.Background(), str(t, start, keyUserCode), userAlice, backendID, deviceName); err != nil {
+	if _, err := e.st.ApprovePairing(context.Background(), str(t, start, keyUserCode), userAlice, backendID, name); err != nil {
 		t.Fatal(err)
 	}
 	status, res := call(t, http.MethodPost, r.url+"/api/device/pair/token", "", map[string]string{keyDeviceCode: str(t, start, keyDeviceCode)})
@@ -816,6 +830,7 @@ const (
 	reasonOtherDevice = "hermes_device_other_device"
 	reasonNotBound    = "hermes_device_not_bound"
 	sandboxID         = "sandbox-alice"
+	sandboxName       = "Alice's sandbox"
 	sandboxToken      = "hdt_sandbox-token-for-tests-only-0123456789" //nolint:gosec // a test token
 )
 
@@ -824,7 +839,7 @@ func TestServiceDevice(t *testing.T) {
 	stores(t, func(t *testing.T, st *store.Store) {
 		e := setup(t, st)
 		c, pc := e.connectExec(e.a, sandboxToken)
-		if pc.Claims.DeviceID != sandboxID || pc.Claims.Sub != hub.ServiceUser || pc.Claims.DeviceName != "Alice's sandbox" {
+		if pc.Claims.DeviceID != sandboxID || pc.Claims.Sub != hub.ServiceUser || pc.Claims.DeviceName != sandboxName {
 			t.Fatalf("claims = %+v", pc.Claims)
 		}
 		if s, who := call(t, http.MethodGet, e.a.url+"/api/device/whoami", sandboxToken, nil); s != http.StatusOK || who["device_id"] != sandboxID {
