@@ -244,7 +244,7 @@ func TestSessionsAndAttachButton(t *testing.T) {
 	h := startBot(t, nil)
 	h.hub.mu.Lock()
 	h.hub.sessions = []hub.Session{
-		{ID: "old", BackendID: beLaptop, Title: "Old", UpdatedAt: time.Unix(100, 0)},
+		{ID: sessOld, BackendID: beLaptop, Title: "Old", UpdatedAt: time.Unix(100, 0)},
 		{ID: "new", BackendID: beCluster, Title: "New <b>", Live: true, UpdatedAt: time.Unix(200, 0)},
 		{ID: "hers1", BackendID: beHers, Title: "Hers", UpdatedAt: time.Unix(300, 0)},
 	}
@@ -263,7 +263,7 @@ func TestSessionsAndAttachButton(t *testing.T) {
 	h.tg.wait(mSend, "Attached to <b>Old</b>")
 	h.tg.say(dm(aliceTG), aliceTG, "continue")
 	p := h.hub.waitPrompt(t, 1)
-	if p[0].SessionID != "old" || p[0].BackendID != beLaptop {
+	if p[0].SessionID != sessOld || p[0].BackendID != beLaptop {
 		t.Fatalf("prompt = %+v", p[0])
 	}
 }
@@ -320,7 +320,7 @@ func TestSessionsNamesUnreachableBackends(t *testing.T) {
 	t.Parallel()
 	h := startBot(t, nil)
 	h.hub.mu.Lock()
-	h.hub.sessions = []hub.Session{{ID: "old", BackendID: beLaptop, Title: "Old", UpdatedAt: time.Unix(100, 0)}}
+	h.hub.sessions = []hub.Session{{ID: sessOld, BackendID: beLaptop, Title: "Old", UpdatedAt: time.Unix(100, 0)}}
 	h.hub.down = map[string]string{beCluster: "dial tcp: connection refused"}
 	h.hub.mu.Unlock()
 	h.tg.say(dm(aliceTG), aliceTG, "/sessions")
@@ -352,7 +352,10 @@ func TestHeldPromptIsAnnounced(t *testing.T) {
 	}
 }
 
-const sOld = "s-old"
+const (
+	sOld    = "s-old"
+	sessOld = "old"
+)
 
 func TestRestoresChatsAndOffset(t *testing.T) {
 	t.Parallel()
