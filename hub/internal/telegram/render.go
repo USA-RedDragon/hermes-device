@@ -134,6 +134,14 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 	case hub.KindSessionDeleted:
 		r.sealThinking(ctx)
 		r.send(ctx, "This session was deleted. Send /sessions to pick another one.", nil)
+	case hub.KindInputNotSent:
+		var p hub.HeldInput
+		r.decode(ev, &p)
+		msg := "<b>Your message was not sent.</b> " + escapeHTML(p.Message)
+		if p.Text != "" {
+			msg += "\n<i>" + escapeHTML(truncate(p.Text, 1000)) + "</i>"
+		}
+		r.send(ctx, msg, nil)
 	default:
 		r.logger.Debug("Ignoring event", "kind", ev.Kind, "seq", ev.Seq)
 	}

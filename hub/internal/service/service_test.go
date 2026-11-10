@@ -33,6 +33,7 @@ type env struct {
 	gw  *gatewaytest.Gateway
 	gw2 *gatewaytest.Gateway
 	svc *service.Service
+	cfg *config.Config
 }
 
 func setup(t *testing.T, opts service.Options) *env {
@@ -54,7 +55,7 @@ func setup(t *testing.T, opts service.Options) *env {
 	}
 	svc := service.New(cfg.Backends, groups{userBob: {"home"}, userAlice: {"admins"}}, opts)
 	t.Cleanup(svc.Close)
-	return &env{gw: gw, gw2: gw2, svc: svc}
+	return &env{gw: gw, gw2: gw2, svc: svc, cfg: cfg}
 }
 
 func next(t *testing.T, ch <-chan hub.Event) hub.Event {
@@ -133,7 +134,7 @@ func TestAuthorizationDenied(t *testing.T) {
 		if _, _, err := e.svc.Attach(ctx, user, backendPC, sLive, 0); !errors.Is(err, hub.ErrForbidden) {
 			t.Fatalf("%q attach: %v", user, err)
 		}
-		if err := e.svc.Prompt(ctx, user, backendPC, sLive, "x"); !errors.Is(err, hub.ErrForbidden) {
+		if _, err := e.svc.Prompt(ctx, user, backendPC, sLive, "x"); !errors.Is(err, hub.ErrForbidden) {
 			t.Fatalf("%q prompt: %v", user, err)
 		}
 		if err := e.svc.Interrupt(ctx, user, backendPC, sLive); !errors.Is(err, hub.ErrForbidden) {
@@ -183,7 +184,7 @@ func TestAttachStreamsInOrder(t *testing.T) {
 	if !e.gw.ShowReasoning(sLive) {
 		t.Fatal("show_reasoning was not turned on")
 	}
-	if err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "hello"); err != nil {
+	if _, err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "hello"); err != nil {
 		t.Fatal(err)
 	}
 	evs := until(t, ch, hub.KindMessageComplete)
@@ -236,7 +237,7 @@ func TestViewerReconnectSinceSeq(t *testing.T) {
 		t.Fatal(err)
 	}
 	next(t, ch)
-	_ = e.svc.Prompt(ctx, userAlice, backendPC, sLive, "one")
+	_, _ = e.svc.Prompt(ctx, userAlice, backendPC, sLive, "one")
 	evs := until(t, ch, hub.KindMessageComplete)
 	stop()
 	cut := evs[3].Seq
@@ -331,7 +332,7 @@ func TestInterrupt(t *testing.T) {
 	}
 	defer stop()
 	next(t, ch)
-	if err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "long job"); err != nil {
+	if _, err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "long job"); err != nil {
 		t.Fatal(err)
 	}
 	e.gw.Publish(sLive, "message.start", map[string]any{})
@@ -358,7 +359,7 @@ func TestApproval(t *testing.T) {
 	if err := e.svc.RespondApproval(ctx, userAlice, backendPC, sLive, "ap-1", true); !errors.Is(err, hub.ErrUnknownApproval) {
 		t.Fatalf("unknown approval: %v", err)
 	}
-	_ = e.svc.Prompt(ctx, userAlice, backendPC, sLive, "approve me")
+	_, _ = e.svc.Prompt(ctx, userAlice, backendPC, sLive, "approve me")
 	evs := until(t, ch, hub.KindApprovalRequest)
 	var p gateway.Prompt
 	_ = json.Unmarshal(evs[len(evs)-1].Data, &p)
@@ -385,7 +386,7 @@ func TestNewSessionAndIdleDetach(t *testing.T) {
 	if err != nil || s.ID == "" || !s.Live {
 		t.Fatalf("new session = %+v, %v", s, err)
 	}
-	if err := e.svc.Prompt(ctx, userAlice, backendPC, s.ID, "hi"); err != nil {
+	if _, err := e.svc.Prompt(ctx, userAlice, backendPC, s.ID, "hi"); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)

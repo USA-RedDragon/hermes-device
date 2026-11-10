@@ -15,7 +15,8 @@
   const words = { approval: "Hermes asks to run this", allow: "Allow", deny: "Deny",
     args: "Input", result: "Output", running: "Running", done: "Done", failed: "Failed",
     working: "Working", queued: "Waiting for Hermes to start", waiting: "Waiting to run", newchat: "New chat",
-    lost: "Hermes restarted before it finished replying to this message. Messages sent after it wait until you dismiss it." };
+    lost: "Hermes restarted before it finished replying to this message. Messages sent after it wait until you dismiss it.",
+    held: "Hermes is restarting. Your message will send when it is back.", notsent: "Not sent.", again: "Send again" };
   const t = (k) => words[k];
 
   async function api(method, path, body) {
@@ -34,7 +35,8 @@
       try { msg = (await r.json()).error || msg; } catch (_) { /* not JSON */ }
       throw new Error(msg);
     }
-    return r.status === 200 || r.status === 201 ? r.json() : null;
+    const json = (r.headers.get("Content-Type") || "").startsWith("application/json");
+    return r.status === 200 || r.status === 201 || (r.status === 202 && json) ? r.json() : null;
   }
 
   function banner(text, bad) {
@@ -274,6 +276,7 @@
       this.tools = new Map();
       this.approvals = new Map();
       this.pending = [];
+      this.failed = [];
       this.status = null;
       this.info = {};
     }
@@ -350,23 +353,89 @@
 
     userText(text, pending) {
       const m = this.add(el("div", "msg user" + (pending ? " pending" : ""), text));
-      if (pending) this.pending.push({ bubble: m, label: null });
+      if (pending) this.pending.push({ bubble: m, label: null, text, id: null });
       return m;
+    }
+
+    // label replaces the line under a pending message.
+    label(p, node) {
+      if (p.label) p.label.remove();
+      p.label = node;
+      p.bubble.after(node);
+    }
+
+    // held marks a message the hub keeps until Hermes is back.
+    held(p, id) {
+      p.id = id;
+      p.held = true;
+      this.label(p, el("div", "queued", t("held")));
+    }
+
+    // heldEvent handles input.held: a message this page sent, or one sent
+    // from somewhere else while Hermes is away.
+    heldEvent(d) {
+      let p = this.pending.find((x) => x.id === d.id);
+      if (!p) p = this.pending.find((x) => !x.id && !x.admitted && sameText(x.text, d.text || ""));
+      if (!p) {
+        this.userText(d.text || "", true);
+        p = this.pending[this.pending.length - 1];
+      }
+      this.held(p, d.id);
+    }
+
+    sentEvent(d) {
+      let p = this.pending.find((x) => x.id === d.id);
+      if (!p) {
+        const i = this.failed.findIndex((x) => x.id === d.id);
+        if (i < 0) return;
+        p = this.failed.splice(i, 1)[0];
+        p.bubble.classList.remove("failed");
+        p.bubble.classList.add("pending");
+        this.pending.push(p);
+      }
+      p.held = false;
+      p.sent = true;
+      this.label(p, el("div", "queued", t("queued")));
+    }
+
+    notSentEvent(d) {
+      const i = this.pending.findIndex((x) => x.id === d.id);
+      const p = i >= 0 ? this.pending.splice(i, 1)[0] : null;
+      const text = p ? p.text : (d.text || "");
+      const box = el("div", "lost");
+      box.append(el("div", "", t("notsent") + (d.message ? " " + d.message : "")));
+      if (!p && text) box.append(el("div", "lost-text", text));
+      if (text) {
+        const b = el("button", "", t("again"));
+        b.type = "button";
+        b.onclick = () => resend(this, text, p, box);
+        box.append(b);
+      }
+      if (!p) {
+        this.add(box);
+        return;
+      }
+      p.id = d.id;
+      p.bubble.classList.remove("pending");
+      p.bubble.classList.add("failed");
+      this.label(p, box);
+      this.failed.push(p);
     }
 
     // queued marks a sent message the backend has accepted but not started.
     // With an id (from a snapshot) it also offers Cancel.
     queued(bubble, id, text) {
       const p = this.pending.find((x) => x.bubble === bubble);
-      if (!p || p.label) return;
-      p.label = el("div", "queued", id ? t("waiting") : t("queued"));
+      if (!p || (p.label && !id)) return;
+      if (id) p.admitted = true;
+      const label = el("div", "queued", id ? t("waiting") : t("queued"));
       if (id) {
         const c = el("button", "link", "Cancel");
         c.type = "button";
         c.onclick = () => this.inputAction(id, "cancel", c);
-        p.label.append(" ", c);
+        label.append(" ", c);
       }
-      bubble.after(p.label);
+      this.label(p, label);
     }
 
     lost(id, text) {
@@ -640,6 +709,9 @@
           if (p.operation === "delete") this.deleted();
           break;
         case "session.deleted": this.deleted(); break;
+        case "input.held": this.heldEvent(p); break;
+        case "input.sent": this.sentEvent(p); break;
+        case "input.not_sent": this.notSentEvent(p); break;
         case "approval.request": case "clarify.request": this.approval(p); break;
         case "approval.settled": case "clarify.settled": this.settle(p.prompt_id, "Answered"); break;
         case "approval.cancelled":
@@ -973,14 +1045,39 @@
     input.value = "";
     grow();
     try {
-      await api("POST", chat.base + "/prompt", { text });
-      chat.queued(bubble);
+      const r = await api("POST", chat.base + "/prompt", { text });
+      const p = chat.pending.find((x) => x.bubble === bubble);
+      if (r && r.status === "held" && p) {
+        if (!p.sent) chat.held(p, r.id);
+      } else {
+        if (p && r) p.id = r.id;
+        chat.queued(bubble);
+      }
     } catch (e) {
       bubble.remove();
       chat.pending = chat.pending.filter((p) => p.bubble !== bubble);
       input.value = text;
       banner("Could not send: " + e.message, true);
     }
+  }
+
+  // sameText matches a message to an event's text, which another replica
+  // may have cut short with "...".
+  function sameText(text, evText) {
+    if (text === evText) return true;
+    return evText.endsWith("...") && text.startsWith(evText.slice(0, -3));
+  }
+
+  // resend sends a message that was not sent again, as a new message.
+  function resend(chat, text, p, box) {
+    if (chat !== view) return;
+    box.remove();
+    if (p) {
+      p.bubble.remove();
+      chat.failed = chat.failed.filter((x) => x !== p);
+    }
+    $("input").value = text;
+    send({ preventDefault() {} });
   }
 
   function grow() {

@@ -332,3 +332,31 @@ func terminateLockHolders(t *testing.T, dsn string, key int64) {
 	}
 }
 
+func TestRelay(t *testing.T) {
+	t.Parallel()
+	dsn := storetest.Postgres(t)
+	a, b := openPostgres(t, dsn), openPostgres(t, dsn)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := make(chan string, 64)
+	go b.Listen(ctx, func(m []byte) { got <- string(m) }, nil)
+	if err := a.Publish(ctx, make([]byte, store.MaxRelayMessage+1)); err == nil {
+		t.Fatal("oversized message accepted")
+	}
+	deadline := time.After(10 * time.Second)
+	for {
+		if err := a.Publish(ctx, []byte("hello")); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case m := <-got:
+			if m != "hello" {
+				t.Fatalf("got %q", m)
+			}
+			return
+		case <-time.After(100 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("no message relayed")
+		}
+	}
+}

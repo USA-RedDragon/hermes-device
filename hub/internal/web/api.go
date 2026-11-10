@@ -104,11 +104,28 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusBadRequest, "empty prompt")
 		return
 	}
-	if err := s.svc.Prompt(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), body.Text); err != nil {
+	res, err := s.svc.Prompt(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), body.Text)
+	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	w.WriteHeader(http.StatusAccepted)
+	out := promptJSON{ID: res.ID, Status: promptSent}
+	if res.Held {
+		out.Status, out.HeldUntil = promptHeld, res.HeldUntil
+	}
+	writeJSON(w, http.StatusAccepted, out)
+}
+
+// Prompt statuses: sent to the backend, or held until it is back.
+const (
+	promptSent = "sent"
+	promptHeld = "held"
+)
+
+type promptJSON struct {
+	ID        string    `json:"id"`
+	Status    string    `json:"status"`
+	HeldUntil time.Time `json:"held_until,omitzero"`
 }
 
 func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {

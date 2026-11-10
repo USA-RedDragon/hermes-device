@@ -35,6 +35,7 @@ const (
 	cbApproval   = "ap"
 	cbAttach     = "at"
 	untitledName = "(untitled)"
+	msgHeld      = "Hermes is restarting. Your message will send when it is back."
 )
 
 var tagRe = regexp.MustCompile(`<[^>]*>`)
@@ -616,8 +617,12 @@ func (b *Bot) prompt(ctx context.Context, chatID int64, user, text string) {
 	a = st.att
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	if err := b.svc.Prompt(cctx, user, a.backendID, a.sessionID, text); err != nil {
+	res, err := b.svc.Prompt(cctx, user, a.backendID, a.sessionID, text)
+	switch {
+	case err != nil:
 		b.reportErr(ctx, chatID, user, "prompt", err)
+	case res.Held:
+		b.sendText(ctx, chatID, msgHeld)
 	}
 }
 
@@ -770,6 +775,10 @@ func (b *Bot) reportErr(ctx context.Context, chatID int64, user, action string, 
 		b.sendText(ctx, chatID, "You do not have access to that backend.")
 	case errors.Is(err, hub.ErrUnknownBackend):
 		b.sendText(ctx, chatID, "Unknown backend. Send /backends to list yours.")
+	case errors.Is(err, hub.ErrShuttingDown):
+		b.sendText(ctx, chatID, "The hub is restarting. Send your message again in a moment.")
+	case errors.Is(err, hub.ErrHoldFull):
+		b.sendText(ctx, chatID, "Too many messages are waiting for Hermes to come back. Send this one again later.")
 	default:
 		b.logger.Error("Telegram request failed", "user", user, "action", action, "error", err)
 		b.sendText(ctx, chatID, errGeneric)

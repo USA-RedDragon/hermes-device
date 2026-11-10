@@ -101,6 +101,7 @@ button.icon { border: 0; background: transparent; font-size: 1.3rem; padding: .2
 .msg { padding: .55rem .75rem; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.user { align-self: flex-end; background: var(--accent); color: #fff; max-width: 88%; }
 .msg.user.pending { opacity: .65; }
+.msg.user.failed { opacity: .65; border: 1px dashed var(--bad); }
 .queued { align-self: flex-end; color: var(--muted); font-size: .75rem; margin-top: -.4rem; }
 .msg.assistant { background: var(--card); border: 1px solid var(--line); }
 .lost { border: 1px dashed var(--warn); border-radius: 10px; padding: .6rem .75rem; display: flex; flex-direction: column;

@@ -335,6 +335,22 @@ func TestSessionsNamesUnreachableBackends(t *testing.T) {
 	h.tg.wait(mSend, "Can't reach Laptop, Cluster right now. It may be restarting; try again in a minute.")
 }
 
+func TestHeldPromptIsAnnounced(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	h.hub.mu.Lock()
+	h.hub.hold = true
+	h.hub.mu.Unlock()
+	sid := h.startTurn(t)
+	h.tg.wait(mSend, "Hermes is restarting. Your message will send when it is back.")
+	h.hub.emit(t, sid, hub.KindInputNotSent, hub.HeldInput{ID: "p1", Text: "hello", Reason: hub.NotSentTimeout,
+		Message: "Hermes did not come back in time."})
+	c := h.tg.wait(mSend, "Your message was not sent")
+	if !strings.Contains(c.text(), "did not come back in time") || !strings.Contains(c.text(), "hello") {
+		t.Fatalf("not sent message = %q", c.text())
+	}
+}
+
 const sOld = "s-old"
 
 func TestRestoresChatsAndOffset(t *testing.T) {

@@ -115,6 +115,9 @@ func (s *Service) ArchiveSession(ctx context.Context, user, backendID, sessionID
 // DeleteSession deletes a session and ends every stream of it.
 func (s *Service) DeleteSession(ctx context.Context, user, backendID, sessionID string) error {
 	return s.withSession(ctx, user, backendID, sessionID, func(b *backend, ls *live) error {
+		if b.heldCount(sessionID) > 0 {
+			return fmt.Errorf("%w: messages are waiting for the backend", hub.ErrBusy)
+		}
 		if _, err := b.mutate(ctx, ls, gateway.OpDelete, map[string]any{}, true); err != nil {
 			return refusal(err)
 		}

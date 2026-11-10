@@ -54,7 +54,10 @@ type Service interface {
 	// Attach streams events after sinceSeq (0 for a fresh attach). The
 	// returned func detaches and closes the channel.
 	Attach(ctx context.Context, user, backendID, sessionID string, sinceSeq int64) (<-chan Event, func(), error)
-	Prompt(ctx context.Context, user, backendID, sessionID, text string) error
+	// Prompt submits text as the session's next input. While the backend
+	// restarts or cannot be reached, the hub holds it and submits it once
+	// the backend is back: the result says so.
+	Prompt(ctx context.Context, user, backendID, sessionID, text string) (PromptResult, error)
 	Interrupt(ctx context.Context, user, backendID, sessionID string) error
 	RespondApproval(ctx context.Context, user, backendID, sessionID, approvalID string, allow bool) error
 	// CancelInput drops a queued input before it runs.
@@ -123,6 +126,16 @@ func ReasoningEfforts() []string {
 	return []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 }
 
+// PromptResult is what became of a prompt. ID is the submission ID the
+// hub sent it under, or will send it under. Held is true when the backend
+// is restarting or unreachable: the hub submits the prompt when the backend
+// is back, or reports it with KindInputNotSent at HeldUntil.
+type PromptResult struct {
+	ID        string
+	Held      bool
+	HeldUntil time.Time
+}
+
 // Links maps external identities to hub users.
 type Links interface {
 	UserForTelegram(ctx context.Context, telegramID int64) (string, bool, error)
@@ -149,7 +162,51 @@ const (
 	KindBackendStatus = "backend.status"
 	// KindSessionDeleted ends the stream of a deleted session.
 	KindSessionDeleted = "session.deleted"
+	// KindInputHeld reports a prompt the hub holds while the backend
+	// restarts: Data is a HeldInput.
+	KindInputHeld = "input.held"
+	// KindInputSent reports that the backend took a held prompt: Data is a
+	// HeldInput without Text.
+	KindInputSent = "input.sent"
+	// KindInputNotSent reports a held prompt the hub gave up on: Data is a
+	// HeldInput with Reason and Message.
+	KindInputNotSent = "input.not_sent"
 )
+
+// Reasons a held prompt was not sent.
+const (
+	NotSentTimeout  = "timeout"
+	NotSentRefused  = "refused"
+	NotSentShutdown = "shutdown"
+)
+
+// HeldInput is the Data of the input.* events. Text may be cut short when
+// the event came from another hub replica.
+type HeldInput struct {
+	ID        string    `json:"id"`
+	Text      string    `json:"text,omitempty"`
+	HeldUntil time.Time `json:"held_until,omitzero"`
+	Reason    string    `json:"reason,omitempty"`
+	Message   string    `json:"message,omitempty"`
+}
+
+// TelegramChat is the session a Telegram chat is attached to.
+type TelegramChat struct {
+	ChatID    int64
+	User      string
+	BackendID string
+	SessionID string
+}
+
+// TelegramState keeps the Telegram bot's chat attachments and update
+// offset, so the hub replica that takes the bot over carries on where the
+// last one stopped.
+type TelegramState interface {
+	SaveTelegramChat(ctx context.Context, c TelegramChat) error
+	TelegramChats(ctx context.Context) ([]TelegramChat, error)
+	TelegramOffset(ctx context.Context, botID int64) (int64, error)
+	SetTelegramOffset(ctx context.Context, botID, offset int64) error
+}
 
 // Snapshot is the Data of a KindSnapshot event. Messages and Prompts are
 // the gateway's transcript rows and pending prompts, passed through.
@@ -190,22 +247,4 @@ type Pending struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
 	Text   string `json:"text"`
-}
-
-// TelegramChat is the session a Telegram chat is attached to.
-type TelegramChat struct {
-	ChatID    int64
-	User      string
-	BackendID string
-	SessionID string
-}
-
-// TelegramState keeps the Telegram bot's chat attachments and update
-// offset, so the hub replica that takes the bot over carries on where the
-// last one stopped.
-type TelegramState interface {
-	SaveTelegramChat(ctx context.Context, c TelegramChat) error
-	TelegramChats(ctx context.Context) ([]TelegramChat, error)
-	TelegramOffset(ctx context.Context, botID int64) (int64, error)
-	SetTelegramOffset(ctx context.Context, botID, offset int64) error
 }

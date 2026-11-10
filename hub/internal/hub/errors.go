@@ -16,4 +16,10 @@ var (
 	ErrBadValue = errors.New("invalid value")
 	// ErrTitleInUse is a rename to a title another session holds.
 	ErrTitleInUse = errors.New("title in use")
+	// ErrHoldFull is a prompt refused because the session already has as
+	// many held prompts as the hub keeps.
+	ErrHoldFull = errors.New("too many messages waiting for the backend")
+	// ErrShuttingDown is a prompt the hub could not hold because it is
+	// shutting down.
+	ErrShuttingDown = errors.New("hub shutting down")
 )

@@ -71,7 +71,11 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	}
 	defer st.Close()
 
-	svc := service.New(cfg.Backends, st, service.Options{})
+	opts := service.Options{HoldTimeout: cfg.Hold.Timeout}
+	if st.Postgres() {
+		opts.Relay = st
+	}
+	svc := service.New(cfg.Backends, st, opts)
 	defer svc.Close()
 
 	ui, err := web.New(cfg, web.Options{Service: svc, Links: st, Tokens: st, Groups: st})
@@ -100,7 +104,7 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 
 	<-ctx.Done()
 	stop()
-	if err := shutdown(cfg.Shutdown, ui, srv, stopBot, botDone); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+	if err := shutdown(cfg.Shutdown, ui, svc, srv, stopBot, botDone); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	slog.Info("Shutdown complete")
@@ -152,18 +156,19 @@ func runBot(ctx context.Context, st *store.Store, bot *telegram.Bot, cfg config.
 	})
 }
 
-// shutdown fails /readyz, keeps serving for the drain delay, ends the
-// event streams so browsers reconnect to another replica, stops the
-// Telegram bot, which releases its leader lock, and stops the HTTP
-// server. The steps after the drain delay share one
+// shutdown fails /readyz, keeps serving for the drain delay, gives up on
+// held prompts, ends the event streams so browsers reconnect to another
+// replica, stops the Telegram bot, which releases its leader lock, and
+// stops the HTTP server. The steps after the drain delay share one
 // timeout.
-func shutdown(cfg config.Shutdown, ui *web.Server, srv *server.Server,
+func shutdown(cfg config.Shutdown, ui *web.Server, svc *service.Service, srv *server.Server,
 	stopBot context.CancelFunc, botDone <-chan struct{}) error {
 	slog.Info("Shutting down: not ready, draining", "delay", cfg.DrainDelay)
 	ui.SetReady(false)
 	time.Sleep(cfg.DrainDelay)
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 	defer cancel()
+	svc.Drain()
 	ui.Drain()
 	stopBot()
 	select {

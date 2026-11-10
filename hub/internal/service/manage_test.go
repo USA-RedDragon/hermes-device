@@ -63,7 +63,7 @@ func TestRenameArchiveAndDelete(t *testing.T) {
 	}
 	defer stop()
 	next(t, ch)
-	if err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "hi"); err != nil {
+	if _, err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "hi"); err != nil {
 		t.Fatal(err)
 	}
 	until(t, ch, hub.KindMessageComplete)
@@ -104,7 +104,7 @@ func TestRenameArchiveAndDelete(t *testing.T) {
 	}
 
 	e.gw.HoldTurns = true
-	if err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "hold"); err != nil {
+	if _, err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "hold"); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.svc.DeleteSession(ctx, userAlice, backendPC, sLive); !errors.Is(err, hub.ErrBusy) {
@@ -204,7 +204,7 @@ func TestModelsAndReasoning(t *testing.T) {
 	}
 
 	e.gw.HoldTurns = true
-	if err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "hold"); err != nil {
+	if _, err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "hold"); err != nil {
 		t.Fatal(err)
 	}
 	res, err = e.svc.SetModel(ctx, userAlice, backendPC, sLive, provLocal, modelBig, "")

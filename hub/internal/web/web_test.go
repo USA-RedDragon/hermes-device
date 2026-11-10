@@ -64,7 +64,7 @@ func setup(t *testing.T) *hubEnv {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	svc := service.New(cfg.Backends, st, service.Options{})
+	svc := service.New(cfg.Backends, st, service.Options{HoldRetryMin: 20 * time.Millisecond, HoldRetryMax: 100 * time.Millisecond})
 	t.Cleanup(svc.Close)
 	s, err := web.New(cfg, web.Options{Service: svc, Links: st, Tokens: st, Groups: st, KeepAlive: time.Hour})
 	if err != nil {
@@ -250,7 +250,7 @@ func TestAPIAuthorization(t *testing.T) {
 	if body != `[{"id":"home","name":"home"}]`+"\n" {
 		t.Fatalf("bob backends = %s", body)
 	}
-	if resp, _ := post(t, c, e.url+"/api/sessions/pc/s1/prompt", m.CSRF, "", map[string]string{"text": "hi"}); resp.StatusCode != http.StatusForbidden {
+	if resp, _ := post(t, c, e.url+"/api/sessions/pc/s1/prompt", m.CSRF, "", map[string]string{kText: "hi"}); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("bob prompt on alice's backend = %d", resp.StatusCode)
 	}
 	if resp, _ := get(t, c, e.url+"/api/sessions/pc/s1/events"); resp.StatusCode != http.StatusForbidden {
@@ -323,7 +323,7 @@ func TestEventStreamAndResume(t *testing.T) {
 	if len(first) != 1 || !strings.Contains(string(first[0].data), `"title":"First"`) {
 		t.Fatalf("first = %+v", first)
 	}
-	if resp, _ := post(t, c, e.url+"/api/sessions/pc/s1/prompt", m.CSRF, e.url, map[string]string{"text": "hello"}); resp.StatusCode != http.StatusAccepted {
+	if resp, _ := post(t, c, e.url+"/api/sessions/pc/s1/prompt", m.CSRF, e.url, map[string]string{kText: "hello"}); resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("prompt = %d", resp.StatusCode)
 	}
 	evs := readEvents(t, r, "message.complete")
@@ -482,3 +482,37 @@ func TestReadinessAndDrain(t *testing.T) {
 	}
 }
 
+func TestHeldPrompt(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	c := client(t)
+	m := login(t, e, c)
+	r, stop := stream(t, c, e.url+"/api/sessions/pc/s1/events", "")
+	defer stop()
+	readEvents(t, r, "snapshot")
+	var res struct {
+		ID        string    `json:"id"`
+		Status    string    `json:"status"`
+		HeldUntil time.Time `json:"held_until"`
+	}
+	resp, body := post(t, c, e.url+"/api/sessions/pc/s1/prompt", m.CSRF, e.url, map[string]string{kText: "now"})
+	if resp.StatusCode != http.StatusAccepted || json.Unmarshal([]byte(body), &res) != nil || res.Status != "sent" || res.ID == "" {
+		t.Fatalf("prompt = %d %s", resp.StatusCode, body)
+	}
+	readEvents(t, r, "message.complete")
+
+	e.gw.Stop()
+	resp, body = post(t, c, e.url+"/api/sessions/pc/s1/prompt", m.CSRF, e.url, map[string]string{kText: "later"})
+	if resp.StatusCode != http.StatusAccepted || json.Unmarshal([]byte(body), &res) != nil || res.Status != "held" || res.HeldUntil.IsZero() {
+		t.Fatalf("held prompt = %d %s", resp.StatusCode, body)
+	}
+	evs := readEvents(t, r, "input.held")
+	if last := evs[len(evs)-1]; !strings.Contains(string(last.data), res.ID) {
+		t.Fatalf("held event = %s", last.data)
+	}
+	e.gw.FinishRestart()
+	evs = readEvents(t, r, "input.sent")
+	if last := evs[len(evs)-1]; !strings.Contains(string(last.data), res.ID) {
+		t.Fatalf("sent event = %s", last.data)
+	}
+}

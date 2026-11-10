@@ -255,6 +255,8 @@ type fakeHub struct {
 	seq         int64
 	// down maps backend ids to their last connection error.
 	down map[string]string
+	// hold makes Prompt answer that it held the prompt.
+	hold bool
 }
 
 func newFakeHub() *fakeHub {
@@ -317,14 +319,14 @@ func (h *fakeHub) Attach(_ context.Context, user, backendID, sessionID string, _
 	return st.ch, func() { st.once.Do(func() { close(st.ch) }) }, nil
 }
 
-func (h *fakeHub) Prompt(_ context.Context, user, backendID, sessionID, text string) error {
+func (h *fakeHub) Prompt(_ context.Context, user, backendID, sessionID, text string) (hub.PromptResult, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err := h.allowed(user, backendID); err != nil {
-		return err
+		return hub.PromptResult{}, err
 	}
 	h.prompts = append(h.prompts, promptCall{user, backendID, sessionID, text})
-	return nil
+	return hub.PromptResult{ID: fmt.Sprintf("p%d", len(h.prompts)), Held: h.hold}, nil
 }
 
 func (h *fakeHub) Interrupt(_ context.Context, user, backendID, sessionID string) error {

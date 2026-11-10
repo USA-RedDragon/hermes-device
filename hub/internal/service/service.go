@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
@@ -44,6 +45,15 @@ type Options struct {
 	// Dialer builds the dialer of a backend. Default: gateway.NewDialer.
 	Dialer func(config.Backend) Dialer
 	Logger *slog.Logger
+	// HoldTimeout is how long a prompt waits for a restarting or
+	// unreachable backend before the hub gives up on it. Default 10m.
+	HoldTimeout time.Duration
+	// HoldRetryMin and HoldRetryMax bound the backoff between attempts to
+	// send held prompts. Defaults 250ms and 5s.
+	HoldRetryMin, HoldRetryMax time.Duration
+	// Relay carries held-prompt events to the other replicas. Nil for a
+	// single replica.
+	Relay Relay
 }
 
 // Service is the hub core.
@@ -53,6 +63,11 @@ type Service struct {
 	dir      Directory
 	opts     Options
 	log      *slog.Logger
+	origin   string
+	relayOut chan []byte
+	// relayPending counts relay events queued but not yet published.
+	relayPending atomic.Int64
+	stop         context.CancelFunc
 }
 
 var _ hub.Service = (*Service)(nil)
@@ -79,18 +94,37 @@ func New(cfgs []config.Backend, dir Directory, opts Options) *Service {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	s := &Service{backends: map[string]*backend{}, dir: dir, opts: opts, log: opts.Logger}
+	if opts.HoldTimeout == 0 {
+		opts.HoldTimeout = 10 * time.Minute
+	}
+	if opts.HoldRetryMin == 0 {
+		opts.HoldRetryMin = 250 * time.Millisecond
+	}
+	if opts.HoldRetryMax == 0 {
+		opts.HoldRetryMax = 5 * time.Second
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	s := &Service{backends: map[string]*backend{}, dir: dir, opts: opts, log: opts.Logger, origin: uuid.NewString(), stop: stop}
 	for _, c := range cfgs {
 		b := &backend{svc: s, cfg: c, dialer: opts.Dialer(c), sessions: map[string]*live{},
-			log: s.log.With("backend", c.ID)}
+			log: s.log.With("backend", c.ID), held: map[string][]*heldPrompt{}, remote: map[string][]hub.HeldInput{},
+			kick: make(chan struct{}, 1), sending: map[string]*sessionGate{}}
 		s.backends[c.ID] = b
 		s.order = append(s.order, c.ID)
+	}
+	if opts.Relay != nil {
+		s.relayOut = make(chan []byte, 256)
+		go s.relay(ctx, opts.Relay)
 	}
 	return s
 }
 
 // Close drops every gateway connection. Sessions stay owned by the gateways.
 func (s *Service) Close() {
+	if s.relayOut != nil {
+		s.flushRelay()
+	}
+	s.stop()
 	for _, b := range s.backends {
 		b.close()
 	}
@@ -209,10 +243,18 @@ func (s *Service) Attach(ctx context.Context, user, backendID, sessionID string,
 		return nil, nil, err
 	}
 	ls, err := b.session(ctx, sessionID)
+	offline := false
 	if err != nil {
-		return nil, nil, refusal(err)
+		if ls = b.known(sessionID); ls == nil || !gateway.Retryable(err) {
+			return nil, nil, refusal(err)
+		}
+		offline = true
 	}
 	ch, cancel := ls.attach(sinceSeq)
+	if offline {
+		ls.status(false)
+		b.retry()
+	}
 	ls.unpin()
 	go func() {
 		<-ctx.Done()
@@ -221,20 +263,41 @@ func (s *Service) Attach(ctx context.Context, user, backendID, sessionID string,
 	return ch, cancel, nil
 }
 
-// Prompt submits text as the next turn of a session.
-func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text string) error {
+// Prompt submits text as the next turn of a session. When the backend is
+// restarting or cannot be reached, it holds the prompt and sends it, under
+// the same submission ID, once the backend is back. A prompt behind held
+// ones is held too, to keep their order.
+func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text string) (hub.PromptResult, error) {
 	b, err := s.backend(ctx, user, backendID)
+	if err != nil {
+		return hub.PromptResult{}, err
+	}
+	id := uuid.NewString()
+	release := b.gate(sessionID)
+	defer release()
+	if b.heldCount(sessionID) == 0 {
+		err := b.submit(ctx, sessionID, id, text)
+		if err == nil {
+			return hub.PromptResult{ID: id}, nil
+		}
+		if !gateway.Retryable(err) {
+			return hub.PromptResult{}, refusal(err)
+		}
+		b.log.Info("backend unavailable, holding a prompt", "session", sessionID, "error", err.Error())
+		return b.hold(user, sessionID, id, text, errors.Is(err, gateway.ErrClosed))
+	}
+	return b.hold(user, sessionID, id, text, false)
+}
+
+// submit sends one prompt.submit. Hermes answers a repeated submission ID
+// with the admission it already has, so a retry never runs a prompt twice.
+func (b *backend) submit(ctx context.Context, sessionID, id, text string) error {
+	ls, err := b.session(ctx, sessionID)
 	if err != nil {
 		return err
 	}
-	ls, err := b.session(ctx, sessionID)
-	if err != nil {
-		return refusal(err)
-	}
 	defer ls.unpin()
-	return b.call(ctx, ls, gateway.MethodPromptSubmit, gateway.SubmitParams{
-		SessionID: ls.id, Text: text, SubmissionID: uuid.NewString(),
-	}, nil)
+	return b.call(ctx, ls, gateway.MethodPromptSubmit, gateway.SubmitParams{SessionID: ls.id, Text: text, SubmissionID: id}, nil)
 }
 
 // Interrupt stops the session's running turn.
@@ -342,12 +405,61 @@ type backend struct {
 	sessions map[string]*live
 	closed   bool
 	retrying bool
+
+	// holdMu guards the held prompts. It is taken before ls.mu, never
+	// after, and events about held prompts are sent while it is held.
+	holdMu   sync.Mutex
+	held     map[string][]*heldPrompt
+	remote   map[string][]hub.HeldInput
+	flushing bool
+	draining bool
+	kick     chan struct{}
+
+	// gateMu guards sending: a gate per session that orders direct
+	// submits with the check for held prompts.
+	gateMu  sync.Mutex
+	sending map[string]*sessionGate
+}
+
+type sessionGate struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// gate serializes direct submits to one session, so a prompt that is held
+// after a slow failure stays ahead of the prompts sent after it. The
+// returned func releases the gate.
+func (b *backend) gate(sessionID string) func() {
+	b.gateMu.Lock()
+	g := b.sending[sessionID]
+	if g == nil {
+		g = &sessionGate{}
+		b.sending[sessionID] = g
+	}
+	g.refs++
+	b.gateMu.Unlock()
+	g.mu.Lock()
+	return func() {
+		g.mu.Unlock()
+		b.gateMu.Lock()
+		g.refs--
+		if g.refs == 0 {
+			delete(b.sending, sessionID)
+		}
+		b.gateMu.Unlock()
+	}
 }
 
 func (b *backend) lastError() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.lastErr
+}
+
+func (b *backend) isClosed() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closed
 }
 
 func (b *backend) close() {
@@ -359,6 +471,7 @@ func (b *backend) close() {
 	if c != nil {
 		c.Close()
 	}
+	b.wake()
 }
 
 func (b *backend) timeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -409,6 +522,7 @@ func (b *backend) conn(ctx context.Context) (*gateway.Client, error) {
 	}
 	b.client, b.lastErr = c, ""
 	go b.watch(c)
+	b.wake()
 	return c, nil
 }
 
@@ -571,6 +685,25 @@ func (b *backend) create(ctx context.Context) (hub.Session, error) {
 		title = *snap.Info.Title
 	}
 	return hub.Session{ID: snap.SessionID, BackendID: b.cfg.ID, Title: title, Live: true, UpdatedAt: time.Now()}, nil
+}
+
+// known pins and returns the hub's subscription to a session when it has
+// a snapshot to show, so a viewer can attach while the backend is away.
+// It returns nil otherwise.
+func (b *backend) known(id string) *live {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ls := b.sessions[id]
+	if ls == nil {
+		return nil
+	}
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	if ls.retired || ls.snapshot.Seq == 0 {
+		return nil
+	}
+	ls.pins++
+	return ls
 }
 
 // session returns the hub's subscription to a session, subscribing first.
@@ -745,6 +878,8 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 		b.log.Warn("encode snapshot", "session", snap.SessionID, "error", err.Error())
 		data = json.RawMessage(`{}`)
 	}
+	b.holdMu.Lock()
+	defer b.holdMu.Unlock()
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 	ls.subID, ls.epoch, ls.gwSeq = snap.SubscriptionID, snap.ReplayEpoch, snap.LastSequence
@@ -758,6 +893,7 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	for _, ev := range tail {
 		ls.emit(ev.Type, ev.Payload)
 	}
+	b.heldEventsLocked(ls, ls.id, snap.SessionID)
 	ls.flushEarly()
 }
 

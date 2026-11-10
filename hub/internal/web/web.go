@@ -231,6 +231,10 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		errorJSON(w, http.StatusNotFound, "that chat no longer exists")
 	case errors.Is(err, hub.ErrBusy):
 		errorJSON(w, http.StatusConflict, "Hermes is still working on this chat. Stop it or wait until it is done, then try again")
+	case errors.Is(err, hub.ErrHoldFull):
+		errorJSON(w, http.StatusTooManyRequests, "Too many messages are waiting for Hermes to come back. Send this one again later")
+	case errors.Is(err, hub.ErrShuttingDown):
+		errorJSON(w, http.StatusServiceUnavailable, "The hub is restarting. Send the message again in a moment")
 	case errors.Is(err, hub.ErrTitleInUse):
 		errorJSON(w, http.StatusConflict, "Hermes did not accept that name. Another chat may already use it")
 	case errors.Is(err, hub.ErrBadValue):
