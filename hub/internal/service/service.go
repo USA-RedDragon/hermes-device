@@ -213,6 +213,7 @@ func (s *Service) Attach(ctx context.Context, user, backendID, sessionID string,
 		return nil, nil, err
 	}
 	ch, cancel := ls.attach(sinceSeq)
+	ls.unpin()
 	go func() {
 		<-ctx.Done()
 		cancel()
@@ -230,6 +231,7 @@ func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text s
 	if err != nil {
 		return err
 	}
+	defer ls.unpin()
 	return b.call(ctx, ls, gateway.MethodPromptSubmit, gateway.SubmitParams{
 		SessionID: ls.id, Text: text, SubmissionID: uuid.NewString(),
 	}, nil)
@@ -245,6 +247,7 @@ func (s *Service) Interrupt(ctx context.Context, user, backendID, sessionID stri
 	if err != nil {
 		return err
 	}
+	defer ls.unpin()
 	ls.mu.Lock()
 	gen := ls.generation
 	ls.mu.Unlock()
@@ -262,6 +265,7 @@ func (s *Service) RespondApproval(ctx context.Context, user, backendID, sessionI
 	if err != nil {
 		return err
 	}
+	defer ls.unpin()
 	ls.mu.Lock()
 	p, ok := ls.prompts[approvalID]
 	ls.mu.Unlock()
@@ -325,7 +329,10 @@ func alive(c *gateway.Client) bool {
 	}
 }
 
-var errClosed = errors.New("service closed")
+var (
+	errClosed  = errors.New("service closed")
+	errRetired = errors.New("session retired while subscribing")
+)
 
 func (b *backend) conn(ctx context.Context) (*gateway.Client, error) {
 	b.dialMu.Lock()
@@ -362,9 +369,9 @@ func (b *backend) watch(c *gateway.Client) {
 	b.mu.Lock()
 	if b.client == c {
 		b.client = nil
-	}
-	if c.Err() != nil && !b.closed {
-		b.lastErr = c.Err().Error()
+		if c.Err() != nil && !b.closed {
+			b.lastErr = c.Err().Error()
+		}
 	}
 	sessions := make([]*live, 0, len(b.sessions))
 	for _, ls := range b.sessions {
@@ -379,7 +386,9 @@ func (b *backend) watch(c *gateway.Client) {
 	}
 	b.log.Warn("gateway connection lost", "error", fmt.Sprint(c.Err()))
 	for _, ls := range sessions {
-		ls.status(false)
+		if ls.on(c) {
+			ls.status(false)
+		}
 	}
 	b.retry()
 }
@@ -419,10 +428,17 @@ func (b *backend) retry() {
 			}
 			failed := false
 			for _, ls := range watched {
-				if _, err := b.ensure(context.Background(), ls); err != nil {
+				_, err := b.ensure(context.Background(), ls)
+				var rerr *gateway.RPCError
+				switch {
+				case errors.As(err, &rerr):
+					b.log.Warn("re-subscribe refused, giving up on session", "session", ls.id, "error", err.Error())
+					ls.fail(err)
+				case err != nil:
 					b.log.Warn("re-subscribe", "session", ls.id, "error", err.Error())
 					failed = true
-					break
+				case !ls.onAlive():
+					failed = true
 				}
 			}
 			if !failed {
@@ -494,7 +510,7 @@ func (b *backend) create(ctx context.Context) (hub.Session, error) {
 	b.sessions[snap.SessionID] = ls
 	b.mu.Unlock()
 	b.subscribed(cctx, c, ls, snap)
-	ls.client = c
+	ls.setClient(c)
 	ls.opMu.Unlock()
 	ls.idle()
 	title := ""
@@ -506,6 +522,18 @@ func (b *backend) create(ctx context.Context) (hub.Session, error) {
 
 // session returns the hub's subscription to a session, subscribing first.
 func (b *backend) session(ctx context.Context, id string) (*live, error) {
+	for {
+		ls, err := b.sessionOnce(ctx, id)
+		if !errors.Is(err, errRetired) {
+			return ls, err
+		}
+	}
+}
+
+// sessionOnce subscribes and pins the session, so an idle detach cannot
+// retire it while a caller uses it; callers unpin. It returns
+// errRetired when an idle detach retired the session first.
+func (b *backend) sessionOnce(ctx context.Context, id string) (*live, error) {
 	b.mu.Lock()
 	ls := b.sessions[id]
 	if ls == nil {
@@ -525,7 +553,17 @@ func (b *backend) session(ctx context.Context, id string) (*live, error) {
 		ls.opMu.Unlock()
 		return nil, err
 	}
-	ls.idle()
+	b.mu.Lock()
+	ls.mu.Lock()
+	current := b.sessions[id] == ls && !ls.retired
+	if current {
+		ls.pins++
+	}
+	ls.mu.Unlock()
+	b.mu.Unlock()
+	if !current {
+		return nil, errRetired
+	}
 	return ls, nil
 }
 
@@ -575,7 +613,7 @@ func (b *backend) ensure(ctx context.Context, ls *live) (*gateway.Client, error)
 			ls.setPrompts(snap.Prompts)
 			ls.flushEarly()
 			ls.mu.Unlock()
-			ls.client = c
+			ls.setClient(c)
 			ls.status(true)
 			return c, nil
 		}
@@ -594,7 +632,7 @@ func (b *backend) ensure(ctx context.Context, ls *live) (*gateway.Client, error)
 		b.mu.Unlock()
 	}
 	b.subscribed(cctx, c, ls, snap)
-	ls.client = c
+	ls.setClient(c)
 	if recovering {
 		ls.status(true)
 	}
@@ -694,7 +732,7 @@ func (b *backend) detachIdle(ls *live) {
 	defer ls.opMu.Unlock()
 	b.mu.Lock()
 	ls.mu.Lock()
-	if len(ls.viewers) > 0 || ls.pending {
+	if len(ls.viewers) > 0 || ls.pending || ls.pins > 0 {
 		ls.mu.Unlock()
 		b.mu.Unlock()
 		return
@@ -705,7 +743,7 @@ func (b *backend) detachIdle(ls *live) {
 		}
 	}
 	c, sub := ls.client, ls.subID
-	ls.client = nil
+	ls.client, ls.cur, ls.retired = nil, nil, true
 	ls.mu.Unlock()
 	b.mu.Unlock()
 	if !alive(c) || sub == "" {

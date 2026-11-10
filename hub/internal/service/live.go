@@ -22,6 +22,9 @@ type live struct {
 
 	mu         sync.Mutex
 	stale      bool
+	retired    bool
+	pins       int
+	cur        *gateway.Client
 	pending    bool
 	early      []gateway.Event
 	subID      string
@@ -45,6 +48,53 @@ type viewer struct {
 func newLive(b *backend, id string) *live {
 	return &live{b: b, id: id, prompts: map[string]gateway.Prompt{}, viewers: map[*viewer]struct{}{},
 		seq: time.Now().UnixMicro()}
+}
+
+// setClient records the connection ls is subscribed on. ls.opMu is held.
+func (ls *live) setClient(c *gateway.Client) {
+	ls.client = c
+	ls.mu.Lock()
+	ls.cur = c
+	ls.mu.Unlock()
+}
+
+func (ls *live) on(c *gateway.Client) bool {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	return ls.cur == c
+}
+
+func (ls *live) onAlive() bool {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	return alive(ls.cur)
+}
+
+func (ls *live) unpin() {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	ls.pins--
+	if ls.pins == 0 && len(ls.viewers) == 0 {
+		ls.idleLocked()
+	}
+}
+
+// fail tells viewers the session cannot be followed any more and drops them.
+func (ls *live) fail(err error) {
+	data, merr := json.Marshal(map[string]string{"message": err.Error()})
+	if merr != nil {
+		data = json.RawMessage(`{"message":"session lost"}`)
+	}
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	ls.seq++
+	ls.broadcast(hub.Event{Seq: ls.seq, Kind: hub.KindError, Data: data})
+	for v := range ls.viewers {
+		v.closed = true
+		close(v.ch)
+		delete(ls.viewers, v)
+	}
+	ls.idleLocked()
 }
 
 func (ls *live) viewerCount() int {
@@ -89,7 +139,12 @@ func (ls *live) setPrompts(ps []gateway.Prompt) {
 
 // apply passes one gateway frame to viewers once, in order. ls.mu is held.
 func (ls *live) apply(ev gateway.Event) {
-	if ev.ReplayEpoch != ls.epoch {
+	if ev.Type == gateway.ReplayGapEvent {
+		ls.b.log.Warn("gateway dropped the subscription, taking a new snapshot", "session", ls.id)
+		ls.resnapshotLocked()
+		return
+	}
+	if ev.ReplayEpoch != "" && ev.ReplayEpoch != ls.epoch {
 		ls.b.log.Info("replay epoch changed", "session", ls.id)
 		ls.epoch, ls.gwSeq = ev.ReplayEpoch, 0
 	}
@@ -179,19 +234,14 @@ func (ls *live) status(connected bool) {
 func (ls *live) attach(sinceSeq int64) (<-chan hub.Event, func()) {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	v := &viewer{ch: make(chan hub.Event, ls.b.svc.opts.ViewerBuffer)}
+	v := &viewer{ch: make(chan hub.Event, ls.b.svc.opts.ViewerBuffer+len(ls.ring)+1)}
 	covered := sinceSeq >= ls.snapshot.Seq && sinceSeq <= ls.seq &&
 		(!ls.truncated || len(ls.ring) == 0 || ls.ring[0].Seq <= sinceSeq+1)
 	switch {
 	case covered:
 		ls.send(v, sinceSeq)
 	case ls.truncated:
-		ls.stale = true
-		go func() {
-			if _, err := ls.b.ensure(context.Background(), ls); err != nil {
-				ls.b.log.Warn("re-snapshot", "session", ls.id, "error", err.Error())
-			}
-		}()
+		ls.resnapshotLocked()
 	default:
 		v.ch <- ls.snapshot
 		ls.send(v, 0)
@@ -202,6 +252,22 @@ func (ls *live) attach(sinceSeq int64) (<-chan hub.Event, func()) {
 		ls.idleTimer = nil
 	}
 	return v.ch, func() { ls.detach(v) }
+}
+
+// resnapshotLocked starts a fresh subscription; viewers get its snapshot.
+// ls.mu is held. The new subscription outlives any request.
+//
+//nolint:contextcheck // see above
+func (ls *live) resnapshotLocked() {
+	if ls.stale {
+		return
+	}
+	ls.stale = true
+	go func() {
+		if _, err := ls.b.ensure(context.Background(), ls); err != nil {
+			ls.b.log.Warn("re-snapshot", "session", ls.id, "error", err.Error())
+		}
+	}()
 }
 
 // send queues the buffered events after sinceSeq. ls.mu is held.

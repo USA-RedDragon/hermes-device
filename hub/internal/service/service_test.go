@@ -427,3 +427,52 @@ func TestLoginAgainWhenCookieExpires(t *testing.T) {
 		t.Fatalf("status = %v", st)
 	}
 }
+
+func TestLateViewerGetsWholeBuffer(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{ViewerBuffer: 16})
+	ctx := context.Background()
+	ch, stop, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	next(t, ch)
+	for range 40 {
+		e.gw.Publish(sLive, hub.KindMessageDelta, map[string]any{kText: "x"})
+		next(t, ch)
+	}
+	ch2, stop2, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop2()
+	if k := next(t, ch2).Kind; k != hub.KindSnapshot {
+		t.Fatalf("first = %s", k)
+	}
+	for i := range 40 {
+		if k := next(t, ch2).Kind; k != hub.KindMessageDelta {
+			t.Fatalf("event %d = %s", i, k)
+		}
+	}
+}
+
+func TestReplayGapTakesNewSnapshot(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ctx := context.Background()
+	ch, stop, err := e.svc.Attach(ctx, "alice", backendPC, sLive, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	next(t, ch)
+	e.gw.RetireSubscriptions(sLive)
+	if k := next(t, ch).Kind; k != hub.KindSnapshot {
+		t.Fatalf("after gap = %s", k)
+	}
+	e.gw.Publish(sLive, hub.KindMessageDelta, map[string]any{kText: "after"})
+	if ev := next(t, ch); text(t, ev) != "after" {
+		t.Fatalf("live after gap = %s %s", ev.Kind, ev.Data)
+	}
+}

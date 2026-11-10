@@ -24,6 +24,8 @@ import (
 const (
 	kSessionID       = "session_id"
 	kJSONRPC         = "jsonrpc"
+	kEvent           = "event"
+	kMethod          = "method"
 	kToolID          = "tool_id"
 	kText            = "text"
 	kStatus          = "status"
@@ -184,6 +186,20 @@ func (g *Gateway) Publish(sessionID, typ string, payload any) {
 	g.publishLocked(g.sessions[sessionID], typ, payload)
 }
 
+// RetireSubscriptions drops every subscription to a session and sends
+// session.replay_gap, as the gateway does when a viewer's backlog overflows.
+func (g *Gateway) RetireSubscriptions(sessionID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	s := g.sessions[sessionID]
+	for c := range s.subs {
+		c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, "params": map[string]any{
+			"type": gateway.ReplayGapEvent, kSessionID: s.ID,
+			"payload": map[string]any{kReplayEpoch: s.epoch, "latest_seq": s.seq}}})
+	}
+	s.subs = map[*conn]string{}
+}
+
 // PublishOffline adds an event to the replay ring without sending it to
 // any connection, as if it was published while the hub was away.
 func (g *Gateway) PublishOffline(sessionID, typ string, payload any) {
@@ -206,7 +222,7 @@ func (g *Gateway) publishLocked(s *Session, typ string, payload any) {
 	ev := gateway.Event{Type: typ, SessionID: s.ID, Payload: raw, ReplayEpoch: s.epoch, Seq: s.seq, ExecutionGeneration: &gen}
 	s.ring = append(s.ring, ev)
 	for c := range s.subs {
-		c.send(map[string]any{kJSONRPC: jsonRPCVersion, "method": "event", "params": ev})
+		c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, "params": ev})
 	}
 }
 
@@ -286,7 +302,7 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 		g.mu.Unlock()
 		_ = ws.CloseNow()
 	}()
-	c.send(map[string]any{kJSONRPC: jsonRPCVersion, "method": "event", "params": map[string]any{
+	c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, "params": map[string]any{
 		"type": gateway.ReadyEvent, "payload": map[string]any{"session_authority": true, kReplayEpoch: "x"}}})
 	for {
 		_, data, err := ws.Read(r.Context())
