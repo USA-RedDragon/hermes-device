@@ -52,6 +52,23 @@ const (
 	opBranch    = "branch"
 	opWorkspace = "workspace"
 
+	keyCode      = "code"
+	keyData      = "data"
+	keyMessage   = "message"
+	keyReason    = "reason"
+	keyTitle     = "title"
+	keyScope     = "scope"
+	keyLatest    = "latest"
+	keyReasoning = "reasoning"
+	scopeGlobal  = "global"
+
+	hubBackendDown = "backend_unavailable"
+	reasonNotBound = "hermes_device_not_bound"
+	webChat        = "web-chat"
+	liveSession    = "live-1"
+	parserSession  = "s-parser"
+	parserTitle    = "fix the parser"
+
 	sourceTUI  = "tui"
 	hubOffline = "device_offline"
 
@@ -99,11 +116,20 @@ type fakeHub struct {
 	legs     []*websocket.Conn
 	// stall makes the gateway stop reading, so pings go unanswered.
 	stall chan struct{}
+	// titles maps a session title to its session id for session.list.
+	titles map[string]string
+	// stored and live are the session ids of the stored and live
+	// session.list rows, most recent first.
+	stored, live []string
+	// notMine maps a session id to the data.reason the hub refuses it with.
+	notMine map[string]string
+	// lookupFail makes the hub fail every binding lookup.
+	lookupFail bool
 }
 
 func newFakeHub(t *testing.T) *fakeHub {
 	t.Helper()
-	h := &fakeHub{t: t, bindFail: map[string]string{}}
+	h := &fakeHub{t: t, bindFail: map[string]string{}, titles: map[string]string{}, notMine: map[string]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+hubapi.PathWhoami, h.whoami)
 	mux.HandleFunc("PUT /api/device/sessions/{id}/binding", h.bind)
@@ -142,7 +168,7 @@ func (h *fakeHub) whoami(w http.ResponseWriter, r *http.Request) {
 	fail := h.whoamiFail
 	h.mu.Unlock()
 	if fail {
-		writeJSON(w, http.StatusBadGateway, map[string]string{keyError: "backend_unavailable"})
+		writeJSON(w, http.StatusBadGateway, map[string]string{keyError: hubBackendDown})
 		return
 	}
 	writeJSON(w, http.StatusOK, hubapi.Whoami{DeviceID: "d_1", DeviceName: "desktop", User: "alice",
@@ -169,7 +195,7 @@ func (h *fakeHub) bind(w http.ResponseWriter, r *http.Request) {
 	code := h.bindFail[body.Dir]
 	h.mu.Unlock()
 	if code != "" {
-		writeJSON(w, http.StatusConflict, map[string]string{keyError: code, "message": "refused"})
+		writeJSON(w, http.StatusConflict, map[string]string{keyError: code, keyMessage: "refused"})
 		return
 	}
 	writeJSON(w, http.StatusOK, hubapi.Binding{SessionID: sid, DeviceID: "d_1", Dir: body.Dir, Generation: "g1"})
@@ -270,17 +296,44 @@ func (h *fakeHub) gateway(w http.ResponseWriter, r *http.Request) {
 			case opWorkspace:
 				if strings.HasPrefix(sid, busySession) {
 					send(map[string]any{keyJSONRPC: jsonRPC, "id": m.ID,
-						keyError: map[string]any{"code": 4009, "message": "session_busy"}})
+						keyError: map[string]any{keyCode: 4009, keyMessage: "session_busy"}})
 					continue
 				}
 			}
 			answer(m.ID, res)
 		case "session.resume":
+			// hermes-hub v0.5.0 refuses a resume by title or latest, or
+			// without a session_id.
 			sid, _ := p[keySessionID].(string)
-			if sid == "" {
-				sid = latestSession
+			_, title := p[keyTitle]
+			_, latest := p[keyLatest]
+			if sid == "" || title || latest {
+				send(map[string]any{keyJSONRPC: jsonRPC, "id": m.ID, keyError: map[string]any{keyCode: -32601,
+					keyMessage: "session.resume is not available through hermes-device", keyData: map[string]any{
+						keyReason: "hermes_device_denied"}}})
+				continue
 			}
 			answer(m.ID, map[string]any{keySessionID: sid, keyRevision: 3, keyParams: p})
+		case "session.list":
+			answer(m.ID, map[string]any{"sessions": h.listRows(p)})
+		case "session.info":
+			sid, _ := p[keySessionID].(string)
+			h.mu.Lock()
+			reason, refused := h.notMine[sid]
+			fail := h.lookupFail
+			h.mu.Unlock()
+			switch {
+			case fail:
+				send(map[string]any{keyJSONRPC: jsonRPC, "id": m.ID, keyError: map[string]any{keyCode: 4001,
+					keyMessage: "plugin down", keyData: map[string]any{keyReason: "hermes_device_bind",
+						"hub_error": hubBackendDown}}})
+			case refused:
+				send(map[string]any{keyJSONRPC: jsonRPC, "id": m.ID, keyError: map[string]any{keyCode: 4001,
+					keyMessage: "refused", keyData: map[string]any{keyReason: reason}}})
+			default:
+				send(map[string]any{keyJSONRPC: jsonRPC, "id": m.ID, keyError: map[string]any{keyCode: -32602,
+					keyMessage: "invalid_params"}})
+			}
 		case "test.server_request":
 			sid := fmt.Sprintf("srv-%d", len(waiting)+1)
 			waiting[sid] = m.ID
@@ -290,6 +343,28 @@ func (h *fakeHub) gateway(w http.ResponseWriter, r *http.Request) {
 			answer(m.ID, map[string]any{keyMethod: m.Method, keyParams: p})
 		}
 	}
+}
+
+// listRows answers session.list as the gateway does: one row for a title
+// or session id, else the stored or live rows.
+func (h *fakeHub) listRows(p map[string]any) []map[string]any {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rows := []map[string]any{}
+	if title, ok := p[keyTitle].(string); ok {
+		if sid, ok := h.titles[title]; ok {
+			rows = append(rows, map[string]any{keySessionID: sid, "id": sid, "resolved_id": sid, keyTitle: title})
+		}
+		return rows
+	}
+	ids := h.live
+	if p[keyScope] == "stored" {
+		ids = h.stored
+	}
+	for _, sid := range ids {
+		rows = append(rows, map[string]any{keySessionID: sid, "id": sid})
+	}
+	return rows
 }
 
 // env is a splice serving in front of a fake hub.

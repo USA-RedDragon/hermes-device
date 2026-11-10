@@ -24,6 +24,9 @@ const (
 const (
 	jsonRPCVersion = "2.0"
 	keyReason      = "reason"
+	keySessionID   = "session_id"
+	keyError       = "error"
+	hubUnreachable = "hub_unreachable"
 )
 
 // OwnIDPrefix starts the id of every request the splice sends itself.
@@ -163,7 +166,7 @@ func hubErrorCode(err error) string {
 	case errors.Is(err, hubapi.ErrUnauthorized):
 		return "unauthorized"
 	default:
-		return "hub_unreachable"
+		return hubUnreachable
 	}
 }
 

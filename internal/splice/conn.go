@@ -3,8 +3,10 @@ package splice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -18,7 +20,6 @@ const (
 	heldCreate heldKind = iota
 	heldWorkspace
 	heldBranch
-	heldResume
 )
 
 // held is a forwarded TUI request whose answer the splice acts on before
@@ -227,12 +228,12 @@ func (c *conn) fromTUI(typ websocket.MessageType, data []byte) {
 	case f.Method == methodCreate:
 		c.rewriteCreate(f.ID, key, params, data)
 	case f.Method == methodResume:
-		c.rewriteResume(f.ID, key, params, data)
+		c.rewriteResume(f.ID, params, data)
 	case f.Method == methodMutate && rawString(params["operation"]) == opWorkspace:
 		c.rewriteWorkspace(f.ID, key, params, data)
 	case f.Method == methodMutate && rawString(params["operation"]) == opBranch:
 		dropMember(params, "payload", "mcp_servers")
-		c.hold(key, &held{kind: heldBranch, id: f.ID, sessionID: rawString(params["session_id"])})
+		c.hold(key, &held{kind: heldBranch, id: f.ID, sessionID: rawString(params[keySessionID])})
 		c.forwardParams(f.ID, data, params)
 	default:
 		c.forward(typ, data)
@@ -272,23 +273,68 @@ func (c *conn) rewriteCreate(id json.RawMessage, key string, params map[string]j
 	c.forwardParams(id, data, params)
 }
 
-// rewriteResume binds the resumed session to the directory chat runs in,
-// unless this chat already bound it (a resume after a reconnect).
-func (c *conn) rewriteResume(id json.RawMessage, key string, params map[string]json.RawMessage, data []byte) {
+// rewriteResume resumes by an explicit session id, which the hub needs:
+// it looks up a resume by title, of the latest session or with an empty
+// session_id, and the session a session_id names (which may be a title),
+// then binds the session to the directory chat runs in, unless this chat
+// already bound it (a resume after a reconnect).
+func (c *conn) rewriteResume(id json.RawMessage, params map[string]json.RawMessage, data []byte) {
 	dropMember(params, "editor", "mcp_servers")
-	sid := rawString(params["session_id"])
-	if sid == "" {
-		// latest: the gateway picks the session, so bind it on the answer.
-		c.hold(key, &held{kind: heldResume, id: id})
+	sid := rawString(params[keySessionID])
+	_, latest := params["latest"]
+	_, byTitle := params["title"]
+	if !latest && !byTitle && sid != "" && c.token.saw(sid) {
 		c.forwardParams(id, data, params)
 		return
 	}
-	if !c.token.saw(sid) {
-		if c.isHubDown() {
-			return
+	if c.isHubDown() {
+		return
+	}
+	// A lookup can take many calls, so it runs off the TUI reader, which
+	// must keep reading for the TUI's pongs.
+	c.work.Go(func() { c.resolveResume(id, params, data, sid, latest, byTitle) })
+}
+
+// resolveResume looks up the session of a resume, binds it and forwards
+// the resume by its id.
+func (c *conn) resolveResume(id json.RawMessage, params map[string]json.RawMessage, data []byte, sid string,
+	latest, byTitle bool,
+) {
+	var err error
+	switch {
+	case latest || (!byTitle && sid == ""):
+		sid, err = resolveLatest(c)
+	case byTitle:
+		sid, err = resolveName(c, rawString(params["title"]))
+	default:
+		var found string
+		if found, err = resolveName(c, sid); err == nil {
+			sid = found
+		} else if errors.Is(err, ErrNoSession) {
+			// Not a title or a local session id: resume the id as sent.
+			err = nil
 		}
+	}
+	switch {
+	case errors.Is(err, ErrNoSession) && (latest || !byTitle):
+		c.toTUI(notFoundAnswer(id, "no session bound to this device to resume"))
+		return
+	case errors.Is(err, ErrNoSession):
+		c.toTUI(notFoundAnswer(id, "no session matches "+strconv.Quote(rawString(params["title"]))))
+		return
+	case err != nil:
+		if !c.isHubDown() {
+			c.toTUI(lookupAnswer(id, err))
+		}
+		return
+	}
+	delete(params, "latest")
+	delete(params, "title")
+	delete(params, "workspace")
+	params[keySessionID] = mustRaw(sid)
+	if !c.token.saw(sid) {
 		if err := c.s.bind(c.ctx, sid, c.token.dir); err != nil {
-			c.s.log.Warn("bind before session.resume failed", "session_id", sid, "error", err)
+			c.s.log.Warn("bind before session.resume failed", keySessionID, sid, "error", err)
 			c.toTUI(bindAnswer(id, err))
 			return
 		}
@@ -298,7 +344,7 @@ func (c *conn) rewriteResume(id json.RawMessage, key string, params map[string]j
 }
 
 func (c *conn) rewriteWorkspace(id json.RawMessage, key string, params map[string]json.RawMessage, data []byte) {
-	sid := rawString(params["session_id"])
+	sid := rawString(params[keySessionID])
 	payload, _ := decodeParams(params["payload"])
 	dir := rawString(payload["cwd"])
 	if dir == "" || !filepath.IsAbs(dir) {
@@ -315,7 +361,7 @@ func (c *conn) rewriteWorkspace(id json.RawMessage, key string, params map[strin
 	}
 	prev, _ := c.s.sessionDir(sid)
 	if err := c.s.bind(c.ctx, sid, dir); err != nil {
-		c.s.log.Warn("workspace bind failed", "session_id", sid, "error", err)
+		c.s.log.Warn("workspace bind failed", keySessionID, sid, "error", err)
 		c.toTUI(bindAnswer(id, err))
 		return
 	}
@@ -359,8 +405,6 @@ func (c *conn) fromHub(typ websocket.MessageType, data []byte) {
 	switch h.kind {
 	case heldCreate:
 		c.createAnswered(h, &f, data)
-	case heldResume:
-		c.resumeAnswered(h, &f, data)
 	case heldWorkspace:
 		if isError(&f) && h.prevDir != "" {
 			c.work.Go(func() {
@@ -368,7 +412,7 @@ func (c *conn) fromHub(typ websocket.MessageType, data []byte) {
 				defer cancel()
 				if err := c.s.bind(ctx, h.sessionID, h.prevDir); err != nil {
 					c.s.log.Warn("restoring the binding after a refused workspace move failed",
-						"session_id", h.sessionID, "error", err)
+						keySessionID, h.sessionID, "error", err)
 				}
 			})
 		}
@@ -420,36 +464,13 @@ func (c *conn) createAnswered(h *held, f *frame, data []byte) {
 		if c.isHubDown() {
 			// No delete is possible and an error would be final; the TUI
 			// retries the same request_id on a new socket.
-			c.s.log.Warn("bind after session.create failed with the gateway leg gone", "session_id", res.SessionID, "error", err)
+			c.s.log.Warn("bind after session.create failed with the gateway leg gone", keySessionID, res.SessionID, "error", err)
 			return
 		}
-		c.s.log.Warn("bind after session.create failed; deleting the session", "session_id", res.SessionID, "error", err)
+		c.s.log.Warn("bind after session.create failed; deleting the session", keySessionID, res.SessionID, "error", err)
 		if c.deleteSession(res) {
 			c.toTUI(bindAnswer(h.id, err))
 		}
-	})
-}
-
-func (c *conn) resumeAnswered(h *held, f *frame, data []byte) {
-	var res struct {
-		SessionID string `json:"session_id"`
-	}
-	if isError(f) || json.Unmarshal(f.Result, &res) != nil || res.SessionID == "" || c.token.saw(res.SessionID) {
-		c.toTUI(data)
-		return
-	}
-	c.work.Go(func() {
-		ctx, cancel := c.bindCtx()
-		defer cancel()
-		if err := c.s.bind(ctx, res.SessionID, c.token.dir); err != nil {
-			c.s.log.Warn("bind after session.resume failed", "session_id", res.SessionID, "error", err)
-			if !c.isHubDown() {
-				c.toTUI(bindAnswer(h.id, err))
-			}
-			return
-		}
-		c.token.see(res.SessionID)
-		c.toTUI(data)
 	})
 }
 
@@ -464,7 +485,7 @@ func (c *conn) branchAnswered(h *held, f *frame, data []byte) {
 	dir, ok := c.s.sessionDir(h.sessionID)
 	if !ok {
 		c.s.log.Info("branch of a session this daemon did not bind; the child inherits through lineage",
-			"session_id", h.sessionID, "branched_session_id", res.Branched)
+			keySessionID, h.sessionID, "branched_session_id", res.Branched)
 		c.toTUI(data)
 		return
 	}
@@ -494,7 +515,7 @@ func (c *conn) deleteSession(res createResult) bool {
 		gen = json.RawMessage("null")
 	}
 	params := map[string]json.RawMessage{
-		"session_id":          mustRaw(res.SessionID),
+		keySessionID:          mustRaw(res.SessionID),
 		"request_id":          mustRaw(OwnIDPrefix + "delete-" + res.SessionID),
 		"expected_revision":   rev,
 		"expected_generation": gen,
@@ -504,10 +525,10 @@ func (c *conn) deleteSession(res createResult) bool {
 	ans, err := c.call(methodMutate, params, deleteTimeout)
 	switch {
 	case err != nil:
-		c.s.log.Warn("deleting the unbound session failed", "session_id", res.SessionID, "error", err)
+		c.s.log.Warn("deleting the unbound session failed", keySessionID, res.SessionID, "error", err)
 		return !c.isHubDown()
 	case isError(&ans):
-		c.s.log.Warn("gateway refused to delete the unbound session", "session_id", res.SessionID,
+		c.s.log.Warn("gateway refused to delete the unbound session", keySessionID, res.SessionID,
 			"error", string(ans.Error))
 	}
 	return true
@@ -531,21 +552,7 @@ func (c *conn) call(method string, params map[string]json.RawMessage, timeout ti
 		delete(c.own, id)
 		c.mu.Unlock()
 	}()
-	msg, err := json.Marshal(map[string]any{"jsonrpc": jsonRPCVersion, "id": id, "method": method, "params": params})
-	if err != nil {
-		return frame{}, err
-	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), timeout)
 	defer cancel()
-	if err := c.hub.Write(ctx, websocket.MessageText, msg); err != nil {
-		return frame{}, fmt.Errorf("%s: %w", method, err)
-	}
-	select {
-	case f := <-ch:
-		return f, nil
-	case <-c.hubGone:
-		return frame{}, fmt.Errorf("%s: gateway leg lost", method)
-	case <-ctx.Done():
-		return frame{}, fmt.Errorf("%s: %w", method, ctx.Err())
-	}
+	return sendCall(ctx, c.hub, id, method, params, ch, c.hubGone)
 }

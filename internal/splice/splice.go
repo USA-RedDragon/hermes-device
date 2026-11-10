@@ -28,6 +28,7 @@ import (
 const (
 	PathTUI           = "/api/ws"
 	PathControlTokens = "/control/tokens"
+	PathControlLookup = "/control/lookup"
 )
 
 const (
@@ -136,6 +137,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+PathControlTokens, s.handleCreateToken)
 	mux.HandleFunc("DELETE "+PathControlTokens+"/{token}", s.handleDeleteToken)
+	mux.HandleFunc("POST "+PathControlLookup, s.handleLookup)
 	mux.HandleFunc(PathTUI, s.handleTUI)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { forbidden(w) })
 	srv := &http.Server{
@@ -221,7 +223,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(map[string]string{"token": token}); err != nil {
-		s.log.Debug("token answer not written", "error", err)
+		s.log.Debug("token answer not written", keyError, err)
 	}
 }
 
@@ -243,6 +245,47 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 		c.closeTUI(websocket.StatusNormalClosure, "token revoked")
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleLookup(w http.ResponseWriter, r *http.Request) {
+	if !s.controlAllowed(r) {
+		forbidden(w)
+		return
+	}
+	var body struct {
+		Session *string `json:"session"`
+		Latest  bool    `json:"latest"`
+	}
+	err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body)
+	if err != nil || (body.Session == nil) == !body.Latest || (body.Session != nil && *body.Session == "") {
+		http.Error(w, `body must be {"session": "<id or title>"} or {"latest": true}`, http.StatusBadRequest)
+		return
+	}
+	name := ""
+	if body.Session != nil {
+		name = *body.Session
+	}
+	sid, err := s.Lookup(r.Context(), name)
+	var le *LookupError
+	switch {
+	case errors.Is(err, ErrNoSession):
+		s.writeControlJSON(w, http.StatusNotFound, map[string]string{keyError: "not_found"})
+	case errors.As(err, &le):
+		s.log.Warn("session lookup failed", keyError, err)
+		s.writeControlJSON(w, http.StatusBadGateway, map[string]string{keyError: le.HubError, "message": err.Error()})
+	case err != nil:
+		s.writeControlJSON(w, http.StatusBadGateway, map[string]string{keyError: hubUnreachable, "message": err.Error()})
+	default:
+		s.writeControlJSON(w, http.StatusOK, map[string]string{keySessionID: sid})
+	}
+}
+
+func (s *Server) writeControlJSON(w http.ResponseWriter, status int, v map[string]string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		s.log.Debug("control answer not written", "error", err)
+	}
 }
 
 // matchToken returns the stored token equal to t, comparing it with every
@@ -278,7 +321,7 @@ func (s *Server) handleTUI(w http.ResponseWriter, r *http.Request) {
 	hub, err := s.opts.Hub.DialLeg(dialCtx, hubapi.PathGatewayLeg)
 	cancel()
 	if err != nil {
-		s.log.Warn("gateway leg dial failed", "error", err)
+		s.log.Warn("gateway leg dial failed", keyError, err)
 		http.Error(w, "hub gateway leg unavailable", http.StatusBadGateway)
 		return
 	}

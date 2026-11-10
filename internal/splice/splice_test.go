@@ -3,6 +3,7 @@ package splice_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -48,7 +49,7 @@ func TestCreateBindFailureDeletes(t *testing.T) {
 	e.hub.bindFail[deviceDir] = hubOffline
 	c := e.dialTUI()
 	m := c.call("r1", "session.create", createParams("req-1", deviceDir))
-	if m.Error == nil || m.Error.Code != splice.CodeDevice || m.Error.Data["reason"] != splice.ReasonBind ||
+	if m.Error == nil || m.Error.Code != splice.CodeDevice || m.Error.Data[keyReason] != splice.ReasonBind ||
 		m.Error.Data["hub_error"] != hubOffline {
 		t.Fatalf("answer %+v", m)
 	}
@@ -96,7 +97,7 @@ func TestCreateCwdChecks(t *testing.T) {
 	c := e.dialTUI()
 	for i, cwd := range []string{"", "src/app"} {
 		m := c.call(i, "session.create", createParams("req", cwd))
-		if m.Error == nil || m.Error.Code != splice.CodeDevice || m.Error.Data["reason"] != splice.ReasonCwd {
+		if m.Error == nil || m.Error.Code != splice.CodeDevice || m.Error.Data[keyReason] != splice.ReasonCwd {
 			t.Fatalf("cwd %q: answer %+v", cwd, m)
 		}
 	}
@@ -111,7 +112,7 @@ func TestWhoamiFailureThenRecovery(t *testing.T) {
 	e.hub.whoamiFail = true
 	c := e.dialTUI()
 	m := c.call("r1", "session.create", createParams("req-1", deviceDir))
-	if m.Error == nil || m.Error.Data["reason"] != splice.ReasonBind || m.Error.Data["hub_error"] != "backend_unavailable" {
+	if m.Error == nil || m.Error.Data[keyReason] != splice.ReasonBind || m.Error.Data["hub_error"] != hubBackendDown {
 		t.Fatalf("answer %+v", m)
 	}
 	e.hub.mu.Lock()
@@ -152,7 +153,7 @@ func TestWorkspaceRebind(t *testing.T) {
 	}
 	m = c.call("r4", methodMutate, map[string]any{keySessionID: sessionReq1, keyOperation: opWorkspace,
 		keyPayload: map[string]any{keyCwd: "relative"}})
-	if m.Error == nil || m.Error.Data["reason"] != splice.ReasonCwd {
+	if m.Error == nil || m.Error.Data[keyReason] != splice.ReasonCwd {
 		t.Fatalf("answer %+v", m)
 	}
 }
@@ -208,8 +209,8 @@ func deniedConfig(p map[string]any) bool {
 	switch p[keyConfigKey] {
 	case "verbose", "yolo":
 		return false
-	case "reasoning":
-		return p[keyConfigValue] == "show" || p["scope"] == "global"
+	case keyReasoning:
+		return p[keyConfigValue] == "show" || p[keyScope] == scopeGlobal
 	}
 	return true
 }
@@ -225,9 +226,9 @@ func TestDeniedMethods(t *testing.T) {
 		{methodConfigSet, map[string]any{keyConfigKey: keyCwd, keyConfigValue: "/x"}},
 		{methodConfigSet, map[string]any{keyConfigKey: "terminal.cwd", keyConfigValue: "/x"}},
 		{methodConfigSet, map[string]any{}},
-		{methodConfigSet, map[string]any{keyConfigKey: "fast", keyConfigValue: "on", "scope": "global"}},
-		{methodConfigSet, map[string]any{keyConfigKey: "reasoning", keyConfigValue: "show"}},
-		{methodConfigSet, map[string]any{keyConfigKey: "reasoning", keyConfigValue: "high", "scope": "global"}},
+		{methodConfigSet, map[string]any{keyConfigKey: "fast", keyConfigValue: "on", keyScope: scopeGlobal}},
+		{methodConfigSet, map[string]any{keyConfigKey: keyReasoning, keyConfigValue: "show"}},
+		{methodConfigSet, map[string]any{keyConfigKey: keyReasoning, keyConfigValue: "high", keyScope: scopeGlobal}},
 		{"vault.list", nil},
 		{"vault.set", map[string]any{keyName: "k"}},
 		{"model.save_key", map[string]any{}},
@@ -266,7 +267,7 @@ func TestDeniedMethods(t *testing.T) {
 	}
 	for i, tc := range cases {
 		m := c.call(i, tc.method, tc.params)
-		if m.Error == nil || m.Error.Code != splice.CodeDenied || m.Error.Data["reason"] != splice.ReasonDenied ||
+		if m.Error == nil || m.Error.Code != splice.CodeDenied || m.Error.Data[keyReason] != splice.ReasonDenied ||
 			m.Error.Message != tc.method+" is not available through hermes-device" {
 			t.Errorf("%s %v: answer %+v", tc.method, tc.params, m)
 		}
@@ -277,11 +278,11 @@ func TestDeniedMethods(t *testing.T) {
 	}{
 		{methodConfigSet, map[string]any{keyConfigKey: "verbose", keyConfigValue: "all", keySessionID: "s"}},
 		{methodConfigSet, map[string]any{keyConfigKey: "yolo", keyConfigValue: "on", keySessionID: "s"}},
-		{methodConfigSet, map[string]any{keyConfigKey: "reasoning", keyConfigValue: "high", "scope": "session"}},
-		{methodConfigSet, map[string]any{keyConfigKey: "reasoning", keyConfigValue: "reset"}},
+		{methodConfigSet, map[string]any{keyConfigKey: keyReasoning, keyConfigValue: "high", keyScope: "session"}},
+		{methodConfigSet, map[string]any{keyConfigKey: keyReasoning, keyConfigValue: "reset"}},
 		{methodPDFAttach, map[string]any{"content_base64": "AA=="}},
 		{methodFileAttach, map[string]any{"data_url": "data:,", keyPath: nil}},
-		{"image.attach_bytes", map[string]any{"data": "AA=="}},
+		{"image.attach_bytes", map[string]any{keyData: "AA=="}},
 		{"slash.exec", map[string]any{keyCommand: "/help"}},
 		{"command.dispatch", map[string]any{keyName: "help"}},
 	}
@@ -454,7 +455,7 @@ func TestCreateBypassRefused(t *testing.T) {
 		p := createParams("bypass", deviceDir)
 		p[field] = true
 		m := c.call(i, "session.create", p)
-		if m.Error == nil || m.Error.Code != splice.CodeDevice || m.Error.Data["reason"] != splice.ReasonBypass {
+		if m.Error == nil || m.Error.Code != splice.CodeDevice || m.Error.Data[keyReason] != splice.ReasonBypass {
 			t.Fatalf("%s: answer %+v", field, m)
 		}
 	}
@@ -478,9 +479,9 @@ func TestEditorMCPServersRemoved(t *testing.T) {
 		t.Fatalf("editor at the gateway %+v", ed)
 	}
 	resultMap(t, c.call("r2", methodMutate, map[string]any{keySessionID: sessionReq1, keyOperation: opBranch,
-		keyPayload: map[string]any{"title": "t", keyMCPServers: []any{}}}))
+		keyPayload: map[string]any{keyTitle: "t", keyMCPServers: []any{}}}))
 	br, _ := e.hub.find(methodMutate, nil)
-	if pl := asMap(t, br.Params[keyPayload]); pl["title"] != "t" || pl[keyMCPServers] != nil {
+	if pl := asMap(t, br.Params[keyPayload]); pl[keyTitle] != "t" || pl[keyMCPServers] != nil {
 		t.Fatalf("branch payload at the gateway %+v", pl)
 	}
 	resultMap(t, c.call("r3", "session.resume", map[string]any{keySessionID: sessionReq1,
@@ -507,13 +508,6 @@ func TestResumeBindsToChatDir(t *testing.T) {
 	if b := e.hub.bindCalls(); len(b) != 2 || b[1] != (bindCall{oldSession, other}) {
 		t.Fatalf("binds %+v", b)
 	}
-	// A latest resume binds the session the gateway picked.
-	if res := resultMap(t, c.call("r4", "session.resume", map[string]any{"latest": sourceTUI})); res[keySessionID] != latestSession {
-		t.Fatalf("result %+v", res)
-	}
-	if b := e.hub.bindCalls(); len(b) != 3 || b[2] != (bindCall{latestSession, deviceDir}) {
-		t.Fatalf("binds %+v", b)
-	}
 	// A failed bind refuses the resume.
 	e.hub.mu.Lock()
 	e.hub.bindFail[deviceDir] = "bound_to_other_device"
@@ -524,6 +518,189 @@ func TestResumeBindsToChatDir(t *testing.T) {
 	}
 	if _, ok := e.hub.find("session.resume", func(p map[string]any) bool { return p[keySessionID] == "theirs" }); ok {
 		t.Fatal("a resume whose bind failed reached the gateway")
+	}
+}
+
+// resumeIDs returns the session_id of every session.resume the gateway got.
+func (h *fakeHub) resumeIDs() []any {
+	var ids []any
+	for _, m := range h.receivedMethods() {
+		if m.Method == "session.resume" {
+			ids = append(ids, m.Params[keySessionID])
+		}
+	}
+	return ids
+}
+
+func TestResumeLatestResolvesToBoundSession(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, splice.Options{})
+	e.hub.mu.Lock()
+	e.hub.stored = []string{webChat, "other-dev", latestSession}
+	e.hub.live = []string{liveSession}
+	e.hub.notMine[webChat] = reasonNotBound
+	e.hub.notMine["other-dev"] = "hermes_device_other_device"
+	e.hub.mu.Unlock()
+	c := e.dialTUI()
+	for i, params := range []map[string]any{
+		{keyLatest: sourceTUI, "workspace": "/home/alice/src"},
+		{keySessionID: ""},
+		{},
+	} {
+		res := resultMap(t, c.call(fmt.Sprintf("r%d", i), "session.resume", params))
+		if res[keySessionID] != latestSession {
+			t.Fatalf("resume %v: result %+v", params, res)
+		}
+	}
+	got, ok := e.hub.find("session.resume", nil)
+	if !ok {
+		t.Fatal("no resume reached the gateway")
+	}
+	if _, has := got.Params[keyLatest]; has || got.Params["workspace"] != nil {
+		t.Fatalf("resume params %+v", got.Params)
+	}
+	// One bind: the later resumes are of a session this chat bound.
+	if b := e.hub.bindCalls(); len(b) != 1 || b[0] != (bindCall{latestSession, deviceDir}) {
+		t.Fatalf("binds %+v", b)
+	}
+	if ids := e.hub.resumeIDs(); len(ids) != 3 {
+		t.Fatalf("resumes %v", ids)
+	}
+
+	// No session of this device: the TUI gets not_found and nothing is
+	// resumed or bound.
+	e.hub.mu.Lock()
+	e.hub.stored = []string{webChat}
+	e.hub.live = []string{"other-dev"}
+	e.hub.mu.Unlock()
+	m := c.call("r9", "session.resume", map[string]any{keyLatest: sourceTUI})
+	if m.Error == nil || m.Error.Data[keyReason] != splice.ReasonNotFound {
+		t.Fatalf("answer %+v", m)
+	}
+	if ids := e.hub.resumeIDs(); len(ids) != 3 {
+		t.Fatalf("resumes %v", ids)
+	}
+}
+
+func TestResumeLatestFindsLiveSession(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, splice.Options{})
+	e.hub.mu.Lock()
+	e.hub.stored = []string{webChat}
+	e.hub.live = []string{webChat, liveSession}
+	e.hub.notMine[webChat] = reasonNotBound
+	e.hub.mu.Unlock()
+	c := e.dialTUI()
+	if res := resultMap(t, c.call("r1", "session.resume", map[string]any{keyLatest: sourceTUI})); res[keySessionID] != liveSession {
+		t.Fatalf("result %+v", res)
+	}
+	// web-chat is checked once, though both listings name it.
+	probes := 0
+	for _, m := range e.hub.receivedMethods() {
+		if m.Method == "session.info" && m.Params[keySessionID] == webChat {
+			probes++
+		}
+	}
+	if probes != 1 {
+		t.Fatalf("web-chat checked %d times", probes)
+	}
+}
+
+func TestResumeLatestLookupFailure(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, splice.Options{})
+	e.hub.mu.Lock()
+	e.hub.stored = []string{latestSession}
+	e.hub.lookupFail = true
+	e.hub.mu.Unlock()
+	c := e.dialTUI()
+	m := c.call("r1", "session.resume", map[string]any{})
+	if m.Error == nil || m.Error.Data[keyReason] != splice.ReasonBind || m.Error.Data["hub_error"] != hubBackendDown {
+		t.Fatalf("answer %+v", m)
+	}
+	if ids := e.hub.resumeIDs(); len(ids) != 0 {
+		t.Fatalf("resumes %v", ids)
+	}
+}
+
+func TestResumeByTitle(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, splice.Options{})
+	e.hub.mu.Lock()
+	e.hub.titles[parserTitle] = parserSession
+	e.hub.mu.Unlock()
+	c := e.dialTUI()
+	// The Ink TUI sends a title as session_id (/resume <title>, or a
+	// --resume the launcher could not match locally); other clients send
+	// a title member.
+	for i, params := range []map[string]any{
+		{keySessionID: parserTitle},
+		{keyTitle: parserTitle},
+	} {
+		if res := resultMap(t, c.call(fmt.Sprintf("r%d", i), "session.resume", params)); res[keySessionID] != parserSession {
+			t.Fatalf("resume %v: result %+v", params, res)
+		}
+	}
+	if b := e.hub.bindCalls(); len(b) != 1 || b[0] != (bindCall{parserSession, deviceDir}) {
+		t.Fatalf("binds %+v", b)
+	}
+	got, _ := e.hub.find("session.resume", nil)
+	if _, has := got.Params[keyTitle]; has {
+		t.Fatalf("resume params %+v", got.Params)
+	}
+	m := c.call("r9", "session.resume", map[string]any{keyTitle: "no such chat"})
+	if m.Error == nil || m.Error.Data[keyReason] != splice.ReasonNotFound {
+		t.Fatalf("answer %+v", m)
+	}
+	if ids := e.hub.resumeIDs(); len(ids) != 2 {
+		t.Fatalf("resumes %v", ids)
+	}
+}
+
+func TestLookupEndpoint(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, splice.Options{})
+	e.hub.mu.Lock()
+	e.hub.titles[parserTitle] = parserSession
+	e.hub.stored = []string{webChat, latestSession}
+	e.hub.notMine[webChat] = reasonNotBound
+	e.hub.mu.Unlock()
+	secret := e.splice.ControlSecret()
+	lookup := func(body string) (int, map[string]string) {
+		resp := e.controlBody(http.MethodPost, splice.PathControlLookup, secret, body)
+		out := map[string]string{}
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+	if code, out := lookup(`{"latest": true}`); code != http.StatusOK || out[keySessionID] != latestSession {
+		t.Fatalf("latest: %d %v", code, out)
+	}
+	if code, out := lookup(`{"session": "` + parserTitle + `"}`); code != http.StatusOK || out[keySessionID] != parserSession {
+		t.Fatalf("title: %d %v", code, out)
+	}
+	if code, out := lookup(`{"session": "nothing"}`); code != http.StatusNotFound || out[keyError] != "not_found" {
+		t.Fatalf("missing: %d %v", code, out)
+	}
+	for _, body := range []string{`{}`, `{"session": ""}`, `{"session": "x", "latest": true}`, `[`} {
+		if code, _ := lookup(body); code != http.StatusBadRequest {
+			t.Fatalf("%s: %d", body, code)
+		}
+	}
+	if resp := e.controlBody(http.MethodPost, splice.PathControlLookup, "wrong", `{"latest": true}`); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong secret: %d", resp.StatusCode)
+	}
+	e.hub.mu.Lock()
+	e.hub.lookupFail = true
+	e.hub.mu.Unlock()
+	if code, out := lookup(`{"latest": true}`); code != http.StatusBadGateway || out[keyError] != hubBackendDown {
+		t.Fatalf("lookup failure: %d %v", code, out)
+	}
+	// A lookup binds and resumes nothing.
+	if b := e.hub.bindCalls(); len(b) != 0 {
+		t.Fatalf("binds %+v", b)
+	}
+	if ids := e.hub.resumeIDs(); len(ids) != 0 {
+		t.Fatalf("resumes %v", ids)
 	}
 }
 

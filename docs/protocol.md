@@ -357,7 +357,20 @@ Session checks. For every request (and every notification) whose `params.session
 
 **`session.resume`**
 
-Resuming in `hermes-device chat` means "continue this session here". Before forwarding, bind `params.session_id` to the directory `chat` ran in (from the per-run secret, section 5.5). A session already bound to that directory keeps its binding; one bound to another directory of this device moves to this one. If the bind fails (for example `409` `bound_to_other_device`), answer the TUI with the bind error and forward nothing. The bind is skipped when this chat run (the same per-run secret) already bound the session, so a TUI reconnect does not undo a workspace move. A resume with an empty `session_id` (the latest session) is forwarded first, and the session id in its answer is bound before the answer is passed on. Remove `params.editor.mcp_servers` if present.
+Resuming in `hermes-device chat` means "continue this session here". The hub resumes only by an explicit `session_id`, so the splice first finds the session id:
+
+1. A resume with a `latest` member, or with no `title` member and an empty or missing `session_id`, is a resume of the latest session: the most recent session bound to this device (lookup below).
+2. A resume with a `title` member is a resume of the session with that title.
+3. Otherwise `params.session_id` may be a session id or a title. The Ink TUI sends a title there: `/resume <title>` sends it as `session_id`, and so does a `--resume <title>` that the local Hermes launcher could not match in its own session store (hermes_cli/main.py `_resolve_chat_session_args`, ui-tui/src/app/useSessionLifecycle.ts). The splice looks the name up and resumes the id it finds; when nothing matches, it resumes `params.session_id` as sent.
+
+The splice skips the lookup for a `session_id` this chat run already bound. When a lookup of 1 or 2 finds nothing, it answers the TUI with `hermes_device_not_found` (5.6) and forwards nothing. When a lookup fails, it answers with the bind error. It then removes `latest`, `title` and `workspace` from the params and sets `params.session_id` to the id.
+
+Lookups use the splice's own requests on the gateway leg (ids `hermes-device-<n>`). Both methods are allowed by the hub:
+
+- A name: `session.list` with `{"title": <name>}`. The gateway resolves it as `session.resume` would, without attaching: a session id first, then a title (the latest `"<title> #N"` continuation), projected to the compression tip (gateway/session_local_title.py `resolve_titled_session`). The splice takes the first row's `resolved_id` (else `session_id`, else `id`).
+- The latest session: `session.list` with `{"scope": "stored", "limit": 200}` (closed sessions, most recently active first), then `session.list` with `{"limit": 200}` (open sessions). The device cannot read bindings, so the splice asks the hub about each row in that order, at most 50 sessions: it sends `session.info` with `{"session_id": <id>, "hermes_device_probe": true}`. The hub checks the `session_id` of every request (below) and refuses one that is not bound to this device with `hermes_device_not_bound` or `hermes_device_other_device`; the splice then tries the next row. Any other answer means the hub let the request through, so the session is this device's (the extra member makes the gateway answer `invalid_params` at once). A `hermes_device_bind` refusal (the hub could not check) fails the lookup. The latest session is not limited to the current directory.
+
+Then, before forwarding, bind the session to the directory `chat` ran in (from the per-run secret, section 5.5). A session already bound to that directory keeps its binding; one bound to another directory of this device moves to this one. If the bind fails (for example `409` `bound_to_other_device`), answer the TUI with the bind error and forward nothing. The bind is skipped when this chat run (the same per-run secret) already bound the session, so a TUI reconnect does not undo a workspace move. Remove `params.editor.mcp_servers` if present.
 
 The hub enforces this on the leg. It refuses a resume with a non-empty `session_id` that is not bound to the device (5.6), and it checks every resume answer, including a resume by title and a resume of the latest session: when the answer's `session_id` is not bound to this device, it detaches the subscription (`session.detach`, with the answer's `subscription_id`) and answers the device with the same refusal. The hub checks the answer before the splice sees it, so a latest resume of a session that is not bound to the device yet is refused, and the splice's bind of the answer's session never runs. The hub binds nothing on a resume.
 
@@ -411,6 +424,7 @@ The hub enforces the same rules on the gateway leg, so a holder of the device to
 
 - `POST /control/tokens` with `Authorization: Bearer <control_secret>` and `{"cwd": "<absolute device dir chat runs in>"}`: answers `201` with `{"token": "<43 base64url chars>"}`, a new per-run secret tied to that directory (used for `session.resume`, 5.3). A missing or relative `cwd` gets `400`; a daemon that is stopping answers `503`.
 - `DELETE /control/tokens/<token>` with the same header when the TUI exits: `204`. Open TUI sockets that used it are closed.
+- `POST /control/lookup` with the same header and `{"session": "<id or title>"}` or `{"latest": true}`: the daemon opens a gateway leg of its own, looks the session up as for a resume (5.3), and closes the leg. It binds and attaches nothing. Answers `200` `{"session_id": "<id>"}`, `404` `{"error": "not_found"}`, `502` `{"error": <hub error code>, "message": <text>}` when the lookup fails, and `400` for any other body.
 
 The daemon refuses the control endpoints from non-loopback peers and with a wrong secret (`403`). It removes `daemon.json` on a clean exit.
 
@@ -426,6 +440,7 @@ The splice answers a request it refuses or fails with `{"jsonrpc": "2.0", "id": 
 | Bind failed | `4001` | `hermes_device_bind`, plus `data.hub_error` with the hub's error code (`unauthorized`, or `hub_unreachable` when the hub gave none). When the hub itself fails a bind or a binding lookup, `data.hub_error` is the plugin's error code, or `backend_unavailable` when the plugin gave none |
 | Session bound to another device (hub only) | `4001` | `hermes_device_other_device` |
 | Session not bound to this device (hub only) | `4001` | `hermes_device_not_bound` |
+| No session to resume: no session bound to this device for a latest resume, or none with the title (splice only) | `4001` | `hermes_device_not_found` |
 | Message is not one JSON object, such as a batch (hub only) | `-32600` | none, `id` is `null` |
 | Request id that is not a string or a number (hub only) | `-32600` | none, `id` is `null` |
 | Request id that starts with `hermes-hub-` (hub only) | `-32600` | none |
