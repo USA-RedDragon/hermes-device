@@ -36,6 +36,25 @@ const (
 	kLastSequence    = "last_sequence"
 	kExecGen         = "execution_generation"
 	errInvalidParams = "invalid_params"
+	errInternal      = "internal error"
+	kPayload         = "payload"
+	kModel           = "model"
+	kReasoning       = "reasoning"
+	kTotal           = "total"
+	kScope           = "scope"
+	kSession         = "session"
+	kTerminal        = "terminal"
+	kArgs            = "args"
+	kIsError         = "is_error"
+	kDuration        = "duration_s"
+	kLocal           = "local"
+	kCode            = "code"
+	kProvider        = "provider"
+	kSmall           = "small"
+	kMessage         = "message"
+	kRevision        = "revision"
+	kOperation       = "operation"
+	kTitle           = "title"
 	jsonRPCVersion   = "2.0"
 	toolReadFile     = "read_file"
 )
@@ -58,6 +77,15 @@ type Session struct {
 	ShowReasoning bool
 	// Pending is the snapshot's pending list: queued inputs and lost (unknown) turns.
 	Pending []gateway.PendingAdmission
+	// Revision is the runtime revision session.mutate is fenced on. Turns
+	// and settings changes move it, as in Hermes.
+	Revision int64
+	Archived bool
+	Model    string
+	Provider string
+	CWD      string
+	// Effort is the reasoning effort; "" is the profile default.
+	Effort string
 
 	epoch   string
 	seq     int64
@@ -81,6 +109,11 @@ type Gateway struct {
 	logins   int
 	// HoldTurns stops prompt.submit from running its scripted turn.
 	HoldTurns bool
+	// Providers is what model.options reports.
+	Providers []gateway.ModelProvider
+	// ConfirmModels need a confirmation token before session.mutate
+	// commits them.
+	ConfirmModels []string
 }
 
 type conn struct {
@@ -109,10 +142,17 @@ func randHex() string {
 
 // New starts a fake gateway with the given dashboard credentials.
 func New(username, password string) *Gateway {
+	yes, no := true, false
 	g := &Gateway{
 		Username: username, Password: password,
 		sessions: map[string]*Session{}, tickets: map[string]bool{},
 		cookies: map[string]bool{}, conns: map[*conn]bool{},
+		Providers: []gateway.ModelProvider{
+			{Slug: kLocal, Name: "Local", Models: []string{kSmall, "big", "gone"}, Authenticated: &yes,
+				UnavailableModels: []string{"gone"},
+				Capabilities:      map[string]gateway.ModelCapabilities{kSmall: {Reasoning: false}, "big": {Reasoning: true}}},
+			{Slug: "cloud", Name: "Cloud", Models: []string{"remote"}, Authenticated: &no},
+		},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/password-login", g.login)
@@ -138,7 +178,21 @@ func (g *Gateway) AddSession(s *Session) {
 	s.epoch = randHex()
 	s.prompts = map[string]gateway.Prompt{}
 	s.subs = map[*conn]string{}
+	if s.Model == "" {
+		s.Model, s.Provider = kSmall, kLocal
+	}
 	g.sessions[s.ID] = s
+}
+
+// Session returns a copy of a session's state, or false once it is deleted.
+func (g *Gateway) Session(id string) (Session, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	s, ok := g.sessions[id]
+	if !ok {
+		return Session{}, false
+	}
+	return *s, true
 }
 
 // Calls returns every request received so far.
@@ -198,7 +252,7 @@ func (g *Gateway) RetireSubscriptions(sessionID string) {
 	for c := range s.subs {
 		c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: map[string]any{
 			"type": gateway.ReplayGapEvent, kSessionID: s.ID,
-			"payload": map[string]any{kReplayEpoch: s.epoch, "latest_seq": s.seq}}})
+			kPayload: map[string]any{kReplayEpoch: s.epoch, "latest_seq": s.seq}}})
 	}
 	s.subs = map[*conn]string{}
 }
@@ -321,7 +375,7 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 		_ = ws.CloseNow()
 	}()
 	c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: map[string]any{
-		"type": gateway.ReadyEvent, "payload": map[string]any{"session_authority": true, kReplayEpoch: "x"}}})
+		"type": gateway.ReadyEvent, kPayload: map[string]any{"session_authority": true, kReplayEpoch: "x"}}})
 	for {
 		_, data, err := ws.Read(r.Context())
 		if err != nil {
@@ -338,9 +392,13 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		g.calls = append(g.calls, Call{Method: req.Method, Params: req.Params})
 		result, rerr, after := g.dispatch(c, req.Method, req.Params)
-		g.mu.Unlock()
+		var errFrame map[string]any
 		if rerr != "" {
-			c.send(map[string]any{kJSONRPC: jsonRPCVersion, "id": req.ID, "error": map[string]any{"code": -32000, "message": rerr}})
+			errFrame = g.refusalLocked(req.Method, req.Params, rerr)
+		}
+		g.mu.Unlock()
+		if errFrame != nil {
+			c.send(map[string]any{kJSONRPC: jsonRPCVersion, "id": req.ID, "error": errFrame})
 		} else {
 			c.send(map[string]any{kJSONRPC: jsonRPCVersion, "id": req.ID, kResult: result})
 		}
@@ -348,6 +406,24 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 			go after()
 		}
 	}
+}
+
+// refusalLocked builds an error frame as gateway/session_controls.py does:
+// code 4001, the reason as the message and in data, and for a stale
+// session.mutate the fresh fences.
+func (g *Gateway) refusalLocked(method string, p map[string]any, reason string) map[string]any {
+	switch {
+	case strings.HasPrefix(reason, "unknown method"):
+		return map[string]any{kCode: -32601, kMessage: reason}
+	case reason == errInternal:
+		return map[string]any{kCode: -32603, kMessage: reason}
+	}
+	data := map[string]any{"reason": reason}
+	if s := g.sessions[str(p, kSessionID)]; s != nil && method == gateway.MethodMutate &&
+		(reason == gateway.ReasonRevisionConflict || reason == gateway.ReasonStaleGeneration) {
+		data["revision"], data[kExecGen] = s.Revision, s.Generation
+	}
+	return map[string]any{kCode: 4001, kMessage: reason, "data": data}
 }
 
 func keys(p map[string]any) []string {
@@ -396,10 +472,28 @@ func (g *Gateway) snapshotLocked(c *conn, s *Session) map[string]any {
 	return map[string]any{
 		kSessionID: s.ID, "stored_session_id": s.ID, "messages": msgs, "message_count": len(msgs),
 		"running": s.Running, "authority_epoch": 1, kReplayEpoch: s.epoch, kLastSequence: s.seq,
-		"subscription_id": sub, "revision": 1, kExecGen: s.Generation,
+		"subscription_id": sub, kRevision: s.Revision, kExecGen: s.Generation,
 		"pending": pending, "prompts": prompts,
-		"info": map[string]any{"desktop_protocol": gateway.Subprotocol, "title": s.Title},
+		"info": g.infoLocked(s, true),
 	}
+}
+
+// infoLocked is a session.info payload (gateway/session_local.py
+// local_session_info); full adds the inventory a snapshot carries.
+func (g *Gateway) infoLocked(s *Session, full bool) map[string]any {
+	var title any
+	if s.Title != "" {
+		title = s.Title
+	}
+	info := map[string]any{"desktop_protocol": gateway.Subprotocol, kTitle: title, "source": "gui", kModel: s.Model,
+		"cwd": s.CWD, "reasoning_effort": s.Effort, "reasoning_effort_wire": s.Effort, "fast": false, "lazy": false,
+		"started_at": s.StartedAt}
+	if full {
+		info[kProvider], info["context_length"] = s.Provider, 131072
+		info["usage"] = map[string]any{kModel: s.Model, "input": 0, "output": 0, kReasoning: 0, "prompt": 0,
+			"completion": 0, kTotal: 0, "calls": 0}
+	}
+	return info
 }
 
 func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, string, func()) {
@@ -427,6 +521,10 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 		h = g.hPromptCancel
 	case gateway.MethodResolveLost:
 		h = g.hResolveLost
+	case gateway.MethodMutate:
+		h = g.hMutate
+	case gateway.MethodModelOptions:
+		h = g.hModelOptions
 	default:
 		return nil, "unknown method: " + method, nil
 	}
@@ -434,22 +532,23 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 }
 
 func (g *Gateway) hSessionList(_ *conn, p map[string]any) (any, string, func()) {
-	if !onlyKeys(p, "limit", "title", "include_hidden", "scope") {
+	if !onlyKeys(p, "limit", "title", "include_hidden", kScope) {
 		return nil, errInvalidParams, nil
 	}
-	scope := str(p, "scope")
+	scope := str(p, kScope)
 	if scope == "" {
 		scope = "live"
 	}
+	hidden, _ := p["include_hidden"].(bool)
 	rows := []map[string]any{}
 	for _, s := range g.sessions {
-		if scope == "live" && !s.Live {
+		if scope == "live" && !s.Live || s.Archived && (scope == "stored" || !hidden) {
 			continue
 		}
-		rows = append(rows, map[string]any{kSessionID: s.ID, "id": s.ID, "title": s.Title, "source": "acp",
-			"started_at": s.StartedAt, "message_count": len(s.Messages), "running": s.Running})
+		rows = append(rows, map[string]any{kSessionID: s.ID, "id": s.ID, kTitle: s.Title, "source": "acp",
+			"started_at": s.StartedAt, "message_count": len(s.Messages), "running": s.Running, kModel: s.Model})
 	}
-	return map[string]any{"sessions": rows, "scope": scope}, "", nil
+	return map[string]any{"sessions": rows, kScope: scope}, "", nil
 }
 
 func (g *Gateway) hSessionCreate(c *conn, p map[string]any) (any, string, func()) {
@@ -457,7 +556,8 @@ func (g *Gateway) hSessionCreate(c *conn, p map[string]any) (any, string, func()
 		return nil, errInvalidParams, nil
 	}
 	s := &Session{ID: "local-" + randHex()[:16], Live: true, StartedAt: float64(time.Now().Unix()), epoch: randHex(),
-		prompts: map[string]gateway.Prompt{}, subs: map[*conn]string{}}
+		prompts: map[string]gateway.Prompt{}, subs: map[*conn]string{}, Model: kSmall, Provider: kLocal,
+		CWD: str(p, "cwd")}
 	g.sessions[s.ID] = s
 	return g.snapshotLocked(c, s), "", nil
 }
@@ -465,7 +565,7 @@ func (g *Gateway) hSessionCreate(c *conn, p map[string]any) (any, string, func()
 func (g *Gateway) hSessionResume(c *conn, p map[string]any) (any, string, func()) {
 	s := g.sessions[str(p, kSessionID)]
 	if s == nil {
-		return nil, "not_found", nil
+		return nil, gateway.ReasonNotFound, nil
 	}
 	s.Live = true
 	return g.snapshotLocked(c, s), "", nil
@@ -486,7 +586,7 @@ func (g *Gateway) hSessionDetach(c *conn, p map[string]any) (any, string, func()
 func (g *Gateway) hEventsSince(_ *conn, p map[string]any) (any, string, func()) {
 	s := g.sessions[str(p, kSessionID)]
 	if s == nil {
-		return nil, "not_found", nil
+		return nil, gateway.ReasonNotFound, nil
 	}
 	last, _ := num(p, kLastSequence)
 	if str(p, kReplayEpoch) != s.epoch || last > s.seq {
@@ -505,6 +605,9 @@ func (g *Gateway) hEventsSince(_ *conn, p map[string]any) (any, string, func()) 
 
 func (g *Gateway) hConfigSet(_ *conn, p map[string]any) (any, string, func()) {
 	s := g.sessions[str(p, kSessionID)]
+	if s != nil && str(p, "key") == gateway.ReasoningKey {
+		return g.setReasoning(s, p)
+	}
 	if s == nil || !onlyKeys(p, kSessionID, "profile", "key", "value") || str(p, "key") != "show_reasoning" {
 		return nil, errInvalidParams, nil
 	}
@@ -516,7 +619,7 @@ func (g *Gateway) hConfigSet(_ *conn, p map[string]any) (any, string, func()) {
 	default:
 		return nil, errInvalidParams, nil
 	}
-	return map[string]any{"key": "show_reasoning", "value": "1", "scope": "session"}, "", nil
+	return map[string]any{"key": "show_reasoning", "value": "1", kScope: kSession}, "", nil
 }
 
 func (g *Gateway) hPromptSubmit(c *conn, p map[string]any) (any, string, func()) {
@@ -565,7 +668,7 @@ func (g *Gateway) hApproval(_ *conn, p map[string]any) (any, string, func()) {
 	}
 	delete(s.prompts, pr.PromptID)
 	g.publishLocked(s, "approval.settled", map[string]any{"prompt_id": pr.PromptID, kExecGen: pr.ExecutionGeneration})
-	g.publishLocked(s, "tool.complete", map[string]any{kToolID: "t-approve", kName: "terminal", kResult: str(p, "choice")})
+	g.publishLocked(s, "tool.complete", map[string]any{kToolID: "t-approve", kName: kTerminal, kResult: str(p, "choice")})
 	s.Running = false
 	g.publishLocked(s, "message.complete", map[string]any{kText: "approved: " + str(p, "choice"), kStatus: "complete"})
 	return map[string]any{kStatus: "resolved"}, "", nil
@@ -577,30 +680,46 @@ func (g *Gateway) turn(id, admission, text string) {
 	s := g.sessions[id]
 	// Like Hermes: session.info lists the input with its text, then
 	// message.start names the admission with an empty payload.
+	s.Revision++
 	g.publishLocked(s, gateway.InfoEvent, map[string]any{"pending": []gateway.PendingAdmission{
-		{AdmissionID: admission, Status: "started", Text: text}}})
+		{AdmissionID: admission, Status: "started", Text: text}}, kRevision: s.Revision, kExecGen: s.Generation})
 	g.publishAdmissionLocked(s, "message.start", admission, map[string]any{})
 	if s.ShowReasoning {
 		g.publishLocked(s, "reasoning.delta", map[string]any{kText: "thinking about "})
 		g.publishLocked(s, "reasoning.delta", map[string]any{kText: text})
 	}
 	if text == "approve me" {
-		pr := gateway.Prompt{Kind: "approval", PromptID: "ap-1", ExecutionGeneration: s.Generation, Choices: []string{"once", "deny", "session", "always"}}
+		pr := gateway.Prompt{Kind: "approval", PromptID: "ap-1", ExecutionGeneration: s.Generation, Choices: []string{"once", "deny", kSession, "always"}}
 		cmd := "rm -rf build"
 		pr.Command = &cmd
 		s.prompts[pr.PromptID] = pr
-		g.publishLocked(s, "tool.start", map[string]any{kToolID: "t-approve", kName: "terminal", "args": map[string]any{"command": cmd}})
+		g.publishLocked(s, "tool.start", map[string]any{kToolID: "t-approve", kName: kTerminal, kArgs: map[string]any{"command": cmd}})
 		g.publishLocked(s, "approval.request", pr)
 		return
 	}
-	g.publishLocked(s, "tool.start", map[string]any{kToolID: "t1", kName: toolReadFile, "args": map[string]any{"path": "README.md"}})
-	g.publishLocked(s, "tool.progress", map[string]any{kToolID: "t1", kName: toolReadFile, "progress": 1, "total": 2})
-	g.publishLocked(s, "tool.complete", map[string]any{kToolID: "t1", kName: toolReadFile, kResult: "ok", "duration_s": 0.1})
+	g.publishLocked(s, "tool.start", map[string]any{kToolID: "t1", kName: toolReadFile, kArgs: map[string]any{"path": "README.md"}})
+	g.publishLocked(s, "tool.progress", map[string]any{kToolID: "t1", kName: toolReadFile, "progress": 1, kTotal: 2})
+	switch text {
+	case "edit":
+		g.publishLocked(s, "tool.start", map[string]any{kToolID: "t-edit", kName: "patch", kArgs: map[string]any{"path": "a.go"}})
+		g.publishLocked(s, "tool.complete", map[string]any{kToolID: "t-edit", kName: "patch", kIsError: false,
+			kResult: `{"success": true}`, kDuration: 0.2,
+			"inline_diff": "  review diff\n\x1b[38;2;180;160;255ma/a.go \u2192 b/a.go\x1b[0m\n\x1b[38;2;120;120;140m@@ -1 +1 @@\x1b[0m\n" +
+				"\x1b[38;2;255;255;255;48;2;120;20;20m-old\x1b[0m\n\x1b[38;2;255;255;255;48;2;20;90;20m+new\x1b[0m"})
+	case "run":
+		g.publishLocked(s, "tool.start", map[string]any{kToolID: "t-run", kName: kTerminal, kArgs: map[string]any{"command": "ls"}})
+		g.publishLocked(s, "tool.complete", map[string]any{kToolID: "t-run", kName: kTerminal, kIsError: false,
+			kResult: `{"output": "a.go\nb.go", "exit_code": 0, "error": null}`, kDuration: 1.5})
+	}
+	g.publishLocked(s, "tool.complete", map[string]any{kToolID: "t1", kName: toolReadFile, kResult: "ok", kDuration: 0.1, kIsError: false})
 	g.publishLocked(s, "message.delta", map[string]any{kText: "echo: "})
 	g.publishLocked(s, "message.delta", map[string]any{kText: text})
 	s.Running = false
 	s.Messages = append(s.Messages, map[string]any{"role": "assistant", kText: "echo: " + text})
-	g.publishLocked(s, "message.complete", map[string]any{kText: "echo: " + text, kStatus: "complete"})
+	g.publishLocked(s, "message.complete", map[string]any{kText: "echo: " + text, kStatus: "complete",
+		"usage": map[string]any{kModel: s.Model, "input": 9000, "output": 120, kReasoning: 0, "prompt": 9000, "completion": 120,
+			kTotal: 9120, "calls": 1, "context_used": 9000, "context_max": 131072, "context_percent": 7,
+			"context_source": "provider_usage", "context_estimated": false, "avg_tps": 42.5}})
 }
 
 // hPromptCancel retires a queued input, as Hermes refuses for any other status.
@@ -623,7 +742,7 @@ func (g *Gateway) hResolveLost(_ *conn, p map[string]any) (any, string, func()) 
 func (g *Gateway) dropPending(sid, id, status string, gen *int64) (any, string, func()) {
 	s := g.sessions[sid]
 	if s == nil {
-		return nil, "not_found", nil
+		return nil, gateway.ReasonNotFound, nil
 	}
 	for i, a := range s.Pending {
 		if a.AdmissionID != id {
@@ -633,7 +752,7 @@ func (g *Gateway) dropPending(sid, id, status string, gen *int64) (any, string, 
 			return nil, "stale_generation", nil
 		}
 		s.Pending = slices.Delete(s.Pending, i, i+1)
-		return map[string]any{"admission_id": id, kStatus: "terminal", "outcome": "interrupted"}, "", nil
+		return map[string]any{"admission_id": id, kStatus: kTerminal, "outcome": "interrupted"}, "", nil
 	}
-	return nil, "not_found", nil
+	return nil, gateway.ReasonNotFound, nil
 }

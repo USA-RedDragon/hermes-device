@@ -492,3 +492,19 @@ func (h *fakeHub) CancelInput(context.Context, string, string, string, string) e
 func (h *fakeHub) DismissLost(context.Context, string, string, string, string) error {
 	return hub.ErrUnknownInput
 }
+
+func (h *fakeHub) RenameSession(context.Context, string, string, string, string) error { return nil }
+
+func (h *fakeHub) ArchiveSession(context.Context, string, string, string, bool) error { return nil }
+
+func (h *fakeHub) DeleteSession(context.Context, string, string, string) error { return nil }
+
+func (h *fakeHub) Models(context.Context, string, string, string) (hub.Models, error) {
+	return hub.Models{}, nil
+}
+
+func (h *fakeHub) SetModel(context.Context, string, string, string, string, string, string) (hub.ModelChange, error) {
+	return hub.ModelChange{Status: hub.ModelChanged}, nil
+}
+
+func (h *fakeHub) SetReasoning(context.Context, string, string, string, string) error { return nil }

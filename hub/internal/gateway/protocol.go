@@ -31,6 +31,34 @@ const (
 	MethodSteer         = "session.steer"
 	MethodApproval      = "approval.respond"
 	MethodConfigSet     = "config.set"
+	MethodMutate        = "session.mutate"
+	MethodModelOptions  = "model.options"
+)
+
+// session.mutate operations (hermes_state_mutations.py validate_action).
+const (
+	OpRename  = "rename"
+	OpArchive = "archive"
+	OpDelete  = "delete"
+	OpModel   = "model"
+)
+
+// Refusal reasons the hub acts on. A refusal is a JSON-RPC error whose
+// message is the reason (gateway/session_controls.py _refusal_data).
+const (
+	ReasonRevisionConflict = "revision_conflict"
+	ReasonStaleGeneration  = "stale_generation"
+	ReasonSessionBusy      = "session_busy"
+	ReasonUnknownExecution = "unknown_execution"
+	ReasonInvalidParams    = "invalid_params"
+	ReasonNotFound         = "not_found"
+	ReasonModelResolution  = "model_resolution_failed"
+)
+
+// Session events the hub reads besides the turn events.
+const (
+	UpdatedEvent = "session.updated"
+	UsageEvent   = "session.usage"
 )
 
 // Approval choices (gateway/session_pending_controls.py).
@@ -51,10 +79,18 @@ type Event struct {
 	AdmissionID         string          `json:"admission_id,omitempty"`
 }
 
-// ListParams is session.list's params.
+// session.list scopes.
+const (
+	ScopeLive   = "live"
+	ScopeStored = "stored"
+)
+
+// ListParams is session.list's params. IncludeHidden also lists archived
+// and hidden sessions, with nothing in the row to tell them apart.
 type ListParams struct {
-	Scope string `json:"scope"`
-	Limit int    `json:"limit"`
+	Scope         string `json:"scope"`
+	Limit         int    `json:"limit"`
+	IncludeHidden bool   `json:"include_hidden,omitempty"`
 }
 
 // ListRow is one session.list row.
@@ -97,10 +133,44 @@ type Prompt struct {
 	Question            *string  `json:"question,omitempty"`
 }
 
-// SnapshotInfo is the part of a snapshot's info the hub reads.
+// SnapshotInfo is the part of a snapshot's info, and of a session.info
+// payload, the hub reads (gateway/session_local.py local_session_info and
+// gateway/session_local_inventory.py snapshot_info). Usage has the shape of
+// message.complete's usage (gateway/session_usage.py tui_usage).
 type SnapshotInfo struct {
-	Title *string `json:"title,omitempty"`
-	Model *string `json:"model,omitempty"`
+	Title           *string         `json:"title,omitempty"`
+	Model           *string         `json:"model,omitempty"`
+	Provider        *string         `json:"provider,omitempty"`
+	CWD             *string         `json:"cwd,omitempty"`
+	ReasoningEffort *string         `json:"reasoning_effort,omitempty"`
+	ContextLength   *int64          `json:"context_length,omitempty"`
+	Usage           json.RawMessage `json:"usage,omitempty"`
+}
+
+// UnmarshalJSON reads each field on its own and skips one of an unexpected
+// type, so a change in a field the hub only displays cannot stop a session
+// from opening.
+func (i *SnapshotInfo) UnmarshalJSON(b []byte) error {
+	var m map[string]json.RawMessage
+	_ = json.Unmarshal(b, &m)
+	str := func(k string) *string {
+		var s string
+		if string(m[k]) == "null" || json.Unmarshal(m[k], &s) != nil {
+			return nil
+		}
+		return &s
+	}
+	*i = SnapshotInfo{Title: str("title"), Model: str("model"), Provider: str("provider"), CWD: str("cwd"),
+		ReasoningEffort: str("reasoning_effort")}
+	var n float64
+	if json.Unmarshal(m["context_length"], &n) == nil {
+		v := int64(n)
+		i.ContextLength = &v
+	}
+	if u := m["usage"]; len(u) > 0 && u[0] == '{' {
+		i.Usage = u
+	}
+	return nil
 }
 
 // Admission statuses in a snapshot's pending list.
@@ -124,10 +194,87 @@ type PendingAdmission struct {
 // list; message.start names the admission it started but not its text.
 const InfoEvent = "session.info"
 
-// InfoPayload is the part of a session.info payload the hub reads.
+// InfoPayload is the part of a session.info payload the hub reads. The
+// pending list and revision come in their own session.info frames
+// (gateway/session_authority.py _publish_pending); the session's settings
+// come in others.
 type InfoPayload struct {
-	Pending []PendingAdmission `json:"pending"`
+	Pending  []PendingAdmission `json:"pending"`
+	Revision *int64             `json:"revision"`
 }
+
+// MutateParams is session.mutate's params. ExpectedGeneration is required
+// for delete, model and reasoning, and refused as null by none.
+type MutateParams struct {
+	SessionID          string `json:"session_id"`
+	RequestID          string `json:"request_id"`
+	ExpectedRevision   int64  `json:"expected_revision"`
+	Operation          string `json:"operation"`
+	Payload            any    `json:"payload"`
+	ExpectedGeneration *int64 `json:"expected_generation,omitempty"`
+}
+
+// MutateResult is the part of a session.mutate result the hub reads.
+// Status is set only by a model pick that did not commit: "deferred" while
+// a turn runs, "confirmation_required", or "noop".
+type MutateResult struct {
+	Revision            *int64 `json:"revision"`
+	ExecutionGeneration *int64 `json:"execution_generation"`
+	Status              string `json:"status"`
+	Confirm             string `json:"confirm"`
+	ConfirmMessage      string `json:"confirm_message"`
+}
+
+// Fences is the fresh revision and generation a revision_conflict or
+// stale_generation refusal carries in its data.
+type Fences struct {
+	Revision            *int64 `json:"revision"`
+	ExecutionGeneration *int64 `json:"execution_generation"`
+}
+
+// ModelPayload is session.mutate's payload for the model operation.
+type ModelPayload struct {
+	Model    string `json:"model"`
+	Provider string `json:"provider,omitempty"`
+	Confirm  string `json:"confirm,omitempty"`
+}
+
+// ModelOptionsParams is model.options's params.
+type ModelOptionsParams struct {
+	SessionID string `json:"session_id"`
+}
+
+// ModelCapabilities is one model's capabilities in a model.options row.
+type ModelCapabilities struct {
+	Reasoning           bool  `json:"reasoning"`
+	CanDisableReasoning *bool `json:"can_disable_reasoning"`
+}
+
+// ModelProvider is one provider row of model.options.
+type ModelProvider struct {
+	Slug              string                       `json:"slug"`
+	Name              string                       `json:"name"`
+	Models            []string                     `json:"models"`
+	Authenticated     *bool                        `json:"authenticated"`
+	UnavailableModels []string                     `json:"unavailable_models"`
+	Capabilities      map[string]ModelCapabilities `json:"capabilities"`
+}
+
+// ModelOptionsResult is model.options's result.
+type ModelOptionsResult struct {
+	Providers []ModelProvider `json:"providers"`
+	Model     string          `json:"model"`
+	Provider  string          `json:"provider"`
+}
+
+// ReasoningKey is the config.set key for a session's reasoning effort
+// (gateway/session_tui_config.py _set_command_setting). It runs the fenced
+// mutation itself and holds the change while a turn runs.
+const ReasoningKey = "reasoning"
+
+// ReasoningReset is the reasoning value that returns a session to the
+// profile's default effort.
+const ReasoningReset = "reset"
 
 // AdmissionParams is prompt.cancel's params.
 type AdmissionParams struct {
@@ -154,6 +301,7 @@ type Snapshot struct {
 	Prompts             []Prompt           `json:"prompts"`
 	Pending             []PendingAdmission `json:"pending"`
 	Info                SnapshotInfo       `json:"info"`
+	Revision            int64              `json:"revision"`
 }
 
 // DetachParams is session.detach's params.

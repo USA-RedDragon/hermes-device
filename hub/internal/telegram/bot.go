@@ -366,6 +366,7 @@ func (b *Bot) listSessions(ctx context.Context, chatID int64, user string) {
 		b.reportErr(ctx, chatID, user, "list sessions", err)
 		return
 	}
+	list = slices.DeleteFunc(list, func(s hub.Session) bool { return s.Archived })
 	if len(list) == 0 {
 		b.sendText(ctx, chatID, "No sessions yet. Send a message or /new to start one.")
 		return
@@ -509,7 +510,11 @@ func (b *Bot) prompt(ctx context.Context, chatID int64, user, text string) {
 			return
 		}
 	case a.closed():
-		if err := b.attach(ctx, chatID, user, a.backendID, a.sessionID, a.lastSeq.Load()); err != nil {
+		err := b.attach(ctx, chatID, user, a.backendID, a.sessionID, a.lastSeq.Load())
+		if errors.Is(err, hub.ErrUnknownSession) {
+			_, err = b.startSession(ctx, chatID, user, a.backendID)
+		}
+		if err != nil {
 			b.reportErr(ctx, chatID, user, "reattach", err)
 			return
 		}

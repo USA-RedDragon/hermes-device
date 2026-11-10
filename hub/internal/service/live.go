@@ -31,17 +31,20 @@ type live struct {
 	epoch      string
 	gwSeq      int64
 	generation int64
-	prompts    map[string]gateway.Prompt
-	inputs     map[string]gateway.PendingAdmission
+	// revision is the session's runtime revision, which session.mutate
+	// is fenced on. Turns and settings changes move it.
+	revision int64
+	prompts  map[string]gateway.Prompt
+	inputs   map[string]gateway.PendingAdmission
 	// texts remembers each pending input's text until its turn starts, so
 	// message.start can carry it and a replay shows who said what.
-	texts map[string]string
-	seq        int64
-	snapshot   hub.Event
-	ring       []hub.Event
-	truncated  bool
-	viewers    map[*viewer]struct{}
-	idleTimer  *time.Timer
+	texts     map[string]string
+	seq       int64
+	snapshot  hub.Event
+	ring      []hub.Event
+	truncated bool
+	viewers   map[*viewer]struct{}
+	idleTimer *time.Timer
 }
 
 type viewer struct {
@@ -166,6 +169,25 @@ func (ls *live) withText(ev gateway.Event) json.RawMessage {
 	return out
 }
 
+// setFences takes the fences a stale-fence refusal carries as they are.
+// ls.mu is held.
+func (ls *live) setFences(f gateway.Fences) {
+	ls.revision = *f.Revision
+	if f.ExecutionGeneration != nil {
+		ls.generation = *f.ExecutionGeneration
+	}
+}
+
+// fences records a newer revision and generation. ls.mu is held.
+func (ls *live) fences(revision, generation *int64) {
+	if revision != nil && *revision > ls.revision {
+		ls.revision = *revision
+	}
+	if generation != nil && *generation > ls.generation {
+		ls.generation = *generation
+	}
+}
+
 func (ls *live) setPrompts(ps []gateway.Prompt) {
 	ls.prompts = map[string]gateway.Prompt{}
 	for _, p := range ps {
@@ -198,8 +220,16 @@ func (ls *live) apply(ev gateway.Event) {
 	switch ev.Type {
 	case gateway.InfoEvent:
 		var p gateway.InfoPayload
-		if json.Unmarshal(ev.Payload, &p) == nil && p.Pending != nil {
-			ls.setInputs(p.Pending)
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			if p.Pending != nil {
+				ls.setInputs(p.Pending)
+			}
+			ls.fences(p.Revision, nil)
+		}
+	case gateway.UpdatedEvent:
+		var p gateway.MutateResult
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			ls.fences(p.Revision, p.ExecutionGeneration)
 		}
 	case hub.KindMessageStart:
 		ev.Payload = ls.withText(ev)

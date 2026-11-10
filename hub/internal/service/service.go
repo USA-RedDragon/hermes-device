@@ -210,7 +210,7 @@ func (s *Service) Attach(ctx context.Context, user, backendID, sessionID string,
 	}
 	ls, err := b.session(ctx, sessionID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, refusal(err)
 	}
 	ch, cancel := ls.attach(sinceSeq)
 	ls.unpin()
@@ -229,7 +229,7 @@ func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text s
 	}
 	ls, err := b.session(ctx, sessionID)
 	if err != nil {
-		return err
+		return refusal(err)
 	}
 	defer ls.unpin()
 	return b.call(ctx, ls, gateway.MethodPromptSubmit, gateway.SubmitParams{
@@ -245,7 +245,7 @@ func (s *Service) Interrupt(ctx context.Context, user, backendID, sessionID stri
 	}
 	ls, err := b.session(ctx, sessionID)
 	if err != nil {
-		return err
+		return refusal(err)
 	}
 	defer ls.unpin()
 	ls.mu.Lock()
@@ -263,7 +263,7 @@ func (s *Service) RespondApproval(ctx context.Context, user, backendID, sessionI
 	}
 	ls, err := b.session(ctx, sessionID)
 	if err != nil {
-		return err
+		return refusal(err)
 	}
 	defer ls.unpin()
 	ls.mu.Lock()
@@ -310,7 +310,7 @@ func (s *Service) input(ctx context.Context, user, backendID, sessionID, inputID
 	}
 	ls, err := b.session(ctx, sessionID)
 	if err != nil {
-		return err
+		return refusal(err)
 	}
 	defer ls.unpin()
 	ls.mu.Lock()
@@ -518,14 +518,18 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 	cctx, cancel := b.timeout(ctx)
 	defer cancel()
 	rows := map[string]hub.Session{}
-	for _, scope := range []string{"stored", "live"} {
+	// The live list with include_hidden adds archived (and hidden)
+	// sessions; the plain live list that follows clears the flag again.
+	lists := []gateway.ListParams{{Scope: gateway.ScopeStored, Limit: 200},
+		{Scope: gateway.ScopeLive, Limit: 200, IncludeHidden: true}, {Scope: gateway.ScopeLive, Limit: 200}}
+	for _, lp := range lists {
 		var res gateway.ListResult
-		if err := c.Call(cctx, gateway.MethodSessionList, gateway.ListParams{Scope: scope, Limit: 200}, &res); err != nil {
+		if err := c.Call(cctx, gateway.MethodSessionList, lp, &res); err != nil {
 			return nil, err
 		}
 		for _, r := range res.Sessions {
-			s := hub.Session{ID: r.SessionID, BackendID: b.cfg.ID, Title: r.Title, Live: scope == "live",
-				Running: r.Running, MessageCount: r.MessageCount}
+			s := hub.Session{ID: r.SessionID, BackendID: b.cfg.ID, Title: r.Title, Live: lp.Scope == gateway.ScopeLive,
+				Running: r.Running, MessageCount: r.MessageCount, Archived: lp.IncludeHidden}
 			if r.StartedAt != nil {
 				s.UpdatedAt = time.UnixMilli(int64(*r.StartedAt * 1000))
 			}
@@ -659,6 +663,7 @@ func (b *backend) ensure(ctx context.Context, ls *live) (*gateway.Client, error)
 			ls.mu.Lock()
 			ls.subID = snap.SubscriptionID
 			ls.generation = max(ls.generation, snap.ExecutionGeneration)
+			ls.revision = max(ls.revision, snap.Revision)
 			ls.setPrompts(snap.Prompts)
 			ls.setInputs(snap.Pending)
 			ls.flushEarly()
@@ -735,7 +740,7 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 		}
 	}
 	data, err := json.Marshal(hub.Snapshot{SessionID: snap.SessionID, BackendID: b.cfg.ID, Title: title,
-		Running: snap.Running, Messages: msgs, Prompts: prompts, Pending: pending})
+		Running: snap.Running, Messages: msgs, Prompts: prompts, Pending: pending, Info: info(snap.Info)})
 	if err != nil {
 		b.log.Warn("encode snapshot", "session", snap.SessionID, "error", err.Error())
 		data = json.RawMessage(`{}`)
@@ -743,7 +748,7 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
 	ls.subID, ls.epoch, ls.gwSeq = snap.SubscriptionID, snap.ReplayEpoch, snap.LastSequence
-	ls.generation = snap.ExecutionGeneration
+	ls.generation, ls.revision = snap.ExecutionGeneration, snap.Revision
 	ls.setPrompts(snap.Prompts)
 	ls.setInputs(snap.Pending)
 	ls.ring, ls.truncated = nil, false
@@ -754,6 +759,21 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 		ls.emit(ev.Type, ev.Payload)
 	}
 	ls.flushEarly()
+}
+
+func info(i gateway.SnapshotInfo) hub.Info {
+	str := func(p *string) string {
+		if p == nil {
+			return ""
+		}
+		return *p
+	}
+	out := hub.Info{Model: str(i.Model), Provider: str(i.Provider), CWD: str(i.CWD),
+		ReasoningEffort: str(i.ReasoningEffort), Usage: i.Usage}
+	if i.ContextLength != nil {
+		out.ContextLength = *i.ContextLength
+	}
+	return out
 }
 
 // currentTurn is the frames of the running turn: those after the last

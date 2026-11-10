@@ -24,13 +24,14 @@ type sessionJSON struct {
 	Title        string    `json:"title"`
 	Live         bool      `json:"live"`
 	Running      bool      `json:"running"`
+	Archived     bool      `json:"archived"`
 	MessageCount int       `json:"message_count"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func toJSON(s hub.Session) sessionJSON {
 	return sessionJSON{ID: s.ID, BackendID: s.BackendID, Title: s.Title, Live: s.Live,
-		Running: s.Running, MessageCount: s.MessageCount, UpdatedAt: s.UpdatedAt}
+		Running: s.Running, Archived: s.Archived, MessageCount: s.MessageCount, UpdatedAt: s.UpdatedAt}
 }
 
 func (s *Server) handleBackends(w http.ResponseWriter, r *http.Request) {
@@ -144,6 +145,81 @@ func (s *Server) handleDismissLost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) inputAction(w http.ResponseWriter, r *http.Request,
 	fn func(ctx context.Context, user, backendID, sessionID, inputID string) error) {
 	if err := fn(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), r.PathValue("input")); err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title string `json:"title"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	s.done(w, s.svc.RenameSession(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), body.Title))
+}
+
+func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Archived bool `json:"archived"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	s.done(w, s.svc.ArchiveSession(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), body.Archived))
+}
+
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	s.done(w, s.svc.DeleteSession(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session")))
+}
+
+type modelsJSON struct {
+	hub.Models
+	Efforts []string `json:"efforts"`
+}
+
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	m, err := s.svc.Models(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, modelsJSON{Models: m, Efforts: hub.ReasoningEfforts()})
+}
+
+func (s *Server) handleSetModel(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		Confirm  string `json:"confirm"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	res, err := s.svc.SetModel(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"),
+		body.Provider, body.Model, body.Confirm)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleSetReasoning(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Effort string `json:"effort"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	s.done(w, s.svc.SetReasoning(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), body.Effort))
+}
+
+// done answers 202 for a change the service made, or the error.
+func (s *Server) done(w http.ResponseWriter, err error) {
+	if err != nil {
 		s.fail(w, err)
 		return
 	}

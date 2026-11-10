@@ -17,8 +17,10 @@ type Backend struct {
 type Session struct {
 	ID, BackendID, Title string
 	Live, Running        bool
-	MessageCount         int
-	UpdatedAt            time.Time
+	// Archived sessions are hidden from the gateway's normal list.
+	Archived     bool
+	MessageCount int
+	UpdatedAt    time.Time
 }
 
 // Event kinds delivered on an attached session.
@@ -59,6 +61,66 @@ type Service interface {
 	CancelInput(ctx context.Context, user, backendID, sessionID, inputID string) error
 	// DismissLost resolves a lost input so the inputs queued after it run.
 	DismissLost(ctx context.Context, user, backendID, sessionID, inputID string) error
+	// RenameSession sets a session's title.
+	RenameSession(ctx context.Context, user, backendID, sessionID, title string) error
+	// ArchiveSession hides a session from the list, or shows it again.
+	ArchiveSession(ctx context.Context, user, backendID, sessionID string, archived bool) error
+	// DeleteSession deletes a session for good. It fails with ErrBusy
+	// while the session runs or has inputs waiting.
+	DeleteSession(ctx context.Context, user, backendID, sessionID string) error
+	// Models lists the models the session's backend can use.
+	Models(ctx context.Context, user, backendID, sessionID string) (Models, error)
+	// SetModel picks the session's model. confirm is the Confirm of an
+	// earlier result that asked for confirmation.
+	SetModel(ctx context.Context, user, backendID, sessionID, provider, model, confirm string) (ModelChange, error)
+	// SetReasoning sets the session's reasoning effort: one of
+	// ReasoningEfforts, or "" for the backend's default.
+	SetReasoning(ctx context.Context, user, backendID, sessionID, effort string) error
+}
+
+// Models is the model choice of one session.
+type Models struct {
+	Provider  string          `json:"provider"`
+	Model     string          `json:"model"`
+	Providers []ModelProvider `json:"providers"`
+}
+
+// ModelProvider is one provider and the models it offers.
+type ModelProvider struct {
+	ID     string        `json:"id"`
+	Name   string        `json:"name"`
+	Models []ModelChoice `json:"models"`
+}
+
+// ModelChoice is one model. Reasoning is false when the model has no
+// reasoning effort to set; CanDisableReasoning is false when its reasoning
+// cannot be turned off.
+type ModelChoice struct {
+	ID                  string `json:"id"`
+	Reasoning           bool   `json:"reasoning"`
+	CanDisableReasoning bool   `json:"can_disable_reasoning"`
+}
+
+// Model change outcomes.
+const (
+	ModelChanged   = "changed"
+	ModelDeferred  = "deferred"
+	ModelUnchanged = "unchanged"
+	ModelConfirm   = "confirm"
+)
+
+// ModelChange is the outcome of SetModel. With Status ModelConfirm nothing
+// changed: Message says why, and SetModel with Confirm applies it.
+type ModelChange struct {
+	Status  string `json:"status"`
+	Confirm string `json:"confirm,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// ReasoningEfforts are the reasoning efforts SetReasoning takes besides
+// "" (the backend's default). "none" turns reasoning off.
+func ReasoningEfforts() []string {
+	return []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 }
 
 // Links maps external identities to hub users.
@@ -85,6 +147,8 @@ const (
 	// KindBackendStatus reports the backend connection: Data is
 	// {"connected": bool}.
 	KindBackendStatus = "backend.status"
+	// KindSessionDeleted ends the stream of a deleted session.
+	KindSessionDeleted = "session.deleted"
 )
 
 // Snapshot is the Data of a KindSnapshot event. Messages and Prompts are
@@ -97,6 +161,20 @@ type Snapshot struct {
 	Messages  []json.RawMessage `json:"messages"`
 	Prompts   []json.RawMessage `json:"prompts"`
 	Pending   []Pending         `json:"pending"`
+	Info      Info              `json:"info"`
+}
+
+// Info is a session's settings and its latest usage, for a status line.
+// Usage is the gateway's usage object, passed through: model,
+// context_used, context_max, context_percent, avg_tps and more, each only
+// when known.
+type Info struct {
+	Model           string          `json:"model,omitempty"`
+	Provider        string          `json:"provider,omitempty"`
+	CWD             string          `json:"cwd,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	ContextLength   int64           `json:"context_length,omitempty"`
+	Usage           json.RawMessage `json:"usage,omitempty"`
 }
 
 // Pending is an input that has not run yet: "queued" behind the running

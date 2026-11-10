@@ -131,6 +131,9 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 		r.decode(ev, &p)
 		r.sealThinking(ctx)
 		r.send(ctx, "<b>Error:</b> "+escapeHTML(truncate(p.Message, 3000)), nil)
+	case hub.KindSessionDeleted:
+		r.sealThinking(ctx)
+		r.send(ctx, "This session was deleted. Send /sessions to pick another one.", nil)
 	default:
 		r.logger.Debug("Ignoring event", "kind", ev.Kind, "seq", ev.Seq)
 	}

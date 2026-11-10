@@ -129,6 +129,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/sessions/{backend}/{session}/approvals/{approval}", s.api(s.handleApproval))
 	mux.Handle("POST /api/sessions/{backend}/{session}/inputs/{input}/cancel", s.api(s.handleCancelInput))
 	mux.Handle("POST /api/sessions/{backend}/{session}/inputs/{input}/dismiss", s.api(s.handleDismissLost))
+	mux.Handle("POST /api/sessions/{backend}/{session}/rename", s.api(s.handleRename))
+	mux.Handle("POST /api/sessions/{backend}/{session}/archive", s.api(s.handleArchive))
+	mux.Handle("POST /api/sessions/{backend}/{session}/delete", s.api(s.handleDelete))
+	mux.Handle("GET /api/sessions/{backend}/{session}/models", s.api(s.handleModels))
+	mux.Handle("POST /api/sessions/{backend}/{session}/model", s.api(s.handleSetModel))
+	mux.Handle("POST /api/sessions/{backend}/{session}/reasoning", s.api(s.handleSetReasoning))
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
 	return headers(mux)
@@ -196,6 +202,18 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		errorJSON(w, http.StatusNotFound, "no such pending approval")
 	case errors.Is(err, hub.ErrUnknownInput):
 		errorJSON(w, http.StatusNotFound, "that message is no longer waiting")
+	case errors.Is(err, hub.ErrUnknownSession):
+		errorJSON(w, http.StatusNotFound, "that chat no longer exists")
+	case errors.Is(err, hub.ErrBusy):
+		errorJSON(w, http.StatusConflict, "Hermes is still working on this chat. Stop it or wait until it is done, then try again")
+	case errors.Is(err, hub.ErrTitleInUse):
+		errorJSON(w, http.StatusConflict, "Hermes did not accept that name. Another chat may already use it")
+	case errors.Is(err, hub.ErrBadValue):
+		msg := strings.TrimPrefix(err.Error(), hub.ErrBadValue.Error()+": ")
+		if !strings.Contains(msg, " ") {
+			msg = "Hermes did not accept that"
+		}
+		errorJSON(w, http.StatusBadRequest, msg)
 	default:
 		s.log.Warn("request failed", "error", err.Error())
 		msg := err.Error()
