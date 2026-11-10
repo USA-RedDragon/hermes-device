@@ -390,7 +390,11 @@ func TestSessionRewrites(t *testing.T) {
 		if _, ok := p["mcp_servers"]; ok {
 			t.Errorf("%s: mcp_servers kept", method)
 		}
-		if p["sessionId"] != "s1" {
+		want := any("s1")
+		if method == "session/new" {
+			want = nil
+		}
+		if p["sessionId"] != want {
 			t.Errorf("%s: sessionId %v", method, p["sessionId"])
 		}
 	}
@@ -709,6 +713,75 @@ func TestOtherDeviceRefused(t *testing.T) {
 	}
 }
 
+// TestParamsPinned checks that no _meta member reaches the ACP SDK, which
+// merges params._meta (or params.field_meta) into the handler's keyword
+// arguments, so {"_meta":{"session_id":...}} would replace the session id
+// acp-host checked and {"_meta":{"cwd":...}} the placeholder.
+func TestParamsPinned(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	writeBindings(t, h)
+	conn := h.dial()
+	for _, msg := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"s1","prompt":[{"type":"text","text":"hi"}],"_meta":{"session_id":"s4"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"s1","prompt":[],"field_meta":{"session_id":"s4"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"s1","prompt":[],"\u005fmeta":{"session_id":"s4"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/home/alice","mcpServers":[],"_meta":{"cwd":"/opt/data"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"s1","cwd":"/home/alice","mcpServers":[],"_meta":{"cwd":"/opt/data","session_id":"s4"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"session/set_config_option","params":{"sessionId":"s1","configId":"c","value":"v","_meta":{"session_id":"s4"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"_meta":{"protocol_version":2}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"other/method","params":{"a":1,"_meta":{"session_id":"s4"},"field_meta":{}}}`,
+	} {
+		p := echoed(t, conn, msg)
+		for _, k := range []string{"_meta", "field_meta"} {
+			if _, ok := p[k]; ok {
+				t.Errorf("%s: %s reached hermes: %v", msg, k, p)
+			}
+		}
+		if cwd, ok := p["cwd"]; ok && cwd != placeholder {
+			t.Errorf("%s: cwd %v", msg, cwd)
+		}
+		if sid, ok := p["sessionId"]; ok && sid != "s1" {
+			t.Errorf("%s: sessionId %v", msg, sid)
+		}
+	}
+
+	p := echoed(t, conn, `{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"session_id":"s4","sessionId":"s1",
+		"prompt":[{"type":"text","text":"hi","_meta":{"k":"v"}}],"messageId":"m","extra":1}}`)
+	if p["sessionId"] != "s1" || p["session_id"] != nil || p["extra"] != nil || p["messageId"] != "m" {
+		t.Errorf("prompt params not pinned: %v", p)
+	}
+	blocks, _ := p["prompt"].([]any)
+	if len(blocks) != 1 || asMap(t, blocks[0])["_meta"] == nil {
+		t.Errorf("a content block lost its _meta, which the SDK does not merge: %v", p["prompt"])
+	}
+	p = echoed(t, conn, `{"jsonrpc":"2.0","id":3,"method":"session/set_mode","params":{"session_id":"s1","mode_id":"m"}}`)
+	if p["sessionId"] != "s1" || p["modeId"] != "m" || len(p) != 2 {
+		t.Errorf("field names not folded into aliases: %v", p)
+	}
+	p = echoed(t, conn, `{"jsonrpc":"2.0","id":4,"method":"other/method","params":[1]}`)
+	if p != nil {
+		t.Errorf("array params of an unknown method changed: %v", p)
+	}
+
+	for _, msg := range []string{
+		`{"jsonrpc":"2.0","id":5,"method":"session/set_config_option","params":{"sessionId":"s4","configId":"c","value":"v"}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"session/set_mode","params":{"session_id":"s4","modeId":"m"}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"session/set_model","params":{"sessionId":"s4","modelId":"m"}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"s4"}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"other/method","params":{"session_id":"s4"}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":["s1",[]]}`,
+	} {
+		send(t, conn, msg)
+		r, data := recv(t, conn)
+		if r.Error == nil || r.Error.Code != codeInvalidParams {
+			t.Errorf("%s: got %s", msg, data)
+		}
+	}
+	send(t, conn, `{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s4"}}`)
+	echoed(t, conn, `{"jsonrpc":"2.0","id":6,"method":"initialize","params":{}}`)
+}
+
 func TestGatewayHealthGate(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
@@ -773,8 +846,8 @@ func TestNotificationsGetNoAnswer(t *testing.T) {
 	conn := h.dial()
 	send(t, conn, `{"jsonrpc":"2.0","method":"session/prompt","params":{"prompt":"x"}}`)
 	send(t, conn, `{"jsonrpc":"2.0","method":"session/new","params":[]}`)
-	p := echoed(t, conn, `{"jsonrpc":"2.0","id":5,"method":"initialize","params":{"x":1}}`)
-	if p["x"] != float64(1) {
+	p := echoed(t, conn, `{"jsonrpc":"2.0","id":5,"method":"initialize","params":{"protocolVersion":1}}`)
+	if p["protocolVersion"] != float64(1) {
 		t.Errorf("params %v", p)
 	}
 }

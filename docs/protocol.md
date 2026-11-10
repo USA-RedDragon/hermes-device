@@ -451,21 +451,42 @@ When no gateway answers, `hermes acp` starts one itself (hermes_cli/gateway_clie
 - starts a child only while the gateway answers `2xx` on `acp-host.gateway-health-url` (default `http://127.0.0.1:9120/api/health`, a public route), and otherwise closes the connection with `1013`;
 - makes itself a child subreaper, and every 2 seconds stops (SIGTERM, then SIGKILL 5 seconds later) every process that left a child's process group, and every orphan reparented to it, then reaps it. A gateway that a child starts during a gateway restart is stopped this way.
 
-acp-host also refuses, with JSON-RPC error `-32602` and message `session is bound to another device`, any `session/load`, `session/resume`, `session/fork` or `session/prompt` whose `sessionId` is bound in `bindings.json` to a device other than the assertion's `device_id`. It folds `params.session_id` (the field name the ACP SDK also accepts) into `params.sessionId` first. When `bindings.json` cannot be read or parsed, these calls get `-32603`.
+acp-host also refuses, with JSON-RPC error `-32602` and message `session is bound to another device`, any editor request or notification whose `params.sessionId` (or `params.session_id`) is bound in `bindings.json` to a device other than the assertion's `device_id`. It checks the params after the pinning of 6.2, so it sees the id Hermes will use. When `bindings.json` cannot be read or parsed, these calls get `-32603`.
 
 ### 6.2 acp-host rewrites (editor to agent)
 
+Params pinning comes first, for every editor message with a `method`. The ACP SDK in Hermes (agent-client-protocol 0.9.0) validates params against the method's request model and calls the handler with the model's fields as keyword arguments, then merges `params._meta` into them (acp/router.py `_make_func`, acp/utils.py `model_to_kwargs`). The SDK also accepts each field name in place of its alias (`populate_by_name`), so `field_meta` works as `_meta`, and `session_id` as `sessionId`. A `_meta` member named like a handler argument replaces it: `{"sessionId": <own>, "_meta": {"session_id": <other>}}` would run on the other session after the session check, and `"_meta": {"cwd": ...}` would replace the placeholder. The SDK merges only the top-level `_meta`; a `_meta` inside a content block or capability stays on that object, which Hermes does not read. So:
+
+- For a method the SDK routes to Hermes, acp-host keeps only the members of its request model, each under its alias. A field name folds into the alias; when both are present the alias wins, as in the SDK. Everything else, including `_meta` and `field_meta`, is removed. Params that are not an object are refused (`-32602`).
+
+  | Method | Members kept |
+  |---|---|
+  | `initialize` | `protocolVersion`, `clientCapabilities`, `clientInfo` |
+  | `authenticate` | `methodId` |
+  | `session/new` | `cwd`, `mcpServers` |
+  | `session/load`, `session/resume`, `session/fork` | `sessionId`, `cwd`, `mcpServers` |
+  | `session/list` | `cursor`, `cwd` |
+  | `session/close`, `session/cancel` | `sessionId` |
+  | `session/set_mode` | `sessionId`, `modeId` |
+  | `session/set_model` | `sessionId`, `modelId` |
+  | `session/set_config_option` | `sessionId`, `configId`, `type`, `value` |
+  | `session/prompt` | `sessionId`, `prompt`, `messageId` |
+
+- Any other method loses the `_meta` and `field_meta` members of object params; its other params pass. The SDK answers such methods with method not found today (Hermes registers no extension methods); this covers a method a later SDK adds.
+
+The session check of 6.1 then runs on the pinned params. Removing `_meta` instead of refusing the message keeps editors that send `_meta` working; the SDK would ignore every other unknown member anyway.
+
 | Method | Rewrite |
 |---|---|
-| `session/new`, `session/load`, `session/resume`, `session/fork` | `params.cwd` becomes the placeholder (`acp-host.placeholder`). `params.mcpServers` becomes `[]` and `params.mcp_servers` is removed (the ACP SDK accepts field names as well as aliases): editor MCP servers would run as programs in the pod. The same values on every call keep `session/load` from triggering a workspace move or an MCP rebind |
+| `session/new`, `session/load`, `session/resume`, `session/fork` | `params.cwd` becomes the placeholder (`acp-host.placeholder`). `params.mcpServers` becomes `[]`: editor MCP servers would run as programs in the pod. The same values on every call keep `session/load` from triggering a workspace move or an MCP rebind |
 | `session/list` | `params.cwd`, when present, must be absolute and is removed: TUI sessions keep their device dir as row cwd, so a placeholder filter would hide them (acp_adapter/catalog.py). The request gets an id of acp-host's own, `hermes-device-list-<n>`, and the response gets the editor's id back, so the response is matched whatever id form the editor used (Python re-encodes ids, and treats `"id": null` as a request). The result is filtered (below) |
 | `session/prompt` | Every content block of type `resource_link` is replaced by `{"type": "text", "text": "[hermes-device: link <uri> removed; the bridge inlines device files]"}`. `hermes acp` reads a link as a pod path whatever its form: `file://` in any case, a bare path, or a drive path (acp_adapter/content.py `_path_from_file_uri`) |
 
-Rewritten messages are decoded and encoded again, so a duplicate key keeps its last value, as in Python. acp-host answers these itself and forwards nothing: a message that is not JSON (`-32700`), JSON that is not one object, such as a batch (`-32600`), and `params` of a rewritten method that are not an object, a `prompt` that is not an array, or a relative list `cwd` (`-32602`). A refused notification (no `id` member) gets no answer.
+Rewritten messages are decoded and encoded again, so a duplicate key keeps its last value, as in Python. acp-host answers these itself and forwards nothing: a message that is not JSON (`-32700`), JSON that is not one object, such as a batch (`-32600`), and `params` of a pinned method that are not an object, a `prompt` that is not an array, or a relative list `cwd` (`-32602`). A refused notification (no `id` member) gets no answer.
 
 `session/list` results: acp-host reads `$HERMES_HOME/device/bindings.json` (section 8.2; setting `acp-host.bindings-file` overrides the path) read-only, on every list, keeps only rows whose session is bound to the assertion's `device_id` (and, when the request named a cwd, whose binding dir is that cwd or below it), and sets each kept row's `cwd` to its binding dir. A missing file keeps no rows; so does a file that cannot be read or parsed (logged). `nextCursor` passes unchanged, so a filtered page can be empty while `nextCursor` is still set.
 
-Everything else passes unchanged in both directions, including the agent's requests to the editor (`session/request_permission`, `elicitation/create`).
+Everything else passes unchanged in both directions, including the agent's requests to the editor (`session/request_permission`, `elicitation/create`) and the editor's answers to them.
 
 ### 6.3 Bridge behavior (`hermes-device acp`)
 

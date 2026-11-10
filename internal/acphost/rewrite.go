@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"strings"
@@ -19,6 +20,62 @@ const (
 	methodList   = "session/list"
 	methodPrompt = "session/prompt"
 )
+
+// Params members acp-host reads or writes.
+const (
+	keySessionID      = "sessionId"
+	keySessionIDField = "session_id"
+	keyMCPServers     = "mcpServers"
+)
+
+// metaKeys are the params members the ACP SDK merges into a handler's
+// keyword arguments (agent-client-protocol 0.9.0, acp/router.py
+// _make_func and acp/utils.py model_to_kwargs): the alias _meta and the
+// field name field_meta, which the SDK also accepts. A member there named
+// like a handler argument, such as session_id or cwd, replaces it.
+func metaKeys() []string { return []string{"_meta", "field_meta"} }
+
+// paramKeys lists, for each ACP method the SDK routes to Hermes
+// (acp/agent/router.py), the params members of its request model
+// (acp/schema.py), as alias and field name. The SDK accepts either name
+// (populate_by_name); acp-host keeps only these members, under the alias.
+func paramKeys(method string) (map[string]string, bool) {
+	const cwd = "cwd"
+	keys := func(withSession bool, pairs ...string) map[string]string {
+		m := map[string]string{}
+		if withSession {
+			m[keySessionID] = keySessionIDField
+		}
+		for i := 0; i+1 < len(pairs); i += 2 {
+			m[pairs[i]] = pairs[i+1]
+		}
+		return m
+	}
+	switch method {
+	case "initialize":
+		return keys(false, "protocolVersion", "protocol_version", "clientCapabilities", "client_capabilities",
+			"clientInfo", "client_info"), true
+	case "authenticate":
+		return keys(false, "methodId", "method_id"), true
+	case methodNew:
+		return keys(false, cwd, cwd, keyMCPServers, "mcp_servers"), true
+	case methodLoad, methodResume, methodFork:
+		return keys(true, cwd, cwd, keyMCPServers, "mcp_servers"), true
+	case methodList:
+		return keys(false, "cursor", "cursor", cwd, cwd), true
+	case "session/close", "session/cancel":
+		return keys(true), true
+	case "session/set_mode":
+		return keys(true, "modeId", "mode_id"), true
+	case "session/set_model":
+		return keys(true, "modelId", "model_id"), true
+	case "session/set_config_option":
+		return keys(true, "configId", "config_id", "type", "type", "value", "value"), true
+	case methodPrompt:
+		return keys(true, "messageId", "message_id", "prompt", "prompt"), true
+	}
+	return nil, false
+}
 
 // JSON-RPC error codes acp-host answers with itself.
 const (
@@ -98,17 +155,16 @@ func (r *rewriter) fromEditor(data []byte) ([]byte, error) {
 			return nil, &rpcError{id: m["id"], code: codeInvalidReq, message: "hermes-device acp-host: method must be a string", notify: isNotification(m)}
 		}
 	}
+	if method != "" {
+		if err := r.pinParams(m, method); err != nil {
+			return nil, err
+		}
+	}
 	switch method {
 	case methodNew, methodLoad, methodResume, methodFork:
 		if err := r.rewriteParams(m, func(p object) error {
-			if method != methodNew {
-				if err := r.checkSession(p); err != nil {
-					return err
-				}
-			}
 			p["cwd"] = mustJSON(r.placeholder)
-			p["mcpServers"] = json.RawMessage("[]")
-			delete(p, "mcp_servers")
+			p[keyMCPServers] = json.RawMessage("[]")
 			return nil
 		}); err != nil {
 			return nil, err
@@ -136,12 +192,7 @@ func (r *rewriter) fromEditor(data []byte) ([]byte, error) {
 			m["id"] = mustJSON(own)
 		}
 	case methodPrompt:
-		if err := r.rewriteParams(m, func(p object) error {
-			if err := r.checkSession(p); err != nil {
-				return err
-			}
-			return rewritePrompt(p)
-		}); err != nil {
+		if err := r.rewriteParams(m, rewritePrompt); err != nil {
 			return nil, err
 		}
 	}
@@ -176,18 +227,53 @@ func (r *rewriter) rewriteParams(m object, fn func(object) error) error {
 // connection's.
 var errOtherDevice = errors.New("session is bound to another device")
 
-// checkSession refuses p when its session is bound to another device. It
-// folds the field name session_id, which the ACP SDK also accepts, into
-// sessionId so the check sees the id Hermes will use.
-func (r *rewriter) checkSession(p object) error {
-	if alias, ok := p["session_id"]; ok {
-		if _, has := p["sessionId"]; !has {
-			p["sessionId"] = alias
-		}
-		delete(p, "session_id")
+// pinParams applies the params rules every editor request meets, before
+// the per-method rewrites. For a method the SDK routes, only the members of
+// its request model pass, each under its alias (a field name folds into
+// the alias; with both, the alias wins, as in the SDK), so no _meta
+// reaches the handler. Any other method loses the _meta members of object
+// params, and its other params pass unchanged. Then every session id in
+// params is checked.
+func (r *rewriter) pinParams(m object, method string) error {
+	keys, known := paramKeys(method)
+	if !known && !isObject(m["params"]) {
+		return nil
 	}
-	raw, ok := p["sessionId"]
-	if !ok {
+	return r.rewriteParams(m, func(p object) error {
+		if known {
+			pinned := object{}
+			for alias, field := range keys {
+				if v, ok := p[alias]; ok {
+					pinned[alias] = v
+				} else if v, ok := p[field]; ok {
+					pinned[alias] = v
+				}
+			}
+			clear(p)
+			maps.Copy(p, pinned)
+		} else {
+			for _, k := range metaKeys() {
+				delete(p, k)
+			}
+		}
+		for _, k := range []string{keySessionID, keySessionIDField} {
+			if err := r.checkSession(p[k], len(p[k]) > 0); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// isObject reports whether raw is a JSON object.
+func isObject(raw json.RawMessage) bool {
+	var p object
+	return json.Unmarshal(raw, &p) == nil && p != nil
+}
+
+// checkSession refuses a session id bound to another device.
+func (r *rewriter) checkSession(raw json.RawMessage, present bool) error {
+	if !present {
 		return nil
 	}
 	var sid string
@@ -274,7 +360,7 @@ func (r *rewriter) fromAgent(line []byte) ([]byte, error) {
 	kept := []object{}
 	for _, row := range rows {
 		var sid string
-		if json.Unmarshal(row["sessionId"], &sid) != nil {
+		if json.Unmarshal(row[keySessionID], &sid) != nil {
 			continue
 		}
 		b, ok := bindings[sid]
