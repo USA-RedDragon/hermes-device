@@ -38,11 +38,14 @@ func (f *fakeKeyring) Delete(s, u string) error {
 	return nil
 }
 
-var rec = tokenstore.Record{Hub: "https://hub.example.com", Token: "hdt_x", DeviceID: "d1", DeviceName: "desktop"}
+func record() tokenstore.Record {
+	return tokenstore.Record{Hub: "https://hub.example.com", Token: "hdt_x", DeviceID: "d1", DeviceName: "desktop"}
+}
 
 func TestKeyring(t *testing.T) {
 	t.Parallel()
 	kr := &fakeKeyring{m: map[string]string{}}
+	rec := record()
 	s := &tokenstore.Store{Keyring: kr, File: filepath.Join(t.TempDir(), "token")}
 	where, err := s.Save(rec)
 	if err != nil || where != "keyring" {
@@ -65,6 +68,7 @@ func TestKeyring(t *testing.T) {
 
 func TestFileFallback(t *testing.T) {
 	t.Parallel()
+	rec := record()
 	file := filepath.Join(t.TempDir(), "sub", "token")
 	s := &tokenstore.Store{Keyring: &fakeKeyring{m: map[string]string{}, fail: true}, File: file}
 	where, err := s.Save(rec)

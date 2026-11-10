@@ -38,8 +38,8 @@ type Keyring interface {
 type osKeyring struct{}
 
 func (osKeyring) Get(s, u string) (string, error) { return keyring.Get(s, u) }
-func (osKeyring) Set(s, u, p string) error         { return keyring.Set(s, u, p) }
-func (osKeyring) Delete(s, u string) error         { return keyring.Delete(s, u) }
+func (osKeyring) Set(s, u, p string) error        { return keyring.Set(s, u, p) }
+func (osKeyring) Delete(s, u string) error        { return keyring.Delete(s, u) }
 
 // Store reads and writes the token.
 type Store struct {

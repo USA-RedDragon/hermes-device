@@ -87,13 +87,11 @@ type Expect struct {
 	Path     string
 }
 
-var b64 = base64.RawURLEncoding
-
 // NewNonce returns 16 random bytes, base64url encoded without padding.
 func NewNonce() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
-	return b64.EncodeToString(b)
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 // Sign encodes and signs c. It fills Typ, and Nonce when empty.
@@ -106,8 +104,8 @@ func Sign(key ed25519.PrivateKey, c Claims) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	signed := Prefix + b64.EncodeToString(payload)
-	return signed + "." + b64.EncodeToString(ed25519.Sign(key, []byte(signed))), nil
+	signed := Prefix + base64.RawURLEncoding.EncodeToString(payload)
+	return signed + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, []byte(signed))), nil
 }
 
 // Verifier checks assertions against a set of public keys and remembers
@@ -138,11 +136,11 @@ func (v *Verifier) Verify(encoded string, want Expect) (*Claims, error) {
 	if !ok || strings.Contains(sigText, ".") {
 		return nil, ErrMalformed
 	}
-	payload, err := b64.DecodeString(signed)
+	payload, err := base64.RawURLEncoding.DecodeString(signed)
 	if err != nil {
 		return nil, ErrMalformed
 	}
-	sig, err := b64.DecodeString(sigText)
+	sig, err := base64.RawURLEncoding.DecodeString(sigText)
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return nil, ErrMalformed
 	}

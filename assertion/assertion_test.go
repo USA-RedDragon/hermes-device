@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -13,11 +14,13 @@ import (
 	"github.com/USA-RedDragon/hermes-device/assertion"
 )
 
-var want = assertion.Expect{Audience: "backend-a", Leg: assertion.LegExec, Method: "GET", Path: "/api/plugins/device/ws"}
+func expect() assertion.Expect {
+	return assertion.Expect{Audience: "backend-a", Leg: assertion.LegExec, Method: http.MethodGet, Path: "/api/plugins/device/ws"}
+}
 
 func claims(now time.Time) assertion.Claims {
 	return assertion.Claims{
-		Aud: "backend-a", Leg: assertion.LegExec, Method: "GET", Path: "/api/plugins/device/ws",
+		Aud: "backend-a", Leg: assertion.LegExec, Method: http.MethodGet, Path: "/api/plugins/device/ws",
 		Sub: "user-1", DeviceID: "dev_1", DeviceName: "desktop",
 		IssuedAt: now.Unix(), Expires: now.Add(30 * time.Second).Unix(),
 	}
@@ -42,14 +45,14 @@ func TestSignVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := v.Verify(enc, want)
+	c, err := v.Verify(enc, expect())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.DeviceID != "dev_1" || c.Typ != assertion.Type {
 		t.Errorf("claims = %+v", c)
 	}
-	if _, err := v.Verify(enc, want); !errors.Is(err, assertion.ErrReplay) {
+	if _, err := v.Verify(enc, expect()); !errors.Is(err, assertion.ErrReplay) {
 		t.Errorf("replay: %v", err)
 	}
 }
@@ -62,22 +65,22 @@ func TestRefusals(t *testing.T) {
 	cases := map[string]struct {
 		key    ed25519.PrivateKey
 		mutate func(*assertion.Claims)
-		want   assertion.Expect
+		exp    assertion.Expect
 		err    error
 	}{
-		"wrong key":      {other, nil, want, assertion.ErrSignature},
-		"wrong audience": {priv, func(c *assertion.Claims) { c.Aud = "backend-b" }, want, assertion.ErrClaims},
-		"wrong leg":      {priv, func(c *assertion.Claims) { c.Leg = assertion.LegACP }, want, assertion.ErrClaims},
-		"wrong path":     {priv, func(c *assertion.Claims) { c.Path = "/api/ws" }, want, assertion.ErrClaims},
-		"bad device id":  {priv, func(c *assertion.Claims) { c.DeviceID = "a/b" }, want, assertion.ErrClaims},
-		"too long":       {priv, func(c *assertion.Claims) { c.Expires = c.IssuedAt + 31 }, want, assertion.ErrExpired},
+		"wrong key":      {other, nil, expect(), assertion.ErrSignature},
+		"wrong audience": {priv, func(c *assertion.Claims) { c.Aud = "backend-b" }, expect(), assertion.ErrClaims},
+		"wrong leg":      {priv, func(c *assertion.Claims) { c.Leg = assertion.LegACP }, expect(), assertion.ErrClaims},
+		"wrong path":     {priv, func(c *assertion.Claims) { c.Path = "/api/ws" }, expect(), assertion.ErrClaims},
+		"bad device id":  {priv, func(c *assertion.Claims) { c.DeviceID = "a/b" }, expect(), assertion.ErrClaims},
+		"too long":       {priv, func(c *assertion.Claims) { c.Expires = c.IssuedAt + 31 }, expect(), assertion.ErrExpired},
 		"expired": {priv, func(c *assertion.Claims) {
 			c.IssuedAt, c.Expires = now.Add(-60*time.Second).Unix(), now.Add(-40*time.Second).Unix()
-		}, want, assertion.ErrExpired},
+		}, expect(), assertion.ErrExpired},
 		"future": {priv, func(c *assertion.Claims) {
 			c.IssuedAt, c.Expires = now.Add(20*time.Second).Unix(), now.Add(40*time.Second).Unix()
-		}, want, assertion.ErrExpired},
-		"empty audience expected": {priv, nil, assertion.Expect{Leg: assertion.LegExec, Method: "GET", Path: want.Path}, assertion.ErrClaims},
+		}, expect(), assertion.ErrExpired},
+		"empty audience expected": {priv, nil, assertion.Expect{Leg: assertion.LegExec, Method: http.MethodGet, Path: expect().Path}, assertion.ErrClaims},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -92,7 +95,7 @@ func TestRefusals(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := v.Verify(enc, tc.want); !errors.Is(err, tc.err) {
+			if _, err := v.Verify(enc, tc.exp); !errors.Is(err, tc.err) {
 				t.Errorf("got %v, want %v", err, tc.err)
 			}
 		})
@@ -109,16 +112,16 @@ func TestMalformed(t *testing.T) {
 	}
 	v := assertion.NewVerifier([]ed25519.PublicKey{pub})
 	for _, bad := range []string{"", "v2." + enc[3:], enc + ".x", strings.Replace(enc, ".", "!", 2), enc[:len(enc)-4]} {
-		if _, err := v.Verify(bad, want); err == nil {
+		if _, err := v.Verify(bad, expect()); err == nil {
 			t.Errorf("accepted %q", bad)
 		}
 	}
 	tampered := []byte(enc)
 	tampered[10] ^= 1
-	if _, err := v.Verify(string(tampered), want); err == nil {
+	if _, err := v.Verify(string(tampered), expect()); err == nil {
 		t.Error("accepted tampered payload")
 	}
-	if _, err := assertion.NewVerifier(nil).Verify(enc, want); !errors.Is(err, assertion.ErrNoKeys) {
+	if _, err := assertion.NewVerifier(nil).Verify(enc, expect()); !errors.Is(err, assertion.ErrNoKeys) {
 		t.Errorf("no keys: %v", err)
 	}
 }

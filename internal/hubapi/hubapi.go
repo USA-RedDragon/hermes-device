@@ -21,7 +21,7 @@ import (
 // Hub paths.
 const (
 	PathPair        = "/api/device/pair"
-	PathPairToken   = "/api/device/pair/token"
+	PathPairToken   = "/api/device/pair/token" //nolint:gosec // a URL path, not a credential
 	PathWhoami      = "/api/device/whoami"
 	PathBindingFmt  = "/api/device/sessions/%s/binding"
 	PathExecLeg     = "/api/device/exec"
