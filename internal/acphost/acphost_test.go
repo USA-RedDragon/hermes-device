@@ -87,6 +87,10 @@ func fakeHermes() {
 			child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 			_ = child.Start()
 			reply(m.ID, map[string]any{"pid": os.Getpid(), "child": child.Process.Pid})
+		case "test/stderr":
+			_, _ = os.Stderr.WriteString(strings.Repeat("x", 2<<20) + "\n")
+			_, _ = os.Stderr.WriteString(strings.Repeat("y", 4<<20) + "\n")
+			reply(m.ID, map[string]any{})
 		case "test/exit":
 			reply(m.ID, map[string]any{})
 			os.Exit(3)
@@ -712,4 +716,46 @@ func TestParseStat(t *testing.T) {
 	if info, ok := parseStat("9 (x) Z 1 9 9"); !ok || !info.zombie {
 		t.Errorf("zombie = %+v %v", info, ok)
 	}
+}
+
+func TestListIDs(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	writeBindings(t, h)
+	conn := h.dial()
+	for _, id := range []string{`null`, `1e0`, `"\u00e9"`, `"hermes-device-list-1"`, `-7`} {
+		send(t, conn, `{"jsonrpc":"2.0","id":`+id+`,"method":"session/list","params":{}}`)
+		_, data := recv(t, conn)
+		var m map[string]json.RawMessage
+		_ = json.Unmarshal(data, &m)
+		if string(m["id"]) != id {
+			t.Errorf("id %s came back as %s", id, m["id"])
+		}
+		var res listResult
+		_ = json.Unmarshal(m["result"], &res)
+		if len(res.Sessions) != 3 {
+			t.Errorf("id %s: unfiltered list %v", id, rows(res))
+		}
+	}
+}
+
+func TestNotificationsGetNoAnswer(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	conn := h.dial()
+	send(t, conn, `{"jsonrpc":"2.0","method":"session/prompt","params":{"prompt":"x"}}`)
+	send(t, conn, `{"jsonrpc":"2.0","method":"session/new","params":[]}`)
+	p := echoed(t, conn, `{"jsonrpc":"2.0","id":5,"method":"initialize","params":{"x":1}}`)
+	if p["x"] != float64(1) {
+		t.Errorf("params %v", p)
+	}
+}
+
+func TestLongStderrLine(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	conn := h.dial()
+	send(t, conn, `{"jsonrpc":"2.0","id":1,"method":"test/stderr"}`)
+	recv(t, conn)
+	echoed(t, conn, `{"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}`)
 }

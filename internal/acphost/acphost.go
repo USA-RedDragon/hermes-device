@@ -31,8 +31,13 @@ const (
 	CloseChildExited   = websocket.StatusInternalError
 )
 
-// maxMessage is the largest message acp-host copies either way.
-const maxMessage = 64 << 20
+// maxMessage is the largest stdout line acp-host copies. maxInbound is the
+// largest WebSocket message: hermes acp reads stdin with a 50 MiB line
+// limit (acp/core.py) and stops reading on a longer line.
+const (
+	maxMessage = 64 << 20
+	maxInbound = 48 << 20
+)
 
 // Options configure a Server.
 type Options struct {
@@ -179,7 +184,7 @@ func (s *Server) handleACP(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(CloseTryAgainLater, "Hermes gateway not running")
 		return
 	}
-	conn.SetReadLimit(maxMessage)
+	conn.SetReadLimit(maxInbound)
 	c := &connection{
 		srv: s, conn: conn, log: log,
 		rw: &rewriter{
@@ -375,6 +380,9 @@ func (c *connection) pumpWebSocket(ctx context.Context, stdin io.Writer) {
 			var re *rpcError
 			if errors.As(err, &re) {
 				c.log.Warn("Refused an editor message", "error", re.message)
+				if re.notify {
+					continue
+				}
 				if werr := c.conn.Write(ctx, websocket.MessageText, re.response()); werr != nil {
 					return
 				}
@@ -459,6 +467,10 @@ func (c *connection) logStderr(stderr io.Reader) {
 	for sc.Scan() {
 		c.log.Info("hermes acp: " + sc.Text())
 	}
+	if err := sc.Err(); err != nil {
+		c.log.Warn("hermes acp stderr line too long; dropping the rest of its stderr", "error", err)
+	}
+	_, _ = io.Copy(io.Discard, stderr)
 }
 
 func (c *connection) ping(ctx context.Context) {

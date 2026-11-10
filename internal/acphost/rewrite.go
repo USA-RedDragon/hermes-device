@@ -1,7 +1,6 @@
 package acphost
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +36,8 @@ type rpcError struct {
 	id      json.RawMessage
 	code    int
 	message string
+	// notify is set for a refused notification, which gets no answer.
+	notify bool
 }
 
 func (e *rpcError) Error() string { return e.message }
@@ -56,6 +57,7 @@ func (e *rpcError) response() []byte {
 // listRequest remembers a session/list request so its response can be
 // filtered.
 type listRequest struct {
+	id  json.RawMessage
 	dir string
 }
 
@@ -64,24 +66,17 @@ type rewriter struct {
 	placeholder  string
 	bindingsFile string
 	deviceID     string
-	// lists holds the session/list requests in flight, by id key. Only the
-	// WebSocket reader adds and only the stdout reader removes, under mu
-	// held by the caller.
-	lists map[string]listRequest
+	// lists holds the session/list requests in flight, by the id acp-host
+	// gave them. The caller holds a lock.
+	lists    map[string]listRequest
+	nextList uint64
 }
 
-// idKey returns a comparable form of a JSON-RPC id.
-func idKey(id json.RawMessage) string {
-	var b bytes.Buffer
-	if err := json.Compact(&b, id); err != nil {
-		return string(id)
-	}
-	return b.String()
-}
-
-func hasID(m object) bool {
-	id, ok := m["id"]
-	return ok && string(id) != "null"
+// isNotification reports whether m has no id member. Python's JSON-RPC
+// treats "id": null as a request, so only a missing id is a notification.
+func isNotification(m object) bool {
+	_, ok := m["id"]
+	return !ok
 }
 
 // fromEditor turns one WebSocket message into one stdin line. It returns a
@@ -97,7 +92,7 @@ func (r *rewriter) fromEditor(data []byte) ([]byte, error) {
 	var method string
 	if raw, ok := m["method"]; ok {
 		if err := json.Unmarshal(raw, &method); err != nil {
-			return nil, &rpcError{id: m["id"], code: codeInvalidReq, message: "hermes-device acp-host: method must be a string"}
+			return nil, &rpcError{id: m["id"], code: codeInvalidReq, message: "hermes-device acp-host: method must be a string", notify: isNotification(m)}
 		}
 	}
 	switch method {
@@ -131,8 +126,11 @@ func (r *rewriter) fromEditor(data []byte) ([]byte, error) {
 		}); err != nil {
 			return nil, err
 		}
-		if hasID(m) {
-			r.lists[idKey(m["id"])] = listRequest{dir: dir}
+		if id, ok := m["id"]; ok {
+			r.nextList++
+			own := fmt.Sprintf("hermes-device-list-%d", r.nextList)
+			r.lists[own] = listRequest{id: id, dir: dir}
+			m["id"] = mustJSON(own)
 		}
 	case methodPrompt:
 		if err := r.rewriteParams(m, func(p object) error {
@@ -154,17 +152,18 @@ func (r *rewriter) rewriteParams(m object, fn func(object) error) error {
 	p := object{}
 	if raw, ok := m["params"]; ok && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &p); err != nil {
-			return &rpcError{id: m["id"], code: codeInvalidParams, message: "hermes-device acp-host: params must be an object"}
+			return &rpcError{id: m["id"], code: codeInvalidParams, message: "hermes-device acp-host: params must be an object", notify: isNotification(m)}
 		}
 	}
 	if err := fn(p); err != nil {
+		e := &rpcError{id: m["id"], code: codeInvalidParams, message: "hermes-device acp-host: " + err.Error(), notify: isNotification(m)}
 		switch {
 		case errors.Is(err, errOtherDevice):
-			return &rpcError{id: m["id"], code: codeInvalidParams, message: err.Error()}
+			e.message = err.Error()
 		case errors.Is(err, errBindings):
-			return &rpcError{id: m["id"], code: codeInternal, message: err.Error()}
+			e.code, e.message = codeInternal, err.Error()
 		}
-		return &rpcError{id: m["id"], code: codeInvalidParams, message: "hermes-device acp-host: " + err.Error()}
+		return e
 	}
 	m["params"] = mustJSON(p)
 	return nil
@@ -245,18 +244,22 @@ func (r *rewriter) fromAgent(line []byte) ([]byte, error) {
 	if err := json.Unmarshal(line, &m); err != nil {
 		return line, nil
 	}
-	if _, isReq := m["method"]; isReq || !hasID(m) {
+	if _, isReq := m["method"]; isReq {
 		return line, nil
 	}
-	key := idKey(m["id"])
+	var key string
+	if json.Unmarshal(m["id"], &key) != nil {
+		return line, nil
+	}
 	req, ok := r.lists[key]
 	if !ok {
 		return line, nil
 	}
 	delete(r.lists, key)
+	m["id"] = req.id
 	raw, ok := m["result"]
 	if !ok {
-		return line, nil
+		return json.Marshal(m)
 	}
 	var res object
 	if err := json.Unmarshal(raw, &res); err != nil {
