@@ -59,6 +59,9 @@ type Options struct {
 	OnRevoke func(deviceID string)
 	// Sandboxes lists the service devices a user's device list shows.
 	Sandboxes func(ctx context.Context, user string) []hub.Sandbox
+	// Computers lets users start and move chats on their computers. Nil
+	// when device.enabled is off.
+	Computers hub.Computers
 }
 
 // Server is the web front end.
@@ -85,6 +88,7 @@ type Server struct {
 	deviceAPI    http.Handler
 	onRevoke     func(string)
 	sandboxes    func(context.Context, string) []hub.Sandbox
+	computers    hub.Computers
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
 	backendNames     map[string]string
@@ -126,7 +130,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		}
 	}
 	return &Server{
-		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes,
+		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,
@@ -186,6 +190,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/sessions/{backend}/{session}/models", s.api(s.handleModels))
 	mux.Handle("POST /api/sessions/{backend}/{session}/model", s.api(s.handleSetModel))
 	mux.Handle("POST /api/sessions/{backend}/{session}/reasoning", s.api(s.handleSetReasoning))
+	mux.Handle("GET /api/sessions/{backend}/{session}/place", s.api(s.handlePlace))
+	mux.Handle("POST /api/sessions/{backend}/{session}/move", s.api(s.handleMove))
+	mux.Handle("POST /api/sessions/{backend}/{session}/release", s.api(s.handleRelease))
+	mux.Handle("POST /api/places", s.api(s.handlePlaces))
+	mux.Handle("GET /api/computers", s.api(s.handleComputers))
+	mux.Handle("GET /api/computers/{device}/folders", s.api(s.handleFolders))
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
 	mux.HandleFunc("GET /device/pair", s.handlePairPage)
@@ -253,6 +263,9 @@ func (s *Server) api(h http.HandlerFunc) http.Handler {
 }
 
 func (s *Server) fail(w http.ResponseWriter, err error) {
+	if computerError(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, hub.ErrForbidden):
 		errorJSON(w, http.StatusForbidden, "not allowed")

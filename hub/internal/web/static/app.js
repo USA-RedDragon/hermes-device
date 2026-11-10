@@ -86,10 +86,58 @@
         unhid = "";
       }
       if (!menuOpen || !document.querySelector("#sessions .menu")) drawList();
+      if (me.computers) loadPlaces(sessions);
     } catch (e) {
       if (e.message !== "login required") banner("Could not load chats: " + e.message, true);
     } finally {
       listing = false;
+    }
+  }
+
+  // Where chats run. places holds the place of each chat by backend and
+  // session; computers are the user's paired computers.
+  const places = new Map();
+  let computers = [];
+  const placeKey = (b, s) => b + "\n" + s;
+  const placeOf = (s) => places.get(placeKey(s.backend_id, s.id));
+  const base = (dir) => (dir || "").replace(/\/+$/, "").split("/").pop() || dir || "";
+
+  // placeText is how a chat's place reads in the list and the header.
+  function placeText(p, long) {
+    if (!p) return "";
+    const off = p.online ? "" : " (offline)";
+    if (p.kind === "computer") {
+      const where = (p.mine ? p.name : "another computer") + (p.dir ? (long ? ", in " : " \u00B7 ") + (long ? p.dir : base(p.dir)) : "");
+      return (long ? "On " : "") + where + off;
+    }
+    if (p.kind === "sandbox") return (long ? "In the sandbox" : "Sandbox") + off;
+    if (p.kind === "none") return long ? "Not on a computer" : "No computer";
+    return "";
+  }
+
+  async function loadComputers() {
+    try {
+      computers = await api("GET", "/api/computers");
+    } catch (_) {
+      computers = [];
+    }
+    $("newon-row").hidden = !computers.length;
+  }
+
+  let placing = false;
+  async function loadPlaces(sessions) {
+    if (placing) return;
+    const shown = sessions.filter((s) => s.running || s.message_count > 0 || isCurrent(s) || s.archived);
+    if (!shown.length) return;
+    placing = true;
+    try {
+      const got = await api("POST", "/api/places", { sessions: shown.map((s) => ({ backend_id: s.backend_id, session_id: s.id })) });
+      for (const x of got) places.set(placeKey(x.backend_id, x.session_id), x.place);
+      if (!menuOpen || !document.querySelector("#sessions .menu")) drawList();
+    } catch (_) {
+      /* the list works without places */
+    } finally {
+      placing = false;
     }
   }
 
@@ -154,7 +202,15 @@
     const a = el("a", "go");
     a.href = chatHash(s.backend_id, s.id);
     if (s.running) { const d = el("span", "dot"); d.title = "Working"; a.append(d); }
-    a.append(el("span", "name", s.title || t("newchat")), el("span", "when", ago(s.updated_at)));
+    const p = placeOf(s);
+    const where = computers.length || (p && p.kind === "computer") ? placeText(p, false) : "";
+    if (where) {
+      const col = el("span", "col");
+      col.append(el("span", "name", s.title || t("newchat")), el("span", "where" + (p.online ? "" : " off"), where));
+      a.append(col, el("span", "when", ago(s.updated_at)));
+    } else {
+      a.append(el("span", "name", s.title || t("newchat")), el("span", "when", ago(s.updated_at)));
+    }
     a.onclick = () => openSide(false);
     const more = el("button", "more", "\u22EF");
     more.type = "button";
@@ -235,7 +291,29 @@
       menu.replaceChildren(box);
       no.focus();
     });
-    menu.append(rename, archive, del);
+    menu.append(rename, archive);
+    const p = placeOf(s);
+    if (computers.some((c) => c.backend_id === s.backend_id)) {
+      menu.append(button("", "Move to computer...", () => { close(); picker.open({ move: s, place: p }); }));
+    }
+    if (p && p.kind === "computer" && p.mine && !p.inherited) {
+      const rel = button("", "Stop using this computer", () => {
+        const box = el("div", "confirm");
+        box.append(el("p", "", "Stop using " + p.name + " for this chat? Hermes then cannot run commands or change files " +
+          "for this chat anywhere, also not in the sandbox, until you move it to a computer again."));
+        const yes = button("danger", "Stop using it");
+        const no = button("", "Cancel", close);
+        yes.onclick = () => act([yes, no], "/release", undefined, "Could not change this chat: ", () => {
+          places.delete(placeKey(s.backend_id, s.id));
+          if (isCurrent(s)) loadPlace();
+        });
+        box.append(yes, no);
+        menu.replaceChildren(box);
+        no.focus();
+      });
+      menu.append(rel);
+    }
+    menu.append(del);
     row.after(menu);
   }
 
@@ -252,6 +330,56 @@
       banner("Could not start a chat: " + e.message, true);
     } finally {
       btn.disabled = false;
+    }
+  }
+
+  // showPlace shows where the open chat runs, and a note when its
+  // computer is offline or it is on none.
+  function showPlace(p) {
+    const chat = view;
+    if (!chat) return;
+    chat.place = p && p.kind ? p : null;
+    const line = $("place");
+    const note = $("placenote");
+    const input = $("input");
+    line.hidden = !chat.place || chat.place.kind === "server";
+    line.textContent = placeText(chat.place, true);
+    line.classList.toggle("off", !!chat.place && !chat.place.online);
+    line.title = computers.some((c) => c.backend_id === chat.backend) ? "Change where this chat runs" : "";
+    note.replaceChildren();
+    note.hidden = true;
+    input.placeholder = "Message Hermes";
+    if (chat.place && chat.place.kind === "computer" && !chat.place.online) {
+      const name = chat.place.mine ? chat.place.name : "The computer";
+      note.append(el("span", "", name + " is offline. Hermes cannot run commands or change files there until it is back, " +
+        "so messages you send now will fail. Nothing waits for it."));
+      input.placeholder = name + " is offline";
+      note.hidden = false;
+    } else if (chat.place && chat.place.kind === "sandbox" && !chat.place.online) {
+      note.append(el("span", "", "The sandbox is not running right now. Hermes cannot run commands for this chat until it is back."));
+      input.placeholder = "The sandbox is not running";
+      note.hidden = false;
+    } else if (chat.place && chat.place.kind === "none") {
+      note.append(el("span", "", "This chat is not on a computer, so Hermes cannot run commands or change files for it."));
+      input.placeholder = "Not on a computer";
+      note.hidden = false;
+    }
+    if (!note.hidden && computers.some((c) => c.backend_id === chat.backend)) {
+      note.append(button("", "Move to computer...", () => picker.open({ move: { backend_id: chat.backend, id: chat.session }, place: chat.place })));
+    }
+    drawInfo(chat.info);
+  }
+
+  async function loadPlace() {
+    const chat = view;
+    if (!chat || !me.computers) return;
+    try {
+      const p = await api("GET", chat.base + "/place");
+      if (chat !== view) return;
+      places.set(placeKey(chat.backend, chat.session), p);
+      showPlace(p);
+    } catch (_) {
+      if (chat === view && chat.place === undefined) showPlace(null);
     }
   }
 
@@ -817,7 +945,11 @@
         "How much of the model's working memory this chat fills. Hermes compacts the chat when it gets full."]);
     }
     if (typeof u.avg_tps === "number" && u.avg_tps > 0) parts.push(["speed", Math.round(u.avg_tps) + " tokens/s", "Reply speed"]);
-    if (info.cwd) parts.push(["cwd", info.cwd.replace(/\/+$/, "").split("/").pop() || info.cwd, "Working folder: " + info.cwd]);
+    const p = view ? view.place : null;
+    let cwd = info.cwd;
+    if (p) cwd = p.kind === "computer" ? p.dir : p.kind === "server" ? info.cwd : "";
+    else if (p === undefined && me.computers) cwd = "";
+    if (cwd) parts.push(["cwd", base(cwd), "Working folder: " + cwd + (p && p.kind === "computer" && p.mine ? " on " + p.name : "")]);
     const line = $("infoline");
     line.replaceChildren();
     for (const [cls, text, title] of parts) {
@@ -981,6 +1113,8 @@
     $("composer").hidden = true;
     $("stop").hidden = true;
     $("info").hidden = true;
+    $("place").hidden = true;
+    $("placenote").hidden = true;
     settings.reset();
     $("title").textContent = "Hermes";
     $("subtitle").textContent = "";
@@ -1000,8 +1134,14 @@
     banner("");
     settings.reset();
     view = new Chat(backend, session);
+    $("place").hidden = true;
+    $("placenote").hidden = true;
+    $("input").placeholder = "Message Hermes";
     drawInfo({});
     $("info").hidden = false;
+    const known = places.get(placeKey(backend, session));
+    if (known) showPlace(known);
+    loadPlace();
     const es = new EventSource(view.base + "/events");
     stream = es;
     const chat = view;
@@ -1164,6 +1304,159 @@
     },
   };
 
+  // picker chooses a computer and a folder on it, to start a chat there or
+  // to move a chat there.
+  const picker = {
+    async open(opts) {
+      this.opts = opts || {};
+      this.dlg = $("picker");
+      this.dlg.onclose = () => { this.dlg.replaceChildren(); };
+      this.frame(this.opts.move ? "Move to a computer" : "New chat on a computer", [el("p", "status", "Loading your computers...")]);
+      if (!this.dlg.open) this.dlg.showModal();
+      await loadComputers();
+      this.list = computers.filter((c) => !this.opts.move || c.backend_id === this.opts.move.backend_id);
+      const online = this.list.filter((c) => c.online);
+      if (online.length === 1 && this.list.length === 1) this.folders(online[0], "");
+      else this.computers();
+    },
+    close() { if (this.dlg && this.dlg.open) this.dlg.close(); },
+    intro() {
+      const m = this.opts.move;
+      if (!m) return "Hermes runs this chat's commands and file changes on the computer, in the folder you pick.";
+      const p = this.opts.place;
+      if (p && p.kind === "computer") {
+        return "Hermes will run this chat's commands and file changes on the computer and in the folder you pick, " +
+          "instead of " + (p.mine ? p.name : "the computer it uses now") + (p.dir ? ", " + p.dir : "") + ".";
+      }
+      return "Hermes will run this chat's commands and file changes on the computer and in the folder you pick. " +
+        (p && p.kind === "server" ? "They then no longer run on the Hermes server." : "The chat then stops using the sandbox.");
+    },
+    frame(title, body, foot) {
+      const h = el("h2", "", title);
+      h.id = "picker-title";
+      const b = el("div", "pbody");
+      b.append(...body);
+      const f = el("div", "pfoot");
+      if (foot) f.append(...foot);
+      f.append(button("", "Cancel", () => this.close()));
+      this.dlg.replaceChildren(h, el("p", "intro", this.intro()), b, f);
+    },
+    computers() {
+      const title = this.opts.move ? "Move to a computer" : "New chat on a computer";
+      if (!this.list.length) {
+        this.frame(title, [el("p", "", this.opts.move ? "None of your computers works with this chat's Hermes." :
+          "You have no computers yet. To connect one, run hermes-device login on it.")]);
+        return;
+      }
+      const body = [el("div", "label", "Pick a computer")];
+      for (const c of this.list) {
+        const b = button("choice" + (c.online ? " on" : ""), "", () => this.folders(c, ""));
+        b.append(el("span", "", c.name), el("span", "meta", c.online ? "Online" : "Offline"));
+        b.disabled = !c.online;
+        body.push(b);
+      }
+      if (!this.list.some((c) => c.online)) {
+        body.push(el("p", "status", "All your computers are offline. Turn one on and check that hermes-device runs on it."));
+      }
+      this.frame(title, body);
+    },
+    // crumbs splits path into the steps from the computer root that holds it.
+    crumbs(c, path) {
+      const root = (c.roots || []).filter((r) => path === r || path.startsWith(r.replace(/\/$/, "") + "/"))
+        .sort((x, y) => y.length - x.length)[0];
+      const out = [];
+      let acc = root || "/";
+      out.push({ label: root ? (root === c.home ? "Home" : root) : "/", path: acc });
+      for (const part of path.slice(acc.length).split("/").filter(Boolean)) {
+        acc = acc.replace(/\/$/, "") + "/" + part;
+        out.push({ label: part, path: acc });
+      }
+      return out;
+    },
+    async folders(c, path) {
+      const title = (this.opts.move ? "Move to " : "New chat on ") + c.name;
+      const pick = button("primary", this.opts.move ? "Move here" : "Start chat here");
+      pick.disabled = true;
+      const loading = el("p", "status", "Loading folders...");
+      this.frame(title, [loading], [pick]);
+      let f;
+      try {
+        f = await api("GET", "/api/computers/" + encodeURIComponent(c.id) + "/folders" + (path ? "?path=" + encodeURIComponent(path) : ""));
+      } catch (e) {
+        const body = [el("p", "err", "Could not open this folder: " + e.message)];
+        if (path) body.push(button("", "Back to the start", () => this.folders(c, "")));
+        if (this.list.length > 1) body.push(button("link", "Pick another computer", () => this.computers()));
+        this.frame(title, body);
+        return;
+      }
+      const body = [];
+      if (this.list.length > 1) body.push(button("link", "Pick another computer", () => this.computers()));
+      const recent = (c.recent || []).filter((d) => d !== f.path);
+      if (recent.length && !path) {
+        body.push(el("div", "label", "Recent folders"));
+        const box = el("div", "recent");
+        for (const d of recent) {
+          const b = button("", base(d), () => this.folders(c, d));
+          b.title = d;
+          box.append(b);
+        }
+        body.push(box);
+      }
+      body.push(el("div", "label", "Folder"));
+      const nav = el("nav", "crumbs");
+      nav.setAttribute("aria-label", "Folder path");
+      const steps = this.crumbs(c, f.path);
+      steps.forEach((st, i) => {
+        if (i) nav.append(el("span", "", "/"));
+        if (i === steps.length - 1) nav.append(el("span", "here", st.label));
+        else nav.append(button("", st.label, () => this.folders(c, st.path)));
+      });
+      body.push(nav);
+      if (f.folders.length) {
+        const ul = el("ul", "folders");
+        for (const name of f.folders) {
+          const li = el("li");
+          li.append(button("", name, () => this.folders(c, f.path.replace(/\/$/, "") + "/" + name)));
+          ul.append(li);
+        }
+        body.push(ul);
+      } else {
+        body.push(el("p", "none", "No folders in here."));
+      }
+      const chosen = el("span", "chosen", f.path);
+      pick.disabled = false;
+      pick.onclick = () => this.choose(c, f.path, pick, chosen);
+      this.frame(title, body, [chosen, pick]);
+    },
+    async choose(c, dir, btn, note) {
+      btn.disabled = true;
+      note.textContent = this.opts.move ? "Moving..." : "Starting...";
+      note.classList.remove("err");
+      try {
+        if (this.opts.move) {
+          const s = this.opts.move;
+          const p = await api("POST", "/api/sessions/" + encodeURIComponent(s.backend_id) + "/" + encodeURIComponent(s.id) + "/move",
+            { device_id: c.id, dir });
+          places.set(placeKey(s.backend_id, s.id), p);
+          if (view && view.backend === s.backend_id && view.session === s.id) showPlace(p);
+          this.close();
+          drawList();
+        } else {
+          const s = await api("POST", "/api/sessions", { device_id: c.id, dir });
+          places.set(placeKey(s.backend_id, s.id), s.place);
+          this.close();
+          openSide(false);
+          location.hash = chatHash(s.backend_id, s.id);
+        }
+        loadComputers();
+      } catch (e) {
+        btn.disabled = false;
+        note.textContent = (this.opts.move ? "Could not move the chat: " : "Could not start the chat: ") + e.message;
+        note.classList.add("err");
+      }
+    },
+  };
+
   async function init() {
     try {
       me = await api("GET", "/api/me");
@@ -1173,6 +1466,11 @@
     $("menu").onclick = () => openSide(true);
     $("scrim").onclick = () => openSide(false);
     $("newchat").onclick = () => newChat();
+    $("newon").onclick = () => { openSide(false); picker.open({}); };
+    $("place").onclick = () => {
+      if (!view || !computers.some((c) => c.backend_id === view.backend)) return;
+      picker.open({ move: { backend_id: view.backend, id: view.session }, place: view.place });
+    };
     $("stop").onclick = async () => {
       if (!view) return;
       try { await api("POST", view.base + "/interrupt"); } catch (e) { banner("Could not stop: " + e.message, true); }
@@ -1202,6 +1500,10 @@
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshList(); });
     setInterval(() => { if (!document.hidden) refreshList(); }, 20000);
     window.onhashchange = route;
+    if (me.computers) {
+      await loadComputers();
+      setInterval(() => { if (!document.hidden) { loadComputers(); loadPlace(); } }, 20000);
+    }
     route();
   }
 

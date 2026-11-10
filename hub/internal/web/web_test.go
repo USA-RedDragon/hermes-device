@@ -48,6 +48,7 @@ type hubEnv struct {
 	gw    *gatewaytest.Gateway
 	store *store.Store
 	ui    *web.Server
+	svc   *service.Service
 }
 
 func setup(t *testing.T) *hubEnv {
@@ -96,7 +97,7 @@ func setupWith(t *testing.T, fn func(cfg *config.Config, opts *web.Options, st *
 	srv.Config.Handler = s.Handler()
 	srv.Start()
 	t.Cleanup(srv.Close)
-	return &hubEnv{url: pub, is: is, gw: gw, store: st, ui: s}
+	return &hubEnv{url: pub, is: is, gw: gw, store: st, ui: s, svc: svc}
 }
 
 func client(t *testing.T) *http.Client {

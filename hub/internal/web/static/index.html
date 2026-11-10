@@ -17,6 +17,7 @@
       <span class="brand">Hermes</span>
       <button id="newchat" class="primary" type="button">New chat</button>
     </div>
+    <div id="newon-row" class="newon-row" hidden><button id="newon" class="link" type="button">New chat on a computer</button></div>
     <div class="search"><input id="search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off"></div>
     <nav id="sessions" class="sessions"></nav>
     <details id="prefs" class="prefs" hidden>
@@ -36,7 +37,7 @@
   <section class="main">
     <header class="bar">
       <button id="menu" class="icon menu" type="button" aria-label="Show chats">&#9776;</button>
-      <div class="title"><span id="title">Hermes</span><span id="subtitle" class="sub"></span></div>
+      <div class="title"><span id="title">Hermes</span><span id="subtitle" class="sub"></span><button id="place" class="place" type="button" hidden></button></div>
       <button id="stop" class="danger" type="button" hidden>Stop</button>
     </header>
     <details id="info" class="info" hidden>
@@ -48,6 +49,7 @@
       </div>
     </details>
     <div id="banner" class="banner" hidden></div>
+    <div id="placenote" class="placenote" hidden></div>
     <div id="welcome" class="welcome">
       <p>Pick a chat, or start a new one.</p>
     </div>
@@ -58,5 +60,6 @@
     </form>
   </section>
 </div>
+<dialog id="picker" class="picker" aria-labelledby="picker-title"></dialog>
 </body>
 </html>

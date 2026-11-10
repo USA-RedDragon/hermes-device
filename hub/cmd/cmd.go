@@ -93,7 +93,7 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	}
 	if devices != nil {
 		webOpts.Devices, webOpts.DeviceAPI, webOpts.OnRevoke = st, devices.Handler(), devices.CloseDevice
-		webOpts.Sandboxes = devices.Sandboxes
+		webOpts.Sandboxes, webOpts.Computers = devices.Sandboxes, devices
 	}
 	ui, err := web.New(cfg, webOpts)
 	if err != nil {

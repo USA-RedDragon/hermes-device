@@ -28,11 +28,12 @@ type sessionJSON struct {
 	Archived     bool      `json:"archived"`
 	MessageCount int       `json:"message_count"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	Source       string    `json:"source,omitempty"`
 }
 
 func toJSON(s hub.Session) sessionJSON {
 	return sessionJSON{ID: s.ID, BackendID: s.BackendID, Title: s.Title, Live: s.Live,
-		Running: s.Running, Archived: s.Archived, MessageCount: s.MessageCount, UpdatedAt: s.UpdatedAt}
+		Running: s.Running, Archived: s.Archived, MessageCount: s.MessageCount, UpdatedAt: s.UpdatedAt, Source: s.Source}
 }
 
 func (s *Server) handleBackends(w http.ResponseWriter, r *http.Request) {
@@ -81,8 +82,14 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		BackendID string `json:"backend_id"`
+		DeviceID  string `json:"device_id"`
+		Dir       string `json:"dir"`
 	}
 	if !decode(w, r, &body) {
+		return
+	}
+	if body.DeviceID != "" {
+		s.startOn(w, r, body.DeviceID, body.Dir)
 		return
 	}
 	sess, err := s.svc.NewSession(r.Context(), userFrom(r), body.BackendID)
