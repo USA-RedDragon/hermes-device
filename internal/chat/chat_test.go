@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -284,15 +283,22 @@ func TestReadState(t *testing.T) {
 	}
 }
 
+// hangupAddr returns the address of a server that drops every connection
+// without an answer. It stays up for the whole test: a closed listener's
+// port is free again at once, and parallel tests' httptest servers (in this
+// process or another package's) take it.
+func hangupAddr(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(srv.Close)
+	return strings.TrimPrefix(srv.URL, "http://")
+}
+
 func TestControlNotRunning(t *testing.T) {
 	t.Parallel()
-	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	c := &chat.Control{State: &daemonstate.State{Splice: addr, ControlSecret: secret}}
+	c := &chat.Control{State: &daemonstate.State{Splice: hangupAddr(t), ControlSecret: secret}}
 	if _, err := c.NewToken(t.Context(), "/home/alice"); !errors.Is(err, chat.ErrNotRunning) {
 		t.Fatalf("NewToken: %v", err)
 	}
