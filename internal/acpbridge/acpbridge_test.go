@@ -1,0 +1,536 @@
+package acpbridge
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
+	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/coder/websocket"
+)
+
+type fakeHub struct {
+	t     *testing.T
+	ts    *httptest.Server
+	conns chan *websocket.Conn
+	stop  chan struct{}
+
+	mu       sync.Mutex
+	binds    []string
+	failBind map[string]int
+	refuse   bool
+}
+
+func newFakeHub(t *testing.T) *fakeHub {
+	t.Helper()
+	h := &fakeHub{t: t, conns: make(chan *websocket.Conn, 4), stop: make(chan struct{}), failBind: map[string]int{}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+hubapi.PathACPLeg, func(w http.ResponseWriter, r *http.Request) {
+		h.mu.Lock()
+		refuse := h.refuse
+		h.mu.Unlock()
+		if refuse || r.Header.Get("Authorization") != "Bearer hdt_test" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		conn.SetReadLimit(64 << 20)
+		h.conns <- conn
+		<-h.stop
+	})
+	mux.HandleFunc("PUT /api/device/sessions/{id}/binding", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Dir string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		h.mu.Lock()
+		status := h.failBind[body.Dir]
+		h.binds = append(h.binds, r.PathValue("id")+"="+body.Dir)
+		h.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if status != 0 {
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, `{"error":"device_offline","message":"device desktop is not connected"}`)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"session_id": r.PathValue("id"), "device_id": "d1", "dir": body.Dir})
+	})
+	h.ts = httptest.NewServer(mux)
+	t.Cleanup(func() {
+		close(h.stop)
+		h.ts.CloseClientConnections()
+		h.ts.Close()
+	})
+	return h
+}
+
+func (h *fakeHub) bindLog() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.binds...)
+}
+
+func (h *fakeHub) accept() *agent {
+	h.t.Helper()
+	select {
+	case c := <-h.conns:
+		h.t.Cleanup(func() { _ = c.CloseNow() })
+		return &agent{t: h.t, conn: c}
+	case <-time.After(10 * time.Second):
+		h.t.Fatal("bridge did not connect")
+		return nil
+	}
+}
+
+// agent is the test's side of one ACP leg, acting as hermes acp.
+type agent struct {
+	t    *testing.T
+	conn *websocket.Conn
+}
+
+func (a *agent) recv() map[string]any {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, data, err := a.conn.Read(ctx)
+	if err != nil {
+		a.t.Fatalf("agent read: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		a.t.Fatalf("agent got %q: %v", data, err)
+	}
+	return m
+}
+
+func (a *agent) send(msg any) {
+	a.t.Helper()
+	data, ok := msg.(string)
+	if !ok {
+		b, _ := json.Marshal(msg)
+		data = string(b)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.conn.Write(ctx, websocket.MessageText, []byte(data)); err != nil {
+		a.t.Fatalf("agent write: %v", err)
+	}
+}
+
+func (a *agent) answer(req map[string]any, result any) {
+	a.t.Helper()
+	a.send(map[string]any{"jsonrpc": "2.0", "id": req["id"], "result": result})
+}
+
+type editor struct {
+	t     *testing.T
+	in    *io.PipeWriter
+	lines chan map[string]any
+	done  chan error
+}
+
+func startBridge(t *testing.T, hub *fakeHub) *editor {
+	t.Helper()
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	e := &editor{t: t, in: inW, lines: make(chan map[string]any, 64), done: make(chan error, 1)}
+	br := New(Options{
+		Hub: hubapi.New(hub.ts.URL, "hdt_test", "test"), In: inR, Out: outW,
+		MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, PingInterval: 5 * time.Second,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	go func() {
+		sc := bufio.NewScanner(outR)
+		sc.Buffer(make([]byte, 1<<20), 64<<20)
+		for sc.Scan() {
+			var m map[string]any
+			if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
+				t.Errorf("bridge wrote a line that is not JSON: %q", sc.Text())
+				continue
+			}
+			e.lines <- m
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		e.done <- br.Run(ctx)
+		_ = outW.Close()
+	}()
+	t.Cleanup(func() {
+		_ = inW.Close()
+		cancel()
+		select {
+		case <-e.done:
+		case <-time.After(10 * time.Second):
+			t.Error("bridge did not stop")
+		}
+	})
+	return e
+}
+
+func (e *editor) send(msg string) {
+	e.t.Helper()
+	if _, err := io.WriteString(e.in, msg+"\n"); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+func (e *editor) recv() map[string]any {
+	e.t.Helper()
+	select {
+	case m := <-e.lines:
+		return m
+	case <-time.After(10 * time.Second):
+		e.t.Fatal("editor got nothing")
+		return nil
+	}
+}
+
+func (e *editor) none() {
+	e.t.Helper()
+	select {
+	case m := <-e.lines:
+		e.t.Fatalf("editor got unexpected %v", m)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func errCode(m map[string]any) (int, string) {
+	e, _ := m["error"].(map[string]any)
+	if e == nil {
+		return 0, ""
+	}
+	code, _ := e["code"].(float64)
+	msg, _ := e["message"].(string)
+	return int(code), msg
+}
+
+func param(m map[string]any, key string) any {
+	p, _ := m["params"].(map[string]any)
+	return p[key]
+}
+
+func TestSessionNewBindsAndIDs(t *testing.T) {
+	t.Parallel()
+	hub := newFakeHub(t)
+	ed := startBridge(t, hub)
+	a := hub.accept()
+
+	ed.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
+	req := a.recv()
+	if req["id"] != float64(1) || req["method"] != "initialize" {
+		t.Fatalf("agent got %v", req)
+	}
+	a.answer(req, map[string]any{"protocolVersion": 1})
+	if r := ed.recv(); r["id"] != float64(1) || r["result"] == nil {
+		t.Fatalf("editor got %v", r)
+	}
+
+	ed.send(`{"jsonrpc":"2.0","id":"n1","method":"session/new","params":{"cwd":"/home/alice/src/app","mcpServers":[]}}`)
+	req = a.recv()
+	if param(req, "cwd") != "/home/alice/src/app" {
+		t.Errorf("cwd %v", param(req, "cwd"))
+	}
+	if len(hub.bindLog()) != 0 {
+		t.Error("bound before the result")
+	}
+	a.answer(req, map[string]any{"sessionId": "local-1"})
+	r := ed.recv()
+	if r["id"] != "n1" || r["result"].(map[string]any)["sessionId"] != "local-1" {
+		t.Fatalf("editor got %v", r)
+	}
+	if got := hub.bindLog(); len(got) != 1 || got[0] != "local-1=/home/alice/src/app" {
+		t.Errorf("binds %v", got)
+	}
+
+	a.send(`{"jsonrpc":"2.0","id":0,"method":"session/request_permission","params":{"sessionId":"local-1"}}`)
+	r = ed.recv()
+	pid, _ := r["id"].(string)
+	if !strings.HasPrefix(pid, IDPrefix) || r["method"] != "session/request_permission" {
+		t.Fatalf("editor got %v", r)
+	}
+	ed.send(`{"jsonrpc":"2.0","id":"` + pid + `","result":{"outcome":{"outcome":"selected","optionId":"allow"}}}`)
+	if got := a.recv(); got["id"] != float64(0) || got["result"] == nil {
+		t.Errorf("agent got %v", got)
+	}
+
+	ed.send(`{"jsonrpc":"2.0","id":"f1","method":"session/fork","params":{"sessionId":"local-1","cwd":"/home/alice/src/app/sub/","mcpServers":[]}}`)
+	a.answer(a.recv(), map[string]any{"sessionId": "local-2"})
+	if r := ed.recv(); r["id"] != "f1" || r["error"] != nil {
+		t.Fatalf("editor got %v", r)
+	}
+	if got := hub.bindLog(); len(got) != 2 || got[1] != "local-2=/home/alice/src/app/sub" {
+		t.Errorf("binds %v", got)
+	}
+
+	a.send(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"local-1","update":{}}}`)
+	if r := ed.recv(); r["method"] != "session/update" {
+		t.Errorf("editor got %v", r)
+	}
+
+	ed.send(`{not json`)
+	if code, _ := errCode(ed.recv()); code != CodeParse {
+		t.Errorf("parse error code %d", code)
+	}
+	ed.send(`{"jsonrpc":"2.0","id":7,"method":"session/new","params":{"cwd":"rel","mcpServers":[]}}`)
+	if code, _ := errCode(ed.recv()); code != CodeInvalidParams {
+		t.Errorf("relative cwd code %d", code)
+	}
+}
+
+func TestBindFailures(t *testing.T) {
+	t.Parallel()
+	hub := newFakeHub(t)
+	hub.failBind["/home/alice/offline"] = http.StatusConflict
+	ed := startBridge(t, hub)
+	a := hub.accept()
+
+	ed.send(`{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/home/alice/offline","mcpServers":[]}}`)
+	a.answer(a.recv(), map[string]any{"sessionId": "local-9"})
+	r := ed.recv()
+	code, msg := errCode(r)
+	if r["id"] != float64(1) || code != CodeInternal || !strings.HasPrefix(msg, "hermes-device: could not bind the session to /home/alice/offline: ") ||
+		!strings.Contains(msg, "device_offline") {
+		t.Errorf("editor got %v", r)
+	}
+
+	ed.send(`{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"local-3","cwd":"/home/alice/offline","mcpServers":[]}}`)
+	r = ed.recv()
+	if code, _ := errCode(r); r["id"] != float64(2) || code != CodeInternal {
+		t.Errorf("editor got %v", r)
+	}
+	ed.send(`{"jsonrpc":"2.0","id":3,"method":"session/resume","params":{"sessionId":"local-3","cwd":"/home/alice/src","mcpServers":[]}}`)
+	req := a.recv()
+	if req["id"] != float64(3) {
+		t.Fatalf("a failed load was forwarded: %v", req)
+	}
+	if got := hub.bindLog(); got[len(got)-1] != "local-3=/home/alice/src" {
+		t.Errorf("binds %v", got)
+	}
+	a.answer(req, map[string]any{})
+	ed.recv()
+}
+
+func TestInlining(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	small := filepath.Join(dir, "small.go")
+	big := filepath.Join(dir, "big.txt")
+	binary := filepath.Join(dir, "bin")
+	fifo := filepath.Join(dir, "fifo")
+	exact := filepath.Join(dir, "exact.txt")
+	must(t, os.WriteFile(small, []byte("package main\n// héllo\n"), 0o600))
+	must(t, os.WriteFile(big, []byte(strings.Repeat("a", MaxInline+1)), 0o600))
+	must(t, os.WriteFile(exact, []byte(strings.Repeat("b", MaxInline)), 0o600))
+	must(t, os.WriteFile(binary, []byte{0xff, 0xfe, 0x00}, 0o600))
+	must(t, syscall.Mkfifo(fifo, 0o600))
+
+	hub := newFakeHub(t)
+	ed := startBridge(t, hub)
+	a := hub.accept()
+	links := []string{"file://" + small, "file://" + exact, "file://" + big, "file://" + binary, "file://" + fifo,
+		"file://" + dir, "file://" + filepath.Join(dir, "missing"), "https://example.com/x", "file://other-host" + small}
+	var blocks []string
+	for _, l := range links {
+		b, _ := json.Marshal(map[string]string{"type": "resource_link", "uri": l, "name": "x"})
+		blocks = append(blocks, string(b))
+	}
+	ed.send(`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"s","prompt":[` + strings.Join(blocks, ",") + `,{"type":"text","text":"hi"}]}}`)
+	req := a.recv()
+	got := param(req, "prompt").([]any)
+	for i, l := range links {
+		blk := got[i].(map[string]any)
+		inlined := i < 2
+		if !inlined {
+			if blk["type"] != "resource_link" || blk["uri"] != l {
+				t.Errorf("%s: changed to %v", l, blk)
+			}
+			continue
+		}
+		res, _ := blk["resource"].(map[string]any)
+		want, _ := os.ReadFile(strings.TrimPrefix(l, "file://"))
+		if blk["type"] != "resource" || res["uri"] != l || res["mimeType"] != "text/plain" || res["text"] != string(want) {
+			t.Errorf("%s: not inlined: type %v uri %v", l, blk["type"], res["uri"])
+		}
+	}
+	if blk := got[len(links)].(map[string]any); blk["text"] != "hi" {
+		t.Errorf("text block %v", blk)
+	}
+}
+
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReconnectReplay(t *testing.T) {
+	t.Parallel()
+	hub := newFakeHub(t)
+	ed := startBridge(t, hub)
+	a := hub.accept()
+
+	ed.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"zed"}}}`)
+	a.answer(a.recv(), map[string]any{"protocolVersion": 1})
+	ed.recv()
+	ed.send(`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/home/alice/src/app","mcpServers":[]}}`)
+	a.answer(a.recv(), map[string]any{"sessionId": "local-1"})
+	ed.recv()
+	ed.send(`{"jsonrpc":"2.0","id":3,"method":"session/load","params":{"sessionId":"local-2","cwd":"/home/alice/src/lib","mcpServers":[]}}`)
+	req := a.recv()
+	a.send(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"local-2","update":{"sessionUpdate":"user_message_chunk"}}}`)
+	if r := ed.recv(); r["method"] != "session/update" {
+		t.Fatalf("history of an editor load not passed: %v", r)
+	}
+	a.answer(req, map[string]any{})
+	ed.recv()
+
+	a.send(`{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"local-1"}}`)
+	stale := ed.recv()["id"].(string)
+	ed.send(`{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"local-1","prompt":[]}}`)
+	a.recv()
+
+	_ = a.conn.Close(websocket.StatusGoingAway, "gateway restart")
+	r := ed.recv()
+	if code, msg := errCode(r); r["id"] != float64(4) || code != CodeInternal || msg != MsgLost {
+		t.Fatalf("in-flight prompt got %v", r)
+	}
+
+	b := hub.accept()
+	init := b.recv()
+	initID, _ := init["id"].(string)
+	if init["method"] != "initialize" || !strings.HasPrefix(initID, IDPrefix) {
+		t.Fatalf("first message on reconnect %v", init)
+	}
+	if info, _ := param(init, "clientInfo").(map[string]any); info["name"] != "zed" {
+		t.Errorf("initialize params not the editor's: %v", init["params"])
+	}
+	b.answer(init, map[string]any{"protocolVersion": 1})
+	for _, want := range []struct{ sid, cwd string }{{"local-1", "/home/alice/src/app"}, {"local-2", "/home/alice/src/lib"}} {
+		load := b.recv()
+		if load["method"] != "session/load" || param(load, "sessionId") != want.sid || param(load, "cwd") != want.cwd {
+			t.Fatalf("replay load %v", load)
+		}
+		if s, ok := param(load, "mcpServers").([]any); !ok || len(s) != 0 {
+			t.Errorf("mcpServers %v", param(load, "mcpServers"))
+		}
+		if id, _ := load["id"].(string); !strings.HasPrefix(id, IDPrefix) || id == initID {
+			t.Errorf("load id %v", load["id"])
+		}
+		b.send(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": want.sid, "update": map[string]any{"sessionUpdate": "agent_message_chunk"}}})
+		b.answer(load, map[string]any{})
+	}
+	ed.none()
+
+	ed.send(`{"jsonrpc":"2.0","id":"` + stale + `","result":{"outcome":{"outcome":"cancelled"}}}`)
+	ed.send(`{"jsonrpc":"2.0","id":6,"method":"session/prompt","params":{"sessionId":"local-1","prompt":[]}}`)
+	if got := b.recv(); got["id"] != float64(6) {
+		t.Fatalf("stale answer reached the new agent, or the prompt did not: %v", got)
+	}
+	b.send(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"local-1","update":{"sessionUpdate":"agent_message_chunk"}}}`)
+	if r := ed.recv(); r["method"] != "session/update" {
+		t.Errorf("live update after replay %v", r)
+	}
+	if len(hub.bindLog()) != 2 {
+		t.Errorf("replay bound again: %v", hub.bindLog())
+	}
+}
+
+func TestReplayDropsFailedLoad(t *testing.T) {
+	t.Parallel()
+	hub := newFakeHub(t)
+	ed := startBridge(t, hub)
+	a := hub.accept()
+	ed.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	a.answer(a.recv(), map[string]any{})
+	ed.recv()
+	ed.send(`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/home/alice","mcpServers":[]}}`)
+	a.answer(a.recv(), map[string]any{"sessionId": "local-1"})
+	ed.recv()
+
+	_ = a.conn.Close(websocket.StatusGoingAway, "")
+	b := hub.accept()
+	b.answer(b.recv(), map[string]any{})
+	load := b.recv()
+	b.send(map[string]any{"jsonrpc": "2.0", "id": load["id"], "error": map[string]any{"code": -32002, "message": "not found"}})
+	ed.none()
+
+	_ = b.conn.Close(websocket.StatusGoingAway, "")
+	c := hub.accept()
+	if init := c.recv(); init["method"] != "initialize" {
+		t.Fatalf("got %v", init)
+	} else {
+		c.answer(init, map[string]any{})
+	}
+	ed.send(`{"jsonrpc":"2.0","id":3,"method":"session/list","params":{}}`)
+	if got := c.recv(); got["method"] != "session/list" {
+		t.Errorf("a session that failed to load was loaded again: %v", got)
+	}
+}
+
+func TestUnauthorized(t *testing.T) {
+	t.Parallel()
+	t.Run("upgrade refused", func(t *testing.T) {
+		t.Parallel()
+		hub := newFakeHub(t)
+		hub.refuse = true
+		ed := startBridge(t, hub)
+		select {
+		case err := <-ed.done:
+			if !errors.Is(err, hubapi.ErrUnauthorized) {
+				t.Errorf("Run = %v", err)
+			}
+			ed.done <- err
+		case <-time.After(10 * time.Second):
+			t.Fatal("bridge did not stop")
+		}
+	})
+	t.Run("closed with 4401", func(t *testing.T) {
+		t.Parallel()
+		hub := newFakeHub(t)
+		ed := startBridge(t, hub)
+		a := hub.accept()
+		_ = a.conn.Close(protocol.CloseUnauthorized, "revoked")
+		select {
+		case err := <-ed.done:
+			if !errors.Is(err, hubapi.ErrUnauthorized) {
+				t.Errorf("Run = %v", err)
+			}
+			ed.done <- err
+		case <-time.After(10 * time.Second):
+			t.Fatal("bridge did not stop")
+		}
+	})
+}
+
+func TestEditorEOF(t *testing.T) {
+	t.Parallel()
+	hub := newFakeHub(t)
+	ed := startBridge(t, hub)
+	hub.accept()
+	_ = ed.in.Close()
+	select {
+	case err := <-ed.done:
+		if err != nil {
+			t.Errorf("Run = %v", err)
+		}
+		ed.done <- err
+	case <-time.After(10 * time.Second):
+		t.Fatal("bridge did not stop on EOF")
+	}
+}
