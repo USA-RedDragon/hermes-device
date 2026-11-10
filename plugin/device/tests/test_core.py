@@ -94,7 +94,7 @@ class FakeDevice:
 
     def close(self) -> None:
         self.hub.detach(self.conn)
-        for p in self.procs.values():
+        for p in list(self.procs.values()):
             if p.poll() is None:
                 try:
                     os.killpg(p.pid, 9)
