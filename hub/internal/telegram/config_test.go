@@ -12,7 +12,7 @@ func TestConfigValidate(t *testing.T) {
 	t.Parallel()
 	good := telegram.Config{
 		Enabled: true, Token: "t",
-		DefaultBackends: []string{"alice=cluster", " home = hers "},
+		DefaultBackends: []string{"alice=cluster", " bob = hers "},
 		PollTimeout:     time.Second, EditInterval: time.Second,
 	}
 	if err := good.Validate(); err != nil {

@@ -22,7 +22,7 @@ const (
 	kText       = "text"
 	sLive       = "s-live"
 	userAlice   = "alice"
-	userBob   = "bob"
+	userBob     = "bob"
 )
 
 type groups map[string][]string
@@ -44,7 +44,7 @@ func setup(t *testing.T, opts service.Options) *env {
 	gw.AddSession(&gatewaytest.Session{ID: sLive, Title: liveTitle, Live: true, StartedAt: 2000,
 		Messages: []map[string]any{{"role": "user", "text": "hi"}}})
 	gw.AddSession(&gatewaytest.Session{ID: "s-old", Title: "Old one", StartedAt: 1000})
-	gw2.AddSession(&gatewaytest.Session{ID: "w-1", Title: "Home's", Live: true, StartedAt: 3000})
+	gw2.AddSession(&gatewaytest.Session{ID: "w-1", Title: "Home", Live: true, StartedAt: 3000})
 	cfg := &config.Config{LogLevel: "info", Users: []config.User{{Sub: "s1", Name: userAlice}, {Sub: "s2", Name: userBob}}, Backends: []config.Backend{
 		{ID: backendPC, Name: "Desktop", URL: gw.URL(), Username: "hub", Password: "pw", Users: []string{userAlice}},
 		{ID: backendHome, URL: gw2.URL(), Username: "hub", Password: "pw2", Groups: []string{"home"}},
@@ -151,7 +151,7 @@ func TestAuthorizationDenied(t *testing.T) {
 		t.Fatalf("bob sessions = %+v", ss)
 	}
 	if _, _, err := e.svc.Attach(ctx, userAlice, backendHome, "w-1", 0); !errors.Is(err, hub.ErrForbidden) {
-		t.Fatalf("alice on home's backend: %v", err)
+		t.Fatalf("alice on the home backend: %v", err)
 	}
 	if _, _, err := e.svc.Attach(ctx, userAlice, "nope", "w-1", 0); !errors.Is(err, hub.ErrUnknownBackend) {
 		t.Fatalf("unknown backend: %v", err)

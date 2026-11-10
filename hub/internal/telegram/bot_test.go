@@ -49,13 +49,13 @@ func TestRoutesToLinkedUsersDefaultBackend(t *testing.T) {
 	h := startBot(t, nil)
 	h.tg.say(dm(aliceTG), aliceTG, "from alice")
 	h.hub.waitPrompt(t, 1)
-	h.tg.say(dm(bobTG), bobTG, "from home")
+	h.tg.say(dm(bobTG), bobTG, "from bob")
 	p := h.hub.waitPrompt(t, 2)
 	if p[0].User != userAlice || p[0].BackendID != beCluster || p[0].Text != "from alice" {
 		t.Fatalf("alice prompt = %+v", p[0])
 	}
-	if p[1].User != userHome || p[1].BackendID != beHers {
-		t.Fatalf("home prompt = %+v", p[1])
+	if p[1].User != userBob || p[1].BackendID != beHers {
+		t.Fatalf("bob prompt = %+v", p[1])
 	}
 	h.tg.say(dm(aliceTG), aliceTG, "again")
 	p = h.hub.waitPrompt(t, 3)
@@ -66,7 +66,7 @@ func TestRoutesToLinkedUsersDefaultBackend(t *testing.T) {
 
 func TestAuthorizationDenialIsReported(t *testing.T) {
 	t.Parallel()
-	h := startBot(t, func(c *telegram.Config) { c.DefaultBackends = []string{"home=cluster"} })
+	h := startBot(t, func(c *telegram.Config) { c.DefaultBackends = []string{"bob=cluster"} })
 	h.tg.say(dm(bobTG), bobTG, "try alice's backend")
 	h.tg.wait(mSend, "do not have access")
 	h.tg.say(dm(bobTG), bobTG, "/new cluster")

@@ -24,7 +24,7 @@ import (
 
 const (
 	userAlice   = "alice"
-	userBob   = "bob"
+	userBob     = "bob"
 	groupAdmins = "admins"
 	clientID    = "hub"
 )

@@ -28,7 +28,7 @@ const (
 	kDesc        = "description"
 	kResult      = "result"
 	userAlice    = "alice"
-	userHome     = "home"
+	userBob      = "bob"
 	beCluster    = "cluster"
 	beLaptop     = "laptop"
 	beHers       = "hers"
@@ -254,7 +254,7 @@ func newFakeHub() *fakeHub {
 	return &fakeHub{
 		backends: map[string][]hub.Backend{
 			userAlice: {{ID: beLaptop, Name: "Laptop"}, {ID: beCluster, Name: "Cluster"}},
-			userHome:  {{ID: beHers, Name: "Hers"}},
+			userBob:   {{ID: beHers, Name: "Hers"}},
 		},
 		streams: map[string]*stream{},
 	}
@@ -416,7 +416,7 @@ func (f *fakeTokens) ConsumeLinkToken(context.Context, string) (int64, bool, err
 
 const (
 	aliceTG = 1
-	bobTG  = 2
+	bobTG   = 2
 )
 
 type harness struct {
@@ -446,7 +446,7 @@ func startBot(t *testing.T, mutate func(*telegram.Config)) *harness {
 	h := &harness{
 		tg:     newFakeTelegram(t),
 		hub:    newFakeHub(),
-		links:  &fakeLinks{users: map[int64]string{aliceTG: userAlice, bobTG: userHome}},
+		links:  &fakeLinks{users: map[int64]string{aliceTG: userAlice, bobTG: userBob}},
 		tokens: &fakeTokens{},
 	}
 	cfg := testConfig(h.tg)

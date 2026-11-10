@@ -98,7 +98,7 @@ func TestLoadErrors(t *testing.T) {
 		strings.Replace(file, "https://hub.example.test/", "https://hub.example.test/sub", 1),
 		file + "ui:\n  default_backends: [bob]\n",
 		file + "ui:\n  default_backends: [nobody=cluster]\n",
-		strings.Replace(file, "users: [alice]", "users: [alice]", 1),
+		strings.Replace(file, "users: [alice]", "users: [carol]", 1),
 		strings.Replace(file, "sub: 3d4e5f", "sub: 0a1b2c", 1),
 		strings.Replace(file, "name: bob", "name: alice", 1),
 	} {
