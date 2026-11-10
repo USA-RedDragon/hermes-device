@@ -117,8 +117,7 @@ func run(t *testing.T, f *fakeHub) (*hubapi.PairResult, *clock, *hubapi.PairStar
 
 func start(interval, expires int) hubapi.PairStart {
 	return hubapi.PairStart{
-		DeviceCode: "dc_secret", UserCode: "WDJB-MJHT", VerificationURI: "https://hub.example.com/device/pair",
-		VerificationURIComplete: "https://hub.example.com/device/pair?code=WDJB-MJHT", ExpiresIn: expires, Interval: interval,
+		DeviceCode: "dc_secret", UserCode: "WDJB-MJHT", VerificationURI: "https://hub.example.com/device/pair", ExpiresIn: expires, Interval: interval,
 	}
 }
 
@@ -138,7 +137,7 @@ func TestPairSlowDown(t *testing.T) {
 	if !reflect.DeepEqual(clk.sleeps, want) {
 		t.Errorf("sleeps = %v, want %v", clk.sleeps, want)
 	}
-	if prompted == nil || prompted.UserCode != "WDJB-MJHT" || prompted.VerificationURIComplete == "" {
+	if prompted == nil || prompted.UserCode != "WDJB-MJHT" || prompted.VerificationURI == "" {
 		t.Errorf("prompt = %+v", prompted)
 	}
 	if f.pairReq.Name != testName || f.pairReq.OS != "linux" || f.pairReq.ClientVersion != "v0.2.0" {

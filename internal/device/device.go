@@ -28,6 +28,7 @@ var (
 	ErrReplaced           = errors.New("another hermes-device run with the same token took over this device (close 4409); stop the other daemon or run login again on one of them")
 	ErrUnsupportedVersion = errors.New("the Hermes device plugin does not speak this protocol version (close 4426); upgrade hermes-device and the plugin together")
 	ErrWindows            = errors.New("hermes-device does not support Windows: device paths must be POSIX")
+	ErrUnsupportedOS      = errors.New("the Hermes device plugin does not serve this device's operating system (close 4427)")
 	ErrNoWelcome          = errors.New("no welcome from the device plugin")
 )
 
@@ -153,7 +154,8 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func isFatal(err error) bool {
-	return errors.Is(err, hubapi.ErrUnauthorized) || errors.Is(err, ErrReplaced) || errors.Is(err, ErrUnsupportedVersion)
+	return errors.Is(err, hubapi.ErrUnauthorized) || errors.Is(err, ErrReplaced) || errors.Is(err, ErrUnsupportedVersion) ||
+		errors.Is(err, ErrUnsupportedOS)
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {
@@ -178,6 +180,8 @@ func stopError(err error) error {
 		return ErrReplaced
 	case protocol.CloseUnsupportedVersion:
 		return ErrUnsupportedVersion
+	case protocol.CloseUnsupportedPlatform:
+		return ErrUnsupportedOS
 	}
 	return nil
 }

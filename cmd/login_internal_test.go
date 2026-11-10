@@ -33,8 +33,7 @@ func (h *pairHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		h.name.Store(req.Name)
 		writeJSONBody(h.t, w, hubapi.PairStart{
-			DeviceCode: "dc", UserCode: "WDJB-MJHT", VerificationURI: "https://hub.example.com/device/pair",
-			VerificationURIComplete: "https://hub.example.com/device/pair?code=WDJB-MJHT", ExpiresIn: 600, Interval: 1,
+			DeviceCode: "dc", UserCode: "WDJB-MJHT", VerificationURI: "https://hub.example.com/device/pair", ExpiresIn: 600, Interval: 1,
 		})
 	case hubapi.PathPairToken:
 		if h.polls.Add(1) == 1 {
@@ -73,7 +72,7 @@ func TestLoginCommandStoresTokenFile(t *testing.T) {
 	}
 	file := filepath.Join(stateDir, "token")
 	text := out.String()
-	for _, want := range []string{"https://hub.example.com/device/pair?code=WDJB-MJHT", "WDJB-MJHT", file} {
+	for _, want := range []string{"https://hub.example.com/device/pair\n", "WDJB-MJHT", file} {
 		if !strings.Contains(text, want) {
 			t.Errorf("output %q lacks %q", text, want)
 		}

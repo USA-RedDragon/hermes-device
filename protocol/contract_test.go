@@ -41,6 +41,7 @@ func protocolConstants() []shared {
 		{"CloseAssertionRefused", protocol.CloseAssertionRefused, []string{"CLOSE_ASSERTION_REFUSED"}},
 		{"CloseReplaced", protocol.CloseReplaced, []string{"CLOSE_REPLACED"}},
 		{"CloseUnsupportedVersion", protocol.CloseUnsupportedVersion, []string{"CLOSE_UNSUPPORTED_VERSION"}},
+		{"CloseUnsupportedPlatform", protocol.CloseUnsupportedPlatform, []string{"CLOSE_UNSUPPORTED_PLATFORM"}},
 		{"CloseBackendUnavailable", protocol.CloseBackendUnavailable, []string{"CLOSE_BACKEND_UNAVAILABLE"}},
 		{"ClosePingTimeout", protocol.ClosePingTimeout, []string{"CLOSE_PING_TIMEOUT"}},
 		{"ExitRefused", protocol.ExitRefused, []string{"EXIT_REFUSED"}},

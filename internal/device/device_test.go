@@ -339,6 +339,7 @@ func TestCloseCodes(t *testing.T) {
 		"4409":                {protocol.CloseReplaced, false, device.ErrReplaced},
 		"4426":                {protocol.CloseUnsupportedVersion, false, device.ErrUnsupportedVersion},
 		"4426 before welcome": {protocol.CloseUnsupportedVersion, true, device.ErrUnsupportedVersion},
+		"4427":                {protocol.CloseUnsupportedPlatform, true, device.ErrUnsupportedOS},
 	}
 	for name, tc := range stops {
 		t.Run("stop "+name, func(t *testing.T) {
