@@ -377,6 +377,7 @@ func TestRefusals(t *testing.T) {
 func TestSessionRewrites(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, nil)
+	writeBindings(t, h)
 	conn := h.dial()
 	for _, method := range []string{"session/new", "session/load", "session/resume", "session/fork"} {
 		p := echoed(t, conn, `{"jsonrpc":"2.0","id":"r1","method":"`+method+`","params":{"sessionId":"s1","cwd":"/home/alice/src/app",
@@ -415,6 +416,7 @@ func TestSessionRewrites(t *testing.T) {
 func TestPromptLinks(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, nil)
+	writeBindings(t, h)
 	conn := h.dial()
 	uris := []string{
 		"file:///etc/passwd", "FILE:///etc/passwd", "/etc/passwd", "relative.txt", "C:\\Windows\\x",
@@ -698,11 +700,18 @@ func TestOtherDeviceRefused(t *testing.T) {
 			t.Errorf("%s: got %s", msg, data)
 		}
 	}
-	for _, sid := range []string{"s1", "s5", "unknown"} {
-		p := echoed(t, conn, `{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"session_id":"`+sid+`","prompt":[]}}`)
-		if p["sessionId"] != sid || p["session_id"] != nil {
-			t.Errorf("%s: params %v", sid, p)
+	for _, sid := range []string{"s5", "unknown", "s1-child"} {
+		for _, method := range []string{"session/load", "session/resume", "session/fork", "session/prompt", "session/set_mode", "session/close"} {
+			send(t, conn, `{"jsonrpc":"2.0","id":2,"method":"`+method+`","params":{"sessionId":"`+sid+`","cwd":"/x","mcpServers":[],"prompt":[]}}`)
+			r, data := recv(t, conn)
+			if r.Error == nil || r.Error.Code != codeInvalidParams || r.Error.Message != "session is not bound to this device" {
+				t.Errorf("%s %s: got %s", method, sid, data)
+			}
 		}
+	}
+	p := echoed(t, conn, `{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"session_id":"s1","prompt":[]}}`)
+	if p["sessionId"] != "s1" || p["session_id"] != nil {
+		t.Errorf("s1: params %v", p)
 	}
 	if err := os.WriteFile(h.bindings, []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)

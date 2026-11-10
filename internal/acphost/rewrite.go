@@ -212,7 +212,7 @@ func (r *rewriter) rewriteParams(m object, fn func(object) error) error {
 	if err := fn(p); err != nil {
 		e := &rpcError{id: m["id"], code: codeInvalidParams, message: "hermes-device acp-host: " + err.Error(), notify: isNotification(m)}
 		switch {
-		case errors.Is(err, errOtherDevice):
+		case errors.Is(err, errOtherDevice), errors.Is(err, errNotBound):
 			e.message = err.Error()
 		case errors.Is(err, errBindings):
 			e.code, e.message = codeInternal, err.Error()
@@ -226,6 +226,9 @@ func (r *rewriter) rewriteParams(m object, fn func(object) error) error {
 // errOtherDevice refuses a session bound to a device other than the
 // connection's.
 var errOtherDevice = errors.New("session is bound to another device")
+
+// errNotBound refuses a session that has no binding of its own.
+var errNotBound = errors.New("session is not bound to this device")
 
 // pinParams applies the params rules every editor request meets, before
 // the per-method rewrites. For a method the SDK routes, only the members of
@@ -271,7 +274,9 @@ func isObject(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &p) == nil && p != nil
 }
 
-// checkSession refuses a session id bound to another device.
+// checkSession refuses a session id that is not bound to the connection's
+// device. Only the session's own binding counts: acp-host cannot read the
+// lineage, and the bridge binds every session before it uses it (6.3).
 func (r *rewriter) checkSession(raw json.RawMessage, present bool) error {
 	if !present {
 		return nil
@@ -284,7 +289,11 @@ func (r *rewriter) checkSession(raw json.RawMessage, present bool) error {
 	if err != nil {
 		return errBindings
 	}
-	if b, ok := bindings[sid]; ok && b.DeviceID != r.deviceID {
+	b, ok := bindings[sid]
+	switch {
+	case !ok:
+		return errNotBound
+	case b.DeviceID != r.deviceID:
 		return errOtherDevice
 	}
 	return nil
