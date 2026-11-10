@@ -49,6 +49,16 @@ type Options struct {
 	// KeepAlive is the interval of SSE comments that keep idle proxies
 	// from closing a stream. Default 15s.
 	KeepAlive time.Duration
+	// Devices turns on the pairing page and the device list. Nil when
+	// device.enabled is off.
+	Devices hub.DeviceStore
+	// DeviceAPI serves /api/device/, the API of the hermes-device client.
+	DeviceAPI http.Handler
+	// OnRevoke is called with the id of each device a user revokes, to
+	// close its connections on this replica.
+	OnRevoke func(deviceID string)
+	// Sandboxes lists the service devices a user's device list shows.
+	Sandboxes func(ctx context.Context, user string) []hub.Sandbox
 }
 
 // Server is the web front end.
@@ -69,11 +79,19 @@ type Server struct {
 	groupsClaim  string
 	keepAlive    time.Duration
 	linkPage     *template.Template
+	pairPage     *template.Template
 	defaults     map[string]string
-	instance     string
-	ready        atomic.Bool
-	draining     chan struct{}
-	drainOnce    sync.Once
+	devices      hub.DeviceStore
+	deviceAPI    http.Handler
+	onRevoke     func(string)
+	sandboxes    func(context.Context, string) []hub.Sandbox
+	// deviceBackendIDs are the backends with devices on.
+	deviceBackendIDs map[string]bool
+	backendNames     map[string]string
+	instance         string
+	ready            atomic.Bool
+	draining         chan struct{}
+	drainOnce        sync.Once
 }
 
 // New returns a Server.
@@ -100,7 +118,16 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	if opts.KeepAlive == 0 {
 		opts.KeepAlive = 15 * time.Second
 	}
+	deviceBackends, names := map[string]bool{}, map[string]string{}
+	for _, b := range cfg.Backends {
+		names[b.ID] = b.Name
+		if b.Devices {
+			deviceBackends[b.ID] = true
+		}
+	}
 	return &Server{
+		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes,
+		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,
 			redirect: cfg.HTTP.PublicURL + "/auth/callback", scopes: cfg.OIDC.Scopes, httpClient: opts.HTTPClient},
@@ -161,6 +188,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/sessions/{backend}/{session}/reasoning", s.api(s.handleSetReasoning))
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
+	mux.HandleFunc("GET /device/pair", s.handlePairPage)
+	mux.HandleFunc("POST /device/pair", s.handlePair)
+	mux.Handle("GET /api/devices", s.api(s.handleDevices))
+	mux.Handle("POST /api/devices/{device}/revoke", s.api(s.handleRevokeDevice))
+	mux.Handle("POST /api/devices/{device}/dismiss-address", s.api(s.handleDismissAddress))
+	if s.deviceAPI != nil {
+		mux.Handle("/api/device/", s.deviceAPI)
+	}
 	return headers(mux)
 }
 

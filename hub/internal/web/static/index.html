@@ -19,6 +19,14 @@
     </div>
     <div class="search"><input id="search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off"></div>
     <nav id="sessions" class="sessions"></nav>
+    <details id="prefs" class="prefs" hidden>
+      <summary>Settings</summary>
+      <div class="prefs-body">
+        <h2>Computers</h2>
+        <p class="hint">Computers where Hermes can run commands and change files for you. To connect one, run <code>hermes-device login</code> on it.</p>
+        <div id="devices" aria-live="polite"></div>
+      </div>
+    </details>
     <div class="side-foot">
       <span id="who" class="who"></span>
       <button id="logout" class="ghost" type="button">Log out</button>

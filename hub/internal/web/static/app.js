@@ -1086,6 +1086,84 @@
     ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.4) + "px";
   }
 
+  // devices is the list of the user's computers in Settings: when each was
+  // last used and from where, a note when one connected from a new
+  // address, and a way to remove one.
+  const devices = {
+    async load() {
+      const box = $("devices");
+      try {
+        this.draw(await api("GET", "/api/devices"));
+      } catch (e) {
+        box.replaceChildren(el("p", "err", "Could not load your computers: " + e.message));
+      }
+    },
+    when(iso) {
+      const v = Date.parse(iso);
+      return v ? new Date(v).toLocaleString() : "";
+    },
+    draw(list) {
+      const box = $("devices");
+      box.replaceChildren();
+      if (!list.length) {
+        box.append(el("p", "none", "No computers are connected."));
+        return;
+      }
+      const many = new Set(list.map((d) => d.backend_id)).size > 1;
+      for (const d of list) {
+        const row = el("div", "device");
+        row.append(el("div", "dname", d.name));
+        if (d.kind === "sandbox") {
+          row.append(el("div", "dmeta", "Sandbox: where Hermes runs commands for chats that are not on one of your computers. It is set up by the owner."));
+          if (many) row.append(el("div", "dmeta", "Works with " + d.backend_name));
+          row.append(el("div", "dmeta", d.online === true ? "Online" : d.online === false ? "Offline" : "Could not check if it is online"));
+          box.append(row);
+          continue;
+        }
+        const meta = [];
+        if (many) meta.push("Works with " + d.backend_name);
+        if (!d.paired) meta.push("Waiting for the computer to finish connecting");
+        else if (!d.last_seen_at) meta.push("Not used yet");
+        else meta.push("Last used " + this.when(d.last_seen_at) + (d.last_addr ? " from " + d.last_addr : ""));
+        if (d.hostname) meta.push("Computer name: " + d.hostname);
+        for (const m of meta) row.append(el("div", "dmeta", m));
+        const acts = el("div", "dacts");
+        if (d.addr_changed_at) {
+          row.append(el("div", "dnote", "Connected from a new address on " + this.when(d.addr_changed_at) +
+            (d.prev_addr ? ". Before that it used " + d.prev_addr + "." : ".") +
+            " If that was not you, remove this computer."));
+          const ok = el("button", "", "That was me");
+          ok.type = "button";
+          ok.onclick = () => this.act(d, "dismiss-address");
+          acts.append(ok);
+        }
+        const rm = el("button", "", "Remove");
+        rm.type = "button";
+        rm.onclick = () => {
+          acts.replaceChildren(el("span", "dmeta", "Remove " + d.name + "? Hermes can no longer use it until you connect it again."));
+          const yes = el("button", "danger", "Remove");
+          yes.type = "button";
+          yes.onclick = () => this.act(d, "revoke");
+          const no = el("button", "", "Cancel");
+          no.type = "button";
+          no.onclick = () => this.load();
+          acts.append(yes, no);
+        };
+        acts.append(rm);
+        row.append(acts);
+        box.append(row);
+      }
+    },
+    async act(d, what) {
+      try {
+        await api("POST", "/api/devices/" + encodeURIComponent(d.id) + "/" + what);
+      } catch (e) {
+        banner("Could not change " + d.name + ": " + e.message, true);
+      }
+      this.load();
+    },
+  };
+
   async function init() {
     try {
       me = await api("GET", "/api/me");
@@ -1111,6 +1189,8 @@
     $("composer").onsubmit = send;
     $("search").oninput = () => drawList();
     $("info").ontoggle = () => { if ($("info").open) settings.load(); };
+    $("prefs").hidden = !me.devices;
+    $("prefs").ontoggle = () => { if ($("prefs").open) devices.load(); };
     $("model").onchange = () => settings.pickModel();
     $("effort").onchange = () => settings.pickEffort();
     const input = $("input");

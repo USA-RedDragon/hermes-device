@@ -30,6 +30,18 @@ const (
 	clientID    = "hub"
 )
 
+const (
+	fieldCSRF        = "csrf"
+	fieldCode        = "code"
+	fieldAction      = "action"
+	actionApprove    = "approve"
+	backendHome      = "home"
+	fieldBackend     = "backend"
+	fieldName        = "name"
+	laptopName       = "work laptop"
+	responseTypeCode = "code"
+)
+
 type hubEnv struct {
 	url   string
 	is    *issuer
@@ -39,6 +51,12 @@ type hubEnv struct {
 }
 
 func setup(t *testing.T) *hubEnv {
+	t.Helper()
+	return setupWith(t, nil)
+}
+
+// setupWith is setup with fn changing the config and options first.
+func setupWith(t *testing.T, fn func(cfg *config.Config, opts *web.Options, st *store.Store)) *hubEnv {
 	t.Helper()
 	is := newIssuer(t)
 	gw := gatewaytest.New(clientID, "pw")
@@ -59,14 +77,19 @@ func setup(t *testing.T) *hubEnv {
 		Session: config.Session{Secret: strings.Repeat("k", 40), TTL: time.Hour},
 		Backends: []config.Backend{
 			{ID: "pc", URL: gw.URL(), Username: clientID, Password: "pw", Users: []string{userAlice}},
-			{ID: "home", URL: gw.URL(), Username: clientID, Password: "pw", Groups: []string{"family"}},
+			{ID: backendHome, URL: gw.URL(), Username: clientID, Password: "pw", Groups: []string{"family"}},
 		}}
+	opts := web.Options{Links: st, Tokens: st, Groups: st, KeepAlive: time.Hour}
+	if fn != nil {
+		fn(cfg, &opts, st)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	svc := service.New(cfg.Backends, st, service.Options{HoldRetryMin: 20 * time.Millisecond, HoldRetryMax: 100 * time.Millisecond})
 	t.Cleanup(svc.Close)
-	s, err := web.New(cfg, web.Options{Service: svc, Links: st, Tokens: st, Groups: st, KeepAlive: time.Hour})
+	opts.Service = svc
+	s, err := web.New(cfg, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +266,7 @@ func TestAPIAuthorization(t *testing.T) {
 	e.is.user, e.is.groups = userBob, []string{"family"}
 	e.is.mu.Unlock()
 	m := login(t, e, c)
-	if m.Default != "home" {
+	if m.Default != backendHome {
 		t.Fatalf("bob me = %+v", m)
 	}
 	_, body := get(t, c, e.url+"/api/backends")
@@ -370,7 +393,7 @@ func TestTelegramLink(t *testing.T) {
 	}
 	form := func(token, csrf string) (*http.Response, string) {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, e.url+"/link/telegram",
-			strings.NewReader(url.Values{"token": {token}, "csrf": {csrf}}.Encode()))
+			strings.NewReader(url.Values{"token": {token}, fieldCSRF: {csrf}}.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		resp, err := c.Do(req)
 		if err != nil {

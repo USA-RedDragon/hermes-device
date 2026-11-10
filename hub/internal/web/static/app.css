@@ -152,6 +152,25 @@ details.toolgroup .group-body { display: flex; flex-direction: column; gap: .5re
   border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
 .scrim { display: none; }
 .page { max-width: 34rem; margin: 2rem auto; padding: 0 1rem; }
+body.doc { overflow: auto; height: auto; }
+.page label { display: flex; flex-direction: column; gap: .3rem; margin: .8rem 0; }
+.page input, .page select { font: inherit; padding: .4rem .55rem; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--card); color: var(--fg); }
+.page .buttons { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: 1rem 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.prefs { border-top: 1px solid var(--line); font-size: .85rem; }
+.prefs summary { cursor: pointer; padding: .45rem .75rem; color: var(--muted); }
+.prefs-body { max-height: 50vh; overflow-y: auto; padding: 0 .75rem .6rem; }
+.prefs-body h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: .3rem 0; }
+.prefs-body .hint { color: var(--muted); margin: 0 0 .5rem; }
+.device { border: 1px solid var(--line); border-radius: 8px; padding: .45rem .55rem; margin-bottom: .4rem; background: var(--card); }
+.device .dname { font-weight: 600; overflow-wrap: anywhere; }
+.device .dmeta { color: var(--muted); overflow-wrap: anywhere; }
+.device .dnote { color: var(--warn); margin: .3rem 0; overflow-wrap: anywhere; }
+.device .dacts { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .35rem; }
+.device .dacts button { font-size: .8rem; padding: .15rem .55rem; }
 .page .err { color: var(--bad); }
 code { background: var(--code); padding: 0 .25rem; border-radius: 4px; }
 
