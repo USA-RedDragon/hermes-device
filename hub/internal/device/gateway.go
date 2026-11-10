@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -231,8 +232,8 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 		}
 		return
 	}
-	if f.Method == "" {
-		g.forward(&f, nil)
+	if _, ok := f.members["method"]; !ok {
+		g.answerServer(&f)
 		return
 	}
 	params, isObject := decodeParams(f.Params)
@@ -294,6 +295,33 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 		g.send(&f, params, &held{kind: heldBranch, id: f.ID})
 	default:
 		g.send(&f, params, nil)
+	}
+}
+
+// serverRequestPrefix starts the id of every request the gateway sends to
+// its viewers (gateway/session_server_requests.py is_response_frame).
+const serverRequestPrefix = "srq-"
+
+// answerServer forwards a device's answer to a gateway request: a frame
+// with no method member, a string id starting with srq- and exactly one
+// of result and error. It is rebuilt from those members only. Anything
+// else is dropped.
+func (g *guard) answerServer(f *frame) {
+	id, isString := rawStringOK(f.ID)
+	_, hasResult := f.members["result"]
+	_, hasError := f.members["error"]
+	if !isString || !strings.HasPrefix(id, serverRequestPrefix) || hasResult == hasError {
+		g.s.log.Warn("dropped a device message that is neither a request nor an answer to a gateway request", "device", g.dev.ID)
+		return
+	}
+	out := map[string]json.RawMessage{"jsonrpc": mustRaw(jsonRPCVersion), "id": f.ID}
+	if hasResult {
+		out["result"] = f.members["result"]
+	} else {
+		out["error"] = f.members["error"]
+	}
+	if data, err := json.Marshal(out); err == nil {
+		g.toGateway(data)
 	}
 }
 

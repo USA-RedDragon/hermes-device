@@ -312,3 +312,41 @@ func TestGatewayLegParams(t *testing.T) {
 	})
 }
 
+// TestGatewayLegAnswers covers device messages with no method: only an
+// answer to a gateway request (string srq- id, exactly one of result and
+// error) goes through, rebuilt from those members.
+func TestGatewayLegAnswers(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, _ := e.pair(e.a)
+		g := e.gatewayLeg(e.b, tok)
+		for _, m := range []map[string]any{
+			{"id": "r1", keyResult: map[string]any{}},
+			{"id": 5, keyResult: map[string]any{}},
+			{"id": "srq-2", keyResult: map[string]any{}, "error": map[string]any{"code": 1}},
+			{"id": "srq-3"},
+			{keyResult: map[string]any{}},
+			{"id": "srq-4", keyMethod: "", keyResult: map[string]any{}},
+		} {
+			m[keyJSONRPC] = jsonRPC
+			writeJSON(t, g.c, m)
+		}
+		writeJSON(t, g.c, map[string]any{keyJSONRPC: "1.0", "id": "srq-1", keyResult: map[string]any{keyValue: "yes"},
+			keyParams: map[string]any{keySessionID: sessionOther}, keySessionID: sessionOther, "adopt": true})
+		if m := readJSON(t, g.c); errCode(m) != -32601 || m["id"] != "srq-4" {
+			t.Fatalf("empty method = %v", m)
+		}
+		g.request("fence", methodList, map[string]any{})
+		var got []json.RawMessage
+		for _, c := range e.gw.Calls() {
+			if c.Method == "" {
+				got = append(got, c.Raw)
+			}
+		}
+		if len(got) != 1 || string(got[0]) != `{"id":"srq-1","jsonrpc":"2.0","result":{"value":"yes"}}` {
+			t.Fatalf("gateway got %s", got)
+		}
+	})
+}
+

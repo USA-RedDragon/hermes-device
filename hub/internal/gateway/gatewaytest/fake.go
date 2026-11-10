@@ -64,6 +64,8 @@ const (
 type Call struct {
 	Method string
 	Params map[string]any
+	// Raw is the whole message as the gateway got it.
+	Raw json.RawMessage
 }
 
 // Session is a fake gateway session.
@@ -577,7 +579,13 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 			_ = ws.Close(websocket.StatusCode(1013), "")
 			return
 		}
-		g.calls = append(g.calls, Call{Method: req.Method, Params: req.Params})
+		g.calls = append(g.calls, Call{Method: req.Method, Params: req.Params, Raw: append(json.RawMessage(nil), data...)})
+		var members map[string]json.RawMessage
+		_ = json.Unmarshal(data, &members)
+		if members["method"] == nil {
+			g.mu.Unlock()
+			continue
+		}
 		result, rerr, after := g.dispatch(c, req.Method, req.Params)
 		var errFrame map[string]any
 		if rerr != "" {
