@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/USA-RedDragon/configulator/v2"
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
@@ -36,6 +37,8 @@ backends:
     show_reasoning: false
 `
 
+const defaultDB = "/data/hermes-hub.db"
+
 func load(t *testing.T, env map[string]string, body string) (*config.Config, error) {
 	t.Helper()
 	c := configulator.New(config.ConfigSchema()).
@@ -62,7 +65,7 @@ func TestLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTP.PublicURL != "https://hub.example.test" || cfg.Store.Path != "/data/hermes-hub.db" {
+	if cfg.HTTP.PublicURL != "https://hub.example.test" || cfg.Store.Path != defaultDB {
 		t.Fatalf("http/store = %+v %+v", cfg.HTTP, cfg.Store)
 	}
 	b := cfg.Backends
@@ -78,6 +81,42 @@ func TestLoad(t *testing.T) {
 	}
 	if cfg.Telegram.Enabled {
 		t.Fatal("telegram on by default")
+	}
+	if cfg.Store.Driver != config.DriverSQLite || cfg.Shutdown.DrainDelay != 5*time.Second ||
+		cfg.Shutdown.Timeout != 20*time.Second || cfg.Hold.Timeout != 10*time.Minute || cfg.Telegram.LeaderRetry != 2*time.Second {
+		t.Fatalf("store/shutdown/hold defaults = %+v %+v %+v %v", cfg.Store, cfg.Shutdown, cfg.Hold, cfg.Telegram.LeaderRetry)
+	}
+}
+
+func TestLoadPostgres(t *testing.T) {
+	t.Parallel()
+	env := secrets()
+	env["HUB_STORE_DRIVER"] = "postgres"
+	if _, err := load(t, env, file); !errors.Is(err, config.ErrStoreDSN) {
+		t.Fatalf("postgres without dsn: %v", err)
+	}
+	env["HUB_STORE_DSN"] = "postgres://hub@db.example.com/hub"
+	env["HUB_STORE_IMPORT_PATH"] = defaultDB
+	cfg, err := load(t, env, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Store.DSN != "postgres://hub@db.example.com/hub" || cfg.Store.ImportPath != defaultDB {
+		t.Fatalf("store = %+v", cfg.Store)
+	}
+	env["HUB_STORE_DRIVER"] = "mysql"
+	if _, err := load(t, env, file); !errors.Is(err, config.ErrStoreDriver) {
+		t.Fatalf("unknown driver: %v", err)
+	}
+	env = secrets()
+	env["HUB_STORE_IMPORT_PATH"] = defaultDB
+	if _, err := load(t, env, file); !errors.Is(err, config.ErrImportPath) {
+		t.Fatalf("import with sqlite: %v", err)
+	}
+	env = secrets()
+	env["HUB_SHUTDOWN_DRAIN_DELAY"] = "-1s"
+	if _, err := load(t, env, file); !errors.Is(err, config.ErrDuration) {
+		t.Fatalf("negative drain delay: %v", err)
 	}
 }
 

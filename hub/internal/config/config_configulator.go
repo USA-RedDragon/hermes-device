@@ -55,7 +55,19 @@ type uIShadow struct {
 }
 
 type storeShadow struct {
-	Path *string `json:"path" toml:"path" yaml:"path"`
+	Driver     *string `json:"driver"      toml:"driver"      yaml:"driver"`
+	Path       *string `json:"path"        toml:"path"        yaml:"path"`
+	DSN        *string `json:"dsn"         toml:"dsn"         yaml:"dsn"`
+	ImportPath *string `json:"import_path" toml:"import_path" yaml:"import_path"`
+}
+
+type shutdownShadow struct {
+	DrainDelay *impl.Duration `json:"drain_delay" toml:"drain_delay" yaml:"drain_delay"`
+	Timeout    *impl.Duration `json:"timeout"     toml:"timeout"     yaml:"timeout"`
+}
+
+type holdShadow struct {
+	Timeout *impl.Duration `json:"timeout" toml:"timeout" yaml:"timeout"`
 }
 
 type userShadow struct {
@@ -85,6 +97,7 @@ type telegramShadow struct {
 	PollTimeout     *impl.Duration `json:"poll_timeout"     toml:"poll_timeout"     yaml:"poll_timeout"`
 	EditInterval    *impl.Duration `json:"edit_interval"    toml:"edit_interval"    yaml:"edit_interval"`
 	MaxRetries      *int           `json:"max_retries"      toml:"max_retries"      yaml:"max_retries"`
+	LeaderRetry     *impl.Duration `json:"leader_retry"     toml:"leader_retry"     yaml:"leader_retry"`
 }
 
 type configShadow struct {
@@ -94,6 +107,8 @@ type configShadow struct {
 	Session  *sessionShadow   `json:"session"   toml:"session"   yaml:"session"`
 	UI       *uIShadow        `json:"ui"        toml:"ui"        yaml:"ui"`
 	Store    *storeShadow     `json:"store"     toml:"store"     yaml:"store"`
+	Shutdown *shutdownShadow  `json:"shutdown"  toml:"shutdown"  yaml:"shutdown"`
+	Hold     *holdShadow      `json:"hold"      toml:"hold"      yaml:"hold"`
 	Users    *[]userShadow    `json:"users"     toml:"users"     yaml:"users"`
 	Backends *[]backendShadow `json:"backends"  toml:"backends"  yaml:"backends"`
 	Telegram *telegramShadow  `json:"telegram"  toml:"telegram"  yaml:"telegram"`
@@ -137,8 +152,16 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("oidc.groups_claim", configulator.LayerDefault, "default tag")
 	cfg.Session.TTL = time.Duration(int64(604800000000000))
 	set("session.ttl", configulator.LayerDefault, "default tag")
+	cfg.Store.Driver = "sqlite"
+	set("store.driver", configulator.LayerDefault, "default tag")
 	cfg.Store.Path = "/data/hermes-hub.db"
 	set("store.path", configulator.LayerDefault, "default tag")
+	cfg.Shutdown.DrainDelay = time.Duration(int64(5000000000))
+	set("shutdown.drain_delay", configulator.LayerDefault, "default tag")
+	cfg.Shutdown.Timeout = time.Duration(int64(20000000000))
+	set("shutdown.timeout", configulator.LayerDefault, "default tag")
+	cfg.Hold.Timeout = time.Duration(int64(600000000000))
+	set("hold.timeout", configulator.LayerDefault, "default tag")
 	cfg.Telegram.Enabled = false
 	set("telegram.enabled", configulator.LayerDefault, "default tag")
 	cfg.Telegram.APIURL = "https://api.telegram.org"
@@ -149,6 +172,8 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("telegram.edit_interval", configulator.LayerDefault, "default tag")
 	cfg.Telegram.MaxRetries = 5
 	set("telegram.max_retries", configulator.LayerDefault, "default tag")
+	cfg.Telegram.LeaderRetry = time.Duration(int64(2000000000))
+	set("telegram.leader_retry", configulator.LayerDefault, "default tag")
 	return nil
 }
 
@@ -254,9 +279,58 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		}
 	}
 	if s.Store != nil {
+		if s.Store.Driver != nil {
+			cfg.Store.Driver = *s.Store.Driver
+			set("store.driver", configulator.LayerFile, file)
+		}
 		if s.Store.Path != nil {
 			cfg.Store.Path = *s.Store.Path
 			set("store.path", configulator.LayerFile, file)
+		}
+		if s.Store.DSN != nil {
+			cfg.Store.DSN = *s.Store.DSN
+			set("store.dsn", configulator.LayerFile, file)
+		}
+		if s.Store.ImportPath != nil {
+			cfg.Store.ImportPath = *s.Store.ImportPath
+			set("store.import_path", configulator.LayerFile, file)
+		}
+	}
+	if s.Shutdown != nil {
+		if s.Shutdown.DrainDelay != nil {
+			v, ok := s.Shutdown.DrainDelay.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "shutdown.drain_delay",
+				}
+			}
+			cfg.Shutdown.DrainDelay = v
+			set("shutdown.drain_delay", configulator.LayerFile, file)
+		}
+		if s.Shutdown.Timeout != nil {
+			v, ok := s.Shutdown.Timeout.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "shutdown.timeout",
+				}
+			}
+			cfg.Shutdown.Timeout = v
+			set("shutdown.timeout", configulator.LayerFile, file)
+		}
+	}
+	if s.Hold != nil {
+		if s.Hold.Timeout != nil {
+			v, ok := s.Hold.Timeout.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "hold.timeout",
+				}
+			}
+			cfg.Hold.Timeout = v
+			set("hold.timeout", configulator.LayerFile, file)
 		}
 	}
 	if s.Users != nil {
@@ -375,6 +449,17 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			cfg.Telegram.MaxRetries = *s.Telegram.MaxRetries
 			set("telegram.max_retries", configulator.LayerFile, file)
 		}
+		if s.Telegram.LeaderRetry != nil {
+			v, ok := s.Telegram.LeaderRetry.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "telegram.leader_retry",
+				}
+			}
+			cfg.Telegram.LeaderRetry = v
+			set("telegram.leader_retry", configulator.LayerFile, file)
+		}
 	}
 	return nil
 }
@@ -490,9 +575,60 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.UI.DefaultBackends = lst
 		set("ui.default_backends", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "driver"); ok {
+		cfg.Store.Driver = v
+		set("store.driver", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "path"); ok {
 		cfg.Store.Path = v
 		set("store.path", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "dsn"); ok {
+		cfg.Store.DSN = v
+		set("store.dsn", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "import_path"); ok {
+		cfg.Store.ImportPath = v
+		set("store.import_path", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "shutdown", "drain_delay"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "shutdown.drain_delay",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Shutdown.DrainDelay = d
+		set("shutdown.drain_delay", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "shutdown", "timeout"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "shutdown.timeout",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Shutdown.Timeout = d
+		set("shutdown.timeout", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "hold", "timeout"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "hold.timeout",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Hold.Timeout = d
+		set("hold.timeout", configulator.LayerEnv, n)
 	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "enabled"); ok {
 		p, err := strconv.ParseBool(v)
@@ -578,6 +714,19 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Telegram.MaxRetries = int(p)
 		set("telegram.max_retries", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "leader_retry"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.leader_retry",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Telegram.LeaderRetry = d
+		set("telegram.leader_retry", configulator.LayerEnv, n)
+	}
 	return nil
 }
 
@@ -609,7 +758,13 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"session" + o.Separator + "secret",
 		"session" + o.Separator + "ttl",
 		"ui" + o.Separator + "default_backends",
+		"store" + o.Separator + "driver",
 		"store" + o.Separator + "path",
+		"store" + o.Separator + "dsn",
+		"store" + o.Separator + "import_path",
+		"shutdown" + o.Separator + "drain_delay",
+		"shutdown" + o.Separator + "timeout",
+		"hold" + o.Separator + "timeout",
 		"telegram" + o.Separator + "enabled",
 		"telegram" + o.Separator + "token",
 		"telegram" + o.Separator + "api_url",
@@ -618,6 +773,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"telegram" + o.Separator + "poll_timeout",
 		"telegram" + o.Separator + "edit_interval",
 		"telegram" + o.Separator + "max_retries",
+		"telegram" + o.Separator + "leader_retry",
 	}
 	for i, name := range names {
 		if f := fs.Lookup(name); f != nil {
@@ -652,15 +808,22 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[15], "", "Key for the session and login cookies. At least 32 characters")
 	fs.Duration(names[16], time.Duration(int64(604800000000000)), "How long a login lasts")
 	fs.StringSlice(names[17], nil, "Default backend per user, as user=backend pairs. A user without one gets their first backend")
-	fs.String(names[18], "/data/hermes-hub.db", "Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups")
-	fs.Bool(names[19], false, "Run the Telegram bot")
-	fs.String(names[20], "", "Telegram bot token from BotFather")
-	fs.String(names[21], "https://api.telegram.org", "Telegram Bot API base URL")
-	fs.StringSlice(names[22], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
-	fs.Int64Slice(names[23], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
-	fs.Duration(names[24], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
-	fs.Duration(names[25], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
-	fs.Var(impl.NewInt(5), names[26], "Retries of a Bot API call that Telegram answers with 429")
+	fs.String(names[18], "sqlite", "Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups and the Telegram bot's state")
+	fs.String(names[19], "/data/hermes-hub.db", "Path of the SQLite database (store.driver sqlite)")
+	fs.String(names[20], "", "PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session")
+	fs.String(names[21], "", "With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped")
+	fs.Duration(names[22], time.Duration(int64(5000000000)), "How long the hub keeps serving after SIGTERM while /readyz fails, so load balancers stop sending it requests")
+	fs.Duration(names[23], time.Duration(int64(20000000000)), "How long the hub then waits for open requests and the Telegram bot to stop. Keep drain_delay plus timeout below the pod's termination grace period")
+	fs.Duration(names[24], time.Duration(int64(600000000000)), "How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default")
+	fs.Bool(names[25], false, "Run the Telegram bot")
+	fs.String(names[26], "", "Telegram bot token from BotFather")
+	fs.String(names[27], "https://api.telegram.org", "Telegram Bot API base URL")
+	fs.StringSlice(names[28], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
+	fs.Int64Slice(names[29], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
+	fs.Duration(names[30], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
+	fs.Duration(names[31], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
+	fs.Var(impl.NewInt(5), names[32], "Retries of a Bot API call that Telegram answers with 429")
+	fs.Duration(names[33], time.Duration(int64(2000000000)), "With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over")
 	return nil
 }
 
@@ -881,6 +1044,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.UI.DefaultBackends = v
 		set("ui.default_backends", configulator.LayerCLI, "--"+n)
 	}
+	if n := "store" + o.Separator + "driver"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "store.driver",
+				Source: "--" + n,
+			}
+		}
+		cfg.Store.Driver = v
+		set("store.driver", configulator.LayerCLI, "--"+n)
+	}
 	if n := "store" + o.Separator + "path"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
@@ -892,6 +1067,66 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Store.Path = v
 		set("store.path", configulator.LayerCLI, "--"+n)
+	}
+	if n := "store" + o.Separator + "dsn"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "store.dsn",
+				Source: "--" + n,
+			}
+		}
+		cfg.Store.DSN = v
+		set("store.dsn", configulator.LayerCLI, "--"+n)
+	}
+	if n := "store" + o.Separator + "import_path"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "store.import_path",
+				Source: "--" + n,
+			}
+		}
+		cfg.Store.ImportPath = v
+		set("store.import_path", configulator.LayerCLI, "--"+n)
+	}
+	if n := "shutdown" + o.Separator + "drain_delay"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "shutdown.drain_delay",
+				Source: "--" + n,
+			}
+		}
+		cfg.Shutdown.DrainDelay = v
+		set("shutdown.drain_delay", configulator.LayerCLI, "--"+n)
+	}
+	if n := "shutdown" + o.Separator + "timeout"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "shutdown.timeout",
+				Source: "--" + n,
+			}
+		}
+		cfg.Shutdown.Timeout = v
+		set("shutdown.timeout", configulator.LayerCLI, "--"+n)
+	}
+	if n := "hold" + o.Separator + "timeout"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "hold.timeout",
+				Source: "--" + n,
+			}
+		}
+		cfg.Hold.Timeout = v
+		set("hold.timeout", configulator.LayerCLI, "--"+n)
 	}
 	if n := "telegram" + o.Separator + "enabled"; fs.Changed(n) {
 		v, err := fs.GetBool(n)
@@ -988,6 +1223,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Telegram.MaxRetries = v
 		set("telegram.max_retries", configulator.LayerCLI, "--"+n)
+	}
+	if n := "telegram" + o.Separator + "leader_retry"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.leader_retry",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.LeaderRetry = v
+		set("telegram.leader_retry", configulator.LayerCLI, "--"+n)
 	}
 	return nil
 }
@@ -1116,6 +1363,44 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Store = &sub
+			}
+		case "shutdown":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("shutdown", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub shutdownShadow
+				if err := sub.decodeJSON(dec, "shutdown"); err != nil {
+					return err
+				}
+				s.Shutdown = &sub
+			}
+		case "hold":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("hold", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub holdShadow
+				if err := sub.decodeJSON(dec, "hold"); err != nil {
+					return err
+				}
+				s.Hold = &sub
 			}
 		case "users":
 			if dec.PeekKind() == jsontext.KindNull {
@@ -1653,6 +1938,19 @@ func (s *storeShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			return nil
 		}
 		switch key := tok.String(); key {
+		case "driver":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Driver = &str
+			default:
+				return configJSONError(path+".driver", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
 		case "path":
 			v, err := dec.ReadToken()
 			if err != nil {
@@ -1665,6 +1963,135 @@ func (s *storeShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				s.Path = &str
 			default:
 				return configJSONError(path+".path", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "dsn":
+			if err := func() error {
+				v, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				switch v.Kind() {
+				case jsontext.KindNull:
+				case jsontext.KindString:
+					str := v.String()
+					s.DSN = &str
+				default:
+					return configJSONError(path+".dsn", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+				}
+				return nil
+			}(); err != nil {
+				return &configulator.ParseError{
+					Err:   errors.New("invalid value"),
+					Path:  path + ".dsn",
+					Value: "(redacted)",
+				}
+			}
+		case "import_path":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.ImportPath = &str
+			default:
+				return configJSONError(path+".import_path", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *shutdownShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "drain_delay":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".drain_delay", v, err)
+				}
+				s.DrainDelay = &slot
+			default:
+				return configJSONError(path+".drain_delay", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		case "timeout":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".timeout", v, err)
+				}
+				s.Timeout = &slot
+			default:
+				return configJSONError(path+".timeout", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *holdShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "timeout":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".timeout", v, err)
+				}
+				s.Timeout = &slot
+			default:
+				return configJSONError(path+".timeout", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -2097,6 +2524,22 @@ func (s *telegramShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			default:
 				return configJSONError(path+".max_retries", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
+		case "leader_retry":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".leader_retry", v, err)
+				}
+				s.LeaderRetry = &slot
+			default:
+				return configJSONError(path+".leader_retry", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
 				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
@@ -2140,7 +2583,13 @@ func (c *Config) PrintConfig() string {
 	b.WriteString("session.secret = (redacted)\n")
 	fmt.Fprintf(&b, "session.ttl = %v\n", c.Session.TTL)
 	fmt.Fprintf(&b, "ui.default_backends = %v\n", c.UI.DefaultBackends)
+	fmt.Fprintf(&b, "store.driver = %v\n", c.Store.Driver)
 	fmt.Fprintf(&b, "store.path = %v\n", c.Store.Path)
+	b.WriteString("store.dsn = (redacted)\n")
+	fmt.Fprintf(&b, "store.import_path = %v\n", c.Store.ImportPath)
+	fmt.Fprintf(&b, "shutdown.drain_delay = %v\n", c.Shutdown.DrainDelay)
+	fmt.Fprintf(&b, "shutdown.timeout = %v\n", c.Shutdown.Timeout)
+	fmt.Fprintf(&b, "hold.timeout = %v\n", c.Hold.Timeout)
 	fmt.Fprintf(&b, "users = %v\n", c.Users)
 	b.WriteString("backends = (redacted)\n")
 	fmt.Fprintf(&b, "telegram.enabled = %v\n", c.Telegram.Enabled)
@@ -2151,6 +2600,7 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "telegram.poll_timeout = %v\n", c.Telegram.PollTimeout)
 	fmt.Fprintf(&b, "telegram.edit_interval = %v\n", c.Telegram.EditInterval)
 	fmt.Fprintf(&b, "telegram.max_retries = %v\n", c.Telegram.MaxRetries)
+	fmt.Fprintf(&b, "telegram.leader_retry = %v\n", c.Telegram.LeaderRetry)
 	return b.String()
 }
 

@@ -47,9 +47,32 @@ type Session struct {
 	TTL    time.Duration `name:"ttl" default:"168h" description:"How long a login lasts"`
 }
 
-// Store configures the embedded database.
+// Store drivers.
+const (
+	DriverSQLite   = "sqlite"
+	DriverPostgres = "postgres"
+)
+
+// Store configures the database.
 type Store struct {
-	Path string `name:"path" default:"/data/hermes-hub.db" description:"Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups"`
+	Driver     string `name:"driver" default:"sqlite" description:"Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups and the Telegram bot's state"`
+	Path       string `name:"path" default:"/data/hermes-hub.db" description:"Path of the SQLite database (store.driver sqlite)"`
+	DSN        string `name:"dsn" secret:"true" description:"PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session"`
+	ImportPath string `name:"import_path" description:"With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped"`
+}
+
+// Shutdown configures what the hub does after SIGTERM.
+type Shutdown struct {
+	DrainDelay time.Duration `name:"drain_delay" default:"5s" description:"How long the hub keeps serving after SIGTERM while /readyz fails, so load balancers stop sending it requests"`
+	Timeout    time.Duration `name:"timeout" default:"20s" description:"How long the hub then waits for open requests and the Telegram bot to stop. Keep drain_delay plus timeout below the pod's termination grace period"`
+}
+
+// defaultHoldTimeout is hold.timeout's default, also for a zero value.
+const defaultHoldTimeout = 10 * time.Minute
+
+// Hold configures prompts the hub holds while a backend restarts.
+type Hold struct {
+	Timeout time.Duration `name:"timeout" default:"10m" description:"How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default"`
 }
 
 // User maps an OIDC subject to a hub user name.
@@ -104,6 +127,8 @@ type Config struct {
 	Session  Session   `name:"session"`
 	UI       UI        `name:"ui"`
 	Store    Store     `name:"store"`
+	Shutdown Shutdown  `name:"shutdown"`
+	Hold     Hold      `name:"hold"`
 	Users    []User    `name:"users" description:"Who may log in: each OIDC sub and its hub user name. A login with any other sub is refused. Only settable in the config file"`
 	Backends []Backend `name:"backends" description:"Hermes backends and who may use them. Only settable in the config file"`
 	Telegram Telegram  `name:"telegram"`
@@ -117,6 +142,10 @@ var (
 	ErrBackend         = errors.New("invalid backend")
 	ErrUser            = errors.New("invalid user")
 	ErrDefaultBackend  = errors.New("ui.default_backends entries must be user=backend")
+	ErrStoreDriver     = errors.New("store.driver must be sqlite or postgres")
+	ErrStoreDSN        = errors.New("store.dsn is required when store.driver is postgres")
+	ErrImportPath      = errors.New("store.import_path needs store.driver postgres")
+	ErrDuration        = errors.New("shutdown.drain_delay, shutdown.timeout and hold.timeout must not be negative")
 )
 
 var backendIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -168,6 +197,25 @@ func (c *Config) validateUsers() error {
 	return nil
 }
 
+func (c *Config) validateStore() error {
+	if c.Store.Driver == "" {
+		c.Store.Driver = DriverSQLite
+	}
+	switch c.Store.Driver {
+	case DriverSQLite:
+		if c.Store.ImportPath != "" {
+			return ErrImportPath
+		}
+	case DriverPostgres:
+		if c.Store.DSN == "" {
+			return ErrStoreDSN
+		}
+	default:
+		return ErrStoreDriver
+	}
+	return nil
+}
+
 // Validate checks what tags can't and fills backend defaults.
 func (c *Config) Validate() error {
 	switch c.LogLevel {
@@ -180,6 +228,15 @@ func (c *Config) Validate() error {
 	}
 	if err := telegram.Config(c.Telegram).Validate(); err != nil {
 		return err
+	}
+	if err := c.validateStore(); err != nil {
+		return err
+	}
+	if c.Hold.Timeout == 0 {
+		c.Hold.Timeout = defaultHoldTimeout
+	}
+	if c.Shutdown.DrainDelay < 0 || c.Shutdown.Timeout < 0 || c.Hold.Timeout < 0 {
+		return ErrDuration
 	}
 	if c.Session.Secret != "" && len(c.Session.Secret) < 32 {
 		return ErrShortSecret

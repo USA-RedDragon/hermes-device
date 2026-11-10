@@ -438,6 +438,7 @@ func testConfig(f *fakeTelegram) telegram.Config {
 		DefaultBackends: []string{"alice=cluster"},
 		AllowedGroups:   []int64{-500},
 		PollTimeout:     time.Second,
+		LeaderRetry:     time.Second,
 		EditInterval:    300 * time.Millisecond,
 		MaxRetries:      3,
 	}

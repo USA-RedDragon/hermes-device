@@ -17,13 +17,14 @@ type Config struct {
 	PollTimeout     time.Duration `name:"poll_timeout" default:"50s" description:"Long poll timeout for getUpdates"`
 	EditInterval    time.Duration `name:"edit_interval" default:"1500ms" description:"Minimum time between edits of one live message"`
 	MaxRetries      int           `name:"max_retries" default:"5" description:"Retries of a Bot API call that Telegram answers with 429"`
+	LeaderRetry     time.Duration `name:"leader_retry" default:"2s" description:"With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over"`
 }
 
 // Errors returned by Config.Validate.
 var (
 	ErrMissingToken      = errors.New("telegram.token is required when telegram.enabled is true")
 	ErrBadDefaultBackend = errors.New("telegram.default_backends entries must be user=backend")
-	ErrBadInterval       = errors.New("telegram.poll_timeout and telegram.edit_interval must be positive")
+	ErrBadInterval       = errors.New("telegram.poll_timeout, telegram.edit_interval and telegram.leader_retry must be positive")
 )
 
 // Validate checks the configuration. It accepts anything when the bot is
@@ -35,7 +36,7 @@ func (c Config) Validate() error {
 	if c.Token == "" {
 		return ErrMissingToken
 	}
-	if c.PollTimeout <= 0 || c.EditInterval <= 0 {
+	if c.PollTimeout <= 0 || c.EditInterval <= 0 || c.LeaderRetry <= 0 {
 		return ErrBadInterval
 	}
 	_, err := c.defaultBackends()

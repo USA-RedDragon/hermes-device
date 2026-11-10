@@ -41,8 +41,22 @@ ui:
   # Default backend per user, as user=backend pairs. A user without one gets their first backend
   # default_backends: []
 store:
-  # Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups
+  # Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups and the Telegram bot's state
+  driver: "sqlite"
+  # Path of the SQLite database (store.driver sqlite)
   path: "/data/hermes-hub.db"
+  # PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session
+  # dsn: "(secret)"
+  # With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped
+  # import_path: ""
+shutdown:
+  # How long the hub keeps serving after SIGTERM while /readyz fails, so load balancers stop sending it requests
+  drain_delay: "5s"
+  # How long the hub then waits for open requests and the Telegram bot to stop. Keep drain_delay plus timeout below the pod's termination grace period
+  timeout: "20s"
+hold:
+  # How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default
+  timeout: "10m"
 # Who may log in: each OIDC sub and its hub user name. A login with any other sub is refused. Only settable in the config file
 # users:
 #   - sub: ""
@@ -76,3 +90,5 @@ telegram:
   edit_interval: "1500ms"
   # Retries of a Bot API call that Telegram answers with 429
   max_retries: 5
+  # With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over
+  leader_retry: "2s"
