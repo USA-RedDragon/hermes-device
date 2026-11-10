@@ -44,6 +44,7 @@ type fakeHub struct {
 	failBind map[string]int
 	refuse   bool
 	status   int
+	refused  int
 }
 
 func newFakeHub(t *testing.T) *fakeHub {
@@ -52,10 +53,12 @@ func newFakeHub(t *testing.T) *fakeHub {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+hubapi.PathACPLeg, func(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
-		refuse := h.refuse
+		refuse, code := h.refuse, h.status
+		if refuse {
+			h.refused++
+		}
 		h.mu.Unlock()
 		if refuse || r.Header.Get("Authorization") != "Bearer hdt_test" {
-			code := h.status
 			if code == 0 {
 				code = http.StatusUnauthorized
 			}
@@ -92,6 +95,21 @@ func newFakeHub(t *testing.T) *fakeHub {
 		h.ts.Close()
 	})
 	return h
+}
+
+// setRefuse makes the hub answer every upgrade with status (0 accepts
+// again) and returns how many upgrades it refused so far.
+func (h *fakeHub) setRefuse(status int) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.refuse, h.status = status != 0, status
+	return h.refused
+}
+
+func (h *fakeHub) refusedCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.refused
 }
 
 func (h *fakeHub) bindLog() []string {
@@ -169,13 +187,18 @@ type edLine struct {
 
 func startBridge(t *testing.T, hub *fakeHub) *editor {
 	t.Helper()
+	return startBridgeReady(t, hub, 300*time.Millisecond)
+}
+
+func startBridgeReady(t *testing.T, hub *fakeHub, readyTimeout time.Duration) *editor {
+	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	e := &editor{t: t, in: inW, lines: make(chan edLine, 64), done: make(chan error, 1)}
 	br := acpbridge.New(acpbridge.Options{
 		Hub: hubapi.New(hub.ts.URL, "hdt_test", "test"), In: inR, Out: outW,
 		MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, PingInterval: 5 * time.Second,
-		ReadyTimeout: 300 * time.Millisecond,
+		ReadyTimeout: readyTimeout,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	go func() {
@@ -415,12 +438,41 @@ func must(t *testing.T, err error) {
 	}
 }
 
+// TestReconnectReplay drops the ACP leg the ways acp-host and the hub drop
+// it, and checks that the bridge answers the request in flight with
+// MsgLost, reconnects, replays initialize and session/load without passing
+// the replayed history to the editor, and then serves the editor again.
 func TestReconnectReplay(t *testing.T) {
 	t.Parallel()
-	hub := newFakeHub(t)
-	ed := startBridge(t, hub)
-	a := hub.accept()
+	closeWith := func(code websocket.StatusCode, reason string) func(*agent) {
+		return func(a *agent) { _ = a.conn.Close(code, reason) }
+	}
+	dropTCP := func(a *agent) { _ = a.conn.CloseNow() }
+	for _, tc := range []struct {
+		name string
+		drop func(*agent)
+		// outage makes the hub answer upgrades with 502 after the drop,
+		// as the ingress does while the hub restarts.
+		outage bool
+	}{
+		{"acp-host child exited", closeWith(websocket.StatusInternalError, "hermes acp exited"), false},
+		{"acp-host connection lost", dropTCP, false},
+		{"gateway restart", closeWith(websocket.StatusGoingAway, "gateway restart"), false},
+		{"hub shutting down then 502", closeWith(websocket.StatusGoingAway, "hub shutting down"), true},
+		{"hub connection lost then 502", dropTCP, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			testReconnectReplay(t, tc.drop, tc.outage)
+		})
+	}
+}
 
+// openSessions initializes, opens local-1 (new) and local-2 (load), passes
+// a permission request to the editor and leaves prompt 4 in flight. It
+// returns the editor-side id of the permission request.
+func openSessions(t *testing.T, ed *editor, a *agent) string {
+	t.Helper()
 	ed.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"zed"}}}`)
 	a.answer(a.recv(), map[string]any{keyProtocolVersion: 1})
 	ed.recv()
@@ -443,11 +495,32 @@ func TestReconnectReplay(t *testing.T) {
 	}
 	ed.send(`{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"local-1","prompt":[]}}`)
 	a.recv()
+	return stale
+}
 
-	_ = a.conn.Close(websocket.StatusGoingAway, "gateway restart")
+func testReconnectReplay(t *testing.T, drop func(*agent), outage bool) {
+	t.Helper()
+	hub := newFakeHub(t)
+	ed := startBridgeReady(t, hub, 2*time.Second)
+	a := hub.accept()
+	stale := openSessions(t, ed, a)
+
+	if outage {
+		hub.setRefuse(http.StatusBadGateway)
+	}
+	drop(a)
 	r := ed.recv()
 	if code, msg := errCode(r); r["id"] != float64(4) || code != acpbridge.CodeInternal || msg != acpbridge.MsgLost {
 		t.Fatalf("in-flight prompt got %v", r)
+	}
+	if outage {
+		ed.send(`{"jsonrpc":"2.0","id":5,"method":"session/list","params":{}}`)
+		if code, msg := errCode(ed.recv()); code != acpbridge.CodeInternal || msg != acpbridge.MsgLost {
+			t.Fatalf("request during the outage got %d %q", code, msg)
+		}
+		if n := hub.setRefuse(0); n < 2 {
+			t.Fatalf("bridge stopped retrying after %d refused upgrades", n)
+		}
 	}
 
 	b := hub.accept()
@@ -459,6 +532,7 @@ func TestReconnectReplay(t *testing.T) {
 	if info, _ := param(init, "clientInfo").(map[string]any); info["name"] != "zed" {
 		t.Errorf("initialize params not the editor's: %v", init["params"])
 	}
+	ed.send(`{"jsonrpc":"2.0","id":6,"method":"session/prompt","params":{"sessionId":"local-1","prompt":[]}}`)
 	b.answer(init, map[string]any{keyProtocolVersion: 1})
 	for _, want := range []struct{ sid, cwd string }{{localSession, "/home/alice/src/app"}, {"local-2", "/home/alice/src/lib"}} {
 		load := b.recv()
@@ -471,13 +545,23 @@ func TestReconnectReplay(t *testing.T) {
 		if id, _ := load["id"].(string); !strings.HasPrefix(id, acpbridge.IDPrefix) || id == initID {
 			t.Errorf("load id %v", load["id"])
 		}
-		b.send(map[string]any{keyJSONRPC: jsonRPC, "method": methodUpdate, "params": map[string]any{keySessionID: want.sid, "update": map[string]any{"sessionUpdate": "agent_message_chunk"}}})
+		for _, kind := range []string{"user_message_chunk", "agent_message_chunk"} {
+			b.send(map[string]any{keyJSONRPC: jsonRPC, "method": methodUpdate, "params": map[string]any{keySessionID: want.sid, "update": map[string]any{"sessionUpdate": kind}}})
+		}
 		b.answer(load, map[string]any{})
 	}
+	waiting := b.recv()
+	if waiting["method"] != "session/prompt" {
+		t.Fatalf("editor request sent during the replay: agent got %v", waiting)
+	}
 	ed.none()
+	b.answer(waiting, map[string]any{"stopReason": "end_turn"})
+	if r := ed.recv(); r["id"] != float64(6) || r["result"] == nil {
+		t.Fatalf("editor got %v", r)
+	}
 
 	ed.send(`{"jsonrpc":"2.0","id":"` + stale + `","result":{"outcome":{"outcome":"cancelled"}}}`)
-	ed.send(`{"jsonrpc":"2.0","id":6,"method":"session/prompt","params":{"sessionId":"local-1","prompt":[]}}`)
+	ed.send(`{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"local-1","prompt":[]}}`)
 	if got := b.recv(); got["method"] != "session/prompt" {
 		t.Fatalf("stale answer reached the new agent, or the prompt did not: %v", got)
 	}
@@ -487,6 +571,9 @@ func TestReconnectReplay(t *testing.T) {
 	}
 	if len(hub.bindLog()) != 2 {
 		t.Errorf("replay bound again: %v", hub.bindLog())
+	}
+	if !outage && hub.refusedCount() != 0 {
+		t.Errorf("hub refused %d upgrades", hub.refusedCount())
 	}
 }
 
