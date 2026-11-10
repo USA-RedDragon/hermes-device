@@ -84,10 +84,10 @@ func TestACPLegMethods(t *testing.T) {
 		e := setup(t, st)
 		tok, _ := e.pair(e.a)
 		a := e.acpLeg(tok)
-		if m := a.request(acpInitialize, map[string]any{"protocolVersion": 1}); m["result"] == nil {
+		if m := a.request(acpInitialize, map[string]any{"protocolVersion": 1}); m[keyResult] == nil {
 			t.Fatalf("initialize = %v", m)
 		}
-		if m := a.request("authenticate", map[string]any{"methodId": "x"}); m["result"] == nil {
+		if m := a.request("authenticate", map[string]any{"methodId": "x"}); m[keyResult] == nil {
 			t.Fatalf("authenticate = %v", m)
 		}
 		before := len(e.acp.Received())
@@ -97,7 +97,7 @@ func TestACPLegMethods(t *testing.T) {
 				t.Fatalf("%s = %v", method, m)
 			}
 		}
-		writeJSON(t, a.c, map[string]any{keyJSONRPC: jsonRPC, keyMethod: "session/new", keyParams: map[string]any{}})
+		writeJSON(t, a.c, map[string]any{keyJSONRPC: jsonRPC, keyMethod: acpNew, keyParams: map[string]any{}})
 		writeJSON(t, a.c, map[string]any{keyJSONRPC: jsonRPC, keyMethod: "_hermes/note", keyParams: map[string]any{}})
 		if m := a.request("session/list", "x"); errCode(m) != -32602 {
 			t.Fatalf("list with string params = %v", m)
@@ -131,9 +131,9 @@ func TestACPLegSessions(t *testing.T) {
 		e.plugin.SetBinding(sessionOther, otherDevice, "/home/bob")
 		e.plugin.SetParent("s-child", sessionMine)
 		a := e.acpLeg(tok)
-		m := a.request("session/new", map[string]any{keyCWD: deviceDir, keyMCPServers: []any{map[string]any{keyName: "x", "command": "sh"}},
+		m := a.request(acpNew, map[string]any{keyCWD: deviceDir, keyMCPServers: []any{map[string]any{keyName: "x", "command": "sh"}},
 			"mcp_servers": []any{"y"}})
-		res, _ := m["result"].(map[string]any)
+		res, _ := m[keyResult].(map[string]any)
 		created, _ := res[keySessionACP].(string)
 		if created == "" {
 			t.Fatalf("new = %v", m)
@@ -145,7 +145,7 @@ func TestACPLegSessions(t *testing.T) {
 		}
 		if m := a.request(acpPrompt, map[string]any{keySessionACP: created, keyPrompt: []any{
 			map[string]any{keyType: "resource_link", "uri": "file:///etc/passwd", keyName: "p"}, map[string]any{keyType: keyText, keyText: "hi"},
-		}}); m["result"] == nil {
+		}}); m[keyResult] == nil {
 			t.Fatalf("prompt in a created session = %v", m)
 		}
 		sent = a.lastAgentMessage()
@@ -159,21 +159,25 @@ func TestACPLegSessions(t *testing.T) {
 			t.Fatalf("prompt reached the agent as %v", sent)
 		}
 		for _, sid := range []string{sessionMine, "s-child"} {
-			for _, method := range []string{acpLoad, "session/resume", "session/fork", acpPrompt, "session/set_mode", "session/set_model",
+			for _, method := range []string{acpLoad, acpResume, acpFork, acpPrompt, acpSetMode, "session/set_model",
 				"session/set_config_option"} {
-				if m := a.request(method, map[string]any{keySessionACP: sid, keyCWD: deviceDir}); m["result"] == nil {
+				params := map[string]any{keySessionACP: sid}
+				if method == acpLoad || method == acpResume || method == acpFork {
+					params[keyCWD] = deviceDir
+				}
+				if m := a.request(method, params); m[keyResult] == nil {
 					t.Fatalf("%s of %s = %v", method, sid, m)
 				}
 			}
 		}
 		for _, params := range []map[string]any{
-			{keySessionACP: sessionOther}, {"session_id": sessionOther}, {keySessionACP: sessionMine, "session_id": sessionOther},
+			{keySessionACP: sessionOther}, {keySessionID: sessionOther}, {keySessionACP: sessionMine, keySessionID: sessionOther},
 		} {
 			if m := a.request(acpLoad, params); errCode(m) != -32602 || reason(m) != "hermes_device_other_device" {
 				t.Fatalf("load %v = %v", params, m)
 			}
 		}
-		for _, method := range []string{acpLoad, acpPrompt, "session/set_mode"} {
+		for _, method := range []string{acpLoad, acpPrompt, acpSetMode} {
 			if m := a.request(method, map[string]any{keySessionACP: sessionUnbound}); errCode(m) != -32602 || reason(m) != "hermes_device_not_bound" {
 				t.Fatalf("%s of an unbound session = %v", method, m)
 			}
@@ -189,8 +193,8 @@ func TestACPLegSessions(t *testing.T) {
 		if sent := a.lastAgentMessage(); len(e.acp.Received()) != n+2 || sent[keyMethod] != acpCancel {
 			t.Fatalf("cancels reached the agent as %v", e.acp.Received()[n:])
 		}
-		m = a.request("session/new", map[string]any{keyCWD: deviceDir})
-		res, _ = m["result"].(map[string]any)
+		m = a.request(acpNew, map[string]any{keyCWD: deviceDir})
+		res, _ = m[keyResult].(map[string]any)
 		taken, _ := res[keySessionACP].(string)
 		e.plugin.SetBinding(taken, otherDevice, "/home/bob")
 		if m := a.request(acpPrompt, map[string]any{keySessionACP: taken}); reason(m) != "hermes_device_other_device" {
@@ -211,7 +215,7 @@ func TestACPLegList(t *testing.T) {
 		})
 		a := e.acpLeg(tok)
 		m := a.request("session/list", map[string]any{})
-		res, _ := m["result"].(map[string]any)
+		res, _ := m[keyResult].(map[string]any)
 		rows, _ := res["sessions"].([]any)
 		if len(rows) != 1 {
 			t.Fatalf("list = %v", m)
@@ -238,10 +242,10 @@ func TestACPLegAgentRequests(t *testing.T) {
 			}
 		}
 		n := len(e.acp.Received())
-		send(map[string]any{"id": 5, keyMethod: "fs/read_text_file", keyParams: map[string]any{keySessionACP: "x", "path": "/home/alice/.ssh/id_ed25519"}})
+		send(map[string]any{"id": 5, keyMethod: "fs/read_text_file", keyParams: map[string]any{keySessionACP: "x", keyPath: "/home/alice/.ssh/id_ed25519"}})
 		send(map[string]any{"id": 6, keyMethod: "terminal/create", keyParams: map[string]any{keySessionACP: "x", "command": "sh"}})
 		send(map[string]any{keyMethod: "_hermes/note", keyParams: map[string]any{}})
-		send(map[string]any{"id": 9, "result": map[string]any{}})
+		send(map[string]any{"id": 9, keyResult: map[string]any{}})
 		send(map[string]any{keyMethod: acpUpdate, keyParams: map[string]any{keySessionACP: "x", "update": map[string]any{}}})
 		if m := readJSON(t, a.c); m[keyMethod] != acpUpdate {
 			t.Fatalf("device got %v before the update", m)
@@ -256,8 +260,8 @@ func TestACPLegAgentRequests(t *testing.T) {
 			if m[keyMethod] != method || m["id"] != float64(20+i) {
 				t.Fatalf("device got %v", m)
 			}
-			writeJSON(t, a.c, map[string]any{keyJSONRPC: jsonRPC, "id": 20 + i, "result": map[string]any{"outcome": "x"}})
-			if r := e.acp.WaitReceived(ctx, n+3+i)[n+2+i]; r["id"] != float64(20+i) || r["result"] == nil {
+			writeJSON(t, a.c, map[string]any{keyJSONRPC: jsonRPC, "id": 20 + i, keyResult: map[string]any{"outcome": "x"}})
+			if r := e.acp.WaitReceived(ctx, n+3+i)[n+2+i]; r["id"] != float64(20+i) || r[keyResult] == nil {
 				t.Fatalf("agent got %v", r)
 			}
 		}

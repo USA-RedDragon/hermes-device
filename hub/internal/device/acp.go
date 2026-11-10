@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"sync"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
@@ -35,7 +36,22 @@ type acpRule struct {
 	// session is set for a method that names a session in sessionId (or
 	// its alias session_id), which must belong to the device.
 	session bool
+	// params are the members its params may have besides sessionId and
+	// session_id, by alias and by field name: the ACP SDK (v0.9.0,
+	// acp/schema.py) accepts both, and merges a _meta member into the
+	// handler's arguments (acp/router.py _make_func), where it would
+	// replace sessionId or cwd after the hub checked them. Every other
+	// member, _meta included, is refused.
+	params []string
 }
+
+// ACP params members of more than one method.
+const (
+	acpCWD       = "cwd"
+	acpMCP       = "mcpServers"
+	acpMCPField  = "mcp_servers"
+	acpMetaField = "field_meta"
+)
 
 // acpEditorRules are the editor-to-agent methods a device may send on the
 // ACP leg: those of the ACP SDK that Hermes v0.22.7's gateway ACP agent
@@ -44,17 +60,18 @@ type acpRule struct {
 //
 //nolint:gochecknoglobals // a fixed table
 var acpEditorRules = map[string]acpRule{
-	"initialize":                {},
-	"authenticate":              {},
-	acpNew:                      {},
-	acpList:                     {},
-	acpLoad:                     {session: true},
-	acpResume:                   {session: true},
-	acpFork:                     {session: true},
-	acpPrompt:                   {session: true},
-	"session/set_mode":          {session: true},
-	"session/set_model":         {session: true},
-	"session/set_config_option": {session: true},
+	"initialize": {params: []string{"protocolVersion", "protocol_version", "clientCapabilities", "client_capabilities",
+		"clientInfo", "client_info"}},
+	"authenticate":              {params: []string{"methodId", "method_id"}},
+	acpNew:                      {params: []string{acpCWD, acpMCP, acpMCPField}},
+	acpList:                     {params: []string{"cursor", acpCWD}},
+	acpLoad:                     {session: true, params: []string{acpCWD, acpMCP, acpMCPField}},
+	acpResume:                   {session: true, params: []string{acpCWD, acpMCP, acpMCPField}},
+	acpFork:                     {session: true, params: []string{acpCWD, acpMCP, acpMCPField}},
+	acpPrompt:                   {session: true, params: []string{"prompt", "messageId", "message_id"}},
+	"session/set_mode":          {session: true, params: []string{"modeId", "mode_id"}},
+	"session/set_model":         {session: true, params: []string{"modelId", "model_id"}},
+	"session/set_config_option": {session: true, params: []string{"configId", "config_id", "type", "value"}},
 	"session/cancel":            {notification: true, session: true},
 }
 
@@ -238,6 +255,14 @@ func (g *acpGuard) check(method string, rule acpRule, params map[string]json.Raw
 	if !isObject {
 		return invalidParams("hermes-hub takes only object params")
 	}
+	for k := range params {
+		if !slices.Contains(rule.params, k) && (!rule.session || (k != keyACPSession && k != keyACPAlias)) {
+			return invalidParams("params member " + strconv.Quote(k) + " is not allowed on " + method)
+		}
+	}
+	if hasMember(params, acpMetaField) {
+		return invalidParams("a field_meta member is not allowed")
+	}
 	if rule.session {
 		if err := g.checkSession(params); err != nil {
 			return err
@@ -245,12 +270,54 @@ func (g *acpGuard) check(method string, rule acpRule, params map[string]json.Raw
 	}
 	switch method {
 	case acpNew, acpLoad, acpResume, acpFork:
-		params["mcpServers"] = json.RawMessage("[]")
-		delete(params, "mcp_servers")
+		ph, err := g.placeholder()
+		if err != nil {
+			return &acpError{code: codeRPCInternal, message: "the hub could not read the placeholder directory: " + err.Error(),
+				reason: reasonBind, err: err}
+		}
+		params[acpCWD] = mustRaw(ph)
+		params[acpMCP] = json.RawMessage("[]")
+		delete(params, acpMCPField)
 	case acpPrompt:
 		return rewritePromptLinks(params)
 	}
 	return nil
+}
+
+func (g *acpGuard) placeholder() (string, error) {
+	ctx, cancel := context.WithTimeout(g.l.ctx, guardTimeout)
+	defer cancel()
+	return g.s.placeholderDir(ctx, g.b)
+}
+
+// hasMember reports whether any object in raw JSON, at any depth, has a
+// member named name.
+func hasMember(params map[string]json.RawMessage, name string) bool {
+	var walk func(v any) bool
+	walk = func(v any) bool {
+		switch t := v.(type) {
+		case map[string]any:
+			for k, c := range t {
+				if k == name || walk(c) {
+					return true
+				}
+			}
+		case []any:
+			for _, c := range t {
+				if walk(c) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for k, raw := range params {
+		var v any
+		if k == name || (json.Unmarshal(raw, &v) == nil && walk(v)) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkSession refuses a session of another device, and a session bound
