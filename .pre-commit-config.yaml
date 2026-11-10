@@ -1,0 +1,14 @@
+repos:
+  - repo: https://github.com/USA-RedDragon/configulator
+    rev: v2.5.0
+    hooks:
+      - id: configulator-generate
+        args: [-dir, internal/config, -type, Config]
+      - id: configulator-markdown
+        args: [-dir, internal/config, -type, Config, -markdown-file, README.md, -env-prefix, HERMES_DEVICE_]
+      - id: configulator-sample
+        args: [-dir, internal/config, -type, Config, -sample-file, config.example.yaml]
+  - repo: https://github.com/USA-RedDragon/docgen
+    rev: ef1962a8c99614cb228786728ee57526d875bdfc  # v0.0.0-20261109224744-ef1962a8c996
+    hooks:
+      - id: docgen-check
