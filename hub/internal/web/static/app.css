@@ -73,8 +73,6 @@ details.reasoning .body { white-space: pre-wrap; overflow-wrap: anywhere; max-he
   padding-bottom: max(.5rem, env(safe-area-inset-bottom)); background: var(--card); border-top: 1px solid var(--line); }
 .composer textarea { flex: 1; font: inherit; font-size: 16px; resize: none; max-height: 40vh; padding: .5rem .6rem;
   border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
-body.simple #refresh { display: none; }
-body.simple .tool { font-size: .85rem; }
 .page { max-width: 34rem; margin: 2rem auto; padding: 0 1rem; }
 .page .err { color: var(--bad); }
 code { background: var(--code); padding: 0 .25rem; border-radius: 4px; }

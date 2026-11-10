@@ -10,16 +10,12 @@
   let csrf = "";
   let stream = null;
   let view = null;
-  let me = { simple: false };
-  // Plain wording for the simple view; the full view keeps the technical terms.
-  const words = {
-    full: { approval: "Approval needed", allow: "Allow once", deny: "Deny", args: "arguments", result: "result",
-      running: "running", done: "done", failed: "failed", working: "working", idle: "idle", title: "Hermes Hub" },
-    simple: { approval: "Hermes wants to do this. Is that OK?", allow: "Yes, go ahead", deny: "No", args: "details",
-      result: "what happened", running: "working on it", done: "done", failed: "did not work", working: "working on it",
-      idle: "ready", title: "Hermes" },
-  };
-  const t = (k) => (me.simple ? words.simple : words.full)[k];
+  let me = {};
+  // One plain set of words for everyone; details stay behind "details".
+  const words = { approval: "Hermes wants to do this. Is that OK?", allow: "Yes, go ahead", deny: "No",
+    args: "details", result: "what happened", running: "working on it", done: "done", failed: "did not work",
+    working: "working on it", idle: "ready", title: "Hermes" };
+  const t = (k) => words[k];
 
   async function api(method, path, body) {
     const opts = { method, headers: { "X-CSRF-Token": csrf }, credentials: "same-origin" };
@@ -68,9 +64,9 @@
     $("list").hidden = false;
     $("chat").hidden = true;
     $("composer").hidden = true;
-    $("back").hidden = !me.simple;
+    $("back").hidden = false;
     $("stop").hidden = true;
-    $("title").textContent = "Hermes Hub";
+    $("title").textContent = "All chats";
     $("subtitle").textContent = "";
     $("more").hidden = true;
     $("newchat").hidden = true;
@@ -223,7 +219,8 @@
       const failed = p.error || (p.result && typeof p.result === "object" && p.result.error);
       if (failed) card.classList.add("failed");
       const dur = typeof p.duration_s === "number" ? " in " + p.duration_s.toFixed(1) + "s" : "";
-      card.querySelector(".state").textContent = (failed ? t("failed") : t("done")) + (me.simple ? "" : dur);
+      card.querySelector(".state").textContent = (failed ? t("failed") : t("done"));
+      card.title = dur.trim();
       const prog = card.querySelector("progress, .progress");
       if (prog) prog.remove();
       let out = p.summary || p.result_text;
@@ -290,7 +287,7 @@
 
     snapshot(s) {
       this.reset();
-      $("title").textContent = me.simple ? t("title") : (s.title || this.session);
+      $("title").textContent = s.title || t("title");
       this.setRunning(s.running);
       for (const m of s.messages || []) this.row(m);
       this.turn = null;
@@ -392,10 +389,10 @@
     $("list").hidden = true;
     $("chat").hidden = false;
     $("composer").hidden = false;
-    $("back").hidden = me.simple;
-    $("more").hidden = !me.simple;
-    $("newchat").hidden = !me.simple;
-    $("title").textContent = me.simple ? t("title") : session;
+    $("back").hidden = true;
+    $("more").hidden = false;
+    $("newchat").hidden = false;
+    $("title").textContent = t("title");
     $("subtitle").textContent = "";
     banner("");
     view = new Chat(backend, session);
@@ -420,7 +417,7 @@
 
   const chatHash = (b, s) => "#/s/" + encodeURIComponent(b) + "/" + encodeURIComponent(s);
 
-  // home opens the simple view's one chat: the newest session on the
+  // home opens the default chat: the newest session on the
   // user's default backend, or a new one.
   async function home(fresh) {
     closeStream();
@@ -441,7 +438,7 @@
   function route() {
     const m = location.hash.match(/^#\/s\/([^/]+)\/(.+)$/);
     if (m) showChat(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
-    else if (me.simple && location.hash !== "#/all") home(false);
+    else if (location.hash !== "#/all") home(false);
     else showList();
   }
 
@@ -475,7 +472,6 @@
       me = await api("GET", "/api/me");
       csrf = me.csrf;
       $("logout").title = "Logged in as " + me.user;
-      document.body.classList.toggle("simple", !!me.simple);
     } catch (_) { return; }
     $("back").onclick = () => { location.hash = "#/"; };
     $("more").onclick = () => { location.hash = "#/all"; };

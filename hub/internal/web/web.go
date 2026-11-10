@@ -66,7 +66,6 @@ type Server struct {
 	groupsClaim  string
 	keepAlive    time.Duration
 	linkPage     *template.Template
-	simple       map[string]bool
 	defaults     map[string]string
 }
 
@@ -88,10 +87,6 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	simple := map[string]bool{}
-	for _, u := range cfg.UI.SimpleUsers {
-		simple[u] = true
-	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
@@ -105,7 +100,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		sessions: sessions, logins: logins, ttl: cfg.Session.TTL,
 		origin: u.Scheme + "://" + u.Host, secure: u.Scheme == "https",
 		displayClaim: cfg.OIDC.DisplayClaim, users: cfg.UserMap(), groupsClaim: cfg.OIDC.GroupsClaim, keepAlive: opts.KeepAlive,
-		simple: simple, defaults: defaults,
+		defaults: defaults,
 		linkPage: template.Must(template.New("link").Parse(linkHTML)),
 	}, nil
 }

@@ -216,7 +216,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	sess, _ := s.session(r)
 	writeJSON(w, http.StatusOK, map[string]any{"user": sess.User, "display": sess.Display, "groups": sess.Groups, "csrf": sess.CSRF,
-		"simple": s.simple[sess.User], "default_backend": s.defaults[sess.User]})
+		"default_backend": s.defaults[sess.User]})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -58,10 +58,8 @@ type User struct {
 	Name string `name:"name" description:"Hub user name, used by backends[].users, ui.default_backends and Telegram links"`
 }
 
-// UI configures the web UI per user. It changes only what the page shows
-// first, never what a user may do.
+// UI configures the web UI. Every user gets the same UI.
 type UI struct {
-	SimpleUsers     []string `name:"simple_users" description:"User names that get the simple view: one chat with their default backend and plain wording. Backends, sessions and details stay one tap away"`
 	DefaultBackends []string `name:"default_backends" description:"Default backend per user, as user=backend pairs. A user without one gets their first backend"`
 }
 

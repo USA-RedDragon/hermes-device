@@ -51,7 +51,6 @@ type sessionShadow struct {
 }
 
 type uIShadow struct {
-	SimpleUsers     *[]string `json:"simple_users"     toml:"simple_users"     yaml:"simple_users"`
 	DefaultBackends *[]string `json:"default_backends" toml:"default_backends" yaml:"default_backends"`
 }
 
@@ -249,10 +248,6 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		}
 	}
 	if s.UI != nil {
-		if s.UI.SimpleUsers != nil {
-			cfg.UI.SimpleUsers = *s.UI.SimpleUsers
-			set("ui.simple_users", configulator.LayerFile, file)
-		}
 		if s.UI.DefaultBackends != nil {
 			cfg.UI.DefaultBackends = *s.UI.DefaultBackends
 			set("ui.default_backends", configulator.LayerFile, file)
@@ -490,11 +485,6 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Session.TTL = d
 		set("session.ttl", configulator.LayerEnv, n)
 	}
-	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "ui", "simple_users"); ok {
-		lst := impl.SplitList(v, ec.ArraySeparator)
-		cfg.UI.SimpleUsers = lst
-		set("ui.simple_users", configulator.LayerEnv, n)
-	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "ui", "default_backends"); ok {
 		lst := impl.SplitList(v, ec.ArraySeparator)
 		cfg.UI.DefaultBackends = lst
@@ -618,7 +608,6 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"oidc" + o.Separator + "groups_claim",
 		"session" + o.Separator + "secret",
 		"session" + o.Separator + "ttl",
-		"ui" + o.Separator + "simple_users",
 		"ui" + o.Separator + "default_backends",
 		"store" + o.Separator + "path",
 		"telegram" + o.Separator + "enabled",
@@ -662,17 +651,16 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[14], "groups", "ID token claim that holds the group names that backends[].groups lists")
 	fs.String(names[15], "", "Key for the session and login cookies. At least 32 characters")
 	fs.Duration(names[16], time.Duration(int64(604800000000000)), "How long a login lasts")
-	fs.StringSlice(names[17], nil, "User names that get the simple view: one chat with their default backend and plain wording. Backends, sessions and details stay one tap away")
-	fs.StringSlice(names[18], nil, "Default backend per user, as user=backend pairs. A user without one gets their first backend")
-	fs.String(names[19], "/data/hermes-hub.db", "Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups")
-	fs.Bool(names[20], false, "Run the Telegram bot")
-	fs.String(names[21], "", "Telegram bot token from BotFather")
-	fs.String(names[22], "https://api.telegram.org", "Telegram Bot API base URL")
-	fs.StringSlice(names[23], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
-	fs.Int64Slice(names[24], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
-	fs.Duration(names[25], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
-	fs.Duration(names[26], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
-	fs.Var(impl.NewInt(5), names[27], "Retries of a Bot API call that Telegram answers with 429")
+	fs.StringSlice(names[17], nil, "Default backend per user, as user=backend pairs. A user without one gets their first backend")
+	fs.String(names[18], "/data/hermes-hub.db", "Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups")
+	fs.Bool(names[19], false, "Run the Telegram bot")
+	fs.String(names[20], "", "Telegram bot token from BotFather")
+	fs.String(names[21], "https://api.telegram.org", "Telegram Bot API base URL")
+	fs.StringSlice(names[22], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
+	fs.Int64Slice(names[23], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
+	fs.Duration(names[24], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
+	fs.Duration(names[25], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
+	fs.Var(impl.NewInt(5), names[26], "Retries of a Bot API call that Telegram answers with 429")
 	return nil
 }
 
@@ -880,18 +868,6 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Session.TTL = v
 		set("session.ttl", configulator.LayerCLI, "--"+n)
-	}
-	if n := "ui" + o.Separator + "simple_users"; fs.Changed(n) {
-		v, err := fs.GetStringSlice(n)
-		if err != nil {
-			return &configulator.ParseError{
-				Err:    err,
-				Path:   "ui.simple_users",
-				Source: "--" + n,
-			}
-		}
-		cfg.UI.SimpleUsers = v
-		set("ui.simple_users", configulator.LayerCLI, "--"+n)
 	}
 	if n := "ui" + o.Separator + "default_backends"; fs.Changed(n) {
 		v, err := fs.GetStringSlice(n)
@@ -1624,36 +1600,6 @@ func (s *uIShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			return nil
 		}
 		switch key := tok.String(); key {
-		case "simple_users":
-			if dec.PeekKind() == jsontext.KindNull {
-				if _, err := dec.ReadToken(); err != nil {
-					return err
-				}
-			} else {
-				open, err := dec.ReadToken()
-				if err != nil {
-					return err
-				}
-				if open.Kind() != jsontext.KindBeginArray {
-					return configJSONError(path+".simple_users", open, fmt.Errorf("expected an array, got %v", open.Kind()))
-				}
-				out := []string{}
-				for dec.PeekKind() != jsontext.KindEndArray {
-					v, err := dec.ReadToken()
-					if err != nil {
-						return err
-					}
-					if v.Kind() != jsontext.KindString {
-						return configJSONError(path+".simple_users"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
-					}
-					el := v.String()
-					out = append(out, el)
-				}
-				if _, err := dec.ReadToken(); err != nil {
-					return err
-				}
-				s.SimpleUsers = &out
-			}
 		case "default_backends":
 			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
@@ -2193,7 +2139,6 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "oidc.groups_claim = %v\n", c.OIDC.GroupsClaim)
 	b.WriteString("session.secret = (redacted)\n")
 	fmt.Fprintf(&b, "session.ttl = %v\n", c.Session.TTL)
-	fmt.Fprintf(&b, "ui.simple_users = %v\n", c.UI.SimpleUsers)
 	fmt.Fprintf(&b, "ui.default_backends = %v\n", c.UI.DefaultBackends)
 	fmt.Fprintf(&b, "store.path = %v\n", c.Store.Path)
 	fmt.Fprintf(&b, "users = %v\n", c.Users)

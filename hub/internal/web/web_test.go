@@ -53,7 +53,7 @@ func setup(t *testing.T) *hubEnv {
 		HTTP:    config.HTTP{PublicURL: pub},
 		OIDC:    config.OIDC{IssuerURL: is.srv.URL, ClientID: clientID, ClientSecret: "s3cret", Scopes: []string{"openid", "profile"}, DisplayClaim: "preferred_username", GroupsClaim: "groups"},
 		Users:   []config.User{{Sub: "sub-alice", Name: userAlice}, {Sub: "sub-bob", Name: userBob}},
-		UI:      config.UI{SimpleUsers: []string{userBob}, DefaultBackends: []string{"bob=home"}},
+		UI:      config.UI{DefaultBackends: []string{"bob=home"}},
 		Session: config.Session{Secret: strings.Repeat("k", 40), TTL: time.Hour},
 		Backends: []config.Backend{
 			{ID: "pc", URL: gw.URL(), Username: clientID, Password: "pw", Users: []string{userAlice}},
@@ -97,7 +97,6 @@ type me struct {
 	Display string   `json:"display"`
 	Groups  []string `json:"groups"`
 	CSRF    string   `json:"csrf"`
-	Simple  bool     `json:"simple"`
 	Default string   `json:"default_backend"`
 }
 
@@ -146,7 +145,7 @@ func TestLoginFlow(t *testing.T) {
 		t.Fatalf("anonymous me = %d", resp.StatusCode)
 	}
 	m := login(t, e, c)
-	if m.Simple || m.User != userAlice || len(m.Groups) != 1 || m.Groups[0] != groupAdmins || m.CSRF == "" {
+	if m.Default != "" || m.User != userAlice || len(m.Groups) != 1 || m.Groups[0] != groupAdmins || m.CSRF == "" {
 		t.Fatalf("me = %+v", m)
 	}
 	if g, _ := e.store.Groups(context.Background(), userAlice); len(g) != 1 || g[0] != groupAdmins {
@@ -242,7 +241,7 @@ func TestAPIAuthorization(t *testing.T) {
 	e.is.user, e.is.groups = userBob, []string{"family"}
 	e.is.mu.Unlock()
 	m := login(t, e, c)
-	if !m.Simple || m.Default != "home" {
+	if m.Default != "home" {
 		t.Fatalf("bob me = %+v", m)
 	}
 	_, body := get(t, c, e.url+"/api/backends")
