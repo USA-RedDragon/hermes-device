@@ -49,7 +49,7 @@ func newACPHostCommand(b *base) *cobra.Command {
 				}
 				bindings = filepath.Join(home, "device", "bindings.json")
 			}
-			ln, err := net.Listen("tcp", cfg.ACPHost.Listen)
+			ln, err := (&net.ListenConfig{}).Listen(cmd.Context(), "tcp", cfg.ACPHost.Listen)
 			if err != nil {
 				return err
 			}

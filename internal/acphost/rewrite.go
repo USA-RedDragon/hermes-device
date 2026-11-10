@@ -47,10 +47,13 @@ func (e *rpcError) response() []byte {
 	if len(id) == 0 {
 		id = json.RawMessage("null")
 	}
-	b, _ := json.Marshal(map[string]any{
+	b, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": id,
 		"error": map[string]any{"code": e.code, "message": e.message},
 	})
+	if err != nil {
+		return nil
+	}
 	return b
 }
 
@@ -242,14 +245,14 @@ func (r *rewriter) fromAgent(line []byte) ([]byte, error) {
 	}
 	var m object
 	if err := json.Unmarshal(line, &m); err != nil {
-		return line, nil
+		return line, nil //nolint:nilerr // a line that is not JSON passes through unchanged
 	}
 	if _, isReq := m["method"]; isReq {
 		return line, nil
 	}
 	var key string
 	if json.Unmarshal(m["id"], &key) != nil {
-		return line, nil
+		return line, nil //nolint:nilerr // only string ids are tracked list requests; others pass through
 	}
 	req, ok := r.lists[key]
 	if !ok {
@@ -263,7 +266,7 @@ func (r *rewriter) fromAgent(line []byte) ([]byte, error) {
 	}
 	var res object
 	if err := json.Unmarshal(raw, &res); err != nil {
-		return line, nil
+		return line, nil //nolint:nilerr // a result that is not an object passes through unchanged
 	}
 	var rows []object
 	_ = json.Unmarshal(res["sessions"], &rows)
@@ -317,7 +320,7 @@ type bindingsFile struct {
 func readBindings(file string) (map[string]Binding, error) {
 	data, err := os.ReadFile(file)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return map[string]Binding{}, nil
 	}
 	if err != nil {
 		return nil, err

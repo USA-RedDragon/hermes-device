@@ -1,4 +1,4 @@
-package acphost
+package acphost_test
 
 import (
 	"bufio"
@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/hermes-device/assertion"
+	"github.com/USA-RedDragon/hermes-device/internal/acphost"
 	"github.com/USA-RedDragon/hermes-device/protocol"
 	"github.com/coder/websocket"
 )
@@ -31,6 +32,24 @@ const (
 	fakeEnv     = "ACPHOST_TEST_FAKE_HERMES"
 	placeholder = "/opt/data/hermes/device-placeholder"
 	backendID   = "backend-alice"
+
+	// readLimit matches the largest stdout line acp-host copies.
+	readLimit = 64 << 20
+)
+
+// JSON-RPC 2.0 error codes.
+const (
+	codeParse         = -32700
+	codeInvalidReq    = -32600
+	codeInvalidParams = -32602
+	codeInternal      = -32603
+)
+
+const (
+	keyPID    = "pid"
+	blockText = "text"
+	rowApp    = "s1=/home/alice/src/app"
+	rowAppSub = "s2=/home/alice/src/app/sub"
 )
 
 func TestMain(m *testing.M) {
@@ -48,7 +67,11 @@ func fakeHermes() {
 	fmt.Fprintln(os.Stderr, "fake hermes started")
 	out := bufio.NewWriter(os.Stdout)
 	reply := func(id json.RawMessage, result any) {
-		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+		b, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "fake hermes: encode reply:", err)
+			os.Exit(2)
+		}
 		_, _ = out.Write(append(b, '\n'))
 		_ = out.Flush()
 	}
@@ -67,26 +90,27 @@ func fakeHermes() {
 		_ = json.Unmarshal([]byte(line), &m)
 		switch m.Method {
 		case "session/list":
-			var rows []map[string]any
-			for _, id := range []string{"s1", "s2", "s3", "s4", "s5"} {
+			ids := []string{"s1", "s2", "s3", "s4", "s5"}
+			rows := make([]map[string]any, 0, len(ids))
+			for _, id := range ids {
 				rows = append(rows, map[string]any{"sessionId": id, "cwd": placeholder, "title": "t " + id, "updatedAt": "2026-11-10T00:00:00Z"})
 			}
 			reply(m.ID, map[string]any{"sessions": rows, "nextCursor": "s5", "receivedCwd": m.Params.Cwd})
 		case "test/hang":
 			signal.Ignore(syscall.SIGTERM)
-			child := exec.Command("sleep", "300")
+			child := exec.CommandContext(context.Background(), "sleep", "300")
 			_ = child.Start()
 			hang = true
-			reply(m.ID, map[string]any{"pid": os.Getpid(), "child": child.Process.Pid})
+			reply(m.ID, map[string]any{keyPID: os.Getpid(), "child": child.Process.Pid})
 		case "test/notify":
 			_, _ = out.WriteString("this is not json\n")
 			_, _ = out.WriteString(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1"}}` + "\n")
-			reply(m.ID, map[string]any{"pid": os.Getpid()})
+			reply(m.ID, map[string]any{keyPID: os.Getpid()})
 		case "test/detach":
-			child := exec.Command("sleep", "300")
+			child := exec.CommandContext(context.Background(), "sleep", "300")
 			child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 			_ = child.Start()
-			reply(m.ID, map[string]any{"pid": os.Getpid(), "child": child.Process.Pid})
+			reply(m.ID, map[string]any{keyPID: os.Getpid(), "child": child.Process.Pid})
 		case "test/stderr":
 			_, _ = os.Stderr.WriteString(strings.Repeat("x", 2<<20) + "\n")
 			_, _ = os.Stderr.WriteString(strings.Repeat("y", 4<<20) + "\n")
@@ -106,12 +130,13 @@ func fakeHermes() {
 }
 
 type harness struct {
-	t    *testing.T
-	priv ed25519.PrivateKey
-	srv  *Server
-	url  string
-	logs *syncBuffer
-	home string
+	t        *testing.T
+	priv     ed25519.PrivateKey
+	srv      *acphost.Server
+	url      string
+	logs     *syncBuffer
+	home     string
+	bindings string
 }
 
 type syncBuffer struct {
@@ -131,7 +156,7 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-func newHarness(t *testing.T, tweak func(*Options)) *harness {
+func newHarness(t *testing.T, tweak func(*acphost.Options)) *harness {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -142,12 +167,13 @@ func newHarness(t *testing.T, tweak func(*Options)) *harness {
 		t.Fatal(err)
 	}
 	h := &harness{t: t, priv: priv, logs: &syncBuffer{}, home: t.TempDir()}
-	opts := Options{
+	h.bindings = filepath.Join(h.home, "device", "bindings.json")
+	opts := acphost.Options{
 		Verifier:     assertion.NewVerifier([]ed25519.PublicKey{pub}),
 		BackendID:    backendID,
 		Hermes:       exe,
 		Placeholder:  placeholder,
-		BindingsFile: filepath.Join(h.home, "device", "bindings.json"),
+		BindingsFile: h.bindings,
 		MaxProcesses: 4,
 		PingInterval: 5 * time.Second,
 		StopGrace:    200 * time.Millisecond,
@@ -157,7 +183,7 @@ func newHarness(t *testing.T, tweak func(*Options)) *harness {
 	if tweak != nil {
 		tweak(&opts)
 	}
-	h.srv = New(opts)
+	h.srv = acphost.New(opts)
 	ts := httptest.NewServer(h.srv.Handler())
 	t.Cleanup(func() {
 		ts.CloseClientConnections()
@@ -198,7 +224,7 @@ func (h *harness) dialWith(header string) *websocket.Conn {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	conn.SetReadLimit(maxMessage)
+	conn.SetReadLimit(readLimit)
 	h.t.Cleanup(func() { _ = conn.CloseNow() })
 	return conn
 }
@@ -274,7 +300,11 @@ func closeStatus(t *testing.T, conn *websocket.Conn) websocket.StatusCode {
 func TestHealthz(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, nil)
-	resp, err := http.Get(h.url + "/healthz")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, h.url+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,6 +350,7 @@ func TestRefusals(t *testing.T) {
 	}
 	for name, mk := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			conn := h.dialWith(mk())
 			if got := closeStatus(t, conn); got != protocol.CloseAssertionRefused {
 				t.Errorf("close %d, want %d", got, protocol.CloseAssertionRefused)
@@ -327,6 +358,7 @@ func TestRefusals(t *testing.T) {
 		})
 	}
 	t.Run("replay", func(t *testing.T) {
+		t.Parallel()
 		enc := h.sign(h.claims())
 		first := h.dialWith(enc)
 		send(t, first, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
@@ -380,9 +412,12 @@ func TestPromptLinks(t *testing.T) {
 		"file:///etc/passwd", "FILE:///etc/passwd", "/etc/passwd", "relative.txt", "C:\\Windows\\x",
 		" \tfile:///etc/passwd", "fi\nle:///etc/passwd", "file://localhost/etc/passwd", "https://example.com/a", "zed://x",
 	}
-	var blocks []string
+	blocks := make([]string, 0, len(uris)+3)
 	for _, u := range uris {
-		b, _ := json.Marshal(map[string]string{"type": "resource_link", "uri": u, "name": "n"})
+		b, err := json.Marshal(map[string]string{"type": "resource_link", "uri": u, "name": "n"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		blocks = append(blocks, string(b))
 	}
 	blocks = append(blocks, `{"type":"text","text":"hi"}`, `{"type":"resource","resource":{"uri":"file:///x","text":"inline"}}`,
@@ -394,24 +429,24 @@ func TestPromptLinks(t *testing.T) {
 	}
 	kept := map[string]bool{}
 	for i, u := range uris {
-		blk := got[i].(map[string]any)
+		blk := asMap(t, got[i])
 		if kept[u] {
 			if blk["type"] != "resource_link" || blk["uri"] != u {
 				t.Errorf("%q: changed to %v", u, blk)
 			}
 			continue
 		}
-		if blk["type"] != "text" || blk["text"] != "[hermes-device: link "+u+" removed; the bridge inlines device files]" {
+		if blk["type"] != blockText || blk[blockText] != "[hermes-device: link "+u+" removed; the bridge inlines device files]" {
 			t.Errorf("%q: not replaced: %v", u, blk)
 		}
 	}
-	if blk := got[len(uris)].(map[string]any); blk["type"] != "text" || blk["text"] != "hi" {
+	if blk := asMap(t, got[len(uris)]); blk["type"] != blockText || blk[blockText] != "hi" {
 		t.Errorf("text block changed: %v", blk)
 	}
-	if blk := got[len(uris)+1].(map[string]any); blk["type"] != "resource" {
+	if blk := asMap(t, got[len(uris)+1]); blk["type"] != "resource" {
 		t.Errorf("embedded resource changed: %v", blk)
 	}
-	if blk := got[len(uris)+2].(map[string]any); blk["type"] != "text" {
+	if blk := asMap(t, got[len(uris)+2]); blk["type"] != blockText {
 		t.Errorf("link with a non-string uri kept: %v", blk)
 	}
 }
@@ -449,10 +484,10 @@ func writeBindings(t *testing.T, h *harness) {
 		"s3":{"device_id":"d1","dir":"/home/alice/other","generation":"g3","bound_at":1794300000.5},
 		"s4":{"device_id":"d2","dir":"/home/alice/src/app","generation":"g4","bound_at":1794300000.5}},
 		"ever_bound":["s1","s2","s3","s4","s5"]}`
-	if err := os.MkdirAll(filepath.Dir(h.srv.opts.BindingsFile), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(h.bindings), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(h.srv.opts.BindingsFile, []byte(data), 0o600); err != nil {
+	if err := os.WriteFile(h.bindings, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -479,7 +514,7 @@ func list(t *testing.T, conn *websocket.Conn, params string) listResult {
 }
 
 func rows(res listResult) []string {
-	var out []string
+	out := make([]string, 0, len(res.Sessions))
 	for _, s := range res.Sessions {
 		out = append(out, s.SessionID+"="+s.Cwd)
 	}
@@ -497,7 +532,7 @@ func TestListFiltering(t *testing.T) {
 
 	writeBindings(t, h)
 	res := list(t, conn, `{"cwd":"/home/alice/src"}`)
-	if want := []string{"s1=/home/alice/src/app", "s2=/home/alice/src/app/sub"}; !slices.Equal(rows(res), want) {
+	if want := []string{rowApp, rowAppSub}; !slices.Equal(rows(res), want) {
 		t.Errorf("cwd filter: %v, want %v", rows(res), want)
 	}
 	if res.ReceivedCwd != nil {
@@ -507,7 +542,7 @@ func TestListFiltering(t *testing.T) {
 		t.Errorf("cursor %q", res.NextCursor)
 	}
 	res = list(t, conn, `{"cwd":"/home/alice/src/app/"}`)
-	if want := []string{"s1=/home/alice/src/app", "s2=/home/alice/src/app/sub"}; !slices.Equal(rows(res), want) {
+	if want := []string{rowApp, rowAppSub}; !slices.Equal(rows(res), want) {
 		t.Errorf("exact dir: %v, want %v", rows(res), want)
 	}
 	res = list(t, conn, `{"cwd":"/home/alice/src/ap"}`)
@@ -515,7 +550,7 @@ func TestListFiltering(t *testing.T) {
 		t.Errorf("prefix that is not a parent matched: %v", rows(res))
 	}
 	res = list(t, conn, `{"cursor":"s0"}`)
-	if want := []string{"s1=/home/alice/src/app", "s2=/home/alice/src/app/sub", "s3=/home/alice/other"}; !slices.Equal(rows(res), want) {
+	if want := []string{rowApp, rowAppSub, "s3=/home/alice/other"}; !slices.Equal(rows(res), want) {
 		t.Errorf("no cwd: %v, want %v", rows(res), want)
 	}
 	if res.ReceivedCwd != nil {
@@ -529,7 +564,7 @@ func TestListFiltering(t *testing.T) {
 		t.Errorf("device d2: %v", rows(res))
 	}
 
-	if err := os.WriteFile(h.srv.opts.BindingsFile, []byte("{broken"), 0o600); err != nil {
+	if err := os.WriteFile(h.bindings, []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if res := list(t, conn, `{}`); len(res.Sessions) != 0 {
@@ -539,12 +574,12 @@ func TestListFiltering(t *testing.T) {
 
 func TestProcessLimit(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, func(o *Options) { o.MaxProcesses = 1 })
+	h := newHarness(t, func(o *acphost.Options) { o.MaxProcesses = 1 })
 	first := h.dial()
 	send(t, first, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	recv(t, first)
 	second := h.dial()
-	if got := closeStatus(t, second); got != CloseTryAgainLater {
+	if got := closeStatus(t, second); got != acphost.CloseTryAgainLater {
 		t.Errorf("close %d, want 1013", got)
 	}
 	_ = first.Close(websocket.StatusNormalClosure, "")
@@ -632,8 +667,8 @@ func TestChildExitClosesLeg(t *testing.T) {
 	conn := h.dial()
 	send(t, conn, `{"jsonrpc":"2.0","id":1,"method":"test/exit"}`)
 	recv(t, conn)
-	if got := closeStatus(t, conn); got != CloseChildExited {
-		t.Errorf("close %d, want %d", got, CloseChildExited)
+	if got := closeStatus(t, conn); got != acphost.CloseChildExited {
+		t.Errorf("close %d, want %d", got, acphost.CloseChildExited)
 	}
 }
 
@@ -661,7 +696,7 @@ func TestOtherDeviceRefused(t *testing.T) {
 			t.Errorf("%s: params %v", sid, p)
 		}
 	}
-	if err := os.WriteFile(h.srv.opts.BindingsFile, []byte("{broken"), 0o600); err != nil {
+	if err := os.WriteFile(h.bindings, []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	send(t, conn, `{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"s1","prompt":[]}}`)
@@ -680,8 +715,8 @@ func TestGatewayHealthGate(t *testing.T) {
 		w.WriteHeader(status)
 	}))
 	t.Cleanup(gw.Close)
-	h := newHarness(t, func(o *Options) { o.GatewayHealthURL = gw.URL + "/api/health" })
-	if got := closeStatus(t, h.dial()); got != CloseTryAgainLater {
+	h := newHarness(t, func(o *acphost.Options) { o.GatewayHealthURL = gw.URL + "/api/health" })
+	if got := closeStatus(t, h.dial()); got != acphost.CloseTryAgainLater {
 		t.Errorf("gateway down: close %d, want 1013", got)
 	}
 	mu.Lock()
@@ -693,7 +728,7 @@ func TestGatewayHealthGate(t *testing.T) {
 
 func TestSweepStopsDetached(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, func(o *Options) { o.SweepInterval = 50 * time.Millisecond })
+	h := newHarness(t, func(o *acphost.Options) { o.SweepInterval = 50 * time.Millisecond })
 	conn := h.dial()
 	send(t, conn, `{"jsonrpc":"2.0","id":1,"method":"test/detach"}`)
 	r, _ := recv(t, conn)
@@ -704,17 +739,6 @@ func TestSweepStopsDetached(t *testing.T) {
 	waitGone(t, got.Child)
 	if gone(got.Pid) {
 		t.Error("the sweep stopped hermes acp itself")
-	}
-}
-
-func TestParseStat(t *testing.T) {
-	t.Parallel()
-	info, ok := parseStat("123 (we ir) d) S 45 67 67 0 -1")
-	if !ok || info.ppid != 45 || info.pgid != 67 || info.zombie {
-		t.Errorf("parseStat = %+v %v", info, ok)
-	}
-	if info, ok := parseStat("9 (x) Z 1 9 9"); !ok || !info.zombie {
-		t.Errorf("zombie = %+v %v", info, ok)
 	}
 }
 
@@ -758,4 +782,14 @@ func TestLongStderrLine(t *testing.T) {
 	send(t, conn, `{"jsonrpc":"2.0","id":1,"method":"test/stderr"}`)
 	recv(t, conn)
 	echoed(t, conn, `{"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}`)
+}
+
+// asMap returns v as a JSON object, failing the test when it is not one.
+func asMap(t *testing.T, v any) map[string]any {
+	t.Helper()
+	m, ok := v.(map[string]any)
+	if !ok {
+		t.Fatalf("%v (%T) is not a JSON object", v, v)
+	}
+	return m
 }

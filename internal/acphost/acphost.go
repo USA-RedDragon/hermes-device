@@ -68,7 +68,7 @@ type Options struct {
 type Server struct {
 	opts   Options
 	slots  chan struct{}
-	base   context.Context
+	base   context.Context //nolint:containedctx // server lifetime: Close cancels it to end every connection
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	nextID atomic.Uint64
@@ -139,7 +139,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		return err
 	case <-ctx.Done():
 	}
-	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(sctx)
 	s.Close()
@@ -192,7 +192,7 @@ func (s *Server) handleACP(w http.ResponseWriter, r *http.Request) {
 			deviceID: claims.DeviceID, lists: map[string]listRequest{},
 		},
 	}
-	c.serve()
+	c.serve() //nolint:contextcheck // a connection derives from the server's base context so Close ends it
 }
 
 func (s *Server) gatewayUp(ctx context.Context) bool {
@@ -297,6 +297,7 @@ func (c *connection) start() (*exec.Cmd, *os.File, *os.File, *os.File, error) {
 		closeAll(inR, inW, outR, outW)
 		return nil, nil, nil, nil, err
 	}
+	//nolint:gosec,noctx // the hermes path is operator config; stop ends the process group with a grace period, which a context kill would cut short
 	cmd := exec.Command(c.srv.opts.Hermes, "acp")
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, errW
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
