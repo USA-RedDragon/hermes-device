@@ -748,6 +748,8 @@
       setTitle(s.title);
       this.setRunning(s.running);
       this.showInfo(s.info || {});
+      // Stored tool rows carry no arguments; the assistant message that made the call has them.
+      this.calls = new Map();
       for (const m of s.messages || []) this.row(m);
       this.turn = null;
       const users = this.log.querySelectorAll(".msg.user");
@@ -765,13 +767,24 @@
       const text = m.text != null ? m.text : (typeof m.content === "string" ? m.content : "");
       if (m.role === "user") { this.turn = null; this.userText(text); return; }
       if (m.role === "assistant") {
+        for (const c of m.tool_calls || []) {
+          const fn = c.function || {};
+          let args = fn.arguments;
+          if (typeof args === "string") {
+            try { args = JSON.parse(args); } catch (_) { args = { arguments: args }; }
+          }
+          const call = { name: fn.name, args };
+          if (c.id) this.calls.set(c.id, call);
+          if (c.call_id) this.calls.set(c.call_id, call);
+        }
         const r = m.reasoning || m.reasoning_content;
         if (r) { this.reasoning(r); this.turn.reasoning.open = false; }
         if (text) { this.assistantText(text); this.turn.text = null; }
         return;
       }
       if (m.role === "tool") {
-        const card = this.toolCard(m.tool_call_id || ("row" + m.row_id), m.name || m.tool_name, m.args);
+        const call = (this.calls && this.calls.get(m.tool_call_id)) || {};
+        const card = this.toolCard(m.tool_call_id || ("row" + m.row_id), m.name || m.tool_name || call.name, m.args || call.args);
         this.toolDone(card, { result: m.content != null ? m.content : text });
         return;
       }
