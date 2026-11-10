@@ -944,7 +944,7 @@ func TestResumeBufferBound(t *testing.T) {
 	f.handle = func(ctx context.Context, n int32, conn *websocket.Conn) {
 		if n == 1 {
 			writeJSON(ctx, conn, protocol.Exec{Type: protocol.TypeExec, ID: "1", Timeout: 60, Cwd: root,
-				Cmd: "echo first; while [ ! -e " + gate + " ]; do sleep 0.02; done; for i in $(seq 1 200); do echo line$i; sleep 0.001; done"})
+				Cmd: "echo first; while [ ! -e " + gate + " ]; do sleep 0.02; done; seq 1 200 | sed s/^/line/"})
 			waitOutput(ctx, t, conn, "1", "first\n")
 			_ = conn.Close(websocket.StatusGoingAway, "hub shutting down")
 			if err := os.WriteFile(gate, nil, 0o600); err != nil {
@@ -969,8 +969,9 @@ func TestResumeBufferBound(t *testing.T) {
 	t.Cleanup(srv.Close)
 	opts := options(t, srv.URL, root)
 	opts.ResumeBuffer = 64
-	opts.MinBackoff = 500 * time.Millisecond
-	opts.MaxBackoff = 500 * time.Millisecond
+	// The command must finish while the leg is down, so only the bounded buffer comes back on resume.
+	opts.MinBackoff = 2 * time.Second
+	opts.MaxBackoff = 2 * time.Second
 	start(t, opts)
 	wait(t, finished)
 }

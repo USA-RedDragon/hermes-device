@@ -628,11 +628,27 @@ func (cmd *command) emit(b []byte) {
 		cmd.size -= len(cmd.chunks[0].data)
 		cmd.chunks = cmd.chunks[1:]
 	}
+	if cmd.size > cmd.max {
+		cmd.keepTail()
+	}
 	if cmd.link != nil {
 		cmd.chunks[len(cmd.chunks)-1].seq = cmd.link.sendCmd(cmd.link.ctx, protocol.Output{
 			Type: protocol.TypeOutput, ID: cmd.id, Data: ch.data, Offset: ch.off,
 		})
 	}
+}
+
+// keepTail cuts the only buffered chunk to its last max bytes, on a rune
+// boundary, so one large write cannot exceed the resume buffer. Call with mu held.
+func (cmd *command) keepTail() {
+	ch := &cmd.chunks[0]
+	cut := len(ch.data) - cmd.max
+	for cut < len(ch.data) && !utf8.RuneStart(ch.data[cut]) {
+		cut++
+	}
+	ch.off += int64(cut)
+	ch.data = ch.data[cut:]
+	cmd.size = len(ch.data)
 }
 
 // finish records the exit and sends it. It reports whether the command
