@@ -43,6 +43,7 @@ type completePayload struct {
 }
 
 type approvalPayload struct {
+	PromptID    string `json:"prompt_id"`
 	RequestID   string `json:"request_id"`
 	ID          string `json:"id"`
 	Command     string `json:"command"`
@@ -346,7 +347,10 @@ func (r *renderer) approval(ctx context.Context, ev hub.Event) {
 	if !r.decode(ev, &p) {
 		return
 	}
-	id := p.RequestID
+	id := p.PromptID
+	if id == "" {
+		id = p.RequestID
+	}
 	if id == "" {
 		id = p.ID
 	}

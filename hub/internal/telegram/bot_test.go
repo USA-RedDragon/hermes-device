@@ -202,7 +202,7 @@ func TestApprovalDeniedForOtherUser(t *testing.T) {
 	group := telegram.Chat{ID: -500, Type: "group"}
 	h.tg.say(group, aliceTG, "hello")
 	sid := h.hub.waitPrompt(t, 1)[0].SessionID
-	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{"request_id": "r9", "command": "reboot"})
+	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{"prompt_id": "r9", "command": "reboot"})
 	req := h.tg.wait(mSend, "Approval needed")
 	data, _ := req.buttons()[0]["callback_data"].(string)
 	h.tg.press(group, bobTG, req.ResultID, data)
