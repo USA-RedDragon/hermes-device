@@ -1,4 +1,4 @@
 name: device
-version: 0.1.0
-description: "Run this server's agent shell and file operations on a device that dials in over a WebSocket (/device <name> <dir>)."
+version: 0.2.0
+description: "Run a session's shell and file operations on the user's own device, which dials in through hermes-hub (/device <device> <dir>)."
 author: "Jacob McSwain"

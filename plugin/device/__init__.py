@@ -1,12 +1,15 @@
-"""Hermes device plugin: a terminal backend that runs commands on a device that dials in.
+"""Hermes device plugin: a terminal backend that runs a session's commands and file operations
+on the user's own device, which dials in through hermes-hub.
 
-Registers the ``device`` terminal environment provider and the ``/device`` command. The
-WebSocket the device dials lives in ``dashboard/plugin_api.py``; both halves share
-``core.py`` through one module object.
+Registers the ``device`` terminal environment provider, the ``pre_tool_call`` guard, the
+``/device`` command and the ``@device:`` context reference, and wraps the Hermes internals that
+read server files directly. The exec leg and the HTTP routes live in ``dashboard/plugin_api.py``;
+both halves share ``core.py`` through one module object. docs/protocol.md section 8.
 """
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -23,45 +26,18 @@ def _core():
     return module
 
 
-USAGE = ("Usage: /device <name> <dir> binds this session to a device directory; "
-         "/device shows the binding; /device off removes it; /device list shows connected devices.")
+def device_command(raw_args: str = "", session_id: str = "", **kwargs) -> str:
+    return _core().device_command(raw_args, session_id=session_id, **kwargs)
 
 
-def device_command(raw_args: str = "", session_id: str = "", **_kwargs) -> str:
-    core = _core()
-    hub = core.hub()
-    args = (raw_args or "").split(maxsplit=1)
-    if not args:
-        b = hub.binding(session_id)
-        if b is None:
-            return f"No device bound to session {session_id or '(none)'}. {USAGE}"
-        state = "connected" if hub.device(b.device) else "offline"
-        return f"Session {session_id} runs on {b.device} ({state}) in {b.dir}"
-    if args[0] == "list" and len(args) == 1:
-        conns = hub.devices()
-        if not conns:
-            return "No devices connected."
-        return "\n".join(f"{c.name} ({c.hostname}) roots: {', '.join(c.roots)}" for c in conns)
-    if args[0] == "off" and len(args) == 1:
-        return "Device binding removed." if hub.unbind(session_id) else "No device was bound."
-    if len(args) != 2:
-        return USAGE
-    try:
-        b = hub.bind(session_id, args[0], args[1].strip())
-    except core.DeviceError as exc:
-        return f"Not bound: {exc}"
-    return f"Session {session_id} now runs commands on {b.device} in {b.dir}"
-
-
-def register(ctx) -> None:
-    core = _core()
+def make_provider(core):
     from agent.terminal_env_provider import TerminalEnvironmentProvider
 
     class DeviceTerminalProvider(TerminalEnvironmentProvider):
         name = "device"
         display_name = "Device"
         is_remote = True
-        # Device paths look like host paths (/home/...); a container backend would discard them.
+        # Container path handling would discard device paths such as /home/alice/src as host paths.
         is_container = False
 
         @property
@@ -70,22 +46,75 @@ def register(ctx) -> None:
 
         @property
         def env_description(self) -> str:
-            return "the user's own device, reached through the device plugin (Linux or macOS shell)"
+            return "the user's own device (Linux or macOS shell), reached through hermes-hub"
 
         def is_available(self) -> bool:
-            return bool(core.configured_devices())
+            return True
 
         def create_environment(self, *, cwd: str, timeout: int, task_id: str = "default", **_kwargs):
-            return core.DeviceEnvironment(cwd=cwd, timeout=timeout, task_id=task_id)
+            return core.DeviceRouterEnvironment(cwd=cwd, timeout=timeout, task_id=task_id)
 
-    ctx.register_terminal_environment_provider(DeviceTerminalProvider())
-    def pre_tool_call(*_args, task_id: str = "", session_id: str = "", **_kwargs):
-        try:
-            core.anchor_file_tools(task_id, session_id)
-        except Exception:
-            core.logger.debug("device: could not anchor file tools", exc_info=True)
-        return None
+    return DeviceTerminalProvider()
 
-    ctx.register_hook("pre_tool_call", pre_tool_call)
+
+def make_reference_provider(core):
+    import asyncio
+
+    from agent.context_references import ContextCompletionItem, ContextReferenceProvider
+
+    class DeviceReferenceProvider(ContextReferenceProvider):
+        """``@device:<path>``: a file or folder of the session's device."""
+
+        prefix = "device"
+        description = "file or folder on this session's device"
+
+        def _bound(self):
+            res = core.resolve_current()
+            if res.state != core.STATE_BOUND:
+                raise ValueError("this session is not bound to a device; bind it with /device <device> <dir>"
+                                 if res.state == core.STATE_NEVER_BOUND else core.fail_closed_message(res))
+            return res
+
+        async def expand(self, target: str):
+            def run():
+                warning, block = core.expand_device_path(self._bound(), f"@device:{target}", "any", target)
+                if warning:
+                    raise ValueError(warning)
+                return block
+            return await asyncio.to_thread(run)
+
+        async def autocomplete(self, query: str, *, limit: int = 10):
+            def run():
+                try:
+                    res = self._bound()
+                    base = query.rsplit("/", 1)[0] + "/" if "/" in query else ""
+                    directory = core.device_abs_path(res, base or ".")
+                    _, names = core.list_device_dirs(res.binding.device_id, directory)
+                except Exception:
+                    return []
+                stem = query.rsplit("/", 1)[-1]
+                return [ContextCompletionItem(text=f"{base}{n}/", meta="device folder")
+                        for n in names if n.startswith(stem)][:limit]
+            return await asyncio.to_thread(run)
+
+    return DeviceReferenceProvider()
+
+
+def register(ctx) -> None:
+    core = _core()
+    ctx.register_terminal_environment_provider(make_provider(core))
+    ctx.register_hook("pre_tool_call", core.pre_tool_call)
     ctx.register_command("device", device_command, description="Bind this session to a device directory",
-                         args_hint="<name> <dir> | off | list")
+                         args_hint="<device> <dir> | off | list")
+    ctx.register_context_reference(make_reference_provider(core))
+    missing = core.install_hooks()
+    if missing:
+        core.logger.error("device: Hermes internals not wrapped: %s", ", ".join(missing))
+    core.apply_safe_root_policy()
+    ph = core.placeholder()
+    if not ph:
+        core.logger.error("device: the placeholder setting is required (plugins.entries.device.settings)")
+    elif not os.path.isdir(ph):
+        core.logger.error("device: placeholder %s does not exist", ph)
+    if not core.backend_id():
+        core.logger.error("device: the backend_id setting is required; the exec route refuses every assertion")

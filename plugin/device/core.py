@@ -1,59 +1,167 @@
-"""Shared state of the device plugin: connected devices, session bindings, the terminal backend.
+"""Shared state of the device plugin: connected devices, session bindings, lineage resolution,
+the terminal backend and the server-side reader wrappers.
 
 Loaded once per process under the fixed module name ``hermes_device_core`` so the agent half
-(``__init__.py``) and the dashboard route (``dashboard/plugin_api.py``) share one hub.
+(``__init__.py``) and the dashboard routes (``dashboard/plugin_api.py``) share one hub.
+docs/protocol.md sections 3, 4, 8 and 9 are the normative description.
 """
 from __future__ import annotations
 
 import asyncio
 import contextvars
 import hmac
+import importlib.util
 import json
 import logging
 import os
 import posixpath
 import queue
+import re
 import shlex
+import sys
+import tempfile
 import threading
+import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 logger = logging.getLogger("hermes_device")
 
 PLUGIN_ID = "device"
+PLUGIN_VERSION = "0.2.0"
+
+PROTOCOL_VERSION = 2
+TYPE_HELLO = "hello"
+TYPE_WELCOME = "welcome"
+TYPE_EXEC = "exec"
+TYPE_KILL = "kill"
+TYPE_OUTPUT = "output"
+TYPE_EXIT = "exit"
+TYPE_PING = "ping"
+TYPE_PONG = "pong"
+TYPE_RESUME = "resume"
+
+CLOSE_PROTOCOL_ERROR = 1002
 CLOSE_UNAUTHORIZED = 4401
+CLOSE_ASSERTION_REFUSED = 4403
+CLOSE_PING_TIMEOUT = 4408
+CLOSE_REPLACED = 4409
+CLOSE_UNSUPPORTED_VERSION = 4426
+CLOSE_UNSUPPORTED_PLATFORM = 4427
+CLOSE_BACKEND_UNAVAILABLE = 4502
+
 EXIT_REFUSED = 126
 EXIT_KILLED = 130
 EXIT_LOST = 255
+
+PING_INTERVAL_S = 25
+PING_TIMEOUT_S = 15
+HELLO_TIMEOUT_S = 10
+SILENCE_TIMEOUT_S = 60
+
+PLUGIN_EXEC_PATH = "/api/plugins/device/ws"
+ACP_HOST_PATH = "/acp"
+
 SEND_TIMEOUT_S = 15.0
-HELLO_TIMEOUT_S = 10.0
+MAX_LINEAGE_HOPS = 100
+BINDINGS_VERSION = 2
+MAX_DIR_ENTRIES = 500
+MAX_READ_BYTES = 16 * 1024 * 1024
+
+STATE_BOUND = "bound"
+STATE_NEVER_BOUND = "never_bound"
+STATE_FAIL_CLOSED = "fail_closed"
+
+DEVICE_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+FILE_AND_COMMAND_TOOLS = frozenset({
+    "terminal", "process_manage", "read_terminal", "close_terminal", "read_file", "write_file", "patch",
+    "search_files", "execute_code"})
+FILE_PATH_TOOLS = ("read_file", "write_file", "patch", "search_files")
+POD_ONLY_TOOLS = frozenset({"cronjob_manage", "kanban_create", "kanban_schedule", "kanban_unblock"})
+_BOM = "\ufeff"
 
 
 class DeviceError(Exception):
     """A request the plugin cannot carry out (unknown device, offline, refused dir)."""
 
 
+class LineageError(Exception):
+    """The session lineage could not be read completely."""
+
+
+def _load_sibling(module_name: str, file_name: str):
+    module = sys.modules.get(module_name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(module_name, Path(__file__).with_name(file_name))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+    return module
+
+
+assertion = _load_sibling("hermes_device_assertion", "assertion.py")
+
+
 # --- settings ---------------------------------------------------------------------------------
 
-def _settings() -> dict[str, Any]:
-    """``plugins.entries.device.settings`` from config.yaml, or ``{}``."""
+def _config() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config_readonly
-        cfg = load_config_readonly() or {}
+        return load_config_readonly() or {}
     except Exception:
         logger.debug("device: config not readable", exc_info=True)
         return {}
-    entry = ((cfg.get("plugins") or {}).get("entries") or {}).get(PLUGIN_ID) or {}
-    settings = entry.get("settings") if isinstance(entry, dict) else None
-    return settings if isinstance(settings, dict) else {}
+
+
+def settings() -> dict[str, Any]:
+    """``plugins.entries.device.settings`` from config.yaml, or ``{}``."""
+    entry = ((_config().get("plugins") or {}).get("entries") or {}).get(PLUGIN_ID) or {}
+    value = entry.get("settings") if isinstance(entry, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def backend_id() -> str:
+    value = settings().get("backend_id")
+    return value if isinstance(value, str) else ""
+
+
+def placeholder() -> str:
+    """The configured placeholder directory, normalized, or "" when unset."""
+    value = settings().get("placeholder")
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    return os.path.realpath(os.path.expanduser(value.strip()))
+
+
+def fallback() -> str:
+    value = settings().get("fallback", "local")
+    if value in ("local", "refuse"):
+        return value
+    logger.error("device: fallback %r is not local or refuse; refusing never-bound sessions", value)
+    return "refuse"
+
+
+def dev_static_tokens() -> bool:
+    return settings().get("dev_static_tokens") is True
+
+
+def device_write_roots() -> list[str]:
+    roots = settings().get("device_write_roots") or []
+    return [r for r in roots if isinstance(r, str) and r] if isinstance(roots, list) else []
+
+
+def terminal_cwd() -> str:
+    term = _config().get("terminal") or {}
+    value = term.get("cwd") if isinstance(term, dict) else None
+    return value if isinstance(value, str) else ""
 
 
 def configured_devices() -> dict[str, str]:
-    """Device name -> shared token. ``token_env`` names an env var holding the token."""
+    """Dev mode: device name -> static token. ``token_env`` names an env var holding it."""
     out: dict[str, str] = {}
-    devices = _settings().get("devices") or {}
+    devices = settings().get("devices") or {}
     if not isinstance(devices, dict):
         return out
     for name, spec in devices.items():
@@ -67,15 +175,61 @@ def configured_devices() -> dict[str, str]:
     return out
 
 
-def placeholder_roots() -> list[str]:
-    """Server directories that stand in for the device directory (session cwd, terminal.cwd)."""
-    roots = _settings().get("placeholder_roots") or []
-    return [os.path.realpath(str(r)) for r in roots if isinstance(r, str) and r]
+def authenticate_static(name: str, token: str) -> bool:
+    expected = configured_devices().get(name)
+    return bool(expected) and hmac.compare_digest(expected.encode(), (token or "").encode())
 
 
-def _home() -> Path:
+def hermes_home() -> Path:
     from hermes_constants import get_hermes_home
     return Path(get_hermes_home())
+
+
+def hermes_version() -> str:
+    try:
+        from hermes_cli.version_info import get_version_info
+        base = get_version_info().base_version
+    except Exception:
+        return "unknown"
+    return base if base.startswith("v") or base == "unknown" else f"v{base}"
+
+
+# --- hub public keys --------------------------------------------------------------------------
+
+_VERIFIER = assertion.Verifier()
+_KEY_CACHE: dict[str, Any] = {"text": None, "keys": []}
+_KEY_LOCK = threading.Lock()
+
+
+def hub_key_text() -> Optional[bytes]:
+    s = settings()
+    path = s.get("hub_public_key_file")
+    if isinstance(path, str) and path:
+        try:
+            return Path(os.path.expanduser(path)).read_bytes()
+        except OSError as exc:
+            logger.error("device: cannot read hub_public_key_file %s: %s", path, exc)
+            return None
+    env_name = s.get("hub_public_key_env") or "HERMES_DEVICE_HUB_PUBLIC_KEY"
+    value = os.environ.get(str(env_name))
+    return value.encode("utf-8", errors="surrogatepass") if value else None
+
+
+def verifier() -> Any:
+    """The process-wide verifier with the currently configured keys (re-read on every call, so a
+    rotated key file takes effect without a restart; the nonce cache is kept)."""
+    text = hub_key_text()
+    with _KEY_LOCK:
+        if text != _KEY_CACHE["text"]:
+            keys: list = []
+            if text is not None:
+                try:
+                    keys = assertion.parse_public_keys(text)
+                except assertion.Refused as exc:
+                    logger.error("device: hub public keys refused: %s", exc)
+            _KEY_CACHE.update(text=text, keys=keys)
+        _VERIFIER.keys = list(_KEY_CACHE["keys"])
+    return _VERIFIER
 
 
 # --- process handle ---------------------------------------------------------------------------
@@ -95,6 +249,7 @@ class DeviceProcess:
         self._done = threading.Event()
         self._finished = False
         self.refused = False
+        self.error = ""
         self._lock = threading.Lock()
         threading.Thread(target=self._pump, name=f"device-pump-{request_id[:8]}", daemon=True).start()
 
@@ -154,19 +309,32 @@ class DeviceProcess:
             self.finish(EXIT_KILLED, "[device offline; command abandoned]")
 
 
-# --- connections and bindings -----------------------------------------------------------------
+def finished_process(code: int, note: str) -> DeviceProcess:
+    proc = DeviceProcess(uuid.uuid4().hex, lambda: False)
+    proc.finish(code, note)
+    return proc
+
+
+# --- connections --------------------------------------------------------------------------------
 
 @dataclass
 class DeviceConn:
-    """One connected device. ``send`` coroutines run on ``loop`` (the gateway's event loop)."""
+    """One connected device. ``send_text`` and ``close`` coroutines run on ``loop``."""
 
+    device_id: str
     name: str
     send_text: Callable[[str], Any]
     loop: asyncio.AbstractEventLoop
     roots: list[str]
     tmp_dir: str
+    home: str = ""
     hostname: str = ""
-    close: Optional[Callable[[], Any]] = None
+    os: str = ""
+    arch: str = ""
+    shell: str = ""
+    client_version: str = ""
+    close: Optional[Callable[[int, str], Any]] = None
+    connected_at: float = field(default_factory=time.time)
     conn_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     pending: dict[str, DeviceProcess] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -183,71 +351,191 @@ class DeviceConn:
         try:
             fut.result(timeout=SEND_TIMEOUT_S)
         except BaseException:
-            # A send that has not started must not go out later with no handle waiting for it.
             fut.cancel()
             raise
 
     def within_roots(self, path: str) -> bool:
-        path = posixpath.normpath(path)
-        return any(path == r or path.startswith(r.rstrip("/") + "/") for r in self.roots)
+        return any(is_under(path, r) for r in self.roots)
+
+    def info(self) -> dict:
+        return {"device_id": self.device_id, "name": self.name, "hostname": self.hostname, "os": self.os,
+                "arch": self.arch, "home": self.home, "roots": list(self.roots),
+                "client_version": self.client_version, "connected_at": int(self.connected_at)}
 
 
-@dataclass
+def is_under(path: str, root: str) -> bool:
+    path, root = posixpath.normpath(path), posixpath.normpath(root)
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+# --- bindings ---------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
 class Binding:
-    device: str
+    session_id: str
+    device_id: str
     dir: str
     generation: str
+    bound_at: float
+
+    def to_json(self) -> dict:
+        return {"session_id": self.session_id, "device_id": self.device_id, "dir": self.dir,
+                "generation": self.generation, "bound_at": self.bound_at}
+
+
+@dataclass(frozen=True)
+class Resolution:
+    state: str
+    session_id: str
+    via: Optional[str] = None
+    binding: Optional[Binding] = None
+    reason: str = ""
+
+    def to_json(self) -> dict:
+        return {"state": self.state, "via": self.via}
+
+
+class StateUnavailable(DeviceError):
+    """bindings.json exists but cannot be read; every non-bound session fails closed."""
+
+
+ParentLookup = Callable[[str], tuple[bool, Optional[str]]]
+
+
+class BindError(DeviceError):
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(message)
+        self.status, self.code, self.message = status, code, message
 
 
 class Hub:
-    """Process-wide registry of connected devices and session -> (device, dir) bindings."""
+    """Process-wide registry of connected devices and the persisted bindings (section 8.2)."""
 
-    def __init__(self, state_path: Optional[Path] = None):
+    def __init__(self, state_path: Optional[Path] = None, parent_lookup: Optional[ParentLookup] = None,
+                 session_check: Optional[Callable[[str], Optional[str]]] = None):
         self._lock = threading.RLock()
+        self._session_check = session_check
         self._devices: dict[str, DeviceConn] = {}
+        self._seen: set[str] = set()
         self._state_path = state_path
-        self._bindings: dict[str, Binding] = self._load()
+        self._parent_lookup = parent_lookup
+        self._parents: dict[str, str] = {}
+        self._orphans: dict[str, str] = {}
         self._cwds: dict[str, str] = {}
+        self._state_error = ""
+        self._bindings: dict[str, Binding] = {}
+        self._ever_bound: set[str] = set()
+        self._load()
 
-    # bindings persist so a gateway restart and a later resume keep the device
-    def _load(self) -> dict[str, Binding]:
-        if not self._state_path or not self._state_path.is_file():
-            return {}
+    # persistence
+    def _load(self) -> None:
+        path = self._state_path
+        if not path or not path.exists():
+            return
         try:
-            raw = json.loads(self._state_path.read_text(encoding="utf-8"))
-            return {k: Binding(**v) for k, v in (raw.get("bindings") or {}).items()}
-        except Exception:
-            logger.warning("device: unreadable %s; starting with no bindings", self._state_path)
-            return {}
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("not a JSON object")
+            if raw.get("version") == BINDINGS_VERSION:
+                self._load_v2(raw)
+            elif "version" not in raw:
+                self._migrate_v1(raw)
+                self._save()
+            else:
+                raise ValueError(f"unknown version {raw.get('version')!r}")
+        except Exception as exc:
+            self._bindings, self._ever_bound = {}, set()
+            self._state_error = f"{path} is unreadable ({exc})"
+            logger.error("device: %s; every session that is not bound fails closed until it is fixed",
+                         self._state_error)
+
+    def _load_v2(self, raw: dict) -> None:
+        bindings: dict[str, Binding] = {}
+        for sid, b in (raw.get("bindings") or {}).items():
+            bindings[sid] = Binding(session_id=sid, device_id=str(b["device_id"]), dir=str(b["dir"]),
+                                    generation=str(b["generation"]), bound_at=float(b.get("bound_at") or 0))
+        ever = raw.get("ever_bound") or []
+        if not isinstance(ever, list):
+            raise ValueError("ever_bound is not a list")
+        self._bindings = bindings
+        self._ever_bound = {str(s) for s in ever} | set(bindings)
+        self._seen.update(b.device_id for b in bindings.values())
+
+    def _migrate_v1(self, raw: dict) -> None:
+        """v1 (proof of concept) keyed bindings by device name. In dev mode the device id is the
+        configured name, so a name that is a valid id carries over; others are dropped but stay in
+        ever_bound, so their sessions fail closed instead of running on the server."""
+        stamp = self._state_path.stat().st_mtime if self._state_path else time.time()
+        bindings: dict[str, Binding] = {}
+        ever: set[str] = set()
+        for sid, b in (raw.get("bindings") or {}).items():
+            ever.add(str(sid))
+            if not isinstance(b, dict):
+                continue
+            name, directory = str(b.get("device") or ""), b.get("dir")
+            if DEVICE_ID_RE.fullmatch(name) and isinstance(directory, str) and directory.startswith("/"):
+                bindings[sid] = Binding(session_id=sid, device_id=name, dir=directory,
+                                        generation=str(b.get("generation") or uuid.uuid4().hex[:12]), bound_at=stamp)
+            else:
+                logger.warning("device: v1 binding of session %s (device %r) dropped; the session fails closed",
+                               sid, name)
+        self._bindings, self._ever_bound = bindings, ever
+        self._seen.update(b.device_id for b in bindings.values())
+        logger.info("device: migrated %d v1 bindings to version %d", len(bindings), BINDINGS_VERSION)
 
     def _save(self) -> None:
         if not self._state_path:
             return
-        self._state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"bindings": {k: asdict(v) for k, v in self._bindings.items()}}, indent=2),
-                       encoding="utf-8")
-        os.replace(tmp, self._state_path)
+        path = self._state_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        doc = {"version": BINDINGS_VERSION,
+               "bindings": {sid: {"device_id": b.device_id, "dir": b.dir, "generation": b.generation,
+                                  "bound_at": b.bound_at} for sid, b in sorted(self._bindings.items())},
+               "ever_bound": sorted(self._ever_bound)}
+        fd, tmp = tempfile.mkstemp(prefix=".bindings-", suffix=".tmp", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh, indent=2)
+                fh.write("\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _require_state(self) -> None:
+        if self._state_error:
+            raise StateUnavailable(self._state_error)
 
     # devices
     def attach(self, conn: DeviceConn) -> None:
         with self._lock:
-            old = self._devices.get(conn.name)
-            self._devices[conn.name] = conn
-        if old is not None:
-            # Newest connection wins; close the old socket so two machines never share a name.
-            logger.warning("device: %s connected again; closing the previous connection", conn.name)
+            old = self._devices.get(conn.device_id)
+            self._devices[conn.device_id] = conn
+            self._seen.add(conn.device_id)
+        if old is not None and old is not conn:
+            logger.warning("device: %s connected again; closing the previous connection", conn.device_id)
             self._fail_pending(old, "[device reconnected; command lost]")
             if old.close is not None:
-                asyncio.run_coroutine_threadsafe(old.close(), old.loop)
-        logger.info("device: %s connected (%s) roots=%s", conn.name, conn.hostname, conn.roots)
+                try:
+                    asyncio.run_coroutine_threadsafe(old.close(CLOSE_REPLACED, "replaced by a newer connection"),
+                                                     old.loop)
+                except RuntimeError:
+                    logger.debug("device: old connection loop is closed", exc_info=True)
+        logger.info("device: %s (%s) connected from %s, roots=%s", conn.device_id, conn.name, conn.hostname,
+                    conn.roots)
 
     def detach(self, conn: DeviceConn) -> None:
         with self._lock:
-            if self._devices.get(conn.name) is conn:
-                del self._devices[conn.name]
+            if self._devices.get(conn.device_id) is conn:
+                del self._devices[conn.device_id]
         self._fail_pending(conn, "[device disconnected; command lost]")
-        logger.info("device: %s disconnected", conn.name)
+        logger.info("device: %s disconnected", conn.device_id)
 
     @staticmethod
     def _fail_pending(conn: DeviceConn, note: str) -> None:
@@ -257,41 +545,67 @@ class Hub:
         for proc in procs:
             proc.finish(EXIT_LOST, note)
 
-    def device(self, name: str) -> Optional[DeviceConn]:
+    def device(self, device_id: str) -> Optional[DeviceConn]:
         with self._lock:
-            return self._devices.get(name)
+            return self._devices.get(device_id)
 
     def devices(self) -> list[DeviceConn]:
         with self._lock:
             return list(self._devices.values())
 
+    def seen(self, device_id: str) -> bool:
+        with self._lock:
+            return device_id in self._seen
+
+    def find_device(self, name_or_id: str) -> DeviceConn:
+        """A connected device by id, else by unique name."""
+        conn = self.device(name_or_id)
+        if conn is not None:
+            return conn
+        matches = [c for c in self.devices() if c.name == name_or_id]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise DeviceError(f"several connected devices are named {name_or_id!r}; use the device id: "
+                              + ", ".join(sorted(c.device_id for c in matches)))
+        raise DeviceError(f"no connected device is named {name_or_id!r}")
+
     def on_message(self, conn: DeviceConn, msg: dict) -> None:
         kind, rid = msg.get("type"), msg.get("id", "")
+        if kind not in (TYPE_OUTPUT, TYPE_EXIT) or not isinstance(rid, str):
+            return
         with conn.lock:
-            proc = conn.pending.get(rid) if kind == "output" else conn.pending.pop(rid, None) if kind == "exit" else None
-        if kind == "output" and proc is not None:
-            proc.feed(msg.get("data") or "")
-        elif kind == "exit" and proc is not None:
-            error = msg.get("error") or ""
+            proc = conn.pending.get(rid) if kind == TYPE_OUTPUT else conn.pending.pop(rid, None)
+        if proc is None:
+            return
+        if kind == TYPE_OUTPUT:
+            data = msg.get("data")
+            proc.feed(data if isinstance(data, str) else "")
+            return
+        error = msg.get("error") if isinstance(msg.get("error"), str) else ""
+        try:
             code = int(msg.get("code", 1))
-            proc.refused = bool(error) and code == EXIT_REFUSED
-            proc.finish(code, f"[{error}]" if error else "")
+        except (TypeError, ValueError):
+            code = 1
+        proc.refused = bool(error) and code == EXIT_REFUSED
+        proc.error = error
+        proc.finish(code, f"[{error}]" if error else "")
 
     # execution
-    def start(self, name: str, *, cmd: str, cwd: str, login: bool, timeout: float,
+    def start(self, device_id: str, *, cmd: str, cwd: str, login: bool, timeout: float,
               stdin: Optional[str]) -> DeviceProcess:
-        conn = self.device(name)
-        rid = uuid.uuid4().hex
+        conn = self.device(device_id)
         if conn is None:
-            proc = DeviceProcess(rid, lambda: False)
-            proc.finish(EXIT_LOST, f"[device {name} is not connected]")
-            return proc
+            return finished_process(EXIT_LOST, f"[device {device_id} is not connected; the command did not run]")
+        if not posixpath.isabs(cwd or ""):
+            return finished_process(EXIT_REFUSED, f"[hermes-device: no device directory for this command ({cwd!r})]")
+        rid = uuid.uuid4().hex
 
         def kill() -> bool:
-            if self.device(name) is not conn:
+            if self.device(device_id) is not conn:
                 return False
             try:
-                conn.send({"type": "kill", "id": rid})
+                conn.send({"type": TYPE_KILL, "id": rid})
                 return True
             except Exception:
                 return False
@@ -299,7 +613,7 @@ class Hub:
         proc = DeviceProcess(rid, kill)
         with conn.lock:
             conn.pending[rid] = proc
-        msg = {"type": "exec", "id": rid, "cmd": cmd, "cwd": cwd, "login": login, "timeout": timeout}
+        msg = {"type": TYPE_EXEC, "id": rid, "cmd": cmd, "cwd": cwd, "login": bool(login), "timeout": timeout}
         if stdin is not None:
             msg["stdin"] = stdin
         try:
@@ -307,63 +621,231 @@ class Hub:
         except Exception as exc:
             with conn.lock:
                 conn.pending.pop(rid, None)
-            proc.finish(EXIT_LOST, f"[could not reach device {name}: {exc}]")
+            proc.finish(EXIT_LOST, f"[could not reach device {device_id}: {exc}]")
         return proc
 
-    def run(self, name: str, cmd: str, cwd: str, timeout: float = 20) -> tuple[int, str]:
-        """Run a short command synchronously (for /device checks)."""
-        proc = self.start(name, cmd=cmd, cwd=cwd, login=False, timeout=timeout, stdin=None)
+    def run(self, device_id: str, cmd: str, cwd: str, timeout: float = 20) -> tuple[int, str, DeviceProcess]:
+        """Run a short command synchronously and return ``(code, output, process)``."""
+        proc = self.start(device_id, cmd=cmd, cwd=cwd, login=False, timeout=timeout, stdin=None)
         if proc.wait(timeout + 5) is None:
             proc.kill()
-            return EXIT_KILLED, "timed out"
+            proc.wait(5)
+            with proc.stdout:
+                proc.stdout.read()
+            return EXIT_KILLED, "timed out", proc
         with proc.stdout:
             out = proc.stdout.read()
-        return proc.returncode or 0, out
+        return proc.returncode if proc.returncode is not None else 1, out, proc
 
     # bindings
     def binding(self, session_id: str) -> Optional[Binding]:
         with self._lock:
             return self._bindings.get(session_id) if session_id else None
 
-    def bind(self, session_id: str, device: str, directory: str) -> Binding:
+    def bindings(self) -> list[Binding]:
+        with self._lock:
+            return sorted(self._bindings.values(), key=lambda b: b.session_id)
+
+    def ever_bound(self, session_id: str) -> bool:
+        with self._lock:
+            return session_id in self._ever_bound
+
+    def bind(self, session_id: str, device_id: str, directory: str) -> Binding:
+        """Bind ``session_id`` to ``directory`` on a connected device (section 9 PUT rules).
+        Raises :class:`BindError` with the HTTP status and error code."""
         if not session_id:
-            raise DeviceError("this surface did not give a session id")
-        if device not in configured_devices():
-            raise DeviceError(f"unknown device {device!r}; configured: {', '.join(sorted(configured_devices())) or 'none'}")
-        conn = self.device(device)
+            raise BindError(400, "bad_request", "no session id")
+        if self._state_error:
+            raise BindError(503, "state_unavailable", self._state_error)
+        conn = self.device(device_id)
         if conn is None:
-            raise DeviceError(f"device {device} is not connected")
-        if not directory.startswith("/"):
-            raise DeviceError("the directory must be an absolute path on the device")
+            if self.seen(device_id):
+                raise BindError(409, "device_offline", f"device {device_id} is not connected")
+            raise BindError(404, "unknown_device", f"device {device_id} is not connected and was never seen")
+        if not isinstance(directory, str) or not posixpath.isabs(directory):
+            raise BindError(400, "bad_dir", "dir must be an absolute device path")
         directory = posixpath.normpath(directory)
-        code, out = self.run(device, "pwd -P", directory)
-        if code != 0:
-            raise DeviceError(f"device {device} refused {directory}: {out.strip()}")
-        real = out.strip().splitlines()[-1] if out.strip() else directory
-        binding = Binding(device=device, dir=real, generation=uuid.uuid4().hex[:12])
+        why = self._session_check(session_id) if self._session_check else None
+        if why:
+            raise BindError(409, "not_device_session", why)
+        existing = self.binding(session_id)
+        if existing is not None and existing.device_id != device_id:
+            raise BindError(409, "bound_to_other_device",
+                            f"session {session_id} is bound to device {existing.device_id}; unbind it first")
+        real = device_pwd(self, device_id, directory)
         with self._lock:
+            existing = self._bindings.get(session_id)
+            if existing is not None and existing.device_id != device_id:
+                raise BindError(409, "bound_to_other_device",
+                                f"session {session_id} is bound to device {existing.device_id}; unbind it first")
+            if existing is not None and existing.dir == real:
+                return existing
+            binding = Binding(session_id=session_id, device_id=device_id, dir=real,
+                              generation=uuid.uuid4().hex[:12], bound_at=round(time.time(), 3))
+            previous = (dict(self._bindings), set(self._ever_bound))
             self._bindings[session_id] = binding
-            self._save()
+            self._ever_bound.add(session_id)
+            try:
+                self._save()
+            except Exception as exc:
+                self._bindings, self._ever_bound = previous
+                raise BindError(500, "state_write_failed", f"could not write bindings: {exc}") from exc
+        logger.info("device: session %s bound to %s:%s", session_id, device_id, real)
         return binding
-
-    def device_cwd(self, session_id: str) -> Optional[str]:
-        """The session's current directory on its device: the bound dir until a command cds."""
-        with self._lock:
-            b = self._bindings.get(session_id) if session_id else None
-            return None if b is None else self._cwds.get(f"{session_id}:{b.generation}", b.dir)
-
-    def set_device_cwd(self, session_id: str, cwd: str) -> None:
-        with self._lock:
-            b = self._bindings.get(session_id)
-            if b is not None and cwd:
-                self._cwds[f"{session_id}:{b.generation}"] = cwd
 
     def unbind(self, session_id: str) -> bool:
         with self._lock:
-            found = self._bindings.pop(session_id, None) is not None
-            if found:
+            self._require_state()
+            if session_id not in self._bindings:
+                return False
+            removed = self._bindings.pop(session_id)
+            try:
                 self._save()
-        return found
+            except Exception:
+                self._bindings[session_id] = removed
+                raise
+        logger.info("device: session %s unbound", session_id)
+        return True
+
+    def device_cwd(self, binding: Binding) -> str:
+        with self._lock:
+            return self._cwds.get(f"{binding.session_id}:{binding.generation}", binding.dir)
+
+    def set_device_cwd(self, binding: Binding, cwd: str) -> None:
+        if cwd and posixpath.isabs(cwd):
+            with self._lock:
+                self._cwds[f"{binding.session_id}:{binding.generation}"] = cwd
+
+    # lineage (section 8.3)
+    def note_parent(self, session_id: str, parent_id: Optional[str]) -> None:
+        """Record a parent link learned in process (a delegate child before its row exists)."""
+        if session_id and parent_id and session_id != parent_id:
+            with self._lock:
+                self._parents.setdefault(session_id, parent_id)
+
+    def note_orphan(self, session_id: str, reason: str) -> None:
+        """Mark a side agent whose starting session could not be found: it fails closed."""
+        if session_id:
+            with self._lock:
+                self._orphans[session_id] = reason
+
+    def _parent(self, session_id: str) -> Optional[str]:
+        with self._lock:
+            cached = self._parents.get(session_id)
+        if cached is not None:
+            return cached
+        lookup = self._parent_lookup or db_parent_lookup
+        try:
+            found, parent = lookup(session_id)
+        except LineageError:
+            raise
+        except Exception as exc:
+            raise LineageError(f"the session store failed ({exc})") from exc
+        if not found:
+            raise LineageError(f"session {session_id} has no row in the session store yet")
+        if parent:
+            with self._lock:
+                self._parents[session_id] = parent
+        return parent or None
+
+    def resolve(self, session_id: str) -> Resolution:
+        with self._lock:
+            state_error = self._state_error
+        if not session_id:
+            return Resolution(STATE_FAIL_CLOSED, "", reason="has no session id in this context")
+        seen: set[str] = set()
+        saw_ever = False
+        cur = session_id
+        for _ in range(MAX_LINEAGE_HOPS + 1):
+            if cur in seen:
+                return Resolution(STATE_FAIL_CLOSED, session_id, reason="has a cycle in its lineage")
+            seen.add(cur)
+            binding = self.binding(cur)
+            if binding is not None:
+                return Resolution(STATE_BOUND, session_id, via=cur, binding=binding)
+            with self._lock:
+                orphan = self._orphans.get(cur)
+            if orphan:
+                return Resolution(STATE_FAIL_CLOSED, session_id, reason=orphan)
+            saw_ever = saw_ever or self.ever_bound(cur)
+            try:
+                parent = self._parent(cur)
+            except LineageError as exc:
+                return Resolution(STATE_FAIL_CLOSED, session_id, reason=f"has an unreadable lineage: {exc}")
+            if parent is None:
+                if saw_ever:
+                    return Resolution(STATE_FAIL_CLOSED, session_id, reason="was bound to a device and is not now")
+                if state_error:
+                    return Resolution(STATE_FAIL_CLOSED, session_id, reason=f"cannot be checked: {state_error}")
+                return Resolution(STATE_NEVER_BOUND, session_id)
+            cur = parent
+        return Resolution(STATE_FAIL_CLOSED, session_id,
+                          reason=f"has a lineage longer than {MAX_LINEAGE_HOPS} hops")
+
+
+def fail_closed_message(res: Resolution) -> str:
+    sid = res.session_id or "(none)"
+    return (f"hermes-device: session {sid} {res.reason or 'cannot be served'}, so this does not run on the "
+            f"server. Rebind it with /device <device> <dir>.")
+
+
+def refusal_message(res: Resolution) -> str:
+    if res.state == STATE_NEVER_BOUND:
+        return (f"hermes-device: session {res.session_id or '(none)'} is not bound to a device and this server "
+                f"refuses unbound sessions (fallback: refuse). Bind it with /device <device> <dir>.")
+    return fail_closed_message(res)
+
+
+def db_parent_lookup(session_id: str) -> tuple[bool, Optional[str]]:
+    """``(row found, parent id)`` from the Hermes session store."""
+    from hermes_cli.goals import _get_session_db
+    db = _get_session_db()
+    if db is None:
+        raise LineageError("the session store is unavailable")
+    row = db.get_session(session_id)
+    if row is None:
+        return False, None
+    parent = row.get("parent_session_id")
+    return True, (str(parent) if parent else None)
+
+
+def _live_policy(session_id: str):
+    """The frozen local-session policy of a live session in this gateway, or None when this
+    process cannot tell (no gateway runner, a messaging session, a session not loaded)."""
+    from gateway import run_api
+    runner = getattr(run_api, "_ACTIVE_RUNNER", None)
+    if runner is None:
+        return None
+    from gateway.session_authorities import all_authorities
+    from gateway.session_policy import policy_for_source
+    for authority in all_authorities(runner):
+        live = (getattr(authority, "sessions", None) or {}).get(session_id)
+        if live is not None:
+            return policy_for_source(authority.runner, live.source)
+    return None
+
+
+def not_device_session_reason(session_id: str) -> Optional[str]:
+    """Why a session can never serve a device (a bypass worker, or a frozen terminal backend
+    that is not ``device``), or None when it can or this process cannot tell."""
+    try:
+        policy = _live_policy(session_id)
+    except Exception:
+        logger.debug("device: policy of %s not readable", session_id, exc_info=True)
+        return None
+    if policy is None:
+        return None
+    if getattr(policy, "safe_mode", False) or getattr(policy, "ignore_user_config", False):
+        return (f"session {session_id} runs in a safe-mode or config-bypass worker, which loads no plugins, so it "
+                f"cannot run on a device")
+    try:
+        terminal = json.loads(policy.terminal_json)
+    except Exception:
+        return None
+    backend = str(terminal.get("TERMINAL_ENV") or "local").strip().lower() if isinstance(terminal, dict) else ""
+    if backend != PLUGIN_ID:
+        return f"session {session_id} has terminal backend {backend!r}, not {PLUGIN_ID!r}, so it cannot run on a device"
+    return None
 
 
 _HUB: Optional[Hub] = None
@@ -374,138 +856,1064 @@ def hub() -> Hub:
     global _HUB
     with _HUB_LOCK:
         if _HUB is None:
-            _HUB = Hub(_home() / "device" / "bindings.json")
+            _HUB = Hub(hermes_home() / "device" / "bindings.json", session_check=not_device_session_reason)
         return _HUB
 
 
-def authenticate(name: str, token: str) -> bool:
-    expected = configured_devices().get(name)
-    return bool(expected) and hmac.compare_digest(expected.encode(), (token or "").encode())
+# --- session id -------------------------------------------------------------------------------
 
-
-def anchor_file_tools(task_id: str, session_id: str) -> None:
-    """Point the session's cwd record at the device directory before a tool runs.
-
-    Each turn re-registers the session's server workspace (the placeholder) as its cwd, and the
-    file tools resolve relative paths against that record on the server. Rewriting the record to
-    the device-side cwd makes ``patch app.py`` mean the device's ``app.py``.
-    """
-    cwd = hub().device_cwd(session_id or current_session_id())
-    if not cwd or not task_id:
-        return
-    from tools.terminal_tool import get_session_cwd, record_session_cwd
-    if get_session_cwd(task_id) != cwd:
-        record_session_cwd(task_id, cwd)
+SESSION_OVERRIDE: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "hermes_device_session_id", default=None)
 
 
 def current_session_id() -> str:
-    from gateway.session_context import get_session_env
-    return get_session_env("HERMES_SESSION_ID", "")
+    """The session the running turn serves: the plugin's own override (set around reference
+    expansion, which runs before the turn binds the session), else the HERMES_SESSION_ID context
+    variable of gateway.session_context. Never the process environment, which agent
+    construction overwrites. "" when unset."""
+    override = SESSION_OVERRIDE.get()
+    if override is not None:
+        return override
+    try:
+        from gateway.session_context import _SESSION_ID, _UNSET
+    except Exception:
+        return ""
+    value = _SESSION_ID.get()
+    return "" if value is _UNSET or not isinstance(value, str) else value
 
 
-# --- terminal backend -------------------------------------------------------------------------
+def session_cwd() -> str:
+    """The session cwd context variable Hermes sets from the frozen policy, or ""."""
+    try:
+        from agent.runtime_cwd import scoped_session_cwd
+        return scoped_session_cwd()
+    except Exception:
+        return ""
+
+
+def is_placeholder_cwd(cwd: str) -> bool:
+    ph = placeholder()
+    if not ph or not cwd:
+        return False
+    try:
+        return posixpath.normpath(cwd) == ph or os.path.realpath(cwd) == ph
+    except (OSError, ValueError):
+        return False
+
+
+def resolve_session(session_id: str, cwd: Optional[str] = None) -> Resolution:
+    """Section 8.3 for a running turn: lineage resolution, plus the placeholder rule (a session
+    whose cwd is the placeholder and that has no binding fails closed)."""
+    res = hub().resolve(session_id)
+    if res.state == STATE_NEVER_BOUND and any(is_placeholder_cwd(c) for c in (session_cwd(), cwd or "")):
+        return Resolution(STATE_FAIL_CLOSED, session_id,
+                          reason="was created for a device (its cwd is the placeholder) but is not bound")
+    return res
+
+
+def resolve_current() -> Resolution:
+    return resolve_session(current_session_id())
+
+
+def runs_on_pod(res: Resolution) -> bool:
+    return res.state == STATE_NEVER_BOUND and fallback() == "local"
+
+
+# --- device helpers -----------------------------------------------------------------------------
+
+_MARK = "__HERMES_DEVICE_{}__"
+
+
+def _sh(script: str, *args: str) -> str:
+    """A command line that runs ``script`` with /bin/sh whatever the device user's shell is."""
+    return "exec /bin/sh -c " + " ".join(shlex.quote(a) for a in (script, "sh", *args))
+
+
+def run_script(device_id: str, script: str, args: Iterable[str], cwd: str, timeout: float = 30) -> tuple[int, str, str]:
+    """Run a /bin/sh script on the device. Returns ``(code, output after the marker, error)``.
+    The marker keeps shell startup noise out of the result."""
+    mark = _MARK.format(uuid.uuid4().hex[:12])
+    full = f"printf '%s\\n' {shlex.quote(mark)}\n{script}"
+    code, out, proc = hub().run(device_id, _sh(full, *args), cwd, timeout)
+    idx = out.find(mark + "\n")
+    body = out[idx + len(mark) + 1:] if idx >= 0 else ""
+    err = proc.error or ("" if idx >= 0 else out.strip())
+    return code, body, err
+
+
+def device_pwd(h: Hub, device_id: str, directory: str) -> str:
+    """The device's ``pwd -P`` of ``directory``. Raises :class:`BindError` 422 when refused."""
+    code, out, proc = h.run(device_id, "pwd -P", directory)
+    if code != 0:
+        message = proc.error or out.strip() or f"exit {code}"
+        if code == EXIT_LOST:
+            raise BindError(409, "device_offline", message)
+        raise BindError(422, "dir_refused", message)
+    lines = [ln for ln in out.strip().splitlines() if ln.startswith("/")]
+    if not lines:
+        raise BindError(422, "dir_refused", f"device did not report a directory for {directory}")
+    return posixpath.normpath(lines[-1])
+
+
+_LIST_DIRS = r"""
+cd -P -- "$1" 2>/dev/null || { echo "cannot enter $1" >&2; exit 2; }
+pwd -P
+for f in * .*; do
+  case $f in .|..) continue ;; esac
+  [ -d "$f" ] && printf '%s\0' "$f"
+done
+exit 0
+"""
+
+
+def list_device_dirs(device_id: str, path: str) -> tuple[str, list[str]]:
+    """``(resolved path, subdirectory names)`` on the device; raises :class:`BindError`."""
+    conn = hub().device(device_id)
+    if conn is None:
+        raise BindError(409, "device_offline", f"device {device_id} is not connected")
+    path = path or (conn.roots[0] if conn.roots else "")
+    if not posixpath.isabs(path):
+        raise BindError(400, "bad_dir", "path must be an absolute device path")
+    path = posixpath.normpath(path)
+    code, body, err = run_script(device_id, _LIST_DIRS, [path], cwd=path)
+    if code == EXIT_LOST:
+        raise BindError(409, "device_offline", err or f"device {device_id} is not connected")
+    if code != 0:
+        raise BindError(422, "dir_refused", err or body.strip() or f"exit {code}")
+    head, _, rest = body.partition("\n")
+    names = sorted({n for n in rest.split("\0") if n and "/" not in n})
+    return posixpath.normpath(head.strip() or path), names[:MAX_DIR_ENTRIES]
+
+
+_RESOLVE = r"""
+for p in "$@"; do
+  n=0
+  while [ -L "$p" ] && [ $n -lt 40 ]; do
+    t=$(readlink -- "$p") || break
+    case $t in /*) p=$t ;; *) p=$(dirname -- "$p")/$t ;; esac
+    n=$((n+1))
+  done
+  d=$(dirname -- "$p"); b=$(basename -- "$p"); rest=""
+  while [ ! -d "$d" ]; do rest=$(basename -- "$d")/$rest; d=$(dirname -- "$d"); done
+  d=$(cd -P -- "$d" 2>/dev/null && pwd -P) || d=/
+  case $b in /) printf '%s\0' "$d" ;; *) printf '%s\0' "${d%/}/$rest$b" ;; esac
+done
+"""
+
+
+def device_realpaths(res: Resolution, paths: list[str]) -> list[str]:
+    """Each absolute device path with symlinks resolved on the device (missing tails kept)."""
+    if not paths:
+        return []
+    b = res.binding
+    code, body, err = run_script(b.device_id, _RESOLVE, paths, cwd=b.dir)
+    out = [posixpath.normpath(p) for p in body.split("\0")[:len(paths)] if p]
+    if code != 0 or len(out) != len(paths):
+        raise DeviceError(err or f"device {b.device_id} could not resolve {', '.join(paths)} (exit {code})")
+    return out
+
+
+_READ = r"""
+p=$1; max=$2
+if [ -d "$p" ]; then echo D; exit 0; fi
+if [ ! -e "$p" ]; then echo N; exit 0; fi
+if [ ! -f "$p" ]; then echo X; exit 0; fi
+n=$(wc -c < "$p" 2>/dev/null | tr -d ' ') || exit 3
+echo "F $n"
+head -c "$max" < "$p" 2>/dev/null || exit 3
+"""
+
+
+@dataclass(frozen=True)
+class DeviceFile:
+    kind: str  # "file", "dir", "missing", "other"
+    size: int = 0
+    text: str = ""
+
+
+def read_device_file(res: Resolution, path: str, max_bytes: int = MAX_READ_BYTES) -> DeviceFile:
+    b = res.binding
+    code, body, err = run_script(b.device_id, _READ, [path, str(max_bytes)], cwd=b.dir)
+    head, _, rest = body.partition("\n")
+    if code != 0 or not head:
+        raise DeviceError(err or f"device {b.device_id} could not read {path} (exit {code})")
+    if head == "D":
+        return DeviceFile("dir")
+    if head == "N":
+        return DeviceFile("missing")
+    if head == "X":
+        return DeviceFile("other")
+    if head.startswith("F "):
+        try:
+            size = int(head[2:].strip())
+        except ValueError:
+            size = len(rest)
+        return DeviceFile("file", size, rest)
+    raise DeviceError(f"device {b.device_id} sent an unreadable answer for {path}")
+
+
+def active_conn(res: Resolution) -> DeviceConn:
+    conn = hub().device(res.binding.device_id) if res.binding else None
+    if conn is None:
+        device = res.binding.device_id if res.binding else "?"
+        raise DeviceError(f"device {device} is not connected; session {res.session_id} cannot reach its files")
+    return conn
+
+
+def device_abs_path(res: Resolution, path: str, *, cwd: Optional[str] = None) -> str:
+    """``path`` as an absolute device path: ``~`` against the device home, relative paths against
+    the session's device cwd."""
+    path = (path or "").strip()
+    if not path:
+        raise DeviceError("empty path")
+    if path == "~" or path.startswith("~/"):
+        home = active_conn(res).home
+        if not posixpath.isabs(home or ""):
+            raise DeviceError("the device did not report its home directory")
+        path = home + path[1:]
+    elif path.startswith("~"):
+        raise DeviceError(f"{path}: ~user paths are not supported on devices")
+    if not posixpath.isabs(path):
+        path = posixpath.join(cwd or hub().device_cwd(res.binding), path)
+    return posixpath.normpath(path)
+
+
+# --- device write denylist (section 8.6) --------------------------------------------------------
+
+_PROBE_HOME = "/__hermes_device_probe_home__"
+
+
+def device_denylist(home: str) -> tuple[set[str], list[str], set[str]]:
+    """``(denied paths, denied prefixes, approval paths)`` of Hermes's write denylist rebuilt for
+    a device home. Hermes's builders realpath on the server and add server HERMES_HOME files, so
+    they are called with a probe home; entries under it are moved to the device home, /etc
+    entries are kept, and the server's HERMES_HOME entries are dropped."""
+    from agent.file_safety import build_write_approval_paths, build_write_denied_paths, build_write_denied_prefixes
+
+    home = posixpath.normpath(home)
+
+    def rebase(p: str) -> Optional[str]:
+        if p == _PROBE_HOME or p.startswith(_PROBE_HOME + "/"):
+            return home.rstrip("/") + p[len(_PROBE_HOME):]
+        if p.startswith("/etc/"):
+            return p
+        return None
+
+    denied = {q for p in build_write_denied_paths(_PROBE_HOME) if (q := rebase(p))}
+    prefixes = [q for p in build_write_denied_prefixes(_PROBE_HOME) if (q := rebase(p))]
+    approval = {q for p in build_write_approval_paths(_PROBE_HOME) if (q := rebase(p))}
+    return denied, prefixes, approval
+
+
+def device_write_denial(conn: DeviceConn, path: str) -> Optional[str]:
+    """Why a write to the absolute device ``path`` is refused, or None."""
+    path = posixpath.normpath(path)
+    if not conn.within_roots(path):
+        return f"{path} is outside the device roots ({', '.join(conn.roots) or 'none'})"
+    if not posixpath.isabs(conn.home or ""):
+        return "the device did not report its home directory, so its credential paths cannot be checked"
+    denied, prefixes, approval = device_denylist(conn.home)
+    if path in approval:
+        return f"{path} needs approval on the device and file tools cannot ask for it here"
+    if path in denied or any(path.startswith(p) or path + "/" == p for p in prefixes):
+        return f"{path} is a protected credential or system path"
+    return None
+
+
+# --- terminal backend (section 8.4) -----------------------------------------------------------
+
+_EXEC_STATE: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("hermes_device_exec", default=None)
 
 from tools.environments.base import BaseEnvironment  # noqa: E402  (Hermes runtime import)
 
-_EXEC_CWD: contextvars.ContextVar[str] = contextvars.ContextVar("hermes_device_exec_cwd", default="")
+
+def _scope_terminal_cwd() -> str:
+    try:
+        from agent.runtime_cwd import scope_terminal_cwd
+        return scope_terminal_cwd()
+    except Exception:
+        return ""
 
 
-class DeviceEnvironment(BaseEnvironment):
-    """Runs each command on the device bound to the current session, in the bound directory.
+def _pod_paths(extra: Iterable[str] = ()) -> list[str]:
+    out = []
+    for p in (placeholder(), terminal_cwd(), _scope_terminal_cwd(), *extra):
+        if isinstance(p, str) and p and posixpath.isabs(os.path.expanduser(p)):
+            out.append(posixpath.normpath(os.path.expanduser(p)))
+    return out
 
-    The env is created per session by the terminal tool, but the binding is looked up on every
-    command from the session id ContextVar, so ``/device`` takes effect on the next command and
-    a binding made after the env was created still applies. Server paths (the session's
-    placeholder cwd, which must exist on the server) are never sent to the device: ``cwd``
-    keeps the device-side directory and ignores placeholder writes.
-    """
 
-    def __init__(self, cwd: str, timeout: int, task_id: str = "default"):
-        self._device_cwd = ""
-        self._placeholders = {os.path.realpath(cwd)} if cwd else set()
-        self._bound_generation = ""
-        self._device_name = ""
-        self._device_tmp = "/tmp"  # no-tmp: ok — device-side, replaced by the device's tmp_dir on bind
-        self._last_proc: Optional[DeviceProcess] = None
-        self.task_id = task_id
-        super().__init__(cwd=cwd, timeout=timeout)
+def is_pod_path(path: str, extra: Iterable[str] = ()) -> bool:
+    """True for paths that name server directories (the placeholder, terminal.cwd, TERMINAL_CWD,
+    the env's creation cwd), which must never be sent to a device."""
+    if not path or not posixpath.isabs(path):
+        return True
+    candidates = {posixpath.normpath(path)}
+    try:
+        candidates.add(os.path.realpath(path))
+    except (OSError, ValueError):
+        pass
+    return any(is_under(c, p) for c in candidates for p in _pod_paths(extra))
 
-    # cwd: device-side only
-    def _is_placeholder(self, path: str) -> bool:
-        if not path:
-            return True
-        real = os.path.realpath(path)
-        if real in self._placeholders:
-            return True
-        return any(real == r or real.startswith(r + os.sep) for r in placeholder_roots())
+
+class DeviceShell(BaseEnvironment):
+    """Runs commands for one binding on its device, with Hermes's snapshot and cwd tracking."""
+
+    def __init__(self, binding: Binding, conn: DeviceConn, timeout: int, pod_cwd: str = ""):
+        self._binding = binding
+        self._device_tmp = conn.tmp_dir if posixpath.isabs(conn.tmp_dir or "") else "/tmp"  # no-tmp: ok — device-side
+        self._conn_id = conn.conn_id
+        self._pod_cwd = pod_cwd
+        super().__init__(cwd=hub().device_cwd(binding), timeout=timeout)
+        self.init_session()
 
     @property
-    def cwd(self) -> str:
-        return self._device_cwd
-
-    @cwd.setter
-    def cwd(self, value: str) -> None:
-        if self._device_name and value and not self._is_placeholder(value):
-            self._device_cwd = value
-        elif not self._device_name:
-            self._device_cwd = value
+    def binding(self) -> Binding:
+        return self._binding
 
     def get_temp_dir(self) -> str:
         return self._device_tmp
 
-    def _rebind(self, binding: Binding) -> None:
-        conn = hub().device(binding.device)
-        self._device_name = binding.device
-        self._device_tmp = (conn.tmp_dir if conn and conn.tmp_dir else "/tmp")  # no-tmp: ok — device-side
-        self._device_cwd = binding.dir
-        temp_dir = self._device_tmp.rstrip("/") or "/"
-        self._snapshot_path = f"{temp_dir}/hermes-snap-{self._session_id}.sh"
-        self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
-        self._snapshot_ready = False
-        self._prefer_nonlogin = False
-        self._bound_generation = binding.generation
-        self.init_session()
-        logger.info("device: session %s now runs on %s:%s (snapshot=%s)", current_session_id(),
-                    binding.device, binding.dir, self._snapshot_ready)
+    def refresh(self, conn: DeviceConn) -> None:
+        """A reconnected device may have lost the snapshot file: take a new one."""
+        if conn.conn_id != self._conn_id:
+            self._conn_id = conn.conn_id
+            if posixpath.isabs(conn.tmp_dir or ""):
+                self._device_tmp = conn.tmp_dir
+                temp_dir = self._device_tmp.rstrip("/") or "/"
+                self._snapshot_path = f"{temp_dir}/hermes-snap-{self._session_id}.sh"
+                self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
+            self._snapshot_ready = False
+            self._prefer_nonlogin = False
+            self.init_session()
+
+    def _safe_cwd(self) -> str:
+        cwd = self.cwd or ""
+        return self._binding.dir if is_pod_path(cwd, [self._pod_cwd]) else cwd
+
+    def map_cwd(self, cwd: str) -> str:
+        if not cwd or is_pod_path(cwd, [self._pod_cwd]):
+            return self._safe_cwd()
+        return posixpath.normpath(cwd)
 
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
-        binding = hub().binding(current_session_id())
-        if binding is None:
-            return {"output": "No device is bound to this session. Ask the user to run "
-                              "/device <name> <dir> first.", "returncode": 1}
-        if binding.generation != self._bound_generation:
-            self._rebind(binding)
-        effective = self._device_cwd if self._is_placeholder(cwd) else cwd
-        token = _EXEC_CWD.set(effective)
+        effective = self.map_cwd(cwd)
+        state = {"cwd": effective, "proc": None}
+        token = _EXEC_STATE.set(state)
         try:
             result = super().execute(command, effective, **kwargs)
         finally:
-            _EXEC_CWD.reset(token)
-        last = self._last_proc
-        if last is not None and last.refused and effective == self._device_cwd:
-            # A tracked cwd outside the device's roots (after `cd /`) must not stick.
-            self._device_cwd = binding.dir
-        hub().set_device_cwd(current_session_id(), self._device_cwd)
+            _EXEC_STATE.reset(token)
+        proc = state["proc"]
+        if proc is not None and proc.refused:
+            self.cwd = self._binding.dir
+        self.cwd = self._safe_cwd()
+        hub().set_device_cwd(self._binding, self.cwd)
         return result
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: Optional[str] = None):
-        binding = hub().binding(current_session_id())
-        name = binding.device if binding else self._device_name
-        if not name:
-            proc = DeviceProcess(uuid.uuid4().hex, lambda: False)
-            proc.finish(1, "[no device bound]")
-            return proc
-        cwd = _EXEC_CWD.get() or self._device_cwd or (binding.dir if binding else "")
-        proc = hub().start(name, cmd=cmd_string, cwd=cwd, login=login, timeout=float(timeout), stdin=stdin_data)
-        self._last_proc = proc
+        state = _EXEC_STATE.get()
+        cwd = state["cwd"] if state else self._safe_cwd()
+        proc = hub().start(self._binding.device_id, cmd=cmd_string, cwd=cwd, login=login,
+                           timeout=float(timeout), stdin=stdin_data)
+        if state is not None:
+            state["proc"] = proc
         return proc
 
     def cleanup(self):
-        if self._device_name and hub().device(self._device_name):
-            quoted = " ".join(shlex.quote(p) for p in (self._snapshot_path, self._cwd_file))
-            try:
-                hub().start(self._device_name, cmd=f"rm -f {quoted}", cwd=self._device_cwd, login=False,
-                            timeout=10, stdin=None)
-            except Exception:
-                pass
+        if hub().device(self._binding.device_id) is None:
+            return
+        quoted = " ".join(shlex.quote(p) for p in (self._snapshot_path, self._cwd_file))
+        try:
+            hub().start(self._binding.device_id, cmd=f"rm -f {quoted}", cwd=self._binding.dir, login=False,
+                        timeout=10, stdin=None)
+        except Exception:
+            logger.debug("device: snapshot cleanup failed", exc_info=True)
+
+
+def _default_local_factory(cwd: str, timeout: int):
+    from tools.environments.local import LocalEnvironment
+    try:
+        from tools.terminal_tool import _get_env_config
+        persistent = _get_env_config().get("local_persistent", True)
+    except Exception:
+        persistent = True
+    return LocalEnvironment(cwd=cwd, timeout=timeout, persistent=persistent)
+
+
+class DeviceRouterEnvironment(BaseEnvironment):
+    """The ``device`` terminal backend (section 8.4). Each command goes to the child that the
+    session's binding resolution picks: a device shell for a bound session, a lazily created
+    Hermes LocalEnvironment for a never-bound one, or a refusal.
+
+    The class name avoids the backend hints of tools/file_tools_paths.py, so Hermes identifies
+    it by its stamped backend name.
+    """
+
+    def __init__(self, cwd: str, timeout: int, task_id: str = "default",
+                 local_factory: Optional[Callable[[str, int], Any]] = None):
+        self._ready = False
+        self._pod_cwd = cwd
+        self._local = None
+        self._local_lock = threading.Lock()
+        self._shells: dict[tuple[str, str], DeviceShell] = {}
+        self._shells_lock = threading.Lock()
+        self._local_factory = local_factory or _default_local_factory
+        self.task_id = task_id
+        super().__init__(cwd=cwd, timeout=timeout)
+        self._ready = True
+
+    def _resolve(self) -> Resolution:
+        return resolve_current()
+
+    def _local_env(self):
+        with self._local_lock:
+            if self._local is None:
+                self._local = self._local_factory(self._pod_cwd, self.timeout)
+            return self._local
+
+    def _shell(self, res: Resolution) -> DeviceShell | dict:
+        b = res.binding
+        conn = hub().device(b.device_id)
+        if conn is None:
+            return {"output": f"[device {b.device_id} is not connected; session {res.session_id} is bound to it "
+                              f"({b.dir}), so the command did not run]", "returncode": EXIT_LOST}
+        key = (b.session_id, b.generation)
+        with self._shells_lock:
+            shell = self._shells.get(key)
+            if shell is None:
+                for k in [k for k in self._shells if k[0] == b.session_id]:
+                    self._shells.pop(k).cleanup()
+                shell = DeviceShell(b, conn, self.timeout, pod_cwd=self._pod_cwd)
+                self._shells[key] = shell
+            else:
+                shell.refresh(conn)
+        return shell
+
+    @property
+    def cwd(self) -> str:
+        if not getattr(self, "_ready", False):
+            return getattr(self, "_pod_cwd", "")
+        res = self._resolve()
+        if res.state == STATE_BOUND:
+            return hub().device_cwd(res.binding)
+        if runs_on_pod(res) and self._local is not None:
+            return self._local.cwd
+        return self._pod_cwd
+
+    @cwd.setter
+    def cwd(self, value: str) -> None:
+        if not getattr(self, "_ready", False):
+            self._pod_cwd = value
+            return
+        res = self._resolve()
+        if res.state == STATE_BOUND:
+            if isinstance(value, str) and posixpath.isabs(value) and not is_pod_path(value, [self._pod_cwd]):
+                hub().set_device_cwd(res.binding, posixpath.normpath(value))
+        elif runs_on_pod(res) and self._local is not None:
+            self._local.cwd = value
+        else:
+            self._pod_cwd = value
+
+    @property
+    def uses_host_filesystem(self) -> bool:
+        if not getattr(self, "_ready", False):
+            return False
+        from tools.environments.local import LocalEnvironment
+        return runs_on_pod(self._resolve()) and LocalEnvironment.uses_host_filesystem is True
+
+    @property
+    def is_local(self) -> bool:
+        return self.uses_host_filesystem
+
+    def get_temp_dir(self) -> str:
+        if not getattr(self, "_ready", False):
+            return tempfile.gettempdir()
+        res = self._resolve()
+        if res.state == STATE_BOUND:
+            conn = hub().device(res.binding.device_id)
+            if conn is not None and posixpath.isabs(conn.tmp_dir or ""):
+                return conn.tmp_dir
+            return "/tmp"  # no-tmp: ok — device-side
+        if runs_on_pod(res) and self._local is not None:
+            return self._local.get_temp_dir()
+        return tempfile.gettempdir()
+
+    def init_session(self):
+        return None
+
+    def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
+        res = self._resolve()
+        if res.state == STATE_BOUND:
+            child = self._shell(res)
+            return child if isinstance(child, dict) else child.execute(command, cwd, **kwargs)
+        if runs_on_pod(res):
+            return self._local_env().execute(command, cwd, **kwargs)
+        return {"output": refusal_message(res), "returncode": 1}
+
+    def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
+                  stdin_data: Optional[str] = None):
+        res = self._resolve()
+        if res.state == STATE_BOUND:
+            child = self._shell(res)
+            if isinstance(child, dict):
+                return finished_process(child["returncode"], child["output"])
+            return child._run_bash(cmd_string, login=login, timeout=timeout, stdin_data=stdin_data)
+        if runs_on_pod(res):
+            return self._local_env()._run_bash(cmd_string, login=login, timeout=timeout, stdin_data=stdin_data)
+        return finished_process(1, refusal_message(res))
+
+    def cleanup(self):
+        with self._shells_lock:
+            shells = list(self._shells.values())
+            self._shells.clear()
+        for shell in shells:
+            shell.cleanup()
+        if self._local is not None:
+            self._local.cleanup()
+
+
+# --- server-side readers (section 8.5) ----------------------------------------------------------
+
+def read_text_for_edit(res: Resolution, path: str) -> Optional[str]:
+    """``_read_text_if_exists`` for a bound session: None when missing, raises OSError when the
+    path is not a file or the device cannot be read."""
+    try:
+        active_conn(res)
+        f = read_device_file(res, device_abs_path(res, path))
+    except DeviceError as exc:
+        raise OSError(f"hermes-device: cannot read {path} on the device: {exc}") from exc
+    if f.kind == "missing":
+        return None
+    if f.kind != "file":
+        raise OSError(f"Cannot edit non-file path: {path}")
+    if f.size > MAX_READ_BYTES:
+        raise OSError(f"hermes-device: {path} is larger than {MAX_READ_BYTES} bytes")
+    return f.text[1:] if f.text.startswith(_BOM) else f.text
+
+
+def _sensitive_device_path(conn: DeviceConn, path: str) -> bool:
+    from agent.context_references import _SENSITIVE_HOME_FILES
+    from agent.file_safety import HOME_CREDENTIAL_DIRS
+    home = posixpath.normpath(conn.home or "/")
+    exact = {posixpath.join(home, str(p)) for p in _SENSITIVE_HOME_FILES}
+    dirs = [posixpath.join(home, d) for d in HOME_CREDENTIAL_DIRS]
+    denied, prefixes, _approval = device_denylist(home)
+    return path in exact or path in denied or any(is_under(path, d) for d in dirs) \
+        or any(path.startswith(p) for p in prefixes)
+
+
+_FENCE = {".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "tsx", ".jsx": "jsx",
+          ".json": "json", ".md": "markdown", ".sh": "bash", ".yml": "yaml", ".yaml": "yaml", ".toml": "toml"}
+
+
+def _tokens(text: str) -> int:
+    from agent.model_metadata import estimate_tokens_rough
+    return estimate_tokens_rough(text)
+
+
+def _chars_per_token() -> int:
+    from agent.model_metadata import CHARS_PER_TOKEN
+    return CHARS_PER_TOKEN
+
+
+_LISTING = r"""
+find "$1" -mindepth 1 -maxdepth 3 -name .git -prune -o -print 2>/dev/null | head -n "$2" | while IFS= read -r f; do
+  if [ -d "$f" ]; then printf 'd %s\n' "$f"; else printf 'f %s\n' "$f"; fi
+done
+"""
+
+
+def device_folder_listing(res: Resolution, path: str, limit: int = 200) -> str:
+    code, body, err = run_script(res.binding.device_id, _LISTING, [path, str(limit)], cwd=res.binding.dir)
+    if code != 0:
+        raise DeviceError(err or f"device listing of {path} failed (exit {code})")
+    lines = [f"{path}/"]
+    entries = sorted(ln for ln in body.splitlines() if ln[:2] in ("d ", "f "))
+    for ln in entries:
+        kind, full = ln[0], ln[2:]
+        depth = posixpath.relpath(full, path).count("/")
+        name = posixpath.basename(full)
+        lines.append(f"{'  ' * depth}- {name}/" if kind == "d" else f"{'  ' * depth}- {name}")
+    if len(entries) >= limit:
+        lines.append("- ...")
+    return "\n".join(lines)
+
+
+def expand_device_path(res: Resolution, raw: str, kind: str, target: str, line_start: Optional[int] = None,
+                       line_end: Optional[int] = None,
+                       max_inline_tokens: Optional[int] = None) -> tuple[Optional[str], Optional[str]]:
+    """``(warning, block)`` for a file or folder reference read from the device. ``kind`` is
+    file, folder or any (``@device:``)."""
+    conn = active_conn(res)
+    root = res.binding.dir
+    path = device_abs_path(res, target)
+    real = device_realpaths(res, [path])[0]
+    if not is_under(real, root):
+        return f"{raw}: {path} is outside the session's device directory {root}", None
+    if _sensitive_device_path(conn, real):
+        return f"{raw}: path is a sensitive credential path and cannot be attached", None
+    cap = MAX_READ_BYTES if max_inline_tokens is None else max_inline_tokens * _chars_per_token() + 1
+    f = read_device_file(res, real, max_bytes=cap)
+    if f.kind == "missing":
+        return f"{raw}: {'file' if kind == 'any' else kind} not found on the device", None
+    if kind == "folder" or (kind == "any" and f.kind == "dir"):
+        if f.kind != "dir":
+            return f"{raw}: path is not a folder", None
+        listing = device_folder_listing(res, real)
+        return None, f"📁 {raw} ({_tokens(listing)} tokens)\n{listing}"
+    if f.kind != "file":
+        return f"{raw}: path is not a file", None
+    binary = "\x00" in f.text[:8192]
+    if f.size > cap or binary:
+        why = "binary" if binary else f"too large to inline ({f.size} bytes)"
+        return None, (f"📄 {raw}: {why}; it is on the device at {real}, where the agent's tools run. "
+                      f"Read it with the file tools instead.")
+    text = f.text[1:] if f.text.startswith(_BOM) else f.text
+    if line_start is not None:
+        lines = text.splitlines(keepends=True)
+        text = "".join(lines[max(line_start - 1, 0):(line_end or line_start)])
+    tokens = _tokens(text)
+    if max_inline_tokens is not None and tokens > max_inline_tokens:
+        return None, (f"📄 {raw}: {tokens} tokens, too large to inline; it is on the device at {real}. "
+                      f"Read it with the file tools instead.")
+    lang = _FENCE.get(posixpath.splitext(real)[1].lower(), "")
+    return None, f"📄 {raw} ({tokens} tokens)\n```{lang}\n{text}\n```"
+
+
+_GIT = r"""
+{ env GIT_TERMINAL_PROMPT=0 GIT_PAGER=cat PAGER=cat GIT_CONFIG_NOSYSTEM=1 GCM_INTERACTIVE=Never \
+    git -c core.fsmonitor=false -c core.hooksPath=/dev/null --no-pager "$@" 2>&1; echo "__RC__$?"; } | head -c 4194400
+"""
+
+
+def _expand_device_git(res: Resolution, raw: str, args: list[str], label: str) -> tuple[Optional[str], Optional[str]]:
+    from hermes_cli._subprocess_compat import harden_git_argv
+    cwd = hub().device_cwd(res.binding)
+    code, body, err = run_script(res.binding.device_id, _GIT, harden_git_argv(args), cwd=cwd, timeout=30)
+    if code != 0 and "__RC__" not in body:
+        return f"{raw}: {err or 'git command failed on the device'}", None
+    out, sep, rc = body.rpartition("__RC__")
+    if not sep:
+        return f"{raw}: git output on the device is larger than 4 MiB", None
+    if rc.strip() != "0":
+        return f"{raw}: {out.strip() or 'git command failed'}", None
+    content = out.strip() or "(no output)"
+    return None, f"🧾 {label} ({_tokens(content)} tokens)\n```diff\n{content}\n```"
+
+
+def expand_reference_on_device(res: Resolution, ref: Any, max_inline_tokens: Optional[int]):
+    """A built-in ``@file``/``@folder``/``@diff``/``@staged``/``@git`` reference served from the
+    device of a bound session."""
+    try:
+        if ref.kind in ("file", "folder"):
+            return expand_device_path(res, ref.raw, ref.kind, ref.target, ref.line_start, ref.line_end,
+                                      max_inline_tokens)
+        from agent.context_references import _GIT_REFERENCE_ARGS
+        args = _GIT_REFERENCE_ARGS[ref.kind](ref)
+        return _expand_device_git(res, ref.raw, args, "git " + " ".join(args))
+    except Exception as exc:
+        return f"{ref.raw}: {exc}", None
+
+
+# --- Hermes hook installation -------------------------------------------------------------------
+
+_WRAPPED_MARK = "__hermes_device_original__"
+DEVICE_REFERENCE_KINDS = ("file", "folder", "diff", "staged", "git")
+
+
+def _wrap(owner: Any, name: str, make: Callable[[Callable], Callable]) -> bool:
+    original = getattr(owner, name)
+    if getattr(original, _WRAPPED_MARK, None) is not None:
+        return False
+    wrapped = make(original)
+    setattr(wrapped, _WRAPPED_MARK, original)
+    wrapped.__name__ = getattr(original, "__name__", name)
+    wrapped.__qualname__ = getattr(original, "__qualname__", name)
+    wrapped.__doc__ = getattr(original, "__doc__", None)
+    setattr(owner, name, wrapped)
+    return True
+
+
+def _make_expand_reference(original):
+    async def _expand_reference(ref, cwd, *args, **kwargs):
+        if getattr(ref, "kind", None) not in DEVICE_REFERENCE_KINDS:
+            return await original(ref, cwd, *args, **kwargs)
+        res = await asyncio.to_thread(resolve_session, current_session_id(), str(cwd))
+        if runs_on_pod(res):
+            return await original(ref, cwd, *args, **kwargs)
+        if res.state != STATE_BOUND:
+            return f"{ref.raw}: {refusal_message(res)}", None
+        return await asyncio.to_thread(expand_reference_on_device, res, ref, kwargs.get("max_inline_tokens"))
+    return _expand_reference
+
+
+def _inbound_session_id(runner, source, session_key) -> str:
+    try:
+        from gateway.config import Platform
+        if source is not None and source.platform == Platform.LOCAL:
+            return str(source.chat_id or "")
+    except Exception:
+        logger.debug("device: LOCAL check failed", exc_info=True)
+    try:
+        return str(runner.session_store.peek_session_id(session_key) or "")
+    except Exception:
+        logger.debug("device: session id for %s not found", session_key, exc_info=True)
+        return ""
+
+
+def _make_inbound_references(original):
+    async def inbound_references(runner, source, session_key, text):
+        token = SESSION_OVERRIDE.set(_inbound_session_id(runner, source, session_key))
+        try:
+            return await original(runner, source, session_key, text)
+        finally:
+            SESSION_OVERRIDE.reset(token)
+    return inbound_references
+
+
+def _make_managed_turn_text(original):
+    async def managed_turn_text(authority, row, policy):
+        sid = str((row or {}).get("target_session_id") or "")
+        token = SESSION_OVERRIDE.set(sid)
+        try:
+            if getattr(policy, "ignore_user_config", False):
+                res = await asyncio.to_thread(resolve_session, sid, str(getattr(policy, "cwd", "") or ""))
+                if not runs_on_pod(res):
+                    return None, (f"{refusal_message(res)} Safe-mode and config-bypass sessions do not load the "
+                                  f"device plugin, so they cannot serve device sessions.")
+            return await original(authority, row, policy)
+        finally:
+            SESSION_OVERRIDE.reset(token)
+    return managed_turn_text
+
+
+def _make_required_path(original):
+    def _required_path(arguments):
+        res = resolve_current()
+        if runs_on_pod(res):
+            return original(arguments)
+        path = str((arguments or {}).get("path") or "")
+        if not path:
+            raise ValueError("path required")
+        if res.state != STATE_BOUND:
+            raise ValueError(refusal_message(res))
+        try:
+            return device_abs_path(res, path)
+        except DeviceError as exc:
+            raise ValueError(str(exc)) from exc
+    return _required_path
+
+
+def _make_read_text_if_exists(original):
+    def _read_text_if_exists(path):
+        res = resolve_current()
+        if runs_on_pod(res):
+            return original(path)
+        if res.state != STATE_BOUND:
+            raise OSError(refusal_message(res))
+        return read_text_for_edit(res, str(path))
+    return _read_text_if_exists
+
+
+def _make_ensure_checkpoint(original):
+    def ensure_checkpoint(self, working_dir, reason="auto"):
+        if not runs_on_pod(resolve_current()):
+            return False
+        return original(self, working_dir, reason)
+    return ensure_checkpoint
+
+
+def _make_init_session_state(original):
+    def _init_session_state(agent, session_id, session_db, parent_session_id, *args, **kwargs):
+        result = original(agent, session_id, session_db, parent_session_id, *args, **kwargs)
+        try:
+            hub().note_parent(str(getattr(agent, "session_id", "") or ""),
+                              str(parent_session_id) if parent_session_id else None)
+        except Exception:
+            logger.debug("device: could not record a parent link", exc_info=True)
+        return result
+    return _init_session_state
+
+
+def _make_side_spawn(original):
+    def _spawn(authority, ref, task_id, *args, **kwargs):
+        _link_side_agent(task_id, lambda: _physical_session(authority, ref))
+        return original(authority, ref, task_id, *args, **kwargs)
+    return _spawn
+
+
+def _physical_session(authority, ref) -> str:
+    try:
+        return str(authority.physical_target(ref) or ref.session_id)
+    except Exception:
+        return str(getattr(ref, "session_id", "") or "")
+
+
+def _link_side_agent(task_id: str, parent: Callable[[], str]) -> None:
+    """Record that side agent ``task_id`` belongs to the session that started it; when that
+    session cannot be found, the side agent fails closed."""
+    try:
+        parent_id = parent()
+    except Exception:
+        logger.debug("device: starting session of %s not found", task_id, exc_info=True)
+        parent_id = ""
+    if parent_id:
+        hub().note_parent(str(task_id), parent_id)
+    else:
+        hub().note_orphan(str(task_id), "is a background task whose starting session could not be found")
+
+
+def _make_run_background_task(original):
+    async def _run_background_task(self, prompt, source, task_id, *args, **kwargs):
+        _link_side_agent(task_id, lambda: _inbound_session_id(self, source, self._session_key_for_source(source)))
+        return await original(self, prompt, source, task_id, *args, **kwargs)
+    return _run_background_task
+
+
+HOOK_POINTS: tuple[tuple[str, str, str, Callable], ...] = (
+    ("agent.context_references", "", "_expand_reference", _make_expand_reference),
+    ("gateway.session_context_refs", "", "inbound_references", _make_inbound_references),
+    ("gateway.session_context_refs", "", "managed_turn_text", _make_managed_turn_text),
+    ("acp_adapter.edit_approval", "", "_required_path", _make_required_path),
+    ("acp_adapter.edit_approval", "", "_read_text_if_exists", _make_read_text_if_exists),
+    ("tools.checkpoint_manager", "CheckpointManager", "ensure_checkpoint", _make_ensure_checkpoint),
+    ("agent.agent_init", "", "_init_session_state", _make_init_session_state),
+    ("gateway.session_tui_side", "", "_spawn", _make_side_spawn),
+    ("gateway.run_background", "GatewayBackgroundMixin", "_run_background_task", _make_run_background_task),
+)
+
+
+def install_hooks() -> list[str]:
+    """Wrap the Hermes internals in :data:`HOOK_POINTS`. Returns the names it could not wrap."""
+    import importlib
+    missing = []
+    for module_name, cls, name, make in HOOK_POINTS:
+        label = f"{module_name}.{cls + '.' if cls else ''}{name}"
+        try:
+            owner = importlib.import_module(module_name)
+            if cls:
+                owner = getattr(owner, cls)
+            _wrap(owner, name, make)
+        except Exception:
+            logger.error("device: cannot wrap %s; device sessions may read server files there", label,
+                         exc_info=True)
+            missing.append(label)
+    return missing
+
+
+# --- pre_tool_call guard (section 8.6) ----------------------------------------------------------
+
+_V4A_HEADER = re.compile(r"^(\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*)(.+?)(\s*)$")
+_V4A_MOVE = re.compile(r"^(\*\*\*\s*Move\s+File:\s*)(.+?)(\s*->\s*)(.+?)(\s*)$")
+
+
+def _v4a_paths(body: str) -> Optional[list[str]]:
+    """The paths a V4A patch touches, as Hermes's own parser reads them; None on a parse error."""
+    from tools.patch_parser import parse_v4a_patch
+    ops, error = parse_v4a_patch(body)
+    if error:
+        return None
+    paths = []
+    for op in ops:
+        paths.append(op.file_path)
+        if op.new_path:
+            paths.append(op.new_path)
+    return paths
+
+
+def _rewrite_v4a(body: str, mapping: dict[str, str]) -> str:
+    """``body`` with each file header's path replaced through ``mapping``."""
+    out = []
+    for line in body.split("\n"):
+        m = _V4A_MOVE.match(line)
+        if m and m.group(2).strip() in mapping and m.group(4).strip() in mapping:
+            line = f"{m.group(1)}{mapping[m.group(2).strip()]}{m.group(3)}{mapping[m.group(4).strip()]}{m.group(5)}"
+        else:
+            m = _V4A_HEADER.match(line)
+            if m and m.group(2).strip() in mapping:
+                line = f"{m.group(1)}{mapping[m.group(2).strip()]}{m.group(3)}"
+        out.append(line)
+    return "\n".join(out)
+
+
+def _record_cwd(task_id: str, cwd: str) -> None:
+    from tools.terminal_tool import get_session_cwd, record_session_cwd
+    keys = {task_id or "default"}
+    try:
+        from tools.approval import get_current_session_key
+        key = get_current_session_key(default="")
+        if key:
+            keys.add(key)
+    except Exception:
+        logger.debug("device: no session key", exc_info=True)
+    for key in keys:
+        if get_session_cwd(key) != cwd:
+            record_session_cwd(key, cwd)
+
+
+def _block(message: str) -> dict:
+    return {"action": "block", "message": message}
+
+
+def pre_tool_call(tool_name: str = "", args: Optional[dict] = None, task_id: str = "", session_id: str = "",
+                  **_kwargs) -> Optional[dict]:
+    """The section 8.6 guard. Any exception blocks the call: Hermes runs a tool whose hook raised."""
+    try:
+        return _guard(tool_name, args if isinstance(args, dict) else {}, task_id)
+    except Exception as exc:
+        logger.warning("device: pre_tool_call guard failed for %s", tool_name, exc_info=True)
+        return _block(f"hermes-device: {tool_name} refused because the device check failed: {exc}")
+
+
+def _guard(tool_name: str, args: dict, task_id: str) -> Optional[dict]:
+    res = resolve_current()
+    if runs_on_pod(res):
+        return None
+    if res.state != STATE_BOUND:
+        if tool_name in FILE_AND_COMMAND_TOOLS or tool_name in POD_ONLY_TOOLS:
+            return _block(refusal_message(res))
+        return None
+    b = res.binding
+    if tool_name in POD_ONLY_TOOLS:
+        return _block(f"hermes-device: session {res.session_id} is bound to device {b.device_id}; {tool_name} "
+                      f"creates work that runs on the server, so it is refused for device sessions.")
+    from tools.file_tools_paths import _terminal_env_type_for_task
+    env_type = _terminal_env_type_for_task(task_id or "default")
+    if env_type != PLUGIN_ID:
+        return _block(f"hermes-device: session {res.session_id} is bound to device {b.device_id}, but its terminal "
+                      f"backend is {env_type!r}, not {PLUGIN_ID!r}, so tools would run on the server. Start a new "
+                      f"session with terminal.backend: {PLUGIN_ID}.")
+    cwd = hub().device_cwd(b)
+    _record_cwd(task_id, cwd)
+    if tool_name not in FILE_PATH_TOOLS:
+        return None
+    v4a = tool_name == "patch" and args.get("mode", "replace") == "patch"
+    if v4a:
+        body = args.get("patch")
+        paths = _v4a_paths(body) if isinstance(body, str) else None
+        if paths is None:
+            return None
+    elif tool_name == "search_files" and not str(args.get("path") or "").strip():
+        paths = ["."]
+    else:
+        paths = [str(args.get("path") or "")]
+    paths = [p.strip() for p in paths if isinstance(p, str) and p.strip()]
+    if not paths:
+        return None
+    conn = active_conn(res)
+    try:
+        absolute = {p: device_abs_path(res, p, cwd=cwd) for p in paths}
+    except DeviceError as exc:
+        return _block(f"hermes-device: {tool_name} refused: {exc}")
+    if tool_name in ("write_file", "patch"):
+        targets = list(dict.fromkeys(absolute.values()))
+        resolved = device_realpaths(res, targets)
+        for a, r in zip(targets, resolved):
+            for candidate in dict.fromkeys((a, r)):
+                reason = device_write_denial(conn, candidate)
+                if reason:
+                    return _block(f"hermes-device: {tool_name} to {a} refused on device {conn.name}: {reason}")
+    if v4a:
+        rewritten = _rewrite_v4a(args["patch"], absolute)
+        if _v4a_paths(rewritten) != [absolute[p] for p in paths]:
+            return _block("hermes-device: could not rewrite the V4A patch paths to device paths; use absolute "
+                          "device paths in the patch.")
+        return None if rewritten == args["patch"] else {"action": "modify", "args": {"patch": rewritten}}
+    new_path = absolute[paths[0]]
+    return None if new_path == args.get("path") else {"action": "modify", "args": {"path": new_path}}
+
+
+# --- HERMES_WRITE_SAFE_ROOT (section 8.7) -------------------------------------------------------
+
+def pod_writable_paths() -> list[str]:
+    paths = ["/opt/data", str(hermes_home()), tempfile.gettempdir(),
+             "/tmp", "/var/tmp", "/dev/shm",  # no-tmp: ok — server paths compared, not written
+             placeholder(), terminal_cwd()]
+    out: list[str] = []
+    for p in paths:
+        if not p or not posixpath.isabs(os.path.expanduser(p)):
+            continue
+        for q in (posixpath.normpath(os.path.expanduser(p)), os.path.realpath(os.path.expanduser(p))):
+            if q not in out:
+                out.append(q)
+    return out
+
+
+def apply_safe_root_policy(environ=None) -> list[str]:
+    """Remove from HERMES_WRITE_SAFE_ROOT every device_write_roots entry that equals, contains or
+    lies inside a pod-writable path. Returns the removed entries."""
+    environ = os.environ if environ is None else environ
+    raw = environ.get("HERMES_WRITE_SAFE_ROOT", "")
+    if not raw:
+        return []
+    pod = pod_writable_paths()
+    bad = set()
+    for root in device_write_roots():
+        norm = posixpath.normpath(os.path.expanduser(root))
+        hit = next((p for p in pod if is_under(norm, p) or is_under(p, norm)), None)
+        if hit:
+            logger.error("device: device_write_roots entry %s overlaps the server path %s; removed from "
+                         "HERMES_WRITE_SAFE_ROOT so server sessions cannot write there", root, hit)
+            bad.add(norm)
+    if not bad:
+        return []
+    kept, removed = [], []
+    for entry in raw.split(os.pathsep):
+        if entry and posixpath.normpath(os.path.expanduser(entry)) in bad:
+            removed.append(entry)
+        else:
+            kept.append(entry)
+    environ["HERMES_WRITE_SAFE_ROOT"] = os.pathsep.join(kept)
+    return removed
+
+
+# --- /device command (section 8.8) --------------------------------------------------------------
+
+USAGE = ("Usage: /device shows this session's binding; /device <device name or id> <dir> binds it; "
+         "/device off unbinds it; /device list lists connected devices.")
+
+
+def device_command(raw_args: str = "", session_id: str = "", **_kwargs) -> str:
+    h = hub()
+    sid = session_id or current_session_id()
+    args = (raw_args or "").strip().split(maxsplit=1)
+    if not args:
+        res = h.resolve(sid)
+        if res.state == STATE_BOUND:
+            b = res.binding
+            conn = h.device(b.device_id)
+            state = f"connected as {conn.name}" if conn else "offline"
+            via = "" if res.via == sid else f" (inherited from session {res.via})"
+            return f"Session {sid} runs on device {b.device_id} ({state}) in {b.dir}{via}."
+        if res.state == STATE_FAIL_CLOSED:
+            return fail_closed_message(res)
+        return f"Session {sid or '(none)'} is not bound to a device. {USAGE}"
+    if args[0] == "list" and len(args) == 1:
+        conns = h.devices()
+        if not conns:
+            return "No devices are connected."
+        return "\n".join(f"{c.name} [{c.device_id}] on {c.hostname or '?'} ({c.os}/{c.arch}), roots: "
+                         f"{', '.join(c.roots) or 'none'}" for c in sorted(conns, key=lambda c: c.name))
+    if args[0] == "off" and len(args) == 1:
+        res = h.resolve(sid)
+        target = res.via if res.state == STATE_BOUND else sid
+        try:
+            removed = h.unbind(target) if target else False
+        except DeviceError as exc:
+            return f"Not unbound: {exc}"
+        if not removed:
+            return "No device was bound."
+        return (f"Device binding of session {target} removed. This session now fails closed until you bind it "
+                f"again with /device <device> <dir>.")
+    if len(args) != 2:
+        return USAGE
+    if not sid:
+        return "Not bound: this surface did not give a session id."
+    try:
+        conn = h.find_device(args[0])
+        b = h.bind(sid, conn.device_id, args[1].strip())
+    except DeviceError as exc:
+        return f"Not bound: {exc}"
+    return f"Session {sid} now runs commands on {conn.name} [{b.device_id}] in {b.dir}."
