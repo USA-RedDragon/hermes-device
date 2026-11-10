@@ -221,41 +221,57 @@ func checkClaims(c *Claims, want Expect) error {
 // starting with # are ignored.
 func ParsePublicKeys(text string) ([]ed25519.PublicKey, error) {
 	var keys []ed25519.PublicKey
-	rest := []byte(text)
-	for {
-		block, after := pem.Decode(rest)
-		if block == nil {
-			break
-		}
-		if block.Type != "PUBLIC KEY" {
-			return nil, fmt.Errorf("%w: PEM block %q", ErrMalformed, block.Type)
-		}
-		pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrMalformed, err)
-		}
-		k, ok := pub.(ed25519.PublicKey)
-		if !ok {
-			return nil, fmt.Errorf("%w: not an Ed25519 key", ErrMalformed)
-		}
-		keys = append(keys, k)
-		rest = after
-	}
-	for line := range strings.SplitSeq(string(rest), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+	lines := strings.Split(text, "\n")
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		switch {
+		case line == "" || strings.HasPrefix(line, "#"):
 			continue
+		case strings.HasPrefix(line, "-----BEGIN "):
+			j := i
+			for j < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[j]), "-----END ") {
+				j++
+			}
+			if j == len(lines) {
+				return nil, fmt.Errorf("%w: unterminated PEM block", ErrMalformed)
+			}
+			k, err := parsePEMKey(strings.Join(lines[i:j+1], "\n"))
+			if err != nil {
+				return nil, err
+			}
+			keys = append(keys, k)
+			i = j
+		default:
+			raw, err := decodeAnyBase64(line)
+			if err != nil || len(raw) != ed25519.PublicKeySize {
+				return nil, fmt.Errorf("%w: key line is not 32 bytes of base64", ErrMalformed)
+			}
+			keys = append(keys, ed25519.PublicKey(raw))
 		}
-		raw, err := decodeAnyBase64(line)
-		if err != nil || len(raw) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("%w: key line is not 32 bytes of base64", ErrMalformed)
-		}
-		keys = append(keys, ed25519.PublicKey(raw))
 	}
 	if len(keys) == 0 {
 		return nil, ErrNoKeys
 	}
 	return keys, nil
+}
+
+func parsePEMKey(text string) (ed25519.PublicKey, error) {
+	block, _ := pem.Decode([]byte(text))
+	if block == nil {
+		return nil, fmt.Errorf("%w: bad PEM block", ErrMalformed)
+	}
+	if block.Type != "PUBLIC KEY" {
+		return nil, fmt.Errorf("%w: PEM block %q", ErrMalformed, block.Type)
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrMalformed, err)
+	}
+	k, ok := pub.(ed25519.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("%w: not an Ed25519 key", ErrMalformed)
+	}
+	return k, nil
 }
 
 func decodeAnyBase64(s string) ([]byte, error) {

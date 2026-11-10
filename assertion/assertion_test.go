@@ -134,13 +134,13 @@ func TestParsePublicKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})) +
-		"# rotated key\n" + base64.StdEncoding.EncodeToString(pub2) + "\n\n" + base64.RawURLEncoding.EncodeToString(pub1) + "\n"
+	text := base64.RawURLEncoding.EncodeToString(pub1) + "\n" + string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})) +
+		"# rotated key\n" + base64.StdEncoding.EncodeToString(pub2) + "\n\n"
 	keys, err := assertion.ParsePublicKeys(text)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(keys) != 3 || !keys[0].Equal(pub1) || !keys[1].Equal(pub2) || !keys[2].Equal(pub1) {
+	if len(keys) != 3 || !keys[0].Equal(pub1) || !keys[1].Equal(pub1) || !keys[2].Equal(pub2) {
 		t.Errorf("keys = %v", keys)
 	}
 	if _, err := assertion.ParsePublicKeys("\n# none\n"); !errors.Is(err, assertion.ErrNoKeys) {
