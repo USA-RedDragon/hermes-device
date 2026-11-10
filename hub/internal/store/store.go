@@ -1,6 +1,7 @@
 // Package store is the hub's database: an embedded SQLite file for a single
-// replica, or PostgreSQL for several. It implements hub.Links and
-// hub.TokenStore and keeps each user's last seen groups.
+// replica, or PostgreSQL for several. It implements hub.Links,
+// hub.TokenStore, hub.TelegramState and hub.DeviceStore and keeps each
+// user's last seen groups.
 package store
 
 import (

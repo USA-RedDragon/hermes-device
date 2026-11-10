@@ -49,6 +49,35 @@ var migrations = []migration{
 			`CREATE TABLE telegram_offsets (bot_id BIGINT PRIMARY KEY, next_offset BIGINT NOT NULL)`,
 		},
 	},
+	{
+		version: 4,
+		sqlite: []string{
+			`CREATE TABLE devices (id TEXT PRIMARY KEY, "user" TEXT NOT NULL, backend_id TEXT NOT NULL, name TEXT NOT NULL,
+				hostname TEXT NOT NULL, os TEXT NOT NULL, arch TEXT NOT NULL, client_version TEXT NOT NULL, token_hash TEXT UNIQUE,
+				created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL DEFAULT 0, last_addr TEXT NOT NULL DEFAULT '',
+				prev_addr TEXT NOT NULL DEFAULT '', addr_changed_at INTEGER NOT NULL DEFAULT 0, revoked_at INTEGER NOT NULL DEFAULT 0)`,
+			`CREATE UNIQUE INDEX devices_user_name ON devices ("user", name) WHERE revoked_at = 0`,
+			`CREATE TABLE device_pairings (device_code_hash TEXT PRIMARY KEY, user_code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+				hostname TEXT NOT NULL, os TEXT NOT NULL, arch TEXT NOT NULL, client_version TEXT NOT NULL, addr TEXT NOT NULL,
+				created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_poll_ms INTEGER NOT NULL DEFAULT 0,
+				status TEXT NOT NULL, device_id TEXT NOT NULL DEFAULT '')`,
+			`CREATE TABLE device_code_failures ("user" TEXT NOT NULL, at INTEGER NOT NULL)`,
+			`CREATE INDEX device_code_failures_user ON device_code_failures ("user", at)`,
+		},
+		postgres: []string{
+			`CREATE TABLE devices (id TEXT PRIMARY KEY, "user" TEXT NOT NULL, backend_id TEXT NOT NULL, name TEXT NOT NULL,
+				hostname TEXT NOT NULL, os TEXT NOT NULL, arch TEXT NOT NULL, client_version TEXT NOT NULL, token_hash TEXT UNIQUE,
+				created_at BIGINT NOT NULL, last_seen_at BIGINT NOT NULL DEFAULT 0, last_addr TEXT NOT NULL DEFAULT '',
+				prev_addr TEXT NOT NULL DEFAULT '', addr_changed_at BIGINT NOT NULL DEFAULT 0, revoked_at BIGINT NOT NULL DEFAULT 0)`,
+			`CREATE UNIQUE INDEX devices_user_name ON devices ("user", name) WHERE revoked_at = 0`,
+			`CREATE TABLE device_pairings (device_code_hash TEXT PRIMARY KEY, user_code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+				hostname TEXT NOT NULL, os TEXT NOT NULL, arch TEXT NOT NULL, client_version TEXT NOT NULL, addr TEXT NOT NULL,
+				created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, last_poll_ms BIGINT NOT NULL DEFAULT 0,
+				status TEXT NOT NULL, device_id TEXT NOT NULL DEFAULT '')`,
+			`CREATE TABLE device_code_failures ("user" TEXT NOT NULL, at BIGINT NOT NULL)`,
+			`CREATE INDEX device_code_failures_user ON device_code_failures ("user", at)`,
+		},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas

@@ -3,8 +3,10 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ const (
 	groupFamily = "family"
 	userAlice   = "alice"
 	userBob     = "bob"
+	deviceName  = "desktop"
 )
 
 // backends runs fn against an SQLite store and, when storetest.DSNEnv is
@@ -132,7 +135,7 @@ func TestTelegramState(t *testing.T) {
 		}
 		chats := []hub.TelegramChat{
 			{ChatID: -500, User: userBob, BackendID: "home", SessionID: "s2"},
-			{ChatID: 1, User: userAlice, BackendID: "desktop", SessionID: "s1"},
+			{ChatID: 1, User: userAlice, BackendID: deviceName, SessionID: "s1"},
 		}
 		for _, c := range chats {
 			if err := s.SaveTelegramChat(ctx, c); err != nil {
@@ -359,4 +362,142 @@ func TestRelay(t *testing.T) {
 			t.Fatal("no message relayed")
 		}
 	}
+}
+
+func TestDeviceFlow(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		now := time.Unix(1_800_000_000, 0)
+		s.SetClock(func() time.Time { return now })
+		code, _, d := flowApprove(ctx, t, s)
+		now = now.Add(5 * time.Second)
+		token := flowToken(ctx, t, s, code, d)
+		flowSeen(ctx, t, s, d)
+		flowRevoke(ctx, t, s, d, token)
+	})
+}
+
+func flowApprove(ctx context.Context, t *testing.T, s *store.Store) (string, string, hub.Device) {
+	t.Helper()
+	code, user, err := s.StartPairing(ctx, hub.PairingRequest{Name: deviceName, Hostname: deviceName, OS: "linux", Addr: "192.0.2.1"}, time.Minute)
+	if err != nil || len(code) < 43 || len(user) != 9 {
+		t.Fatalf("start = %q %q %v", code, user, err)
+	}
+	if res, _ := s.PollPairing(ctx, code, 5*time.Second); res.Status != hub.PairPending {
+		t.Fatalf("poll = %+v", res)
+	}
+	if res, _ := s.PollPairing(ctx, code, 5*time.Second); res.Status != hub.PairSlowDown {
+		t.Fatalf("fast poll = %+v", res)
+	}
+	if _, err := s.ApprovePairing(ctx, "BCDF-GHJK", userAlice, "pc", deviceName); !errors.Is(err, hub.ErrUnknownPairing) {
+		t.Fatalf("wrong code = %v", err)
+	}
+	d, err := s.ApprovePairing(ctx, strings.ToLower(user), userAlice, "pc", deviceName)
+	if err != nil || d.User != userAlice || d.Hostname != deviceName || !strings.HasPrefix(d.ID, "d_") {
+		t.Fatalf("approve = %+v %v", d, err)
+	}
+	if _, ok, _ := s.PendingPairing(ctx, user); ok {
+		t.Fatal("approved pairing still pending")
+	}
+	return code, user, d
+}
+
+func flowToken(ctx context.Context, t *testing.T, s *store.Store, code string, d hub.Device) string {
+	t.Helper()
+	res, err := s.PollPairing(ctx, code, 5*time.Second)
+	if err != nil || res.Status != hub.PairApproved || !strings.HasPrefix(res.Token, store.TokenPrefix) || res.Device.ID != d.ID {
+		t.Fatalf("token poll = %+v %v", res, err)
+	}
+	if again, _ := s.PollPairing(ctx, code, 5*time.Second); again.Status != hub.PairExpired {
+		t.Fatalf("second token poll = %+v", again)
+	}
+	got, ok, err := s.DeviceByToken(ctx, res.Token)
+	if err != nil || !ok || got.ID != d.ID || !got.Paired {
+		t.Fatalf("by token = %+v %v %v", got, ok, err)
+	}
+	if _, ok, _ := s.DeviceByToken(ctx, res.Token+"x"); ok {
+		t.Fatal("wrong token accepted")
+	}
+	return res.Token
+}
+
+func flowSeen(ctx context.Context, t *testing.T, s *store.Store, d hub.Device) {
+	t.Helper()
+	if err := s.SeenDevice(ctx, d.ID, "192.0.2.1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SeenDevice(ctx, d.ID, "198.51.100.7"); err != nil {
+		t.Fatal(err)
+	}
+	ds, err := s.Devices(ctx, userAlice)
+	if err != nil || len(ds) != 1 || ds[0].LastAddr != "198.51.100.7" || ds[0].PrevAddr != "192.0.2.1" || ds[0].AddrChangedAt.IsZero() {
+		t.Fatalf("devices = %+v %v", ds, err)
+	}
+	if err := s.DismissAddressChange(ctx, userAlice, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ds, _ := s.Devices(ctx, userAlice); !ds[0].AddrChangedAt.IsZero() {
+		t.Fatalf("dismissed = %+v", ds[0])
+	}
+}
+
+func flowRevoke(ctx context.Context, t *testing.T, s *store.Store, d hub.Device, token string) {
+	t.Helper()
+	_, user2, _ := s.StartPairing(ctx, hub.PairingRequest{Name: deviceName}, time.Minute)
+	if _, err := s.ApprovePairing(ctx, user2, userAlice, "pc", deviceName); !errors.Is(err, hub.ErrNameTaken) {
+		t.Fatalf("same name = %v", err)
+	}
+	if _, err := s.ApprovePairing(ctx, user2, userBob, "pc", deviceName); err != nil {
+		t.Fatalf("same name for bob = %v", err)
+	}
+	if ok, _ := s.RevokeDevice(ctx, userBob, d.ID); ok {
+		t.Fatal("bob revoked alice's device")
+	}
+	if ok, err := s.RevokeDevice(ctx, userAlice, d.ID); !ok || err != nil {
+		t.Fatalf("revoke = %v %v", ok, err)
+	}
+	if _, ok, _ := s.DeviceByToken(ctx, token); ok {
+		t.Fatal("revoked token accepted")
+	}
+	if ds, _ := s.Devices(ctx, userAlice); len(ds) != 0 {
+		t.Fatalf("after revoke = %+v", ds)
+	}
+}
+
+func TestPairingExpiresAndDenies(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		now := time.Unix(1_800_000_000, 0)
+		s.SetClock(func() time.Time { return now })
+		code, user, _ := s.StartPairing(ctx, hub.PairingRequest{Name: "a"}, time.Minute)
+		if err := s.DenyPairing(ctx, user); err != nil {
+			t.Fatal(err)
+		}
+		if res, _ := s.PollPairing(ctx, code, time.Second); res.Status != hub.PairDenied {
+			t.Fatalf("denied = %+v", res)
+		}
+		code, user, _ = s.StartPairing(ctx, hub.PairingRequest{Name: "b"}, time.Minute)
+		if _, err := s.ApprovePairing(ctx, user, userAlice, "pc", "b"); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(2 * time.Minute)
+		if res, _ := s.PollPairing(ctx, code, time.Second); res.Status != hub.PairExpired {
+			t.Fatalf("expired = %+v", res)
+		}
+		if ds, _ := s.Devices(ctx, userAlice); len(ds) != 0 {
+			t.Fatalf("unfinished device kept = %+v", ds)
+		}
+		for range 3 {
+			if _, err := s.CodeFailure(ctx, userAlice, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+		}
+		now = now.Add(2 * time.Minute)
+		n, _ := s.CodeFailure(ctx, userAlice, time.Minute)
+		if n != 1 {
+			t.Fatalf("failures in window = %d", n)
+		}
+	})
 }
