@@ -3,8 +3,11 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
@@ -233,6 +236,8 @@ func (ls *live) apply(ev gateway.Event) {
 		}
 	case hub.KindMessageStart:
 		ev.Payload = ls.withText(ev)
+	case hub.KindThinkingDelta:
+		ev.Payload = plainThinking(ev.Payload)
 	case hub.KindApprovalRequest:
 		var p gateway.Prompt
 		if json.Unmarshal(ev.Payload, &p) == nil && p.PromptID != "" {
@@ -390,4 +395,35 @@ func (ls *live) idleLocked() {
 		ls.mu.Unlock()
 		ls.b.detachIdle(ls)
 	})
+}
+
+// plainThinking drops the decorative face Hermes puts in front of its
+// thinking status ("(◔_◔) brainstorming...") and capitalizes the rest.
+func plainThinking(payload json.RawMessage) json.RawMessage {
+	var p map[string]any
+	if json.Unmarshal(payload, &p) != nil {
+		return payload
+	}
+	text, ok := p["text"].(string)
+	if !ok {
+		return payload
+	}
+	words := strings.Fields(text)
+	for len(words) > 0 && !strings.ContainsFunc(words[0], isASCIIAlnum) {
+		words = words[1:]
+	}
+	plain := strings.Join(words, " ")
+	if r, n := utf8.DecodeRuneInString(plain); n > 0 {
+		plain = string(unicode.ToUpper(r)) + plain[n:]
+	}
+	p["text"] = plain
+	out, err := json.Marshal(p)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+func isASCIIAlnum(r rune) bool {
+	return r < unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r))
 }
