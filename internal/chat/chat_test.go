@@ -75,7 +75,14 @@ func fakeHermes(t *testing.T, version, body string) string {
 	path := filepath.Join(t.TempDir(), "hermes")
 	script := "#!/bin/sh\nif [ \"$1\" = --version ]; then\n  printf 'Hermes Agent v%s (2026.9.24)\\nInstall directory: /opt/hermes\\n' '" +
 		version + "'\n  exit 0\nfi\n" + body + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // the fake hermes script must be executable
+	// A child forked by a parallel test while the file is open for writing
+	// holds that descriptor until it execs, and exec of the script then
+	// fails with ETXTBSY (go.dev/issue/22315). Forks take ForkLock for
+	// writing, so none can start until the file is closed.
+	syscall.ForkLock.RLock()
+	err := os.WriteFile(path, []byte(script), 0o700) //nolint:gosec // the fake hermes script must be executable
+	syscall.ForkLock.RUnlock()
+	if err != nil {
 		t.Fatal(err)
 	}
 	return path
