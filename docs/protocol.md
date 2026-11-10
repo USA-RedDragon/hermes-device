@@ -24,7 +24,7 @@ hermes-device login, run, chat, acp ===>  /api/device/pair, /pair/token, /whoami
 - The device dials only the hub. It never reaches a Hermes pod directly.
 - The hub authenticates the device by its device token on every request and upgrade, maps the device to the one backend it was paired with, and checks again on every connect that the device's user still has access to that backend.
 - On the exec and ACP legs the hub adds a hub assertion (section 3) to its upgrade request to the backend. On the gateway leg it uses its own gateway credentials (a socket ticket), as it does for its web UI.
-- After an upgrade the hub copies WebSocket messages between the two hops unchanged, in order, text as text. It does not parse exec or ACP messages. It closes the other hop when one hop closes, and relays the close code (section 2.3).
+- After an upgrade on the exec and ACP legs the hub copies WebSocket messages between the two hops unchanged, in order, text as text. It does not parse them. On the gateway leg the hub parses every JSON-RPC message and enforces the rules of section 5. It closes the other hop when one hop closes, and relays the close code (section 2.3).
 
 ## 2. Common rules
 
@@ -32,7 +32,7 @@ hermes-device login, run, chat, acp ===>  /api/device/pair, /pair/token, /whoami
 
 - Format: `hdt_` followed by 43 characters of base64url without padding (32 random bytes). The hub generates it at pairing and stores only its SHA-256.
 - The device sends it as `Authorization: Bearer <token>` on every hub HTTP request and WebSocket upgrade.
-- The hub answers `401` with `{"error":"unauthorized"}` (HTTP), or refuses the upgrade with HTTP `401`, when the token is unknown or revoked. The client then stops and tells the user to run `hermes-device login`.
+- The hub answers `401` with `{"error":"unauthorized"}` (HTTP), or refuses the upgrade with HTTP `401`, when the token is unknown or revoked, when the device's user may no longer use the pinned backend, or when the backend no longer exists or lost `devices` in the hub's configuration. The client then stops and tells the user to run `hermes-device login`. When the hub cannot check the token or the access (a store or lookup error), it answers `503` with `{"error":"internal_error"}` instead, and the client reconnects with backoff.
 - The client keeps the token in the OS keyring (service `hermes-device`, account = the hub URL's host) when one is available, else in a file with mode `0600` (default `<user config dir>/hermes-device/token`).
 - The hub records the device's last-seen time and remote address on every authenticated request and upgrade, and shows "reconnected from a new address" when the address changes.
 
@@ -62,7 +62,7 @@ The hub relays the backend's close code and reason to the device unchanged. Code
 | <!-- docgen:const pkg=protocol name=CloseReplaced code=false -->4409<!-- /docgen:const --> | replaced | plugin | `run` stops: another daemon with the same token took over |
 | <!-- docgen:const pkg=protocol name=CloseUnsupportedVersion code=false -->4426<!-- /docgen:const --> | unsupported version | plugin | stop, tell the user to upgrade |
 | <!-- docgen:const pkg=protocol name=CloseUnsupportedPlatform code=false -->4427<!-- /docgen:const --> | unsupported platform | plugin | stop: the device's OS (Windows) is not supported |
-| <!-- docgen:const pkg=protocol name=CloseBackendUnavailable code=false -->4502<!-- /docgen:const --> | backend unavailable | hub | reconnect with backoff |
+| <!-- docgen:const pkg=protocol name=CloseBackendUnavailable code=false -->4502<!-- /docgen:const --> | backend unavailable | hub (also when the backend hop drops without a close frame) | reconnect with backoff |
 | `1008` | policy | Hermes plugin gate | reconnect with backoff (plugin disabled) |
 | `1011` | `hermes acp` exited | acp-host | reconnect with backoff |
 | `1013` | try again later | acp-host (process limit, or no gateway) | reconnect with backoff |
@@ -253,9 +253,10 @@ When the exec leg drops, the plugin finishes every pending command of that devic
 ### 5.1 Legs
 
 - Device to hub: `GET wss://<hub>/api/device/gateway` with the device token.
-- Hub to backend: the hub opens the gateway's canonical session socket for the device's user, exactly as for its web UI (`/api/ws` on 9120, subprotocols `hermes-gateway-v1` and `hermes-gateway-ticket.<ticket>`), and copies messages both ways unchanged.
+- Hub to backend: the hub opens the gateway's canonical session socket for the device's user, exactly as for its web UI (`/api/ws` on 9120, subprotocols `hermes-gateway-v1` and `hermes-gateway-ticket.<ticket>`).
+- The hub parses every message of the device and applies the rules of 5.3 to 5.6, whether or not the device runs the splice. It answers a refused request itself and forwards nothing. It forwards every other device request under its own id `hermes-hub-d<n>` and gives the device's id back on the answer, so the answer matches whatever form the gateway gives the id in. Messages without a `method` (answers to the gateway's requests) and notifications that pass the rules go through under their own ids. The hub also sends its own requests, with ids `hermes-hub-<n>` (5.3), and consumes their answers. It refuses a device request whose id starts with `hermes-hub-` (5.6). It acts on the held answers of 5.3 before the device sees them.
 - The hub dials the backend as its web UI does, with an `Origin` header and `?native_dial=browser`, because the gateway refuses a ticket dial from a non-loopback peer without an `Origin` (gateway/run_api.py:428-446).
-- The hub sends nothing of its own on the device hop. The first message the device sees is the gateway's `gateway.ready` event, with `session_authority: true`.
+- The hub sends no message of its own to the device except answers to the device's own requests. The first message the device sees is the gateway's `gateway.ready` event, with `session_authority: true`.
 
 ### 5.2 Loopback splice
 
@@ -289,9 +290,23 @@ The device directory of a create is the `cwd` the TUI sends, which is the direct
 
 `/new` in the TUI is a fresh `session.create` from the client, so it goes through the same steps.
 
+The hub repeats the create rewrite, the hold, the bind and the delete for every `session.create` it receives, whether the device sent it raw or the splice already rewrote it:
+
+1. A create with `safe_mode` or `ignore_user_config` true is answered with `hermes_device_bypass`.
+2. The hub reads the placeholder from the plugin's `GET /info` (cached for 1 minute, dropped when the gateway refuses a create). When `params.cwd` equals the placeholder, the device directory is `params.row_cwd` (a create the splice already rewrote). Otherwise it is `params.cwd`. If that directory is not absolute, or is the placeholder, the hub answers with `hermes_device_cwd`.
+3. The hub sets `params.cwd` to the placeholder and `params.row_cwd` to the device directory, removes `params.editor.mcp_servers`, forwards the create and holds the answer.
+4. On a result with a `session_id`, the hub binds the session to the directory through the plugin and passes the answer on only when the bind succeeds. It remembers a successful bind for 1 hour under the device id and the `request_id`, and skips the bind on a repeat of the same session and directory. An error answer, or a result without `session_id`, passes unchanged.
+5. If the bind fails, the hub sends `session.mutate` with `{"session_id": <id>, "request_id": "hermes-hub-delete-<id>", "expected_revision": result.revision, "expected_generation": result.execution_generation, "operation": "delete", "payload": {}}`, waits up to 15 seconds for its answer (failure is logged, not retried), then answers the device's create with `hermes_device_bind` (5.6). If the gateway leg is lost first, the device gets no answer.
+
+The hub also repeats the rest of the rewrites of this section on the gateway leg: it removes `params.editor.mcp_servers` from `session.resume` and `params.payload.mcp_servers` from a `branch`, and for a `workspace` move it binds the new directory first, sets `params.payload.cwd` to the placeholder, and binds the previous directory back when the gateway refuses the move.
+
+Session checks. For every request (and every notification) whose `params.session_id` is a non-empty string, the hub asks the plugin for the session's binding (through lineage) and refuses the request unless it is bound to this device (`hermes_device_not_bound` when it is not bound, `hermes_device_other_device` when it is bound to another device). A `params.parent_session_id` bound to another device is refused the same way. A lookup that succeeds is trusted for 10 seconds. When the lookup fails, the device gets `hermes_device_bind`. A notification that fails a check is dropped. The hub binds every session its own create rewrite creates, so the check passes for them.
+
 **`session.resume`**
 
 Resuming in `hermes-device chat` means "continue this session here". Before forwarding, bind `params.session_id` to the directory `chat` ran in (from the per-run secret, section 5.5). A session already bound to that directory keeps its binding; one bound to another directory of this device moves to this one. If the bind fails (for example `409` `bound_to_other_device`), answer the TUI with the bind error and forward nothing. The bind is skipped when this chat run (the same per-run secret) already bound the session, so a TUI reconnect does not undo a workspace move. A resume with an empty `session_id` (the latest session) is forwarded first, and the session id in its answer is bound before the answer is passed on. Remove `params.editor.mcp_servers` if present.
+
+The hub enforces this on the leg. It refuses a resume with a non-empty `session_id` that is not bound to the device (5.6), and it checks every resume answer, including a resume by title and a resume of the latest session: when the answer's `session_id` is not bound to this device, it detaches the subscription (`session.detach`, with the answer's `subscription_id`) and answers the device with the same refusal. The hub checks the answer before the splice sees it, so a latest resume of a session that is not bound to the device yet is refused, and the splice's bind of the answer's session never runs. The hub binds nothing on a resume.
 
 **`session.mutate` with `operation` `workspace`** (a workspace move)
 
@@ -305,11 +320,11 @@ Remove `params.payload.mcp_servers` if present, then forward. On a result with `
 
 ### 5.4 Denied calls
 
-The splice answers these itself with error code `-32601` and message `"<method> is not available through hermes-device"`, and forwards nothing:
+The splice and the hub both apply this table. Each answers a denied request itself with error code `-32601` and message `"<method> is not available through hermes-device"`, and forwards nothing:
 
 | Method | Why |
 |---|---|
-| `config.set` with any `key` other than `verbose` | Profile-wide settings of the pod. The TUI sets `verbose` after every create. This also refuses `/reasoning`, `/yolo`, `/fast` and display settings from the TUI in phase 1 |
+| `config.set` unless `key` is `busy`, `verbose`, `show_reasoning`, `service_tier`, `fast` or `yolo` with no `scope` member, or `reasoning` with `scope` absent or `session` and a `value` that is exactly an effort level or `reset` | Everything else writes profile-wide state of the pod. Display keys write `config.yaml` through `_write_profile_config`. The allowed keys change only the one session. The TUI sets `verbose` after every create |
 | `session.mutate` with `operation` `editor_mcp` | Spawns editor MCP programs on the pod |
 | `vault.*` | Credential store of the pod |
 | `model.save_key`, `profiles.create` | Writes credentials and profiles on the pod |
@@ -317,13 +332,19 @@ The splice answers these itself with error code `-32601` and message `"<method> 
 | `complete.path` | Lists pod directories. The splice answers `{"items": []}` as a result instead of an error |
 | `image.attach`, `pdf.attach` with a non-null `path`, `file.attach` with a non-null `path`, `input.detect_drop`, `clipboard.paste` | Read pod paths or the pod clipboard, not the device's |
 | `mcp.servers.add`, `mcp.servers.test`, `mcp.servers.remove`, `plugins.manage`, `skills.manage`, `cron.manage`, `cron.submit`, `kanban.run`, `browser.manage`, `display.install`, `display.start`, `a2a.forward`, `worker.*`, `process.kill`, `process.list` | Change, spawn or stop programs on the pod |
-| `rollback.restore` | Restores pod checkpoints |
+| `rollback.*` | Restores pod checkpoints |
 | `connectors.*`, `set_api_key`, `oauth.*`, `diagnostics.share_nous`, `free_tier.provision`, `session.foreign.import` | Change pod credentials or import pod files |
+| `bot_relay.*`, `groups.*`, `onboarding.*` | Relay into the profile's messaging bots, change its groups and its onboarding state |
+| `session.prune`, `cron.cancel`, `cron.recover`, `reload.mcp`, `process.stop`, `skills.reload`, `llm.oneshot`, `session.automation`, `session.control`, `connection.respond`, `preview.restart` | Act on the pod as a whole (bulk session deletion, cron jobs, MCP and skill reloads, processes, one-shot model calls, session automation and control, connections, previews) |
+| any request with a non-empty, non-null `profile` param | The gateway would route it to a sibling profile that may not run device sessions. Error code `-32601`, message `hermes-device serves only the device's own Hermes profile`, reason `hermes_device_denied`. Only the hub does this |
+| `slash.exec` or `command.dispatch` whose command is not in the slash-command allowlist below, or whose argument contains `--global` | Slash commands that write pod state |
 | `prompt.background` | A background agent has no lineage to its parent session (gateway/session_tui_side.py), so it would run on the pod. The plugin also refuses it for bound sessions (section 8.3) |
 
-Every other call passes unchanged, including `slash.exec` and `command.dispatch`, which the TUI needs for its slash commands; the plugin guards what those reach (section 8.3). Phase 3 replaces this list with an allowlist.
+The slash-command allowlist is `new`, `clear`, `redraw`, `history`, `retry`, `undo`, `title`, `compress`, `stop`, `status`, `context`, `usage`, `help`, `commands`, `version`, `copy`, `queue`, `steer`, `btw`, `branch`, `diff`, `verbose`, `fast`, `yolo`, `reasoning`, `model`, `goal`, `plan`, `review`, `refine` and `whoami`. The hub splits a `slash.exec` command as Hermes does (strip, remove leading `/`, name up to the first space, the rest is the argument) and takes `name` and `arg` of `command.dispatch` the same way. `/reasoning` takes no argument, or exactly an effort level or `reset`. A denied notification is dropped.
 
-This list keeps a well-behaved TUI from acting on the pod by mistake. It is not a security boundary: the splice runs on the device, and anyone holding the device token can open the gateway leg without it (section 10).
+`complete.path` is answered with `{"items": []}` by both. Every other call passes, so a method that a new Hermes release adds is allowed until it is added to this list: the list is a deny list. The plugin guards what the allowed calls reach (section 8.3). Phase 3 replaces this list with an allowlist.
+
+The hub enforces the same rules on the gateway leg, so a holder of the device token who dials the gateway leg without the splice meets them too (section 10). The splice applies them first so the TUI gets its refusal without a round trip.
 
 ### 5.5 Daemon control
 
@@ -349,7 +370,14 @@ The splice answers a request it refuses or fails with `{"jsonrpc": "2.0", "id": 
 | Denied method | `-32601` | `hermes_device_denied` |
 | Missing or relative cwd | `4001` | `hermes_device_cwd` |
 | `safe_mode` or `ignore_user_config` create | `4001` | `hermes_device_bypass` |
-| Bind failed | `4001` | `hermes_device_bind`, plus `data.hub_error` with the hub's error code (`unauthorized`, or `hub_unreachable` when the hub gave none) |
+| Bind failed | `4001` | `hermes_device_bind`, plus `data.hub_error` with the hub's error code (`unauthorized`, or `hub_unreachable` when the hub gave none). When the hub itself fails a bind or a binding lookup, `data.hub_error` is the plugin's error code, or `backend_unavailable` when the plugin gave none |
+| Session bound to another device (hub only) | `4001` | `hermes_device_other_device` |
+| Session not bound to this device (hub only) | `4001` | `hermes_device_not_bound` |
+| Message is not one JSON object, such as a batch (hub only) | `-32600` | none, `id` is `null` |
+| Request id that is not a string or a number (hub only) | `-32600` | none, `id` is `null` |
+| Request id that starts with `hermes-hub-` (hub only) | `-32600` | none |
+| `params` that is not an object (hub only) | `-32602` | none |
+| `session_id` or `parent_session_id` that is not a string (hub only) | `-32602` | none |
 
 When the hub leg drops, the splice closes the TUI's socket with code `1011`; it does not answer held requests (5.3 step 7).
 
@@ -420,7 +448,7 @@ The flow follows the OAuth 2.0 device authorization grant (RFC 8628) in shape. T
  "expires_in": 600, "interval": 5}
 ```
 
-The client prints `verification_uri` and `user_code`. On the hub page the user signs in and types the code; the hub never takes the code from the link, so a link someone else sends cannot pair their device to the user's backend. The confirm page shows the requesting device's address, `hostname`, `os` and the request time. The user names the device and confirms. The hub rate-limits both unauthenticated pairing endpoints per address and limits wrong code entries per user.
+The client prints `verification_uri` and `user_code`. On the hub page the user signs in and types the code; the hub never takes the code from the link, so a link someone else sends cannot pair their device to the user's backend. The confirm page shows the requesting device's address, `hostname`, `os` and the request time. The user names the device and confirms. The hub rate-limits both unauthenticated pairing endpoints per address and limits wrong code entries per user. A rate-limited start answers `429` `{"error": "rate_limited"}`. A rate-limited poll answers `400` `{"error": "slow_down"}`.
 
 **Poll**: `POST /api/device/pair/token`, no auth, `{"device_code": "..."}`, no more often than every `interval` seconds.
 
@@ -436,7 +464,7 @@ The token is returned once. The hub forgets the device code after that answer.
 
 ### 7.2 Revoke
 
-The user revokes a device on the hub page. The hub then refuses the token (section 2.1) and closes the device's open legs with `4401`.
+The user revokes a device on the hub page. The hub then refuses the token (section 2.1) and closes the device's open legs with `4401`. On the hub replica that served the revoke it does so at once. Other replicas close the legs they hold at their next check, within `device.recheck_interval` (default 10 seconds). The same check closes a leg when the device's user may no longer use its backend.
 
 ### 7.3 Whoami
 
@@ -446,6 +474,8 @@ The user revokes a device on the hub page. The hub then refuses the token (secti
 {"device_id": "d_8f2c", "device_name": "desktop", "user": "alice", "backend": "alice",
  "hermes_version": "v0.22.7", "plugin_version": "0.2.0", "placeholder": "/opt/data/hermes/device-placeholder"}
 ```
+
+Service devices (section 8.10) may call whoami too. Their `user` is `service`.
 
 `hermes_version`, `plugin_version` and `placeholder` come from the plugin's `GET /info` (section 9); if the backend is unreachable the hub answers `502` `{"error": "backend_unavailable"}`. `chat` compares `hermes_version` with the first line of the local `hermes --version` (`Hermes Agent v<version> (<date>)`), exactly after removing a leading `v`, and refuses to start on a mismatch (the local TUI and the server must be the same release).
 
@@ -457,7 +487,9 @@ The hub forwards to the plugin as `PUT /api/plugins/device/sessions/{session_id}
 
 A session whose frozen terminal backend is not `device`, or that runs in a bypass (safe mode) worker, cannot be bound: the plugin answers `409` `not_device_session`.
 
-`DELETE /api/device/sessions/{session_id}/binding` with the device token: the hub forwards it only when the session is bound to the token's device, else `403` `{"error": "forbidden"}`.
+`DELETE /api/device/sessions/{session_id}/binding` with the device token: the hub forwards it only when the session's own binding belongs to the token's device, else `403` `{"error": "forbidden"}`. A binding the session only inherits through lineage does not count.
+
+Service devices (section 8.10) get `403` `{"error": "forbidden"}` on the bind and unbind API, on the gateway leg and on the ACP leg. They may use only the exec leg and whoami.
 
 Binding object and errors: section 9.
 
@@ -604,7 +636,8 @@ Errors from the dirs route: `409` `device_offline` for any device that is not co
 ## 10. Security notes
 
 - The device daemon runs commands only in its own roots, and only on its own user's backend. It can lie about command output.
-- A device token is full operator access to its user's own Hermes backend. Through the gateway leg the holder can do what the web UI can, including running commands in the pod (`shell.exec`) and in sessions bound to any of that user's devices; the splice's deny list (5.4) does not stop a holder who dials the gateway leg directly. The same holds for the ACP leg, except that acp-host refuses sessions bound to another device. A token cannot reach another user's backend, mint assertions, or learn the backend's dashboard password. Phase 3 moves the method allowlist and the session.create rewrite into the hub so the hub enforces them.
+- The hub enforces the deny list of 5.4, the create rewrite and the session checks of 5.3 on the gateway leg, so a holder of a device token who dials the gateway leg directly meets them. The list is a deny list: a method that a new Hermes release adds is allowed until the list names it. Phase 3 moves to an allowlist. The ACP leg is not parsed by the hub: acp-host refuses sessions bound to another device and rewrites cwd and MCP servers (6.2), but a holder can still use any other ACP method. A token cannot reach another user's backend, mint assertions, or learn the backend's dashboard password.
+- What a device token still allows on the gateway leg: running commands in the sessions bound to that device, and every call that passes the deny list, which can act on the user's Hermes profile in ways the list does not name. Sessions that are bound to no device are refused on the gateway leg (`hermes_device_not_bound`) but not on the ACP leg. A compromised device can also lie about command output.
 - A compromised Hermes pod can do anything the user's Hermes can, including running commands on connected devices in their roots. It cannot mint hub assertions, because it holds only public keys.
 - The hub's private key is the root of trust for every backend. Keep it in the hub's secret store only.
 - With `fallback: local`, the commands of never-bound sessions run in the gateway container and can read its secrets, environment, state database and processes. `fallback: device` (8.10) moves them to a sandbox pod that holds only its own device token and the `/work` volume. The sandbox's commands run as the same user as its daemon, so they can read its token file and open an exec leg of their own, which replaces the daemon's connection (`4409`). That token is a service device token, which the hub accepts on the exec leg only, so it reaches no gateway or ACP leg. `run` removes `HERMES_DEVICE_HUB_TOKEN` from the environment of the commands it runs, but they can still read it from `/proc` of the daemon, so an environment variable or a flag is no better hidden than the file. All of one person's sessions share the `/work` volume, so one session can read another's directory. Limit the sandbox's network to the internet and the hub.
