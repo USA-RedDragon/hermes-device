@@ -1,4 +1,4 @@
-assertion/assertion.go	106	88
+assertion/assertion.go	106	89
 cmd/acp.go	29	1
 cmd/acphost.go	29	1
 cmd/chat.go	27	4
@@ -12,7 +12,7 @@ internal/acpbridge/inline.go	38	35
 internal/acphost/acphost.go	242	186
 internal/acphost/rewrite.go	154	138
 internal/acphost/sweep.go	42	36
-internal/acphost/sweep_linux.go	38	27
+internal/acphost/sweep_linux.go	38	28
 internal/allowlist/allowlist.go	25	25
 internal/chat/chat.go	136	109
 internal/config/config.go	44	35
