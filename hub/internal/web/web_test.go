@@ -395,7 +395,8 @@ func TestStaticAndHeaders(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "/static/app.js") {
 		t.Fatalf("index = %d", resp.StatusCode)
 	}
-	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "default-src 'self'") || resp.Header.Get("X-Frame-Options") != "DENY" {
+	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "default-src 'self'") || resp.Header.Get("X-Frame-Options") != "DENY" ||
+		resp.Header.Get("Referrer-Policy") != "same-origin" {
 		t.Fatalf("headers = %v", resp.Header)
 	}
 	for _, f := range []string{"/static/app.js", "/static/app.css", "/static/markdown.js", "/static/vendor/highlight.min.js"} {

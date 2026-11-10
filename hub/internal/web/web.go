@@ -145,7 +145,8 @@ func headers(next http.Handler) http.Handler {
 		h := w.Header()
 		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "no-referrer")
+		// no-referrer would make browsers send "Origin: null" on form posts, which the origin check refuses
+		h.Set("Referrer-Policy", "same-origin")
 		h.Set("X-Frame-Options", "DENY")
 		next.ServeHTTP(w, r)
 	})
