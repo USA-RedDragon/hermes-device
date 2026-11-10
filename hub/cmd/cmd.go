@@ -108,8 +108,11 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	defer stopBot()
 	botDone := make(chan struct{})
 	if cfg.Telegram.Enabled {
-		bot, err := telegram.New(telegram.Config(cfg.Telegram), telegram.Options{PublicURL: cfg.HTTP.PublicURL, Service: svc,
-			Links: st, Tokens: st, State: st, Logger: slog.Default()})
+		topts := telegram.Options{PublicURL: cfg.HTTP.PublicURL, Service: svc, Links: st, Tokens: st, State: st, Logger: slog.Default()}
+		if devices != nil {
+			topts.Computers = devices
+		}
+		bot, err := telegram.New(telegram.Config(cfg.Telegram), topts)
 		if err != nil {
 			return fmt.Errorf("failed to start Telegram bot: %w", err)
 		}

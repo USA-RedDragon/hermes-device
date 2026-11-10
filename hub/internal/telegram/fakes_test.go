@@ -501,6 +501,13 @@ func startBot(t *testing.T, mutate func(*telegram.Config)) *harness {
 
 func startBotState(t *testing.T, mutate func(*telegram.Config), state *fakeState) *harness {
 	t.Helper()
+	return startBotWith(t, mutate, state, nil)
+}
+
+// startBotWith is startBotState with the computers mk makes over the
+// harness's hub; mk may be nil.
+func startBotWith(t *testing.T, mutate func(*telegram.Config), state *fakeState, mk func(*fakeHub) hub.Computers) *harness {
+	t.Helper()
 	h := &harness{
 		tg:     newFakeTelegram(t),
 		hub:    newFakeHub(),
@@ -512,9 +519,13 @@ func startBotState(t *testing.T, mutate func(*telegram.Config), state *fakeState
 	if mutate != nil {
 		mutate(&cfg)
 	}
+	var computers hub.Computers
+	if mk != nil {
+		computers = mk(h.hub)
+	}
 	bot, err := telegram.New(cfg, telegram.Options{
 		PublicURL: "https://hub.example/",
-		Service:   h.hub, Links: h.links, Tokens: h.tokens, State: h.state,
+		Service:   h.hub, Links: h.links, Tokens: h.tokens, State: h.state, Computers: computers,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {

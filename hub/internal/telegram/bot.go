@@ -54,7 +54,10 @@ type Options struct {
 	Tokens    hub.TokenStore
 	// State keeps chat attachments and the update offset, so a replica
 	// that takes the bot over carries on. Optional.
-	State      hub.TelegramState
+	State hub.TelegramState
+	// Computers lets users start and move chats on their computers.
+	// Optional.
+	Computers  hub.Computers
 	Logger     *slog.Logger
 	HTTPClient *http.Client
 }
@@ -71,17 +74,18 @@ func BotID(token string) int64 {
 
 // Bot is the Telegram bot.
 type Bot struct {
-	cfg      Config
-	link     string
-	api      *Client
-	svc      hub.Service
-	links    hub.Links
-	tokens   hub.TokenStore
-	state    hub.TelegramState
-	botID    int64
-	logger   *slog.Logger
-	defaults map[string]string
-	groups   map[int64]bool
+	cfg       Config
+	link      string
+	api       *Client
+	svc       hub.Service
+	links     hub.Links
+	tokens    hub.TokenStore
+	state     hub.TelegramState
+	computers hub.Computers
+	botID     int64
+	logger    *slog.Logger
+	defaults  map[string]string
+	groups    map[int64]bool
 
 	chats map[int64]*chatState
 	wg    sync.WaitGroup
@@ -96,6 +100,7 @@ type chatState struct {
 	att     *attachment
 	listGen int
 	list    []hub.Session
+	release *pendingRelease
 }
 
 type attachment struct {
@@ -162,6 +167,7 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		links:     opts.Links,
 		tokens:    opts.Tokens,
 		state:     opts.State,
+		computers: opts.Computers,
 		botID:     BotID(cfg.Token),
 		logger:    logger,
 		defaults:  defaults,
@@ -364,6 +370,12 @@ func (b *Bot) handleMessage(ctx context.Context, m *Message) {
 		b.newSession(ctx, m.Chat.ID, user, arg)
 	case "stop":
 		b.stop(ctx, m.Chat.ID, user)
+	case "devices", "computers":
+		b.listComputers(ctx, m.Chat.ID, user)
+	case "where":
+		b.where(ctx, m.Chat.ID, user)
+	case "move":
+		b.move(ctx, m.Chat.ID, user, arg)
 	default:
 		b.sendText(ctx, m.Chat.ID, "Unknown command. Send /help for the list.")
 	}
@@ -411,6 +423,13 @@ func (b *Bot) help(ctx context.Context, chatID int64, user string) {
 		"/new [backend] start a new session\n" +
 		"/backends list your backends\n" +
 		"/stop interrupt the current turn")
+	if b.computers != nil {
+		sb.WriteString("\n/devices list your computers\n" +
+			"/new NAME [folder] start a session on a computer\n" +
+			"/where show where this session runs\n" +
+			"/move NAME [folder] run this session on a computer\n" +
+			"/move off stop using its computer")
+	}
 	b.sendHTML(ctx, chatID, sb.String(), nil)
 }
 
@@ -468,6 +487,7 @@ func (b *Bot) listSessions(ctx context.Context, chatID int64, user string) {
 	st := b.chat(chatID)
 	st.listGen++
 	st.list = list
+	places := b.places(cctx, user, list)
 	var sb strings.Builder
 	sb.WriteString("<b>Sessions</b>")
 	var rows [][]InlineButton
@@ -480,6 +500,11 @@ func (b *Bot) listSessions(ctx context.Context, chatID int64, user string) {
 		if s.Live {
 			sb.WriteString(" live")
 		}
+		if from := sourceName(s.Source); from != "" {
+			sb.WriteString(", from " + from)
+		}
+		p, ok := places[hub.SessionRef{BackendID: s.BackendID, SessionID: s.ID}]
+		sb.WriteString(placeTag(p, ok))
 		if st.att != nil && st.att.sessionID == s.ID && st.att.backendID == s.BackendID {
 			sb.WriteString(" <b>(attached)</b>")
 		}
@@ -492,6 +517,30 @@ func (b *Bot) listSessions(ctx context.Context, chatID int64, user string) {
 		fmt.Fprintf(&sb, "\n\n<i>Can't reach %s right now, so its sessions are missing.</i>", escapeHTML(strings.Join(down, ", ")))
 	}
 	b.sendHTML(ctx, chatID, sb.String(), &InlineKeyboard{InlineKeyboard: rows})
+}
+
+// places looks up where the listed sessions run, when computers are on.
+func (b *Bot) places(ctx context.Context, user string, list []hub.Session) map[hub.SessionRef]hub.Place {
+	if b.computers == nil {
+		return nil
+	}
+	refs := make([]hub.SessionRef, 0, len(list))
+	for _, s := range list {
+		refs = append(refs, hub.SessionRef{BackendID: s.BackendID, SessionID: s.ID})
+	}
+	return b.computers.Places(ctx, user, refs)
+}
+
+// sourceName names the surface that started a session, for one that was
+// not started here or in the web app.
+func sourceName(source string) string {
+	switch source {
+	case "acp":
+		return "an editor"
+	case "cli", "tui":
+		return "the terminal"
+	}
+	return ""
 }
 
 func (b *Bot) attachCommand(ctx context.Context, chatID int64, user, arg string) {
@@ -517,6 +566,9 @@ func (b *Bot) attachListed(ctx context.Context, chatID int64, user string, s hub
 }
 
 func (b *Bot) newSession(ctx context.Context, chatID int64, user, arg string) {
+	if arg != "" && !b.isBackend(ctx, user, arg) && b.newOnComputer(ctx, chatID, user, arg) {
+		return
+	}
 	backendID, ok := b.pickBackend(ctx, chatID, user, arg)
 	if !ok {
 		return
@@ -527,6 +579,22 @@ func (b *Bot) newSession(ctx context.Context, chatID int64, user, arg string) {
 		return
 	}
 	b.sendHTML(ctx, chatID, "New session on <b>"+escapeHTML(s.BackendID)+"</b>. Send a message to begin.", nil)
+}
+
+// isBackend reports whether arg names one of user's backends.
+func (b *Bot) isBackend(ctx context.Context, user, arg string) bool {
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	list, err := b.svc.Backends(cctx, user)
+	if err != nil {
+		return true
+	}
+	for _, be := range list {
+		if strings.EqualFold(be.ID, arg) || strings.EqualFold(be.Name, arg) {
+			return true
+		}
+	}
+	return false
 }
 
 // pickBackend resolves arg (an ID or name) or the user's default.
@@ -547,6 +615,10 @@ func (b *Bot) pickBackend(ctx context.Context, chatID int64, user, arg string) (
 		if strings.EqualFold(be.ID, arg) || strings.EqualFold(be.Name, arg) {
 			return be.ID, true
 		}
+	}
+	if b.computers != nil {
+		b.sendText(ctx, chatID, "Unknown backend or computer. Send /backends or /devices to list yours.")
+		return "", false
 	}
 	b.sendText(ctx, chatID, "Unknown backend. Send /backends to list yours.")
 	return "", false
@@ -716,6 +788,8 @@ func (b *Bot) handleCallback(ctx context.Context, q *CallbackQuery) {
 	switch {
 	case len(parts) == 3 && parts[0] == cbApproval:
 		b.answerApproval(ctx, q, user, parts[1], parts[2] == "1")
+	case len(parts) == 2 && parts[0] == cbRelease && b.computers != nil:
+		b.confirmRelease(ctx, q, user, parts[1])
 	case len(parts) == 3 && parts[0] == cbAttach:
 		st := b.chat(chatID)
 		gen, err1 := strconv.Atoi(parts[1])
@@ -777,6 +851,10 @@ func (b *Bot) dropApproval(key string) {
 }
 
 func (b *Bot) reportErr(ctx context.Context, chatID int64, user, action string, err error) {
+	if b.computerErr(ctx, chatID, err) {
+		b.logger.Info("Telegram computer request refused", "user", user, "action", action, "error", err)
+		return
+	}
 	switch {
 	case errors.Is(err, hub.ErrForbidden):
 		b.logger.Warn("Hub denied Telegram request", "user", user, "action", action, "error", err)
