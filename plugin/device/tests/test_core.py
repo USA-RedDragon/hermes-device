@@ -309,6 +309,7 @@ class EnvironmentTests(Base):
 
 class BindingTests(Base):
     def test_bind_rules(self):
+        self.store.rows.update({"sess-2": None, "sess-3": None, "sess-4": None})
         b = self.bind()
         self.assertEqual(b.dir, str(self.root))
         again = self.bind()
@@ -334,6 +335,45 @@ class BindingTests(Base):
         with self.assertRaises(core.BindError) as ctx:
             self.hub.bind("sess-4", "d_lap", str(self.root))
         self.assertEqual((ctx.exception.status, ctx.exception.code), (409, "device_offline"))
+
+    def assert_refused(self, sid, device_id, code, operator=False):
+        with self.assertRaises(core.BindError) as ctx:
+            self.hub.bind(sid, device_id, str(self.root), operator=operator)
+        self.assertEqual((ctx.exception.status, ctx.exception.code), (409, code))
+        return ctx.exception.message
+
+    def test_device_cannot_take_another_devices_lineage(self):
+        other = FakeDevice(self.hub, str(self.root), str(self.devtmp), str(self.home), device_id="d_lap", name="lap")
+        self.addCleanup(other.close)
+        self.store.rows.update({"comp": self.session, "branch": "comp", "web": None, "web-child": "web", "gone": None})
+        self.bind()
+        for sid in (self.session, "comp", "branch"):
+            message = self.assert_refused(sid, "d_lap", "bound_to_other_device")
+            self.assertIn("d_pc", message)
+        self.assertIn("through session sess-1", self.assert_refused("branch", "d_lap", "bound_to_other_device"))
+        self.assertIsNone(self.hub.binding("branch"))
+        self.assertEqual(self.hub.bind("comp", "d_pc", str(self.root)).device_id, "d_pc")
+        self.assertEqual(self.hub.bind("web-child", "d_lap", str(self.root)).device_id, "d_lap")
+        self.assert_refused("web-child", "d_pc", "bound_to_other_device")
+        self.hub.bind("gone", "d_pc", str(self.root))
+        self.hub.unbind("gone")
+        for device_id in ("d_lap", "d_pc"):
+            self.assertIn("was bound to a device", self.assert_refused("gone", device_id, "not_bindable"))
+        self.assertIn("no row", self.assert_refused("ghost", "d_lap", "not_bindable"))
+        self.store.broken = True
+        self.assert_refused("ghost-2", "d_lap", "not_bindable")
+
+    def test_operator_moves_a_session(self):
+        other = FakeDevice(self.hub, str(self.root), str(self.devtmp), str(self.home), device_id="d_lap", name="lap")
+        self.addCleanup(other.close)
+        self.store.rows.update({"comp": self.session, "gone": None})
+        self.bind()
+        moved = self.hub.bind(self.session, "d_lap", str(self.root), operator=True)
+        self.assertEqual((moved.device_id, self.hub.resolve("comp").binding.device_id), ("d_lap", "d_lap"))
+        self.assertIn("/device off", self.assert_refused("comp", "d_pc", "bound_to_other_device", operator=True))
+        self.hub.bind("gone", "d_pc", str(self.root))
+        self.hub.unbind("gone")
+        self.assertEqual(self.hub.bind("gone", "d_lap", str(self.root), operator=True).device_id, "d_lap")
 
     def test_bind_resolves_symlinks(self):
         link = self.root / "link"
@@ -712,6 +752,14 @@ class CommandTests(Base):
         self.assertIsNone(self.hub.binding(self.session))
         self.assertIn("Rebind", core.device_command("", session_id=self.session))
         self.assertIn("Not bound", core.device_command(f"nope {self.root}", session_id=self.session))
+        self.assertIn("now runs commands on pc", core.device_command(f"pc {self.root}", session_id=self.session))
+        other = FakeDevice(self.hub, str(self.root), str(self.devtmp), str(self.home), device_id="d_lap", name="lap")
+        self.addCleanup(other.close)
+        self.assertIn("now runs commands on lap", core.device_command(f"lap {self.root}", session_id=self.session))
+        self.assertEqual(self.hub.binding(self.session).device_id, "d_lap")
+        out = core.device_command(f"pc {self.root}", session_id="c1")
+        self.assertIn("Not bound", out)
+        self.assertIn("/device off", out)
 
 
 class SandboxTests(Base):

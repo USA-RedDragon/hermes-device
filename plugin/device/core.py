@@ -31,7 +31,7 @@ from typing import Any, Callable, Iterable, Optional
 logger = logging.getLogger("hermes_device")
 
 PLUGIN_ID = "device"
-PLUGIN_VERSION = "0.3.0"
+PLUGIN_VERSION = "0.4.1"
 
 PROTOCOL_VERSION = 3
 MIN_PROTOCOL_VERSION = 2
@@ -982,9 +982,33 @@ class Hub:
         with self._lock:
             return session_id in self._ever_bound
 
-    def bind(self, session_id: str, device_id: str, directory: str) -> Binding:
+    def _check_claim(self, session_id: str, device_id: str, operator: bool) -> None:
+        """Refuse a bind that would take a session from another device (section 9 PUT rules).
+
+        A device (``operator`` false: the PUT route, so the splice, the ACP bridge and the hub)
+        may bind a session whose lineage resolves to that device, or one that is unbound and was
+        never bound anywhere in its lineage. The operator's ``/device`` may move a session whose
+        own binding names another device, and may bind any session that is not bound now; it may
+        not carve a session out of a lineage bound to another device through an ancestor."""
+        res = self.resolve(session_id)
+        if res.state == STATE_BOUND and res.binding.device_id != device_id:
+            if res.via == session_id:
+                if operator:
+                    return
+                raise BindError(409, "bound_to_other_device",
+                                f"session {session_id} is bound to device {res.binding.device_id}; only that "
+                                f"device, or /device in the session, can move it")
+            raise BindError(409, "bound_to_other_device",
+                            f"session {session_id} is bound to device {res.binding.device_id} through session "
+                            f"{res.via}; run /device off in the session first to move it")
+        if res.state == STATE_FAIL_CLOSED and not operator:
+            raise BindError(409, "not_bindable",
+                            f"session {session_id} {res.reason}, so only /device in the session can bind it")
+
+    def bind(self, session_id: str, device_id: str, directory: str, *, operator: bool = False) -> Binding:
         """Bind ``session_id`` to ``directory`` on a connected device (section 9 PUT rules).
-        Raises :class:`BindError` with the HTTP status and error code."""
+        ``operator`` is true for the ``/device`` command. Raises :class:`BindError` with the HTTP
+        status and error code."""
         if not session_id:
             raise BindError(400, "bad_request", "no session id")
         if self._state_error:
@@ -1000,17 +1024,13 @@ class Hub:
         why = self._session_check(session_id) if self._session_check else None
         if why:
             raise BindError(409, "not_device_session", why)
-        existing = self.binding(session_id)
-        if existing is not None and existing.device_id != device_id:
-            raise BindError(409, "bound_to_other_device",
-                            f"session {session_id} is bound to device {existing.device_id}; unbind it first")
+        self._check_claim(session_id, device_id, operator)
         real = device_pwd(self, device_id, directory)
         with self._lock:
+            # Again under the lock: a bind of this session or an ancestor may have landed meanwhile.
+            self._check_claim(session_id, device_id, operator)
             existing = self._bindings.get(session_id)
-            if existing is not None and existing.device_id != device_id:
-                raise BindError(409, "bound_to_other_device",
-                                f"session {session_id} is bound to device {existing.device_id}; unbind it first")
-            if existing is not None and existing.dir == real:
+            if existing is not None and existing.device_id == device_id and existing.dir == real:
                 return existing
             binding = Binding(session_id=session_id, device_id=device_id, dir=real,
                               generation=uuid.uuid4().hex[:12], bound_at=round(time.time(), 3))
@@ -2325,7 +2345,7 @@ def device_command(raw_args: str = "", session_id: str = "", **_kwargs) -> str:
         return "Not bound: this surface did not give a session id."
     try:
         conn = h.find_device(args[0])
-        b = h.bind(sid, conn.device_id, args[1].strip())
+        b = h.bind(sid, conn.device_id, args[1].strip(), operator=True)
     except DeviceError as exc:
         return f"Not bound: {exc}"
     return f"Session {sid} now runs commands on {conn.name} [{b.device_id}] in {b.dir}."

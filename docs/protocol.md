@@ -559,7 +559,7 @@ Service devices (section 8.10) may call whoami too. Their `user` is `service`.
 
 `PUT /api/device/sessions/{session_id}/binding` with the device token and `{"dir": "/home/alice/src/app"}`.
 
-The hub forwards to the plugin as `PUT /api/plugins/device/sessions/{session_id}/binding` with `{"device_id": <the token's device id>, "dir": <dir>}`. A device can only bind sessions to itself. The hub passes the plugin's status and body through.
+The hub forwards to the plugin as `PUT /api/plugins/device/sessions/{session_id}/binding` with `{"device_id": <the token's device id>, "dir": <dir>}`. A device can only bind sessions to itself, and only sessions that are its own or were never bound (section 9 PUT rules). The hub passes the plugin's status and body through.
 
 A session whose frozen terminal backend is not `device`, or that runs in a bypass (safe mode) worker, cannot be bound: the plugin answers `409` `not_device_session`.
 
@@ -654,6 +654,14 @@ Windows devices are not supported: the plugin needs POSIX absolute device paths,
 
 `/device` shows the session's binding; `/device <device name or id> <dir>` binds; `/device off` unbinds (the session then fails closed, section 8.3); `/device list` lists connected devices.
 
+`/device <device> <dir>` is the owner's explicit action, so it binds with operator rules, which are wider than the PUT rules of section 9:
+
+1. A session whose own binding names another device moves to the named device. No `/device off` is needed first.
+2. A session that is not bound now binds, whether or not it or its lineage was ever bound (after `/device off`, or a session whose lineage cannot be read).
+3. A session that only inherits a binding of another device from an ancestor (a compression child or branch) is refused with `bound_to_other_device`: binding it would carve it out of that device's lineage. Run `/device off` in the session first (it removes the ancestor's binding), then bind.
+
+Devices cannot run `/device`: the hub refuses it on the gateway leg (5.4) and acp-host refuses it in ACP prompts (6.2).
+
 ### 8.9 Dev mode
 
 With `dev_static_tokens: true` the exec route also accepts version 1 to 3 `hello` messages with `name` and `token` and no assertion, checked against `devices`. It is for local tests without a hub. Never enable it on a pod the hub serves.
@@ -669,7 +677,7 @@ With `fallback: device`, a session that rule 7 of section 8.3 finds never bound 
    One difference: the session's server cwd stays `terminal.cwd`, not the placeholder (rule 5 of 8.3 would fail it closed). Hermes builds the system prompt in the gateway and reads project context files (`AGENTS.md`, `.hermes.md` and the like) and the git state from that server directory (agent/system_prompt.py). The agent cannot choose these paths, but keep `terminal.cwd` an empty directory, so the prompt holds no pod files.
 4. Before the first command whose cwd is in that directory, on each connection of the sandbox, the plugin runs `mkdir -p -- <dir>` on the sandbox, with cwd the sandbox root that holds `fallback_root`, so `fallback_root` itself may be missing. If that fails, the command fails with exit 126 (255 when the sandbox dropped) and a note, and nothing else runs. When the sandbox refuses a command in that directory (for example because the agent deleted it), that command fails and the next one creates the directory again.
 5. The command fails, and never runs on the pod, when the sandbox device is not connected, when the name matches more than one connected device, when `fallback_root` is not an absolute path, and when `fallback_root` is not inside the sandbox's roots from `hello`. The terminal gets exit 1 and a message that names the sandbox; a command whose sandbox drops while it is sent gets exit 255. File tools are blocked with the same message.
-6. An explicit bind (`/device <device> <dir>`, the splice, the ACP bridge or the PUT route) wins: the session then runs on that device, and is in `ever_bound` like any bound session. After `/device off` it fails closed (rule 3); it does not return to the sandbox.
+6. An explicit bind (`/device <device> <dir>`, the splice, the ACP bridge or the PUT route) wins, and the PUT rules of section 9 allow it, since the implicit binding is not stored: the session then runs on that device, and is in `ever_bound` like any bound session. After `/device off` it fails closed (rule 3); it does not return to the sandbox.
 7. `/device` without arguments names the sandbox and the directory; `/device off` answers that no device was bound.
 
 Name the sandbox by its device id. A name lookup takes any connected device of that name, including a PC the user named the same, and an id falls back to a name lookup until the sandbox has connected once since the gateway started. Either way the device must also have `fallback_root` inside its roots.
@@ -701,7 +709,10 @@ PUT rules:
 
 - The device must be connected (`409` `device_offline`).
 - `dir` must be absolute (`400` `bad_dir`), and the device must accept it as a cwd and resolve it with `pwd -P` (`422` `dir_refused`, with the device's message).
-- A session bound to a different device is refused (`409` `bound_to_other_device`); unbind first.
+- The plugin resolves the session through its lineage (8.3) first. A session whose own binding, or the binding it inherits from an ancestor, names a different device is refused (`409` `bound_to_other_device`). So a device cannot take a compression child or branch of another device's session, which before this rule would have shadowed the ancestor's binding (the nearest binding wins).
+- A session whose lineage resolves fail-closed is refused (`409` `not_bindable`, the message gives the reason): one that was bound and is not now (after `/device off`), one whose lineage cannot be read (no row in the session store yet, a store error, a cycle, too many hops), and an orphaned side agent. No device can claim these; the owner binds them with `/device` (8.8). A session the device itself bound and then had unbound is refused the same way, because `ever_bound` does not record the device.
+- So a device may bind: a session that resolves to itself (its own binding, or one it inherits, such as a branch of its own session, which the splice binds after a `branch`), and a session that is unbound and was never bound anywhere in its lineage (a new session of a create, or a web chat). With `fallback: device` the implicit sandbox binding does not count (8.10), so such a session counts as never bound.
+- The plugin checks these rules before it asks the device to resolve `dir`, and again under its lock before it writes, so a bind that lands meanwhile is seen.
 - Binding a session to the directory it is already bound to returns the existing binding with its generation unchanged. A different directory on the same device replaces the binding with a new generation.
 - `404` `unknown_device` when `device_id` is not connected and was never seen; `400` `bad_request` for a malformed body.
 - `409` `not_device_session` for a session whose live frozen policy is a bypass (safe mode, ignore-user-config) policy or names a terminal backend other than `device`. The plugin can check this only for sessions loaded in the gateway; others are allowed.
@@ -709,13 +720,14 @@ PUT rules:
 
 Errors from the dirs route: `409` `device_offline` for any device that is not connected, `422` `dir_refused`, `400` `bad_dir`.
 
-`GET /sessions/{id}/binding` returns the binding that serves the session, which may belong to an ancestor (`resolved.via` names it). `DELETE` removes only the session's own binding; `/device off` removes the binding that serves the current session.
+`/device <device> <dir>` uses wider rules (8.8). `GET /sessions/{id}/binding` returns the binding that serves the session, which may belong to an ancestor (`resolved.via` names it). `DELETE` removes only the session's own binding; `/device off` removes the binding that serves the current session.
 
 ## 10. Security notes
 
 - The device daemon runs commands only in its own roots, and only on its own user's backend. It can lie about command output.
 - The hub enforces the deny list of 5.4, the create rewrite and the session checks of 5.3 on the gateway leg, so a holder of a device token who dials the gateway leg directly meets them. The list is a deny list: a method that a new Hermes release adds is allowed until the list names it. Phase 3 moves to an allowlist. The ACP leg is not parsed by the hub: acp-host pins the params of every ACP method and removes `_meta`, refuses every session that is not bound to the device itself, refuses slash commands outside the 5.4 allowlist in prompts, and rewrites cwd and MCP servers (6.1, 6.2). A token cannot reach another user's backend, mint assertions, or learn the backend's dashboard password.
 - What a device token still allows on the gateway leg: running commands in the sessions bound to that device, and every call that passes the deny list, which can act on the user's Hermes profile in ways the list does not name. Sessions that are bound to no device are refused on the gateway leg (`hermes_device_not_bound`) and on the ACP leg (`session is not bound to this device`). A device can still bind a never-bound session to itself with the PUT route (section 9), then use it. A compromised device can also lie about command output.
+- A device token can bind only sessions that resolve to its device or were never bound in their lineage (section 9). It cannot take a session of another device's lineage, or one whose binding was removed. It can still claim any never-bound session of the user, such as a web chat, and then run commands in it on itself.
 - A compromised Hermes pod can do anything the user's Hermes can, including running commands on connected devices in their roots. It cannot mint hub assertions, because it holds only public keys.
 - The hub's private key is the root of trust for every backend. Keep it in the hub's secret store only.
 - With `fallback: local`, the commands of never-bound sessions run in the gateway container and can read its secrets, environment, state database and processes. `fallback: device` (8.10) moves them to a sandbox pod that holds only its own device token and the `/work` volume. The sandbox's commands run as the same user as its daemon, so they can read its token file and open an exec leg of their own, which replaces the daemon's connection (`4409`). That token is a service device token, which the hub accepts on the exec leg only, so it reaches no gateway or ACP leg. `run` removes `HERMES_DEVICE_HUB_TOKEN` from the environment of the commands it runs, but they can still read it from `/proc` of the daemon, so an environment variable or a flag is no better hidden than the file. All of one person's sessions share the `/work` volume, so one session can read another's directory. Limit the sandbox's network to the internet and the hub.
@@ -731,3 +743,5 @@ The device client, the plugin and acp-host come from one hermes-device release. 
 | device 0.2.0, plugin 0.3.0 | version 2 (`hello` has no `max_version`) |
 
 Browser control needs a device and a plugin that both know the `browser` capability. With an older peer on either side the capability is not negotiated: the leg works as before, and the plugin's browser tools report that the device does not offer browser control.
+
+Plugin 0.4.1 and the acp-host of the same release add refusals and change no wire format. The plugin refuses a device bind of a session of another device's lineage or of a fail-closed lineage (section 9), and `/device` can move a session between devices (8.8). acp-host pins ACP params, removes `_meta`, refuses sessions that are not bound to the device itself, and applies the slash-command allowlist to prompts (6.1, 6.2). Editors and the bridge need no change: the bridge binds every session before it uses it.

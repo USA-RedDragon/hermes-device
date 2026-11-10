@@ -171,7 +171,7 @@ class RouteTests(unittest.TestCase):
     def test_welcome_exec_and_devices(self):
         welcome, device = self.online()
         self.assertEqual(welcome, {"type": "welcome", "version": 2, "device_id": "d_8f2c", "name": "desktop",
-                                   "ping_interval": 25, "plugin_version": "0.3.0", "hermes_version": "v0.22.7"})
+                                   "ping_interval": 25, "plugin_version": "0.4.1", "hermes_version": "v0.22.7"})
         code, out, _ = self.hub.run("d_8f2c", "echo hi; exit 4", str(self.root))
         self.assertEqual((code, out), (4, "hi\n"))
         devices = self.client.get("/api/plugins/device/devices").json()["devices"]
@@ -231,7 +231,7 @@ class RouteTests(unittest.TestCase):
     # HTTP routes
     def test_info(self):
         r = self.client.get("/api/plugins/device/info").json()
-        self.assertEqual(r, {"plugin_version": "0.3.0", "hermes_version": "v0.22.7", "protocol_version": 3,
+        self.assertEqual(r, {"plugin_version": "0.4.1", "hermes_version": "v0.22.7", "protocol_version": 3,
                              "backend_id": "alice", "placeholder": self.cfg["placeholder"]})
 
     def test_binding_routes(self):
@@ -290,9 +290,11 @@ class RouteTests(unittest.TestCase):
         ws = self.connect(header=other)
         ws.receive_json()
         Device(ws, str(self.root)).start()
-        r = self.client.put("/api/plugins/device/sessions/s1/binding", json={"device_id": "d_lap",
-                                                                             "dir": str(self.root)})
-        self.assertEqual((r.status_code, r.json()["error"]), (409, "bound_to_other_device"))
+        for sid in ("s1", "c1"):
+            r = self.client.put(f"/api/plugins/device/sessions/{sid}/binding", json={"device_id": "d_lap",
+                                                                                   "dir": str(self.root)})
+            self.assertEqual((r.status_code, r.json()["error"]), (409, "bound_to_other_device"))
+        self.assertIsNone(self.hub.binding("c1"))
 
     def test_dirs_route(self):
         r = self.client.get("/api/plugins/device/devices/d_8f2c/dirs")
