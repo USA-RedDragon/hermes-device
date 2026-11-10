@@ -278,7 +278,7 @@ func runTUI(p Params, token string) (int, error) {
 		env = os.Environ()
 	}
 	argv := Argv(p.Hermes, p.Args)
-	//nolint:gosec // the launcher is the user's own configured Hermes
+	//nolint:gosec,noctx // the launcher is the user's own configured Hermes; chat forwards signals to it and waits, so no context may kill it
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = Env(env, p.Control.State.Splice, token)
 	cmd.Dir = p.Dir

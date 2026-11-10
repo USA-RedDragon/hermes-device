@@ -23,15 +23,17 @@ import (
 
 const (
 	secret = "control-secret"
-	token  = "per-run-token"
+	token  = "per-run-token" //nolint:gosec // test fixture, not a credential
+
+	hermesVersion = "0.22.7"
 )
 
 func TestParseVersion(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"Hermes Agent v0.22.7 (2026.9.24)\nInstall directory: /x\n":                             "0.22.7",
-		"Hermes Agent v0.22.7 · stable\n":                                                       "0.22.7",
-		"Hermes Agent v0.22.7 (2026.9.24) · stable · local b200f5bc60e3\nInstall method: git\n": "0.22.7",
+		"Hermes Agent v0.22.7 (2026.9.24)\nInstall directory: /x\n":                             hermesVersion,
+		"Hermes Agent v0.22.7 · stable\n":                                                       hermesVersion,
+		"Hermes Agent v0.22.7 (2026.9.24) · stable · local b200f5bc60e3\nInstall method: git\n": hermesVersion,
 		"Hermes Agent v0.22.7+3.gabc1234 (2026.9.24) · main":                                    "0.22.7+3.gabc1234",
 	}
 	for out, want := range cases {
@@ -47,7 +49,7 @@ func TestParseVersion(t *testing.T) {
 
 func TestSameVersion(t *testing.T) {
 	t.Parallel()
-	if !chat.SameVersion("0.22.7", "v0.22.7") || !chat.SameVersion("v0.22.7", "v0.22.7") {
+	if !chat.SameVersion(hermesVersion, "v0.22.7") || !chat.SameVersion("v0.22.7", "v0.22.7") {
 		t.Error("same release reported different")
 	}
 	if chat.SameVersion("0.22.6", "v0.22.7") || chat.SameVersion("0.22.7+3.gabc", "v0.22.7") {
@@ -74,7 +76,7 @@ func fakeHermes(t *testing.T, version, body string) string {
 	path := filepath.Join(t.TempDir(), "hermes")
 	script := "#!/bin/sh\nif [ \"$1\" = --version ]; then\n  printf 'Hermes Agent v%s (2026.9.24)\\nInstall directory: /opt/hermes\\n' '" +
 		version + "'\n  exit 0\nfi\n" + body + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { //nolint:gosec // the fake hermes script must be executable
 		t.Fatal(err)
 	}
 	return path
@@ -145,7 +147,7 @@ func TestRunStartsTUI(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	out := filepath.Join(t.TempDir(), "out")
-	hermes := fakeHermes(t, "0.22.7", `printf '%s\n' "$*" "$`+chat.GatewayURLEnv+`" "$(pwd -P)" > '`+out+`'
+	hermes := fakeHermes(t, hermesVersion, `printf '%s\n' "$*" "$`+chat.GatewayURLEnv+`" "$(pwd -P)" > '`+out+`'
 exit 7`)
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -202,7 +204,7 @@ func TestRunForwardsSignals(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	ready := filepath.Join(t.TempDir(), "ready")
-	hermes := fakeHermes(t, "0.22.7", `trap 'exit 3' INT
+	hermes := fakeHermes(t, hermesVersion, `trap 'exit 3' INT
 trap 'exit 42' TERM
 : > '`+ready+`'
 while :; do sleep 0.05; done`)
@@ -246,7 +248,7 @@ while :; do sleep 0.05; done`)
 func TestRunSignaledExitCode(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	hermes := fakeHermes(t, "0.22.7", "kill -KILL $$")
+	hermes := fakeHermes(t, hermesVersion, "kill -KILL $$")
 	code, err := chat.Run(t.Context(), f.params(hermes, ""))
 	if err != nil || code != 128+int(syscall.SIGKILL) {
 		t.Fatalf("Run = %d, %v", code, err)
@@ -269,7 +271,7 @@ func TestReadState(t *testing.T) {
 	if _, err := chat.ReadState(dir, "https://other.example.com"); !errors.Is(err, chat.ErrOtherHub) {
 		t.Fatalf("other hub: %v", err)
 	}
-	dead := exec.Command("true")
+	dead := exec.CommandContext(t.Context(), "true")
 	if err := dead.Run(); err != nil {
 		t.Fatal(err)
 	}
