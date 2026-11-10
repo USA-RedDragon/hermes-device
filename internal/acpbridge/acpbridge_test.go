@@ -1,4 +1,4 @@
-package acpbridge
+package acpbridge_test
 
 import (
 	"bufio"
@@ -17,9 +17,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/USA-RedDragon/hermes-device/internal/acpbridge"
 	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
 	"github.com/USA-RedDragon/hermes-device/protocol"
 	"github.com/coder/websocket"
+)
+
+const (
+	jsonRPC            = "2.0"
+	methodInitialize   = "initialize"
+	methodUpdate       = "session/update"
+	keyProtocolVersion = "protocolVersion"
+	keyJSONRPC         = "jsonrpc"
+	keySessionID       = "sessionId"
+	localSession       = "local-1"
 )
 
 type fakeHub struct {
@@ -126,7 +137,10 @@ func (a *agent) send(msg any) {
 	a.t.Helper()
 	data, ok := msg.(string)
 	if !ok {
-		b, _ := json.Marshal(msg)
+		b, err := json.Marshal(msg)
+		if err != nil {
+			a.t.Fatalf("agent encode: %v", err)
+		}
 		data = string(b)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -138,7 +152,7 @@ func (a *agent) send(msg any) {
 
 func (a *agent) answer(req map[string]any, result any) {
 	a.t.Helper()
-	a.send(map[string]any{"jsonrpc": "2.0", "id": req["id"], "result": result})
+	a.send(map[string]any{keyJSONRPC: jsonRPC, "id": req["id"], "result": result})
 }
 
 type editor struct {
@@ -158,7 +172,7 @@ func startBridge(t *testing.T, hub *fakeHub) *editor {
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	e := &editor{t: t, in: inW, lines: make(chan edLine, 64), done: make(chan error, 1)}
-	br := New(Options{
+	br := acpbridge.New(acpbridge.Options{
 		Hub: hubapi.New(hub.ts.URL, "hdt_test", "test"), In: inR, Out: outW,
 		MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond, PingInterval: 5 * time.Second,
 		ReadyTimeout: 300 * time.Millisecond,
@@ -248,10 +262,10 @@ func TestSessionNewBindsAndIDs(t *testing.T) {
 
 	ed.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
 	req := a.recv()
-	if id, _ := req["id"].(string); !strings.HasPrefix(id, IDPrefix) || req["method"] != "initialize" {
+	if id, _ := req["id"].(string); !strings.HasPrefix(id, acpbridge.IDPrefix) || req["method"] != methodInitialize {
 		t.Fatalf("agent got %v", req)
 	}
-	a.answer(req, map[string]any{"protocolVersion": 1})
+	a.answer(req, map[string]any{keyProtocolVersion: 1})
 	if r := ed.recv(); r["id"] != float64(1) || r["result"] == nil {
 		t.Fatalf("editor got %v", r)
 	}
@@ -264,9 +278,9 @@ func TestSessionNewBindsAndIDs(t *testing.T) {
 	if len(hub.bindLog()) != 0 {
 		t.Error("bound before the result")
 	}
-	a.answer(req, map[string]any{"sessionId": "local-1"})
+	a.answer(req, map[string]any{keySessionID: localSession})
 	r := ed.recv()
-	if r["id"] != "n1" || r["result"].(map[string]any)["sessionId"] != "local-1" {
+	if r["id"] != "n1" || asMap(t, r["result"])[keySessionID] != localSession {
 		t.Fatalf("editor got %v", r)
 	}
 	if got := hub.bindLog(); len(got) != 1 || got[0] != "local-1=/home/alice/src/app" {
@@ -276,7 +290,7 @@ func TestSessionNewBindsAndIDs(t *testing.T) {
 	a.send(`{"jsonrpc":"2.0","id":0,"method":"session/request_permission","params":{"sessionId":"local-1"}}`)
 	r = ed.recv()
 	pid, _ := r["id"].(string)
-	if !strings.HasPrefix(pid, IDPrefix) || r["method"] != "session/request_permission" {
+	if !strings.HasPrefix(pid, acpbridge.IDPrefix) || r["method"] != "session/request_permission" {
 		t.Fatalf("editor got %v", r)
 	}
 	ed.send(`{"jsonrpc":"2.0","id":"` + pid + `","result":{"outcome":{"outcome":"selected","optionId":"allow"}}}`)
@@ -285,7 +299,7 @@ func TestSessionNewBindsAndIDs(t *testing.T) {
 	}
 
 	ed.send(`{"jsonrpc":"2.0","id":"f1","method":"session/fork","params":{"sessionId":"local-1","cwd":"/home/alice/src/app/sub/","mcpServers":[]}}`)
-	a.answer(a.recv(), map[string]any{"sessionId": "local-2"})
+	a.answer(a.recv(), map[string]any{keySessionID: "local-2"})
 	if r := ed.recv(); r["id"] != "f1" || r["error"] != nil {
 		t.Fatalf("editor got %v", r)
 	}
@@ -294,16 +308,16 @@ func TestSessionNewBindsAndIDs(t *testing.T) {
 	}
 
 	a.send(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"local-1","update":{}}}`)
-	if r := ed.recv(); r["method"] != "session/update" {
+	if r := ed.recv(); r["method"] != methodUpdate {
 		t.Errorf("editor got %v", r)
 	}
 
 	ed.send(`{not json`)
-	if code, _ := errCode(ed.recv()); code != CodeParse {
+	if code, _ := errCode(ed.recv()); code != acpbridge.CodeParse {
 		t.Errorf("parse error code %d", code)
 	}
 	ed.send(`{"jsonrpc":"2.0","id":7,"method":"session/new","params":{"cwd":"rel","mcpServers":[]}}`)
-	if code, _ := errCode(ed.recv()); code != CodeInvalidParams {
+	if code, _ := errCode(ed.recv()); code != acpbridge.CodeInvalidParams {
 		t.Errorf("relative cwd code %d", code)
 	}
 }
@@ -316,17 +330,17 @@ func TestBindFailures(t *testing.T) {
 	a := hub.accept()
 
 	ed.send(`{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/home/alice/offline","mcpServers":[]}}`)
-	a.answer(a.recv(), map[string]any{"sessionId": "local-9"})
+	a.answer(a.recv(), map[string]any{keySessionID: "local-9"})
 	r := ed.recv()
 	code, msg := errCode(r)
-	if r["id"] != float64(1) || code != CodeInternal || !strings.HasPrefix(msg, "hermes-device: could not bind the session to /home/alice/offline: ") ||
+	if r["id"] != float64(1) || code != acpbridge.CodeInternal || !strings.HasPrefix(msg, "hermes-device: could not bind the session to /home/alice/offline: ") ||
 		!strings.Contains(msg, "device_offline") {
 		t.Errorf("editor got %v", r)
 	}
 
 	ed.send(`{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"local-3","cwd":"/home/alice/offline","mcpServers":[]}}`)
 	r = ed.recv()
-	if code, _ := errCode(r); r["id"] != float64(2) || code != CodeInternal {
+	if code, _ := errCode(r); r["id"] != float64(2) || code != acpbridge.CodeInternal {
 		t.Errorf("editor got %v", r)
 	}
 	ed.send(`{"jsonrpc":"2.0","id":3,"method":"session/resume","params":{"sessionId":"local-3","cwd":"/home/alice/src","mcpServers":[]}}`)
@@ -352,8 +366,8 @@ func TestInlining(t *testing.T) {
 	fifo := filepath.Join(dir, "fifo")
 	exact := filepath.Join(dir, "exact.txt")
 	must(t, os.WriteFile(small, []byte("package main\n// héllo\n"), 0o600))
-	must(t, os.WriteFile(big, []byte(strings.Repeat("a", MaxInline+1)), 0o600))
-	must(t, os.WriteFile(exact, []byte(strings.Repeat("b", MaxInline)), 0o600))
+	must(t, os.WriteFile(big, []byte(strings.Repeat("a", acpbridge.MaxInline+1)), 0o600))
+	must(t, os.WriteFile(exact, []byte(strings.Repeat("b", acpbridge.MaxInline)), 0o600))
 	must(t, os.WriteFile(binary, []byte{0xff, 0xfe, 0x00}, 0o600))
 	must(t, syscall.Mkfifo(fifo, 0o600))
 
@@ -362,16 +376,20 @@ func TestInlining(t *testing.T) {
 	a := hub.accept()
 	links := []string{"file://" + small, "file://" + exact, "file://" + big, "file://" + binary, "file://" + fifo,
 		"file://" + dir, "file://" + filepath.Join(dir, "missing"), "https://example.com/x", "file://other-host" + small}
-	var blocks []string
+	blocks := make([]string, 0, len(links))
 	for _, l := range links {
-		b, _ := json.Marshal(map[string]string{"type": "resource_link", "uri": l, "name": "x"})
+		b, err := json.Marshal(map[string]string{"type": "resource_link", "uri": l, "name": "x"})
+		must(t, err)
 		blocks = append(blocks, string(b))
 	}
 	ed.send(`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"s","prompt":[` + strings.Join(blocks, ",") + `,{"type":"text","text":"hi"}]}}`)
 	req := a.recv()
-	got := param(req, "prompt").([]any)
+	got, ok := param(req, "prompt").([]any)
+	if !ok {
+		t.Fatalf("prompt %v is not a list", param(req, "prompt"))
+	}
 	for i, l := range links {
-		blk := got[i].(map[string]any)
+		blk := asMap(t, got[i])
 		inlined := i < 2
 		if !inlined {
 			if blk["type"] != "resource_link" || blk["uri"] != l {
@@ -385,7 +403,7 @@ func TestInlining(t *testing.T) {
 			t.Errorf("%s: not inlined: type %v uri %v", l, blk["type"], res["uri"])
 		}
 	}
-	if blk := got[len(links)].(map[string]any); blk["text"] != "hi" {
+	if blk := asMap(t, got[len(links)]); blk["text"] != "hi" {
 		t.Errorf("text block %v", blk)
 	}
 }
@@ -404,53 +422,56 @@ func TestReconnectReplay(t *testing.T) {
 	a := hub.accept()
 
 	ed.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"zed"}}}`)
-	a.answer(a.recv(), map[string]any{"protocolVersion": 1})
+	a.answer(a.recv(), map[string]any{keyProtocolVersion: 1})
 	ed.recv()
 	ed.send(`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/home/alice/src/app","mcpServers":[]}}`)
-	a.answer(a.recv(), map[string]any{"sessionId": "local-1"})
+	a.answer(a.recv(), map[string]any{keySessionID: localSession})
 	ed.recv()
 	ed.send(`{"jsonrpc":"2.0","id":3,"method":"session/load","params":{"sessionId":"local-2","cwd":"/home/alice/src/lib","mcpServers":[]}}`)
 	req := a.recv()
 	a.send(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"local-2","update":{"sessionUpdate":"user_message_chunk"}}}`)
-	if r := ed.recv(); r["method"] != "session/update" {
+	if r := ed.recv(); r["method"] != methodUpdate {
 		t.Fatalf("history of an editor load not passed: %v", r)
 	}
 	a.answer(req, map[string]any{})
 	ed.recv()
 
 	a.send(`{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"local-1"}}`)
-	stale := ed.recv()["id"].(string)
+	stale, ok := ed.recv()["id"].(string)
+	if !ok {
+		t.Fatal("permission request reached the editor without a string id")
+	}
 	ed.send(`{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"local-1","prompt":[]}}`)
 	a.recv()
 
 	_ = a.conn.Close(websocket.StatusGoingAway, "gateway restart")
 	r := ed.recv()
-	if code, msg := errCode(r); r["id"] != float64(4) || code != CodeInternal || msg != MsgLost {
+	if code, msg := errCode(r); r["id"] != float64(4) || code != acpbridge.CodeInternal || msg != acpbridge.MsgLost {
 		t.Fatalf("in-flight prompt got %v", r)
 	}
 
 	b := hub.accept()
 	init := b.recv()
 	initID, _ := init["id"].(string)
-	if init["method"] != "initialize" || !strings.HasPrefix(initID, IDPrefix) {
+	if init["method"] != methodInitialize || !strings.HasPrefix(initID, acpbridge.IDPrefix) {
 		t.Fatalf("first message on reconnect %v", init)
 	}
 	if info, _ := param(init, "clientInfo").(map[string]any); info["name"] != "zed" {
 		t.Errorf("initialize params not the editor's: %v", init["params"])
 	}
-	b.answer(init, map[string]any{"protocolVersion": 1})
-	for _, want := range []struct{ sid, cwd string }{{"local-1", "/home/alice/src/app"}, {"local-2", "/home/alice/src/lib"}} {
+	b.answer(init, map[string]any{keyProtocolVersion: 1})
+	for _, want := range []struct{ sid, cwd string }{{localSession, "/home/alice/src/app"}, {"local-2", "/home/alice/src/lib"}} {
 		load := b.recv()
-		if load["method"] != "session/load" || param(load, "sessionId") != want.sid || param(load, "cwd") != want.cwd {
+		if load["method"] != "session/load" || param(load, keySessionID) != want.sid || param(load, "cwd") != want.cwd {
 			t.Fatalf("replay load %v", load)
 		}
 		if s, ok := param(load, "mcpServers").([]any); !ok || len(s) != 0 {
 			t.Errorf("mcpServers %v", param(load, "mcpServers"))
 		}
-		if id, _ := load["id"].(string); !strings.HasPrefix(id, IDPrefix) || id == initID {
+		if id, _ := load["id"].(string); !strings.HasPrefix(id, acpbridge.IDPrefix) || id == initID {
 			t.Errorf("load id %v", load["id"])
 		}
-		b.send(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": want.sid, "update": map[string]any{"sessionUpdate": "agent_message_chunk"}}})
+		b.send(map[string]any{keyJSONRPC: jsonRPC, "method": methodUpdate, "params": map[string]any{keySessionID: want.sid, "update": map[string]any{"sessionUpdate": "agent_message_chunk"}}})
 		b.answer(load, map[string]any{})
 	}
 	ed.none()
@@ -461,7 +482,7 @@ func TestReconnectReplay(t *testing.T) {
 		t.Fatalf("stale answer reached the new agent, or the prompt did not: %v", got)
 	}
 	b.send(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"local-1","update":{"sessionUpdate":"agent_message_chunk"}}}`)
-	if r := ed.recv(); r["method"] != "session/update" {
+	if r := ed.recv(); r["method"] != methodUpdate {
 		t.Errorf("live update after replay %v", r)
 	}
 	if len(hub.bindLog()) != 2 {
@@ -478,19 +499,19 @@ func TestReplayDropsFailedLoad(t *testing.T) {
 	a.answer(a.recv(), map[string]any{})
 	ed.recv()
 	ed.send(`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/home/alice","mcpServers":[]}}`)
-	a.answer(a.recv(), map[string]any{"sessionId": "local-1"})
+	a.answer(a.recv(), map[string]any{keySessionID: localSession})
 	ed.recv()
 
 	_ = a.conn.Close(websocket.StatusGoingAway, "")
 	b := hub.accept()
 	b.answer(b.recv(), map[string]any{})
 	load := b.recv()
-	b.send(map[string]any{"jsonrpc": "2.0", "id": load["id"], "error": map[string]any{"code": -32002, "message": "not found"}})
+	b.send(map[string]any{keyJSONRPC: jsonRPC, "id": load["id"], "error": map[string]any{"code": -32002, "message": "not found"}})
 	ed.none()
 
 	_ = b.conn.Close(websocket.StatusGoingAway, "")
 	c := hub.accept()
-	if init := c.recv(); init["method"] != "initialize" {
+	if init := c.recv(); init["method"] != methodInitialize {
 		t.Fatalf("got %v", init)
 	} else {
 		c.answer(init, map[string]any{})
@@ -562,7 +583,7 @@ func TestEditorIDs(t *testing.T) {
 		ed.send(`{"jsonrpc":"2.0","id":` + id + `,"method":"session/set_mode","params":{"sessionId":"s","modeId":"m"}}`)
 		req := a.recv()
 		ownID, _ := req["id"].(string)
-		if !strings.HasPrefix(ownID, IDPrefix) {
+		if !strings.HasPrefix(ownID, acpbridge.IDPrefix) {
 			t.Fatalf("agent got id %v", req["id"])
 		}
 		a.send(`{"jsonrpc":"2.0","id":"` + ownID + `","result":{}}`)
@@ -573,7 +594,7 @@ func TestEditorIDs(t *testing.T) {
 		}
 	}
 	ed.send(`[{"jsonrpc":"2.0","id":1,"method":"initialize"}]`)
-	if code, _ := errCode(ed.recv()); code != CodeInvalidReq {
+	if code, _ := errCode(ed.recv()); code != acpbridge.CodeInvalidReq {
 		t.Errorf("batch code %d", code)
 	}
 }
@@ -585,7 +606,7 @@ func TestReadyTimeout(t *testing.T) {
 	hub.status = http.StatusBadGateway
 	ed := startBridge(t, hub)
 	ed.send(`{"jsonrpc":"2.0","id":1,"method":"session/list","params":{}}`)
-	if code, msg := errCode(ed.recv()); code != CodeInternal || msg != MsgLost {
+	if code, msg := errCode(ed.recv()); code != acpbridge.CodeInternal || msg != acpbridge.MsgLost {
 		t.Errorf("got %d %q", code, msg)
 	}
 }
@@ -599,7 +620,7 @@ func TestSessionClose(t *testing.T) {
 	a.answer(a.recv(), map[string]any{})
 	ed.recv()
 	ed.send(`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/home/alice","mcpServers":[]}}`)
-	a.answer(a.recv(), map[string]any{"sessionId": "local-1"})
+	a.answer(a.recv(), map[string]any{keySessionID: localSession})
 	ed.recv()
 	ed.send(`{"jsonrpc":"2.0","id":3,"method":"session/close","params":{"sessionId":"local-1"}}`)
 	a.answer(a.recv(), map[string]any{})
@@ -611,4 +632,14 @@ func TestSessionClose(t *testing.T) {
 	if got := b.recv(); got["method"] != "session/list" {
 		t.Errorf("a closed session was loaded again: %v", got)
 	}
+}
+
+// asMap returns v as a JSON object, failing the test when it is not one.
+func asMap(t *testing.T, v any) map[string]any {
+	t.Helper()
+	m, ok := v.(map[string]any)
+	if !ok {
+		t.Fatalf("%v (%T) is not a JSON object", v, v)
+	}
+	return m
 }

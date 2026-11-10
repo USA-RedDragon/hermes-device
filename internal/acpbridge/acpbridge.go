@@ -51,6 +51,9 @@ const MsgLost = "hermes-device: connection to Hermes lost; retry"
 // IDPrefix starts the ids of requests the bridge sends itself.
 const IDPrefix = "hermes-device-"
 
+// jsonNull is the JSON encoding of null.
+const jsonNull = "null"
+
 const (
 	stableAfter = 30 * time.Second
 	callTimeout = 60 * time.Second
@@ -334,8 +337,11 @@ func (b *Bridge) forward(ctx context.Context, m object, p pendingReq, withID boo
 			m["id"] = mustJSON(own)
 		}
 		b.mu.Unlock()
-		data, _ := json.Marshal(m)
-		if err := conn.Write(ctx, websocket.MessageText, data); err != nil && withID {
+		data, err := json.Marshal(m)
+		if err == nil {
+			err = conn.Write(ctx, websocket.MessageText, data)
+		}
+		if err != nil && withID {
 			b.mu.Lock()
 			_, ok := b.pending[own]
 			delete(b.pending, own)
@@ -421,7 +427,7 @@ func (b *Bridge) connect(ctx context.Context) error {
 			}
 		}
 		if ctx.Err() != nil {
-			return nil
+			return nil //nolint:nilerr // the caller stopped the bridge; the leg error is the shutdown itself
 		}
 		if ferr := fatalError(err); ferr != nil {
 			return ferr
@@ -440,7 +446,7 @@ func fatalError(err error) error {
 	if errors.Is(err, hubapi.ErrUnauthorized) {
 		return hubapi.ErrUnauthorized
 	}
-	switch websocket.CloseStatus(err) {
+	switch websocket.CloseStatus(err) { //nolint:exhaustive // close codes are an open set; only these two are fatal
 	case protocol.CloseUnauthorized:
 		return hubapi.ErrUnauthorized
 	case protocol.CloseUnsupportedVersion:
@@ -527,7 +533,10 @@ func (b *Bridge) replay(ctx context.Context, conn *websocket.Conn, procDone <-ch
 		return fmt.Errorf("initialize failed: %s", e)
 	}
 	for _, s := range sessions {
-		params, _ := json.Marshal(map[string]any{"sessionId": s.id, "cwd": s.cwd, "mcpServers": []any{}})
+		params, err := json.Marshal(map[string]any{"sessionId": s.id, "cwd": s.cwd, "mcpServers": []any{}})
+		if err != nil {
+			return err
+		}
 		resp, err := b.call(ctx, conn, procDone, methodLoad, params, s.id)
 		if err != nil {
 			return err
@@ -659,13 +668,13 @@ func (b *Bridge) fromAgent(ctx context.Context, gen uint64, data []byte) {
 func (b *Bridge) finish(ctx context.Context, p pendingReq, m object) {
 	_, failed := m["error"]
 	result, hasResult := m["result"]
-	ok := !failed && hasResult && string(result) != "null"
+	ok := !failed && hasResult && string(result) != jsonNull
 	switch p.method {
 	case methodInitialize:
 		if ok {
 			b.mu.Lock()
 			b.init = p.params
-			if len(b.init) == 0 || string(b.init) == "null" {
+			if len(b.init) == 0 || string(b.init) == jsonNull {
 				b.init = json.RawMessage("{}")
 			}
 			b.mu.Unlock()
@@ -765,14 +774,14 @@ func (b *Bridge) writeEditor(data []byte) {
 
 func errorMsg(id json.RawMessage, code int, message string) []byte {
 	if len(id) == 0 {
-		id = json.RawMessage("null")
+		id = json.RawMessage(jsonNull)
 	}
 	return mustJSON(map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": code, "message": message}})
 }
 
 func hasID(m object) bool {
 	id, ok := m["id"]
-	return ok && string(id) != "null"
+	return ok && string(id) != jsonNull
 }
 
 func params(m object) object {
