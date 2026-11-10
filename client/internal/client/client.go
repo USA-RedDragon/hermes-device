@@ -35,6 +35,9 @@ const (
 	writeTimeout = 30 * time.Second
 	// A connection that stayed up this long resets the backoff.
 	stableAfter = 30 * time.Second
+	// Pings detect a server that vanished without closing the socket.
+	pingInterval = 30 * time.Second
+	pingTimeout  = 15 * time.Second
 )
 
 // Client is the device side of the protocol.
@@ -158,6 +161,7 @@ func (c *Client) serveOnce(ctx context.Context) error {
 		return fmt.Errorf("%w: %s", ErrUnexpectedMessage, truncate(data))
 	}
 	slog.Info("Connected", "url", c.cfg.Server.URL, "device", c.cfg.Device.Name, "roots", c.allow.Roots())
+	s.wg.Go(func() { keepAlive(connCtx, conn) })
 
 	for {
 		_, data, err := conn.Read(connCtx)
@@ -188,6 +192,26 @@ func (c *Client) serveOnce(ctx context.Context) error {
 			_ = s.send(connCtx, protocol.Envelope{Type: protocol.TypePong})
 		default:
 			slog.Debug("Ignoring message", "type", env.Type)
+		}
+	}
+}
+
+func keepAlive(ctx context.Context, conn *websocket.Conn) {
+	t := time.NewTicker(pingInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pctx, cancel := context.WithTimeout(ctx, pingTimeout)
+			err := conn.Ping(pctx)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				slog.Warn("Ping failed; dropping connection", "error", err)
+				conn.CloseNow()
+				return
+			}
 		}
 	}
 }

@@ -117,10 +117,13 @@ func Start(shell string, req Request, out func([]byte)) (*Process, error) {
 		}
 		_ = pr.Close()
 		p.mu.Lock()
-		p.result = Result{Code: exitCode(err), Killed: p.killed}
-		if p.killed {
-			p.result.Code = ExitKilled
+		code := exitCode(err)
+		// A kill that lost the race to a natural exit keeps the real exit code.
+		killed := p.killed && signaled(err)
+		if killed {
+			code = ExitKilled
 		}
+		p.result = Result{Code: code, Killed: killed}
 		p.mu.Unlock()
 		close(p.done)
 	}()
@@ -139,6 +142,16 @@ func exitCode(err error) int {
 		return ee.ExitCode()
 	}
 	return 1
+}
+
+func signaled(err error) bool {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
+			return ws.Signaled() || ws.ExitStatus() == 128+int(syscall.SIGTERM)
+		}
+	}
+	return false
 }
 
 // Kill sends SIGTERM to the process group, then SIGKILL after KillGrace.
