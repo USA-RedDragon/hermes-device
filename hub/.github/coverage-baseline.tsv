@@ -12,7 +12,7 @@ internal/service/manage.go	119	114
 internal/service/service.go	473	414
 internal/store/store.go	58	46
 internal/telegram/api.go	69	56
-internal/telegram/bot.go	364	261
+internal/telegram/bot.go	387	280
 internal/telegram/config.go	16	16
 internal/telegram/format.go	114	111
 internal/telegram/render.go	184	139
