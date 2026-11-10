@@ -29,9 +29,10 @@ const (
 func TestParseVersion(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"Hermes Agent v0.22.7 (2026.9.24)\nInstall directory: /x\n": "0.22.7",
-		"Hermes Agent v0.22.7 · stable\n":                           "0.22.7",
-		"Hermes Agent v0.22.7+3.gabc1234 (2026.9.24) · main":        "0.22.7+3.gabc1234",
+		"Hermes Agent v0.22.7 (2026.9.24)\nInstall directory: /x\n":                             "0.22.7",
+		"Hermes Agent v0.22.7 · stable\n":                                                       "0.22.7",
+		"Hermes Agent v0.22.7 (2026.9.24) · stable · local b200f5bc60e3\nInstall method: git\n": "0.22.7",
+		"Hermes Agent v0.22.7+3.gabc1234 (2026.9.24) · main":                                    "0.22.7+3.gabc1234",
 	}
 	for out, want := range cases {
 		got, err := chat.ParseVersion(out)
