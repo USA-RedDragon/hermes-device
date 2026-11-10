@@ -29,7 +29,7 @@ Your PC dials only the hub, over HTTPS and WebSockets. The hub checks the device
 - the gateway leg (for `chat`) to the gateway's session socket;
 - the ACP leg (for editors) to `acp-host` in the Hermes pod.
 
-A session is bound to a device and a directory. Every command of a bound session runs on that device, in that directory, and only inside the roots you allow in the config. The session's server-side working directory is a placeholder directory in the pod. A session that was ever bound never falls back to the pod shell, also after compression, branching or a subagent. Sessions that were never bound (web or Telegram sessions, for example) keep running in the pod.
+A session is bound to a device and a directory. Every command of a bound session runs on that device, in that directory, and only inside the roots you allow in the config. The session's server-side working directory is a placeholder directory in the pod. A session that was ever bound never falls back to the pod shell, also after compression, branching or a subagent. Sessions that were never bound (web or Telegram sessions, for example) run where the plugin's `fallback` setting says: in the pod (`local`, the default), nowhere (`refuse`), or in a per-person sandbox pod (`device`, see [Agent sandbox](#agent-sandbox)).
 
 ### Pairing
 

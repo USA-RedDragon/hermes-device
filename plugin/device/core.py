@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
 import hmac
 import importlib.util
 import json
@@ -69,6 +70,7 @@ MAX_LINEAGE_HOPS = 100
 BINDINGS_VERSION = 2
 MAX_DIR_ENTRIES = 500
 MAX_READ_BYTES = 16 * 1024 * 1024
+DEFAULT_FALLBACK_ROOT = "/work"
 
 STATE_BOUND = "bound"
 STATE_NEVER_BOUND = "never_bound"
@@ -136,11 +138,33 @@ def placeholder() -> str:
 
 
 def fallback() -> str:
+    """``local``, ``refuse`` or ``device`` (section 8.1). A bad value refuses never-bound sessions."""
     value = settings().get("fallback", "local")
     if value in ("local", "refuse"):
         return value
-    logger.error("device: fallback %r is not local or refuse; refusing never-bound sessions", value)
+    if value == "device":
+        if fallback_device():
+            return value
+        logger.error("device: fallback device needs the fallback_device setting; refusing never-bound sessions")
+        return "refuse"
+    logger.error("device: fallback %r is not local, refuse or device; refusing never-bound sessions", value)
     return "refuse"
+
+
+def fallback_device() -> str:
+    """The sandbox device (id or name) that never-bound sessions run on with ``fallback: device``."""
+    value = settings().get("fallback_device")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def fallback_root() -> str:
+    """The sandbox directory that holds one working directory per session lineage, or "" when
+    the setting is not an absolute path."""
+    value = settings().get("fallback_root", DEFAULT_FALLBACK_ROOT)
+    if not isinstance(value, str) or not posixpath.isabs(value.strip()):
+        logger.error("device: fallback_root %r is not an absolute path; never-bound sessions fail closed", value)
+        return ""
+    return posixpath.normpath(value.strip())
 
 
 def dev_static_tokens() -> bool:
@@ -250,6 +274,7 @@ class DeviceProcess:
         self._finished = False
         self.refused = False
         self.error = ""
+        self.cwd = ""
         self._lock = threading.Lock()
         threading.Thread(target=self._pump, name=f"device-pump-{request_id[:8]}", daemon=True).start()
 
@@ -390,6 +415,10 @@ class Resolution:
     via: Optional[str] = None
     binding: Optional[Binding] = None
     reason: str = ""
+    # The lineage root of a never-bound session; it names the session's sandbox directory.
+    root: Optional[str] = None
+    # True when the session is served (or would be) by the fallback sandbox device.
+    sandbox: bool = False
 
     def to_json(self) -> dict:
         return {"state": self.state, "via": self.via}
@@ -425,6 +454,8 @@ class Hub:
         self._state_error = ""
         self._bindings: dict[str, Binding] = {}
         self._ever_bound: set[str] = set()
+        self._sandbox_dirs: dict[tuple[str, str], str] = {}
+        self._sandbox_ready: set[tuple[str, str]] = set()
         self._load()
 
     # persistence
@@ -589,7 +620,55 @@ class Hub:
             code = 1
         proc.refused = bool(error) and code == EXIT_REFUSED
         proc.error = error
+        if proc.refused and proc.cwd:
+            self._forget_sandbox_dir(conn, proc.cwd)
         proc.finish(code, f"[{error}]" if error else "")
+
+    # sandbox directories (section 8.3, fallback device)
+    def note_sandbox_dir(self, device_id: str, directory: str, mkdir_cwd: str) -> None:
+        """Record a sandbox session directory, created with mkdir -p (run in ``mkdir_cwd``, a
+        device root) before the first command that runs in it or below it on each connection of
+        the device, and again after the device refused a command there."""
+        with self._lock:
+            self._sandbox_dirs[(device_id, directory)] = mkdir_cwd
+
+    def _sandbox_dir_of(self, device_id: str, cwd: str) -> Optional[tuple[str, str]]:
+        """``(sandbox dir, mkdir cwd)`` of the sandbox directory that holds ``cwd``. Call with the lock."""
+        probe = posixpath.normpath(cwd)
+        while True:
+            mkdir_cwd = self._sandbox_dirs.get((device_id, probe))
+            if mkdir_cwd is not None:
+                return probe, mkdir_cwd
+            parent = posixpath.dirname(probe)
+            if parent == probe:
+                return None
+            probe = parent
+
+    def _forget_sandbox_dir(self, conn: DeviceConn, cwd: str) -> None:
+        """The device refused a command in ``cwd`` (for example, the agent deleted its sandbox
+        directory): make the next command create the directory again."""
+        with self._lock:
+            found = self._sandbox_dir_of(conn.device_id, cwd)
+            if found is not None:
+                self._sandbox_ready.discard((conn.conn_id, found[0]))
+
+    def _ensure_sandbox_dir(self, conn: DeviceConn, device_id: str, cwd: str) -> Optional[DeviceProcess]:
+        """None when ``cwd`` is in no sandbox directory or the directory exists; else a finished
+        process that reports why it could not be created."""
+        with self._lock:
+            found = self._sandbox_dir_of(device_id, cwd)
+            if found is None or (conn.conn_id, found[0]) in self._sandbox_ready:
+                return None
+        directory, root = found
+        code, out, proc = self.run(device_id, "mkdir -p -- " + shlex.quote(directory), root)
+        if code != 0:
+            why = proc.error or out.strip() or f"exit {code}"
+            return finished_process(EXIT_LOST if code == EXIT_LOST else EXIT_REFUSED,
+                                    f"[hermes-device: could not create the sandbox directory {directory} on device "
+                                    f"{device_id}: {why}]")
+        with self._lock:
+            self._sandbox_ready.add((conn.conn_id, directory))
+        return None
 
     # execution
     def start(self, device_id: str, *, cmd: str, cwd: str, login: bool, timeout: float,
@@ -599,6 +678,9 @@ class Hub:
             return finished_process(EXIT_LOST, f"[device {device_id} is not connected; the command did not run]")
         if not posixpath.isabs(cwd or ""):
             return finished_process(EXIT_REFUSED, f"[hermes-device: no device directory for this command ({cwd!r})]")
+        failed = self._ensure_sandbox_dir(conn, device_id, cwd)
+        if failed is not None:
+            return failed
         rid = uuid.uuid4().hex
 
         def kill() -> bool:
@@ -611,6 +693,7 @@ class Hub:
                 return False
 
         proc = DeviceProcess(rid, kill)
+        proc.cwd = cwd
         with conn.lock:
             conn.pending[rid] = proc
         msg = {"type": TYPE_EXEC, "id": rid, "cmd": cmd, "cwd": cwd, "login": bool(login), "timeout": timeout}
@@ -777,7 +860,7 @@ class Hub:
                     return Resolution(STATE_FAIL_CLOSED, session_id, reason="was bound to a device and is not now")
                 if state_error:
                     return Resolution(STATE_FAIL_CLOSED, session_id, reason=f"cannot be checked: {state_error}")
-                return Resolution(STATE_NEVER_BOUND, session_id)
+                return Resolution(STATE_NEVER_BOUND, session_id, root=cur)
             cur = parent
         return Resolution(STATE_FAIL_CLOSED, session_id,
                           reason=f"has a lineage longer than {MAX_LINEAGE_HOPS} hops")
@@ -785,11 +868,17 @@ class Hub:
 
 def fail_closed_message(res: Resolution) -> str:
     sid = res.session_id or "(none)"
+    if res.sandbox:
+        return (f"hermes-device: session {sid} {res.reason or 'runs in the sandbox device'}, so this did not "
+                f"run. Sessions that are not bound to a device run only in the sandbox, never on the server. Try "
+                f"again when the sandbox is back, or bind the session with /device <device> <dir>.")
     return (f"hermes-device: session {sid} {res.reason or 'cannot be served'}, so this does not run on the "
             f"server. Rebind it with /device <device> <dir>.")
 
 
 def refusal_message(res: Resolution) -> str:
+    if res.state == STATE_NEVER_BOUND and fallback() == "device":
+        return fail_closed_message(sandbox_resolution(res))
     if res.state == STATE_NEVER_BOUND:
         return (f"hermes-device: session {res.session_id or '(none)'} is not bound to a device and this server "
                 f"refuses unbound sessions (fallback: refuse). Bind it with /device <device> <dir>.")
@@ -903,12 +992,68 @@ def is_placeholder_cwd(cwd: str) -> bool:
 
 def resolve_session(session_id: str, cwd: Optional[str] = None) -> Resolution:
     """Section 8.3 for a running turn: lineage resolution, plus the placeholder rule (a session
-    whose cwd is the placeholder and that has no binding fails closed)."""
+    whose cwd is the placeholder and that has no binding fails closed), plus the implicit
+    sandbox binding of ``fallback: device``."""
     res = hub().resolve(session_id)
     if res.state == STATE_NEVER_BOUND and any(is_placeholder_cwd(c) for c in (session_cwd(), cwd or "")):
         return Resolution(STATE_FAIL_CLOSED, session_id,
                           reason="was created for a device (its cwd is the placeholder) but is not bound")
+    if res.state == STATE_NEVER_BOUND and fallback() == "device":
+        return sandbox_resolution(res)
     return res
+
+
+_SANDBOX_NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}")
+
+
+def sandbox_dir_name(session_id: str) -> str:
+    """The directory name of a lineage root in the sandbox: the session id when it is a safe
+    file name, else a cleaned prefix, "~" and a hash of the id. Safe names never hold "~", so
+    distinct ids never share a directory."""
+    if _SANDBOX_NAME.fullmatch(session_id):
+        return session_id
+    clean = re.sub(r"[^A-Za-z0-9._-]", "_", session_id)[:64].lstrip(".") or "session"
+    return f"{clean}~{hashlib.sha256(session_id.encode('utf-8', 'surrogatepass')).hexdigest()[:12]}"
+
+
+def sandbox_resolution(res: Resolution) -> Resolution:
+    """The implicit binding of a never-bound session to its directory on the sandbox device
+    (``fallback: device``), or a sandbox fail-closed resolution when the sandbox cannot serve it.
+    The binding is computed, not stored: it never enters ``bindings`` or ``ever_bound``, so an
+    explicit bind still works and wins."""
+    sid, target, root = res.session_id, fallback_device(), fallback_root()
+    if not target or not root:
+        return Resolution(STATE_FAIL_CLOSED, sid, sandbox=True,
+                          reason="has no sandbox: fallback_device or fallback_root is not set correctly")
+    try:
+        conn = hub().device(target)
+        if conn is None and hub().seen(target):
+            raise DeviceError(f"device {target} is not connected")
+        if conn is None:
+            conn = hub().find_device(target)
+    except DeviceError as exc:
+        why = f"is ambiguous ({exc})" if "several" in str(exc) else "is not connected"
+        return Resolution(STATE_FAIL_CLOSED, sid, sandbox=True, reason=f"runs in the sandbox device {target}, which {why}")
+    device_root = next((r for r in conn.roots if is_under(root, r)), None)
+    if device_root is None:
+        return Resolution(STATE_FAIL_CLOSED, sid, sandbox=True,
+                          reason=f"runs in the sandbox device {conn.name} [{conn.device_id}], whose roots "
+                                 f"({', '.join(conn.roots) or 'none'}) do not hold fallback_root {root}")
+    lineage_root = res.root or sid
+    directory = posixpath.join(root, sandbox_dir_name(lineage_root))
+    generation = "sb" + hashlib.sha256(f"{conn.device_id}\0{directory}".encode()).hexdigest()[:10]
+    hub().note_sandbox_dir(conn.device_id, directory, device_root)
+    binding = Binding(session_id=lineage_root, device_id=conn.device_id, dir=directory, generation=generation,
+                      bound_at=0.0)
+    return Resolution(STATE_BOUND, sid, via=lineage_root, binding=binding, root=lineage_root, sandbox=True)
+
+
+def where(res: Resolution) -> str:
+    """How a bound resolution reads in messages."""
+    b = res.binding
+    if res.sandbox:
+        return f"runs in the sandbox device {b.device_id if b else fallback_device()}"
+    return f"is bound to device {b.device_id if b else '?'}"
 
 
 def resolve_current() -> Resolution:
@@ -1277,6 +1422,10 @@ class DeviceRouterEnvironment(BaseEnvironment):
         b = res.binding
         conn = hub().device(b.device_id)
         if conn is None:
+            if res.sandbox:
+                return {"output": f"[the sandbox device {b.device_id} is not connected; session {res.session_id} "
+                                  f"runs there ({b.dir}), so the command did not run. It never runs on the "
+                                  f"server.]", "returncode": EXIT_LOST}
             return {"output": f"[device {b.device_id} is not connected; session {res.session_id} is bound to it "
                               f"({b.dir}), so the command did not run]", "returncode": EXIT_LOST}
         key = (b.session_id, b.generation)
@@ -1581,7 +1730,9 @@ def _make_managed_turn_text(original):
             if getattr(policy, "ignore_user_config", False):
                 res = await asyncio.to_thread(resolve_session, sid, str(getattr(policy, "cwd", "") or ""))
                 if not runs_on_pod(res):
-                    return None, (f"{refusal_message(res)} Safe-mode and config-bypass sessions do not load the "
+                    head = (f"hermes-device: session {sid} {where(res)}, so this does not run on the server."
+                            if res.state == STATE_BOUND else refusal_message(res))
+                    return None, (f"{head} Safe-mode and config-bypass sessions do not load the "
                                   f"device plugin, so they cannot serve device sessions.")
             return await original(authority, row, policy)
         finally:
@@ -1777,12 +1928,12 @@ def _guard(tool_name: str, args: dict, task_id: str) -> Optional[dict]:
         return None
     b = res.binding
     if tool_name in POD_ONLY_TOOLS:
-        return _block(f"hermes-device: session {res.session_id} is bound to device {b.device_id}; {tool_name} "
+        return _block(f"hermes-device: session {res.session_id} {where(res)}; {tool_name} "
                       f"creates work that runs on the server, so it is refused for device sessions.")
     from tools.file_tools_paths import _terminal_env_type_for_task
     env_type = _terminal_env_type_for_task(task_id or "default")
     if env_type != PLUGIN_ID:
-        return _block(f"hermes-device: session {res.session_id} is bound to device {b.device_id}, but its terminal "
+        return _block(f"hermes-device: session {res.session_id} {where(res)}, but its terminal "
                       f"backend is {env_type!r}, not {PLUGIN_ID!r}, so tools would run on the server. Start a new "
                       f"session with terminal.backend: {PLUGIN_ID}.")
     cwd = hub().device_cwd(b)
@@ -1850,7 +2001,10 @@ def apply_safe_root_policy(environ=None) -> list[str]:
         return []
     pod = pod_writable_paths()
     bad = set()
-    for root in device_write_roots():
+    roots = device_write_roots()
+    if fallback() == "device" and fallback_root():
+        roots.append(fallback_root())
+    for root in roots:
         norm = posixpath.normpath(os.path.expanduser(root))
         hit = next((p for p in pod if is_under(norm, p) or is_under(p, norm)), None)
         if hit:
@@ -1881,6 +2035,13 @@ def device_command(raw_args: str = "", session_id: str = "", **_kwargs) -> str:
     args = (raw_args or "").strip().split(maxsplit=1)
     if not args:
         res = h.resolve(sid)
+        if res.state == STATE_NEVER_BOUND and fallback() == "device":
+            res = resolve_session(sid)
+            if res.state == STATE_BOUND and res.sandbox:
+                conn = h.device(res.binding.device_id)
+                return (f"Session {sid} is not bound to a device, so it runs in the sandbox device "
+                        f"{conn.name if conn else '?'} [{res.binding.device_id}] in {res.binding.dir}. Bind it to "
+                        f"one of your devices with /device <device> <dir>.")
         if res.state == STATE_BOUND:
             b = res.binding
             conn = h.device(b.device_id)
@@ -1904,6 +2065,8 @@ def device_command(raw_args: str = "", session_id: str = "", **_kwargs) -> str:
         except DeviceError as exc:
             return f"Not unbound: {exc}"
         if not removed:
+            if res.state == STATE_NEVER_BOUND and fallback() == "device":
+                return "No device was bound. This session runs in the sandbox device until you bind it."
             return "No device was bound."
         return (f"Device binding of session {target} removed. This session now fails closed until you bind it "
                 f"again with /device <device> <dir>.")

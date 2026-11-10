@@ -713,6 +713,233 @@ class CommandTests(Base):
         self.assertIn("Not bound", core.device_command(f"nope {self.root}", session_id=self.session))
 
 
+class SandboxTests(Base):
+    """``fallback: device``: never-bound sessions run on the sandbox device, never on the pod."""
+
+    def setUp(self):
+        super().setUp()
+        self.work = self.base / "work"
+        (self.work / ".ssh").mkdir(parents=True)
+        self.cfg.update(fallback="device", fallback_device="d_sb", fallback_root=str(self.work))
+        self.sandbox = FakeDevice(self.hub, str(self.work), str(self.devtmp), str(self.work), device_id="d_sb",
+                                  name="sandbox")
+        self.addCleanup(self.sandbox.close)
+        self.sdir = self.work / self.session
+
+    def mkdirs(self, device=None):
+        return [m for m in (device or self.sandbox).execs if m["cmd"].startswith("mkdir -p -- ")]
+
+    def test_never_bound_runs_in_its_sandbox_dir(self):
+        env = self.env()
+        r = env.execute("pwd", cwd=str(self.placeholder))
+        self.assertEqual((r["returncode"], r["output"].strip()), (0, str(self.sdir)))
+        self.assertTrue(self.sdir.is_dir())
+        self.assertIsNone(env._local)
+        self.assertFalse(env.uses_host_filesystem)
+        self.assertEqual(self.device.execs, [])
+        self.assertEqual(env.get_temp_dir(), str(self.devtmp))
+        env.execute("mkdir -p a && cd a")
+        self.assertEqual(env.cwd, str(self.sdir / "a"))
+        self.assertEqual(len(self.mkdirs()), 1)
+        self.assertEqual(self.mkdirs()[0]["cwd"], str(self.work))
+
+    def test_not_recorded_as_a_binding(self):
+        self.env().execute("true")
+        self.assertIsNone(self.hub.binding(self.session))
+        self.assertFalse(self.hub.ever_bound(self.session))
+        self.assertFalse((self.base / "state" / "bindings.json").exists())
+        self.assertEqual(self.hub.resolve(self.session).state, core.STATE_NEVER_BOUND)
+        res = core.resolve_current()
+        self.assertEqual((res.state, res.sandbox, res.via, res.binding.dir),
+                         (core.STATE_BOUND, True, self.session, str(self.sdir)))
+
+    def test_lineage_shares_the_root_dir(self):
+        self.store.rows.update({"c1": "sess-1", "c2": "c1", "other": None})
+        self.session = "c2"
+        self.assertEqual(self.env().execute("pwd")["output"].strip(), str(self.sdir))
+        self.session = "other"
+        self.assertEqual(self.env().execute("pwd")["output"].strip(), str(self.work / "other"))
+
+    def test_offline_fails_and_never_runs_on_pod(self):
+        env = self.env()
+        env.execute("true")
+        self.hub.detach(self.sandbox.conn)
+        r = env.execute("pwd")
+        self.assertEqual(r["returncode"], 1)
+        self.assertIn("sandbox device d_sb, which is not connected", r["output"])
+        self.assertIn("never on the server", r["output"])
+        self.assertIsNone(env._local)
+        self.assertFalse(env.uses_host_filesystem)
+
+    def test_dropped_while_running_is_lost(self):
+        env = self.env()
+        env.execute("true")
+        res = core.resolve_current()
+        self.hub.detach(self.sandbox.conn)
+        with mock.patch.object(env, "_resolve", lambda: res):
+            r = env.execute("pwd")
+        self.assertEqual(r["returncode"], 255)
+        self.assertIn("sandbox device d_sb is not connected", r["output"])
+
+    def test_by_name_and_ambiguous_name(self):
+        self.cfg["fallback_device"] = "sandbox"
+        self.assertEqual(self.env().execute("pwd")["output"].strip(), str(self.sdir))
+        twin = FakeDevice(self.hub, str(self.work), str(self.devtmp), str(self.work), device_id="d_sb2",
+                          name="sandbox")
+        self.addCleanup(twin.close)
+        r = self.env().execute("pwd")
+        self.assertEqual(r["returncode"], 1)
+        self.assertIn("ambiguous", r["output"])
+
+    def test_missing_settings_refuse(self):
+        self.cfg["fallback_device"] = ""
+        self.assertEqual(core.fallback(), "refuse")
+        self.assertIn("refuses unbound sessions", self.env().execute("pwd")["output"])
+        self.cfg.update(fallback_device="d_sb", fallback_root="work")
+        r = self.env().execute("pwd")
+        self.assertEqual(r["returncode"], 1)
+        self.assertIn("no sandbox", r["output"])
+        self.cfg["fallback_root"] = str(self.outside)
+        self.assertIn("do not hold fallback_root", self.env().execute("pwd")["output"])
+        self.assertEqual(self.sandbox.execs, [])
+
+    def test_explicit_bind_wins_and_moves_to_the_pc(self):
+        env = self.env()
+        self.assertEqual(env.execute("pwd")["output"].strip(), str(self.sdir))
+        out = core.device_command(f"pc {self.root}", session_id=self.session)
+        self.assertIn("now runs commands on pc [d_pc]", out)
+        self.assertEqual(env.execute("pwd")["output"].strip(), str(self.root))
+        self.assertTrue(self.hub.ever_bound(self.session))
+        self.hub.unbind(self.session)
+        r = env.execute("pwd")
+        self.assertEqual(r["returncode"], 1)
+        self.assertIn("was bound to a device", r["output"])
+
+    def test_reconnect_creates_the_dir_again(self):
+        env = self.env()
+        env.execute("true")
+        self.sdir.rmdir()
+        newer = self.sandbox.make_conn("d_sb", "sandbox", str(self.devtmp), str(self.work))
+        self.hub.attach(newer)
+        self.sandbox.conn = newer
+        self.assertEqual(env.execute("pwd")["output"].strip(), str(self.sdir))
+        self.assertEqual(len(self.mkdirs()), 2)
+
+    def test_mkdir_failure_is_reported(self):
+        (self.work / "blocker").write_text("x")
+        self.session = "blocker"
+        self.store.rows["blocker"] = None
+        r = self.env().execute("pwd")
+        self.assertNotEqual(r["returncode"], 0)
+        self.assertIn("could not create the sandbox directory", r["output"])
+
+    def test_placeholder_cwd_still_fails_closed(self):
+        with mock.patch.object(core, "session_cwd", lambda: str(self.placeholder)):
+            r = self.env().execute("pwd")
+        self.assertIn("placeholder", r["output"])
+        self.assertEqual(self.sandbox.execs, [])
+
+    def test_dir_names(self):
+        self.assertEqual(core.sandbox_dir_name("20261110_120000_ab12"), "20261110_120000_ab12")
+        for odd in ("..", ".", "a/b", "../x", "", "x" * 200, "é"):
+            name = core.sandbox_dir_name(odd)
+            self.assertRegex(name, r"^[A-Za-z0-9_-][A-Za-z0-9._~-]*$", odd)
+            self.assertNotIn("/", name)
+        self.assertNotEqual(core.sandbox_dir_name("a/b"), core.sandbox_dir_name("a_b"))
+        hashed = core.sandbox_dir_name("a:b")
+        self.assertIn("~", hashed)
+        self.assertNotEqual(core.sandbox_dir_name(hashed), hashed)
+
+    def test_deleted_dir_is_created_again(self):
+        env = self.env()
+        env.execute("true")
+        r = env.execute('rm -rf "$PWD"')
+        self.assertEqual(r["returncode"], 0)
+        r = env.execute("pwd")
+        self.assertEqual(r["returncode"], 126)
+        r = env.execute("pwd")
+        self.assertEqual((r["returncode"], r["output"].strip()), (0, str(self.sdir)))
+        self.assertEqual(len(self.mkdirs()), 2)
+
+    def test_nested_fallback_root_is_created(self):
+        self.cfg["fallback_root"] = str(self.work / "sessions")
+        r = self.env().execute("pwd")
+        self.assertEqual((r["returncode"], r["output"].strip()), (0, str(self.work / "sessions" / self.session)))
+        self.assertEqual(self.mkdirs()[0]["cwd"], str(self.work))
+
+    def test_a_seen_id_never_matches_a_name(self):
+        self.hub.detach(self.sandbox.conn)
+        pc = FakeDevice(self.hub, str(self.work), str(self.devtmp), str(self.work), device_id="d_pc2", name="d_sb")
+        self.addCleanup(pc.close)
+        r = self.env().execute("pwd")
+        self.assertEqual(r["returncode"], 1)
+        self.assertIn("not connected", r["output"])
+        self.assertEqual(pc.execs, [])
+
+    def test_safe_mode_turn_refused_with_the_real_reason(self):
+        async def fake_original(authority, row, policy):
+            return "expanded", None
+        wrapped = core._make_managed_turn_text(fake_original)
+        text, refusal = asyncio.run(wrapped(None, {"target_session_id": self.session},
+                                            mock.Mock(ignore_user_config=True, cwd=str(self.outside))))
+        self.assertIsNone(text)
+        self.assertIn("runs in the sandbox device d_sb", refusal)
+        self.assertNotIn("Try again", refusal)
+
+    def test_guard_rewrites_to_the_sandbox_and_checks_its_home(self):
+        recorded = {}
+        with mock.patch.object(core, "_record_cwd", lambda task, cwd: recorded.__setitem__(task, cwd)), \
+                mock.patch("tools.file_tools_paths._terminal_env_type_for_task", lambda task_id="default": "device"):
+            r = core.pre_tool_call(tool_name="write_file", args={"path": "x.txt", "content": "x"}, task_id="t")
+            self.assertEqual(r, {"action": "modify", "args": {"path": str(self.sdir / "x.txt")}})
+            r = core.pre_tool_call(tool_name="write_file", args={"path": "~/.ssh/authorized_keys", "content": "x"},
+                                   task_id="t")
+            self.assertEqual(r["action"], "block")
+            r = core.pre_tool_call(tool_name="cronjob_manage", args={"action": "create"}, task_id="t")
+            self.assertIn("runs in the sandbox device", r["message"])
+            self.hub.detach(self.sandbox.conn)
+            r = core.pre_tool_call(tool_name="read_file", args={"path": "x.txt"}, task_id="t")
+            self.assertEqual(r["action"], "block")
+            self.assertIn("sandbox", r["message"])
+        with mock.patch("tools.file_tools_paths._terminal_env_type_for_task", lambda task_id="default": "local"):
+            self.hub.attach(self.sandbox.conn)
+            r = core.pre_tool_call(tool_name="read_file", args={"path": "x.txt"}, task_id="t")
+            self.assertIn("terminal.backend: device", r["message"])
+        self.assertEqual(recorded, {"t": str(self.sdir)})
+
+    def test_readers_use_the_sandbox(self):
+        core.install_hooks()
+        from acp_adapter import edit_approval
+        from agent.context_references import preprocess_context_references
+        self.env().execute("printf 'in sandbox\\n' > s.txt")
+        self.assertEqual(edit_approval._required_path({"path": "s.txt"}), str(self.sdir / "s.txt"))
+        self.assertEqual(edit_approval._read_text_if_exists(str(self.sdir / "s.txt")), "in sandbox\n")
+        r = preprocess_context_references("see @file:s.txt", cwd=str(self.outside), context_length=200_000)
+        self.assertIn("in sandbox", r.message)
+        calls = []
+        wrapped = core._make_ensure_checkpoint(lambda mgr, wd, reason: calls.append(wd) or True)
+        self.assertFalse(wrapped(object(), str(self.sdir), "before write_file"))
+        self.hub.detach(self.sandbox.conn)
+        with self.assertRaises(OSError):
+            edit_approval._read_text_if_exists(str(self.sdir / "s.txt"))
+        self.assertEqual(calls, [])
+
+    def test_device_command(self):
+        out = core.device_command("", session_id=self.session)
+        self.assertIn(f"runs in the sandbox device sandbox [d_sb] in {self.sdir}", out)
+        self.assertIn("runs in the sandbox device until you bind it", core.device_command("off", session_id=self.session))
+        with mock.patch.object(core, "session_cwd", lambda: str(self.placeholder)):
+            self.assertIn("placeholder", core.device_command("", session_id=self.session))
+        self.hub.detach(self.sandbox.conn)
+        self.assertIn("not connected", core.device_command("", session_id=self.session))
+
+    def test_safe_root_policy_checks_fallback_root(self):
+        self.cfg["fallback_root"] = str(self.placeholder)
+        env = {"HERMES_WRITE_SAFE_ROOT": os.pathsep.join([str(self.placeholder), "/srv/other"])}
+        self.assertEqual(core.apply_safe_root_policy(env), [str(self.placeholder)])
+        self.assertEqual(env["HERMES_WRITE_SAFE_ROOT"], "/srv/other")
+
+
 class SessionIdTests(unittest.TestCase):
     def test_reads_only_the_context_variable(self):
         from gateway import session_context

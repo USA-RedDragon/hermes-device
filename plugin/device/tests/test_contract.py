@@ -83,6 +83,33 @@ class WireConstantTests(unittest.TestCase):
         self.assertIn(f"version: {core.PLUGIN_VERSION}\n", manifest)
 
 
+class SettingsDocContractTests(unittest.TestCase):
+    """Every plugin setting the code reads is in the docs/protocol.md section 8.1 table, with
+    the default the code uses."""
+
+    def table(self) -> dict[str, str]:
+        doc = REPO / "docs" / "protocol.md"
+        if not doc.is_file():
+            self.skipTest(f"{doc} not found; set HERMES_DEVICE_REPO")
+        text = doc.read_text(encoding="utf-8")
+        section = text.split("### 8.1 Settings", 1)[1].split("### 8.2", 1)[0]
+        return {m.group(1): m.group(2) for m in re.finditer(r"^\| `(\w+)` \| ([^|]+) \|", section, flags=re.M)}
+
+    def test_every_setting_is_documented(self):
+        code = Path(core.__file__).read_text(encoding="utf-8")
+        keys = set(re.findall(r"""(?:settings\(\)|\bs)\.get\(\s*["'](\w+)["']""", code))
+        self.assertGreaterEqual(keys, {"fallback", "fallback_device", "fallback_root", "backend_id"})
+        table = self.table()
+        for key in sorted(keys):
+            with self.subTest(key=key):
+                self.assertIn(key, table)
+
+    def test_documented_defaults(self):
+        table = self.table()
+        self.assertEqual(table["fallback"].strip(), "`local`")
+        self.assertEqual(table["fallback_root"].strip(), f"`{core.DEFAULT_FALLBACK_ROOT}`")
+
+
 def original(fn):
     return getattr(fn, "__hermes_device_original__", fn)
 

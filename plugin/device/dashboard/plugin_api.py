@@ -77,7 +77,12 @@ def get_binding(session_id: str):
     res = core.hub().resolve(session_id)
     if res.state == core.STATE_BOUND:
         return {**res.binding.to_json(), "resolved": res.to_json()}
-    return _error(404, "not_bound", f"session {session_id} is not bound to a device", resolved=res.to_json())
+    resolved = res.to_json()
+    if res.state == core.STATE_NEVER_BOUND and core.fallback() == "device":
+        sandbox = core.sandbox_resolution(res)
+        resolved["sandbox"] = ({"device_id": sandbox.binding.device_id, "dir": sandbox.binding.dir}
+                               if sandbox.state == core.STATE_BOUND else None)
+    return _error(404, "not_bound", f"session {session_id} is not bound to a device", resolved=resolved)
 
 
 @router.put("/sessions/{session_id}/binding")

@@ -271,6 +271,18 @@ class RouteTests(unittest.TestCase):
         r = self.client.get("/api/plugins/device/sessions/ghost/binding")
         self.assertEqual(r.json()["resolved"]["state"], "fail_closed")
 
+    def test_binding_route_names_the_sandbox(self):
+        url = "/api/plugins/device/sessions/c1/binding"
+        self.assertEqual(self.client.get(url).json()["resolved"], {"state": "never_bound", "via": None})
+        self.cfg.update(fallback="device", fallback_device="d_8f2c", fallback_root=str(self.root))
+        r = self.client.get(url)
+        self.assertEqual((r.status_code, r.json()["resolved"]),
+                         (404, {"state": "never_bound", "via": None, "sandbox": None}))
+        self.online()
+        r = self.client.get(url)
+        self.assertEqual(r.json()["resolved"]["sandbox"], {"device_id": "d_8f2c", "dir": str(self.root / "s1")})
+        self.assertEqual(self.client.get("/api/plugins/device/bindings").json(), {"bindings": []})
+
     def test_bound_to_other_device(self):
         self.online()
         self.hub.bind("s1", "d_8f2c", str(self.root))

@@ -476,7 +476,9 @@ The plugin is a Hermes user plugin named `device`, installed into `$HERMES_HOME/
 | `hub_public_key_file` | none | File holding the hub public keys; wins over the env var |
 | `placeholder` | none (required) | Server directory used as the cwd of device sessions. Must exist. Must match acp-host's `acp-host.placeholder` |
 | `device_write_roots` | `[]` | Device directories the operator added to `HERMES_WRITE_SAFE_ROOT` so file tools can write to devices (section 8.7) |
-| `fallback` | `local` | What an unbound, never-bound session runs on: `local` (the pod shell, as without the plugin) or `refuse` |
+| `fallback` | `local` | What an unbound, never-bound session runs on: `local` (the pod shell, as without the plugin), `refuse`, or `device` (the sandbox device, section 8.10). `device` without `fallback_device` acts as `refuse` |
+| `fallback_device` | none | `fallback: device` only: the sandbox device, by device id (preferred) or by the unique name of a connected device |
+| `fallback_root` | `/work` | `fallback: device` only: absolute directory on the sandbox device that holds one working directory per session lineage. Must be inside the sandbox's roots |
 | `dev_static_tokens` | `false` | Dev mode (section 8.9) |
 | `devices` | `{}` | Dev mode only: `<name>: {token_env: <env var>}` or `{token: <at least 16 chars>}` |
 
@@ -508,8 +510,8 @@ For each command and file operation, the plugin resolves the session id of the r
 4. If the lineage cannot be read completely (no row yet, a store error, a cycle, more than 100 hops), the command fails closed the same way.
 5. A session whose cwd (the session cwd context variable that Hermes sets from the frozen policy) is the placeholder, and that has no binding, fails closed. This covers sessions created for a device but not bound yet or no longer bound: an ACP bind failure, a hub-created session between create and bind, a create the splice lost.
 6. Side agents with no parent row (`/bg` and other background tasks, gateway/session_tui_side.py and gateway/run_background.py) inherit the binding of the session that started them; the plugin wraps their creation to record that link. If the link cannot be recorded, a background task started from a bound session is refused. Cron jobs and Kanban runs run in the pod only; for a bound session the plugin refuses the tools that create them.
-7. Only a session whose whole lineage was read and never had a binding runs on the pod (setting `fallback: local`), or is refused (`fallback: refuse`).
-8. A bound session whose device is not connected fails the command with exit 255 and a note; it never falls back.
+7. Only a session whose whole lineage was read and never had a binding runs on the pod (setting `fallback: local`), is refused (`fallback: refuse`), or runs on the sandbox device (`fallback: device`, section 8.10). Rule 5 applies first, so a placeholder session never goes to the sandbox.
+8. A bound session whose device is not connected fails the command with exit 255 and a note; it never falls back. A never-bound session whose sandbox device is not connected fails the same way (section 8.10).
 9. A session that runs in a bypass (safe mode or ignore-user-config) managed worker loads no plugins and gets the code-default terminal, so it can never serve a device. The plugin refuses to bind one (`409` `not_device_session`).
 
 ### 8.4 Terminal backend
@@ -546,6 +548,26 @@ Windows devices are not supported: the plugin needs POSIX absolute device paths,
 
 With `dev_static_tokens: true` the exec route also accepts version 1 and 2 `hello` messages with `name` and `token` and no assertion, checked against `devices`. It is for local tests without a hub. Never enable it on a pod the hub serves.
 
+### 8.10 Sandbox fallback
+
+With `fallback: device`, a session that rule 7 of section 8.3 finds never bound runs on the sandbox device `fallback_device`, a service device that the hub knows from its own config and that authenticates on the exec leg only. The sandbox is a separate pod (image `hermes-device-sandbox`, one per person, in its own namespace) that runs `hermes-device run --no-splice`.
+
+1. The plugin gives the session an implicit binding: device = the connected device whose id is `fallback_device`, else, only when no device with that id connected since the gateway started, the one connected device with that name; dir = `<fallback_root>/<name>`, where `<name>` is the id of the session's lineage root (the session at the top of its `parent_session_id` chain) when it matches `[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}`, else a cleaned prefix of the id, `~`, and the first 12 hex digits of its SHA-256 (a name that passes unchanged never holds `~`, so two ids never share a directory). Every session of one lineage (compression children, subagents, branches, side agents) shares the directory.
+2. The implicit binding is computed for each resolution and never stored. It is not in `bindings.json`, not in `ever_bound`, and not returned by `GET /bindings`, so acp-host does not filter on it and section 9's PUT works on the session as on any never-bound session.
+3. Everything that treats a bound session specially treats it the same way: the terminal backend runs its commands on the sandbox in that directory, `uses_host_filesystem` is false, the guard (8.6) rewrites file tool paths and checks writes against the denylist rebuilt for the sandbox's `home` and its roots, edit approval and context references read from the sandbox, checkpoints are skipped, and the tools of `POD_ONLY_TOOLS` and bypass (safe mode) turns are refused. As for a bound session whose terminal backend is not `device`, the guard blocks every tool call of a never-bound session whose frozen backend is not `device` (a session created before `terminal.backend: device`).
+
+   One difference: the session's server cwd stays `terminal.cwd`, not the placeholder (rule 5 of 8.3 would fail it closed). Hermes builds the system prompt in the gateway and reads project context files (`AGENTS.md`, `.hermes.md` and the like) and the git state from that server directory (agent/system_prompt.py). The agent cannot choose these paths, but keep `terminal.cwd` an empty directory, so the prompt holds no pod files.
+4. Before the first command whose cwd is in that directory, on each connection of the sandbox, the plugin runs `mkdir -p -- <dir>` on the sandbox, with cwd the sandbox root that holds `fallback_root`, so `fallback_root` itself may be missing. If that fails, the command fails with exit 126 (255 when the sandbox dropped) and a note, and nothing else runs. When the sandbox refuses a command in that directory (for example because the agent deleted it), that command fails and the next one creates the directory again.
+5. The command fails, and never runs on the pod, when the sandbox device is not connected, when the name matches more than one connected device, when `fallback_root` is not an absolute path, and when `fallback_root` is not inside the sandbox's roots from `hello`. The terminal gets exit 1 and a message that names the sandbox; a command whose sandbox drops while it is sent gets exit 255. File tools are blocked with the same message.
+6. An explicit bind (`/device <device> <dir>`, the splice, the ACP bridge or the PUT route) wins: the session then runs on that device, and is in `ever_bound` like any bound session. After `/device off` it fails closed (rule 3); it does not return to the sandbox.
+7. `/device` without arguments names the sandbox and the directory; `/device off` answers that no device was bound.
+
+Name the sandbox by its device id. A name lookup takes any connected device of that name, including a PC the user named the same, and an id falls back to a name lookup until the sandbox has connected once since the gateway started. Either way the device must also have `fallback_root` inside its roots.
+
+The plugin also checks `fallback_root` against the pod-writable paths of section 8.7. Add it to `device_write_roots` and to `HERMES_WRITE_SAFE_ROOT` when that variable is set, or file tools cannot write there.
+
+The bindings file format does not change (version 2).
+
 ## 9. Plugin HTTP routes
 
 Mounted by the dashboard under `/api/plugins/device/` on the gateway listener (9120). They are behind dashboard sign-in, so the hub calls them with its dashboard session for the user. Errors are `{"error": "<code>", "message": "<text>"}`.
@@ -556,7 +578,7 @@ Mounted by the dashboard under `/api/plugins/device/` on the gateway listener (9
 | `GET /devices` | `200` `{"devices": [Device]}` |
 | `GET /devices/{device_id}/dirs?path=<abs>` | `200` `{"path": <resolved>, "entries": [{"name": "src"}]}`: subdirectories only, sorted, at most 500, hidden ones included. `path` defaults to the first root |
 | `GET /bindings` | `200` `{"bindings": [Binding]}` |
-| `GET /sessions/{session_id}/binding` | `200` Binding plus `"resolved": {"state": "bound" or "never_bound" or "fail_closed", "via": <session id or null>}`; `404` `not_bound` with the same `resolved` |
+| `GET /sessions/{session_id}/binding` | `200` Binding plus `"resolved": {"state": "bound" or "never_bound" or "fail_closed", "via": <session id or null>}`; `404` `not_bound` with the same `resolved`. With `fallback: device`, a `never_bound` `resolved` also has `"sandbox": {"device_id", "dir"}` for the session's implicit sandbox binding (8.10), or `"sandbox": null` when the sandbox cannot serve it |
 | `PUT /sessions/{session_id}/binding` | Body `{"device_id", "dir"}`. `200` Binding |
 | `DELETE /sessions/{session_id}/binding` | `204`; `404` `not_bound` |
 | `GET /ws` (WebSocket) | The exec leg, section 4 |
@@ -585,6 +607,7 @@ Errors from the dirs route: `409` `device_offline` for any device that is not co
 - A device token is full operator access to its user's own Hermes backend. Through the gateway leg the holder can do what the web UI can, including running commands in the pod (`shell.exec`) and in sessions bound to any of that user's devices; the splice's deny list (5.4) does not stop a holder who dials the gateway leg directly. The same holds for the ACP leg, except that acp-host refuses sessions bound to another device. A token cannot reach another user's backend, mint assertions, or learn the backend's dashboard password. Phase 3 moves the method allowlist and the session.create rewrite into the hub so the hub enforces them.
 - A compromised Hermes pod can do anything the user's Hermes can, including running commands on connected devices in their roots. It cannot mint hub assertions, because it holds only public keys.
 - The hub's private key is the root of trust for every backend. Keep it in the hub's secret store only.
+- With `fallback: local`, the commands of never-bound sessions run in the gateway container and can read its secrets, environment, state database and processes. `fallback: device` (8.10) moves them to a sandbox pod that holds only its own device token and the `/work` volume. The sandbox's commands run as the same user as its daemon, so they can read its token file and open an exec leg of their own, which replaces the daemon's connection (`4409`). That token is a service device token, which the hub accepts on the exec leg only, so it reaches no gateway or ACP leg. `run` removes `HERMES_DEVICE_HUB_TOKEN` from the environment of the commands it runs, but they can still read it from `/proc` of the daemon, so an environment variable or a flag is no better hidden than the file. All of one person's sessions share the `/work` volume, so one session can read another's directory. Limit the sandbox's network to the internet and the hub.
 
 ## 11. Versions
 
