@@ -125,7 +125,11 @@ func fakeHermes() {
 		}
 	}
 	if hang {
-		select {}
+		// A sleeping goroutine, not select {}: with no other goroutine, the runtime
+		// would end a blocked select as a deadlock instead of waiting for SIGKILL.
+		for {
+			time.Sleep(time.Hour)
+		}
 	}
 }
 
