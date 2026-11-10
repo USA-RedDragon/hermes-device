@@ -10,6 +10,16 @@
   let csrf = "";
   let stream = null;
   let view = null;
+  let me = { simple: false };
+  // Plain wording for the simple view; the full view keeps the technical terms.
+  const words = {
+    full: { approval: "Approval needed", allow: "Allow once", deny: "Deny", args: "arguments", result: "result",
+      running: "running", done: "done", failed: "failed", working: "working", idle: "idle", title: "Hermes Hub" },
+    simple: { approval: "Hermes wants to do this. Is that OK?", allow: "Yes, go ahead", deny: "No", args: "details",
+      result: "what happened", running: "working on it", done: "done", failed: "did not work", working: "working on it",
+      idle: "ready", title: "Hermes" },
+  };
+  const t = (k) => (me.simple ? words.simple : words.full)[k];
 
   async function api(method, path, body) {
     const opts = { method, headers: { "X-CSRF-Token": csrf }, credentials: "same-origin" };
@@ -58,10 +68,12 @@
     $("list").hidden = false;
     $("chat").hidden = true;
     $("composer").hidden = true;
-    $("back").hidden = true;
+    $("back").hidden = !me.simple;
     $("stop").hidden = true;
     $("title").textContent = "Hermes Hub";
     $("subtitle").textContent = "";
+    $("more").hidden = true;
+    $("newchat").hidden = true;
     banner("");
     const list = $("list");
     let backends, sessions;
@@ -148,7 +160,7 @@
 
     setRunning(on) {
       $("stop").hidden = !on;
-      $("subtitle").textContent = on ? "working" : "idle";
+      $("subtitle").textContent = on ? t("working") : t("idle");
     }
 
     // newTurn starts the containers for one assistant turn.
@@ -193,11 +205,11 @@
       if (card) return card;
       card = el("div", "tool running");
       const head = el("div", "head");
-      head.append(el("span", "name", name || "tool"), el("span", "state", "running"));
+      head.append(el("span", "name", name || "tool"), el("span", "state", t("running")));
       card.append(head);
       if (args && Object.keys(args).length) {
         const d = el("details");
-        d.append(el("summary", "", "arguments"), el("pre", "", JSON.stringify(args, null, 2)));
+        d.append(el("summary", "", t("args")), el("pre", "", JSON.stringify(args, null, 2)));
         card.append(d);
       }
       this.tools.set(id, card);
@@ -211,7 +223,7 @@
       const failed = p.error || (p.result && typeof p.result === "object" && p.result.error);
       if (failed) card.classList.add("failed");
       const dur = typeof p.duration_s === "number" ? " in " + p.duration_s.toFixed(1) + "s" : "";
-      card.querySelector(".state").textContent = (failed ? "failed" : "done") + dur;
+      card.querySelector(".state").textContent = (failed ? t("failed") : t("done")) + (me.simple ? "" : dur);
       const prog = card.querySelector("progress, .progress");
       if (prog) prog.remove();
       let out = p.summary || p.result_text;
@@ -219,7 +231,7 @@
       if (p.inline_diff) card.append(el("pre", "", p.inline_diff));
       if (out) {
         const d = el("details");
-        d.append(el("summary", "", "result"), el("pre", "", out.length > 20000 ? out.slice(0, 20000) + "\n..." : out));
+        d.append(el("summary", "", t("result")), el("pre", "", out.length > 20000 ? out.slice(0, 20000) + "\n..." : out));
         card.append(d);
       }
     }
@@ -228,14 +240,14 @@
       const id = p.prompt_id;
       if (!id || this.approvals.has(id)) return;
       const box = el("div", "approval");
-      box.append(el("b", "", p.kind === "clarify" ? "Question" : "Approval needed"));
+      box.append(el("b", "", p.kind === "clarify" ? "Question" : t("approval")));
       if (p.description) box.append(el("div", "", p.description));
       if (p.command) box.append(el("pre", "", p.command));
       if (p.question) box.append(el("div", "", p.question));
       const actions = el("div", "actions");
       if (p.kind !== "clarify") {
-        const ok = el("button", "primary", "Allow once");
-        const no = el("button", "danger", "Deny");
+        const ok = el("button", "primary", t("allow"));
+        const no = el("button", "danger", t("deny"));
         const answer = async (allow) => {
           ok.disabled = no.disabled = true;
           try {
@@ -278,7 +290,7 @@
 
     snapshot(s) {
       this.reset();
-      $("title").textContent = s.title || this.session;
+      $("title").textContent = me.simple ? t("title") : (s.title || this.session);
       this.setRunning(s.running);
       for (const m of s.messages || []) this.row(m);
       this.turn = null;
@@ -380,8 +392,10 @@
     $("list").hidden = true;
     $("chat").hidden = false;
     $("composer").hidden = false;
-    $("back").hidden = false;
-    $("title").textContent = session;
+    $("back").hidden = me.simple;
+    $("more").hidden = !me.simple;
+    $("newchat").hidden = !me.simple;
+    $("title").textContent = me.simple ? t("title") : session;
     $("subtitle").textContent = "";
     banner("");
     view = new Chat(backend, session);
@@ -404,9 +418,30 @@
     };
   }
 
+  const chatHash = (b, s) => "#/s/" + encodeURIComponent(b) + "/" + encodeURIComponent(s);
+
+  // home opens the simple view's one chat: the newest session on the
+  // user's default backend, or a new one.
+  async function home(fresh) {
+    closeStream();
+    $("list").hidden = true;
+    try {
+      const [backends, sessions] = await Promise.all([api("GET", "/api/backends"), api("GET", "/api/sessions")]);
+      const b = backends.find((x) => x.id === me.default_backend) || backends[0];
+      if (!b) { banner("No assistant is set up for you yet.", true); return; }
+      const mine = sessions.filter((s) => s.backend_id === b.id);
+      let s = fresh ? null : (mine.find((x) => x.live) || mine[0]);
+      if (!s) s = await api("POST", "/api/sessions", { backend_id: b.id });
+      location.replace(chatHash(b.id, s.id));
+    } catch (e) {
+      banner("Could not open your chat: " + e.message, true);
+    }
+  }
+
   function route() {
     const m = location.hash.match(/^#\/s\/([^/]+)\/(.+)$/);
     if (m) showChat(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+    else if (me.simple && location.hash !== "#/all") home(false);
     else showList();
   }
 
@@ -437,11 +472,14 @@
 
   async function init() {
     try {
-      const me = await api("GET", "/api/me");
+      me = await api("GET", "/api/me");
       csrf = me.csrf;
       $("logout").title = "Logged in as " + me.user;
+      document.body.classList.toggle("simple", !!me.simple);
     } catch (_) { return; }
     $("back").onclick = () => { location.hash = "#/"; };
+    $("more").onclick = () => { location.hash = "#/all"; };
+    $("newchat").onclick = () => home(true);
     $("refresh").onclick = route;
     $("stop").onclick = async () => {
       if (!view) return;

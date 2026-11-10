@@ -22,6 +22,10 @@ The browser gets each session as server-sent events. Each event has the hub's se
 
 When the hub attaches to a session, it sets the session's `show_reasoning` control on (`config.set`), so that sessions that VS Code started through ACP also stream reasoning. The gateway reads this flag when a turn starts, so the change shows from the next turn. Set `backends[].show_reasoning: false` to turn this off.
 
+## Simple view
+
+Users in `ui.simple_users` see one chat with their default backend (`ui.default_backends`, as `user=backend`, else their first backend) in plain words, with "New chat" and "More". "More" opens the full list of backends and sessions. The simple view changes only what the page shows first; the user can do everything that the full view can, and authorization is the same.
+
 ## Set up a Hermes backend
 
 The hub needs the Hermes Webapp listener on an address that it can reach, with a password sign-in. On a non-loopback bind, Hermes always requires sign-in. Add this to the backend's Hermes `config.yaml` (the device's `~/.hermes/config.yaml`, or the cluster instance's config) and restart its gateway:
@@ -86,6 +90,8 @@ Configuration is read from `config.yaml` in the working directory, or from the f
 | `oidc.groups_claim`         | string          | `groups`                   | `HUB_OIDC_GROUPS_CLAIM`         | `--oidc.groups_claim`         | ID token claim that holds the group names that backends[].groups lists                                                                                                                  |
 | `session.secret`            | string          |                            | `HUB_SESSION_SECRET`            | `--session.secret`            | Key for the session and login cookies. At least 32 characters (required) (secret)                                                                                                       |
 | `session.ttl`               | string          | `168h`                     | `HUB_SESSION_TTL`               | `--session.ttl`               | How long a login lasts                                                                                                                                                                  |
+| `ui.simple_users`           | list of string  |                            | `HUB_UI_SIMPLE_USERS`           | `--ui.simple_users`           | User names that get the simple view: one chat with their default backend and plain wording. Backends, sessions and details stay one tap away                                            |
+| `ui.default_backends`       | list of string  |                            | `HUB_UI_DEFAULT_BACKENDS`       | `--ui.default_backends`       | Default backend per user, as user=backend pairs. A user without one gets their first backend                                                                                            |
 | `store.path`                | string          | `/data/hermes-hub.db`      | `HUB_STORE_PATH`                | `--store.path`                | Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups                                                                                          |
 | `backends`                  | list of objects |                            | —                               | —                             | Hermes backends and who may use them. Only settable in the config file                                                                                                                  |
 | `backends[].id`             | string          |                            | —                               | —                             | Stable backend ID: lowercase letters, digits and dashes                                                                                                                                 |

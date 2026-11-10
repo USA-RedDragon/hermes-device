@@ -52,6 +52,27 @@ type Store struct {
 	Path string `name:"path" default:"/data/hermes-hub.db" description:"Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups"`
 }
 
+// UI configures the web UI per user. It changes only what the page shows
+// first, never what a user may do.
+type UI struct {
+	SimpleUsers     []string `name:"simple_users" description:"User names that get the simple view: one chat with their default backend and plain wording. Backends, sessions and details stay one tap away"`
+	DefaultBackends []string `name:"default_backends" description:"Default backend per user, as user=backend pairs. A user without one gets their first backend"`
+}
+
+// DefaultBackendMap parses DefaultBackends.
+func (u UI) DefaultBackendMap() (map[string]string, error) {
+	out := make(map[string]string, len(u.DefaultBackends))
+	for _, pair := range u.DefaultBackends {
+		user, backend, ok := strings.Cut(pair, "=")
+		user, backend = strings.TrimSpace(user), strings.TrimSpace(backend)
+		if !ok || user == "" || backend == "" {
+			return nil, fmt.Errorf("%w: %q", ErrDefaultBackend, pair)
+		}
+		out[user] = backend
+	}
+	return out, nil
+}
+
 // Backend is one Hermes gateway Webapp listener.
 type Backend struct {
 	ID            string   `name:"id" description:"Stable backend ID: lowercase letters, digits and dashes"`
@@ -77,6 +98,7 @@ type Config struct {
 	HTTP     HTTP      `name:"http"`
 	OIDC     OIDC      `name:"oidc"`
 	Session  Session   `name:"session"`
+	UI       UI        `name:"ui"`
 	Store    Store     `name:"store"`
 	Backends []Backend `name:"backends" description:"Hermes backends and who may use them. Only settable in the config file"`
 	Telegram Telegram  `name:"telegram"`
@@ -88,6 +110,7 @@ var (
 	ErrShortSecret     = errors.New("session.secret must be at least 32 characters")
 	ErrPublicURL       = errors.New("http.public_url must be an absolute http or https URL with no path")
 	ErrBackend         = errors.New("invalid backend")
+	ErrDefaultBackend  = errors.New("ui.default_backends entries must be user=backend")
 )
 
 var backendIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -106,6 +129,9 @@ func (c *Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return ErrInvalidLogLevel
+	}
+	if _, err := c.UI.DefaultBackendMap(); err != nil {
+		return err
 	}
 	if err := telegram.Config(c.Telegram).Validate(); err != nil {
 		return err

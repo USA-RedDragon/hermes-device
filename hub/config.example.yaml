@@ -37,6 +37,11 @@ session:
   # secret: "(secret)"
   # How long a login lasts
   ttl: "168h"
+ui:
+  # User names that get the simple view: one chat with their default backend and plain wording. Backends, sessions and details stay one tap away
+  # simple_users: []
+  # Default backend per user, as user=backend pairs. A user without one gets their first backend
+  # default_backends: []
 store:
   # Path of the SQLite database that holds Telegram links, link tokens and users' last seen groups
   path: "/data/hermes-hub.db"

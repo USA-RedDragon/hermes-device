@@ -65,6 +65,9 @@ func TestLoad(t *testing.T) {
 		!*b[0].ShowReasoning || *b[1].ShowReasoning || b[1].Groups[0] != "family" {
 		t.Fatalf("backends = %+v", b)
 	}
+	if d, err := cfg.UI.DefaultBackendMap(); err != nil || len(d) != 0 {
+		t.Fatalf("ui defaults = %v %v", d, err)
+	}
 	if cfg.Telegram.Enabled {
 		t.Fatal("telegram on by default")
 	}
@@ -85,6 +88,7 @@ func TestLoadErrors(t *testing.T) {
 		strings.Replace(file, "http://desktop:9120/", "desktop", 1),
 		strings.Replace(file, "    password: pw\n    users", "    users", 1),
 		strings.Replace(file, "https://hub.example.test/", "https://hub.example.test/sub", 1),
+		file + "ui:\n  default_backends: [bob]\n",
 	} {
 		if _, err := load(t, secrets(), bad); err == nil {
 			t.Fatalf("accepted:\n%s", bad)

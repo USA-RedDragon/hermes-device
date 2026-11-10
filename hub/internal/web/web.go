@@ -65,6 +65,8 @@ type Server struct {
 	groupsClaim   string
 	keepAlive     time.Duration
 	linkPage      *template.Template
+	simple        map[string]bool
+	defaults      map[string]string
 }
 
 // New returns a Server.
@@ -81,6 +83,14 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	defaults, err := cfg.UI.DefaultBackendMap()
+	if err != nil {
+		return nil, err
+	}
+	simple := map[string]bool{}
+	for _, u := range cfg.UI.SimpleUsers {
+		simple[u] = true
+	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
@@ -94,6 +104,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		sessions: sessions, logins: logins, ttl: cfg.Session.TTL,
 		origin: u.Scheme + "://" + u.Host, secure: u.Scheme == "https",
 		usernameClaim: cfg.OIDC.UsernameClaim, groupsClaim: cfg.OIDC.GroupsClaim, keepAlive: opts.KeepAlive,
+		simple: simple, defaults: defaults,
 		linkPage: template.Must(template.New("link").Parse(linkHTML)),
 	}, nil
 }
