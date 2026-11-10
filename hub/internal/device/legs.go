@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/USA-RedDragon/hermes-device/assertion"
 	"github.com/USA-RedDragon/hermes-device/protocol"
@@ -183,9 +185,7 @@ func (l *leg) records() bool { return l.name == assertion.LegExec && !l.dev.Serv
 // backend hop with upCode. by is the side that ended the leg (hub.CloseBy*).
 func (l *leg) finish(by string, downCode, upCode websocket.StatusCode, reason string) {
 	l.once.Do(func() {
-		if len(reason) > 120 {
-			reason = reason[:120]
-		}
+		reason = truncateUTF8(strings.ToValidUTF8(reason, ""), maxCloseReason)
 		l.closed = legClose{code: downCode, upCode: upCode, reason: reason, by: by}
 		var wg sync.WaitGroup
 		wg.Go(func() { _ = l.down.Close(downCode, reason) })
@@ -203,6 +203,28 @@ func (l *leg) finish(by string, downCode, upCode websocket.StatusCode, reason st
 			close(l.done)
 		}()
 	})
+}
+
+// maxCloseReason is the longest close reason the hub sends or keeps, in
+// bytes: a close frame carries at most 123.
+const maxCloseReason = 120
+
+// truncateUTF8 cuts s to at most n bytes without splitting a character.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// legID is a new random id for a leg.
+func legID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // closeOf is the close code and reason that ended a read, and whether the
