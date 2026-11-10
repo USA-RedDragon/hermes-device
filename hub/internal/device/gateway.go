@@ -377,7 +377,7 @@ func (g *guard) rewriteCreate(f *frame, params map[string]json.RawMessage) {
 		g.toDevice(bindAnswer(f.ID, err))
 		return
 	}
-	cwd, row := rawString(params["cwd"]), rawString(params["row_cwd"])
+	cwd, row := rawString(params[keyCWD]), rawString(params["row_cwd"])
 	dir := cwd
 	if cwd == ph {
 		dir = row
@@ -386,10 +386,10 @@ func (g *guard) rewriteCreate(f *frame, params map[string]json.RawMessage) {
 		g.toDevice(cwdAnswer(f.ID, "session.create needs an absolute device directory as its cwd: run hermes-device chat in it"))
 		return
 	}
-	params["cwd"] = mustRaw(ph)
+	params[keyCWD] = mustRaw(ph)
 	params["row_cwd"] = mustRaw(dir)
 	dropMember(params, "editor", "mcp_servers")
-	g.send(f, params, &held{kind: heldCreate, id: f.ID, dir: dir, requestID: rawString(params["request_id"])})
+	g.send(f, params, &held{kind: heldCreate, id: f.ID, dir: dir, requestID: rawString(params[keyRequestID])})
 }
 
 // rewriteWorkspace binds the session to the new device directory before
@@ -397,7 +397,7 @@ func (g *guard) rewriteCreate(f *frame, params map[string]json.RawMessage) {
 func (g *guard) rewriteWorkspace(f *frame, params map[string]json.RawMessage) {
 	sid := rawString(params[keySessionID])
 	payload, ok := decodeParams(params["payload"])
-	dir := rawString(payload["cwd"])
+	dir := rawString(payload[keyCWD])
 	if !ok || !absDir(dir) {
 		g.toDevice(cwdAnswer(f.ID, "a workspace move needs an absolute device directory"))
 		return
@@ -420,7 +420,7 @@ func (g *guard) rewriteWorkspace(f *frame, params map[string]json.RawMessage) {
 			g.toDevice(bindAnswer(f.ID, err))
 			return
 		}
-		payload["cwd"] = mustRaw(ph)
+		payload[keyCWD] = mustRaw(ph)
 		params["payload"] = mustRaw(payload)
 	}
 	g.send(f, params, h)

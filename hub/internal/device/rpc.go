@@ -35,6 +35,9 @@ const (
 	keyReason         = "reason"
 	keySessionID      = "session_id"
 	keyParentSession  = "parent_session_id"
+	keyCWD            = "cwd"
+	keyRequestID      = "request_id"
+	keyTitle          = "title"
 )
 
 // OwnIDPrefix starts the JSON-RPC id of every request the hub sends on a
@@ -165,7 +168,13 @@ func deniedAnswer(id json.RawMessage, method string, params map[string]json.RawM
 	why := DeniedReason(method)
 	if _, ok := gatewayRules[method]; ok {
 		why = "these params are refused"
-		if method == methodMutate {
+		switch r := paramRefusal(method, params); {
+		case r != "":
+			why = r
+		case slices.Contains(textMethods, method):
+			why = "its text is a slash command that is not allowed: only " + strings.Join(SlashCommands(), ", ") +
+				" (a /model needs --session)"
+		case method == methodMutate:
 			why = "operation " + strconv.Quote(rawString(params["operation"])) + " is refused"
 		}
 	}
@@ -390,9 +399,57 @@ func slashAllowed(method string, params map[string]json.RawMessage) bool {
 	return true
 }
 
+// refusedParams are the params the hub refuses on methods it allows,
+// with the reason.
+//
+//nolint:gochecknoglobals // a fixed table
+var refusedParams = map[string]map[string]string{
+	methodCreate: {
+		keyTitle:       "a create with a title returns the existing session of that title or id",
+		"base_url":     "it would send the profile's stored key to a host the device picks",
+		"api_key":      "a launch key is not part of a device session",
+		"accept_hooks": "it records shell hook consent for the whole profile",
+	},
+	methodResume: {
+		keyTitle: "resume a session by its id: the hub checks the id before the gateway attaches it",
+		"latest": "resume a session by its id: the hub checks the id before the gateway attaches it",
+	},
+	"config.get":     {keyCWD: "it runs git in a directory of the Hermes pod"},
+	methodFileAttach: {"staged_upload": "it copies a browser upload out of the Hermes pod"},
+}
+
+// RefusedParams are the params the gateway leg refuses on each method it
+// allows, with the reason.
+func RefusedParams() map[string]map[string]string {
+	out := make(map[string]map[string]string, len(refusedParams))
+	for m, p := range refusedParams {
+		out[m] = maps.Clone(p)
+	}
+	return out
+}
+
+// paramRefusal says why the params of an allowed method are refused, or
+// is empty.
+func paramRefusal(method string, params map[string]json.RawMessage) string {
+	for _, k := range slices.Sorted(maps.Keys(refusedParams[method])) {
+		if _, ok := params[k]; ok {
+			return "param " + k + " is refused: " + refusedParams[method][k]
+		}
+	}
+	if method == methodResume {
+		if sid, ok := rawStringOK(params[keySessionID]); !ok || sid == "" {
+			return "it needs a session_id: the hub checks the id before the gateway attaches the session"
+		}
+	}
+	return ""
+}
+
 // denied reports whether a request of method with params is refused.
 func denied(method string, params map[string]json.RawMessage) bool {
 	if _, ok := gatewayRules[method]; !ok {
+		return true
+	}
+	if paramRefusal(method, params) != "" || (slices.Contains(textMethods, method) && !textAllowed(params)) {
 		return true
 	}
 	switch method {

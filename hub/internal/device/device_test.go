@@ -873,11 +873,16 @@ func TestGatewayLegOtherDevice(t *testing.T) {
 		if got := len(e.called("session.resume")) + len(e.called("prompt.submit")); got != 0 {
 			t.Fatalf("%d refused calls reached the gateway", got)
 		}
-		if m := g.request(4, "session.resume", map[string]any{keySessionID: "", "title": "Other"}); reason(m) != reasonOtherDevice {
-			t.Fatalf("resume by title = %v", m)
+		for i, p := range []map[string]any{
+			{keySessionID: "", keyTitle: titleOther}, {keyTitle: titleOther}, {keySessionID: sessionOther, keyTitle: titleOther},
+			{keySessionID: "", "latest": sourceTUI}, {"latest": sourceTUI}, {keySessionID: ""}, {},
+		} {
+			if m := g.request(40+i, "session.resume", p); reason(m) != reasonDenied {
+				t.Fatalf("resume %v = %v", p, m)
+			}
 		}
-		if m := g.request(5, "session.resume", map[string]any{keySessionID: "", "latest": sourceTUI}); reason(m) != reasonNotBound {
-			t.Fatalf("resume latest = %v", m)
+		if got := e.called("session.resume"); len(got) != 0 {
+			t.Fatalf("resumes by title or latest reached the gateway: %v", got)
 		}
 		if m := g.request(6, methodMutate, map[string]any{keySessionID: sessionPod, "request_id": "a", keyExpectedRev: 0,
 			"operation": "archive", "payload": map[string]any{"archived": true}}); reason(m) != reasonNotBound {

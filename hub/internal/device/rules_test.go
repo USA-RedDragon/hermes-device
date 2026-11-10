@@ -162,6 +162,43 @@ func TestBindTakeover(t *testing.T) {
 	})
 }
 
+// TestGatewayLegCreateParams covers session.create params that reach
+// beyond the new session: title (returns an existing session), base_url
+// and api_key (send the profile's key to the device's host),
+// accept_hooks (profile-wide hook consent) and cwd_explicit false (the
+// profile's workspace in the pod).
+func TestGatewayLegCreateParams(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, _ := e.pair(e.a)
+		e.connectExec(e.a, tok)
+		g := e.gatewayLeg(e.b, tok)
+		for i, extra := range []map[string]any{
+			{keyTitle: sessionOther}, {keyTitle: "My chat"}, {keyTitle: nil},
+			{"base_url": "https://attacker.example.com/v1"}, {"base_url": nil}, {"api_key": "sk-x"},
+			{"accept_hooks": true}, {"accept_hooks": false},
+		} {
+			p := map[string]any{keyRequestID: "q", keyCWD: deviceDir, keySource: sourceTUI}
+			for k, v := range extra {
+				p[k] = v
+			}
+			if m := g.request(i, methodCreate, p); reason(m) != reasonDenied {
+				t.Fatalf("create %v = %v", extra, m)
+			}
+		}
+		if got := e.called(methodCreate); len(got) != 0 {
+			t.Fatalf("refused creates reached the gateway: %v", got)
+		}
+		if m := g.request("ok", methodCreate, map[string]any{keyRequestID: "q2", keyCWD: deviceDir, "cwd_explicit": false}); m[keyResult] == nil {
+			t.Fatalf("create = %v", m)
+		}
+		if got := e.called(methodCreate); len(got) != 1 || got[0].Params["cwd_explicit"] != nil {
+			t.Fatalf("create reached the gateway as %v", got)
+		}
+	})
+}
+
 // TestGatewayLegCreateExisting covers a create answered with a session
 // that already exists (a request_id another device used): the hub must
 // neither bind it nor delete it.
