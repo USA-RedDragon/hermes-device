@@ -572,8 +572,12 @@ PUT rules:
 - A session bound to a different device is refused (`409` `bound_to_other_device`); unbind first.
 - Binding a session to the directory it is already bound to returns the existing binding with its generation unchanged. A different directory on the same device replaces the binding with a new generation.
 - `404` `unknown_device` when `device_id` is not connected and was never seen; `400` `bad_request` for a malformed body.
+- `409` `not_device_session` for a session whose live frozen policy is a bypass (safe mode, ignore-user-config) policy or names a terminal backend other than `device`. The plugin can check this only for sessions loaded in the gateway; others are allowed.
+- `503` `state_unavailable` when `bindings.json` cannot be read (every unbound session then fails closed), and `500` `state_write_failed` when it cannot be written.
 
-Errors from the dirs route: `409` `device_offline`, `422` `dir_refused`, `400` `bad_dir`.
+Errors from the dirs route: `409` `device_offline` for any device that is not connected, `422` `dir_refused`, `400` `bad_dir`.
+
+`GET /sessions/{id}/binding` returns the binding that serves the session, which may belong to an ancestor (`resolved.via` names it). `DELETE` removes only the session's own binding; `/device off` removes the binding that serves the current session.
 
 ## 10. Security notes
 
