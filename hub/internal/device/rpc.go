@@ -238,9 +238,8 @@ var gatewayRules = map[string]string{
 	"slash.exec": RuleChecked, methodDispatch: RuleChecked, "command.observe": RuleAllowed, "commands.catalog": RuleAllowed,
 	"complete.slash": RuleAllowed, "plugins.list": RuleAllowed, "tools.show": RuleAllowed,
 	"subagent.list": RuleAllowed, "subagent.tail": RuleAllowed, "subagent.steer": RuleAllowed, "subagent.interrupt": RuleAllowed,
-	"delegation.status": RuleAllowed, "spawn_tree.list": RuleAllowed, "spawn_tree.load": RuleAllowed,
-	"image.attach_bytes": RuleAllowed, "image.detach": RuleAllowed, "file.attach": RuleChecked,
-	"learning.frames": RuleAllowed, "learning.detail": RuleAllowed, "pet.info.meta": RuleAllowed, "pet.cells": RuleAllowed,
+	"image.attach_bytes": RuleAllowed, "image.detach": RuleAllowed, methodFileAttach: RuleChecked,
+	"learning.frames": RuleRewritten, "learning.detail": RuleAllowed, "pet.info.meta": RuleAllowed, "pet.cells": RuleRewritten,
 	"pet.gallery": RuleAllowed, "i18n.catalog": RuleAllowed, "system.battery": RuleAllowed,
 	"shared_metrics.slash_command": RuleAllowed, "shared_metrics.startup_latency": RuleAllowed,
 }
@@ -253,7 +252,7 @@ const (
 	whyAccount    = "it acts on credentials or the account of the Hermes profile"
 	whyHost       = "it uses the Hermes pod's own audio or display"
 	whyLegacy     = "the gateway serves it only to legacy clients and refuses it on the hub's connection"
-	whyOtherSess  = "it acts on many sessions at once"
+	whyOtherSess  = "it acts on or reads many sessions at once"
 	whyBackground = "a background agent has no lineage to its session, so it would run on the pod"
 	whyProfiles   = "it reads or changes other Hermes profiles"
 	whyNotChat    = "it is not part of chatting"
@@ -286,6 +285,7 @@ var deniedWhy = map[string]string{
 	"display.observe": whyHost, "free_tier.status": whyAccount, "onboarding.start": whyProfile, "onboarding.state": whyProfile,
 	"profiles.describe": whyProfiles, "profiles.list": whyProfiles, "projects.tree": whyProfile,
 	"setup.runtime_check": whyNotChat, "shared_metrics.update_run": whyNotChat,
+	"delegation.status": whyOtherSess, "spawn_tree.list": whyOtherSess, "spawn_tree.load": whyOtherSess,
 }
 
 // whyUnknown is the reason for a method in neither table.
