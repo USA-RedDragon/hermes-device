@@ -1,0 +1,4 @@
+name: device
+version: 0.1.0
+description: "Run this server's agent shell and file operations on a device that dials in over a WebSocket (/device <name> <dir>)."
+author: "Jacob McSwain"

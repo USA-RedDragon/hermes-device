@@ -1,0 +1,7 @@
+{
+  "name": "device",
+  "label": "Device",
+  "description": "WebSocket endpoint that device clients dial into.",
+  "api": "plugin_api.py",
+  "tab": { "hidden": true }
+}
