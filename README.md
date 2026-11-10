@@ -127,7 +127,7 @@ Upgrade these together: the server's Hermes and every local Hermes that `chat` r
 
 ## Configuration
 
-The client and `acp-host` read `config.yaml` in the current directory or in `hermes-device` under the user config directory, then environment variables, then flags.
+The client and `acp-host` read `hermes-device/config.yaml` under the user config directory (`~/.config/hermes-device/config.yaml` on Linux), or the file given with `-c`, then environment variables, then flags. A `config.yaml` in the current directory is not read.
 
 <!-- configulator:begin -->
 

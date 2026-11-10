@@ -77,10 +77,12 @@ func (b *base) userAgent() string {
 	return "hermes-device/" + b.version
 }
 
+// defaultConfigFiles is only the user config file: hermes-device runs from
+// any directory, and a config.yaml of another tool there must not win.
 func defaultConfigFiles() []string {
-	files := []string{"config.yaml"}
-	if dir, err := os.UserConfigDir(); err == nil {
-		files = append(files, filepath.Join(dir, "hermes-device", "config.yaml"))
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return nil
 	}
-	return files
+	return []string{filepath.Join(dir, "hermes-device", "config.yaml")}
 }
