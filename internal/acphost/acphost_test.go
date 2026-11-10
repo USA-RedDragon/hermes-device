@@ -812,14 +812,17 @@ func TestSlashCommands(t *testing.T) {
 		return string(b)
 	}
 	for _, texts := range [][]string{
-		{"/model gpt-x"}, {"  /new"}, {"/reasoning high"}, {"/reasoning"}, {"/Compress"}, {"/discard a1"},
-		{"/etc/hosts is wrong"}, {"hello /device d2 /"}, {"/"}, {"", "plain"}, {"text", "/device d2 /"},
+		{"  /new"}, {"/reasoning high"}, {"/reasoning"}, {"/Compress"}, {"/discard a1"}, {"/reset"}, {"/compact"},
+		{"/etc/hosts is wrong"}, {"hello /device d2 /"}, {"/"}, {"", "plain"}, {"text", "/device d2 /"}, {"/usage"},
+		{"/new@bot"}, {"@notes.md\n/new"},
 	} {
 		echoed(t, conn, prompt(texts...))
 	}
 	for _, texts := range [][]string{
 		{"/device d2 /home/alice"}, {"/DEVICE d2 /"}, {"\u001c\t/device d2 /"}, {"/device"}, {" ", "/device d2 /"},
-		{"", "/plugins install x"}, {"/reasoning show"}, {"/model x --global"}, {"/\uff44evice d2 /"}, {"/reset"},
+		{"", "/plugins install x"}, {"/reasoning show"}, {"/model gpt-x"}, {"/\uff44evice d2 /"}, {"/verbose"},
+		{"/diff"}, {"/refine"}, {"/usage reset"}, {"/fast on '--GLOBAL'"}, {"/yolo \u2014global"}, {"/device@bot d2 /"},
+		{"@notes.md\n/device d2 /"}, {"/model x --global"},
 	} {
 		send(t, conn, prompt(texts...))
 		r, data := recv(t, conn)

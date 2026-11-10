@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -339,12 +340,20 @@ func rewritePrompt(p object) error {
 // slashCommands are the slash commands a prompt may run: the gateway
 // leg's allowlist (docs/protocol.md 5.4), plus discard and tools, which
 // hermes acp answers for the session itself (acp_adapter/gateway_commands.py
-// ROUTES).
+// ROUTES). /model is not among them: typed as text, its value flags can
+// take a --session as their value, and Hermes may then write the pick to
+// the profile's config.
 func slashCommands() []string {
 	return []string{"new", "clear", "redraw", "history", "retry", "undo", "title", "compress", "stop", "status",
-		"context", "usage", "help", "commands", "version", "copy", "queue", "steer", "btw", "branch", "diff",
-		"verbose", "fast", "yolo", "reasoning", "model", "goal", "plan", "review", "refine", "whoami",
-		"discard", "tools"}
+		"context", "usage", "help", "commands", "version", "copy", "queue", "steer", "btw", "branch",
+		"fast", "yolo", "reasoning", "goal", "plan", "review", "whoami", "discard", "tools"}
+}
+
+// slashAliases are the Hermes v0.22.7 aliases (hermes_cli/commands.py) of
+// the allowed slash commands.
+func slashAliases() map[string]string {
+	return map[string]string{"reset": "new", "fork": "branch", "compact": "compress", "q": "queue",
+		"s": "steer", "ctx": "context", "v": "version"}
 }
 
 func reasoningEfforts() []string {
@@ -357,8 +366,22 @@ func isPySpace(r rune) bool {
 	return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f)
 }
 
+// attachmentRefs are the leading attachment ref lines Hermes strips before
+// it looks for a command (gateway/platforms/event.py _ATTACHMENT_REF_RE),
+// widened to every line that starts with @.
+var attachmentRefs = regexp.MustCompile(`^(?:@[^\n]*\n?)+`)
+
+// flagForm is an argument as Hermes' flag parsers may read it: quotes and
+// backslashes dropped, figure, en, em and bar dashes turned into --, lower
+// case. A --global in any of those forms shows as --global.
+func flagForm(arg string) string {
+	r := strings.NewReplacer(`"`, "", "'", "", `\`, "", "\u2012", "--", "\u2013", "--", "\u2014", "--", "\u2015", "--")
+	return strings.ToLower(r.Replace(arg))
+}
+
 // checkSlash refuses a prompt that would run a slash command outside
-// slashCommands. hermes acp runs a prompt whose text starts with a
+// slashCommands, with the hub's rules (hermes-hub internal/device/rpc.go
+// textAllowed). hermes acp runs a prompt whose text starts with a
 // registered command as that command, and sends the ones it does not
 // answer itself to the gateway's slash.exec (acp_adapter/gateway_server.py
 // _slash_command and _run_slash), so without this check the ACP leg would
@@ -376,26 +399,42 @@ func checkSlash(blocks []json.RawMessage) error {
 			texts = append(texts, text)
 		}
 	}
-	rest, ok := strings.CutPrefix(strings.TrimLeftFunc(strings.Join(texts, "\n"), isPySpace), "/")
+	t := strings.TrimLeftFunc(strings.Join(texts, "\n"), isPySpace)
+	t = strings.TrimLeftFunc(attachmentRefs.ReplaceAllString(t, ""), isPySpace)
+	rest, ok := strings.CutPrefix(t, "/")
 	if !ok {
 		return nil
 	}
-	name, arg := rest, ""
+	word, arg := rest, ""
 	if i := strings.IndexFunc(rest, isPySpace); i >= 0 {
-		name, arg = rest[:i], strings.TrimFunc(rest[i:], isPySpace)
+		word, arg = rest[:i], strings.TrimFunc(rest[i:], isPySpace)
 	}
+	name, _, _ := strings.Cut(strings.ToLower(word), "@")
 	if name == "" || strings.Contains(name, "/") {
 		return nil
 	}
-	lower := strings.ToLower(name)
-	allowed := isASCII(name) && slices.Contains(slashCommands(), lower) && !strings.Contains(arg, "--global")
-	if allowed && lower == "reasoning" {
-		allowed = arg == "" || arg == "reset" || slices.Contains(reasoningEfforts(), arg)
+	if alias, ok := slashAliases()[name]; ok {
+		name = alias
 	}
-	if !allowed {
-		return fmt.Errorf("/%s is not available through hermes-device", name)
+	if !isASCII(word) || !commandAllowed(name, arg) {
+		return fmt.Errorf("/%s is not available through hermes-device", word)
 	}
 	return nil
+}
+
+// commandAllowed applies slashCommands to a command name and argument.
+func commandAllowed(name, arg string) bool {
+	if !slices.Contains(slashCommands(), name) || strings.Contains(flagForm(arg), "--global") {
+		return false
+	}
+	switch name {
+	case "reasoning":
+		return arg == "" || arg == "reset" || slices.Contains(reasoningEfforts(), arg)
+	case "usage":
+		// /usage reset redeems an account credit.
+		return arg == ""
+	}
+	return true
 }
 
 func isASCII(s string) bool {
