@@ -279,9 +279,45 @@ func (g *acpGuard) check(method string, rule acpRule, params map[string]json.Raw
 		params[acpMCP] = json.RawMessage("[]")
 		delete(params, acpMCPField)
 	case acpPrompt:
+		if !promptTextAllowed(params) {
+			return &acpError{code: codeInvalidParams, message: "the prompt is a slash command that is not available through hermes-hub",
+				reason: reasonDenied}
+		}
 		return rewritePromptLinks(params)
 	}
 	return nil
+}
+
+// promptTextAllowed applies the gateway leg's slash allowlist to every text
+// of a prompt: hermes acp joins the text blocks and sends a prompt that
+// names a registered command to the gateway as slash.exec over its own
+// connection (acp_adapter/gateway_server.py _run_slash), which the hub
+// does not see. Each string under a text member, at any depth, is checked
+// on its own, since the joined text starts with one of them.
+func promptTextAllowed(params map[string]json.RawMessage) bool {
+	var blocks any
+	if json.Unmarshal(params["prompt"], &blocks) != nil {
+		return true
+	}
+	ok := true
+	var walk func(v any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			for k, c := range t {
+				if s, isString := c.(string); isString && k == keyText && !textAllowed(map[string]json.RawMessage{keyText: mustRaw(s)}) {
+					ok = false
+				}
+				walk(c)
+			}
+		case []any:
+			for _, c := range t {
+				walk(c)
+			}
+		}
+	}
+	walk(blocks)
+	return ok
 }
 
 func (g *acpGuard) placeholder() (string, error) {

@@ -410,3 +410,37 @@ func TestGatewayLegPromptSlash(t *testing.T) {
 		}
 	})
 }
+
+// TestACPLegPromptSlash covers slash commands in ACP prompt text: hermes acp
+// sends a prompt that names a registered command to the gateway as
+// slash.exec over its own connection, past the gateway leg's checks.
+func TestACPLegPromptSlash(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, id := e.pair(e.a)
+		e.plugin.SetBinding(sessionMine, id, deviceDir)
+		a := e.acpLeg(tok)
+		n := len(e.acp.Received())
+		text := func(s string) map[string]any { return map[string]any{keyType: keyText, keyText: s} }
+		for _, prompt := range [][]any{
+			{text("/approvals off")}, {text("  /verbose")}, {text("/diff")}, {text("/personality pirate")}, {text("/memory approve")},
+			{text("/skills approve x")}, {text("/my-quick-exec")}, {text(""), text("/approvals off")}, {text("hi"), text("/approvals off")},
+			{map[string]any{keyType: "resource", "resource": map[string]any{"uri": "file:///a", keyText: "/approvals off"}}},
+			{text("/model gpt-5 --reasoning --session --reasoning high")}, {text("/usage reset --force")},
+		} {
+			if m := a.request(acpPrompt, map[string]any{keySessionACP: sessionMine, keyPrompt: prompt}); errCode(m) != codeBadParams ||
+				reason(m) != reasonDenied {
+				t.Fatalf("prompt %v = %v", prompt, m)
+			}
+		}
+		if got := e.acp.Received()[n:]; len(got) != 0 {
+			t.Fatalf("refused prompts reached the agent: %v", got)
+		}
+		for _, prompt := range [][]any{{text("hi")}, {text("/etc/hosts is wrong")}, {text("/title x")}, {text("/compact")}} {
+			if m := a.request(acpPrompt, map[string]any{keySessionACP: sessionMine, keyPrompt: prompt}); m[keyResult] == nil {
+				t.Fatalf("prompt %v = %v", prompt, m)
+			}
+		}
+	})
+}
