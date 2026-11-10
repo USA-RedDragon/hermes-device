@@ -35,73 +35,16 @@ func (g *Gateway) BumpRevision(id string) {
 // hMutate follows gateway/session_mutations.py and hermes_state_mutations.py
 // for the operations the hub sends.
 func (g *Gateway) hMutate(_ *conn, p map[string]any) (any, string, func()) {
-	// The keys besides expected_generation (gateway/session_mutations.py
-	// _FIELDS), and the operations that need it (hermes_state_runtime.py).
-	fields := []string{"expected_revision", kOperation, kPayload, "request_id", kSessionID}
-	fenced := []string{gateway.OpDelete, gateway.OpModel, kReasoning}
-	got := slices.DeleteFunc(keys(p), func(k string) bool { return k == "expected_generation" })
-	s := g.sessions[str(p, kSessionID)]
-	if !slices.Equal(got, fields) {
-		return nil, errInvalidParams, nil
+	s, op, payload, reason := g.mutateParams(p)
+	if reason != "" {
+		return nil, reason, nil
 	}
-	if s == nil {
-		return nil, gateway.ReasonNotFound, nil
-	}
-	op := str(p, kOperation)
-	payload, ok := p[kPayload].(map[string]any)
-	rev, revOK := num(p, "expected_revision")
-	gen, genOK := num(p, "expected_generation")
-	if !ok || !revOK || rev < 0 || (slices.Contains(fenced, op) && !genOK) {
-		return nil, errInvalidParams, nil
-	}
-	if rev != s.Revision {
-		return nil, gateway.ReasonRevisionConflict, nil
-	}
-	if genOK && gen != s.Generation {
-		return nil, gateway.ReasonStaleGeneration, nil
+	if op == gateway.OpModel {
+		return g.pickModel(s, payload)
 	}
 	result := map[string]any{kSessionID: s.ID, kOperation: op}
-	switch op {
-	case gateway.OpRename:
-		title, ok := payload[kTitle].(string)
-		if len(payload) != 1 || !ok {
-			return nil, errInvalidParams, nil
-		}
-		title = strings.TrimSpace(title)
-		if utf8.RuneCountInString(title) > maxTitle {
-			return nil, errInternal, nil
-		}
-		for _, o := range g.sessions {
-			if o != s && title != "" && o.Title == title {
-				return nil, errInternal, nil
-			}
-		}
-		s.Title = title
-		result[kTitle] = title
-	case gateway.OpArchive:
-		archived, ok := payload["archived"].(bool)
-		if len(payload) != 1 || !ok {
-			return nil, errInvalidParams, nil
-		}
-		s.Archived = archived
-		result["archived"] = archived
-	case gateway.OpDelete:
-		if len(payload) != 0 {
-			return nil, errInvalidParams, nil
-		}
-		for _, a := range s.Pending {
-			if a.Status == gateway.AdmissionUnknown {
-				return nil, gateway.ReasonUnknownExecution, nil
-			}
-		}
-		if s.Running || len(s.Pending) > 0 {
-			return nil, gateway.ReasonSessionBusy, nil
-		}
-		result["deleted_ids"] = []string{s.ID}
-	case gateway.OpModel:
-		return g.pickModel(s, payload)
-	default:
-		return nil, errInvalidParams, nil
+	if reason := g.applyMutation(s, op, payload, result); reason != "" {
+		return nil, reason, nil
 	}
 	s.Revision++
 	result[kRevision], result[kExecGen] = s.Revision, s.Generation
@@ -110,6 +53,88 @@ func (g *Gateway) hMutate(_ *conn, p map[string]any) (any, string, func()) {
 		delete(g.sessions, s.ID)
 	}
 	return result, "", nil
+}
+
+// mutateParams validates the envelope of a mutation and its fences.
+func (g *Gateway) mutateParams(p map[string]any) (*Session, string, map[string]any, string) {
+	// The keys besides expected_generation (gateway/session_mutations.py
+	// _FIELDS), and the operations that need it (hermes_state_runtime.py).
+	fields := []string{"expected_revision", kOperation, kPayload, "request_id", kSessionID}
+	fenced := []string{gateway.OpDelete, gateway.OpModel, kReasoning}
+	got := slices.DeleteFunc(keys(p), func(k string) bool { return k == "expected_generation" })
+	s := g.sessions[str(p, kSessionID)]
+	if !slices.Equal(got, fields) {
+		return nil, "", nil, errInvalidParams
+	}
+	if s == nil {
+		return nil, "", nil, gateway.ReasonNotFound
+	}
+	op := str(p, kOperation)
+	payload, ok := p[kPayload].(map[string]any)
+	rev, revOK := num(p, "expected_revision")
+	gen, genOK := num(p, "expected_generation")
+	if !ok || !revOK || rev < 0 || (slices.Contains(fenced, op) && !genOK) {
+		return nil, "", nil, errInvalidParams
+	}
+	if rev != s.Revision {
+		return nil, "", nil, gateway.ReasonRevisionConflict
+	}
+	if genOK && gen != s.Generation {
+		return nil, "", nil, gateway.ReasonStaleGeneration
+	}
+	return s, op, payload, ""
+}
+
+// applyMutation performs one non-model operation and returns a failure reason.
+func (g *Gateway) applyMutation(s *Session, op string, payload, result map[string]any) string {
+	switch op {
+	case gateway.OpRename:
+		title, ok := payload[kTitle].(string)
+		if len(payload) != 1 || !ok {
+			return errInvalidParams
+		}
+		title = strings.TrimSpace(title)
+		if utf8.RuneCountInString(title) > maxTitle {
+			return errInternal
+		}
+		for _, o := range g.sessions {
+			if o != s && title != "" && o.Title == title {
+				return errInternal
+			}
+		}
+		s.Title = title
+		result[kTitle] = title
+	case gateway.OpArchive:
+		archived, ok := payload["archived"].(bool)
+		if len(payload) != 1 || !ok {
+			return errInvalidParams
+		}
+		s.Archived = archived
+		result["archived"] = archived
+	case gateway.OpDelete:
+		if len(payload) != 0 {
+			return errInvalidParams
+		}
+		for _, a := range s.Pending {
+			if a.Status == gateway.AdmissionUnknown {
+				return gateway.ReasonUnknownExecution
+			}
+		}
+		if s.Running || len(s.Pending) > 0 {
+			return gateway.ReasonSessionBusy
+		}
+		result["deleted_ids"] = []string{s.ID}
+	case "workspace":
+		cwd, ok := payload["cwd"].(string)
+		if len(payload) != 1 || !ok || !strings.HasPrefix(cwd, "/") {
+			return errInvalidParams
+		}
+		s.CWD = cwd
+		result["cwd"] = cwd
+	default:
+		return errInvalidParams
+	}
+	return ""
 }
 
 func (g *Gateway) pickModel(s *Session, payload map[string]any) (any, string, func()) {

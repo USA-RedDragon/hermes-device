@@ -166,6 +166,31 @@ func contract() map[string][]string {
 		},
 		"agent/display.py":       {`rendered.append(f"{_diff_ansi()[color]}{raw_line}{_ANSI_RESET}")`},
 		"tools/terminal_tool.py": {`body: dict[str, Any] = {"output": "", "exit_code": exit_code, "error": error}`},
+		// The device gateway leg's config.set rule (internal/device): these keys change one session,
+		// every other key writes the profile.
+		"gateway/session_busy_controls.py#device": {
+			"return {'key': 'busy', 'value': value, 'scope': 'session'}",
+			"return {'key': 'verbose', 'value': current, 'scope': 'session'}",
+			"return {'key': 'show_reasoning', 'value': '1' if shown is True else '0', 'scope': 'session'}",
+			"return {'key': 'service_tier', 'value': tier or 'normal', 'scope': 'session'}",
+			"return {'key': 'yolo', 'value': '1' if enabled else '0', 'scope': 'session'}",
+		},
+		"gateway/session_tui_config.py#device": {
+			"_SESSION_CONTROL_KEYS = frozenset({'busy', 'verbose', 'yolo', 'show_reasoning', 'service_tier', 'model'})",
+			"if key == 'fast':\n        return await _set_fast(connection, ref, policy, value)",
+			"lambda cfg: _set_display(cfg, key, value))",
+			"if params['key'] == 'yolo':\n        if scope != 'global':",
+			"value, scope = _word(params.get('value')), params.get('scope', 'session')",
+		},
+		"gateway/slash_commands_model.py": {
+			`_REASONING_DISPLAY_TOGGLES = {"show": True, "on": True, "hide": False, "off": False}`,
+			`self._save_gateway_config_key(f"display.platforms.{platform_key}.show_reasoning", show)`,
+			`if self._save_gateway_config_key("agent.reasoning_effort", value):`,
+		},
+		"tui_gateway/contracts/canonical_sessions.py#device": {
+			"    row_cwd: str | None = None", "    safe_mode: bool = False", "    ignore_user_config: bool = False",
+			"    editor: dict[str, JsonValue] | None = None", "    session_id: str = ''",
+		},
 		"tui_gateway/contracts/events.py": {
 			`event("message.start"`, `event("message.delta"`, `event("reasoning.delta"`, `event("thinking.delta"`,
 			`event("message.complete"`, `event("tool.start"`, `event("tool.progress"`, `event("tool.complete"`,

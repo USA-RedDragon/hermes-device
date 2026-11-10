@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -88,6 +89,17 @@ const maxFrame = 64 << 20
 // unless the peer is loopback. onEvent gets every event notification in the order the gateway
 // sent them, on the connection's reader goroutine.
 func (d *Dialer) Dial(ctx context.Context, onEvent func(Event)) (*Client, error) {
+	conn, err := d.DialRaw(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return newClient(ctx, conn, onEvent)
+}
+
+// DialRaw dials the gateway socket as Dial does and returns it before
+// anything is read from it, so the gateway.ready event is its first
+// message. The caller owns the connection.
+func (d *Dialer) DialRaw(ctx context.Context) (*websocket.Conn, error) {
 	ticket, err := d.ticket(ctx)
 	if errors.Is(err, ErrUnauthorized) {
 		if err = d.login(ctx); err != nil {
@@ -103,8 +115,7 @@ func (d *Dialer) Dial(ctx context.Context, onEvent func(Event)) (*Client, error)
 		return nil, fmt.Errorf("gateway url: %w", err)
 	}
 	origin := base.Scheme + "://" + base.Host
-	wsURL := strings.Replace(strings.Replace(d.creds.BaseURL, "https:", "wss:", 1), "http:", "ws:", 1) + "/api/ws?native_dial=browser"
-	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+	conn, resp, err := websocket.Dial(ctx, WebSocketURL(d.creds.BaseURL)+"/api/ws?native_dial=browser", &websocket.DialOptions{
 		Subprotocols: []string{Subprotocol, TicketPrefix + ticket},
 		HTTPHeader:   http.Header{"Origin": []string{origin}},
 	})
@@ -124,7 +135,54 @@ func (d *Dialer) Dial(ctx context.Context, onEvent func(Event)) (*Client, error)
 		return nil, ErrProtocol
 	}
 	conn.SetReadLimit(maxFrame)
-	return newClient(ctx, conn, onEvent)
+	return conn, nil
+}
+
+// WebSocketURL turns an http or https base URL into ws or wss.
+func WebSocketURL(base string) string {
+	if rest, ok := strings.CutPrefix(base, "https:"); ok {
+		return "wss:" + rest
+	}
+	if rest, ok := strings.CutPrefix(base, "http:"); ok {
+		return "ws:" + rest
+	}
+	return base
+}
+
+// Request sends one HTTP request to the listener with the dashboard
+// session, signing in again once when it is refused with 401. body may be
+// nil. The caller closes the response body.
+func (d *Dialer) Request(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
+	resp, err := d.send(ctx, method, path, body)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if err := d.login(ctx); err != nil {
+		return nil, err
+	}
+	return d.send(ctx, method, path, body)
+}
+
+func (d *Dialer) send(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
+	var r io.Reader
+	if body != nil {
+		r = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, d.creds.BaseURL+path, r)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := d.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w: %w", method, path, ErrUnreachable, err)
+	}
+	return resp, nil
 }
 
 func (d *Dialer) post(ctx context.Context, path string, body any) (*http.Response, error) {

@@ -85,6 +85,10 @@ type Session struct {
 	Model    string
 	Provider string
 	CWD      string
+	// RowCWD is the row_cwd session.create named.
+	RowCWD string
+	// RequestID is the request_id session.create named.
+	RequestID string
 	// Effort is the reasoning effort; "" is the profile default.
 	Effort string
 
@@ -101,6 +105,7 @@ type Gateway struct {
 	Username string
 	Password string
 
+	mux      *http.ServeMux
 	mu       sync.Mutex
 	sessions map[string]*Session
 	tickets  map[string]bool
@@ -200,6 +205,7 @@ func New(username, password string) *Gateway {
 		},
 	}
 	mux := http.NewServeMux()
+	g.mux = mux
 	mux.HandleFunc("POST /auth/password-login", g.login)
 	mux.HandleFunc("POST /api/webapp/socket-ticket", g.ticket)
 	mux.HandleFunc("GET /api/ws", g.ws)
@@ -291,6 +297,41 @@ func (g *Gateway) FinishRestart() {
 	}
 	g.mu.Unlock()
 	g.down.set(false)
+}
+
+// Handle serves pattern on the fake's listener, as a dashboard plugin's
+// route. With signedIn, a request without a dashboard session cookie gets
+// 401 as on Hermes' /api/* routes.
+func (g *Gateway) Handle(pattern string, h http.Handler, signedIn bool) {
+	if !signedIn {
+		g.mux.Handle(pattern, h)
+		return
+	}
+	g.mux.Handle(pattern, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ck, err := r.Cookie("hermes_session_at")
+		g.mu.Lock()
+		ok := err == nil && g.cookies[ck.Value]
+		g.mu.Unlock()
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"detail":"Unauthorized"}`))
+			return
+		}
+		h.ServeHTTP(w, r)
+	}))
+}
+
+// SessionIDs lists the ids of every session.
+func (g *Gateway) SessionIDs() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]string, 0, len(g.sessions))
+	for id := range g.sessions {
+		out = append(out, id)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // URL is the fake's base URL.
@@ -521,9 +562,9 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
-			ID     int64          `json:"id"`
-			Method string         `json:"method"`
-			Params map[string]any `json:"params"`
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params map[string]any  `json:"params"`
 		}
 		if json.Unmarshal(data, &req) != nil {
 			continue
@@ -714,15 +755,36 @@ func (g *Gateway) hSessionCreate(c *conn, p map[string]any) (any, string, func()
 	if str(p, "request_id") == "" {
 		return nil, errInvalidParams, nil
 	}
+	for _, s := range g.sessions {
+		if s.RequestID == str(p, "request_id") {
+			return g.snapshotLocked(c, s), "", nil
+		}
+	}
 	s := &Session{ID: "local-" + randHex()[:16], Live: true, StartedAt: float64(time.Now().Unix()), epoch: randHex(),
 		prompts: map[string]gateway.Prompt{}, subs: map[*conn]string{}, Model: kSmall, Provider: kLocal,
-		CWD: str(p, "cwd")}
+		CWD: str(p, "cwd"), RowCWD: str(p, "row_cwd"), RequestID: str(p, "request_id")}
 	g.sessions[s.ID] = s
 	return g.snapshotLocked(c, s), "", nil
 }
 
 func (g *Gateway) hSessionResume(c *conn, p map[string]any) (any, string, func()) {
 	s := g.sessions[str(p, kSessionID)]
+	if t, ok := p[kTitle].(string); ok {
+		s = nil
+		for _, x := range g.sessions {
+			if x.Title == t {
+				s = x
+			}
+		}
+	}
+	if _, ok := p["latest"]; ok {
+		s = nil
+		for _, x := range g.sessions {
+			if s == nil || x.StartedAt > s.StartedAt {
+				s = x
+			}
+		}
+	}
 	if s == nil {
 		return nil, gateway.ReasonNotFound, nil
 	}
