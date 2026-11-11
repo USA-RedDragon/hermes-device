@@ -85,6 +85,34 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  firefox-extension-lint:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - run: go generate ./...
+
+      - name: Lint the extension as addons.mozilla.org validates it
+        run: |
+          go run . browser extension --out "$RUNNER_TEMP/extension"
+          npx --yes web-ext@10.8.0 lint --source-dir "$RUNNER_TEMP/extension" --self-hosted
+
   backend-unit-tests-coverage:
     runs-on: ubuntu-24.04
     permissions:
