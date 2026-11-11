@@ -19,8 +19,16 @@ The jobs attest the files as the release holds them after the upload, and the im
 
 1. It downloads the checksum file and the archive for this OS and architecture, and checks the archive's SHA-256 against the checksum file. The archive stays in memory from here on.
 2. It gets the attestations for that SHA-256 from the GitHub API (only `https://slsa.dev/provenance/v1` statements, up to 5 pages of 30). No attestation at all fails.
-3. It reads the Sigstore trusted root of the public-good instance from its TUF repository (`tuf-repo-cdn.sigstore.dev`), checked against the TUF root that sigstore-go builds in. It caches the TUF metadata for a day in the user cache directory (`~/.cache/hermes-device/sigstore-tuf` on Linux, `~/Library/Caches/hermes-device/sigstore-tuf` on macOS).
-4. For each attestation, it verifies the Sigstore bundle with sigstore-go, the same way `gh attestation verify` verifies a public-good bundle: the certificate chains to the Fulcio root, has a signed certificate timestamp, and was valid when the transparency log recorded the signature; the log entry verifies against the Rekor key; the DSSE signature verifies with the certificate's key; and the statement has a subject with the archive's SHA-256.
+3. It uses the trusted root of the Sigstore public-good instance that is built into the binary: `internal/attest/trusted_root.json`, the `targets/trusted_root.json` of [sigstore/root-signing](https://github.com/sigstore/root-signing) as of <!-- docgen:const pkg=internal/attest name=PublicGoodRootDate code=false -->2026-11-11<!-- /docgen:const -->. It does not download the trusted root.
+4. For each attestation, it verifies the Sigstore bundle with its own verifier, which uses only the Go standard library. It checks the same things that `gh attestation verify` checks for a public-good bundle:
+   - The bundle is a v0.1, v0.2 or v0.3 Sigstore bundle with a DSSE envelope of an in-toto statement and a signing certificate (a v0.3 bundle must hold the certificate alone, not a chain).
+   - The transparency log entry is from the Rekor log of the trusted root. Its signed entry timestamp verifies with the Rekor key over the entry body, integrated time, log ID and log index. The entry body (kind `dsse` 0.0.1 or `intoto` 0.0.2) records the SHA-256 of this envelope's payload, this envelope's signature and this certificate. The inclusion proof (required from bundle v0.2 on) leads to its root hash, and its checkpoint is signed by the Rekor key and names the same tree size and root hash.
+   - The certificate was valid at the entry's integrated time, chains to a Fulcio root and intermediate of the trusted root that were valid then, and allows code signing.
+   - At least one signed certificate timestamp in the certificate verifies with a certificate transparency log key of the trusted root.
+   - The DSSE signature verifies with the certificate's key over the DSSE pre-authentication encoding.
+   - The statement is an in-toto v1 statement with a subject with the archive's SHA-256.
+
+   The verifier refuses a JSON object with two equal keys or two keys that differ only in case, and a certificate extension that is not a DER UTF8String. When a bundle is signed by a certificate authority or logged in a log that the built-in trusted root does not have, `update` says that the binary's trusted root may be out of date. Then verify the release by hand (section 5) and install it by hand, or install a newer release the same way, which has a newer trusted root.
 5. It checks the certificate against this policy. Every item must match exactly:
 
 | Field | Required value |
@@ -45,7 +53,7 @@ The binary that runs `update` does the checks. A binary before v<!-- docgen:cons
 
 ## 3. What it trusts
 
-- The Sigstore public-good TUF root that is built into the binary (through sigstore-go), and what that TUF repository signs: the Fulcio certificate authority, the Rekor log key and the certificate transparency log key.
+- The Sigstore public-good trusted root that is built into the binary: the Fulcio certificate authorities, the Rekor log key and the certificate transparency log keys. A release updates it when Sigstore rotates a key: replace `internal/attest/trusted_root.json` with the public-good line of `gh attestation trusted-root` (or `targets/trusted_root.json` of sigstore/root-signing), and update its date and SHA-256 in `internal/attest/trustedroot.go` and its test.
 - GitHub Actions: its OIDC tokens say truthfully which repository, workflow, ref and runner a job runs for. Fulcio puts these claims in the certificate.
 - The release workflow at the tag and the actions it pins by commit SHA, and everyone who can push a `v*` tag to the repository.
 
@@ -55,7 +63,7 @@ The GitHub API allows 60 requests per hour without a token per IP address. `upda
 
 ## 4. Unsafe override
 
-`hermes-device update --insecure-skip-attestation` installs without step 2 to 5. Then only the checksum file, which comes from the same place as the archive, vouches for the archive. Use it only in an emergency, for example when the GitHub attestations API or the Sigstore TUF repository is down, or to install a release before v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false -->0.13.0<!-- /docgen:const -->. `update` prints a warning when you use it.
+`hermes-device update --insecure-skip-attestation` installs without step 2 to 5. Then only the checksum file, which comes from the same place as the archive, vouches for the archive. Use it only in an emergency, for example when the GitHub attestations API is down, or to install a release before v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false -->0.13.0<!-- /docgen:const -->. `update` prints a warning when you use it.
 
 ## 5. Verify by hand
 
