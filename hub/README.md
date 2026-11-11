@@ -8,6 +8,7 @@ One web front end, behind OpenID Connect login, for many [Hermes Agent](https://
 - Open a session and continue it, also a live session that VS Code or the CLI started. The gateway keeps ownership of the session, so you can go back to VS Code at any time.
 - Reasoning, tool calls (arguments, progress, result) and the reply stream live, with no refresh.
 - New sessions, interrupt, and approval prompts.
+- Images and files attached to a message, on the page and in Telegram (see [Attachments](#attachments)).
 - Replies in Markdown, with colored code blocks and a Copy button. Model output never becomes HTML, and links open only `http`, `https` and `mailto` targets.
 - A line under the chat title with the model, how full its context is, reply speed and the working folder. It opens to pick the model and the thinking level.
 - Rename, archive and delete chats, and search their titles.
@@ -48,6 +49,15 @@ Chat changes use the gateway's `session.mutate` (rename, archive, delete, model)
 
 Syntax colors come from [highlight.js](https://highlightjs.org/) 11.11.1 (BSD-3-Clause), in `internal/web/static/vendor`.
 
+## Attachments
+
+The paperclip by the message box attaches files; pasting or dropping files onto the chat does too. Each file shows as a chip, with a thumbnail for an image, until it is sent or removed. The sent message shows them. A chat opened again later shows them too, by name, since Hermes keeps no thumbnail.
+
+- **Images** (PNG, JPEG, GIF and WebP, found by their first bytes) go to the model. The hub stages each one with `image.attach_bytes`, which the gateway saves in the profile's `cache/images`, and names them in the `attachments` of the `prompt.submit`. Hermes takes up to 10 images of up to 25 MB each. Hermes decides whether the model reads them itself or an image model describes them. When the session's tools have no `vision_analyze`, Hermes has neither, and the hub tells the user that the agent may not see the images.
+- **Other files** go where the session's tools can read them. For a chat that runs on a computer or the sandbox, the hub sends the file to the device plugin, which writes it into `.hermes/attachments` of the chat's folder on that device (hermes-device docs/protocol.md section 9). For a chat that runs on the Hermes server, the hub hands it to Hermes with `file.attach`. The message then gets a line that names the file and its path. A file is at most 32 MB.
+- One message takes at most 10 files, 64 MB in all. A message with files cannot be a slash command. Hermes must be up to take the files, so while it restarts the hub refuses such a message with a note instead of holding it; it holds one only when Hermes took the files and then went away before the message itself.
+- PDFs are files. Hermes' `pdf.attach`, which turns pages into images, is not served on the gateway's socket.
+
 ## Set up a Hermes backend
 
 The hub needs the Hermes Webapp listener on an address that it can reach, with a password sign-in. On a non-loopback bind, Hermes always requires sign-in. Add this to the backend's Hermes `config.yaml` (the device's `~/.hermes/config.yaml`, or the cluster instance's config) and restart its gateway:
@@ -80,6 +90,8 @@ dashboard:
 ## Telegram
 
 Set `telegram.enabled`, `telegram.token` and `http.public_url`. A Telegram user sends `/link` to the bot and gets a link to `/link/telegram?token=...`. That page needs a hub login and asks the user to confirm; only the confirmation (a POST with the CSRF token) links the account. A link token is valid for <!-- docgen:const pkg=internal/store name=LinkTokenTTL -->`10m0s`<!-- /docgen:const --> and works once.
+
+A photo, an image or other file, a video or a voice note sent to the bot goes to the chat like an attachment on the page, with its caption as the message. The photos and files of one album go as one message. Telegram lets bots download files of up to 20 MB, so the bot answers a larger one with a note instead.
 
 Telegram lets only one process long-poll a bot token. With `store.driver: postgres`, the replicas elect one leader with a PostgreSQL session advisory lock, held on a connection of its own. Only the leader polls. The other replicas try to take the lock every `telegram.leader_retry` (default 2s), so one of them takes over a few seconds after the leader stops. If the leader dies without closing its connection, PostgreSQL frees the lock when its TCP keepalive gives up, after about 15 seconds. The leader checks its lock every 2 seconds and stops polling when the check fails. With SQLite there is one replica, and it always leads.
 
