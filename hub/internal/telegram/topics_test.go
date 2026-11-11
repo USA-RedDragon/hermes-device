@@ -213,9 +213,8 @@ func TestTopicMadeInTelegramGetsAChat(t *testing.T) {
 func TestStoredTopicRoutesAndGoneTopicIsDropped(t *testing.T) {
 	t.Parallel()
 	since := time.Now().Add(-time.Hour)
-	h := linked(t, since, hub.TelegramTopic{ChatID: forumID, ThreadID: 42, User: userAlice, BackendID: beCluster, SessionID: "s7",
-		Name: "Deploy", Seen: since})
-	h.hub.add(hub.Session{ID: "s7", BackendID: beCluster, Title: "Deploy", UpdatedAt: since})
+	h := linkedWith(t, since, []string{"s7"}, hub.TelegramTopic{ChatID: forumID, ThreadID: 42, User: userAlice, BackendID: beCluster,
+		SessionID: "s7", Name: "Deploy", Seen: since})
 	h.tg.sayIn(forumChat(), 42, aliceTG, "ship it", nil)
 	if p := h.hub.waitPrompt(t, 1)[0]; p.SessionID != "s7" {
 		t.Fatalf("prompt = %+v", p)
@@ -237,8 +236,8 @@ func TestStoredTopicRoutesAndGoneTopicIsDropped(t *testing.T) {
 func TestNoticeInGeneralLinksTheTopic(t *testing.T) {
 	t.Parallel()
 	since := time.Now()
-	h := linked(t, since, hub.TelegramTopic{ChatID: forumID, ThreadID: 42, User: userAlice, BackendID: beCluster, SessionID: "s7",
-		Name: "SEV-1 review", Seen: since})
+	h := linkedWith(t, since, []string{"s7"}, hub.TelegramTopic{ChatID: forumID, ThreadID: 42, User: userAlice, BackendID: beCluster,
+		SessionID: "s7", Name: "SEV-1 review", Seen: since})
 	rec := hub.NoticeRecord{ID: "n1", User: userAlice, Kind: hub.NoticeFailure, BackendID: beCluster, SessionID: "s7"}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -256,6 +255,23 @@ func TestNoticeInGeneralLinksTheTopic(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("no topic button; calls: %+v", h.tg.snapshot())
+}
+
+// linkedWith is linked with the hub's sessions in place before the bot
+// starts, so its first check of the topics sees them.
+func linkedWith(t *testing.T, since time.Time, sessions []string, topics ...hub.TelegramTopic) *harness {
+	t.Helper()
+	state := newFakeState()
+	state.groups[forumID] = hub.TelegramGroup{User: userAlice, ChatID: forumID, LinkedAt: since}
+	for _, tp := range topics {
+		state.topics[topicKey(tp.ChatID, tp.BackendID, tp.SessionID)] = tp
+	}
+	return startBotWith(t, nil, state, func(fh *fakeHub) hub.Computers {
+		for _, id := range sessions {
+			fh.sessions = append(fh.sessions, hub.Session{ID: id, BackendID: beCluster, Title: id, UpdatedAt: since})
+		}
+		return nil
+	})
 }
 
 const (
@@ -287,8 +303,7 @@ func (f *fakeState) waitNoTopic(t *testing.T, sessionID string) {
 func TestDeletedChatDeletesItsTopic(t *testing.T) {
 	t.Parallel()
 	since := time.Now().Add(-time.Hour)
-	h := linked(t, since, storedTopic(42, "s7", since))
-	h.hub.add(hub.Session{ID: "s7", BackendID: beCluster, Title: "s7", UpdatedAt: since})
+	h := linkedWith(t, since, []string{"s7"}, storedTopic(42, "s7", since))
 	h.tg.sayIn(forumChat(), 42, aliceTG, "hello", nil)
 	h.hub.waitPrompt(t, 1)
 	h.hub.remove("s7")
@@ -303,9 +318,8 @@ func TestDeletedChatDeletesItsTopic(t *testing.T) {
 func TestReconcileDeletesTopicsOfGoneChats(t *testing.T) {
 	t.Parallel()
 	since := time.Now().Add(-time.Hour)
-	h := linked(t, since, storedTopic(50, sGone, since), storedTopic(51, "kept", since), storedTopic(0, "dropped", since),
-		storedTopic(1, "general", since))
-	h.hub.add(hub.Session{ID: "kept", BackendID: beCluster, Title: "kept", UpdatedAt: since})
+	h := linkedWith(t, since, []string{"kept"}, storedTopic(50, sGone, since), storedTopic(51, "kept", since),
+		storedTopic(0, "dropped", since), storedTopic(1, "general", since))
 	h.tg.waitCall(mDeleteTopic, func(c tgCall) bool { return c.thread() == 50 })
 	for _, id := range []string{sGone, "dropped", "general"} {
 		h.state.waitNoTopic(t, id)
@@ -341,8 +355,7 @@ func TestReconcileKeepsTopicsWhenItCannotCheck(t *testing.T) {
 func TestArchiveClosesAndUnarchiveReopensTheTopic(t *testing.T) {
 	t.Parallel()
 	since := time.Now().Add(-time.Hour)
-	h := linked(t, since, storedTopic(60, sFix, since))
-	h.hub.add(hub.Session{ID: sFix, BackendID: beCluster, Title: sFix, UpdatedAt: since})
+	h := linkedWith(t, since, []string{sFix}, storedTopic(60, sFix, since))
 	h.hub.update(sFix, func(s *hub.Session) { s.Archived = true })
 	h.tg.waitCall(mCloseTopic, func(c tgCall) bool { return c.thread() == 60 })
 	waitClosed(t, h.state, sFix, true)
@@ -379,9 +392,7 @@ func deleteViaEvent(t *testing.T, h *harness, thread int64, sessionID string, n 
 func TestTopicErrors(t *testing.T) {
 	t.Parallel()
 	since := time.Now().Add(-time.Hour)
-	h := linked(t, since, storedTopic(70, "a", since), storedTopic(71, "b", since))
-	h.hub.add(hub.Session{ID: "a", BackendID: beCluster, Title: "a", UpdatedAt: since})
-	h.hub.add(hub.Session{ID: "b", BackendID: beCluster, Title: "b", UpdatedAt: since})
+	h := linkedWith(t, since, []string{"a", "b"}, storedTopic(70, "a", since), storedTopic(71, "b", since))
 	h.tg.mu.Lock()
 	h.tg.topicErr[mDeleteTopic] = "Bad Request: not enough rights to manage topics in the chat"
 	h.tg.mu.Unlock()
@@ -403,8 +414,7 @@ func TestTopicErrors(t *testing.T) {
 func TestTopicAlreadyDeletedIsForgotten(t *testing.T) {
 	t.Parallel()
 	since := time.Now().Add(-time.Hour)
-	h := linked(t, since, storedTopic(80, sGone, since))
-	h.hub.add(hub.Session{ID: sGone, BackendID: beCluster, Title: sGone, UpdatedAt: since})
+	h := linkedWith(t, since, []string{sGone}, storedTopic(80, sGone, since))
 	h.tg.mu.Lock()
 	h.tg.topicErr[mDeleteTopic] = "Bad Request: TOPIC_ID_INVALID"
 	h.tg.mu.Unlock()
