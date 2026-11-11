@@ -14,7 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_browser  # noqa: E402
 from test_browser import Recorder  # noqa: E402
-from test_contract import SRC  # noqa: E402
+from test_contract import require_source  # noqa: E402
 from test_core import Base, FakeDevice, core  # noqa: E402
 
 mcptools = core._load_sibling("hermes_device_mcp", "mcptools.py")
@@ -463,8 +463,7 @@ class HermesMCPContract(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not (SRC / "run_agent.py").is_file():
-            raise unittest.SkipTest(f"Hermes source not found at {SRC}")
+        require_source()
 
     def test_untrusted_wrapper_covers_the_toolset(self):
         from agent.tool_dispatch_helpers import _is_untrusted_tool

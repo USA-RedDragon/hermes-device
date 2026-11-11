@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_contract import SRC  # noqa: E402
+from test_contract import SRC, require_source  # noqa: E402
 from test_core import Base, FakeDevice, Store, core  # noqa: E402
 from test_routes import PATH, Signer, plugin_api  # noqa: E402
 
@@ -1246,8 +1246,7 @@ class HermesBrowserContract(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not (SRC / "run_agent.py").is_file():
-            raise unittest.SkipTest(f"Hermes source not found at {SRC}")
+        require_source()
 
     def test_register_tool_signature(self):
         from hermes_cli.plugins import PluginContext

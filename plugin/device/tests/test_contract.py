@@ -20,6 +20,16 @@ from test_core import core  # noqa: E402
 REPO = Path(os.environ.get("HERMES_DEVICE_REPO") or Path(__file__).resolve().parents[3])
 SRC = Path(os.path.expanduser(os.environ.get("HERMES_AGENT_SRC") or "~/.hermes/hermes-agent"))
 
+
+def require_source() -> None:
+    """Skip without a Hermes checkout. When HERMES_AGENT_SRC names one, fail instead, so a
+    Hermes release that moves run_agent.py cannot pass by skipping."""
+    if (SRC / "run_agent.py").is_file():
+        return
+    if os.environ.get("HERMES_AGENT_SRC"):
+        raise AssertionError(f"HERMES_AGENT_SRC={SRC} has no run_agent.py")
+    raise unittest.SkipTest(f"Hermes source not found at {SRC}; set HERMES_AGENT_SRC")
+
 _GO_DURATION = re.compile(r"^(\d+)\s*\*\s*time\.Second$")
 
 
@@ -126,8 +136,7 @@ class HermesContractTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not (SRC / "run_agent.py").is_file():
-            raise unittest.SkipTest(f"Hermes source not found at {SRC}; set HERMES_AGENT_SRC")
+        require_source()
 
     def source(self, rel: str) -> str:
         return (SRC / rel).read_text(encoding="utf-8")
