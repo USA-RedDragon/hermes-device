@@ -1043,14 +1043,29 @@
   const imageData = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/;
   const placeholder = /^\[screenshot(?: detail=\w+)?\]$/;
   const fileNote = /^\[The user attached a file: (.+)\. It is saved at (\/.*)\. Read it with your tools when the request needs its contents\.\]$/;
+  // The hub's lines for a PDF it read (internal/service/pdf.go): a summary,
+  // then the PDF's text between markers with a random id.
+  const pdfNote = /^\[The PDF (.+) has (\d+) pages?\. .*\]$/;
+  const pdfFailed = /^\[The hub could not read the PDF .+\. Its pages are not shown\.\]$/;
+  const pdfStart = /^<untrusted-pdf-text id="([0-9a-f]{16})">$/;
   const baseName = (p) => p.replace(/\/+$/, "").split("/").pop() || p;
 
   function splitAttachments(text) {
     const atts = [];
     const keep = [];
+    let skipTo = "";
     for (const line of String(text || "").split("\n")) {
       let m;
-      if ((m = line.match(imageHint))) atts.push({ name: baseName(m[1]), image: true, title: m[1], path: m[1] });
+      if (skipTo) {
+        if (line === skipTo) skipTo = "";
+        continue;
+      }
+      if ((m = line.match(pdfStart))) skipTo = "</untrusted-pdf-text id=\"" + m[1] + "\">";
+      else if ((m = line.match(pdfNote))) {
+        const f = atts.findLast((a) => !a.image && a.name === m[1]);
+        if (f) { f.pdf = true; f.pages = +m[2]; }
+      } else if (pdfFailed.test(line)) continue;
+      else if ((m = line.match(imageHint))) atts.push({ name: baseName(m[1]), image: true, title: m[1], path: m[1] });
       else if ((m = line.match(imageRef))) {
         const p = m[1] || m[2] || m[3] || m[4];
         atts.push({ name: baseName(p), image: true, title: p, path: p });
@@ -1081,6 +1096,9 @@
         img.alt = a.name;
         img.src = a.url;
         box.append(img);
+      } else if (a.pdf || /\.pdf$/i.test(a.name)) {
+        box.append(pdfIcon(), el("span", "name", a.name));
+        if (a.pages) box.append(el("span", "size", pages(a.pages)));
       } else {
         box.append(el("span", "file", a.image ? "image" : "file"), el("span", "name", a.name));
       }
@@ -1088,6 +1106,57 @@
     }
     return row;
   }
+
+  const pages = (n) => n + (n === 1 ? " page" : " pages");
+
+  function pdfIcon() {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("class", "pdf");
+    svg.setAttribute("aria-label", "PDF");
+    svg.setAttribute("role", "img");
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", "M6 2h8l6 6v14H6z M14 2v6h6");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.6");
+    path.setAttribute("stroke-linejoin", "round");
+    const label = document.createElementNS(ns, "text");
+    label.setAttribute("x", "13");
+    label.setAttribute("y", "18");
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("font-size", "6.5");
+    label.setAttribute("font-weight", "700");
+    label.setAttribute("fill", "currentColor");
+    label.textContent = "PDF";
+    svg.append(path, label);
+    return svg;
+  }
+
+  const isPDF = (f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name || "");
+
+  // pdfPages guesses a PDF's page count from the /Count of its page tree,
+  // or 0 when the tree is in a compressed object stream. The hub counts
+  // the pages itself when the message is sent.
+  async function pdfPages(f) {
+    try {
+      const text = new TextDecoder("latin1").decode(await f.arrayBuffer());
+      let n = 0;
+      for (const m of text.matchAll(/\/Type\s*\/Pages\b/g)) {
+        const start = text.lastIndexOf("<<", m.index);
+        const end = text.indexOf(">>", m.index);
+        if (start < 0 || end < 0 || m.index - start > 4000 || end - m.index > 4000) continue;
+        const c = text.slice(start, end).match(/\/Count\s+(\d+)/);
+        if (c) n = Math.max(n, +c[1]);
+      }
+      return n;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  const pageRange = /^\s*[1-9]\d{0,6}\s*(?:-\s*(?:[1-9]\d{0,6})?\s*)?$/;
 
   const imageTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
   const limits = { count: 10, images: 10, image: 25 << 20, file: 32 << 20, total: 64 << 20 };
@@ -1106,7 +1175,9 @@
         else if (!image && f.size > limits.file) why = f.name + " is larger than 32 MB, the most the hub takes for a file.";
         else if (total > limits.total) why = "The attachments add up to more than 64 MB.";
         if (why) { banner(why, true); break; }
-        this.list.push({ file: f, image, url: image ? URL.createObjectURL(f) : "" });
+        const a = { file: f, image, url: image ? URL.createObjectURL(f) : "", pdf: !image && isPDF(f), pages: 0, range: "" };
+        this.list.push(a);
+        if (a.pdf) pdfPages(f).then((n) => { a.pages = n; if (this.list.includes(a)) this.draw(); });
       }
       this.draw();
     },
@@ -1130,6 +1201,32 @@
       this.list = l.concat(this.list);
       this.draw();
     },
+    // rangeBox lets the user pick the pages of a PDF that the agent sees,
+    // behind a disclosure. Empty means the hub picks.
+    rangeBox(a) {
+      const d = el("details", "range");
+      d.open = !!a.range;
+      const s = el("summary", "", a.range ? "pages " + a.range : "pages");
+      s.title = "Choose which pages the agent sees";
+      const input = el("input");
+      input.type = "text";
+      input.inputMode = "numeric";
+      input.placeholder = "all";
+      input.value = a.range;
+      input.setAttribute("aria-label", "Pages of " + (a.file.name || "the PDF") + " to show, such as 3-10");
+      input.onchange = () => {
+        const v = input.value.replace(/\s+/g, "");
+        if (v && !pageRange.test(v)) {
+          banner("Pick pages as a number or a range such as 3-10.", true);
+          input.value = a.range;
+          return;
+        }
+        a.range = v;
+        s.textContent = v ? "pages " + v : "pages";
+      };
+      d.append(s, input);
+      return d;
+    },
     draw() {
       const box = $("chips");
       box.replaceChildren();
@@ -1141,10 +1238,14 @@
           img.alt = "";
           img.src = a.url;
           chip.append(img);
+        } else if (a.pdf) {
+          chip.append(pdfIcon());
         } else {
           chip.append(el("span", "file", "file"));
         }
-        chip.append(el("span", "name", a.file.name || "attachment"), el("span", "size", size(a.file.size)));
+        chip.append(el("span", "name", a.file.name || "attachment"),
+          el("span", "size", a.pdf && a.pages ? pages(a.pages) : size(a.file.size)));
+        if (a.pdf) chip.append(this.rangeBox(a));
         const x = el("button", "", "\u00d7");
         x.type = "button";
         x.title = "Remove " + (a.file.name || "attachment");
@@ -1487,7 +1588,7 @@
     const chat = view;
     const files = attachments.take();
     const shown = files.map((a) => ({ name: a.file.name || "attachment", image: a.image,
-      url: a.url ? URL.createObjectURL(a.file) : "" }));
+      url: a.url ? URL.createObjectURL(a.file) : "", pdf: a.pdf, pages: a.pages }));
     const bubble = chat.userText(text, true, files.length ? shown : undefined);
     const mine = chat.pending.find((x) => x.bubble === bubble);
     if (mine) mine.files = files.map((a) => a.file);
@@ -1498,7 +1599,10 @@
     if (files.length) {
       body = new FormData();
       body.append("text", text);
-      for (const a of files) body.append("file", a.file, a.file.name || "attachment");
+      for (const a of files) {
+        body.append("file", a.file, a.file.name || "attachment");
+        if (a.pdf && a.range) body.append("pages", a.range);
+      }
       sending++;
       $("send").disabled = true;
     }

@@ -130,7 +130,9 @@ const (
 )
 
 // promptBody reads a prompt: JSON {"text"}, or multipart/form-data with a
-// "text" field and one "file" part per attachment.
+// "text" field and one "file" part per attachment. A "pages" field after
+// a file part picks the pages of that PDF to show the agent: "N", "N-M"
+// or "N-".
 func promptBody(w http.ResponseWriter, r *http.Request) (string, []hub.Attachment, bool) {
 	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if mt != "multipart/form-data" {
@@ -185,6 +187,14 @@ func promptBody(w http.ResponseWriter, r *http.Request) (string, []hub.Attachmen
 				return "", nil, false
 			}
 			files = append(files, hub.Attachment{Name: name, Data: b})
+		case "pages":
+			b, err := io.ReadAll(io.LimitReader(part, 32))
+			from, to, ok := pageRange(string(b))
+			if err != nil || !ok || len(files) == 0 {
+				errorJSON(w, http.StatusBadRequest, "Pick pages as a number or a range such as 3-10")
+				return "", nil, false
+			}
+			files[len(files)-1].From, files[len(files)-1].To = from, to
 		default:
 			errorJSON(w, http.StatusBadRequest, "unknown form field")
 			return "", nil, false
@@ -192,6 +202,34 @@ func promptBody(w http.ResponseWriter, r *http.Request) (string, []hub.Attachmen
 		_ = part.Close()
 	}
 }
+
+// pageRange reads "N", "N-M" or "N-" with 1 <= N <= M. An empty string
+// is every page.
+func pageRange(s string) (int, int, bool) {
+	s = strings.ReplaceAll(strings.TrimSpace(s), " ", "")
+	if s == "" {
+		return 0, 0, true
+	}
+	a, b, isRange := strings.Cut(s, "-")
+	from, err := strconv.Atoi(a)
+	if err != nil || from < 1 || from > maxPage {
+		return 0, 0, false
+	}
+	if !isRange {
+		return from, from, true
+	}
+	if b == "" {
+		return from, 0, true
+	}
+	to, err := strconv.Atoi(b)
+	if err != nil || to < from || to > maxPage {
+		return 0, 0, false
+	}
+	return from, to, true
+}
+
+// maxPage bounds a page number in a range.
+const maxPage = 1 << 20
 
 func bodyError(w http.ResponseWriter, err error) {
 	var mbe *http.MaxBytesError

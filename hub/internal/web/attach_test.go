@@ -14,8 +14,10 @@ import (
 )
 
 const (
-	fieldFile = "file"
-	aPNG      = "a.png"
+	fieldPages = "pages"
+	aPDF       = "a.pdf"
+	fieldFile  = "file"
+	aPNG       = "a.png"
 )
 
 type part struct {
@@ -77,6 +79,21 @@ func TestPromptWithAttachments(t *testing.T) {
 	resp, body = postForm(t, c, u, m.CSRF, e.url, part{field: fieldFile, name: aPNG, data: png})
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("image only = %d %s", resp.StatusCode, body)
+	}
+
+	resp, body = postForm(t, c, u, m.CSRF, e.url, part{field: fieldFile, name: aPDF, data: []byte("%PDF-1.4")},
+		part{field: fieldPages, data: []byte("2-3")})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("pages = %d %s", resp.StatusCode, body)
+	}
+	for _, parts := range [][]part{
+		{{field: fieldPages, data: []byte("1")}, {field: fieldFile, name: aPDF, data: []byte("%PDF-1.4")}},
+		{{field: fieldFile, name: aPDF, data: []byte("%PDF-1.4")}, {field: fieldPages, data: []byte("3-1")}},
+	} {
+		resp, body = postForm(t, c, u, m.CSRF, e.url, parts...)
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "Pick pages") {
+			t.Fatalf("bad pages = %d %s", resp.StatusCode, body)
+		}
 	}
 	for _, tc := range []struct {
 		parts  []part

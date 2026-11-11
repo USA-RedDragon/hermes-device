@@ -171,7 +171,14 @@ details.toolgroup .group-body { display: flex; flex-direction: column; gap: .5re
 .chip img { width: 2.2rem; height: 2.2rem; }
 .chip .file, .att .file { flex: none; font-size: .7rem; font-weight: 600; text-transform: uppercase; color: var(--muted); }
 .chip .name, .att .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chip .size { flex: none; color: var(--muted); }
+.chip .size, .att .size { flex: none; color: var(--muted); }
+.msg.user .att .size { color: inherit; opacity: .8; }
+.chip svg.pdf, .att svg.pdf { flex: none; width: 1.4rem; height: 1.4rem; color: var(--muted); }
+.msg.user .att svg.pdf { color: inherit; opacity: .8; }
+.chip details.range { flex: none; color: var(--muted); }
+.chip details.range summary { cursor: pointer; font-size: .75rem; }
+.chip details.range input { width: 5rem; margin-top: .2rem; font: inherit; font-size: 16px; padding: .1rem .3rem;
+  border: 1px solid var(--line); border-radius: 5px; background: var(--card); color: var(--fg); }
 .chip button { border: 0; background: none; color: var(--muted); padding: 0 .3rem; font-size: 1rem; line-height: 1; }
 .msg.user .atts { margin-bottom: .35rem; }
 .msg.user .atts:last-child { margin-bottom: 0; }
