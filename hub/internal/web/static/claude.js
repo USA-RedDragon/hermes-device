@@ -293,5 +293,6 @@ window.HubClaude = (ctx) => {
     return s;
   }
 
-  return { parts, note, afterReply, chatNotice, signIn, panel, apiName, apiProvider };
+  return { parts, note, afterReply, chatNotice, signIn, panel, apiName, apiProvider,
+    account: (backend, provider) => { parts(backend, { provider }); return accountFor(backend, provider); } };
 };

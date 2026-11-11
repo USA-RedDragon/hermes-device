@@ -18,9 +18,14 @@
 <script src="/static/notify.js" defer></script>
 <script src="/static/claude.js" defer></script>
 <script src="/static/claudecode.js" defer></script>
+<script src="/static/icons.js" defer></script>
 <script src="/static/activity.js" defer></script>
 <script src="/static/settings.js" defer></script>
 <script src="/static/scheduled.js" defer></script>
+<script src="/static/composer.js" defer></script>
+<script src="/static/msgacts.js" defer></script>
+<script src="/static/chatlist.js" defer></script>
+<script src="/static/shortcuts.js" defer></script>
 <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -28,11 +33,9 @@
   <aside id="side" class="side" aria-label="Chats">
     <div class="side-head">
       <span class="brand">Talaria</span>
-      <button id="searchbtn" class="ghost ib" type="button" aria-label="Search chats" title="Search chats (Ctrl+K)" aria-expanded="false" aria-controls="searchbox"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
-      <button id="newchat" class="primary ib" type="button" aria-label="New chat" title="New chat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+      <span id="split" class="split"><button id="newchat" class="primary ib" type="button" aria-label="New chat" title="New chat in the Sandbox (Ctrl+Shift+O)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button><button id="newchev" class="primary chev" type="button" aria-label="Choose where the new chat runs" title="Choose where the new chat runs" aria-haspopup="menu" aria-expanded="false" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button><span id="newmenu" class="newmenu" role="menu" hidden></span></span>
     </div>
-    <div id="newon-row" class="newon-row" hidden><button id="newon" class="link" type="button">New chat on a computer</button></div>
-    <div id="searchbox" class="search" hidden><input id="search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off"></div>
+    <div id="searchbox" class="search"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-3.5-3.5"/></svg><input id="search" type="search" placeholder="Search chats" title="Search chats (Ctrl+K)" aria-label="Search chats" autocomplete="off"></div>
     <nav id="sessions" class="sessions"></nav>
     <a id="schednav" class="memnav schednav" href="#/scheduled" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Scheduled<span id="schedcount" class="schedcount"></span></a>
     <a id="memnav" class="memnav" href="#/memory" hidden><span class="memdot" aria-hidden="true"></span>Memory<span id="memcount" class="memcount" title="Changes waiting for approval" hidden></span></a>
@@ -45,12 +48,12 @@
   <div id="scrim" class="scrim" hidden></div>
   <section class="main">
     <header class="bar">
-      <button id="menu" class="icon menu" type="button" aria-label="Show chats">&#9776;</button>
-      <div class="title"><span id="title">Talaria</span><span id="subtitle" class="sub"></span><button id="place" class="place" type="button" hidden></button></div>
+      <button id="menu" class="ghost ib menu" type="button" aria-label="Show chats" title="Chats"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+      <div class="title"><span id="title">Talaria</span><span class="subrow"><span id="subtitle" class="sub"></span><button id="place" class="place" type="button" hidden></button><span id="cwdline" class="sub cwd" hidden></span></span></div>
       <div id="tok" class="tok" title="Tokens of this chat's own turns. Subagents and background prompts count apart, in Activity." hidden><span id="tokturn"></span><span id="toksub" class="tsub"></span></div>
-      <button id="filesbtn" type="button" hidden title="See this chat's folder and what Talaria changed">Files</button>
-      <button id="stop" class="danger" type="button" hidden>Stop</button>
-      <button id="actbtn" class="actbtn" type="button" aria-expanded="false" aria-controls="act" aria-label="Activity" hidden><span class="lbl">Activity</span><svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg><span id="actcount" class="count" hidden>0</span></button>
+      <button id="filesbtn" class="ghost ib" type="button" hidden title="Files: this chat's folder and what Talaria changed" aria-label="Files"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
+      <button id="exportbtn" class="ghost ib" type="button" hidden title="Export as Markdown (Ctrl+Shift+E)" aria-label="Export as Markdown"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></button>
+      <button id="actbtn" class="ghost ib actbtn" type="button" aria-expanded="false" aria-controls="act" aria-label="Activity" title="Activity: subagents and background tasks (Ctrl+.)" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span id="actcount" class="count" hidden>0</span></button>
     </header>
     <details id="info" class="info" hidden>
       <summary id="infoline" title="Show model and thinking settings"></summary>
@@ -71,13 +74,15 @@
     <div id="scheduled" class="sched" hidden></div>
     <div id="log" class="log" aria-live="polite" hidden></div>
     <form id="composer" class="composer" hidden>
+      <div id="pop" class="pop" role="listbox" aria-label="Suggestions" hidden></div>
       <div id="chips" class="chips" aria-label="Attachments" hidden></div>
       <div class="composer-row">
-        <button id="attach" class="icon attach" type="button" aria-label="Attach files" title="Attach files"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l9.2-9.2a3.7 3.7 0 0 1 5.2 5.2l-9.2 9.2a1.8 1.8 0 0 1-2.6-2.6l8.5-8.5"/></svg></button>
+        <button id="attach" class="ghost ib attach" type="button" aria-label="Attach files" title="Attach files or images"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg></button>
         <input id="files" type="file" multiple hidden>
-        <textarea id="input" rows="1" placeholder="Message Talaria" aria-label="Message"></textarea>
-        <button id="send" class="primary" type="submit">Send</button>
+        <textarea id="input" rows="1" placeholder="Message Talaria" aria-label="Message" aria-autocomplete="list" aria-controls="pop"></textarea>
+        <button id="send" class="primary ib send" type="submit" aria-label="Send message" title="Send (Enter)" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
       </div>
+      <div class="hint"><span id="draftnote" aria-live="polite"></span><span class="grow"></span><span class="keyonly"><kbd>/</kbd> commands · <kbd>@</kbd> files · <kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> new line · <kbd>↑</kbd> edit last</span></div>
     </form>
   </section>
   <aside id="act" class="act" aria-label="Activity">
@@ -93,6 +98,22 @@
   </aside>
 </div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<dialog id="keys" class="keys-dlg" aria-labelledby="keys-h">
+  <h2 id="keys-h">Keyboard shortcuts</h2>
+  <div class="keys">
+    <span><kbd>Ctrl</kbd> <kbd>K</kbd></span><span>Search chats</span>
+    <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>O</kbd></span><span>New chat</span>
+    <span><kbd>Alt</kbd> <kbd>&#8593;</kbd> / <kbd>&#8595;</kbd></span><span>Previous or next chat</span>
+    <span><kbd>Alt</kbd> <kbd>Shift</kbd> <kbd>&#8595;</kbd></span><span>Next chat that needs you</span>
+    <span><kbd>/</kbd></span><span>Focus the message box</span>
+    <span><kbd>&#8593;</kbd> in an empty box</span><span>Edit your last message</span>
+    <span><kbd>Esc</kbd></span><span>Stop the running turn, or close a menu</span>
+    <span><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>E</kbd></span><span>Export this chat</span>
+    <span><kbd>Ctrl</kbd> <kbd>.</kbd></span><span>Activity sidebar</span>
+    <span><kbd>?</kbd></span><span>This list</span>
+  </div>
+  <div class="foot"><button id="keys-close" type="button">Close</button></div>
+</dialog>
 <dialog id="picker" class="picker" aria-labelledby="picker-title"></dialog>
 <dialog id="settings" class="settings" aria-labelledby="settings-title">
   <div class="set-head"><button id="setback" class="ghost ib" type="button" aria-label="Back to Settings" title="Back" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button><h1 id="settings-title">Settings</h1><button id="setclose" class="ghost ib" type="button" aria-label="Close settings" title="Close (Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>

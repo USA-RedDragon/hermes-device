@@ -52,6 +52,14 @@
     b.classList.toggle("bad", !!bad);
   }
 
+  function toast(text) {
+    const x = $("toast");
+    x.textContent = text;
+    x.hidden = false;
+    clearTimeout(toast.h);
+    toast.h = setTimeout(() => { x.hidden = true; }, 2200);
+  }
+
   function ago(iso) {
     const v = Date.parse(iso);
     if (!v || v < 0) return "";
@@ -127,7 +135,7 @@
     } catch (_) {
       computers = [];
     }
-    $("newon-row").hidden = !computers.length;
+    chats.showChevron(computers.length > 0);
   }
 
   let placing = false;
@@ -167,27 +175,40 @@
     const order = (x, y) => (y.running - x.running) || (Date.parse(y.updated_at) - Date.parse(x.updated_at));
     const many = backends.length > 1;
     let found = 0;
+    const pinned = sessions.filter((s) => s.pinned && !s.archived && match(s)).sort(order);
+    if (pinned.length) {
+      const group = el("div", "group pinned");
+      const h = el("div", "group-head");
+      h.append(el("span", "grow", "Pinned"));
+      group.append(h);
+      for (const s of pinned) group.append(chatItem(s, many));
+      found += pinned.length;
+      nav.append(group);
+    }
     for (const b of backends) {
       const group = el("div", "group");
-      if (many) {
+      if (many || pinned.length) {
         const h = el("div", "group-head");
-        h.append(el("span", "grow", b.name));
-        const nb = el("button", "ghost", "+");
-        nb.type = "button";
-        nb.title = "New chat on " + b.name;
-        nb.onclick = () => newChat(b.id);
-        h.append(nb);
+        h.append(el("span", "grow", many ? b.name : "Recent"));
+        if (many) {
+          const nb = window.HubIcons.button("plus", "New chat on " + b.name);
+          nb.onclick = () => newChat(b.id);
+          h.append(nb);
+        }
         group.append(h);
       }
       if (b.error) group.append(el("p", "err", "Unreachable: " + b.error));
       const mine = sessions.filter((s) => s.backend_id === b.id && !s.archived && shown(s)).sort(order);
-      const hits = mine.filter(match);
+      const hits = mine.filter((s) => match(s) && !s.pinned);
       found += hits.length;
       if (!mine.length && !b.error) group.append(el("p", "none", "No chats yet."));
+      if (!hits.length && mine.length && !b.error && !many) continue;
       for (const s of hits) group.append(chatItem(s));
       nav.append(group);
     }
     if (q && !found) nav.append(el("p", "none", "No chat titles match."));
+    const open = sessions.find(isCurrent);
+    if (open) chats.seen(open);
     search.draw(nav);
     const archived = sessions.filter((s) => s.archived).sort(order);
     if (archived.length) {
@@ -203,31 +224,35 @@
     }
   }
 
-  function chatItem(s) {
-    const row = el("div", "item");
+  function chatItem(s, many) {
+    const row = el("div", "item" + (s.unread && !s.running ? " unread" : ""));
     if (isCurrent(s)) row.classList.add("active");
     const a = el("a", "go");
     a.href = chatHash(s.backend_id, s.id);
-    if (s.running) { const d = el("span", "dot"); d.title = "Working"; a.append(d); }
+    a.append(chats.mark(s));
     const badge = s.activity > 0 ? el("span", "badge", String(s.activity)) : null;
     if (badge) badge.title = s.activity + " running beside this chat: subagents and background commands";
     const p = placeOf(s);
-    const where = computers.length || (p && p.kind === "computer") ? placeText(p, false) : "";
-    if (where) {
-      const col = el("span", "col");
-      col.append(el("span", "name", s.title || t("newchat")), el("span", "where" + (p.online ? "" : " off"), where));
-      a.append(col);
-    } else {
-      a.append(el("span", "name", s.title || t("newchat")));
+    let where = computers.length || (p && p.kind === "computer") ? placeText(p, false) : "";
+    if (s.pinned && many && lastList) {
+      const b = lastList.backends.find((x) => x.id === s.backend_id);
+      if (b) where = b.name + (where ? " \u00B7 " + where : "");
     }
+    const col = el("span", "col");
+    col.append(el("span", "name", s.title || t("newchat")));
+    if (where) col.append(el("span", "where" + (p && !p.online ? " off" : ""), where));
+    a.append(col);
     if (badge) a.append(badge);
-    a.append(el("span", "when", ago(s.updated_at)));
+    const when = el("span", "when", ago(s.updated_at));
+    if (s.updated_at) when.title = new Date(s.updated_at).toLocaleString();
+    a.append(when, ...chats.tail(s));
+    const state = chats.label(s);
+    a.setAttribute("aria-label", (s.title || t("newchat")) + (state ? ", " + state : ""));
     a.onclick = () => openSide(false);
-    const more = el("button", "more", "\u22EF");
-    more.type = "button";
-    more.title = "Chat options";
+    const more = window.HubIcons.button("more", "Chat options", "more");
     more.setAttribute("aria-label", "Options for " + (s.title || t("newchat")));
     more.setAttribute("aria-expanded", "false");
+    more.setAttribute("aria-haspopup", "menu");
     more.onclick = () => chatMenu(row, s, more);
     row.append(a, more);
     return row;
@@ -249,7 +274,9 @@
     if (open) { drawList(); return; }
     more.setAttribute("aria-expanded", "true");
     const menu = el("div", "menu");
+    menu.setAttribute("role", "menu");
     const close = () => drawList();
+    const extra = chats.menu(s, close);
     const sbase = "/api/sessions/" + encodeURIComponent(s.backend_id) + "/" + encodeURIComponent(s.id);
     const act = async (btns, path, body, failText, after) => {
       for (const b of btns) b.disabled = true;
@@ -302,7 +329,9 @@
       menu.replaceChildren(box);
       no.focus();
     });
-    menu.append(rename, archive);
+    rename.setAttribute("role", "menuitem");
+    archive.setAttribute("role", "menuitem");
+    menu.append(...extra.top, rename, extra.export, archive);
     const p = placeOf(s);
     if (computers.some((c) => c.backend_id === s.backend_id)) {
       menu.append(button("", "Move to computer...", () => { close(); picker.open({ move: s, place: p }); }));
@@ -325,7 +354,23 @@
       menu.append(rel);
     }
     menu.append(del);
+    menu.addEventListener("keydown", (e) => {
+      const items = Array.from(menu.querySelectorAll(":scope > button:not(:disabled)"));
+      const i = items.indexOf(document.activeElement);
+      if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length && i >= 0) {
+        e.preventDefault();
+        items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        close();
+        const again = document.querySelector('#sessions a.go[href="' + CSS.escape(chatHash(s.backend_id, s.id)) + '"]');
+        if (again) again.parentNode.querySelector(".more").focus();
+      }
+    });
     row.after(menu);
+    const first = menu.querySelector("button");
+    if (first) first.focus();
   }
 
   async function newChat(backendID) {
@@ -447,8 +492,12 @@
     }
 
     setRunning(on) {
-      $("stop").hidden = !on;
+      this.running = !!on;
       $("subtitle").textContent = on ? t("working") : "";
+      if (view === this) {
+        composer.setRunning(on);
+        msgActs.decorate();
+      }
     }
 
     ensureTurn() {
@@ -557,6 +606,7 @@
       const m = el("div", "msg user" + (pending ? " pending" : ""));
       if (shown.atts.length) m.append(attachmentRow(shown.atts, this.base));
       if (shown.text) m.append(shown.text);
+      m.rawText = shown.text || "";
       if (atts) for (const a of atts) if (a.url) this.urls.push(a.url);
       this.add(m);
       if (pending) this.pending.push({ bubble: m, label: null, text, id: null });
@@ -1051,7 +1101,10 @@
           claude.afterReply(this.backend, this.info.provider);
           this.turn = null;
           this.setRunning(false);
-          refreshList();
+          refreshList().then(() => {
+            const s = lastList && lastList.sessions.find(isCurrent);
+            if (s && view === this) chats.seen(s);
+          });
           break;
         }
         case "session.info": this.showInfo(p); break;
@@ -1793,6 +1846,7 @@
         chip.append(x);
         box.append(chip);
       }
+      composer.update();
     },
   };
 
@@ -1881,60 +1935,121 @@
     return String(n);
   }
 
+  // metric is one meter of the line under the title: a bar on wide
+  // screens, a small ring on phones. It turns the warning color at 80%.
+  function metric(cls, label, pct, text, longText, title) {
+    const sp = el("span", "metric " + cls + (pct >= 80 ? " hi" : ""));
+    sp.append(el("span", "lbl", label));
+    const meter = el("span", "meter");
+    meter.setAttribute("aria-hidden", "true");
+    meter.style.setProperty("--p", String(pct));
+    const fill = el("span");
+    fill.style.width = pct + "%";
+    meter.append(fill);
+    sp.append(meter, text);
+    if (longText) sp.append(el("span", "long", longText));
+    if (title) sp.title = title;
+    return sp;
+  }
+
   // contextPart shows how much of the model's context window the chat
-  // fills, with a meter that turns the warning color when nearly full.
+  // fills.
   function contextPart(info) {
     const u = info.usage || {};
     const max = u.context_max || info.context_length;
     if (!max) return null;
-    const sp = el("span", "context");
     const used = u.context_used;
     if (typeof used !== "number") {
-      sp.textContent = tokens(max) + " context";
+      const sp = el("span", "metric ctx");
+      sp.append(tokens(max), el("span", "long", " context"));
       sp.title = "The model's context window. It shows how full it is after the next reply.";
       return sp;
     }
     const pct = Math.min(100, Math.round((used / max) * 100));
-    const meter = el("span", "meter");
-    meter.setAttribute("aria-hidden", "true");
-    const fill = el("span");
-    fill.style.width = pct + "%";
-    meter.append(fill);
-    sp.append(meter, (u.context_estimated ? "~" : "") + tokens(used) + " / " + tokens(max) + " context");
-    if (pct >= 80) sp.classList.add("full");
-    sp.title = pct + "% of the model's context window is in use" + (u.context_estimated ? " (estimated)" : "") +
-      ". When it fills up, Talaria summarizes older messages to make room.";
-    return sp;
+    return metric("ctx", "ctx", pct, (u.context_estimated ? "~" : "") + tokens(used) + "/" + tokens(max), " context",
+      pct + "% of the model's context window is in use" + (u.context_estimated ? " (estimated)" : "") +
+      ". When it fills up, Talaria summarizes older messages to make room.");
   }
 
-  // drawInfo fills the line under the title: model, how much of the
-  // model's context the chat uses, reply speed and working folder.
+  // limitParts are the meters of the Claude account's usage windows that
+  // the account reports.
+  function limitParts(info) {
+    if (!view || !info.provider) return { name: null, parts: [] };
+    const a = claude.account(view.backend, info.provider);
+    if (!a) return { name: null, parts: [] };
+    const out = [];
+    if (a.signed_in) {
+      for (const [kind, short, long] of [["session", "5h", "5-hour limit"], ["weekly_all", "week", "Weekly limit"]]) {
+        const w = ((a.usage && a.usage.windows) || []).find((x) => x.kind === kind);
+        if (!w || typeof w.used_percent !== "number") continue;
+        const pct = Math.min(100, Math.round(w.used_percent));
+        out.push(metric("lim", short, pct, pct + "%", "", long + ": " + pct + "% used" + (w.resets_text ? ", resets " + w.resets_text : "")));
+      }
+    }
+    return { name: a, parts: out };
+  }
+
+  // drawInfo fills the line under the title: model or account, how much
+  // of the context the chat uses, this turn's tokens (phones) and the
+  // account's limits. It opens the model and thinking settings.
   function drawInfo(info) {
     const u = info.usage || {};
     const model = info.model || u.model;
-    const parts = [];
-    if (model) parts.push(["model", model, "Model"]);
-    if (view) parts.push(...claude.parts(view.backend, info));
-    const ctx = contextPart(info);
-    if (ctx) parts.push(ctx);
-    const p = view ? view.place : null;
-    let cwd = info.cwd;
-    if (p) cwd = p.kind === "computer" ? p.dir : p.kind === "server" ? info.cwd : "";
-    else if (p === undefined && me.computers) cwd = "";
-    if (cwd) parts.push(["cwd", base(cwd), "Working folder: " + cwd + (p && p.kind === "computer" && p.mine ? " on " + p.name : "")]);
     const line = $("infoline");
     line.replaceChildren();
-    for (const part of parts) {
-      if (part instanceof Node) { line.append(part); continue; }
-      const [cls, text, title] = part;
-      const sp = el("span", cls, text);
-      sp.title = title;
-      line.append(sp);
+    const lim = limitParts(info);
+    const apiKey = view && info.provider === claude.apiProvider;
+    const who = el("b", "who1");
+    if (lim.name) {
+      who.append(el("span", "long", "Claude "), lim.name.label);
+      who.title = (lim.name.email ? lim.name.label + ": " + lim.name.email : lim.name.label) + (model ? ", " + model : "");
+    } else if (apiKey) {
+      who.append(claude.apiName);
+      who.title = "Anthropic API with an API key" + (model ? ", " + model : "");
+    } else {
+      who.append(model || "Chat settings");
+      who.title = model ? "Model: " + model : "";
     }
-    if (!parts.length) line.append(el("span", "", "Chat settings"));
+    line.append(who);
+    if ((lim.name || apiKey) && model) {
+      const m = el("span", "long model", model);
+      m.title = "Model";
+      line.append(m);
+    }
+    if (lim.name && !lim.name.signed_in) line.append(el("span", "claude-off", "not signed in"));
+    const ctx = contextPart(info);
+    if (ctx) line.append(ctx);
+    const mt = el("span", "mtok");
+    mt.id = "mtok";
+    line.append(mt, el("span", "break"));
+    line.append(...lim.parts);
+    line.append(el("span", "grow"), el("span", "who2", me.display || me.user || ""));
+    mirrorTokens();
+    const p = view ? view.place : null;
+    let cwd = info.cwd;
+    if (p) cwd = p.kind === "server" ? info.cwd : "";
+    else if (p === undefined && me.computers) cwd = "";
+    const cl = $("cwdline");
+    cl.hidden = !cwd;
+    cl.textContent = cwd ? base(cwd) : "";
+    cl.title = cwd ? "Working folder: " + cwd : "";
     if (view && !$("info").hidden) claude.note($("claudenote"), view.backend, info);
     settings.sync(info);
   }
+
+  // mirrorTokens copies this turn's tokens from the top bar into the line
+  // under the title, where phones show them.
+  function mirrorTokens() {
+    const mt = $("mtok");
+    if (!mt) return;
+    const tok = $("tok");
+    const turn = $("tokturn");
+    const txt = tok.hidden ? "" : turn.textContent.replace(/ (this|last) turn$| in this chat$/, "");
+    mt.textContent = txt;
+    mt.hidden = !txt;
+    if (txt) mt.title = "This turn: " + txt;
+  }
+  new MutationObserver(mirrorTokens).observe($("tok"), { childList: true, subtree: true, characterData: true, attributes: true });
 
   const effortNames = { "": "Default", none: "Off", minimal: "Minimal", low: "Low", medium: "Medium",
     high: "High", xhigh: "Extra high", max: "Max", ultra: "Ultra" };
@@ -2094,7 +2209,8 @@
     $("welcome").hidden = false;
     $("log").hidden = true;
     $("composer").hidden = true;
-    $("stop").hidden = true;
+    $("exportbtn").hidden = true;
+    composer.open(null);
     $("info").hidden = true;
     $("place").hidden = true;
     $("placenote").hidden = true;
@@ -2125,6 +2241,10 @@
     banner("");
     settings.reset();
     view = new Chat(backend, session);
+    msgActs.reset();
+    composer.open(view);
+    composer.setRunning(false);
+    $("exportbtn").hidden = false;
     activity.show(view);
     $("place").hidden = true;
     $("placenote").hidden = true;
@@ -2170,7 +2290,8 @@
     view = null;
     activity.show(null);
     current = null;
-    for (const id of ["welcome", "log", "composer", "stop", "info", "place", "placenote", "claudenote"]) $(id).hidden = true;
+    composer.open(null);
+    for (const id of ["welcome", "log", "composer", "exportbtn", "info", "place", "placenote", "claudenote"]) $(id).hidden = true;
     settings.reset();
     $("title").textContent = "Memory";
     $("subtitle").textContent = "";
@@ -2190,7 +2311,8 @@
     view = null;
     activity.show(null);
     current = null;
-    for (const id of ["welcome", "log", "composer", "stop", "info", "place", "placenote", "claudenote", "filesbtn"]) $(id).hidden = true;
+    composer.open(null);
+    for (const id of ["welcome", "log", "composer", "exportbtn", "info", "place", "placenote", "claudenote", "filesbtn"]) $(id).hidden = true;
     settings.reset();
     $("title").textContent = "Usage";
     $("subtitle").textContent = "";
@@ -2210,7 +2332,8 @@
     view = null;
     activity.show(null);
     current = null;
-    for (const id of ["welcome", "log", "composer", "stop", "info", "place", "placenote", "claudenote", "filesbtn"]) $(id).hidden = true;
+    composer.open(null);
+    for (const id of ["welcome", "log", "composer", "exportbtn", "info", "place", "placenote", "claudenote", "filesbtn"]) $(id).hidden = true;
     settings.reset();
     $("title").textContent = "Scheduled";
     $("subtitle").textContent = "";
@@ -2271,6 +2394,7 @@
       if (!prompt) { banner("Type the prompt after /bg, such as /bg summarize today's Renovate PRs.", false); return; }
       input.value = "";
       grow();
+      composer.sent(chat);
       try {
         await activity.background(prompt);
       } catch (e) {
@@ -2279,6 +2403,7 @@
       }
       return;
     }
+    const steer = !!chat.running;
     const files = attachments.take();
     const shown = files.map((a) => ({ name: a.file.name || "attachment", image: a.image,
       url: a.url ? URL.createObjectURL(a.file) : "", pdf: a.pdf, pages: a.pages }));
@@ -2288,7 +2413,7 @@
     chat.bottom();
     input.value = "";
     grow();
-    let body = { text };
+    let body = steer ? { text, steer: true } : { text };
     if (files.length) {
       body = new FormData();
       body.append("text", text);
@@ -2297,7 +2422,7 @@
         if (a.pdf && a.range) body.append("pages", a.range);
       }
       sending++;
-      $("send").disabled = true;
+      composer.update();
     }
     try {
       const r = await api("POST", chat.base + "/prompt", body);
@@ -2306,8 +2431,17 @@
         if (!p.sent) chat.held(p, r.id);
       } else {
         if (p && r) p.id = r.id;
-        chat.queued(bubble);
+        if (r && r.steered && p) {
+          p.steered = true;
+          bubble.classList.remove("pending");
+          chat.label(p, el("div", "queued", "Sent to the running turn"));
+          toast("Sent; Talaria reads it after its current step");
+        } else {
+          chat.queued(bubble);
+          if (steer && !files.length) toast("Talaria takes it as the next message");
+        }
       }
+      composer.sent(chat);
       if (r && r.notice && chat === view) chat.add(el("div", "note", r.notice));
       for (const a of files) if (a.url) URL.revokeObjectURL(a.url);
     } catch (e) {
@@ -2323,7 +2457,7 @@
       banner("Could not send: " + e.message, true);
     } finally {
       if (files.length) sending--;
-      $("send").disabled = sending > 0;
+      composer.update();
     }
   }
   let sending = 0;
@@ -2384,11 +2518,7 @@
     send({ preventDefault() {} });
   }
 
-  function grow() {
-    const ta = $("input");
-    ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.4) + "px";
-  }
+  const grow = () => composer.grow();
 
   // picker chooses a computer and a folder on it, to start a chat there or
   // to move a chat there.
@@ -2402,7 +2532,9 @@
       await loadComputers();
       this.list = computers.filter((c) => !this.opts.move || c.backend_id === this.opts.move.backend_id);
       const online = this.list.filter((c) => c.online);
-      if (online.length === 1 && this.list.length === 1) this.folders(online[0], "");
+      const want = this.opts.computer && this.list.find((c) => c.id === this.opts.computer.id && c.online);
+      if (want) this.folders(want, "");
+      else if (online.length === 1 && this.list.length === 1) this.folders(online[0], "");
       else this.computers();
     },
     close() { if (this.dlg && this.dlg.open) this.dlg.close(); },
@@ -2566,6 +2698,24 @@
     defaultBackend: () => me.default_backend || "" });
   const notices = window.HubNotify({ api, el, csrf: () => csrf,
     current: () => (view && view.backend && view.session ? { backend: view.backend, session: view.session } : null) });
+  const composer = window.HubComposer({ api, el, chat: () => view, submit: () => send({ preventDefault() {} }),
+    stop: () => stopTurn(), editLast: () => msgActs.editLast(), busy: () => sending > 0, hasFiles: () => attachments.list.length > 0,
+    canFiles: (chat) => {
+      const pl = chat && chat.place;
+      return !!me.files && !!pl && ((pl.kind === "computer" && pl.mine) || pl.kind === "sandbox");
+    } });
+  const msgActs = window.HubMsgActions({ api, el, chat: () => view, running: () => !!(view && view.running), stop: () => stopTurn(),
+    reopen: (chat) => { if (chat === view) showChat(chat.backend, chat.session); }, toast, banner, noteKinds,
+    open: (b, s) => { openSide(false); location.hash = chatHash(b, s); } });
+  const chats = window.HubChatList({ api, el, toast, banner, refresh: () => refreshList(),
+    exportChat: (b, s, title) => msgActs.exportChat(b, s, title), computers: () => computers,
+    newChat: () => newChat(), pickFolder: (c) => { openSide(false); picker.open({ computer: c }); }, me: () => me });
+
+  async function stopTurn() {
+    if (!view) return;
+    try { await api("POST", view.base + "/interrupt"); } catch (e) { banner("Could not stop: " + e.message, true); }
+  }
+
   const prefs = window.HubSettings({ api, el, me: () => me, computers: () => computers, notices, logout,
     closeSide: () => openSide(false) });
 
@@ -2580,21 +2730,11 @@
     document.body.replaceChildren(page);
   }
 
-  // showSearch shows or hides the search box of the chat list. Hiding it
-  // clears the search.
-  function showSearch(on) {
-    const box = $("searchbox");
-    box.hidden = !on;
-    $("searchbtn").setAttribute("aria-expanded", String(on));
-    if (on) {
-      $("search").focus();
-      return;
-    }
-    if ($("search").value) {
-      $("search").value = "";
-      search.query("");
-      drawList();
-    }
+  // showSearch opens the chat list and puts the cursor in its search box.
+  function showSearch() {
+    openSide(true);
+    $("search").focus();
+    $("search").select();
   }
 
   async function init() {
@@ -2606,22 +2746,26 @@
     $("menu").onclick = () => openSide(true);
     $("scrim").onclick = () => openSide(false);
     $("newchat").onclick = () => newChat();
-    $("newon").onclick = () => { openSide(false); picker.open({}); };
     $("place").onclick = () => {
       if (!view || !computers.some((c) => c.backend_id === view.backend)) return;
       picker.open({ move: { backend_id: view.backend, id: view.session }, place: view.place });
     };
-    $("stop").onclick = async () => {
-      if (!view) return;
-      try { await api("POST", view.base + "/interrupt"); } catch (e) { banner("Could not stop: " + e.message, true); }
+    $("composer").onsubmit = (e) => {
+      e.preventDefault();
+      if (composer.mode() === "stop") stopTurn();
+      else send(e);
     };
-    $("composer").onsubmit = send;
+    $("exportbtn").onclick = () => { if (view) msgActs.exportChat(view.backend, view.session, $("title").textContent); };
     dropZone();
     $("search").oninput = () => { search.query($("search").value); drawList(); };
     $("search").onkeydown = (e) => {
-      if (e.key === "Escape" && !$("search").value) { e.stopPropagation(); showSearch(false); $("searchbtn").focus(); }
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      if ($("search").value) { $("search").value = ""; search.query(""); drawList(); return; }
+      openSide(false);
+      $("search").blur();
+      if (view) $("input").focus();
     };
-    $("searchbtn").onclick = () => showSearch($("searchbox").hidden);
     $("usagenav").hidden = !me.usage;
     $("filesbtn").onclick = () => {
       if (view) location.hash = "#/files/" + encodeURIComponent(view.backend) + "/" + encodeURIComponent(view.session);
@@ -2631,19 +2775,15 @@
     notices.start(!!me.notify);
     $("model").onchange = () => settings.pickModel();
     $("effort").onchange = () => settings.pickEffort();
-    const input = $("input");
-    input.oninput = grow;
-    input.onkeydown = (e) => {
-      if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer: coarse)").matches) send(e);
-    };
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") openSide(false);
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k" && !$("settings").open) {
-        e.preventDefault();
-        openSide(true);
-        showSearch(true);
-      }
-    });
+    window.HubShortcuts({ search: showSearch, newChat: () => newChat(), stop: stopTurn, running: () => !!(view && view.running),
+      hasChat: () => !!view, exportChat: () => $("exportbtn").click(), activity: () => $("actbtn").click(),
+      closeMenus: () => {
+        if (composer.popOpen()) { composer.closePop(); return true; }
+        if (chats.newOpen()) { chats.closeNew(); return true; }
+        if (document.querySelector("#sessions .menu")) { menuOpen = false; drawList(); return true; }
+        if ($("side").classList.contains("open")) { openSide(false); return true; }
+        return false;
+      } });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshList(); });
     setInterval(() => { if (!document.hidden) refreshList(); }, 20000);
     window.onhashchange = route;
