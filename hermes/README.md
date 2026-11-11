@@ -14,7 +14,9 @@ Each patch fixes one limit, sits behind a config option whose default keeps upst
 
 Tags are `v<upstream release>-p<n>`: `v0.23.1-p1`, `v0.23.1-p2`, then `v0.24.0-p1` after the base moves. The upstream release is always the part before `-p`.
 
-The Release workflow runs on every push to `main` that changes the Dockerfile, the patches, the scripts or the workflows. It runs the tests, then builds and pushes `ghcr.io/usa-reddragon/hermes-patches:<tag>` with BuildKit SLSA provenance and an SBOM, attests the image with `actions/attest-build-provenance`, and creates the tag and a GitHub release that lists the patches. Run it by hand (workflow_dispatch) to release HEAD again.
+The Release workflow runs on every push to `main` that changes the Dockerfile, the patches, the scripts or the workflows. It runs the tests, then builds and pushes `ghcr.io/usa-reddragon/hermes-patches:<tag>` with BuildKit SLSA provenance and an SBOM, signs the image keyless with cosign (GitHub artifact attestations are not available for private repositories of a user account), and creates the tag and a GitHub release that lists the patches. Run it by hand (workflow_dispatch) to release HEAD again.
+
+Verify a release with `cosign verify ghcr.io/usa-reddragon/hermes-patches:<tag> --certificate-identity-regexp '^https://github.com/USA-RedDragon/hermes-patches/' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
 
 Renovate bumps the `FROM` lines (both, one PR) as soon as upstream releases. A green PR merges on its own, which publishes `v<new release>-p1`. Rolling it out is a separate Renovate PR in the Flux repo that is never merged on its own.
 
