@@ -956,9 +956,10 @@ class Hub:
         except Exception:
             return False
 
-    def run(self, device_id: str, cmd: str, cwd: str, timeout: float = 20) -> tuple[int, str, DeviceProcess]:
+    def run(self, device_id: str, cmd: str, cwd: str, timeout: float = 20,
+            stdin: Optional[str] = None) -> tuple[int, str, DeviceProcess]:
         """Run a short command synchronously and return ``(code, output, process)``."""
-        proc = self.start(device_id, cmd=cmd, cwd=cwd, login=False, timeout=timeout, stdin=None)
+        proc = self.start(device_id, cmd=cmd, cwd=cwd, login=False, timeout=timeout, stdin=stdin)
         if proc.wait(timeout + 5) is None:
             proc.kill()
             proc.wait(5)
@@ -1343,12 +1344,13 @@ def _sh(script: str, *args: str) -> str:
     return "exec /bin/sh -c " + " ".join(shlex.quote(a) for a in (script, "sh", *args))
 
 
-def run_script(device_id: str, script: str, args: Iterable[str], cwd: str, timeout: float = 30) -> tuple[int, str, str]:
+def run_script(device_id: str, script: str, args: Iterable[str], cwd: str, timeout: float = 30,
+               stdin: Optional[str] = None) -> tuple[int, str, str]:
     """Run a /bin/sh script on the device. Returns ``(code, output after the marker, error)``.
     The marker keeps shell startup noise out of the result."""
     mark = _MARK.format(uuid.uuid4().hex[:12])
     full = f"printf '%s\\n' {shlex.quote(mark)}\n{script}"
-    code, out, proc = hub().run(device_id, _sh(full, *args), cwd, timeout)
+    code, out, proc = hub().run(device_id, _sh(full, *args), cwd, timeout, stdin=stdin)
     idx = out.find(mark + "\n")
     body = out[idx + len(mark) + 1:] if idx >= 0 else ""
     err = proc.error or ("" if idx >= 0 else out.strip())
@@ -1532,6 +1534,127 @@ def device_write_denial(conn: DeviceConn, path: str) -> Optional[str]:
     if path in denied or any(path.startswith(p) or path + "/" == p for p in prefixes):
         return f"{path} is a protected credential or system path"
     return None
+
+
+# --- attachment uploads (section 9) ------------------------------------------------------------
+
+MAX_UPLOAD_BYTES = 32 * 1024 * 1024
+MAX_UPLOAD_NAME = 120
+UPLOAD_DIR = (".hermes", "attachments")
+UPLOAD_TIMEOUT_S = 300
+
+_UPLOAD_DIR_SCRIPT = r"""
+umask 077
+pwd -P
+c=.
+for part in "$@"; do
+  c=$c/$part
+  if [ -L "$c" ]; then echo "${c#./} is a symbolic link" >&2; exit 4; fi
+  if [ -e "$c" ] && [ ! -d "$c" ]; then echo "${c#./} is not a folder" >&2; exit 4; fi
+  [ -d "$c" ] || mkdir -- "$c" || exit 3
+done
+cd -P -- "$c" || exit 3
+pwd -P
+"""
+
+_UPLOAD_WRITE_SCRIPT = r"""
+want=$1; name=$2; stem=$3; ext=$4
+[ "$(pwd -P)" = "$want" ] || { echo "the attachments folder moved" >&2; exit 4; }
+if printf 'YQ==' | base64 -d >/dev/null 2>&1; then dec() { base64 -d; }
+elif printf 'YQ==' | base64 -D >/dev/null 2>&1; then dec() { base64 -D; }
+elif command -v openssl >/dev/null 2>&1; then dec() { openssl base64 -d -A; }
+else echo "the device has no base64 decoder" >&2; exit 5; fi
+umask 077
+n=$name; i=2
+while [ -e "$n" ] || [ -L "$n" ]; do
+  [ "$i" -le 999 ] || { echo "too many files named $name" >&2; exit 6; }
+  n=$stem-$i$ext; i=$((i+1))
+done
+(set -C; : > "$n") 2>/dev/null || { echo "could not create $n" >&2; exit 6; }
+dec > "$n" || { rm -f -- "$n"; echo "could not write $n" >&2; exit 5; }
+printf '%s\n' "$n"
+"""
+
+_UPLOAD_NAME_BAD = re.compile(r"[\x00-\x1f\x7f/\\]+")
+
+
+def upload_name(name: str) -> str:
+    """A file name that is safe on any device: the last path part, without control characters,
+    slashes or leading dots, at most MAX_UPLOAD_NAME bytes of UTF-8, else ``attachment``."""
+    base = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    clean = _UPLOAD_NAME_BAD.sub("_", base).strip().lstrip(".").strip()
+    encoded = clean.encode("utf-8", "ignore")
+    if len(encoded) > MAX_UPLOAD_NAME:
+        stem, dot, ext = clean.rpartition(".")
+        ext = dot + ext if dot and len(ext.encode()) <= 16 else ""
+        keep = MAX_UPLOAD_NAME - len(ext.encode())
+        clean = (stem if ext else clean).encode("utf-8", "ignore")[:keep].decode("utf-8", "ignore").rstrip() + ext
+    return clean or "attachment"
+
+
+def _outside_safe_root(path: str) -> Optional[str]:
+    """Why HERMES_WRITE_SAFE_ROOT refuses a write to the device ``path``, or None (section 8.7)."""
+    raw = os.environ.get("HERMES_WRITE_SAFE_ROOT", "")
+    roots = [posixpath.normpath(os.path.expanduser(r)) for r in raw.split(os.pathsep) if r]
+    if not roots or any(is_under(path, r) for r in roots):
+        return None
+    return f"{path} is outside HERMES_WRITE_SAFE_ROOT; add the device folder to device_write_roots"
+
+
+def upload_resolution(session_id: str) -> Resolution:
+    """The binding that serves a session's uploads: its own or an ancestor's, or the sandbox for a
+    never-bound session with ``fallback: device``. Raises :class:`BindError` when no device serves it."""
+    res = hub().resolve(session_id)
+    if res.state == STATE_NEVER_BOUND:
+        if fallback() == "local":
+            raise BindError(409, "runs_on_pod", f"session {session_id} runs on the Hermes server, not on a device")
+        if fallback() != "device":
+            raise BindError(409, "fail_closed", f"session {session_id} is not bound to a device and runs nowhere")
+        res = sandbox_resolution(res)
+    if res.state != STATE_BOUND or res.binding is None:
+        raise BindError(409, "fail_closed", fail_closed_message(res))
+    return res
+
+
+def put_session_file(session_id: str, name: str, data: bytes) -> dict:
+    """Write an attached file into ``.hermes/attachments`` of the session's device directory and
+    return ``{"path", "name", "device_id", "bytes"}``. The folder and every part of it must be a
+    real folder inside the binding directory, and the file must pass the write rules of file tools
+    (device roots, credential denylist, HERMES_WRITE_SAFE_ROOT). An existing file is never
+    overwritten. Raises :class:`BindError`."""
+    import base64
+
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise BindError(413, "too_large", f"the file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+    res = upload_resolution(session_id)
+    b = res.binding
+    conn = hub().device(b.device_id)
+    if conn is None:
+        raise BindError(409, "device_offline", f"device {b.device_id} is not connected")
+    clean = upload_name(name)
+    code, body, err = run_script(b.device_id, _UPLOAD_DIR_SCRIPT, UPLOAD_DIR, cwd=b.dir)
+    if code == EXIT_LOST:
+        raise BindError(409, "device_offline", err or f"device {b.device_id} is not connected")
+    lines = [ln for ln in body.splitlines() if ln.startswith("/")]
+    if code != 0 or len(lines) != 2:
+        raise BindError(422, "write_refused", err or body.strip() or f"exit {code}")
+    root, folder = (posixpath.normpath(ln) for ln in lines)
+    if folder != posixpath.join(root, *UPLOAD_DIR):
+        raise BindError(422, "write_refused", f"{folder} is not inside the session folder {b.dir}")
+    target = posixpath.join(folder, clean)
+    why = device_write_denial(conn, target) or _outside_safe_root(target)
+    if why:
+        raise BindError(422, "write_refused", why)
+    stem, dot, ext = clean.rpartition(".")
+    stem, ext = (stem, dot + ext) if dot and stem else (clean, "")
+    code, body, err = run_script(b.device_id, _UPLOAD_WRITE_SCRIPT, [folder, clean, stem, ext], cwd=folder,
+                                 timeout=UPLOAD_TIMEOUT_S, stdin=base64.b64encode(data).decode("ascii"))
+    if code == EXIT_LOST:
+        raise BindError(409, "device_offline", err or f"device {b.device_id} is not connected")
+    written = body.strip().splitlines()[-1] if body.strip() else ""
+    if code != 0 or not written or "/" in written:
+        raise BindError(422, "write_refused", err or body.strip() or f"exit {code}")
+    return {"path": posixpath.join(folder, written), "name": written, "device_id": b.device_id, "bytes": len(data)}
 
 
 # --- terminal backend (section 8.4) -----------------------------------------------------------

@@ -8,6 +8,7 @@ assertion itself before it reads any message.
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 import json
 import logging
@@ -112,6 +113,36 @@ def delete_binding(session_id: str):
     if not removed:
         return _error(404, "not_bound", f"session {session_id} is not bound to a device")
     return Response(status_code=204)
+
+
+@router.post("/sessions/{session_id}/files")
+async def post_file(session_id: str, request: Request):
+    core = _core()
+    limit = 4 * ((core.MAX_UPLOAD_BYTES + 2) // 3) + 64 * 1024
+    too_large = f"the file is larger than {core.MAX_UPLOAD_BYTES // (1024 * 1024)} MB"
+    length = request.headers.get("content-length", "")
+    if length.isdigit() and int(length) > limit:
+        return _error(413, "too_large", too_large)
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > limit:
+            return _error(413, "too_large", too_large)
+    try:
+        body = json.loads(bytes(raw))
+    except ValueError:
+        body = None
+    if not isinstance(body, dict) or not isinstance(body.get("name"), str) \
+            or not isinstance(body.get("content_base64"), str):
+        return _error(400, "bad_request", 'the body must be {"name": <string>, "content_base64": <string>}')
+    try:
+        data = base64.b64decode(body["content_base64"], validate=True)
+    except ValueError:
+        return _error(400, "bad_request", "content_base64 is not valid base64")
+    try:
+        return await asyncio.to_thread(core.put_session_file, session_id, body["name"], data)
+    except core.BindError as exc:
+        return _error(exc.status, exc.code, exc.message)
 
 
 # --- exec leg (section 4) ---------------------------------------------------------------------

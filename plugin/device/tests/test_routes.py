@@ -76,7 +76,8 @@ class Device(threading.Thread):
                     self.ws.send_json({"type": "exit", "id": msg["id"], "code": 126,
                                        "error": f"device desktop refused: working directory {cwd!r}"})
                     continue
-                p = subprocess.run(["bash", "-c", msg["cmd"]], cwd=cwd, capture_output=True, text=True)
+                p = subprocess.run(["bash", "-c", msg["cmd"]], cwd=cwd, capture_output=True, text=True,
+                                   input=msg.get("stdin"))
                 if p.stdout or p.stderr:
                     self.ws.send_json({"type": "output", "id": msg["id"], "data": p.stdout + p.stderr})
                 self.ws.send_json({"type": "exit", "id": msg["id"], "code": p.returncode})
@@ -307,6 +308,103 @@ class RouteTests(unittest.TestCase):
         r = self.client.get("/api/plugins/device/devices/d_8f2c/dirs", params={"path": str(self.outside)})
         self.assertEqual((r.status_code, r.json()["error"]), (422, "dir_refused"))
 
+
+    # file uploads
+    def upload(self, sid="s1", name="notes.txt", data=b"hello\n", **extra):
+        body = {"name": name, "content_base64": base64.b64encode(data).decode(), **extra}
+        return self.client.post(f"/api/plugins/device/sessions/{sid}/files", json=body)
+
+    def test_upload_writes_into_the_session_folder(self):
+        self.online()
+        self.hub.bind("s1", "d_8f2c", str(self.root))
+        folder = self.root / ".hermes" / "attachments"
+        r = self.upload(sid="c1", data=b"\x00\xffbinary")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json(), {"path": str(folder / "notes.txt"), "name": "notes.txt", "device_id": "d_8f2c",
+                                    "bytes": 8})
+        self.assertEqual((folder / "notes.txt").read_bytes(), b"\x00\xffbinary")
+        self.assertEqual((folder / "notes.txt").stat().st_mode & 0o777, 0o600)
+        r = self.upload()
+        self.assertEqual(r.json()["name"], "notes-2.txt")
+        self.assertEqual((folder / "notes.txt").read_bytes(), b"\x00\xffbinary")
+        for name, want in (("../../evil.sh", "evil.sh"), ("..", "attachment"), (".bashrc", "bashrc"),
+                           ("a\nb\x00c.txt", "a_b_c.txt"), ("dir\\x.txt", "x.txt")):
+            with self.subTest(name=name):
+                r = self.upload(name=name)
+                self.assertEqual(r.status_code, 200, r.text)
+                self.assertEqual(r.json()["name"], want)
+                self.assertEqual(Path(r.json()["path"]).parent, folder)
+        self.assertEqual(sorted(p.name for p in self.outside.iterdir()), [])
+
+    def test_upload_refuses_symlinks_out_of_the_session_folder(self):
+        self.online()
+        self.hub.bind("s1", "d_8f2c", str(self.root / "sub"))
+        (self.root / "sub" / ".hermes").symlink_to(self.outside)
+        r = self.upload()
+        self.assertEqual((r.status_code, r.json()["error"]), (422, "write_refused"))
+        self.assertEqual(list(self.outside.iterdir()), [])
+        (self.root / "sub" / ".hermes").unlink()
+        (self.root / "sub" / ".hermes").mkdir()
+        (self.root / "sub" / ".hermes" / "attachments").symlink_to(self.outside)
+        r = self.upload()
+        self.assertEqual((r.status_code, r.json()["error"]), (422, "write_refused"))
+        self.assertEqual(list(self.outside.iterdir()), [])
+
+    def test_upload_checks_the_write_rules(self):
+        self.online(home=str(self.root))
+        self.hub.bind("s1", "d_8f2c", str(self.root))
+        with mock.patch.object(core, "UPLOAD_DIR", (".ssh",)):
+            r = self.upload(name="authorized_keys")
+        self.assertEqual((r.status_code, r.json()["error"]), (422, "write_refused"))
+        self.assertFalse((self.root / ".ssh" / "authorized_keys").exists())
+        with mock.patch.dict(os.environ, {"HERMES_WRITE_SAFE_ROOT": str(self.outside)}):
+            r = self.upload()
+        self.assertEqual((r.status_code, r.json()["error"]), (422, "write_refused"))
+        with mock.patch.dict(os.environ, {"HERMES_WRITE_SAFE_ROOT": str(self.root)}):
+            self.assertEqual(self.upload().status_code, 200)
+
+    def test_upload_refusals(self):
+        r = self.upload()
+        self.assertEqual((r.status_code, r.json()["error"]), (409, "runs_on_pod"))
+        self.cfg.update(fallback="refuse")
+        self.assertEqual(self.upload().json()["error"], "fail_closed")
+        self.cfg.update(fallback="local")
+        self.online()
+        self.hub.bind("s1", "d_8f2c", str(self.root))
+        self.hub.unbind("s1")
+        self.assertEqual(self.upload().json()["error"], "fail_closed")
+        for body in ([], {"name": "x"}, {"name": 1, "content_base64": ""}):
+            with self.subTest(body=body):
+                r = self.client.post("/api/plugins/device/sessions/s1/files", json=body)
+                self.assertEqual((r.status_code, r.json()["error"]), (400, "bad_request"))
+        r = self.client.post("/api/plugins/device/sessions/s1/files", json={"name": "x", "content_base64": "@@"})
+        self.assertEqual((r.status_code, r.json()["error"]), (400, "bad_request"))
+        with mock.patch.object(core, "MAX_UPLOAD_BYTES", 4):
+            r = self.upload(sid="s2", data=b"12345")
+            self.assertEqual((r.status_code, r.json()["error"]), (413, "too_large"))
+            r = self.upload(sid="s2", data=b"1" * 64)
+            self.assertEqual((r.status_code, r.json()["error"]), (413, "too_large"))
+
+    def test_upload_reaches_the_sandbox_and_offline_devices_fail(self):
+        self.cfg.update(fallback="device", fallback_device="d_8f2c", fallback_root=str(self.root / "work"))
+        r = self.upload(sid="c1")
+        self.assertEqual((r.status_code, r.json()["error"]), (409, "fail_closed"))
+        _, device = self.online()
+        r = self.upload(sid="c1")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["path"], str(self.root / "work" / "s1" / ".hermes" / "attachments" / "notes.txt"))
+        self.hub.bind("s1", "d_8f2c", str(self.root))
+        device.ws.close()
+        deadline = time.monotonic() + 5
+        while self.hub.device("d_8f2c") is not None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        r = self.upload()
+        self.assertEqual((r.status_code, r.json()["error"]), (409, "device_offline"))
+
+    def test_upload_name(self):
+        self.assertEqual(core.upload_name("x" * 200 + ".pdf"), "x" * 116 + ".pdf")
+        self.assertEqual(core.upload_name("\u00e9" * 100), "\u00e9" * 60)
+        self.assertEqual(core.upload_name(" . "), "attachment")
 
 if __name__ == "__main__":
     unittest.main()
