@@ -24,7 +24,7 @@ hermes-device login, run, chat, acp ===>  /api/device/pair, /pair/token, /whoami
 - The device dials only the hub. It never reaches a Hermes pod directly.
 - The hub authenticates the device by its device token on every request and upgrade, maps the device to the one backend it was paired with, and checks again on every connect that the device's user still has access to that backend.
 - On the exec and ACP legs the hub adds a hub assertion (section 3) to its upgrade request to the backend. On the gateway leg it uses its own gateway credentials (a socket ticket), as it does for its web UI.
-- After an upgrade on the exec and ACP legs the hub copies WebSocket messages between the two hops unchanged, in order, text as text. On the exec leg it reads only each message's `type`, for browser sign-in (section 4.8): it answers `browser_auth` itself, rewrites `browser_status`, refuses `browser` requests of a browser that is not signed in, and drops `browser_auth_result` from the plugin and messages whose type is ambiguous (4.8). On the gateway leg the hub parses every JSON-RPC message and enforces the rules of section 5. It closes the other hop when one hop closes, and relays the close code (section 2.3).
+- After an upgrade on the exec and ACP legs the hub copies WebSocket messages between the two hops unchanged, in order, text as text. It does not parse them. On the gateway leg the hub parses every JSON-RPC message and enforces the rules of section 5. It closes the other hop when one hop closes, and relays the close code (section 2.3).
 
 ## 2. Common rules
 
@@ -297,15 +297,11 @@ On a leg where `welcome.capabilities` names `browser`, more message types run on
 | Type | Direction | Meaning |
 |---|---|---|
 | `browser` | plugin to device | Run one browser operation: `{"type", "id", "op", "args", "timeout"}`. `id` is unique per connection; `kill` with the same `id` cancels it. `op` is one of `tabs_list`, `tab_open`, `tab_close`, `navigate`, `back`, `read_text`, `snapshot`, `inspect`, `click`, `type`, `press`, `hover`, `scroll`, `wait`, `eval`, `screenshot`, `login`, `check` |
-| `browser_start` | plugin to device | Start Firefox when the extension is not connected, and wait until it is connected and signed in: `{"type", "id", "timeout"}`. Answered by one `browser_result` with the same `id` (`result`: `{"started", "signed_in", "user"}`); `kill` cancels it. The hub forwards it like any other message (docs/browser.md section 5.1) |
+| `browser_start` | plugin to device | Start Firefox when the extension is not connected, and wait until it is connected: `{"type", "id", "timeout"}`. Answered by one `browser_result` with the same `id` (`result`: `{"started"}`); `kill` cancels it. The hub forwards it like any other message (docs/browser.md section 5.1) |
 | `browser_result` | device to plugin | Exactly one answer per `browser`: `{"type", "id", "ok", "result"}` or `{"type", "id", "ok": false, "code", "error"}`, `code` one of `not_connected`, `refused`, `timeout`, `cancelled`, `failed` |
-| `browser_status` | device to plugin | Whether the browser extension is connected and signed in: `{"type", "connected", "signed_in", "user", "reason", "browser", "extension_version", "can_start"}` (`can_start`: the device answers `browser_start`). Sent after the `welcome` (and the `resume`) and on every change. The hub rewrites it: while the hub has not accepted the browser's credential, `connected` and `signed_in` are false and `reason` says why |
-| `browser_auth` | device to hub | The browser credential the extension holds: `{"type", "token"}`, `""` when signed out. Sent after the `welcome` (and the `resume`) and whenever it changes. The hub answers it and never forwards it |
-| `browser_auth_result` | hub to device | `{"type", "ok", "user", "session_id"}` or `{"type", "ok": false, "code", "error"}`, `code` one of `signed_out`, `invalid`, `wrong_user`, `other_device`, `unavailable`. The answer to each `browser_auth`, and unsolicited when the hub drops the sign-in. The hub drops any that the plugin sends |
+| `browser_status` | device to plugin | Whether the browser extension is connected: `{"type", "connected", "browser", "extension_version", "can_start"}` (`can_start`: the device answers `browser_start`). Sent after the `welcome` (and the `resume`) and on every change |
 
-A `browser_result` may also carry `code` `not_signed_in`: the browser is not signed in to the hub as the device's owner. The hub sends it itself, in place of forwarding the `browser` request, after checking the sign-in in its store for each request; the device sends it when the hub has not accepted the extension's current credential on this leg. docs/browser.md section 13 describes the sign-in flow, the credential and revocation.
-
-The hub and the device read the `type` of every exec leg message with `protocol.MessageType`: a message that is not a single JSON object, that has a member name twice, that has another member equal to `type` without regard to case, or whose `type` is not a string, is dropped. This keeps the hub, the device (Go, case-insensitive struct fields, a later `null` ignored) and the plugin (Python, exact names, the last value wins) agreeing on every message's type.
+The browser is authorized by the device, as commands are: the extension talks only to the local daemon, the daemon's socket is private to its OS user, and the daemon is paired to its owner's hub account. The plugin sends browser messages only on the exec leg of the session's browser device, which must belong to the session's hub user (docs/browser.md section 3.2), so they reach only devices that user owns. docs/browser.md section 13 describes the trust model. Devices from v0.7.0 to v0.14.0 also sent `browser_auth` and refused browser requests until the hub answered it; the current hub does not answer it, so update those devices.
 
 Browser requests are never resumed: a drop cancels them on the device, and the plugin fails them with `not_connected` at once. A device without the capability never gets `browser`; a plugin that did not accept it never gets `browser_status`.
 
@@ -358,7 +354,7 @@ Server lifecycle on the device:
 
 MCP requests are never resumed: a dropped leg cancels the requests in flight on the device (it sends `notifications/cancelled`), and the plugin fails them with `not_connected` at once. The servers keep running across a drop and a reconnect. A device without the capability never gets `mcp`; it answers one with `refused` and starts no server. A plugin that did not accept the capability ignores `mcp_result`.
 
-The hub copies `mcp` and `mcp_result` unchanged, as every exec leg message other than the browser sign-in messages of section 4.8. Their sizes are within its 64 MiB message limit. The plugin decides which session may use which device's servers (section 8.11), and the device decides which servers can run.
+The hub copies `mcp` and `mcp_result` unchanged, as every exec leg message. Their sizes are within its 64 MiB message limit. The plugin decides which session may use which device's servers (section 8.11), and the device decides which servers can run.
 
 ## 5. Gateway leg and the chat splice
 
@@ -518,8 +514,7 @@ Attachments from the TUI. The v0.22.7 Ink TUI on a remote gateway sends a pasted
 
 `hermes-device setup` calls, with the same header:
 
-- `GET /control/browser`: answers `200` with `{"enabled", "connected", "version", "browser", "auth", "user", "reason"}`. `enabled` is false, and the other members are empty, when `browser.enabled` is off. `connected` is true while the Firefox extension is connected to the daemon, with its `version` and `browser`. `auth` is the sign-in state the daemon last sent the extension (`signed_out`, `checking`, `signed_in`, `refused` or `offline`, docs/browser.md section 5), with `user` and `reason`.
-- `POST /control/browser/sign-in`: sends the extension `sign_in`, so it opens the hub's sign-in window. Answers `204`, or `409` when no extension is connected or `browser.enabled` is off.
+- `GET /control/browser`: answers `200` with `{"enabled", "connected", "version", "browser"}`. `enabled` is false, and the other members are empty, when `browser.enabled` is off. `connected` is true while the Firefox extension is connected to the daemon, with its `version` and `browser`. `hermes-device setup` uses it to wait for the extension.
 
 The daemon refuses the control endpoints from non-loopback peers and with a wrong secret (`403`). It removes `daemon.json` on a clean exit.
 
@@ -626,8 +621,6 @@ The bridge runs on the device, so it can read the editor's files and it knows th
 10. `initialize`: on a successful result, the bridge sets `agentCapabilities.sessionCapabilities.close` to `{}` (ACP's unstable session close capability), since it answers `session/close` (point 9). It keeps every other member, and a `close` the agent already sent. A result whose `agentCapabilities` or `sessionCapabilities` is not an object passes unchanged. Hermes v0.22.7 advertises `loadSession`, image prompts and the `fork`, `list` and `resume` session capabilities; the hub allows all of them.
 
 ## 7. Hub HTTP API (device side)
-
-The browser extension uses three more hub endpoints, documented with the sign-in flow in docs/browser.md section 13: `GET` and `POST /browser/authorize` (the consent page, behind the hub's login), `POST /api/browser/token` (the PKCE code exchange; answers `{token, session_id, user, device_id, device_name}` or `400` `{"error": "invalid_grant", "message"}`), and `POST /api/browser/revoke` (`Authorization: Bearer hbt_...`; `204`, also for an unknown token).
 
 Base: the hub URL (`hub.url`, for example `https://hub.example.com`). Bodies are JSON. Errors are `{"error": "<code>", "message": "<text>"}` with an HTTP status.
 
@@ -934,7 +927,7 @@ Rules:
 - The memory routes (9.1) are behind the same sign-in, so a device token cannot read or change memory either. Memory text enters every new chat's system prompt, so the routes keep Hermes's threat scan on every text they write, and the hub shows a backend's memory only to the users who may use that backend.
 - A device token can bind only sessions that resolve to its device or were never bound in their lineage (7.4, and the plugin's own rules in section 9). It cannot take a session of another device's lineage (`409` `bound_to_other_device`), or one whose binding was removed (`409` `was_bound`). It can still claim any never-bound session of the user, such as a web chat, and then run commands in it on itself. When a create's bind fails, the hub deletes the new session only when it is never bound, so a create cannot delete a session that is or was bound.
 - A compromised Hermes pod can do anything the user's Hermes can, including running commands on connected devices in their roots. It cannot mint hub assertions, because it holds only public keys.
-- A compromised Hermes pod cannot use a device's browser unless the browser is signed in to the hub as the device's owner: the hub refuses `browser` requests itself (4.8), and it drops a forged `browser_auth_result` from the plugin. While the browser is signed in, the pod can do what the agent can (docs/browser.md section 8).
+- A compromised Hermes pod can use the browser of a connected device that has browser control on, as the agent can (docs/browser.md section 8), as it can run commands there.
 - A session's browser device (docs/browser.md section 3.2) is one of the connected devices of the session's hub user, never a service device: the user of the computer the session is bound to, else the plugin setting `user`. Without that setting, a session that no computer serves has no browser device. Scheduling unattended work with a browser device asks the user each time. A run of a job that has no browser device has no browser. A scheduled job keeps the browser device of the session that created it in the plugin's own file on the pod, which a device cannot reach. A run of the job uses only that device and fails when it is offline or now reports another user; a revoked device cannot connect, so its jobs fail until the user picks another device. The job's commands still run on the sandbox.
 - MCP servers on a device (4.9) run only when the device's own config lists them; the plugin and the hub cannot add one or change its command. They run as the device's user, outside `device.roots`, with what that user can reach, so list only servers you would let the agent use. A session reaches only the servers of the device it is bound to (8.11). A compromised Hermes pod can call any tool of a connected device's servers with any arguments, as it can run commands there. MCP results come from the server and from what it reads, so they are untrusted data: the plugin marks them so and Hermes wraps them (8.11).
 - The hub's private key is the root of trust for every backend. Keep it in the hub's secret store only.
@@ -942,7 +935,7 @@ Rules:
 
 ## 11. Versions
 
-The device client, the plugin and acp-host come from one hermes-device release. Release 0.3.0 speaks exec leg protocol versions 2 and 3 and negotiates the newest both sides speak (section 4.1), so a 0.3.0 device works with a 0.2.0 plugin and the other way round, without resume. Upgrade the plugin first: devices then get resume as soon as they upgrade. A side that shares no version with its peer closes with `4426` and a reason that names both versions. The ACP and gateway legs did not change. Browser sign-in (4.8) adds messages to the `browser` capability without a version bump: exec leg commands work with any mix of releases, but browser control needs a hub, a device and a plugin that all know it (docs/browser.md section 13.7). The local Hermes that `chat` runs must be the same release as the server's Hermes (`chat` checks `hermes_version`).
+The device client, the plugin and acp-host come from one hermes-device release. Release 0.3.0 speaks exec leg protocol versions 2 and 3 and negotiates the newest both sides speak (section 4.1), so a 0.3.0 device works with a 0.2.0 plugin and the other way round, without resume. Upgrade the plugin first: devices then get resume as soon as they upgrade. A side that shares no version with its peer closes with `4426` and a reason that names both versions. The ACP and gateway legs did not change. The local Hermes that `chat` runs must be the same release as the server's Hermes (`chat` checks `hermes_version`).
 
 | Peers | Exec leg |
 |---|---|
