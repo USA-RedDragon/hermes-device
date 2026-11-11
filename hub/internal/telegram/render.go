@@ -77,6 +77,8 @@ type renderer struct {
 	logger   *slog.Logger
 	now      func() time.Time
 	approve  func(approvalID, text string) (string, func(messageID int64))
+	// media opens a file a reply names; nil when the service cannot.
+	media func(ctx context.Context, path string) (*hub.MediaFile, error)
 
 	think      *liveMsg
 	thinkStart time.Time
@@ -398,6 +400,7 @@ func (r *renderer) complete(ctx context.Context, ev hub.Event) {
 	}
 	r.answer.Reset()
 	r.tools = make(map[string]*toolMsg)
+	paths, text := hub.MediaDirectives(text)
 	switch p.Status {
 	case "interrupted":
 		text += "\n\n**Interrupted.**"
@@ -406,14 +409,14 @@ func (r *renderer) complete(ctx context.Context, ev hub.Event) {
 			text += "\n\nError: " + p.Error
 		}
 	}
-	if strings.TrimSpace(text) == "" {
-		return
-	}
-	for _, chunk := range RenderMarkdown(text, MaxMessageLen) {
-		if r.send(ctx, chunk, nil) == 0 {
-			break
+	if strings.TrimSpace(text) != "" {
+		for _, chunk := range RenderMarkdown(text, MaxMessageLen) {
+			if r.send(ctx, chunk, nil) == 0 {
+				break
+			}
 		}
 	}
+	r.sendMedia(ctx, paths)
 }
 
 // send sends html and returns the message ID, or 0 on failure. When Telegram

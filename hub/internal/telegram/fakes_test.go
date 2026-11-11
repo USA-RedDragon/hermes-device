@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +25,8 @@ const (
 	mSend        = "sendMessage"
 	mEdit        = "editMessageText"
 	mAnswer      = "answerCallbackQuery"
+	mPhoto       = "sendPhoto"
+	mDocument    = "sendDocument"
 	kText        = "text"
 	kStatus      = "status"
 	kDesc        = "description"
@@ -81,7 +85,9 @@ type fakeTelegram struct {
 	nextUpdate int64
 	fail429    map[string]int
 	rejectHTML int
-	offsets    []int64
+	// rejectPhoto makes sendPhoto fail as for a photo of bad dimensions.
+	rejectPhoto bool
+	offsets     []int64
 	// files are the files getFile and downloads serve, by file id.
 	files map[string][]byte
 	// sizes overrides the file_size getFile reports.
@@ -121,10 +127,11 @@ func (f *fakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	body, _ := io.ReadAll(r.Body)
 	params := map[string]any{}
-	if err := json.Unmarshal(body, &params); err != nil {
-		f.t.Errorf("bad body for %s: %v", method, err)
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		params = f.form(r)
+	} else if body, _ := io.ReadAll(r.Body); json.Unmarshal(body, &params) != nil {
+		f.t.Errorf("bad body for %s", method)
 	}
 	if method == "getUpdates" {
 		off, _ := params["offset"].(float64)
@@ -143,6 +150,12 @@ func (f *fakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		f.reply(w, map[string]any{"ok": false, kErrorCode: 429,
 			kDesc: "Too Many Requests: retry after 1", "parameters": map[string]any{"retry_after": 1}})
+		return
+	}
+	if method == mPhoto && f.rejectPhoto {
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusBadRequest)
+		f.reply(w, map[string]any{"ok": false, kErrorCode: 400, kDesc: "Bad Request: PHOTO_INVALID_DIMENSIONS"})
 		return
 	}
 	if method == mSend && params["parse_mode"] == "HTML" && f.rejectHTML > 0 {
@@ -180,6 +193,31 @@ func (f *fakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
 			"file_path": "docs/" + fid}})
 	default:
 		f.reply(w, map[string]any{"ok": true, kResult: true})
+	}
+}
+
+// form reads a file upload: its chat_id, and the file's field, name and
+// bytes as "field", "name" and "data".
+func (f *fakeTelegram) form(r *http.Request) map[string]any {
+	params := map[string]any{}
+	mr, err := r.MultipartReader()
+	if err != nil {
+		f.t.Errorf("bad upload: %v", err)
+		return params
+	}
+	for {
+		part, err := mr.NextPart()
+		if err != nil {
+			return params
+		}
+		data, _ := io.ReadAll(io.LimitReader(part, 64<<20))
+		if part.FileName() == "" {
+			if id, err := strconv.ParseFloat(string(data), 64); part.FormName() == "chat_id" && err == nil {
+				params["chat_id"] = id
+			}
+			continue
+		}
+		params["field"], params["name"], params["data"] = part.FormName(), part.FileName(), string(data)
 	}
 }
 
@@ -294,6 +332,29 @@ type fakeHub struct {
 	hold bool
 	// notice is the Notice Prompt answers.
 	notice string
+	// media are the files Media opens, by path, and mediaCalls its calls.
+	media      map[string]fakeFile
+	mediaCalls []string
+}
+
+type fakeFile struct {
+	mime string
+	data string
+}
+
+// Media opens a file of h.media for a user who may use the backend.
+func (h *fakeHub) Media(_ context.Context, user, backendID, sessionID, p string) (*hub.MediaFile, error) {
+	if err := h.allowed(user, backendID); err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.mediaCalls = append(h.mediaCalls, user+" "+backendID+" "+sessionID+" "+p)
+	f, ok := h.media[p]
+	if !ok {
+		return nil, hub.ErrNoMedia
+	}
+	return &hub.MediaFile{Name: path.Base(p), MIME: f.mime, Size: int64(len(f.data)), Body: io.NopCloser(strings.NewReader(f.data))}, nil
 }
 
 func newFakeHub() *fakeHub {

@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -188,8 +190,14 @@ func (c *Client) call(ctx context.Context, method string, params, result any) er
 	if err != nil {
 		return fmt.Errorf("failed to encode %s: %w", method, err)
 	}
+	return c.callBody(ctx, method, body, "application/json", result)
+}
+
+// callBody sends a request body as it is, retrying while Telegram rate
+// limits it.
+func (c *Client) callBody(ctx context.Context, method string, body []byte, contentType string, result any) error {
 	for attempt := 0; ; attempt++ {
-		err := c.do(ctx, method, body, result)
+		err := c.do(ctx, method, body, contentType, result)
 		var apiErr *APIError
 		if !errors.As(err, &apiErr) || apiErr.Code != http.StatusTooManyRequests {
 			return err
@@ -209,12 +217,12 @@ func (c *Client) call(ctx context.Context, method string, params, result any) er
 	}
 }
 
-func (c *Client) do(ctx context.Context, method string, body []byte, result any) error {
+func (c *Client) do(ctx context.Context, method string, body []byte, contentType string, result any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+method, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to build %s request: %w", method, err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("telegram %s: %w", method, redactToken(err))
@@ -348,4 +356,39 @@ func (c *Client) Download(ctx context.Context, fileID string, limit int64) ([]by
 		return nil, ErrTooLarge
 	}
 	return data, nil
+}
+
+// Upload limits of the Bot API (https://core.telegram.org/bots/api#sending-files).
+const (
+	MaxPhotoUpload    = 10 << 20
+	MaxDocumentUpload = 50 << 20
+)
+
+// SendPhoto sends an image that the chat shows inline.
+func (c *Client) SendPhoto(ctx context.Context, chatID int64, name string, data []byte) error {
+	return c.upload(ctx, "sendPhoto", "photo", chatID, name, data)
+}
+
+// SendDocument sends a file.
+func (c *Client) SendDocument(ctx context.Context, chatID int64, name string, data []byte) error {
+	return c.upload(ctx, "sendDocument", "document", chatID, name, data)
+}
+
+func (c *Client) upload(ctx context.Context, method, field string, chatID int64, name string, data []byte) error {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return err
+	}
+	fw, err := w.CreateFormFile(field, name)
+	if err != nil {
+		return err
+	}
+	if _, err := fw.Write(data); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return c.callBody(ctx, method, buf.Bytes(), w.FormDataContentType(), nil)
 }

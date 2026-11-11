@@ -807,6 +807,11 @@ func (b *Bot) pump(a *attachment) {
 		func(approvalID, text string) (string, func(int64)) {
 			return b.addApproval(a, approvalID, text)
 		})
+	if m, ok := b.svc.(hub.Media); ok {
+		r.media = func(ctx context.Context, p string) (*hub.MediaFile, error) {
+			return m.Media(ctx, a.user, a.backendID, a.sessionID, p)
+		}
+	}
 	timer := time.NewTimer(time.Hour)
 	timer.Stop()
 	defer timer.Stop()
