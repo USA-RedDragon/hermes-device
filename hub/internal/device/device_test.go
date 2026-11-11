@@ -1043,22 +1043,24 @@ func TestGatewayLegImageRender(t *testing.T) {
 	})
 }
 
+const capServerRequests = "server_requests"
+
 func TestGatewayLegClientCapabilities(t *testing.T) {
 	t.Parallel()
 	stores(t, func(t *testing.T, st *store.Store) {
 		e := setup(t, st)
 		tok, _ := e.pair(e.a)
 		g := e.gatewayLeg(e.b, tok)
-		g.request("ok", "client.capabilities", map[string]any{"server_requests": true})
+		g.request("ok", "client.capabilities", map[string]any{capServerRequests: true})
 		got := e.called("client.capabilities")
-		if len(got) != 1 || len(got[0].Params) != 1 || got[0].Params["server_requests"] != true {
+		if len(got) != 1 || len(got[0].Params) != 1 || got[0].Params[capServerRequests] != true {
 			t.Fatalf("forwarded client.capabilities calls = %v", got)
 		}
 		for name, params := range map[string]map[string]any{
 			"local":   {"desktop_local": true},
-			"both":    {"server_requests": true, "desktop_local": true},
-			"string":  {"server_requests": "yes"},
-			"null":    {"server_requests": nil},
+			"both":    {capServerRequests: true, "desktop_local": true},
+			"string":  {capServerRequests: "yes"},
+			"null":    {capServerRequests: nil},
 			"nothing": {},
 		} {
 			if m := g.request(name, "client.capabilities", params); reason(m) != reasonDenied {
@@ -1099,6 +1101,68 @@ func TestGatewayLegListAudience(t *testing.T) {
 		}
 		if last.Params["audience"] != "hermes-device:"+id {
 			t.Fatalf("forwarded params = %v", last.Params)
+		}
+	})
+}
+
+const keyChoiceT = "choice"
+
+func TestGatewayLegRecordsApprovalAnswers(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, id := e.pair(e.a)
+		e.gw.AddSession(&gatewaytest.Session{ID: sessionMine, Live: true, Title: sessionMine})
+		e.plugin.SetBinding(sessionMine, id, deviceDir)
+		g := e.gatewayLeg(e.b, tok)
+		ctx := context.Background()
+		cmd := "rm -rf build"
+		e.gw.Ask(sessionMine, gateway.Prompt{Kind: gateway.PromptApproval, PromptID: "ap-9", Command: &cmd,
+			Choices: []string{hub.ChoiceOnce, hub.ChoiceDeny, hub.ChoiceAlways}})
+		call := func(rid, method string, params map[string]any) map[string]any {
+			writeJSON(t, g.c, map[string]any{keyJSONRPC: jsonRPC, "id": rid, keyMethod: method, keyParams: params})
+			for {
+				if m := readJSON(t, g.c); m["id"] == rid && m[keyMethod] == nil {
+					return m
+				}
+			}
+		}
+		respond := func(rid, prompt, choice string) map[string]any {
+			return call(rid, "approval.respond", map[string]any{keySessionID: sessionMine, "execution_generation": 0,
+				"prompt_id": prompt, keyChoiceT: choice})
+		}
+		if m := respond("r1", "ap-9", hub.ChoiceAlways); m["error"] != nil {
+			t.Fatalf("respond = %v", m)
+		}
+		want := hub.PromptAnswer{Choice: hub.ChoiceAlways, Via: hub.AnsweredOnDevice, Device: deviceName}
+		if a, ok, err := st.PromptAnswer(ctx, backendID, "ap-9"); a != want || !ok || err != nil {
+			t.Fatalf("answer = %+v %v %v", a, ok, err)
+		}
+		respond("r2", "ap-gone", hub.ChoiceOnce)
+		if _, ok, _ := st.PromptAnswer(ctx, backendID, "ap-gone"); ok {
+			t.Fatal("kept the answer to an approval the gateway did not have")
+		}
+		respond("r3", "ap-9", hub.ChoiceOnce)
+		if a, ok, _ := st.PromptAnswer(ctx, backendID, "ap-9"); a != want || !ok {
+			t.Fatalf("a late answer replaced the first: %+v %v", a, ok)
+		}
+		writeJSON(t, g.c, map[string]any{keyJSONRPC: jsonRPC, keyMethod: "approval.respond", keyParams: map[string]any{
+			keySessionID: sessionMine, "execution_generation": 0, "prompt_id": "ap-11", keyChoiceT: hub.ChoiceAlways}})
+		call("fence0", methodList, map[string]any{})
+		if _, ok, _ := st.PromptAnswer(ctx, backendID, "ap-11"); ok {
+			t.Fatal("recorded the answer of a notification")
+		}
+		e.gw.ServerRequest("srq-7", "approval", map[string]any{keySessionID: "live-1", "request_id": "ap-10", keyCommand: cmd})
+		for {
+			if m := readJSON(t, g.c); m["id"] == "srq-7" {
+				break
+			}
+		}
+		writeJSON(t, g.c, map[string]any{keyJSONRPC: jsonRPC, "id": "srq-7", keyResult: map[string]any{keyChoiceT: hub.ChoiceOnce}})
+		call("fence", methodList, map[string]any{})
+		want.Choice = hub.ChoiceOnce
+		if a, ok, _ := st.PromptAnswer(ctx, backendID, "ap-10"); a != want || !ok {
+			t.Fatalf("server request answer = %+v %v", a, ok)
 		}
 	})
 }

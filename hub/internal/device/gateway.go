@@ -110,6 +110,7 @@ const (
 	heldWorkspace
 	heldBranch
 	heldList
+	heldApproval
 )
 
 // held is a forwarded device request whose answer the hub acts on before
@@ -122,6 +123,8 @@ type held struct {
 	sessionID string
 	prevDir   string
 	method    string
+	// choice is the recorded answer of an approval.respond.
+	choice string
 }
 
 // guard enforces the gateway leg rules of the hub: the device's token is
@@ -144,6 +147,8 @@ type guard struct {
 	gone     bool
 	lost     chan struct{}
 	work     sync.WaitGroup
+	// srq maps the ids of approval server requests to their prompts.
+	srq map[string]string
 }
 
 func (g *guard) markLost() {
@@ -310,6 +315,9 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 // needs a capability of the gateway.
 func (g *guard) sendChecked(f *frame, params map[string]json.RawMessage) {
 	switch {
+	case f.Method == methodApproval && g.recordRespond(f.Method, params):
+		g.send(f, params, &held{kind: heldApproval, id: f.ID, requestID: rawString(params[keyPromptID]),
+			choice: rawString(params[keyChoice])})
 	case f.Method == methodImageRender:
 		g.work.Go(func() {
 			if !g.hasCapability(capImageRenderConfined) {
@@ -379,6 +387,7 @@ func (g *guard) answerServer(f *frame) {
 		g.s.log.Warn("dropped a device message that is neither a request nor an answer to a gateway request", "device", g.dev.ID)
 		return
 	}
+	g.serverApprovalAnswered(f)
 	out := map[string]json.RawMessage{"jsonrpc": mustRaw(jsonRPCVersion), "id": f.ID}
 	if hasResult {
 		out["result"] = f.members["result"]
@@ -530,6 +539,9 @@ func (g *guard) rewriteWorkspace(f *frame, params map[string]json.RawMessage) {
 // requests and acts on held answers.
 func (g *guard) fromGateway(typ websocket.MessageType, data []byte) {
 	f, err := parseFrame(data)
+	if err == nil && f.Method != "" {
+		g.noteServerApproval(&f)
+	}
 	if err != nil || f.Method != "" || !f.hasID() {
 		g.relay(typ, data)
 		return
@@ -574,6 +586,9 @@ func (g *guard) fromGateway(typ websocket.MessageType, data []byte) {
 			return
 		}
 		g.work.Go(func() { g.listAnswered(h.method, &f) })
+	case heldApproval:
+		g.approvalAnswered(h, &f)
+		g.toDevice(data)
 	case heldWorkspace:
 		if f.isError() && h.prevDir != "" {
 			g.work.Go(func() {
