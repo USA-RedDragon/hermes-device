@@ -909,7 +909,7 @@
     "flac pdf docx doc odt rtf txt md epub xlsx xls ods csv tsv json xml yaml yml kmz kml geojson gpx pptx ppt odp key " +
     "zip tar gz tgz bz2 xz 7z rar apk ipa html htm").split(" "));
   const imageExts = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
-  const extOf = (p) => { const b = baseName(p); const i = b.lastIndexOf("."); return i > 0 ? b.slice(i + 1).toLowerCase() : ""; };
+  const extOf = (p) => { const b = baseName(p); const i = b.lastIndexOf("."); return i >= 0 ? b.slice(i + 1).toLowerCase() : ""; };
   const imagePath = (p) => imageExts.has(extOf(p));
   const utf8 = new TextEncoder();
 
@@ -949,7 +949,7 @@
   function mediaDirectives(text) {
     if (!/MEDIA:/i.test(text)) return { paths: [], text };
     const scan = maskMedia(text);
-    const tag = /[`"'*_]{0,3}MEDIA:[ \t]*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\/[^\s`"'<>]+)/gi;
+    const tag = /[`"'*_]{0,3}MEDIA:[ \t]*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\/[^ \t\n\f\r`"'<>]+)/gi;
     const spans = [];
     const paths = [];
     let m;
