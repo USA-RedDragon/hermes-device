@@ -1,7 +1,7 @@
 github.com/USA-RedDragon/configulator/v2 v2.5.0 h1:Z6eY4ncXH6m7cTCfF0/chRJxUT5/TQnFDoBgh0CMV9Y=
 github.com/USA-RedDragon/configulator/v2 v2.5.0/go.mod h1:L/HGK6Bf1Wr7dbBibAW0zpXhvG0A+7cMI0U9Rz9Hplg=
-github.com/USA-RedDragon/hermes-device v0.6.1-0.20261111011029-eddbe8470a60 h1:keiC8OnxXVJzobOaFJfyFbdROPdHQZYcMny/8OzttFU=
-github.com/USA-RedDragon/hermes-device v0.6.1-0.20261111011029-eddbe8470a60/go.mod h1:BEkI84rUmCGf0w0elYa7xa/1Z6VLdWu00E3SQSKg/vs=
+github.com/USA-RedDragon/hermes-device v0.7.0 h1:dDgHQp8Sz2qTLsjccG7Jxh5+1Qn6M9ZyMw9hIyID4lk=
+github.com/USA-RedDragon/hermes-device v0.7.0/go.mod h1:BEkI84rUmCGf0w0elYa7xa/1Z6VLdWu00E3SQSKg/vs=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
