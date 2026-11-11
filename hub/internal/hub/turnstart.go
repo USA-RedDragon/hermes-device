@@ -54,6 +54,8 @@ func noteKind(kind string) bool {
 }
 
 type transcriptRow struct {
+	RowID        int64           `json:"row_id"`
+	RowKind      string          `json:"row_kind"`
 	Role         string          `json:"role"`
 	Text         *string         `json:"text"`
 	Content      json.RawMessage `json:"content"`
@@ -127,4 +129,40 @@ func rowContent(raw json.RawMessage) (string, int) {
 		}
 	}
 	return strings.Join(texts, "\n"), images
+}
+
+// UserMessage is a message the user sent, as a transcript row shows it.
+type UserMessage struct {
+	// RowID is the row's id in Hermes' store, which a rewind or a branch
+	// names.
+	RowID  int64
+	Text   string
+	Images int
+}
+
+// LastUserMessage finds the last row of rows (oldest first) that the user
+// typed: a user row with a row id that is not hidden and not a note Hermes
+// wrote.
+func LastUserMessage(rows []json.RawMessage) (UserMessage, bool) {
+	for i := len(rows) - 1; i >= 0; i-- {
+		var r transcriptRow
+		if json.Unmarshal(rows[i], &r) != nil || r.Role != "user" || r.RowID <= 0 ||
+			(r.RowKind != "" && r.RowKind != "message") || r.DisplayKind == "hidden" || noteKind(r.DisplayKind) {
+			continue
+		}
+		m := UserMessage{RowID: r.RowID}
+		text, images := rowContent(r.Content)
+		m.Text, m.Images = text, images
+		if r.Text != nil {
+			m.Text = *r.Text
+		}
+		return m, true
+	}
+	return UserMessage{}, false
+}
+
+// MessageText reads a message's content: a string, or content parts with
+// text and images. It returns the text and the number of images.
+func MessageText(content json.RawMessage) (string, int) {
+	return rowContent(content)
 }

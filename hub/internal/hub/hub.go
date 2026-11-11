@@ -20,7 +20,9 @@ type Session struct {
 	// Archived sessions are hidden from the gateway's normal list.
 	Archived     bool
 	MessageCount int
-	UpdatedAt    time.Time
+	// UpdatedAt is when the session last changed, or when it started when
+	// the backend did not say.
+	UpdatedAt time.Time
 	// Source is the surface that started the session, such as "gui" (the
 	// hub or the web app), "cli", "tui" or "acp" (an editor such as VS
 	// Code). "" when the backend did not say.
@@ -28,6 +30,9 @@ type Session struct {
 	// Activity counts the subagents and background commands the session
 	// runs now.
 	Activity int
+	// Needs is NeedsApproval or NeedsQuestion while the session waits for
+	// its user, as far as this hub replica knows; "" otherwise.
+	Needs string
 }
 
 // Event kinds delivered on an attached session.
@@ -150,6 +155,13 @@ type PromptResult struct {
 	// Notice is a note for the user about how the prompt went, such as
 	// images the session's model cannot read.
 	Notice string
+	// Steered is true when the running turn took the prompt's text (see
+	// WithSteer).
+	Steered bool
+	// Command is true for a slash command that Hermes ran at once instead
+	// of a prompt: Output is what it answered, and ID is "".
+	Command bool
+	Output  string
 }
 
 type submissionKey struct{}

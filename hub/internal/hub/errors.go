@@ -22,4 +22,7 @@ var (
 	// ErrShuttingDown is a prompt the hub could not hold because it is
 	// shutting down.
 	ErrShuttingDown = errors.New("hub shutting down")
+	// ErrBackendAway is a request that needs the backend at once while it
+	// restarts or cannot be reached.
+	ErrBackendAway = errors.New("backend away")
 )
