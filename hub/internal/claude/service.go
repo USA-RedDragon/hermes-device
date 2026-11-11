@@ -379,6 +379,30 @@ func (s *Service) CancelSignIn(ctx context.Context, user, backendID, accountID s
 	return convertSignIn(si), nil
 }
 
+// ClaudePool says which account the pool runs a session's next turn on.
+// See hub.Claude.
+func (s *Service) ClaudePool(ctx context.Context, user, backendID, sessionID, model string) (hub.ClaudePool, error) {
+	c, err := s.client(ctx, user, backendID)
+	if err != nil {
+		return hub.ClaudePool{}, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, s.o.Timeout)
+	defer cancel()
+	p, err := c.Pool(cctx, sessionID, model)
+	if err = mapError(err); err != nil {
+		return hub.ClaudePool{}, err
+	}
+	out := hub.ClaudePool{Account: p.Account, Label: p.Label, Provider: p.Provider, Pinned: p.Pinned,
+		ResetsAt: p.WeeklyResetsAt, Message: p.Message}
+	if !p.WeeklyResetsAt.IsZero() {
+		out.ResetsText = ResetText(p.WeeklyResetsAt, s.o.Now(), s.o.Location)
+	}
+	if out.Account == "" && out.Message == "" {
+		out.Message = "No Claude account can run this chat now."
+	}
+	return out, nil
+}
+
 func convertSignIn(x SignIn) hub.ClaudeSignIn {
 	return hub.ClaudeSignIn{ID: x.ID, Account: x.Account, Label: x.Label, EmailHint: x.EmailHint, Reason: x.Reason,
 		State: x.State, URL: x.URL, Message: x.Message, Email: x.Email, StartedAt: x.StartedAt, ExpiresAt: x.ExpiresAt}

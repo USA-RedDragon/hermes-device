@@ -161,6 +161,41 @@ func TestModelCommand(t *testing.T) {
 	}
 }
 
+func TestModelCommandClaudeGroups(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	h.hub.mu.Lock()
+	h.hub.models = hub.Models{Provider: "ollama", Model: "qwen-small", Providers: []hub.ModelProvider{
+		{ID: hub.ClaudePoolProvider, Name: "Claude", Models: []hub.ModelChoice{{ID: "claude-opus-5-5[1m]"}}},
+		{ID: "claude-api-caam", Name: "Claude API (caam)", Models: []hub.ModelChoice{{ID: "claude-opus-5-5"}}},
+		{ID: "claude-api-jaam", Name: "Claude API (jaam)", Models: []hub.ModelChoice{{ID: "claude-opus-5-5"}}},
+		{ID: "ollama", Name: "Local", Models: []hub.ModelChoice{{ID: "qwen-small"}}},
+	}}
+	hub.ArrangeModels(h.hub.models.Providers)
+	h.hub.mu.Unlock()
+	h.startTurn(t)
+	h.tg.say(dm(aliceTG), aliceTG, "/model")
+	menu := h.tg.wait(mSend, "<b>Model:</b> <code>qwen-small</code>")
+	btns := menu.buttons()
+	got := make([]string, 0, len(btns))
+	for _, b := range btns {
+		text, _ := b[kText].(string)
+		got = append(got, text)
+	}
+	want := []string{"Claude: Opus 5.5", "Claude API credits: Opus 5.5 (caam credits)",
+		"Claude API credits: Opus 5.5 (jaam credits)", "• Local: qwen-small"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("buttons = %q, want %q", got, want)
+	}
+	h.tg.say(dm(aliceTG), aliceTG, "/model claude-pool/claude-opus-5-5[1m]")
+	h.tg.wait(mSend, "Model changed to")
+	h.hub.mu.Lock()
+	defer h.hub.mu.Unlock()
+	if want := []string{"claude-pool/claude-opus-5-5[1m]/"}; !slices.Equal(h.hub.modelSets, want) {
+		t.Fatalf("model sets = %q, want %q", h.hub.modelSets, want)
+	}
+}
+
 func TestBackgroundCommand(t *testing.T) {
 	t.Parallel()
 	h := startBot(t, nil)

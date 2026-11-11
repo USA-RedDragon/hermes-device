@@ -353,3 +353,38 @@ func TestSignInEndedLaterRefreshesTheList(t *testing.T) {
 		t.Fatalf("after a sign-in that ended later = %+v %v (want a fresh read)", list, err)
 	}
 }
+
+func TestPool(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := context.Background()
+	e.plugin.Lock()
+	e.plugin.Pools["s1"] = claude.Pool{Account: "account2", Label: "Claude (account2)", Provider: "claude-account2", Pinned: true,
+		WeeklyResetsAt: time.Date(2026, 11, 16, 6, 0, 0, 0, time.UTC)}
+	e.plugin.Pool = claude.Pool{Message: "All Claude accounts are at their limit; the first resets Mon 12:00 AM CST"}
+	e.plugin.Unlock()
+
+	got, err := e.svc.ClaudePool(ctx, bob, backendMain, "s1", "claude-opus-5-5[1m]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Account != "account2" || !got.Pinned || got.ResetsText != "Mon 12:00 AM CST" || got.Message != "" {
+		t.Fatalf("pool = %+v", got)
+	}
+	if n := e.plugin.CallCount("GET /pool?model=claude-opus-5-5%5B1m%5D&session=s1"); n != 1 {
+		t.Errorf("plugin calls = %v", e.plugin.Calls)
+	}
+	got, err = e.svc.ClaudePool(ctx, bob, backendMain, "s2", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Account != "" || !strings.Contains(got.Message, "first resets Mon 12:00 AM CST") {
+		t.Fatalf("exhausted pool = %+v", got)
+	}
+	if _, err := e.svc.ClaudePool(ctx, alice, other, "s1", ""); !errors.Is(err, hub.ErrForbidden) {
+		t.Errorf("other backend for alice: %v", err)
+	}
+	if _, err := e.svc.ClaudePool(ctx, bob, other, "s1", ""); !errors.Is(err, hub.ErrNoClaude) {
+		t.Errorf("backend without the plugin: %v", err)
+	}
+}

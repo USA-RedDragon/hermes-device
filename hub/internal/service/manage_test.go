@@ -158,7 +158,8 @@ func TestModelsAndReasoning(t *testing.T) {
 	if m.Model != modelSmall || m.Provider != provLocal || len(m.Providers) != 1 || m.Providers[0].ID != provLocal {
 		t.Fatalf("models = %+v", m)
 	}
-	want := []hub.ModelChoice{{ID: modelSmall, CanDisableReasoning: true}, {ID: modelBig, Reasoning: true, CanDisableReasoning: true}}
+	want := []hub.ModelChoice{{ID: modelSmall, Label: modelSmall, CanDisableReasoning: true},
+		{ID: modelBig, Label: modelBig, Reasoning: true, CanDisableReasoning: true}}
 	if got := m.Providers[0].Models; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("local models = %+v", got)
 	}

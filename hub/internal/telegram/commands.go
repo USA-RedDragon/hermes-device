@@ -69,6 +69,10 @@ func (b *Bot) model(ctx context.Context, to dest, user, arg string) {
 	}
 	var rows [][]InlineButton
 	total := 0
+	groups := map[string]bool{}
+	for _, p := range ms.Providers {
+		groups[cmpOr(p.Group, p.Name)] = true
+	}
 	for _, p := range ms.Providers {
 		for _, m := range p.Models {
 			total++
@@ -76,9 +80,9 @@ func (b *Bot) model(ctx context.Context, to dest, user, arg string) {
 				continue
 			}
 			st.models.picks = append(st.models.picks, modelPick{provider: p.ID, model: m.ID})
-			label := m.ID
-			if len(ms.Providers) > 1 {
-				label = p.Name + ": " + m.ID
+			label := cmpOr(m.Label, m.ID)
+			if len(groups) > 1 {
+				label = cmpOr(p.Group, p.Name) + ": " + label
 			}
 			if p.ID == ms.Provider && m.ID == ms.Model {
 				label = "• " + label

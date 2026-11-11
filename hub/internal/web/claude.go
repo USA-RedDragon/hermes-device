@@ -24,6 +24,7 @@ func (s *Server) claudeRoutes(mux *http.ServeMux) {
 	mux.Handle("GET "+base+"/{account}/signin", s.api(s.handleClaudeSignIn))
 	mux.Handle("DELETE "+base+"/{account}/signin", s.api(s.handleClaudeSignIn))
 	mux.Handle("POST "+base+"/{account}/signin/code", s.api(s.handleClaudeCode))
+	mux.Handle("GET /api/claude/{backend}/pool", s.api(s.handleClaudePool))
 }
 
 func (s *Server) isClaudeAdmin(user string) bool {
@@ -121,6 +122,22 @@ func (s *Server) handleClaudeCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := s.claude.SendSignInCode(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("account"), body.SignInID, body.Code)
+	if err != nil {
+		s.claudeFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleClaudePool says which account the Claude pool runs a chat's next
+// turn on: ?session=<chat>&model=<model>.
+func (s *Server) handleClaudePool(w http.ResponseWriter, r *http.Request) {
+	if s.claude == nil {
+		errorJSON(w, http.StatusNotFound, hub.ErrNoClaude.Error())
+		return
+	}
+	q := r.URL.Query()
+	out, err := s.claude.ClaudePool(r.Context(), userFrom(r), r.PathValue("backend"), q.Get("session"), q.Get("model"))
 	if err != nil {
 		s.claudeFail(w, err)
 		return

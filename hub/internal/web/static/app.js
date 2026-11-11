@@ -1106,7 +1106,7 @@
           for (const card of this.tools.values()) if (card.classList.contains("running")) this.toolDone(card, {});
           this.groupTools(null);
           if (p.usage) this.showInfo({ usage: p.usage });
-          claude.afterReply(this.backend, this.info.provider);
+          claude.afterReply(this.backend, this.info.provider, this.session, this.info.model || (this.info.usage || {}).model || "");
           this.turn = null;
           this.setRunning(false);
           refreshList().then(() => {
@@ -1994,7 +1994,7 @@
   // the account reports.
   function limitParts(info) {
     if (!view || !info.provider) return { name: null, parts: [] };
-    const a = claude.account(view.backend, info.provider);
+    const a = claude.account(view.backend, info.provider, view.session, info.model || (info.usage || {}).model || "");
     if (!a) return { name: null, parts: [] };
     const out = [];
     if (a.signed_in) {
@@ -2157,11 +2157,24 @@
           o.value = (cur.provider || "") + "\n" + cur.model;
           sel.append(o);
         }
+        // Providers with the same group share one heading, as the Claude
+        // API credit providers do.
+        const group = (p) => p.group || p.name;
+        const many = new Set(providers.map(group)).size > 1;
+        const heads = new Map();
         for (const p of providers) {
-          const parent = providers.length > 1 ? el("optgroup") : sel;
-          if (parent !== sel) { parent.label = p.name; sel.append(parent); }
+          let parent = sel;
+          if (many) {
+            parent = heads.get(group(p));
+            if (!parent) {
+              parent = el("optgroup");
+              parent.label = group(p);
+              heads.set(group(p), parent);
+              sel.append(parent);
+            }
+          }
           for (const m of p.models) {
-            const o = el("option", "", m.id);
+            const o = el("option", "", m.label || m.id);
             o.value = p.id + "\n" + m.id;
             if (cur.m === m) o.selected = true;
             parent.append(o);
@@ -2169,6 +2182,7 @@
         }
         sel.disabled = !providers.length || this.busy;
       }
+      this.route(cur.p ? cur.p.id : cur.provider, cur.m ? cur.m.id : cur.model);
       const reasoning = !cur.m || cur.m.reasoning;
       $("effort-row").hidden = !reasoning;
       if (document.activeElement !== eff) {
@@ -2184,6 +2198,18 @@
           eff.append(o);
         }
       }
+    },
+    // route fills the line under the model picker: which account a chat on
+    // the Claude pool runs on, or what an API credit provider bills.
+    async route(provider, model) {
+      const chat = view;
+      const line = $("model-route");
+      if (!chat || !me.claude) { line.hidden = true; return; }
+      const r = await claude.route(chat.backend, chat.session, provider, model);
+      if (chat !== view) return;
+      line.hidden = !r;
+      line.classList.toggle("bad", !!(r && r.bad));
+      line.replaceChildren(...(r ? r.parts.filter((x) => x !== "") : []));
     },
     async pickModel(confirm, picked) {
       const chat = view;

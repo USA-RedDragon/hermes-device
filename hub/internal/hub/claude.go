@@ -3,6 +3,9 @@ package hub
 import (
 	"context"
 	"errors"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -12,6 +15,104 @@ const (
 	ClaudeAPIProvider = "anthropic"
 	ClaudeAPIName     = "Claude API"
 )
+
+// ClaudePoolProvider is the claude-accounts plugin's provider that runs
+// each chat on one of the backend's Claude subscription accounts. The
+// pickers show its models under ClaudePoolGroup.
+const (
+	ClaudePoolProvider = "claude-pool"
+	ClaudePoolGroup    = "Claude"
+)
+
+// ClaudeKeysPrefix starts the provider of one Claude account's API key,
+// "claude-api-<account>", which bills the account's API credits. The
+// pickers show these providers' models under ClaudeKeysGroup.
+const (
+	ClaudeKeysPrefix = "claude-api-"
+	ClaudeKeysGroup  = "Claude API credits"
+)
+
+// ClaudeModelName names a Claude model as Anthropic does: "Opus 5.5" for
+// claude-opus-5-5 and claude-opus-5-5[1m]. A snapshot date is not part of
+// the name. ok is false for an ID that is not a versioned Claude model.
+func ClaudeModelName(id string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSuffix(id, "[1m]"), "claude-")
+	if !ok || rest == "" {
+		return "", false
+	}
+	parts := strings.Split(rest, "-")
+	if last := parts[len(parts)-1]; len(parts) > 1 && len(last) == 8 && isDigits(last) {
+		parts = parts[:len(parts)-1]
+	}
+	family := parts[0]
+	if family == "" || isDigits(family) {
+		return "", false
+	}
+	var version []string
+	for _, p := range parts[1:] {
+		if !isDigits(p) {
+			return "", false
+		}
+		version = append(version, p)
+	}
+	if len(version) == 0 {
+		return "", false
+	}
+	return strings.ToUpper(family[:1]) + family[1:] + " " + strings.Join(version, "."), true
+}
+
+func isDigits(s string) bool {
+	_, err := strconv.ParseUint(s, 10, 64)
+	return s != "" && err == nil
+}
+
+// ArrangeModels sets each provider's Group and each model's Label as the
+// pickers show them, and puts the Claude groups first: the Claude pool's
+// models by name under "Claude", then every account's API key models under
+// "Claude API credits" as "Opus 5.5 (caam credits)". Other providers keep
+// their name, IDs and order.
+func ArrangeModels(providers []ModelProvider) {
+	labelModels(providers)
+	rank := func(p ModelProvider) int {
+		switch p.Group {
+		case ClaudePoolGroup:
+			if p.ID == ClaudePoolProvider {
+				return 0
+			}
+		case ClaudeKeysGroup:
+			return 1
+		}
+		return 2
+	}
+	slices.SortStableFunc(providers, func(a, b ModelProvider) int { return rank(a) - rank(b) })
+}
+
+func labelModels(providers []ModelProvider) {
+	for i := range providers {
+		p := &providers[i]
+		account, credits := strings.CutPrefix(p.ID, ClaudeKeysPrefix)
+		switch {
+		case p.ID == ClaudePoolProvider:
+			p.Group = ClaudePoolGroup
+		case credits && account != "":
+			p.Group = ClaudeKeysGroup
+		default:
+			p.Group = p.Name
+		}
+		for j := range p.Models {
+			m := &p.Models[j]
+			m.Label = m.ID
+			name, ok := ClaudeModelName(m.ID)
+			switch {
+			case !ok:
+			case p.ID == ClaudePoolProvider:
+				m.Label = name
+			case credits && account != "":
+				m.Label = name + " (" + account + " credits)"
+			}
+		}
+	}
+}
 
 // ClaudeWindow is one usage window of a Claude subscription account, such
 // as the 5-hour session or the week. UsedPercent is nil when unknown.
@@ -54,6 +155,21 @@ type ClaudeAccount struct {
 	Usage       *ClaudeUsage `json:"usage,omitempty"`
 	// SignIn is the running or last sign-in, for admins only.
 	SignIn *ClaudeSignIn `json:"signin,omitempty"`
+}
+
+// ClaudePool says which account the Claude pool runs a chat's next turn
+// on. Account is empty when no account can, and Message says why.
+type ClaudePool struct {
+	Account  string `json:"account,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	// Pinned is true when the chat already runs on the account.
+	Pinned bool `json:"pinned"`
+	// ResetsAt is when the account's weekly window resets; ResetsText is
+	// it in the backend's time zone, "Mon 12:00 AM CST".
+	ResetsAt   time.Time `json:"resets_at,omitzero"`
+	ResetsText string    `json:"resets_text,omitempty"`
+	Message    string    `json:"message,omitempty"`
 }
 
 // ClaudeAccounts are a backend's Claude accounts. Admin says whether the
@@ -128,6 +244,9 @@ type Claude interface {
 	// running sign-in. The code is never logged or kept.
 	SendSignInCode(ctx context.Context, user, backendID, accountID, signInID, code string) (ClaudeSignIn, error)
 	CancelSignIn(ctx context.Context, user, backendID, accountID string) (ClaudeSignIn, error)
+	// ClaudePool says which account the Claude pool runs the session's
+	// next turn of model on.
+	ClaudePool(ctx context.Context, user, backendID, sessionID, model string) (ClaudePool, error)
 }
 
 // Claude errors.

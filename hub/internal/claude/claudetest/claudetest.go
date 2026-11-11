@@ -24,6 +24,10 @@ type Plugin struct {
 	Accounts []claude.Account
 	// Usages are the usage answers by account.
 	Usages map[string]claude.Usage
+	// Pools are the pool answers by session; a session without one gets
+	// Pool.
+	Pools map[string]claude.Pool
+	Pool  claude.Pool
 	// SignIns are the sign-ins by account.
 	SignIns map[string]*claude.SignIn
 	// Calls are the requests served, as "METHOD path".
@@ -39,7 +43,7 @@ type Plugin struct {
 // account2, on gw.
 func New(gw *gatewaytest.Gateway) *Plugin {
 	p := &Plugin{Usages: map[string]claude.Usage{}, SignIns: map[string]*claude.SignIn{}, Codes: map[string]string{},
-		SignInEmail: "alice@example.com"}
+		Pools: map[string]claude.Pool{}, SignInEmail: "alice@example.com"}
 	for _, id := range []string{"account1", "account2"} {
 		p.Accounts = append(p.Accounts, claude.Account{ID: id, Label: "Claude (" + id + ")", Provider: "claude-" + id,
 			ConfigDir: "/opt/data/hermes/claude/" + id, Status: claude.Status{CheckedAt: time.Now().UTC()}})
@@ -52,6 +56,7 @@ func New(gw *gatewaytest.Gateway) *Plugin {
 	gw.Handle("GET "+b+"/accounts/{id}/signin", http.HandlerFunc(p.get), true)
 	gw.Handle("DELETE "+b+"/accounts/{id}/signin", http.HandlerFunc(p.cancel), true)
 	gw.Handle("POST "+b+"/accounts/{id}/signin/code", http.HandlerFunc(p.code), true)
+	gw.Handle("GET "+b+"/pool", http.HandlerFunc(p.pool), true)
 	return p
 }
 
@@ -121,6 +126,17 @@ func (p *Plugin) list(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		out.Accounts = append(out.Accounts, a)
+	}
+	answer(w, http.StatusOK, out)
+}
+
+func (p *Plugin) pool(w http.ResponseWriter, r *http.Request) {
+	p.Lock()
+	defer p.Unlock()
+	p.Calls = append(p.Calls, "GET /pool?"+r.URL.RawQuery)
+	out, ok := p.Pools[r.URL.Query().Get("session")]
+	if !ok {
+		out = p.Pool
 	}
 	answer(w, http.StatusOK, out)
 }

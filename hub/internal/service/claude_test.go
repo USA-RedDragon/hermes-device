@@ -90,3 +90,35 @@ func TestModelsNameClaudeAPI(t *testing.T) {
 		t.Fatalf("names = %v", names)
 	}
 }
+
+func TestModelsGroupClaude(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	yes := true
+	e.gw.Providers = append(e.gw.Providers,
+		gateway.ModelProvider{Slug: "claude-api-acct1", Name: "Claude API (acct1)", Models: []string{"claude-opus-5-5"}, Authenticated: &yes},
+		gateway.ModelProvider{Slug: hub.ClaudePoolProvider, Name: "Claude", Authenticated: &yes,
+			Models: []string{"claude-opus-5-5[1m]", "claude-haiku-4-5-20251001", "claude-next"}})
+	ctx := context.Background()
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	next(t, ch)
+	m, err := e.svc.Models(ctx, userAlice, backendPC, sLive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range m.Providers {
+		for _, c := range p.Models {
+			got = append(got, p.Group+"|"+c.Label)
+		}
+	}
+	want := []string{"Claude|Opus 5.5", "Claude|Haiku 4.5", "Claude|claude-next",
+		"Claude API credits|Opus 5.5 (acct1 credits)", "Local|" + modelSmall, "Local|" + modelBig}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("models = %v, want %v", got, want)
+	}
+}

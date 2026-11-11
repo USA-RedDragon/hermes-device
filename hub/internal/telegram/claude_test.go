@@ -96,6 +96,10 @@ func (f *fakeClaude) CancelSignIn(context.Context, string, string, string) (hub.
 	return hub.ClaudeSignIn{}, nil
 }
 
+func (f *fakeClaude) ClaudePool(context.Context, string, string, string, string) (hub.ClaudePool, error) {
+	return hub.ClaudePool{}, nil
+}
+
 func (f *fakeClaude) codesCopy() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -116,3 +116,26 @@ func TestClaudeAPI(t *testing.T) {
 		t.Fatalf("backend without the plugin = %d", resp.StatusCode)
 	}
 }
+
+func TestClaudePoolAPI(t *testing.T) {
+	t.Parallel()
+	var e *hubEnv
+	e = setupWith(t, func(cfg *config.Config, opts *web.Options, _ *store.Store) {
+		cfg.Backends[0].Users = []string{userAlice}
+		d := gateway.NewDialer(gateway.Credentials{BaseURL: cfg.Backends[0].URL, Provider: providerBasic, Username: clientID, Password: "pw"})
+		opts.Claude = claude.New(claude.Options{Access: lateAccess{&e}, Requesters: map[string]device.Requester{"pc": d}})
+	})
+	plugin := claudetest.New(e.gw)
+	plugin.Lock()
+	plugin.Pools["s1"] = claude.Pool{Account: "account2", Pinned: true}
+	plugin.Unlock()
+	alice := client(t)
+	login(t, e, alice)
+	if resp, body := get(t, alice, e.url+"/api/claude/pc/pool?session=s1&model=m"); resp.StatusCode != http.StatusOK ||
+		!strings.Contains(body, `"account":"account2"`) || !strings.Contains(body, `"pinned":true`) {
+		t.Fatalf("pool = %d %s", resp.StatusCode, body)
+	}
+	if n := plugin.CallCount("GET /pool?model=m&session=s1"); n != 1 {
+		t.Fatalf("plugin calls = %v", plugin.Calls)
+	}
+}

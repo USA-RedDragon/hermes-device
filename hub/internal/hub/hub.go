@@ -106,18 +106,22 @@ type Models struct {
 	Providers []ModelProvider `json:"providers"`
 }
 
-// ModelProvider is one provider and the models it offers.
+// ModelProvider is one provider and the models it offers. Group is the
+// heading the pickers show it under; providers with the same group share
+// one heading.
 type ModelProvider struct {
 	ID     string        `json:"id"`
 	Name   string        `json:"name"`
+	Group  string        `json:"group"`
 	Models []ModelChoice `json:"models"`
 }
 
-// ModelChoice is one model. Reasoning is false when the model has no
-// reasoning effort to set; CanDisableReasoning is false when its reasoning
-// cannot be turned off.
+// ModelChoice is one model. Label is what the pickers show for it.
+// Reasoning is false when the model has no reasoning effort to set;
+// CanDisableReasoning is false when its reasoning cannot be turned off.
 type ModelChoice struct {
 	ID                  string `json:"id"`
+	Label               string `json:"label"`
 	Reasoning           bool   `json:"reasoning"`
 	CanDisableReasoning bool   `json:"can_disable_reasoning"`
 }

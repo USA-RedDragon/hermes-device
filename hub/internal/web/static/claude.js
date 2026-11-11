@@ -1,8 +1,9 @@
 "use strict";
 // HubClaude shows the Claude accounts of a backend with the claude-accounts
 // Hermes plugin: the account and its usage on the line under a chat's
-// title, a panel on the Usage page, the notice in a chat whose account lost
-// its login, and the sign-in dialog. Only the backend's Claude admins see
+// title (for a chat on the Claude pool, the account the pool runs it on),
+// a panel on the Usage page, the notice in a chat whose account lost its
+// login, and the sign-in dialog. Only the backend's Claude admins see
 // the sign-in controls; the hub refuses everyone else too. The sign-in
 // link and code stay in the dialog: the code input is cleared as soon as it
 // is sent, and neither is stored. ctx gives it the app's api and el
@@ -12,10 +13,15 @@ window.HubClaude = (ctx) => {
   const { api, el } = ctx;
   const apiProvider = "anthropic";
   const apiName = "Claude API";
+  const poolProvider = "claude-pool";
+  const creditsPrefix = "claude-api-";
   // cache maps a backend ID to { at, data } (data null: no plugin) while
   // a load runs or after it ended.
   const cache = new Map();
   const loading = new Map();
+  // pools maps "backend\nsession" to { at, data, model } for chats on the
+  // pool: the account the pool runs the chat's next turn on.
+  const pools = new Map();
   const minute = 60000;
   const me = () => (ctx.me() || {});
 
@@ -47,10 +53,50 @@ window.HubClaude = (ctx) => {
     return p;
   }
 
-  function accountFor(backend, provider) {
+  function accountFor(backend, provider, session) {
     const c = cache.get(backend);
     if (!c || !c.data || !provider) return null;
+    if (provider === poolProvider) {
+      const p = pools.get(backend + "\n" + session);
+      const id = p && p.data && p.data.account;
+      return id ? (c.data.accounts || []).find((a) => a.id === id) || null : null;
+    }
     return (c.data.accounts || []).find((a) => a.provider === provider) || null;
+  }
+
+  // pool reads which account the pool runs a chat's next turn on, at most
+  // once a minute unless force. It answers null when that is unknown.
+  async function pool(backend, session, model, force) {
+    const key = backend + "\n" + session;
+    const p = pools.get(key);
+    if (!force && p && p.model === model && (p.loading || Date.now() - p.at < minute)) return p.loading || p.data;
+    const entry = { at: Date.now(), data: p ? p.data : null, model };
+    entry.loading = (async () => {
+      try {
+        entry.data = await api("GET", "/api/claude/" + encodeURIComponent(backend) + "/pool?session=" +
+          encodeURIComponent(session) + "&model=" + encodeURIComponent(model || ""));
+      } catch (_) { /* the next read tries again */ }
+      entry.at = Date.now();
+      entry.loading = null;
+      return entry.data;
+    })();
+    pools.set(key, entry);
+    return entry.loading;
+  }
+
+  // route is the line under the model picker: the account a chat on the
+  // pool runs on, or what an API credit provider bills. Null for others.
+  async function route(backend, session, provider, model) {
+    if (provider === poolProvider) {
+      const p = await pool(backend, session, model);
+      if (!p) return null;
+      if (!p.account) return { bad: true, parts: [p.message || "No Claude account can run this chat now."] };
+      const tag = el("span", "tag", p.resets_text ? "resets " + p.resets_text : "");
+      return { parts: ["Runs on ", el("b", "", p.account), " ", ...(p.resets_text ? [tag] : []),
+        p.pinned ? "" : ", the soonest reset with room."] };
+    }
+    if (provider && provider.startsWith(creditsPrefix)) return { parts: ["Bills that account's monthly API credits."] };
+    return null;
   }
 
   const pct = (w) => Math.round(w.used_percent) + "%";
@@ -104,9 +150,11 @@ window.HubClaude = (ctx) => {
     box.append(signInControl(backend, a.id, a.signed_in));
   }
 
-  // afterReply reads the usage of the chat's account again.
-  async function afterReply(backend, provider) {
-    const a = accountFor(backend, provider);
+  // afterReply reads the usage of the chat's account again, and for a chat
+  // on the pool which account it is on.
+  async function afterReply(backend, provider, session, model) {
+    if (provider === poolProvider) await pool(backend, session, model, true);
+    const a = accountFor(backend, provider, session);
     if (!a) return;
     try {
       const u = await api("GET", base(backend) + "/" + encodeURIComponent(a.id) + "/usage?fresh=1");
@@ -293,6 +341,13 @@ window.HubClaude = (ctx) => {
     return s;
   }
 
-  return { parts, note, afterReply, chatNotice, signIn, panel, apiName, apiProvider,
-    account: (backend, provider) => { parts(backend, { provider }); return accountFor(backend, provider); } };
+  return { parts, note, afterReply, chatNotice, signIn, panel, apiName, apiProvider, route,
+    account: (backend, provider, session, model) => {
+      parts(backend, { provider });
+      if (provider === poolProvider && session && me().claude) {
+        const p = pools.get(backend + "\n" + session);
+        if (!p || (!p.loading && (p.model !== model || Date.now() - p.at >= minute))) pool(backend, session, model).then(() => ctx.redraw());
+      }
+      return accountFor(backend, provider, session);
+    } };
 };

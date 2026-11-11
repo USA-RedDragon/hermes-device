@@ -177,6 +177,7 @@ func (s *Service) Models(ctx context.Context, user, backendID, sessionID string)
 				out.Providers = append(out.Providers, hp)
 			}
 		}
+		hub.ArrangeModels(out.Providers)
 		return nil
 	})
 	return out, err

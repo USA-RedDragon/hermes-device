@@ -85,6 +85,17 @@ type Account struct {
 	Usage     *Usage  `json:"usage"`
 }
 
+// Pool is the plugin's GET /pool answer: the account the pool runs a
+// chat's next turn on, or Message when none can.
+type Pool struct {
+	Account        string    `json:"account"`
+	Label          string    `json:"label"`
+	Provider       string    `json:"provider"`
+	Pinned         bool      `json:"pinned"`
+	WeeklyResetsAt time.Time `json:"weekly_resets_at"`
+	Message        string    `json:"message"`
+}
+
 // Accounts is the plugin's GET /accounts answer.
 type Accounts struct {
 	CLIVersion string    `json:"cli_version"`
@@ -170,6 +181,14 @@ func (c *Client) Accounts(ctx context.Context, usage bool) (Accounts, error) {
 		q = "?usage=1"
 	}
 	return out, c.call(ctx, false, http.MethodGet, "/accounts"+q, nil, &out)
+}
+
+// Pool asks which account the pool runs the session's next turn of
+// model on.
+func (c *Client) Pool(ctx context.Context, sessionID, model string) (Pool, error) {
+	var out Pool
+	q := url.Values{"session": {sessionID}, "model": {model}}
+	return out, c.call(ctx, false, http.MethodGet, "/pool?"+q.Encode(), nil, &out)
 }
 
 // Usage reads one account's usage.
