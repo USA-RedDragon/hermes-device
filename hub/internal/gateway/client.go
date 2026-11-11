@@ -88,8 +88,8 @@ const maxFrame = 64 << 20
 
 // Dial signs in if needed, mints a single-use gateway socket ticket and dials
 // /api/ws the way the Hermes Webapp page does: native_dial=browser and an
-// Origin naming the listener. Hermes refuses a ticket dial without an Origin
-// unless the peer is loopback. onEvent gets every event notification in the order the gateway
+// Origin naming the listener. With an Origin, Hermes sends the dial to the
+// Webapp's ticket gate, never to its loopback-only native gate. onEvent gets every event notification in the order the gateway
 // sent them, on the connection's reader goroutine.
 func (d *Dialer) Dial(ctx context.Context, onEvent func(Event)) (*Client, error) {
 	conn, err := d.DialRaw(ctx)
