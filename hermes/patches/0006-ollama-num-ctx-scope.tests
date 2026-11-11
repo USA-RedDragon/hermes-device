@@ -1,0 +1,2 @@
+tests/agent/test_unset_reasoning_effort_default.py
+tests/agent/test_local_probe_disk_cache.py

@@ -1,0 +1,539 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 02:52:18 -0600
+Subject: [PATCH] feat(gateway): scope session.list to an audience judged by
+ plugins
+
+session.list takes an optional audience; filter_session_list plugin hooks keep the sessions that audience may see, after every other filter and before the limit. A listing no hook judges is refused. Without audience nothing changes.
+---
+ apps/shared/src/gateway-contract.generated.ts |   1 +
+ apps/shared/src/gateway-contract.openrpc.json |  12 ++
+ gateway/session_controls.py                   |  18 ++-
+ gateway/session_listing.py                    |  77 ++++++---
+ gateway/session_picker_fields.py              |  10 +-
+ hermes_cli/plugins.py                         |   4 +
+ hermes_cli/plugins_dispatch.py                |   2 +
+ tests/gateway/test_session_list_audience.py   | 151 ++++++++++++++++++
+ tui_gateway/contracts/canonical_sessions.py   |   3 +
+ .../developer-guide/gateway-local-sessions.md |   7 +-
+ website/docs/user-guide/features/hooks.md     |  35 ++++
+ 11 files changed, 291 insertions(+), 29 deletions(-)
+ create mode 100644 tests/gateway/test_session_list_audience.py
+
+diff --git a/apps/shared/src/gateway-contract.generated.ts b/apps/shared/src/gateway-contract.generated.ts
+index 8a84977ce2..d44f0bb543 100644
+--- a/apps/shared/src/gateway-contract.generated.ts
++++ b/apps/shared/src/gateway-contract.generated.ts
+@@ -5253,6 +5253,7 @@ export interface CanonicalListParams {
+   include_hidden?: boolean
+   workspace?: string | null
+   picker?: boolean
++  audience?: string | null
+ }
+ export interface CanonicalListResult {
+   sessions: CanonicalSessionListRow[]
+diff --git a/apps/shared/src/gateway-contract.openrpc.json b/apps/shared/src/gateway-contract.openrpc.json
+index fb0d36e11b..5f02468cd5 100644
+--- a/apps/shared/src/gateway-contract.openrpc.json
++++ b/apps/shared/src/gateway-contract.openrpc.json
+@@ -9246,6 +9246,18 @@
+             "default": false,
+             "title": "Picker",
+             "type": "boolean"
++          },
++          "audience": {
++            "anyOf": [
++              {
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null,
++            "title": "Audience"
+           }
+         },
+         "title": "CanonicalListParams",
+diff --git a/gateway/session_controls.py b/gateway/session_controls.py
+index cca0449098..2771e11fb0 100644
+--- a/gateway/session_controls.py
++++ b/gateway/session_controls.py
+@@ -561,7 +561,7 @@ class AuthorityConnection:
+                 'authority_epoch': self.authority.epoch,
+                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1',
+                                  'acp-session-mcp-v1', 'clarify-batch-v1', 'plugin-rpc-v1', 'session-client-v1', 'session-transcript-v1', 'session-list-picker-v1',
+-                                 *await asyncio.to_thread(self._image_render_capabilities)],
++                                 'session-list-audience-v1', *await asyncio.to_thread(self._image_render_capabilities)],
+                 'session_create': {'sources': sorted(SURFACES),
+                                    'parameters': sorted(CREATE_FIELDS | {'title'})},
+                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
+@@ -589,9 +589,11 @@ class AuthorityConnection:
+         if 'session:read' not in self.actor.capabilities:
+             raise RuntimeStoreError('permission_denied')
+         limit, workspace, picker = params.get('limit', 200), params.get('workspace'), params.get('picker', False)
+-        if (set(params) - {'limit', 'title', 'include_hidden', 'scope', 'workspace', 'picker'} or type(limit) is not int
++        audience = params.get('audience')
++        if (set(params) - {'limit', 'title', 'include_hidden', 'scope', 'workspace', 'picker', 'audience'}
++                or type(limit) is not int
+                 or not 1 <= limit <= 200 or (workspace is not None and not (isinstance(workspace, str) and workspace))
+-                or type(picker) is not bool):
++                or type(picker) is not bool or (audience is not None and not (isinstance(audience, str) and audience))):
+             raise RuntimeStoreError('invalid_params')
+         if (params.get('scope', 'live') not in {'live', 'stored'}
+                 or ('title' in params and ('scope' in params or workspace is not None or picker))):
+@@ -599,7 +601,8 @@ class AuthorityConnection:
+         if params.get('scope') == 'stored':
+             from gateway.session_listing import stored_picker_sessions
+             return await asyncio.to_thread(stored_picker_sessions, self.authority, self.actor,
+-                limit=limit, include_hidden=params.get('include_hidden', False), workspace=workspace, picker=picker)
++                limit=limit, include_hidden=params.get('include_hidden', False), workspace=workspace, picker=picker,
++                audience=audience)
+         if 'title' in params:
+             # Title-as-identity lookup (the Bots roster's forever-chat registry): the same
+             # resolver `session.resume title=` uses, so a hidden canonical chat answers here
+@@ -608,6 +611,10 @@ class AuthorityConnection:
+             # resolve_session_by_title (#139779); recoverable auto-archives still resolve.
+             from gateway.session_local_title import resolve_titled_session
+             found = resolve_titled_session(self.authority, self.actor, params['title'], missing_ok=True)
++            if audience is not None:
++                from gateway.session_listing import visible_to
++                kept = await asyncio.to_thread(visible_to, audience, [found.session_id] if found else [])
++                found = found if found is not None and found.session_id in kept else None
+             if found is None:
+                 return {'sessions': [], 'scope': 'stored'}
+             row = self.authority.db.get_session(found.session_id) or {}
+@@ -637,7 +644,8 @@ class AuthorityConnection:
+                              'running': entry.handle.execution_state == 'running'})
+         sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
+         from gateway.session_picker_fields import live_picker_page
+-        return {'sessions': await asyncio.to_thread(live_picker_page, self.authority, sessions, limit, workspace, picker),
++        return {'sessions': await asyncio.to_thread(live_picker_page, self.authority, sessions, limit, workspace, picker,
++                                                         audience),
+                 'scope': 'live'}
+ 
+     async def resume(self, ref, params):
+diff --git a/gateway/session_listing.py b/gateway/session_listing.py
+index 73d9762420..d3bf45ecef 100644
+--- a/gateway/session_listing.py
++++ b/gateway/session_listing.py
+@@ -1,4 +1,6 @@
+ """Read-only native picker history; enumeration never adopts a transcript."""
++import itertools
++
+ from hermes_state_local_migration import client_history_row, validate_legacy_row
+ from hermes_state_mutation_binding import authorize_history
+ from hermes_state_runtime import RuntimeStoreError
+@@ -47,22 +49,70 @@ def legacy_readable(authority, actor, sid):
+         return False
+ 
+ 
+-def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, workspace=None, picker=False):
++LIST_AUDIENCE_HOOK = 'filter_session_list'
++_AUDIENCE_BATCH = 50
++
++
++def visible_to(audience, session_ids):
++    """The ids among *session_ids* that *audience* may see, as the ``filter_session_list`` plugin hooks
++    judge them (a hook returns the ids it keeps, or None for an audience it does not judge). Every hook
++    that judges *audience* must keep an id. Fails closed: no hook judging *audience* is a refusal, so a
++    scoped listing never falls back to the unscoped one."""
++    from hermes_cli.plugins import invoke_hook
++    ids = list(dict.fromkeys(session_ids))
++    answers = [answer for answer in invoke_hook(LIST_AUDIENCE_HOOK, audience=audience, session_ids=list(ids))
++               if isinstance(answer, (list, tuple, set, frozenset))]
++    if not answers:
++        raise RuntimeStoreError('invalid_params', field='audience', detail='no plugin judges this audience')
++    kept = set(ids)
++    for answer in answers:
++        kept &= {sid for sid in answer if isinstance(sid, str)}
++    return kept
++
++
++def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, workspace=None, picker=False,
++                           audience=None):
+     """Offer legacy local rows only to the same native transport that may resume them.
+ 
+     Canonical sessions are already in the live feed. Old local rows have no policy
+     receipt until explicit resume; listing them must not claim or restore anything.
+     *workspace*: only the folder's rows (``hermes -c``'s rule). *picker*: each row carries the picker
+     fields, from the columns the listing already read (``gateway/session_picker_fields.py``).
++    *audience*: only the rows ``visible_to`` keeps for it, judged before the page is cut to *limit*.
+     """
+     if actor.profile_id != authority.profile_id:
+         raise RuntimeStoreError('profile_mismatch')
+     if not _native_reader(authority, actor):
++        if audience is not None:
++            visible_to(audience, [])  # an audience no hook judges is refused on every path
+         return {'sessions': [], 'scope': 'stored'}
+     db = authority.db
+-    own_profile = db._own_profile_name() or 'default'
+-    sessions, offset, seen, sources = [], 0, set(), []  # sources: (first row, current segment, listed row)
++    sessions, sources = [], []  # sources: (first row, current segment, listed row)
++    candidates = _stored_candidates(authority, actor, db, include_hidden, workspace)
+     while len(sessions) < limit:
++        # A scoped page judges candidates in batches: one hook call per batch, not per row.
++        wanted = limit - len(sessions) if audience is None else max(limit - len(sessions), _AUDIENCE_BATCH)
++        batch = list(itertools.islice(candidates, wanted))
++        exhausted = len(batch) < wanted
++        if audience is not None:
++            kept = visible_to(audience, [row['session_id'] for row, _ in batch])
++            batch = [(row, source) for row, source in batch if row['session_id'] in kept]
++        for row, source in batch[:limit - len(sessions)]:
++            sessions.append(row)
++            sources.append(source)
++        if exhausted:
++            break
++    if picker and sessions:
++        from gateway.session_picker_fields import fill_picker_fields
++        fill_picker_fields(db, [(row, *source) for row, source in zip(sessions, sources)])
++    return {'sessions': sessions, 'scope': 'stored'}
++
++
++def _stored_candidates(authority, actor, db, include_hidden, workspace):
++    """Each stored row the picker may list, newest first, as ``(row, (first row, current segment, listed row))``."""
++    own_profile = db._own_profile_name() or 'default'
++    offset, seen = 0, set()
++    while True:
+         rows = db.list_sessions_rich(exclude_sources=_excluded_sources(), limit=200, offset=offset,
+             order_by_last_active=True, compact_rows=True, include_hidden=include_hidden, workspace_key=workspace)
+         for row in rows:
+@@ -80,33 +130,20 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, wor
+                 if (row.get('profile_name') in (None, '', own_profile) and mountable(authority, root)
+                         and root not in seen):
+                     seen.add(root)
+-                    sessions.append(_picker_row({**row, 'id': root}, tip, root))
+-                    sources.append((root, sid, row))
+-                if len(sessions) == limit:
+-                    break
++                    yield _picker_row({**row, 'id': root}, tip, root), (root, sid, row)
+                 continue
+             closed = _closed_local_session(authority, actor, row, tip)
+             if closed is not None:
+                 if closed['id'] not in seen:
+                     seen.add(closed['id'])
+-                    sessions.append(closed)
+-                    sources.append((closed['id'], sid, row))
+-                if len(sessions) == limit:
+-                    break
++                    yield closed, (closed['id'], sid, row)
+                 continue
+             if not legacy_readable(authority, actor, sid):
+                 continue
+-            sessions.append(_picker_row(row, tip, sid))
+-            sources.append((row.get('_lineage_root_id') or row['id'], sid, row))
+-            if len(sessions) == limit:
+-                break
++            yield _picker_row(row, tip, sid), (row.get('_lineage_root_id') or row['id'], sid, row)
+         if len(rows) < 200:
+-            break
++            return
+         offset += len(rows)
+-    if picker and sessions:
+-        from gateway.session_picker_fields import fill_picker_fields
+-        fill_picker_fields(db, [(row, *source) for row, source in zip(sessions, sources)])
+-    return {'sessions': sessions, 'scope': 'stored'}
+ 
+ 
+ def _closed_local_session(authority, actor, row, tip):
+diff --git a/gateway/session_picker_fields.py b/gateway/session_picker_fields.py
+index 9bbbc5f415..246350bfb0 100644
+--- a/gateway/session_picker_fields.py
++++ b/gateway/session_picker_fields.py
+@@ -61,12 +61,16 @@ def current_segments(authority, session_ids):
+     return authority.db.session_current_segments(session_ids)
+ 
+ 
+-def live_picker_page(authority, sessions, limit, workspace=None, picker=False):
+-    """The live feed's page: *sessions* (newest first) in *workspace*, cut to *limit*, with the picker
+-    fields when asked."""
++def live_picker_page(authority, sessions, limit, workspace=None, picker=False, audience=None):
++    """The live feed's page: *sessions* (newest first) in *workspace* and visible to *audience*
++    (``gateway.session_listing.visible_to``), cut to *limit*, with the picker fields when asked."""
+     if workspace is not None:
+         members = workspace_members(authority.db, [row['session_id'] for row in sessions], workspace)
+         sessions = [row for row in sessions if row['session_id'] in members]
++    if audience is not None:
++        from gateway.session_listing import visible_to
++        kept = visible_to(audience, [row['session_id'] for row in sessions])
++        sessions = [row for row in sessions if row['session_id'] in kept]
+     page = sessions[:limit]
+     if picker and page:
+         segments = current_segments(authority, [row['session_id'] for row in page])
+diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
+index cca7c7b2b0..07504c7164 100644
+--- a/hermes_cli/plugins.py
++++ b/hermes_cli/plugins.py
+@@ -135,6 +135,10 @@ VALID_HOOKS: set[str] = {
+     "on_session_finalize", "on_session_reset", "on_session_delete",
+     # on_session_open: local session created/opened, before its first turn. Kwargs: session_id, platform, reason.
+     "on_session_open",
++    # filter_session_list: a gateway ``session.list`` that names an ``audience``. Kwargs: audience, session_ids.
++    # Return the ids that audience may see, or None for an audience the plugin does not judge. Fails closed:
++    # a listing no callback judged is refused (gateway/session_listing.py).
++    "filter_session_list",
+     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
+     "on_skill_lifecycle", "subagent_start", "subagent_stop",
+     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
+diff --git a/hermes_cli/plugins_dispatch.py b/hermes_cli/plugins_dispatch.py
+index ee0890db35..503736cf23 100644
+--- a/hermes_cli/plugins_dispatch.py
++++ b/hermes_cli/plugins_dispatch.py
+@@ -49,6 +49,8 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
+     "pre_command",
+     # Fires inside the compression commit window (lease held): a hung plugin must not wedge the session.
+     "post_compaction",
++    # A skipped callback judged nothing, so the scoped listing is refused (fails closed).
++    "filter_session_list",
+ }
+ # Hooks whose calls are told apart by another payload field: one session's commands are one
+ # sequence, so a still-running callback skips that session's next command, not another session's.
+diff --git a/tests/gateway/test_session_list_audience.py b/tests/gateway/test_session_list_audience.py
+new file mode 100644
+index 0000000000..6bc151b01d
+--- /dev/null
++++ b/tests/gateway/test_session_list_audience.py
+@@ -0,0 +1,151 @@
++"""``session.list`` with an ``audience`` lists only what ``filter_session_list`` plugin hooks keep for it."""
++from types import SimpleNamespace
++
++import pytest
++
++from tests.gateway.test_session_mutation_model_busy import _owner
++
++
++def _judge(monkeypatch, keep):
++    """Register a ``filter_session_list`` callback that judges audience ``alice`` (keeping *keep*) and
++    abstains for every other one; returns the calls it saw."""
++    from hermes_cli import plugins
++    calls = []
++
++    def judge(audience, session_ids, **kwargs):
++        calls.append((audience, list(session_ids)))
++        if audience != 'alice':
++            return None
++        return [sid for sid in session_ids if sid in keep]
++    manager = plugins.get_plugin_manager()
++    monkeypatch.setattr(manager, '_discovered', True)
++    monkeypatch.setitem(manager._hooks, 'filter_session_list', [judge])
++    return calls
++
++
++@pytest.mark.asyncio
++async def test_live_listing_keeps_only_the_audience_sessions(tmp_path, monkeypatch):
++    from gateway.session_local import create_local_session
++    from gateway.session_local_recovery import transcript_target
++
++    async def handle(event):
++        return 'ok'
++    store, db, authority, owner, mine = _owner(tmp_path, monkeypatch, handle)
++    elsewhere = tmp_path / 'elsewhere'
++    elsewhere.mkdir()
++    other = create_local_session(authority, owner.actor, dict(request_id='o', source='gui', cwd=str(elsewhere),
++                                                              model='frozen', toolsets=[]))
++    try:
++        for ref, text in ((mine, 'mine'), (other, 'other')):
++            target = transcript_target(authority, ref)
++            db.append_message(target, 'user', f'{text} question')
++            db.append_message(target, 'assistant', f'{text} answer')
++            db.set_session_title(target, f'{text} chat')
++        calls = _judge(monkeypatch, {mine.session_id})
++
++        async def listing(**params):
++            reply = await owner.dispatch({'id': 1, 'method': 'session.list', 'params': params})
++            return reply.get('result', {}).get('sessions'), reply.get('error')
++
++        both = {mine.session_id, other.session_id}
++        sessions, _ = await listing()
++        assert {row['session_id'] for row in sessions} == both
++        assert calls == []  # no audience: no hook runs, the listing is unchanged
++        sessions, _ = await listing(audience='alice')
++        assert [row['session_id'] for row in sessions] == [mine.session_id]
++        assert calls[-1][0] == 'alice' and set(calls[-1][1]) == both
++        [row], _ = await listing(audience='alice', picker=True)
++        assert (row['session_id'], row['preview'], row['last_reply']) == (mine.session_id, 'mine question', 'mine answer')
++        sessions, _ = await listing(audience='alice', workspace=str(tmp_path), picker=True)
++        assert [row['session_id'] for row in sessions] == [mine.session_id]
++        # Params that widen a listing stay inside the audience.
++        assert (await listing(audience='alice', workspace=str(elsewhere), picker=True))[0] == []
++        assert (await listing(audience='alice', workspace=str(elsewhere)))[0] == []
++        sessions, _ = await listing(audience='alice', include_hidden=True, limit=200)
++        assert [row['session_id'] for row in sessions] == [mine.session_id]
++        assert (await listing(audience='alice', title='other chat'))[0] == []
++        [row], _ = await listing(audience='alice', title='mine chat')
++        assert row['session_id'] == mine.session_id
++        assert {row['session_id'] for row in (await listing(title='other chat'))[0]} == {other.session_id}
++    finally:
++        await owner.close()
++        store.close_all_db_handles()
++
++
++@pytest.mark.asyncio
++async def test_audience_nobody_judges_is_refused(tmp_path, monkeypatch):
++    async def handle(event):
++        return 'ok'
++    store, _db, _authority, owner, mine = _owner(tmp_path, monkeypatch, handle)
++    try:
++        async def error(**params):
++            reply = await owner.dispatch({'id': 1, 'method': 'session.list', 'params': params})
++            assert 'result' not in reply, reply
++            return reply['error']['data']
++
++        _judge(monkeypatch, {mine.session_id})
++        for params in ({'audience': 'bob'}, {'audience': 'bob', 'scope': 'stored'}, {'audience': 'bob', 'title': 'x'},
++                       {'audience': 'bob', 'picker': True, 'workspace': str(tmp_path)}):
++            assert (await error(**params))['field'] == 'audience', params
++        for bad in ('', 7, ['alice']):
++            assert (await error(audience=bad))['reason'] == 'invalid_params'
++
++        from hermes_cli import plugins
++
++        def broken(**kwargs):
++            raise RuntimeError('state unavailable')
++        plugins.get_plugin_manager()._hooks['filter_session_list'] = [broken]
++        assert (await error(audience='alice'))['field'] == 'audience'  # a failing judge fails closed
++    finally:
++        await owner.close()
++        store.close_all_db_handles()
++
++
++@pytest.mark.asyncio
++async def test_stored_listing_keeps_only_the_audience_rows(tmp_path, monkeypatch):
++    from gateway import run
++    from gateway.config import GatewayConfig
++    from gateway.session import SessionStore
++    from gateway.session_authority import initialize_session_authority
++    from gateway.session_controls import AuthorityConnection
++
++    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
++    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
++    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
++    db = store._db
++    repo = tmp_path / 'repo'
++    for sid, cwd in (('mine', repo / 'pkg'), ('theirs', repo / 'pkg'), ('newest', tmp_path / 'other')):
++        db.create_session(sid, source='cli', model='m', cwd=str(cwd))
++        db.append_message(sid, 'user', f'{sid} question')
++        db.append_message(sid, 'assistant', f'{sid} answer')
++        db.end_session(sid, 'cli_exit')
++    db._write_sql('UPDATE sessions SET git_repo_root=? WHERE id IN (?, ?)', (str(repo), 'mine', 'theirs'))
++    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
++                             _cached_agent_for=lambda route: None)
++    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
++    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
++    native = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'native',
++        'profile_id': str(tmp_path), 'instance_id': 'owner'})
++    try:
++        async def listing(**params):
++            reply = await native.dispatch({'id': 1, 'method': 'session.list', 'params': {'scope': 'stored', **params}})
++            assert 'result' in reply, reply
++            return [row['id'] for row in reply['result']['sessions']]
++
++        assert await listing() == ['newest', 'theirs', 'mine']
++        assert await listing(limit=1) == ['newest']
++        calls = _judge(monkeypatch, {'mine'})
++        assert await listing() == ['newest', 'theirs', 'mine'] and calls == []
++        # Judged before the page is cut: the audience's one row is the page, though two newer rows precede it.
++        assert await listing(audience='alice', limit=1) == ['mine']
++        assert len(calls) == 1  # one hook call for the whole page
++        assert await listing(audience='alice', workspace=str(repo)) == ['mine']
++        assert await listing(audience='alice', workspace=str(tmp_path / 'other')) == []
++        assert await listing(audience='alice', include_hidden=True) == ['mine']
++        reply = await native.dispatch({'id': 2, 'method': 'session.list', 'params': {
++            'scope': 'stored', 'audience': 'alice', 'workspace': str(repo), 'picker': True}})
++        [row] = reply['result']['sessions']
++        assert (row['id'], row['preview'], row['last_reply']) == ('mine', 'mine question', 'mine answer')
++    finally:
++        await native.close()
++        store.close_all_db_handles()
+diff --git a/tui_gateway/contracts/canonical_sessions.py b/tui_gateway/contracts/canonical_sessions.py
+index e3569203f6..8e3a3e6f02 100644
+--- a/tui_gateway/contracts/canonical_sessions.py
++++ b/tui_gateway/contracts/canonical_sessions.py
+@@ -187,6 +187,9 @@ class CanonicalListParams(ProfileParams):
+     workspace: str | None = None
+     # Each row also carries the picker fields below (off by default: a live-list poll does not pay for them).
+     picker: bool = False
++    # Only conversations this audience may see, as ``filter_session_list`` plugin hooks judge it
++    # (``gateway/session_listing.visible_to``), with every other param. Refused when no hook judges it.
++    audience: str | None = None
+ 
+ 
+ class CanonicalSessionListRow(Result):
+diff --git a/website/docs/developer-guide/gateway-local-sessions.md b/website/docs/developer-guide/gateway-local-sessions.md
+index fd2bed5ed9..052cce9bc1 100644
+--- a/website/docs/developer-guide/gateway-local-sessions.md
++++ b/website/docs/developer-guide/gateway-local-sessions.md
+@@ -151,6 +151,11 @@ listener keeps working.
+   there), `last_reply` (its newest reply, shortened as `preview` is; a pure compaction handoff is no
+   reply, a carrier shows the reply it wraps), `git_branch`, `last_active_at` and `pinned`. Off by
+   default, so the 1.5 s live-list poll pays nothing; on, a page is one batched store read.
++  Both scopes, and a `title` lookup, also take `audience`: only rows the `filter_session_list` plugin
++  hooks keep for that label (`gateway/session_listing.visible_to`), judged after every other filter and
++  before the page is cut to `limit`, so no other param widens it. A listing no hook judges is refused
++  (`invalid_params`, `field: "audience"`). A front end that serves several callers on its own login sets
++  it on each caller's requests; it is a narrowing, not an identity, so any client may send it.
+ - `session.transcript({session_id, subagent_id?, cursor?, limit?, order?, inline_images?})` reads a
+   conversation without attaching to it (`gateway/session_stored_reads.py`). It is authorized as
+   `session.resume`'s read (`SessionAuthority.authorize`, `session:read`: profile, owner or operator).
+@@ -160,7 +165,7 @@ listener keeps working.
+   by the stored feed's own rule, whichever lineage id is asked, and never adopted. It runs on the
+   socket's concurrent read lane, so a prompt or interrupt never queues behind it. Runtimes that serve
+   it advertise `session-transcript-v1` (and `session-list-picker-v1` for the `session.list` options
+-  above) in `runtime.describe.capabilities`.
++  above, `session-list-audience-v1` for `audience`) in `runtime.describe.capabilities`.
+   It returns `{session_id, rows, next_cursor, reset}`: display rows across the compression lineage
+   (live and compaction-archived, each logical message once), oldest first within a page. Every row
+   carries `row_kind` (`gateway/session_transcript_rows.py`): `"message"` is `session.resume`'s
+diff --git a/website/docs/user-guide/features/hooks.md b/website/docs/user-guide/features/hooks.md
+index c867d976e8..73a5b8ff00 100644
+--- a/website/docs/user-guide/features/hooks.md
++++ b/website/docs/user-guide/features/hooks.md
+@@ -473,6 +473,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
+ | `transform_api_error_classification` | Transform | On each failed provider attempt, at the top of the built-in classifier; all callbacks run, then the first dict with a valid `reason` wins (run-all-then-pick-first), and skipped valid results log a runtime warning. Python plugins only. | `provider`, `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages` | `error_message` and `error_body` may contain raw provider/user data. |
+ | `on_session_start` | Observer | First turn of a new session; return ignored. | `session_id`, `model`, `platform` | Identifiers and routing metadata only. |
+ | `on_session_open` | Observer | Once each time a client creates or opens a local session (CLI, TUI, Desktop, ACP, kanban/A2A workers), in the gateway under the session's profile, before its first turn; never for messaging chats. Timeout-bounded; return ignored. | `session_id`, `platform`, `reason` (`create` or `resume`) | Session identifiers only. |
++| [`filter_session_list`](#filter_session_list) | Directive/control (fail-closed) | In the gateway, once per page of a `session.list` that names an `audience`, before the page is cut to its limit; never for a listing without one. Return the ids that audience may see, or `None` for an audience the plugin does not judge. Every callback that judges it must keep an id; a listing no callback judged (none answered, each raised or timed out) is refused. Timeout-bounded. | `audience`, `session_ids` | Session identifiers and the caller's audience label only. |
+ | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
+ | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
+ | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
+@@ -990,6 +991,40 @@ def register(ctx):
+ 
+ ---
+ 
++### `filter_session_list`
++
++Fires when a gateway client asks `session.list` for an `audience`: a label that a front end in front of the gateway sets for the people or machines it serves, such as one per remote computer. Use it to keep a listing to the sessions that audience may see when that knowledge lives in a plugin, not in Hermes. A listing without `audience` never calls it and is unchanged.
++
++**Callback signature:**
++
++```python
++def my_callback(audience: str, session_ids: list[str], **kwargs):
++```
++
++| Parameter | Type | Description |
++|-----------|------|-------------|
++| `audience` | `str` | The `audience` param of the `session.list` request |
++| `session_ids` | `list[str]` | The candidate rows' `session_id` values, newest first, after every other `session.list` filter (`workspace`, hidden rows, `title`) |
++
++**Fires:** In the gateway, under the profile that serves the request, on a worker thread. On the live feed once per request; on the stored feed (`scope: "stored"`) once per batch of candidates until the page is full, so a page holds `limit` kept rows when the store has them. A `title` lookup calls it with the one resolved session.
++
++**Return value:** A list or set of the ids the audience may see (ids not in `session_ids` are ignored), or `None` when this plugin does not judge that audience. When several callbacks judge it, a row is listed only if all of them keep it. When no callback judges it (none returned an answer, or each one raised or timed out), the request fails with `invalid_params` and `field: "audience"`: a scoped listing never falls back to the unscoped one.
++
++**Example: list only the sessions bound to one remote computer:**
++
++```python
++def keep_bound(audience, session_ids, **kwargs):
++    if not audience.startswith("computer:"):
++        return None
++    computer = audience.removeprefix("computer:")
++    return [sid for sid in session_ids if bindings.owner(sid) == computer]
++
++def register(ctx):
++    ctx.register_hook("filter_session_list", keep_bound)
++```
++
++---
++
+ ### `on_session_end`
+ 
+ Fires at the **very end** of every `run_conversation()` call, regardless of outcome. Also fires from the CLI's exit handler if the agent was mid-turn when the user quit.

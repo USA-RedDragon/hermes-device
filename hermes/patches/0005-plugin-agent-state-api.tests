@@ -1,0 +1,5 @@
+tests/agent/test_subagent_lifecycle.py
+tests/tools/test_subagent_steer.py
+tests/agent/test_turn_facade_lease.py
+tests/hermes_cli/test_plugins.py
+tests/hermes_cli/test_plugin_api_compat.py

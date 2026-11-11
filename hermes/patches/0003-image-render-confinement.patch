@@ -1,0 +1,520 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 02:54:45 -0600
+Subject: [PATCH] feat(tui): security.image_render_paths confines image.render
+ reads
+
+image.render reads any local image on the gateway host. The new
+security.image_render_paths key (default "any", unchanged) can confine it
+to images Hermes stored itself ("media") or to those plus the host working
+directories of the requesting connection's sessions ("workspace"). Paths
+are resolved before the check, the rest of every Hermes home stays closed,
+and a refused path gets error 4073. runtime.describe lists
+image-render-confined-v1 while a confined mode is on.
+---
+ cli-config.yaml.example                      |   7 +
+ gateway/session_controls.py                  |  14 +-
+ hermes_cli/config_defaults.py                |   6 +
+ tests/gateway/test_runtime_describe_skin.py  |  19 +++
+ tests/tui_gateway/test_image_render_paths.py | 156 +++++++++++++++++++
+ tui_gateway/image_render_paths.py            |  83 ++++++++++
+ tui_gateway/methods_images.py                |  44 +++++-
+ tui_gateway/ws.py                            |   2 +-
+ tui_gateway/ws_legacy_fallback.py            |  16 +-
+ website/docs/user-guide/configuration.md     |   3 +
+ 10 files changed, 344 insertions(+), 6 deletions(-)
+ create mode 100644 tests/tui_gateway/test_image_render_paths.py
+ create mode 100644 tui_gateway/image_render_paths.py
+
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index bb585a17ea..0565bd6f78 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -607,6 +607,13 @@ terminal:
+ #   # disable the gate; add fnmatch patterns on the basename to protect more files.
+ #   protected_instruction_files: true
+ #   protected_instruction_extra_patterns: []
++#   # Files image.render (the TUI's inline image previews) may read on the
++#   # gateway host: "any" local image, "workspace" (images Hermes stored plus
++#   # the host working directories of the connection's sessions) or "media"
++#   # (only images Hermes stored: uploads, screenshots, generated images).
++#   # Symlinks and ".." are resolved first. Use "media" when remote clients
++#   # reach the gateway.
++#   image_render_paths: any
+ 
+ # =============================================================================
+ # LSP Diagnostics (post-write lint for write_file / patch)
+diff --git a/gateway/session_controls.py b/gateway/session_controls.py
+index 48bdf7e169..cca0449098 100644
+--- a/gateway/session_controls.py
++++ b/gateway/session_controls.py
+@@ -560,12 +560,24 @@ class AuthorityConnection:
+         return {'instance_id': self.authority.instance_id, 'profile_id': self.authority.profile_id,
+                 'authority_epoch': self.authority.epoch,
+                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1',
+-                                 'acp-session-mcp-v1', 'clarify-batch-v1', 'plugin-rpc-v1', 'session-client-v1', 'session-transcript-v1', 'session-list-picker-v1'],
++                                 'acp-session-mcp-v1', 'clarify-batch-v1', 'plugin-rpc-v1', 'session-client-v1', 'session-transcript-v1', 'session-list-picker-v1',
++                                 *await asyncio.to_thread(self._image_render_capabilities)],
+                 'session_create': {'sources': sorted(SURFACES),
+                                    'parameters': sorted(CREATE_FIELDS | {'title'})},
+                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
+                 'skin': await asyncio.to_thread(resolved_skin)}
+ 
++    def _image_render_capabilities(self):
++        """``image-render-confined-v1`` while ``security.image_render_paths`` confines
++        ``image.render``; not listed when the config cannot be read."""
++        from hermes_cli.config_effective import load_user_config_effective
++        from tui_gateway.image_render_paths import CAPABILITY, configured_mode
++        try:
++            cfg = load_user_config_effective(Path(self.authority.profile_id) / 'config.yaml')
++        except Exception:
++            return []
++        return [] if configured_mode(cfg) == 'any' else [CAPABILITY]
++
+     async def info(self, ref, params):
+         from gateway.session_local_inventory import snapshot_info
+         if set(params) != {'session_id'}:
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 07504f0492..8a3c092d4a 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1774,6 +1774,12 @@ DEFAULT_CONFIG = {
+         # enabled (e.g. `elevenlabs`). False = require explicit pip install for everything beyond
+         # the base set (restricted/audited/air-gapped environments).
+         "allow_lazy_installs": True,
++        # Files the TUI gateway's image.render (inline transcript previews) may read: "any" local
++        # image, "workspace" (Hermes-stored media plus the connection's sessions' host working
++        # directories) or "media" (only images Hermes stored: uploads, screenshots, generated).
++        # Paths are resolved (symlinks, ..) first; the confined modes never read elsewhere in a
++        # Hermes home. Set "media" on gateways that remote clients reach.
++        "image_render_paths": "any",
+     },
+ 
+     "cron": {
+diff --git a/tests/gateway/test_runtime_describe_skin.py b/tests/gateway/test_runtime_describe_skin.py
+index 05352c89ba..b3fc9057ac 100644
+--- a/tests/gateway/test_runtime_describe_skin.py
++++ b/tests/gateway/test_runtime_describe_skin.py
+@@ -46,3 +46,22 @@ async def test_runtime_describe_advertises_clarify_batch(tmp_path, monkeypatch):
+     finally:
+         await conn.close()
+         authority.db.close()
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(('config', 'listed'), [('', False), ('security:\n  image_render_paths: any\n', False),
++                                                ('security:\n  image_render_paths: media\n', True),
++                                                ('security:\n  image_render_paths: workspace\n', True)])
++async def test_runtime_describe_says_when_image_render_is_confined(tmp_path, monkeypatch, config, listed):
++    """A client that may only preview Hermes-stored images (a relay for remote devices) keys on this."""
++    authority, _store = await _authority(tmp_path, monkeypatch)
++    home = Path(authority.profile_id)
++    (home / 'config.yaml').write_text(config)
++    monkeypatch.setenv('HERMES_HOME', str(home))
++    conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'owner'})
++    try:
++        described = await conn.dispatch({'id': 0, 'method': 'runtime.describe', 'params': {}})
++        assert ('image-render-confined-v1' in described['result']['capabilities']) is listed
++    finally:
++        await conn.close()
++        authority.db.close()
+diff --git a/tests/tui_gateway/test_image_render_paths.py b/tests/tui_gateway/test_image_render_paths.py
+new file mode 100644
+index 0000000000..2f351cd99a
+--- /dev/null
++++ b/tests/tui_gateway/test_image_render_paths.py
+@@ -0,0 +1,156 @@
++"""``security.image_render_paths``: which files ``image.render`` may read on the gateway host."""
++
++import json
++import os
++import threading
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++
++from hermes_constants import get_hermes_home
++from tui_gateway import server
++from tui_gateway.image_render_paths import allowed_path, configured_mode
++from tui_gateway.transport import StdioTransport
++
++PIL = pytest.importorskip("PIL.Image")
++
++
++def _png(path: Path) -> Path:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    PIL.new("RGBA", (32, 16), (0, 200, 90, 255)).save(path, format="PNG")
++    return path
++
++
++def _render(monkeypatch, path, mode):
++    cfg = {"display": {"inline_images": "unicode"}}
++    if mode is not None:
++        cfg["security"] = {"image_render_paths": mode}
++    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
++    return server.handle_request(
++        {"id": "img", "method": "image.render", "params": {"path": str(path), "cols": 8, "rows": 4}})
++
++
++def _drawn(response) -> bool:
++    assert "error" not in response, response
++    return response["result"]["mode"] == "unicode"
++
++
++def _refused(response) -> bool:
++    return response.get("error", {}).get("code") == 4073
++
++
++@pytest.fixture
++def home():
++    return get_hermes_home()
++
++
++@pytest.fixture
++def attached(monkeypatch, tmp_path):
++    """A sidecar session with *tmp_path/ws* as its cwd, attached to the bound transport."""
++    workspace = tmp_path / "ws"
++    workspace.mkdir()
++    transport = StdioTransport(lambda: None, threading.Lock())
++    monkeypatch.setitem(server._sessions, "img-sid", {"transport": transport, "cwd": str(workspace)})
++    token = server.bind_transport(transport)
++    yield workspace
++    server.reset_transport(token)
++
++
++def test_default_reads_any_local_image(monkeypatch, tmp_path):
++    outside = _png(tmp_path / "elsewhere" / "pic.png")
++    assert _drawn(_render(monkeypatch, outside, None))
++    assert _drawn(_render(monkeypatch, outside, "any"))
++
++
++def test_media_reads_stored_attachments_and_tool_images(monkeypatch, home):
++    from tui_gateway.prompt_attachments import stage_image_bytes
++
++    upload = stage_image_bytes(home / "images", _png(home / "src.png").read_bytes(), ".png", prefix="upload")
++    canonical_upload = _png(home / "cache" / "images" / "upload_a.png")
++    screenshot = _png(home / "cache" / "screenshots" / "browser_1.png")
++    generated = _png(home / "cache" / "generated" / "images" / "gen_1.png")
++    for path in (upload, canonical_upload, screenshot, generated):
++        assert _drawn(_render(monkeypatch, path, "media")), path
++
++
++def test_media_refuses_everything_else(monkeypatch, tmp_path, home, attached):
++    (home / ".env").write_text("OPENAI_API_KEY=sk-test\n")
++    (home / "auth.json").write_text("{}")
++    _png(home / "skins" / "logo.png")
++    workspace_image = _png(attached / "shot.png")
++    for path in ("/etc/passwd", home / ".env", home / "auth.json", home / "skins" / "logo.png", workspace_image,
++                 tmp_path / "missing.png"):
++        assert _refused(_render(monkeypatch, path, "media")), path
++
++
++def test_workspace_reads_under_the_attached_sessions_cwd(monkeypatch, attached):
++    assert _drawn(_render(monkeypatch, _png(attached / "out" / "plot.png"), "workspace"))
++    assert _drawn(_render(monkeypatch, _png(attached / ".hermes" / "attachments" / "a.png"), "workspace"))
++
++
++def test_workspace_refuses_traversal_symlinks_and_other_paths(monkeypatch, tmp_path, attached):
++    outside = _png(tmp_path / "outside" / "secret.png")
++    link = attached / "link.png"
++    link.symlink_to(outside)
++    (attached / "dirlink").symlink_to(outside.parent, target_is_directory=True)
++    for path in (f"{attached}/../outside/secret.png", link, attached / "dirlink" / "secret.png", "/etc/passwd"):
++        assert _refused(_render(monkeypatch, path, "workspace")), path
++
++
++def test_workspace_never_exposes_the_hermes_home(monkeypatch, home):
++    # A session whose cwd contains the home (cwd ~ with home ~/.hermes) still gets no home files.
++    transport = StdioTransport(lambda: None, threading.Lock())
++    monkeypatch.setitem(server._sessions, "home-sid", {"transport": transport, "cwd": str(home.parent)})
++    token = server.bind_transport(transport)
++    try:
++        (home / ".env").write_text("OPENAI_API_KEY=sk-test\n")
++        for path in (home / ".env", _png(home / "skins" / "logo.png")):
++            assert _refused(_render(monkeypatch, path, "workspace")), path
++        assert _drawn(_render(monkeypatch, _png(home.parent / "beside-home.png"), "workspace"))
++        assert _drawn(_render(monkeypatch, _png(home / "cache" / "screenshots" / "s.png"), "workspace"))
++    finally:
++        server.reset_transport(token)
++
++
++def test_workspace_ignores_sessions_of_other_connections(monkeypatch, tmp_path):
++    other = tmp_path / "other"
++    monkeypatch.setitem(server._sessions, "other-sid",
++                        {"transport": StdioTransport(lambda: None, threading.Lock()), "cwd": str(other)})
++    assert _refused(_render(monkeypatch, _png(other / "pic.png"), "workspace"))
++
++
++def test_canonical_connection_workspace_is_the_frozen_policy_cwd(monkeypatch, tmp_path):
++    # A legacy-fallback request (the shared gateway's socket): the roots are the authority sessions this
++    # connection subscribes to. A device session's cwd is a placeholder: its parents stay refused.
++    from gateway import session_policy
++    from tui_gateway import ws_legacy_fallback
++
++    placeholder = tmp_path / "srv" / "device-placeholder"
++    placeholder.mkdir(parents=True)
++    policies = {"mine": SimpleNamespace(cwd=str(placeholder), terminal_json=json.dumps({"TERMINAL_ENV": "local"})),
++                "other": SimpleNamespace(cwd=str(tmp_path / "other"), terminal_json="{}")}
++    authority = SimpleNamespace(profile_id=str(get_hermes_home()), runner=None,
++                                sessions={sid: SimpleNamespace(source=sid) for sid in policies})
++    monkeypatch.setattr(session_policy, "policy_for_source", lambda runner, source: policies[source])
++    token = ws_legacy_fallback._fallback_connection.set(
++        SimpleNamespace(authority=authority, subscriptions={"mine": object()}))
++    try:
++        assert _drawn(_render(monkeypatch, _png(placeholder / "a.png"), "workspace"))
++        assert _refused(_render(monkeypatch, _png(tmp_path / "srv" / "b.png"), "workspace"))
++        assert _refused(_render(monkeypatch, _png(tmp_path / "other" / "c.png"), "workspace"))
++    finally:
++        ws_legacy_fallback._fallback_connection.reset(token)
++
++
++def test_unknown_mode_confines_like_media():
++    assert configured_mode({}) == "any"
++    assert configured_mode({"security": {"image_render_paths": "Workspace"}}) == "workspace"
++    assert configured_mode({"security": {"image_render_paths": "nonsense"}}) == "media"
++
++
++def test_a_filesystem_root_workspace_is_ignored(tmp_path):
++    image = _png(tmp_path / "pic.png")
++    root = Path(os.path.abspath(os.sep))
++    assert allowed_path(str(image), mode="workspace", homes=[], workspaces=[str(root)]) is None
++    assert allowed_path(str(image), mode="workspace", homes=[], workspaces=[str(tmp_path)]) == image.resolve()
+diff --git a/tui_gateway/image_render_paths.py b/tui_gateway/image_render_paths.py
+new file mode 100644
+index 0000000000..627f1ba81d
+--- /dev/null
++++ b/tui_gateway/image_render_paths.py
+@@ -0,0 +1,83 @@
++"""Which files ``image.render`` may read (``security.image_render_paths``).
++
++``any`` (the default) reads any local image file. ``media`` reads only images Hermes stored
++itself: attachment staging and the media caches that tools write screenshots, vision inputs and
++generated images to. ``workspace`` also reads under the working directory of a session the
++requesting connection is attached to, when that directory is on this host. The path is resolved
++(``~``, ``..`` and symlinks) before the check. In both confined modes nothing else under a Hermes
++home is readable, so a workspace that contains the home never exposes ``.env``, ``auth.json`` or
++``state.db``.
++"""
++
++from __future__ import annotations
++
++import os
++from collections.abc import Iterable
++from pathlib import Path
++from typing import Any
++
++MODES = ("any", "workspace", "media")
++#: Listed in ``runtime.describe`` capabilities while a confined mode is on.
++CAPABILITY = "image-render-confined-v1"
++
++# Hermes-home subdirectories (current and legacy names) that hold only files Hermes wrote:
++# image uploads (tui_gateway/prompt_attachments.py, gateway/session_images.py), inbound and
++# computer_use images, browser screenshots, vision downloads and generated images.
++_MEDIA_SUBDIRS = (
++    "images", "cache/images", "image_cache", "cache/screenshots", "browser_screenshots",
++    "cache/vision", "temp_vision_images", "cache/generated")
++
++
++def configured_mode(cfg: Any) -> str:
++    """The configured mode; an unknown value confines to ``media`` rather than reading anything."""
++    security = cfg.get("security") if isinstance(cfg, dict) else None
++    raw = security.get("image_render_paths") if isinstance(security, dict) else None
++    if raw is None:
++        return "any"
++    mode = str(raw).strip().lower()
++    return mode if mode in MODES else "media"
++
++
++def _resolve(path: str | os.PathLike) -> Path | None:
++    try:
++        return Path(os.path.expanduser(os.fspath(path))).resolve()
++    except (OSError, RuntimeError, ValueError):
++        return None
++
++
++def _within(path: Path, root: Path) -> bool:
++    return path == root or root in path.parents
++
++
++def media_roots(homes: Iterable[str | os.PathLike]) -> list[Path]:
++    """The resolved media directories of each Hermes home in *homes*."""
++    roots = (_resolve(Path(home) / sub) for home in homes if home for sub in _MEDIA_SUBDIRS)
++    return [root for root in roots if root is not None]
++
++
++def allowed_path(candidate: str, *, mode: str, homes: Iterable[str | os.PathLike],
++                 workspaces: Iterable[str | os.PathLike] = (),
++                 protected: Iterable[str | os.PathLike] = ()) -> Path | None:
++    """The resolved path of *candidate* when *mode* lets ``image.render`` read it, else ``None``.
++
++    *homes* are the Hermes homes serving the request: their media directories are readable and
++    the rest of each home is not. *protected* are further trees that stay closed (the Hermes root
++    and the launch home). *workspaces* are the host working directories of the connection's
++    sessions, read only in ``workspace`` mode; one that resolves to a filesystem root is ignored.
++    """
++    resolved = _resolve(candidate)
++    if resolved is None:
++        return None
++    homes = [home for home in homes if home]
++    if any(_within(resolved, root) for root in media_roots(homes)):
++        return resolved
++    if mode != "workspace":
++        return None
++    closed = (_resolve(tree) for tree in (*homes, *protected) if tree)
++    if any(_within(resolved, tree) for tree in closed if tree is not None):
++        return None
++    for workspace in workspaces:
++        root = _resolve(workspace) if workspace else None
++        if root is not None and root != Path(root.anchor) and root.is_dir() and _within(resolved, root):
++            return resolved
++    return None
+diff --git a/tui_gateway/methods_images.py b/tui_gateway/methods_images.py
+index 73b342cf6c..d9138dd6f0 100644
+--- a/tui_gateway/methods_images.py
++++ b/tui_gateway/methods_images.py
+@@ -105,11 +105,23 @@ def _(rid, params: dict) -> dict:
+     # The client's terminal, never this process's env: one gateway serves many clients.
+     mode = resolve_inline_mode(_display_cfg().get("inline_images", "auto"), graphics=params.get("graphics") is True,
+                                detected="kitty" if params.get("terminal") == "kitty" else "unicode")
+-    path = local_image_path(params.get("path"))
+     try:
+         cols, rows = int(params.get("cols") or 0), int(params.get("rows") or 0)
+     except (TypeError, ValueError):
+         return _err(rid, 4072, "cols and rows must be integers")
++    from tui_gateway.image_render_paths import allowed_path, configured_mode
++    path_mode = configured_mode(_load_cfg())
++    raw_path = params.get("path")
++    if (path_mode != "any" and isinstance(raw_path, str) and raw_path.strip()
++            and "://" not in raw_path and not raw_path.strip().startswith("data:")):
++        from hermes_constants import get_default_hermes_root
++        homes, workspaces = _image_render_scope()
++        confined = allowed_path(raw_path.strip(), mode=path_mode, homes=homes, workspaces=workspaces,
++                                protected=(get_default_hermes_root(), _hermes_home))
++        if confined is None:
++            return _err(rid, 4073, f"image path is outside what security.image_render_paths ({path_mode}) allows")
++        raw_path = str(confined)
++    path = local_image_path(raw_path)
+     # A preview, whoever asks: past the TUI's own budget the reply grows by the cell (8 ints each).
+     cols, rows = min(cols, _MAX_PREVIEW_COLS), min(rows, _MAX_PREVIEW_ROWS)
+     image = render_inline_image(path, mode=mode, max_cols=cols, max_rows=rows) if path else None
+@@ -122,5 +134,35 @@ def _(rid, params: dict) -> dict:
+                      "cells": [[[*top, *bottom] for top, bottom in row] for row in image.cells]})
+ 
+ 
++def _image_render_scope() -> tuple[list[str], list[str]]:
++    """Hermes homes and host workspaces of the sessions the requesting connection is attached to:
++    the authority's subscriptions for a legacy-fallback request (``ws_legacy_fallback``), else the
++    sidecar's own sessions on this transport."""
++    from tui_gateway.ws_legacy_fallback import fallback_connection
++    homes, workspaces = [str(get_hermes_home())], []
++    if (connection := fallback_connection()) is not None:
++        from gateway.session_policy import policy_for_source, terminal_uses_host_cwd
++        authority = connection.authority
++        homes.append(str(authority.profile_id))
++        for sid in list(connection.subscriptions):
++            live = authority.sessions.get(sid)
++            try:
++                policy = policy_for_source(authority.runner, live.source) if live is not None else None
++                if policy is not None and terminal_uses_host_cwd(json.loads(policy.terminal_json)):
++                    workspaces.append(str(policy.cwd))
++            except Exception:
++                continue
++        return homes, workspaces
++    transport = current_transport()
++    with _sessions_lock:
++        attached = [s for s in _sessions.values() if _session_transport_contains(s, transport)]
++    for session in attached:
++        if session.get("profile_home"):
++            homes.append(str(session["profile_home"]))
++        if session.get("cwd") and not _cwd_is_remote(session.get("profile_home")):
++            workspaces.append(str(session["cwd"]))
++    return homes, workspaces
++
++
+ def register(server) -> None:
+     bind_module(globals(), server, skip=("_",))
+diff --git a/tui_gateway/ws.py b/tui_gateway/ws.py
+index 833751e0df..2c603446c6 100644
+--- a/tui_gateway/ws.py
++++ b/tui_gateway/ws.py
+@@ -406,7 +406,7 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
+             # registers (pet, wake word, connectors) keeps its legacy handler. A legacy
+             # session writer keeps the authority's -32601 (ws_legacy_fallback), as does a
+             # method neither side knows, which the client's capability fallbacks key on.
+-            resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
++            resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor, authority_connection)
+         return resp
+ 
+ 
+diff --git a/tui_gateway/ws_legacy_fallback.py b/tui_gateway/ws_legacy_fallback.py
+index dab451676f..837f0e78c0 100644
+--- a/tui_gateway/ws_legacy_fallback.py
++++ b/tui_gateway/ws_legacy_fallback.py
+@@ -21,6 +21,8 @@ from typing import Any
+ 
+ _connection_profile_home: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+     "hermes_ws_connection_profile_home", default=None)
++_fallback_connection: contextvars.ContextVar[Any] = contextvars.ContextVar(
++    "hermes_ws_fallback_connection", default=None)
+ 
+ 
+ # The authority owns every session, its transcript and its admissions: a legacy handler in these
+@@ -67,6 +69,11 @@ def connection_profile_home() -> str | None:
+     return _connection_profile_home.get()
+ 
+ 
++def fallback_connection() -> Any:
++    """The authority connection the current legacy fallback request came in on, else None."""
++    return _fallback_connection.get()
++
++
+ def _foreign_profile_home(server: Any, profile_id: Any) -> str | None:
+     """The ticket's non-launch home, or None for the launch profile. Raises when the ticket names a
+     home that stopped being a directory: that is a refusal, never the launch profile (N86)."""
+@@ -148,9 +155,10 @@ def _own_profile_read(server: Any, req: dict, home: str) -> dict:
+     return {"jsonrpc": "2.0", "id": req.get("id"), "result": {"sessions": rows}}
+ 
+ 
+-def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict | None:
+-    """Run ``server.dispatch`` with the ticket's profile home bound (call from a worker thread;
+-    the pool path copies this context, so long handlers see it too)."""
++def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any, connection: Any = None) -> dict | None:
++    """Run ``server.dispatch`` with the ticket's profile home and *connection* (the authority
++    connection, read through :func:`fallback_connection`) bound (call from a worker thread; the
++    pool path copies this context, so long handlers see it too)."""
+     try:
+         home = _foreign_profile_home(server, getattr(actor, "profile_id", None))
+     except OSError:
+@@ -180,8 +188,10 @@ def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict
+         if target:
+             scope = server._session_profile_runtime_scope({"profile_home": target})
+     token = _connection_profile_home.set(home)
++    connection_token = _fallback_connection.set(connection)
+     try:
+         with scope:
+             return server.dispatch(req, transport)
+     finally:
++        _fallback_connection.reset(connection_token)
+         _connection_profile_home.reset(token)
+diff --git a/website/docs/user-guide/configuration.md b/website/docs/user-guide/configuration.md
+index bef1b7d513..e9218a5918 100644
+--- a/website/docs/user-guide/configuration.md
++++ b/website/docs/user-guide/configuration.md
+@@ -3068,6 +3068,7 @@ Secret redaction and the website blocklist:
+ ```yaml
+ security:
+   redact_secrets: true           # Redact API key patterns in tool output and logs (on by default)
++  image_render_paths: any        # any | workspace | media: files the TUI's inline image previews may read
+   website_blocklist:             # See Website Blocklist section below
+     enabled: false
+     domains: []
+@@ -3076,6 +3077,8 @@ security:
+ 
+ - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development. Reading a secret-bearing file (`.env`-style files, shell rc/profile files, the Hermes `config.yaml` under `HERMES_HOME` and its `backups/config/` copies) with `read_file`, `search_files` or a terminal `cat`/`grep` also masks credential-shaped assignments (`SOME_API_TOKEN: …`) with a non-reusable `«redacted-secret»` marker, whatever the value looks like; ordinary source and project config files keep only the vendor-prefix patterns so fixtures such as `MAX_TOKENS: 100` are never mangled.
+ 
++- `image_render_paths` — which files on the gateway host `image.render` (the TUI's inline image previews) may read. `any` (default) reads any local image file. `media` reads only images Hermes stored itself: uploads and clipboard images (`images/`, `cache/images/`), browser and computer-use screenshots (`cache/screenshots/`), vision inputs (`cache/vision/`) and generated images (`cache/generated/`). `workspace` also reads under the host working directory of a session the requesting connection is attached to; a session whose terminal runs elsewhere (ssh, a sandbox without the cwd mount) adds none, and a workspace that is a filesystem root is ignored. The path is resolved (`~`, `..`, symlinks) before the check, and neither confined mode reads anything else under a Hermes home (`.env`, `auth.json`, `state.db`). A refused path gets error `4073`. While a confined mode is on, `runtime.describe` lists the capability `image-render-confined-v1`. Use `media` on a gateway that remote clients reach. An unknown value confines like `media`.
++
+ Earlier releases also had `tirith_*` keys for a bundled command scanner; it was removed and upgrading drops those keys. Content-level command checks are described in [Content-Level Command Checks](security.md#content-level-command-checks).
+ 
+ ## Website Blocklist

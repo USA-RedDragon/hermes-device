@@ -1,0 +1,6 @@
+tests/gateway/test_session_picker_fields.py
+tests/gateway/test_stored_session_picker.py
+tests/gateway/test_session_list_allowed_sources.py
+tests/gateway/test_session_list_live_hidden.py
+tests/tui_gateway/contracts/test_generated.py
+tests/hermes_cli/test_plugin_hook_failure_reporting.py

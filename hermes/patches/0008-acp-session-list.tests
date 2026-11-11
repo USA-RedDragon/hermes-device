@@ -1,0 +1,3 @@
+tests/acp_adapter/test_gateway_catalog_cwd.py
+tests/acp_adapter/test_gateway_catalog_local_rows.py
+tests/acp_adapter/test_catalog_read_only.py

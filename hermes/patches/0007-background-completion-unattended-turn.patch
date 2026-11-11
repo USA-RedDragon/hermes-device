@@ -1,0 +1,592 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 03:07:22 -0600
+Subject: [PATCH] feat(gateway): opt-in turns for background process exits with
+ no viewer
+
+sessions.unviewed_completion_turns (default 0) runs a notify_on_complete
+process exit for a local session with no viewer as an agent turn instead
+of a note, at most N in a row. A viewer attaching or a user message
+resets the count; a chat closed by exit or /new keeps notes.
+
+Refs #143649.
+---
+ cli-config.yaml.example                       |   8 +
+ gateway/session_authority.py                  |   9 +
+ gateway/session_completion_notes.py           |  99 ++++++-
+ hermes_cli/config_defaults.py                 |   4 +
+ .../gateway/test_unviewed_completion_turns.py | 277 ++++++++++++++++++
+ tools/async_delegation.py                     |   6 +
+ .../docs/user-guide/features/delegation.md    |   2 +-
+ website/docs/user-guide/sessions.md           |  22 ++
+ 8 files changed, 423 insertions(+), 4 deletions(-)
+ create mode 100644 tests/gateway/test_unviewed_completion_turns.py
+
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index fcc34b1188..c443905cb4 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -1129,6 +1129,13 @@ hosted_rooms:
+ # It replaces dashboard.ws_orphan_reap_grace_s / startup_orphan_sweep for these
+ # sessions; while it is unset, their opt-outs (0 / false) still turn it off.
+ #
++# A notify_on_complete background process that exits while such a session has
++# no viewer is written into it as a note, and the next turn reads it.
++# unviewed_completion_turns: N runs up to N of those exits in a row as agent
++# turns instead, so an agent that ended its turn to wait on a long job picks
++# the work back up. A viewer attaching or a message from you starts the count
++# again. A chat you closed (exit or /new) keeps notes. 0 (default) = notes.
++#
+ # Uncomment to change the defaults shown; auto_prune: true bounds the file,
+ # auto_prune: false keeps every ended session and silences the low-disk prompt.
+ # sessions:
+@@ -1138,6 +1145,7 @@ hosted_rooms:
+ #   min_vacuum_interval_days: 30
+ #   min_interval_hours: 24
+ #   orphan_end_grace_s: 300
++#   unviewed_completion_turns: 0
+ 
+ # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
+ # Leave unset for the safe default: Desktop coordinates cross-gateway rooms and
+diff --git a/gateway/session_authority.py b/gateway/session_authority.py
+index 96152d34b2..4438aa1a7d 100644
+--- a/gateway/session_authority.py
++++ b/gateway/session_authority.py
+@@ -53,6 +53,9 @@ class LiveSession:
+     # The messaging ingress tells the platform user once per pause episode (unknown head,
+     # preflight refusal), not per message; the drain clears it when the FIFO moves again.
+     pause_notified: bool = False
++    # ``(admission id, limit, end reason)`` read before a process exit's claim for
++    # ``sessions.unviewed_completion_turns`` (gateway/session_completion_notes.read_unviewed_policy).
++    unviewed_policy: tuple | None = None
+     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+     # Held by the FIFO claim and by compress across its summarization (which runs outside
+     # ``mutation_lock``, so admissions are not parked behind an LLM call): no turn is claimed
+@@ -183,6 +186,9 @@ class SessionAuthority:
+         # session id -> end_reason of a last-viewer close still waiting for an idle FIFO
+         # (gateway/session_viewer_close); a viewer attaching again cancels it.
+         self.pending_closes = {}
++        # session id -> process-exit turns run in a row with no viewer (``sessions.unviewed_completion_turns``);
++        # here, not on LiveSession, so retiring an idle session between exits does not reset it.
++        self.unviewed_turns = {}
+         self.orphan_closes = {}  # session id -> grace timer of a session left with no viewer, never closed
+         # Logical owner rotated away by the exhaustion auto-reset -> its session key: an admission
+         # that reserved it before the rotation commits on that key's current route instead.
+@@ -380,6 +386,7 @@ class SessionAuthority:
+             cancel_orphan_close(self, ref.session_id)
+             from tools.async_delegation import allow_for_session
+             allow_for_session((self.profile_id, ref.session_id))  # a closed session's work may start again
++            self.unviewed_turns.pop(ref.session_id, None)  # someone is watching: unviewed turns count afresh
+             transport = self.events.get(actor.transport_id)
+             if transport is not None:
+                 if replay_from is not None and not live.event_stream.fanout.contains(transport):
+@@ -1106,6 +1113,8 @@ class SessionAuthority:
+                 if 'local_automation_v1' in first['payload']:
+                     from gateway.session_automation import check_local_automation
+                     check_local_automation(self, ref, first)
++                    from gateway.session_completion_notes import read_unviewed_policy
++                    await read_unviewed_policy(self, ref, live, first)
+                 else:
+                     from gateway.session_operator import check_local_input
+                     check_local_input(self, ref, first)
+diff --git a/gateway/session_completion_notes.py b/gateway/session_completion_notes.py
+index 6982d2c3e6..ad4218a7f5 100644
+--- a/gateway/session_completion_notes.py
++++ b/gateway/session_completion_notes.py
+@@ -10,10 +10,18 @@ viewer attached (the authority's own subscriber records) the executor records it
+ history, where the next turn sees it, and settles the admission without a model call. Queue order, restart survival and
+ exactly-once are the admission contract's. With a viewer attached it runs as the turn it always was,
+ except a local cron result, which is always a note; messaging, Kanban, ``/loop`` and heartbeat wakes
+-never reach here.
++never reach here. With ``sessions.unviewed_completion_turns`` set, a background process's exit runs as
++a turn with no viewer too, so an agent that ended its turn to wait on the process picks the work back
++up: at most that many times in a row, and never in a chat the user closed.
+ """
++import asyncio
++import contextlib
+ import json
++import logging
+ from functools import partial
++from pathlib import Path
++
++logger = logging.getLogger(__name__)
+ 
+ # ``_completion_delivery_identity`` kinds: an async delegation's result, a background process's exit
+ # and its watch-pattern notices.
+@@ -21,6 +29,9 @@ _NOTED_PRODUCERS = frozenset({'async_delegation', 'completion', 'watch_match', '
+ # A cron result for a local chat (``session_cron.deliver_to_local_chat``) is finished text: a note
+ # with or without a viewer, since a turn over it would only spend a model call (#143547 CRON-11).
+ _ALWAYS_NOTED = frozenset({'cron'})
++# What ``sessions.unviewed_completion_turns`` runs as a turn with no viewer: a ``notify_on_complete``
++# process's exit. A watch notice can fire many times per process; delegation results keep their own rule.
++_UNVIEWED_TURN_PRODUCERS = frozenset({'completion'})
+ 
+ 
+ def _producer(identity):
+@@ -36,6 +47,76 @@ def noted_completion(row):
+     return descriptor is not None and _producer(descriptor['identity']) in _NOTED_PRODUCERS | _ALWAYS_NOTED
+ 
+ 
++def unviewed_completion_turns(authority):
++    """Blocking: ``sessions.unviewed_completion_turns`` of the profile that owns *authority*'s store, the
++    process-exit turns one session may run in a row with no viewer (0 = each one is a note)."""
++    from hermes_cli.config_defaults import DEFAULT_CONFIG
++    from hermes_cli.config_effective import load_user_config_effective
++    from gateway.session_local import profile_env_scope
++    default = DEFAULT_CONFIG['sessions']['unviewed_completion_turns']
++    home = Path(authority.db.db_path).resolve().parent
++    with profile_env_scope(home):
++        sessions = load_user_config_effective(home / 'config.yaml').get('sessions')
++    raw = sessions.get('unviewed_completion_turns', default) if isinstance(sessions, dict) else default
++    if isinstance(raw, bool):
++        return default
++    with contextlib.suppress(ValueError, TypeError):
++        return max(0, int(raw))
++    return default
++
++
++def _unviewed_turn_policy(authority, session_id):
++    """Blocking: the configured limit, and *session_id*'s row end reason when it is ended (else None).
++    An end reason recovery does not resume (exit, /new) outlives the in-memory refusal across a restart."""
++    limit = unviewed_completion_turns(authority)
++    if not limit:
++        return 0, None
++    from gateway.session_viewer_close import _physical_target
++    row = authority.db.get_session(_physical_target(authority, session_id)) or {}
++    return limit, (row.get('end_reason') or '') if row.get('ended_at') else None
++
++
++def _runs_unviewed(authority, session_id, live, descriptor, limit, end_reason):
++    """A background process's exit with no viewer attached runs as a turn under the opt-in. Not in a
++    chat the user closed: exit or /new refused its dispatches, left a close pending (still pending
++    after a restart, which does not restore the refusal) or ended its row. Not past *limit* in a row."""
++    from hermes_state_common import _RECOVERABLE_END_REASONS
++    ended = end_reason is not None and end_reason not in _RECOVERABLE_END_REASONS
++    if not limit or ended or not _wants_unviewed_turn(descriptor):
++        return False
++    from gateway.session_viewer_close import ORPHAN_REASONS
++    from tools.async_delegation import refused_for_session
++    close = authority.pending_closes.get(session_id)
++    if refused_for_session((authority.profile_id, session_id)) or (close is not None and close.reason not in ORPHAN_REASONS):
++        return False
++    if authority.unviewed_turns.get(session_id, 0) >= limit:
++        return False
++    authority.unviewed_turns[session_id] = authority.unviewed_turns.get(session_id, 0) + 1
++    return True
++
++
++def _wants_unviewed_turn(descriptor):
++    identities = set(descriptor.get('identities') or ()) | {descriptor['identity']}
++    return bool(_UNVIEWED_TURN_PRODUCERS & {_producer(identity) for identity in identities})
++
++
++async def read_unviewed_policy(authority, ref, live, row):
++    """Before *row* is claimed (still queued, so a cancelled read loses nothing): the opt-in's limit and
++    the row's end reason for a process exit no viewer watches, for ``note_if_unviewed`` to decide on in
++    one loop step. Any other row reads nothing. An unreadable config or row keeps the note."""
++    descriptor = row['payload'].get('local_automation_v1')
++    live.unviewed_policy = None
++    if live.subscribers or descriptor is None or not _wants_unviewed_turn(descriptor):
++        return
++    try:
++        policy = await asyncio.to_thread(_unviewed_turn_policy, authority, ref.session_id)
++    except Exception:
++        logger.warning('sessions.unviewed_completion_turns unreadable for %s; keeping notes', ref.session_id,
++                       exc_info=True)
++        return
++    live.unviewed_policy = (row['admission_id'], *policy)
++
++
+ async def reopen_for_turn(authority, ref):
+     """A turn (never a note) makes *ref*'s finalized row live again: a local session's receipt tip, or
+     the row of a conversation its chat moved past (gateway/session_detached.py), which the chat's /new
+@@ -53,14 +134,26 @@ async def note_if_unviewed(authority, ref, row):
+     """The claimed *row*'s response when it was written as a note instead of running, else None.
+     It is the FIFO head, so the note lands after every input committed before it and before every
+     input committed after; the viewer check and the decision share one loop step."""
++    live = authority.sessions.get(ref.session_id)
++    if live is not None and (live.subscribers or 'local_automation_v1' not in row['payload']):
++        authority.unviewed_turns.pop(ref.session_id, None)  # someone is watching, or the user sent this
+     if not noted_completion(row):
+         return None
+     from gateway.session_runtime_workers import tracked_write
+-    live = authority.sessions.get(ref.session_id)
++    policy = getattr(live, 'unviewed_policy', None)
++    limit, end_reason = policy[1:] if policy is not None and policy[0] == row['admission_id'] else (0, None)
+     descriptor = row['payload']['local_automation_v1']
+-    if live is None or (live.subscribers and _producer(descriptor['identity']) not in _ALWAYS_NOTED):
++    unviewed = live is not None and not live.subscribers and _runs_unviewed(
++        authority, ref.session_id, live, descriptor, limit, end_reason)
++    if live is None or (live.subscribers and _producer(descriptor['identity']) not in _ALWAYS_NOTED) or unviewed:
+         # The claim left a closed row closed for a note; the turn reopens it as any first turn does.
+         await reopen_for_turn(authority, ref)
++        if unviewed:
++            from gateway.session_viewer_close import ORPHAN_REASONS, arm_detached_orphan_close
++            if end_reason in ORPHAN_REASONS:
++                # The turn reopened a row the orphan reaper ended: it ends again once the turn settles. A
++                # row a live client handed back with a plain detach stays open, as it was.
++                await arm_detached_orphan_close(authority, ref.session_id)
+         return None
+     from gateway.session_viewer_close import _physical_target
+     metadata = {'completion_note': sorted(set(descriptor.get('identities') or ()) | {descriptor['identity']})}
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 8a3c092d4a..ba5058f733 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -2303,6 +2303,10 @@ DEFAULT_CONFIG = {
+         # Seconds before a local session with no viewer is ended (resumable) once its turn settles; 0 = never; after a
+         # restart also >= 6h idle. Unset: dashboard.ws_orphan_reap_grace_s: 0 / startup_orphan_sweep: false opt out.
+         "orphan_end_grace_s": 300.0,
++        # notify_on_complete process exits a local session with no viewer runs as turns in a row, so an agent
++        # that ended its turn to wait picks the work back up; 0 = each is a note for the next turn to read.
++        # A viewer attaching or a user message counts afresh; a chat closed by exit or /new stays notes.
++        "unviewed_completion_turns": 0,
+     },
+     # First-touch onboarding hints (agent/onboarding.py), each latched under `seen` once shown.
+     "onboarding": {
+diff --git a/tests/gateway/test_unviewed_completion_turns.py b/tests/gateway/test_unviewed_completion_turns.py
+new file mode 100644
+index 0000000000..4823095188
+--- /dev/null
++++ b/tests/gateway/test_unviewed_completion_turns.py
+@@ -0,0 +1,277 @@
++"""``sessions.unviewed_completion_turns``: a background process's exit runs as a turn with no viewer.
++
++#134889 LC-7 writes a completion for a local session no viewer is watching into it as a note, with no
++model call. An agent that started a long ``notify_on_complete`` job and ended its turn to wait then
++never resumes until someone attaches. With the opt-in set, the exit runs as the turn a viewer would
++have got, through the same FIFO: at most that many in a row with nobody watching, and never in a chat
++the user closed. The default keeps the note.
++"""
++from pathlib import Path
++
++import pytest
++
++from tests.gateway.test_session_end_delegations import _PROCESS, _admissions, _deliver, _local
++from tests.gateway.test_unviewed_completion_notes import _human, _process_event, _target, _turns
++from tools import async_delegation as delegation
++
++
++@pytest.fixture(autouse=True)
++def _no_delegations():
++    delegation._reset_for_tests()
++    yield
++    delegation._reset_for_tests()
++
++
++def _configure(authority, text):
++    (Path(authority.db.db_path).parent / 'config.yaml').write_text(text)
++
++
++def _notes(authority, target, marker='RESULT_'):
++    return [m for m in authority.db.get_messages(target)
++            if marker in str(m.get('content')) and (m.get('display_metadata') or {}).get('completion_note')]
++
++
++def _exit(runner, authority, ref, name):
++    """A finished ``notify_on_complete`` process, as the watcher hands it to the gateway."""
++    target = _target(runner, authority, ref)
++    return runner._deliver_completion_notification(f'[finished] RESULT_{name}',
++                                                   dict(_process_event(authority, ref, target, name)))
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('config', ['', 'sessions:\n  unviewed_completion_turns: 0\n',
++                                    'sessions:\n  unviewed_completion_turns: true\n'],
++                         ids=['unset', 'zero', 'bool'])
++async def test_default_keeps_the_note(tmp_path, monkeypatch, config):
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority, config)
++        target = await _deliver(runner, authority, ref, _PROCESS)
++
++        async def no_turn(event):
++            raise AssertionError('the default must not start a turn with no viewer')
++        runner._handle_message = no_turn
++        await authority._drain(ref)
++        assert len(_notes(authority, target)) == 1
++        assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed']
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_unviewed_exit_runs_as_a_turn_and_is_stored(tmp_path, monkeypatch):
++    """The turn is the ordinary one: its output lands in the session's history, where a viewer that
++    attaches later reads it, and no note is written for the same exit."""
++    runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority, 'sessions:\n  unviewed_completion_turns: 5\n')
++        target = await _deliver(runner, authority, ref, _PROCESS)
++        assert not authority.sessions[ref.session_id].subscribers
++        seen = []
++
++        async def turn(event):
++            seen.append(event.text)
++            authority.db.append_message(target, 'assistant', 'REACTED to the finished job')
++            return 'REACTED to the finished job'
++        runner._handle_message = turn
++        await authority._drain(ref)
++        assert seen == [f'[finished] RESULT_{_PROCESS[1]}']
++        assert _notes(authority, target) == []
++        assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed']
++        snapshot = await authority.attach(actor, ref, history=True)
++        assert any('REACTED' in str(m.get('content')) for m in snapshot.history)
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_viewer_attached_is_unchanged(tmp_path, monkeypatch):
++    runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
++    try:
++        target = await _deliver(runner, authority, ref, _PROCESS)
++        authority.sessions[ref.session_id].subscribers['viewer'] = actor
++        seen = _turns(runner, authority, target)
++        await authority._drain(ref)
++        assert [text for text, _ in seen] == [f'[finished] RESULT_{_PROCESS[1]}']
++        assert _notes(authority, target) == []
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_busy_session_runs_the_exit_after_the_running_input(tmp_path, monkeypatch):
++    """An exit that arrives while a turn holds the FIFO waits behind it; a second exit arriving
++    meanwhile folds into the queued one, so both reach the agent in one turn."""
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority, 'sessions:\n  unviewed_completion_turns: 5\n')
++        target = _target(runner, authority, ref)
++        _human(authority, ref, 'human', 'FIRST')
++        await _deliver(runner, authority, ref, _PROCESS)
++        assert await _exit(runner, authority, ref, 'proc_second') is True
++        assert [r['status'] for r in _admissions(authority, ref)] == ['terminal', 'queued']
++        seen = _turns(runner, authority, target)
++        await authority._drain(ref)
++        assert len(seen) == 2 and seen[0] == ('FIRST', 0)
++        assert all(f'RESULT_{name}' in seen[1][0] for name in (_PROCESS[1], 'proc_second'))
++        assert _notes(authority, target) == []
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_unviewed_turns_stop_at_the_limit_until_the_user_returns(tmp_path, monkeypatch):
++    """An agent that relaunches a failing job on each exit would run itself without end: past the limit
++    the exit is a note, and the user's own message starts the count again."""
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority, 'sessions:\n  unviewed_completion_turns: 2\n')
++        target = _target(runner, authority, ref)
++        seen = _turns(runner, authority, target, 'proc_loop')
++        for i in range(4):
++            assert await _exit(runner, authority, ref, f'proc_loop{i}') is True
++            await authority._drain(ref)
++        assert [f'proc_loop{i}' in text for i, (text, _) in enumerate(seen)] == [True, True]
++        assert len(_notes(authority, target, 'proc_loop')) == 2
++        _human(authority, ref, 'back', 'what happened?')
++        await authority._drain(ref)
++        assert await _exit(runner, authority, ref, 'proc_loop_after') is True
++        await authority._drain(ref)
++        assert len(seen) == 4 and 'proc_loop_after' in seen[-1][0]
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_attaching_a_viewer_counts_afresh(tmp_path, monkeypatch):
++    runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority, 'sessions:\n  unviewed_completion_turns: 1\n')
++        target = _target(runner, authority, ref)
++        seen = _turns(runner, authority, target, 'proc_seen')
++        assert await _exit(runner, authority, ref, 'proc_seen0') is True
++        await authority._drain(ref)
++        snapshot = await authority.attach(actor, ref, history=False)
++        await authority.detach(actor, snapshot.subscription_id)
++        assert await _exit(runner, authority, ref, 'proc_seen1') is True
++        await authority._drain(ref)
++        assert len(seen) == 2 and _notes(authority, target, 'proc_seen') == []
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_count_survives_the_session_leaving_memory(tmp_path, monkeypatch):
++    """An idle session with no viewer is retired between exits and restored for the next one: the
++    in-a-row count is the authority's, so the limit still holds."""
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority, 'sessions:\n  unviewed_completion_turns: 1\n')
++        target = _target(runner, authority, ref)
++        seen = _turns(runner, authority, target, 'proc_gone')
++        assert await _exit(runner, authority, ref, 'proc_gone0') is True
++        await authority._drain(ref)
++        live = authority.sessions[ref.session_id]
++        authority.sessions[ref.session_id] = type(live)(source=live.source, route=live.route)
++        assert await _exit(runner, authority, ref, 'proc_gone1') is True
++        await authority._drain(ref)
++        assert len(seen) == 1 and len(_notes(authority, target, 'proc_gone')) == 1
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_unreadable_config_keeps_the_note(tmp_path, monkeypatch):
++    import hermes_cli.config_effective as effective
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority, 'sessions:\n  unviewed_completion_turns: 5\n')
++        target = await _deliver(runner, authority, ref, _PROCESS)
++
++        def broken(*_args, **_kwargs):
++            raise OSError('config unreadable')
++        monkeypatch.setattr(effective, 'load_user_config_effective', broken)
++        seen = _turns(runner, authority, target)
++        await authority._drain(ref)
++        assert seen == [] and len(_notes(authority, target)) == 1
++        assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed']
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('closed', ['refused', 'pending_after_restart', 'ended'])
++async def test_chat_the_user_closed_keeps_the_note(tmp_path, monkeypatch, closed):
++    """Exit or /new ends the chat's work. The dispatch refusal says so in memory; after a restart only
++    the stored close (re-armed, still pending) or the row's end reason does."""
++    from gateway.session_viewer_close import _PendingClose
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority, 'sessions:\n  unviewed_completion_turns: 5\n')
++        target = await _deliver(runner, authority, ref, _PROCESS)
++        if closed == 'refused':
++            delegation.refuse_for_session((authority.profile_id, ref.session_id),
++                                          session_key=authority.sessions[ref.session_id].route)
++        elif closed == 'pending_after_restart':
++            authority.pending_closes[ref.session_id] = _PendingClose('tui_close')
++        else:
++            authority.db.end_session(target, 'cli_close')
++        seen = _turns(runner, authority, target)
++        await authority._drain(ref)
++        assert seen == [] and len(_notes(authority, target)) == 1
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_orphan_reaped_chat_is_reopened_for_the_turn_and_ended_again(tmp_path, monkeypatch):
++    """A viewer that vanished is not the user closing the chat: the turn reopens the row, and the orphan
++    close is armed again so the row ends once the turn settles, as after any unviewed turn."""
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority, 'sessions:\n  unviewed_completion_turns: 5\n')
++        target = await _deliver(runner, authority, ref, _PROCESS)
++        authority.db.end_session(target, 'ws_orphan_reap')
++        seen = _turns(runner, authority, target)
++        await authority._drain(ref)
++        assert len(seen) == 1 and _notes(authority, target) == []
++        assert authority.db.get_session(target)['ended_at'] is None
++        assert ref.session_id in authority.orphan_closes
++    finally:
++        for handle in authority.orphan_closes.values():
++            handle.cancel()
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_plain_detach_leaves_the_row_open(tmp_path, monkeypatch):
++    """A client that handed the session back with a plain detach armed no orphan close: the turn does not
++    arm one either, so the row stays open as it was."""
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority, 'sessions:\n  unviewed_completion_turns: 5\n')
++        target = await _deliver(runner, authority, ref, _PROCESS)
++        seen = _turns(runner, authority, target)
++        await authority._drain(ref)
++        assert len(seen) == 1
++        assert authority.db.get_session(target)['ended_at'] is None
++        assert authority.orphan_closes == {}
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_watch_notice_stays_a_note(tmp_path, monkeypatch):
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority, 'sessions:\n  unviewed_completion_turns: 5\n')
++        target = _target(runner, authority, ref)
++        evt = {'type': 'watch_match', 'session_id': 'proc_watch', 'event_id': 'w1', 'command': 'make',
++               'pattern': 'READY', 'output': 'RESULT_watch READY',
++               'session_key': authority.sessions[ref.session_id].route, 'parent_session_id': target}
++        assert await runner._deliver_completion_notification('[watch] RESULT_watch', evt) is True
++        seen = _turns(runner, authority, target)
++        await authority._drain(ref)
++        assert seen == [] and len(_notes(authority, target)) == 1
++    finally:
++        authority.db.close()
+diff --git a/tools/async_delegation.py b/tools/async_delegation.py
+index 01fe04948a..1c4a28f823 100644
+--- a/tools/async_delegation.py
++++ b/tools/async_delegation.py
+@@ -1426,6 +1426,12 @@ def refuse_for_session(token: Any, *, session_key: str = "", parent_session_ids=
+             _refused_by.setdefault(selector, set()).add(token)
+ 
+ 
++def refused_for_session(token: Any) -> bool:
++    """Whether *token*'s session is closed to new dispatches (``refuse_for_session``, not yet lifted)."""
++    with _records_lock:
++        return token in _refused
++
++
+ def allow_for_session(token: Any) -> None:
+     """Lift ONE session's refusal: a viewer attached again, or the owner retired its live state."""
+     with _records_lock:
+diff --git a/website/docs/user-guide/features/delegation.md b/website/docs/user-guide/features/delegation.md
+index bbfb81aef8..0096aa0ef2 100644
+--- a/website/docs/user-guide/features/delegation.md
++++ b/website/docs/user-guide/features/delegation.md
+@@ -686,7 +686,7 @@ Top-level model-facing `delegate_task` calls run in the background automatically
+ 
+ - Normal follow-up messages do not cancel background children, and neither does stopping the current turn: Ctrl+C, Esc, the Desktop/TUI Stop button and an ACP cancel end only the turn. The `/stop` command (gateway `/stop` — also when the session is idle after the dispatching turn ended — or CLI `/stop`) ends the session's running background delegations, and closing or resetting the owning session does the same.
+ - Explicit session close/reset interrupts that session's background children. In the CLI and TUI, the gateway owns the session and the client only views it: when the last viewer exits or runs `/new` (a TUI resume switch counts too), the gateway interrupts that session's background children at once and refuses new ones for it until a viewer opens the session again. A plain detach cancels nothing: closing Desktop, a dropped connection, or exiting while another viewer is still attached leaves the work running. Background processes (`terminal(background=True)`) keep running either way.
+-- A completion for a CLI or TUI session — a background child's result (including an interrupted one), or a `notify_on_complete` process exit or watch-pattern notice — that reaches the head of the session's queue while no viewer is attached does not start a turn. It is written into the session as a note, and the next turn reads it (for example after `hermes chat --resume`). If a viewer is attached by then, including one that came back after the completion arrived, the completion runs as a turn as before. Messaging chats have no viewers and are unchanged: their completions still start a turn.
++- A completion for a CLI or TUI session — a background child's result (including an interrupted one), or a `notify_on_complete` process exit or watch-pattern notice — that reaches the head of the session's queue while no viewer is attached does not start a turn. It is written into the session as a note, and the next turn reads it (for example after `hermes chat --resume`). If a viewer is attached by then, including one that came back after the completion arrived, the completion runs as a turn as before. With `sessions.unviewed_completion_turns` set, a `notify_on_complete` process exit runs as a turn with no viewer too ([Sessions](../sessions.md)). Messaging chats have no viewers and are unchanged: their completions still start a turn.
+ - A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
+ - A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
+ - Stopped children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`) whose `summary` is the last text the child produced before the stop (the interrupt placeholder moves to `error`). The stop recurses down the spawn tree — an orchestrator child's synchronous workers are interrupted first and their partial results roll up into the child's own interrupted result — and each background unit's result re-enters the conversation right away as its normal completion notice (`Subagent Task Interrupted: …`), so nothing waits for the child to exhaust its budget.
+diff --git a/website/docs/user-guide/sessions.md b/website/docs/user-guide/sessions.md
+index 03d8eb59d9..19eeada10c 100644
+--- a/website/docs/user-guide/sessions.md
++++ b/website/docs/user-guide/sessions.md
+@@ -1249,6 +1249,28 @@ an interrupted turn stays open until you Discard it. A viewer that reconnects
+ within the grace keeps the session open. Ending is non-destructive: the session
+ stays resumable, and its next message reopens it on the same id.
+ 
++**Background work with nobody watching.** A `terminal(background=true,
++notify_on_complete=true)` process that exits while its CLI, TUI or Desktop
++session has no viewer is written into the session as a note, and the next turn
++reads it. To have the agent pick the work back up on its own, set
++`sessions.unviewed_completion_turns` to the number of such exits a session may
++run as agent turns in a row with no viewer (default `0`: notes only):
++
++```yaml
++sessions:
++  unviewed_completion_turns: 20
++```
++
++The turn runs and is saved like any other, so a client that attaches later
++sees it in the history. A viewer attaching or a message from you starts the
++count again (so does a gateway restart); past the limit, exits are notes until
++then. A chat you closed (exit or `/new`) keeps notes. A session the gateway
++ended because its viewer vanished is reopened for the turn and ended again
++`sessions.orphan_end_grace_s` after the turn starts, or when it settles if
++that is later. Watch-pattern notices and background
++subagent results are not affected, and neither are messaging chats, whose
++completions always start a turn.
++
+ ### Oversized-Transcript Guards
+ 
+ Two limits stop a runaway transcript from being loaded into memory all at once

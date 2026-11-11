@@ -1,0 +1,2 @@
+tests/acp_adapter/test_gateway_attach_mode_race.py
+tests/acp_adapter/test_gateway_editor_cwd.py

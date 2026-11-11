@@ -1,0 +1,653 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 02:53:00 -0600
+Subject: [PATCH] feat(plugins): agent_turn_start/end hooks and a
+ running-subagent snapshot
+
+agent_turn_start and agent_turn_end bracket every admitted
+AIAgent.run_conversation turn; the end fires in the facade's finally, so
+early returns and exceptions that skip finalize_turn (and with it
+post_llm_call and on_session_end) still close the bracket.
+
+SubagentLifecycleService.list_active() returns immutable snapshots of
+every running delegated child, with its own and its parent's session id,
+and steer_active() steers one by id, so plugins no longer read
+tools.delegate_tool_registry internals.
+---
+ agent/subagent_lifecycle.py                   |  45 ++++++
+ agent/turn_facade.py                          |   4 +
+ agent/turn_lifecycle_events.py                |  44 +++++
+ hermes_cli/plugins.py                         |   4 +
+ hermes_cli/plugins_dispatch.py                |   2 +
+ tests/agent/test_subagent_lifecycle_active.py |  78 +++++++++
+ tests/agent/test_turn_lifecycle_events.py     | 152 ++++++++++++++++++
+ .../providers/test_turn_lifecycle_hooks.py    |  75 +++++++++
+ website/docs/developer-guide/plugins/index.md |   1 +
+ .../developer-guide/subagent-lifecycle-api.md |  22 +++
+ website/docs/user-guide/features/hooks.md     |  50 +++++-
+ 11 files changed, 476 insertions(+), 1 deletion(-)
+ create mode 100644 agent/turn_lifecycle_events.py
+ create mode 100644 tests/agent/test_subagent_lifecycle_active.py
+ create mode 100644 tests/agent/test_turn_lifecycle_events.py
+ create mode 100644 tests/e2e/core/providers/test_turn_lifecycle_hooks.py
+
+diff --git a/agent/subagent_lifecycle.py b/agent/subagent_lifecycle.py
+index 658654717f..e0046738cb 100644
+--- a/agent/subagent_lifecycle.py
++++ b/agent/subagent_lifecycle.py
+@@ -134,6 +134,22 @@ class SubagentReconnectResult:
+     diagnostic: Optional[str] = None
+ 
+ 
++@dataclasses.dataclass(frozen=True)
++class ActiveSubagent:
++    """Snapshot of one running delegated child in this process (``delegate_task`` or ``launch``)."""
++
++    subagent_id: str
++    session_id: Optional[str]
++    parent_subagent_id: Optional[str]
++    parent_session_id: Optional[str]
++    depth: int
++    goal: Optional[str]
++    model: Optional[str]
++    status: Optional[str]
++    started_at: Optional[float]
++    steerable: bool
++
++
+ @dataclasses.dataclass
+ class _Record:
+     handle: SubagentHandle
+@@ -386,6 +402,35 @@ class SubagentLifecycleService:
+         from tools.delegate_tool_registry import steer_subagent
+         return steer_subagent(record.handle.subagent_id, text.strip())
+ 
++    @staticmethod
++    def list_active() -> tuple[ActiveSubagent, ...]:
++        """Every running delegated child in this process, whatever launched it. Safe from any thread,
++        including outside an agent turn."""
++        from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
++        with _active_subagents_lock:
++            records = [(r, _session_id_of(r.get("agent"))) for r in _active_subagents.values()]
++        return tuple(
++            ActiveSubagent(
++                subagent_id=str(r["subagent_id"]), session_id=session_id,
++                parent_subagent_id=r.get("parent_id") or None,
++                parent_session_id=r.get("owner_agent_session_id") or None,
++                depth=int(r.get("depth") or 0), goal=_clip(r.get("goal")), model=r.get("model") or None,
++                status=r.get("status") or None, started_at=r.get("started_at"),
++                steerable=bool(r.get("accepting_steer", False)),
++            )
++            for r, session_id in records if r.get("subagent_id")
++        )
++
++    @staticmethod
++    def steer_active(subagent_id: str, text: str) -> bool:
++        """Queue text for a running child listed by :meth:`list_active`, by id and without a handle.
++        This is the in-process contract of ``delegate_task``'s own steering: the caller authorizes it.
++        ``False`` for an unknown or finished child, a child that stopped accepting steering, or empty text."""
++        if not isinstance(subagent_id, str) or not subagent_id or not isinstance(text, str) or not text.strip():
++            return False
++        from tools.delegate_tool_registry import steer_subagent
++        return steer_subagent(subagent_id, text.strip())
++
+     def _record(self, handle: SubagentHandle | Mapping[str, Any]) -> Optional[_Record]:
+         """Registry record for a well-formed, capability-verified handle owned by the active parent."""
+         handle = _coerce_handle(handle)
+diff --git a/agent/turn_facade.py b/agent/turn_facade.py
+index 3830058dce..05ce868e29 100644
+--- a/agent/turn_facade.py
++++ b/agent/turn_facade.py
+@@ -54,6 +54,7 @@ class TurnFacadeMixin:
+         from agent.subagent_lifecycle import bind_subagent_parent
+         from agent.interrupt_scope import track_in_interrupt_scope
+         from agent.turn_facade_lease import admit_durable_turn_lease, carry_unadmitted_user_message
++        from agent.turn_lifecycle_events import fire_turn_end, fire_turn_start
+         from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
+ 
+         effective_task_id = task_id or str(uuid.uuid4())
+@@ -76,6 +77,7 @@ class TurnFacadeMixin:
+         token = affinity_token = acct_token = None
+         task_started = task_finished = False
+         relay_outcome = "failed"
++        turn_hook_payload = None
+ 
+         try:
+             # First statement of the try so the finally's note_turn_finished balances every exit.
+@@ -96,6 +98,7 @@ class TurnFacadeMixin:
+                 return admission.early_result
+             lease = admission.lease
+             conversation_history = admission.conversation_history
++            turn_hook_payload = fire_turn_start(self, turn_id=relay_turn_id, task_id=effective_task_id)
+ 
+             relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(
+                 self,
+@@ -189,6 +192,7 @@ class TurnFacadeMixin:
+             raise
+         finally:
+             try:
++                fire_turn_end(turn_hook_payload, outcome=relay_outcome)
+                 if relay_turn is not None:
+                     relay_runtime.SESSION_COORDINATOR.end_turn(relay_turn, outcome=relay_outcome)
+             finally:
+diff --git a/agent/turn_lifecycle_events.py b/agent/turn_lifecycle_events.py
+new file mode 100644
+index 0000000000..3521a846db
+--- /dev/null
++++ b/agent/turn_lifecycle_events.py
+@@ -0,0 +1,44 @@
++"""``agent_turn_start`` / ``agent_turn_end``: plugin observers that bracket every admitted turn of
++``AIAgent.run_conversation``, including early returns and exceptions that never reach
++``finalize_turn`` (so ``post_llm_call`` and ``on_session_end`` do not fire for them)."""
++
++from __future__ import annotations
++
++import logging
++from typing import Any, Optional
++
++logger = logging.getLogger(__name__)
++
++TURN_START_HOOK = "agent_turn_start"
++TURN_END_HOOK = "agent_turn_end"
++
++
++def _invoke(name: str, payload: dict[str, Any]) -> None:
++    try:
++        from hermes_cli.lifecycle import invoke_hook
++        invoke_hook(name, **payload)
++    except Exception:
++        logger.warning("%s hook failed", name, exc_info=True)
++
++
++def fire_turn_start(agent: Any, *, turn_id: str, task_id: str) -> Optional[dict[str, Any]]:
++    """Fire ``agent_turn_start`` and return the payload ``fire_turn_end`` repeats. Persistence-disabled
++    forks (background review) share their parent's session id and never publish turns: ``None``."""
++    if getattr(agent, "_persist_disabled", False):
++        return None
++    payload = {
++        "session_id": str(getattr(agent, "session_id", None) or ""),
++        "turn_id": turn_id,
++        "task_id": task_id,
++        "platform": str(getattr(agent, "platform", None) or ""),
++        "model": str(getattr(agent, "model", None) or ""),
++    }
++    _invoke(TURN_START_HOOK, payload)
++    return payload
++
++
++def fire_turn_end(started: Optional[dict[str, Any]], *, outcome: str) -> None:
++    """Fire ``agent_turn_end`` with the start payload (same ``session_id`` even if compaction rotated
++    it mid-turn) plus ``outcome``: ``success``, ``failed``, ``cancelled`` or ``timed_out``."""
++    if started is not None:
++        _invoke(TURN_END_HOOK, {**started, "outcome": outcome})
+diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
+index 07504c7164..48add2e7db 100644
+--- a/hermes_cli/plugins.py
++++ b/hermes_cli/plugins.py
+@@ -141,6 +141,10 @@ VALID_HOOKS: set[str] = {
+     "filter_session_list",
+     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
+     "on_skill_lifecycle", "subagent_start", "subagent_stop",
++    # agent_turn_start/end: bracket every admitted AIAgent.run_conversation turn (agent/turn_lifecycle_events.py),
++    # end also on early returns and exceptions. Kwargs: session_id, turn_id, task_id, platform, model; end adds
++    # outcome ("success"|"failed"|"cancelled"|"timed_out"). Observers; returns ignored.
++    "agent_turn_start", "agent_turn_end",
+     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
+     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
+     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
+diff --git a/hermes_cli/plugins_dispatch.py b/hermes_cli/plugins_dispatch.py
+index 503736cf23..f1b9acad25 100644
+--- a/hermes_cli/plugins_dispatch.py
++++ b/hermes_cli/plugins_dispatch.py
+@@ -43,6 +43,8 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
+     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
+     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
+     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end", "on_session_open",
++    # Fire on every turn: a hung callback must not stall the session.
++    "agent_turn_start", "agent_turn_end",
+     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
+     "post_gateway_admission",
+     # Observer on every local session's commands, fired by the gateway (gateway/session_commands.py).
+diff --git a/tests/agent/test_subagent_lifecycle_active.py b/tests/agent/test_subagent_lifecycle_active.py
+new file mode 100644
+index 0000000000..61b5371371
+--- /dev/null
++++ b/tests/agent/test_subagent_lifecycle_active.py
+@@ -0,0 +1,78 @@
++"""SubagentLifecycleService.list_active / steer_active: the running delegated children of this process."""
++
++from __future__ import annotations
++
++import dataclasses
++
++import pytest
++
++from agent.subagent_lifecycle import ActiveSubagent, SubagentLifecycleService
++from tools.delegate_tool_registry import _close_subagent_steering, _register_subagent, _unregister_subagent
++
++
++class _Child:
++    def __init__(self, session_id):
++        self.session_id = session_id
++        self.steered = []
++
++    def steer(self, text):
++        self.steered.append(text)
++        return True
++
++
++@pytest.fixture
++def child():
++    agent = _Child("child-session")
++    _register_subagent({
++        "subagent_id": "sa-active-1", "parent_id": "sa-root", "depth": 1, "goal": "check the logs",
++        "model": "test-model", "started_at": 12.5, "status": "running", "agent": agent,
++        "owner_agent_session_id": "parent-session", "owner_session_id": "private-owner",
++    })
++    yield agent
++    _unregister_subagent("sa-active-1", agent=agent)
++
++
++def _listed(subagent_id):
++    return next((a for a in SubagentLifecycleService.list_active() if a.subagent_id == subagent_id), None)
++
++
++def test_list_active_snapshots_a_running_child(child):
++    snap = _listed("sa-active-1")
++
++    assert snap == ActiveSubagent(
++        subagent_id="sa-active-1", session_id="child-session", parent_subagent_id="sa-root",
++        parent_session_id="parent-session", depth=1, goal="check the logs", model="test-model",
++        status="running", started_at=12.5, steerable=True,
++    )
++    with pytest.raises(dataclasses.FrozenInstanceError):
++        snap.status = "done"
++
++
++def test_list_active_follows_the_child_session_id(child):
++    child.session_id = "child-session-compacted"
++
++    assert _listed("sa-active-1").session_id == "child-session-compacted"
++
++
++def test_finished_child_leaves_the_list(child):
++    _unregister_subagent("sa-active-1", agent=child)
++
++    assert _listed("sa-active-1") is None
++
++
++def test_steer_active_reaches_a_running_child(child):
++    assert SubagentLifecycleService.steer_active("sa-active-1", "  look at disk too  ") is True
++    assert child.steered == ["look at disk too"]
++
++
++def test_steer_active_refuses_closed_unknown_and_empty(child):
++    assert SubagentLifecycleService.steer_active("sa-active-1", "   ") is False
++    assert SubagentLifecycleService.steer_active("sa-missing", "hi") is False
++    assert SubagentLifecycleService.steer_active("", "hi") is False
++
++    _close_subagent_steering("sa-active-1", child)
++
++    assert _listed("sa-active-1").steerable is False
++    assert SubagentLifecycleService.steer_active("sa-active-1", "hi") is False
++    assert child.steered == []
++
+diff --git a/tests/agent/test_turn_lifecycle_events.py b/tests/agent/test_turn_lifecycle_events.py
+new file mode 100644
+index 0000000000..57f42df3a4
+--- /dev/null
++++ b/tests/agent/test_turn_lifecycle_events.py
+@@ -0,0 +1,152 @@
++"""agent_turn_start / agent_turn_end bracket every admitted AIAgent.run_conversation turn."""
++
++from __future__ import annotations
++
++import pytest
++
++from hermes_cli.plugins import VALID_HOOKS
++from hermes_cli.plugins_dispatch import _HOOK_TIMEOUT_BOUNDED_HOOKS
++from run_agent import AIAgent
++
++
++class _DB:
++    def __init__(self, acquire_result=True):
++        self.acquire_result = acquire_result
++
++    def get_session(self, session_id):
++        return {"id": session_id}
++
++    def acquire_session_turn_lease(self, session_id, holder, **kwargs):
++        return self.acquire_result
++
++    def resolve_resume_session_id(self, session_id):
++        return session_id
++
++    def get_messages_as_conversation(self, session_id, **kwargs):
++        return []
++
++    def refresh_session_turn_lease(self, session_id, holder, **kwargs):
++        return True
++
++    def release_session_turn_lease(self, session_id, holder):
++        pass
++
++
++def _agent(*, db=None, persist_disabled=False):
++    agent = AIAgent.__new__(AIAgent)
++    agent.session_id = "s1"
++    agent.platform = "tui"
++    agent.model = "test-model"
++    agent._session_db = db or _DB()
++    agent._session_db_created = True
++    agent._persist_disabled = persist_disabled
++    agent._parent_session_id = None
++    agent._relay_pending_turn_id = None
++    agent._reset_activity_labels_after_turn = lambda: None
++    agent._conversation_root_id = lambda: "s1"
++    agent.log_prefix = ""
++    agent._vprint = lambda *a, **k: None
++    agent.status_callback = None
++    agent._interrupt_requested = False
++    agent._interrupt_message = None
++    agent._pending_redirect = None
++    agent._execution_thread_id = None
++    agent._interrupt_thread_signal_pending = False
++    return agent
++
++
++@pytest.fixture
++def hooks(monkeypatch):
++    calls = []
++    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda name, **kw: calls.append((name, kw)) or [])
++    monkeypatch.setattr("agent.relay_cwd.resolve_relay_scope_cwds", lambda *_a: ("", ""))
++    return calls
++
++
++def _turn_events(calls):
++    return [(name, kw) for name, kw in calls if name in {"agent_turn_start", "agent_turn_end"}]
++
++
++def test_hooks_are_registered_observers():
++    assert {"agent_turn_start", "agent_turn_end"} <= VALID_HOOKS
++    assert {"agent_turn_start", "agent_turn_end"} <= _HOOK_TIMEOUT_BOUNDED_HOOKS
++
++
++@pytest.mark.parametrize("result, outcome", [
++    ({"final_response": "ok", "messages": []}, "success"),
++    ({"final_response": "", "messages": [], "failed": True}, "failed"),
++    ({"final_response": "", "messages": [], "interrupted": True}, "cancelled"),
++])
++def test_start_and_end_bracket_every_returned_turn(monkeypatch, hooks, result, outcome):
++    seen = {}
++
++    def fake_run(agent, *_args, **_kwargs):
++        seen["during"] = [name for name, _kw in _turn_events(hooks)]
++        return dict(result)
++
++    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
++    AIAgent.run_conversation(_agent(), "hello", task_id="t1")
++
++    events = _turn_events(hooks)
++    assert seen["during"] == ["agent_turn_start"]
++    assert [name for name, _kw in events] == ["agent_turn_start", "agent_turn_end"]
++    start, end = events[0][1], events[1][1]
++    assert start["session_id"] == "s1" and start["task_id"] == "t1"
++    assert start["platform"] == "tui" and start["model"] == "test-model"
++    assert start["turn_id"] and start["turn_id"] == end["turn_id"]
++    assert end == {**start, "outcome": outcome}
++
++
++def test_end_fires_when_the_turn_raises(monkeypatch, hooks):
++    def boom(*_args, **_kwargs):
++        raise RuntimeError("provider exploded")
++
++    monkeypatch.setattr("agent.conversation_loop.run_conversation", boom)
++    with pytest.raises(RuntimeError):
++        AIAgent.run_conversation(_agent(), "hello", task_id="t1")
++
++    events = _turn_events(hooks)
++    assert [name for name, _kw in events] == ["agent_turn_start", "agent_turn_end"]
++    assert events[1][1]["outcome"] == "failed"
++
++
++def test_end_keeps_the_start_session_id_after_a_mid_turn_rotation(monkeypatch, hooks):
++    def rotate(agent, *_args, **_kwargs):
++        agent.session_id = "s1-compacted"
++        return {"final_response": "ok", "messages": []}
++
++    monkeypatch.setattr("agent.conversation_loop.run_conversation", rotate)
++    AIAgent.run_conversation(_agent(), "hello", task_id="t1")
++
++    assert [kw["session_id"] for _name, kw in _turn_events(hooks)] == ["s1", "s1"]
++
++
++def test_persistence_disabled_fork_fires_nothing(monkeypatch, hooks):
++    monkeypatch.setattr("agent.conversation_loop.run_conversation",
++                        lambda *_a, **_k: {"final_response": "ok", "messages": []})
++    AIAgent.run_conversation(_agent(persist_disabled=True), "hello", task_id="t1")
++
++    assert _turn_events(hooks) == []
++
++
++def test_unadmitted_turn_fires_nothing(monkeypatch, hooks):
++    def never(*_args, **_kwargs):
++        raise AssertionError("turn must not start without a lease")
++
++    monkeypatch.setattr("agent.conversation_loop.run_conversation", never)
++    result = AIAgent.run_conversation(_agent(db=_DB(acquire_result=False)), "hello", task_id="t1")
++
++    assert result["failed"] is True
++    assert _turn_events(hooks) == []
++
++
++def test_a_failing_hook_never_breaks_the_turn(monkeypatch):
++    def broken(name, **_kw):
++        raise RuntimeError("plugin bug")
++
++    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", broken)
++    monkeypatch.setattr("agent.relay_cwd.resolve_relay_scope_cwds", lambda *_a: ("", ""))
++    monkeypatch.setattr("agent.conversation_loop.run_conversation",
++                        lambda *_a, **_k: {"final_response": "ok", "messages": []})
++
++    assert AIAgent.run_conversation(_agent(), "hello", task_id="t1")["final_response"] == "ok"
+diff --git a/tests/e2e/core/providers/test_turn_lifecycle_hooks.py b/tests/e2e/core/providers/test_turn_lifecycle_hooks.py
+new file mode 100644
+index 0000000000..173f6a97b5
+--- /dev/null
++++ b/tests/e2e/core/providers/test_turn_lifecycle_hooks.py
+@@ -0,0 +1,75 @@
++"""``agent_turn_start`` / ``agent_turn_end`` through a REAL ``hermes -z`` process.
++
++A loopback fake provider answers with a non-retryable 400, so the turn leaves the loop on an
++early return that never reaches ``finalize_turn``: ``post_llm_call`` and ``on_session_end`` do
++not fire for it. The turn bracket still closes, and a normal turn closes it with ``success``.
++"""
++
++from __future__ import annotations
++
++import json
++import sys
++
++import pytest
++
++from tests.e2e.core.providers._openai_helpers import Home, bounded_turn, custom_chat_config
++from tests.fakes.providers.chat_variants import CError, CText, FakeChatVariantServer
++
++pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="subprocess harness is Linux-gated")
++
++PLUGIN = "turn-bracket-probe"
++HOOKS = ("agent_turn_start", "agent_turn_end", "pre_llm_call", "post_llm_call", "on_session_end")
++
++
++def _home(tmp_path, base_url) -> tuple[Home, object]:
++    log = tmp_path / "hooks.log"
++    cfg = custom_chat_config(base_url)
++    cfg["plugins"] = {"enabled": [PLUGIN]}
++    h = Home(tmp_path).write(cfg, {"OPENAI_API_KEY": "sk-fake"})
++    plugin = h.hermes_home / "plugins" / PLUGIN
++    plugin.mkdir(parents=True)
++    (plugin / "plugin.yaml").write_text(f"name: {PLUGIN}\nversion: 1.0.0\ndescription: turn bracket probe\n")
++    (plugin / "__init__.py").write_text(
++        "import json\n"
++        "def register(ctx):\n"
++        f"    for name in {HOOKS!r}:\n"
++        "        def cb(_name=name, **kw):\n"
++        f"            with open({str(log)!r}, 'a') as fh:\n"
++        "                fh.write(json.dumps({'hook': _name, 'session_id': kw.get('session_id'),\n"
++        "                                     'turn_id': kw.get('turn_id'), 'outcome': kw.get('outcome')}) + '\\n')\n"
++        "        ctx.register_hook(name, cb)\n"
++    )
++    return h, log
++
++
++def _events(log) -> list[dict]:
++    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
++
++
++def test_turn_bracket_closes_on_an_early_return(tmp_path) -> None:
++    with FakeChatVariantServer(lambda _r: CError(400, "bad request", code="invalid_request_error")) as provider:
++        h, log = _home(tmp_path, provider.base_url)
++        run = bounded_turn(h, "say hello", 60.0)
++    events = _events(log)
++    names = [e["hook"] for e in events]
++
++    assert names.count("agent_turn_start") == 1 and names.count("agent_turn_end") == 1, run.describe()
++    assert "post_llm_call" not in names and "on_session_end" not in names, names
++    start = next(e for e in events if e["hook"] == "agent_turn_start")
++    end = next(e for e in events if e["hook"] == "agent_turn_end")
++    assert names.index("agent_turn_start") < names.index("pre_llm_call") < names.index("agent_turn_end")
++    assert (end["session_id"], end["turn_id"]) == (start["session_id"], start["turn_id"])
++    assert start["session_id"] == run.session_id
++    assert end["outcome"] == "failed"
++
++
++def test_turn_bracket_wraps_a_normal_turn(tmp_path) -> None:
++    with FakeChatVariantServer(lambda _r: CText("hello there")) as provider:
++        h, log = _home(tmp_path, provider.base_url)
++        run = bounded_turn(h, "say hello", 60.0)
++    names = [e["hook"] for e in _events(log)]
++
++    assert run.stdout.strip() == "hello there", run.describe()
++    assert names[0] == "agent_turn_start" and names[-1] == "agent_turn_end", names
++    assert {"pre_llm_call", "post_llm_call", "on_session_end"} <= set(names)
++    assert _events(log)[-1]["outcome"] == "success"
+diff --git a/website/docs/developer-guide/plugins/index.md b/website/docs/developer-guide/plugins/index.md
+index bdb3b08bf9..5cb3b6f305 100644
+--- a/website/docs/developer-guide/plugins/index.md
++++ b/website/docs/developer-guide/plugins/index.md
+@@ -1546,6 +1546,7 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
+ | `post_auxiliary_call` | After that attempt returns or raises | `pre_auxiliary_call` fields plus `api_duration: float, finish_reason, response_model, usage: dict \| None, response: dict \| None, error: str \| None, error_type: str \| None` | ignored |
+ | [`on_session_start`](../../user-guide/features/hooks.md#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
+ | [`on_session_end`](../../user-guide/features/hooks.md#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
++| [`agent_turn_start`](../../user-guide/features/hooks.md#agent_turn_start) / `agent_turn_end` | Every admitted turn starts / ends, early returns and exceptions included | `session_id: str, turn_id: str, task_id: str, platform: str, model: str`; end adds `outcome: str` | ignored |
+ | [`on_session_finalize`](../../user-guide/features/hooks.md#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
+ | [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
+ | [`on_session_delete`](../../user-guide/features/hooks.md#on_session_delete) | A session delete or deliberate archive commits (every surface, sweeps, prune) | `session_id: str, reason: str, profile: str \| None`, optional `deleted_ids: list[str]`, `sessions_dir: str` | ignored |
+diff --git a/website/docs/developer-guide/subagent-lifecycle-api.md b/website/docs/developer-guide/subagent-lifecycle-api.md
+index 56d9388d07..efef9a5506 100644
+--- a/website/docs/developer-guide/subagent-lifecycle-api.md
++++ b/website/docs/developer-guide/subagent-lifecycle-api.md
+@@ -72,6 +72,28 @@ timeouts are explicitly rejected until Hermes can
+ support them without weakening isolation. Use `allowed_toolsets` to narrow a
+ child; Hermes's existing unsafe-tool block remains enforced.
+ 
++## Running children
++
++`list_active()` returns an immutable `ActiveSubagent` snapshot of every delegated child running in
++this process, whether `delegate_task` or `launch` started it. It needs no handle and no active turn,
++so a plugin route or background thread can call it.
++
++```python
++for child in ctx.subagent_lifecycle.list_active():
++    print(child.subagent_id, child.session_id, child.parent_session_id, child.status)
++```
++
++Each snapshot has `subagent_id`, `session_id` (the child's own session, which follows a compaction),
++`parent_subagent_id` (`None` for a child of a top-level session), `parent_session_id` (the session
++that owns the delegation), `depth`, `goal`, `model`, `status`, `started_at`, and `steerable`
++(`False` once the child stopped accepting steering, just before it finishes). A finished child
++leaves the list.
++
++`steer_active(subagent_id, text)` queues text for a listed child by its id, the same in-process
++steering `delegate_task` uses. It does not check who owns the child: the plugin decides who may
++steer it. It returns `False` for empty text, an unknown or finished child, or a child that is not
++`steerable`.
++
+ ## Routing
+ 
+ Children follow the `delegation` config (`provider`, `model`, `base_url`,
+diff --git a/website/docs/user-guide/features/hooks.md b/website/docs/user-guide/features/hooks.md
+index 73a5b8ff00..ea3c8a451c 100644
+--- a/website/docs/user-guide/features/hooks.md
++++ b/website/docs/user-guide/features/hooks.md
+@@ -475,6 +475,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
+ | `on_session_open` | Observer | Once each time a client creates or opens a local session (CLI, TUI, Desktop, ACP, kanban/A2A workers), in the gateway under the session's profile, before its first turn; never for messaging chats. Timeout-bounded; return ignored. | `session_id`, `platform`, `reason` (`create` or `resume`) | Session identifiers only. |
+ | [`filter_session_list`](#filter_session_list) | Directive/control (fail-closed) | In the gateway, once per page of a `session.list` that names an `audience`, before the page is cut to its limit; never for a listing without one. Return the ids that audience may see, or `None` for an audience the plugin does not judge. Every callback that judges it must keep an id; a listing no callback judged (none answered, each raised or timed out) is refused. Timeout-bounded. | `audience`, `session_ids` | Session identifiers and the caller's audience label only. |
+ | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
++| [`agent_turn_start`](#agent_turn_start) / `agent_turn_end` | Observer | Bracket every admitted `AIAgent.run_conversation()` turn: start before the loop, end in its `finally`, so the end fires on early returns and exceptions too. Not for persistence-disabled internal forks. Timeout-bounded; return ignored. | `session_id`, `turn_id`, `task_id`, `platform`, `model`; end adds `outcome` (`success`, `failed`, `cancelled`, `timed_out`) | Identifiers and outcome only; no message body. |
+ | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
+ | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
+ | `on_session_delete` | Observer | After a session delete or deliberate archive commits (CLI, TUI, Desktop/dashboard, gateway API, sweeps, prune); return ignored. | `session_id`, `reason`, `profile`, optional `deleted_ids` (full set when more than one row went), `sessions_dir` | Session identifiers only; no message content. |
+@@ -1045,7 +1046,7 @@ def my_callback(session_id: str, completed: bool, interrupted: bool,
+ | `platform` | `str` | Where the session is running |
+ 
+ **Fires:** In two places:
+-1. **`agent/turn_finalizer.py`** — at the end of every `run_conversation()` call (`agent/conversation_loop.py`), after all cleanup. Always fires, even if the turn errored.
++1. **`agent/turn_finalizer.py`** — at the end of every `run_conversation()` call (`agent/conversation_loop.py`) that reaches turn finalization, after all cleanup. Some early exits (a non-retryable provider error, exhausted retries, an interrupt during the API call) return without finalization and do not fire it; use [`agent_turn_end`](#agent_turn_start) when you need a callback for every turn.
+ 2. **`cli.py`** — in the CLI's atexit handler, but **only** if the agent was mid-turn (`_agent_running=True`) when the exit occurred. This catches Ctrl+C and `/exit` during processing. In this case, `completed=False` and `interrupted=True`.
+ 
+ **Return value:** Ignored. Despite its name this hook fires after **every turn**, so it can't show the user anything. To show something when a session ends, return a message from [`on_session_finalize`](#on_session_finalize).
+@@ -1241,6 +1242,53 @@ def my_callback(run_dir: str, run_json_path: str, report_md_path: str, dry_run:
+ 
+ **Return value:** Ignored. A callback that raises is logged and skipped; the curator pass is unaffected.
+ 
++### `agent_turn_start`
++
++`agent_turn_start` fires when an agent turn starts and `agent_turn_end` fires when it ends, whatever the outcome. Together they tell a plugin which sessions have a turn running right now. Use them instead of pairing `pre_llm_call` with `post_llm_call` or `on_session_end`: those fire only for turns that reach turn finalization, and `post_llm_call` only for turns that completed with a response.
++
++**Callback signatures:**
++
++```python
++def on_start(session_id: str, turn_id: str, task_id: str, platform: str, model: str, **kwargs):
++def on_end(session_id: str, turn_id: str, task_id: str, platform: str, model: str, outcome: str, **kwargs):
++```
++
++| Parameter | Type | Description |
++|-----------|------|-------------|
++| `session_id` | `str` | The session that runs the turn. The end repeats the start's value, even when compaction gave the session a new id during the turn (see [`post_compaction`](#post_compaction)). |
++| `turn_id` | `str` | The turn's id, the same `turn_id` that `pre_llm_call`, `post_llm_call` and `on_session_end` receive |
++| `task_id` | `str` | The turn's task id |
++| `platform` | `str` | Where the turn runs (`cli`, `tui`, `telegram`, `subagent`, ...) |
++| `model` | `str` | The model at the start of the turn |
++| `outcome` | `str` | End only: `success`, `failed`, `cancelled` (interrupted) or `timed_out` |
++
++**Fires:** In `agent/turn_facade.py::run_conversation` (through `agent/turn_lifecycle_events.py`). The start fires after turn admission (the session turn lease, when the session has a state database) and before the conversation loop. The end fires in the `finally` block, before the lease is released, so with a lease the start and end of consecutive turns of one session never interleave. A turn that never gets the lease (a lease timeout or an interrupt while it waits) fires neither. Subagent turns fire both with `platform="subagent"`. Persistence-disabled internal forks, such as the background memory review, share their parent's session id and fire neither.
++
++**Return value:** Ignored.
++
++**Example — know which sessions are busy:**
++
++```python
++import threading
++
++_running: set[str] = set()
++_lock = threading.Lock()
++
++def on_start(session_id, **kwargs):
++    with _lock:
++        _running.add(session_id)
++
++def on_end(session_id, **kwargs):
++    with _lock:
++        _running.discard(session_id)
++
++def register(ctx):
++    ctx.register_hook("agent_turn_start", on_start)
++    ctx.register_hook("agent_turn_end", on_end)
++```
++
++---
++
+ ### `agent_loop_stopped`
+ 
+ Fires when the gateway **interrupts a running agent turn** — the user ran `/stop` while the loop was working, or the running-agent fast-path inside `/new` cleared the in-flight run before swapping the session. Unlike `on_session_finalize`, this fires earlier, while a turn is mid-flight, so plugins can drop per-turn external resources the agent loop will never consume (e.g. an outbound RPC that was waiting for a tool result).

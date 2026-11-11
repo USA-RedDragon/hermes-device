@@ -1,0 +1,2 @@
+tests/tools/test_process_registry_completion_races.py
+tests/tools/test_process_registry_list_exit.py

@@ -1,0 +1,6 @@
+tests/gateway/test_unviewed_completion_notes.py
+tests/gateway/test_local_automation.py
+tests/gateway/test_completion_admission.py
+tests/gateway/test_completion_delivery.py
+tests/gateway/test_completion_fold.py
+tests/tools/test_async_delegation.py

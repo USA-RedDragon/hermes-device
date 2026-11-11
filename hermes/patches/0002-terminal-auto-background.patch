@@ -1,0 +1,440 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 02:56:40 -0600
+Subject: [PATCH] feat(terminal): move long foreground commands to the
+ background
+
+terminal.auto_background_seconds (default 0, off): a foreground command
+still running after N seconds is handed to the process registry as a
+notify_on_complete background session through the existing
+yield-to-background path, instead of running on to its timeout. The
+result carries the session_id, the output so far and a note not to
+re-run it. Local backend only, and only where a completion can reach
+the agent; elsewhere the command keeps the plain foreground wait.
+---
+ cli-config.yaml.example                      |   4 +
+ hermes_cli/config_defaults.py                |   4 +-
+ tests/tools/test_terminal_auto_background.py | 167 +++++++++++++++++++
+ tools/environments/base.py                   |  24 ++-
+ tools/terminal_tool.py                       |  33 +++-
+ tools/terminal_tool_background.py            |  24 +++
+ website/docs/user-guide/features/tools.md    |  24 +++
+ 7 files changed, 265 insertions(+), 15 deletions(-)
+ create mode 100644 tests/tools/test_terminal_auto_background.py
+
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index 786386a734..bb585a17ea 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -450,6 +450,10 @@ terminal:
+   # Two process_manage wait/poll calls in a row with no new output on a running background process
+   # turn on notify_on_complete for it and tell the agent to stop checking; false = poll as before.
+   process_wait_auto_notify: true
++  # A foreground command still running after this many seconds is moved to the background as a
++  # tracked process with notify_on_complete (it is not killed); the agent gets its session_id and is
++  # told not to re-run it. Local backend only. 0 = off: the command runs until it exits or times out.
++  auto_background_seconds: 0
+   # A `hermes` / `hermes --tui` session's local tools (terminal, background processes, execute_code)
+   # start with the launching shell's toolchain: PATH, an activated venv and CONDA_* / NODE_* / NVM_* /
+   # PYENV_* (plus GOPATH, GOROOT, CARGO_HOME, RUSTUP_HOME, JAVA_HOME), for that session only, when
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 7284e561c6..07504f0492 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -299,8 +299,7 @@ DEFAULT_CONFIG = {
+         # Menlo, Consolas, monospace"). Lets users use a Nerd Font without patching the app.
+         "font_family": "",
+         "timeout": 180,
+-        # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
+-        # = SIGTERM only.
++        # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons); 0 = SIGTERM only.
+         "daemon_term_grace_seconds": 2.0,
+         # Max seconds a one-shot CLI run (-q/-Q/-z) lingers for tracked notify_on_complete
+         # background processes to finish. The dying parent owns their stdout pipes, so exiting
+@@ -309,6 +308,7 @@ DEFAULT_CONFIG = {
+         # disables.
+         "oneshot_completion_wait_seconds": 600.0,
+         "process_wait_auto_notify": True,  # 2 unchanged wait/poll -> notify_on_complete + stop; False = old polling
++        "auto_background_seconds": 0,  # foreground still running after N s -> notify_on_complete background process; 0 = off
+         # Env vars passed into sandboxed terminal/execute_code (plus skill-declared required_environment_variables).
+         "env_passthrough": [],
+         "client_env_passthrough": [],  # Extra non-secret toolchain names a CLI/TUI client sends for its tools
+diff --git a/tests/tools/test_terminal_auto_background.py b/tests/tools/test_terminal_auto_background.py
+new file mode 100644
+index 0000000000..c3d79d5e11
+--- /dev/null
++++ b/tests/tools/test_terminal_auto_background.py
+@@ -0,0 +1,167 @@
++"""``terminal.auto_background_seconds``: a foreground command still running after N seconds is
++handed to the process registry as a notify-on-complete background session (not killed), and the
++model is told its session_id and not to re-run it. Off by default; backends and sessions that
++cannot take the handoff keep the plain foreground wait.
++"""
++import json
++import re
++import threading
++import time
++
++import pytest
++
++from hermes_cli.config_defaults import DEFAULT_CONFIG
++from tools import process_registry_wait_policy as wait_policy
++from tools.process_registry import process_registry
++from tools.terminal_tool import _yield_kwargs, terminal_tool
++from tools.terminal_tool_background import auto_background_seconds
++
++pytestmark = pytest.mark.platforms("linux")
++
++
++@pytest.fixture
++def auto_bg(monkeypatch, tmp_path):
++    """Set ``terminal.auto_background_seconds`` for the test; completion delivery is possible."""
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.setattr(wait_policy, "_can_deliver_completion", lambda: True)
++
++    def set_seconds(value):
++        terminal = {} if value is None else {"auto_background_seconds": value}
++        monkeypatch.setattr(wait_policy, "_effective_config", lambda: {"terminal": terminal})
++    return set_seconds
++
++
++def test_default_is_off(auto_bg):
++    assert DEFAULT_CONFIG["terminal"]["auto_background_seconds"] == 0
++    auto_bg(None)
++    assert auto_background_seconds() is None
++    auto_bg(0)
++    assert auto_background_seconds() is None
++    auto_bg("not a number")
++    assert auto_background_seconds() is None
++
++
++def test_off_runs_in_the_foreground_until_exit(auto_bg):
++    auto_bg(0)
++    r = json.loads(terminal_tool("echo alpha; sleep 0.6; echo omega", task_id="auto-bg-off", timeout=30))
++    assert r["exit_code"] == 0
++    assert "alpha" in r["output"] and "omega" in r["output"]
++    assert "session_id" not in r and r.get("status") != "auto_backgrounded"
++
++
++def test_command_finishing_before_the_threshold_is_a_normal_result(auto_bg):
++    auto_bg(5)
++    t0 = time.monotonic()
++    r = json.loads(terminal_tool("echo quick", task_id="auto-bg-fast", timeout=30))
++    assert time.monotonic() - t0 < 5
++    assert r["exit_code"] == 0 and "quick" in r["output"]
++    assert "session_id" not in r and r.get("status") != "auto_backgrounded"
++
++
++@pytest.mark.live_system_guard_bypass
++def test_command_exceeding_the_threshold_moves_to_background(auto_bg):
++    """Real signal delivery is required for the cleanup kill (see test_terminal_yield_to_background)."""
++    auto_bg(0.5)
++    t0 = time.monotonic()
++    r = json.loads(terminal_tool("echo started; sleep 30; echo done", task_id="auto-bg-slow", timeout=60))
++    elapsed = time.monotonic() - t0
++    sid = r.get("session_id")
++    try:
++        assert elapsed < 10, elapsed
++        assert r["status"] == "auto_backgrounded"
++        assert r["exit_code"] is None and "started" in r["output"]
++        assert r["notify_on_complete"] is True
++        assert sid in r["note"] and "Do NOT re-run it" in r["note"]
++        after = re.search(r"still running after ([0-9.]+)s", r["note"])
++        assert after and 0.5 <= float(after.group(1)) < 10
++        session = process_registry.get(sid)
++        assert session is not None and session.notify_on_complete is True
++        assert process_registry.poll(sid)["status"] == "running"
++    finally:
++        if sid:
++            process_registry.kill_process(sid)
++    evt = process_registry.completion_queue.get(timeout=5)
++    assert evt["session_id"] == sid
++
++
++def test_threshold_at_or_above_timeout_is_ignored(auto_bg):
++    auto_bg(30)
++    kw = _yield_kwargs("sleep 1", 30, env_type="local", cwd="/", effective_task_id="t", task_id="t",
++                       session_key="")
++    assert "yield_handler" in kw and "yield_after" not in kw
++    auto_bg(5)
++    kw = _yield_kwargs("sleep 1", 30, env_type="local", cwd="/", effective_task_id="t", task_id="t",
++                       session_key="")
++    assert kw["yield_after"] == 5
++
++
++@pytest.mark.parametrize("env_type", ["docker", "ssh", "modal", "device"])
++def test_backends_without_handoff_keep_the_foreground_wait(auto_bg, env_type):
++    auto_bg(1)
++    assert _yield_kwargs("sleep 1", 30, env_type=env_type, cwd="/", effective_task_id="t", task_id="t",
++                         session_key="") == {}
++
++
++def test_session_that_cannot_receive_a_completion_stays_off(auto_bg, monkeypatch):
++    auto_bg(1)
++    monkeypatch.setattr(wait_policy, "_can_deliver_completion", lambda: False)
++    assert auto_background_seconds() is None
++
++
++@pytest.mark.parametrize("handler_result", ["decline", "raise"])
++def test_handler_that_cannot_take_the_process_falls_back_once(handler_result):
++    """A declined or failed handoff is not retried every poll, and the command still runs to its
++    natural exit exactly once (no kill, no second copy)."""
++    from tools.environments.local import LocalEnvironment
++
++    calls = []
++
++    def handler(proc, output_so_far):
++        calls.append(output_so_far)
++        if handler_result == "raise":
++            raise RuntimeError("cannot adopt")
++
++    env = LocalEnvironment()
++    try:
++        result = env.execute("echo alpha; sleep 0.8; echo omega", timeout=20, yield_handler=handler,
++                             yield_after=0.2)
++    finally:
++        env.cleanup()
++    assert result["returncode"] == 0
++    assert result["output"].count("alpha") == 1 and "omega" in result["output"]
++    assert len(calls) == 1 and "alpha" in calls[0]
++
++
++def test_yield_after_without_a_handler_is_inert():
++    from tools.environments.local import LocalEnvironment
++
++    env = LocalEnvironment()
++    try:
++        result = env.execute("sleep 0.4; echo omega", timeout=20, yield_after=0.1)
++    finally:
++        env.cleanup()
++    assert result["returncode"] == 0 and "omega" in result["output"]
++
++
++def test_user_yield_keeps_its_own_reason():
++    """A mid-command user message still hands over as a plain yield, not an auto-background."""
++    from tools import interrupt as interrupt_mod
++    from tools.environments.local import LocalEnvironment
++
++    env = LocalEnvironment()
++    procs = []
++
++    def handler(proc, output_so_far):
++        procs.append(proc)
++        return {"output": output_so_far, "returncode": None, "yielded_session_id": "proc_test"}
++
++    tid = threading.current_thread().ident
++    try:
++        interrupt_mod.request_yield(tid)
++        result = env.execute("sleep 5", timeout=20, yield_handler=handler, yield_after=30)
++        assert result["yield_reason"] == "user_message"
++    finally:
++        interrupt_mod.consume_yield(tid)
++        for proc in procs:
++            env._kill_process(proc)
++        env.cleanup()
+diff --git a/tools/environments/base.py b/tools/environments/base.py
+index bcb2ba0ae8..19e4fec902 100644
+--- a/tools/environments/base.py
++++ b/tools/environments/base.py
+@@ -508,12 +508,17 @@ class BaseEnvironment(ABC):
+     def _wait_for_process(
+         self, proc: ProcessHandle, timeout: int = 120, *,
+         bounded_capture: bool = False, watch_interrupt_tid: int | None = None,
+-        output=None, yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
++        output=None, yield_handler: Callable[[ProcessHandle, str], dict] | None = None,
++        yield_after: float | None = None) -> dict:
+         """Poll-based wait with interrupt checking and stdout draining (shared, not overridden).
+         ``yield_handler(proc, output_so_far)``: when the tool thread is asked to yield
+         (``tools.interrupt.request_yield`` — a user message arrived mid-command), the drain
+         thread is stopped, the still-running process is handed to the handler and its dict
+         is returned as the result; the process is NOT killed.
++        ``yield_after`` (seconds, with ``yield_handler``): also hand the process over once it
++        has run that long (``terminal.auto_background_seconds``); the handler's dict then
++        carries ``yield_reason="auto_background"`` and ``yielded_after_s``. Tried once: when the handler declines
++        (returns None or raises) the wait continues to the normal timeout.
+         ``bounded_capture=True`` (foreground terminal-tool path only) retains at most
+         ``tool_output.max_bytes`` in a head/tail window so a verbose subprocess cannot OOM the
+         process; the default keeps full fidelity for internal consumers. Fires the activity
+@@ -553,7 +558,14 @@ class BaseEnvironment(ABC):
+                     _kill_and_join()
+                     return {**self._finalize_wait_result(output, output.render(suffix="\n[Command interrupted]"), 130),
+                             "hermes_interrupted": True}
+-                if yield_handler is not None and consume_yield(watch_interrupt_tid):
++                yield_reason, yield_extra = None, {}
++                if yield_handler is not None:
++                    if consume_yield(watch_interrupt_tid):
++                        yield_reason = "user_message"
++                    elif yield_after is not None and time.monotonic() - _now >= yield_after:
++                        yield_reason, yield_after = "auto_background", None
++                        yield_extra = {"yielded_after_s": round(time.monotonic() - _now, 1)}
++                if yield_reason is not None:
+                     drain_stop.set()
+                     drain_thread.join(timeout=1)
+                     try:
+@@ -563,7 +575,7 @@ class BaseEnvironment(ABC):
+                         handed = None
+                     if handed is not None:
+                         output.close_spill()
+-                        return handed
++                        return {**handed, "yield_reason": yield_reason, **yield_extra}
+                     drain_stop.clear()
+                     drain_thread = _start_drain_thread(proc, output, drain_stop)
+                 if time.monotonic() > deadline:
+@@ -675,7 +687,8 @@ class BaseEnvironment(ABC):
+         stdin_data: str | None = None,
+         rewrite_compound_background: bool = True,
+         bounded_capture: bool = False,
+-        yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
++        yield_handler: Callable[[ProcessHandle, str], dict] | None = None,
++        yield_after: float | None = None) -> dict:
+         """Execute a command, return {"output": str, "returncode": int}. ``bounded_capture=True``
+         caps retention at ``tool_output.max_bytes`` WHILE draining; only the foreground terminal
+         tool may set it — internal full-fidelity consumers (file-op ``cat`` reads feeding the
+@@ -736,7 +749,8 @@ class BaseEnvironment(ABC):
+                 return self._wait_for_process(
+                     spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
+                     watch_interrupt_tid=parent_tid, output=output,
+-                    **({"yield_handler": yield_handler} if yield_handler is not None else {}))
++                    **({"yield_handler": yield_handler} if yield_handler is not None else {}),
++                    **({"yield_after": yield_after} if yield_after is not None else {}))
+             finally:
+                 with _live_foreground_cond:
+                     _live_foreground.pop(id(spawned), None)
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index d99296ba6e..f1aab88aab 100644
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -953,7 +953,10 @@ from tools.terminal_tool_guards import (
+     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
+     gateway_lifecycle_block, locked_skill_block, self_repo_block, trailing_amp_background_command,
+ )
+-from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
++from tools.terminal_tool_background import (
++    _AUTO_BACKGROUND_TIMEOUT_NOTE, _YIELDED_NOTE, auto_background_seconds, spawn_background_process,
++    yield_to_background_handler,
++)
+ from tools.terminal_tool_result import finalize_foreground_result
+ 
+ 
+@@ -1333,10 +1336,17 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
+         return new_env
+ 
+ 
+-def _yield_kwargs(command: str, **ctx) -> dict:
+-    """``env.execute`` kwargs enabling yield-to-background (local backend only)."""
++def _yield_kwargs(command: str, timeout: int, **ctx) -> dict:
++    """``env.execute`` kwargs enabling yield-to-background (local backend only), plus the
++    ``terminal.auto_background_seconds`` deadline when it is on and shorter than ``timeout``."""
+     handler = yield_to_background_handler(command=command, **ctx)
+-    return {"yield_handler": handler} if handler is not None else {}
++    if handler is None:
++        return {}
++    kwargs = {"yield_handler": handler}
++    after = auto_background_seconds()
++    if after is not None and after < timeout:
++        kwargs["yield_after"] = after
++    return kwargs
+ 
+ 
+ def _run_foreground(
+@@ -1372,8 +1382,8 @@ def _run_foreground(
+             # internal env.execute() consumers stay unbounded.
+             result = env.execute(
+                 command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
+-                **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
+-                                task_id=task_id, session_key=session_key),
++                **_yield_kwargs(command, effective_timeout, env_type=env_type, cwd=command_cwd,
++                                effective_task_id=eff, task_id=task_id, session_key=session_key),
+             )
+             break
+         except Exception as e:
+@@ -1393,10 +1403,17 @@ def _run_foreground(
+             return _error_json(_redact_terminal_error_text(f"Command execution failed: {type(e).__name__}: {e}"))
+ 
+     if result.get("yielded_session_id"):  # handed to the background: no exit status yet
++        session_ref = result["yielded_session_id"]
++        if result.get("yield_reason") == "auto_background":
++            status = "auto_backgrounded"
++            note = _AUTO_BACKGROUND_TIMEOUT_NOTE.format(
++                seconds=f"{result.get('yielded_after_s', 0):g}", session_id=session_ref)
++        else:
++            status, note = "yielded_to_background", _YIELDED_NOTE
+         return json.dumps({
+             "output": result.get("output", ""), "exit_code": None, "error": None,
+-            "status": "yielded_to_background", "session_id": result["yielded_session_id"],
+-            "pid": result.get("pid"), "notify_on_complete": True, "note": _YIELDED_NOTE,
++            "status": status, "session_id": session_ref,
++            "pid": result.get("pid"), "notify_on_complete": True, "note": note,
+         }, ensure_ascii=False)
+     if metered:
+         record_terminal_outcome(command, env_type, result)
+diff --git a/tools/terminal_tool_background.py b/tools/terminal_tool_background.py
+index 8c1f02ad6a..368d71d48e 100644
+--- a/tools/terminal_tool_background.py
++++ b/tools/terminal_tool_background.py
+@@ -249,6 +249,30 @@ _YIELDED_NOTE = (
+ )
+ 
+ 
++_AUTO_BACKGROUND_TIMEOUT_NOTE = (
++    "This command was still running after {seconds}s, so it was moved "
++    "to the background WITHOUT being killed and is still running as session_id {session_id}. You will be "
++    "notified when it exits (notify_on_complete). Do NOT re-run it. Continue with other work or end your "
++    "turn; use process_manage(action='poll'|'wait'|'log', session_id=...) to check on it."
++)
++
++
++def auto_background_seconds() -> Optional[float]:
++    """``terminal.auto_background_seconds`` when a foreground command may be moved to the
++    background after that long, else None. 0 (the default) or an unreadable value is off, and so
++    is any session that cannot receive the completion notice (one-shot runs, cron, Kanban
++    workers, stateless API sessions, delegated subagents, notifications off): there the command
++    keeps running in the foreground until it exits or times out."""
++    from hermes_cli.config import cfg_get
++    from tools.process_registry_wait_policy import _can_deliver_completion, _effective_config
++    try:
++        seconds = float(cfg_get(_effective_config(), "terminal", "auto_background_seconds", default=0) or 0)
++        return seconds if seconds > 0 and _can_deliver_completion() else None
++    except Exception:
++        logger.debug("terminal.auto_background_seconds unreadable; auto-background off", exc_info=True)
++        return None
++
++
+ def yield_to_background_handler(
+     *, command: str, env_type: str, cwd: Optional[str], effective_task_id: str,
+     task_id: Optional[str], session_key: str,
+diff --git a/website/docs/user-guide/features/tools.md b/website/docs/user-guide/features/tools.md
+index 92da7b0baa..1eafeebdd5 100644
+--- a/website/docs/user-guide/features/tools.md
++++ b/website/docs/user-guide/features/tools.md
+@@ -260,6 +260,30 @@ wrappers, command substitutions (`$(...)`, backticks, `<(...)`) and commands
+ whose approval category would change without the `&` are still refused with
+ guidance, because Hermes cannot safely tell which part should keep running.
+ 
++### Moving long foreground commands to the background
++
++By default a foreground command runs until it exits or reaches its timeout,
++and a command that times out is killed. Set `terminal.auto_background_seconds`
++to move a foreground command that is still running after that many seconds to
++the background instead, the same as if it had been started with
++`background=true` and `notify=true`. The command is not killed or restarted.
++The tool result has `status: "auto_backgrounded"`, the `session_id`, the output
++so far, and a note that tells the agent the command is still running, that it
++will be notified when the command exits, and that it must not run it again.
++The completion notice (exit code and output tail) arrives like any other
++`notify_on_complete` completion.
++
++```yaml
++terminal:
++  auto_background_seconds: 120   # 0 (default) = off
++```
++
++This applies to the local backend, and only where a completion can reach the
++agent (the same sessions as the repeated-wait rule below). Elsewhere, and on
++backends that cannot hand a running command over, the command keeps today's
++behavior and runs in the foreground until it exits or times out. A value at or
++above the command's timeout has no effect.
++
+ ### Repeated waits on a quiet process
+ 
+ When the agent calls `process(action="wait")` or `process(action="poll")` twice in a row on a

@@ -1,0 +1,172 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 02:50:00 -0600
+Subject: [PATCH] feat(acp): configurable session sources for session/list
+
+session/list offered only sessions an editor started. sessions.acp_list_sources (default [acp]) lets an editor also list chats the TUI, Desktop or CLI started, filtered by the editor's folder as before.
+---
+ acp_adapter/catalog.py                        | 30 ++++++++++++--
+ cli-config.yaml.example                       |  5 +++
+ hermes_cli/config_defaults.py                 |  3 ++
+ .../test_gateway_catalog_sources.py           | 41 +++++++++++++++++++
+ website/docs/user-guide/sessions.md           |  7 ++++
+ 5 files changed, 83 insertions(+), 3 deletions(-)
+ create mode 100644 tests/acp_adapter/test_gateway_catalog_sources.py
+
+diff --git a/acp_adapter/catalog.py b/acp_adapter/catalog.py
+index dee1cc402b..da967bb77d 100644
+--- a/acp_adapter/catalog.py
++++ b/acp_adapter/catalog.py
+@@ -8,7 +8,31 @@ from acp_adapter.session import (
+ )
+ 
+ 
+-def read_catalog_rows(path):
++DEFAULT_LIST_SOURCES = ("acp",)
++
++
++def list_sources(hermes_home):
++    """``sessions.acp_list_sources`` from *hermes_home*'s own config.yaml: the session sources
++    ``session/list`` offers (``hermes sessions list --source`` labels). The default when the key is
++    unset, empty or unreadable."""
++    from hermes_cli.config import load_config_readonly
++    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
++
++    token = set_hermes_home_override(str(hermes_home))
++    try:
++        sessions_cfg = load_config_readonly().get("sessions") or {}
++    except Exception:
++        return DEFAULT_LIST_SOURCES
++    finally:
++        reset_hermes_home_override(token)
++    raw = sessions_cfg.get("acp_list_sources") if isinstance(sessions_cfg, dict) else None
++    if isinstance(raw, str):
++        raw = [raw]
++    sources = tuple(dict.fromkeys(str(item).strip() for item in raw or () if str(item).strip()))
++    return sources or DEFAULT_LIST_SOURCES
++
++
++def read_catalog_rows(path, sources=DEFAULT_LIST_SOURCES):
+     path = Path(path)
+     if not path.exists():
+         return {}
+@@ -16,7 +40,7 @@ def read_catalog_rows(path):
+     # The owner stores an editor thread as ``local`` with ``created_source='acp'``; the surface
+     # reader matches both labels in SQL, before the LIMIT.
+     with SessionDB(db_path=path, read_only=True) as db:
+-        rows = SurfaceLabelReader(db).list_sessions_rich(source="acp", limit=1000)
++        rows = SurfaceLabelReader(db).list_sessions_rich(sources=list(sources), limit=1000)
+         return {str(row["id"]): dict(row) for row in rows}
+ 
+ 
+@@ -66,7 +90,7 @@ def catalog_sessions(path, cwd=None):
+     normalized = _normalize_cwd_for_compare(cwd) if cwd else None
+     owners = read_local_owners(path)
+     results = {}
+-    for sid, row in read_catalog_rows(path).items():
++    for sid, row in read_catalog_rows(path, list_sources(Path(path).parent)).items():
+         # The listing projects a compressed chat's tip; the editor must hold the logical id.
+         sid = row.get("_lineage_root_id") or sid
+         sid = owners.get(sid, sid)
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index c443905cb4..d63b9ba658 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -1136,6 +1136,10 @@ hosted_rooms:
+ # the work back up. A viewer attaching or a message from you starts the count
+ # again. A chat you closed (exit or /new) keeps notes. 0 (default) = notes.
+ #
++# An ACP editor's session list (session/list) offers only sessions an editor
++# started (acp_list_sources: [acp]). Add tui, gui (Desktop) or cli to also offer
++# the chats those surfaces started, so the editor can open them too.
++#
+ # Uncomment to change the defaults shown; auto_prune: true bounds the file,
+ # auto_prune: false keeps every ended session and silences the low-disk prompt.
+ # sessions:
+@@ -1146,6 +1150,7 @@ hosted_rooms:
+ #   min_interval_hours: 24
+ #   orphan_end_grace_s: 300
+ #   unviewed_completion_turns: 0
++#   acp_list_sources: [acp]
+ 
+ # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
+ # Leave unset for the safe default: Desktop coordinates cross-gateway rooms and
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index ba5058f733..5d3fb74310 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -2274,6 +2274,9 @@ DEFAULT_CONFIG = {
+         # List delegate_task subagent runs in session lists (desktop sidebar, dashboard, session.list),
+         # nested under their parent. Off by default: they are machinery, not conversations.
+         "show_subagents": False,
++        # Session sources an ACP editor's session/list offers (`hermes sessions list --source` labels).
++        # Default: editor threads only. Add tui, gui or cli to also offer chats those surfaces started.
++        "acp_list_sources": ["acp"],
+         # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE, #54189). It blocks
+         # writes (~seconds per 100MB): only at startup, only when ≥1 session went AND freelist/page_count > 25%.
+         "vacuum_after_prune": True,
+diff --git a/tests/acp_adapter/test_gateway_catalog_sources.py b/tests/acp_adapter/test_gateway_catalog_sources.py
+new file mode 100644
+index 0000000000..59637b79ec
+--- /dev/null
++++ b/tests/acp_adapter/test_gateway_catalog_sources.py
+@@ -0,0 +1,41 @@
++"""``sessions.acp_list_sources`` widens session/list to chats other surfaces started."""
++import pytest
++
++from acp_adapter.catalog import catalog_sessions
++from hermes_state import SessionDB
++
++
++def _store(home, workspace):
++    db_path = home / 'state.db'
++    with SessionDB(db_path) as db:
++        for sid, source, created in (('editor-thread', 'local', 'acp'), ('tui-chat', 'local', 'tui'),
++                                     ('desktop-chat', 'local', 'desktop'), ('hub-chat', 'gui', None),
++                                     ('cli-chat', 'local', 'cli'), ('telegram-chat', 'telegram', None)):
++            db.create_session(session_id=sid, source=source, cwd=str(workspace))
++            if created:
++                db._execute_write(lambda conn, sid=sid, created=created: conn.execute(
++                    'UPDATE sessions SET created_source = ? WHERE id = ?', (created, sid)))
++            db.append_message(sid, 'user', 'saved turn')
++        db.create_session(session_id='other-folder', source='tui', cwd=str(home / 'elsewhere'))
++        db.append_message('other-folder', 'user', 'saved turn')
++    return db_path
++
++
++def _listed(db_path, cwd):
++    return {row['session_id'] for row in catalog_sessions(db_path, cwd)}
++
++
++@pytest.mark.parametrize('config', [None, 'sessions:\n  show_subagents: false\n',
++                                    'sessions:\n  acp_list_sources: []\n'])
++def test_default_lists_editor_threads_only(tmp_path, config):
++    if config is not None:
++        (tmp_path / 'config.yaml').write_text(config)
++    assert _listed(_store(tmp_path, tmp_path), str(tmp_path)) == {'editor-thread'}
++
++
++def test_configured_sources_list_tui_desktop_and_cli_chats_in_the_folder(tmp_path):
++    (tmp_path / 'config.yaml').write_text('sessions:\n  acp_list_sources: [acp, tui, gui, cli]\n')
++    db_path = _store(tmp_path, tmp_path)
++    assert _listed(db_path, str(tmp_path)) == {'editor-thread', 'tui-chat', 'desktop-chat', 'hub-chat', 'cli-chat'}
++    assert 'other-folder' in _listed(db_path, None)
++    assert 'telegram-chat' not in _listed(db_path, None)
+diff --git a/website/docs/user-guide/sessions.md b/website/docs/user-guide/sessions.md
+index 19eeada10c..dc76496a42 100644
+--- a/website/docs/user-guide/sessions.md
++++ b/website/docs/user-guide/sessions.md
+@@ -142,6 +142,13 @@ Each session is tagged with its source platform:
+ 
+ A session compressed mid-conversation continues under the same source: the compression child of a `--source tool` or `oneshot` run is tagged the same way, so it inherits the same picker visibility.
+ 
++An ACP editor's session list offers only sessions an editor started. To also offer chats started in the TUI, Desktop or the CLI, list those sources in `sessions.acp_list_sources` (default `[acp]`). The editor's folder filter still applies:
++
++```yaml
++sessions:
++  acp_list_sources: [acp, tui, gui, cli]
++```
++
+ ## CLI Session Resume
+ 
+ Resume previous conversations from the CLI using `--continue` or `--resume`:
