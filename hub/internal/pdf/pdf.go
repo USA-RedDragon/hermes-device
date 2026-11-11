@@ -350,8 +350,9 @@ func readLimited(path string, n int64) ([]byte, error) {
 
 // limitScript sets the resource limits, then runs the program. The
 // program and its arguments come as positional parameters, so no file
-// name is ever parsed by the shell.
-const limitScript = `ulimit -v ` + "%d" + ` -t ` + "%d" + ` -f ` + "%d" + ` -c 0 || exit 125; exec "$@"`
+// name is ever parsed by the shell. Each ulimit call sets one limit,
+// since dash takes only one option.
+const limitScript = `{ ulimit -v %d && ulimit -t %d && ulimit -f %d && ulimit -c 0; } || exit 125; exec "$@"`
 
 // run runs one poppler program in dir with a clean environment and
 // limits, until ctx ends. Its standard output goes to stdout.
