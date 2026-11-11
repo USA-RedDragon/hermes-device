@@ -27,6 +27,8 @@ import (
 const (
 	kSessionID       = "session_id"
 	kPending         = "pending"
+	kRole            = "role"
+	kSubmission      = "submission_id"
 	kComplete        = "complete"
 	kJSONRPC         = "jsonrpc"
 	kEvent           = "event"
@@ -991,7 +993,7 @@ func (g *Gateway) hPromptSubmit(c *conn, p map[string]any) (any, string, func())
 	if s == nil || s.subs[c] == "" {
 		return nil, errDenied, nil
 	}
-	if !onlyKeys(p, kSessionID, kText, "submission_id", "attachments") || str(p, "submission_id") == "" {
+	if !onlyKeys(p, kSessionID, kText, kSubmission, "attachments") || str(p, kSubmission) == "" {
 		return nil, errInvalidParams, nil
 	}
 	var atts []gateway.Attachment
@@ -1009,7 +1011,7 @@ func (g *Gateway) hPromptSubmit(c *conn, p map[string]any) (any, string, func())
 	if r := g.refuse[s.ID]; r != "" {
 		return nil, r, nil
 	}
-	key := s.ID + "\x00" + str(p, "submission_id")
+	key := s.ID + "\x00" + str(p, kSubmission)
 	if old, ok := g.submissions[key]; ok {
 		if old.text != str(p, kText) {
 			return nil, "admission_conflict", nil
@@ -1019,7 +1021,7 @@ func (g *Gateway) hPromptSubmit(c *conn, p map[string]any) (any, string, func())
 	s.Generation++
 	s.Running = true
 	s.Attachments = append(s.Attachments, atts)
-	s.Messages = append(s.Messages, map[string]any{"role": "user", kText: str(p, kText)})
+	s.Messages = append(s.Messages, map[string]any{kRole: "user", kText: str(p, kText), kSubmission: str(p, kSubmission)})
 	admission := randHex()
 	receipt := map[string]any{"admission_id": admission, "ref": map[string]any{kSessionID: s.ID},
 		"sequence": 1, kStatus: "started", "outcome": nil, "authority_epoch": 1, kExecGen: s.Generation}
@@ -1028,7 +1030,7 @@ func (g *Gateway) hPromptSubmit(c *conn, p map[string]any) (any, string, func())
 		return receipt, "", nil
 	}
 	text := str(p, kText)
-	return receipt, "", func() { g.turn(s.ID, admission, text) }
+	return receipt, "", func() { g.turn(s.ID, admission, str(p, kSubmission), text) }
 }
 
 func (g *Gateway) hInterrupt(_ *conn, p map[string]any) (any, string, func()) {
@@ -1126,16 +1128,11 @@ func (g *Gateway) clarify(s *Session, text string) bool {
 	return true
 }
 
-func (g *Gateway) turn(id, admission, text string) {
+func (g *Gateway) turn(id, admission, submission, text string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	s := g.sessions[id]
-	// Like Hermes: session.info lists the input with its text, then
-	// message.start names the admission with an empty payload.
-	s.Revision++
-	g.publishLocked(s, gateway.InfoEvent, map[string]any{kPending: []gateway.PendingAdmission{
-		{AdmissionID: admission, Status: "started", Text: text}}, kRevision: s.Revision, kExecGen: s.Generation})
-	g.publishAdmissionLocked(s, "message.start", admission, map[string]any{})
+	g.startLocked(s, admission, submission, text)
 	if s.ShowReasoning {
 		g.publishLocked(s, "reasoning.delta", map[string]any{kText: "thinking about "})
 		g.publishLocked(s, "reasoning.delta", map[string]any{kText: text})
@@ -1170,11 +1167,43 @@ func (g *Gateway) turn(id, admission, text string) {
 	g.publishLocked(s, "message.delta", map[string]any{kText: "echo: "})
 	g.publishLocked(s, "message.delta", map[string]any{kText: text})
 	s.Running = false
-	s.Messages = append(s.Messages, map[string]any{"role": "assistant", kText: "echo: " + text})
+	s.Messages = append(s.Messages, map[string]any{kRole: "assistant", kText: "echo: " + text})
 	g.publishLocked(s, "message.complete", map[string]any{kText: "echo: " + text, kStatus: kComplete,
 		"usage": map[string]any{kModel: s.Model, "input": 9000, "output": 120, kReasoning: 0, "prompt": 9000, "completion": 120,
 			kTotal: 9120, "calls": 1, "context_used": 9000, "context_max": 131072, "context_percent": 7,
 			"context_source": "provider_usage", "context_estimated": false, "avg_tps": 42.5}})
+}
+
+// startLocked starts a turn as Hermes does: session.info lists the input
+// with its text and the client's submission ID, then message.start names
+// the admission with an empty payload.
+func (g *Gateway) startLocked(s *Session, admission, submission, text string) {
+	s.Revision++
+	g.publishLocked(s, gateway.InfoEvent, map[string]any{kPending: []gateway.PendingAdmission{
+		{AdmissionID: admission, Status: "started", Text: text, InputID: submission}}, kRevision: s.Revision, kExecGen: s.Generation})
+	g.publishAdmissionLocked(s, "message.start", admission, map[string]any{})
+}
+
+// StartElsewhere starts a turn as another client of the gateway does,
+// such as the terminal UI, and leaves it running: the test publishes the
+// rest. With offline set, no connection gets its events, as when the hub
+// was not subscribed; with stored unset the transcript does not show the
+// prompt yet.
+func (g *Gateway) StartElsewhere(sessionID, submission, text string, offline, stored bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	s := g.sessions[sessionID]
+	subs := s.subs
+	if offline {
+		s.subs = map[*conn]string{}
+	}
+	s.Generation++
+	s.Running = true
+	if stored {
+		s.Messages = append(s.Messages, map[string]any{kRole: "user", kText: text, kSubmission: submission})
+	}
+	g.startLocked(s, randHex(), submission, text)
+	s.subs = subs
 }
 
 // hPromptCancel retires a queued input, as Hermes refuses for any other status.

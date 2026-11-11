@@ -327,7 +327,7 @@ func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text s
 	}
 	id := hub.SubmissionID(ctx)
 	if id == "" {
-		id = uuid.NewString()
+		id = hub.NewSubmissionID()
 	}
 	release := b.gate(sessionID)
 	defer release()
@@ -1120,9 +1120,7 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	ls.seq++
 	ls.snapshot = hub.Event{Seq: ls.seq, Kind: hub.KindSnapshot, Data: data}
 	ls.broadcast(ls.snapshot)
-	for _, ev := range tail {
-		ls.emit(ev.Type, ls.trackTurn(ev))
-	}
+	ls.replayTurn(tail, msgs)
 	b.heldEventsLocked(ls, ls.id, snap.SessionID)
 	ls.flushEarly()
 }

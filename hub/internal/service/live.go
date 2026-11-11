@@ -181,36 +181,100 @@ func (ls *live) setInputs(ps []gateway.PendingAdmission) {
 	}
 }
 
-// withText adds the started input's text to a message.start payload that
-// lacks one, and "note" with its producer when Hermes queued the input
-// itself (a cron result), so viewers do not show it as the user's message.
-// ls.mu is held.
+// withText adds what the hub knows about the started input to a
+// message.start payload: its text when the payload lacks one, "note" with
+// its producer when Hermes queued the input itself (a cron result), so
+// viewers do not show it as the user's message, and else the input's
+// submission ID, so viewers can tell where the user sent it. ls.mu is held.
 func (ls *live) withText(ev gateway.Event) json.RawMessage {
+	return ls.startPayload(ev, true)
+}
+
+// startPayload is withText; withPrompt false leaves out the text of a
+// user's input. ls.mu is held.
+func (ls *live) startPayload(ev gateway.Event, withPrompt bool) json.RawMessage {
+	if ev.AdmissionID == "" {
+		return ev.Payload
+	}
 	text, ok := ls.texts[ev.AdmissionID]
-	if !ok || ev.AdmissionID == "" {
+	in, known := ls.inputs[ev.AdmissionID]
+	if !ok && !known {
 		return ev.Payload
 	}
 	delete(ls.texts, ev.AdmissionID)
-	note := gateway.Producer(ls.inputs[ev.AdmissionID].InputID)
+	note := gateway.Producer(in.InputID)
 	var p map[string]any
 	if json.Unmarshal(ev.Payload, &p) != nil || p == nil {
 		p = map[string]any{}
 	}
-	s, _ := p["text"].(string)
-	if s != "" && note == "" {
-		return ev.Payload
-	}
-	if s == "" {
+	switch s, _ := p["text"].(string); {
+	case note != "":
+		if s == "" {
+			p["text"] = text
+		}
+		p["note"] = note
+	case s == "" && withPrompt && text != "":
 		p["text"] = text
 	}
-	if note != "" {
-		p["note"] = note
+	if note == "" && in.InputID != "" {
+		p[hub.StartSubmissionID] = in.InputID
+	}
+	if note == "" {
+		p[hub.StartAdmissionID] = ev.AdmissionID
 	}
 	out, err := json.Marshal(p)
 	if err != nil {
 		return ev.Payload
 	}
 	return out
+}
+
+// stampStart adds when the hub saw a turn start to its message.start
+// payload, so a viewer that attaches later shows how long it runs.
+func stampStart(payload json.RawMessage, at time.Time) json.RawMessage {
+	var p map[string]any
+	if json.Unmarshal(payload, &p) != nil || p == nil {
+		p = map[string]any{}
+	}
+	p[hub.StartedAt] = at.UnixMilli()
+	out, err := json.Marshal(p)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+// replayTurn emits the events of the turn that ran when the hub
+// subscribed, with what the turn's session.info events say about its
+// input on its message.start. The prompt's text goes on it only when the
+// snapshot's transcript does not show it already. ls.mu is held.
+func (ls *live) replayTurn(tail []gateway.Event, msgs []json.RawMessage) {
+	_, shown := hub.OpenTurnPrompt(msgs)
+	inputs, texts := ls.inputs, ls.texts
+	ls.inputs, ls.texts = map[string]gateway.PendingAdmission{}, map[string]string{}
+	for _, ev := range tail {
+		if ev.Type != gateway.InfoEvent {
+			continue
+		}
+		var p gateway.InfoPayload
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			for _, in := range p.Pending {
+				ls.inputs[in.AdmissionID] = in
+				ls.texts[in.AdmissionID] = in.Text
+			}
+		}
+	}
+	for _, ev := range tail {
+		payload := ev.Payload
+		if ev.Type == hub.KindMessageStart {
+			ev.Payload = ls.startPayload(ev, !shown)
+			if gateway.Producer(ls.inputs[ev.AdmissionID].InputID) != "" {
+				ev.Payload = payload
+			}
+		}
+		ls.emit(ev.Type, ls.trackTurn(ev))
+	}
+	ls.inputs, ls.texts = inputs, texts
 }
 
 // setFences takes the fences a stale-fence refusal carries as they are.
@@ -385,7 +449,7 @@ func (ls *live) apply(ev gateway.Event) {
 			}
 		}
 	case hub.KindMessageStart:
-		ev.Payload = ls.withText(ev)
+		ev.Payload = stampStart(ls.withText(ev), time.Now())
 	case hub.KindThinkingDelta, "subagent.thinking":
 		ev.Payload = plainThinking(ev.Payload)
 	case hub.KindApprovalRequest, hub.KindClarifyRequest:
