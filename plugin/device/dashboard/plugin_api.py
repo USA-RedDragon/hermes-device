@@ -155,6 +155,63 @@ async def _post_file(core, session_id: str, request: Request):
         return _error(exc.status, exc.code, exc.message)
 
 
+# --- built-in memory (section 9.1) -------------------------------------------------------------
+
+def _memory():
+    return _core()._load_sibling("hermes_device_memory", "memory.py")
+
+
+async def _memory_call(fn, *args):
+    mem = _memory()
+    try:
+        return await asyncio.to_thread(fn, *args)
+    except mem.MemoryRefused as exc:
+        return _error(exc.status, exc.code, exc.message)
+
+
+async def _json_body(request: Request) -> Optional[dict]:
+    try:
+        body = await request.json()
+    except Exception:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+@router.get("/memory")
+async def memory_get():
+    return await _memory_call(_memory().snapshot)
+
+
+@router.post("/memory/pending/{pending_id}/approve")
+async def memory_approve(pending_id: str):
+    return await _memory_call(_memory().approve, pending_id)
+
+
+@router.post("/memory/pending/{pending_id}/reject")
+async def memory_reject(pending_id: str):
+    return await _memory_call(_memory().reject, pending_id)
+
+
+@router.post("/memory/{target}/{op}")
+async def memory_change(target: str, op: str, request: Request):
+    mem = _memory()
+    body = await _json_body(request)
+    try:
+        if op == "add":
+            args = (mem.add, target, mem.body_text(body, "content"))
+        elif op == "edit":
+            args = (mem.edit, target, mem.body_text(body, "entry"), mem.body_text(body, "content"))
+        elif op == "remove":
+            args = (mem.remove, target, mem.body_text(body, "entry"))
+        elif op == "replace":
+            args = (mem.replace_all, target, mem.body_text(body, "text"), mem.body_list(body, "base"))
+        else:
+            return _error(404, "not_found", "unknown memory operation")
+    except mem.MemoryRefused as exc:
+        return _error(exc.status, exc.code, exc.message)
+    return await _memory_call(*args)
+
+
 # --- exec leg (section 4) ---------------------------------------------------------------------
 
 def _header(ws: WebSocket, name: str) -> Optional[bytes]:
