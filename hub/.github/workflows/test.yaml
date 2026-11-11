@@ -44,6 +44,9 @@ jobs:
 
       - run: go generate ./...
 
+      - name: Install PDF tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils qpdf
+
       - name: Race tests
         run: |
           go test ./... -race
@@ -64,6 +67,9 @@ jobs:
           go-version-file: go.mod
 
       - run: go generate ./...
+
+      - name: Install PDF tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils qpdf
 
       - name: Unit tests
         run: |
@@ -136,6 +142,9 @@ jobs:
           go-version-file: go.mod
 
       - run: go generate ./...
+
+      - name: Install PDF tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils qpdf
 
       - name: Unit tests
         run: |
