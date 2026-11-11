@@ -266,6 +266,7 @@ func TestImagesTurnAutoUpdateOff(t *testing.T) {
 func TestInteractiveNoticeDoesNotBlock(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-release:
@@ -274,13 +275,14 @@ func TestInteractiveNoticeDoesNotBlock(t *testing.T) {
 		_, _ = w.Write([]byte(`{"tag_name":"v0.15.0"}`))
 	}))
 	t.Cleanup(srv.Close)
-	t.Cleanup(func() { close(release) })
+	t.Cleanup(unblock)
 	path := filepath.Join(t.TempDir(), "release.json")
 	b, _ := autoBase(t, verNow, nil)
 	b.releaseLookup = func(string) *autoupdate.Releases {
 		return &autoupdate.Releases{APIURL: srv.URL, Owner: "alice", Repo: "hermes-device", Client: srv.Client(), Path: path}
 	}
-	if err := os.WriteFile(path, []byte(`{"tag":"v0.15.0","tried_at":"`+time.Now().Format(time.RFC3339)+`"}`), 0o600); err != nil {
+	stale := time.Now().Add(-2 * autoupdate.NoticeMaxAge).Format(time.RFC3339)
+	if err := os.WriteFile(path, []byte(`{"tag":"v0.15.0","tried_at":"`+stale+`"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
@@ -292,6 +294,11 @@ func TestInteractiveNoticeDoesNotBlock(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "v0.15.0 is available") {
 		t.Errorf("notice %q", out.String())
+	}
+	unblock()
+	b.notice.Finish()
+	if _, checked := b.notice.Releases.Cached(); checked.IsZero() {
+		t.Error("the background lookup did not finish")
 	}
 	b.notice = nil
 	b.getenv = func(k string) string {
