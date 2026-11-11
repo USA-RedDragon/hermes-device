@@ -944,7 +944,15 @@ class SandboxTests(Base):
             r = core.pre_tool_call(tool_name="write_file", args={"path": "~/.ssh/authorized_keys", "content": "x"},
                                    task_id="t")
             self.assertEqual(r["action"], "block")
-            r = core.pre_tool_call(tool_name="cronjob_manage", args={"action": "create"}, task_id="t")
+            self.assertIsNone(core.pre_tool_call(tool_name="cronjob_manage",
+                                                 args={"action": "create", "prompt": "p", "schedule": "in 2m",
+                                                       "script": "", "no_agent": False}, task_id="t"))
+            for pod_arg in ({"script": "s.py"}, {"monitor": "https://example.com"}, {"no_agent": True},
+                            {"workdir": "/opt/data"}, {"monitor_url": "https://example.com"}):
+                r = core.pre_tool_call(tool_name="cronjob_manage", args={"action": "create", **pod_arg}, task_id="t")
+                self.assertEqual(r["action"], "block")
+                self.assertIn("would run on the server", r["message"])
+            r = core.pre_tool_call(tool_name="kanban_create", args={}, task_id="t")
             self.assertIn("runs in the sandbox device", r["message"])
             self.hub.detach(self.sandbox.conn)
             r = core.pre_tool_call(tool_name="read_file", args={"path": "x.txt"}, task_id="t")

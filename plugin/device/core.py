@@ -119,6 +119,10 @@ FILE_AND_COMMAND_TOOLS = frozenset({
     "search_files", "execute_code"})
 FILE_PATH_TOOLS = ("read_file", "write_file", "patch", "search_files")
 POD_ONLY_TOOLS = frozenset({"cronjob_manage", "kanban_create", "kanban_schedule", "kanban_unblock"})
+# A cron run is a never-bound session, so with ``fallback: device`` its tools run on the sandbox too.
+# Sandbox sessions may schedule jobs, but not the job fields that run or fetch on the pod itself.
+SANDBOX_CRON_TOOL = "cronjob_manage"
+CRON_POD_ARGS = ("script", "monitor", "monitor_script", "monitor_url", "no_agent", "workdir")
 _BOM = "\ufeff"
 
 
@@ -2341,7 +2345,13 @@ def _guard(tool_name: str, args: dict, task_id: str) -> Optional[dict]:
             return _block(refusal_message(res))
         return None
     b = res.binding
-    if tool_name in POD_ONLY_TOOLS:
+    if tool_name == SANDBOX_CRON_TOOL and res.sandbox:
+        pod_args = [k for k in CRON_POD_ARGS if args.get(k) not in (None, "", False)]
+        if pod_args:
+            return _block(f"hermes-device: session {res.session_id} {where(res)}; cronjob_manage "
+                          f"{', '.join(pod_args)} would run on the server, so it is refused. Schedule a "
+                          f"prompt-only job; its run uses the sandbox too.")
+    elif tool_name in POD_ONLY_TOOLS:
         return _block(f"hermes-device: session {res.session_id} {where(res)}; {tool_name} "
                       f"creates work that runs on the server, so it is refused for device sessions.")
     from tools.file_tools_paths import _terminal_env_type_for_task
