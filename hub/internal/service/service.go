@@ -817,6 +817,16 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 			rows[s.ID] = s
 		}
 	}
+	var roster gateway.Roster
+	if err := c.Call(cctx, gateway.MethodSubagentRoster, map[string]any{}, &roster); err != nil {
+		b.log.Debug("subagent.roster", "error", err.Error())
+	}
+	for _, r := range roster.Sessions {
+		if s, ok := rows[r.SessionID]; ok {
+			s.Activity = r.Subagents + r.Background
+			rows[r.SessionID] = s
+		}
+	}
 	out := make([]hub.Session, 0, len(rows))
 	for _, s := range rows {
 		out = append(out, s)
@@ -1008,12 +1018,12 @@ func (b *backend) reasoning(ctx context.Context, c *gateway.Client, id string) {
 // subscribed installs a fresh snapshot. ls.pending must be set.
 func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, snap gateway.Snapshot) {
 	b.reasoning(ctx, c, snap.SessionID)
-	var tail []gateway.Event
+	var tail, before []gateway.Event
 	if snap.Running {
 		var r gateway.EventsSinceResult
 		err := c.Call(ctx, gateway.MethodEventsSince, gateway.EventsSinceParams{SessionID: snap.SessionID, ReplayEpoch: snap.ReplayEpoch}, &r)
 		if err == nil && !r.SnapshotRequired {
-			tail = currentTurn(r.Events, snap.LastSequence)
+			before, tail = currentTurn(r.Events, snap.LastSequence)
 		}
 	}
 	title := ""
@@ -1064,12 +1074,13 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	}
 	ls.setPrompts(snap.Prompts)
 	ls.setInputs(snap.Pending)
+	ls.subscribedUsage(snap.Running, snap.Info.Usage, before)
 	ls.ring, ls.truncated = nil, false
 	ls.seq++
 	ls.snapshot = hub.Event{Seq: ls.seq, Kind: hub.KindSnapshot, Data: data}
 	ls.broadcast(ls.snapshot)
 	for _, ev := range tail {
-		ls.emit(ev.Type, ev.Payload)
+		ls.emit(ev.Type, ls.trackTurn(ev))
 	}
 	b.heldEventsLocked(ls, ls.id, snap.SessionID)
 	ls.flushEarly()
@@ -1090,22 +1101,22 @@ func info(i gateway.SnapshotInfo) hub.Info {
 	return out
 }
 
-// currentTurn is the frames of the running turn: those after the last
-// message.complete, up to the snapshot's sequence.
-func currentTurn(evs []gateway.Event, last int64) []gateway.Event {
+// currentTurn splits the frames up to the snapshot's sequence at the
+// last message.complete: the frames before the running turn, up to that
+// turn end, and the frames of the running turn.
+func currentTurn(evs []gateway.Event, last int64) (before, turn []gateway.Event) {
 	start := 0
 	for i, ev := range evs {
 		if ev.Type == hub.KindMessageComplete && ev.Seq <= last {
 			start = i + 1
 		}
 	}
-	var out []gateway.Event
 	for _, ev := range evs[start:] {
 		if ev.Seq <= last {
-			out = append(out, ev)
+			turn = append(turn, ev)
 		}
 	}
-	return out
+	return evs[:start], turn
 }
 
 func (b *backend) call(ctx context.Context, ls *live, method string, params, out any) error {

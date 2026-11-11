@@ -25,6 +25,9 @@ type Session struct {
 	// hub or the web app), "cli", "tui" or "acp" (an editor such as VS
 	// Code). "" when the backend did not say.
 	Source string
+	// Activity counts the subagents and background commands the session
+	// runs now.
+	Activity int
 }
 
 // Event kinds delivered on an attached session.

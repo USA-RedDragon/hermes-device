@@ -62,6 +62,12 @@ type live struct {
 	// watched keeps the session subscribed with no viewer while it runs,
 	// so the hub sees its prompts (see Service.Watch).
 	watched bool
+	// usage is the session's latest token counters, turnBase those at the
+	// start of the running turn and turn its tokens so far; nil when not
+	// known.
+	usage    *counts
+	turnBase *counts
+	turn     *hub.TurnTokens
 }
 
 func (ls *live) canSee() *bool {
@@ -370,7 +376,7 @@ func (ls *live) apply(ev gateway.Event) {
 		}
 	case hub.KindMessageStart:
 		ev.Payload = ls.withText(ev)
-	case hub.KindThinkingDelta:
+	case hub.KindThinkingDelta, "subagent.thinking":
 		ev.Payload = plainThinking(ev.Payload)
 	case hub.KindApprovalRequest, hub.KindClarifyRequest:
 		var p gateway.Prompt
@@ -399,6 +405,7 @@ func (ls *live) apply(ev gateway.Event) {
 			ls.settle(true, p.RequestIDs...)
 		}
 	}
+	ev.Payload = ls.trackTurn(ev)
 	ls.trackProvider(ev)
 	ls.turnNotices(ev)
 	if text, ok := failedTurnText(ev); ok {

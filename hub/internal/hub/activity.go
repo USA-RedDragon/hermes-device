@@ -1,0 +1,103 @@
+package hub
+
+import (
+	"context"
+	"errors"
+)
+
+// Errors of Activity.
+var (
+	// ErrUnknownSubagent is a subagent the session does not run now.
+	ErrUnknownSubagent = errors.New("unknown subagent")
+	// ErrUnknownProcess is a background command the session does not own.
+	ErrUnknownProcess = errors.New("unknown background command")
+	// ErrSteerRejected is a message a subagent no longer takes: it is past
+	// its last step or has ended.
+	ErrSteerRejected = errors.New("the subagent no longer takes messages")
+	// ErrUsageUnavailable is token use the backend's records could not
+	// give, wrapping why.
+	ErrUsageUnavailable = errors.New("token use unavailable")
+)
+
+// Activity is the work a chat runs beside its turns: subagents that
+// delegate_task started, background commands and /bg prompts. Every method
+// fails with ErrForbidden when the backend is not mapped to user, and acts
+// only on the work of the named session.
+type Activity interface {
+	// Activity lists the session's subagents and background commands.
+	Activity(ctx context.Context, user, backendID, sessionID string) (ActivityState, error)
+	// SubagentTail is the end of a running subagent's transcript.
+	SubagentTail(ctx context.Context, user, backendID, sessionID, subagentID string) (SubagentTail, error)
+	// SteerSubagent queues a message for a running subagent. It takes the
+	// message at its next step.
+	SteerSubagent(ctx context.Context, user, backendID, sessionID, subagentID, text string) error
+	// StopSubagent interrupts a running subagent.
+	StopSubagent(ctx context.Context, user, backendID, sessionID, subagentID string) error
+	// StopProcess kills one background command of the session.
+	StopProcess(ctx context.Context, user, backendID, sessionID, processID string) error
+	// PauseSubagents stops or allows new subagents. Hermes keeps one switch
+	// for every chat of the backend; running subagents go on.
+	PauseSubagents(ctx context.Context, user, backendID, sessionID string, paused bool) (bool, error)
+	// Background starts a /bg prompt: a separate agent runs text with the
+	// session's settings, and its answer comes as a background.complete
+	// event. It returns the task ID.
+	Background(ctx context.Context, user, backendID, sessionID, text string) (string, error)
+}
+
+// ActivityState is what a session runs beside its turns now.
+type ActivityState struct {
+	Subagents []Subagent `json:"subagents"`
+	Processes []Process  `json:"processes"`
+	// Paused is true while Hermes starts no new subagents on the backend.
+	Paused bool `json:"paused"`
+}
+
+// Subagent is one running subagent, from subagent.list. Finished
+// subagents are known only from their subagent.complete events.
+type Subagent struct {
+	ID             string  `json:"id"`
+	ParentID       string  `json:"parent_id,omitempty"`
+	Depth          int     `json:"depth"`
+	Goal           string  `json:"goal"`
+	Model          string  `json:"model,omitempty"`
+	StartedAt      float64 `json:"started_at,omitempty"`
+	Status         string  `json:"status"`
+	ToolCount      int     `json:"tool_count"`
+	LastTool       string  `json:"last_tool,omitempty"`
+	AcceptingSteer bool    `json:"accepting_steer"`
+	ChildSessionID string  `json:"child_session_id,omitempty"`
+}
+
+// Process is one background command of a session, running or ended.
+type Process struct {
+	ID        string  `json:"id"`
+	Command   string  `json:"command"`
+	Running   bool    `json:"running"`
+	ExitCode  *int    `json:"exit_code"`
+	StartedAt float64 `json:"started_at,omitempty"`
+	ExitedAt  float64 `json:"exited_at,omitempty"`
+	// Reason is why it ended, such as "exited" or "killed".
+	Reason string `json:"reason,omitempty"`
+	// Output is the end of its output: Hermes keeps the last 32k
+	// characters.
+	Output string `json:"output"`
+}
+
+// SubagentTail is the end of a subagent's live transcript.
+type SubagentTail struct {
+	Available bool   `json:"available"`
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated"`
+}
+
+// TurnTokens is what the hub adds to session.usage and message.complete
+// payloads, under TurnKey: the tokens of the turn that runs or just ended.
+// Input counts every token sent in, cached or not; it is nil when the hub
+// cannot tell.
+type TurnTokens struct {
+	Input  *int64 `json:"input"`
+	Output int64  `json:"output"`
+}
+
+// TurnKey is the payload member that carries TurnTokens.
+const TurnKey = "hub_turn"
