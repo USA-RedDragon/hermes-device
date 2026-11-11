@@ -23,6 +23,7 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/insights"
 	"github.com/USA-RedDragon/hermes-hub/internal/leader"
 	"github.com/USA-RedDragon/hermes-hub/internal/memory"
+	"github.com/USA-RedDragon/hermes-hub/internal/notify"
 	"github.com/USA-RedDragon/hermes-hub/internal/pdf"
 	"github.com/USA-RedDragon/hermes-hub/internal/server"
 	"github.com/USA-RedDragon/hermes-hub/internal/service"
@@ -97,7 +98,12 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	svc := service.New(cfg.Backends, st, opts)
 	defer svc.Close()
 
-	webOpts := web.Options{Service: svc, Links: st, Tokens: st, Groups: st}
+	notifier, err := newNotifier(cfg, st, svc, dialers)
+	if err != nil {
+		return err
+	}
+	svc.SetNotify(notifier.Notify)
+	webOpts := web.Options{Service: svc, Links: st, Tokens: st, Groups: st, Notices: st, Notifier: notifier}
 	devices, err := newDevices(cfg, st, svc, dialers)
 	if err != nil {
 		return err
@@ -136,8 +142,10 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	botCtx, stopBot := context.WithCancel(context.Background())
 	defer stopBot()
 	botDone := make(chan struct{})
+	notifyOn := false
 	if cfg.Telegram.Enabled {
-		topts := telegram.Options{PublicURL: cfg.HTTP.PublicURL, Service: svc, Links: st, Tokens: st, State: st, Logger: slog.Default()}
+		topts := telegram.Options{PublicURL: cfg.HTTP.PublicURL, Service: svc, Links: st, Tokens: st, State: st, Notices: st,
+			Logger: slog.Default()}
 		if devices != nil {
 			topts.Computers = devices
 		}
@@ -145,9 +153,18 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 		if err != nil {
 			return fmt.Errorf("failed to start Telegram bot: %w", err)
 		}
+		notifier.SetTelegram(bot)
+		notifyOn = true
 		go runBot(botCtx, st, bot, cfg.Telegram, botDone)
 	} else {
 		close(botDone)
+	}
+	notifyOn = notifyOn || notifier.PushKey() != ""
+	notifyCtx, stopNotify := context.WithCancel(context.Background())
+	defer stopNotify()
+	if notifyOn {
+		go notifier.Run(notifyCtx)
+		go runNotifyLeader(notifyCtx, st, svc, notifier, cfg.Notify)
 	}
 	ui.SetReady(true)
 
@@ -158,6 +175,52 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	}
 	slog.Info("Shutdown complete")
 	return nil
+}
+
+// newNotifier returns the notifier of notices on people's phones.
+func newNotifier(cfg *config.Config, st *store.Store, svc *service.Service, dialers map[string]*gateway.Dialer) (*notify.Notifier, error) {
+	key, err := cfg.Notify.PushKey()
+	if err != nil {
+		return nil, err
+	}
+	users := make([]string, 0, len(cfg.Users))
+	for _, u := range cfg.Users {
+		users = append(users, u.Name)
+	}
+	names := map[string]string{}
+	jobs := map[string]notify.Requester{}
+	for _, b := range cfg.Backends {
+		names[b.ID] = b.Name
+		jobs[b.ID] = dialers[b.ID]
+	}
+	opts := notify.Options{Store: st, Access: svc, Prompts: svc, Users: users, Backends: names, Jobs: jobs,
+		PublicURL: cfg.HTTP.PublicURL, PushSubject: cfg.Notify.VAPIDSubject, Remind: cfg.Notify.RemindAfter, JobPoll: cfg.Notify.JobInterval}
+	if key != nil {
+		opts.Push = key
+		slog.Info("Web Push enabled", "public_key", key.PublicKey())
+	}
+	return notify.New(opts), nil
+}
+
+// notifyRetry is how often a replica that does not lead tries to take
+// over the notifier's leader work.
+const notifyRetry = 5 * time.Second
+
+// runNotifyLeader runs, in one replica, the watch of running chats, the
+// reminders and the reads of scheduled jobs.
+func runNotifyLeader(ctx context.Context, st *store.Store, svc *service.Service, n *notify.Notifier, cfg config.Notify) {
+	log := slog.Default().With("component", "notify")
+	try := func(ctx context.Context) (leader.Lease, error) {
+		l, err := st.TryLock(ctx, leader.Key("notify"), botCheckInterval)
+		if l == nil {
+			return nil, err
+		}
+		return l, nil
+	}
+	leader.Run(ctx, try, notifyRetry, log, func(ctx context.Context) {
+		go svc.Watch(ctx, cfg.WatchInterval)
+		n.Lead(ctx)
+	})
 }
 
 // newDevices returns the hermes-device server, or nil when
