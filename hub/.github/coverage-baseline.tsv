@@ -26,6 +26,7 @@ internal/hub/attach.go	45	39
 internal/hub/hub.go	4	4
 internal/hub/media.go	93	92
 internal/hub/memory.go	1	1
+internal/hub/page.go	55	54
 internal/leader/leader.go	32	29
 internal/memory/facts.go	51	43
 internal/memory/honcho.go	104	92
@@ -40,6 +41,7 @@ internal/service/hold.go	229	198
 internal/service/live.go	206	162
 internal/service/manage.go	121	115
 internal/service/media.go	113	91
+internal/service/page.go	51	47
 internal/service/pdf.go	71	55
 internal/service/service.go	564	518
 internal/store/browser.go	77	63
@@ -52,13 +54,13 @@ internal/store/store.go	83	68
 internal/store/storetest/storetest.go	26	20
 internal/store/telegram.go	18	16
 internal/telegram/api.go	106	83
-internal/telegram/bot.go	521	408
+internal/telegram/bot.go	523	410
 internal/telegram/computers.go	187	146
 internal/telegram/config.go	16	16
 internal/telegram/format.go	114	111
 internal/telegram/media.go	39	37
-internal/telegram/render.go	198	154
-internal/telegram/replymedia.go	46	37
+internal/telegram/render.go	200	156
+internal/telegram/replymedia.go	72	60
 internal/telegram/status.go	59	52
 internal/web/api.go	224	160
 internal/web/auth.go	112	84
@@ -69,5 +71,6 @@ internal/web/devices.go	164	113
 internal/web/link.go	39	28
 internal/web/media.go	28	25
 internal/web/memory.go	117	81
-internal/web/web.go	130	111
+internal/web/page.go	79	69
+internal/web/web.go	132	113
 main.go	4	0
