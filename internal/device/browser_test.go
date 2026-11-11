@@ -413,3 +413,142 @@ func TestBrowserForgedResultAndDrop(t *testing.T) {
 		t.Fatalf("request in flight when the sign-in was dropped = %+v", r)
 	}
 }
+
+// browser_start starts Firefox through Options.StartBrowser and answers
+// once the extension is connected and signed in.
+func TestBrowserStart(t *testing.T) {
+	t.Parallel()
+	fb := newFakeBrowser(false)
+	results := make(chan protocol.BrowserResult, 1)
+	statuses := make(chan protocol.BrowserStatus, 1)
+	f := &fakeHub{capabilities: []string{protocol.CapabilityBrowser}, handler: func(ctx context.Context, conn *websocket.Conn, _ protocol.Hello) {
+		var a protocol.BrowserAuth
+		// The first status and the first browser_auth come in either order.
+		for got := 0; got < 2; {
+			typ, data, err := readMsg(ctx, conn)
+			if err != nil {
+				return
+			}
+			switch typ {
+			case protocol.TypeBrowserAuth:
+				writeJSON(ctx, conn, protocol.BrowserAuthResult{Type: protocol.TypeBrowserAuthResult, Code: protocol.BrowserAuthSignedOut})
+				got++
+			case protocol.TypeBrowserStatus:
+				var st protocol.BrowserStatus
+				_ = json.Unmarshal(data, &st)
+				if got < 2 {
+					statuses <- st
+				}
+				got++
+			}
+		}
+		writeJSON(ctx, conn, protocol.BrowserStart{Type: protocol.TypeBrowserStart, ID: "s", Timeout: 10})
+		for {
+			typ, data, err := readMsg(ctx, conn)
+			if err != nil {
+				return
+			}
+			switch typ {
+			case protocol.TypeBrowserAuth:
+				if json.Unmarshal(data, &a) == nil && a.Token == "hbt_alice" {
+					writeJSON(ctx, conn, protocol.BrowserAuthResult{Type: protocol.TypeBrowserAuthResult, OK: true, User: userAlice})
+				}
+			case protocol.TypeBrowserResult:
+				var r protocol.BrowserResult
+				_ = json.Unmarshal(data, &r)
+				results <- r
+				<-ctx.Done()
+				return
+			}
+		}
+	}}
+	opts := options(t, serve(t, f).URL, t.TempDir())
+	opts.Browser = fb
+	var starts int
+	opts.StartBrowser = func(context.Context) error {
+		starts++
+		go func() {
+			fb.set(true)
+			fb.setToken("hbt_alice")
+		}()
+		return nil
+	}
+	start(t, opts)
+	if st := recv(t, statuses); st.Connected || !st.CanStart {
+		t.Errorf("status before start = %+v", st)
+	}
+	r := recv(t, results)
+	if !r.OK || string(r.Result) != `{"started":true,"signed_in":true,"user":"alice"}` || starts != 1 {
+		t.Fatalf("start result = %+v (%s), starts = %d", r, r.Result, starts)
+	}
+}
+
+// A second start within StartCooldown is refused without starting Firefox.
+func TestBrowserStartCooldown(t *testing.T) {
+	t.Parallel()
+	results := make(chan protocol.BrowserResult, 2)
+	f := &fakeHub{capabilities: []string{protocol.CapabilityBrowser}, handler: func(ctx context.Context, conn *websocket.Conn, _ protocol.Hello) {
+		for _, id := range []string{"a", "b"} {
+			writeJSON(ctx, conn, protocol.BrowserStart{Type: protocol.TypeBrowserStart, ID: id, Timeout: 0.3})
+			var r protocol.BrowserResult
+			readType(ctx, t, conn, protocol.TypeBrowserResult, &r)
+			results <- r
+		}
+		<-ctx.Done()
+	}}
+	opts := options(t, serve(t, f).URL, t.TempDir())
+	opts.Browser = newFakeBrowser(false)
+	var mu sync.Mutex
+	starts := 0
+	opts.StartBrowser = func(context.Context) error {
+		mu.Lock()
+		defer mu.Unlock()
+		starts++
+		return nil
+	}
+	start(t, opts)
+	if r := recv(t, results); r.Code != protocol.BrowserTimeout {
+		t.Errorf("first start = %+v", r)
+	}
+	if r := recv(t, results); r.Code != protocol.BrowserRefused || !strings.Contains(r.Error, "less than") {
+		t.Errorf("second start = %+v", r)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if starts != 1 {
+		t.Errorf("Firefox started %d times", starts)
+	}
+}
+
+func TestBrowserStartRefusals(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		start func(context.Context) error
+		code  string
+		text  string
+	}{
+		idOff:     {nil, protocol.BrowserRefused, "browser.start-firefox is off"},
+		"fails":   {func(context.Context) error { return errors.New("no graphical session: sign in") }, protocol.BrowserFailed, "no graphical session"},
+		"silence": {func(context.Context) error { return nil }, protocol.BrowserTimeout, "did not connect"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			results := make(chan protocol.BrowserResult, 1)
+			f := &fakeHub{capabilities: []string{protocol.CapabilityBrowser}, handler: func(ctx context.Context, conn *websocket.Conn, _ protocol.Hello) {
+				writeJSON(ctx, conn, protocol.BrowserStart{Type: protocol.TypeBrowserStart, ID: "s", Timeout: 0.5})
+				var r protocol.BrowserResult
+				readType(ctx, t, conn, protocol.TypeBrowserResult, &r)
+				results <- r
+				<-ctx.Done()
+			}}
+			opts := options(t, serve(t, f).URL, t.TempDir())
+			opts.Browser = newFakeBrowser(false)
+			opts.StartBrowser = tc.start
+			start(t, opts)
+			r := recv(t, results)
+			if r.OK || r.Code != tc.code || !strings.Contains(r.Error, tc.text) {
+				t.Errorf("result = %+v, want %s with %q", r, tc.code, tc.text)
+			}
+		})
+	}
+}

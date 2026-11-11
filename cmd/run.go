@@ -13,6 +13,7 @@ import (
 	"github.com/USA-RedDragon/hermes-device/internal/allowlist"
 	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
 	"github.com/USA-RedDragon/hermes-device/internal/browser/host"
+	"github.com/USA-RedDragon/hermes-device/internal/browser/launch"
 	"github.com/USA-RedDragon/hermes-device/internal/config"
 	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
 	"github.com/USA-RedDragon/hermes-device/internal/device"
@@ -139,6 +140,9 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 			return err
 		}
 		opts.Browser = br
+		if cfg.Browser.StartFirefox {
+			opts.StartBrowser = launch.New(cfg.Browser.FirefoxCommand).Launch
+		}
 	}
 	if len(cfg.MCP.Servers) > 0 {
 		mgr := newMCP(cfg, version)

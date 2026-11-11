@@ -68,9 +68,11 @@ type reconnectShadow struct {
 }
 
 type browserShadow struct {
-	Enabled      *bool     `json:"enabled"       toml:"enabled"       yaml:"enabled"`
-	AllowHosts   *[]string `json:"allow-hosts"   toml:"allow-hosts"   yaml:"allow-hosts"`
-	ConfirmHosts *[]string `json:"confirm-hosts" toml:"confirm-hosts" yaml:"confirm-hosts"`
+	Enabled        *bool     `json:"enabled"         toml:"enabled"         yaml:"enabled"`
+	AllowHosts     *[]string `json:"allow-hosts"     toml:"allow-hosts"     yaml:"allow-hosts"`
+	ConfirmHosts   *[]string `json:"confirm-hosts"   toml:"confirm-hosts"   yaml:"confirm-hosts"`
+	StartFirefox   *bool     `json:"start-firefox"   toml:"start-firefox"   yaml:"start-firefox"`
+	FirefoxCommand *string   `json:"firefox-command" toml:"firefox-command" yaml:"firefox-command"`
 }
 
 type mCPServerShadow struct {
@@ -141,6 +143,10 @@ func configApplyDefaults(cfg *Config, _ string, set configulator.SetOrigin) erro
 	set("reconnect.max-backoff", configulator.LayerDefault, "default tag")
 	cfg.Browser.Enabled = false
 	set("browser.enabled", configulator.LayerDefault, "default tag")
+	cfg.Browser.StartFirefox = true
+	set("browser.start-firefox", configulator.LayerDefault, "default tag")
+	cfg.Browser.FirefoxCommand = "firefox"
+	set("browser.firefox-command", configulator.LayerDefault, "default tag")
 	cfg.MCP.IdleTimeout = time.Duration(int64(3600000000000))
 	set("mcp.idle-timeout", configulator.LayerDefault, "default tag")
 	return nil
@@ -320,6 +326,14 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		if s.Browser.ConfirmHosts != nil {
 			cfg.Browser.ConfirmHosts = *s.Browser.ConfirmHosts
 			set("browser.confirm-hosts", configulator.LayerFile, file)
+		}
+		if s.Browser.StartFirefox != nil {
+			cfg.Browser.StartFirefox = *s.Browser.StartFirefox
+			set("browser.start-firefox", configulator.LayerFile, file)
+		}
+		if s.Browser.FirefoxCommand != nil {
+			cfg.Browser.FirefoxCommand = *s.Browser.FirefoxCommand
+			set("browser.firefox-command", configulator.LayerFile, file)
 		}
 	}
 	if s.MCP != nil {
@@ -569,6 +583,23 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Browser.ConfirmHosts = lst
 		set("browser.confirm-hosts", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "browser", "start-firefox"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "browser.start-firefox",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Browser.StartFirefox = p
+		set("browser.start-firefox", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "browser", "firefox-command"); ok {
+		cfg.Browser.FirefoxCommand = v
+		set("browser.firefox-command", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "mcp", "idle-timeout"); ok {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -625,6 +656,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"browser" + o.Separator + "enabled",
 		"browser" + o.Separator + "allow-hosts",
 		"browser" + o.Separator + "confirm-hosts",
+		"browser" + o.Separator + "start-firefox",
+		"browser" + o.Separator + "firefox-command",
 		"mcp" + o.Separator + "idle-timeout",
 	}
 	for i, name := range names {
@@ -671,7 +704,9 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Bool(names[27], false, "Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run hermes-device browser install once")
 	fs.StringSlice(names[28], nil, "Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs")
 	fs.StringSlice(names[29], nil, "More sites where, as on Salesforce, every click and every Enter or Space key press asks the user each time and scripts may only read. Host names; each covers its subdomains. The plugin cannot change this list")
-	fs.Duration(names[30], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
+	fs.Bool(names[30], true, "Let the agent start Firefox, with the user's default profile, in the user's graphical session when the extension is not connected, so a scheduled job works after Firefox was closed. The sandbox image turns it off")
+	fs.String(names[31], "firefox", "Command that starts Firefox for start-firefox: a name on PATH or an absolute path")
+	fs.Duration(names[32], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
 	return nil
 }
 
@@ -1035,6 +1070,30 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Browser.ConfirmHosts = v
 		set("browser.confirm-hosts", configulator.LayerCLI, "--"+n)
+	}
+	if n := "browser" + o.Separator + "start-firefox"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "browser.start-firefox",
+				Source: "--" + n,
+			}
+		}
+		cfg.Browser.StartFirefox = v
+		set("browser.start-firefox", configulator.LayerCLI, "--"+n)
+	}
+	if n := "browser" + o.Separator + "firefox-command"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "browser.firefox-command",
+				Source: "--" + n,
+			}
+		}
+		cfg.Browser.FirefoxCommand = v
+		set("browser.firefox-command", configulator.LayerCLI, "--"+n)
 	}
 	if n := "mcp" + o.Separator + "idle-timeout"; fs.Changed(n) {
 		v, err := fs.GetDuration(n)
@@ -1901,6 +1960,32 @@ func (s *browserShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				}
 				s.ConfirmHosts = &out
 			}
+		case "start-firefox":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.StartFirefox = &b
+			default:
+				return configJSONError(path+".start-firefox", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "firefox-command":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.FirefoxCommand = &str
+			default:
+				return configJSONError(path+".firefox-command", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
 				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
@@ -2157,6 +2242,8 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "browser.enabled = %v\n", c.Browser.Enabled)
 	fmt.Fprintf(&b, "browser.allow-hosts = %v\n", c.Browser.AllowHosts)
 	fmt.Fprintf(&b, "browser.confirm-hosts = %v\n", c.Browser.ConfirmHosts)
+	fmt.Fprintf(&b, "browser.start-firefox = %v\n", c.Browser.StartFirefox)
+	fmt.Fprintf(&b, "browser.firefox-command = %v\n", c.Browser.FirefoxCommand)
 	b.WriteString("mcp.servers = (redacted)\n")
 	fmt.Fprintf(&b, "mcp.idle-timeout = %v\n", c.MCP.IdleTimeout)
 	return b.String()

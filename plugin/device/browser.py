@@ -60,8 +60,37 @@ class Unavailable(Exception):
     """The session has no device browser to use; the message says why."""
 
 
-def target(session_id: str = "") -> tuple[Any, Any]:
-    """``(resolution, connection)`` of the device whose browser this session uses."""
+class Started(Exception):
+    """Firefox was not running and is started now; the call must be made again so that its
+    approvals are checked against the running browser."""
+
+
+START_TIMEOUT_S = 90
+
+
+def not_running(conn: Any) -> bool:
+    """The device's Firefox extension is not connected (Firefox is closed) and the device can
+    start Firefox."""
+    b = conn.browser
+    return bool(b.get("can_start")) and not b.get("connected") and not b.get("reason")
+
+
+def start_firefox(conn: Any) -> None:
+    """Start Firefox on the device and wait until it is connected and signed in."""
+    core = _core()
+    try:
+        core.hub().browser_call(conn.device_id, "start", {}, START_TIMEOUT_S, start=True)
+    except core.BrowserError as exc:
+        raise Unavailable(f"hermes-device: Firefox on device {conn.name} [{conn.device_id}] was not running and did "
+                          f"not start: {exc}") from None
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not (conn.browser.get("connected") and conn.browser.get("signed_in")):
+        time.sleep(0.1)
+
+
+def target(session_id: str = "", start: bool = True) -> tuple[Any, Any]:
+    """``(resolution, connection)`` of the device whose browser this session uses. With
+    start, a closed Firefox is started first when the device can (docs/browser.md 5.1)."""
     core = _core()
     sid = core.current_session_id() or session_id
     res = core.resolve_session(sid)
@@ -83,6 +112,13 @@ def target(session_id: str = "") -> tuple[Any, Any]:
                           f"that computer: set browser.enabled to true in the hermes-device config, run "
                           f"hermes-device browser install, load the Hermes Firefox extension, and restart "
                           f"hermes-device run.")
+    if not_running(conn):
+        if not start:
+            raise Unavailable(f"hermes-device: Firefox is not running on device {conn.name} [{device_id}]. Any other "
+                              f"browser tool, such as browser_navigate, starts it.")
+        start_firefox(conn)
+        raise Started(f"Firefox was not running on device {conn.name}, so it was started and is signed in now. "
+                      f"Make the same browser call again.")
     reason = conn.browser.get("reason") or ""
     if reason or (conn.browser.get("connected") and not conn.browser.get("signed_in")):
         if not reason or reason == NOT_SIGNED_IN:
@@ -92,6 +128,7 @@ def target(session_id: str = "") -> tuple[Any, Any]:
     if not conn.browser.get("connected"):
         raise Unavailable(f"hermes-device: the Hermes Firefox extension on device {conn.name} [{device_id}] is "
                           f"not connected. Firefox must be running with the extension loaded"
+                          f"{'' if conn.browser.get('can_start') else ' (this device does not start Firefox itself)'}.")
     return res, conn
 
 
@@ -356,7 +393,7 @@ def pre_tool_call(tool_name: str = "", args: Optional[dict] = None, task_id: str
     key = _grant_key(_session(session_id), tool_name, args)
     _take_grant(key)
     try:
-        _, conn = target(session_id)
+        _, conn = target(session_id, start=False)
     except Unavailable:
         return None
     core = _core()
@@ -559,6 +596,8 @@ def _tool(fn: Callable[[dict, Any, str], Any]) -> Callable[..., Any]:
         try:
             _, conn = target(session_id)
             return fn(args, conn, session_id)
+        except Started as exc:
+            return _err(str(exc), "started")
         except Unavailable as exc:
             return _err(str(exc), "unavailable")
         except _core().BrowserError as exc:
@@ -586,7 +625,7 @@ def _need_ref(args: dict) -> str:
 def browser_status(args: dict, session_id: str = "", **_kwargs) -> str:
     core = _core()
     try:
-        _, conn = target(session_id)
+        _, conn = target(session_id, start=False)
     except Unavailable as exc:
         return _ok({"available": False, "reason": str(exc)})
     out = {"available": True, "device": conn.name, "device_id": conn.device_id}
@@ -929,10 +968,10 @@ def offered() -> bool:
 
 def available() -> bool:
     """check_fn of the other tools: as offered, and that device's extension is connected and signed in to
-    the hub."""
+    the hub, or Firefox is closed and the device can start it."""
     core = _core()
-    return enabled() and any(core.CAPABILITY_BROWSER in c.capabilities and c.browser.get("connected")
-                             and c.browser.get("signed_in") for c in core.hub().devices())
+    return enabled() and any(core.CAPABILITY_BROWSER in c.capabilities and (
+        (c.browser.get("connected") and c.browser.get("signed_in")) or not_running(c)) for c in core.hub().devices())
 
 
 def register(ctx: Any, core: Any) -> None:

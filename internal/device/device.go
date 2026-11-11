@@ -105,6 +105,9 @@ type Options struct {
 	// MCP serves MCP requests for the servers of the device config. With
 	// servers the device offers protocol.CapabilityMCP in hello.
 	MCP MCP
+	// StartBrowser starts the user's Firefox for a browser_start, when
+	// the extension is not connected. Nil turns browser_start off.
+	StartBrowser func(ctx context.Context) error
 	// Shell runs each command as <shell> -c <cmd>.
 	Shell string
 	// TempDir is sent as hello.tmp_dir.
@@ -321,6 +324,9 @@ type session struct {
 	browser bool
 	bmu     sync.Mutex
 	calls   map[string]context.CancelFunc
+	// starts holds the cancel function of each browser_start in flight.
+	// A change of the sign-in does not cancel them; they wait for it.
+	starts map[string]context.CancelFunc
 	// auth is the hub's view of the extension's credential on this leg.
 	// pending counts browser_auth messages the hub has not answered yet.
 	amu     sync.Mutex
@@ -611,6 +617,16 @@ func (s *session) readLoop(ctx context.Context) error {
 			s.browserCall(ctx, req)
 		case protocol.TypeMCP:
 			s.mcpRequest(ctx, data)
+		case protocol.TypeBrowserStart:
+			if !s.browser {
+				continue
+			}
+			var req protocol.BrowserStart
+			if err := json.Unmarshal(data, &req); err != nil {
+				slog.Warn("Ignoring malformed browser_start", "error", err)
+				continue
+			}
+			s.browserStart(ctx, req)
 		case protocol.TypeBrowserAuthResult:
 			if !s.browser {
 				continue
@@ -1099,6 +1115,7 @@ func (s *session) browserStatus(ctx context.Context) {
 			st.Connected, st.Browser, st.ExtensionVersion = true, h.Browser, h.Version
 			st.SignedIn, st.User, st.Reason = s.signedIn()
 		}
+		st.CanStart = s.c.opts.StartBrowser != nil
 		if st != last {
 			if err := s.send(ctx, st); err != nil {
 				return
@@ -1249,6 +1266,9 @@ func (s *session) cancelAllBrowser() {
 func (s *session) cancelBrowser(id string) {
 	s.bmu.Lock()
 	cancel := s.calls[id]
+	if cancel == nil {
+		cancel = s.starts[id]
+	}
 	s.bmu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -1316,4 +1336,120 @@ func (s *session) browserCall(ctx context.Context, req protocol.Browser) {
 		}
 		_ = s.send(ctx, out)
 	})
+}
+
+// startPoll is how often browserStart checks for the extension.
+const startPoll = 500 * time.Millisecond
+
+// StartCooldown is the least time between two Firefox starts.
+const StartCooldown = time.Minute
+
+// startCooldown reserves a Firefox start and returns 0, or returns how
+// long to wait before the next one.
+func (c *Client) startCooldown() time.Duration {
+	c.startMu.Lock()
+	defer c.startMu.Unlock()
+	if since := time.Since(c.lastStart); !c.lastStart.IsZero() && since < StartCooldown {
+		return StartCooldown - since
+	}
+	c.lastStart = time.Now()
+	return 0
+}
+
+// browserStart starts Firefox when the extension is not connected and
+// waits until it is connected and signed in (docs/browser.md section 5.1).
+func (s *session) browserStart(ctx context.Context, req protocol.BrowserStart) {
+	fail := func(code, msg string) {
+		_ = s.send(ctx, protocol.BrowserResult{Type: protocol.TypeBrowserResult, ID: req.ID, Code: code, Error: msg})
+	}
+	timeout := time.Duration(req.Timeout * float64(time.Second))
+	if timeout <= 0 {
+		timeout = protocol.BrowserDefaultTimeout
+	}
+	timeout = min(timeout, protocol.BrowserMaxTimeout)
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	s.bmu.Lock()
+	if s.starts == nil {
+		s.starts = map[string]context.CancelFunc{}
+	}
+	_, dup := s.starts[req.ID]
+	if !dup {
+		s.starts[req.ID] = cancel
+	}
+	s.bmu.Unlock()
+	if dup {
+		cancel()
+		fail(protocol.BrowserRefused, fmt.Sprintf("device %s refused: request id %q is already running", s.name, req.ID))
+		return
+	}
+	s.wg.Go(func() {
+		defer cancel()
+		defer func() {
+			s.bmu.Lock()
+			delete(s.starts, req.ID)
+			s.bmu.Unlock()
+		}()
+		res, code, msg := s.startAndWait(cctx, timeout)
+		if code != "" {
+			fail(code, msg)
+			return
+		}
+		data, err := json.Marshal(res)
+		if err != nil {
+			fail(protocol.BrowserFailed, err.Error())
+			return
+		}
+		_ = s.send(ctx, protocol.BrowserResult{Type: protocol.TypeBrowserResult, ID: req.ID, OK: true, Result: data})
+	})
+}
+
+type startResult struct {
+	Started  bool   `json:"started"`
+	SignedIn bool   `json:"signed_in"`
+	User     string `json:"user,omitempty"`
+}
+
+func (s *session) startAndWait(ctx context.Context, timeout time.Duration) (startResult, string, string) {
+	b := s.c.opts.Browser
+	var res startResult
+	if _, ok := b.Connected(); !ok {
+		if s.c.opts.StartBrowser == nil {
+			return res, protocol.BrowserRefused, fmt.Sprintf("device %s does not start Firefox (browser.start-firefox is "+
+				"off); start Firefox on that computer", s.name)
+		}
+		if wait := s.c.startCooldown(); wait > 0 {
+			return res, protocol.BrowserRefused, fmt.Sprintf("device %s started Firefox less than %s ago; wait %s",
+				s.name, StartCooldown, wait.Round(time.Second))
+		}
+		slog.Info("Starting Firefox for the agent")
+		if err := s.c.opts.StartBrowser(ctx); err != nil {
+			slog.Warn("Could not start Firefox", "error", err)
+			return res, protocol.BrowserFailed, fmt.Sprintf("device %s could not start Firefox: %v", s.name, err)
+		}
+		res.Started = true
+	}
+	tick := time.NewTicker(startPoll)
+	defer tick.Stop()
+	for {
+		changed := b.Changed()
+		_, connected := b.Connected()
+		ok, user, why := s.signedIn()
+		if connected && ok {
+			res.SignedIn, res.User = true, user
+			return res, "", ""
+		}
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return res, protocol.BrowserCancelled, "browser start cancelled"
+			}
+			if !connected {
+				return res, protocol.BrowserTimeout, fmt.Sprintf("Firefox did not connect to hermes-device on %s within %s: "+
+					"check that the Hermes extension is installed and enabled in the default Firefox profile", s.name, timeout)
+			}
+			return res, protocol.BrowserNotSignedIn, fmt.Sprintf("Firefox runs on %s but is not signed in: %s", s.name, why)
+		case <-changed:
+		case <-tick.C:
+		}
+	}
 }

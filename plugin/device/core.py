@@ -48,6 +48,7 @@ TYPE_RESUME = "resume"
 TYPE_BROWSER = "browser"
 TYPE_BROWSER_RESULT = "browser_result"
 TYPE_BROWSER_STATUS = "browser_status"
+TYPE_BROWSER_START = "browser_start"
 # The device presents the browser's hub sign-in to the hub, which answers it; neither reaches the
 # plugin through a hub (docs/browser.md section 13).
 TYPE_BROWSER_AUTH = "browser_auth"
@@ -890,8 +891,9 @@ class Hub:
         call.finish(False, code=code, error=error)
 
     def browser_call(self, device_id: str, op: str, args: dict, timeout: float = BROWSER_DEFAULT_TIMEOUT_S,
+                     start: bool = False) -> Any:
         """Run one browser operation on the device (docs/browser.md section 4) and return its
-        result. Raises BrowserError. Call from a worker thread, never the event loop."""
+        result; with start, send browser_start instead (section 5.1) and ignore op and args.
         Raises BrowserError. Call from a worker thread, never the event loop."""
         conn = self.device(device_id)
         if conn is None:
@@ -907,7 +909,10 @@ class Hub:
         with conn.lock:
             conn.browser_calls[rid] = call
         try:
-            conn.send({"type": TYPE_BROWSER, "id": rid, "op": op, "args": args, "timeout": timeout})
+            if start:
+                conn.send({"type": TYPE_BROWSER_START, "id": rid, "timeout": timeout})
+            else:
+                conn.send({"type": TYPE_BROWSER, "id": rid, "op": op, "args": args, "timeout": timeout})
         except Exception as exc:
             with conn.lock:
                 conn.browser_calls.pop(rid, None)

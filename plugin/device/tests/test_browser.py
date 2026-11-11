@@ -90,6 +90,13 @@ def attach_browser(device, fake: FakeBrowser, connected: bool = True) -> None:
 
     async def send_text(text: str) -> None:
         msg = json.loads(text)
+        if msg["type"] == core.TYPE_BROWSER_START:
+            fake.requests.append(msg)
+            conn.browser = dict(conn.browser, connected=True, signed_in=True, user="alice")
+            reply = {"type": core.TYPE_BROWSER_RESULT, "id": msg["id"], "ok": True,
+                     "result": {"started": True, "signed_in": True, "user": "alice"}}
+            threading.Thread(target=device.hub.on_message, args=(conn, reply), daemon=True).start()
+            return
         if msg["type"] != core.TYPE_BROWSER:
             await inner(text)
             return
@@ -533,6 +540,36 @@ class ToolTests(Base):
             self.run_tool("browser_vision", tab_id=7)
         self.assertNotIn("full_page", self.last("screenshot")["args"])
 
+    def test_starts_closed_firefox(self):
+        self.device.conn.browser = {"connected": False, "signed_in": False, "can_start": True}
+        self.assertTrue(browser.available(), "tools stay listed while the device can start Firefox")
+        status = self.run_tool("browser_status")
+        self.assertFalse(status["available"])
+        self.assertIn("not running", status["reason"])
+        self.assertFalse(self.fake.requests, "browser_status does not start Firefox")
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertEqual(out["code"], "started")
+        self.assertIn("Make the same browser call again", out["error"])
+        self.assertEqual([r["type"] for r in self.fake.requests], [core.TYPE_BROWSER_START])
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertEqual(self.decision["rule_key"], "browser:visit:example.com")
+        self.assertEqual(out["tab_id"], 8)
+
+    def test_no_start_without_capability(self):
+        self.device.conn.browser = {"connected": False, "signed_in": False}
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("does not start Firefox itself", out["error"])
+        self.assertFalse(self.fake.requests)
+
+    def test_start_failure_reported(self):
+        self.device.conn.browser = {"connected": False, "can_start": True}
+
+        def boom(*_a, **_k):
+            raise core.BrowserError(core.BROWSER_FAILED, "device pc could not start Firefox: no graphical session")
+        with mock.patch.object(self.hub, "browser_call", boom):
+            out = self.run_tool("browser_tabs", action="list")
+        self.assertEqual(out["code"], "unavailable")
+        self.assertIn("no graphical session", out["error"])
 
     def test_extension_refusal_reported(self):
         self.fake.fail["click"] = (core.BROWSER_REFUSED, "click: submitting a form to example.com needs approval")

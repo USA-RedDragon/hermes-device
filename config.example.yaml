@@ -67,6 +67,10 @@ browser:
   # allow-hosts: []
   # More sites where, as on Salesforce, every click and every Enter or Space key press asks the user each time and scripts may only read. Host names; each covers its subdomains. The plugin cannot change this list
   # confirm-hosts: []
+  # Let the agent start Firefox, with the user's default profile, in the user's graphical session when the extension is not connected, so a scheduled job works after Firefox was closed. The sandbox image turns it off
+  start-firefox: true
+  # Command that starts Firefox for start-firefox: a name on PATH or an absolute path
+  firefox-command: "firefox"
 mcp:
   # MCP servers the agent may use on this device, by name: lowercase letters, digits, - and _, at most 32 characters. Each one runs on this device with stdio, started on first use. Only servers listed here can run. Config file only
   # servers:

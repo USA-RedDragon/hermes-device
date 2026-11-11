@@ -45,6 +45,12 @@ const (
 	// resume) and whenever the browser extension connects, goes away or
 	// changes its sign-in. The hub rewrites it (docs/browser.md section 13).
 	TypeBrowserStatus = "browser_status"
+	// TypeBrowserStart asks the device to start the user's Firefox when
+	// the extension is not connected, and to wait until it is connected
+	// and signed in (docs/browser.md section 5.1). The device answers
+	// with one TypeBrowserResult with the same ID. Only on a leg that
+	// negotiated CapabilityBrowser.
+	TypeBrowserStart = "browser_start"
 	// TypeBrowserAuth is sent by the device to the hub with the browser
 	// credential the extension holds, after the welcome (and the resume)
 	// and whenever it changes. The hub answers with TypeBrowserAuthResult
@@ -360,6 +366,16 @@ type BrowserStatus struct {
 	Reason           string `json:"reason,omitempty"`
 	Browser          string `json:"browser,omitempty"`
 	ExtensionVersion string `json:"extension_version,omitempty"`
+	// CanStart: the device can start Firefox on a TypeBrowserStart.
+	CanStart bool `json:"can_start,omitempty"`
+}
+
+// BrowserStart asks the device to start Firefox. Timeout is in seconds,
+// as in Browser.
+type BrowserStart struct {
+	Type    string  `json:"type"`
+	ID      string  `json:"id"`
+	Timeout float64 `json:"timeout"`
 }
 
 // BrowserAuth carries the extension's browser credential from the device
