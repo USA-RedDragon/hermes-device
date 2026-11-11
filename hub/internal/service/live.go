@@ -159,21 +159,30 @@ func (ls *live) setInputs(ps []gateway.PendingAdmission) {
 }
 
 // withText adds the started input's text to a message.start payload that
-// lacks one. ls.mu is held.
+// lacks one, and "note" with its producer when Hermes queued the input
+// itself (a cron result), so viewers do not show it as the user's message.
+// ls.mu is held.
 func (ls *live) withText(ev gateway.Event) json.RawMessage {
 	text, ok := ls.texts[ev.AdmissionID]
 	if !ok || ev.AdmissionID == "" {
 		return ev.Payload
 	}
 	delete(ls.texts, ev.AdmissionID)
+	note := gateway.Producer(ls.inputs[ev.AdmissionID].InputID)
 	var p map[string]any
 	if json.Unmarshal(ev.Payload, &p) != nil || p == nil {
 		p = map[string]any{}
 	}
-	if s, _ := p["text"].(string); s != "" {
+	s, _ := p["text"].(string)
+	if s != "" && note == "" {
 		return ev.Payload
 	}
-	p["text"] = text
+	if s == "" {
+		p["text"] = text
+	}
+	if note != "" {
+		p["note"] = note
+	}
 	out, err := json.Marshal(p)
 	if err != nil {
 		return ev.Payload

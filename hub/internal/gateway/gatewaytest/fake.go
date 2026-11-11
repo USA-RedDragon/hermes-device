@@ -26,6 +26,8 @@ import (
 
 const (
 	kSessionID       = "session_id"
+	kPending         = "pending"
+	kComplete        = "complete"
 	kJSONRPC         = "jsonrpc"
 	kEvent           = "event"
 	kMethod          = "method"
@@ -431,6 +433,23 @@ func (g *Gateway) ConnCount() int {
 	return len(g.conns)
 }
 
+// DeliverCron delivers a cron result into a session as Hermes does for a
+// local chat: session.info lists the input under an input_id that names the
+// cron producer, message.start names its admission, and message.complete
+// has no text, because Hermes writes the result as a note.
+func (g *Gateway) DeliverCron(sessionID, text string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	s := g.sessions[sessionID]
+	admission := "cron-" + sessionID
+	s.Revision++
+	g.publishLocked(s, gateway.InfoEvent, map[string]any{kPending: []gateway.PendingAdmission{
+		{AdmissionID: admission, Status: "queued", Text: text, InputID: `["cron","agent:main:local:dm:` + sessionID + `","00"]`}},
+		kRevision: s.Revision, kExecGen: s.Generation})
+	g.publishAdmissionLocked(s, "message.start", admission, map[string]any{})
+	g.publishAdmissionLocked(s, "message.complete", admission, map[string]any{kText: "", kStatus: kComplete})
+}
+
 // Publish emits one session event to subscribers and the replay ring.
 func (g *Gateway) Publish(sessionID, typ string, payload any) {
 	g.mu.Lock()
@@ -694,7 +713,7 @@ func (g *Gateway) snapshotLocked(c *conn, s *Session) map[string]any {
 		kSessionID: s.ID, "stored_session_id": s.ID, "messages": msgs, "message_count": len(msgs),
 		"running": s.Running, "authority_epoch": 1, kReplayEpoch: s.epoch, kLastSequence: s.seq,
 		"subscription_id": sub, kRevision: s.Revision, kExecGen: s.Generation,
-		"pending": pending, "prompts": prompts,
+		kPending: pending, "prompts": prompts,
 		"info": g.infoLocked(s, true),
 	}
 }
@@ -947,7 +966,7 @@ func (g *Gateway) hApproval(_ *conn, p map[string]any) (any, string, func()) {
 	g.publishLocked(s, "approval.settled", map[string]any{"prompt_id": pr.PromptID, kExecGen: pr.ExecutionGeneration})
 	g.publishLocked(s, "tool.complete", map[string]any{kToolID: "t-approve", kName: kTerminal, kResult: str(p, "choice")})
 	s.Running = false
-	g.publishLocked(s, "message.complete", map[string]any{kText: "approved: " + str(p, "choice"), kStatus: "complete"})
+	g.publishLocked(s, "message.complete", map[string]any{kText: "approved: " + str(p, "choice"), kStatus: kComplete})
 	return map[string]any{kStatus: "resolved"}, "", nil
 }
 
@@ -958,7 +977,7 @@ func (g *Gateway) turn(id, admission, text string) {
 	// Like Hermes: session.info lists the input with its text, then
 	// message.start names the admission with an empty payload.
 	s.Revision++
-	g.publishLocked(s, gateway.InfoEvent, map[string]any{"pending": []gateway.PendingAdmission{
+	g.publishLocked(s, gateway.InfoEvent, map[string]any{kPending: []gateway.PendingAdmission{
 		{AdmissionID: admission, Status: "started", Text: text}}, kRevision: s.Revision, kExecGen: s.Generation})
 	g.publishAdmissionLocked(s, "message.start", admission, map[string]any{})
 	if s.ShowReasoning {
@@ -993,7 +1012,7 @@ func (g *Gateway) turn(id, admission, text string) {
 	g.publishLocked(s, "message.delta", map[string]any{kText: text})
 	s.Running = false
 	s.Messages = append(s.Messages, map[string]any{"role": "assistant", kText: "echo: " + text})
-	g.publishLocked(s, "message.complete", map[string]any{kText: "echo: " + text, kStatus: "complete",
+	g.publishLocked(s, "message.complete", map[string]any{kText: "echo: " + text, kStatus: kComplete,
 		"usage": map[string]any{kModel: s.Model, "input": 9000, "output": 120, kReasoning: 0, "prompt": 9000, "completion": 120,
 			kTotal: 9120, "calls": 1, "context_used": 9000, "context_max": 131072, "context_percent": 7,
 			"context_source": "provider_usage", "context_estimated": false, "avg_tps": 42.5}})

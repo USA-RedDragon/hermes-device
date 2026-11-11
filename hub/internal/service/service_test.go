@@ -302,6 +302,26 @@ func TestGatewayReconnectReplaysWithEventsSince(t *testing.T) {
 	}
 }
 
+func TestCronResultIsMarkedAsNote(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ch, stop, err := e.svc.Attach(context.Background(), userAlice, backendPC, sLive, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	next(t, ch)
+	e.gw.DeliverCron(sLive, "Cronjob Response: ping")
+	evs := until(t, ch, hub.KindMessageStart)
+	var p struct {
+		Text string `json:"text"`
+		Note string `json:"note"`
+	}
+	if err := json.Unmarshal(evs[len(evs)-1].Data, &p); err != nil || p.Text != "Cronjob Response: ping" || p.Note != "cron" {
+		t.Fatalf("message.start = %s, %v", evs[len(evs)-1].Data, err)
+	}
+}
+
 func TestAttachMidTurnBackfillsCurrentTurn(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
