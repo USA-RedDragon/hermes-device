@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 )
 
@@ -49,7 +50,7 @@ func (s *sessionStatus) track(ev hub.Event) {
 		return
 	case "session.info", "session.usage", hub.KindMessageComplete:
 	case "session.updated":
-		if json.Unmarshal(ev.Data, &p) != nil || p.Operation != "model" || p.Model == "" {
+		if json.Unmarshal(ev.Data, &p) != nil || p.Operation != gateway.OpModel || p.Model == "" {
 			return
 		}
 		s.mu.Lock()

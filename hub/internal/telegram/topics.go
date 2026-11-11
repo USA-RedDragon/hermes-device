@@ -229,6 +229,7 @@ func (b *Bot) linkGroup(ctx context.Context, m *Message) {
 	b.fmu.Lock()
 	b.forums[g.ChatID] = newForum(g)
 	b.fmu.Unlock()
+	b.groupMenu(ctx, g.ChatID, true)
 	b.logger.Info("Linked a Telegram group", "chat", g.ChatID, "user", user)
 	b.sendHTML(ctx, to, "Linked this group to <b>"+escapeHTML(user)+"</b>. Each chat that you start or use from now on gets "+
 		"a topic here, named after the chat. Send a message here in General to start a new chat. "+
@@ -345,6 +346,7 @@ func (b *Bot) unlinkGroup(ctx context.Context, f *forum, to dest) {
 		return
 	}
 	b.dropForum(f.chatID)
+	b.groupMenu(ctx, f.chatID, false)
 	b.logger.Info("Unlinked a Telegram group", "chat", f.chatID, "user", f.user)
 	b.sendText(ctx, to, "Unlinked. Chats no longer get topics here. Your private chat with me still works.")
 }

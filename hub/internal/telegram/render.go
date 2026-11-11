@@ -279,6 +279,22 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 		}
 		r.send(ctx, msg, nil)
 	default:
+		r.handleMore(ctx, ev)
+	}
+}
+
+// handleMore handles the events that are not about the turn's messages:
+// the to-do list and the answers of /bg prompts.
+func (r *renderer) handleMore(ctx context.Context, ev hub.Event) {
+	switch ev.Kind {
+	case todoEvent:
+		var p todoPayload
+		if r.decode(ev, &p) {
+			r.showTodos(ctx, p)
+		}
+	case bgCompleteEvent:
+		r.backgroundResult(ctx, ev)
+	default:
 		r.logger.Debug("Ignoring event", "kind", ev.Kind, "seq", ev.Seq)
 	}
 }

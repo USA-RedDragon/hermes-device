@@ -206,6 +206,7 @@ type chatState struct {
 	listGen int
 	list    []hub.Session
 	release *pendingRelease
+	models  modelMenu
 }
 
 type attachment struct {
@@ -326,6 +327,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	syncDone := make(chan struct{})
 	go b.syncTopics(ctx, syncDone)
 	defer func() { <-syncDone }()
+	b.setCommands(ctx)
 	hctx := context.WithoutCancel(ctx)
 	backoff := time.Second
 	b.logger.Info("Telegram bot polling")
@@ -589,16 +591,16 @@ func (b *Bot) handleAlbum(ctx context.Context, ms []*Message) {
 	b.logger.Debug("Telegram message", "user", user, "chat", m.Chat.ID, "command", cmd)
 	switch cmd {
 	case "":
-		b.prompt(ctx, to, user, m.Text)
-	case "start", "help":
+		b.prompt(ctx, to, user, m.MessageID, m.Text)
+	case "start", cmdHelp:
 		b.help(ctx, to, user)
-	case "backends":
+	case cmdBackends:
 		b.listBackends(ctx, to, user)
-	case "sessions":
+	case cmdSessions:
 		b.listSessions(ctx, to, user)
 	case "attach":
 		b.attachCommand(ctx, to, user, arg)
-	case "new":
+	case cmdNew:
 		b.newSession(ctx, to, user, arg)
 	case cmdLink:
 		b.sendText(ctx, to, "This account is linked. To get a topic for each chat, send /link in a group with Topics.")
@@ -610,15 +612,19 @@ func (b *Bot) handleAlbum(ctx context.Context, ms []*Message) {
 // sessionCommand handles the commands that act on the chat's session.
 func (b *Bot) sessionCommand(ctx context.Context, to dest, user, cmd, arg string) {
 	switch cmd {
-	case "stop":
+	case cmdStop:
 		b.stop(ctx, to, user)
-	case "status":
+	case cmdStatus:
 		b.status(ctx, to, user)
-	case "devices", "computers":
+	case cmdDevices, "device", "computers":
 		b.listComputers(ctx, to, user)
-	case "where":
+	case cmdModel:
+		b.model(ctx, to, user, arg)
+	case cmdBg, "background":
+		b.background(ctx, to, user, arg)
+	case cmdWhere:
 		b.where(ctx, to, user)
-	case "move":
+	case cmdMove:
 		b.move(ctx, to, user, arg)
 	case "cancel", cmdSkip:
 		b.sendText(ctx, to, "Nothing to cancel. To answer a question, reply to its message.")
@@ -670,7 +676,9 @@ func (b *Bot) help(ctx context.Context, to dest, user string) {
 		"/new [backend] start a new session\n" +
 		"/backends list your backends\n" +
 		"/stop interrupt the current turn\n" +
-		"/status show the model and how full its context is")
+		"/status show the model and how full its context is\n" +
+		"/model show or switch the model\n" +
+		"/bg TEXT run a prompt in the background")
 	if b.computers != nil {
 		sb.WriteString("\n/devices list your computers\n" +
 			"/new NAME [folder] start a session on a computer\n" +
@@ -1151,6 +1159,8 @@ func (b *Bot) handleCallback(ctx context.Context, q *CallbackQuery) {
 			return
 		}
 		b.pressPrompt(ctx, q, user, t, parts[2])
+	case len(parts) == 3 && parts[0] == cbModel, len(parts) == 2 && parts[0] == cbModelYes:
+		b.pressModel(ctx, q, to, user, parts)
 	case len(parts) == 1 && parts[0] == cbSteps:
 		b.sendSteps(ctx, q, to)
 	case len(parts) == 2 && parts[0] == cbRelease && b.computers != nil:
