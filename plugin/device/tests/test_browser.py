@@ -92,17 +92,15 @@ def attach_browser(device, fake: FakeBrowser, connected: bool = True) -> None:
     """Give a test_core FakeDevice the browser capability, answered by fake."""
     conn = device.conn
     conn.capabilities = frozenset({core.CAPABILITY_BROWSER})
-    conn.browser = {"connected": connected, "signed_in": connected, "user": "alice", "browser": "Firefox 157.0.1",
-                    "extension_version": "0.2.0"}
+    conn.browser = {"connected": connected, "browser": "Firefox 157.0.1", "extension_version": "0.2.0"}
     inner = conn.send_text
 
     async def send_text(text: str) -> None:
         msg = json.loads(text)
         if msg["type"] == core.TYPE_BROWSER_START:
             fake.requests.append(msg)
-            conn.browser = dict(conn.browser, connected=True, signed_in=True, user="alice")
-            reply = {"type": core.TYPE_BROWSER_RESULT, "id": msg["id"], "ok": True,
-                     "result": {"started": True, "signed_in": True, "user": "alice"}}
+            conn.browser = dict(conn.browser, connected=True)
+            reply = {"type": core.TYPE_BROWSER_RESULT, "id": msg["id"], "ok": True, "result": {"started": True}}
             threading.Thread(target=device.hub.on_message, args=(conn, reply), daemon=True).start()
             return
         if msg["type"] != core.TYPE_BROWSER:
@@ -235,31 +233,6 @@ class ToolTests(BrowserBase):
         self.device.conn.browser = {"connected": False}
         out = self.run_tool("browser_tabs", action="list")
         self.assertIn("extension on device pc", out["error"])
-
-    def test_not_signed_in(self):
-        """The hub reports a browser that is not signed in as not connected, with the reason."""
-        self.device.conn.browser = {"connected": False, "signed_in": False, "reason": browser.NOT_SIGNED_IN}
-        self.assertFalse(browser.available())
-        out = self.run_tool("browser_snapshot", tab_id=7)
-        self.assertEqual(out["code"], "unavailable")
-        self.assertIn("Firefox is not signed in to Hermes on device pc", out["error"])
-        status = self.run_tool("browser_status")
-        self.assertFalse(status["available"])
-        self.assertIn("Firefox is not signed in to Hermes", status["reason"])
-        self.device.conn.browser = {"connected": False, "signed_in": False,
-                                    "reason": "Firefox is signed in to Hermes as bob, not as the account this computer belongs to."}
-        status = self.run_tool("browser_status")
-        self.assertIn("as bob", status["reason"])
-        self.device.conn.browser = {"connected": True, "signed_in": False}
-        self.assertFalse(browser.available())
-        self.assertIn("not signed in", self.run_tool("browser_status")["reason"])
-        self.assertEqual(self.fake.requests, [])
-
-    def test_not_signed_in_result(self):
-        """A request the hub or the device refused for the sign-in reports its code."""
-        self.fake.fail["snapshot"] = (core.BROWSER_NOT_SIGNED_IN, "Firefox is not signed in to Hermes on desktop")
-        out = self.run_tool("browser_snapshot", tab_id=7)
-        self.assertEqual(out["code"], core.BROWSER_NOT_SIGNED_IN)
 
     def test_navigate_new_tab_asks_once_per_site(self):
         out = self.run_tool("browser_navigate", url="https://www.Example.com/a")
@@ -661,7 +634,7 @@ class ToolTests(BrowserBase):
         self.assertNotIn("full_page", self.last("screenshot")["args"])
 
     def test_starts_closed_firefox(self):
-        self.device.conn.browser = {"connected": False, "signed_in": False, "can_start": True}
+        self.device.conn.browser = {"connected": False, "can_start": True}
         self.assertTrue(browser.available(), "tools stay listed while the device can start Firefox")
         status = self.run_tool("browser_status")
         self.assertFalse(status["available"])
@@ -676,7 +649,7 @@ class ToolTests(BrowserBase):
         self.assertEqual(out["tab_id"], 8)
 
     def test_no_start_without_capability(self):
-        self.device.conn.browser = {"connected": False, "signed_in": False}
+        self.device.conn.browser = {"connected": False}
         out = self.run_tool("browser_navigate", url="https://example.com/")
         self.assertIn("does not start Firefox itself", out["error"])
         self.assertFalse(self.fake.requests)
@@ -1256,8 +1229,8 @@ class HubBrowserTests(unittest.TestCase):
         self.hub.on_message(self.dev.conn, {"type": "browser_status", "connected": True, "signed_in": True,
                                             "user": "alice", "browser": "Firefox 157.0.1",
                                             "extension_version": "0.2.0", "extra": "x"})
-        self.assertEqual(self.dev.conn.browser, {"connected": True, "signed_in": True, "user": "alice",
-                                                 "browser": "Firefox 157.0.1", "extension_version": "0.2.0"})
+        self.assertEqual(self.dev.conn.browser, {"connected": True, "browser": "Firefox 157.0.1",
+                                                 "extension_version": "0.2.0"})
         self.assertEqual(self.dev.conn.info()["browser"]["browser"], "Firefox 157.0.1")
         self.dev.conn.capabilities = frozenset()
         self.hub.on_message(self.dev.conn, {"type": "browser_status", "connected": False})

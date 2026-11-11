@@ -49,10 +49,6 @@ TYPE_BROWSER = "browser"
 TYPE_BROWSER_RESULT = "browser_result"
 TYPE_BROWSER_STATUS = "browser_status"
 TYPE_BROWSER_START = "browser_start"
-# The device presents the browser's hub sign-in to the hub, which answers it; neither reaches the
-# plugin through a hub (docs/browser.md section 13).
-TYPE_BROWSER_AUTH = "browser_auth"
-TYPE_BROWSER_AUTH_RESULT = "browser_auth_result"
 
 # Capabilities the plugin accepts from a device's hello (section 4.1).
 CAPABILITY_BROWSER = "browser"
@@ -64,16 +60,6 @@ BROWSER_REFUSED = "refused"
 BROWSER_TIMEOUT = "timeout"
 BROWSER_CANCELLED = "cancelled"
 BROWSER_FAILED = "failed"
-BROWSER_NOT_SIGNED_IN = "not_signed_in"
-# Codes of a browser_auth_result, the browser credential's prefix and the extension's id. The plugin
-# does not use them; they are listed so the contract test keeps Go and Python in step.
-BROWSER_AUTH_SIGNED_OUT = "signed_out"
-BROWSER_AUTH_INVALID = "invalid"
-BROWSER_AUTH_WRONG_USER = "wrong_user"
-BROWSER_AUTH_OTHER_DEVICE = "other_device"
-BROWSER_AUTH_UNAVAILABLE = "unavailable"
-BROWSER_TOKEN_PREFIX = "hbt_"
-BROWSER_EXTENSION_ID = "browser@hermes-device"
 BROWSER_DEFAULT_TIMEOUT_S = 60
 BROWSER_MAX_TIMEOUT_S = 300
 MAX_BROWSER_RESULT = 16_777_216
@@ -880,14 +866,12 @@ class Hub:
 
     def _on_browser(self, conn: DeviceConn, msg: dict) -> None:
         if msg.get("type") == TYPE_BROWSER_STATUS:
-            status = {"connected": msg.get("connected") is True, "signed_in": msg.get("signed_in") is True}
-            for key, limit in (("browser", 64), ("extension_version", 64), ("user", 256), ("reason", 300)):
+            status = {"connected": msg.get("connected") is True}
+            for key in ("browser", "extension_version"):
                 if isinstance(msg.get(key), str) and msg[key]:
-                    status[key] = msg[key][:limit]
+                    status[key] = msg[key][:64]
             conn.browser = status
-            logger.info("device: %s browser %s", conn.device_id,
-                        "connected" if status["connected"] and status["signed_in"] else
-                        status.get("reason") or "not connected")
+            logger.info("device: %s browser %s", conn.device_id, "connected" if status["connected"] else "not connected")
             return
         rid = msg.get("id")
         if not isinstance(rid, str):

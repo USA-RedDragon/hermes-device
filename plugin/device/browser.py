@@ -55,9 +55,6 @@ def _ok(result: Any) -> str:
 
 # --- target device -----------------------------------------------------------------------------
 
-NOT_SIGNED_IN = "Firefox is not signed in to Hermes"
-
-
 class Unavailable(Exception):
     """The session has no device browser to use; the message says why."""
 
@@ -74,11 +71,11 @@ def not_running(conn: Any) -> bool:
     """The device's Firefox extension is not connected (Firefox is closed) and the device can
     start Firefox."""
     b = conn.browser
-    return bool(b.get("can_start")) and not b.get("connected") and not b.get("reason")
+    return bool(b.get("can_start")) and not b.get("connected")
 
 
 def start_firefox(conn: Any) -> None:
-    """Start Firefox on the device and wait until it is connected and signed in."""
+    """Start Firefox on the device and wait until it is connected."""
     core = _core()
     try:
         core.hub().browser_call(conn.device_id, "start", {}, START_TIMEOUT_S, start=True)
@@ -86,7 +83,7 @@ def start_firefox(conn: Any) -> None:
         raise Unavailable(f"hermes-device: Firefox on device {conn.name} [{conn.device_id}] was not running and did "
                           f"not start: {exc}") from None
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and not (conn.browser.get("connected") and conn.browser.get("signed_in")):
+    while time.monotonic() < deadline and not conn.browser.get("connected"):
         time.sleep(0.1)
 
 
@@ -455,14 +452,8 @@ def target(session_id: str = "", start: bool = True) -> tuple[Any, Any]:
             raise Unavailable(f"hermes-device: Firefox is not running on device {conn.name} [{device_id}]. Any other "
                               f"browser tool, such as browser_navigate, starts it.")
         start_firefox(conn)
-        raise Started(f"Firefox was not running on device {conn.name}, so it was started and is signed in now. "
+        raise Started(f"Firefox was not running on device {conn.name}, so it was started and is connected now. "
                       f"Make the same browser call again.")
-    reason = conn.browser.get("reason") or ""
-    if reason or (conn.browser.get("connected") and not conn.browser.get("signed_in")):
-        if not reason or reason == NOT_SIGNED_IN:
-            raise Unavailable(f"hermes-device: {NOT_SIGNED_IN} on device {conn.name} [{device_id}]. The user must "
-                              f"choose \"Sign in to Hermes\" in the Hermes menu of Firefox's toolbar.")
-        raise Unavailable(f"hermes-device: Firefox on device {conn.name} [{device_id}] cannot be used: {reason}")
     if not conn.browser.get("connected"):
         raise Unavailable(f"hermes-device: the Hermes Firefox extension on device {conn.name} [{device_id}] is "
                           f"not connected. Firefox must be running with the extension loaded"
@@ -1123,8 +1114,8 @@ def _device_list(user: Optional[str], selected: str = "") -> list[dict]:
     out = []
     for c in browser_devices(user):
         item = {"device": c.name, "device_id": c.device_id,
-                "firefox": "signed in" if c.browser.get("connected") and c.browser.get("signed_in") else
-                "not running" if not_running(c) else (c.browser.get("reason") or "not connected")}
+                "firefox": "connected" if c.browser.get("connected") else
+                "not running" if not_running(c) else "not connected"}
         if c.device_id == selected:
             item["selected"] = True
         out.append(item)
@@ -1148,7 +1139,7 @@ def browser_status(args: dict, session_id: str = "", **_kwargs) -> str:
     except Unavailable as exc:
         return _ok({"available": False, "reason": str(exc), "devices": _device_list(_known_user(session_id))})
     out = {"available": True, "device": conn.name, "device_id": conn.device_id, "why": _HOW.get(how, how)}
-    out.update({k: v for k, v in conn.browser.items() if k not in ("connected", "reason")})
+    out.update({k: v for k, v in conn.browser.items() if k != "connected"})
     try:
         tabs = call(conn, "tabs_list", {}, INSPECT_TIMEOUT_S)
         out["tabs"] = tabs.get("tabs", []) if isinstance(tabs, dict) else []
@@ -1663,11 +1654,11 @@ def offered() -> bool:
 
 
 def available() -> bool:
-    """check_fn of the other tools: as offered, and that device's extension is connected and signed in to
-    the hub, or Firefox is closed and the device can start it."""
+    """check_fn of the other tools: as offered, and that device's extension is connected, or Firefox is
+    closed and the device can start it."""
     core = _core()
     return enabled() and any(core.CAPABILITY_BROWSER in c.capabilities and (
-        (c.browser.get("connected") and c.browser.get("signed_in")) or not_running(c)) for c in core.hub().devices())
+        c.browser.get("connected") or not_running(c)) for c in core.hub().devices())
 
 
 def register(ctx: Any, core: Any) -> None:
