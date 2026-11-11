@@ -30,6 +30,7 @@ const (
 	envProd       = "prod"
 	lblOnce       = "Once"
 	titleFixCI    = "Fix CI"
+	titleTerminal = "Terminal chat"
 	topicTrip     = "Trip"
 )
 
@@ -139,7 +140,9 @@ func TestEachChatGetsATopic(t *testing.T) {
 	h.hub.add(hub.Session{ID: "busy", BackendID: beCluster, Title: titleLong, Running: true, UpdatedAt: since.Add(-time.Hour)})
 	h.hub.add(hub.Session{ID: "bg_abc123", BackendID: beCluster, Title: "Background prompt", Source: "desktop", UpdatedAt: since.Add(time.Minute)})
 	h.hub.add(hub.Session{ID: "fix", BackendID: beCluster, Title: titleFixCI, UpdatedAt: since.Add(time.Minute)})
+	h.hub.add(hub.Session{ID: "local-1", BackendID: beCluster, Title: titleTerminal, Source: "local", UpdatedAt: since.Add(time.Minute)})
 	h.tg.waitCall(mTopic, func(c tgCall) bool { return c.name() == "SEV-1 review · scheduled" })
+	h.tg.waitCall(mTopic, func(c tgCall) bool { return c.name() == titleTerminal })
 	h.tg.waitCall(mTopic, func(c tgCall) bool { return c.name() == titleLong })
 	created := h.tg.waitCall(mTopic, func(c tgCall) bool { return c.name() == titleFixCI })
 	thread := created.ResultID
@@ -160,7 +163,7 @@ func TestEachChatGetsATopic(t *testing.T) {
 		t.Fatalf("answer went to %+v", answer.Params)
 	}
 	for _, c := range h.tg.snapshot() {
-		if c.Method == mTopic && !slices.Contains([]string{titleFixCI, "SEV-1 review · scheduled", titleLong}, c.name()) {
+		if c.Method == mTopic && !slices.Contains([]string{titleFixCI, "SEV-1 review · scheduled", titleLong, titleTerminal}, c.name()) {
 			t.Fatalf("unexpected topic %q", c.name())
 		}
 	}

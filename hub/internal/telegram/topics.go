@@ -157,12 +157,13 @@ func topicName(title, place string) string {
 const sourceCron = "cron"
 
 // topicSource reports whether chats of a source get topics: the user's own
-// chats and scheduled jobs, not the conversations that Hermes holds on a
+// chats, including those of a computer's talaria daemon ("local"), and
+// scheduled jobs, not the conversations that Hermes holds on a
 // messaging platform, which may have other people in them, nor its
 // subagents. "" is a backend that does not say.
 func topicSource(source string) bool {
 	switch source {
-	case "", "gui", "cli", "tui", "acp", "desktop", sourceCron:
+	case "", "gui", "cli", "tui", "acp", "desktop", "local", sourceCron:
 		return true
 	}
 	return false
