@@ -58,6 +58,9 @@ const (
 	methodSlashExec    = "slash.exec"
 	methodConfigGet    = "config.get"
 	methodFileAttach   = "file.attach"
+	methodList         = "session.list"
+	methodActiveList   = "session.active_list"
+	methodMostRecent   = "session.most_recent"
 	opCompress         = "compress"
 	opReset            = "reset"
 	opWorkspace        = "workspace"
@@ -235,7 +238,7 @@ const (
 var gatewayRules = map[string]string{
 	"gateway.ping": RuleAllowed, "runtime.describe": RuleAllowed, "setup.status": RuleAllowed,
 	methodCreate: RuleRewritten, methodResume: RuleRewritten, methodMutate: RuleRewritten, methodCompletePath: RuleRewritten,
-	methodDetach: RuleAllowed, "session.list": RuleAllowed, "session.active_list": RuleAllowed, "session.most_recent": RuleAllowed,
+	methodDetach: RuleAllowed, methodList: RuleAllowed, methodActiveList: RuleAllowed, methodMostRecent: RuleAllowed,
 	"session.info": RuleAllowed, "session.stats": RuleAllowed, "session.export": RuleAllowed,
 	"session.context_breakdown": RuleAllowed, "session.control.read": RuleAllowed, "terminal.resize": RuleAllowed,
 	"prompt.submit": RuleAllowed, "prompt.receipt": RuleAllowed, "prompt.cancel": RuleAllowed, "prompt.resolve_unknown": RuleAllowed,
@@ -553,7 +556,7 @@ var refusedParams = map[string]map[string]string{
 		"latest":  "resume a session by its id: the hub checks the id before the gateway attaches it",
 		"api_key": "a launch key is not part of a device session",
 	},
-	"session.list": {
+	methodList: {
 		"picker":         "it returns the first prompt and last reply of every chat of the backend",
 		"workspace":      "it lists chats by a folder of any device",
 		keyTitle:         "it finds a chat of the backend by its title",

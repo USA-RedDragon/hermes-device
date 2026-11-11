@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -108,6 +109,7 @@ const (
 	heldResume
 	heldWorkspace
 	heldBranch
+	heldList
 )
 
 // held is a forwarded device request whose answer the hub acts on before
@@ -119,6 +121,7 @@ type held struct {
 	requestID string
 	sessionID string
 	prevDir   string
+	method    string
 }
 
 // guard enforces the gateway leg rules of the hub: the device's token is
@@ -293,6 +296,8 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 	case f.Method == methodMutate && rawString(params["operation"]) == opBranch:
 		dropMember(params, "payload", "mcp_servers")
 		g.send(&f, params, &held{kind: heldBranch, id: f.ID})
+	case slices.Contains(listMethods, f.Method):
+		g.send(&f, params, &held{kind: heldList, id: f.ID, method: f.Method})
 	default:
 		g.send(&f, params, nil)
 	}
@@ -503,6 +508,12 @@ func (g *guard) fromGateway(typ websocket.MessageType, data []byte) {
 		g.resumeAnswered(h, &f, data)
 	case heldBranch:
 		g.branchAnswered(&f, data)
+	case heldList:
+		if f.isError() {
+			g.toDevice(data)
+			return
+		}
+		g.work.Go(func() { g.listAnswered(h.method, &f) })
 	case heldWorkspace:
 		if f.isError() && h.prevDir != "" {
 			g.work.Go(func() {
@@ -685,5 +696,46 @@ func (g *guard) call(method string, params any) (frame, error) {
 		return frame{}, fmt.Errorf("%s: %w", method, errHubLegLost)
 	case <-ctx.Done():
 		return frame{}, fmt.Errorf("%s: %w", method, ctx.Err())
+	}
+}
+
+// listMethods are the methods whose answers list sessions of the whole
+// profile. The hub keeps only the rows of this device's sessions.
+//
+//nolint:gochecknoglobals // a fixed list
+var listMethods = []string{methodList, methodActiveList, methodMostRecent}
+
+// listAnswered keeps only the sessions bound to this device (through their
+// lineage) in a list answer. A session whose binding cannot be read is
+// left out.
+func (g *guard) listAnswered(method string, f *frame) {
+	res, isObj := decodeParams(f.Result)
+	if !isObj {
+		res = map[string]json.RawMessage{}
+	}
+	mine := func(sid string) bool { return sid != "" && g.sessions.check(sid, true) == nil }
+	if method == methodMostRecent {
+		if sid, _ := rawStringOK(res[keySessionID]); !mine(sid) {
+			res = map[string]json.RawMessage{keySessionID: json.RawMessage("null")}
+		}
+	} else {
+		var rows []json.RawMessage
+		_ = json.Unmarshal(res["sessions"], &rows)
+		kept := []json.RawMessage{}
+		for _, row := range rows {
+			r, _ := decodeParams(row)
+			sid, ok := rawStringOK(r[keySessionID])
+			if !ok {
+				sid, _ = rawStringOK(r["id"])
+			}
+			if mine(sid) {
+				kept = append(kept, row)
+			}
+		}
+		res["sessions"] = mustRaw(kept)
+	}
+	f.members["result"] = mustRaw(res)
+	if out, err := json.Marshal(f.members); err == nil {
+		g.toDevice(out)
 	}
 }

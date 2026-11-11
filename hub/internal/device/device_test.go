@@ -54,6 +54,7 @@ const (
 	keyJSONRPC      = "jsonrpc"
 	keyKey          = "key"
 	keyScope        = "scope"
+	scopeStored     = "stored"
 	keyPayload      = "payload"
 	opWorkspace     = "workspace"
 	hubUser         = "hub"
@@ -760,10 +761,10 @@ func TestGatewayLegDenyList(t *testing.T) {
 		if m := readJSON(t, g.c); m["error"] == nil {
 			t.Fatalf("batch = %v", m)
 		}
-		if m := g.request("dup", methodList, map[string]any{keyScope: "stored"}); m["error"] != nil {
+		if m := g.request("dup", methodList, map[string]any{keyScope: scopeStored}); m["error"] != nil {
 			t.Fatalf("session.list = %v", m)
 		}
-		if m := g.request(1.0, methodList, map[string]any{keyScope: "stored"}); m["id"] != 1.0 || m["error"] != nil {
+		if m := g.request(1.0, methodList, map[string]any{keyScope: scopeStored}); m["id"] != 1.0 || m["error"] != nil {
 			t.Fatalf("numeric id = %v", m)
 		}
 		g.request("slash", methodSlash, map[string]any{keySessionID: "s1", keyCommand: "/title new name"})
@@ -989,4 +990,29 @@ func TestStoreErrorsAreNotUnauthorized(t *testing.T) {
 	if s == http.StatusUnauthorized || s < 500 {
 		t.Fatalf("whoami with a broken store = %d %v", s, out)
 	}
+}
+
+func TestGatewayLegListOwnSessions(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, id := e.pair(e.a)
+		for _, sid := range []string{sessionMine, sessionOther, sessionUnbound} {
+			e.gw.AddSession(&gatewaytest.Session{ID: sid, Live: true, Title: sid})
+		}
+		e.plugin.SetBinding(sessionMine, id, deviceDir)
+		e.plugin.SetBinding(sessionOther, otherDevice, "/home/bob")
+		g := e.gatewayLeg(e.b, tok)
+		for _, scope := range []string{"live", scopeStored} {
+			m := g.request("list-"+scope, methodList, map[string]any{keyScope: scope})
+			res, _ := m[keyResult].(map[string]any)
+			rows, _ := res["sessions"].([]any)
+			if len(rows) != 1 {
+				t.Fatalf("%s list = %v", scope, m)
+			}
+			if row, _ := rows[0].(map[string]any); row[keySessionID] != sessionMine {
+				t.Fatalf("%s list = %v", scope, m)
+			}
+		}
+	})
 }
