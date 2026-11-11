@@ -251,6 +251,25 @@ var migrations = []migration{
 				updated_at BIGINT NOT NULL, PRIMARY KEY ("user", account_uuid))`,
 		},
 	},
+	{
+		version: 16,
+		sqlite: []string{
+			`CREATE TABLE chat_drafts ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL, text TEXT NOT NULL,
+				updated_at INTEGER NOT NULL, PRIMARY KEY ("user", backend_id, session_id))`,
+			`CREATE TABLE chat_marks ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL,
+				pinned INTEGER NOT NULL DEFAULT 0, seen_at INTEGER NOT NULL DEFAULT 0, unread INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY ("user", backend_id, session_id))`,
+			`CREATE TABLE read_baselines ("user" TEXT PRIMARY KEY, at INTEGER NOT NULL)`,
+		},
+		postgres: []string{
+			`CREATE TABLE chat_drafts ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL, text TEXT NOT NULL,
+				updated_at BIGINT NOT NULL, PRIMARY KEY ("user", backend_id, session_id))`,
+			`CREATE TABLE chat_marks ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL,
+				pinned INTEGER NOT NULL DEFAULT 0, seen_at BIGINT NOT NULL DEFAULT 0, unread INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY ("user", backend_id, session_id))`,
+			`CREATE TABLE read_baselines ("user" TEXT PRIMARY KEY, at BIGINT NOT NULL)`,
+		},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas
