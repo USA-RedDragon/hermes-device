@@ -35,6 +35,7 @@ type sessionJSON struct {
 	Pinned       bool      `json:"pinned"`
 	Unread       bool      `json:"unread"`
 	Needs        string    `json:"needs"`
+	Page         bool      `json:"page"`
 }
 
 func toJSON(s hub.Session) sessionJSON {
@@ -105,9 +106,16 @@ func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
-	text, files, steer, ok := promptBody(w, r)
+	text, files, steer, page, ok := promptBody(w, r)
 	if !ok {
 		return
+	}
+	if page != nil {
+		var err error
+		if text, err = hub.WithPageContext(text, *page); err != nil {
+			errorJSON(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if text == "" && len(files) == 0 {
 		errorJSON(w, http.StatusBadRequest, "empty prompt")
@@ -131,22 +139,24 @@ const (
 	maxFileName   = 4096
 )
 
-// promptBody reads a prompt: JSON {"text", "steer"}, or multipart/form-data
-// with a "text" field and one "file" part per attachment. A "pages" field
-// after a file part picks the pages of that PDF to show the agent: "N",
-// "N-M" or "N-". Only a JSON prompt can steer.
-func promptBody(w http.ResponseWriter, r *http.Request) (string, []hub.Attachment, bool, bool) {
+// promptBody reads a prompt: JSON {"text", "steer", "page"}, or
+// multipart/form-data with a "text" field and one "file" part per
+// attachment. A "pages" field after a file part picks the pages of that PDF
+// to show the agent: "N", "N-M" or "N-". Only a JSON prompt can steer or
+// carry the page chat's context.
+func promptBody(w http.ResponseWriter, r *http.Request) (string, []hub.Attachment, bool, *hub.PageContext, bool) {
 	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if mt != "multipart/form-data" {
 		var body struct {
-			Text  string `json:"text"`
-			Steer bool   `json:"steer"`
+			Text  string           `json:"text"`
+			Steer bool             `json:"steer"`
+			Page  *hub.PageContext `json:"page"`
 		}
 		ok := decode(w, r, &body)
-		return body.Text, nil, body.Steer, ok
+		return body.Text, nil, body.Steer, body.Page, ok
 	}
 	text, files, ok := formPrompt(w, r)
-	return text, files, false, ok
+	return text, files, false, nil, ok
 }
 
 // formPrompt reads a multipart/form-data prompt.

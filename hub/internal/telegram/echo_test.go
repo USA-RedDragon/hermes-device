@@ -51,7 +51,12 @@ func TestPromptFromElsewhereIsShown(t *testing.T) {
 	h := startBot(t, nil)
 	sid := h.startTurn(t)
 	h.finishFirst(t, sid)
-	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "from the hub", kSubmitID: hub.NewSubmissionID()})
+	text, err := hub.WithPageContext("from the hub", hub.PageContext{Scope: "tab",
+		Tabs: []hub.PageTab{{ID: 3, Title: "Docs", URL: "https://example.com/", Active: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: text, kSubmitID: hub.NewSubmissionID()})
 	h.hub.emit(t, sid, hub.KindThinkingDelta, map[string]any{kText: kPondering})
 	h.tg.wait(mSend, kThinking)
 	if got := h.tg.wait(mSend, "from the hub"); got.text() != echoHub {

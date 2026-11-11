@@ -66,6 +66,7 @@ const imageCaption = "What do you see in this image?"
 // splitPrompt takes the attachment lines out of a prompt and returns the
 // rest and the names of the attachments.
 func splitPrompt(text string) (string, []string) {
+	text = hub.CutPageContext(text)
 	var keep, names []string
 	files, images := false, false
 	skipTo := ""

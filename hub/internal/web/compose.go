@@ -156,7 +156,7 @@ func (s *Server) marked(ctx context.Context, user string, ss []hub.Session) []se
 		j := toJSON(x)
 		if marks != nil {
 			m := marks[hub.SessionRef{BackendID: x.BackendID, SessionID: x.ID}]
-			j.Pinned, j.Unread = m.Pinned, m.IsUnread(x, base)
+			j.Pinned, j.Unread, j.Page = m.Pinned, m.IsUnread(x, base), m.Page
 		}
 		out = append(out, j)
 	}

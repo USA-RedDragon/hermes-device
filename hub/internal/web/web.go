@@ -211,6 +211,7 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFileFS(w, r, static, "index.html")
 	})
+	mux.HandleFunc("GET /pagechat", s.handlePageChatView(static))
 	for _, f := range []struct{ path, file, mime string }{
 		{"/manifest.webmanifest", "manifest.webmanifest", "application/manifest+json"},
 		{"/sw.js", "sw.js", "text/javascript; charset=utf-8"},
@@ -236,6 +237,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/backends", s.api(s.handleBackends))
 	mux.Handle("GET /api/sessions", s.api(s.handleSessions))
 	mux.Handle("POST /api/sessions", s.api(s.handleNewSession))
+	mux.Handle("POST /api/pagechats", s.api(s.handleNewPageChat))
 	mux.Handle("GET /api/sessions/{backend}/{session}/events", s.api(s.handleEvents))
 	mux.Handle("POST /api/sessions/{backend}/{session}/prompt", s.api(s.handlePrompt))
 	mux.Handle("POST /api/sessions/{backend}/{session}/interrupt", s.api(s.handleInterrupt))
