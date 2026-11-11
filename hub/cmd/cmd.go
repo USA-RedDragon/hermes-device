@@ -105,7 +105,8 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 		return err
 	}
 	svc.SetNotify(notifier.Notify)
-	webOpts := web.Options{Service: svc, Links: st, Tokens: st, Groups: st, Notices: st, Notifier: notifier}
+	webOpts := web.Options{Service: svc, Links: st, Tokens: st, Groups: st, Notices: st, Notifier: notifier,
+		Version: cmd.Annotations["version"]}
 	devices, err := newDevices(cfg, st, svc, dialers)
 	if err != nil {
 		return err

@@ -76,6 +76,8 @@ type Options struct {
 	// Claude serves the Claude accounts of backends with the
 	// claude-accounts plugin. Nil: none.
 	Claude hub.Claude
+	// Version is the hub's release, shown in Settings.
+	Version string
 }
 
 // Server is the web front end.
@@ -113,6 +115,8 @@ type Server struct {
 	deviceBackendIDs map[string]bool
 	backendNames     map[string]string
 	instance         string
+	version          string
+	telegramSteps    string
 	ready            atomic.Bool
 	draining         chan struct{}
 	drainOnce        sync.Once
@@ -164,7 +168,19 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		linkPage: template.Must(template.New("link").Parse(linkHTML)),
 		draining: make(chan struct{}),
 		instance: uuid.NewString()[:8],
+		version:  opts.Version, telegramSteps: telegramSteps(cfg),
 	}, nil
+}
+
+// telegramSteps is the bot's steps setting, or "" without a bot.
+func telegramSteps(cfg *config.Config) string {
+	if !cfg.Telegram.Enabled {
+		return ""
+	}
+	if cfg.Telegram.Steps == "" {
+		return "collapsed"
+	}
+	return cfg.Telegram.Steps
 }
 
 // SetReady sets what /readyz answers: 200 when ready, else 503, so load

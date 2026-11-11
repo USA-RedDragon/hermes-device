@@ -540,3 +540,24 @@ func TestHeldPrompt(t *testing.T) {
 		t.Fatalf("sent event = %s", last.data)
 	}
 }
+
+func TestMeSettings(t *testing.T) {
+	t.Parallel()
+	e := setupWith(t, func(cfg *config.Config, opts *web.Options, _ *store.Store) {
+		cfg.Telegram = config.Telegram{Enabled: true, Token: "t", PollTimeout: time.Second, EditInterval: time.Second,
+			LeaderRetry: time.Second, TopicSync: time.Second, Steps: "expanded"}
+		opts.Version = "v9.8.7"
+	})
+	c := client(t)
+	login(t, e, c)
+	_, body := get(t, c, e.url+"/api/me")
+	if !strings.Contains(body, `"telegram_steps":"expanded"`) || !strings.Contains(body, `"version":"v9.8.7"`) {
+		t.Fatalf("me = %s", body)
+	}
+	plain := setup(t)
+	c = client(t)
+	login(t, plain, c)
+	if _, body := get(t, c, plain.url+"/api/me"); !strings.Contains(body, `"telegram_steps":""`) {
+		t.Fatalf("me without a bot = %s", body)
+	}
+}

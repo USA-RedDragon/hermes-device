@@ -249,6 +249,7 @@ type deviceJSON struct {
 	Hostname      string     `json:"hostname"`
 	OS            string     `json:"os"`
 	Arch          string     `json:"arch"`
+	ClientVersion string     `json:"client_version,omitempty"`
 	CreatedAt     time.Time  `json:"created_at,omitzero"`
 	Paired        bool       `json:"paired"`
 	LastSeenAt    *time.Time `json:"last_seen_at"`
@@ -288,7 +289,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	out := make([]deviceJSON, 0, len(ds))
 	for _, d := range ds {
 		j := deviceJSON{ID: d.ID, Kind: kindPaired, Name: d.Name, BackendID: d.BackendID, BackendName: s.backendNames[d.BackendID],
-			Hostname: d.Hostname, OS: d.OS, Arch: d.Arch, CreatedAt: d.CreatedAt, Paired: d.Paired,
+			Hostname: d.Hostname, OS: d.OS, Arch: d.Arch, ClientVersion: d.ClientVersion, CreatedAt: d.CreatedAt, Paired: d.Paired,
 			LastSeenAt: optTime(d.LastSeenAt), LastAddr: d.LastAddr}
 		if !d.AddrChangedAt.IsZero() {
 			j.PrevAddr, j.AddrChangedAt = d.PrevAddr, optTime(d.AddrChangedAt)
