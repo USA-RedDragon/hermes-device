@@ -577,6 +577,43 @@ type ACPHost struct {
 	nextID    int
 	got       chan struct{}
 	hangUp    bool
+	usage     []byte
+	usageGot  []assertion.Claims
+}
+
+// SetUsage sets the body GET /usage answers with.
+func (h *ACPHost) SetUsage(body []byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.usage = body
+}
+
+// UsageClaims are the claims of each GET /usage the fake accepted.
+func (h *ACPHost) UsageClaims() []assertion.Claims {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]assertion.Claims(nil), h.usageGot...)
+}
+
+// usageReport answers GET /usage as acp-host does: only with a hub
+// assertion for the usage leg.
+func (h *ACPHost) usageReport(w http.ResponseWriter, r *http.Request) {
+	c, err := h.verifier.Verify(r.Header.Get(assertion.Header), assertion.Expect{Audience: h.BackendID, Leg: "usage",
+		Method: r.Method, Path: r.URL.Path})
+	if err != nil {
+		http.Error(w, "assertion refused", http.StatusUnauthorized)
+		return
+	}
+	h.mu.Lock()
+	h.usageGot = append(h.usageGot, *c)
+	body := h.usage
+	h.mu.Unlock()
+	if body == nil {
+		http.Error(w, "usage is off", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(body)
 }
 
 // NewACPHost starts a fake acp-host for backendID.
@@ -584,6 +621,7 @@ func NewACPHost(backendID string, key ed25519.PublicKey) *ACPHost {
 	h := &ACPHost{BackendID: backendID, verifier: assertion.NewVerifier([]ed25519.PublicKey{key}), got: make(chan struct{}, 1)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+protocol.ACPHostPath, h.acp)
+	mux.HandleFunc("GET /usage", h.usageReport)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	h.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()

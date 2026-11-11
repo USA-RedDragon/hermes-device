@@ -118,6 +118,7 @@ type Server struct {
 	created map[string]time.Time
 	closed  bool
 	stopped chan struct{}
+	usage   UsageSink
 }
 
 // New returns a Server.
@@ -182,6 +183,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/device/exec", s.authed(s.handleExec))
 	mux.Handle("GET /api/device/acp", s.authed(s.exceptService(s.handleACP)))
 	mux.Handle("GET /api/device/gateway", s.authed(s.exceptService(s.handleGateway)))
+	mux.Handle("POST /api/device/usage", s.authed(s.exceptService(s.handleUsage)))
 	mux.HandleFunc("/api/device/", func(w http.ResponseWriter, _ *http.Request) {
 		apiError(w, http.StatusNotFound, "not_found", "no such device API")
 	})
