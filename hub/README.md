@@ -9,6 +9,7 @@ One web front end, behind OpenID Connect login, for many [Hermes Agent](https://
 - Reasoning, tool calls (arguments, progress, result) and the reply stream live, with no refresh.
 - New sessions, interrupt, and approval prompts.
 - Images and files attached to a message, on the page and in Telegram (see [Attachments](#attachments)).
+- Images and files the agent shows the user, such as browser screenshots, on the page and in Telegram (see [Files from the agent](#files-from-the-agent)).
 - Replies in Markdown, with colored code blocks and a Copy button. Model output never becomes HTML, and links open only `http`, `https` and `mailto` targets.
 - A line under the chat title with the model, how full its context is, reply speed and the working folder. It opens to pick the model and the thinking level.
 - Rename, archive and delete chats, and search their titles.
@@ -51,12 +52,25 @@ Syntax colors come from [highlight.js](https://highlightjs.org/) 11.11.1 (BSD-3-
 
 ## Attachments
 
-The paperclip by the message box attaches files; pasting or dropping files onto the chat does too. Each file shows as a chip, with a thumbnail for an image, until it is sent or removed. The sent message shows them. A chat opened again later shows them too, by name, since Hermes keeps no thumbnail.
+The paperclip by the message box attaches files; pasting or dropping files onto the chat does too. Each file shows as a chip, with a thumbnail for an image, until it is sent or removed. The sent message shows them. A chat opened again later shows the images again through the hub's file route (see [Files from the agent](#files-from-the-agent)), and other files by name.
 
 - **Images** (PNG, JPEG, GIF and WebP, found by their first bytes) go to the model. The hub stages each one with `image.attach_bytes`, which the gateway saves in the profile's `cache/images`, and names them in the `attachments` of the `prompt.submit`. Hermes takes up to 10 images of up to 25 MB each. Hermes decides whether the model reads them itself or an image model describes them. When the session's tools have no `vision_analyze`, Hermes most likely has neither, and the hub tells the user that the model may not be able to see the images. For a chat on a computer or the sandbox, the hub also writes each image to the chat's folder there, as it does other files, so the agent's tools can open it.
 - **Other files** go where the session's tools can read them. For a chat that runs on a computer or the sandbox, the hub sends the file to the device plugin, which writes it into `.hermes/attachments` of the chat's folder on that device (hermes-device docs/protocol.md section 9). For a chat that runs on the Hermes server, the hub hands it to Hermes with `file.attach`. The message then gets a line that names the file and its path. A file is at most 32 MB. The plugin takes 2 uploads at a time and the hub stages 4 messages with attachments at a time; more get a note to try again.
 - One message takes at most 10 files, 64 MB in all. A message with files cannot be a slash command. Hermes must be up to take the files, so while it restarts the hub refuses such a message with a note instead of holding it; it holds one only when Hermes took the files and then went away before the message itself.
 - PDFs are files. Hermes' `pdf.attach`, which turns pages into images, is not served on the gateway's socket.
+
+## Files from the agent
+
+The agent shows a file to the user with a `MEDIA:<path>` line in its reply, as for Hermes' own messaging platforms (`gateway/platforms/base.py` `extract_media`). hermes-device's `browser_screenshot` tool saves a screenshot of a browser tab and tells the model to put such a line in its reply. The page hides the line and shows the file in its place: an image inline, which opens full size, or a chip that downloads any other file. A `browser_screenshot` tool card shows the screenshot too. Telegram gets the reply text without the line, then each image as a photo (a file when Telegram refuses the photo, or when it is over 10 MB) and each other file as a document, up to 50 MB. Lines in code blocks, inline code examples and quotes stay as text.
+
+The hub reads the files from the Hermes server through its web server, the way the Hermes Webapp page downloads a file: `POST /api/files/ticket` mints a ticket bound to the path, and `GET /api/fs/download` with that ticket streams the file. The page asks `GET /api/sessions/<backend>/<session>/media?path=<path>`, and the hub serves the file only when all of these hold:
+
+- the user may use the backend;
+- a reply of that chat names the path with a `MEDIA:` line, a `browser_screenshot` result of that chat names it, or a message of that chat names it as an attached image (`[Image attached at: <path>]` or `@image:<path>`);
+- the path is absolute and clean, with an extension Hermes delivers;
+- the path is under one of the backend's `media_roots`, or, when it has none, is a `browser_screenshot` file (`<dir>/cache/screenshots/hermes-device/<session>/<file>`) or an attached image (`<dir>/cache/images/<file>`).
+
+An image (PNG, JPEG, GIF or WebP by both its extension and its first bytes) comes back inline as that type; anything else comes back as `application/octet-stream` with `Content-Disposition: attachment`. Every answer has `Content-Security-Policy: default-src 'none'; sandbox`. A file is at most 64 MB. Files on a computer that runs the chat are not shown: the hub reads files of the Hermes server only.
 
 ## Set up a Hermes backend
 
