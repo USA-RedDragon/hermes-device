@@ -210,7 +210,7 @@ func (b *Bot) Run(ctx context.Context) error {
 			continue
 		}
 		backoff = time.Second
-		updates = b.completeAlbum(ctx, updates)
+		updates = b.completeAlbum(ctx, offset, updates)
 		for i := 0; i < len(updates); i++ {
 			if ctx.Err() != nil {
 				break
@@ -236,8 +236,10 @@ const albumWait = 2 * time.Second
 
 // completeAlbum adds the rest of an album to a batch that ends inside one:
 // Telegram sends each photo of an album as its own message, and they may
-// arrive in separate batches.
-func (b *Bot) completeAlbum(ctx context.Context, updates []Update) []Update {
+// arrive in separate batches. It polls from the batch's own offset, which
+// confirms nothing new to Telegram, so a leader that stops before it
+// handled the batch leaves all of it to the next one.
+func (b *Bot) completeAlbum(ctx context.Context, offset int64, updates []Update) []Update {
 	for range 3 {
 		if len(updates) == 0 {
 			return updates
@@ -247,12 +249,20 @@ func (b *Bot) completeAlbum(ctx context.Context, updates []Update) []Update {
 			return updates
 		}
 		pctx, cancel := context.WithTimeout(ctx, albumWait+pollSlack)
-		more, err := b.api.GetUpdates(pctx, last.UpdateID+1, albumWait)
+		more, err := b.api.GetUpdates(pctx, offset, albumWait)
 		cancel()
-		if err != nil || len(more) == 0 {
+		if err != nil {
 			return updates
 		}
-		updates = append(updates, more...)
+		n := len(updates)
+		for _, u := range more {
+			if u.UpdateID > last.UpdateID {
+				updates = append(updates, u)
+			}
+		}
+		if len(updates) == n {
+			return updates
+		}
 	}
 	return updates
 }
