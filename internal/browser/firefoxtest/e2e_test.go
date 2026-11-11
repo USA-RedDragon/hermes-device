@@ -83,11 +83,7 @@ func TestFirefoxEndToEnd(t *testing.T) { //nolint:paralleltest // one Firefox at
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
-	hub := &fakeHub{t: t}
-	hubSrv := httptest.NewServer(hub)
-	defer hubSrv.Close()
-	b, bc := startFirefox(ctx, t, hubSrv.URL)
-	signInFlow(ctx, t, b, bc, hub)
+	b, bc := startFirefox(ctx, t)
 
 	var tab tabResult
 	if _, err := b.Call(ctx, "tab_open", map[string]any{keyURL: exampleURL}); err == nil ||
@@ -147,19 +143,23 @@ func TestFirefoxEndToEnd(t *testing.T) { //nolint:paralleltest // one Firefox at
 	refusals(ctx, t, b, tab.TabID)
 	pages, rec := frameFlow(ctx, t, b, tab.TabID)
 	loginFlow(ctx, t, b, bc, tab.TabID)
-	if _, err := b.Call(ctx, "navigate", map[string]any{keyTab: tab.TabID, keyURL: hubSrv.URL + "/browser/authorize",
-		keyGuard: map[string]any{keyVisit: []string{loopback}}}); err == nil || !strings.Contains(err.Error(), "Hermes hub") {
+	if _, err := b.Call(ctx, "navigate", map[string]any{keyTab: tab.TabID, keyURL: e2eHubURL + "/device/pair",
+		keyGuard: map[string]any{keyVisit: []string{e2eHubHost}}}); err == nil || !strings.Contains(err.Error(), "Hermes hub") {
 		t.Errorf("navigate an agent tab to the hub: err = %v", err)
 	}
 	t.Run("plugin", func(t *testing.T) { pluginLayer(ctx, t, b, srv.URL, pages, rec) })
-	signOutFlow(ctx, t, b, hub)
 }
+
+// The daemon's hub, which agent tabs may not open.
+const (
+	e2eHubHost = "hub.example.com"
+	e2eHubURL  = "https://" + e2eHubHost
+)
 
 // startFirefox builds hermes-device, registers it as the native host in a
 // fresh HOME, starts a headless Firefox on a fresh profile, loads the
-// extension, with hubURL as its default hub, as a temporary add-on over
-// BiDi and waits for it to connect.
-func startFirefox(ctx context.Context, t *testing.T, hubURL string) (*broker.Broker, *bidi.Client) {
+// extension as a temporary add-on over BiDi and waits for it to connect.
+func startFirefox(ctx context.Context, t *testing.T) (*broker.Broker, *bidi.Client) {
 	t.Helper()
 	root, err := os.MkdirTemp("", "hbe2e")
 	if err != nil {
@@ -184,7 +184,7 @@ func startFirefox(ctx context.Context, t *testing.T, hubURL string) (*broker.Bro
 	}
 	writeFile(t, filepath.Join(host.ManifestDir(home), host.Name+".json"), manifest)
 	writeFile(t, filepath.Join(profile, "user.js"), []byte(userJS))
-	if err := firefox.Write(extDir, "", hubURL); err != nil {
+	if err := firefox.Write(extDir, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -192,11 +192,10 @@ func startFirefox(ctx context.Context, t *testing.T, hubURL string) (*broker.Bro
 	b, err := broker.Listen(broker.Options{Path: sock, ExtensionID: host.ExtensionID,
 		AllowHosts:     []string{loopback, crossHost, confirmHost, loginHost, otherLoginHost, twoLoginHost},
 		ConfirmHosts:   []string{confirmHost},
-		AutologinHosts: []string{loginHost, twoLoginHost}})
+		AutologinHosts: []string{loginHost, twoLoginHost}, HubURL: e2eHubURL})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.SetDevice(e2eDevice, "desktop")
 	go func() { _ = b.Serve(ctx) }()
 
 	ffDone := runFirefox(ctx, t, profile, []string{
@@ -381,11 +380,11 @@ func formFlow(ctx context.Context, t *testing.T, b *broker.Broker, tabID int, ba
 	if strings.Join(info.Sensitive, ",") != "one_time_code,password" {
 		t.Errorf("sensitive on the login page = %v", info.Sensitive)
 	}
-	if _, err := b.Call(ctx, "type", map[string]any{keyTab: tabID, keyRef: r["textbox"], keyText: e2eUser}); err == nil ||
+	if _, err := b.Call(ctx, "type", map[string]any{keyTab: tabID, keyRef: r["textbox"], keyText: "alice"}); err == nil ||
 		!strings.Contains(err.Error(), "must confirm") {
 		t.Errorf("type on a password page without confirmation: err = %v", err)
 	}
-	call(ctx, t, b, "type", map[string]any{keyTab: tabID, keyRef: r["textbox"], keyText: e2eUser,
+	call(ctx, t, b, "type", map[string]any{keyTab: tabID, keyRef: r["textbox"], keyText: "alice",
 		keyGuard: map[string]any{"sensitive": true}}, nil)
 	if strings.Contains(snap.Snapshot, "hunter2") {
 		t.Error("the snapshot shows a password value")

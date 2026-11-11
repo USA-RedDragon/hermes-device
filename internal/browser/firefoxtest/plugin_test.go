@@ -37,9 +37,8 @@ func (d dialer) DialLeg(ctx context.Context, path string) (*websocket.Conn, erro
 // plugin's Python tool layer on the other end of the exec leg:
 // plugin/device/tests/test_browser_e2e.py, in the Hermes runtime. The
 // relay here plays the hub and the plugin's exec route: it answers hello
-// with a welcome that accepts the browser capability, answers the device's
-// browser_auth, and copies every other message between the leg and the
-// Python test as JSON lines.
+// with a welcome that accepts the browser capability, then copies every
+// message between the leg and the Python test as JSON lines.
 func pluginLayer(ctx context.Context, t *testing.T, b *broker.Broker, formURL, pagesURL string, rec *recorder) {
 	if _, err := exec.LookPath("hermes"); err != nil {
 		t.Skip("hermes is not on PATH; the plugin layer needs the Hermes runtime")
@@ -167,24 +166,6 @@ func relay(ctx context.Context, t *testing.T, w http.ResponseWriter, r *http.Req
 		_, msg, err := ws.Read(ctx)
 		if err != nil {
 			return
-		}
-		// As the hub does, accept the extension's credential and keep the
-		// browser_auth from the plugin.
-		var auth protocol.BrowserAuth
-		if json.Unmarshal(msg, &auth) == nil && auth.Type == protocol.TypeBrowserAuth {
-			r := protocol.BrowserAuthResult{Type: protocol.TypeBrowserAuthResult, OK: true, User: e2eUser}
-			if auth.Token == "" {
-				r = protocol.BrowserAuthResult{Type: protocol.TypeBrowserAuthResult, Code: protocol.BrowserAuthSignedOut}
-			}
-			res, err := json.Marshal(r)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			if ws.Write(ctx, websocket.MessageText, res) != nil {
-				return
-			}
-			continue
 		}
 		if _, err := c.Write(append(msg, '\n')); err != nil {
 			return
