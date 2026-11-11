@@ -265,12 +265,15 @@ func TestBusy(t *testing.T) {
 	start()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
+		// A probe sent at once can take the slot before the slow call does, every time.
+		time.Sleep(10 * time.Millisecond)
 		select {
 		case err := <-done:
 			if code(err) != mcp.CodeBusy {
 				t.Fatalf("slow call: %v", err)
 			}
 			start()
+			continue
 		default:
 		}
 		_, err := m.Call(ctx, fake, mcptest.ToolCount, nil)
@@ -280,7 +283,6 @@ func TestBusy(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("no busy: %v", err)
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
 	if err := <-done; code(err) != mcp.CodeCancelled {
