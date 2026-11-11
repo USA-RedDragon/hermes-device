@@ -1,6 +1,7 @@
 package telegram_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -75,5 +76,27 @@ func TestTooLargeReplyMedia(t *testing.T) {
 	h.tg.wait(mSend, "big.zip: Telegram takes files up to 50 MB")
 	if len(h.tg.find(mDocument, "")) != 0 {
 		t.Fatal("a file over the limit was sent")
+	}
+}
+
+func TestReplyMediaIsCapped(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	h.hub.mu.Lock()
+	h.hub.media = map[string]fakeFile{}
+	h.hub.mu.Unlock()
+	sid := h.startTurn(t)
+	var text strings.Builder
+	for i := range 15 {
+		fmt.Fprintf(&text, "MEDIA:/opt/data/out/f%d.png\n", i)
+	}
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: text.String(), kStatus: statusComplete})
+	h.tg.wait(mSend, "The reply names 15 files; this chat gets the first 10")
+	h.tg.wait(mSend, "f9.png: it is no longer on the Hermes server")
+	h.hub.mu.Lock()
+	n := len(h.hub.mediaCalls)
+	h.hub.mu.Unlock()
+	if n != 10 {
+		t.Fatalf("media calls = %d", n)
 	}
 }

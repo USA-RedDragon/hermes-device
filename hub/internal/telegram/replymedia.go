@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 )
@@ -15,11 +16,22 @@ const (
 	msgMediaGone     = "Could not send %s: it is no longer on the Hermes server."
 	msgMediaTooLarge = "Could not send %s: Telegram takes files up to %d MB from bots. Open it in the hub's web page."
 	msgMediaFailed   = "Could not send %s. Open it in the hub's web page."
+	msgMediaMany     = "The reply names %d files; this chat gets the first %d. Open the chat in the hub's web page for the rest."
 )
+
+// maxReplyMedia bounds the files the bot sends for one reply.
+const maxReplyMedia = 10
+
+// uploadTimeout bounds one upload to Telegram.
+const uploadTimeout = 2 * time.Minute
 
 // sendMedia sends the files a reply names, after its text: an image as a
 // photo when Telegram takes it as one, anything else as a document.
 func (r *renderer) sendMedia(ctx context.Context, paths []string) {
+	if len(paths) > maxReplyMedia {
+		r.notice(ctx, msgMediaMany, len(paths), maxReplyMedia)
+		paths = paths[:maxReplyMedia]
+	}
 	for _, p := range paths {
 		name := hub.CleanName(path.Base(p))
 		if r.media == nil {
@@ -40,7 +52,7 @@ func (r *renderer) sendMedia(ctx context.Context, paths []string) {
 			continue
 		}
 		if mime != "" && len(data) <= MaxPhotoUpload {
-			err = r.api.SendPhoto(ctx, r.chatID, name, data)
+			err = r.upload(ctx, r.api.SendPhoto, name, data)
 			var apiErr *APIError
 			if !errors.As(err, &apiErr) || apiErr.Code != http.StatusBadRequest {
 				r.sent(ctx, name, err)
@@ -48,8 +60,14 @@ func (r *renderer) sendMedia(ctx context.Context, paths []string) {
 			}
 			r.logger.Info("Telegram refused a photo, sending it as a file", "error", err)
 		}
-		r.sent(ctx, name, r.api.SendDocument(ctx, r.chatID, name, data))
+		r.sent(ctx, name, r.upload(ctx, r.api.SendDocument, name, data))
 	}
+}
+
+func (r *renderer) upload(ctx context.Context, send func(context.Context, int64, string, []byte) error, name string, data []byte) error {
+	cctx, cancel := context.WithTimeout(ctx, uploadTimeout)
+	defer cancel()
+	return send(cctx, r.chatID, name, data)
 }
 
 func (r *renderer) readMedia(ctx context.Context, p string) ([]byte, string, error) {
