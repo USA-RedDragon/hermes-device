@@ -27,12 +27,17 @@ const (
 	Range7d    = "7d"
 	Range30d   = "30d"
 	RangeMTD   = "mtd"
+	Range90d   = "90d"
 
 	GroupAccount  = "account"
 	GroupComputer = "computer"
 	GroupModel    = "model"
 	GroupProject  = "project"
 )
+
+// keptDays is about how far back computers keep Claude Code transcripts,
+// so the first day a longer range can have counts for.
+const keptDays = 35
 
 // Limits of a report.
 const (
@@ -296,6 +301,8 @@ func (s *Service) days(rng string) (from, to int64, days []time.Time, err error)
 		n = 30
 	case RangeMTD:
 		n = now.Day()
+	case Range90d:
+		n = 90
 	default:
 		return 0, 0, nil, hub.ErrBadRange
 	}
@@ -458,7 +465,11 @@ func (s *Service) ClaudeCodeUsage(ctx context.Context, user, rng, group string) 
 	labels := accountLabels(accounts, names)
 	t := &tally{days: days, loc: s.o.Location, groups: map[string]*groupAcc{}}
 	unpriced := map[string]bool{}
+	first := int64(0)
 	for _, r := range rows {
+		if first == 0 || r.Hour < first {
+			first = r.Hour
+		}
 		g := t.get(key(group, r, labels, computers))
 		total := r.Input + r.Output + r.CacheWrite + r.CacheRead
 		cost := 0.0
@@ -482,6 +493,11 @@ func (s *Service) ClaudeCodeUsage(ctx context.Context, user, rng, group string) 
 			case a.Slot != "":
 				t.get("slot:"+a.Source+":"+a.Slot, a.Label, "")
 			}
+		}
+	}
+	if len(days) > keptDays && first != 0 {
+		if d := time.Unix(first, 0).In(s.o.Location).Format(time.DateOnly); d > out.Days[0] {
+			out.Since = d
 		}
 	}
 	out.Groups = t.sorted()

@@ -2700,7 +2700,7 @@
   const claudeCode = window.HubClaudeCode({ api, el });
   const usage = window.HubUsage({ api, el, chatHash, defaultBackend: () => me.default_backend || "",
     claudePanel: (b) => (me.claude ? claude.panel(b) : Promise.resolve(null)),
-    claudeCodePanel: () => (me.claude_code ? claudeCode.panel() : null) });
+    claudeCodePanel: (range) => (me.claude_code ? claudeCode.panel(range) : null) });
   const files = window.HubFiles({ api, el, back: () => {
     if (view) location.hash = chatHash(view.backend, view.session);
     else history.back();

@@ -9,14 +9,13 @@ window.HubClaudeCode = (ctx) => {
   const { api, el } = ctx;
   const ns = "http://www.w3.org/2000/svg";
   const colors = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)"];
-  const ranges = [["today", "Today"], ["7d", "7 days"], ["30d", "30 days"], ["mtd", "This month"]];
   const groups = [["account", "Account"], ["computer", "Computer"], ["model", "Model"], ["project", "Project"]];
   const heads = { account: "Account", computer: "Computer", model: "Model", project: "Project" };
   const store = "hub.claudecode";
   const S = { range: "7d", group: "account" };
+  const ranges = ["today", "7d", "30d", "mtd", "90d"];
   try {
     const saved = JSON.parse(localStorage.getItem(store) || "{}");
-    if (ranges.some(([v]) => v === saved.range)) S.range = saved.range;
     if (groups.some(([v]) => v === saved.group)) S.group = saved.group;
   } catch (_) { /* defaults */ }
 
@@ -44,7 +43,7 @@ window.HubClaudeCode = (ctx) => {
       b.onclick = () => {
         if (S[key] === v) return;
         S[key] = v;
-        try { localStorage.setItem(store, JSON.stringify(S)); } catch (_) { /* per-viewer only */ }
+        try { localStorage.setItem(store, JSON.stringify({ group: S.group })); } catch (_) { /* per-viewer only */ }
         redraw();
       };
       g.append(b);
@@ -149,7 +148,7 @@ window.HubClaudeCode = (ctx) => {
     const tiles = el("div", "cc-totals");
     const unpriced = d.unpriced_models || [];
     for (const [a, b, c] of [
-      ["Tokens", k(T.total), d.days.length + (d.days.length === 1 ? " day" : " days")],
+      ["Tokens", k(T.total), d.since ? "since " + d.since + ", the first day with data" : d.days.length + (d.days.length === 1 ? " day" : " days")],
       ["Output", k(T.output), "written by Claude"],
       ["Cache hit", (inp ? Math.round(T.cache_read / inp * 100) : 0) + "%", k(T.cache_read) + " read from cache"],
       ["At API prices", usd(T.cost_usd), unpriced.length ? "estimate, without " + unpriced.length + (unpriced.length === 1 ? " model" : " models") : "estimate"],
@@ -213,15 +212,16 @@ window.HubClaudeCode = (ctx) => {
     body.replaceChildren(...parts);
   }
 
-  // panel returns the panel's section and loads it.
-  function panel() {
+  // panel returns the panel's section for range, the Usage page's time
+  // range, and loads it.
+  function panel(range) {
+    if (ranges.includes(range)) S.range = range;
     const sec = el("section", "usage-sec cc-panel");
     sec.setAttribute("aria-labelledby", "cc-h");
     const head = el("div", "cc-head");
     const h = el("h2", "", "Claude Code");
     h.id = "cc-h";
-    const rangeBox = el("span");
-    head.append(h, rangeBox);
+    head.append(h);
     const hint = el("p", "mem-hint", "From the Claude Code transcripts on your computers and in Hermes. Only token counts leave each computer, " +
       "never what was said. Cost is what the tokens would cost at API prices; a subscription does not bill this.");
     const controls = el("div", "cc-controls");
@@ -232,7 +232,6 @@ window.HubClaudeCode = (ctx) => {
     sec.append(head, hint, controls, body);
     let gen = 0;
     const load = async () => {
-      rangeBox.replaceChildren(seg("Range", ranges, "range", load));
       groupBox.replaceChildren(seg("Group by", groups, "group", load));
       const mine = ++gen;
       let d;

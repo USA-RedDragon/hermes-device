@@ -97,12 +97,15 @@ type ClaudeCodeGroup struct {
 
 // ClaudeCodeUsage is the Usage page's Claude Code panel.
 type ClaudeCodeUsage struct {
-	Range    string            `json:"range"`
-	Group    string            `json:"group"`
-	TimeZone string            `json:"time_zone"`
-	Days     []string          `json:"days"`
-	Groups   []ClaudeCodeGroup `json:"groups"`
-	Total    ClaudeCodeTotals  `json:"total"`
+	Range    string   `json:"range"`
+	Group    string   `json:"group"`
+	TimeZone string   `json:"time_zone"`
+	Days     []string `json:"days"`
+	// Since is the first day with any count when that is after the
+	// range's first day: computers keep about 35 days of transcripts.
+	Since  string            `json:"since,omitempty"`
+	Groups []ClaudeCodeGroup `json:"groups"`
+	Total  ClaudeCodeTotals  `json:"total"`
 	// Unpriced are the models without a price, whose tokens cost counts
 	// as nothing.
 	Unpriced []string `json:"unpriced_models"`
@@ -116,7 +119,7 @@ type ClaudeCode interface {
 
 // Claude Code errors.
 var (
-	ErrBadRange = errors.New("range must be today, 7d, 30d or mtd, and group account, computer, model or project")
+	ErrBadRange = errors.New("range must be today, 7d, 30d, mtd or 90d, and group account, computer, model or project")
 	ErrBadName  = errors.New("an account uuid and a name of at most 64 characters are needed")
 	// ErrBadClaudeCodeReport is a usage report the hub refuses.
 	ErrBadClaudeCodeReport = errors.New("bad Claude Code usage report")

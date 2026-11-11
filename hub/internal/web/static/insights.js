@@ -143,6 +143,10 @@ window.HubUsage = (ctx) => {
   let shown = false;
   let gen = 0;
   let ccPanel = null;
+  // ranges are the page's time ranges; every panel follows the one picked.
+  const ranges = [[1, "Today"], [7, "Last 7 days"], [30, "Last 30 days"], ["mtd", "This month"], [90, "Last 90 days"]];
+  const ccRange = { 1: "today", 7: "7d", 30: "30d", mtd: "mtd", 90: "90d" };
+  const dayCount = () => (days === "mtd" ? new Date().getDate() : days);
 
   function setHash() {
     const h = "#/usage/" + encodeURIComponent(backend) + "/" + days;
@@ -154,7 +158,8 @@ window.HubUsage = (ctx) => {
     root.hidden = false;
     nav.classList.add("on");
     const [b, d] = (rest || "").split("/").map((x) => { try { return decodeURIComponent(x || ""); } catch (_) { return ""; } });
-    if ([7, 30, 90].includes(Number(d))) days = Number(d);
+    if (d === "mtd") days = d;
+    else if ([1, 7, 30, 90].includes(Number(d))) days = Number(d);
     let backends = [];
     try { backends = await api("GET", "/api/backends"); } catch (_) { /* drawn below */ }
     if (!shown) return;
@@ -191,13 +196,13 @@ window.HubUsage = (ctx) => {
     bar.append(el("span", "grow"));
     const range = el("select");
     range.setAttribute("aria-label", "Time range");
-    for (const d of [7, 30, 90]) {
-      const o = el("option", "", "Last " + d + " days");
+    for (const [d, label] of ranges) {
+      const o = el("option", "", label);
       o.value = String(d);
       o.selected = d === days;
       range.append(o);
     }
-    range.onchange = () => { days = Number(range.value); setHash(); load(backends); };
+    range.onchange = () => { days = range.value === "mtd" ? "mtd" : Number(range.value); ccPanel = null; setHash(); load(backends); };
     const again = el("button", "", "Refresh");
     again.type = "button";
     again.onclick = () => { ccPanel = null; load(backends); };
@@ -211,7 +216,7 @@ window.HubUsage = (ctx) => {
     root.replaceChildren(head(backends), body);
     // The Claude Code panel is the user's, not the backend's: it stays
     // when the Hermes changes.
-    if (!ccPanel && ctx.claudeCodePanel) ccPanel = ctx.claudeCodePanel();
+    if (!ccPanel && ctx.claudeCodePanel) ccPanel = ctx.claudeCodePanel(ccRange[days]);
     const code = ccPanel ? [ccPanel] : [];
     if (!backend) {
       body.append(...code, el("p", "none", "No assistant is set up for you yet."));
@@ -224,7 +229,7 @@ window.HubUsage = (ctx) => {
     }, () => {});
     let r;
     try {
-      r = await api("GET", "/api/usage/" + encodeURIComponent(backend) + "?days=" + days);
+      r = await api("GET", "/api/usage/" + encodeURIComponent(backend) + "?days=" + dayCount());
     } catch (e) {
       if (mine !== gen) return;
       body.replaceChildren(claude, ...code, el("p", "err", "Could not load usage: " + e.message));

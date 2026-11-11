@@ -226,6 +226,24 @@ func TestUsageDaysAcrossDST(t *testing.T) {
 		find(u, "app").Input != 1+3+4 {
 		t.Fatalf("mtd %+v", u)
 	}
+	if u.Since != "" {
+		t.Fatalf("7d since %q", u.Since)
+	}
+	long, err := e.svc.ClaudeCodeUsage(context.Background(), alice, "90d", "computer")
+	if err != nil || len(long.Days) != 90 {
+		t.Fatalf("90d %v %+v", err, long.Days)
+	}
+	firstDay := ""
+	for i := range long.Days {
+		for _, g := range long.Groups {
+			if g.Daily[i] > 0 && firstDay == "" {
+				firstDay = long.Days[i]
+			}
+		}
+	}
+	if firstDay == "" || long.Since != firstDay {
+		t.Fatalf("90d since %q, want %q", long.Since, firstDay)
+	}
 	for _, q := range [][2]string{{"1y", "account"}, {"7d", "user"}} {
 		if _, err := e.svc.ClaudeCodeUsage(context.Background(), alice, q[0], q[1]); !errors.Is(err, hub.ErrBadRange) {
 			t.Errorf("%v: %v", q, err)
