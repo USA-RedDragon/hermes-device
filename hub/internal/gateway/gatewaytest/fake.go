@@ -7,12 +7,14 @@ package gatewaytest
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -32,11 +34,13 @@ const (
 	kText            = "text"
 	kStatus          = "status"
 	kName            = "name"
+	kPath            = "path"
 	kResult          = "result"
 	kReplayEpoch     = "replay_epoch"
 	kLastSequence    = "last_sequence"
 	kExecGen         = "execution_generation"
 	errInvalidParams = "invalid_params"
+	errDenied        = "permission_denied"
 	errInternal      = "internal error"
 	kPayload         = "payload"
 	kModel           = "model"
@@ -95,6 +99,10 @@ type Session struct {
 	Source string
 	// Effort is the reasoning effort; "" is the profile default.
 	Effort string
+	// Tools are the session's tools by toolset, as session.info lists them.
+	Tools map[string][]string
+	// Attachments are the attachments of each prompt.submit, in order.
+	Attachments [][]gateway.Attachment
 
 	epoch   string
 	seq     int64
@@ -698,6 +706,9 @@ func (g *Gateway) infoLocked(s *Session, full bool) map[string]any {
 	info := map[string]any{"desktop_protocol": gateway.Subprotocol, kTitle: title, "source": "gui", kModel: s.Model,
 		"cwd": s.CWD, "reasoning_effort": s.Effort, "reasoning_effort_wire": s.Effort, "fast": false, "lazy": false,
 		"started_at": s.StartedAt}
+	if s.Tools != nil {
+		info["tools"] = s.Tools
+	}
 	if full {
 		info[kProvider], info["context_length"] = s.Provider, 131072
 		info["usage"] = map[string]any{kModel: s.Model, "input": 0, "output": 0, kReasoning: 0, "prompt": 0,
@@ -735,6 +746,10 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 		h = g.hMutate
 	case gateway.MethodModelOptions:
 		h = g.hModelOptions
+	case gateway.MethodAttachBytes:
+		h = g.hAttachBytes
+	case gateway.MethodFileAttach:
+		h = g.hFileAttach
 	default:
 		return nil, "unknown method: " + method, nil
 	}
@@ -860,10 +875,22 @@ func (g *Gateway) hConfigSet(_ *conn, p map[string]any) (any, string, func()) {
 func (g *Gateway) hPromptSubmit(c *conn, p map[string]any) (any, string, func()) {
 	s := g.sessions[str(p, kSessionID)]
 	if s == nil || s.subs[c] == "" {
-		return nil, "permission_denied", nil
+		return nil, errDenied, nil
 	}
-	if !onlyKeys(p, kSessionID, kText, "submission_id") || str(p, "submission_id") == "" {
+	if !onlyKeys(p, kSessionID, kText, "submission_id", "attachments") || str(p, "submission_id") == "" {
 		return nil, errInvalidParams, nil
+	}
+	var atts []gateway.Attachment
+	if raw, ok := p["attachments"]; ok {
+		b, err := json.Marshal(raw)
+		if err != nil || json.Unmarshal(b, &atts) != nil || len(atts) == 0 || len(atts) > 10 {
+			return nil, errInvalidParams, nil
+		}
+		for _, a := range atts {
+			if !strings.HasPrefix(a.Path, StagedImages) {
+				return nil, errInvalidParams, nil
+			}
+		}
 	}
 	if r := g.refuse[s.ID]; r != "" {
 		return nil, r, nil
@@ -877,6 +904,7 @@ func (g *Gateway) hPromptSubmit(c *conn, p map[string]any) (any, string, func())
 	}
 	s.Generation++
 	s.Running = true
+	s.Attachments = append(s.Attachments, atts)
 	s.Messages = append(s.Messages, map[string]any{"role": "user", kText: str(p, kText)})
 	admission := randHex()
 	receipt := map[string]any{"admission_id": admission, "ref": map[string]any{kSessionID: s.ID},
@@ -943,11 +971,11 @@ func (g *Gateway) turn(id, admission, text string) {
 		g.publishLocked(s, "approval.request", pr)
 		return
 	}
-	g.publishLocked(s, "tool.start", map[string]any{kToolID: "t1", kName: toolReadFile, kArgs: map[string]any{"path": "README.md"}})
+	g.publishLocked(s, "tool.start", map[string]any{kToolID: "t1", kName: toolReadFile, kArgs: map[string]any{kPath: "README.md"}})
 	g.publishLocked(s, "tool.progress", map[string]any{kToolID: "t1", kName: toolReadFile, "progress": 1, kTotal: 2})
 	switch text {
 	case "edit":
-		g.publishLocked(s, "tool.start", map[string]any{kToolID: "t-edit", kName: "patch", kArgs: map[string]any{"path": "a.go"}})
+		g.publishLocked(s, "tool.start", map[string]any{kToolID: "t-edit", kName: "patch", kArgs: map[string]any{kPath: "a.go"}})
 		g.publishLocked(s, "tool.complete", map[string]any{kToolID: "t-edit", kName: "patch", kIsError: false,
 			kResult: `{"success": true}`, kDuration: 0.2,
 			"inline_diff": "  review diff\n\x1b[38;2;180;160;255ma/a.go \u2192 b/a.go\x1b[0m\n\x1b[38;2;120;120;140m@@ -1 +1 @@\x1b[0m\n" +
@@ -1001,4 +1029,43 @@ func (g *Gateway) dropPending(sid, id, status string, gen *int64) (any, string, 
 		return map[string]any{"admission_id": id, kStatus: kTerminal, "outcome": "interrupted"}, "", nil
 	}
 	return nil, gateway.ReasonNotFound, nil
+}
+
+// Where the fake says it staged attachments.
+const (
+	StagedImages = "/opt/data/cache/images/"
+	StagedFiles  = "/opt/data/attachments/"
+)
+
+// hAttachBytes stages an image as gateway/session_images.py does.
+func (g *Gateway) hAttachBytes(c *conn, p map[string]any) (any, string, func()) {
+	s := g.sessions[str(p, kSessionID)]
+	if s == nil || s.subs[c] == "" {
+		return nil, errDenied, nil
+	}
+	data, err := base64.StdEncoding.DecodeString(str(p, "content_base64"))
+	if !onlyKeys(p, kSessionID, "content_base64", "filename") || err != nil || len(data) == 0 || len(data) > 25<<20 {
+		return nil, errInvalidParams, nil
+	}
+	mime := map[string]string{".png": "image/png", ".jpg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}[path.Ext(str(p, "filename"))]
+	if mime == "" {
+		return nil, errInvalidParams, nil
+	}
+	name := "upload_" + randHex()[:8] + path.Ext(str(p, "filename"))
+	return map[string]any{"attached": true, kPath: StagedImages + name, "mime": mime, kName: name, "bytes": len(data)}, "", nil
+}
+
+// hFileAttach stages a data URL as gateway/session_ancillary.py does.
+func (g *Gateway) hFileAttach(c *conn, p map[string]any) (any, string, func()) {
+	s := g.sessions[str(p, kSessionID)]
+	if s == nil || s.subs[c] == "" {
+		return nil, errDenied, nil
+	}
+	_, b64, ok := strings.Cut(str(p, "data_url"), ";base64,")
+	if _, err := base64.StdEncoding.DecodeString(b64); !onlyKeys(p, kSessionID, "data_url", kName) || !ok || err != nil {
+		return nil, errInvalidParams, nil
+	}
+	name := path.Base(str(p, kName))
+	return map[string]any{"attached": true, kName: name, kPath: StagedFiles + name, "ref_path": StagedFiles + name,
+		"ref_text": "@file:" + StagedFiles + name, "uploaded": true}, "", nil
 }

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -197,6 +198,34 @@ func contract() map[string][]string {
 			"value = request.get('row_cwd') if isinstance(request, dict) else None",
 			"return policy['cwd'] if not isinstance(value, str) else (value or None)",
 		},
+		// Attachments: images go through image.attach_bytes into the profile's cache/images and
+		// ride on prompt.submit; other files go through file.attach; a session without the vision
+		// tool cannot read images.
+		"gateway/session_controls.py#attach": {
+			"handlers['" + gateway.MethodAttachBytes + "'] = partial(attach_bytes, self)",
+			"forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments',",
+		},
+		"gateway/session_images.py": {
+			"set(params) - {'session_id', 'profile', 'content_base64', 'data', 'filename', 'ext'}",
+			"directory = Path(connection.authority.profile_id) / 'cache' / 'images'",
+			"return {'attached': True, 'path': str(path), 'mime': mime,",
+		},
+		"gateway/session_ancillary.py": {
+			"'" + gateway.MethodFileAttach + "': partial(attach_file, connection)",
+			"if (set(params) - {'session_id', 'profile', 'path', 'data_url', 'name', 'staged_upload'}",
+			"return {'attached': True, 'name': stored.name, 'path': str(stored),",
+		},
+		"gateway/session_ingress_media.py": {
+			"_ATTACHMENT_MIMES = frozenset({'" + strings.Join(hub.ImageMIMEs(), "', '") + "'})",
+			"_ATTACHMENT_LIMIT = " + strconv.Itoa(hub.MaxImages),
+			"or any(not isinstance(item, dict) or set(item) != {'path', 'mime'}",
+		},
+		"gateway/platforms/base.py":                          {`"image", "IMAGE_CACHE_DIR", "cache/images", "image_cache")`},
+		"tui_gateway/prompt_attachments.py":                  {"_ATTACH_BYTES_MAX_BYTES = " + strconv.Itoa(hub.MaxImageBytes>>20) + " * 1024 * 1024"},
+		"tui_gateway/contracts/canonical_sessions.py#attach": {"    attachments: list[CanonicalAttachment] | None = None", "class CanonicalAttachment(Params):\n    path: str\n    mime: str"},
+		"tools/vision_tools.py":                              {`"name": "` + gateway.VisionTool + `",`, "return _should_use_native_vision_fast_path() or check_video_requirements()"},
+		"gateway/session_local_inventory.py#tools": {`info["tools"] = _grouped(getattr(agent, "tools", None))`,
+			`grouped.setdefault(get_toolset_for_tool(name) or "other", []).append(name)`},
 		// Sessions that VS Code (acp) and the CLI started are in the live feed with their source.
 		"tui_gateway/contracts/canonical_sessions.py#list": {
 			"class CanonicalSessionListRow(Result):\n    session_id: str\n    id: str\n    title: str\n    source: str | None",

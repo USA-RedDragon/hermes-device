@@ -33,6 +33,8 @@ const (
 	MethodConfigSet     = "config.set"
 	MethodMutate        = "session.mutate"
 	MethodModelOptions  = "model.options"
+	MethodAttachBytes   = "image.attach_bytes"
+	MethodFileAttach    = "file.attach"
 )
 
 // session.mutate operations (hermes_state_mutations.py validate_action).
@@ -160,6 +162,8 @@ type SnapshotInfo struct {
 	ReasoningEffort *string         `json:"reasoning_effort,omitempty"`
 	ContextLength   *int64          `json:"context_length,omitempty"`
 	Usage           json.RawMessage `json:"usage,omitempty"`
+	// Vision says whether the session can read images (see Vision).
+	Vision *bool `json:"-"`
 }
 
 // UnmarshalJSON reads each field on its own and skips one of an unexpected
@@ -176,7 +180,7 @@ func (i *SnapshotInfo) UnmarshalJSON(b []byte) error {
 		return &s
 	}
 	*i = SnapshotInfo{Title: str("title"), Model: str("model"), Provider: str("provider"), CWD: str("cwd"),
-		ReasoningEffort: str("reasoning_effort")}
+		ReasoningEffort: str("reasoning_effort"), Vision: Vision(b)}
 	var n float64
 	if json.Unmarshal(m["context_length"], &n) == nil {
 		v := int64(n)
@@ -347,9 +351,74 @@ type EventsSinceResult struct {
 // after a gateway restart, so the hub can resend a prompt whose answer it
 // lost without running it twice.
 type SubmitParams struct {
-	SessionID    string `json:"session_id"`
-	Text         string `json:"text"`
-	SubmissionID string `json:"submission_id"`
+	SessionID    string       `json:"session_id"`
+	Text         string       `json:"text"`
+	SubmissionID string       `json:"submission_id"`
+	Attachments  []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment is one image a prompt.submit carries: a path that
+// image.attach_bytes staged in the profile's cache/images, and its type
+// (gateway/session_ingress_media.py admit_attachments).
+type Attachment struct {
+	Path string `json:"path"`
+	MIME string `json:"mime"`
+}
+
+// AttachBytesParams is image.attach_bytes's params. Filename only hints
+// the extension; the gateway names the staged file itself
+// (gateway/session_images.py).
+type AttachBytesParams struct {
+	SessionID     string `json:"session_id"`
+	ContentBase64 string `json:"content_base64"`
+	Filename      string `json:"filename,omitempty"`
+}
+
+// AttachBytesResult is the part of image.attach_bytes's result the hub
+// reads.
+type AttachBytesResult struct {
+	Path string `json:"path"`
+	MIME string `json:"mime"`
+}
+
+// FileAttachParams is file.attach's params for bytes the gateway cannot
+// read from a path: it stages them in the profile's attachments folder
+// (gateway/session_ancillary.py attach_file).
+type FileAttachParams struct {
+	SessionID string `json:"session_id"`
+	DataURL   string `json:"data_url"`
+	Name      string `json:"name"`
+}
+
+// FileAttachResult is the part of file.attach's result the hub reads.
+type FileAttachResult struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+}
+
+// VisionTool is the tool that loads an image for the model. Hermes
+// registers it only when the main model can see images or an auxiliary
+// vision model is set (tools/vision_tools.py check_vision_requirements),
+// so a session whose tools lack it cannot read attached images.
+const VisionTool = "vision_analyze"
+
+// Vision reads a session.info or snapshot info payload's tools, grouped by
+// toolset (tui_gateway/server.py _session_info). It is nil when the
+// payload lists no tools, as for a session whose agent is not loaded yet.
+func Vision(info json.RawMessage) *bool {
+	var p struct {
+		Tools map[string][]string `json:"tools"`
+	}
+	if json.Unmarshal(info, &p) != nil || len(p.Tools) == 0 {
+		return nil
+	}
+	found := false
+	for _, names := range p.Tools {
+		for _, n := range names {
+			found = found || n == VisionTool
+		}
+	}
+	return &found
 }
 
 // InterruptParams is session.interrupt's params.
