@@ -17,7 +17,7 @@ One web front end, behind OpenID Connect login, for many [Hermes Agent](https://
 - An optional Telegram bot (`telegram.*`) that uses the same backends and permissions.
 - Optional [hermes-device](https://github.com/USA-RedDragon/hermes-device) support (`device.*`): users pair their own computers, start or move chats onto a computer and folder from the web page or Telegram, and Hermes runs commands, edits files and serves VS Code there.
 
-The hub speaks the canonical session protocol of Hermes <!-- docgen:const pkg=internal/gateway name=HermesVersion -->`v0.22.7`<!-- /docgen:const -->: JSON-RPC over the gateway's `/api/ws` WebSocket. A contract test (`internal/gateway/contract_test.go`) checks the protocol lines it depends on against a Hermes checkout (`HERMES_AGENT_SRC`, default `~/.hermes/hermes-agent`).
+The hub speaks the canonical session protocol of Hermes <!-- docgen:const pkg=internal/gateway name=HermesVersion -->`v0.22.7`<!-- /docgen:const -->: JSON-RPC over the gateway's `/api/ws` WebSocket. A contract test (`internal/gateway/contract_test.go`) checks the protocol lines it depends on against a Hermes checkout (`HERMES_AGENT_SRC`, default `~/.hermes/hermes-agent`). Set `HERMES_AGENT_VERSION` to check a newer release. Before a Hermes upgrade, follow [docs/hermes-upgrade.md](docs/hermes-upgrade.md).
 
 ## How it works
 
