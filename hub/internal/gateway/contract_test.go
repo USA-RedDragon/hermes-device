@@ -62,6 +62,12 @@ func contract() map[string][]string {
 			"if ref.session_id not in self.subscriptions:\n            raise RuntimeStoreError('permission_denied')",
 			"request_id = params.get('submission_id') or params.get('input_id')",
 		},
+		"gateway/session_automation.py": {
+			"identity = json.dumps([producer, key, uuid.uuid4().hex], separators=(',', ':'))",
+			"session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),",
+		},
+		"gateway/session_authority.py":        {"input_id=row['request_id'], text=text,"},
+		"gateway/session_completion_notes.py": {"_ALWAYS_NOTED = frozenset({'cron'})"},
 		"gateway/session_events.py": {
 			"'type': event_type, 'session_id': self._key,", "'payload': deepcopy(payload), 'replay_epoch': self.epoch}}",
 		},

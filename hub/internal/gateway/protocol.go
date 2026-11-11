@@ -3,7 +3,10 @@
 // pinned to Hermes v0.22.7.
 package gateway
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // HermesVersion is the Hermes Agent release this client was checked against.
 const HermesVersion = "v0.22.7"
@@ -207,6 +210,24 @@ type PendingAdmission struct {
 	Status              string `json:"status"`
 	ExecutionGeneration *int64 `json:"execution_generation"`
 	Text                string `json:"text"`
+	InputID             string `json:"input_id,omitempty"`
+}
+
+// Producer is the producer that queued an input when Hermes queued it
+// itself, such as "cron" for a cron result, else "". Hermes names such an
+// input by a JSON array whose first element is the producer
+// (gateway/session_automation.py admit_route_wake); a user's input has the
+// submission ID of the client.
+func Producer(inputID string) string {
+	if !strings.HasPrefix(inputID, "[") {
+		return ""
+	}
+	var parts []any
+	if json.Unmarshal([]byte(inputID), &parts) != nil || len(parts) == 0 {
+		return ""
+	}
+	p, _ := parts[0].(string)
+	return p
 }
 
 // InfoEvent is the session.info event type. Its payload carries the pending
