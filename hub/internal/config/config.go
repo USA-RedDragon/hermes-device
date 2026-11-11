@@ -177,6 +177,7 @@ type Config struct {
 	Backends []Backend `name:"backends" description:"Hermes backends and who may use them. Only settable in the config file"`
 	Telegram Telegram  `name:"telegram"`
 	Device   Device    `name:"device"`
+	Notify   Notify    `name:"notify"`
 }
 
 // Validation errors.
@@ -302,6 +303,9 @@ func (c *Config) Validate() error {
 		c.Usage.PrometheusURL = strings.TrimRight(c.Usage.PrometheusURL, "/")
 	}
 	if err := c.validateBackends(); err != nil {
+		return err
+	}
+	if err := c.validateNotify(); err != nil {
 		return err
 	}
 	return c.validateDevices()

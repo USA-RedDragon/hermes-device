@@ -126,3 +126,16 @@ device:
   recheck_interval: "10s"
   # CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer
   # trusted_proxies: []
+notify:
+  # Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription
+  # vapid_private_key: "(secret)"
+  # File that holds notify.vapid_private_key. Wins over vapid_private_key
+  # vapid_private_key_file: ""
+  # How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url
+  # vapid_subject: ""
+  # How long an approval or question waits before the hub reminds its person once. 0 is the default
+  remind_after: "5m"
+  # How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default
+  watch_interval: "15s"
+  # How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default
+  job_interval: "1m"

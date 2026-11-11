@@ -136,6 +136,15 @@ type deviceShadow struct {
 	TrustedProxies  *[]string      `json:"trusted_proxies"  toml:"trusted_proxies"  yaml:"trusted_proxies"`
 }
 
+type notifyShadow struct {
+	VAPIDPrivateKey     *string        `json:"vapid_private_key"      toml:"vapid_private_key"      yaml:"vapid_private_key"`
+	VAPIDPrivateKeyFile *string        `json:"vapid_private_key_file" toml:"vapid_private_key_file" yaml:"vapid_private_key_file"`
+	VAPIDSubject        *string        `json:"vapid_subject"          toml:"vapid_subject"          yaml:"vapid_subject"`
+	RemindAfter         *impl.Duration `json:"remind_after"           toml:"remind_after"           yaml:"remind_after"`
+	WatchInterval       *impl.Duration `json:"watch_interval"         toml:"watch_interval"         yaml:"watch_interval"`
+	JobInterval         *impl.Duration `json:"job_interval"           toml:"job_interval"           yaml:"job_interval"`
+}
+
 type configShadow struct {
 	LogLevel *string          `json:"log_level" toml:"log_level" yaml:"log_level"`
 	HTTP     *hTTPShadow      `json:"http"      toml:"http"      yaml:"http"`
@@ -150,6 +159,7 @@ type configShadow struct {
 	Backends *[]backendShadow `json:"backends"  toml:"backends"  yaml:"backends"`
 	Telegram *telegramShadow  `json:"telegram"  toml:"telegram"  yaml:"telegram"`
 	Device   *deviceShadow    `json:"device"    toml:"device"    yaml:"device"`
+	Notify   *notifyShadow    `json:"notify"    toml:"notify"    yaml:"notify"`
 }
 
 // ConfigSchema returns the generated schema for Config.
@@ -220,6 +230,12 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("device.poll_interval", configulator.LayerDefault, "default tag")
 	cfg.Device.RecheckInterval = time.Duration(int64(10000000000))
 	set("device.recheck_interval", configulator.LayerDefault, "default tag")
+	cfg.Notify.RemindAfter = time.Duration(int64(300000000000))
+	set("notify.remind_after", configulator.LayerDefault, "default tag")
+	cfg.Notify.WatchInterval = time.Duration(int64(15000000000))
+	set("notify.watch_interval", configulator.LayerDefault, "default tag")
+	cfg.Notify.JobInterval = time.Duration(int64(60000000000))
+	set("notify.job_interval", configulator.LayerDefault, "default tag")
 	return nil
 }
 
@@ -633,6 +649,53 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			set("device.trusted_proxies", configulator.LayerFile, file)
 		}
 	}
+	if s.Notify != nil {
+		if s.Notify.VAPIDPrivateKey != nil {
+			cfg.Notify.VAPIDPrivateKey = *s.Notify.VAPIDPrivateKey
+			set("notify.vapid_private_key", configulator.LayerFile, file)
+		}
+		if s.Notify.VAPIDPrivateKeyFile != nil {
+			cfg.Notify.VAPIDPrivateKeyFile = *s.Notify.VAPIDPrivateKeyFile
+			set("notify.vapid_private_key_file", configulator.LayerFile, file)
+		}
+		if s.Notify.VAPIDSubject != nil {
+			cfg.Notify.VAPIDSubject = *s.Notify.VAPIDSubject
+			set("notify.vapid_subject", configulator.LayerFile, file)
+		}
+		if s.Notify.RemindAfter != nil {
+			v, ok := s.Notify.RemindAfter.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "notify.remind_after",
+				}
+			}
+			cfg.Notify.RemindAfter = v
+			set("notify.remind_after", configulator.LayerFile, file)
+		}
+		if s.Notify.WatchInterval != nil {
+			v, ok := s.Notify.WatchInterval.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "notify.watch_interval",
+				}
+			}
+			cfg.Notify.WatchInterval = v
+			set("notify.watch_interval", configulator.LayerFile, file)
+		}
+		if s.Notify.JobInterval != nil {
+			v, ok := s.Notify.JobInterval.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "notify.job_interval",
+				}
+			}
+			cfg.Notify.JobInterval = v
+			set("notify.job_interval", configulator.LayerFile, file)
+		}
+	}
 	return nil
 }
 
@@ -968,6 +1031,57 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Device.TrustedProxies = lst
 		set("device.trusted_proxies", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "notify", "vapid_private_key"); ok {
+		cfg.Notify.VAPIDPrivateKey = v
+		set("notify.vapid_private_key", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "notify", "vapid_private_key_file"); ok {
+		cfg.Notify.VAPIDPrivateKeyFile = v
+		set("notify.vapid_private_key_file", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "notify", "vapid_subject"); ok {
+		cfg.Notify.VAPIDSubject = v
+		set("notify.vapid_subject", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "notify", "remind_after"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "notify.remind_after",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Notify.RemindAfter = d
+		set("notify.remind_after", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "notify", "watch_interval"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "notify.watch_interval",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Notify.WatchInterval = d
+		set("notify.watch_interval", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "notify", "job_interval"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "notify.job_interval",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Notify.JobInterval = d
+		set("notify.job_interval", configulator.LayerEnv, n)
+	}
 	return nil
 }
 
@@ -1023,6 +1137,12 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"device" + o.Separator + "poll_interval",
 		"device" + o.Separator + "recheck_interval",
 		"device" + o.Separator + "trusted_proxies",
+		"notify" + o.Separator + "vapid_private_key",
+		"notify" + o.Separator + "vapid_private_key_file",
+		"notify" + o.Separator + "vapid_subject",
+		"notify" + o.Separator + "remind_after",
+		"notify" + o.Separator + "watch_interval",
+		"notify" + o.Separator + "job_interval",
 	}
 	for i, name := range names {
 		if f := fs.Lookup(name); f != nil {
@@ -1081,6 +1201,12 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[39], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
 	fs.Duration(names[40], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
 	fs.StringSlice(names[41], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
+	fs.String(names[42], "", "Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription")
+	fs.String(names[43], "", "File that holds notify.vapid_private_key. Wins over vapid_private_key")
+	fs.String(names[44], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url")
+	fs.Duration(names[45], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
+	fs.Duration(names[46], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
+	fs.Duration(names[47], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
 	return nil
 }
 
@@ -1589,6 +1715,78 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.Device.TrustedProxies = v
 		set("device.trusted_proxies", configulator.LayerCLI, "--"+n)
 	}
+	if n := "notify" + o.Separator + "vapid_private_key"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "notify.vapid_private_key",
+				Source: "--" + n,
+			}
+		}
+		cfg.Notify.VAPIDPrivateKey = v
+		set("notify.vapid_private_key", configulator.LayerCLI, "--"+n)
+	}
+	if n := "notify" + o.Separator + "vapid_private_key_file"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "notify.vapid_private_key_file",
+				Source: "--" + n,
+			}
+		}
+		cfg.Notify.VAPIDPrivateKeyFile = v
+		set("notify.vapid_private_key_file", configulator.LayerCLI, "--"+n)
+	}
+	if n := "notify" + o.Separator + "vapid_subject"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "notify.vapid_subject",
+				Source: "--" + n,
+			}
+		}
+		cfg.Notify.VAPIDSubject = v
+		set("notify.vapid_subject", configulator.LayerCLI, "--"+n)
+	}
+	if n := "notify" + o.Separator + "remind_after"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "notify.remind_after",
+				Source: "--" + n,
+			}
+		}
+		cfg.Notify.RemindAfter = v
+		set("notify.remind_after", configulator.LayerCLI, "--"+n)
+	}
+	if n := "notify" + o.Separator + "watch_interval"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "notify.watch_interval",
+				Source: "--" + n,
+			}
+		}
+		cfg.Notify.WatchInterval = v
+		set("notify.watch_interval", configulator.LayerCLI, "--"+n)
+	}
+	if n := "notify" + o.Separator + "job_interval"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "notify.job_interval",
+				Source: "--" + n,
+			}
+		}
+		cfg.Notify.JobInterval = v
+		set("notify.job_interval", configulator.LayerCLI, "--"+n)
+	}
 	return nil
 }
 
@@ -1879,6 +2077,25 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Device = &sub
+			}
+		case "notify":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("notify", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub notifyShadow
+				if err := sub.decodeJSON(dec, "notify"); err != nil {
+					return err
+				}
+				s.Notify = &sub
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -3443,6 +3660,125 @@ func (s *deviceShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	}
 }
 
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *notifyShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "vapid_private_key":
+			if err := func() error {
+				v, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				switch v.Kind() {
+				case jsontext.KindNull:
+				case jsontext.KindString:
+					str := v.String()
+					s.VAPIDPrivateKey = &str
+				default:
+					return configJSONError(path+".vapid_private_key", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+				}
+				return nil
+			}(); err != nil {
+				return &configulator.ParseError{
+					Err:   errors.New("invalid value"),
+					Path:  path + ".vapid_private_key",
+					Value: "(redacted)",
+				}
+			}
+		case "vapid_private_key_file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.VAPIDPrivateKeyFile = &str
+			default:
+				return configJSONError(path+".vapid_private_key_file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "vapid_subject":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.VAPIDSubject = &str
+			default:
+				return configJSONError(path+".vapid_subject", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "remind_after":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".remind_after", v, err)
+				}
+				s.RemindAfter = &slot
+			default:
+				return configJSONError(path+".remind_after", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		case "watch_interval":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".watch_interval", v, err)
+				}
+				s.WatchInterval = &slot
+			default:
+				return configJSONError(path+".watch_interval", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		case "job_interval":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".job_interval", v, err)
+				}
+				s.JobInterval = &slot
+			default:
+				return configJSONError(path+".job_interval", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // configJSONError returns a ParseError for the JSON token v at path.
 func configJSONError(path string, v jsontext.Token, err error) error {
 	return &configulator.ParseError{
@@ -3501,6 +3837,12 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "device.poll_interval = %v\n", c.Device.PollInterval)
 	fmt.Fprintf(&b, "device.recheck_interval = %v\n", c.Device.RecheckInterval)
 	fmt.Fprintf(&b, "device.trusted_proxies = %v\n", c.Device.TrustedProxies)
+	b.WriteString("notify.vapid_private_key = (redacted)\n")
+	fmt.Fprintf(&b, "notify.vapid_private_key_file = %v\n", c.Notify.VAPIDPrivateKeyFile)
+	fmt.Fprintf(&b, "notify.vapid_subject = %v\n", c.Notify.VAPIDSubject)
+	fmt.Fprintf(&b, "notify.remind_after = %v\n", c.Notify.RemindAfter)
+	fmt.Fprintf(&b, "notify.watch_interval = %v\n", c.Notify.WatchInterval)
+	fmt.Fprintf(&b, "notify.job_interval = %v\n", c.Notify.JobInterval)
 	return b.String()
 }
 

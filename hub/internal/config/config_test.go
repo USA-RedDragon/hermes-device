@@ -13,6 +13,7 @@ import (
 	"github.com/USA-RedDragon/configulator/v2"
 	"github.com/USA-RedDragon/hermes-device/assertion"
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
+	"github.com/USA-RedDragon/hermes-hub/internal/webpush"
 	"github.com/goccy/go-yaml"
 )
 
@@ -319,5 +320,50 @@ func TestHonchoKeyEnv(t *testing.T) {
 	h := config.Honcho{APIKey: "inline", APIKeyEnv: "HUB_TEST_HONCHO_KEY"} //nolint:gosec // test values, not credentials
 	if k, err := h.Key(); err != nil || k != "env-key" {
 		t.Fatalf("key = %q, %v", k, err)
+	}
+}
+
+func TestNotifySettings(t *testing.T) {
+	t.Parallel()
+	cfg, err := load(t, secrets(), file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := cfg.Notify
+	if n.RemindAfter != 5*time.Minute || n.WatchInterval != 15*time.Second || n.JobInterval != time.Minute {
+		t.Fatalf("defaults = %+v", n)
+	}
+	if k, err := n.PushKey(); k != nil || err != nil {
+		t.Fatalf("push key without one set = %v, %v", k, err)
+	}
+	key, err := webpush.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := secrets()
+	env["HUB_NOTIFY_VAPID_PRIVATE_KEY"] = key
+	cfg, err = load(t, env, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, err := cfg.Notify.PushKey()
+	if err != nil || k == nil || len(k.PublicKey()) != 87 {
+		t.Fatalf("push key = %v, %v", k, err)
+	}
+	if !strings.HasPrefix(cfg.Notify.VAPIDSubject, "https://") {
+		t.Fatalf("subject = %q", cfg.Notify.VAPIDSubject)
+	}
+	for _, bad := range []map[string]string{
+		{"HUB_NOTIFY_VAPID_PRIVATE_KEY": "not a key"},
+		{"HUB_NOTIFY_VAPID_PRIVATE_KEY": key, "HUB_NOTIFY_VAPID_SUBJECT": "ops@example.com"},
+		{"HUB_NOTIFY_VAPID_PRIVATE_KEY_FILE": filepath.Join(t.TempDir(), "missing")},
+	} {
+		env := secrets()
+		for k, v := range bad {
+			env[k] = v
+		}
+		if _, err := load(t, env, file); !errors.Is(err, config.ErrNotify) {
+			t.Fatalf("%v: err = %v", bad, err)
+		}
 	}
 }
