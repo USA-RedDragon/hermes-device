@@ -31,7 +31,7 @@ type Store struct {
 
 // Device is what the run daemon lets the agent use on this device.
 type Device struct {
-	Roots        []string      `name:"roots" description:"Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Needed by run"`
+	Roots        []string      `name:"roots" description:"Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Defaults to the home directory"`
 	TempDir      string        `name:"tmp-dir" description:"Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory"`
 	Shell        string        `name:"shell" default:"bash" description:"Shell used to run commands"`
 	ResumeBuffer int           `name:"resume-buffer" default:"1048576" description:"Most output bytes per command that run keeps for a resume of the exec leg until the plugin confirms them. Older output of a command is dropped, and the plugin shows the gap"`
@@ -203,10 +203,28 @@ func (c Config) ForRun() error {
 	if err := c.ForHub(); err != nil {
 		return err
 	}
-	if len(c.Device.Roots) == 0 {
-		return fmt.Errorf("%w: device.roots", ErrMissing)
-	}
 	return nil
+}
+
+// ErrNoHomeRoot is returned when device.roots is unset and the home
+// directory cannot stand in for it.
+var ErrNoHomeRoot = errors.New("device.roots is unset and the home directory cannot be the default; set device.roots")
+
+// Roots returns device.roots, or the home directory that home returns when
+// device.roots is unset. A home of / is refused: it would allow every
+// directory.
+func (c Config) Roots(home func() (string, error)) ([]string, error) {
+	if len(c.Device.Roots) > 0 {
+		return c.Device.Roots, nil
+	}
+	h, err := home()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrNoHomeRoot, err)
+	}
+	if !filepath.IsAbs(h) || filepath.Clean(h) == "/" {
+		return nil, fmt.Errorf("%w: home is %q", ErrNoHomeRoot, h)
+	}
+	return []string{filepath.Clean(h)}, nil
 }
 
 // ForACPHost checks the settings acp-host needs.

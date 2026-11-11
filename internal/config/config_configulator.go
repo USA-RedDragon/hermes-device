@@ -682,7 +682,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Bool(names[5], true, "Keep the device token in the OS keyring when one is available")
 	fs.String(names[6], "", "File (mode 0600) for the device token when the keyring is off or unavailable. Defaults to token in the state directory")
 	fs.String(names[7], "", "Directory for the token file and the daemon's state file. Defaults to hermes-device in the user config directory")
-	fs.StringSlice(names[8], nil, "Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Needed by run")
+	fs.StringSlice(names[8], nil, "Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Defaults to the home directory")
 	fs.String(names[9], "", "Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory")
 	fs.String(names[10], "bash", "Shell used to run commands")
 	fs.Var(impl.NewInt(1048576), names[11], "Most output bytes per command that run keeps for a resume of the exec leg until the plugin confirms them. Older output of a command is dropped, and the plugin shows the gap")

@@ -10,7 +10,12 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
-const hubURL = "https://hub.example.com"
+const (
+	hubURL    = "https://hub.example.com"
+	hubURLEnv = "HERMES_DEVICE_HUB_URL"
+	aliceHome = "/home/alice"
+	workRoot  = "/work"
+)
 
 func load(env map[string]string, file string) (*config.Config, error) {
 	c := configulator.New(config.ConfigSchema()).
@@ -131,5 +136,32 @@ mcp:
 		if _, err := load(nil, file); !errors.Is(err, config.ErrMCPServer) {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+func TestRootsDefaultToHome(t *testing.T) {
+	t.Parallel()
+	cfg, err := load(map[string]string{hubURLEnv: hubURL}, "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.ForRun(); err != nil {
+		t.Errorf("ForRun without roots: %v", err)
+	}
+	home := func(h string, err error) func() (string, error) { return func() (string, error) { return h, err } }
+	if roots, err := cfg.Roots(home("/home/alice/", nil)); err != nil || len(roots) != 1 || roots[0] != aliceHome {
+		t.Errorf("Roots = %q, %v", roots, err)
+	}
+	for _, h := range []string{"/", "", "rel"} {
+		if _, err := cfg.Roots(home(h, nil)); !errors.Is(err, config.ErrNoHomeRoot) {
+			t.Errorf("home %q: %v", h, err)
+		}
+	}
+	if _, err := cfg.Roots(home("", errors.New("no home"))); !errors.Is(err, config.ErrNoHomeRoot) {
+		t.Errorf("home error: %v", err)
+	}
+	cfg.Device.Roots = []string{workRoot}
+	if roots, err := cfg.Roots(home("/", nil)); err != nil || len(roots) != 1 || roots[0] != workRoot {
+		t.Errorf("set roots: %q, %v", roots, err)
 	}
 }

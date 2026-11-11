@@ -118,7 +118,11 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 	}
 	hub := hubapi.New(cfg.Hub.URL, token, userAgent)
 
-	allow, err := allowlist.New(cfg.Device.Roots)
+	roots, err := cfg.Roots(os.UserHomeDir)
+	if err != nil {
+		return err
+	}
+	allow, err := allowlist.New(roots)
 	if err != nil {
 		return err
 	}

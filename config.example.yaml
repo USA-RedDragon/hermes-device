@@ -18,7 +18,7 @@ store:
   # Directory for the token file and the daemon's state file. Defaults to hermes-device in the user config directory
   # state-dir: ""
 device:
-  # Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Needed by run
+  # Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Defaults to the home directory
   # roots: []
   # Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory
   # tmp-dir: ""
