@@ -16,7 +16,10 @@ import (
 )
 
 // goosDarwin is macOS's GOOS.
-const goosDarwin = "darwin"
+const (
+	goosDarwin = "darwin"
+	goosLinux  = "linux"
+)
 
 // handOffWait is how long a process that handed over to the talaria
 // service waits to be stopped before it exits by itself.
@@ -33,7 +36,7 @@ func WithMigration() Option {
 // rename runs this process.
 func underLegacyService() bool {
 	switch runtime.GOOS {
-	case "linux":
+	case goosLinux:
 		data, err := os.ReadFile("/proc/self/cgroup")
 		return err == nil && strings.Contains(string(data), "/"+setup.LegacyUnitName)
 	case goosDarwin:

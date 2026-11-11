@@ -30,7 +30,7 @@ const (
 // hermesBuilds is the store of managed Hermes builds, or nil when
 // chat.managed is off or this OS cannot run them.
 func hermesBuilds(cfg *config.Config, userAgent string) *hermesbuild.Store {
-	if !cfg.Chat.Managed || runtime.GOOS != "linux" {
+	if !cfg.Chat.Managed || runtime.GOOS != goosLinux {
 		return nil
 	}
 	dir := cfg.Chat.ManagedDir

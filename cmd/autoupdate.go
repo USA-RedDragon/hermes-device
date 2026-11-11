@@ -81,7 +81,7 @@ func (b *base) startNotice(cfg *config.Config) {
 // process, so that it starts again after an exit.
 func underService() bool {
 	switch runtime.GOOS {
-	case "linux":
+	case goosLinux:
 		data, err := os.ReadFile("/proc/self/cgroup")
 		return err == nil && (strings.Contains(string(data), "/"+setup.UnitName) || strings.Contains(string(data), "/"+setup.LegacyUnitName))
 	case goosDarwin:
