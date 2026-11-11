@@ -87,7 +87,8 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	for _, b := range cfg.Backends {
 		dialers[b.ID] = gateway.NewDialer(gateway.Credentials{BaseURL: b.URL, Provider: b.Provider, Username: b.Username, Password: b.Password})
 	}
-	opts := service.Options{HoldTimeout: cfg.Hold.Timeout, Dialer: func(b config.Backend) service.Dialer { return dialers[b.ID] }}
+	opts := service.Options{HoldTimeout: cfg.Hold.Timeout, Dialer: func(b config.Backend) service.Dialer { return dialers[b.ID] },
+		Answers: st}
 	if st.Postgres() {
 		opts.Relay = st
 	}

@@ -417,6 +417,9 @@ type Notice struct {
 	Cancelled bool
 	// Account is the Claude account of a NoticeClaudeSignIn.
 	Account string
+	// Outcome is what became of the approval of a NoticeOutcome, or of a
+	// NoticeSettled whose answer the hub recorded.
+	Outcome *ApprovalOutcome
 }
 
 // SessionChecker is the optional part of a Service that tells whether a

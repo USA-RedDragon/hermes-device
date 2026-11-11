@@ -150,6 +150,12 @@ func (s *Store) SettleNotices(ctx context.Context, backendID, sessionID string, 
 		AND backend_id = ? AND session_id = ? AND prompt_id IN (`+marks+`) RETURNING `+noticeColumns, args...)
 }
 
+// PromptNotices lists the settled notices of a prompt.
+func (s *Store) PromptNotices(ctx context.Context, backendID, sessionID, promptID string) ([]hub.NoticeRecord, error) {
+	return s.notices(ctx, `SELECT `+noticeColumns+` FROM notices WHERE settled_at <> 0 AND backend_id = ? AND session_id = ?
+		AND prompt_id = ?`, backendID, sessionID, promptID)
+}
+
 // DueReminders lists open approval and question notices created before
 // t that had no reminder yet and are not put off past now.
 func (s *Store) DueReminders(ctx context.Context, t, now time.Time) ([]hub.NoticeRecord, error) {
@@ -207,12 +213,16 @@ func (s *Store) NoticeMessages(ctx context.Context, id string) ([]hub.NoticeMess
 	return out, rows.Err()
 }
 
-// PruneNotices drops notices, their messages and presence older than t.
+// PruneNotices drops notices, their messages, recorded prompt answers and
+// presence older than t.
 func (s *Store) PruneNotices(ctx context.Context, t time.Time) error {
 	if err := s.exec(ctx, `DELETE FROM notice_messages WHERE notice_id IN (SELECT id FROM notices WHERE created_at < ?)`, t.Unix()); err != nil {
 		return err
 	}
 	if err := s.exec(ctx, `DELETE FROM notices WHERE created_at < ?`, t.Unix()); err != nil {
+		return err
+	}
+	if err := s.exec(ctx, `DELETE FROM prompt_answers WHERE created_at < ?`, t.Unix()); err != nil {
 		return err
 	}
 	return s.exec(ctx, `DELETE FROM presence WHERE seen_at < ?`, t.Unix())

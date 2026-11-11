@@ -452,6 +452,32 @@ func (g *Gateway) ConnCount() int {
 	return len(g.conns)
 }
 
+// Ask makes a session wait for an approval, as a turn's tool call does.
+func (g *Gateway) Ask(sessionID string, pr gateway.Prompt) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	s := g.sessions[sessionID]
+	if s.prompts == nil {
+		s.prompts = map[string]gateway.Prompt{}
+	}
+	s.prompts[pr.PromptID] = pr
+	g.publishLocked(s, "approval.request", pr)
+}
+
+// ServerRequest sends a server request to every open WebSocket, as
+// tui_gateway/server_requests.py does to a client that answers them.
+func (g *Gateway) ServerRequest(id, method string, params any) {
+	g.mu.Lock()
+	conns := make([]*conn, 0, len(g.conns))
+	for c := range g.conns {
+		conns = append(conns, c)
+	}
+	g.mu.Unlock()
+	for _, c := range conns {
+		c.send(map[string]any{kJSONRPC: jsonRPCVersion, "id": id, kMethod: method, kParams: params})
+	}
+}
+
 // DeliverCron delivers a cron result into a session as Hermes does for a
 // local chat: session.info lists the input under an input_id that names the
 // cron producer, message.start names its admission, and message.complete
@@ -1028,12 +1054,40 @@ func (g *Gateway) hApproval(_ *conn, p map[string]any) (any, string, func()) {
 	if !slices.Contains(pr.Choices, str(p, "choice")) {
 		return nil, errInvalidParams, nil
 	}
+	g.resolveApproval(s, pr, str(p, "choice"))
+	return map[string]any{kStatus: "resolved"}, "", nil
+}
+
+// deniedResult is the result of a terminal call whose approval was denied
+// on the gateway (tools/approval.py gateway_refused, tools/terminal_tool.py
+// _error_json).
+const deniedResult = `{"output": "", "exit_code": -1, "error": "BLOCKED: Command denied by user. The user has NOT consented ` +
+	`to this action.", "status": "blocked"}`
+
+// resolveApproval settles an approval with choice and ends the terminal
+// call that asked for it as Hermes does. g.mu is held.
+func (g *Gateway) resolveApproval(s *Session, pr gateway.Prompt, choice string) {
 	delete(s.prompts, pr.PromptID)
 	g.publishLocked(s, "approval.settled", map[string]any{"prompt_id": pr.PromptID, kExecGen: pr.ExecutionGeneration})
-	g.publishLocked(s, "tool.complete", map[string]any{kToolID: "t-approve", kName: kTerminal, kResult: str(p, "choice")})
+	result := `{"output": "approved: ` + choice + `", "exit_code": 0}`
+	if choice == gateway.ChoiceDeny {
+		result = deniedResult
+	}
+	g.publishLocked(s, "tool.complete", map[string]any{kToolID: "t-approve", kName: kTerminal, kResult: result})
 	s.Running = false
-	g.publishLocked(s, "message.complete", map[string]any{kText: "approved: " + str(p, "choice"), kStatus: kComplete})
-	return map[string]any{kStatus: "resolved"}, "", nil
+	g.publishLocked(s, "message.complete", map[string]any{kText: "approved: " + choice, kStatus: kComplete})
+}
+
+// AnswerElsewhere answers a pending approval as a client that talks to the
+// gateway directly would, so the hub sees only the settle and how the
+// tool call ends.
+func (g *Gateway) AnswerElsewhere(sessionID, promptID, choice string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	s := g.sessions[sessionID]
+	if pr, ok := s.prompts[promptID]; ok {
+		g.resolveApproval(s, pr, choice)
+	}
 }
 
 func (g *Gateway) hClarify(_ *conn, p map[string]any) (any, string, func()) {

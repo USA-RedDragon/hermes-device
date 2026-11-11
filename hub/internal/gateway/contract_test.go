@@ -79,6 +79,23 @@ func contract() map[string][]string {
 			`prompt = {"kind": "clarify", "prompt_id": entry.clarify_id,`, `"multi_select": entry.multi_select}`,
 			`event_type="clarify.request")`, "event_type=prompt['kind'] + '.settled')",
 		},
+		// The hub works out the outcome of an approval answered where it cannot
+		// see the choice from the tool call that asked (internal/service/outcome.go).
+		"agent/tool_executor.py": {
+			"_advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))",
+			`_safe_callback(agent.tool_start_callback, "Tool start", tool_call_id, function_name, display_args)`,
+		},
+		"gateway/run_turn_progress.py#tools": {
+			`payload = {"tool_id": str(call_id or ""), "name": name, "context": build_tool_preview(name, args, max_len=80) or "",`,
+			`"result": bounded_result(result, is_error)}`,
+		},
+		"tools/approval.py#outcome": {
+			`return deny(spec.gateway_refused, "denied", reason="denied by user",`,
+			`gateway_refused="BLOCKED: Command {reason}.{reason_addendum}"`,
+			`cli_denied="BLOCKED: User denied this command."`,
+		},
+		"tools/terminal_tool.py#outcome":   {`raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",`},
+		"tools/file_tools_write_guards.py": {`denied = blocked.format(why="was denied by the user.")`},
 		"gateway/session_busy_controls.py": {
 			"if params.get('key') == 'show_reasoning' and not set(params) - allowed and ref.session_id:",
 			"_YOLO_WORDS = {'1': True, 'on': True,",

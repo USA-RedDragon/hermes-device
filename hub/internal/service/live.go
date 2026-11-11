@@ -68,6 +68,12 @@ type live struct {
 	usage    *counts
 	turnBase *counts
 	turn     *hub.TurnTokens
+	// running are the tool calls that started and did not end, subagents
+	// the subagents that run, and gates the approvals whose outcome the
+	// hub works out from their tool call, by prompt ID.
+	running   map[string]runningTool
+	subagents map[string]bool
+	gates     map[string]*gate
 }
 
 func (ls *live) canSee() *bool {
@@ -83,7 +89,7 @@ type viewer struct {
 
 func newLive(b *backend, id string) *live {
 	return &live{b: b, id: id, prompts: map[string]gateway.Prompt{}, viewers: map[*viewer]struct{}{},
-		seq: time.Now().UnixMicro()}
+		seq: time.Now().UnixMicro(), running: map[string]runningTool{}, subagents: map[string]bool{}, gates: map[string]*gate{}}
 }
 
 // setClient records the connection ls is subscribed on. ls.opMu is held.
@@ -269,8 +275,12 @@ func (ls *live) settle(cancelled bool, ids ...string) {
 	var gone []string
 	for _, id := range ids {
 		if id != "" {
+			p, ok := ls.prompts[id]
 			delete(ls.prompts, id)
 			gone = append(gone, id)
+			if ok && p.Kind == gateway.PromptApproval {
+				ls.settleOutcome(id, cancelled)
+			}
 		}
 	}
 	if len(gone) > 0 {
@@ -389,6 +399,7 @@ func (ls *live) apply(ev gateway.Event) {
 			}
 			ls.prompts[p.PromptID] = p
 			ls.promptNotice(p)
+			ls.gateApproval(p)
 		}
 	case "approval.settled", "clarify.settled":
 		var p struct {
@@ -412,6 +423,7 @@ func (ls *live) apply(ev gateway.Event) {
 		ls.turnFailed(text)
 	}
 	ls.emit(ev.Type, ev.Payload)
+	ls.trackOutcomes(ev)
 }
 
 // emit records an event and sends it to viewers. ls.mu is held.

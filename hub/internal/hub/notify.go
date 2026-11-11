@@ -98,6 +98,8 @@ type NotifyStore interface {
 	// SettleNotices marks the open notices of the prompts settled and
 	// returns them.
 	SettleNotices(ctx context.Context, backendID, sessionID string, promptIDs []string) ([]NoticeRecord, error)
+	// PromptNotices lists the settled notices of a prompt.
+	PromptNotices(ctx context.Context, backendID, sessionID, promptID string) ([]NoticeRecord, error)
 	// DueReminders lists open approval and question notices created before
 	// t that had no reminder yet and are not put off past now.
 	DueReminders(ctx context.Context, t, now time.Time) ([]NoticeRecord, error)
@@ -107,7 +109,8 @@ type NotifyStore interface {
 	ClaimReminder(ctx context.Context, id string) (bool, error)
 	AddNoticeMessage(ctx context.Context, id string, m NoticeMessage) error
 	NoticeMessages(ctx context.Context, id string) ([]NoticeMessage, error)
-	// PruneNotices drops notices and presence older than t.
+	// PruneNotices drops notices, recorded prompt answers and presence
+	// older than t.
 	PruneNotices(ctx context.Context, t time.Time) error
 
 	SavePushSubscription(ctx context.Context, s PushSubscription) (PushSubscription, error)

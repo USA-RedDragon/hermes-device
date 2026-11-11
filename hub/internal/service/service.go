@@ -58,6 +58,10 @@ type Options struct {
 	// PDF reads attached PDFs, so the agent gets their text and first
 	// pages. Nil: a PDF is a plain file.
 	PDF PDFReader
+	// Answers records the answers to approvals that pass through the hub,
+	// so every replica can say which choice answered one. Nil: the hub
+	// works every outcome out from the tool call.
+	Answers hub.AnswerStore
 }
 
 // Service is the hub core.
@@ -456,19 +460,53 @@ func (s *Service) AnswerPrompt(ctx context.Context, user, backendID, sessionID, 
 	default:
 		return hub.ErrUnknownApproval
 	}
+	answer := hub.PromptAnswer{Choice: a.Choice, Via: hub.AnsweredVia(ctx)}
+	recorded := p.Kind == gateway.PromptApproval && s.recordAnswer(ctx, backendID, promptID, answer)
 	var res struct {
 		Status string `json:"status"`
 	}
-	if err := b.call(ctx, ls, method, params, &res); err != nil {
-		return err
+	err = b.call(ctx, ls, method, params, &res)
+	resolved := err == nil && res.Status == "already_resolved"
+	if (err != nil || resolved) && recorded {
+		s.forgetAnswer(ctx, backendID, promptID, answer)
 	}
-	if res.Status == "already_resolved" {
+	if resolved {
 		ls.mu.Lock()
 		ls.settled(promptID)
 		ls.mu.Unlock()
 		return hub.ErrUnknownApproval
 	}
-	return nil
+	return err
+}
+
+// answerTimeout bounds recording an answer, so a slow store does not hold
+// up the answer for long.
+const answerTimeout = 2 * time.Second
+
+// recordAnswer records an answer before it goes to Hermes, so the replica
+// that sees the approval settle can tell which choice answered it. It
+// reports whether it recorded this one: false also when the approval
+// already had an answer.
+func (s *Service) recordAnswer(ctx context.Context, backendID, promptID string, a hub.PromptAnswer) bool {
+	if s.opts.Answers == nil {
+		return false
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), answerTimeout)
+	defer cancel()
+	recorded, err := s.opts.Answers.RecordAnswer(cctx, backendID, promptID, a)
+	if err != nil {
+		s.log.Warn("Failed to record an approval's answer", "backend", backendID, "error", err.Error())
+	}
+	return recorded
+}
+
+// forgetAnswer drops a recorded answer that Hermes did not take.
+func (s *Service) forgetAnswer(ctx context.Context, backendID, promptID string, a hub.PromptAnswer) {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), answerTimeout)
+	defer cancel()
+	if err := s.opts.Answers.ForgetAnswer(cctx, backendID, promptID, a); err != nil {
+		s.log.Warn("Failed to forget an approval's answer", "backend", backendID, "error", err.Error())
+	}
 }
 
 // clarifyAnswer is the answer clarify.respond takes for a: "" to skip, a
