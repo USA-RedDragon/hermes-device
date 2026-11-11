@@ -90,6 +90,16 @@ type User struct {
 // UI configures the web UI. Every user gets the same UI.
 type UI struct {
 	DefaultBackends []string `name:"default_backends" description:"Default backend per user, as user=backend pairs. A user without one gets their first backend"`
+	TimeZone        string   `name:"time_zone" default:"America/Chicago" description:"IANA time zone of the times on the Scheduled page"`
+}
+
+// Location is TimeZone's location; UTC for an unknown zone.
+func (u UI) Location() *time.Location {
+	loc, err := time.LoadLocation(u.TimeZone)
+	if err != nil || u.TimeZone == "" {
+		return time.UTC
+	}
+	return loc
 }
 
 // DefaultBackendMap parses DefaultBackends.
@@ -258,6 +268,7 @@ var (
 	ErrPrometheusURL   = errors.New("usage.prometheus_url must be an absolute http or https URL")
 	ErrClaudeAdmin     = errors.New("claude.admins entries must be user=backend with a known backend")
 	ErrClaudeTimeZone  = errors.New("claude.time_zone is not a known time zone")
+	ErrUITimeZone      = errors.New("ui.time_zone is not a known time zone")
 )
 
 var backendIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -305,6 +316,12 @@ func (c *Config) validateUsers() error {
 				return fmt.Errorf("%w: backends[%d].users names unknown user %q", ErrUser, i, user)
 			}
 		}
+	}
+	if c.UI.TimeZone == "" {
+		c.UI.TimeZone = defaultClaudeTimeZone
+	}
+	if _, err := time.LoadLocation(c.UI.TimeZone); err != nil {
+		return fmt.Errorf("%w: %q", ErrUITimeZone, c.UI.TimeZone)
 	}
 	return c.validateClaude(names)
 }

@@ -52,6 +52,7 @@ type sessionShadow struct {
 
 type uIShadow struct {
 	DefaultBackends *[]string `json:"default_backends" toml:"default_backends" yaml:"default_backends"`
+	TimeZone        *string   `json:"time_zone"        toml:"time_zone"        yaml:"time_zone"`
 }
 
 type storeShadow struct {
@@ -208,6 +209,8 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("oidc.groups_claim", configulator.LayerDefault, "default tag")
 	cfg.Session.TTL = time.Duration(int64(604800000000000))
 	set("session.ttl", configulator.LayerDefault, "default tag")
+	cfg.UI.TimeZone = "America/Chicago"
+	set("ui.time_zone", configulator.LayerDefault, "default tag")
 	cfg.Store.Driver = "sqlite"
 	set("store.driver", configulator.LayerDefault, "default tag")
 	cfg.Store.Path = "/data/hermes-hub.db"
@@ -352,6 +355,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		if s.UI.DefaultBackends != nil {
 			cfg.UI.DefaultBackends = *s.UI.DefaultBackends
 			set("ui.default_backends", configulator.LayerFile, file)
+		}
+		if s.UI.TimeZone != nil {
+			cfg.UI.TimeZone = *s.UI.TimeZone
+			set("ui.time_zone", configulator.LayerFile, file)
 		}
 	}
 	if s.Store != nil {
@@ -849,6 +856,10 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.UI.DefaultBackends = lst
 		set("ui.default_backends", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "ui", "time_zone"); ok {
+		cfg.UI.TimeZone = v
+		set("ui.time_zone", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "driver"); ok {
 		cfg.Store.Driver = v
 		set("store.driver", configulator.LayerEnv, n)
@@ -1178,6 +1189,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"session" + o.Separator + "secret",
 		"session" + o.Separator + "ttl",
 		"ui" + o.Separator + "default_backends",
+		"ui" + o.Separator + "time_zone",
 		"store" + o.Separator + "driver",
 		"store" + o.Separator + "path",
 		"store" + o.Separator + "dsn",
@@ -1246,40 +1258,41 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[15], "", "Key for the session and login cookies. At least 32 characters")
 	fs.Duration(names[16], time.Duration(int64(604800000000000)), "How long a login lasts")
 	fs.StringSlice(names[17], nil, "Default backend per user, as user=backend pairs. A user without one gets their first backend")
-	fs.String(names[18], "sqlite", "Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices")
-	fs.String(names[19], "/data/hermes-hub.db", "Path of the SQLite database (store.driver sqlite)")
-	fs.String(names[20], "", "PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session")
-	fs.String(names[21], "", "With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped")
-	fs.Duration(names[22], time.Duration(int64(5000000000)), "How long the hub keeps serving after SIGTERM while /readyz fails, so load balancers stop sending it requests")
-	fs.Duration(names[23], time.Duration(int64(20000000000)), "How long the hub then waits for open requests and the Telegram bot to stop. Keep drain_delay plus timeout below the pod's termination grace period")
-	fs.Duration(names[24], time.Duration(int64(600000000000)), "How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default")
-	fs.String(names[25], "", "Base URL of a Prometheus query API, such as http://prometheus:9090, that scrapes the metrics of ollama-priority-proxy in front of the local GPU's Ollama. The Usage page then shows how long the GPU was busy. Empty: it does not")
-	fs.Bool(names[26], false, "Run the Telegram bot")
-	fs.String(names[27], "", "Telegram bot token from BotFather")
-	fs.String(names[28], "https://api.telegram.org", "Telegram Bot API base URL")
-	fs.StringSlice(names[29], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
-	fs.Int64Slice(names[30], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
-	fs.Duration(names[31], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
-	fs.Duration(names[32], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
-	fs.Var(impl.NewInt(5), names[33], "Retries of a Bot API call that Telegram answers with 429")
-	fs.Duration(names[34], time.Duration(int64(2000000000)), "With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over")
-	fs.Duration(names[35], time.Duration(int64(20000000000)), "How often the bot reads the chats of each linked group to add topics for new chats, rename topics and follow the chats that run")
-	fs.String(names[36], "collapsed", "How the status line of a turn shows its steps and thinking: collapsed (a quote that opens on a tap), expanded, or off")
-	fs.Bool(names[37], false, "Serve the talaria device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
-	fs.String(names[38], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
-	fs.String(names[39], "", "File that holds device.signing_key. Wins over signing_key")
-	fs.Duration(names[40], time.Duration(int64(600000000000)), "How long a pairing code from talaria setup or talaria login stays valid")
-	fs.Duration(names[41], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
-	fs.Duration(names[42], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
-	fs.StringSlice(names[43], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
-	fs.String(names[44], "", "Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription")
-	fs.String(names[45], "", "File that holds notify.vapid_private_key. Wins over vapid_private_key")
-	fs.String(names[46], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url")
-	fs.Duration(names[47], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
-	fs.Duration(names[48], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
-	fs.Duration(names[49], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
-	fs.StringSlice(names[50], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
-	fs.String(names[51], "America/Chicago", "IANA time zone of the reset times of Claude usage windows")
+	fs.String(names[18], "America/Chicago", "IANA time zone of the times on the Scheduled page")
+	fs.String(names[19], "sqlite", "Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices")
+	fs.String(names[20], "/data/hermes-hub.db", "Path of the SQLite database (store.driver sqlite)")
+	fs.String(names[21], "", "PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session")
+	fs.String(names[22], "", "With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped")
+	fs.Duration(names[23], time.Duration(int64(5000000000)), "How long the hub keeps serving after SIGTERM while /readyz fails, so load balancers stop sending it requests")
+	fs.Duration(names[24], time.Duration(int64(20000000000)), "How long the hub then waits for open requests and the Telegram bot to stop. Keep drain_delay plus timeout below the pod's termination grace period")
+	fs.Duration(names[25], time.Duration(int64(600000000000)), "How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default")
+	fs.String(names[26], "", "Base URL of a Prometheus query API, such as http://prometheus:9090, that scrapes the metrics of ollama-priority-proxy in front of the local GPU's Ollama. The Usage page then shows how long the GPU was busy. Empty: it does not")
+	fs.Bool(names[27], false, "Run the Telegram bot")
+	fs.String(names[28], "", "Telegram bot token from BotFather")
+	fs.String(names[29], "https://api.telegram.org", "Telegram Bot API base URL")
+	fs.StringSlice(names[30], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
+	fs.Int64Slice(names[31], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
+	fs.Duration(names[32], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
+	fs.Duration(names[33], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
+	fs.Var(impl.NewInt(5), names[34], "Retries of a Bot API call that Telegram answers with 429")
+	fs.Duration(names[35], time.Duration(int64(2000000000)), "With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over")
+	fs.Duration(names[36], time.Duration(int64(20000000000)), "How often the bot reads the chats of each linked group to add topics for new chats, rename topics and follow the chats that run")
+	fs.String(names[37], "collapsed", "How the status line of a turn shows its steps and thinking: collapsed (a quote that opens on a tap), expanded, or off")
+	fs.Bool(names[38], false, "Serve the talaria device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
+	fs.String(names[39], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
+	fs.String(names[40], "", "File that holds device.signing_key. Wins over signing_key")
+	fs.Duration(names[41], time.Duration(int64(600000000000)), "How long a pairing code from talaria setup or talaria login stays valid")
+	fs.Duration(names[42], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
+	fs.Duration(names[43], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
+	fs.StringSlice(names[44], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
+	fs.String(names[45], "", "Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription")
+	fs.String(names[46], "", "File that holds notify.vapid_private_key. Wins over vapid_private_key")
+	fs.String(names[47], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url")
+	fs.Duration(names[48], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
+	fs.Duration(names[49], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
+	fs.Duration(names[50], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
+	fs.StringSlice(names[51], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
+	fs.String(names[52], "America/Chicago", "IANA time zone of the reset times of Claude usage windows")
 	return nil
 }
 
@@ -1499,6 +1512,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.UI.DefaultBackends = v
 		set("ui.default_backends", configulator.LayerCLI, "--"+n)
+	}
+	if n := "ui" + o.Separator + "time_zone"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "ui.time_zone",
+				Source: "--" + n,
+			}
+		}
+		cfg.UI.TimeZone = v
+		set("ui.time_zone", configulator.LayerCLI, "--"+n)
 	}
 	if n := "store" + o.Separator + "driver"; fs.Changed(n) {
 		v, err := fs.GetString(n)
@@ -2662,6 +2687,19 @@ func (s *uIShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 					return err
 				}
 				s.DefaultBackends = &out
+			}
+		case "time_zone":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.TimeZone = &str
+			default:
+				return configJSONError(path+".time_zone", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -4046,6 +4084,7 @@ func (c *Config) PrintConfig() string {
 	b.WriteString("session.secret = (redacted)\n")
 	fmt.Fprintf(&b, "session.ttl = %v\n", c.Session.TTL)
 	fmt.Fprintf(&b, "ui.default_backends = %v\n", c.UI.DefaultBackends)
+	fmt.Fprintf(&b, "ui.time_zone = %v\n", c.UI.TimeZone)
 	fmt.Fprintf(&b, "store.driver = %v\n", c.Store.Driver)
 	fmt.Fprintf(&b, "store.path = %v\n", c.Store.Path)
 	b.WriteString("store.dsn = (redacted)\n")
