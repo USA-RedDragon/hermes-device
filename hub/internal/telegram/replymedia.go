@@ -31,13 +31,15 @@ const mediaReadTimeout = 150 * time.Second
 // uploadTimeout bounds one upload to Telegram.
 const uploadTimeout = 2 * time.Minute
 
-// sendMedia sends the files a reply names, after its text: an image as a
-// photo when Telegram takes it as one, anything else as a document.
+// sendMedia sends the files a reply names, after its text: images that
+// Telegram takes as photos go together as albums of up to ten
+// (sendMediaGroup), after the other files, which go as documents.
 func (r *renderer) sendMedia(ctx context.Context, paths []string) {
 	if len(paths) > maxReplyMedia {
 		r.notice(ctx, msgMediaMany, len(paths), maxReplyMedia)
 		paths = paths[:maxReplyMedia]
 	}
+	var photos []Photo
 	for _, p := range paths {
 		name := hub.CleanName(path.Base(p))
 		if hub.PagePath(p) && r.pageURL != nil {
@@ -65,21 +67,58 @@ func (r *renderer) sendMedia(ctx context.Context, paths []string) {
 			continue
 		}
 		if mime != "" && len(data) <= MaxPhotoUpload {
-			err = r.upload(ctx, r.api.SendPhoto, name, data)
-			var apiErr *APIError
-			if !errors.As(err, &apiErr) || apiErr.Code != http.StatusBadRequest {
-				r.sent(ctx, name, err)
-				continue
-			}
-			r.logger.Info("Telegram refused a photo, sending it as a file", "error", err)
+			photos = append(photos, Photo{Name: name, Data: data})
+			continue
 		}
 		r.sent(ctx, name, r.upload(ctx, r.api.SendDocument, name, data))
+	}
+	for len(photos) > 0 {
+		n := min(len(photos), maxAlbum)
+		r.sendPhotos(ctx, photos[:n])
+		photos = photos[n:]
+	}
+}
+
+// sendPhotos sends up to ten images as one album, or one image as a
+// photo. When Telegram refuses the album, it sends each image on its own;
+// when it refuses a photo, such as one of odd dimensions, it sends the
+// image as a file.
+func (r *renderer) sendPhotos(ctx context.Context, photos []Photo) {
+	if len(photos) > 1 {
+		cctx, cancel := context.WithTimeout(ctx, uploadTimeout)
+		err := r.api.SendAlbum(cctx, r.to.chat, r.to.thread, photos)
+		cancel()
+		r.spend()
+		r.draftLost()
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Code != http.StatusBadRequest {
+			if err != nil {
+				r.logger.Warn("Failed to send an album", "error", err)
+				for _, p := range photos {
+					r.notice(ctx, msgMediaFailed, p.Name)
+				}
+			}
+			return
+		}
+		r.logger.Info("Telegram refused an album, sending its images one by one", "error", err)
+	}
+	for _, p := range photos {
+		err := r.upload(ctx, r.api.SendPhoto, p.Name, p.Data)
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Code != http.StatusBadRequest {
+			r.sent(ctx, p.Name, err)
+			continue
+		}
+		r.logger.Info("Telegram refused a photo, sending it as a file", "error", err)
+		r.sent(ctx, p.Name, r.upload(ctx, r.api.SendDocument, p.Name, p.Data))
 	}
 }
 
 func (r *renderer) upload(ctx context.Context, send func(context.Context, int64, int64, string, []byte) error, name string, data []byte) error {
 	cctx, cancel := context.WithTimeout(ctx, uploadTimeout)
 	defer cancel()
+	defer r.draftLost()
+	defer r.spend()
 	return send(cctx, r.to.chat, r.to.thread, name, data)
 }
 
