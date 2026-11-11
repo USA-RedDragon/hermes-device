@@ -26,6 +26,7 @@ const (
 	kText        = "text"
 	kStatus      = "status"
 	kDesc        = "description"
+	kErrorCode   = "error_code"
 	kResult      = "result"
 	userAlice    = "alice"
 	userBob      = "bob"
@@ -81,11 +82,16 @@ type fakeTelegram struct {
 	fail429    map[string]int
 	rejectHTML int
 	offsets    []int64
+	// files are the files getFile and downloads serve, by file id.
+	files map[string][]byte
+	// sizes overrides the file_size getFile reports.
+	sizes map[string]int64
 }
 
 func newFakeTelegram(t *testing.T) *fakeTelegram {
 	t.Helper()
-	f := &fakeTelegram{t: t, updates: make(chan telegram.Update, 64), fail429: map[string]int{}, nextID: 100}
+	f := &fakeTelegram{t: t, updates: make(chan telegram.Update, 64), fail429: map[string]int{}, nextID: 100,
+		files: map[string][]byte{}, sizes: map[string]int64{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -99,6 +105,17 @@ func (f *fakeTelegram) reply(w http.ResponseWriter, v any) {
 }
 
 func (f *fakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
+	if id, ok := strings.CutPrefix(r.URL.Path, "/file/bot"+testToken+"/docs/"); ok {
+		f.mu.Lock()
+		data, found := f.files[id]
+		f.mu.Unlock()
+		if !found {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(data)
+		return
+	}
 	method, ok := strings.CutPrefix(r.URL.Path, "/bot"+testToken+"/")
 	if !ok {
 		http.NotFound(w, r)
@@ -124,7 +141,7 @@ func (f *fakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
 		f.fail429[method]--
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusTooManyRequests)
-		f.reply(w, map[string]any{"ok": false, "error_code": 429,
+		f.reply(w, map[string]any{"ok": false, kErrorCode: 429,
 			kDesc: "Too Many Requests: retry after 1", "parameters": map[string]any{"retry_after": 1}})
 		return
 	}
@@ -132,7 +149,7 @@ func (f *fakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
 		f.rejectHTML--
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusBadRequest)
-		f.reply(w, map[string]any{"ok": false, "error_code": 400,
+		f.reply(w, map[string]any{"ok": false, kErrorCode: 400,
 			kDesc: "Bad Request: can't parse entities: unexpected end tag"})
 		return
 	}
@@ -146,6 +163,21 @@ func (f *fakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
 	case mSend:
 		f.reply(w, map[string]any{"ok": true, kResult: map[string]any{
 			"message_id": id, "chat": map[string]any{"id": params["chat_id"], "type": "private"}, kText: params[kText]}})
+	case "getFile":
+		fid, _ := params["file_id"].(string)
+		f.mu.Lock()
+		data, found := f.files[fid]
+		size, sized := f.sizes[fid]
+		f.mu.Unlock()
+		if !sized {
+			size = int64(len(data))
+		}
+		if !found {
+			f.reply(w, map[string]any{"ok": false, kErrorCode: 400, kDesc: "Bad Request: invalid file_id"})
+			return
+		}
+		f.reply(w, map[string]any{"ok": true, kResult: map[string]any{"file_id": fid, "file_size": size,
+			"file_path": "docs/" + fid}})
 	default:
 		f.reply(w, map[string]any{"ok": true, kResult: true})
 	}
@@ -228,7 +260,10 @@ func (f *fakeTelegram) wait(method, contains string) tgCall {
 	return tgCall{}
 }
 
-type promptCall struct{ User, BackendID, SessionID, Text, SubmissionID string }
+type promptCall struct {
+	User, BackendID, SessionID, Text, SubmissionID string
+	Files                                          []hub.Attachment
+}
 
 type approvalCall struct {
 	User, BackendID, SessionID, ApprovalID string
@@ -257,6 +292,8 @@ type fakeHub struct {
 	down map[string]string
 	// hold makes Prompt answer that it held the prompt.
 	hold bool
+	// notice is the Notice Prompt answers.
+	notice string
 }
 
 func newFakeHub() *fakeHub {
@@ -319,14 +356,17 @@ func (h *fakeHub) Attach(_ context.Context, user, backendID, sessionID string, _
 	return st.ch, func() { st.once.Do(func() { close(st.ch) }) }, nil
 }
 
-func (h *fakeHub) Prompt(ctx context.Context, user, backendID, sessionID, text string) (hub.PromptResult, error) {
+func (h *fakeHub) Prompt(ctx context.Context, user, backendID, sessionID, text string, files ...hub.Attachment) (hub.PromptResult, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err := h.allowed(user, backendID); err != nil {
 		return hub.PromptResult{}, err
 	}
-	h.prompts = append(h.prompts, promptCall{user, backendID, sessionID, text, hub.SubmissionID(ctx)})
-	return hub.PromptResult{ID: fmt.Sprintf("p%d", len(h.prompts)), Held: h.hold}, nil
+	if err := hub.CheckAttachments(files); err != nil {
+		return hub.PromptResult{}, err
+	}
+	h.prompts = append(h.prompts, promptCall{user, backendID, sessionID, text, hub.SubmissionID(ctx), files})
+	return hub.PromptResult{ID: fmt.Sprintf("p%d", len(h.prompts)), Held: h.hold, Notice: h.notice}, nil
 }
 
 func (h *fakeHub) Interrupt(_ context.Context, user, backendID, sessionID string) error {

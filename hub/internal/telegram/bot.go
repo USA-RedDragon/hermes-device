@@ -210,16 +210,69 @@ func (b *Bot) Run(ctx context.Context) error {
 			continue
 		}
 		backoff = time.Second
-		for _, u := range updates {
+		updates = b.completeAlbum(ctx, updates)
+		for i := 0; i < len(updates); i++ {
 			if ctx.Err() != nil {
 				break
 			}
-			offset = u.UpdateID + 1
-			b.handleUpdate(hub.WithSubmissionID(hctx, b.submissionID(u.UpdateID)), u)
+			u := updates[i]
+			sctx := hub.WithSubmissionID(hctx, b.submissionID(u.UpdateID))
+			if album := albumAt(updates, i); len(album) > 1 {
+				i += len(album) - 1
+				b.handleAlbum(sctx, album)
+			} else {
+				b.handleUpdate(sctx, u)
+			}
+			offset = updates[i].UpdateID + 1
 			b.saveOffset(hctx, offset)
 		}
 	}
 	return nil
+}
+
+// albumWait is how long the bot waits for the rest of an album whose
+// last message ended a batch of updates.
+const albumWait = 2 * time.Second
+
+// completeAlbum adds the rest of an album to a batch that ends inside one:
+// Telegram sends each photo of an album as its own message, and they may
+// arrive in separate batches.
+func (b *Bot) completeAlbum(ctx context.Context, updates []Update) []Update {
+	for range 3 {
+		if len(updates) == 0 {
+			return updates
+		}
+		last := updates[len(updates)-1]
+		if last.Message == nil || last.Message.MediaGroupID == "" {
+			return updates
+		}
+		pctx, cancel := context.WithTimeout(ctx, albumWait+pollSlack)
+		more, err := b.api.GetUpdates(pctx, last.UpdateID+1, albumWait)
+		cancel()
+		if err != nil || len(more) == 0 {
+			return updates
+		}
+		updates = append(updates, more...)
+	}
+	return updates
+}
+
+// albumAt is the run of messages of one album in one chat that starts at
+// updates[i]. It is empty when updates[i] is not part of an album.
+func albumAt(updates []Update, i int) []*Message {
+	first := updates[i].Message
+	if first == nil || first.MediaGroupID == "" {
+		return nil
+	}
+	out := []*Message{first}
+	for _, u := range updates[i+1:] {
+		m := u.Message
+		if m == nil || m.MediaGroupID != first.MediaGroupID || m.Chat.ID != first.Chat.ID {
+			break
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // submissionID derives the Hermes submission ID of an update's prompt, so
@@ -341,7 +394,15 @@ func (b *Bot) lookupUser(ctx context.Context, telegramID int64) (string, bool, e
 }
 
 func (b *Bot) handleMessage(ctx context.Context, m *Message) {
-	if m.From == nil || m.From.IsBot || m.Text == "" || !b.chatAllowed(m.Chat) {
+	b.handleAlbum(ctx, []*Message{m})
+}
+
+// handleAlbum handles one message, or the messages of one album as one
+// prompt.
+func (b *Bot) handleAlbum(ctx context.Context, ms []*Message) {
+	m := ms[0]
+	media := slices.ContainsFunc(ms, hasMedia)
+	if m.From == nil || m.From.IsBot || m.Text == "" && !media || !b.chatAllowed(m.Chat) {
 		return
 	}
 	user, linked, err := b.lookupUser(ctx, m.From.ID)
@@ -351,6 +412,10 @@ func (b *Bot) handleMessage(ctx context.Context, m *Message) {
 	}
 	if !linked {
 		b.sendLink(ctx, m)
+		return
+	}
+	if media {
+		b.promptMedia(ctx, m.Chat.ID, user, ms)
 		return
 	}
 	cmd, arg := parseCommand(m.Text)
@@ -671,7 +736,7 @@ func (b *Bot) attach(ctx context.Context, chatID int64, user, backendID, session
 	return nil
 }
 
-func (b *Bot) prompt(ctx context.Context, chatID int64, user, text string) {
+func (b *Bot) prompt(ctx context.Context, chatID int64, user, text string, files ...hub.Attachment) {
 	st := b.chat(chatID)
 	a := st.att
 	switch {
@@ -697,12 +762,15 @@ func (b *Bot) prompt(ctx context.Context, chatID int64, user, text string) {
 	a = st.att
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	res, err := b.svc.Prompt(cctx, user, a.backendID, a.sessionID, text)
+	res, err := b.svc.Prompt(cctx, user, a.backendID, a.sessionID, text, files...)
 	switch {
 	case err != nil:
 		b.reportErr(ctx, chatID, user, "prompt", err)
 	case res.Held:
 		b.sendText(ctx, chatID, msgHeld)
+	}
+	if err == nil && res.Notice != "" {
+		b.sendText(ctx, chatID, res.Notice)
 	}
 }
 
@@ -863,6 +931,8 @@ func (b *Bot) reportErr(ctx context.Context, chatID int64, user, action string, 
 		b.sendText(ctx, chatID, "Unknown backend. Send /backends to list yours.")
 	case errors.Is(err, hub.ErrShuttingDown):
 		b.sendText(ctx, chatID, "The hub is restarting. Send your message again in a moment.")
+	case errors.Is(err, hub.ErrAttachment):
+		b.sendText(ctx, chatID, hub.AttachmentReason(err)+".")
 	case errors.Is(err, hub.ErrHoldFull):
 		b.sendText(ctx, chatID, "Too many messages are waiting for Hermes to come back. Send this one again later.")
 	default:

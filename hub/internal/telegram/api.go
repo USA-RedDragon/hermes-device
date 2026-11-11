@@ -56,11 +56,37 @@ type Chat struct {
 
 // Message is a Telegram message.
 type Message struct {
-	MessageID int64  `json:"message_id"`
-	From      *User  `json:"from,omitempty"`
-	Chat      Chat   `json:"chat"`
-	Text      string `json:"text,omitempty"`
+	MessageID    int64       `json:"message_id"`
+	From         *User       `json:"from,omitempty"`
+	Chat         Chat        `json:"chat"`
+	Text         string      `json:"text,omitempty"`
+	Caption      string      `json:"caption,omitempty"`
+	MediaGroupID string      `json:"media_group_id,omitempty"`
+	Photo        []PhotoSize `json:"photo,omitempty"`
+	Document     *File       `json:"document,omitempty"`
+	Video        *File       `json:"video,omitempty"`
+	Audio        *File       `json:"audio,omitempty"`
+	Voice        *File       `json:"voice,omitempty"`
 }
+
+// PhotoSize is one size of a photo.
+type PhotoSize struct {
+	FileID   string `json:"file_id"`
+	FileSize int64  `json:"file_size,omitempty"`
+}
+
+// File is a document, video, audio file or voice note: the fields they
+// share.
+type File struct {
+	FileID   string `json:"file_id"`
+	FileName string `json:"file_name,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	FileSize int64  `json:"file_size,omitempty"`
+}
+
+// MaxDownload is the largest file the Bot API lets a bot download
+// (https://core.telegram.org/bots/api#getfile).
+const MaxDownload = 20 << 20
 
 // CallbackQuery is a press on an inline keyboard button.
 type CallbackQuery struct {
@@ -134,6 +160,7 @@ type apiResponse struct {
 // retry_after Telegram sends.
 type Client struct {
 	base       string
+	fileBase   string
 	http       *http.Client
 	maxRetries int
 	logger     *slog.Logger
@@ -149,6 +176,7 @@ func NewClient(apiURL, token string, httpClient *http.Client, maxRetries int, lo
 	}
 	return &Client{
 		base:       strings.TrimRight(apiURL, "/") + "/bot" + token + "/",
+		fileBase:   strings.TrimRight(apiURL, "/") + "/file/bot" + token + "/",
 		http:       httpClient,
 		maxRetries: maxRetries,
 		logger:     logger,
@@ -276,4 +304,48 @@ func (c *Client) EditHTML(ctx context.Context, chatID, messageID int64, html str
 // AnswerCallback acknowledges a button press, with an optional toast.
 func (c *Client) AnswerCallback(ctx context.Context, id, text string) error {
 	return c.call(ctx, "answerCallbackQuery", answerCallbackParams{CallbackQueryID: id, Text: text}, nil)
+}
+
+type getFileParams struct {
+	FileID string `json:"file_id"`
+}
+
+// ErrTooLarge is a file over the download limit.
+var ErrTooLarge = errors.New("file too large to download")
+
+// Download fetches a file the user sent, up to limit bytes.
+func (c *Client) Download(ctx context.Context, fileID string, limit int64) ([]byte, error) {
+	var f struct {
+		FilePath string `json:"file_path"`
+		FileSize int64  `json:"file_size"`
+	}
+	if err := c.call(ctx, "getFile", getFileParams{FileID: fileID}, &f); err != nil {
+		return nil, err
+	}
+	if f.FileSize > limit {
+		return nil, ErrTooLarge
+	}
+	if f.FilePath == "" || strings.HasPrefix(f.FilePath, "/") || strings.Contains(f.FilePath, "..") {
+		return nil, fmt.Errorf("telegram getFile: unusable file path")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.fileBase+f.FilePath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build file request: %w", redactToken(err))
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("telegram file download: %w", redactToken(err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("telegram file download: HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("telegram file download: %w", redactToken(err))
+	}
+	if int64(len(data)) > limit {
+		return nil, ErrTooLarge
+	}
+	return data, nil
 }
