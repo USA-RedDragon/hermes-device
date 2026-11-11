@@ -80,7 +80,7 @@ func setupWith(t *testing.T, fn func(cfg *config.Config, opts *web.Options, st *
 			{ID: "pc", URL: gw.URL(), Username: clientID, Password: "pw", Users: []string{userAlice}},
 			{ID: backendHome, URL: gw.URL(), Username: clientID, Password: "pw", Groups: []string{"family"}},
 		}}
-	opts := web.Options{Links: st, Tokens: st, Groups: st, KeepAlive: time.Hour}
+	opts := web.Options{Links: st, Tokens: st, Groups: st, KeepAlive: time.Hour, Chats: st}
 	if fn != nil {
 		fn(cfg, &opts, st)
 	}

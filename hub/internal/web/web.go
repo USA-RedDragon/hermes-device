@@ -78,6 +78,8 @@ type Options struct {
 	Claude hub.Claude
 	// ClaudeCode serves the Usage page's Claude Code panel. Nil: no panel.
 	ClaudeCode hub.ClaudeCode
+	// Chats keeps each user's drafts, pins and read state. Nil: none.
+	Chats hub.ChatStore
 	// Version is the hub's release, shown in Settings.
 	Version string
 	// Scheduled serves the Scheduled page. Nil: no Scheduled page.
@@ -117,6 +119,7 @@ type Server struct {
 	claude       hub.Claude
 	scheduled    hub.Scheduled
 	claudeCode   hub.ClaudeCode
+	chats        hub.ChatStore
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
 	backendNames     map[string]string
@@ -163,7 +166,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory,
 		insights: opts.Insights, files: opts.Files,
 		notices: opts.Notices, notifier: opts.Notifier, claude: opts.Claude, scheduled: opts.Scheduled,
-		claudeCode:       opts.ClaudeCode,
+		claudeCode: opts.ClaudeCode, chats: opts.Chats,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,
@@ -268,6 +271,7 @@ func (s *Server) Handler() http.Handler {
 	s.claudeCodeRoutes(mux)
 	s.claudeRoutes(mux)
 	s.scheduledRoutes(mux)
+	s.composeRoutes(mux)
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
 	mux.HandleFunc("GET /device/pair", s.handlePairPage)
@@ -336,7 +340,7 @@ func (s *Server) api(h http.HandlerFunc) http.Handler {
 }
 
 func (s *Server) fail(w http.ResponseWriter, err error) {
-	if computerError(w, err) {
+	if computerError(w, err) || unknownCommand(w, err) {
 		return
 	}
 	switch {
@@ -354,6 +358,8 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		errorJSON(w, http.StatusConflict, "Talaria is still working on this chat. Stop it or wait until it is done, then try again")
 	case errors.Is(err, hub.ErrHoldFull):
 		errorJSON(w, http.StatusTooManyRequests, "Too many messages are waiting for Hermes to come back. Send this one again later")
+	case errors.Is(err, hub.ErrBackendAway):
+		errorJSON(w, http.StatusServiceUnavailable, strings.TrimPrefix(err.Error(), hub.ErrBackendAway.Error()+": "))
 	case errors.Is(err, hub.ErrShuttingDown):
 		errorJSON(w, http.StatusServiceUnavailable, "The hub is restarting. Send the message again in a moment")
 	case errors.Is(err, hub.ErrTitleInUse):

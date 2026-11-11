@@ -32,12 +32,15 @@ type sessionJSON struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 	Source       string    `json:"source,omitempty"`
 	Activity     int       `json:"activity,omitempty"`
+	Pinned       bool      `json:"pinned"`
+	Unread       bool      `json:"unread"`
+	Needs        string    `json:"needs"`
 }
 
 func toJSON(s hub.Session) sessionJSON {
 	return sessionJSON{ID: s.ID, BackendID: s.BackendID, Title: s.Title, Live: s.Live,
 		Running: s.Running, Archived: s.Archived, MessageCount: s.MessageCount, UpdatedAt: s.UpdatedAt, Source: s.Source,
-		Activity: s.Activity}
+		Activity: s.Activity, Needs: s.Needs}
 }
 
 func (s *Server) handleBackends(w http.ResponseWriter, r *http.Request) {
@@ -59,16 +62,13 @@ func (s *Server) handleBackends(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
-	ss, err := s.svc.Sessions(r.Context(), userFrom(r))
+	user := userFrom(r)
+	ss, err := s.svc.Sessions(r.Context(), user)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	out := make([]sessionJSON, 0, len(ss))
-	for _, x := range ss {
-		out = append(out, toJSON(x))
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, s.marked(r.Context(), user, ss))
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
@@ -105,7 +105,7 @@ func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
-	text, files, ok := promptBody(w, r)
+	text, files, steer, ok := promptBody(w, r)
 	if !ok {
 		return
 	}
@@ -113,16 +113,16 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusBadRequest, "empty prompt")
 		return
 	}
-	res, err := s.svc.Prompt(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), text, files...)
+	ctx := r.Context()
+	if steer && len(files) == 0 {
+		ctx = hub.WithSteer(ctx)
+	}
+	res, err := s.svc.Prompt(ctx, userFrom(r), r.PathValue("backend"), r.PathValue("session"), text, files...)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	out := promptJSON{ID: res.ID, Status: promptSent, Notice: res.Notice}
-	if res.Held {
-		out.Status, out.HeldUntil = promptHeld, res.HeldUntil
-	}
-	writeJSON(w, http.StatusAccepted, out)
+	writeJSON(w, http.StatusAccepted, toPromptJSON(res))
 }
 
 // maxPromptText bounds a prompt's text, maxFileName a file name.
@@ -131,18 +131,26 @@ const (
 	maxFileName   = 4096
 )
 
-// promptBody reads a prompt: JSON {"text"}, or multipart/form-data with a
-// "text" field and one "file" part per attachment. A "pages" field after
-// a file part picks the pages of that PDF to show the agent: "N", "N-M"
-// or "N-".
-func promptBody(w http.ResponseWriter, r *http.Request) (string, []hub.Attachment, bool) {
+// promptBody reads a prompt: JSON {"text", "steer"}, or multipart/form-data
+// with a "text" field and one "file" part per attachment. A "pages" field
+// after a file part picks the pages of that PDF to show the agent: "N",
+// "N-M" or "N-". Only a JSON prompt can steer.
+func promptBody(w http.ResponseWriter, r *http.Request) (string, []hub.Attachment, bool, bool) {
 	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if mt != "multipart/form-data" {
 		var body struct {
-			Text string `json:"text"`
+			Text  string `json:"text"`
+			Steer bool   `json:"steer"`
 		}
-		return body.Text, nil, decode(w, r, &body)
+		ok := decode(w, r, &body)
+		return body.Text, nil, body.Steer, ok
 	}
+	text, files, ok := formPrompt(w, r)
+	return text, files, false, ok
+}
+
+// formPrompt reads a multipart/form-data prompt.
+func formPrompt(w http.ResponseWriter, r *http.Request) (string, []hub.Attachment, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, hub.MaxAttachmentBytes+maxPromptText+1<<20)
 	mr, err := r.MultipartReader()
 	if err != nil {
@@ -242,10 +250,12 @@ func bodyError(w http.ResponseWriter, err error) {
 	errorJSON(w, http.StatusBadRequest, "bad form body")
 }
 
-// Prompt statuses: sent to the backend, or held until it is back.
+// Prompt statuses: sent to the backend, held until it is back, or a slash
+// command that Hermes ran at once.
 const (
-	promptSent = "sent"
-	promptHeld = "held"
+	promptSent    = "sent"
+	promptHeld    = "held"
+	promptCommand = "command"
 )
 
 type promptJSON struct {
@@ -253,6 +263,8 @@ type promptJSON struct {
 	Status    string    `json:"status"`
 	HeldUntil time.Time `json:"held_until,omitzero"`
 	Notice    string    `json:"notice,omitempty"`
+	Steered   bool      `json:"steered"`
+	Output    string    `json:"output,omitempty"`
 }
 
 func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
