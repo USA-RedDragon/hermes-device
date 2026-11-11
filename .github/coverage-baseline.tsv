@@ -1,4 +1,4 @@
-assertion/assertion.go	106	89
+assertion/assertion.go	106	88
 cmd/acp.go	29	1
 cmd/acphost.go	57	23
 cmd/autoupdate.go	72	55
@@ -19,9 +19,9 @@ extension/firefox/embed.go	42	37
 internal/acpbridge/acpbridge.go	487	425
 internal/acpbridge/inline.go	38	35
 internal/acpbridge/place.go	155	141
-internal/acphost/acphost.go	275	219
+internal/acphost/acphost.go	275	218
 internal/acphost/rewrite.go	260	237
-internal/acphost/sweep.go	42	33
+internal/acphost/sweep.go	42	36
 internal/acphost/sweep_linux.go	38	27
 internal/allowlist/allowlist.go	25	25
 internal/attest/attest.go	141	123
@@ -58,7 +58,7 @@ internal/hermesbuild/launch.go	65	62
 internal/hermesbuild/relocate.go	38	31
 internal/hubapi/hubapi.go	78	69
 internal/legacy/legacy.go	8	8
-internal/mcp/mcp.go	507	446
+internal/mcp/mcp.go	507	447
 internal/mcp/mcptest/fake.go	136	113
 internal/oci/extract.go	130	106
 internal/oci/ocitest/ocitest.go	127	118
@@ -71,14 +71,14 @@ internal/setup/binary.go	53	40
 internal/setup/config.go	20	15
 internal/setup/firefox.go	40	34
 internal/setup/migrate.go	390	269
-internal/setup/release.go	106	87
+internal/setup/release.go	125	106
 internal/setup/service.go	103	87
-internal/setup/setup.go	364	295
+internal/setup/setup.go	357	294
 internal/setup/shellenv.go	143	124
 internal/setup/state.go	63	43
 internal/setup/system.go	51	4
 internal/setup/update.go	79	68
-internal/splice/conn.go	306	265
+internal/splice/conn.go	306	264
 internal/splice/resolve.go	127	111
 internal/splice/rpc.go	97	83
 internal/splice/splice.go	225	201
