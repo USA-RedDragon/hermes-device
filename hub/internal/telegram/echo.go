@@ -204,7 +204,9 @@ func (r *renderer) echo(ctx context.Context, text, id string, images int) {
 		return
 	}
 	if html := echoHTML(where, text, images); html != "" {
-		r.send(ctx, html, nil)
+		if id := r.send(ctx, html, nil); id != 0 {
+			r.logger.Info("Showed a prompt sent elsewhere", "from", where, "message", id)
+		}
 	}
 }
 
