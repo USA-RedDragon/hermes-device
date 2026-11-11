@@ -254,3 +254,19 @@ func TestServiceDevices(t *testing.T) {
 		}
 	}
 }
+
+func TestMediaRoots(t *testing.T) {
+	t.Parallel()
+	cfg, err := load(t, secrets(), file+"    media_roots: [/opt/data/hermes/cache, /srv/out]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := cfg.Backends[1].MediaRoots; len(r) != 2 || r[1] != "/srv/out" || len(cfg.Backends[0].MediaRoots) != 0 {
+		t.Fatalf("media roots = %v / %v", cfg.Backends[0].MediaRoots, r)
+	}
+	for _, bad := range []string{"/", "relative", "/a/../b", "/a/"} {
+		if _, err := load(t, secrets(), file+"    media_roots: ["+bad+"]\n"); !errors.Is(err, config.ErrBackend) {
+			t.Errorf("media root %q: %v", bad, err)
+		}
+	}
+}

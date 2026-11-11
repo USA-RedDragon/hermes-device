@@ -75,6 +75,7 @@ hold:
 #     show_reasoning: false
 #     devices: false
 #     acp_url: ""
+#     media_roots: []
 #     service_devices:
 #       - id: ""
 #         name: ""

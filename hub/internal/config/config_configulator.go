@@ -94,6 +94,7 @@ type backendShadow struct {
 	ShowReasoning  *bool                  `json:"show_reasoning"  toml:"show_reasoning"  yaml:"show_reasoning"`
 	Devices        *bool                  `json:"devices"         toml:"devices"         yaml:"devices"`
 	ACPURL         *string                `json:"acp_url"         toml:"acp_url"         yaml:"acp_url"`
+	MediaRoots     *[]string              `json:"media_roots"     toml:"media_roots"     yaml:"media_roots"`
 	ServiceDevices *[]serviceDeviceShadow `json:"service_devices" toml:"service_devices" yaml:"service_devices"`
 }
 
@@ -432,6 +433,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			if esh.ACPURL != nil {
 				e.ACPURL = *esh.ACPURL
 				set(idx+".acp_url", configulator.LayerFile, file)
+			}
+			if esh.MediaRoots != nil {
+				e.MediaRoots = *esh.MediaRoots
+				set(idx+".media_roots", configulator.LayerFile, file)
 			}
 			if esh.ServiceDevices != nil {
 				out1 := make([]ServiceDevice, len(*esh.ServiceDevices))
@@ -2654,6 +2659,36 @@ func (s *backendShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				s.ACPURL = &str
 			default:
 				return configJSONError(path+".acp_url", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "media_roots":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".media_roots", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".media_roots"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.MediaRoots = &out
 			}
 		case "service_devices":
 			if dec.PeekKind() == jsontext.KindNull {

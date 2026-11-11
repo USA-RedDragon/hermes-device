@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -114,6 +115,7 @@ type Backend struct {
 	ShowReasoning  *bool           `name:"show_reasoning" description:"Turn on reasoning streaming for each session the hub attaches to. Default true"`
 	Devices        bool            `name:"devices" description:"Let users pair hermes-device devices with this backend. Its Hermes needs the hermes-device plugin, with plugin setting backend_id equal to this backend's id and the hub's public key. Default false"`
 	ACPURL         string          `name:"acp_url" description:"Base URL of this backend's acp-host, such as http://desktop:9130, for editors that connect with hermes-device acp. Only the hub may reach it. Empty: editors cannot connect"`
+	MediaRoots     []string        `name:"media_roots" description:"Absolute folders on this backend's server whose files the hub shows when the agent names them in a reply with MEDIA:<path>. The hub shows a file only when a reply or a browser_screenshot result of that chat names it. Empty: only the screenshots of hermes-device's browser_screenshot, <dir>/cache/screenshots/hermes-device/<session>/<file>"`
 	ServiceDevices []ServiceDevice `name:"service_devices" description:"Devices the hub knows from this list instead of pairing, such as each user's sandbox pod that runs hermes-device run. They may use only the exec leg"`
 }
 
@@ -305,6 +307,11 @@ func (c *Config) validateBackends() error {
 		}
 		if err := validateServiceDevices(i, b, seenDevices); err != nil {
 			return err
+		}
+		for j, r := range b.MediaRoots {
+			if !strings.HasPrefix(r, "/") || path.Clean(r) != r || r == "/" {
+				return fmt.Errorf("%w: backends[%d].media_roots[%d] must be a clean absolute folder other than /", ErrBackend, i, j)
+			}
 		}
 		if b.ACPURL != "" {
 			if _, ok := webURL(b.ACPURL); !ok {
