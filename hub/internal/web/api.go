@@ -188,9 +188,9 @@ func promptBody(w http.ResponseWriter, r *http.Request) (string, []hub.Attachmen
 			}
 			files = append(files, hub.Attachment{Name: name, Data: b})
 		case "pages":
-			b, err := io.ReadAll(io.LimitReader(part, 32))
+			b, err := io.ReadAll(io.LimitReader(part, 33))
 			from, to, ok := pageRange(string(b))
-			if err != nil || !ok || len(files) == 0 {
+			if err != nil || !ok || len(b) > 32 || len(files) == 0 {
 				errorJSON(w, http.StatusBadRequest, "Pick pages as a number or a range such as 3-10")
 				return "", nil, false
 			}

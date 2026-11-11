@@ -1060,17 +1060,18 @@
         if (line === skipTo) skipTo = "";
         continue;
       }
-      if ((m = line.match(pdfStart))) skipTo = "</untrusted-pdf-text id=\"" + m[1] + "\">";
-      else if ((m = line.match(pdfNote))) {
-        const f = atts.findLast((a) => !a.image && a.name === m[1]);
+      const hubLines = atts.some((a) => a.file);
+      if (hubLines && (m = line.match(pdfStart))) skipTo = "</untrusted-pdf-text id=\"" + m[1] + "\">";
+      else if (hubLines && (m = line.match(pdfNote))) {
+        const f = atts.find((a) => a.file && !a.pdf && a.name === m[1]);
         if (f) { f.pdf = true; f.pages = +m[2]; }
-      } else if (pdfFailed.test(line)) continue;
+      } else if (hubLines && pdfFailed.test(line)) continue;
       else if ((m = line.match(imageHint))) atts.push({ name: baseName(m[1]), image: true, title: m[1], path: m[1] });
       else if ((m = line.match(imageRef))) {
         const p = m[1] || m[2] || m[3] || m[4];
         atts.push({ name: baseName(p), image: true, title: p, path: p });
       } else if (imageData.test(line)) atts.push({ name: "image", image: true, url: line });
-      else if ((m = line.match(fileNote))) atts.push({ name: m[1], image: false, title: m[2] });
+      else if ((m = line.match(fileNote))) atts.push({ name: m[1], image: false, title: m[2], file: true });
       else if (!placeholder.test(line)) keep.push(line);
     }
     if (!atts.length) return { text, atts };
@@ -1143,11 +1144,15 @@
     try {
       const text = new TextDecoder("latin1").decode(await f.arrayBuffer());
       let n = 0;
+      let seen = 0;
       for (const m of text.matchAll(/\/Type\s*\/Pages\b/g)) {
-        const start = text.lastIndexOf("<<", m.index);
-        const end = text.indexOf(">>", m.index);
-        if (start < 0 || end < 0 || m.index - start > 4000 || end - m.index > 4000) continue;
-        const c = text.slice(start, end).match(/\/Count\s+(\d+)/);
+        if (++seen > 1000) break;
+        const before = text.slice(Math.max(0, m.index - 2000), m.index);
+        const after = text.slice(m.index, m.index + 2000);
+        const start = before.lastIndexOf("<<");
+        const end = after.indexOf(">>");
+        if (start < 0 || end < 0) continue;
+        const c = (before.slice(start) + after.slice(0, end)).match(/\/Count\s+(\d+)/);
         if (c) n = Math.max(n, +c[1]);
       }
       return n;
