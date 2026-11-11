@@ -3,6 +3,7 @@ package device_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -217,10 +218,12 @@ func TestACPLegList(t *testing.T) {
 		m := a.request("session/list", map[string]any{})
 		res, _ := m[keyResult].(map[string]any)
 		rows, _ := res["sessions"].([]any)
-		if len(rows) != 1 {
-			t.Fatalf("list = %v", m)
+		got := make([]any, 0, len(rows))
+		for _, r := range rows {
+			row, _ := r.(map[string]any)
+			got = append(got, row[keySessionACP])
 		}
-		if row, _ := rows[0].(map[string]any); row[keySessionACP] != sessionMine {
+		if !slices.Equal(got, []any{sessionMine, sessionUnbound}) {
 			t.Fatalf("list = %v", m)
 		}
 	})

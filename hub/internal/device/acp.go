@@ -542,8 +542,10 @@ func (g *acpGuard) fromAgent(typ websocket.MessageType, data []byte) {
 	}
 }
 
-// listAnswered keeps only the rows of sessions bound to this device, as
-// acp-host does. When the bindings cannot be read, it keeps none.
+// listAnswered drops the rows of sessions bound to another device. It
+// keeps the rows bound to this device and the rows of sessions with no
+// binding, which acp-host lists only when they were never bound (talaria
+// v0.19.5). When the bindings cannot be read, it keeps none.
 func (g *acpGuard) listAnswered(f *frame) {
 	ctx, cancel := context.WithTimeout(g.l.ctx, guardTimeout)
 	bindings, err := g.b.plugin.Bindings(ctx)
@@ -551,11 +553,9 @@ func (g *acpGuard) listAnswered(f *frame) {
 	if err != nil {
 		g.s.log.Warn("could not read bindings for an ACP session list; listing no sessions", "device", g.dev.ID, "error", err.Error())
 	}
-	mine := map[string]bool{}
+	bound := map[string]bool{}
 	for _, b := range bindings {
-		if b.DeviceID == g.dev.ID {
-			mine[b.SessionID] = true
-		}
+		bound[b.SessionID] = b.DeviceID == g.dev.ID
 	}
 	res, isObj := decodeParams(f.Result)
 	if !isObj {
@@ -566,7 +566,11 @@ func (g *acpGuard) listAnswered(f *frame) {
 	kept := []json.RawMessage{}
 	for _, row := range rows {
 		r, _ := decodeParams(row)
-		if sid, ok := rawStringOK(r[keyACPSession]); ok && mine[sid] {
+		sid, ok := rawStringOK(r[keyACPSession])
+		if !ok || err != nil {
+			continue
+		}
+		if mine, isBound := bound[sid]; mine || !isBound {
 			kept = append(kept, row)
 		}
 	}
