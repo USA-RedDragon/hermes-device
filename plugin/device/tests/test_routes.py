@@ -411,6 +411,111 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(core.upload_name("\u00e9" * 100), "\u00e9" * 60)
         self.assertEqual(core.upload_name(" . "), "attachment")
 
+    # file reads
+    def read(self, path, sid="s1"):
+        return self.client.get(f"/api/plugins/device/sessions/{sid}/files", params={"path": str(path)})
+
+    def test_read_returns_the_file(self):
+        self.online()
+        self.hub.bind("s1", "d_8f2c", str(self.root / "sub"))
+        data = bytes(range(256)) * 300
+        (self.root / "out").mkdir()
+        (self.root / "out" / "chart \u00e9.png").write_bytes(data)
+        r = self.read(self.root / "out" / "chart \u00e9.png", sid="c1")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.content, data)
+        self.assertEqual(r.headers["content-type"], "application/octet-stream")
+        self.assertEqual(r.headers["content-disposition"], "attachment; filename*=UTF-8''chart%20%C3%A9.png")
+        self.assertEqual(r.headers["content-security-policy"], "default-src 'none'; sandbox")
+        self.assertEqual(r.headers["x-content-type-options"], "nosniff")
+        (self.root / "empty.txt").write_bytes(b"")
+        r = self.read(self.root / "empty.txt")
+        self.assertEqual((r.status_code, r.content), (200, b""))
+
+    def test_read_refuses_links_and_credentials(self):
+        self.online(home=str(self.root))
+        self.hub.bind("s1", "d_8f2c", str(self.root))
+        secret = self.outside / "private.png"
+        secret.write_bytes(b"TOPSECRET")
+        (self.root / "link.png").symlink_to(secret)
+        (self.root / "inner.png").symlink_to(self.root / "f.txt")
+        (self.root / "away").symlink_to(self.outside)
+        (self.root / "hard.png").write_bytes(b"x")
+        os.link(self.root / "hard.png", self.root / "hard2.png")
+        for d in (".ssh", ".hermes", "app"):
+            (self.root / d).mkdir(exist_ok=True)
+        for f in (".ssh/id_ed25519", ".ssh/shot.png", ".hermes/auth.json", "app/.env", ".netrc"):
+            (self.root / f).write_bytes(b"TOPSECRET")
+        cases = {"link.png": "read_refused", "inner.png": "read_refused", "away/private.png": "read_refused",
+                 "hard.png": "read_refused", ".ssh/id_ed25519": "read_refused", ".ssh/shot.png": "read_refused",
+                 ".hermes/auth.json": "read_refused", "app/.env": "read_refused", ".netrc": "read_refused",
+                 "sub": "read_refused", "missing.png": "not_found", "nodir/x.png": "not_found"}
+        for rel, code in cases.items():
+            with self.subTest(path=rel):
+                r = self.read(self.root / rel)
+                self.assertEqual(r.json()["error"], code, r.text)
+                self.assertNotIn(b"TOPSECRET", r.content)
+        r = self.read(secret)
+        self.assertEqual((r.status_code, r.json()["error"]), (422, "read_refused"))
+        for bad in ("rel.png", f"{self.root}/sub/../f.txt", f"{self.root}/", f"{self.root}//f.txt",
+                    f"{self.root}/a\nb.png", "", "/" + "a" * 5000):
+            with self.subTest(path=bad):
+                r = self.read(bad)
+                self.assertEqual((r.status_code, r.json()["error"]), (400, "bad_path"))
+
+    def test_read_rules_use_the_real_home_and_ignore_case(self):
+        real = self.root / "realhome"
+        (real / ".hermes" / "profiles" / "work").mkdir(parents=True)
+        (real / ".config" / "hermes-device").mkdir(parents=True)
+        link = Path(self.tmp.name) / "linkhome"
+        link.symlink_to(real)
+        files = {".hermes/auth.json": b"TOPSECRET", ".hermes/profiles/work/auth.json": b"TOPSECRET",
+                 ".config/hermes-device/daemon.json": b"TOPSECRET", "tls.key": b"TOPSECRET", "ok.png": b"fine"}
+        for rel, data in files.items():
+            (real / rel).write_bytes(data)
+        self.online(home=str(link))
+        self.hub.bind("s1", "d_8f2c", str(self.root))
+        for rel in (".hermes/auth.json", ".HERMES/AUTH.JSON", ".hermes/profiles/work/auth.json",
+                    ".config/hermes-device/daemon.json", "tls.key"):
+            with self.subTest(path=rel):
+                r = self.read(real / rel)
+                self.assertEqual(r.json()["error"], "read_refused", r.text)
+                self.assertNotIn(b"TOPSECRET", r.content)
+        self.assertEqual(self.read(real / "ok.png").content, b"fine")
+        self.assertEqual(self.hub.device("d_8f2c").real_home, str(real))
+        (self.root / "away").symlink_to(self.outside)
+        (self.outside / "there.png").write_bytes(b"x")
+        r = self.read(self.root / "away" / "there.png")
+        self.assertEqual(r.json()["error"], "read_refused")
+        self.assertNotIn(str(self.outside), r.text)
+        self.assertEqual(self.read(self.root / "away" / "missing.png").json()["error"], "read_refused")
+        self.assertEqual(self.read("/" + str(self.root / "ok.png")).json()["error"], "bad_path")
+
+    def test_read_refusals(self):
+        r = self.read(self.root / "f.txt")
+        self.assertEqual((r.status_code, r.json()["error"]), (409, "runs_on_pod"))
+        self.cfg.update(fallback="device", fallback_device="d_8f2c", fallback_root=str(self.root / "work"))
+        r = self.read(self.root / "f.txt", sid="c1")
+        self.assertEqual((r.status_code, r.json()["error"]), (409, "fail_closed"))
+        _, device = self.online()
+        r = self.read(self.root / "f.txt", sid="c1")
+        self.assertEqual((r.status_code, r.content), (200, b"x"))
+        with mock.patch.object(core, "MAX_FILE_READ_BYTES", 0):
+            r = self.read(self.root / "f.txt")
+            self.assertEqual((r.status_code, r.json()["error"]), (413, "too_large"))
+        busy = threading.BoundedSemaphore(1)
+        busy.acquire()
+        with mock.patch.object(core, "FILE_READS", busy):
+            r = self.read(self.root / "f.txt")
+            self.assertEqual((r.status_code, r.json()["error"]), (429, "busy"))
+        self.hub.bind("s1", "d_8f2c", str(self.root))
+        device.ws.close()
+        deadline = time.monotonic() + 5
+        while self.hub.device("d_8f2c") is not None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        r = self.read(self.root / "f.txt")
+        self.assertEqual((r.status_code, r.json()["error"]), (409, "device_offline"))
+
 
 class VersionTest(unittest.TestCase):
     def test_manifest_matches_core(self):

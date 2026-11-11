@@ -16,6 +16,7 @@ import posixpath
 import sys
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
@@ -153,6 +154,47 @@ async def _post_file(core, session_id: str, request: Request):
         return await asyncio.to_thread(core.put_session_file, session_id, body["name"], data)
     except core.BindError as exc:
         return _error(exc.status, exc.code, exc.message)
+
+
+class _ReleasingResponse(Response):
+    """A response that frees a read slot once it is sent or fails, so the file's bytes count
+    against the slot until they leave."""
+
+    def __init__(self, *args: Any, release, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self._release = release
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._release()
+
+
+@router.get("/sessions/{session_id}/files")
+async def get_file(session_id: str, path: str = ""):
+    core = _core()
+    if not core.FILE_READS.acquire(blocking=False):
+        return _error(429, "busy", f"{core.MAX_FILE_READS} file reads are running; try again in a moment")
+    slot = core.FILE_READS
+    fut = asyncio.get_running_loop().run_in_executor(None, core.get_session_file, session_id, path)
+    # Shielded, so a dropped request lets the read finish in its thread and then frees the slot.
+    try:
+        name, data = await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        fut.add_done_callback(lambda _f: slot.release())
+        raise
+    except BaseException as exc:
+        slot.release()
+        if isinstance(exc, core.BindError):
+            return _error(exc.status, exc.code, exc.message)
+        raise
+    return _ReleasingResponse(content=data, media_type="application/octet-stream", release=slot.release, headers={
+        "Content-Disposition": "attachment; filename*=UTF-8''" + quote(name, safe=""),
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+    })
 
 
 # --- built-in memory (section 9.1) -------------------------------------------------------------

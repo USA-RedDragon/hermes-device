@@ -1489,15 +1489,16 @@ def _sh(script: str, *args: str) -> str:
 
 
 def run_script(device_id: str, script: str, args: Iterable[str], cwd: str, timeout: float = 30,
-               stdin: Optional[str] = None) -> tuple[int, str, str]:
+               stdin: Optional[str] = None, output_in_error: bool = True) -> tuple[int, str, str]:
     """Run a /bin/sh script on the device. Returns ``(code, output after the marker, error)``.
-    The marker keeps shell startup noise out of the result."""
+    The marker keeps shell startup noise out of the result. Without the marker the error is the
+    output, unless output_in_error is false (for output that may hold file contents)."""
     mark = _MARK.format(uuid.uuid4().hex[:12])
     full = f"printf '%s\\n' {shlex.quote(mark)}\n{script}"
     code, out, proc = hub().run(device_id, _sh(full, *args), cwd, timeout, stdin=stdin)
     idx = out.find(mark + "\n")
     body = out[idx + len(mark) + 1:] if idx >= 0 else ""
-    err = proc.error or ("" if idx >= 0 else out.strip())
+    err = proc.error or ("" if idx >= 0 or not output_in_error else out.strip())
     return code, body, err
 
 
@@ -1868,6 +1869,143 @@ def put_session_file(session_id: str, name: str, data: bytes) -> dict:
     if code != 0 or not written or "/" in written:
         raise BindError(422, "write_refused", err or body.strip() or f"exit {code}")
     return {"path": posixpath.join(folder, written), "name": written, "device_id": b.device_id, "bytes": len(data)}
+
+
+# --- file reads for the hub (section 9) --------------------------------------------------------
+
+MAX_FILE_READ_BYTES = 32 * 1024 * 1024
+# Each read holds its file about four times over in the gateway's memory at its peak (the output
+# text, its payload, the payload as bytes and the decoded bytes), so only a few run at once. A
+# slot stays taken until the answer is sent.
+MAX_FILE_READS = 2
+FILE_READS = threading.BoundedSemaphore(MAX_FILE_READS)
+FILE_READ_TIMEOUT_S = 120
+MAX_FILE_PATH = 4096
+
+# Prints the real folder (pwd -P) and a NUL, one status line, then for a file its base64 on one
+# line. It opens the file from the folder that pwd -P names. The name must not be a symbolic
+# link or have other hard links, and both open descriptors must be the file the name holds.
+_FILE_READ_SCRIPT = r"""
+set -f
+d=$1; b=$2; max=$3
+cd -P -- "$d" 2>/dev/null || { printf '\0N\n'; exit 0; }
+printf '%s\0' "$(pwd -P)"
+if [ -L "$b" ]; then echo L; exit 0; fi
+if [ ! -e "$b" ]; then echo N; exit 0; fi
+if [ ! -f "$b" ]; then echo X; exit 0; fi
+if [ ! -r "$b" ]; then echo U; exit 0; fi
+exec 3< "$b" || { echo U; exit 0; }
+exec 4< "$b" || { echo U; exit 0; }
+if [ -L "$b" ] || [ ! "$b" -ef /dev/fd/3 ] || [ ! "$b" -ef /dev/fd/4 ]; then echo L; exit 0; fi
+exec 4<&-
+set -- $(ls -lnd -- "$b")
+[ "$2" = 1 ] || { echo H; exit 0; }
+n=$5
+case $n in ''|*[!0-9]*) echo U; exit 0 ;; esac
+if [ "$n" -gt "$max" ]; then echo "B $n"; exit 0; fi
+if command -v base64 >/dev/null 2>&1; then enc() { base64; }
+elif command -v openssl >/dev/null 2>&1; then enc() { openssl base64 -A; }
+else echo E; exit 0; fi
+echo "F $n"
+head -c "$n" <&3 | enc | tr -d '\n'
+"""
+
+_FILE_READ_REFUSALS = {
+    "L": "is a symbolic link, or changed while it was opened",
+    "X": "is not a regular file",
+    "H": "has more than one hard link",
+    "U": "could not be opened",
+    "E": "cannot be sent: the device has no base64 encoder",
+}
+
+
+def device_read_denial(conn: DeviceConn, path: str) -> Optional[str]:
+    """Why the hub may not read the absolute device ``path``, or None: outside the device's roots,
+    or a credential path of file tools rebuilt for the device's home (its reported and its real
+    path, case-folded). That is the sensitive home files, credential folders and write denylist
+    of section 8.6, Hermes's read denylist under ``<home>/.hermes`` and each of its profiles,
+    EXTRA_READ_DENIED_DIRS, project ``.env`` files and key files (READ_DENIED_EXTS) anywhere."""
+    from agent import file_safety
+
+    path = posixpath.normpath(path)
+    if not conn.within_roots(path):
+        return f"{path} is outside the device roots ({', '.join(conn.roots) or 'none'})"
+    if not posixpath.isabs(conn.home or ""):
+        return "the device did not report its home directory, so its credential paths cannot be checked"
+    base = posixpath.basename(path).lower()
+    if _credential_denial(conn, path, read=True) or base in file_safety._BLOCKED_PROJECT_ENV_BASENAMES \
+            or base.endswith(READ_DENIED_EXTS):
+        return f"{path} is a protected credential path"
+    return None
+
+
+def _clean_device_path(path: Any) -> Optional[str]:
+    if not isinstance(path, str) or not path.startswith("/") or path.startswith("//") \
+            or len(path.encode("utf-8", "replace")) > MAX_FILE_PATH:
+        return None
+    if posixpath.normpath(path) != path or any(ord(c) < 0x20 or ord(c) == 0x7f for c in path):
+        return None
+    return path if posixpath.basename(path) not in ("", ".", "..") else None
+
+
+def get_session_file(session_id: str, path: Any) -> tuple[str, bytes]:
+    """Read a file of the device that serves a session, for the hub to show the user, and return
+    ``(name, bytes)``. The session resolves as for uploads: its own binding, an ancestor's, or the
+    sandbox. The path and its real path on the device must pass :func:`device_read_denial`. The
+    file must be a regular file with one hard link whose last part is not a symbolic link, and at
+    most MAX_FILE_READ_BYTES. Error messages never hold the device's output, which may be the
+    file's contents, or the real path. Raises :class:`BindError`."""
+    import binascii
+
+    clean = _clean_device_path(path)
+    if clean is None:
+        raise BindError(400, "bad_path", "path must be an absolute, clean device path of a file")
+    res = upload_resolution(session_id)
+    b = res.binding
+    conn = hub().device(b.device_id)
+    if conn is None:
+        raise BindError(409, "device_offline", f"device {b.device_id} is not connected")
+    why = device_read_denial(conn, clean)
+    if why:
+        raise BindError(422, "read_refused", why)
+    folder, name = posixpath.split(clean)
+    code, body, err = run_script(b.device_id, _FILE_READ_SCRIPT, [folder, name, str(MAX_FILE_READ_BYTES)],
+                                 cwd=b.dir, timeout=FILE_READ_TIMEOUT_S, output_in_error=False)
+    if code == EXIT_LOST:
+        raise BindError(409, "device_offline", err or f"device {b.device_id} is not connected")
+    nul = body.find("\0")
+    eol = body.find("\n", nul + 1) if nul >= 0 else -1
+    if code != 0 or nul < 0 or eol < 0:
+        raise BindError(422, "read_failed", err or f"device {conn.name} could not read {clean} (exit {code})")
+    real, status = body[:nul], body[nul + 1:eol]
+    if status == "N" and not real:
+        raise BindError(404, "not_found", f"{clean} does not exist on device {conn.name}")
+    if not real.startswith("/") or posixpath.normpath(real) != real or "\ufffd" in real \
+            or device_read_denial(conn, posixpath.join(real, name)):
+        raise BindError(422, "read_refused", f"{clean} resolves to a path outside the device roots or to a "
+                                             f"protected credential path")
+    if status == "N":
+        raise BindError(404, "not_found", f"{clean} does not exist on device {conn.name}")
+    if status in _FILE_READ_REFUSALS:
+        raise BindError(422, "read_refused", f"{clean} {_FILE_READ_REFUSALS[status]}")
+    if status.startswith("B "):
+        raise BindError(413, "too_large", f"{clean} is larger than {MAX_FILE_READ_BYTES // (1024 * 1024)} MB")
+    if not status.startswith("F ") or not status[2:].isdigit():
+        raise BindError(422, "read_failed", f"device {conn.name} sent an unreadable answer for {clean}")
+    size = int(status[2:])
+    try:
+        payload = body[eol + 1:].rstrip().encode("ascii")
+    except UnicodeEncodeError:
+        payload = b""
+    del body
+    try:
+        raw = binascii.a2b_base64(payload, strict_mode=True) if payload else b""
+    except binascii.Error:
+        raw = None
+    del payload
+    if raw is None or len(raw) != size:
+        raise BindError(422, "read_failed", f"{clean} changed while it was read, or the device dropped output")
+    return name, raw
 
 
 # --- terminal backend (section 8.4) -----------------------------------------------------------
