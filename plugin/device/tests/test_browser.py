@@ -1061,6 +1061,63 @@ class BrowserDeviceTests(BrowserBase):
             out = self.run_tool("browser_navigate", url="https://example.com/")
         self.assertIn("belongs to another user than this session", out["error"])
 
+    def test_job_records_its_creators_user(self):
+        self.hub.detach(self.device.conn)
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch.object(browser, "_job_exists", lambda j: True):
+            self.create_job()
+        self.assertIsNone(browser.choices().job("job1"), "no browser device was connected")
+        self.assertEqual(browser.choices().job_owner("job1"), "alice")
+        self.assertEqual(json.loads(self.choices_path.read_text())["job_owners"]["job1"]["session_id"], "fresh")
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch.object(browser, "_job_exists", lambda j: j != "job1"):
+            self.create_job("job2")
+        self.assertIsNone(browser.choices().job_owner("job1"), "owners of removed jobs are pruned")
+        self.assertEqual(browser.choices().job_owner("job2"), "alice")
+
+    def test_another_users_job_without_a_device_cannot_be_given_one(self):
+        """On a backend that two hub users share, browser_use_device with job_id refuses a job
+        that another user created, also while the job has no browser device."""
+        del self.cfg["user"]
+        self.second(device_id="d_bob", name="bobs-pc", user="bob")
+        browser.choices().set_job_owner("job1", "bob", "sess-bob")
+        self.session = "sess-1"
+        self.hub.bind("sess-1", "d_pc", str(self.root), operator=True)
+        with mock.patch.object(browser, "_job_id", lambda ref: ref):
+            self.assertIsNone(browser.pre_tool_call(tool_name="browser_use_device",
+                                                    args={"device": "d_pc", "job_id": "job1"}, session_id="sess-1"),
+                              "nothing to ask the user for a call the handler refuses")
+            for device in ("d_pc", "pc", "default"):
+                out = self.run_tool("browser_use_device", device=device, job_id="job1")
+                self.assertIn("belongs to another user", out["error"])
+            self.assertIsNone(browser.choices().job("job1"))
+            out = self.run_tool("browser_use_device", device="d_pc", job_id="job2")
+            self.assertIn("not known which user created scheduled job job2", out["error"])
+            self.assertIsNone(browser.choices().job("job2"))
+            browser.choices().set_job_owner("job3", "alice", "sess-1")
+            out = self.run_tool("browser_use_device", device="d_pc", job_id="job3")
+            self.assertEqual(self.decision["action"], "approve")
+            self.assertEqual(out["device_id"], "d_pc")
+            self.session = "sess-bob"
+            self.hub.bind("sess-bob", "d_bob", str(self.root), operator=True)
+            out = self.run_tool("browser_use_device", device="d_bob", job_id="job1")
+            self.assertEqual(out["device_id"], "d_bob", "the job's own user gives it a device")
+            out = self.run_tool("browser_use_device", device="d_bob", job_id="job3")
+            self.assertIn("another user", out["error"])
+        self.assertEqual(browser.choices().job("job3")["device_id"], "d_pc")
+
+    def test_job_of_an_unknown_creator_on_a_one_user_backend(self):
+        """Jobs created before owners were kept belong to the backend's one user, when it names one."""
+        with mock.patch.object(browser, "_job_id", lambda ref: ref):
+            out = self.run_tool("browser_use_device", device="d_pc", job_id="old")
+            self.assertEqual(out["device_id"], "d_pc")
+            self.cfg["user"] = "carol"
+            self.session = "sess-1"
+            self.hub.bind("sess-1", "d_pc", str(self.root), operator=True)
+            out = self.run_tool("browser_use_device", device="d_pc", job_id="older")
+            self.assertIn("not known which user created scheduled job older", out["error"])
+            self.assertIsNone(browser.choices().job("older"))
+
     def test_scheduling_with_a_browser_asks_the_user(self):
         gate = browser.pre_tool_call
         create = {"action": "create", "prompt": "p", "schedule": "in 2m"}

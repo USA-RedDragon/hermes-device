@@ -99,9 +99,10 @@ _UNREAD = object()
 class Choices:
     """The browser devices that sessions and scheduled jobs chose, in
     ``$HERMES_HOME/device/browser.json``. A session's choice covers its lineage (compression
-    children, subagents, branches); a job's covers each of its runs. Every read checks the file
-    again, and every change holds an exclusive lock on ``browser.json.lock``, so the gateway and
-    other Hermes processes see each other's changes."""
+    children, subagents, branches); a job's covers each of its runs. It also keeps the hub user
+    who created each job, so that only that user gives the job a browser device. Every read
+    checks the file again, and every change holds an exclusive lock on ``browser.json.lock``, so
+    the gateway and other Hermes processes see each other's changes."""
 
     def __init__(self, path: Optional[Path]):
         self._path = path
@@ -111,6 +112,7 @@ class Choices:
         self._sessions: dict[str, dict] = {}
         self._jobs: dict[str, dict] = {}
         self._device_jobs: dict[str, dict] = {}
+        self._owners: dict[str, dict] = {}
 
     def _file_stamp(self) -> Optional[tuple]:
         try:
@@ -126,7 +128,8 @@ class Choices:
         stamp = self._file_stamp()
         if stamp == self._stamp:
             return
-        self._stamp, self._error, self._sessions, self._jobs, self._device_jobs = stamp, "", {}, {}, {}
+        self._stamp, self._error = stamp, ""
+        self._sessions, self._jobs, self._device_jobs, self._owners = {}, {}, {}, {}
         if stamp is None:
             return
         try:
@@ -146,8 +149,13 @@ class Choices:
             if not isinstance(marked, dict) or not all(isinstance(v, dict) for v in marked.values()):
                 raise ValueError("device_jobs is not an object of objects")
             self._device_jobs = {str(k): v for k, v in marked.items()}
+            owners = raw.get("job_owners") or {}
+            if not isinstance(owners, dict) or not all(isinstance(v, dict) and isinstance(v.get("user"), str)
+                                                       for v in owners.values()):
+                raise ValueError("job_owners is not an object of objects with a user")
+            self._owners = {str(k): v for k, v in owners.items()}
         except Exception as exc:
-            self._sessions, self._jobs, self._device_jobs = {}, {}, {}
+            self._sessions, self._jobs, self._device_jobs, self._owners = {}, {}, {}, {}
             self._error = f"{self._path} is unreadable ({exc})"
             _core().logger.error("device: %s; browser device choices fail closed until it is fixed", self._error)
 
@@ -161,7 +169,8 @@ class Choices:
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         doc = {"version": CHOICES_VERSION, "sessions": dict(sorted(self._sessions.items())),
-               "jobs": dict(sorted(self._jobs.items())), "device_jobs": dict(sorted(self._device_jobs.items()))}
+               "jobs": dict(sorted(self._jobs.items())), "device_jobs": dict(sorted(self._device_jobs.items())),
+               "job_owners": dict(sorted(self._owners.items()))}
         fd, tmp = tempfile.mkstemp(prefix=".browser-", suffix=".tmp", dir=str(self._path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -218,6 +227,16 @@ class Choices:
             self.check()
             return job_id in self._device_jobs
 
+    def job_owner(self, job_id: str) -> Optional[str]:
+        """The hub user of the session that created the job, or None when it is not known."""
+        with self._lock:
+            self.check()
+            rec = self._owners.get(job_id)
+            return rec["user"] if rec is not None else None
+
+    def set_job_owner(self, job_id: str, user: str, session_id: str) -> None:
+        self._set("_owners", job_id, {"user": user, "session_id": session_id, "at": round(time.time(), 3)})
+
     def mark_device_job(self, job_id: str, session_id: str) -> None:
         self._set("_device_jobs", job_id, {"session_id": session_id, "at": round(time.time(), 3)})
 
@@ -247,7 +266,7 @@ class Choices:
     def prune_jobs(self, alive: Callable[[str], bool]) -> None:
         """Drop the choices of jobs that no longer exist."""
         def edit() -> bool:
-            gone = [(t, j) for t in (self._jobs, self._device_jobs) for j in t if not alive(j)]
+            gone = [(t, j) for t in (self._jobs, self._device_jobs, self._owners) for j in t if not alive(j)]
             for t, j in gone:
                 del t[j]
             return bool(gone)
@@ -795,6 +814,11 @@ def _schedule_gate(tool_name: str, args: dict, session_id: str) -> Optional[dict
         if tool_name == "browser_use_device":
             if not raw or str(args.get("device") or "").strip() == "default":
                 return None
+            _, res = resolve(session_id)
+            job_id = _job_id(str(raw))
+            if not job_id:
+                return None
+            _check_job_owner(job_id, _need_user(_session_user(res)))
             what, device = f"scheduled job {str(raw)[:64]}", str(args.get("device") or "")[:64]
         elif action == "create":
             sid, res = resolve(session_id)
@@ -1190,6 +1214,25 @@ def _job_id(ref: str) -> str:
     return str(job.get("id") or "") if job else ""
 
 
+def _check_job_owner(job_id: str, user: str) -> None:
+    """Raise Unavailable unless the job belongs to user: the user of the session that created
+    it, and the user of its browser device when it has one. A job whose creator is not known
+    (created before the plugin kept owners, or in a session whose user it could not tell) counts
+    as the user's only on a backend that names its one user (plugin setting ``user``)."""
+    rec = choices().job(job_id)
+    if rec is not None and rec["user"] != user:
+        raise Unavailable(f"hermes-device: scheduled job {job_id} uses the browser of another user, so this session "
+                          f"cannot change it.")
+    owner = choices().job_owner(job_id)
+    if owner is not None and owner != user:
+        raise Unavailable(f"hermes-device: scheduled job {job_id} belongs to another user, so this session cannot "
+                          f"give it a browser device.")
+    if owner is None and rec is None and backend_user() != user:
+        raise Unavailable(f"hermes-device: it is not known which user created scheduled job {job_id}, so this "
+                          f"session cannot give it a browser device. Create the job again in a chat bound to your "
+                          f"computer.")
+
+
 def browser_use_device(args: dict, session_id: str = "", **_kwargs) -> str:
     """Choose the computer whose Firefox this session (or, with job_id, a scheduled job) uses."""
     want = str(args.get("device") or "").strip()
@@ -1207,10 +1250,7 @@ def browser_use_device(args: dict, session_id: str = "", **_kwargs) -> str:
             ref, job_id = job_id, _job_id(job_id)
             if not job_id:
                 raise ValueError(f"no scheduled job has the id or name {ref[:64]!r}")
-            rec = choices().job(job_id)
-            if rec is not None and rec["user"] != user:
-                raise Unavailable(f"hermes-device: scheduled job {job_id} uses the browser of another user, so this "
-                                  f"session cannot change it.")
+            _check_job_owner(job_id, user)
         if want == "default":
             if job_id:
                 choices().set_job(job_id, None)
@@ -1240,9 +1280,9 @@ def browser_use_device(args: dict, session_id: str = "", **_kwargs) -> str:
 
 
 def record_job(job: Any) -> None:
-    """Give a job that the current session just created the session's browser device, so
-    that the job's runs use it (section 3.2). Nothing when the session has none. Raises when
-    the choices cannot be read or saved."""
+    """Record the hub user of the session that just created a job, and give the job the
+    session's browser device, so that the job's runs use it (section 3.2). No device when the
+    session has none. Raises when the choices cannot be read or saved."""
     core = _core()
     job_id = str(job.get("id") or "") if isinstance(job, dict) else ""
     sid = core.current_session_id()
@@ -1252,13 +1292,16 @@ def record_job(job: Any) -> None:
     res = core.resolve_session(sid)
     if not core.runs_on_pod(res):
         choices().mark_device_job(job_id, sid)
+    choices().prune_jobs(_job_exists)
     try:
         _, res = resolve(sid)
+        owner = _session_user(res)
+        if owner is not None:
+            choices().set_job_owner(job_id, owner, sid)
         conn, _ = pick(sid, res)
     except Unavailable as exc:
         core.logger.info("device: scheduled job %s has no browser device: %s", job_id, exc)
         return
-    choices().prune_jobs(_job_exists)
     choices().set_job(job_id, {"device_id": conn.device_id, "name": conn.name, "user": conn.user,
                                "session_id": sid, "at": round(time.time(), 3)})
     core.logger.info("device: scheduled job %s uses the browser of %s [%s]", job_id, conn.name, conn.device_id)
