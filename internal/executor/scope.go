@@ -42,6 +42,11 @@ type Scope struct {
 	// restarting it stops the scopes too, as it stopped the commands when
 	// they ran in its own cgroup.
 	PartOf string
+	// KeepVars passes --expand-environment=no. systemd-run 258 and later
+	// expand ${NAME} in the command line of a scope by default, which
+	// breaks shell parameter expansions such as ${d%/} and ${!PREFIX*};
+	// systemd before 254 has no such option and never expands for a scope.
+	KeepVars bool
 }
 
 // argv returns the command line that runs argv in the scope unit.
@@ -57,6 +62,9 @@ func (s *Scope) argv(unit string, argv []string) []string {
 	}
 	if s.PartOf != "" {
 		out = append(out, "-p", "PartOf="+s.PartOf)
+	}
+	if s.KeepVars {
+		out = append(out, "--expand-environment=no")
 	}
 	return append(append(out, "--"), argv...)
 }
@@ -115,21 +123,37 @@ func NewScope(ctx context.Context, p ScopeProbe, memoryMax int64, auto bool) (*S
 	if s.MemoryMax <= 0 {
 		s.MemoryMax = DefaultMemoryMax
 	}
-	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	argv := s.argv(scopeUnit(), []string{"true"})
-	probe := exec.CommandContext(pctx, argv[0], argv[1:]...) //nolint:gosec // systemd-run from PATH with fixed arguments
-	probe.Env = p.Env
-	var stderr bytes.Buffer
-	probe.Stderr = &stderr
-	if err := probe.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
+	s.KeepVars = true
+	msg, err := s.probe(ctx, p.Env)
+	if err != nil && strings.Contains(msg, "expand-environment") {
+		s.KeepVars = false
+		msg, err = s.probe(ctx, p.Env)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("%w: systemd-run --user --scope failed: %s", ErrNoScope, msg)
 	}
 	return s, nil
+}
+
+// probe runs one empty command in a scope. On failure it returns what
+// systemd-run wrote to stderr, else the error text.
+func (s *Scope) probe(ctx context.Context, env []string) (string, error) {
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	argv := s.argv(scopeUnit(), []string{"true"})
+	cmd := exec.CommandContext(pctx, argv[0], argv[1:]...) //nolint:gosec // systemd-run from PATH with fixed arguments
+	cmd.Env = env
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return "", nil
+	}
+	msg := strings.TrimSpace(stderr.String())
+	if msg == "" {
+		msg = err.Error()
+	}
+	return msg, err
 }
 
 // ownCgroup returns the cgroup v2 path of this process from the contents

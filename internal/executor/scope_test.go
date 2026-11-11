@@ -90,7 +90,7 @@ func TestNewScopeAutoFromServiceLimit(t *testing.T) {
 	got := strings.Join(readArgs(t, args), " ")
 	for _, want := range []string{
 		"--user --scope --quiet --unit=talaria-cmd-", "-p MemoryMax=1610612736", "-p OOMPolicy=kill",
-		"-p TasksMax=512", "-p PartOf=talaria.service", "-- true END",
+		"-p TasksMax=512", "-p PartOf=talaria.service", "--expand-environment=no -- true END",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("probe args %q lack %q", got, want)
@@ -139,6 +139,23 @@ func TestNewScopeUnavailable(t *testing.T) {
 	}
 }
 
+func TestNewScopeWithoutExpandOption(t *testing.T) {
+	t.Parallel()
+	old := "case \"$*\" in *--expand-environment*) echo \"systemd-run: unrecognized option '--expand-environment=no'\" >&2; exit 1 ;; esac\n"
+	bin, args := fakeSystemd(t, old, "")
+	s, err := executor.NewScope(t.Context(), probe(t, bin, serviceCgroup, "max", "max"), 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.KeepVars {
+		t.Error("kept --expand-environment=no that systemd-run does not know")
+	}
+	got := strings.Join(readArgs(t, args), " ")
+	if strings.Count(got, "END") != 2 || !strings.HasSuffix(got, "talaria.service -- true END") {
+		t.Errorf("probe args %q", got)
+	}
+}
+
 func TestStartInScope(t *testing.T) {
 	t.Parallel()
 	bin, args := fakeSystemd(t, "", "")
@@ -149,6 +166,21 @@ func TestStartInScope(t *testing.T) {
 	}
 	got := strings.Join(readArgs(t, args), " ")
 	if !strings.Contains(got, "-p MemoryMax=67108864") || !strings.HasSuffix(got, "-- bash -l -c echo hi; exit 3 END") || strings.Contains(got, "TasksMax") {
+		t.Errorf("args %q", got)
+	}
+}
+
+func TestStartInScopeKeepsVars(t *testing.T) {
+	t.Parallel()
+	bin, args := fakeSystemd(t, "", "")
+	s := scopeIn(bin)
+	s.KeepVars = true
+	cmd := `d=/home/alice/; echo "${d%/}/x" ${!HOME*}`
+	res, out := run(t, executor.Request{Cmd: cmd, Cwd: t.TempDir(), Env: []string{"HOME=/home/alice", "PATH=" + os.Getenv("PATH")}, Scope: s})
+	if res.Code != 0 || out != "/home/alice/x HOME\n" {
+		t.Errorf("result %+v, output %q", res, out)
+	}
+	if got := strings.Join(readArgs(t, args), " "); !strings.HasSuffix(got, "--expand-environment=no -- bash -c "+cmd+" END") {
 		t.Errorf("args %q", got)
 	}
 }
@@ -220,5 +252,24 @@ func TestScopeOOMSystemd(t *testing.T) {
 	res, out = run(t, executor.Request{Cmd: "echo small; exit 4", Cwd: t.TempDir(), Env: os.Environ(), Scope: s})
 	if res.OOM || res.Code != 4 || out != "small\n" {
 		t.Errorf("small command: %+v, %q", res, out)
+	}
+}
+
+// TestScopeKeepsShellExpansionsSystemd checks that systemd-run passes
+// ${...} to the shell as written. It needs a systemd user manager and
+// TALARIA_SYSTEMD_TESTS=1.
+func TestScopeKeepsShellExpansionsSystemd(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("TALARIA_SYSTEMD_TESTS") != "1" {
+		t.Skip("set TALARIA_SYSTEMD_TESTS=1 to run commands in real systemd scopes")
+	}
+	s, err := executor.NewScope(t.Context(), executor.SystemProbe(os.Environ()), 64<<20, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := `d=/home/alice/; TALARIA_T_A=1; echo "${d%/}/x" ${!TALARIA_T_*} "${TALARIA_T_B:+set}"`
+	res, out := run(t, executor.Request{Cmd: cmd, Cwd: t.TempDir(), Env: append(os.Environ(), "TALARIA_T_B=1"), Scope: s})
+	if res.Code != 0 || out != "/home/alice/x TALARIA_T_A TALARIA_T_B set\n" {
+		t.Errorf("result %+v, output %q", res, out)
 	}
 }
