@@ -240,7 +240,7 @@ func promptInfo(p gateway.Prompt) hub.PromptInfo {
 		return *s
 	}
 	return hub.PromptInfo{ID: p.PromptID, Kind: p.Kind, Choices: append([]string(nil), p.Choices...), Multi: p.MultiSelect,
-		Command: str(p.Command), Description: str(p.Description), Question: str(p.Question)}
+		Command: str(p.Command), Description: str(p.Description), Question: str(p.Question), Timeout: p.Timeout}
 }
 
 // promptNotice announces a pending prompt. ls.mu is held.
@@ -254,8 +254,12 @@ func (ls *live) promptNotice(p gateway.Prompt) {
 		Prompt: &info, Title: ls.title})
 }
 
-// settled forgets prompts that got an answer or were cancelled. ls.mu is held.
-func (ls *live) settled(ids ...string) {
+// settled forgets prompts that got an answer. ls.mu is held.
+func (ls *live) settled(ids ...string) { ls.settle(false, ids...) }
+
+// settle forgets prompts that got an answer or were cancelled. ls.mu is
+// held.
+func (ls *live) settle(cancelled bool, ids ...string) {
 	var gone []string
 	for _, id := range ids {
 		if id != "" {
@@ -264,7 +268,8 @@ func (ls *live) settled(ids ...string) {
 		}
 	}
 	if len(gone) > 0 {
-		ls.b.svc.notice(hub.Notice{Kind: hub.NoticeSettled, BackendID: ls.b.cfg.ID, SessionID: ls.id, PromptIDs: gone})
+		ls.b.svc.notice(hub.Notice{Kind: hub.NoticeSettled, BackendID: ls.b.cfg.ID, SessionID: ls.id, PromptIDs: gone,
+			Cancelled: cancelled})
 	}
 }
 
@@ -391,7 +396,7 @@ func (ls *live) apply(ev gateway.Event) {
 			RequestIDs []string `json:"request_ids"`
 		}
 		if json.Unmarshal(ev.Payload, &p) == nil {
-			ls.settled(p.RequestIDs...)
+			ls.settle(true, p.RequestIDs...)
 		}
 	}
 	ls.trackProvider(ev)
@@ -454,6 +459,9 @@ func (ls *live) attach(sinceSeq int64) (<-chan hub.Event, func()) {
 	covered := sinceSeq >= ls.snapshot.Seq && sinceSeq <= ls.seq &&
 		(!ls.truncated || len(ls.ring) == 0 || ls.ring[0].Seq <= sinceSeq+1)
 	switch {
+	case sinceSeq == hub.SinceNow && !ls.truncated:
+		v.ch <- ls.snapshot
+		ls.send(v, ls.turnStartSeq())
 	case covered:
 		ls.send(v, sinceSeq)
 	case ls.truncated:
@@ -468,6 +476,17 @@ func (ls *live) attach(sinceSeq int64) (<-chan hub.Event, func()) {
 		ls.idleTimer = nil
 	}
 	return v.ch, func() { ls.detach(v) }
+}
+
+// turnStartSeq is the seq of the last turn end in the buffer, so the
+// events after it are the turn that runs now. ls.mu is held.
+func (ls *live) turnStartSeq() int64 {
+	for i := len(ls.ring) - 1; i >= 0; i-- {
+		if ls.ring[i].Kind == hub.KindMessageComplete {
+			return ls.ring[i].Seq
+		}
+	}
+	return 0
 }
 
 // resnapshotLocked starts a fresh subscription; viewers get its snapshot.

@@ -154,6 +154,9 @@ type Prompt struct {
 	Description         *string  `json:"description,omitempty"`
 	Question            *string  `json:"question,omitempty"`
 	MultiSelect         bool     `json:"multi_select,omitempty"`
+	// Timeout is how many seconds Hermes waits for the answer, 0 when it
+	// did not say.
+	Timeout float64 `json:"timeout_s,omitempty"`
 }
 
 // Prompt kinds.

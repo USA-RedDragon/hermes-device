@@ -486,6 +486,43 @@ func TestLateViewerGetsWholeBuffer(t *testing.T) {
 	}
 }
 
+// turnTwo is the text of the turn that runs.
+const turnTwo = "turn two"
+
+func TestAttachSinceNowSkipsEndedTurns(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{ViewerBuffer: 16})
+	ctx := context.Background()
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	next(t, ch)
+	e.gw.Publish(sLive, hub.KindMessageDelta, map[string]any{kText: "turn one"})
+	e.gw.Publish(sLive, hub.KindMessageComplete, map[string]any{kText: "turn one"})
+	e.gw.Publish(sLive, hub.KindMessageDelta, map[string]any{kText: turnTwo})
+	for range 3 {
+		next(t, ch)
+	}
+	ch2, stop2, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, hub.SinceNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop2()
+	if k := next(t, ch2).Kind; k != hub.KindSnapshot {
+		t.Fatalf("first = %s", k)
+	}
+	ev := next(t, ch2)
+	if ev.Kind != hub.KindMessageDelta || text(t, ev) != turnTwo {
+		t.Fatalf("second = %s %s", ev.Kind, ev.Data)
+	}
+	e.gw.Publish(sLive, hub.KindMessageComplete, map[string]any{kText: turnTwo})
+	if k := next(t, ch2).Kind; k != hub.KindMessageComplete {
+		t.Fatalf("third = %s", k)
+	}
+}
+
 func TestReplayGapTakesNewSnapshot(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
