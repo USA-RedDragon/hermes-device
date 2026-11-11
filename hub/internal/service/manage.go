@@ -57,6 +57,16 @@ func (s *Service) withSession(ctx context.Context, user, backendID, sessionID st
 // fresh ones, so it retries once with those.
 func (b *backend) mutate(ctx context.Context, ls *live, op string, payload any, fenced bool) (gateway.MutateResult, error) {
 	var res gateway.MutateResult
+	raw, err := b.mutateRaw(ctx, ls, op, payload, fenced)
+	if err == nil {
+		err = json.Unmarshal(raw, &res)
+	}
+	return res, err
+}
+
+// mutateRaw is mutate that returns the whole result.
+func (b *backend) mutateRaw(ctx context.Context, ls *live, op string, payload any, fenced bool) (json.RawMessage, error) {
+	var raw json.RawMessage
 	for attempt := 0; ; attempt++ {
 		ls.mu.Lock()
 		p := gateway.MutateParams{SessionID: ls.id, RequestID: uuid.NewString(), ExpectedRevision: ls.revision,
@@ -66,7 +76,8 @@ func (b *backend) mutate(ctx context.Context, ls *live, op string, payload any, 
 			p.ExpectedGeneration = &gen
 		}
 		ls.mu.Unlock()
-		err := b.call(ctx, ls, gateway.MethodMutate, p, &res)
+		raw = nil
+		err := b.call(ctx, ls, gateway.MethodMutate, p, &raw)
 		var r *gateway.RPCError
 		if attempt == 0 && errors.As(err, &r) &&
 			(r.Message == gateway.ReasonRevisionConflict || r.Message == gateway.ReasonStaleGeneration) {
@@ -79,12 +90,16 @@ func (b *backend) mutate(ctx context.Context, ls *live, op string, payload any, 
 			}
 		}
 		if err != nil {
-			return res, err
+			return nil, err
+		}
+		var res gateway.MutateResult
+		if err := json.Unmarshal(raw, &res); err != nil {
+			return nil, err
 		}
 		ls.mu.Lock()
 		ls.fences(res.Revision, res.ExecutionGeneration)
 		ls.mu.Unlock()
-		return res, nil
+		return raw, nil
 	}
 }
 
@@ -239,10 +254,6 @@ func (b *backend) gone(ls *live) {
 	}
 }
 
-// methodSessionInfo answers a session's info; for a session the backend
-// does not know it is the not_found refusal.
-const methodSessionInfo = "session.info"
-
 var _ hub.SessionChecker = (*Service)(nil)
 
 // SessionExists asks the backend whether it still has a session, without
@@ -259,7 +270,7 @@ func (s *Service) SessionExists(ctx context.Context, user, backendID, sessionID 
 	}
 	cctx, cancel := b.timeout(ctx)
 	defer cancel()
-	err = c.Call(cctx, methodSessionInfo, gateway.SessionParams{SessionID: sessionID}, nil)
+	err = c.Call(cctx, gateway.MethodSessionInfo, gateway.SessionParams{SessionID: sessionID}, nil)
 	var rerr *gateway.RPCError
 	switch {
 	case errors.As(err, &rerr) && rerr.Message == gateway.ReasonNotFound:

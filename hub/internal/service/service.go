@@ -62,6 +62,13 @@ type Options struct {
 	// so every replica can say which choice answered one. Nil: the hub
 	// works every outcome out from the tool call.
 	Answers hub.AnswerStore
+	// SteerRetry is how long a steer waits before it tries again while the
+	// running turn has no agent to take it, and SteerWindow how long it
+	// keeps trying. Defaults 250ms and 3s.
+	SteerRetry, SteerWindow time.Duration
+	// CommandsTTL is how long the hub keeps a backend's command catalog.
+	// Default 5m.
+	CommandsTTL time.Duration
 }
 
 // Service is the hub core.
@@ -128,6 +135,15 @@ func New(cfgs []config.Backend, dir Directory, opts Options) *Service {
 	}
 	if opts.HoldRetryMax == 0 {
 		opts.HoldRetryMax = 5 * time.Second
+	}
+	if opts.SteerRetry == 0 {
+		opts.SteerRetry = 250 * time.Millisecond
+	}
+	if opts.SteerWindow == 0 {
+		opts.SteerWindow = 3 * time.Second
+	}
+	if opts.CommandsTTL == 0 {
+		opts.CommandsTTL = 5 * time.Minute
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	s := &Service{backends: map[string]*backend{}, dir: dir, opts: opts, log: opts.Logger, origin: uuid.NewString(), stop: stop,
@@ -313,7 +329,9 @@ func (s *Service) Attach(ctx context.Context, user, backendID, sessionID string,
 // restarting or cannot be reached, it holds the prompt and sends it, under
 // the same submission ID, once the backend is back. A prompt behind held
 // ones is held too, to keep their order. Attachments need the backend: a
-// prompt with files is refused while it is away.
+// prompt with files is refused while it is away. A slash command runs
+// through slash.exec (see command). With hub.WithSteer, a prompt that
+// queues behind the running turn is handed to that turn (see steer).
 func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text string, files ...hub.Attachment) (hub.PromptResult, error) {
 	if err := hub.CheckAttachments(files); err != nil {
 		return hub.PromptResult{}, err
@@ -329,45 +347,66 @@ func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text s
 	if id == "" {
 		id = hub.NewSubmissionID()
 	}
+	if _, _, ok := hub.SlashCommand(text); ok {
+		return s.command(ctx, b, user, sessionID, id, text)
+	}
 	release := b.gate(sessionID)
-	defer release()
+	res, receipt, err := s.promptLocked(ctx, b, user, sessionID, id, text, files)
+	release()
+	if err != nil || !hub.Steer(ctx) || len(files) > 0 || res.Held || receipt.Status != gateway.AdmissionQueued {
+		return res, err
+	}
+	res.Steered = b.steer(ctx, sessionID, receipt.AdmissionID)
+	return res, nil
+}
+
+// promptLocked is Prompt with the session's gate held. The receipt is the
+// gateway's answer to a direct submit; it is empty for a held prompt.
+func (s *Service) promptLocked(ctx context.Context, b *backend, user, sessionID, id, text string,
+	files []hub.Attachment) (hub.PromptResult, gateway.Receipt, error) {
 	if b.heldCount(sessionID) > 0 {
 		if len(files) > 0 {
-			return hub.PromptResult{}, errAway
+			return hub.PromptResult{}, gateway.Receipt{}, errAway
 		}
-		return b.hold(user, sessionID, id, text, nil, false)
+		res, err := b.hold(user, sessionID, id, text, nil, false)
+		return res, gateway.Receipt{}, err
 	}
-	var atts []gateway.Attachment
-	notice := ""
+	var (
+		atts   []gateway.Attachment
+		notice string
+		err    error
+	)
 	if len(files) > 0 {
 		text, atts, notice, err = b.stage(ctx, user, sessionID, text, files)
 		if err != nil {
-			return hub.PromptResult{}, err
+			return hub.PromptResult{}, gateway.Receipt{}, err
 		}
 	}
-	err = b.submit(ctx, sessionID, id, text, atts)
+	receipt, err := b.submit(ctx, sessionID, id, text, atts)
 	if err == nil {
-		return hub.PromptResult{ID: id, Notice: notice}, nil
+		return hub.PromptResult{ID: id, Notice: notice}, receipt, nil
 	}
 	if !gateway.Retryable(err) {
-		return hub.PromptResult{}, refusal(err)
+		return hub.PromptResult{}, gateway.Receipt{}, refusal(err)
 	}
 	b.log.Info("backend unavailable, holding a prompt", "session", sessionID, "error", err.Error())
 	res, err := b.hold(user, sessionID, id, text, atts, errors.Is(err, gateway.ErrClosed))
 	res.Notice = notice
-	return res, err
+	return res, gateway.Receipt{}, err
 }
 
 // submit sends one prompt.submit. Hermes answers a repeated submission ID
 // with the admission it already has, so a retry never runs a prompt twice.
-func (b *backend) submit(ctx context.Context, sessionID, id, text string, atts []gateway.Attachment) error {
+func (b *backend) submit(ctx context.Context, sessionID, id, text string, atts []gateway.Attachment) (gateway.Receipt, error) {
 	ls, err := b.session(ctx, sessionID)
 	if err != nil {
-		return err
+		return gateway.Receipt{}, err
 	}
 	defer ls.unpin()
-	return b.call(ctx, ls, gateway.MethodPromptSubmit,
-		gateway.SubmitParams{SessionID: ls.id, Text: text, SubmissionID: id, Attachments: atts}, nil)
+	var receipt gateway.Receipt
+	err = b.call(ctx, ls, gateway.MethodPromptSubmit,
+		gateway.SubmitParams{SessionID: ls.id, Text: text, SubmissionID: id, Attachments: atts}, &receipt)
+	return receipt, err
 }
 
 // Interrupt stops the session's running turn.
@@ -621,6 +660,12 @@ type backend struct {
 
 	// obs keeps what the backend's usage events said.
 	obs *observer
+
+	// cmds is the backend's command catalog as the hub runs it, read at
+	// cmdsAt.
+	cmdMu  sync.Mutex
+	cmds   []hub.Command
+	cmdsAt time.Time
 }
 
 type sessionGate struct {
@@ -836,8 +881,8 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 	rows := map[string]hub.Session{}
 	// The live list with include_hidden adds archived (and hidden)
 	// sessions; the plain live list that follows clears the flag again.
-	lists := []gateway.ListParams{{Scope: gateway.ScopeStored, Limit: 200},
-		{Scope: gateway.ScopeLive, Limit: 200, IncludeHidden: true}, {Scope: gateway.ScopeLive, Limit: 200}}
+	lists := []gateway.ListParams{{Scope: gateway.ScopeStored, Limit: 200, Picker: true},
+		{Scope: gateway.ScopeLive, Limit: 200, IncludeHidden: true, Picker: true}, {Scope: gateway.ScopeLive, Limit: 200, Picker: true}}
 	for _, lp := range lists {
 		var res gateway.ListResult
 		if err := c.Call(cctx, gateway.MethodSessionList, lp, &res); err != nil {
@@ -852,7 +897,10 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 			if r.Source != nil {
 				s.Source = *r.Source
 			}
-			if r.StartedAt != nil {
+			switch {
+			case r.LastActiveAt != nil && *r.LastActiveAt > 0:
+				s.UpdatedAt = time.UnixMilli(int64(*r.LastActiveAt * 1000))
+			case r.StartedAt != nil:
 				s.UpdatedAt = time.UnixMilli(int64(*r.StartedAt * 1000))
 			}
 			rows[s.ID] = s
@@ -870,9 +918,38 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 	}
 	out := make([]hub.Session, 0, len(rows))
 	for _, s := range rows {
+		if s.Running {
+			s.Needs = b.needs(s.ID)
+		}
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// needs is what the hub's subscription to a session says it waits for:
+// an approval before a question, "" for neither or no subscription.
+func (b *backend) needs(id string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ls := b.sessions[id]
+	if ls == nil {
+		return ""
+	}
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	if ls.retired {
+		return ""
+	}
+	out := ""
+	for _, p := range ls.prompts {
+		switch p.Kind {
+		case gateway.PromptApproval:
+			return hub.NeedsApproval
+		case gateway.PromptClarify:
+			out = hub.NeedsQuestion
+		}
+	}
+	return out
 }
 
 func (b *backend) create(ctx context.Context, cwd, rowCWD string) (hub.Session, error) {

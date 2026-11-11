@@ -344,7 +344,8 @@ func (b *backend) submitHeld(sessionID string, p *heldPrompt) error {
 		p.sending = false
 		b.holdMu.Unlock()
 	}()
-	return b.submit(ctx, sessionID, p.id, p.text, p.atts)
+	_, err = b.submit(ctx, sessionID, p.id, p.text, p.atts)
+	return err
 }
 
 func refusedMessage(err error) string {

@@ -942,6 +942,9 @@ func (b *Bot) prompt(ctx context.Context, to dest, user, text string, files ...h
 	if err == nil && res.Notice != "" {
 		b.sendText(ctx, to, res.Notice)
 	}
+	if err == nil && res.Output != "" {
+		b.sendText(ctx, to, res.Output)
+	}
 }
 
 func (b *Bot) stop(ctx context.Context, to dest, user string) {
