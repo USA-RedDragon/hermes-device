@@ -15,7 +15,7 @@ internal/device/binding.go	102	76
 internal/device/chatfiles.go	97	81
 internal/device/computers.go	376	319
 internal/device/device.go	201	162
-internal/device/devicetest/devicetest.go	470	421
+internal/device/devicetest/devicetest.go	479	430
 internal/device/files.go	71	57
 internal/device/gateway.go	354	270
 internal/device/legs.go	169	151
@@ -31,6 +31,7 @@ internal/gateway/gatewaytest/files.go	40	35
 internal/gateway/gatewaytest/mutate.go	117	102
 internal/gateway/gatewaytest/source.go	25	9
 internal/gateway/protocol.go	30	30
+internal/hub/activity.go	1	1
 internal/hub/attach.go	45	39
 internal/hub/hub.go	4	4
 internal/hub/media.go	93	92
@@ -38,12 +39,12 @@ internal/hub/memory.go	1	1
 internal/hub/notify.go	9	6
 internal/hub/page.go	55	54
 internal/insights/gpu.go	57	53
-internal/insights/insights.go	144	125
+internal/insights/insights.go	146	127
 internal/leader/leader.go	32	29
 internal/memory/facts.go	51	43
 internal/memory/honcho.go	107	95
 internal/memory/memory.go	245	216
-internal/memory/memorytest/memorytest.go	206	178
+internal/memory/memorytest/memorytest.go	214	186
 internal/memory/notes.go	61	49
 internal/notify/jobs.go	49	36
 internal/notify/notify.go	266	167
@@ -61,7 +62,7 @@ internal/service/media.go	131	108
 internal/service/observe.go	61	50
 internal/service/page.go	51	47
 internal/service/pdf.go	71	55
-internal/service/service.go	676	618
+internal/service/service.go	678	622
 internal/service/turn.go	75	68
 internal/store/agents.go	52	43
 internal/store/device.go	189	157
