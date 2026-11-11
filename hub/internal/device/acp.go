@@ -8,7 +8,9 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 	"github.com/coder/websocket"
@@ -305,7 +307,7 @@ func promptTextAllowed(params map[string]json.RawMessage) bool {
 		switch t := v.(type) {
 		case map[string]any:
 			for k, c := range t {
-				if s, isString := c.(string); isString && k == keyText && !textAllowed(map[string]json.RawMessage{keyText: mustRaw(s)}) {
+				if s, isString := c.(string); isString && k == keyText && !acpTextAllowed(s) {
 					ok = false
 				}
 				walk(c)
@@ -392,6 +394,43 @@ func (g *acpGuard) checkSession(params map[string]json.RawMessage) error {
 		}
 	}
 	return nil
+}
+
+// acpSessionCommands are the slash commands hermes acp answers for the
+// session itself (acp_adapter/gateway_commands.py ROUTES), as acp-host
+// allows them: /discard resolves a lost turn of the session, which every
+// later prompt waits for after a gateway restart, and /tools reads
+// session.info.
+func acpSessionCommands() []string {
+	return []string{"discard", "tools"}
+}
+
+// acpTextAllowed is textAllowed plus acpSessionCommands. The exception
+// takes only the form hermes acp itself reads as the command: the text
+// starts with it, and its word is ASCII with no @bot suffix. Other forms
+// (a leading @ line, /discard@x) reach the gateway as message text, which
+// the gateway may read as its own command.
+func acpTextAllowed(text string) bool {
+	t := strings.TrimLeftFunc(text, pySpace)
+	if word, ok := strings.CutPrefix(t, "/"); ok {
+		arg := ""
+		if end := strings.IndexFunc(word, pySpace); end >= 0 {
+			word, arg = word[:end], strings.TrimLeftFunc(word[end:], pySpace)
+		}
+		if asciiWord(word) && slices.Contains(acpSessionCommands(), strings.ToLower(word)) {
+			return !strings.Contains(flagForm(arg), flagGlobal)
+		}
+	}
+	return textAllowed(map[string]json.RawMessage{keyText: mustRaw(text)})
+}
+
+func asciiWord(w string) bool {
+	for _, r := range w {
+		if r > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
 }
 
 // rewritePromptLinks replaces every resource_link block of a prompt with a

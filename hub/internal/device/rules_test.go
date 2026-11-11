@@ -437,6 +437,8 @@ func TestACPLegPromptSlash(t *testing.T) {
 			{text("/skills approve x")}, {text("/my-quick-exec")}, {text(""), text("/approvals off")}, {text("hi"), text("/approvals off")},
 			{map[string]any{keyType: "resource", "resource": map[string]any{"uri": "file:///a", keyText: "/approvals off"}}},
 			{text("/model gpt-5 --reasoning --session --reasoning high")}, {text("/usage reset --force")},
+			{text("/discard --global")}, {text("/tools \u2014global")},
+			{text("/discard@x")}, {text("@file:a\n/discard")}, {text("/D\u0130SCARD")},
 		} {
 			if m := a.request(acpPrompt, map[string]any{keySessionACP: sessionMine, keyPrompt: prompt}); errCode(m) != codeBadParams ||
 				reason(m) != reasonDenied {
@@ -446,7 +448,8 @@ func TestACPLegPromptSlash(t *testing.T) {
 		if got := e.acp.Received()[n:]; len(got) != 0 {
 			t.Fatalf("refused prompts reached the agent: %v", got)
 		}
-		for _, prompt := range [][]any{{text("hi")}, {text("/etc/hosts is wrong")}, {text("/title x")}, {text("/compact")}} {
+		for _, prompt := range [][]any{{text("hi")}, {text("/etc/hosts is wrong")}, {text("/title x")}, {text("/compact")},
+			{text("/discard a-1")}, {text(" /TOOLS")}} {
 			if m := a.request(acpPrompt, map[string]any{keySessionACP: sessionMine, keyPrompt: prompt}); m[keyResult] == nil {
 				t.Fatalf("prompt %v = %v", prompt, m)
 			}
