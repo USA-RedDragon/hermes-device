@@ -389,3 +389,32 @@ func TestQuietPersonDoesNotBlockReminders(t *testing.T) {
 		t.Fatalf("bob got %d reminders, want 101", got)
 	}
 }
+
+func TestClaudeSignInGoesOnlyToItsUsers(t *testing.T) {
+	t.Parallel()
+	e := setup(t, func(o *notify.Options) { o.Access = access{alice: backend, bob: backend} })
+	_ = e.st.SaveTelegramChat(e.ctx, hub.TelegramChat{ChatID: 11, User: alice, BackendID: backend, SessionID: session})
+	detail := "Claude (account1) (last signed in as alice@example.com) needs a sign-in: the login expired or was revoked. Open the hub to sign in."
+	n := hub.Notice{Kind: hub.NoticeClaudeSignIn, BackendID: backend, SessionID: session, Key: "claude:desk:account1:1",
+		Title: title, Detail: detail, Users: []string{alice}}
+	e.n.HandleNow(e.ctx, n)
+	e.n.HandleNow(e.ctx, n)
+	if e.tg.count() != 1 || e.push.count() != 1 {
+		t.Fatalf("telegram %d, push %d", e.tg.count(), e.push.count())
+	}
+	if got := e.tg.sent[0]; got.chat != 11 || got.m.Detail != detail || got.m.URL != "https://hub.example/#/s/desk/s1" {
+		t.Fatalf("telegram = %+v", got)
+	}
+	p := e.push.sent[0].payload
+	if p.Title != "A Claude account needs a sign-in" || p.Body != "On Desk. "+detail || e.push.sent[0].sub.Endpoint != endpoint+alice {
+		t.Fatalf("push = %+v", p)
+	}
+	set := hub.DefaultNotifySettings()
+	set.ClaudeSignIn = false
+	_ = e.st.SetNotifySettings(e.ctx, alice, set)
+	n.Key = "claude:desk:account1:2"
+	e.n.HandleNow(e.ctx, n)
+	if e.tg.count() != 1 || e.push.count() != 1 {
+		t.Fatalf("sent with the setting off: telegram %d, push %d", e.tg.count(), e.push.count())
+	}
+}

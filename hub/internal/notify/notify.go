@@ -208,7 +208,11 @@ func (n *Notifier) handle(ctx context.Context, nt hub.Notice) {
 		n.settle(cctx, nt.BackendID, nt.SessionID, nt.PromptIDs)
 		return
 	}
-	for _, user := range n.o.Users {
+	users := n.o.Users
+	if nt.Users != nil {
+		users = nt.Users
+	}
+	for _, user := range users {
 		if n.o.Access.Allowed(cctx, user, nt.BackendID) != nil {
 			continue
 		}
@@ -305,7 +309,7 @@ func (n *Notifier) deliver(ctx context.Context, set hub.NotifySettings, m Messag
 
 func (n *Notifier) sendTelegram(ctx context.Context, m Message) {
 	r := m.Record
-	if !m.Reminder && r.SessionID != "" {
+	if !m.Reminder && r.SessionID != "" && r.Kind != hub.NoticeClaudeSignIn {
 		if attached, err := n.o.Store.TelegramAttached(ctx, r.User, r.BackendID, r.SessionID); err != nil || attached {
 			return
 		}
@@ -328,7 +332,8 @@ func (n *Notifier) sendTelegram(ctx context.Context, m Message) {
 }
 
 // PushPayload is the whole of a Web Push message: the event kind and a
-// short title of the hub's own words, never chat content. The click
+// short title of the hub's own words, never chat content. A Claude
+// sign-in notice also names the account in its body. The click
 // opens URL, which loads the hub with the person's normal login.
 type PushPayload struct {
 	Kind  string `json:"kind"`
@@ -351,6 +356,8 @@ func Titles(kind string) string {
 		return "A scheduled job finished"
 	case hub.NoticeFailure:
 		return "Something failed in Hermes"
+	case hub.NoticeClaudeSignIn:
+		return "A Claude account needs a sign-in"
 	case KindTest:
 		return "Test notification from Hermes Hub"
 	}
@@ -362,8 +369,11 @@ func pushPayload(m Message) PushPayload {
 	if m.Reminder {
 		title = "Still waiting: " + strings.ToLower(title[:1]) + title[1:]
 	}
-	return PushPayload{Kind: m.Record.Kind, Title: title, Body: "On " + m.Backend + ". Open the hub to see it.",
-		URL: m.URL, Tag: "hub-" + m.Record.ID}
+	body := "On " + m.Backend + ". Open the hub to see it."
+	if m.Record.Kind == hub.NoticeClaudeSignIn && m.Detail != "" {
+		body = "On " + m.Backend + ". " + m.Detail
+	}
+	return PushPayload{Kind: m.Record.Kind, Title: title, Body: body, URL: m.URL, Tag: "hub-" + m.Record.ID}
 }
 
 func (n *Notifier) sendPush(ctx context.Context, m Message) {

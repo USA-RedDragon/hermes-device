@@ -9,22 +9,24 @@ import (
 // Quiet hours run from QuietStart to QuietEnd ("HH:MM", both empty for
 // none) in TimeZone (an IANA name, "" for UTC).
 type NotifySettings struct {
-	Approvals  bool   `json:"approvals"`
-	Questions  bool   `json:"questions"`
-	Finished   bool   `json:"finished"`
-	Jobs       bool   `json:"jobs"`
-	Failures   bool   `json:"failures"`
-	Telegram   bool   `json:"telegram"`
-	Push       bool   `json:"push"`
-	QuietStart string `json:"quiet_start"`
-	QuietEnd   string `json:"quiet_end"`
-	TimeZone   string `json:"time_zone"`
+	Approvals bool `json:"approvals"`
+	Questions bool `json:"questions"`
+	Finished  bool `json:"finished"`
+	Jobs      bool `json:"jobs"`
+	Failures  bool `json:"failures"`
+	// ClaudeSignIn is for Claude admins: a Claude account lost its login.
+	ClaudeSignIn bool   `json:"claude_signin"`
+	Telegram     bool   `json:"telegram"`
+	Push         bool   `json:"push"`
+	QuietStart   string `json:"quiet_start"`
+	QuietEnd     string `json:"quiet_end"`
+	TimeZone     string `json:"time_zone"`
 }
 
 // DefaultNotifySettings are the settings of a person who never changed
-// them: approvals, questions and failures, on Telegram and Web Push.
+// them: approvals, questions, failures and Claude sign-ins, on Telegram and Web Push.
 func DefaultNotifySettings() NotifySettings {
-	return NotifySettings{Approvals: true, Questions: true, Failures: true, Telegram: true, Push: true}
+	return NotifySettings{Approvals: true, Questions: true, Failures: true, ClaudeSignIn: true, Telegram: true, Push: true}
 }
 
 // Wants reports whether the settings turn on notices of kind.
@@ -40,6 +42,8 @@ func (s NotifySettings) Wants(kind string) bool {
 		return s.Jobs
 	case NoticeFailure:
 		return s.Failures
+	case NoticeClaudeSignIn:
+		return s.ClaudeSignIn
 	}
 	return false
 }

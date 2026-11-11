@@ -335,6 +335,9 @@ const (
 	NoticeFinished = "finished"
 	NoticeJob      = "job"
 	NoticeFailure  = "failure"
+	// NoticeClaudeSignIn says a Claude account that a chat uses lost its
+	// login.
+	NoticeClaudeSignIn = "claude_signin"
 	// NoticeSettled says a prompt got its answer or was cancelled.
 	NoticeSettled = "settled"
 )
@@ -357,4 +360,7 @@ type Notice struct {
 	// Detail is a short line about what happened, such as a job's name
 	// or why it failed.
 	Detail string
+	// Users limits the notice to these hub users; nil is every user of
+	// the backend.
+	Users []string
 }
