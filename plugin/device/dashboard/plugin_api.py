@@ -347,6 +347,15 @@ async def device_socket(ws: WebSocket) -> None:
         os=text_field("os"), arch=text_field("arch"), shell=text_field("shell"),
         client_version=text_field("client_version"), version=version, capabilities=capabilities,
         close=lambda code, reason: _close(ws, code, reason))
+    if core.CAPABILITY_MCP in capabilities:
+        names = hello.get("mcp_servers")
+        servers = tuple(dict.fromkeys(n for n in names if isinstance(n, str) and core.MCP_SERVER_RE.fullmatch(n))) \
+            if isinstance(names, list) else ()
+        if servers:
+            conn.mcp_servers = servers[:64]
+        else:
+            capabilities = capabilities - {core.CAPABILITY_MCP}
+            conn.capabilities = capabilities
     hub = core.hub()
     welcome = {"type": core.TYPE_WELCOME, "version": version, "device_id": device_id, "name": display,
                "ping_interval": core.PING_INTERVAL_S, "plugin_version": core.PLUGIN_VERSION,
@@ -404,7 +413,8 @@ async def device_socket(ws: WebSocket) -> None:
             kind = msg.get("type")
             if kind == core.TYPE_PING:
                 await send_text(json.dumps({"type": core.TYPE_PONG, "seq": msg.get("seq")}))
-            elif kind in (core.TYPE_OUTPUT, core.TYPE_EXIT, core.TYPE_BROWSER_RESULT, core.TYPE_BROWSER_STATUS):
+            elif kind in (core.TYPE_OUTPUT, core.TYPE_EXIT, core.TYPE_BROWSER_RESULT, core.TYPE_BROWSER_STATUS,
+                          core.TYPE_MCP_RESULT):
                 hub.on_message(conn, msg)
     except asyncio.CancelledError:
         resumable = False

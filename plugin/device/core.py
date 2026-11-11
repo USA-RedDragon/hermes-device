@@ -55,7 +55,8 @@ TYPE_BROWSER_AUTH_RESULT = "browser_auth_result"
 
 # Capabilities the plugin accepts from a device's hello (section 4.1).
 CAPABILITY_BROWSER = "browser"
-CAPABILITIES = frozenset({CAPABILITY_BROWSER})
+CAPABILITY_MCP = "mcp"
+CAPABILITIES = frozenset({CAPABILITY_BROWSER, CAPABILITY_MCP})
 
 BROWSER_NOT_CONNECTED = "not_connected"
 BROWSER_REFUSED = "refused"
@@ -75,6 +76,26 @@ BROWSER_EXTENSION_ID = "browser@hermes-device"
 BROWSER_DEFAULT_TIMEOUT_S = 60
 BROWSER_MAX_TIMEOUT_S = 300
 MAX_BROWSER_RESULT = 16_777_216
+# MCP servers on the device (section 4.9).
+TYPE_MCP = "mcp"
+TYPE_MCP_RESULT = "mcp_result"
+MCP_OP_LIST = "list"
+MCP_OP_TOOLS = "tools"
+MCP_OP_CALL = "call"
+MCP_UNKNOWN_SERVER = "unknown_server"
+MCP_UNAVAILABLE = "unavailable"
+MCP_BUSY = "busy"
+MCP_TOO_LARGE = "too_large"
+MCP_TIMEOUT = "timeout"
+MCP_CANCELLED = "cancelled"
+MCP_FAILED = "failed"
+MCP_REFUSED = "refused"
+MCP_NOT_CONNECTED = "not_connected"
+MCP_DEFAULT_TIMEOUT_S = 120
+MCP_MAX_TIMEOUT_S = 3600
+MAX_MCP_RESULT = 16_777_216
+MAX_MCP_REQUEST = 4_194_304
+MCP_SERVER_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 # How long past its timeout the plugin waits for a browser_result before it gives up and kills it.
 BROWSER_SLACK_S = 10.0
 
@@ -132,6 +153,14 @@ class DeviceError(Exception):
 
 class BrowserError(DeviceError):
     """A browser request that did not succeed. ``code`` is a browser_result code."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class MCPError(DeviceError):
+    """An MCP request to a device failed; ``code`` is one of the MCP_* codes."""
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -444,6 +473,10 @@ class DeviceConn:
     browser: dict = field(default_factory=dict)
     # Browser requests waiting for their browser_result. They never wait for a resume.
     browser_calls: dict[str, "BrowserCall"] = field(default_factory=dict)
+    # The MCP servers the device's config lists (section 4.9), with CAPABILITY_MCP.
+    mcp_servers: tuple = ()
+    # MCP requests waiting for their mcp_result. They never wait for a resume.
+    mcp_calls: dict[str, "BrowserCall"] = field(default_factory=dict)
     connected_at: float = field(default_factory=time.time)
     conn_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     pending: dict[str, DeviceProcess] = field(default_factory=dict)
@@ -474,11 +507,13 @@ class DeviceConn:
                "capabilities": sorted(self.capabilities)}
         if CAPABILITY_BROWSER in self.capabilities:
             out["browser"] = dict(self.browser) or {"connected": False}
+        if CAPABILITY_MCP in self.capabilities:
+            out["mcp_servers"] = list(self.mcp_servers)
         return out
 
 
 class BrowserCall:
-    """One browser request waiting for its browser_result."""
+    """One browser or MCP request waiting for its browser_result or mcp_result."""
 
     def __init__(self, request_id: str):
         self.request_id = request_id
@@ -759,8 +794,12 @@ class Hub:
         with conn.lock:
             calls = list(conn.browser_calls.values())
             conn.browser_calls.clear()
+            mcp_calls = list(conn.mcp_calls.values())
+            conn.mcp_calls.clear()
         for call in calls:
             call.finish(False, code=BROWSER_NOT_CONNECTED, error=why)
+        for call in mcp_calls:
+            call.finish(False, code=MCP_NOT_CONNECTED, error=why.replace("browser operation", "MCP request"))
 
     def device(self, device_id: str) -> Optional[DeviceConn]:
         with self._lock:
@@ -792,6 +831,10 @@ class Hub:
         if kind in (TYPE_BROWSER_RESULT, TYPE_BROWSER_STATUS):
             if CAPABILITY_BROWSER in conn.capabilities:
                 self._on_browser(conn, msg)
+            return
+        if kind == TYPE_MCP_RESULT:
+            if CAPABILITY_MCP in conn.capabilities:
+                self._on_mcp(conn, msg)
             return
         if kind not in (TYPE_OUTPUT, TYPE_EXIT) or not isinstance(rid, str):
             return
@@ -878,6 +921,75 @@ class Hub:
             raise BrowserError(BROWSER_TIMEOUT, f"device {device_id} did not answer the {op} request in {timeout:g}s")
         if not call.ok:
             raise BrowserError(call.code, call.error)
+        return call.result
+
+    @staticmethod
+    def _on_mcp(conn: DeviceConn, msg: dict) -> None:
+        rid = msg.get("id")
+        if not isinstance(rid, str):
+            return
+        with conn.lock:
+            call = conn.mcp_calls.pop(rid, None)
+        if call is None:
+            return
+        if msg.get("ok") is True:
+            call.finish(True, result=msg.get("result"))
+            return
+        code = msg.get("code") if isinstance(msg.get("code"), str) else MCP_FAILED
+        error = msg.get("error") if isinstance(msg.get("error"), str) else "MCP request failed"
+        call.finish(False, code=code[:32], error=error[:4000])
+
+    def mcp_call(self, device_id: str, op: str, server: str = "", tool: str = "", arguments: Optional[dict] = None,
+                 timeout: float = MCP_DEFAULT_TIMEOUT_S, interrupted: Optional[Callable[[], bool]] = None) -> Any:
+        """Run one MCP operation on the device (section 4.9) and return its result. Raises
+        MCPError. Call from a worker thread, never the event loop. The caller checks that the
+        session may use this device."""
+        conn = self.device(device_id)
+        if conn is None:
+            raise MCPError(MCP_NOT_CONNECTED, f"device {device_id} is not connected")
+        if CAPABILITY_MCP not in conn.capabilities:
+            raise MCPError(MCP_NOT_CONNECTED, f"device {conn.name} [{device_id}] has no MCP servers: list them under "
+                                              f"mcp.servers in its hermes-device config and restart hermes-device run")
+        if op != MCP_OP_LIST and server not in conn.mcp_servers:
+            raise MCPError(MCP_UNKNOWN_SERVER, f"device {conn.name} has no MCP server named {server[:64]!r}; it has: "
+                                               + (", ".join(conn.mcp_servers) or "none"))
+        timeout = max(1.0, min(float(timeout), MCP_MAX_TIMEOUT_S))
+        rid = uuid.uuid4().hex
+        msg: dict = {"type": TYPE_MCP, "id": rid, "op": op, "timeout": timeout}
+        if op != MCP_OP_LIST:
+            msg["server"] = server
+        if op == MCP_OP_CALL:
+            msg["tool"] = tool
+            msg["arguments"] = arguments if isinstance(arguments, dict) else {}
+        if len(json.dumps(msg)) > MAX_MCP_REQUEST:
+            raise MCPError(MCP_REFUSED, f"the MCP request is over {MAX_MCP_REQUEST} bytes")
+        call = BrowserCall(rid)
+        with conn.lock:
+            conn.mcp_calls[rid] = call
+        try:
+            conn.send(msg)
+        except Exception as exc:
+            with conn.lock:
+                conn.mcp_calls.pop(rid, None)
+            raise MCPError(MCP_NOT_CONNECTED, f"could not reach device {device_id}: {exc}") from exc
+        deadline = time.monotonic() + timeout + BROWSER_SLACK_S
+        stopped = False
+        while not call.wait(min(0.5, max(0.0, deadline - time.monotonic()))):
+            stopped = interrupted is not None and interrupted()
+            if stopped or time.monotonic() >= deadline:
+                break
+        if not call.wait(0):
+            with conn.lock:
+                conn.mcp_calls.pop(rid, None)
+            try:
+                conn.send({"type": TYPE_KILL, "id": rid})
+            except Exception:
+                logger.debug("device: kill of MCP request %s not sent", rid, exc_info=True)
+            if stopped:
+                raise MCPError(MCP_CANCELLED, "the MCP request was cancelled because the turn was interrupted")
+            raise MCPError(MCP_TIMEOUT, f"device {device_id} did not answer the MCP {op} request in {timeout:g}s")
+        if not call.ok:
+            raise MCPError(call.code, call.error)
         return call.result
 
     # sandbox directories (section 8.3, fallback device)
