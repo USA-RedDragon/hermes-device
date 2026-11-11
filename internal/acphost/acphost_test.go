@@ -46,10 +46,12 @@ const (
 )
 
 const (
-	keyPID    = "pid"
-	blockText = "text"
-	rowApp    = "s1=/home/alice/src/app"
-	rowAppSub = "s2=/home/alice/src/app/sub"
+	keyPID       = "pid"
+	methodLoad   = "session/load"
+	methodResume = "session/resume"
+	blockText    = "text"
+	rowApp       = "s1=/home/alice/src/app"
+	rowAppSub    = "s2=/home/alice/src/app/sub"
 )
 
 func TestMain(m *testing.M) {
@@ -115,6 +117,8 @@ func fakeHermes() {
 			_, _ = os.Stderr.WriteString(strings.Repeat("x", 2<<20) + "\n")
 			_, _ = os.Stderr.WriteString(strings.Repeat("y", 4<<20) + "\n")
 			reply(m.ID, map[string]any{})
+		case methodLoad, methodResume:
+			reply(m.ID, map[string]any{"line": line, "_meta": map[string]any{"provenance": "p"}})
 		case "test/exit":
 			reply(m.ID, map[string]any{})
 			os.Exit(3)
@@ -379,7 +383,7 @@ func TestSessionRewrites(t *testing.T) {
 	h := newHarness(t, nil)
 	writeBindings(t, h)
 	conn := h.dial()
-	for _, method := range []string{"session/new", "session/load", "session/resume", "session/fork"} {
+	for _, method := range []string{"session/new", methodLoad, methodResume, "session/fork"} {
 		p := echoed(t, conn, `{"jsonrpc":"2.0","id":"r1","method":"`+method+`","params":{"sessionId":"s1","cwd":"/home/alice/src/app",
 			"mcpServers":[{"name":"x","command":"/bin/sh","args":[],"env":[]}],"mcp_servers":[{"name":"y"}]}}`)
 		if p["cwd"] != placeholder {
@@ -582,6 +586,54 @@ func TestListFiltering(t *testing.T) {
 	}
 }
 
+// TestLoadCarriesBinding checks that a session/load or session/resume
+// result carries the session's own binding to the connection's device, and
+// keeps Hermes' own _meta and the editor's id.
+func TestLoadCarriesBinding(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	writeBindings(t, h)
+	conn := h.dial()
+	for _, tc := range []struct{ method, id, sid, dir string }{
+		{methodLoad, `"l1"`, "s1", "/home/alice/src/app"},
+		{methodLoad, `1e0`, "s3", "/home/alice/other"},
+		{methodResume, `null`, "s2", "/home/alice/src/app/sub"},
+	} {
+		send(t, conn, `{"jsonrpc":"2.0","id":`+tc.id+`,"method":"`+tc.method+`","params":{"sessionId":"`+tc.sid+`","cwd":"/home/bob/elsewhere","mcpServers":[]}}`)
+		_, data := recv(t, conn)
+		var m struct {
+			ID     json.RawMessage `json:"id"`
+			Result struct {
+				Meta map[string]json.RawMessage `json:"_meta"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("%s %s: %s", tc.method, tc.sid, data)
+		}
+		if string(m.ID) != tc.id {
+			t.Errorf("%s: id %s came back as %s", tc.method, tc.id, m.ID)
+		}
+		var b struct{ Dir string }
+		_ = json.Unmarshal(m.Result.Meta[protocol.ACPBindingMeta], &b)
+		if b.Dir != tc.dir || string(m.Result.Meta["provenance"]) != `"p"` {
+			t.Errorf("%s %s: _meta %s", tc.method, tc.sid, data)
+		}
+	}
+
+	if err := os.WriteFile(h.bindings, []byte(`{"bindings":{"s1":{"device_id":"d1","dir":"/home/alice/src/app"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	send(t, conn, `{"jsonrpc":"2.0","id":9,"method":"session/load","params":{"sessionId":"s1","cwd":"/home/alice/src/app","mcpServers":[]}}`)
+	_, data := recv(t, conn)
+	if !strings.Contains(string(data), `"`+protocol.ACPBindingMeta+`":{"dir":"/home/alice/src/app"}`) {
+		t.Errorf("load got %s", data)
+	}
+	send(t, conn, `{"jsonrpc":"2.0","id":10,"method":"session/new","params":{"cwd":"/home/alice/src/app","mcpServers":[]}}`)
+	if _, data := recv(t, conn); strings.Contains(string(data), protocol.ACPBindingMeta) {
+		t.Errorf("session/new got a binding: %s", data)
+	}
+}
+
 func TestProcessLimit(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, func(o *acphost.Options) { o.MaxProcesses = 1 })
@@ -701,7 +753,7 @@ func TestOtherDeviceRefused(t *testing.T) {
 		}
 	}
 	for _, sid := range []string{"s5", "unknown", "s1-child"} {
-		for _, method := range []string{"session/load", "session/resume", "session/fork", "session/prompt", "session/set_mode", "session/close"} {
+		for _, method := range []string{methodLoad, methodResume, "session/fork", "session/prompt", "session/set_mode", "session/close"} {
 			send(t, conn, `{"jsonrpc":"2.0","id":2,"method":"`+method+`","params":{"sessionId":"`+sid+`","cwd":"/x","mcpServers":[],"prompt":[]}}`)
 			r, data := recv(t, conn)
 			if r.Error == nil || r.Error.Code != codeInvalidParams || r.Error.Message != "session is not bound to this device" {

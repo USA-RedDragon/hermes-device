@@ -177,6 +177,11 @@ const (
 	DefaultGrace = 120 * time.Second
 )
 
+// ACPBindingMeta is the _meta member that acp-host adds to a session/load
+// or session/resume result: {"dir": <dir>}, the session's own binding to the
+// connection's device (docs/protocol.md 6.2).
+const ACPBindingMeta = "deviceBinding"
+
 // Paths on the backend.
 const (
 	PluginExecPath = "/api/plugins/device/ws"

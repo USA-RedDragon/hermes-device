@@ -13,6 +13,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/USA-RedDragon/hermes-device/protocol"
 )
 
 // ACP methods acp-host rewrites.
@@ -120,10 +122,13 @@ func (e *rpcError) response() []byte {
 }
 
 // listRequest remembers a session/list request so its response can be
-// filtered.
+// filtered, or a session/load or session/resume request so its result can
+// carry the session's binding.
 type listRequest struct {
 	id  json.RawMessage
 	dir string
+	// session is set for a session/load or session/resume.
+	session string
 }
 
 // rewriter applies the section 6.2 rewrites for one connection.
@@ -131,8 +136,9 @@ type rewriter struct {
 	placeholder  string
 	bindingsFile string
 	deviceID     string
-	// lists holds the session/list requests in flight, by the id acp-host
-	// gave them. The caller holds a lock.
+	// lists holds the session/list, session/load and session/resume
+	// requests in flight, by the id acp-host gave them. The caller holds a
+	// lock.
 	lists    map[string]listRequest
 	nextList uint64
 }
@@ -173,6 +179,14 @@ func (r *rewriter) fromEditor(data []byte) ([]byte, error) {
 			return nil
 		}); err != nil {
 			return nil, err
+		}
+		if id, ok := m["id"]; ok && (method == methodLoad || method == methodResume) {
+			var sid string
+			_ = json.Unmarshal(params(m)[keySessionID], &sid)
+			r.nextList++
+			own := fmt.Sprintf("hermes-device-load-%d", r.nextList)
+			r.lists[own] = listRequest{id: id, session: sid}
+			m["id"] = mustJSON(own)
 		}
 	case methodList:
 		var dir string
@@ -473,6 +487,9 @@ func (r *rewriter) fromAgent(line []byte) ([]byte, error) {
 	if !ok {
 		return json.Marshal(m)
 	}
+	if req.session != "" {
+		return r.addBinding(m, raw, req.session)
+	}
 	var res object
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return line, nil //nolint:nilerr // a result that is not an object passes through unchanged
@@ -500,6 +517,45 @@ func (r *rewriter) fromAgent(line []byte) ([]byte, error) {
 		return nil, merr
 	}
 	return out, err
+}
+
+// addBinding adds the session's own binding to this device, as
+// {"dir": <dir>}, to a session/load or session/resume result under
+// _meta[protocol.ACPBindingMeta], so the bridge can tell whether the
+// editor's folder is the session's folder (docs/protocol.md 6.2). A result
+// that is not an object, or a session with no binding to this device, gets
+// nothing.
+func (r *rewriter) addBinding(m object, raw json.RawMessage, sid string) ([]byte, error) {
+	var res object
+	if json.Unmarshal(raw, &res) != nil || res == nil {
+		return json.Marshal(m)
+	}
+	bindings, err := readBindings(r.bindingsFile)
+	b, ok := bindings[sid]
+	if err != nil || !ok || b.DeviceID != r.deviceID {
+		out, merr := json.Marshal(m)
+		if merr != nil {
+			return nil, merr
+		}
+		return out, err
+	}
+	meta := object{}
+	if mraw, has := res[metaKeys()[0]]; has {
+		if json.Unmarshal(mraw, &meta) != nil || meta == nil {
+			meta = object{}
+		}
+	}
+	meta[protocol.ACPBindingMeta] = mustJSON(map[string]string{"dir": b.Dir})
+	res[metaKeys()[0]] = mustJSON(meta)
+	m["result"] = mustJSON(res)
+	return json.Marshal(m)
+}
+
+// params decodes m's params object; anything else is an empty object.
+func params(m object) object {
+	p := object{}
+	_ = json.Unmarshal(m["params"], &p)
+	return p
 }
 
 // within reports whether dir is base or below it. An empty base matches

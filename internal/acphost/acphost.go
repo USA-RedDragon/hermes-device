@@ -411,7 +411,7 @@ func (c *connection) pumpStdout(ctx context.Context, stdout io.Reader) {
 				out, rerr := c.rw.fromAgent(line)
 				c.mu.Unlock()
 				if rerr != nil {
-					c.log.Error("Could not read the bindings file; listing no sessions", "error", rerr)
+					c.log.Error("Could not read the bindings file; the answer carries no bindings", "error", rerr)
 				}
 				if out != nil {
 					if werr := c.conn.Write(ctx, websocket.MessageText, out); werr != nil {
