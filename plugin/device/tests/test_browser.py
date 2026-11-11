@@ -234,6 +234,13 @@ class ToolTests(BrowserBase):
         out = self.run_tool("browser_tabs", action="list")
         self.assertIn("extension on device pc", out["error"])
 
+    def test_bound_service_device_has_no_browser(self):
+        """A session bound to a service device by hand gets no browser there."""
+        self.device.conn.user = core.SERVICE_USER
+        out = self.run_tool("browser_tabs", action="list")
+        self.assertIn("service device", out["error"])
+        self.assertEqual(self.fake.requests, [])
+
     def test_navigate_new_tab_asks_once_per_site(self):
         out = self.run_tool("browser_navigate", url="https://www.Example.com/a")
         self.assertEqual(self.decision["action"], "approve")

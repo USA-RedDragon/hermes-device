@@ -412,7 +412,12 @@ def pick(session_id: str, res: Any) -> tuple[Any, str]:
                               f"belongs to another user than this session. Choose again with browser_use_device.")
         return _chosen(rec, f"session {session_id}"), "chosen"
     if res.state == core.STATE_BOUND and not res.sandbox:
-        return core.hub().device(res.binding.device_id), "bound"
+        conn = core.hub().device(res.binding.device_id)
+        if conn is not None and conn.user == core.SERVICE_USER:
+            raise Unavailable(f"hermes-device: session {session_id or '(none)'} is bound to the service device "
+                              f"{conn.name} [{conn.device_id}], which has no browser. Choose your computer with "
+                              f"browser_use_device.")
+        return conn, "bound"
     found = browser_devices(_need_user(user))
     if len(found) == 1:
         return found[0], "only"
