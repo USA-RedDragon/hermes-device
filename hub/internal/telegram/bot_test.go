@@ -466,3 +466,29 @@ func TestRestoresChatsAndOffset(t *testing.T) {
 		t.Fatalf("stored chat = %+v", c)
 	}
 }
+
+func TestStatusLineCountsTokens(t *testing.T) {
+	t.Parallel()
+	const kInput, kOutput = "input", "output"
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t1", kName: toolTerminal, kContext: "go test"})
+	h.tg.wait(mSend, "Running")
+	h.hub.emit(t, sid, "session.usage", map[string]any{"usage": map[string]any{"prompt": 12000}, hub.TurnKey: map[string]any{kInput: 12000, kOutput: 900}})
+	h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{kToolID: "t1", kName: toolTerminal})
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "Done.", kStatus: statusComplete,
+		hub.TurnKey: map[string]any{kInput: 31234, kOutput: 2800}})
+	final := h.tg.wait(mEdit, "Worked for")
+	if !strings.Contains(final.text(), "ran 1 command · 31k in, 3k out</i>") {
+		t.Fatalf("final status = %q", final.text())
+	}
+	sid = h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindReasoningDelta, map[string]any{kText: "hmm"})
+	h.tg.wait(mSend, "Thinking…")
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "Ok.", kStatus: statusComplete,
+		hub.TurnKey: map[string]any{kInput: nil, kOutput: 40}})
+	final = h.tg.wait(mEdit, "Thought for")
+	if !strings.Contains(final.text(), " · 40 out</i>") || strings.Contains(final.text(), " in,") {
+		t.Fatalf("final status without input = %q", final.text())
+	}
+}

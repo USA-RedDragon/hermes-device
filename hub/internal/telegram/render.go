@@ -39,9 +39,10 @@ type toolPayload struct {
 }
 
 type completePayload struct {
-	Text   json.RawMessage `json:"text"`
-	Status string          `json:"status"`
-	Error  string          `json:"error"`
+	Text    json.RawMessage `json:"text"`
+	Status  string          `json:"status"`
+	Error   string          `json:"error"`
+	HubTurn *hub.TurnTokens `json:"hub_turn"`
 }
 
 type approvalPayload struct {
@@ -92,6 +93,9 @@ type turnStatus struct {
 	running  []string
 	steps    []string
 	counts   map[string]int
+	// tokens are the turn's tokens so far, from the hub's count; nil
+	// until the first usage event of the turn.
+	tokens *hub.TurnTokens
 }
 
 // renderer turns one attachment's events into Telegram messages. It is used
@@ -169,6 +173,8 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 		r.note(ctx, ev)
 	case hub.KindMessageComplete:
 		r.complete(ctx, ev)
+	case usageEvent:
+		r.turnUsage(ev)
 	case hub.KindApprovalRequest, hub.KindClarifyRequest:
 		var p approvalPayload
 		if r.decode(ev, &p) {
@@ -324,6 +330,32 @@ func (t *turnStatus) summary() string {
 	return strings.Join(parts, ", ")
 }
 
+// usageEvent is the gateway's mid-turn usage event.
+const usageEvent = "session.usage"
+
+// turnUsage takes the turn's tokens from a usage event.
+func (r *renderer) turnUsage(ev hub.Event) {
+	var p struct {
+		HubTurn *hub.TurnTokens `json:"hub_turn"`
+	}
+	if r.turn != nil && r.decode(ev, &p) && p.HubTurn != nil {
+		r.turn.tokens = p.HubTurn
+	}
+}
+
+// tokenText is " · 31k in, 3k out" for the turn's tokens, " · 3k out"
+// when the hub could not count what went in, and "" before any count.
+func (t *turnStatus) tokenText() string {
+	if t.tokens == nil {
+		return ""
+	}
+	out := tokens(t.tokens.Output) + " out"
+	if t.tokens.Input == nil {
+		return " · " + out
+	}
+	return " · " + tokens(*t.tokens.Input) + " in, " + out
+}
+
 // duration writes an elapsed time as 12s, 2m 5s or 1h 3m.
 func duration(d time.Duration) string {
 	s := int(d.Round(time.Second) / time.Second)
@@ -345,12 +377,13 @@ func (r *renderer) statusHTML(final bool) string {
 	t := r.turn
 	elapsed := duration(r.now().Sub(t.start))
 	sum := t.summary()
+	used := t.tokenText()
 	var b strings.Builder
 	switch {
 	case final && sum == "":
-		b.WriteString("<i>Thought for " + elapsed + "</i>")
+		b.WriteString("<i>Thought for " + elapsed + used + "</i>")
 	case final:
-		b.WriteString("<i>Worked for " + elapsed + ": " + escapeHTML(sum) + "</i>")
+		b.WriteString("<i>Worked for " + elapsed + ": " + escapeHTML(sum) + used + "</i>")
 	default:
 		if len(t.running) > 0 {
 			id := t.running[len(t.running)-1]
@@ -368,6 +401,7 @@ func (r *renderer) statusHTML(final bool) string {
 		if sum != "" {
 			meta = sum + " (" + elapsed + ")"
 		}
+		meta += used
 		b.WriteString("\n<i>" + escapeHTML(meta) + "</i>")
 	}
 	if details := r.details(); details != "" {
@@ -675,6 +709,9 @@ func (r *renderer) settled(ctx context.Context, cancelled bool, ids ...string) {
 func (r *renderer) complete(ctx context.Context, ev hub.Event) {
 	var p completePayload
 	r.decode(ev, &p)
+	if r.turn != nil && p.HubTurn != nil {
+		r.turn.tokens = p.HubTurn
+	}
 	r.endTurn(ctx)
 	text := r.answer.String()
 	var s string
