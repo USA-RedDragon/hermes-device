@@ -1,0 +1,10 @@
+tests/tools/test_terminal_auto_background.py
+tests/tools/test_terminal_yield_to_background.py
+tests/tools/test_process_registry_completion_races.py
+tests/tools/test_process_registry_import_fence.py
+tests/tools/test_process_registry_list_exit.py
+tests/tools/test_process_registry_pty_kill.py
+tests/tools/test_base_environment.py
+tests/tools/test_interrupted_command_cwd.py
+tests/tools/test_terminal_cwd_echo.py
+tests/tools/test_terminal_tool.py

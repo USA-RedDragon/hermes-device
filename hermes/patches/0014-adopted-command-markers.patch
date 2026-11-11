@@ -1,0 +1,146 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 12:21:16 -0600
+Subject: [PATCH 1/2] fix(terminal): strip wrapper markers from a command moved
+ to the background
+
+A foreground command handed to the process registry prints the wrapper's
+pipe-status and CWD marker lines after it exits. The foreground path strips
+them in _extract_cwd_from_output, but adopt_local kept them in the buffer,
+so the completion output showed them. The environment now names the markers
+on the handed process and the registry strips them when the command finishes.
+---
+ tests/tools/test_terminal_auto_background.py | 30 ++++++++++++++++++++
+ tools/environments/base.py                   |  6 +++-
+ tools/process_registry.py                    | 19 ++++++++++++-
+ 3 files changed, 53 insertions(+), 2 deletions(-)
+
+diff --git a/tests/tools/test_terminal_auto_background.py b/tests/tools/test_terminal_auto_background.py
+index c3d79d5e11..52f913890c 100644
+--- a/tests/tools/test_terminal_auto_background.py
++++ b/tests/tools/test_terminal_auto_background.py
+@@ -165,3 +165,33 @@ def test_user_yield_keeps_its_own_reason():
+         for proc in procs:
+             env._kill_process(proc)
+         env.cleanup()
++
++
++@pytest.mark.live_system_guard_bypass
++@pytest.mark.parametrize("command", ["echo alpha; sleep 0.8; echo omega", "echo alpha; sleep 0.8; echo omega | cat"])
++def test_adopted_command_output_carries_no_wrapper_markers(command):
++    """The wrapper prints its pipe-status and CWD marker lines after the command exits, so an adopted
++    command emits them into the registry's buffer: the completion output must not show them."""
++    from tools.environments.local import LocalEnvironment
++
++    env = LocalEnvironment()
++    sids = []
++
++    def handler(proc, output_so_far):
++        session = process_registry.adopt_local(proc, command=command, cwd="/", output_so_far=output_so_far,
++                                               notify_on_complete=False)
++        sids.append(session.id)
++        return {"output": output_so_far, "returncode": None, "yielded_session_id": session.id}
++
++    try:
++        result = env.execute(command, timeout=20, yield_handler=handler, yield_after=0.2)
++        assert result["yield_reason"] == "auto_background"
++        done = process_registry.wait(sids[0], timeout=15)
++    finally:
++        for sid in sids:
++            process_registry.kill_process(sid)
++        env.cleanup()
++    assert done["exit_code"] == 0, done
++    assert "alpha" in done["output"] and "omega" in done["output"]
++    assert "__HERMES_" not in done["output"], done["output"]
++    assert "__HERMES_" not in process_registry.get(sids[0]).output_buffer
+diff --git a/tools/environments/base.py b/tools/environments/base.py
+index 19e4fec902..0e1655b18b 100644
+--- a/tools/environments/base.py
++++ b/tools/environments/base.py
+@@ -7,6 +7,7 @@ or a temp file (local). Cohesive pieces live in sibling modules (``base_output``
+ ``base_session_env``, ``base_wait``, ``path_utils``).
+ """
+ 
++import contextlib
+ import json
+ import logging
+ import os
+@@ -514,7 +515,8 @@ class BaseEnvironment(ABC):
+         ``yield_handler(proc, output_so_far)``: when the tool thread is asked to yield
+         (``tools.interrupt.request_yield`` — a user message arrived mid-command), the drain
+         thread is stopped, the still-running process is handed to the handler and its dict
+-        is returned as the result; the process is NOT killed.
++        is returned as the result; the process is NOT killed. ``proc._hermes_output_markers``
++        names the wrapper marker lines the process prints on exit, for the adopter to strip.
+         ``yield_after`` (seconds, with ``yield_handler``): also hand the process over once it
+         has run that long (``terminal.auto_background_seconds``); the handler's dict then
+         carries ``yield_reason="auto_background"`` and ``yielded_after_s``. Tried once: when the handler declines
+@@ -568,6 +570,8 @@ class BaseEnvironment(ABC):
+                 if yield_reason is not None:
+                     drain_stop.set()
+                     drain_thread.join(timeout=1)
++                    with contextlib.suppress(AttributeError):
++                        proc._hermes_output_markers = tuple(m for m in (self._pipe_marker, self._cwd_marker) if m)
+                     try:
+                         handed = yield_handler(proc, output.render())
+                     except Exception:
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+index 26065d0f18..1aea92508d 100644
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -25,6 +25,7 @@ _IS_WINDOWS = platform.system() == "Windows"
+ # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
+ # See #70716.
+ _IS_LINUX = platform.system() == "Linux"
++from tools.environments.base_session_env import _split_cwd_marker
+ from tools.environments.local import _append_dropped_path_entries, _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env, _terminal_env
+ from hermes_cli._subprocess_compat import windows_hide_flags
+ from dataclasses import dataclass, field
+@@ -577,6 +578,7 @@ class ProcessSession:
+                                                 # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
+     output_log: str = ""                        # file the process writes to (worker spawns; no pipe to lose)
+     pty_fallback: str = ""                      # why a pty=true local spawn runs in pipe mode instead
++    output_markers: tuple = ()                  # wrapper marker lines an adopted foreground command prints on exit
+     # Watcher/notification routing (persisted for crash recovery)
+     watcher_platform: str = ""
+     watcher_chat_id: str = ""
+@@ -663,6 +665,18 @@ class ProcessSession:
+                 self.termination_source = source
+ 
+ 
++def _strip_output_markers(session: ProcessSession) -> None:
++    """Remove the foreground wrapper's pipe-status and CWD marker lines from an adopted
++    command's buffer, as ``BaseEnvironment._extract_cwd_from_output`` does for a foreground result."""
++    if not session.output_markers:
++        return
++    with session._lock:
++        for marker in session.output_markers:
++            split = _split_cwd_marker(session.output_buffer, marker)
++            if split is not None:
++                session.output_buffer = split[1]
++
++
+ # Watcher routing fields, in event-dict key order (``watcher_<key>`` on the session).
+ _WATCHER_ROUTE_KEYS = ("platform", "chat_id", "user_id", "user_name", "thread_id", "message_id")
+ # Session fields persisted verbatim in the crash-recovery checkpoint (plus
+@@ -1273,9 +1287,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+         (yield-to-background: the user sent a message while the command was running).
+         The caller has stopped its own drain thread; the registry's reader continues from
+         the pipe's current position and ``output_so_far`` seeds the buffer so nothing
+-        already captured is lost."""
++        already captured is lost. The foreground wrapper's marker lines that the process
++        prints on exit (``proc._hermes_output_markers``) are stripped when it finishes."""
+         session = self._new_session(command, task_id, owner_task_id, session_key, cwd)
+         session.process = proc
++        session.output_markers = tuple(getattr(proc, "_hermes_output_markers", None) or ())
+         session.pid = proc.pid
+         session.host_start_time = self._safe_host_start_time(session.pid)
+         session.notify_on_complete = notify_on_complete
+@@ -1597,6 +1613,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+         Idempotent: kill_process() and the reader thread can both call this; only
+         the FIRST move enqueues the completion notification, so no duplicates.
+         Returns True when this call is the one that persisted the session."""
++        _strip_output_markers(session)
+         with self._lock:
+             if session.handed_off:
+                 return False
