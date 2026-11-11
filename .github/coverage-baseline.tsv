@@ -1,4 +1,4 @@
-assertion/assertion.go	106	88
+assertion/assertion.go	106	89
 cmd/acp.go	29	1
 cmd/acphost.go	29	1
 cmd/autoupdate.go	72	55
@@ -42,7 +42,7 @@ internal/chat/chat.go	256	217
 internal/config/config.go	68	58
 internal/config/load.go	18	17
 internal/daemonstate/daemonstate.go	17	13
-internal/device/device.go	662	590
+internal/device/device.go	662	591
 internal/device/mcp.go	69	60
 internal/executor/executor.go	96	86
 internal/hermesbuild/hermesbuild.go	220	172
@@ -70,7 +70,7 @@ internal/setup/shellenv.go	143	124
 internal/setup/state.go	63	43
 internal/setup/system.go	51	4
 internal/setup/update.go	79	68
-internal/splice/conn.go	304	262
+internal/splice/conn.go	305	263
 internal/splice/resolve.go	127	111
 internal/splice/rpc.go	97	83
 internal/splice/splice.go	225	201
