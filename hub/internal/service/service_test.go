@@ -127,6 +127,34 @@ func TestBackendsAndSessions(t *testing.T) {
 	}
 }
 
+func TestBackgroundSessionsHidden(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ctx := context.Background()
+	e.gw.AddSession(&gatewaytest.Session{ID: "bg_abc123", Title: "Background prompt", StartedAt: 3000})
+	e.gw.AddSession(&gatewaytest.Session{ID: "bg_124526_be5bed", Title: "CLI background", Live: true, StartedAt: 4000})
+	ss, err := e.svc.Sessions(ctx, userAlice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ss) != 2 || ss[0].ID != sLive || hub.IsBackground(ss[1].ID) {
+		t.Fatalf("sessions = %+v", ss)
+	}
+	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, "bg_abc123", 0)
+	if err != nil {
+		t.Fatalf("open a background prompt's chat: %v", err)
+	}
+	defer stop()
+	select {
+	case ev := <-ch:
+		if ev.Kind == "" {
+			t.Fatalf("first event = %+v", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no snapshot for the background prompt's chat")
+	}
+}
+
 func TestAuthorizationDenied(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})

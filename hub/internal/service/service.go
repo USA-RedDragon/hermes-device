@@ -806,6 +806,9 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 			return nil, err
 		}
 		for _, r := range res.Sessions {
+			if hub.IsBackground(r.SessionID) {
+				continue
+			}
 			s := hub.Session{ID: r.SessionID, BackendID: b.cfg.ID, Title: r.Title, Live: lp.Scope == gateway.ScopeLive,
 				Running: r.Running, MessageCount: r.MessageCount, Archived: lp.IncludeHidden}
 			if r.Source != nil {

@@ -3,7 +3,21 @@ package hub
 import (
 	"context"
 	"errors"
+	"strings"
 )
+
+// BackgroundPrefix starts the ID of every /bg prompt's task and of the
+// session Hermes stores it as. Hermes v0.23.1 marks such a session by its
+// ID only: its row has the source of the surface that ran it and no parent
+// session (tui_gateway/agent_callbacks.py _background_agent_kwargs).
+const BackgroundPrefix = "bg_"
+
+// IsBackground reports whether a session is the stored run of a /bg
+// prompt. Such a session belongs to the chat that started it, so the hub
+// leaves it out of the chat list, the search and Telegram topics.
+func IsBackground(sessionID string) bool {
+	return strings.HasPrefix(sessionID, BackgroundPrefix)
+}
 
 // Errors of Activity.
 var (

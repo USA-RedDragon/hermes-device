@@ -561,6 +561,13 @@ window.HubActivity = (ctx) => {
       o.onclick = () => ctx.showText(r.command || r.goal, r.output || r.tail.map((l) => l[1]).join("\n"));
       acts.append(o);
     }
+    if (r.kind === "prompt" && !running) {
+      const o = el("button", "", "Open chat");
+      o.type = "button";
+      o.title = "Open the full transcript of this background prompt";
+      o.onclick = () => { location.hash = "#/s/" + encodeURIComponent(chat.backend) + "/" + encodeURIComponent(r.id); };
+      acts.append(o);
+    }
     if (running && r.kind !== "prompt") {
       const stop = el("button", "danger-text", "Stop");
       stop.type = "button";

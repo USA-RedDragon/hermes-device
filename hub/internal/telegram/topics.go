@@ -153,10 +153,6 @@ func topicName(title, place string) string {
 	return truncate(name, maxTopicName)
 }
 
-// backgroundPrefix starts the ID of the session a /bg prompt runs in. It
-// is a side task of another chat, so it gets no topic.
-const backgroundPrefix = "bg_"
-
 // sourceCron is the source of the sessions of Hermes's scheduled jobs.
 const sourceCron = "cron"
 
@@ -567,7 +563,7 @@ func (b *Bot) syncForum(ctx context.Context, f *forum) {
 	for _, s := range sessions {
 		ref := hub.SessionRef{BackendID: s.BackendID, SessionID: s.ID}
 		listed[ref] = true
-		if !topicSource(s.Source) || strings.HasPrefix(s.ID, backgroundPrefix) || cctx.Err() != nil {
+		if !topicSource(s.Source) || hub.IsBackground(s.ID) || cctx.Err() != nil {
 			continue
 		}
 		p, ok := places[ref]

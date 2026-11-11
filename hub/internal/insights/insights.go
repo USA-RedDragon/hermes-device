@@ -163,6 +163,9 @@ func (s *Service) Search(ctx context.Context, user, query string) (hub.SearchRep
 				return
 			}
 			for _, c := range chats {
+				if hub.IsBackground(c.SessionID) {
+					continue
+				}
 				r := hub.SearchResult{BackendID: b.ID, SessionID: c.SessionID, Title: c.Title,
 					LastActive: unixTime(c.LastActive), Archived: c.Archived, Hits: make([]hub.SearchHit, 0, len(c.Hits))}
 				for _, h := range c.Hits {

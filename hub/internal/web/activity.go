@@ -15,10 +15,6 @@ type sessionTokens interface {
 	SessionTokens(ctx context.Context, user, backendID string, ids []string) (map[string]hub.Tokens, error)
 }
 
-// backgroundPrefix starts the task ID, and session ID, of every /bg
-// prompt (gateway/session_tui_side.py).
-const backgroundPrefix = "bg_"
-
 func (s *Server) activity(w http.ResponseWriter) (hub.Activity, bool) {
 	a, ok := s.svc.(hub.Activity)
 	if !ok {
@@ -166,7 +162,7 @@ func (s *Server) handleBackgroundTokens(w http.ResponseWriter, r *http.Request) 
 	}
 	var ids []string
 	for _, id := range r.URL.Query()["task"] {
-		if strings.HasPrefix(id, backgroundPrefix) && len(id) <= 64 {
+		if hub.IsBackground(id) && len(id) <= 64 {
 			ids = append(ids, id)
 		}
 	}

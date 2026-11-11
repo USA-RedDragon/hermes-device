@@ -98,7 +98,8 @@ func newService(t *testing.T, prom http.Handler) *insights.Service {
 	t.Helper()
 	pc := jsonHandler(map[string]any{
 		searchPath: map[string]any{"results": []any{map[string]any{keySessionID: "s1", "title": "Trip",
-			"last_active": 1.7e9, "hits": []any{map[string]any{"row_id": 4, keySessionID: "s0", "role": "user", "snippet": "a >>>lisbon<<< b", "timestamp": 1.7e9}}}}},
+			"last_active": 1.7e9, "hits": []any{map[string]any{"row_id": 4, keySessionID: "s0", "role": "user", "snippet": "a >>>lisbon<<< b", "timestamp": 1.7e9}}},
+			map[string]any{keySessionID: "bg_abc123", "hits": []any{map[string]any{"row_id": 9, keySessionID: "bg_abc123", "role": "user", "snippet": ">>>lisbon<<<", "timestamp": 1.7e9}}}}},
 		"/api/plugins/device/usage": map[string]any{"since": 1.6e9, "sessions": []any{map[string]any{keySessionID: "s0", "chat_id": "s1",
 			"title": "Trip", "model": "qwen", "provider": "ollama", "last_active": 1.7e9, "input": 10, "output": 2, "calls": 1, "cost_usd": -1}},
 			"models": []any{map[string]any{"model": "qwen", "provider": "ollama", "input": 10, "output": 2, "calls": 1}}},
