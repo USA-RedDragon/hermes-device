@@ -409,6 +409,7 @@
       this.failed = [];
       this.status = null;
       this.info = {};
+      this.compactions = undefined;
       for (const u of this.urls || []) URL.revokeObjectURL(u);
       this.urls = [];
     }
@@ -711,11 +712,32 @@
 
     showInfo(p) {
       if (!p) return;
+      if (p.model && this.info.model && p.model !== this.info.model) {
+        // The old model's window is wrong for the new one; Hermes reports the new one on the next reply.
+        delete this.info.context_length;
+        if (this.info.usage) this.info.usage = { ...this.info.usage, context_max: undefined, context_used: undefined };
+      }
       for (const k of ["model", "provider", "cwd", "reasoning_effort", "context_length"]) {
         if (p[k] !== undefined && p[k] !== null) this.info[k] = p[k];
       }
-      if (p.usage && typeof p.usage === "object") this.info.usage = p.usage;
+      if (p.usage && typeof p.usage === "object") {
+        this.info.usage = p.usage;
+        this.countCompactions(p.usage.compressions);
+      }
       drawInfo(this.info);
+    }
+
+    // countCompactions notes a compaction that the usage counter shows and
+    // no "compacted" status reported.
+    countCompactions(n) {
+      if (typeof n !== "number") return;
+      if (typeof this.compactions === "number" && n > this.compactions) this.compacted();
+      this.compactions = Math.max(n, this.compactions || 0);
+    }
+
+    compacted() {
+      if (typeof this.compactions === "number") this.compactions++;
+      this.add(el("div", "note", "Older messages were summarized to make room."));
     }
 
     deleted() {
@@ -843,7 +865,11 @@
           if (!this.ensureTurn().reasoning) { this.reasoning(p.text || ""); this.turn.reasoning.open = false; }
           break;
         case "thinking.delta": this.setStatus(p.text || ""); break;
-        case "status.update": if (p.text) this.setStatus(p.text); break;
+        case "status.update":
+          if (p.kind === "compacted") { this.setStatus(""); this.compacted(); }
+          else if (p.kind === "compacting") this.setStatus("Summarizing older messages to make room...");
+          else if (p.text) this.setStatus(p.text);
+          break;
         case "tool.generating": this.setStatus("Preparing " + (p.name || "a tool") + "..."); break;
         case "tool.start": this.setStatus(""); this.toolCard(p.tool_id, p.name, p.args, p.context); break;
         case "tool.progress": {
@@ -1341,6 +1367,38 @@
     return String(n);
   }
 
+  function tokens(n) {
+    if (n >= 1e6) return +(n / 1e6).toFixed(1) + "M";
+    if (n >= 1000) return Math.round(n / 1000) + "k";
+    return String(n);
+  }
+
+  // contextPart shows how much of the model's context window the chat
+  // fills, with a meter that turns the warning color when nearly full.
+  function contextPart(info) {
+    const u = info.usage || {};
+    const max = u.context_max || info.context_length;
+    if (!max) return null;
+    const sp = el("span", "context");
+    const used = u.context_used;
+    if (typeof used !== "number") {
+      sp.textContent = tokens(max) + " context";
+      sp.title = "The model's context window. It shows how full it is after the next reply.";
+      return sp;
+    }
+    const pct = Math.min(100, Math.round((used / max) * 100));
+    const meter = el("span", "meter");
+    meter.setAttribute("aria-hidden", "true");
+    const fill = el("span");
+    fill.style.width = pct + "%";
+    meter.append(fill);
+    sp.append(meter, (u.context_estimated ? "~" : "") + tokens(used) + " / " + tokens(max) + " context");
+    if (pct >= 80) sp.classList.add("full");
+    sp.title = pct + "% of the model's context window is in use" + (u.context_estimated ? " (estimated)" : "") +
+      ". When it fills up, Hermes summarizes older messages to make room.";
+    return sp;
+  }
+
   // drawInfo fills the line under the title: model, how much of the
   // model's context the chat uses, reply speed and working folder.
   function drawInfo(info) {
@@ -1348,11 +1406,8 @@
     const model = info.model || u.model;
     const parts = [];
     if (model) parts.push(["model", model, "Model"]);
-    const max = u.context_max || info.context_length;
-    if (typeof u.context_percent === "number" && max) {
-      parts.push(["context", u.context_percent + "% of " + size(max) + " memory used",
-        "How much of the model's working memory this chat fills. Hermes compacts the chat when it gets full."]);
-    }
+    const ctx = contextPart(info);
+    if (ctx) parts.push(ctx);
     if (typeof u.avg_tps === "number" && u.avg_tps > 0) parts.push(["speed", Math.round(u.avg_tps) + " tokens/s", "Reply speed"]);
     const p = view ? view.place : null;
     let cwd = info.cwd;
@@ -1361,7 +1416,9 @@
     if (cwd) parts.push(["cwd", base(cwd), "Working folder: " + cwd + (p && p.kind === "computer" && p.mine ? " on " + p.name : "")]);
     const line = $("infoline");
     line.replaceChildren();
-    for (const [cls, text, title] of parts) {
+    for (const part of parts) {
+      if (part instanceof Node) { line.append(part); continue; }
+      const [cls, text, title] = part;
       const sp = el("span", cls, text);
       sp.title = title;
       line.append(sp);

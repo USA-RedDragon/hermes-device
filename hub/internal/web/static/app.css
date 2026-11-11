@@ -95,6 +95,11 @@ button.icon { border: 0; background: transparent; font-size: 1.3rem; padding: .2
 .info[open] summary::after { content: "\25B4"; }
 .info summary .model { color: var(--fg); font-weight: 600; }
 .info summary span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.info summary .context { display: inline-flex; align-items: center; gap: .35rem; font-variant-numeric: tabular-nums; }
+.info summary .meter { flex: none; width: 2.5rem; height: .35rem; border-radius: 1rem; background: var(--line); overflow: hidden; }
+.info summary .meter span { display: block; height: 100%; background: var(--muted); }
+.info summary .context.full { color: var(--warn); }
+.info summary .context.full .meter span { background: var(--warn); }
 .info-body { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; padding: .2rem 0 .6rem; }
 .info-body label { display: flex; gap: .4rem; align-items: center; color: var(--fg); }
 .info-body select { font: inherit; font-size: .85rem; padding: .2rem .35rem; border-radius: 6px; border: 1px solid var(--line);
