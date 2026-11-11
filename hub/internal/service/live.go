@@ -238,6 +238,7 @@ func (ls *live) apply(ev gateway.Event) {
 	if ev.ExecutionGeneration != nil && *ev.ExecutionGeneration > ls.generation {
 		ls.generation = *ev.ExecutionGeneration
 	}
+	ls.b.obs.observe(ls.id, ev.Type, ev.Payload, time.Now())
 	switch ev.Type {
 	case gateway.InfoEvent:
 		if v := gateway.Vision(ev.Payload); v != nil {

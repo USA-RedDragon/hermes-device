@@ -117,7 +117,7 @@ func New(cfgs []config.Backend, dir Directory, opts Options) *Service {
 	for _, c := range cfgs {
 		b := &backend{svc: s, cfg: c, dialer: opts.Dialer(c), sessions: map[string]*live{},
 			log: s.log.With("backend", c.ID), held: map[string][]*heldPrompt{}, remote: map[string][]hub.HeldInput{},
-			kick: make(chan struct{}, 1), sending: map[string]*sessionGate{}}
+			kick: make(chan struct{}, 1), sending: map[string]*sessionGate{}, obs: newObserver(time.Now())}
 		s.backends[c.ID] = b
 		s.order = append(s.order, c.ID)
 	}
@@ -471,6 +471,9 @@ type backend struct {
 	// submits with the check for held prompts.
 	gateMu  sync.Mutex
 	sending map[string]*sessionGate
+
+	// obs keeps what the backend's usage events said.
+	obs *observer
 }
 
 type sessionGate struct {
