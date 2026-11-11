@@ -78,6 +78,8 @@ type Service struct {
 	uploads chan struct{}
 	// notify takes the notices of every subscribed session.
 	notify atomic.Pointer[func(hub.Notice)]
+	// turnErrors takes the failed turns of every subscribed session.
+	turnErrors atomic.Pointer[func(TurnError)]
 }
 
 // SetNotify makes the service hand each notice to f. f must not block: it
@@ -1056,6 +1058,9 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	ls.generation, ls.revision = snap.ExecutionGeneration, snap.Revision
 	if snap.Info.Vision != nil {
 		ls.vision = snap.Info.Vision
+	}
+	if snap.Info.Provider != nil && *snap.Info.Provider != "" {
+		ls.provider = *snap.Info.Provider
 	}
 	ls.setPrompts(snap.Prompts)
 	ls.setInputs(snap.Pending)

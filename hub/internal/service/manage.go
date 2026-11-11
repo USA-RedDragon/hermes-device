@@ -144,6 +144,9 @@ func (s *Service) Models(ctx context.Context, user, backendID, sessionID string)
 			if hp.Name == "" {
 				hp.Name = p.Slug
 			}
+			if p.Slug == hub.ClaudeAPIProvider {
+				hp.Name = hub.ClaudeAPIName
+			}
 			for _, m := range p.Models {
 				if slices.Contains(p.UnavailableModels, m) {
 					continue

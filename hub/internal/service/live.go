@@ -54,6 +54,8 @@ type live struct {
 	vision *bool
 	// title is the session's title, for notices.
 	title string
+	// provider is the provider the session last used, "" when unknown.
+	provider string
 	// turnStart is when the running turn started, or when the hub saw it
 	// running first; zero while idle.
 	turnStart time.Time
@@ -392,7 +394,11 @@ func (ls *live) apply(ev gateway.Event) {
 			ls.settled(p.RequestIDs...)
 		}
 	}
+	ls.trackProvider(ev)
 	ls.turnNotices(ev)
+	if text, ok := failedTurnText(ev); ok {
+		ls.turnFailed(text)
+	}
 	ls.emit(ev.Type, ev.Payload)
 }
 
