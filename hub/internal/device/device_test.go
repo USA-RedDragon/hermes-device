@@ -487,7 +487,7 @@ func TestLegRefusals(t *testing.T) {
 		if e.plugin.RefusedAssertions() != 1 {
 			t.Fatalf("refused = %d", e.plugin.RefusedAssertions())
 		}
-		e.acp.Close()
+		e.acp.HangUp()
 		if _, resp, err := dial(t, e.a, "/api/device/acp", tok); err == nil || resp == nil || resp.StatusCode != http.StatusBadGateway {
 			t.Fatalf("acp down = %v %v", resp, err)
 		}

@@ -432,7 +432,7 @@ func TestExportLearned(t *testing.T) {
 func TestHonchoErrorsHideKey(t *testing.T) {
 	t.Parallel()
 	e := setup(t)
-	e.honcho.Close()
+	e.honcho.HangUp()
 	_, err := e.svc.Learned(context.Background(), bob, homeID, hub.LearnedQuery{})
 	if status(err) != http.StatusBadGateway || strings.Contains(err.Error(), key) || strings.Contains(err.Error(), "127.0.0.1") {
 		t.Fatalf("err = %v", err)

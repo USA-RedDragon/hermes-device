@@ -207,6 +207,7 @@ type Honcho struct {
 	MissingPeers bool
 	queue        [4]int64
 	next         int
+	hangUp       bool
 }
 
 // NewHoncho starts a fake that accepts key for workspace.
@@ -229,6 +230,15 @@ func (h *Honcho) URL() string { return h.srv.URL }
 
 // Close stops the fake.
 func (h *Honcho) Close() { h.srv.Close() }
+
+// HangUp makes the fake close every connection without an answer, as an
+// unreachable Honcho does. Unlike Close, the fake keeps its port, so no
+// other server can take the port and answer in its place.
+func (h *Honcho) HangUp() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hangUp = true
+}
 
 // Add adds an explicit conclusion as the newest.
 func (h *Honcho) Add(observer, observed, content, session string) string {
@@ -283,6 +293,12 @@ func (h *Honcho) match(c Conclusion, f map[string]any) bool {
 
 // route serves the queue status, and every other route with serve.
 func (h *Honcho) route(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	hangUp := h.hangUp
+	h.mu.Unlock()
+	if hangUp {
+		panic(http.ErrAbortHandler)
+	}
 	if r.Method != http.MethodGet || r.URL.Path != "/v3/workspaces/"+h.workspace+"/queue/status" {
 		h.serve(w, r)
 		return

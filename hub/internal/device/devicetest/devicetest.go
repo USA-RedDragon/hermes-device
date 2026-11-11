@@ -576,6 +576,7 @@ type ACPHost struct {
 	conn      *websocket.Conn
 	nextID    int
 	got       chan struct{}
+	hangUp    bool
 }
 
 // NewACPHost starts a fake acp-host for backendID.
@@ -584,7 +585,15 @@ func NewACPHost(backendID string, key ed25519.PublicKey) *ACPHost {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+protocol.ACPHostPath, h.acp)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	h.Server = httptest.NewServer(mux)
+	h.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.mu.Lock()
+		hangUp := h.hangUp
+		h.mu.Unlock()
+		if hangUp {
+			panic(http.ErrAbortHandler)
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	return h
 }
 
@@ -593,6 +602,15 @@ func (h *ACPHost) URL() string { return h.Server.URL }
 
 // Close stops the fake.
 func (h *ACPHost) Close() { h.Server.Close() }
+
+// HangUp makes the fake close every new connection without an answer, as
+// an acp-host that is down does. Unlike Close, the fake keeps its port, so
+// no other server can take the port and answer in its place.
+func (h *ACPHost) HangUp() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hangUp = true
+}
 
 // SetCloseWith makes each new connection close with code after its first
 // message; 0 answers again.
