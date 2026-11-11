@@ -1074,6 +1074,7 @@ class BrowserDeviceTests(BrowserBase):
         other, fake = self.second()
         out = self.run_tool("browser_navigate", url="https://example.com/")
         self.assertIn("several computers offer a browser", out["error"])
+        self.assertIn("ask the user which computer", out["error"])
         status = self.run_tool("browser_status")
         self.assertFalse(status["available"])
         self.assertEqual([d["device_id"] for d in status["devices"]], ["d_pc2", "d_pc"])

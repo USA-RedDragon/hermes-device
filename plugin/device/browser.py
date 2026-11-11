@@ -447,8 +447,9 @@ def pick(session_id: str, res: Any) -> tuple[Any, str]:
                           f"the user's computers with browser control is connected. Start talaria run with "
                           f"browser.enabled on your computer.")
     raise Unavailable(f"hermes-device: session {session_id or '(none)'} is not bound to a computer, and several "
-                      f"computers offer a browser ({', '.join(f'{c.name} [{c.device_id}]' for c in found)}). Choose "
-                      f"one with browser_use_device.")
+                      f"computers offer a browser ({', '.join(f'{c.name} [{c.device_id}]' for c in found)}). Do not pick "
+                      f"one yourself: ask the user which computer's Firefox to use, then call browser_use_device with "
+                      f"that name.")
 
 
 def resolve(session_id: str = "") -> tuple[str, Any]:
