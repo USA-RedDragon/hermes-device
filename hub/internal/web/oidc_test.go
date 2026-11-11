@@ -58,7 +58,7 @@ func newIssuer(t *testing.T) *issuer {
 	})
 	mux.HandleFunc("GET /authorize", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		if q.Get("client_id") != is.clientID || q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" ||
+		if q.Get("client_id") != is.clientID || q.Get("code_challenge_method") != methodS256 || q.Get("code_challenge") == "" ||
 			q.Get("response_type") != responseTypeCode {
 			http.Error(w, "bad authorize request", http.StatusBadRequest)
 			return

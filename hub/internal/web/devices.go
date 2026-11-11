@@ -14,6 +14,8 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 )
 
+const msgSomethingWrong = "Something went wrong. Try again."
+
 // Wrong pairing codes a user may type within codeFailureWindow.
 const (
 	maxCodeFailures   = 10
@@ -228,7 +230,7 @@ func (s *Server) approvePairing(w http.ResponseWriter, r *http.Request, user str
 
 func (s *Server) pairFailed(w http.ResponseWriter, v pairView, what string, err error) {
 	s.log.Error(what, "error", err.Error())
-	v.Error = "Something went wrong. Try again."
+	v.Error = msgSomethingWrong
 	s.renderPair(w, http.StatusInternalServerError, v)
 }
 
@@ -255,6 +257,8 @@ type deviceJSON struct {
 	PrevAddr      string     `json:"prev_addr,omitempty"`
 	AddrChangedAt *time.Time `json:"addr_changed_at,omitempty"`
 	LastClose     *closeJSON `json:"last_close,omitempty"`
+	// Browsers are the browsers signed in to Hermes for the computer.
+	Browsers []browserJSON `json:"browsers,omitzero"`
 }
 
 // closeJSON is how a computer's latest connection to its Hermes ended,
@@ -284,11 +288,19 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	browsers, err := s.browsersByDevice(r, user)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
 	out := make([]deviceJSON, 0, len(ds))
 	for _, d := range ds {
 		j := deviceJSON{ID: d.ID, Kind: kindPaired, Name: d.Name, BackendID: d.BackendID, BackendName: s.backendNames[d.BackendID],
 			Hostname: d.Hostname, OS: d.OS, Arch: d.Arch, CreatedAt: d.CreatedAt, Paired: d.Paired,
-			LastSeenAt: optTime(d.LastSeenAt), LastAddr: d.LastAddr}
+			LastSeenAt: optTime(d.LastSeenAt), LastAddr: d.LastAddr, Browsers: browsers[d.ID]}
+		if j.Browsers == nil {
+			j.Browsers = []browserJSON{}
+		}
 		if !d.AddrChangedAt.IsZero() {
 			j.PrevAddr, j.AddrChangedAt = d.PrevAddr, optTime(d.AddrChangedAt)
 		}

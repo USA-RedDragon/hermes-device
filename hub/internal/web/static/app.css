@@ -209,6 +209,7 @@ body.doc { overflow: auto; height: auto; }
 .device .dnote { color: var(--warn); margin: .3rem 0; overflow-wrap: anywhere; }
 .device .dacts { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .35rem; }
 .device .dacts button { font-size: .8rem; padding: .15rem .55rem; }
+.device .dbrowser { border-left: 2px solid var(--line); margin-top: .5rem; padding-left: .6rem; }
 .page .err { color: var(--bad); }
 code { background: var(--code); padding: 0 .25rem; border-radius: 4px; }
 
