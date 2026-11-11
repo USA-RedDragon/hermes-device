@@ -138,6 +138,67 @@ type Honcho struct {
 	APIKeyEnv  string `name:"api_key_env" description:"Environment variable that holds the Honcho API key. Wins over api_key"`
 }
 
+// Claude configures the Claude subscription accounts that the
+// claude-accounts Hermes plugin runs.
+type Claude struct {
+	Admins   []string `name:"admins" description:"Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody"`
+	TimeZone string   `name:"time_zone" default:"America/Chicago" description:"IANA time zone of the reset times of Claude usage windows"`
+}
+
+// AdminMap parses Admins: the Claude admins of each backend.
+func (c Claude) AdminMap() (map[string][]string, error) {
+	out := map[string][]string{}
+	for _, pair := range c.Admins {
+		user, backend, ok := strings.Cut(pair, "=")
+		user, backend = strings.TrimSpace(user), strings.TrimSpace(backend)
+		if !ok || user == "" || backend == "" {
+			return nil, fmt.Errorf("%w: %q", ErrClaudeAdmin, pair)
+		}
+		out[backend] = append(out[backend], user)
+	}
+	return out, nil
+}
+
+// Location is TimeZone's location; UTC for an unknown zone.
+func (c Claude) Location() *time.Location {
+	loc, err := time.LoadLocation(c.TimeZone)
+	if err != nil || c.TimeZone == "" {
+		return time.UTC
+	}
+	return loc
+}
+
+func (c *Config) validateClaude(names map[string]bool) error {
+	admins, err := c.Claude.AdminMap()
+	if err != nil {
+		return err
+	}
+	backends := map[string]bool{}
+	for _, b := range c.Backends {
+		backends[b.ID] = true
+	}
+	for backend, users := range admins {
+		if !backends[backend] {
+			return fmt.Errorf("%w: claude.admins names unknown backend %q", ErrClaudeAdmin, backend)
+		}
+		for _, u := range users {
+			if !names[u] {
+				return fmt.Errorf("%w: claude.admins names unknown user %q", ErrUser, u)
+			}
+		}
+	}
+	if c.Claude.TimeZone == "" {
+		c.Claude.TimeZone = defaultClaudeTimeZone
+	}
+	if _, err := time.LoadLocation(c.Claude.TimeZone); err != nil {
+		return fmt.Errorf("%w: %q", ErrClaudeTimeZone, c.Claude.TimeZone)
+	}
+	return nil
+}
+
+// defaultClaudeTimeZone is claude.time_zone's default, also for "".
+const defaultClaudeTimeZone = "America/Chicago"
+
 // Device configures hermes-device: computers that users pair with one of
 // their backends, so Hermes runs commands and editors on them.
 type Device struct {
@@ -178,6 +239,7 @@ type Config struct {
 	Telegram Telegram  `name:"telegram"`
 	Device   Device    `name:"device"`
 	Notify   Notify    `name:"notify"`
+	Claude   Claude    `name:"claude"`
 }
 
 // Validation errors.
@@ -194,6 +256,8 @@ var (
 	ErrDuration        = errors.New("shutdown.drain_delay, shutdown.timeout and hold.timeout must not be negative")
 	ErrDevice          = errors.New("invalid device settings")
 	ErrPrometheusURL   = errors.New("usage.prometheus_url must be an absolute http or https URL")
+	ErrClaudeAdmin     = errors.New("claude.admins entries must be user=backend with a known backend")
+	ErrClaudeTimeZone  = errors.New("claude.time_zone is not a known time zone")
 )
 
 var backendIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -242,7 +306,7 @@ func (c *Config) validateUsers() error {
 			}
 		}
 	}
-	return nil
+	return c.validateClaude(names)
 }
 
 func (c *Config) validateStore() error {

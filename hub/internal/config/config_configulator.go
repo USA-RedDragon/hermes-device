@@ -145,6 +145,11 @@ type notifyShadow struct {
 	JobInterval         *impl.Duration `json:"job_interval"           toml:"job_interval"           yaml:"job_interval"`
 }
 
+type claudeShadow struct {
+	Admins   *[]string `json:"admins"    toml:"admins"    yaml:"admins"`
+	TimeZone *string   `json:"time_zone" toml:"time_zone" yaml:"time_zone"`
+}
+
 type configShadow struct {
 	LogLevel *string          `json:"log_level" toml:"log_level" yaml:"log_level"`
 	HTTP     *hTTPShadow      `json:"http"      toml:"http"      yaml:"http"`
@@ -160,6 +165,7 @@ type configShadow struct {
 	Telegram *telegramShadow  `json:"telegram"  toml:"telegram"  yaml:"telegram"`
 	Device   *deviceShadow    `json:"device"    toml:"device"    yaml:"device"`
 	Notify   *notifyShadow    `json:"notify"    toml:"notify"    yaml:"notify"`
+	Claude   *claudeShadow    `json:"claude"    toml:"claude"    yaml:"claude"`
 }
 
 // ConfigSchema returns the generated schema for Config.
@@ -236,6 +242,8 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("notify.watch_interval", configulator.LayerDefault, "default tag")
 	cfg.Notify.JobInterval = time.Duration(int64(60000000000))
 	set("notify.job_interval", configulator.LayerDefault, "default tag")
+	cfg.Claude.TimeZone = "America/Chicago"
+	set("claude.time_zone", configulator.LayerDefault, "default tag")
 	return nil
 }
 
@@ -696,6 +704,16 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			set("notify.job_interval", configulator.LayerFile, file)
 		}
 	}
+	if s.Claude != nil {
+		if s.Claude.Admins != nil {
+			cfg.Claude.Admins = *s.Claude.Admins
+			set("claude.admins", configulator.LayerFile, file)
+		}
+		if s.Claude.TimeZone != nil {
+			cfg.Claude.TimeZone = *s.Claude.TimeZone
+			set("claude.time_zone", configulator.LayerFile, file)
+		}
+	}
 	return nil
 }
 
@@ -1082,6 +1100,15 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Notify.JobInterval = d
 		set("notify.job_interval", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "claude", "admins"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Claude.Admins = lst
+		set("claude.admins", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "claude", "time_zone"); ok {
+		cfg.Claude.TimeZone = v
+		set("claude.time_zone", configulator.LayerEnv, n)
+	}
 	return nil
 }
 
@@ -1143,6 +1170,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"notify" + o.Separator + "remind_after",
 		"notify" + o.Separator + "watch_interval",
 		"notify" + o.Separator + "job_interval",
+		"claude" + o.Separator + "admins",
+		"claude" + o.Separator + "time_zone",
 	}
 	for i, name := range names {
 		if f := fs.Lookup(name); f != nil {
@@ -1207,6 +1236,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[45], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
 	fs.Duration(names[46], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
 	fs.Duration(names[47], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
+	fs.StringSlice(names[48], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
+	fs.String(names[49], "America/Chicago", "IANA time zone of the reset times of Claude usage windows")
 	return nil
 }
 
@@ -1787,6 +1818,30 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.Notify.JobInterval = v
 		set("notify.job_interval", configulator.LayerCLI, "--"+n)
 	}
+	if n := "claude" + o.Separator + "admins"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "claude.admins",
+				Source: "--" + n,
+			}
+		}
+		cfg.Claude.Admins = v
+		set("claude.admins", configulator.LayerCLI, "--"+n)
+	}
+	if n := "claude" + o.Separator + "time_zone"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "claude.time_zone",
+				Source: "--" + n,
+			}
+		}
+		cfg.Claude.TimeZone = v
+		set("claude.time_zone", configulator.LayerCLI, "--"+n)
+	}
 	return nil
 }
 
@@ -2096,6 +2151,25 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Notify = &sub
+			}
+		case "claude":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("claude", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub claudeShadow
+				if err := sub.decodeJSON(dec, "claude"); err != nil {
+					return err
+				}
+				s.Claude = &sub
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -3779,6 +3853,72 @@ func (s *notifyShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	}
 }
 
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *claudeShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "admins":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".admins", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".admins"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.Admins = &out
+			}
+		case "time_zone":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.TimeZone = &str
+			default:
+				return configJSONError(path+".time_zone", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // configJSONError returns a ParseError for the JSON token v at path.
 func configJSONError(path string, v jsontext.Token, err error) error {
 	return &configulator.ParseError{
@@ -3843,6 +3983,8 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "notify.remind_after = %v\n", c.Notify.RemindAfter)
 	fmt.Fprintf(&b, "notify.watch_interval = %v\n", c.Notify.WatchInterval)
 	fmt.Fprintf(&b, "notify.job_interval = %v\n", c.Notify.JobInterval)
+	fmt.Fprintf(&b, "claude.admins = %v\n", c.Claude.Admins)
+	fmt.Fprintf(&b, "claude.time_zone = %v\n", c.Claude.TimeZone)
 	return b.String()
 }
 

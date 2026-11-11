@@ -47,6 +47,7 @@ const (
 	defaultDB        = "/data/hermes-hub.db"
 	envDeviceEnabled = "HUB_DEVICE_ENABLED"
 	valTrue          = "true"
+	userAlice        = "alice"
 )
 
 func load(t *testing.T, env map[string]string, body string) (*config.Config, error) {
@@ -364,6 +365,46 @@ func TestNotifySettings(t *testing.T) {
 		}
 		if _, err := load(t, env, file); !errors.Is(err, config.ErrNotify) {
 			t.Fatalf("%v: err = %v", bad, err)
+		}
+	}
+}
+
+func TestClaudeSettings(t *testing.T) {
+	t.Parallel()
+	cfg, err := load(t, secrets(), file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Claude.Admins) != 0 || cfg.Claude.TimeZone != "America/Chicago" || cfg.Claude.Location().String() != "America/Chicago" {
+		t.Fatalf("defaults = %+v", cfg.Claude)
+	}
+	env := secrets()
+	env["HUB_CLAUDE_ADMINS"] = "alice=desktop, bob=cluster,alice=cluster"
+	env["HUB_CLAUDE_TIME_ZONE"] = "Europe/Berlin"
+	cfg, err = load(t, env, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := cfg.Claude.AdminMap()
+	if err != nil || len(m["desktop"]) != 1 || m["desktop"][0] != userAlice || len(m["cluster"]) != 2 || cfg.Claude.Location().String() != "Europe/Berlin" {
+		t.Fatalf("admins = %v %v, zone %s", m, err, cfg.Claude.TimeZone)
+	}
+	for _, c := range []struct {
+		admins, zone string
+		want         error
+	}{
+		{userAlice, "", config.ErrClaudeAdmin},
+		{"alice=nowhere", "", config.ErrClaudeAdmin},
+		{"mallory=desktop", "", config.ErrUser},
+		{"", "Mars/Olympus", config.ErrClaudeTimeZone},
+	} {
+		env := secrets()
+		env["HUB_CLAUDE_ADMINS"] = c.admins
+		if c.zone != "" {
+			env["HUB_CLAUDE_TIME_ZONE"] = c.zone
+		}
+		if _, err := load(t, env, file); !errors.Is(err, c.want) {
+			t.Errorf("admins %q zone %q: %v, want %v", c.admins, c.zone, err, c.want)
 		}
 	}
 }

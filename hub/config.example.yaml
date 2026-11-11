@@ -139,3 +139,8 @@ notify:
   watch_interval: "15s"
   # How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default
   job_interval: "1m"
+claude:
+  # Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody
+  # admins: []
+  # IANA time zone of the reset times of Claude usage windows
+  time_zone: "America/Chicago"
