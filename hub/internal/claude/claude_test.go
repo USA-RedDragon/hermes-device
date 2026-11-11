@@ -318,6 +318,7 @@ func TestResetText(t *testing.T) {
 		{time.Date(2026, 7, 2, 4, 0, 0, 0, time.UTC), "11:00 PM CDT"},
 		{time.Date(2026, 7, 2, 6, 0, 0, 0, time.UTC), "Thu 1:00 AM CDT"},
 		{time.Date(2026, 7, 20, 6, 0, 0, 0, time.UTC), "Jul 20, 1:00 AM CDT"},
+		{time.Date(2026, 7, 2, 5, 59, 59, 624790000, time.UTC), "Thu 1:00 AM CDT"},
 	} {
 		if got := claude.ResetText(c.at, now, loc); got != c.want {
 			t.Errorf("ResetText(%v) = %q, want %q", c.at, got, c.want)

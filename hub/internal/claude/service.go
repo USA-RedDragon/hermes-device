@@ -459,14 +459,15 @@ func (s *Service) convertUsage(u Usage) hub.ClaudeUsage {
 	return out
 }
 
-// ResetText is t in loc as a person reads a reset time: "3:40 PM CST"
-// on the same day as now, "Thu 3:40 PM CST" within the next six days,
-// else "Nov 20, 3:40 PM CST".
+// ResetText is t, to the nearest minute, in loc as a person reads a reset
+// time: "3:40 PM CST" on the same day as now, "Thu 3:40 PM CST" within the
+// next six days, else "Nov 20, 3:40 PM CST".
 func ResetText(t, now time.Time, loc *time.Location) string {
 	if loc == nil {
 		loc = time.UTC
 	}
-	t, now = t.In(loc), now.In(loc)
+	// The CLI reports resets a fraction of a second early, as 5:59:59.6.
+	t, now = t.Round(time.Minute).In(loc), now.In(loc)
 	ty, tm, td := t.Date()
 	ny, nm, nd := now.Date()
 	today := time.Date(ny, nm, nd, 0, 0, 0, 0, loc)
