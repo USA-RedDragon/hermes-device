@@ -1,8 +1,9 @@
 "use strict";
 
-// Hermes browser control. The only way in is the native messaging port to
-// the talaria host: there are no content scripts that listen to the
-// page, no external messaging and no web accessible resources.
+// Hermes browser control. The ways in are the native messaging port to
+// the talaria host and messages from this extension's own page chat
+// (pagechat.html): there are no content scripts that listen to the page,
+// no external messaging and no web accessible resources.
 
 // The native messaging host. Before the rename to talaria it was
 // hermes_device; the extension tries that name too, so it works with a
@@ -66,6 +67,20 @@ let loginBusy = false;
 // The daemon's hub.url, from its config message. Agent tabs may not open
 // the hub.
 let hubHost = "";
+let hubURL = "";
+// The hub's id of this device, from the config message once the daemon's
+// exec leg connected. The page chat names it, so its chat uses this
+// Firefox.
+let deviceID = "";
+
+// pageGrants holds, per hub chat (session id), the user's tabs that the
+// page chat let that chat read: read_text and snapshot of these tabs work
+// for requests of that session, as for agent tabs (docs/browser.md
+// section 6.2). Each message from the page chat replaces its chat's grant.
+const pageGrants = new Map();
+const PAGE_GRANT_MS = 30 * 60 * 1000;
+const MAX_PAGE_TABS = 50;
+const SESSION_RE = /^[A-Za-z0-9_.:-]{1,200}$/;
 
 // Refused marks an error the extension chose: the device reports it with
 // code "refused" instead of "failed".
@@ -83,7 +98,7 @@ function showStatus() {
   if (port) {
     setStatus("connected to talaria", "on");
   } else if (replaced) {
-    setStatus("another Firefox took over; click to use this one", "");
+    setStatus("another Firefox took over; open this button to use this one", "");
   } else {
     setStatus("not connected to talaria", "");
   }
@@ -126,6 +141,8 @@ async function onMessage(msg) {
     confirmHosts = (msg.confirm_hosts || []).map((h) => String(h).toLowerCase().replace(/\.$/, "")).filter(Boolean);
     autologinHosts = new Set((msg.autologin_hosts || []).map((h) => String(h).toLowerCase().replace(/\.$/, "")).filter(Boolean));
     hubHost = hostPortOf(msg.hub_url);
+    hubURL = hubHost ? new URL(msg.hub_url).origin : "";
+    deviceID = typeof msg.device_id === "string" ? msg.device_id : "";
     return;
   }
   if (msg && msg.type === "replaced") {
@@ -338,10 +355,12 @@ function inGroup(tab) {
 
 // agentTab returns the tab if the agent may act on it. Unless anyURL is
 // set, the tab must also show an http or https page, so a tab that went
-// back or redirected to file: or about: cannot be read.
-async function agentTab(tabId, anyURL) {
+// back or redirected to file: or about: cannot be read. With sessions (the
+// session and its ancestors), a tab the page chat granted to one of them
+// also counts; only reads pass sessions.
+async function agentTab(tabId, anyURL, sessions) {
   const tab = await browser.tabs.get(tabId);
-  if (!inGroup(tab)) {
+  if (!inGroup(tab) && !(Array.isArray(sessions) && sessions.some((s) => typeof s === "string" && granted(s, tab)))) {
     throw new Refused("tab " + tabId + " is not in the Hermes tab group");
   }
   if (!anyURL && !/^https?:/.test(tab.url || "")) {
@@ -349,6 +368,72 @@ async function agentTab(tabId, anyURL) {
   }
   return tab;
 }
+
+// pageTab reports whether the page chat may offer tab to the agent: an
+// http or https page that is not the hub.
+function pageTab(tab) {
+  return /^https?:/.test(tab.url || "") && !hermesHost(hostPortOf(tab.url));
+}
+
+function granted(session, tab) {
+  const g = pageGrants.get(session);
+  if (!g || g.until < Date.now()) {
+    pageGrants.delete(session);
+    return false;
+  }
+  return g.tabs.has(tab.id) && pageTab(tab);
+}
+
+// grantPage lets session read tabIds, the tabs the user's page chat
+// message covers, and returns those it may read.
+async function grantPage(session, tabIds) {
+  if (typeof session !== "string" || !SESSION_RE.test(session) || !Array.isArray(tabIds)) {
+    throw new Error("bad grant");
+  }
+  const tabs = new Set();
+  for (const id of tabIds.slice(0, MAX_PAGE_TABS)) {
+    try {
+      const tab = await browser.tabs.get(id);
+      if (pageTab(tab)) {
+        tabs.add(tab.id);
+      }
+    } catch (e) {
+      // The tab closed.
+    }
+  }
+  for (const [k, g] of pageGrants) {
+    if (g.until < Date.now()) {
+      pageGrants.delete(k);
+    }
+  }
+  pageGrants.set(session, { tabs, until: Date.now() + PAGE_GRANT_MS });
+  return Array.from(tabs);
+}
+
+function pageState() {
+  return { connected: Boolean(port), replaced, hub_url: hubURL, device_id: deviceID,
+    version: browser.runtime.getManifest().version };
+}
+
+// The page chat (pagechat.html, the toolbar popup and the sidebar) asks
+// for the hub and this device, and grants its chat the tabs a message
+// covers. Only this extension's own pages may.
+browser.runtime.onMessage.addListener((msg, sender) => {
+  if (sender.id !== browser.runtime.id || !String(sender.url || "").startsWith(browser.runtime.getURL("pagechat.html"))) {
+    return undefined;
+  }
+  if (msg && msg.type === "page_open") {
+    if (!port) {
+      replaced = false;
+      connect();
+    }
+    return Promise.resolve(pageState());
+  }
+  if (msg && msg.type === "page_grant") {
+    return grantPage(msg.session, msg.tabs).then((tabs) => ({ tabs }));
+  }
+  return undefined;
+});
 
 // siteOf is the host name without a leading "www.", the unit the user
 // approves (docs/browser.md section 7). The plugin uses the same rule.
@@ -1686,8 +1771,8 @@ const OPS = {
     await browser.tabs.goBack(tab_id);
     return tabInfo(await loaded);
   },
-  async read_text({ tab_id, max_chars, offset }) {
-    await agentTab(tab_id);
+  async read_text({ tab_id, max_chars, offset, sessions }) {
+    await agentTab(tab_id, false, sessions);
     const page = await composeText(tab_id);
     const max = Math.max(1, Math.min(Number(max_chars) || MAX_TEXT, MAX_TEXT));
     const start = Math.max(0, Math.min(Number(offset) || 0, page.text.length));
@@ -1699,8 +1784,8 @@ const OPS = {
     }
     return out;
   },
-  async snapshot({ tab_id, interactive_only, selector, ref }) {
-    await agentTab(tab_id);
+  async snapshot({ tab_id, interactive_only, selector, ref, sessions }) {
+    await agentTab(tab_id, false, sessions);
     return composeSnapshot(tab_id, interactive_only, selector, ref);
   },
   async inspect({ tab_id, ref, url, frame, focus }) {
@@ -2071,12 +2156,5 @@ const OPS = {
     return out;
   },
 };
-
-browser.browserAction.onClicked.addListener(() => {
-  if (!port) {
-    replaced = false;
-    connect();
-  }
-});
 
 connect();

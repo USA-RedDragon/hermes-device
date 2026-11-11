@@ -17,9 +17,16 @@
   "browser_action": {
     "default_title": "Hermes: not connected",
     "default_icon": "toolbar-dark.svg",
+    "default_popup": "pagechat.html",
     "theme_icons": [
       {"light": "toolbar-light.svg", "dark": "toolbar-dark.svg", "size": 16},
       {"light": "toolbar-light.svg", "dark": "toolbar-dark.svg", "size": 32}
     ]
+  },
+  "sidebar_action": {
+    "default_title": "Talaria",
+    "default_panel": "pagechat.html",
+    "default_icon": "toolbar-dark.svg",
+    "open_at_install": false
   }
 }

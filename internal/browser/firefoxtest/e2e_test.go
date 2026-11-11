@@ -36,7 +36,12 @@ user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
 user_pref("browser.aboutwelcome.enabled", false);
 user_pref("signon.autofillForms", true);
 user_pref("signon.rememberSignons", true);
+user_pref("extensions.webextensions.uuids", "{\"browser@hermes-device\":\"` + extUUID + `\"}");
 `
+
+// extUUID is the extension's moz-extension host in the test profile, so a
+// test can open its pages.
+const extUUID = "6c1d3b52-7a0e-4c5f-9e21-0b8f2a4d9c11"
 
 const (
 	keyTab         = "tab_id"

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"regexp"
 	"testing"
 
 	firefox "github.com/USA-RedDragon/hermes-device/extension/firefox"
@@ -99,5 +100,41 @@ func TestManifestPermissions(t *testing.T) {
 	want := []string{"nativeMessaging", "tabs", "tabGroups", "scripting", "webRequest", "webRequestBlocking", "dns", "<all_urls>"}
 	if !reflect.DeepEqual(m.Permissions, want) {
 		t.Errorf("permissions = %q, want %q", m.Permissions, want)
+	}
+}
+
+func TestManifestFilesEmbedded(t *testing.T) {
+	t.Parallel()
+	data, err := firefox.Files.ReadFile("manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Background    struct{ Scripts []string } `json:"background"`
+		BrowserAction struct {
+			Popup string `json:"default_popup"`
+		} `json:"browser_action"`
+		Sidebar struct {
+			Panel string `json:"default_panel"`
+		} `json:"sidebar_action"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.BrowserAction.Popup != "pagechat.html" || m.Sidebar.Panel != "pagechat.html" {
+		t.Errorf("popup %q, sidebar %q, want the page chat in both", m.BrowserAction.Popup, m.Sidebar.Panel)
+	}
+	page, err := firefox.Files.ReadFile("pagechat.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := append([]string{m.BrowserAction.Popup, m.Sidebar.Panel}, m.Background.Scripts...)
+	for _, ref := range regexp.MustCompile(`(?:src|href)="([^"]+)"`).FindAllSubmatch(page, -1) {
+		names = append(names, string(ref[1]))
+	}
+	for _, n := range names {
+		if _, err := firefox.Files.ReadFile(n); err != nil {
+			t.Errorf("%s is not embedded: %v", n, err)
+		}
 	}
 }
