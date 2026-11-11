@@ -141,7 +141,7 @@ Blank lines and lines starting with `#` are ignored. Several keys allow rotation
 
 Device to hub: `GET wss://<hub>/api/device/exec` with the device token. Hub to plugin: `GET ws://<backend>:9120/api/plugins/device/ws` (<!-- docgen:const pkg=protocol name=PluginExecPath -->`/api/plugins/device/ws`<!-- /docgen:const -->) with the assertion (`leg` `exec`). The hub MUST NOT send an `Origin` header and MUST send a `Host` header the gateway accepts (the gateway binds 0.0.0.0, which accepts any Host).
 
-Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-- /docgen:const -->. The oldest version this release still speaks: <!-- docgen:const pkg=protocol name=MinVersion code=false -->2<!-- /docgen:const -->. Version 3 adds resume (section 4.7) and the output `offset`; everything else is as in version 2. Capabilities (section 4.1) add optional features without a version bump: browser control (section 4.8).
+Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-- /docgen:const -->. The oldest version this release still speaks: <!-- docgen:const pkg=protocol name=MinVersion code=false -->2<!-- /docgen:const -->. Version 3 adds resume (section 4.7) and the output `offset`; everything else is as in version 2. Capabilities (section 4.1) add optional features without a version bump: browser control (section 4.8) and MCP servers on the device (section 4.9).
 
 ### 4.1 Handshake
 
@@ -149,7 +149,7 @@ Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-
 2. The device sends `hello` within <!-- docgen:const pkg=protocol name=HelloTimeout print=config -->`10s`<!-- /docgen:const --> of the upgrade. Otherwise the plugin closes with `1002`.
 3. Version negotiation. `hello.version` is the oldest version the device speaks and `hello.max_version` the newest (absent means equal to `version`). The plugin picks the newest version that both sides speak. A version 2 plugin reads only `version`, so a device that speaks 2 to 3 sends `"version": 2, "max_version": 3` and a version 2 plugin serves it as version 2. When no version is common, the plugin closes with `4426` and a reason that names both ranges and both releases, for example `hermes-device v0.4.0 speaks protocol 4 to 5; plugin 0.3.0 speaks 2 to 3; upgrade them together`. The hub relays the code and the reason (it cuts reasons to 120 bytes; the plugin keeps them shorter), and the client stops and shows the reason. A device that gets a `welcome.version` outside its own range closes with `4426` and a reason of the same form, and stops.
 4. The plugin answers `welcome` with the chosen version. On version 3 it sends `resume` (section 4.7) right after `welcome`, before any other message. From then on either side may send.
-5. Capabilities. `hello.capabilities` lists the optional features the device serves; today only `browser` (<!-- docgen:const pkg=protocol name=CapabilityBrowser code=false -->browser<!-- /docgen:const -->, section 4.8). The plugin puts the ones it accepts in `welcome.capabilities` and leaves the field out when it accepts none. Each side uses a feature only when `welcome.capabilities` names it, and ignores unknown names. A plugin that does not know capabilities ignores the field and sends none back, so the device does not use them.
+5. Capabilities. `hello.capabilities` lists the optional features the device serves: `browser` (<!-- docgen:const pkg=protocol name=CapabilityBrowser code=false -->browser<!-- /docgen:const -->, section 4.8) and `mcp` (<!-- docgen:const pkg=protocol name=CapabilityMCP code=false -->mcp<!-- /docgen:const -->, section 4.9). The plugin puts the ones it accepts in `welcome.capabilities` and leaves the field out when it accepts none. Each side uses a feature only when `welcome.capabilities` names it, and ignores unknown names. A plugin that does not know capabilities ignores the field and sends none back, so the device does not use them.
 6. If a connection for the same `device_id` exists, the plugin closes it with `4409`. Newest wins. On version 3 its pending commands move to the new connection and are listed in the `resume`; on version 2 they fail with exit 255.
 
 `hello` (device to plugin):
@@ -177,6 +177,7 @@ Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-
 | `tmp_dir` | Absolute directory Hermes uses on the device for its shell snapshot files |
 | `home` | The device user's `$HOME`. The plugin checks writes against the credential denylist relative to it (section 8.6) |
 | `capabilities` | Optional features the device serves (step 5). Absent means none |
+| `mcp_servers` | With `mcp` in `capabilities`: the names of the MCP servers in the device config (section 4.9). Absent otherwise |
 | `hostname`, `os`, `arch`, `shell`, `client_version` | For display and diagnostics. `os` and `arch` use Go's `GOOS` and `GOARCH` names. `os` MUST NOT be `windows`: the plugin closes with `4427` |
 
 `welcome` (plugin to device):
@@ -306,6 +307,57 @@ A `browser_result` may also carry `code` `not_signed_in`: the browser is not sig
 The hub and the device read the `type` of every exec leg message with `protocol.MessageType`: a message that is not a single JSON object, that has a member name twice, that has another member equal to `type` without regard to case, or whose `type` is not a string, is dropped. This keeps the hub, the device (Go, case-insensitive struct fields, a later `null` ignored) and the plugin (Python, exact names, the last value wins) agreeing on every message's type.
 
 Browser requests are never resumed: a drop cancels them on the device, and the plugin fails them with `not_connected` at once. A device without the capability never gets `browser`; a plugin that did not accept it never gets `browser_status`.
+
+### 4.9 MCP servers (capability `mcp`)
+
+A device may run MCP servers that its own config lists (`mcp.servers`, README "MCP servers"), so that the agent can use tools that must run on the device, such as a reverse engineering server that reads local binaries and drives local programs. The device is the MCP client: it runs each server as a child process and speaks MCP over the server's stdin and stdout (newline-delimited JSON-RPC 2.0, the MCP stdio transport, revision `2025-06-18`). The exec leg carries one request and one answer per tool operation, not the MCP messages themselves, so the plugin and the hub never speak MCP and the device uses only the tools part of it.
+
+The device offers `mcp` in `hello.capabilities` when its config lists at least one server, and lists their names in `hello.mcp_servers`. A name is 1 to 32 characters of `[a-z0-9_-]` that starts with a letter or digit. The plugin accepts the capability only when at least one name is valid, and keeps only the valid names. Changing the list needs a restart of `run`.
+
+| Type | Direction | Meaning |
+|---|---|---|
+| `mcp` | plugin to device | Run one operation: `{"type", "id", "op", "server", "tool", "arguments", "timeout"}`. `id` is unique per connection; `kill` with the same `id` cancels it |
+| `mcp_result` | device to plugin | Exactly one answer per `mcp`: `{"type", "id", "ok": true, "result"}` or `{"type", "id", "ok": false, "code", "error"}`. The device writes `<`, `>` and `&` unescaped and refuses a message over 16 MiB plus 64 KiB with `too_large` |
+
+```json
+{"type": "mcp", "id": "9c1f...", "op": "call", "server": "rea", "tool": "list_strings", "arguments": {"limit": 50}, "timeout": 600}
+{"type": "mcp_result", "id": "9c1f...", "ok": true, "result": {"content": [{"type": "text", "text": "..."}]}}
+{"type": "mcp_result", "id": "9c1f...", "ok": false, "code": "unknown_server", "error": "no MCP server named \"ghidra\" in this device's config"}
+```
+
+| `op` | Fields | `result` |
+|---|---|---|
+| `list` | none | `{"servers": [{"name", "running", "server", "last_error", "retry_in"}]}`: every configured server, whether it runs, its `serverInfo` name and version, the reason it last failed, and the seconds before it may start again |
+| `tools` | `server` | `{"tools": [...]}`: the server's `tools/list`, every page joined, each tool as the server sent it. The device keeps the list until the server sends `notifications/tools/list_changed` or exits |
+| `call` | `server`, `tool` (1 to 128 bytes), `arguments` (a JSON object; absent or `null` means `{}`) | The server's `CallToolResult` unchanged. A tool error is a result with `isError: true`, not a failed `mcp_result` |
+
+`timeout` is in seconds. Without one the device uses <!-- docgen:const pkg=protocol name=MCPDefaultTimeout print=config -->`2m0s`<!-- /docgen:const -->, and it caps every request at <!-- docgen:const pkg=protocol name=MCPMaxTimeout print=config -->`1h0m0s`<!-- /docgen:const -->. When a request ends by its timeout or a `kill`, the device sends the server `notifications/cancelled` for it and answers `timeout` or `cancelled`; the server keeps running.
+
+| `code` | Meaning |
+|---|---|
+| <!-- docgen:const pkg=protocol name=MCPUnknownServer code=false -->unknown_server<!-- /docgen:const --> | The device config lists no server of that name |
+| <!-- docgen:const pkg=protocol name=MCPUnavailable code=false -->unavailable<!-- /docgen:const --> | The server did not start, its initialize failed, it is waiting before it may start again (below), or the daemon is stopping |
+| <!-- docgen:const pkg=protocol name=MCPBusy code=false -->busy<!-- /docgen:const --> | The server already has 8 requests in flight, or the device has 16 on all its servers together |
+| <!-- docgen:const pkg=protocol name=MCPTooLarge code=false -->too_large<!-- /docgen:const --> | The server's answer, or its whole tool list, is over <!-- docgen:const pkg=protocol name=MaxMCPResult code=false -->16777216<!-- /docgen:const --> bytes |
+| <!-- docgen:const pkg=protocol name=MCPTimeout code=false -->timeout<!-- /docgen:const -->, <!-- docgen:const pkg=protocol name=MCPCancelled code=false -->cancelled<!-- /docgen:const --> | The request's timeout passed, or a `kill` or a dropped leg ended it |
+| <!-- docgen:const pkg=protocol name=MCPFailed code=false -->failed<!-- /docgen:const --> | The server answered with a JSON-RPC error, or exited during the request |
+| <!-- docgen:const pkg=protocol name=MCPRefused code=false -->refused<!-- /docgen:const --> | The request is not valid (unknown `op`, a tool name that is empty or too long, `arguments` that are not an object, a message over <!-- docgen:const pkg=protocol name=MaxMCPRequest code=false -->4194304<!-- /docgen:const --> bytes, an `id` already in flight), or the leg did not negotiate `mcp` |
+
+The plugin also uses `not_connected` for a request it could not send, or one whose device disconnected before the answer.
+
+Server lifecycle on the device:
+
+- The daemon starts nothing at startup. A server starts on the first `tools` or `call` for it: the device runs `command` with `args`, in `dir` (default `$HOME`), in its own process group, with the daemon's environment without `HERMES_DEVICE_HUB_TOKEN`, plus the server's `env`. It sends `initialize` (no client capabilities) and `notifications/initialized`, and waits up to 120 seconds for the answer.
+- The server's stderr goes to the daemon log, one line per record, cut to 2000 bytes, at most 50 lines a second; the device logs how many lines it left out. Its stdout must carry only JSON-RPC. A line over 16 MiB is not read. When the answer's `id` is its first member after `jsonrpc` or its last member (the TypeScript MCP SDK writes `{"result", "jsonrpc", "id"}`), that request fails with `too_large` and the server keeps running; otherwise the device kills the server.
+- The device answers the server's `ping` requests and refuses every other server request (`roots/list`, `sampling/createMessage`, `elicitation/create`) with `-32601`. One goroutine writes to the server's stdin, with at most 64 messages waiting. A server that lets more pile up (it sends requests and does not read the answers) or does not take a write within 30 seconds is killed.
+- The start runs on its own: a request whose timeout passes while the server starts fails with `timeout`, and the start goes on for the next request.
+- A server with no request in flight stops after `mcp.idle-timeout` (default 1 hour; `0` keeps it running). It loses its state, such as opened binaries; the next request starts it again.
+- A server that exits on its own fails its requests in flight with `failed`. The next request starts it again, after a wait: 1 second after the first failure, doubling up to 60 seconds while it keeps failing (a start that fails, or an exit within 30 seconds of the start); a server that ran 30 seconds or longer gets the 1 second wait again. Meanwhile requests fail with `unavailable` and the server's last stderr line.
+- To stop a server, the device closes its stdin, then sends SIGTERM and SIGKILL to its process group, 3 seconds apart. `run` stops every server before it exits. When a server's main process exits, the device sends SIGKILL to the rest of its process group, and then no further signal, since the group id may be reused. A server is not stopped if `run` itself is killed with SIGKILL; under systemd, the unit's cgroup ends it.
+
+MCP requests are never resumed: a dropped leg cancels the requests in flight on the device (it sends `notifications/cancelled`), and the plugin fails them with `not_connected` at once. The servers keep running across a drop and a reconnect. A device without the capability never gets `mcp`; it answers one with `refused` and starts no server. A plugin that did not accept the capability ignores `mcp_result`.
+
+The hub copies `mcp` and `mcp_result` unchanged, as every exec leg message other than the browser sign-in messages of section 4.8. Their sizes are within its 64 MiB message limit. The plugin decides which session may use which device's servers (section 8.11), and the device decides which servers can run.
 
 ## 5. Gateway leg and the chat splice
 
@@ -662,6 +714,9 @@ The plugin is a Hermes user plugin named `device`, installed into `$HERMES_HOME/
 | `grace_seconds` | `120` | How long the pending commands of a dropped version 3 exec leg wait for the device to reconnect and resume them (section 4.7). At most 3600. `0` turns resume off |
 | `fallback_root` | `/work` | `fallback: device` only: absolute directory on the sandbox device that holds one working directory per session lineage. Must be inside the sandbox's roots |
 | `browser` | `true` | `false` hides the `device-browser` toolset (docs/browser.md section 3) |
+| `mcp` | `true` | `false` hides the `device-mcp` toolset and turns its tools off (section 8.11) |
+| `mcp_approval` | `write` | When `mcp_device_call` asks the user first: `write` for tools whose server does not mark them `readOnlyHint: true`, `always` for every tool, `never` |
+| `mcp_call_timeout` | `600` | Seconds `mcp_device_call` waits when the agent gives no `timeout`, at most 3600 |
 | `dev_static_tokens` | `false` | Dev mode (section 8.9) |
 | `devices` | `{}` | Dev mode only: `<name>: {token_env: <env var>}` or `{token: <at least 16 chars>}` |
 
@@ -759,6 +814,24 @@ The plugin also checks `fallback_root` against the pod-writable paths of section
 
 The bindings file format does not change (version 2).
 
+### 8.11 device-mcp toolset
+
+The plugin registers three tools in the toolset `device-mcp`, so the agent can use the MCP servers of section 4.9:
+
+| Tool | What it does |
+|---|---|
+| `mcp_device_servers` | Lists the servers of the session's device, with their state (op `list`) |
+| `mcp_device_tools` | Lists a server's tools, by name and the first line of the description cut to 160 characters (at most 400, filtered by `query`), or with `tool` gives one tool's description, input schema and annotations (op `tools`; the plugin keeps the list 5 minutes per connection, `refresh` asks again) |
+| `mcp_device_call` | Runs one tool with `arguments` (op `call`) and returns its content |
+
+The set of tools is fixed, so it does not depend on which device a session uses and needs no change to Hermes. Hermes's tool list and its `check_fn` results are per process, not per session (tools/registry.py, model_tools.py), so a tool per device and per server could not be shown only to the sessions that may use it. The fixed set keeps the model's tool list small too: a server can have hundreds of tools, which the agent finds with `mcp_device_tools` instead.
+
+Gating. Each tool resolves the binding of the running session (section 8.3) on every call and uses only the bound device. A session that is not bound, fails closed, or runs on the sandbox device (section 8.10) gets an error and sends nothing. A session cannot name a device: `server` must be one of the bound device's `mcp_servers`, and the device runs only the servers its own config lists. `check_fn` shows the tools when the setting `mcp` is not `false` and any connected device offers `mcp`; it cannot see the session, so it gates nothing.
+
+Approval. Before `mcp_device_call`, the plugin's `pre_tool_call` asks the user through Hermes's approval gate (`{"action": "approve"}` with rule key `device-mcp:<device id>:<server>:<tool>`, so the user can allow one tool on one device for the session or always), following `mcp_approval`. The prompt shows the arguments as the tool will send them (a JSON string is parsed first), up to 2000 characters, and says how long they are when it cuts them. With `write`, a tool whose server marks it `readOnlyHint: true` does not ask. That trusts the server's own claim, which MCP calls untrusted; set `always` to ask for every tool. The hook never waits for the device: Hermes blocks every tool call while a `pre_tool_call` hook runs over its timeout (hermes_cli/plugins_dispatch.py), so the hook uses only the cached tool list, asks when it has none, and fetches the list in the background. The hook blocks a call the session cannot make (no binding, a server the device does not list, arguments that are not an object) and records the device it checked; the handler refuses the call if the session's device changed in between. Hermes's own MCP approval rules do not apply, because these are plugin tools.
+
+Results. The result is JSON with `device`, `server`, `tool`, `is_error`, `content` (the text blocks joined, with notes for resource links, embedded resources and other content; cut in the middle above 2,000,000 characters), `structured_content` when the server sent it, and a `note` that the content is untrusted data. Up to 4 PNG, JPEG, GIF or WebP images of valid base64 and at most 5 MiB each come back as Hermes's multimodal tool result when the model can take images in tool results. Every tool name starts with `mcp_`, so Hermes wraps the results in its untrusted tool result markers and applies its MCP result size budget (agent/tool_dispatch_helpers.py, tools/budget_config.py). A Hermes interrupt (`/stop`) of the turn sends `kill` for the request.
+
 ## 9. Plugin HTTP routes
 
 Mounted by the dashboard under `/api/plugins/device/` on the gateway listener (9120). They are behind dashboard sign-in, so the hub calls them with its dashboard session for the user. Errors are `{"error": "<code>", "message": "<text>"}`.
@@ -837,6 +910,7 @@ Rules:
 - A device token can bind only sessions that resolve to its device or were never bound in their lineage (7.4, and the plugin's own rules in section 9). It cannot take a session of another device's lineage (`409` `bound_to_other_device`), or one whose binding was removed (`409` `was_bound`). It can still claim any never-bound session of the user, such as a web chat, and then run commands in it on itself. When a create's bind fails, the hub deletes the new session only when it is never bound, so a create cannot delete a session that is or was bound.
 - A compromised Hermes pod can do anything the user's Hermes can, including running commands on connected devices in their roots. It cannot mint hub assertions, because it holds only public keys.
 - A compromised Hermes pod cannot use a device's browser unless the browser is signed in to the hub as the device's owner: the hub refuses `browser` requests itself (4.8), and it drops a forged `browser_auth_result` from the plugin. While the browser is signed in, the pod can do what the agent can (docs/browser.md section 8).
+- MCP servers on a device (4.9) run only when the device's own config lists them; the plugin and the hub cannot add one or change its command. They run as the device's user, outside `device.roots`, with what that user can reach, so list only servers you would let the agent use. A session reaches only the servers of the device it is bound to (8.11). A compromised Hermes pod can call any tool of a connected device's servers with any arguments, as it can run commands there. MCP results come from the server and from what it reads, so they are untrusted data: the plugin marks them so and Hermes wraps them (8.11).
 - The hub's private key is the root of trust for every backend. Keep it in the hub's secret store only.
 - With `fallback: local`, the commands of never-bound sessions run in the gateway container and can read its secrets, environment, state database and processes. `fallback: device` (8.10) moves them to a sandbox pod that holds only its own device token and the `/work` volume. The sandbox's commands run as the same user as its daemon, so they can read its token file and open an exec leg of their own, which replaces the daemon's connection (`4409`). That token is a service device token, which the hub accepts on the exec leg only, so it reaches no gateway or ACP leg. `run` removes `HERMES_DEVICE_HUB_TOKEN` from the environment of the commands it runs, but they can still read it from `/proc` of the daemon, so an environment variable or a flag is no better hidden than the file. All of one person's sessions share the `/work` volume, so one session can read another's directory. Limit the sandbox's network to the internet and the hub.
 
@@ -849,6 +923,8 @@ The device client, the plugin and acp-host come from one hermes-device release. 
 | device 0.3.0, plugin 0.3.0 | version 3, with resume |
 | device 0.3.0, plugin 0.2.0 | version 2 (the device's `hello.version` is 2) |
 | device 0.2.0, plugin 0.3.0 | version 2 (`hello` has no `max_version`) |
+
+MCP servers (4.9) need a device and a plugin that both know the `mcp` capability; the hub needs no change. With an older peer the capability is not negotiated and the plugin's MCP tools report that the device offers no MCP servers.
 
 Browser control needs a device and a plugin that both know the `browser` capability. With an older peer on either side the capability is not negotiated: the leg works as before, and the plugin's browser tools report that the device does not offer browser control.
 

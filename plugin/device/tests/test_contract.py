@@ -45,14 +45,15 @@ def go_consts(path: Path) -> dict[str, object]:
 
 
 def py_name(go_name: str) -> str:
-    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", go_name).upper().replace("A_C_P", "ACP")
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", go_name).upper().replace("A_C_P", "ACP")
 
 
 PROTOCOL_NAMES = {"Version": "PROTOCOL_VERSION", "PingInterval": "PING_INTERVAL_S",
                   "PingTimeout": "PING_TIMEOUT_S", "HelloTimeout": "HELLO_TIMEOUT_S",
                   "ACPHostPath": "ACP_HOST_PATH", "MinVersion": "MIN_PROTOCOL_VERSION",
                   "DefaultGrace": "DEFAULT_GRACE_S", "BrowserDefaultTimeout": "BROWSER_DEFAULT_TIMEOUT_S",
-                  "BrowserMaxTimeout": "BROWSER_MAX_TIMEOUT_S"}
+                  "BrowserMaxTimeout": "BROWSER_MAX_TIMEOUT_S", "MCPDefaultTimeout": "MCP_DEFAULT_TIMEOUT_S",
+                  "MCPMaxTimeout": "MCP_MAX_TIMEOUT_S"}
 ASSERTION_NAMES = {"MaxLifetime": "MAX_LIFETIME_S", "ClockSkew": "CLOCK_SKEW_S", "LegACP": "LEG_ACP"}
 
 

@@ -54,6 +54,12 @@ const (
 	// to a TypeBrowserAuth, or a sign-in the hub dropped later. The hub
 	// drops any the plugin sends.
 	TypeBrowserAuthResult = "browser_auth_result"
+	// TypeMCP asks the device for one operation on an MCP server of its
+	// config (section 4.9). The device answers with exactly one
+	// TypeMCPResult. A Kill with the same ID cancels it. Only on a leg
+	// that negotiated CapabilityMCP.
+	TypeMCP       = "mcp"
+	TypeMCPResult = "mcp_result"
 )
 
 // Capabilities a device offers in Hello.Capabilities. The plugin answers
@@ -62,6 +68,53 @@ const (
 const (
 	// CapabilityBrowser: the device serves TypeBrowser requests.
 	CapabilityBrowser = "browser"
+	// CapabilityMCP: the device serves TypeMCP requests for the servers
+	// it names in Hello.MCPServers.
+	CapabilityMCP = "mcp"
+)
+
+// Operations of an MCP request.
+const (
+	// MCPOpList returns the state of every server: {"servers": [...]}.
+	MCPOpList = "list"
+	// MCPOpTools returns the server's tools/list, every page joined:
+	// {"tools": [...]}.
+	MCPOpTools = "tools"
+	// MCPOpCall runs tools/call and returns the server's CallToolResult.
+	MCPOpCall = "call"
+)
+
+// Error codes in an MCPResult.
+const (
+	// MCPUnknownServer: the device config has no server of that name.
+	MCPUnknownServer = "unknown_server"
+	// MCPUnavailable: the server did not start, or is waiting before it
+	// may start again after it failed.
+	MCPUnavailable = "unavailable"
+	// MCPBusy: the server already runs the most requests the device
+	// allows.
+	MCPBusy = "busy"
+	// MCPTooLarge: the server's answer is larger than MaxMCPResult.
+	MCPTooLarge  = "too_large"
+	MCPTimeout   = "timeout"
+	MCPCancelled = "cancelled"
+	// MCPFailed: the server answered with an error, or exited.
+	MCPFailed = "failed"
+	// MCPRefused: the request was not valid, or the leg has no MCP.
+	MCPRefused = "refused"
+)
+
+// MCP request limits.
+const (
+	// MCPDefaultTimeout applies to an MCP request without a timeout, and
+	// MCPMaxTimeout caps every request.
+	MCPDefaultTimeout = 120 * time.Second
+	MCPMaxTimeout     = 3600 * time.Second
+	// MaxMCPResult is the largest message the device reads from an MCP
+	// server, and so the largest result of an MCPResult.
+	MaxMCPResult = 16 << 20
+	// MaxMCPRequest is the largest MCP request the device accepts.
+	MaxMCPRequest = 4 << 20
 )
 
 // Error codes in a BrowserResult.
@@ -194,6 +247,9 @@ type Hello struct {
 	ClientVersion string   `json:"client_version"`
 	// Capabilities the device offers, such as CapabilityBrowser.
 	Capabilities []string `json:"capabilities,omitempty"`
+	// MCPServers names the MCP servers of the device config, with
+	// CapabilityMCP.
+	MCPServers []string `json:"mcp_servers,omitempty"`
 	// Name and Token are sent only to a plugin in dev_static_tokens mode,
 	// with no hub in between.
 	Name  string `json:"name,omitempty"`
@@ -322,4 +378,27 @@ type BrowserAuthResult struct {
 	SessionID string `json:"session_id,omitempty"`
 	Code      string `json:"code,omitempty"`
 	Error     string `json:"error,omitempty"`
+}
+
+// MCP asks the device for one operation on an MCP server (section 4.9).
+// Server and Tool name the server and, for MCPOpCall, the tool;
+// Arguments is the tool's arguments object.
+type MCP struct {
+	Type      string          `json:"type"`
+	ID        string          `json:"id"`
+	Op        string          `json:"op"`
+	Server    string          `json:"server,omitempty"`
+	Tool      string          `json:"tool,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Timeout   float64         `json:"timeout"`
+}
+
+// MCPResult answers an MCP request. Code is set when OK is false.
+type MCPResult struct {
+	Type   string          `json:"type"`
+	ID     string          `json:"id"`
+	OK     bool            `json:"ok"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Code   string          `json:"code,omitempty"`
+	Error  string          `json:"error,omitempty"`
 }
