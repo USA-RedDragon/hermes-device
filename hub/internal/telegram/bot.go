@@ -115,6 +115,7 @@ type attachment struct {
 	done      chan struct{}
 	lastSeq   atomic.Int64
 	once      sync.Once
+	status    sessionStatus
 }
 
 func (a *attachment) stop() {
@@ -445,6 +446,8 @@ func (b *Bot) handleAlbum(ctx context.Context, ms []*Message) {
 		b.newSession(ctx, m.Chat.ID, user, arg)
 	case "stop":
 		b.stop(ctx, m.Chat.ID, user)
+	case "status":
+		b.status(ctx, m.Chat.ID, user)
 	case "devices", "computers":
 		b.listComputers(ctx, m.Chat.ID, user)
 	case "where":
@@ -497,7 +500,8 @@ func (b *Bot) help(ctx context.Context, chatID int64, user string) {
 		"/attach N attach to session N from /sessions\n" +
 		"/new [backend] start a new session\n" +
 		"/backends list your backends\n" +
-		"/stop interrupt the current turn")
+		"/stop interrupt the current turn\n" +
+		"/status show the model and how full its context is")
 	if b.computers != nil {
 		sb.WriteString("\n/devices list your computers\n" +
 			"/new NAME [folder] start a session on a computer\n" +
@@ -825,6 +829,7 @@ func (b *Bot) pump(a *attachment) {
 				b.logger.Info("Session stream ended", "chat", a.chatID, "session", a.sessionID)
 				return
 			}
+			a.status.track(ev)
 			r.handle(ctx, ev)
 			if ev.Seq > a.lastSeq.Load() {
 				a.lastSeq.Store(ev.Seq)
