@@ -61,6 +61,9 @@ const (
 	methodList         = "session.list"
 	methodActiveList   = "session.active_list"
 	methodMostRecent   = "session.most_recent"
+	methodImageRender  = "image.render"
+	keyCols            = "cols"
+	keyRows            = "rows"
 	opCompress         = "compress"
 	opReset            = "reset"
 	opWorkspace        = "workspace"
@@ -187,6 +190,8 @@ func deniedAnswer(id json.RawMessage, method string, params map[string]json.RawM
 				" (a /model needs --session)"
 		case method == methodMutate:
 			why = "operation " + strconv.Quote(rawString(params["operation"])) + " is refused"
+		case method == methodImageRender:
+			why = "it takes only " + strings.Join(imageRenderParams, ", ")
 		}
 	}
 	return answerError(id, codeDenied, method+" is not available through hermes-device: "+why, map[string]any{keyReason: reasonDenied})
@@ -249,7 +254,7 @@ var gatewayRules = map[string]string{
 	methodSlashExec: RuleChecked, methodDispatch: RuleChecked, "command.observe": RuleAllowed, "commands.catalog": RuleAllowed,
 	"complete.slash": RuleAllowed, "plugins.list": RuleAllowed, "tools.show": RuleAllowed,
 	"subagent.list": RuleAllowed, "subagent.tail": RuleAllowed, "subagent.steer": RuleAllowed, "subagent.interrupt": RuleAllowed,
-	"image.attach_bytes": RuleAllowed, "image.detach": RuleAllowed, methodFileAttach: RuleChecked,
+	"image.attach_bytes": RuleAllowed, "image.detach": RuleAllowed, methodImageRender: RuleChecked, methodFileAttach: RuleChecked,
 	"learning.frames": RuleRewritten, "learning.detail": RuleAllowed, "pet.info.meta": RuleAllowed, "pet.cells": RuleRewritten,
 	"pet.gallery": RuleAllowed, "i18n.catalog": RuleAllowed, "system.battery": RuleAllowed,
 	"shared_metrics.slash_command": RuleAllowed, "shared_metrics.startup_latency": RuleAllowed,
@@ -276,7 +281,7 @@ const (
 var deniedWhy = map[string]string{
 	"shell.exec": whyPodExec, "process.list": whyPodExec, "process.stop": whyPodExec, "process.kill": whyPodExec,
 	"reload.mcp": whyPodExec, "browser.manage": whyPodExec, "kanban.run": whyPodExec, "prompt.background": whyBackground,
-	"session.save": whyPodFiles, "spawn_tree.save": whyPodFiles, "image.attach": whyPodFiles, "image.render": whyPodFiles,
+	"session.save": whyPodFiles, "spawn_tree.save": whyPodFiles, "image.attach": whyPodFiles,
 	"clipboard.paste": whyPodFiles, "input.detect_drop": whyPodFiles, "paste.collapse": whyPodFiles, "rollback.list": whyPodFiles, "rollback.diff": whyPodFiles,
 	"rollback.restore": whyPodFiles, "rollback.session_diff": whyPodFiles,
 	"tools.configure": whyProfile, "plugins.manage": whyProfile, "skills.manage": whyProfile, "skills.reload": whyProfile,
@@ -613,17 +618,38 @@ func denied(method string, params map[string]json.RawMessage) bool {
 		return ok && !isNull(p)
 	case methodMutate:
 		return !slices.Contains(mutateOps, rawString(params["operation"]))
+	case methodImageRender:
+		for k := range params {
+			if !slices.Contains(imageRenderParams, k) {
+				return true
+			}
+		}
 	}
 	return false
 }
+
+// imageRenderParams are the params of image.render
+// (tui_gateway/methods_images.py).
+//
+//nolint:gochecknoglobals // a fixed list
+var imageRenderParams = []string{"path", keyCols, keyRows, "graphics", "terminal"}
+
+// capImageRenderConfined is the runtime.describe capability of a Hermes
+// whose image.render reads only images it stored
+// (security.image_render_paths, hermes-patches 0003).
+const capImageRenderConfined = "image-render-confined-v1"
+
+// whyImageRender is why image.render is refused by a Hermes that does not
+// confine it.
+const whyImageRender = "this Hermes does not confine it to images it stored, so it would read any file of the Hermes pod"
 
 // sizeBounds are the bounds the hub clamps the size params of the TUI's
 // render methods to: Hermes renders whatever size it is asked for.
 //
 //nolint:gochecknoglobals // a fixed table
 var sizeBounds = map[string]map[string][2]float64{
-	"learning.frames": {"cols": {20, 400}, "rows": {10, 200}, "frames": {1, 120}},
-	"pet.cells":       {"cols": {4, 200}},
+	"learning.frames": {keyCols: {20, 400}, keyRows: {10, 200}, "frames": {1, 120}},
+	"pet.cells":       {keyCols: {4, 200}},
 }
 
 // rewriteParams applies the hub's param rewrites to an allowed method:

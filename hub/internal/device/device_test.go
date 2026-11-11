@@ -1016,3 +1016,28 @@ func TestGatewayLegListOwnSessions(t *testing.T) {
 		}
 	})
 }
+
+func TestGatewayLegImageRender(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, _ := e.pair(e.a)
+		render := map[string]any{keyPath: "/opt/data/images/a.png", keyCols: 40}
+		g := e.gatewayLeg(e.b, tok)
+		if m := g.request("plain", "image.render", render); reason(m) != reasonDenied {
+			t.Fatalf("image.render without confinement = %v", m)
+		}
+		e.gw.SetCapabilities("image-render-confined-v1")
+		g = e.gatewayLeg(e.b, tok)
+		g.request("confined", "image.render", render)
+		if got := e.called("image.render"); len(got) != 1 {
+			t.Fatalf("forwarded image.render calls = %v", got)
+		}
+		if m := g.request("extra", "image.render", map[string]any{keyPath: "/x.png", "profile_home": "/"}); reason(m) != reasonDenied {
+			t.Fatalf("image.render with another param = %v", m)
+		}
+		if got := e.called("image.render"); len(got) != 1 {
+			t.Fatalf("forwarded image.render calls = %v", got)
+		}
+	})
+}

@@ -36,7 +36,7 @@ func clientMethods() map[string]string {
 		"delegation.status": device.RuleDenied, "display.observe": device.RuleDenied, "file.attach": device.RuleChecked,
 		"free_tier.status": device.RuleDenied, "gateway.ping": device.RuleAllowed, "i18n.catalog": device.RuleAllowed,
 		"image.attach": device.RuleDenied, "image.attach_bytes": device.RuleAllowed, "image.detach": device.RuleAllowed,
-		"image.render": device.RuleDenied, "input.detect_drop": device.RuleDenied, "kanban.run": device.RuleDenied, "learning.delete": device.RuleDenied,
+		"image.render": device.RuleChecked, "input.detect_drop": device.RuleDenied, "kanban.run": device.RuleDenied, "learning.delete": device.RuleDenied,
 		"learning.detail": device.RuleAllowed, "learning.edit": device.RuleDenied, "learning.frames": device.RuleRewritten,
 		"model.disconnect": device.RuleDenied, "model.options": device.RuleRewritten, "model.save_key": device.RuleDenied,
 		"onboarding.start": device.RuleDenied, "onboarding.state": device.RuleDenied, "paste.collapse": device.RuleDenied,

@@ -158,6 +158,7 @@ type Gateway struct {
 	files       fileStore
 	paused      bool
 	steers      []Steer
+	caps        []string
 }
 
 type submission struct {
@@ -761,6 +762,8 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 	switch method {
 	case gateway.MethodSessionList:
 		h = g.hSessionList
+	case methodRuntimeDescribe:
+		h = g.hRuntimeDescribe
 	case gateway.MethodSessionCreate:
 		h = g.hSessionCreate
 	case gateway.MethodSessionResume:

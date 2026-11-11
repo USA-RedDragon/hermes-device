@@ -137,6 +137,8 @@ type guard struct {
 	own      map[string]chan frame
 	nextOwn  uint64
 	sessions *sessionCheck
+	capsOnce sync.Once
+	caps     []string
 	gone     bool
 	lost     chan struct{}
 	work     sync.WaitGroup
@@ -247,7 +249,8 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 		return
 	}
 	if !f.hasID() {
-		if denied(f.Method, params) || rewritten(f.Method) || f.Method == methodCompletePath || otherProfile(params) ||
+		if denied(f.Method, params) || rewritten(f.Method) || f.Method == methodCompletePath || f.Method == methodImageRender ||
+			otherProfile(params) ||
 			ownRequestID(params) || !rewriteParams(f.Method, params) {
 			g.s.log.Warn("dropped a device notification", "device", g.dev.ID, "method", f.Method)
 			return
@@ -296,10 +299,28 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 	case f.Method == methodMutate && rawString(params["operation"]) == opBranch:
 		dropMember(params, "payload", "mcp_servers")
 		g.send(&f, params, &held{kind: heldBranch, id: f.ID})
-	case slices.Contains(listMethods, f.Method):
-		g.send(&f, params, &held{kind: heldList, id: f.ID, method: f.Method})
 	default:
-		g.send(&f, params, nil)
+		g.sendChecked(&f, params)
+	}
+}
+
+// sendChecked forwards a request whose answer the hub filters, or that
+// needs a capability of the gateway.
+func (g *guard) sendChecked(f *frame, params map[string]json.RawMessage) {
+	switch {
+	case f.Method == methodImageRender:
+		g.work.Go(func() {
+			if !g.hasCapability(capImageRenderConfined) {
+				g.toDevice(answerError(f.ID, codeDenied, methodImageRender+" is not available through hermes-device: "+whyImageRender,
+					map[string]any{keyReason: reasonDenied}))
+				return
+			}
+			g.send(f, params, nil)
+		})
+	case slices.Contains(listMethods, f.Method):
+		g.send(f, params, &held{kind: heldList, id: f.ID, method: f.Method})
+	default:
+		g.send(f, params, nil)
 	}
 }
 
@@ -738,4 +759,23 @@ func (g *guard) listAnswered(method string, f *frame) {
 	if out, err := json.Marshal(f.members); err == nil {
 		g.toDevice(out)
 	}
+}
+
+// hasCapability reports whether the gateway lists capability in
+// runtime.describe. The answer is read once per leg; when it cannot be
+// read, the gateway has no capabilities.
+func (g *guard) hasCapability(capability string) bool {
+	g.capsOnce.Do(func() {
+		f, err := g.call("runtime.describe", map[string]any{})
+		if err != nil || f.isError() {
+			return
+		}
+		var res struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		if json.Unmarshal(f.Result, &res) == nil {
+			g.caps = res.Capabilities
+		}
+	})
+	return slices.Contains(g.caps, capability)
 }
