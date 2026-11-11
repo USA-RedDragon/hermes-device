@@ -208,7 +208,7 @@ func (c *conn) fromTUI(typ websocket.MessageType, data []byte) {
 	}
 	params, objectParams := decodeParams(f.Params)
 	if !f.hasID() {
-		if denied(f.Method, params) || rewritten(f.Method) || f.Method == methodCompletePath || f.Method == methodProcessList {
+		if denied(f.Method, params) || rewritten(f.Method) || f.Method == methodCompletePath || f.Method == methodProcessList || f.Method == methodWakeStart {
 			c.s.log.Warn("dropped a TUI notification", "method", f.Method)
 			return
 		}
@@ -229,6 +229,11 @@ func (c *conn) fromTUI(typ websocket.MessageType, data []byte) {
 		// The hub refuses it (the pod's processes), and the Hermes TUI
 		// polls it and shows a refusal as a version mismatch.
 		c.toTUI(answerResult(f.ID, map[string]any{"processes": []any{}}))
+	case f.Method == methodWakeStart:
+		// The hub refuses it (the pod's audio), and the Hermes TUI shows
+		// that refusal as an error at every start.
+		c.toTUI(answerResult(f.ID, map[string]any{"started": false, "reason": "unavailable",
+			"hint": "the wake word is not available through talaria"}))
 	case denied(f.Method, params):
 		c.toTUI(deniedAnswer(f.ID, f.Method))
 	case rewritten(f.Method) && !objectParams:

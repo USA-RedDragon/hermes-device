@@ -327,6 +327,23 @@ func TestProcessListEmpty(t *testing.T) {
 	}
 }
 
+func TestWakeStartNotStarted(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, splice.Options{})
+	c := e.dialTUI()
+	m := c.call("r1", "wake.start", map[string]any{"surface": "tui"})
+	var res struct {
+		Started bool   `json:"started"`
+		Reason  string `json:"reason"`
+	}
+	if m.Error != nil || json.Unmarshal(m.Result, &res) != nil || res.Started || res.Reason != "unavailable" {
+		t.Fatalf("answer %+v %s", m, m.Result)
+	}
+	if _, ok := e.hub.find("wake.start", nil); ok {
+		t.Fatal("wake.start reached the gateway")
+	}
+}
+
 func TestStringAndIntegerIDs(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, splice.Options{})

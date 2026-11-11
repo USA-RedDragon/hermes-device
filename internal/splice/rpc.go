@@ -39,6 +39,7 @@ const (
 	methodConfigSet    = "config.set"
 	methodCompletePath = "complete.path"
 	methodProcessList  = "process.list"
+	methodWakeStart    = "wake.start"
 	opWorkspace        = "workspace"
 	opBranch           = "branch"
 	opDelete           = "delete"
