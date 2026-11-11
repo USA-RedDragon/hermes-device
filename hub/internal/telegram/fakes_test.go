@@ -759,7 +759,7 @@ func startBotWith(t *testing.T, mutate func(*telegram.Config), state *fakeState,
 
 // startBotNotices is startBotWith with a notice store.
 func startBotNotices(t *testing.T, mutate func(*telegram.Config), state *fakeState, mk func(*fakeHub) hub.Computers,
-	notices telegram.NoticeStore) *harness {
+	notices telegram.NoticeStore, opts ...func(*telegram.Options)) *harness {
 	t.Helper()
 	h := &harness{
 		tg:     newFakeTelegram(t),
@@ -776,11 +776,15 @@ func startBotNotices(t *testing.T, mutate func(*telegram.Config), state *fakeSta
 	if mk != nil {
 		computers = mk(h.hub)
 	}
-	bot, err := telegram.New(cfg, telegram.Options{
+	o := telegram.Options{
 		PublicURL: "https://hub.example/",
 		Service:   h.hub, Links: h.links, Tokens: h.tokens, State: h.state, Computers: computers, Notices: notices,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	}
+	for _, f := range opts {
+		f(&o)
+	}
+	bot, err := telegram.New(cfg, o)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -248,6 +248,11 @@ func noticeHead(m notify.Message) string {
 // chat in the hub.
 func (b *Bot) SendNotice(ctx context.Context, chatID int64, m notify.Message) (int64, error) {
 	rec := m.Record
+	if rec.Kind == hub.NoticeClaudeSignIn {
+		if id, ok := b.sendClaudeSignIn(ctx, chatID, m); ok {
+			return id, nil
+		}
+	}
 	body := noticeHead(m)
 	if pb := promptBody(rec.Prompt); pb != "" {
 		body += "\n" + pb
@@ -390,9 +395,9 @@ func (b *Bot) attachedTarget(to dest, msgID int64, key string) (promptTarget, st
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	p, ok := b.approvals[key]
-	// messageID is 0 only between the send and its bind; the random key
-	// alone ties the press to this prompt then.
-	if !ok || p.to.chat != to.chat || (p.messageID != 0 && p.messageID != msgID) {
+	// messageID is 0 only between the send and its bind; nobody can have
+	// seen the message's buttons before then.
+	if !ok || p.to.chat != to.chat || p.messageID != msgID {
 		return promptTarget{}, msgNotPending
 	}
 	return promptTarget{prefix: cbApproval, key: key, to: p.to, backendID: p.backendID, sessionID: p.sessionID,
@@ -687,7 +692,7 @@ func (b *Bot) replyAnswer(ctx context.Context, to dest, user string, m *Message)
 	if m.ReplyToMessage == nil || m.Text == "" {
 		return false
 	}
-	if cmd, _ := parseCommand(m.Text); cmd != "" && cmd != "skip" {
+	if cmd, _ := parseCommand(m.Text); cmd != "" && cmd != cmdSkip {
 		return false
 	}
 	b.mu.Lock()
@@ -723,7 +728,7 @@ func (b *Bot) replyAnswer(ctx context.Context, to dest, user string, m *Message)
 		return true
 	}
 	a, verdict := hub.Answer{Text: m.Text}, "Answered: "+m.Text
-	if cmd, _ := parseCommand(m.Text); cmd == "skip" {
+	if cmd, _ := parseCommand(m.Text); cmd == cmdSkip {
 		a, verdict = hub.Answer{Skip: true}, "Skipped"
 	}
 	err := b.sendAnswer(ctx, user, t, a)

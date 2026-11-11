@@ -21,6 +21,9 @@ const (
 	kContext      = "context"
 	lblDeny       = "Deny"
 	envDev        = "dev"
+	srcCron       = "cron"
+	titleLong     = "Long build"
+	branchFixCI   = "fix-ci"
 	kToolID       = "tool_id"
 	envStaging    = "staging"
 	envProd       = "prod"
@@ -131,11 +134,11 @@ func TestEachChatGetsATopic(t *testing.T) {
 	h.hub.add(hub.Session{ID: "old", BackendID: beCluster, Title: "Old chat", UpdatedAt: since.Add(-time.Hour)})
 	h.hub.add(hub.Session{ID: "arch", BackendID: beCluster, Title: "Archived", Archived: true, UpdatedAt: since.Add(time.Minute)})
 	h.hub.add(hub.Session{ID: "tg", BackendID: beCluster, Title: "Family group", Source: "telegram", UpdatedAt: since.Add(time.Minute)})
-	h.hub.add(hub.Session{ID: "cron", BackendID: beCluster, Title: "SEV-1 review", Source: "cron", UpdatedAt: since.Add(time.Minute)})
-	h.hub.add(hub.Session{ID: "busy", BackendID: beCluster, Title: "Long build", Running: true, UpdatedAt: since.Add(-time.Hour)})
+	h.hub.add(hub.Session{ID: srcCron, BackendID: beCluster, Title: "SEV-1 review", Source: srcCron, UpdatedAt: since.Add(time.Minute)})
+	h.hub.add(hub.Session{ID: "busy", BackendID: beCluster, Title: titleLong, Running: true, UpdatedAt: since.Add(-time.Hour)})
 	h.hub.add(hub.Session{ID: "fix", BackendID: beCluster, Title: titleFixCI, UpdatedAt: since.Add(time.Minute)})
 	h.tg.waitCall(mTopic, func(c tgCall) bool { return c.name() == "SEV-1 review · scheduled" })
-	h.tg.waitCall(mTopic, func(c tgCall) bool { return c.name() == "Long build" })
+	h.tg.waitCall(mTopic, func(c tgCall) bool { return c.name() == titleLong })
 	created := h.tg.waitCall(mTopic, func(c tgCall) bool { return c.name() == titleFixCI })
 	thread := created.ResultID
 	tp := h.state.waitTopic(t, forumID, beCluster, "fix")
@@ -155,7 +158,7 @@ func TestEachChatGetsATopic(t *testing.T) {
 		t.Fatalf("answer went to %+v", answer.Params)
 	}
 	for _, c := range h.tg.snapshot() {
-		if c.Method == mTopic && !slices.Contains([]string{titleFixCI, "SEV-1 review · scheduled", "Long build"}, c.name()) {
+		if c.Method == mTopic && !slices.Contains([]string{titleFixCI, "SEV-1 review · scheduled", titleLong}, c.name()) {
 			t.Fatalf("unexpected topic %q", c.name())
 		}
 	}

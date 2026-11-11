@@ -265,7 +265,7 @@ func (r *renderer) refresh(ctx context.Context) {
 		t.msg.dirty, t.msg.pending = true, ""
 		return
 	}
-	r.update(ctx, &t.msg, r.statusHTML(false), true)
+	r.update(ctx, &t.msg, r.statusHTML(false))
 }
 
 // endTurn shows the status line of the turn as done and forgets the turn.
@@ -273,7 +273,7 @@ func (r *renderer) endTurn(ctx context.Context) {
 	if r.turn == nil {
 		return
 	}
-	r.update(ctx, &r.turn.msg, r.statusHTML(true), true)
+	r.update(ctx, &r.turn.msg, r.statusHTML(true))
 	r.turn = nil
 }
 
@@ -425,15 +425,11 @@ func fitTail(s string, room int) string {
 // update shows html in m: a new message when m has none yet, an edit when
 // the interval allows or force is set, and otherwise a pending edit for
 // flushDue.
-func (r *renderer) update(ctx context.Context, m *liveMsg, html string, force bool) {
+func (r *renderer) update(ctx context.Context, m *liveMsg, html string) {
 	if m.id == 0 {
 		m.id = r.send(ctx, html, nil)
 		m.lastEdit = r.now()
 		m.dirty = m.id == 0
-		return
-	}
-	if !force && r.now().Sub(m.lastEdit) < r.interval {
-		m.pending, m.dirty = html, true
 		return
 	}
 	r.edit(ctx, m, html)
@@ -492,13 +488,13 @@ func (r *renderer) nextFlush() (time.Duration, bool) {
 
 func (r *renderer) flushDue(ctx context.Context) {
 	if t := r.turn; t != nil && t.msg.dirty && r.now().Sub(t.msg.lastEdit) >= r.interval {
-		r.update(ctx, &t.msg, r.statusHTML(false), true)
+		r.update(ctx, &t.msg, r.statusHTML(false))
 	}
 }
 
 func (r *renderer) flushAll(ctx context.Context) {
 	if t := r.turn; t != nil && t.msg.dirty {
-		r.update(ctx, &t.msg, r.statusHTML(false), true)
+		r.update(ctx, &t.msg, r.statusHTML(false))
 	}
 }
 

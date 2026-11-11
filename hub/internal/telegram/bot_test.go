@@ -169,7 +169,7 @@ func TestCronResultIsSent(t *testing.T) {
 	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "first answer", kStatus: statusComplete})
 	h.tg.wait(mSend, "first answer")
 	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "a user message"})
-	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "Cronjob Response: **ping**", "note": "cron"})
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "Cronjob Response: **ping**", "note": srcCron})
 	got := h.tg.wait(mSend, "Cronjob Response")
 	if got.text() != "Cronjob Response: <b>ping</b>" {
 		t.Fatalf("cron result = %q", got.text())

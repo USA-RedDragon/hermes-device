@@ -41,6 +41,7 @@ const (
 	cbAttach     = "at"
 	untitledName = "(untitled)"
 	cmdLink      = "link"
+	cmdSkip      = "skip"
 	msgHeld      = "Hermes is restarting. Your message will send when it is back."
 )
 
@@ -75,7 +76,9 @@ type Options struct {
 	// Optional.
 	Computers hub.Computers
 	// Notices finds the notices whose buttons people press. Optional.
-	Notices    NoticeStore
+	Notices NoticeStore
+	// Claude signs Claude accounts in from Telegram. Optional.
+	Claude     hub.Claude
 	Logger     *slog.Logger
 	HTTPClient *http.Client
 }
@@ -108,6 +111,7 @@ type Bot struct {
 	state     hub.TelegramState
 	computers hub.Computers
 	notices   NoticeStore
+	claude    hub.Claude
 	botID     int64
 	logger    *slog.Logger
 	defaults  map[string]string
@@ -135,6 +139,8 @@ type Bot struct {
 	shown map[msgKey]shownNotice
 	// gone are topics Telegram refused a message for.
 	gone map[dest]bool
+	// claudes are the Claude sign-in messages whose reply is the code.
+	claudes map[msgKey]claudePrompt
 }
 
 type chatState struct {
@@ -218,6 +224,7 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		state:     opts.State,
 		computers: opts.Computers,
 		notices:   opts.Notices,
+		claude:    opts.Claude,
 		botID:     BotID(cfg.Token),
 		logger:    logger,
 		defaults:  defaults,
@@ -230,6 +237,7 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		replies:   make(map[msgKey]replyTarget),
 		shown:     make(map[msgKey]shownNotice),
 		gone:      make(map[dest]bool),
+		claudes:   make(map[msgKey]claudePrompt),
 	}
 	for _, id := range cfg.AllowedGroups {
 		b.groups[id] = true
@@ -504,7 +512,7 @@ func (b *Bot) handleAlbum(ctx context.Context, ms []*Message) {
 		b.sendLink(ctx, m)
 		return
 	}
-	if !media && b.replyAnswer(ctx, to, user, m) {
+	if !media && (b.claudeReply(ctx, to, user, m) || b.replyAnswer(ctx, to, user, m)) {
 		return
 	}
 	if media {
@@ -546,7 +554,7 @@ func (b *Bot) sessionCommand(ctx context.Context, to dest, user, cmd, arg string
 		b.where(ctx, to, user)
 	case "move":
 		b.move(ctx, to, user, arg)
-	case "cancel", "skip":
+	case "cancel", cmdSkip:
 		b.sendText(ctx, to, "Nothing to cancel. To answer a question, reply to its message.")
 	default:
 		b.sendText(ctx, to, "Unknown command. Send /help for the list.")

@@ -257,7 +257,7 @@ func (b *Bot) handleForum(ctx context.Context, f *forum, ms []*Message, media bo
 	if err != nil || !linked || user != f.user {
 		return
 	}
-	if !media && b.replyAnswer(ctx, to, user, m) {
+	if !media && (b.claudeReply(ctx, to, user, m) || b.replyAnswer(ctx, to, user, m)) {
 		return
 	}
 	if r := m.ReplyToMessage; to.thread == 0 && r != nil && r.From != nil && r.From.ID == b.botID && r.ForumTopicCreated == nil {

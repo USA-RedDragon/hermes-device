@@ -149,9 +149,9 @@ func TestOtherAnswerAsksForReply(t *testing.T) {
 	h := startBot(t, nil)
 	sid := h.startTurn(t)
 	h.hub.emit(t, sid, hub.KindClarifyRequest, map[string]any{kPromptID: "q3", kKind: hub.PromptClarify, kQuestion: "Branch?",
-		kChoices: []string{"main", "fix-ci"}})
+		kChoices: []string{"main", branchFixCI}})
 	req := h.tg.wait(mSend, "Branch?")
-	if got := labels(req); !slices.Equal(got, []string{"main", "fix-ci", "Other answer", "Skip"}) {
+	if got := labels(req); !slices.Equal(got, []string{"main", branchFixCI, "Other answer", "Skip"}) {
 		t.Fatalf("labels = %v", got)
 	}
 	if !strings.Contains(req.text(), "Or reply to this message") {
@@ -268,8 +268,8 @@ func TestReplyToStoredNoticeAnswersIt(t *testing.T) {
 	h := startBotNotices(t, nil, newFakeState(), nil, notices)
 	h.tg.replyTo(dm(aliceTG), aliceTG, 4242, "/stop")
 	h.tg.wait(mSend, "No session is attached.")
-	h.tg.replyTo(dm(aliceTG), aliceTG, 4242, "fix-ci")
-	if got := h.hub.waitAnswer(t); got.Answer.Text != "fix-ci" || got.PromptID != "q4" || got.SessionID != "s4" {
+	h.tg.replyTo(dm(aliceTG), aliceTG, 4242, branchFixCI)
+	if got := h.hub.waitAnswer(t); got.Answer.Text != branchFixCI || got.PromptID != "q4" || got.SessionID != "s4" {
 		t.Fatalf("answer = %+v", got)
 	}
 	if edit := h.tg.wait(mEdit, "Answered: fix-ci"); edit.messageID() != 4242 {
