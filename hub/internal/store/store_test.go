@@ -169,13 +169,23 @@ func TestTelegramGroupsAndTopics(t *testing.T) {
 		if ok, err := s.TelegramAttached(ctx, userAlice, deviceName, "s1"); !ok || err != nil {
 			t.Fatalf("attached = %v %v", ok, err)
 		}
-		topic.ThreadID, topic.Name = 0, "Fix CI · laptop"
+		topic.ThreadID, topic.Name, topic.Closed = 0, "Fix CI · laptop", true
 		if err := s.SaveTelegramTopic(ctx, topic); err != nil {
 			t.Fatal(err)
 		}
 		got, err := s.TelegramTopics(ctx, -1001)
 		if err != nil || len(got) != 1 || got[0] != topic {
 			t.Fatalf("topics = %+v %v", got, err)
+		}
+		other := hub.TelegramTopic{ChatID: -1001, ThreadID: 6, User: userAlice, BackendID: deviceName, SessionID: "s2", Name: "Gone", Seen: at}
+		if err := s.SaveTelegramTopic(ctx, other); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DeleteTelegramTopic(ctx, -1001, deviceName, "s2"); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := s.TelegramTopics(ctx, -1001); len(got) != 1 || got[0].SessionID != "s1" {
+			t.Fatalf("topics after a delete = %+v", got)
 		}
 		if ok, _ := s.TelegramAttached(ctx, userAlice, deviceName, "s1"); ok {
 			t.Fatal("a dropped topic counts as attached")

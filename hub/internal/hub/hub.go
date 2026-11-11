@@ -253,6 +253,8 @@ type TelegramTopic struct {
 	SessionID string
 	// Name is the topic's name as the bot last set it.
 	Name string
+	// Closed is a topic the bot closed because its chat is archived.
+	Closed bool
 	// Seen is when the bot made or dropped the topic.
 	Seen time.Time
 }
@@ -275,6 +277,8 @@ type TelegramState interface {
 	SaveTelegramTopic(ctx context.Context, t TelegramTopic) error
 	// TelegramTopics lists the topics of a group.
 	TelegramTopics(ctx context.Context, chatID int64) ([]TelegramTopic, error)
+	// DeleteTelegramTopic forgets the topic of a chat in a group.
+	DeleteTelegramTopic(ctx context.Context, chatID int64, backendID, sessionID string) error
 }
 
 // Snapshot is the Data of a KindSnapshot event. Messages and Prompts are
@@ -413,4 +417,12 @@ type Notice struct {
 	Cancelled bool
 	// Account is the Claude account of a NoticeClaudeSignIn.
 	Account string
+}
+
+// SessionChecker is the optional part of a Service that tells whether a
+// session still exists on its backend.
+type SessionChecker interface {
+	// SessionExists is false for a session the backend does not know,
+	// such as a deleted one. An error means it could not tell.
+	SessionExists(ctx context.Context, user, backendID, sessionID string) (bool, error)
 }

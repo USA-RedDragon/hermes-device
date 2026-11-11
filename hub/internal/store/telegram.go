@@ -111,16 +111,25 @@ func (s *Store) TelegramGroups(ctx context.Context) ([]hub.TelegramGroup, error)
 
 // SaveTelegramTopic records the topic of a chat in a linked group.
 func (s *Store) SaveTelegramTopic(ctx context.Context, t hub.TelegramTopic) error {
-	return s.exec(ctx, `INSERT INTO telegram_topics (chat_id, backend_id, session_id, thread_id, "user", name, seen_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+	closed := 0
+	if t.Closed {
+		closed = 1
+	}
+	return s.exec(ctx, `INSERT INTO telegram_topics (chat_id, backend_id, session_id, thread_id, "user", name, seen_at, closed)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(chat_id, backend_id, session_id) DO UPDATE SET thread_id = excluded.thread_id, "user" = excluded."user",
-		name = excluded.name, seen_at = excluded.seen_at`,
-		t.ChatID, t.BackendID, t.SessionID, t.ThreadID, t.User, t.Name, t.Seen.Unix())
+		name = excluded.name, seen_at = excluded.seen_at, closed = excluded.closed`,
+		t.ChatID, t.BackendID, t.SessionID, t.ThreadID, t.User, t.Name, t.Seen.Unix(), closed)
+}
+
+// DeleteTelegramTopic forgets the topic of a chat in a linked group.
+func (s *Store) DeleteTelegramTopic(ctx context.Context, chatID int64, backendID, sessionID string) error {
+	return s.exec(ctx, `DELETE FROM telegram_topics WHERE chat_id = ? AND backend_id = ? AND session_id = ?`, chatID, backendID, sessionID)
 }
 
 // TelegramTopics lists the topics of a group.
 func (s *Store) TelegramTopics(ctx context.Context, chatID int64) ([]hub.TelegramTopic, error) {
-	rows, err := s.db.QueryContext(ctx, s.q(`SELECT chat_id, thread_id, "user", backend_id, session_id, name, seen_at
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT chat_id, thread_id, "user", backend_id, session_id, name, seen_at, closed
 		FROM telegram_topics WHERE chat_id = ? ORDER BY backend_id, session_id`), chatID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list topics: %w", err)
@@ -129,13 +138,14 @@ func (s *Store) TelegramTopics(ctx context.Context, chatID int64) ([]hub.Telegra
 	var out []hub.TelegramTopic
 	for rows.Next() {
 		var (
-			t    hub.TelegramTopic
-			seen int64
+			t      hub.TelegramTopic
+			seen   int64
+			closed int
 		)
-		if err := rows.Scan(&t.ChatID, &t.ThreadID, &t.User, &t.BackendID, &t.SessionID, &t.Name, &seen); err != nil {
+		if err := rows.Scan(&t.ChatID, &t.ThreadID, &t.User, &t.BackendID, &t.SessionID, &t.Name, &seen, &closed); err != nil {
 			return nil, err
 		}
-		t.Seen = time.Unix(seen, 0)
+		t.Seen, t.Closed = time.Unix(seen, 0), closed != 0
 		out = append(out, t)
 	}
 	return out, rows.Err()

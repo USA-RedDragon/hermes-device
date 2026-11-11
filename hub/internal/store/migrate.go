@@ -208,6 +208,11 @@ var migrations = []migration{
 		sqlite:   []string{`ALTER TABLE notices ADD COLUMN account_id TEXT NOT NULL DEFAULT ''`},
 		postgres: []string{`ALTER TABLE notices ADD COLUMN account_id TEXT NOT NULL DEFAULT ''`},
 	},
+	{
+		version:  13,
+		sqlite:   []string{`ALTER TABLE telegram_topics ADD COLUMN closed INTEGER NOT NULL DEFAULT 0`},
+		postgres: []string{`ALTER TABLE telegram_topics ADD COLUMN closed INTEGER NOT NULL DEFAULT 0`},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas
