@@ -1,7 +1,9 @@
-"""The ``device-browser`` toolset: the agent drives the user's own Firefox on the device the
-session is bound to, through the Hermes extension and the exec leg (docs/browser.md).
+"""The ``device-browser`` toolset: the agent drives the user's own Firefox on one of the user's
+computers, through the Hermes extension and the exec leg (docs/browser.md).
 
-Every call goes to the session's bound device and never to the sandbox, which has no browser.
+Every call goes to the session's browser device (:func:`pick`): the device a scheduled job or the
+session chose, else the computer the session is bound to, else the user's one computer with
+browser control. It never goes to the sandbox, which has no browser.
 ``pre_tool_call`` asks the user, through Hermes's approval gate, the first time per site and
 session before a form submit, a visit to a new site or a script. On a page with password,
 payment or one-time code fields, and for clicks on Salesforce, the handler asks every time.
@@ -88,25 +90,361 @@ def start_firefox(conn: Any) -> None:
         time.sleep(0.1)
 
 
-def target(session_id: str = "", start: bool = True) -> tuple[Any, Any]:
-    """``(resolution, connection)`` of the device whose browser this session uses. With
-    start, a closed Firefox is started first when the device can (docs/browser.md 5.1)."""
+# --- browser device (docs/browser.md section 3.2) ------------------------------------------------
+
+CHOICES_VERSION = 1
+
+
+_UNREAD = object()
+
+
+class Choices:
+    """The browser devices that sessions and scheduled jobs chose, in
+    ``$HERMES_HOME/device/browser.json``. A session's choice covers its lineage (compression
+    children, subagents, branches); a job's covers each of its runs. Every read checks the file
+    again, and every change holds an exclusive lock on ``browser.json.lock``, so the gateway and
+    other Hermes processes see each other's changes."""
+
+    def __init__(self, path: Optional[Path]):
+        self._path = path
+        self._lock = threading.RLock()
+        self._stamp: Any = _UNREAD
+        self._error = ""
+        self._sessions: dict[str, dict] = {}
+        self._jobs: dict[str, dict] = {}
+        self._device_jobs: dict[str, dict] = {}
+
+    def _file_stamp(self) -> Optional[tuple]:
+        try:
+            st = self._path.stat()
+        except FileNotFoundError:
+            return None
+        return st.st_mtime_ns, st.st_size, st.st_ino
+
+    def _load(self) -> None:
+        """Read the file when it changed since the last read. Call with the lock."""
+        if not self._path:
+            return
+        stamp = self._file_stamp()
+        if stamp == self._stamp:
+            return
+        self._stamp, self._error, self._sessions, self._jobs, self._device_jobs = stamp, "", {}, {}, {}
+        if stamp is None:
+            return
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict) or raw.get("version") != CHOICES_VERSION:
+                raise ValueError("unknown version")
+            for key, into in (("sessions", self._sessions), ("jobs", self._jobs)):
+                entries = raw.get(key) or {}
+                if not isinstance(entries, dict):
+                    raise ValueError(f"{key} is not an object")
+                for k, v in entries.items():
+                    if not (isinstance(v, dict) and isinstance(v.get("device_id"), str)
+                            and isinstance(v.get("user"), str)):
+                        raise ValueError(f"{key} entry {str(k)[:64]!r} has no device_id or user")
+                    into[str(k)] = v
+            marked = raw.get("device_jobs") or {}
+            if not isinstance(marked, dict) or not all(isinstance(v, dict) for v in marked.values()):
+                raise ValueError("device_jobs is not an object of objects")
+            self._device_jobs = {str(k): v for k, v in marked.items()}
+        except Exception as exc:
+            self._sessions, self._jobs, self._device_jobs = {}, {}, {}
+            self._error = f"{self._path} is unreadable ({exc})"
+            _core().logger.error("device: %s; browser device choices fail closed until it is fixed", self._error)
+
+    def check(self) -> None:
+        """Raise Unavailable when the file cannot be read."""
+        with self._lock:
+            self._load()
+            if self._error:
+                raise Unavailable(f"hermes-device: the browser device choices cannot be read: {self._error}")
+
+    def _save(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        doc = {"version": CHOICES_VERSION, "sessions": dict(sorted(self._sessions.items())),
+               "jobs": dict(sorted(self._jobs.items())), "device_jobs": dict(sorted(self._device_jobs.items()))}
+        fd, tmp = tempfile.mkstemp(prefix=".browser-", suffix=".tmp", dir=str(self._path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh, indent=2)
+                fh.write("\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, self._path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        self._stamp = self._file_stamp()
+
+    def _change(self, edit: Callable[[], bool]) -> None:
+        """Run ``edit`` on fresh state under the file lock and save when it returns true. On a
+        failed save the next read takes the file again."""
+        import fcntl
+        with self._lock:
+            if not self._path:
+                edit()
+                return
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with open(str(self._path) + ".lock", "a", encoding="utf-8") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                self._stamp = _UNREAD
+                self._load()
+                if self._error:
+                    raise Unavailable(f"hermes-device: the browser device choices cannot be read: {self._error}")
+                if not edit():
+                    return
+                try:
+                    self._save()
+                except BaseException:
+                    self._stamp = _UNREAD
+                    raise
+
+    def session(self, session_id: str) -> Optional[dict]:
+        with self._lock:
+            self.check()
+            return self._sessions.get(session_id)
+
+    def job(self, job_id: str) -> Optional[dict]:
+        with self._lock:
+            self.check()
+            return self._jobs.get(job_id)
+
+    def device_job(self, job_id: str) -> bool:
+        """The job was created in a session that a device or the sandbox serves."""
+        with self._lock:
+            self.check()
+            return job_id in self._device_jobs
+
+    def mark_device_job(self, job_id: str, session_id: str) -> None:
+        self._set("_device_jobs", job_id, {"session_id": session_id, "at": round(time.time(), 3)})
+
+    def _set(self, into: str, key: str, value: Optional[dict]) -> None:
+        def edit() -> bool:
+            table = getattr(self, into)
+            if value is None:
+                return table.pop(key, None) is not None
+            table[key] = value
+            return True
+        self._change(edit)
+
+    def set_session(self, session_id: str, choice: Optional[dict]) -> None:
+        self._set("_sessions", session_id, choice)
+
+    def set_job(self, job_id: str, choice: Optional[dict]) -> None:
+        self._set("_jobs", job_id, choice)
+
+    def forget_sessions(self, session_ids: list[str]) -> None:
+        def edit() -> bool:
+            gone = [s for s in session_ids if s in self._sessions]
+            for sid in gone:
+                del self._sessions[sid]
+            return bool(gone)
+        self._change(edit)
+
+    def prune_jobs(self, alive: Callable[[str], bool]) -> None:
+        """Drop the choices of jobs that no longer exist."""
+        def edit() -> bool:
+            gone = [(t, j) for t in (self._jobs, self._device_jobs) for j in t if not alive(j)]
+            for t, j in gone:
+                del t[j]
+            return bool(gone)
+        self._change(edit)
+
+
+_CHOICES: Optional[Choices] = None
+_CHOICES_LOCK = threading.Lock()
+
+
+def choices() -> Choices:
+    global _CHOICES
+    with _CHOICES_LOCK:
+        if _CHOICES is None:
+            _CHOICES = Choices(_core().hermes_home() / "device" / "browser.json")
+        return _CHOICES
+
+
+def browser_devices(user: Optional[str] = None) -> list[Any]:
+    """Connected devices that offer browser control and belong to a hub user (not a service
+    device such as the sandbox), by name; with ``user``, only that user's."""
+    core = _core()
+    return sorted((c for c in core.hub().devices()
+                   if core.CAPABILITY_BROWSER in c.capabilities and c.user != core.SERVICE_USER
+                   and (user is None or c.user == user)),
+                  key=lambda c: (c.name, c.device_id))
+
+
+def backend_user() -> str:
+    """The plugin setting ``user``: the one hub user who uses this Hermes, or "" when unset."""
+    value = _core().settings().get("user")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def cron_job_id(session_id: str) -> str:
+    """The id of the scheduled job whose run this session belongs to, or "". Hermes binds the
+    run's ``(authority, session id, job id, execution id)`` in the run's context
+    (gateway.session_cron.bind_execution); a session of that run's lineage (a compression child
+    or a subagent) counts too. Else the frozen policy of a live cron session names its job."""
+    core = _core()
+    try:
+        from gateway.session_cron import current_execution
+        execution = current_execution()
+    except Exception:
+        execution = None
+    if execution and len(execution) >= 3 and isinstance(execution[2], str) and execution[2]:
+        run_sid, cur, seen = execution[1], session_id, set()
+        for _ in range(core.MAX_LINEAGE_HOPS + 1):
+            if not cur or cur in seen:
+                break
+            if cur == run_sid:
+                return execution[2]
+            seen.add(cur)
+            try:
+                cur = core.hub()._parent(cur)
+            except core.LineageError:
+                break
+    try:
+        policy = core._live_policy(session_id)
+        if policy is not None and getattr(policy, "source", "") == "cron":
+            job = json.loads(policy.request_json).get("cron_job") or {}
+            return str(job.get("id") or "")
+    except Exception:
+        core.logger.debug("device: cron policy of %s not readable", session_id, exc_info=True)
+    return ""
+
+
+def _session_choice(session_id: str) -> Optional[dict]:
+    """The browser device choice nearest to the session in its lineage."""
+    core = _core()
+    cur, seen = session_id, set()
+    for _ in range(core.MAX_LINEAGE_HOPS + 1):
+        if not cur or cur in seen:
+            return None
+        seen.add(cur)
+        found = choices().session(cur)
+        if found is not None:
+            return found
+        try:
+            cur = core.hub()._parent(cur)
+        except core.LineageError as exc:
+            raise Unavailable(f"hermes-device: the browser device of session {session_id} cannot be found: "
+                              f"{exc}") from None
+    return None
+
+
+def _label(choice: dict) -> str:
+    name = choice.get("name") or ""
+    return f"{name} [{choice['device_id']}]" if name else choice["device_id"]
+
+
+def _chosen(choice: dict, what: str) -> Any:
+    """The connected device of a stored choice, checked against the user it was chosen for."""
+    core = _core()
+    conn = core.hub().device(choice["device_id"])
+    if conn is None:
+        raise Unavailable(f"hermes-device: device {_label(choice)}, the browser device of {what}, is not connected "
+                          f"(it is offline, or was removed from the hub), so its browser cannot be used.")
+    if conn.user != choice["user"] or conn.user == core.SERVICE_USER:
+        raise Unavailable(f"hermes-device: device {conn.name} [{conn.device_id}], the browser device of {what}, now "
+                          f"belongs to another user, so its browser is not used.")
+    return conn
+
+
+def _session_user(res: Any) -> Optional[str]:
+    """The hub user a session acts for, when the plugin can tell: the user of the computer it
+    is bound to, else the plugin setting ``user``. None when neither tells."""
+    core = _core()
+    if res.state != core.STATE_BOUND or res.sandbox:
+        owner = backend_user()
+        if not owner:
+            return None
+        others = sorted({c.user for c in core.hub().devices() if c.user not in (owner, core.SERVICE_USER)})
+        if others:
+            core.logger.error("device: the plugin setting user is %s, but devices of other hub users are connected "
+                              "(%s); sessions that no computer serves get no browser", owner, ", ".join(others))
+            raise Unavailable(f"hermes-device: this Hermes names {owner} as its one user, but computers of other "
+                              f"users are connected too, so a session that is not bound to a computer cannot use a "
+                              f"browser. Bind the session to your computer with /device <device> <dir>.")
+        return owner
+    conn = core.hub().device(res.binding.device_id)
+    if conn is None:
+        raise Unavailable(f"hermes-device: device {res.binding.device_id} is not connected, so its browser cannot "
+                          f"be used.")
+    return conn.user
+
+
+def _need_user(user: Optional[str]) -> str:
+    if user is None:
+        raise Unavailable("hermes-device: this session is not bound to a computer, and this Hermes does not name its "
+                          "one user (plugin setting user), so it cannot tell whose browser the session may use. "
+                          "Bind the session to your computer with /device <device> <dir>.")
+    return user
+
+
+def pick(session_id: str, res: Any) -> tuple[Any, str]:
+    """``(connection, how)`` of the browser device a session uses, without checking Firefox:
+
+    1. a run of a scheduled job that has a browser device uses that one, and only that one;
+    2. else the device chosen with browser_use_device in the session's lineage;
+    3. else the computer the session is bound to;
+    4. else, for a session that no computer serves (the sandbox), the user's one connected
+       browser device.
+
+    The session's user is the user of the computer it is bound to, else the plugin setting
+    ``user``. Every device must belong to that user; with neither, only rule 3 applies."""
+    core = _core()
+    user = _session_user(res)
+    job_id = cron_job_id(session_id)
+    if job_id:
+        rec = choices().job(job_id)
+        if rec is not None:
+            if user is not None and rec["user"] != user:
+                raise Unavailable(f"hermes-device: device {_label(rec)}, the browser device of scheduled job {job_id}, "
+                                  f"belongs to another user than this session, so its browser is not used.")
+            return _chosen(rec, f"scheduled job {job_id}"), "job"
+        raise Unavailable(f"hermes-device: scheduled job {job_id} has no browser device, so its runs cannot use a "
+                          f"browser. The user gives it one in a chat with browser_use_device and job_id.")
+    rec = _session_choice(session_id)
+    if rec is not None:
+        if rec["user"] != _need_user(user):
+            raise Unavailable(f"hermes-device: device {_label(rec)}, the browser device chosen in this session, "
+                              f"belongs to another user than this session. Choose again with browser_use_device.")
+        return _chosen(rec, f"session {session_id}"), "chosen"
+    if res.state == core.STATE_BOUND and not res.sandbox:
+        return core.hub().device(res.binding.device_id), "bound"
+    found = browser_devices(_need_user(user))
+    if len(found) == 1:
+        return found[0], "only"
+    if not found:
+        raise Unavailable(f"hermes-device: session {session_id or '(none)'} is not bound to a computer, and none of "
+                          f"the user's computers with browser control is connected. Start hermes-device run with "
+                          f"browser.enabled on your computer.")
+    raise Unavailable(f"hermes-device: session {session_id or '(none)'} is not bound to a computer, and several "
+                      f"computers offer a browser ({', '.join(f'{c.name} [{c.device_id}]' for c in found)}). Choose "
+                      f"one with browser_use_device.")
+
+
+def resolve(session_id: str = "") -> tuple[str, Any]:
+    """``(session id, resolution)`` of the running turn; Unavailable when it fails closed."""
     core = _core()
     sid = core.current_session_id() or session_id
     res = core.resolve_session(sid)
-    if res.sandbox:
-        raise Unavailable(f"hermes-device: session {sid or '(none)'} runs in the sandbox device, which has no "
-                          f"browser. Browser tools use the Firefox on the user's own computer: bind this session "
-                          f"to it with /device <device> <dir>.")
-    if res.state != core.STATE_BOUND:
-        if res.state == core.STATE_NEVER_BOUND:
-            raise Unavailable(f"hermes-device: session {sid or '(none)'} is not bound to a device, so it has no "
-                              f"browser. Bind it to the user's computer with /device <device> <dir>.")
+    if res.state == core.STATE_FAIL_CLOSED and not res.sandbox:
         raise Unavailable(core.fail_closed_message(res))
-    device_id = res.binding.device_id
-    conn = core.hub().device(device_id)
-    if conn is None:
-        raise Unavailable(f"hermes-device: device {device_id} is not connected, so its browser cannot be used.")
+    return sid, res
+
+
+def target(session_id: str = "", start: bool = True) -> tuple[Any, Any]:
+    """``(resolution, connection)`` of the device whose browser this session uses (:func:`pick`).
+    With start, a closed Firefox is started first when the device can (docs/browser.md 5.1)."""
+    core = _core()
+    sid, res = resolve(session_id)
+    conn, _ = pick(sid, res)
+    device_id = conn.device_id
     if core.CAPABILITY_BROWSER not in conn.capabilities:
         raise Unavailable(f"hermes-device: device {conn.name} [{device_id}] does not offer browser control. On "
                           f"that computer: set browser.enabled to true in the hermes-device config, run "
@@ -382,11 +720,74 @@ GATED = frozenset({"browser_navigate", "browser_tabs", "browser_click", "browser
                    "browser_eval"})
 
 
+SCHEDULE_TOOLS = frozenset({"cronjob_manage", "browser_use_device"})
+# cronjob_manage actions that make a job with a browser device run again or change what it does.
+_JOB_ACTIONS = frozenset({"update", "run", "resume"})
+
+
+def _schedule_gate(tool_name: str, args: dict, session_id: str) -> Optional[dict]:
+    """Ask the user, every time and without remembering it, before work is scheduled that drives
+    a browser unattended: a job created in a session that has a browser device (only such a job
+    gets one), an update, run or resume of a job that has one, and browser_use_device for a job
+    (section 3.2). A prompt injection could otherwise set up a job that reads the user's
+    logged-in sites with nobody watching."""
+    action = str(args.get("action") or "").strip().lower()
+    raw = args.get("job_id")
+    try:
+        if tool_name == "browser_use_device":
+            if not raw or str(args.get("device") or "").strip() == "default":
+                return None
+            what, device = f"scheduled job {str(raw)[:64]}", str(args.get("device") or "")[:64]
+        elif action == "create":
+            sid, res = resolve(session_id)
+            conn, _ = pick(sid, res)
+            what, device = "a new scheduled job", f"{conn.name} [{conn.device_id}]"
+        elif action in _JOB_ACTIONS and isinstance(raw, str) and raw:
+            job_id = _job_id(raw)
+            rec = choices().job(job_id) if job_id else None
+            if rec is None:
+                return None
+            what, device = f"scheduled job {job_id[:64]}", _label(rec)
+        else:
+            return None
+    except (Unavailable, ValueError):
+        return None
+    message = (f"Let {what} use the Firefox on {device}, with your logins, in runs where nobody is watching? It can "
+               f"open the sites you approved with \"always\" and read them.")
+    if no_user():
+        return {"action": "block", "message": f"{tool_name} was not run: {message} Only the user can allow this, "
+                                              f"in a chat."}
+    if _consent(message):
+        return None
+    return {"action": "block", "message": f"{tool_name} was not run: the user did not allow it. {message}"}
+
+
+def _consent(text: str) -> bool:
+    from tools.approval_prompt import request_elicitation_consent
+    return request_elicitation_consent(
+        text, "Each scheduled job that uses your browser needs your OK.", surface="device-browser",
+        title="Allow unattended browser use?") == "accept"
+
+
 def pre_tool_call(tool_name: str = "", args: Optional[dict] = None, task_id: str = "", session_id: str = "",
                   **_kwargs) -> Optional[dict]:
-    """Ask before a submit, a visit to a new site or a script (section 7). Problems that the
-    handler reports better (no device, no extension) pass through; the handler then refuses.
-    With no user present, anything the user did not approve before is blocked at once."""
+    """Ask before a submit, a visit to a new site or a script (section 7), and before scheduling
+    unattended browser use. Any unexpected exception blocks the call: Hermes runs a tool whose
+    hook raised."""
+    try:
+        return _pre_tool_call(tool_name, args, session_id)
+    except Exception as exc:
+        _core().logger.warning("device-browser: pre_tool_call failed for %s", tool_name, exc_info=True)
+        return {"action": "block", "message": f"hermes-device: {tool_name} refused because the browser check failed: "
+                                              f"{exc}"}
+
+
+def _pre_tool_call(tool_name: str, args: Optional[dict], session_id: str) -> Optional[dict]:
+    """Problems that the handler reports better (no device, no extension) pass through; the
+    handler then refuses. With no user present, anything the user did not approve before is
+    blocked at once."""
+    if tool_name in SCHEDULE_TOOLS:
+        return _schedule_gate(tool_name, args if isinstance(args, dict) else {}, session_id)
     if tool_name not in GATED:
         return None
     args = args if isinstance(args, dict) else {}
@@ -579,10 +980,15 @@ def on_session_delete(session_id: str = "", reason: str = "", deleted_ids: Any =
     (``profile_repair``); the age limit removes them later."""
     if reason in ("archive", "profile_repair"):
         return
+    ids = [session_id, *(deleted_ids or ())]
     try:
-        remove_session_shots([session_id, *(deleted_ids or ())])
+        remove_session_shots(ids)
     except Exception:
         _core().logger.warning("device: could not remove the screenshots of deleted sessions", exc_info=True)
+    try:
+        choices().forget_sessions([str(i) for i in ids if i])
+    except Exception:
+        _core().logger.warning("device: could not drop the browser devices of deleted sessions", exc_info=True)
 
 
 def save_shot(session_id: str, data_url: str, *, root: Optional[Path] = None) -> Path:
@@ -672,20 +1078,169 @@ def _need_ref(args: dict) -> str:
     return ref
 
 
+_HOW = {"job": "the browser device of this scheduled job", "chosen": "chosen with browser_use_device",
+        "bound": "the computer this session is bound to", "only": "the only computer with browser control"}
+
+
+def _device_list(user: Optional[str], selected: str = "") -> list[dict]:
+    """The user's connected browser devices; nothing when the session's user is unknown."""
+    if user is None:
+        return []
+    out = []
+    for c in browser_devices(user):
+        item = {"device": c.name, "device_id": c.device_id,
+                "firefox": "signed in" if c.browser.get("connected") and c.browser.get("signed_in") else
+                "not running" if not_running(c) else (c.browser.get("reason") or "not connected")}
+        if c.device_id == selected:
+            item["selected"] = True
+        out.append(item)
+    return out
+
+
+def _known_user(session_id: str) -> Optional[str]:
+    try:
+        _, res = resolve(session_id)
+        return _session_user(res)
+    except Exception:
+        return None
+
+
 def browser_status(args: dict, session_id: str = "", **_kwargs) -> str:
     core = _core()
     try:
+        sid, res = resolve(session_id)
+        _, how = pick(sid, res)
         _, conn = target(session_id, start=False)
     except Unavailable as exc:
-        return _ok({"available": False, "reason": str(exc)})
-    out = {"available": True, "device": conn.name, "device_id": conn.device_id}
+        return _ok({"available": False, "reason": str(exc), "devices": _device_list(_known_user(session_id))})
+    out = {"available": True, "device": conn.name, "device_id": conn.device_id, "why": _HOW.get(how, how)}
     out.update({k: v for k, v in conn.browser.items() if k not in ("connected", "reason")})
     try:
         tabs = call(conn, "tabs_list", {}, INSPECT_TIMEOUT_S)
         out["tabs"] = tabs.get("tabs", []) if isinstance(tabs, dict) else []
     except core.BrowserError as exc:
         out["tabs_error"] = str(exc)
+    out["devices"] = _device_list(conn.user, conn.device_id)
     return _ok(out)
+
+
+def _job_exists(job_id: str) -> bool:
+    from cron.jobs import get_job
+    return get_job(job_id) is not None
+
+
+def _job_id(ref: str) -> str:
+    """The id of the job that a ``job_id`` (an id or a name, as Hermes resolves it) names, or ""."""
+    from cron.jobs import resolve_job_ref
+    try:
+        job = resolve_job_ref(ref)
+    except LookupError as exc:
+        raise ValueError(str(exc)) from None
+    return str(job.get("id") or "") if job else ""
+
+
+def browser_use_device(args: dict, session_id: str = "", **_kwargs) -> str:
+    """Choose the computer whose Firefox this session (or, with job_id, a scheduled job) uses."""
+    want = str(args.get("device") or "").strip()
+    job_id = str(args.get("job_id") or "").strip()
+    try:
+        if not want:
+            raise ValueError("device is required: a device name or id from browser_status, or \"default\"")
+        sid, res = resolve(session_id)
+        running_job = cron_job_id(sid)
+        if running_job:
+            raise Unavailable(f"hermes-device: this is a run of scheduled job {running_job}; a run cannot choose "
+                              f"browser devices. The user sets them in a chat.")
+        user = _need_user(_session_user(res))
+        if job_id:
+            ref, job_id = job_id, _job_id(job_id)
+            if not job_id:
+                raise ValueError(f"no scheduled job has the id or name {ref[:64]!r}")
+            rec = choices().job(job_id)
+            if rec is not None and rec["user"] != user:
+                raise Unavailable(f"hermes-device: scheduled job {job_id} uses the browser of another user, so this "
+                                  f"session cannot change it.")
+        if want == "default":
+            if job_id:
+                choices().set_job(job_id, None)
+                return _ok({"ok": True, "job_id": job_id, "device": None,
+                            "note": "The job's runs use the user's only computer with browser control."})
+            choices().set_session(sid, None)
+            return _ok({"ok": True, "device": None, "note": "This session uses its default browser device again."})
+        mine = browser_devices(user)
+        found = [c for c in mine if c.device_id == want] or [c for c in mine if c.name == want]
+        if len(found) != 1:
+            raise ValueError(f"{'several' if found else 'none'} of the user's connected computers with browser "
+                             f"control {'are' if found else 'is'} named {want[:64]!r}; browser_status lists them, "
+                             f"use the device id")
+        conn = found[0]
+        choice = {"device_id": conn.device_id, "name": conn.name, "user": conn.user, "at": round(time.time(), 3)}
+        if job_id:
+            choices().set_job(job_id, dict(choice, session_id=sid))
+            return _ok({"ok": True, "job_id": job_id, "device": conn.name, "device_id": conn.device_id})
+        choices().set_session(sid, choice)
+        return _ok({"ok": True, "device": conn.name, "device_id": conn.device_id})
+    except Unavailable as exc:
+        return _err(str(exc), "unavailable")
+    except ValueError as exc:
+        return _err(str(exc), "bad_arguments")
+    except OSError as exc:
+        return _err(f"hermes-device: could not save the choice: {exc}", "failed")
+
+
+def record_job(job: Any) -> None:
+    """Give a job that the current session just created the session's browser device, so
+    that the job's runs use it (section 3.2). Nothing when the session has none. Raises when
+    the choices cannot be read or saved."""
+    core = _core()
+    job_id = str(job.get("id") or "") if isinstance(job, dict) else ""
+    sid = core.current_session_id()
+    if not job_id or not sid:
+        return
+    choices().check()
+    res = core.resolve_session(sid)
+    if not core.runs_on_pod(res):
+        choices().mark_device_job(job_id, sid)
+    try:
+        _, res = resolve(sid)
+        conn, _ = pick(sid, res)
+    except Unavailable as exc:
+        core.logger.info("device: scheduled job %s has no browser device: %s", job_id, exc)
+        return
+    choices().prune_jobs(_job_exists)
+    choices().set_job(job_id, {"device_id": conn.device_id, "name": conn.name, "user": conn.user,
+                               "session_id": sid, "at": round(time.time(), 3)})
+    core.logger.info("device: scheduled job %s uses the browser of %s [%s]", job_id, conn.name, conn.device_id)
+
+
+def _make_create_job(original: Callable) -> Callable:
+    def create_job_with_scheduler_registration(*args, **kwargs):
+        try:
+            job = original(*args, **kwargs)
+        except Exception as exc:
+            if isinstance(getattr(exc, "job", None), dict):
+                _record_or_remove(exc.job)
+            raise
+        _record_or_remove(job)
+        return job
+    return create_job_with_scheduler_registration
+
+
+def _record_or_remove(job: dict) -> None:
+    """record_job; when the choice cannot be saved, the job is removed and the error raised, so
+    that no job runs without the browser device its creator meant."""
+    try:
+        record_job(job)
+    except Exception as exc:
+        _core().logger.error("device: could not save the browser device of scheduled job %s", job.get("id"),
+                             exc_info=True)
+        try:
+            from cron.jobs import remove_job
+            remove_job(str(job.get("id")))
+        except Exception:
+            _core().logger.error("device: could not remove scheduled job %s", job.get("id"), exc_info=True)
+        raise RuntimeError(f"hermes-device: the job was not created: its browser device could not be saved "
+                           f"({exc})") from exc
 
 
 def _visit_guard(tool: str, args: dict, sid: str) -> dict:
@@ -897,8 +1452,17 @@ def _schema(name: str, description: str, props: dict, required: list[str]) -> di
 
 SCHEMAS = {
     "browser_status": _schema(
-        "browser_status", "Report whether this session can use the user's own Firefox (through its bound device) "
-        "and list the agent's tabs. Call it before other browser tools when unsure.", {}, []),
+        "browser_status", "Report whether this session can use the user's own Firefox, on which computer, and list "
+        "the agent's tabs and the user's computers with browser control. Call it before other browser tools when "
+        "unsure.", {}, []),
+    "browser_use_device": _schema(
+        "browser_use_device", "Choose which of the user's computers' Firefox the browser tools use in this session "
+        "(browser_status lists them). With job_id, set it for a scheduled job's runs instead. A job created in a "
+        "session gets that session's browser device.",
+        {"device": {"type": "string", "description": "Device name or id from browser_status, or \"default\" to "
+                                                     "go back to the default"},
+         "job_id": {"type": "string", "description": "A scheduled job's id, to set its browser device"}},
+        ["device"]),
     "browser_tabs": _schema(
         "browser_tabs", "List, open or close tabs in the agent's \"Hermes\" tab group in the user's own Firefox. "
         "The agent can use only tabs in that group.",
@@ -987,6 +1551,7 @@ SCHEMAS = {
 
 HANDLERS = {
     "browser_status": browser_status,
+    "browser_use_device": browser_use_device,
     "browser_tabs": _tool(_tabs),
     "browser_navigate": _tool(_navigate),
     "browser_back": _tool(_back),
@@ -1029,7 +1594,21 @@ def register(ctx: Any, core: Any) -> None:
     _core_ref = core
     for name, schema in SCHEMAS.items():
         ctx.register_tool(name, TOOLSET, schema, HANDLERS[name],
-                          check_fn=offered if name == "browser_status" else available,
+                          check_fn=offered if name in ("browser_status", "browser_use_device") else available,
                           description=schema["description"], emoji=EMOJI)
     ctx.register_hook("pre_tool_call", pre_tool_call)
     ctx.register_hook("on_session_delete", on_session_delete)
+    install_cron_hook()
+
+
+def install_cron_hook() -> bool:
+    """Wrap Hermes's job creation so a new job gets its creator's browser device."""
+    core = _core()
+    try:
+        import cron.scheduler
+        core._wrap(cron.scheduler, "create_job_with_scheduler_registration", _make_create_job)
+        return True
+    except Exception:
+        core.logger.error("device: cannot wrap cron job creation; scheduled jobs use the default browser device",
+                          exc_info=True)
+        return False

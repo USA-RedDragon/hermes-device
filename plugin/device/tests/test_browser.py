@@ -21,7 +21,7 @@ from starlette.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_contract import SRC  # noqa: E402
-from test_core import Base, Store, core  # noqa: E402
+from test_core import Base, FakeDevice, Store, core  # noqa: E402
 from test_routes import PATH, Signer, plugin_api  # noqa: E402
 
 browser = core._load_sibling("hermes_device_browser", "browser.py")
@@ -108,16 +108,27 @@ def attach_browser(device, fake: FakeBrowser, connected: bool = True) -> None:
     conn.send_text = send_text
 
 
-class ToolTests(Base):
+class BrowserBase(Base):
+    """A bound session with a device that has a fake browser, and the toolset registered."""
+
     def setUp(self):
         super().setUp()
         self.fake = FakeBrowser()
         attach_browser(self.device, self.fake)
+        self.device.conn.user = "alice"
         self.bind()
+        self.cfg["user"] = "alice"
+        self.choices_path = self.base / "state" / "browser.json"
+        c = mock.patch.object(browser, "_CHOICES", browser.Choices(self.choices_path))
+        c.start()
+        self.addCleanup(c.stop)
         self.registry = self.registered()
         self.confirm = mock.patch.object(browser, "_confirm", return_value=True)
         self.confirmed = self.confirm.start()
         self.addCleanup(self.confirm.stop)
+        self.consent = mock.patch.object(browser, "_consent", return_value=True)
+        self.consented = self.consent.start()
+        self.addCleanup(self.consent.stop)
 
     def registered(self):
         """A fresh Hermes tool registry with the toolset registered through a fake plugin ctx."""
@@ -136,6 +147,9 @@ class ToolTests(Base):
         browser.register(Ctx(), core)
         self.assertEqual(hooks, [("pre_tool_call", browser.pre_tool_call),
                                  ("on_session_delete", browser.on_session_delete)])
+        import cron.scheduler
+        self.assertIsNotNone(getattr(cron.scheduler.create_job_with_scheduler_registration,
+                                     core._WRAPPED_MARK, None))
         return reg
 
     def run_tool(self, name: str, **args):
@@ -150,10 +164,12 @@ class ToolTests(Base):
     def last(self, op: str) -> dict:
         return [r for r in self.fake.requests if r["op"] == op][-1]
 
+
+class ToolTests(BrowserBase):
     def test_registers_toolset(self):
         names = {"browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_vision",
                  "browser_tabs", "browser_back", "browser_status", "browser_screenshot", "browser_press",
-                 "browser_hover", "browser_scroll", "browser_eval"}
+                 "browser_hover", "browser_scroll", "browser_eval", "browser_use_device"}
         self.assertEqual(set(browser.SCHEMAS), names)
         self.assertEqual(self.registry.get_toolset_for_tool("browser_click"), "device-browser")
         defs = {d["function"]["name"] if "function" in d else d["name"]
@@ -174,22 +190,31 @@ class ToolTests(Base):
         self.assertEqual((out["device"], out["browser"], out["extension_version"]), ("pc", "Firefox 157.0.1", "0.2.0"))
         self.assertEqual([t["tab_id"] for t in out["tabs"]], [7])
 
-    def test_unbound_session_refused(self):
+    def test_unbound_session_uses_the_only_browser_device(self):
         self.hub.unbind(self.session)
         self.store.rows["fresh"] = None
         self.session = "fresh"
         out = self.run_tool("browser_navigate", url="https://example.com/")
-        self.assertIn("not bound to a device", out["error"])
+        self.assertEqual(out["tab_id"], 8)
+        status = self.run_tool("browser_status")
+        self.assertEqual((status["device_id"], status["why"]), ("d_pc", "the only computer with browser control"))
+
+    def test_placeholder_session_refused(self):
+        self.hub.unbind(self.session)
+        self.store.rows["fresh"] = None
+        self.session = "fresh"
+        with mock.patch.object(core, "session_cwd", lambda: str(self.placeholder)):
+            out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("placeholder", out["error"])
         self.assertEqual(self.fake.requests, [])
 
-    def test_sandbox_refused(self):
+    def test_sandbox_session_uses_the_only_browser_device(self):
         res = core.Resolution(core.STATE_BOUND, self.session, binding=self.hub.binding(self.session), sandbox=True)
         with mock.patch.object(core, "resolve_session", lambda *a, **k: res):
             out = self.run_tool("browser_navigate", url="https://example.com/")
             status = self.run_tool("browser_status")
-        self.assertIn("sandbox device, which has no browser", out["error"])
-        self.assertFalse(status["available"])
-        self.assertEqual(self.fake.requests, [])
+        self.assertEqual(out["tab_id"], 8)
+        self.assertEqual(status["device"], "pc")
 
     def test_device_without_capability(self):
         self.device.conn.capabilities = frozenset()
@@ -734,6 +759,354 @@ class Recorder:
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join(5)
         self.loop.close()
+
+
+class BrowserDeviceTests(BrowserBase):
+    """The browser device is chosen apart from the device that runs the session's commands
+    (docs/browser.md section 3.2)."""
+
+    def setUp(self):
+        super().setUp()
+        self.hub.unbind(self.session)
+        self.store.rows["fresh"] = None
+        self.session = "fresh"
+        self.cfg.update(fallback="device", fallback_device="d_sb", fallback_root=str(self.base / "work"))
+        (self.base / "work").mkdir()
+        self.sandbox = FakeDevice(self.hub, str(self.base / "work"), str(self.devtmp), str(self.base / "work"),
+                                  device_id="d_sb", name="sandbox")
+        self.sandbox.conn.user = core.SERVICE_USER
+        self.sandbox.conn.capabilities = frozenset({core.CAPABILITY_BROWSER})
+        self.addCleanup(self.sandbox.close)
+
+    def second(self, device_id="d_pc2", name="laptop", user="alice"):
+        other = FakeDevice(self.hub, str(self.root), str(self.devtmp), str(self.home), device_id=device_id, name=name)
+        self.addCleanup(other.close)
+        fake = FakeBrowser()
+        attach_browser(other, fake)
+        other.conn.user = user
+        return other, fake
+
+    def run_of(self, job_id, sid="cron_run"):
+        """Run the next calls as Hermes runs a scheduled job: a never-bound session with the
+        job's execution bound in the context."""
+        self.store.rows[sid] = None
+        self.session = sid
+        p = mock.patch("gateway.session_cron.current_execution", lambda: (None, sid, job_id, "e1"))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def create_job(self, job_id="job1"):
+        created = browser._make_create_job(lambda **kw: {"id": job_id, **kw})(prompt="p", schedule="in 2m")
+        self.assertEqual(created["id"], job_id)
+
+    def test_sandbox_never_offered_as_browser(self):
+        self.assertEqual([c.device_id for c in browser.browser_devices()], ["d_pc"])
+        out = self.run_tool("browser_use_device", device="d_sb")
+        self.assertIn("none of the user's connected computers", out["error"])
+
+    def test_commands_stay_in_the_sandbox(self):
+        self.device.execs.clear()
+        r = self.env().execute("pwd")
+        self.assertEqual((r["returncode"], r["output"].strip()), (0, str(self.base / "work" / "fresh")))
+        self.assertEqual(self.run_tool("browser_navigate", url="https://example.com/")["tab_id"], 8)
+        self.assertEqual(self.device.execs, [])
+
+    def test_several_devices_need_a_choice(self):
+        other, fake = self.second()
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("several computers offer a browser", out["error"])
+        status = self.run_tool("browser_status")
+        self.assertFalse(status["available"])
+        self.assertEqual([d["device_id"] for d in status["devices"]], ["d_pc2", "d_pc"])
+        self.assertEqual(self.run_tool("browser_use_device", device="laptop")["device_id"], "d_pc2")
+        self.assertEqual(self.run_tool("browser_navigate", url="https://example.com/")["tab_id"], 8)
+        self.assertTrue([r for r in fake.requests if r["op"] == "tab_open"])
+        self.assertFalse([r for r in self.fake.requests if r["op"] == "tab_open"])
+        status = self.run_tool("browser_status")
+        self.assertEqual(status["why"], "chosen with browser_use_device")
+        self.assertEqual([d.get("selected", False) for d in status["devices"]], [True, False])
+        self.store.rows["child"] = "fresh"
+        self.session = "child"
+        self.assertEqual(self.run_tool("browser_status")["device_id"], "d_pc2", "a compression child inherits it")
+        self.assertTrue(self.run_tool("browser_use_device", device="default")["ok"])
+        self.session = "fresh"
+        self.assertEqual(self.run_tool("browser_status")["device_id"], "d_pc2", "the child's reset is its own")
+        self.hub.detach(other.conn)
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("laptop [d_pc2], the browser device of session fresh, is not connected", out["error"])
+
+    def test_devices_of_another_user_refused(self):
+        self.second(user="bob")
+        self.assertIn("computers of other users are connected", self.run_tool("browser_status")["reason"])
+        self.assertEqual(self.run_tool("browser_status")["devices"], [])
+        self.assertIn("computers of other users", self.run_tool("browser_use_device", device="d_pc")["error"])
+        self.session = "sess-1"
+        self.hub.bind("sess-1", "d_pc2", str(self.root), operator=True)
+        self.assertEqual(self.run_tool("browser_status")["device_id"], "d_pc2")
+        self.assertIn("none of the user's", self.run_tool("browser_use_device", device="d_pc")["error"])
+        self.assertIsNone(browser.choices().session("sess-1"))
+
+    def test_without_the_user_setting_only_bound_sessions_have_a_browser(self):
+        """The plugin cannot tell whose a session is that no computer serves, unless the
+        operator names the backend's one user."""
+        del self.cfg["user"]
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("does not name its one user", out["error"])
+        self.assertEqual(self.run_tool("browser_status")["devices"], [])
+        self.assertIn("does not name its one user", self.run_tool("browser_use_device", device="d_pc")["error"])
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch.object(browser, "_job_exists", lambda j: True):
+            self.create_job()
+        self.assertIsNone(browser.choices().job("job1"))
+        self.session = "sess-1"
+        self.hub.bind("sess-1", "d_pc", str(self.root), operator=True)
+        self.assertEqual(self.run_tool("browser_status")["device_id"], "d_pc")
+
+    def test_bound_session_keeps_its_pc(self):
+        self.second()
+        self.session = "sess-1"
+        self.hub.bind("sess-1", "d_pc", str(self.root), operator=True)
+        status = self.run_tool("browser_status")
+        self.assertEqual((status["device_id"], status["why"]), ("d_pc", "the computer this session is bound to"))
+        self.assertTrue(self.run_tool("browser_use_device", device="d_pc2")["ok"])
+        self.assertEqual(self.run_tool("browser_status")["device_id"], "d_pc2")
+
+    def test_job_gets_its_creators_browser_device(self):
+        """A job created in a session bound to a PC runs in the sandbox and uses that PC's Firefox."""
+        self.second()
+        self.session = "sess-1"
+        self.hub.bind("sess-1", "d_pc", str(self.root), operator=True)
+        with mock.patch.object(core, "current_session_id", lambda: "sess-1"), \
+                mock.patch.object(browser, "_job_exists", lambda j: True):
+            self.create_job()
+        rec = browser.choices().job("job1")
+        self.assertEqual((rec["device_id"], rec["user"], rec["session_id"]), ("d_pc", "alice", "sess-1"))
+        self.assertEqual(json.loads(self.choices_path.read_text())["jobs"]["job1"]["device_id"], "d_pc")
+        self.assertEqual(stat_mode(self.choices_path), 0o600)
+        self.run_of("job1")
+        r = self.env().execute("pwd")
+        self.assertEqual(r["output"].strip(), str(self.base / "work" / "cron_run"))
+        status = self.run_tool("browser_status")
+        self.assertEqual((status["device_id"], status["why"]), ("d_pc", "the browser device of this scheduled job"))
+        self.assertEqual(self.run_tool("browser_navigate", url="https://example.com/")["tab_id"], 8)
+        out = self.run_tool("browser_use_device", device="d_pc2")
+        self.assertIn("a run cannot choose browser devices", out["error"])
+        with mock.patch.object(browser, "_job_id", lambda ref: ref):
+            out = self.run_tool("browser_use_device", device="d_pc2", job_id="job2")
+        self.assertIn("a run cannot choose", out["error"])
+
+    def test_job_from_a_sandbox_chat_with_a_chosen_device(self):
+        self.second()
+        self.run_tool("browser_use_device", device="d_pc2")
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch.object(browser, "_job_exists", lambda j: True):
+            self.create_job()
+        self.assertEqual(browser.choices().job("job1")["device_id"], "d_pc2")
+
+    def test_job_run_fails_fast_when_its_device_is_offline(self):
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch.object(browser, "_job_exists", lambda j: True):
+            self.create_job()
+        self.run_of("job1")
+        other, _ = self.second()
+        self.hub.detach(self.device.conn)
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("pc [d_pc], the browser device of scheduled job job1, is not connected (it is offline, or was "
+                      "removed from the hub)", out["error"])
+        self.assertFalse(self.run_tool("browser_status")["available"])
+        self.assertEqual(other.execs, [])
+
+    def test_job_run_refuses_a_device_of_another_user(self):
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch.object(browser, "_job_exists", lambda j: True):
+            self.create_job()
+        self.device.conn.user = "bob"
+        self.run_of("job1")
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("computers of other users are connected", out["error"])
+        del self.cfg["user"]
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("now belongs to another user", out["error"])
+
+    def test_run_of_a_compression_child_counts(self):
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch.object(browser, "_job_exists", lambda j: True):
+            self.create_job()
+        self.run_of("job1")
+        self.store.rows["cron_child"] = "cron_run"
+        self.assertEqual(browser.cron_job_id("cron_child"), "job1")
+        self.store.rows["other"] = None
+        self.assertEqual(browser.cron_job_id("other"), "", "another session is not the run's")
+
+    def test_job_created_without_a_browser_device_gets_none(self):
+        self.hub.detach(self.device.conn)
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch.object(browser, "_job_exists", lambda j: True):
+            self.create_job()
+        self.assertIsNone(browser.choices().job("job1"))
+        self.hub.attach(self.device.conn)
+        self.run_of("job1")
+        self.assertIn("has no browser device", self.run_tool("browser_status")["reason"])
+
+    def test_set_and_clear_a_jobs_device(self):
+        self.second()
+        with mock.patch.object(browser, "_job_id", lambda ref: "job1" if ref in ("job1", "SEV review") else ""):
+            self.assertIn("no scheduled job", self.run_tool("browser_use_device", device="d_pc2", job_id="nope")["error"])
+            out = self.run_tool("browser_use_device", device="d_pc2", job_id="SEV review")
+            self.assertIsNone(self.decision)
+            self.assertEqual(self.consented.call_count, 2, "asked each time, nothing remembered")
+            self.assertEqual(out["job_id"], "job1")
+            self.consented.return_value = False
+            out = self.run_tool("browser_use_device", device="d_pc", job_id="job1")
+            self.assertIn("did not allow", out["error"])
+            self.consented.return_value = True
+            self.assertEqual(browser.choices().job("job1")["device_id"], "d_pc2")
+            self.assertTrue(self.run_tool("browser_use_device", device="default", job_id="job1")["ok"])
+            self.assertIsNone(self.decision)
+        self.assertIsNone(browser.choices().job("job1"))
+
+    def test_another_users_job_cannot_be_changed(self):
+        self.second(user="bob")
+        browser.choices().set_job("job1", {"device_id": "d_pc2", "name": "laptop", "user": "bob"})
+        self.session = "sess-1"
+        self.hub.bind("sess-1", "d_pc", str(self.root), operator=True)
+        with mock.patch.object(browser, "_job_id", lambda ref: ref):
+            for device in ("d_pc", "default"):
+                out = self.run_tool("browser_use_device", device=device, job_id="job1")
+                self.assertIn("uses the browser of another user", out["error"])
+        self.assertEqual(browser.choices().job("job1")["device_id"], "d_pc2")
+        self.run_of("job1")
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("computers of other users are connected", out["error"])
+        self.cfg["user"] = "carol"
+        self.hub.detach(self.device.conn)
+        with mock.patch.object(core, "hub", lambda: self.hub), \
+                mock.patch.object(self.hub, "devices", lambda: [c for c in self.hub._devices.values() if c.user != "bob"]):
+            out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("belongs to another user than this session", out["error"])
+
+    def test_scheduling_with_a_browser_asks_the_user(self):
+        gate = browser.pre_tool_call
+        self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": "create", "prompt": "p", "schedule": "in 2m"},
+                               session_id=self.session))
+        self.assertIn("pc [d_pc]", self.consented.call_args[0][0])
+        self.consented.return_value = False
+        r = gate(tool_name="cronjob_manage", args={"action": "create"}, session_id=self.session)
+        self.assertEqual(r["action"], "block")
+        self.consented.return_value = True
+        self.consented.reset_mock()
+        self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": "list"}, session_id=self.session))
+        browser.choices().set_job("job1", {"device_id": "d_pc", "name": "pc", "user": "alice"})
+        with mock.patch.object(browser, "_job_id", lambda ref: ref):
+            for action in ("update", "run", "resume"):
+                self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": action, "job_id": "job1"},
+                                       session_id=self.session))
+            self.assertEqual(self.consented.call_count, 3)
+            self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": "run", "job_id": "job2"},
+                                   session_id=self.session))
+            for action in ("pause", "remove"):
+                self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": action, "job_id": "job1"},
+                                       session_id=self.session))
+            self.assertEqual(self.consented.call_count, 3)
+            with mock.patch.object(browser, "no_user", lambda: True):
+                r = gate(tool_name="cronjob_manage", args={"action": "run", "job_id": "job1"}, session_id=self.session)
+                self.assertEqual(r["action"], "block")
+        self.hub.detach(self.device.conn)
+        self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": "create"}, session_id=self.session),
+                          "no browser device, nothing to ask")
+
+    def test_gate_errors_block(self):
+        with mock.patch.object(browser, "resolve", side_effect=RuntimeError("store broke")):
+            r = browser.pre_tool_call(tool_name="cronjob_manage", args={"action": "create"}, session_id=self.session)
+        self.assertEqual(r["action"], "block")
+        self.assertIn("store broke", r["message"])
+
+    def test_run_of_a_job_without_a_browser_device_has_none(self):
+        self.run_of("job7")
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("scheduled job job7 has no browser device", out["error"])
+        self.assertFalse([r for r in self.fake.requests if r["op"] == "tab_open"])
+
+    def test_user_setting_checked_against_connected_devices(self):
+        self.second(device_id="d_bob", name="bobs-pc", user="bob")
+        self.second(device_id="d_sb2", name="sandbox2", user=core.SERVICE_USER)
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("computers of other users are connected", out["error"])
+
+    def test_device_jobs_never_run_on_the_pod(self):
+        """A job created in a sandbox session keeps away from the pod after fallback changes."""
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch.object(browser, "_job_exists", lambda j: True):
+            self.create_job()
+        self.assertTrue(browser.choices().device_job("job1"))
+        self.cfg["fallback"] = "local"
+        self.run_of("job1")
+        with mock.patch.object(core, "current_session_id", lambda: "cron_run"):
+            r = core.pre_tool_call(tool_name="terminal", args={"command": "id"}, task_id="t")
+            self.assertEqual(r["action"], "block")
+            self.assertIn("scheduled job job1", r["message"])
+            self.assertEqual(core.pre_tool_call(tool_name="web_search", args={}, task_id="t")["action"], "block")
+        self.run_of("job2", sid="cron_run2")
+        with mock.patch.object(core, "current_session_id", lambda: "cron_run2"):
+            self.assertIsNone(core.pre_tool_call(tool_name="terminal", args={"command": "id"}, task_id="t"),
+                              "a job made on the server runs there as before")
+
+    def test_unsaved_choice_removes_the_job(self):
+        removed = []
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch.object(browser, "_job_exists", lambda j: True), \
+                mock.patch.object(browser.Choices, "_save", side_effect=OSError("disk full")), \
+                mock.patch("cron.jobs.remove_job", removed.append):
+            with self.assertRaises(RuntimeError):
+                self.create_job()
+        self.assertEqual(removed, ["job1"])
+        self.assertIsNone(browser.choices().job("job1"))
+
+    def test_unreadable_choices_fail_closed(self):
+        self.choices_path.parent.mkdir(parents=True, exist_ok=True)
+        self.choices_path.write_text("{not json")
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("cannot be read", out["error"])
+        removed = []
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch("cron.jobs.remove_job", removed.append):
+            with self.assertRaises(RuntimeError):
+                self.create_job()
+        self.assertEqual(removed, ["job1"], "a job whose browser device cannot be saved is removed")
+        self.choices_path.write_text(json.dumps({"version": 1, "sessions": {}, "jobs": {"j": {"device_id": "d_pc"}}}))
+        self.assertIn("has no device_id or user", self.run_tool("browser_navigate", url="https://example.com/")["error"])
+        self.choices_path.write_text(json.dumps({"version": 1, "sessions": {}, "jobs": {}}))
+        self.assertEqual(self.run_tool("browser_navigate", url="https://example.com/")["tab_id"], 8,
+                         "a fixed file is read again without a restart")
+
+    def test_other_processes_see_changes(self):
+        self.second()
+        other = browser.Choices(self.choices_path)
+        self.assertIsNone(other.session("fresh"))
+        self.run_tool("browser_use_device", device="d_pc2")
+        self.assertEqual(other.session("fresh")["device_id"], "d_pc2")
+        other.set_job("job9", {"device_id": "d_pc", "name": "pc", "user": "alice"})
+        self.assertEqual(browser.choices().job("job9")["device_id"], "d_pc")
+        self.assertEqual(browser.choices().session("fresh")["device_id"], "d_pc2")
+
+    def test_deleted_sessions_lose_their_choice(self):
+        self.second()
+        self.run_tool("browser_use_device", device="d_pc2")
+        browser.on_session_delete(session_id="fresh", reason="delete")
+        self.assertIsNone(browser.choices().session("fresh"))
+
+    def test_pruned_jobs(self):
+        with mock.patch.object(browser, "_job_exists", lambda j: True):
+            self.run_tool("browser_use_device", device="d_pc", job_id="old")
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch.object(browser, "_job_exists", lambda j: j != "old"):
+            self.create_job()
+        self.assertIsNone(browser.choices().job("old"))
+        self.assertTrue(browser.choices().device_job("job1"))
+
+
+def stat_mode(path: Path) -> int:
+    return path.stat().st_mode & 0o777
 
 
 class HubBrowserTests(unittest.TestCase):

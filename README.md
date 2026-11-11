@@ -109,7 +109,7 @@ The agent can also use your own Firefox, with your logins, in its own "Hermes" t
 4. Install the extension: download `hermes-device-firefox-<version>.xpi` from the [latest release](https://github.com/USA-RedDragon/hermes-device/releases/latest), then in Firefox open `about:addons`, choose the gear menu, "Install Add-on From File..." and pick the file. Mozilla signs it, so it stays installed, and Firefox updates it from later releases. For development, `hermes-device browser extension --out DIR` writes the files to load as a temporary add-on (docs/browser.md section 6.1).
 5. Sign Firefox in to Hermes: choose the Hermes button in Firefox's toolbar, then "Sign in to Hermes". Set the hub address first if the menu asks for it (the same address as `hub.url`). A window opens on the hub: sign in there as the account that paired this computer, check the computer and browser names, and choose Allow. Until Firefox is signed in, the agent cannot use it. Settings, Computers on the hub lists each computer's signed-in browsers; Remove there, or "Sign out" in the toolbar menu, ends the sign-in at once.
 
-The agent's tools are `browser_status`, `browser_tabs`, `browser_navigate`, `browser_back`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_vision` and `browser_screenshot` (a screenshot the user sees in hermes-hub), for sessions bound to this device. To stop it, close the tab group, sign Firefox out, disable the extension or stop `run`. [docs/browser.md](docs/browser.md) has the design, the approval rules and the security model.
+The agent's tools are `browser_status`, `browser_use_device`, `browser_tabs`, `browser_navigate`, `browser_back`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_vision` and `browser_screenshot` (a screenshot the user sees in hermes-hub). A session bound to this computer uses its Firefox. A session that runs in the sandbox, such as a web chat or a scheduled job, uses the Firefox of your one computer with browser control, or the one `browser_use_device` picks, when the plugin setting `user` names you as the backend's one user. A scheduled job keeps the browser computer of the chat that created it: its commands run in the sandbox and its browser steps run here, also when Firefox was closed (docs/browser.md section 3.2). To stop it, close the tab group, sign Firefox out, disable the extension or stop `run`. [docs/browser.md](docs/browser.md) has the design, the approval rules and the security model.
 
 ### MCP servers
 
@@ -171,6 +171,7 @@ plugins:
         fallback: device
         fallback_device: d_sandbox_alice   # the sandbox's device id (a unique name also works)
         fallback_root: /work               # default
+        user: alice                        # the one hub user of this backend: sandbox chats and jobs use her Firefox
         device_write_roots: [/home/alice/src, /work]
 ```
 

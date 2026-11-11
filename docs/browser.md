@@ -81,7 +81,8 @@ The ACP display formatter reads `title`, `url`, `text` and `snapshot` from the r
 
 | Tool | Parameters | Device op | Result |
 |---|---|---|---|
-| `browser_status` | none | `tabs_list` | `available`, the device, the browser and extension versions, `signed_in`, the hub `user`, and the agent's tabs; or `available: false` and the `reason`, such as "Firefox is not signed in to Hermes" |
+| `browser_status` | none | `tabs_list` | `available`, the device, `why` the session uses it (section 3.2), the browser and extension versions, `signed_in`, the hub `user`, the agent's tabs, and `devices`: the user's connected computers with browser control and their Firefox state; or `available: false`, the `reason`, such as "Firefox is not signed in to Hermes", and `devices` |
+| `browser_use_device` | `device` (a name or id from `browser_status`, or `default`); `job_id` (optional) | none | `ok`, the device, or `job_id` and the device for a job (section 3.2) |
 | `browser_tabs` | `action`: `list`, `open` or `close`; `url` (open); `tab_id` (close) | `tabs_list`, `tab_open`, `tab_close` | Tabs in the Hermes group: `tab_id`, `url`, `title`, `active` |
 | `browser_navigate` | `url`; `tab_id` (optional: without it the plugin opens a tab) | `navigate` or `tab_open` | `tab_id`, `url`, `title` |
 | `browser_back` | `tab_id` | `back` | `tab_id`, `url`, `title` |
@@ -97,7 +98,7 @@ The ACP display formatter reads `title`, `url`, `text` and `snapshot` from the r
 
 Errors are JSON results `{"error": "...", "code": "..."}`. `code` is a `browser_result` code (section 4.2), or `unavailable` (no browser for this session, below, also when Firefox is not signed in), `declined` (the user said no, section 7), `started` (Firefox was closed and is started now: make the same call again, section 5.1) or `bad_arguments`.
 
-Every call goes to the device the session is bound to (`/device <device> <dir>`), resolved as for the terminal backend (protocol.md section 8.3). The plugin refuses, without sending anything, when the session is not bound, when it runs in the sandbox device (`fallback: device`, which has no browser), when the device is not connected, when the device did not offer the `browser` capability, when the device reports that its extension is not connected, or when the status says Firefox is not signed in (section 13).
+Every call goes to the session's browser device (section 3.2). The plugin refuses, without sending anything, when the session fails closed (protocol.md section 8.3), when it has no browser device, when the device is not connected, when the device did not offer the `browser` capability, when the device reports that its extension is not connected, or when the status says Firefox is not signed in (section 13).
 
 Snapshot format, one element per line, indented by nesting, with refs that later calls use (measured on example.com):
 
@@ -144,6 +145,33 @@ Later additions: `browser_select` (select options), `browser_get_images`, `brows
 Hermes v0.22.7 has a built-in `browser_vault` tool in its core `browser` toolset, next to `browser_exec`, `browser_cdp` and `browser_dialog` (source, `toolsets.py`). It drives Hermes's own CDP browser, not the user's Firefox, and Hermes has no switch to turn off one tool of a toolset. The plugin removes `browser_vault` from the tool registry when it loads, and again at each session start (the built-in tools can be imported after the plugin), so the model never sees it. `browser_exec` and the rest stay.
 
 Hermes lets a plugin remove a built-in tool only with the operator's opt-in (source, `tools/registry.py` `deregister`, `_PluginOverridePolicy`): set `plugins.entries.device.granted_capabilities: [tools.override]` in the Hermes `config.yaml` (the older `plugins.entries.device.allow_tool_override: true` also works). The removal runs from the plugin's own module, so the registry applies that check. Without the opt-in the plugin logs one warning and the tool stays. `tools.override` also lets the plugin override other built-in tools; it uses it for nothing else.
+
+### 3.2 Browser device
+
+The browser device is the computer whose Firefox a session uses. It is chosen apart from the device that runs the session's commands, so a session that runs in the sandbox (protocol.md section 8.10), such as a web chat or a scheduled job, can still use the Firefox on the user's computer.
+
+Each session acts for one hub user. The plugin knows the user of each device from the hub assertion (`sub`, protocol.md section 3.2). The user of a session bound to a computer is that computer's user. A session that no computer serves (the sandbox, or the pod with `fallback: local`) carries no user the plugin can see, because every chat reaches Hermes through the hub's one dashboard login. Its user is the plugin setting `user` (protocol.md section 8.1): the hub user name of the one person who uses this Hermes. Leave it unset on a backend that more than one hub user may use; such sessions then have no browser device, and only sessions bound to a computer use a browser. While a computer of another hub user is connected, the plugin logs an error and gives such sessions no browser device either, so a wrong setting on a shared backend fails closed.
+
+The plugin picks the browser device in this order:
+
+1. In a run of a scheduled job: the job's browser device, and only that one. A run of a job that has none has no browser.
+2. The device chosen with `browser_use_device` in the session or in an ancestor of its lineage (a compression child, subagent or branch inherits it).
+3. The computer the session is bound to.
+4. For a session that no computer serves: the user's one connected computer with browser control. With none, or more than one, the call fails and says to choose one with `browser_use_device`.
+
+Every device must belong to the session's user. Service devices, such as the sandbox, are never browser devices. A stored choice records the device's user. A choice whose user is not the session's user is refused, and so is a device that now reports another user than its choice. `browser_status` lists only the session's user's computers, and none when the user is unknown.
+
+A run of a scheduled job finds its job through the context Hermes binds for the run (`gateway.session_cron.current_execution`, with the run's session id, which must be the session or an ancestor of it), else through the frozen policy of a live cron session, which holds the job (`request_json.cron_job`). The agent cannot set either.
+
+When `cronjob_manage` creates a job (Hermes's `cron.scheduler.create_job_with_scheduler_registration`, which the plugin wraps), the job gets the browser device of the session that created it, by rules 2 to 4, when the session has one that is connected. When that choice cannot be read or saved, the plugin removes the job again and the create fails, so no job runs with another browser device than its creator meant. A job created without one (the session had none, or the computer was offline), and a job created on the server, has no browser until the user gives it one. `browser_use_device` with `job_id` (an id or a name) sets, or with `default` clears, a job's browser device from any chat of the job's user; a job whose browser device belongs to another user cannot be changed. A run of a scheduled job cannot use `browser_use_device` at all.
+
+Scheduled work that drives a browser with nobody watching needs the user's OK each time, through Hermes's elicitation consent (`request_elicitation_consent`, which offers only allow once or deny and remembers nothing): `cronjob_manage` `create` in a session that has a browser device (only such a job gets one), `update`, `run` and `resume` of a job that has one, and `browser_use_device` with `job_id`. Without it, a prompt injection in a chat could set up a job that reads the user's logged-in sites later. With no user present these calls are blocked. Any unexpected error in this check blocks the call.
+
+A run whose browser device is offline, or was removed from the hub (a revoked device never connects again), fails each browser call at once with a message that names the device, such as "device upstairs-pc [d_...], the browser device of scheduled job ..., is not connected". It never falls back to another computer. The hub's own checks still apply to every request (section 13.4): the browser must be signed in as the device's owner.
+
+The choices are in `$HERMES_HOME/device/browser.json` (mode 0600, written atomically, changed under an exclusive lock on `browser.json.lock`), keyed by session id and job id. It also marks every job created in a session that a device or the sandbox serves (protocol.md section 8.3 rule 6). Every read checks whether the file changed, so other Hermes processes and a repaired file are seen without a restart. Choices of deleted sessions are dropped through `on_session_delete`, and choices of removed jobs when the next job is created. While the file cannot be read, or holds an entry without a device or user, every browser call fails.
+
+The run's commands still go where protocol.md section 8.3 sends them: the sandbox for a scheduled job with `fallback: device`.
 
 ## 4. Exec leg messages
 
@@ -398,7 +426,7 @@ A scheduled job (cron), a one-shot query (`-q`) or a webhook session has no user
 - Anything else is blocked at once, in `pre_tool_call`, with a message that names the rule (`plugin_rule:browser:visit:<site>` and so on) and says the user must grant it once with "always" or add it to `command_allowlist`. This holds whatever `approvals.cron_mode` says: browser approvals are not granted by default in an unattended run.
 - Actions that ask every time (pages with secret fields, clicks on Salesforce) are blocked at once with a message that they need the user each time.
 
-To prepare a scheduled job: run it once in a chat and answer "always" for each site and kind it needs, or add the `plugin_rule:browser:...` entries to `command_allowlist` in the Hermes config. A config managed in git keeps them across rebuilds.
+To prepare a scheduled job: run it once in a chat and answer "always" for each site and kind it needs, or add the `plugin_rule:browser:...` entries to `command_allowlist` in the Hermes config. A config managed in git keeps them across rebuilds. Create the job in a chat whose browser device (section 3.2) is the computer the job should use, or set it later with `browser_use_device` and `job_id`. The job's commands run in the sandbox; only its browser calls go to that computer, which starts Firefox when it is closed (section 5.1).
 
 The user can stop everything at any time: close the Hermes tab group, sign Firefox out in the toolbar menu or remove it under Settings, Computers on the hub, disable the extension, or stop `hermes-device run`.
 
