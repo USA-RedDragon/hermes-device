@@ -701,6 +701,41 @@ class GuardTests(Base):
         r = self.guard("write_file", path=str(self.outside / "x"), content="x")
         self.assertIn("outside the device roots", r["message"])
 
+    def test_write_paths_when_the_session_folder_is_the_root(self):
+        """The session is bound at the device root, which is the home folder. Writes inside it pass
+        with their full path; writes outside it, through ``..`` or a symbolic link, are refused."""
+        self.device.root = str(self.home)
+        self.device.conn.roots = [str(self.home)]
+        self.session = "sess-home"
+        self.store.rows[self.session] = None
+        self.bind(directory=self.home)
+        (self.home / "out").symlink_to(self.outside)
+        (self.home / "out.json").symlink_to(self.outside / "x.json")
+        for tool, args in (("write_file", {"content": "x"}), ("patch", {"old_string": "a", "new_string": "b"})):
+            for path in (str(self.home / "a.json"), str(self.home / "new" / "deeper" / "a.json"),
+                         str(self.root / "sub" / "a.json")):
+                self.assertIsNone(self.guard(tool, path=path, **args), (tool, path))
+            for path, want in (("a.json", self.home / "a.json"), ("new/a.json", self.home / "new" / "a.json"),
+                               ("~/a.json", self.home / "a.json"), ("./src/../b.json", self.home / "b.json")):
+                self.assertEqual(self.guard(tool, path=path, **args),
+                                 {"action": "modify", "args": {"path": str(want)}}, (tool, path))
+            for path in ("/etc/x", "../x", "src/../../x", str(self.home / ".." / "x"), str(self.outside / "x"),
+                         "out/x", "out.json", str(self.home / "out" / "new" / "x")):
+                r = self.guard(tool, path=path, **args)
+                self.assertEqual(r["action"], "block", (tool, path))
+                self.assertIn("outside the device roots", r["message"], (tool, path))
+        self.assertEqual(self.guard("read_file", path="a.json"),
+                         {"action": "modify", "args": {"path": str(self.home / "a.json")}})
+        self.assertIsNone(self.guard("read_file", path=str(self.home / "src" / "f.txt")))
+        self.assertEqual(self.guard("search_files", pattern="x"),
+                         {"action": "modify", "args": {"path": str(self.home)}})
+        body = "*** Begin Patch\n*** Add File: new/n.txt\n+hi\n*** End Patch"
+        r = self.guard("patch", mode="patch", patch=body)
+        self.assertIn(f"*** Add File: {self.home / 'new' / 'n.txt'}\n", r["args"]["patch"])
+        for target in ("../x", "out/x", "/etc/x"):
+            bad = f"*** Begin Patch\n*** Add File: {target}\n+hi\n*** End Patch"
+            self.assertEqual(self.guard("patch", mode="patch", patch=bad)["action"], "block", target)
+
     def test_symlink_into_denied_path_blocked(self):
         self.device.conn.roots = [str(self.home)]
         (self.root / "keys").symlink_to(self.home / ".ssh")
