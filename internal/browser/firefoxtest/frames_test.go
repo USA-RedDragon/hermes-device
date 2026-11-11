@@ -141,6 +141,7 @@ func frameFlow(ctx context.Context, t *testing.T, b *broker.Broker, tabID int) (
 		t.Fatalf("snapshot lacks the frames or the shadow button: buttons=%q shadow=%q", buttons, shadow)
 	}
 	inner, crossBtn := buttons[0], buttons[1]
+	scopedFlow(ctx, t, b, tabID, shadow, inner, crossBtn)
 	for _, ref := range []string{inner, crossBtn, shadow} {
 		call(ctx, t, b, "click", map[string]any{keyTab: tabID, keyRef: ref}, nil)
 	}
@@ -337,6 +338,32 @@ func confirmFlow(ctx context.Context, t *testing.T, b *broker.Broker, tabID int,
 	if string(out.Result) != "2" {
 		t.Errorf("read-only script on a protected site = %s", out.Result)
 	}
+}
+
+// scopedFlow checks snapshots limited by a selector or a ref: they reach
+// into shadow roots and frames, and keep the refs of the full snapshot.
+func scopedFlow(ctx context.Context, t *testing.T, b *broker.Broker, tabID int, shadow, inner, crossBtn string) {
+	t.Helper()
+	var snap snapResult
+	call(ctx, t, b, "snapshot", map[string]any{keyTab: tabID, "selector": "#host"}, &snap)
+	t.Logf("selector #host:\n%s", snap.Snapshot)
+	if refByName(snap.Snapshot, `"Shadow button"`) != shadow || strings.Contains(snap.Snapshot, "Inner button") ||
+		strings.Contains(snap.Snapshot, "hover me") {
+		t.Errorf("selector #host should outline only the shadow tree, with its ref %s", shadow)
+	}
+	call(ctx, t, b, "snapshot", map[string]any{keyTab: tabID, keyRef: crossBtn}, &snap)
+	t.Logf("ref %s:\n%s", crossBtn, snap.Snapshot)
+	if got := refsByName(snap.Snapshot, `"Inner button"`); len(got) != 1 || got[0] != crossBtn {
+		t.Errorf("ref %s should outline that button only, got %q", crossBtn, got)
+	}
+	call(ctx, t, b, "snapshot", map[string]any{keyTab: tabID, "selector": "button"}, &snap)
+	t.Logf("selector button:\n%s", snap.Snapshot)
+	if got := refsByName(snap.Snapshot, `"Inner button"`); len(got) != 2 || got[0] != inner || got[1] != crossBtn ||
+		refByName(snap.Snapshot, `"Shadow button"`) != shadow || strings.Contains(snap.Snapshot, "Frames") {
+		t.Errorf("selector button should list the buttons of the page and both frames with their refs, got %q", got)
+	}
+	mustFail(ctx, t, b, "bad selector", "not a valid CSS selector", "snapshot", map[string]any{keyTab: tabID, "selector": "[["})
+	mustFail(ctx, t, b, "stale ref", "unknown or stale ref", "snapshot", map[string]any{keyTab: tabID, keyRef: "e999"})
 }
 
 // refsByName returns the refs of every snapshot line that contains name.

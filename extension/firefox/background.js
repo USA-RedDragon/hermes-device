@@ -845,15 +845,28 @@ const NOT_FILLED = "Firefox did not fill the login form. Likely causes: no login
 
 // composeSnapshot joins the snapshots of the tab's frames: each frame's
 // outline goes under its iframe line, and its refs carry the frame's
-// number (f2e5).
-async function composeSnapshot(tabId, interactiveOnly) {
+// number (f2e5). With a selector or a ref it outlines only the matching
+// elements (and the frames inside them), and keeps the refs that earlier
+// snapshots gave out.
+async function composeSnapshot(tabId, interactiveOnly, selector, ref) {
   const tab = await browser.tabs.get(tabId);
+  let scope = null;
+  if (ref) {
+    const r = parseRef(tabId, ref);
+    scope = { frame: r.frameId, ref: r.ref };
+  } else if (selector) {
+    scope = { selector: String(selector).slice(0, 500) };
+  }
   const res = await inAllFrames(tabId, pageSnapshot, [Boolean(interactiveOnly), autologinHost(hostOf(tab.url)),
-    [...autologinHosts]], true);
+    [...autologinHosts], scope], true);
   const byFrame = new Map(res.map((r) => [r.frameId, r.result]));
   const top = byFrame.get(0);
   if (!top) {
     throw new Error("could not read the page");
+  }
+  const bad = res.find((r) => r.result.scope_error);
+  if (bad) {
+    throw new Refused(bad.result.scope_error);
   }
   const lines = [];
   const seen = new Set();
@@ -876,8 +889,29 @@ async function composeSnapshot(tabId, interactiveOnly) {
       lines.push(indent + "- " + e.t + " [ref=" + prefix + e.r + "]");
     }
   };
-  emit(0, 0);
-  return { title: top.title, url: top.url, snapshot: lines.join("\n"), element_count: count };
+  if (!scope) {
+    emit(0, 0);
+    return { title: top.title, url: top.url, snapshot: lines.join("\n"), element_count: count };
+  }
+  // A scoped frame outlines only its matches; the others outline everything,
+  // for when a match holds their iframe.
+  const roots = res.filter((r) => r.result.matched > 0).map((r) => r.frameId).sort((a, b) => (a ? 1 : 0) - (b ? 1 : 0));
+  if (scope.ref !== undefined && !roots.includes(scope.frame)) {
+    throw new Refused("unknown or stale ref " + ref + "; take a new snapshot without ref or selector");
+  }
+  for (const frameId of roots) {
+    if (seen.has(frameId)) {
+      continue;
+    }
+    if (frameId) {
+      lines.push("- frame f" + frameNum(tabId, frameId) + " " + JSON.stringify(hostOf(byFrame.get(frameId).url)));
+      emit(frameId, 1);
+    } else {
+      emit(0, 0);
+    }
+  }
+  return { title: top.title, url: top.url, snapshot: lines.join("\n"), element_count: count,
+    scope: scope.ref !== undefined ? "ref" : "selector", matched: res.reduce((n, r) => n + (r.result.matched || 0), 0) };
 }
 
 // composeText joins the text of the tab's frames, each frame's text after
@@ -963,27 +997,39 @@ function pageText() {
   return { title: document.title, url: location.href, text: globalThis.__hermesHelpers.textOf(), frames };
 }
 
-function pageSnapshot(interactiveOnly, hideValues, hideHosts) {
+function pageSnapshot(interactiveOnly, hideValues, hideHosts, scope) {
   if (!/^https?:$/.test(location.protocol)) {
     return null;
   }
   // On an autologin host no field value is shown at all, so a field whose
   // type a page changed cannot show a filled password.
   const noValues = Boolean(hideValues) || (hideHosts || []).includes(location.hostname.toLowerCase());
-  const state = (globalThis.__hermes = { refs: new Map(), next: 1 });
+  // A scoped snapshot keeps the frame's refs and adds to them, so refs from
+  // the last full snapshot still work.
+  const kept = scope && globalThis.__hermes;
+  const state = kept || (globalThis.__hermes = { refs: new Map(), next: 1 });
+  const known = new Map();
+  if (kept) {
+    for (const [r, w] of state.refs) {
+      const el = w.deref();
+      if (el) {
+        known.set(el, r);
+      }
+    }
+  }
   const implicit = {
     A: "link", BUTTON: "button", SELECT: "combobox", TEXTAREA: "textbox", H1: "heading", H2: "heading",
     H3: "heading", H4: "heading", H5: "heading", H6: "heading", IMG: "img", SUMMARY: "button", P: "paragraph",
     LI: "listitem", NAV: "navigation", MAIN: "main", FORM: "form", TABLE: "table", DIALOG: "dialog",
   };
   const inputRoles = { checkbox: "checkbox", radio: "radio", submit: "button", button: "button", reset: "button", range: "slider", search: "searchbox" };
-  const known = new Set(["link", "button", "textbox", "searchbox", "combobox", "checkbox", "radio", "slider", "tab",
+  const roles = new Set(["link", "button", "textbox", "searchbox", "combobox", "checkbox", "radio", "slider", "tab",
     "menuitem", "option", "switch", "heading", "img", "paragraph", "listitem", "navigation", "main", "form", "table",
     "dialog", "listbox", "menu", "tablist", "tabpanel", "alert", "banner", "contentinfo", "region", "search"]);
   const role = (el) => {
     const r = (el.getAttribute("role") || "").trim().toLowerCase();
     if (r) {
-      return known.has(r) ? r : null;
+      return roles.has(r) ? r : null;
     }
     if (el.tagName === "INPUT") {
       return el.type === "hidden" ? null : inputRoles[el.type] || "textbox";
@@ -1059,8 +1105,11 @@ function pageSnapshot(interactiveOnly, hideValues, hideHosts) {
       const r = role(el);
       let next = depth;
       if (r && visible(el) && (!interactiveOnly || interactive.has(r))) {
-        const ref = "e" + state.next++;
-        state.refs.set(ref, new WeakRef(el));
+        let ref = known.get(el);
+        if (!ref) {
+          ref = "e" + state.next++;
+          state.refs.set(ref, new WeakRef(el));
+        }
         let line = r;
         const n = name(el);
         if (n) {
@@ -1086,10 +1135,44 @@ function pageSnapshot(interactiveOnly, hideValues, hideHosts) {
       walk(kids(el), next);
     }
   };
-  if (document.body) {
+  const out = { title: document.title, url: location.href, entries };
+  if (!scope) {
+    if (document.body) {
+      walk(kids(document.body), 0);
+    }
+    return out;
+  }
+  let matches = [];
+  let self = null;
+  try {
+    self = globalThis.__hermesFrameId(window);
+  } catch (e) {
+    self = null;
+  }
+  if (scope.ref !== undefined) {
+    if (self === scope.frame) {
+      const w = state.refs.get(scope.ref);
+      const el = w && w.deref();
+      if (el && el.isConnected) {
+        matches = [el];
+      }
+    }
+  } else if (document.body) {
+    try {
+      document.body.matches(scope.selector);
+    } catch (e) {
+      return Object.assign(out, { scope_error: "selector is not a valid CSS selector: " + String(scope.selector).slice(0, 100) });
+    }
+    const all = globalThis.__hermesHelpers.allElements(document.body).filter((el) => el.matches(scope.selector));
+    matches = all.filter((el) => !all.some((o) => o !== el && o.contains(el))).slice(0, 50);
+  }
+  if (matches.length) {
+    walk(matches, 0);
+  } else if (document.body) {
     walk(kids(document.body), 0);
   }
-  return { title: document.title, url: location.href, entries };
+  out.matched = matches.length;
+  return out;
 }
 
 // installHelpers defines the classification helpers in the page's isolated
@@ -1294,7 +1377,7 @@ function installHelpers() {
     return loose;
   }
 
-  globalThis.__hermesHelpers = { pageClassify, guardCheck, elementFor, textOf, findText, deepActive };
+  globalThis.__hermesHelpers = { pageClassify, guardCheck, elementFor, textOf, findText, deepActive, allElements };
 }
 
 function pageInspect(ref, focus) {
@@ -1616,9 +1699,9 @@ const OPS = {
     }
     return out;
   },
-  async snapshot({ tab_id, interactive_only }) {
+  async snapshot({ tab_id, interactive_only, selector, ref }) {
     await agentTab(tab_id);
-    return composeSnapshot(tab_id, interactive_only);
+    return composeSnapshot(tab_id, interactive_only, selector, ref);
   },
   async inspect({ tab_id, ref, url, frame, focus }) {
     const out = {};
