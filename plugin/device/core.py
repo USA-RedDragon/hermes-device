@@ -890,10 +890,11 @@ class Hub:
         call.finish(False, code=code, error=error)
 
     def browser_call(self, device_id: str, op: str, args: dict, timeout: float = BROWSER_DEFAULT_TIMEOUT_S,
-                     start: bool = False) -> Any:
+                     start: bool = False, slack: Optional[float] = None) -> Any:
         """Run one browser operation on the device (docs/browser.md section 4) and return its
         result; with start, send browser_start instead (section 5.1) and ignore op and args.
-        Raises BrowserError. Call from a worker thread, never the event loop."""
+        The wait ends ``slack`` seconds (default BROWSER_SLACK_S) after the operation's own
+        timeout. Raises BrowserError. Call from a worker thread, never the event loop."""
         conn = self.device(device_id)
         if conn is None:
             raise BrowserError(BROWSER_NOT_CONNECTED, f"device {device_id} is not connected")
@@ -916,7 +917,7 @@ class Hub:
             with conn.lock:
                 conn.browser_calls.pop(rid, None)
             raise BrowserError(BROWSER_NOT_CONNECTED, f"could not reach device {device_id}: {exc}") from exc
-        if not call.wait(timeout + BROWSER_SLACK_S):
+        if not call.wait(timeout + max(0.0, BROWSER_SLACK_S if slack is None else slack)):
             with conn.lock:
                 conn.browser_calls.pop(rid, None)
             try:

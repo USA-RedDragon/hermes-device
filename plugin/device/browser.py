@@ -472,6 +472,29 @@ def call(conn: Any, op: str, args: dict, timeout: float = 0) -> Any:
     return core.hub().browser_call(conn.device_id, op, args, timeout or core.BROWSER_DEFAULT_TIMEOUT_S)
 
 
+def _hook_timeout() -> float:
+    """Hermes's ``plugins.hook_callback_timeout``; 0 when hooks run without one."""
+    try:
+        from hermes_cli.plugins import _resolve_hook_callback_timeout
+        return max(0.0, float(_resolve_hook_callback_timeout()))
+    except Exception:
+        return 30.0
+
+
+def inspect_in_hook(conn: Any, req: dict) -> Any:
+    """``inspect`` from the pre_tool_call hook, which must end well inside Hermes's hook timeout:
+    a call past it makes Hermes block every tool call the hook sees, in every session, for a
+    while. The whole wait, the device's own timeout and the slack after it, takes at most half
+    of that timeout."""
+    core = _core()
+    total = INSPECT_TIMEOUT_S + core.BROWSER_SLACK_S
+    cap = _hook_timeout()
+    if cap > 0:
+        total = min(total, cap / 2)
+    timeout = max(1.0, total * 0.6)
+    return core.hub().browser_call(conn.device_id, "inspect", req, timeout, slack=max(0.0, total - timeout))
+
+
 # --- sites and approvals (docs/browser.md section 7) -------------------------------------------
 
 def site_of(url_or_host: str) -> str:
@@ -577,7 +600,7 @@ def _decide_login(args: dict, conn: Any, where: str) -> tuple[dict, Optional[dic
     url = str(args.get("url") or "").strip()
     if tab is None and not url:
         return {}, None
-    info = call(conn, "inspect", {"tab_id": tab} if tab is not None else {"url": url}, INSPECT_TIMEOUT_S)
+    info = inspect_in_hook(conn, {"tab_id": tab} if tab is not None else {"url": url})
     info = info if isinstance(info, dict) else {}
     host = str((info.get("top_host") if tab is not None else info.get("url_host")) or "").lower()
     listed = bool(info.get("top_autologin") if tab is not None else info.get("url_autologin"))
@@ -601,7 +624,7 @@ def _decide_eval(args: dict, conn: Any, where: str) -> tuple[dict, Optional[dict
     frame = str(args.get("frame") or "").strip()
     if frame:
         req["frame"] = frame
-    info = call(conn, "inspect", req, INSPECT_TIMEOUT_S)
+    info = inspect_in_hook(conn, req)
     if not isinstance(info, dict) or info.get("error"):
         return {}, None
     host = str(info.get("host") or "")
@@ -666,7 +689,7 @@ def decide(tool_name: str, args: dict, conn: Any) -> tuple[dict, Optional[dict]]
         try:
             # The extension parses the URL as the browser will, so the site
             # asked about is the site opened.
-            info = call(conn, "inspect", req, INSPECT_TIMEOUT_S)
+            info = inspect_in_hook(conn, req)
         except _core().BrowserError:
             info = {}
         info = info if isinstance(info, dict) else {}
@@ -695,7 +718,7 @@ def decide(tool_name: str, args: dict, conn: Any) -> tuple[dict, Optional[dict]]
         req["ref"] = ref
     else:
         req["focus"] = True
-    info = call(conn, "inspect", req, INSPECT_TIMEOUT_S)
+    info = inspect_in_hook(conn, req)
     if not isinstance(info, dict) or info.get("error"):
         return {}, None
     page = site_of(info.get("host") or "")

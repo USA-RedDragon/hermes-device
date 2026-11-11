@@ -1151,6 +1151,28 @@ class BrowserDeviceTests(BrowserBase):
         self.assertIsNone(results["run"])
         self.assertEqual(len(prompts), 1)
 
+    def test_hook_inspect_ends_inside_the_hook_timeout(self):
+        """A device that never answers inspect must not hold the hook past Hermes's timeout."""
+        require_source()
+        import hermes_cli.plugins as plugins
+        self.fake.hold.add("inspect")
+        mgr = plugins.PluginManager()
+        mgr._hooks["pre_tool_call"] = [browser.pre_tool_call]
+        with mock.patch.object(plugins, "_resolve_hook_callback_timeout", lambda: 2.0), \
+                mock.patch("hermes_cli.lifecycle.invoke_hook", mgr.invoke_hook):
+            t0 = time.monotonic()
+            d = plugins._get_pre_tool_call_directive_details("browser_navigate", {"url": "https://example.org/"},
+                                                             session_id=self.session, tool_call_id="call-1")
+            self.assertLess(time.monotonic() - t0, 1.9)
+            self.assertEqual((d.action, d.rule_key), ("approve", "browser:visit:unknown"))
+            self.assertEqual(mgr._hook_abandoned, {})
+            self.assertEqual(mgr._hook_timeout_suppressed_until, {})
+            d = plugins._get_pre_tool_call_directive_details("terminal", {"command": "id"},
+                                                             session_id="other-session", tool_call_id="call-2")
+            self.assertIsNone(d.action)
+        with mock.patch.object(plugins, "_resolve_hook_callback_timeout", lambda: 0):
+            self.assertEqual(browser._hook_timeout(), 0)
+
     def test_gate_errors_block(self):
         with mock.patch.object(browser, "resolve", side_effect=RuntimeError("store broke")):
             r = browser.pre_tool_call(tool_name="cronjob_manage", args={"action": "create"}, session_id=self.session)
