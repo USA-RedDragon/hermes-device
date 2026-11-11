@@ -5,7 +5,7 @@
     ],
     "packageRules": [
         {
-            "description": "Each Hermes release gets its own PR at once, so the Hermes compatibility check runs on it before the Flux upgrade PR is merged. Merge it by hand: see docs/hermes-upgrade.md in hermes-hub.",
+            "description": "Each Hermes release gets its own PR at once, so the Hermes compatibility check runs on it before the Flux upgrade PR is merged. Merge it by hand: see docs/hermes-upgrade.md in talaria-hub.",
             "matchPackageNames": [
                 "NousResearch/hermes-agent"
             ],
