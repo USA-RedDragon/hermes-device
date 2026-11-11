@@ -113,9 +113,20 @@ type Dirs struct {
 	} `json:"entries"`
 }
 
+// slowRequester sends a request that only its context bounds.
+// *gateway.Dialer is one.
+type slowRequester interface {
+	RequestSlow(ctx context.Context, method, path string, body []byte) (*http.Response, error)
+}
+
 // Raw sends one request and returns the plugin's status and body as they
 // are. An error means no answer came.
 func (p *Plugin) Raw(ctx context.Context, method, path string, body any) (int, []byte, error) {
+	return p.raw(ctx, p.r.Request, method, path, body)
+}
+
+func (p *Plugin) raw(ctx context.Context, send func(context.Context, string, string, []byte) (*http.Response, error),
+	method, path string, body any) (int, []byte, error) {
 	var b []byte
 	if body != nil {
 		var err error
@@ -123,7 +134,7 @@ func (p *Plugin) Raw(ctx context.Context, method, path string, body any) (int, [
 			return 0, nil, err
 		}
 	}
-	resp, err := p.r.Request(ctx, method, PluginBase+path, b)
+	resp, err := send(ctx, method, PluginBase+path, b)
 	if err != nil {
 		return 0, nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
@@ -136,7 +147,12 @@ func (p *Plugin) Raw(ctx context.Context, method, path string, body any) (int, [
 }
 
 func (p *Plugin) call(ctx context.Context, method, path string, body, out any) error {
-	status, data, err := p.Raw(ctx, method, path, body)
+	return p.callWith(ctx, p.r.Request, method, path, body, out)
+}
+
+func (p *Plugin) callWith(ctx context.Context, send func(context.Context, string, string, []byte) (*http.Response, error),
+	method, path string, body, out any) error {
+	status, data, err := p.raw(ctx, send, method, path, body)
 	if err != nil {
 		return err
 	}
@@ -274,5 +290,9 @@ type File struct {
 func (p *Plugin) PutFile(ctx context.Context, sessionID, name string, data []byte) (File, error) {
 	var out File
 	body := map[string]string{"name": name, "content_base64": base64.StdEncoding.EncodeToString(data)}
-	return out, p.call(ctx, http.MethodPost, "/sessions/"+url.PathEscape(sessionID)+"/files", body, &out)
+	send := p.r.Request
+	if s, ok := p.r.(slowRequester); ok {
+		send = s.RequestSlow
+	}
+	return out, p.callWith(ctx, send, http.MethodPost, "/sessions/"+url.PathEscape(sessionID)+"/files", body, &out)
 }

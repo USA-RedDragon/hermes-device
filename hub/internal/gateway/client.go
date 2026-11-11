@@ -73,12 +73,15 @@ type Credentials struct {
 type Dialer struct {
 	creds Credentials
 	http  *http.Client
+	// slow shares the cookies of http but has no time limit of its own:
+	// the caller's context bounds it.
+	slow *http.Client
 }
 
 // NewDialer returns a Dialer for creds.
 func NewDialer(creds Credentials) *Dialer {
 	jar, _ := cookiejar.New(nil)
-	return &Dialer{creds: creds, http: &http.Client{Jar: jar, Timeout: 15 * time.Second}}
+	return &Dialer{creds: creds, http: &http.Client{Jar: jar, Timeout: 15 * time.Second}, slow: &http.Client{Jar: jar}}
 }
 
 const maxFrame = 64 << 20
@@ -153,7 +156,17 @@ func WebSocketURL(base string) string {
 // session, signing in again once when it is refused with 401. body may be
 // nil. The caller closes the response body.
 func (d *Dialer) Request(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
-	resp, err := d.send(ctx, method, path, body)
+	return d.request(ctx, d.http, method, path, body)
+}
+
+// RequestSlow is Request with only ctx to bound it, for a request that
+// may take longer than a dashboard call, such as an upload.
+func (d *Dialer) RequestSlow(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
+	return d.request(ctx, d.slow, method, path, body)
+}
+
+func (d *Dialer) request(ctx context.Context, c *http.Client, method, path string, body []byte) (*http.Response, error) {
+	resp, err := d.send(ctx, c, method, path, body)
 	if err != nil || resp.StatusCode != http.StatusUnauthorized {
 		return resp, err
 	}
@@ -162,10 +175,10 @@ func (d *Dialer) Request(ctx context.Context, method, path string, body []byte) 
 	if err := d.login(ctx); err != nil {
 		return nil, err
 	}
-	return d.send(ctx, method, path, body)
+	return d.send(ctx, c, method, path, body)
 }
 
-func (d *Dialer) send(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
+func (d *Dialer) send(ctx context.Context, c *http.Client, method, path string, body []byte) (*http.Response, error) {
 	var r io.Reader
 	if body != nil {
 		r = bytes.NewReader(body)
@@ -178,7 +191,7 @@ func (d *Dialer) send(ctx context.Context, method, path string, body []byte) (*h
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := d.http.Do(req)
+	resp, err := c.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w: %w", method, path, ErrUnreachable, err)
 	}

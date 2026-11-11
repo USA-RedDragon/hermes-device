@@ -12,8 +12,13 @@ import (
 )
 
 // uploadTimeout bounds one upload: the plugin sends the file to the
-// device over its exec leg.
-const uploadTimeout = 5 * time.Minute
+// device over its exec leg, in two commands of up to 35 and 305 seconds
+// (plugin/device/core.py UPLOAD_TIMEOUT_S), so the hub waits longer than
+// the plugin can take.
+const uploadTimeout = 7 * time.Minute
+
+// codeBusy is the plugin's refusal of an upload while others run.
+const codeBusy = "busy"
 
 var _ hub.SessionFiles = (*Server)(nil)
 
@@ -53,6 +58,8 @@ func uploadError(name string, err error) error {
 	switch {
 	case pe.Code == "device_offline":
 		return fmt.Errorf("%w: The computer this chat runs on is offline, so %s cannot reach it", hub.ErrAttachment, name)
+	case pe.Code == codeBusy:
+		return fmt.Errorf("%w: Hermes is busy with other uploads. Send %s again in a moment", hub.ErrAttachment, name)
 	case pe.Code == "too_large":
 		return fmt.Errorf("%w: The file %s is too large for the computer: %s", hub.ErrAttachment, name, pe.Message)
 	case pe.Code == "fail_closed":
