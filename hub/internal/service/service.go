@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -68,6 +69,8 @@ type Service struct {
 	// relayPending counts relay events queued but not yet published.
 	relayPending atomic.Int64
 	stop         context.CancelFunc
+	// files places attached files on devices. Nil without devices.
+	files hub.SessionFiles
 }
 
 var _ hub.Service = (*Service)(nil)
@@ -285,8 +288,15 @@ func (s *Service) Attach(ctx context.Context, user, backendID, sessionID string,
 // Prompt submits text as the next turn of a session. When the backend is
 // restarting or cannot be reached, it holds the prompt and sends it, under
 // the same submission ID, once the backend is back. A prompt behind held
-// ones is held too, to keep their order.
-func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text string) (hub.PromptResult, error) {
+// ones is held too, to keep their order. Attachments need the backend: a
+// prompt with files is refused while it is away.
+func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text string, files ...hub.Attachment) (hub.PromptResult, error) {
+	if err := hub.CheckAttachments(files); err != nil {
+		return hub.PromptResult{}, err
+	}
+	if len(files) > 0 && strings.HasPrefix(strings.TrimSpace(text), "/") {
+		return hub.PromptResult{}, fmt.Errorf("%w: Send a slash command without attachments", hub.ErrAttachment)
+	}
 	b, err := s.backend(ctx, user, backendID)
 	if err != nil {
 		return hub.PromptResult{}, err
@@ -297,29 +307,43 @@ func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text s
 	}
 	release := b.gate(sessionID)
 	defer release()
-	if b.heldCount(sessionID) == 0 {
-		err := b.submit(ctx, sessionID, id, text)
-		if err == nil {
-			return hub.PromptResult{ID: id}, nil
+	if b.heldCount(sessionID) > 0 {
+		if len(files) > 0 {
+			return hub.PromptResult{}, errAway
 		}
-		if !gateway.Retryable(err) {
-			return hub.PromptResult{}, refusal(err)
-		}
-		b.log.Info("backend unavailable, holding a prompt", "session", sessionID, "error", err.Error())
-		return b.hold(user, sessionID, id, text, errors.Is(err, gateway.ErrClosed))
+		return b.hold(user, sessionID, id, text, nil, false)
 	}
-	return b.hold(user, sessionID, id, text, false)
+	var atts []gateway.Attachment
+	notice := ""
+	if len(files) > 0 {
+		text, atts, notice, err = b.stage(ctx, user, sessionID, text, files)
+		if err != nil {
+			return hub.PromptResult{}, err
+		}
+	}
+	err = b.submit(ctx, sessionID, id, text, atts)
+	if err == nil {
+		return hub.PromptResult{ID: id, Notice: notice}, nil
+	}
+	if !gateway.Retryable(err) {
+		return hub.PromptResult{}, refusal(err)
+	}
+	b.log.Info("backend unavailable, holding a prompt", "session", sessionID, "error", err.Error())
+	res, err := b.hold(user, sessionID, id, text, atts, errors.Is(err, gateway.ErrClosed))
+	res.Notice = notice
+	return res, err
 }
 
 // submit sends one prompt.submit. Hermes answers a repeated submission ID
 // with the admission it already has, so a retry never runs a prompt twice.
-func (b *backend) submit(ctx context.Context, sessionID, id, text string) error {
+func (b *backend) submit(ctx context.Context, sessionID, id, text string, atts []gateway.Attachment) error {
 	ls, err := b.session(ctx, sessionID)
 	if err != nil {
 		return err
 	}
 	defer ls.unpin()
-	return b.call(ctx, ls, gateway.MethodPromptSubmit, gateway.SubmitParams{SessionID: ls.id, Text: text, SubmissionID: id}, nil)
+	return b.call(ctx, ls, gateway.MethodPromptSubmit,
+		gateway.SubmitParams{SessionID: ls.id, Text: text, SubmissionID: id, Attachments: atts}, nil)
 }
 
 // Interrupt stops the session's running turn.
@@ -910,6 +934,9 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	defer ls.mu.Unlock()
 	ls.subID, ls.epoch, ls.gwSeq = snap.SubscriptionID, snap.ReplayEpoch, snap.LastSequence
 	ls.generation, ls.revision = snap.ExecutionGeneration, snap.Revision
+	if snap.Info.Vision != nil {
+		ls.vision = snap.Info.Vision
+	}
 	ls.setPrompts(snap.Prompts)
 	ls.setInputs(snap.Pending)
 	ls.ring, ls.truncated = nil, false

@@ -32,6 +32,7 @@ type Relay interface {
 // heldPrompt is a prompt waiting for its backend to come back.
 type heldPrompt struct {
 	id, user, text string
+	atts           []gateway.Attachment
 	until          time.Time
 	// maybe is set once a try lost its connection after the prompt may
 	// have gone out, so Hermes may have it although no answer came.
@@ -120,7 +121,7 @@ func (b *backend) remoteLocked(sessionID, kind string, in hub.HeldInput) {
 // hold queues a prompt the backend could not take and starts the flusher.
 // maybe marks a prompt whose first try lost its connection after it may
 // have gone out.
-func (b *backend) hold(user, sessionID, id, text string, maybe bool) (hub.PromptResult, error) {
+func (b *backend) hold(user, sessionID, id, text string, atts []gateway.Attachment, maybe bool) (hub.PromptResult, error) {
 	until := time.Now().Add(b.svc.opts.HoldTimeout)
 	b.holdMu.Lock()
 	defer b.holdMu.Unlock()
@@ -130,7 +131,7 @@ func (b *backend) hold(user, sessionID, id, text string, maybe bool) (hub.Prompt
 	if len(b.held[sessionID]) >= maxHeld {
 		return hub.PromptResult{}, hub.ErrHoldFull
 	}
-	p := &heldPrompt{id: id, user: user, text: text, until: until, maybe: maybe}
+	p := &heldPrompt{id: id, user: user, text: text, atts: atts, until: until, maybe: maybe}
 	b.held[sessionID] = append(b.held[sessionID], p)
 	b.eventLocked(sessionID, hub.KindInputHeld, p.input())
 	if !b.flushing {
@@ -343,7 +344,7 @@ func (b *backend) submitHeld(sessionID string, p *heldPrompt) error {
 		p.sending = false
 		b.holdMu.Unlock()
 	}()
-	return b.submit(ctx, sessionID, p.id, p.text)
+	return b.submit(ctx, sessionID, p.id, p.text, p.atts)
 }
 
 func refusedMessage(err error) string {

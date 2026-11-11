@@ -48,6 +48,15 @@ type live struct {
 	truncated bool
 	viewers   map[*viewer]struct{}
 	idleTimer *time.Timer
+	// vision says whether the session's tools can read images, from the
+	// latest info that listed them; nil when none did.
+	vision *bool
+}
+
+func (ls *live) canSee() *bool {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	return ls.vision
 }
 
 type viewer struct {
@@ -222,6 +231,9 @@ func (ls *live) apply(ev gateway.Event) {
 	}
 	switch ev.Type {
 	case gateway.InfoEvent:
+		if v := gateway.Vision(ev.Payload); v != nil {
+			ls.vision = v
+		}
 		var p gateway.InfoPayload
 		if json.Unmarshal(ev.Payload, &p) == nil {
 			if p.Pending != nil {

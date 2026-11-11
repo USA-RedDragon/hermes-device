@@ -60,8 +60,11 @@ type Service interface {
 	Attach(ctx context.Context, user, backendID, sessionID string, sinceSeq int64) (<-chan Event, func(), error)
 	// Prompt submits text as the session's next input. While the backend
 	// restarts or cannot be reached, the hub holds it and submits it once
-	// the backend is back: the result says so.
-	Prompt(ctx context.Context, user, backendID, sessionID, text string) (PromptResult, error)
+	// the backend is back: the result says so. Images among files go to
+	// the model; other files go to the device that runs the session, or to
+	// Hermes when no device runs it, and the text names where they are.
+	// Prompt fails with ErrAttachment when files break the limits.
+	Prompt(ctx context.Context, user, backendID, sessionID, text string, files ...Attachment) (PromptResult, error)
 	Interrupt(ctx context.Context, user, backendID, sessionID string) error
 	RespondApproval(ctx context.Context, user, backendID, sessionID, approvalID string, allow bool) error
 	// CancelInput drops a queued input before it runs.
@@ -138,6 +141,9 @@ type PromptResult struct {
 	ID        string
 	Held      bool
 	HeldUntil time.Time
+	// Notice is a note for the user about how the prompt went, such as
+	// images the session's model cannot read.
+	Notice string
 }
 
 type submissionKey struct{}
