@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -32,16 +31,21 @@ const (
 	// maxImageBytes bounds one rendered page.
 	maxImageBytes = 8 << 20
 	// memLimit bounds each program's address space. poppler renders
-	// large images in stripes, so even a 30000 by 30000 pixel image fits.
-	memLimit = 256 << 20
+	// large images in stripes, so even a 30000 by 30000 pixel image fits,
+	// but it allocates a JBIG2 page whole.
+	memLimit = 192 << 20
 	// cpuSeconds bounds each program's CPU time.
 	cpuSeconds = 60
 	// fileLimit bounds each file a program writes.
 	fileLimit = 64 << 20
 	// maxStderr bounds the error output kept from a program.
 	maxStderr = 16 << 10
-	// slots is how many PDFs the hub reads at once.
-	slots = 2
+	// slots is how many PDFs the hub reads at once. One keeps the
+	// programs' memory well inside a 512 MiB pod.
+	slots = 1
+	// staleAfter is how old a work directory left by an earlier process
+	// must be before New removes it.
+	staleAfter = 10 * time.Minute
 )
 
 // Errors for PDFs the hub cannot read.
@@ -54,6 +58,8 @@ var (
 	ErrDamaged = errors.New("the PDF is damaged or not a PDF")
 	// ErrTooHeavy means a program ran out of time or memory.
 	ErrTooHeavy = errors.New("the PDF took too long or too much memory to read")
+	// ErrBusy means the hub ran out of time while it read other PDFs.
+	ErrBusy = errors.New("the hub was busy reading other PDFs")
 	// ErrNoPage means the requested pages are not in the PDF.
 	ErrNoPage = errors.New("the PDF has no such page")
 )
@@ -83,6 +89,9 @@ type Doc struct {
 	Text string
 	// Truncated is true when Text stops before page To ends.
 	Truncated bool
+	// RenderStopped is true when rendering ran out of time or memory
+	// before it rendered every page asked for.
+	RenderStopped bool
 }
 
 // Reader reads PDFs. The zero value is not usable; use New.
@@ -100,12 +109,28 @@ func New(dir string, timeout time.Duration) *Reader {
 		timeout = 60 * time.Second
 	}
 	r := &Reader{dir: dir, timeout: timeout, slots: make(chan struct{}, slots), tools: map[string]string{}}
+	r.removeStale()
 	for _, t := range []string{"sh", "pdfinfo", "pdftotext", "pdftoppm"} {
 		if p, err := exec.LookPath(t); err == nil {
 			r.tools[t] = p
 		}
 	}
 	return r
+}
+
+// removeStale removes work directories that a process which stopped
+// before it cleaned up left behind.
+func (r *Reader) removeStale() {
+	dir := r.dir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	old, _ := filepath.Glob(filepath.Join(dir, "hub-pdf-*"))
+	for _, p := range old {
+		if fi, err := os.Lstat(p); err == nil && fi.IsDir() && time.Since(fi.ModTime()) > staleAfter {
+			_ = os.RemoveAll(p)
+		}
+	}
 }
 
 // Available says whether poppler-utils is installed.
@@ -132,7 +157,7 @@ func (r *Reader) Read(ctx context.Context, req Request) (*Doc, error) {
 		defer func() { <-r.slots }()
 	case <-ctx.Done():
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, ErrTooHeavy
+			return nil, ErrBusy
 		}
 		return nil, ctx.Err()
 	}
@@ -165,7 +190,10 @@ func (r *Reader) Read(ctx context.Context, req Request) (*Doc, error) {
 	}
 	if n := min(req.Images, d.To-d.From+1); n > 0 {
 		d.Images, err = r.render(ctx, dir, d.From, d.From+n-1)
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrTooHeavy):
+			d.RenderStopped = true
+		case err != nil:
 			return nil, err
 		}
 	}
@@ -174,16 +202,19 @@ func (r *Reader) Read(ctx context.Context, req Request) (*Doc, error) {
 
 var pagesLine = regexp.MustCompile(`(?m)^Pages:\s+(\d+)\s*$`)
 
+// pageCount reads the page count from pdfinfo. It takes the last "Pages:"
+// line, since the free-text fields before it (Title, Subject...) may hold
+// a line that looks like one, and keeps only the end of the output.
 func (r *Reader) pageCount(ctx context.Context, dir string) (int, error) {
-	var out bytes.Buffer
-	if err := r.run(ctx, dir, &limited{w: &out, n: 64 << 10}, "pdfinfo", "in.pdf"); err != nil {
+	out := &tail{n: 16 << 10}
+	if err := r.run(ctx, dir, out, "pdfinfo", "in.pdf"); err != nil {
 		return 0, err
 	}
-	m := pagesLine.FindSubmatch(out.Bytes())
-	if m == nil {
+	ms := pagesLine.FindAllSubmatch(out.b, -1)
+	if ms == nil {
 		return 0, ErrDamaged
 	}
-	n, err := strconv.Atoi(string(m[1]))
+	n, err := strconv.Atoi(string(ms[len(ms)-1][1]))
 	if err != nil || n < 1 {
 		return 0, ErrDamaged
 	}
@@ -209,13 +240,24 @@ func (r *Reader) text(ctx context.Context, dir string, from, to, maxChars int) (
 	return text, cut || enough.isFull(), nil
 }
 
-var blankRun = regexp.MustCompile(`\n{3,}`)
+var (
+	blankRun = regexp.MustCompile(`\n{3,}`)
+	// marker and hubLine find text in a PDF that could pass for the
+	// hub's markers and notes around it.
+	marker  = regexp.MustCompile(`(?i)untrusted-pdf-text`)
+	hubLine = regexp.MustCompile(`(?i)^(\s*)\[(the user attached|the pdf |the hub |page \d|image attached)`)
+)
 
 // tidy makes pdftotext's output valid UTF-8 without control characters,
-// puts a "[page N]" line before each page and cuts it to maxChars
-// characters at a line end.
+// defuses text that looks like the hub's markers and notes, puts a
+// "[page N]" line before each page and cuts it to maxChars characters at
+// a line end. It returns "" when the PDF has no text.
 func tidy(raw []byte, from, maxChars int) (string, bool) {
 	s := strings.ToValidUTF8(string(raw), "�")
+	if strings.TrimSpace(strings.ReplaceAll(s, "\f", "")) == "" {
+		return "", false
+	}
+	s = marker.ReplaceAllString(s, "untrusted pdf text")
 	pages := strings.Split(s, "\f")
 	if len(pages) > 1 && strings.TrimSpace(pages[len(pages)-1]) == "" {
 		pages = pages[:len(pages)-1]
@@ -224,7 +266,8 @@ func tidy(raw []byte, from, maxChars int) (string, bool) {
 	for i, p := range pages {
 		fmt.Fprintf(&sb, "[page %d]\n", from+i)
 		for line := range strings.SplitSeq(p, "\n") {
-			sb.WriteString(strings.TrimRightFunc(strings.Map(dropControl, line), isSpace))
+			line = hubLine.ReplaceAllString(strings.Map(dropControl, line), "$1($2")
+			sb.WriteString(strings.TrimRightFunc(line, isSpace))
 			sb.WriteByte('\n')
 		}
 	}
@@ -261,46 +304,32 @@ func runeOffset(s string, n int) int {
 	return len(s)
 }
 
-// render runs pdftoppm for pages first to last and returns the PNGs.
+// render runs pdftoppm for pages first to last, one page at a time, and
+// returns the PNGs. When a page runs out of time or memory it returns the
+// pages before it with ErrTooHeavy.
 func (r *Reader) render(ctx context.Context, dir string, first, last int) ([][]byte, error) {
 	out := filepath.Join(dir, "out")
 	if err := os.Mkdir(out, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to make an output directory: %w", err)
 	}
-	err := r.run(ctx, dir, io.Discard, "pdftoppm", "-png", "-scale-to", strconv.Itoa(ImageSide),
-		"-f", strconv.Itoa(first), "-l", strconv.Itoa(last), "in.pdf", "out/page")
-	if err != nil {
-		return nil, err
-	}
-	ents, err := os.ReadDir(out)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list the pages: %w", err)
-	}
-	names := make([]string, 0, len(ents))
-	for _, e := range ents {
-		if e.Type().IsRegular() && strings.HasSuffix(e.Name(), ".png") {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Slice(names, func(i, j int) bool { return pageNumber(names[i]) < pageNumber(names[j]) })
-	if len(names) > last-first+1 {
-		names = names[:last-first+1]
-	}
-	imgs := make([][]byte, 0, len(names))
-	for _, n := range names {
-		b, err := readLimited(filepath.Join(out, n), maxImageBytes)
+	imgs := make([][]byte, 0, last-first+1)
+	for p := first; p <= last; p++ {
+		err := r.run(ctx, dir, io.Discard, "pdftoppm", "-png", "-singlefile", "-scale-to", strconv.Itoa(ImageSide),
+			"-f", strconv.Itoa(p), "-l", strconv.Itoa(p), "in.pdf", "out/page")
 		if err != nil {
-			return nil, err
+			return imgs, err
+		}
+		name := filepath.Join(out, "page.png")
+		b, err := readLimited(name, maxImageBytes)
+		if err != nil {
+			return imgs, err
+		}
+		if err := os.Remove(name); err != nil {
+			return imgs, fmt.Errorf("failed to remove a page: %w", err)
 		}
 		imgs = append(imgs, b)
 	}
 	return imgs, nil
-}
-
-func pageNumber(name string) int {
-	s := strings.TrimSuffix(name, ".png")
-	n, _ := strconv.Atoi(s[strings.LastIndexByte(s, '-')+1:])
-	return n
 }
 
 func readLimited(path string, n int64) ([]byte, error) {
@@ -397,3 +426,17 @@ func (l *limited) Write(p []byte) (int, error) {
 }
 
 func (l *limited) isFull() bool { return l.dropped }
+
+// tail keeps the last n bytes written to it.
+type tail struct {
+	b []byte
+	n int
+}
+
+func (t *tail) Write(p []byte) (int, error) {
+	t.b = append(t.b, p...)
+	if len(t.b) > 2*t.n {
+		t.b = append(t.b[:0], t.b[len(t.b)-t.n:]...)
+	}
+	return len(p), nil
+}

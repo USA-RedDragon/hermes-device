@@ -9,7 +9,11 @@ import (
 
 // Make returns a PDF with one page per string, each showing its string
 // in Helvetica. Lines in a string go on separate lines of the page.
-func Make(pages ...string) []byte {
+func Make(pages ...string) []byte { return MakeTitled("", pages...) }
+
+// MakeTitled is Make with a document title, written as a PDF string with
+// its newlines escaped as \n.
+func MakeTitled(title string, pages ...string) []byte {
 	objs := make([]string, 0, 3+2*len(pages))
 	kids := make([]string, len(pages))
 	for i := range pages {
@@ -31,6 +35,10 @@ func Make(pages ...string) []byte {
 			fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>", 5+2*i),
 			fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", cs.Len(), cs.String()))
 	}
+	if title != "" {
+		r := strings.NewReplacer(`\`, `\\`, "(", `\(`, ")", `\)`, "\n", `\n`)
+		objs = append(objs, "<< /Title ("+r.Replace(title)+") >>")
+	}
 	var b bytes.Buffer
 	b.WriteString("%PDF-1.4\n")
 	offs := make([]int, len(objs))
@@ -43,6 +51,10 @@ func Make(pages ...string) []byte {
 	for _, o := range offs {
 		fmt.Fprintf(&b, "%010d 00000 n \n", o)
 	}
-	fmt.Fprintf(&b, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(objs)+1, xref)
+	info := ""
+	if title != "" {
+		info = fmt.Sprintf(" /Info %d 0 R", len(objs))
+	}
+	fmt.Fprintf(&b, "trailer\n<< /Size %d /Root 1 0 R%s >>\nstartxref\n%d\n%%%%EOF\n", len(objs)+1, info, xref)
 	return b.Bytes()
 }
