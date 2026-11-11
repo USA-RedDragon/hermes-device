@@ -1,0 +1,453 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 11:42:34 -0600
+Subject: [PATCH] feat(gateway): standby gateway waits for the profile lock
+
+gateway.runtime_lock_wait_seconds (0 = off): a gateway that finds its
+profile owned warms up, then waits for the owner to exit and takes over
+instead of exiting 1. Lock records carry the PID namespace, so a holder
+in a sibling container is not read as stale.
+---
+ cli-config.yaml.example                    |   8 +
+ gateway/config.py                          |   6 +-
+ gateway/config_loader.py                   |   1 +
+ gateway/run_bootstrap.py                   |  88 ++++++++++
+ gateway/status.py                          |  23 ++-
+ tests/gateway/test_runtime_lock_wait.py    | 181 +++++++++++++++++++++
+ website/docs/user-guide/messaging/index.md |  20 +++
+ 7 files changed, 324 insertions(+), 3 deletions(-)
+ create mode 100644 tests/gateway/test_runtime_lock_wait.py
+
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index d63b9ba658..0ceec63234 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -1458,6 +1458,14 @@ gateway:
+   # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
+   # trust_env: true
+ 
++  # Seconds a gateway that finds its profile owned by another gateway waits
++  # for that gateway to exit before it gives up, instead of exiting at once.
++  # It warms up first and takes over within a fraction of a second of the
++  # owner's exit: a standby for rolling updates that share HERMES_HOME
++  # (two containers on one volume, each with its own PID namespace).
++  # 0 keeps the immediate exit.
++  # runtime_lock_wait_seconds: 0
++
+ # =============================================================================
+ # Toolsets
+ # =============================================================================
+diff --git a/gateway/config.py b/gateway/config.py
+index a663f8ad9c..5401d6bd91 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -627,6 +627,9 @@ class GatewayConfig:
+     # route); HERMES_ROOM_LINK_URL overrides.
+     room_link_url: Optional[str] = None
+     systemd_watchdog_seconds: int = 0  # opt-in; zero keeps Type=simple and disables sd_notify
++    # A gateway that finds its profile owned by another gateway waits up to this long for it to exit,
++    # after warming up, instead of exiting 1: a standby for rolling updates on a shared volume. 0 = off.
++    runtime_lock_wait_seconds: float = 0.0
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -661,7 +664,7 @@ class GatewayConfig:
+         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
+         "max_concurrent_sessions", "multiplex_profiles",
+         "on_all_adapters_down",
+-        "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
++        "room_link_url", "systemd_watchdog_seconds", "runtime_lock_wait_seconds", "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+     )
+@@ -794,6 +797,7 @@ class GatewayConfig:
+             multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),
+             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
+             systemd_watchdog_seconds=systemd_watchdog_seconds,
++            runtime_lock_wait_seconds=bounded_float("runtime_lock_wait_seconds", 0.0, 0.0, 86400.0),
+             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),
+             loop_watchdog_probe_interval_s=bounded_float("loop_watchdog_probe_interval_s", DEFAULT_LOOP_WATCHDOG_INTERVAL_S, 1.0, 3600.0),
+             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index e251c24f02..2e25a09dd0 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -93,6 +93,7 @@ _TOPLEVEL_BRIDGE: tuple = (
+     ("profile_routes", "profile_routes", "none", lambda v: isinstance(v, list), None),
+     *_presence("max_concurrent_sessions"),
+     ("systemd_watchdog_seconds", "systemd_watchdog_seconds", "nested", None, None),
++    ("runtime_lock_wait_seconds", "runtime_lock_wait_seconds", "nested", None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
+index bfdca3a81a..de65a6d6a0 100644
+--- a/gateway/run_bootstrap.py
++++ b/gateway/run_bootstrap.py
+@@ -622,6 +622,91 @@ def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float | N
+     return reserve_waiting_out_transient_holders(ownership, homes, wait_s=wait_s)
+ 
+ 
++RUNTIME_LOCK_POLL_S = 0.2
++_RUNTIME_LOCK_PREWARM_MODULES = (
++    "gateway.run_runtime", "gateway.run_startup", "gateway.run_api", "gateway.run_adapters",
++    "gateway.session_authorities", "run_agent", "model_tools", "tui_gateway.server",
++)
++
++
++def _prewarm_before_runtime_lock() -> None:
++    """Imports and plugin discovery that the boot after the lock runs anyway, done while another
++    gateway still owns the profile so the takeover after it exits is short. Opens no profile store."""
++    import importlib
++    for name in _RUNTIME_LOCK_PREWARM_MODULES:
++        try:
++            importlib.import_module(name)
++        except Exception:
++            logger.debug("Prewarm import of %s failed", name, exc_info=True)
++    try:
++        from hermes_cli.plugins import discover_plugins
++        discover_plugins()
++    except Exception:
++        logger.debug("Prewarm plugin discovery failed", exc_info=True)
++
++
++def _host_lock_held_by_predecessor(home) -> bool:
++    """True while another process holds the host gateway lock for this same home: the gateway this
++    standby replaces, between releasing ``gateway.lock`` and exiting."""
++    from gateway import host_rendezvous as hr
++    from gateway.runtime_ownership import canonical_home
++    if hr.owns_host_lock(hr.ROLE_GATEWAY) or not hr.host_lock_is_held(hr.ROLE_GATEWAY):
++        return False
++    try:
++        record = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
++    except Exception:
++        record = None
++    return record is None or not record.home or canonical_home(Path(record.home)) == canonical_home(home)
++
++
++def _remove_predecessor_pid_file() -> None:
++    """After a takeover the lock is ours, so a gateway.pid naming anyone else is stale: a predecessor
++    that died without removing it (SIGKILL at the end of its grace) would fail our O_EXCL claim."""
++    import os
++    from gateway.status import _get_pid_path, _pid_from_record, _read_pid_record
++    path = _get_pid_path()
++    record = _read_pid_record(path)
++    if record is not None and _pid_from_record(record) != os.getpid():
++        path.unlink(missing_ok=True)
++
++
++async def _start_gateway_wait_for_runtime_lock(profile_homes, wait_s: float) -> None:
++    """``gateway.runtime_lock_wait_seconds``: a standby gateway (the new pod of a rolling update on a
++    shared volume) warms up, then waits for the gateway that owns the profile to exit instead of
++    exiting 1, and takes over within one poll of it. When the wait runs out the boot goes on and
++    refuses exactly as it does without the wait."""
++    import asyncio
++    from gateway.run import get_hermes_home
++    from gateway.runtime_ownership import OwnershipConflict, process_ownership
++    from hermes_startup_watchdog import kick_startup_watchdog
++    launch_home = get_hermes_home()
++    homes = [launch_home, *(home for _, home in profile_homes)]
++    started = time.monotonic()
++    deadline = started + wait_s
++    _prewarm_before_runtime_lock()
++    waited = False
++    while True:
++        try:
++            process_ownership.reserve(homes)
++            break
++        except OwnershipConflict:
++            if time.monotonic() >= deadline:
++                return
++        except OSError:
++            return
++        if not waited:
++            logger.info("Another gateway owns %s; waiting up to %.0fs for it to exit", launch_home, wait_s)
++            waited = True
++        kick_startup_watchdog()  # an idle wait, not a stalled boot
++        await asyncio.sleep(RUNTIME_LOCK_POLL_S)
++    while _host_lock_held_by_predecessor(launch_home) and time.monotonic() < deadline:
++        waited = True
++        await asyncio.sleep(RUNTIME_LOCK_POLL_S / 4)
++    if waited:
++        _remove_predecessor_pid_file()
++        logger.info("Took over %s after waiting %.1fs", launch_home, time.monotonic() - started)
++
++
+ def _start_gateway_reserve_profiles(profile_homes) -> bool:
+     """Reserve the launch home plus every served profile home; False when startup must abort."""
+     from gateway.run import get_hermes_home
+@@ -802,6 +887,9 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+         return False
+ 
+     from gateway.status import remove_pid_file, release_gateway_runtime_lock
++    lock_wait_s = float(getattr(resolved_config, "runtime_lock_wait_seconds", 0) or 0)
++    if lock_wait_s > 0:
++        await _start_gateway_wait_for_runtime_lock(profile_homes, lock_wait_s)
+     if not _start_gateway_reserve_profiles(profile_homes):
+         return False
+     # Freeze discovery: later profile additions must restart and reserve before opening stores.
+diff --git a/gateway/status.py b/gateway/status.py
+index 0762c848eb..9e17902431 100644
+--- a/gateway/status.py
++++ b/gateway/status.py
+@@ -787,13 +787,27 @@ def _record_argv() -> list[str]:
+ 
+ 
+ def _build_pid_record() -> dict:
+-    return {
++    from hermes_state_pidns import pid_namespace_id
++    record = {
+         "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": _record_argv(),
+         "start_time": _get_process_start_time(os.getpid()),
+         # Scoped locks are machine-global; the owner's home lets a cross-profile
+         # --replace place its takeover marker where the target will read it.
+         "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+     }
++    pidns = pid_namespace_id()
++    if pidns:
++        record["pidns"] = pidns
++    return record
++
++
++def _record_from_other_pid_namespace(record: Optional[dict[str, Any]]) -> bool:
++    """True when a holder record is stamped with another PID namespace: a gateway in a sibling
++    container on the same volume, whose PID means nothing here."""
++    if not isinstance(record, dict) or not record.get("pidns"):
++        return False
++    from hermes_state_pidns import persistent_record_pidns_checkable
++    return not persistent_record_pidns_checkable(str(record["pidns"]))
+ 
+ 
+ def _get_code_identity_fields() -> dict[str, Any]:
+@@ -1991,7 +2005,12 @@ def get_running_pid(
+                 saw_live_pid = True
+             else:
+                 foreign_live_pid = True
+-        if not saw_live_pid:
++        # A holder in another PID namespace (a standby in a sibling container waits on this lock)
++        # is live although its PID is not: its gateway.pid is not stale.
++        from gateway.runtime_ownership import process_ownership
++        held_elsewhere = (not process_ownership.owns(resolved_lock_path.parent)
++                          and _record_from_other_pid_namespace(records[1]))
++        if not saw_live_pid and not held_elsewhere:
+             _cleanup_invalid_pid_path(
+                 resolved_pid_path, cleanup_stale=cleanup_stale, unlink_lock=not foreign_live_pid
+             )
+diff --git a/tests/gateway/test_runtime_lock_wait.py b/tests/gateway/test_runtime_lock_wait.py
+new file mode 100644
+index 0000000000..962a171052
+--- /dev/null
++++ b/tests/gateway/test_runtime_lock_wait.py
+@@ -0,0 +1,181 @@
++"""gateway.runtime_lock_wait_seconds: a standby gateway waits for the profile owner to exit."""
++import asyncio
++import json
++import time
++
++import pytest
++
++from gateway import run_bootstrap, status
++from gateway.config import GatewayConfig, load_gateway_config
++from gateway.runtime_ownership import ProfileOwnership, process_ownership
++
++
++@pytest.fixture
++def home(tmp_path, monkeypatch):
++    home = tmp_path / "home"
++    home.mkdir()
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    monkeypatch.setattr("gateway.run.get_hermes_home", lambda: home)
++    monkeypatch.setattr(run_bootstrap, "_prewarm_before_runtime_lock", lambda: None)
++    monkeypatch.setattr(run_bootstrap, "RUNTIME_LOCK_POLL_S", 0.02)
++    yield home
++    process_ownership.close()
++
++
++def test_default_keeps_exiting_on_a_held_lock():
++    assert GatewayConfig().runtime_lock_wait_seconds == 0
++    assert GatewayConfig.from_dict({}).runtime_lock_wait_seconds == 0
++
++
++@pytest.mark.parametrize("raw, expected", [(30, 30.0), ("45", 45.0), (-1, 0.0), ("bad", 0.0), (float("inf"), 0.0)])
++def test_from_dict_reads_the_nested_key(raw, expected):
++    config = GatewayConfig.from_dict({"gateway": {"runtime_lock_wait_seconds": raw}})
++    assert config.runtime_lock_wait_seconds == expected
++
++
++def test_config_yaml_key_reaches_the_runner_config(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    (tmp_path / "config.yaml").write_text("gateway:\n  runtime_lock_wait_seconds: 700\n", encoding="utf-8")
++    assert load_gateway_config().runtime_lock_wait_seconds == 700
++
++
++@pytest.mark.platforms("linux")
++@pytest.mark.asyncio
++async def test_standby_takes_the_lock_right_after_the_owner_lets_go(home, monkeypatch):
++    monkeypatch.setattr(run_bootstrap, "_host_lock_held_by_predecessor", lambda _home: False)
++    owner = ProfileOwnership()
++    owner.reserve([home])
++    waiter = asyncio.create_task(run_bootstrap._start_gateway_wait_for_runtime_lock([], 30))
++    await asyncio.sleep(0.3)
++    assert not waiter.done()
++    assert not process_ownership.owns(home)
++    released = time.monotonic()
++    owner.close()
++    await asyncio.wait_for(waiter, 5)
++    assert time.monotonic() - released < 1.0
++    assert process_ownership.owns(home)
++    assert json.loads((home / "gateway.lock").read_text())["pid"] > 0
++
++
++@pytest.mark.platforms("linux")
++@pytest.mark.asyncio
++async def test_wait_runs_out_without_taking_anything(home, monkeypatch):
++    monkeypatch.setattr(run_bootstrap, "_host_lock_held_by_predecessor", lambda _home: False)
++    owner = ProfileOwnership()
++    owner.reserve([home])
++    try:
++        started = time.monotonic()
++        await run_bootstrap._start_gateway_wait_for_runtime_lock([], 0.3)
++        assert 0.3 <= time.monotonic() - started < 2
++        assert not process_ownership.owns(home)
++        assert not run_bootstrap._start_gateway_reserve_profiles([])
++    finally:
++        owner.close()
++
++
++@pytest.mark.platforms("linux")
++@pytest.mark.asyncio
++async def test_free_profile_is_taken_without_waiting(home, monkeypatch):
++    monkeypatch.setattr(run_bootstrap, "_host_lock_held_by_predecessor", lambda _home: False)
++    started = time.monotonic()
++    await run_bootstrap._start_gateway_wait_for_runtime_lock([], 30)
++    assert time.monotonic() - started < 0.5
++    assert process_ownership.owns(home)
++    assert run_bootstrap._start_gateway_reserve_profiles([])
++
++
++@pytest.mark.platforms("linux")
++@pytest.mark.asyncio
++async def test_standby_also_waits_out_the_predecessor_host_lock(home, monkeypatch):
++    held = {"until": time.monotonic() + 0.3}
++    monkeypatch.setattr(run_bootstrap, "_host_lock_held_by_predecessor",
++                        lambda _home: time.monotonic() < held["until"])
++    started = time.monotonic()
++    await run_bootstrap._start_gateway_wait_for_runtime_lock([], 30)
++    assert time.monotonic() - started >= 0.3
++    assert process_ownership.owns(home)
++
++
++def test_prewarm_runs_before_the_wait(home, monkeypatch):
++    calls = []
++    monkeypatch.setattr(run_bootstrap, "_prewarm_before_runtime_lock", lambda: calls.append("prewarm"))
++    monkeypatch.setattr(run_bootstrap, "_host_lock_held_by_predecessor", lambda _home: False)
++    asyncio.run(run_bootstrap._start_gateway_wait_for_runtime_lock([], 1))
++    assert calls == ["prewarm"]
++
++
++def test_pid_record_carries_the_pid_namespace(monkeypatch):
++    monkeypatch.setattr("hermes_state_pidns.pid_namespace_id", lambda: "4026531836")
++    assert status._build_pid_record()["pidns"] == "4026531836"
++
++
++class TestOtherPidNamespaceHolder:
++    def _write(self, home, pidns):
++        record = {
++            "pid": 4242, "kind": "hermes-gateway", "start_time": 123,
++            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
++            "hermes_home": str(home.resolve()),
++        }
++        if pidns:
++            record["pidns"] = pidns
++        (home / "gateway.pid").write_text(json.dumps(record), encoding="utf-8")
++        (home / "gateway.lock").write_text(json.dumps(record), encoding="utf-8")
++
++    def _patch(self, monkeypatch):
++        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda _path=None: True)
++        monkeypatch.setattr(status, "_pid_exists", lambda _pid: False)
++        monkeypatch.setattr(status, "get_runtime_status_running_pid", lambda: None)
++        monkeypatch.setattr("hermes_state_pidns._LOCAL_PID_NS", None)
++        monkeypatch.setattr("hermes_state_pidns._resolve_local_pid_namespace",
++                            lambda: __import__("hermes_state_pidns").LocalPidNamespace("111", True))
++
++    def test_pid_file_of_a_holder_in_another_namespace_is_kept(self, tmp_path, monkeypatch):
++        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++        self._write(tmp_path, "222")
++        self._patch(monkeypatch)
++        assert status.get_running_pid() is None
++        assert (tmp_path / "gateway.pid").exists()
++        assert (tmp_path / "gateway.lock").exists()
++
++    def test_unstamped_dead_holder_pid_file_is_still_cleaned(self, tmp_path, monkeypatch):
++        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++        self._write(tmp_path, None)
++        self._patch(monkeypatch)
++        assert status.get_running_pid() is None
++        assert not (tmp_path / "gateway.pid").exists()
++        assert (tmp_path / "gateway.lock").exists()
++
++    def test_same_namespace_dead_holder_pid_file_is_still_cleaned(self, tmp_path, monkeypatch):
++        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++        self._write(tmp_path, "111")
++        self._patch(monkeypatch)
++        assert status.get_running_pid() is None
++        assert not (tmp_path / "gateway.pid").exists()
++
++
++@pytest.mark.platforms("linux")
++@pytest.mark.asyncio
++async def test_takeover_removes_a_dead_predecessor_pid_file(home, monkeypatch):
++    monkeypatch.setattr(run_bootstrap, "_host_lock_held_by_predecessor", lambda _home: False)
++    owner = ProfileOwnership()
++    owner.reserve([home])
++    (home / "gateway.pid").write_text(json.dumps({"pid": 7, "kind": "hermes-gateway", "pidns": "1"}))
++    waiter = asyncio.create_task(run_bootstrap._start_gateway_wait_for_runtime_lock([], 30))
++    await asyncio.sleep(0.1)
++    owner.close()
++    await asyncio.wait_for(waiter, 5)
++    assert not (home / "gateway.pid").exists()
++
++
++@pytest.mark.asyncio
++async def test_wait_keeps_the_startup_watchdog_from_firing(home, monkeypatch):
++    kicks = []
++    monkeypatch.setattr("hermes_startup_watchdog.kick_startup_watchdog", lambda extra_s=0.0: kicks.append(1))
++    monkeypatch.setattr(run_bootstrap, "_host_lock_held_by_predecessor", lambda _home: False)
++    owner = ProfileOwnership()
++    owner.reserve([home])
++    try:
++        await run_bootstrap._start_gateway_wait_for_runtime_lock([], 0.2)
++    finally:
++        owner.close()
++    assert len(kicks) >= 3
+diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
+index a582528077..04f1f0a8fb 100644
+--- a/website/docs/user-guide/messaging/index.md
++++ b/website/docs/user-guide/messaging/index.md
+@@ -707,6 +707,26 @@ An installed unit (or launchd plist) belongs to the `HERMES_HOME` it pins. A gat
+ If you run multiple Hermes installations on the same machine (with different `HERMES_HOME` directories), each gets its own systemd service name. The default `~/.hermes` uses `hermes-gateway`; other installations use `hermes-gateway-<hash>`. The `hermes gateway` commands automatically target the correct service for your current `HERMES_HOME`.
+ :::
+ 
++### Standby gateway for rolling updates
++
++One gateway owns a `HERMES_HOME` at a time; a second one exits with code `1`.
++When a new gateway must replace a running one that shares the home on the same
++volume (a Kubernetes rolling update with both pods on one node, two containers
++on one volume, each in its own PID namespace), let the new one wait instead:
++
++```yaml title="~/.hermes/config.yaml"
++gateway:
++  runtime_lock_wait_seconds: 700
++```
++
++A gateway started next to a running one in the same PID namespace still refuses
++or attaches as before. The waiting gateway loads its modules and plugins first, then retries the
++profile lock and takes over within a fraction of a second of the old gateway's
++exit. It opens no store, port or platform connection until it owns the
++profile. When the wait runs out it exits as before. Set the wait above the old
++gateway's drain (`agent.restart_drain_timeout`) plus its shutdown. The default
++`0` keeps the immediate exit.
++
+ ### macOS (launchd)
+ 
+ ```bash

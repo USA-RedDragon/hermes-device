@@ -41,6 +41,7 @@ The Test workflow runs on pull requests and before each release:
 | `0007-background-completion-unattended-turn` | `sessions.unviewed_completion_turns` (0 = off): a notify_on_complete process exit in a local session with no viewer runs as an agent turn, up to N in a row, instead of a note. | Not fixed upstream. Open PR #153217 makes it the default and has changes requested; issue #143649 asks for an opt-in. |
 | `0008-acp-session-list` | `sessions.acp_list_sources` (default `[acp]`): ACP `session/list` can also offer chats the TUI, Desktop or CLI started, filtered by folder as before. | Not fixed upstream; no PR. |
 | `0009-acp-load-running` | ACP `session/load` of a running session from another folder attaches as a viewer instead of failing with `session_busy`; the workspace moves at the next idle prompt. Bug fix, no key. | Not fixed upstream; no PR. |
+| `0010-gateway-wait-for-runtime-lock` | `gateway.runtime_lock_wait_seconds` (0 = off): a gateway that finds its profile owned warms up, then waits for the owner to exit and takes over within a poll (0.2 s) instead of exiting 1. Gateway lock records carry the PID namespace, so a holder in a sibling container is not read as stale. For rolling updates of pods that share one volume. | Not fixed upstream; no PR. |
 
 ## Adding or changing a patch
 
