@@ -636,9 +636,65 @@ def _decide_login(args: dict, conn: Any, where: str) -> tuple[dict, Optional[dic
                     f"jobs sign in on {host} without you. It allows nothing else on {host}.")}
 
 
+MAX_SKILL_SCRIPT = 200_000
+MAX_ARGS_JSON = 20_000
+
+
+def _skill_file(skill: str, file: str) -> str:
+    """A text file of a skill, read the way skill_view reads linked files (the path must stay
+    inside the skill)."""
+    from tools.skills_tool import skill_view
+    try:
+        out = json.loads(skill_view(skill, file_path=file, preprocess=False))
+    except Exception as exc:
+        raise ValueError(f"cannot read {file} of skill {skill}: {exc}") from None
+    if not isinstance(out, dict) or not out.get("success"):
+        err = out.get("error") if isinstance(out, dict) else ""
+        files = out.get("available_files") if isinstance(out, dict) else None
+        more = f" Files: {json.dumps(files)[:600]}" if files else ""
+        raise ValueError(f"script_ref: {err or 'cannot read the file'}.{more}")
+    if out.get("is_binary"):
+        raise ValueError(f"script_ref: {file} of skill {skill} is not a text file")
+    content = str(out.get("content") or "")
+    if len(content) > MAX_SKILL_SCRIPT:
+        raise ValueError(f"script_ref: {file} is longer than {MAX_SKILL_SCRIPT} characters")
+    return content
+
+
+def eval_script(args: dict) -> tuple[str, str]:
+    """The script a browser_eval call runs and how to show it to the user: ``script``, or the
+    file that ``script_ref`` names, after ``const ARGS = <args>;``. ("", "") without either."""
+    ref = args.get("script_ref")
+    script = str(args.get("script") or "")
+    if ref and script.strip():
+        raise ValueError("give script or script_ref, not both")
+    raw_args = args.get("args")
+    if raw_args is not None and not isinstance(raw_args, dict):
+        raise ValueError('args must be a JSON object, such as {"case": "TS0012345"}')
+    prefix = ""
+    if raw_args is not None:
+        encoded = json.dumps(raw_args, ensure_ascii=True)
+        if len(encoded) > MAX_ARGS_JSON:
+            raise ValueError(f"args is longer than {MAX_ARGS_JSON} characters as JSON")
+        prefix = f"const ARGS = {encoded};\n"
+    if ref:
+        if not isinstance(ref, dict) or not str(ref.get("skill") or "").strip() or not str(ref.get("file") or "").strip():
+            raise ValueError('script_ref must be {"skill": "<skill name>", "file": "<path in the skill>"}, such as '
+                             '{"skill": "sev1-tracker", "file": "scripts/page-read.js"}')
+        skill, file = str(ref["skill"]).strip(), str(ref["file"]).strip()
+        body = _skill_file(skill, file)
+        return prefix + body, f"{file} of skill {skill}" + (f", with ARGS = {prefix[13:-2]}" if prefix else "")
+    if not script.strip():
+        return "", ""
+    return prefix + script, ""
+
+
 def _decide_eval(args: dict, conn: Any, where: str) -> tuple[dict, Optional[dict]]:
     tab = _tab_id(args)
-    script = str(args.get("script") or "")
+    try:
+        script, source = eval_script(args)
+    except ValueError:
+        return {}, None
     if tab is None or not script.strip():
         return {}, None
     req: dict = {"tab_id": tab}
@@ -664,6 +720,8 @@ def _decide_eval(args: dict, conn: Any, where: str) -> tuple[dict, Optional[dict
     grant: dict = {"script_hosts": [host], "write_hosts": [host] if writes else []}
     shown = script.strip()
     shown = shown if len(shown) <= 400 else shown[:400] + " ..."
+    if source:
+        shown = f"{source[:600]}\n{shown}"
     sensitive = [s for s in (info.get("sensitive") or []) if isinstance(s, str)]
     if sensitive and writes:
         return {}, {"action": "block", "message": f"browser_eval: scripts that change data are not allowed on a page "
@@ -1704,9 +1762,10 @@ EVAL_TIMEOUT_S = 120
 
 def _eval(args: dict, conn: Any, sid: str) -> Any:
     tab = _need_tab(args)
-    script = str(args.get("script") or "")
+    script, _ = eval_script(args)
     if not script.strip():
-        raise ValueError("script is required: the body of an async function that ends with return <value>")
+        raise ValueError("give script (the body of an async function that ends with return <value>) or script_ref "
+                         "(a script file of a skill)")
     grant = _take_grant(_grant_key(_session(sid), "browser_eval", args))
     if grant.get("confirm") and not _confirm(grant.get("confirm_text") or "Allow this script?"):
         return _err("the user did not allow this script", "declined")
@@ -1870,17 +1929,22 @@ SCHEMAS = {
         []),
     "browser_eval": _schema(
         "browser_eval", "Run JavaScript in a tab; returns the result as JSON. script is an async function body "
-        "that ends with return. fetch() reaches only the page's site, GET and HEAD unless allow_writes. Use "
-        "wait_for or wait_selector, not sleeps. After a script, clicks and typing in that tab are refused until "
-        "browser_navigate. Example: {\"tab_id\": 12, "
-        "\"wait_selector\": \"table\", \"script\": \"return document.title\"}",
+        "that ends with return. To run a script file that a skill ships, give script_ref and its inputs in args "
+        "(the script reads them as ARGS); never retype a skill's script. fetch() reaches only the page's site, GET "
+        "and HEAD unless allow_writes. Use wait_for or wait_selector, not sleeps. After a script, clicks and typing "
+        "in that tab are refused until browser_navigate. Example: {\"tab_id\": 12, \"script_ref\": {\"skill\": "
+        "\"report-reader\", \"file\": \"scripts/read.js\"}, \"args\": {\"id\": \"42\"}}",
         {"tab_id": _TAB,
          "script": {"type": "string", "description": "Async function body that ends with return <value>"},
+         "script_ref": {"type": "object", "description": "A skill's script file to run instead of script",
+                        "properties": {"skill": {"type": "string"}, "file": {"type": "string"}},
+                        "required": ["skill", "file"]},
+         "args": {"type": "object", "description": "Inputs, set as const ARGS before the script"},
          "frame": {"type": "string", "description": "Frame to run in, such as f1"},
          "allow_writes": {"type": "boolean", "description": "Allow POST, PUT, DELETE (separate approval)"},
          "max_chars": {"type": "integer", "description": "Longest JSON result (default 100000)"},
          **_WAIT},
-        ["script"]),
+        []),
     "browser_vision": _schema(
         "browser_vision", "Look at a screenshot of a tab, for layout, images or canvas that a snapshot does not "
         "show. Example: {\"tab_id\": 12, \"question\": \"Is there an error banner?\"}",

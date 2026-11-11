@@ -829,6 +829,35 @@ class ToolTests(BrowserBase):
         self.assertEqual(self.last("wait")["args"], {"tab_id": 7, "text": "", "selector": "table", "timeout_ms": 4000})
         self.assertEqual(out["waited"]["found"], True)
 
+    def test_eval_runs_a_skill_script_by_reference(self):
+        served = {}
+
+        def skill_view(name, file_path=None, preprocess=True, **_kw):
+            served["call"] = (name, file_path, preprocess)
+            if file_path == "scripts/read.js":
+                return json.dumps({"success": True, "content": "const re = /\\d+\\s/g;\nreturn ARGS.id;"})
+            return json.dumps({"success": False, "error": f"File '{file_path}' not found in skill '{name}'.",
+                               "available_files": ["scripts/read.js"]})
+        with mock.patch("tools.skills_tool.skill_view", skill_view):
+            out = self.run_tool("browser_eval", tab_id=7, script_ref={"skill": "report-reader", "file": "scripts/read.js"},
+                                args={"id": "42"})
+            self.assertEqual(self.decision["rule_key"], "browser:script:example.com")
+            self.assertIn("scripts/read.js of skill report-reader", self.decision["message"])
+            self.assertEqual(served["call"], ("report-reader", "scripts/read.js", False))
+            self.assertEqual(self.last("eval")["args"]["script"],
+                             'const ARGS = {"id": "42"};\nconst re = /\\d+\\s/g;\nreturn ARGS.id;')
+            self.assertEqual(self.last("eval")["args"]["guard"]["script_hosts"], ["example.com"])
+            self.assertEqual(out["result"], {"n": 2})
+            bad = self.run_tool("browser_eval", tab_id=7, script_ref={"skill": "report-reader", "file": "../x.js"})
+            self.assertEqual(bad["code"], "bad_arguments")
+            self.assertIn("scripts/read.js", bad["error"])
+        both = self.run_tool("browser_eval", tab_id=7, script="return 1", script_ref={"skill": "a", "file": "b"})
+        self.assertEqual(both["code"], "bad_arguments")
+        self.assertEqual(self.run_tool("browser_eval", tab_id=7, script="return 1", args=[1])["code"], "bad_arguments")
+        self.assertEqual(self.run_tool("browser_eval", tab_id=7, script_ref="x.js")["code"], "bad_arguments")
+        self.run_tool("browser_eval", tab_id=7, script="return ARGS.n", args={"n": 1})
+        self.assertEqual(self.last("eval")["args"]["script"], 'const ARGS = {"n": 1};\nreturn ARGS.n')
+
     def test_errors_say_what_to_do_next(self):
         self.fake.fail["click"] = (core.BROWSER_FAILED, "unknown or stale ref e9; take a new snapshot")
         out = self.run_tool("browser_click", tab_id=7, ref="e9")
@@ -846,7 +875,7 @@ class ToolTests(BrowserBase):
             self.assertLessEqual(set(example), set(schema["parameters"]["properties"]), name)
             self.assertLessEqual(set(schema["parameters"]["required"]), set(example) | {"device"}, name)
             total += len(json.dumps({"type": "function", "function": schema}, ensure_ascii=False))
-        self.assertLess(total, 9500, "the eager toolset's schemas cost about chars/4 tokens on every turn")
+        self.assertLess(total, 10000, "the eager toolset's schemas cost about chars/4 tokens on every turn")
 
     def test_vision_multimodal(self):
         with mock.patch.object(browser, "_native_vision", lambda: True), \
@@ -1682,6 +1711,12 @@ class HermesBrowserContract(unittest.TestCase):
         p = inspect.signature(vision_tools._resize_image_for_vision).parameters
         for name in ("mime_type", "max_base64_bytes", "max_dimension", "force_jpeg"):
             self.assertIn(name, p)
+
+    def test_skill_view_reads_linked_files(self):
+        from tools.skills_tool import skill_view
+        p = inspect.signature(skill_view).parameters
+        self.assertEqual(list(p)[:2], ["name", "file_path"])
+        self.assertIn("preprocess", p)
 
     def test_no_core_tool_collision(self):
         import toolsets
