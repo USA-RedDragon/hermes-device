@@ -18,6 +18,8 @@
     lost: "Hermes restarted before it finished replying to this message. Messages sent after it wait until you dismiss it.",
     held: "Hermes is restarting. Your message will send when it is back.", notsent: "Not sent.", again: "Send again" };
   const t = (k) => words[k];
+  // User rows Hermes writes itself (a cron result, a finished background job); shown as notes.
+  const noteKinds = new Set(["internal_notification", "process_complete", "async_delegation_complete"]);
 
   async function api(method, path, body) {
     const opts = { method, headers: { "X-CSRF-Token": csrf }, credentials: "same-origin" };
@@ -620,7 +622,11 @@
       }
     }
 
-    started(text) {
+    started(text, note) {
+      if (note) {
+        if (text) this.add(el("div", "msg result", text));
+        return;
+      }
       const p = this.pending.shift();
       if (p) {
         p.bubble.classList.remove("pending");
@@ -823,6 +829,12 @@
     row(m) {
       if (m.display_kind === "hidden") return;
       const text = m.text != null ? m.text : (typeof m.content === "string" ? m.content : "");
+      if (m.role === "user" && noteKinds.has(m.display_kind)) {
+        this.turn = null;
+        const shown = (m.display_metadata && m.display_metadata.display_text) || text;
+        if (shown) this.add(el("div", "msg result", shown));
+        return;
+      }
       if (m.role === "user") { this.turn = null; this.userText(text); return; }
       if (m.role === "assistant") {
         for (const c of m.tool_calls || []) {
@@ -859,7 +871,7 @@
         case "message.start":
           this.turn = null;
           this.setRunning(true);
-          this.started(p.text);
+          this.started(p.text, p.note);
           break;
         case "reasoning.delta": this.reasoning(p.text || ""); break;
         case "reasoning.available":

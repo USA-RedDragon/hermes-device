@@ -120,6 +120,7 @@ button.icon { border: 0; background: transparent; font-size: 1.3rem; padding: .2
 .msg.user.failed { opacity: .65; border: 1px dashed var(--bad); }
 .queued { align-self: flex-end; color: var(--muted); font-size: .75rem; margin-top: -.4rem; }
 .msg.assistant { background: var(--card); border: 1px solid var(--line); }
+.msg.result { background: var(--card); border: 1px dashed var(--line); color: var(--muted); }
 .lost { border: 1px dashed var(--warn); border-radius: 10px; padding: .6rem .75rem; display: flex; flex-direction: column;
   gap: .4rem; align-items: flex-start; font-size: .9rem; color: var(--muted); }
 .lost-text { color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
