@@ -171,9 +171,11 @@ type renderer struct {
 	// drafts streams each turn into a draft (sendMessageDraft), which
 	// works only in private chats; the status line then changes only when
 	// the turn ends. draftSeq numbers the drafts.
-	drafts   bool
-	draft    draftState
-	draftSeq int64
+	drafts bool
+	draft  draftState
+	// noEmptyDraft is set once Telegram refused the empty "Thinking…"
+	// draft, which servers before Bot API 10.0 do.
+	noEmptyDraft bool
 	// userMsg finds the Telegram message of a prompt the bot sent, by its
 	// submission ID; nil finds none.
 	userMsg func(id string) (int64, bool)
@@ -316,6 +318,10 @@ func (r *renderer) snapshot(ctx context.Context, ev hub.Event) {
 	var snap hub.Snapshot
 	if !r.decode(ev, &snap) {
 		return
+	}
+	if !snap.Running && r.busy {
+		// The turn ended while the stream did not see its end.
+		r.endTurn(ctx)
 	}
 	if r.open = nil; snap.Running && r.turn == nil && !r.echoed {
 		if p, ok := hub.OpenTurnPrompt(snap.Messages); ok {

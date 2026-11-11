@@ -2,6 +2,8 @@ package telegram
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"net/http"
 	"strings"
@@ -37,10 +39,32 @@ type draftState struct {
 	placeholder bool
 }
 
+// draftID is a new draft ID: random, so that turns in different topics of
+// one private chat never share one.
+func draftID() int64 {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return int64(binary.BigEndian.Uint64(b[:])>>2) + 1
+}
+
+// draftUnsupported reports whether Telegram refused a draft because this
+// chat or server cannot take drafts at all, rather than this one frame.
+func draftUnsupported(e *APIError) bool {
+	if e.Code == http.StatusNotFound {
+		return true
+	}
+	d := strings.ToUpper(e.Description)
+	for _, s := range []string{"METHOD NOT FOUND", "PEER", "CHAT NOT FOUND", "THREAD", "NOT SUPPORTED", "PRIVATE CHAT"} {
+		if strings.Contains(d, s) {
+			return true
+		}
+	}
+	return false
+}
+
 // newDraft starts the draft of a new turn.
 func (r *renderer) newDraft() {
-	r.draftSeq++
-	r.draft = draftState{id: r.draftSeq, dirty: true}
+	r.draft = draftState{id: draftID(), dirty: true}
 }
 
 // markDraft notes that the draft changed and sends it when its gap
@@ -107,7 +131,7 @@ func (r *renderer) flushDraft(ctx context.Context) {
 	if html == d.shown && html != "" && now.Sub(d.at) < draftKeep {
 		return
 	}
-	if html == "" && d.placeholder && now.Sub(d.at) < draftKeep {
+	if html == "" && (r.noEmptyDraft || d.placeholder && now.Sub(d.at) < draftKeep) {
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
@@ -122,11 +146,15 @@ func (r *renderer) flushDraft(ctx context.Context) {
 		d.next, d.dirty = now.Add(max(apiErr.RetryAfter, time.Second)), true
 	case html == "":
 		// An empty draft is the "Thinking…" placeholder of Bot API 10.0;
-		// an older server refuses it, which costs nothing.
-		d.placeholder = true
-	case errors.As(err, &apiErr):
+		// an older server refuses it, and gets none again.
+		d.placeholder, r.noEmptyDraft = true, true
+	case errors.As(err, &apiErr) && draftUnsupported(apiErr):
 		r.logger.Info("Telegram refused a draft, editing the status line instead", "error", err)
 		r.stopDrafts(ctx)
+	case errors.As(err, &apiErr):
+		// A bad frame, such as half-written Markdown that Telegram cannot
+		// parse: the next change sends the draft again.
+		r.logger.Debug("Telegram refused a draft frame", "error", err)
 	default:
 		r.logger.Debug("Failed to send a draft", "error", err)
 		d.dirty = true
@@ -147,7 +175,7 @@ func (r *renderer) stopDrafts(ctx context.Context) {
 // draftDue is how long until the draft is due, false when none is.
 func (r *renderer) draftDue() (time.Duration, bool) {
 	d := r.draft
-	if !r.drafts || d.id == 0 || !r.busy {
+	if !r.drafts || d.id == 0 || !r.busy || len(r.prompts) > 0 {
 		return 0, false
 	}
 	at := d.at.Add(draftKeep)
@@ -163,7 +191,7 @@ func (r *renderer) draftDue() (time.Duration, bool) {
 // draftTick sends the draft when it is due: when it changed, or to keep it
 // in the chat while the turn runs.
 func (r *renderer) draftTick(ctx context.Context) {
-	if !r.drafts || r.draft.id == 0 || !r.busy {
+	if !r.drafts || r.draft.id == 0 || !r.busy || len(r.prompts) > 0 {
 		return
 	}
 	if r.now().Sub(r.draft.at) >= draftKeep {
