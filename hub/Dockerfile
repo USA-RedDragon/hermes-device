@@ -5,7 +5,7 @@ FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0
 RUN apk add --no-cache poppler-utils font-urw-base35
 
 ARG TARGETPLATFORM
-COPY $TARGETPLATFORM/hermes-hub /
+COPY $TARGETPLATFORM/talaria-hub /
 USER 65534:65534
 EXPOSE 8080
-ENTRYPOINT ["/hermes-hub"]
+ENTRYPOINT ["/talaria-hub"]

@@ -1,4 +1,4 @@
-// Package cmd is the hermes-hub command.
+// Package cmd is the talaria-hub command.
 package cmd
 
 import (
@@ -38,8 +38,8 @@ import (
 // NewCommand returns the root command.
 func NewCommand(version, commit string) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "hermes-hub",
-		Short:   "One authenticated web front end for many Hermes Agent gateways",
+		Use:     "talaria-hub",
+		Short:   "Talaria hub: one authenticated web front end for many Hermes Agent gateways",
 		Version: fmt.Sprintf("%s - %s", version, commit),
 		Annotations: map[string]string{
 			"version": version,
@@ -73,7 +73,7 @@ func logLevel(s string) slog.Level {
 
 func run(cmd *cobra.Command, cfg *config.Config) error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel(cfg.LogLevel)})))
-	slog.Info("Hermes Hub", "version", cmd.Annotations["version"], "commit", cmd.Annotations["commit"])
+	slog.Info("Talaria hub", "version", cmd.Annotations["version"], "commit", cmd.Annotations["commit"])
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
 

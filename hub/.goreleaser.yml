@@ -1,7 +1,7 @@
 ---
 version: 2
 
-project_name: hermes-hub
+project_name: talaria-hub
 
 release:
   extra_files:
@@ -13,6 +13,7 @@ release:
 dockers_v2:
   - images:
       - "ghcr.io/usa-reddragon/{{ .ProjectName }}"
+      - ghcr.io/usa-reddragon/hermes-hub
     tags:
       - "{{ .Tag }}"
       - "v{{ .Major }}"

@@ -1,5 +1,5 @@
 config.yaml
-/hermes-hub
+/talaria-hub
 /dist/
 *.db
 .claude/
