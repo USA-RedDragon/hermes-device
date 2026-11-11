@@ -410,7 +410,7 @@
     $("filesbtn").hidden = !me.files || !pl || !((pl.kind === "computer" && pl.mine) || pl.kind === "sandbox");
     note.replaceChildren();
     note.hidden = true;
-    input.placeholder = "Message Talaria";
+    input.placeholder = page ? (chat.running ? "Steer the reply" : "Ask about this window") : "Message Talaria";
     if (chat.place && chat.place.kind === "computer" && !chat.place.online) {
       const name = chat.place.mine ? chat.place.name : "The computer";
       note.append(el("span", "", name + " is offline. Talaria cannot run commands or change files there until it is back, " +
