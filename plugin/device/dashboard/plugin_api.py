@@ -517,6 +517,9 @@ async def device_socket(ws: WebSocket) -> None:
         welcome["grace_seconds"] = core.grace_seconds()
     if capabilities:
         welcome["capabilities"] = sorted(capabilities)
+    image = core.hermes_image()
+    if image:
+        welcome["hermes_image"] = image
     pinger: Optional[asyncio.Task] = None
     resumable = True
     attached = False

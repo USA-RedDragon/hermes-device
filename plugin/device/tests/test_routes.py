@@ -107,6 +107,7 @@ class RouteTests(unittest.TestCase):
         patches = [mock.patch.object(core, "hub", lambda: self.hub),
                    mock.patch.object(core, "settings", lambda: self.cfg),
                    mock.patch.object(core, "hermes_version", lambda: "v0.22.7"),
+                   mock.patch.object(core, "hermes_image", lambda: ""),
                    mock.patch.dict(os.environ, {"TEST_HUB_KEY": self.signer.public_b64})]
         for p in patches:
             p.start()
@@ -152,6 +153,12 @@ class RouteTests(unittest.TestCase):
                     self.assertEqual(self.close_code(ws), core.CLOSE_ASSERTION_REFUSED)
         with self.client.websocket_connect(PATH) as ws:
             self.assertEqual(self.close_code(ws), core.CLOSE_ASSERTION_REFUSED)
+
+    def test_welcome_reports_the_image(self):
+        image = "registry.example.com/hermes:v0.23.1@sha256:" + "a" * 64
+        with mock.patch.object(core, "hermes_image", lambda: image):
+            welcome, _ = self.online()
+        self.assertEqual(welcome["hermes_image"], image)
 
     def test_replayed_assertion_refused(self):
         header = self.signer.sign()

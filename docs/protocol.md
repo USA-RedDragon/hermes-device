@@ -189,6 +189,8 @@ Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-
 
 `device_id` and `name` come from the assertion. `version` is the chosen version. `grace_seconds` (version 3 only) is the plugin's resume grace (section 4.7). `capabilities`, when present, lists the device's capabilities the plugin accepts (step 5), for example `["browser"]`. `client_version` in `hello` and `plugin_version` and `hermes_version` in `welcome` carry the release versions both ways, for display and for the `4426` reasons.
 
+`hermes_image`, when present, is the container image the server's Hermes runs, such as `registry.example.com/hermes-agent:v0.23.1@sha256:<64 hex>`, at most <!-- docgen:const pkg=protocol name=MaxHermesImage code=false -->512<!-- /docgen:const --> bytes. The plugin builds it from the gateway's environment: `HERMES_IMAGE_REPOSITORY`, then `:` and `HERMES_IMAGE_TAG`, or `@` and the tag when the tag is only a `sha256:` digest. The tag may carry the digest (`v0.23.1@sha256:<hex>`). The plugin leaves the field out when either variable is unset. Set both from the same values as the pod's image, so the reference names exactly what runs. The hub relays the welcome unchanged. `chat` on the device runs the same build when the reference has a digest (section 5.7); without one it uses its configured launcher.
+
 Dev mode only (section 8.9): with no hub in between, `hello` also carries `"name"` and `"token"`, there is no assertion, and the plugin checks the token against its static device list. `device_id` is then the configured name.
 
 ### 4.2 exec (plugin to device)

@@ -3,6 +3,7 @@ Hermes runtime with scripts/test-plugin.sh."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.util
 import json
 import os
@@ -1186,6 +1187,32 @@ class EditApprovalDiffTests(Base):
         self.assertIsNone(self.hub.binding(self.session))
         self.check_diffs(dev, directory)
         self.assertEqual(self.device.execs, [])
+
+
+class HermesImageTests(unittest.TestCase):
+    DIGEST = "sha256:" + "0" * 64
+
+    def image(self, env):
+        clean = {k: v for k, v in os.environ.items() if k not in (core.IMAGE_REPOSITORY_ENV, core.IMAGE_TAG_ENV)}
+        with mock.patch.dict(os.environ, {**clean, **env}, clear=True):
+            return core.hermes_image()
+
+    def test_forms(self):
+        repo = "registry.example.com/docker.io/nousresearch/hermes-agent"
+        for tag, want in ((f"v0.23.1@{self.DIGEST}", f"{repo}:v0.23.1@{self.DIGEST}"),
+                          (self.DIGEST, f"{repo}@{self.DIGEST}"),
+                          (f"@{self.DIGEST}", f"{repo}@{self.DIGEST}"),
+                          ("v0.23.1", f"{repo}:v0.23.1")):
+            with self.subTest(tag=tag):
+                self.assertEqual(self.image({core.IMAGE_REPOSITORY_ENV: repo, core.IMAGE_TAG_ENV: f" {tag}\n"}), want)
+
+    def test_missing_or_bad(self):
+        for env in ({}, {core.IMAGE_REPOSITORY_ENV: "a/b"}, {core.IMAGE_TAG_ENV: "v1"},
+                    {core.IMAGE_REPOSITORY_ENV: "a b", core.IMAGE_TAG_ENV: "v1"},
+                    {core.IMAGE_REPOSITORY_ENV: "a" * core.MAX_HERMES_IMAGE, core.IMAGE_TAG_ENV: "v1"}):
+            with self.subTest(env=env):
+                with self.assertLogs(core.logger, "WARNING") if len(env) == 2 else contextlib.nullcontext():
+                    self.assertEqual(self.image(env), "")
 
 
 class SessionIdTests(unittest.TestCase):

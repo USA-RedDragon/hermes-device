@@ -234,7 +234,15 @@ type Welcome struct {
 	// Capabilities are the ones of hello's that the plugin accepts. A
 	// plugin that does not know capabilities sends none.
 	Capabilities []string `json:"capabilities,omitempty"`
+	// HermesImage is the container image the server's Hermes runs, such
+	// as registry.example.com/hermes-agent:v0.23.1@sha256:<hex>, when the
+	// plugin knows it. chat runs the same build on the device. At most
+	// MaxHermesImage bytes.
+	HermesImage string `json:"hermes_image,omitempty"`
 }
+
+// MaxHermesImage is the longest Welcome.HermesImage.
+const MaxHermesImage = 512
 
 // Exec asks the device to run Cmd with the shell in Cwd.
 type Exec struct {

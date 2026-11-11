@@ -116,6 +116,11 @@ ACP_HOST_PATH = "/acp"
 # (docs/protocol.md 6.2); the plugin only keeps the name in step with Go.
 ACP_BINDING_META = "deviceBinding"
 
+# The image this Hermes runs, reported as welcome.hermes_image (protocol.md section 4.1).
+IMAGE_REPOSITORY_ENV = "HERMES_IMAGE_REPOSITORY"
+IMAGE_TAG_ENV = "HERMES_IMAGE_TAG"
+MAX_HERMES_IMAGE = 512
+
 SEND_TIMEOUT_S = 15.0
 MAX_LINEAGE_HOPS = 100
 BINDINGS_VERSION = 2
@@ -302,6 +307,26 @@ def hermes_version() -> str:
     except Exception:
         return "unknown"
     return base if base.startswith("v") or base == "unknown" else f"v{base}"
+
+
+def hermes_image() -> str:
+    """The image reference of this Hermes from HERMES_IMAGE_REPOSITORY and HERMES_IMAGE_TAG, or "".
+    The tag may carry the digest (``v0.23.1@sha256:...``) or be only the digest (``sha256:...``)."""
+    repo = os.environ.get(IMAGE_REPOSITORY_ENV, "").strip()
+    tag = os.environ.get(IMAGE_TAG_ENV, "").strip()
+    if not repo or not tag:
+        return ""
+    if tag.startswith("@"):
+        ref = repo + tag
+    elif tag.startswith("sha256:"):
+        ref = f"{repo}@{tag}"
+    else:
+        ref = f"{repo}:{tag}"
+    if len(ref) > MAX_HERMES_IMAGE or not ref.isprintable() or any(c.isspace() for c in ref):
+        logger.warning("device: %s and %s do not form an image reference; not reported",
+                       IMAGE_REPOSITORY_ENV, IMAGE_TAG_ENV)
+        return ""
+    return ref
 
 
 # --- hub public keys --------------------------------------------------------------------------

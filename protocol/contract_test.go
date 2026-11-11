@@ -85,6 +85,7 @@ func protocolConstants() []shared {
 		{"MCPMaxTimeout", protocol.MCPMaxTimeout, []string{"MCP_MAX_TIMEOUT_S"}},
 		{"MaxMCPResult", protocol.MaxMCPResult, []string{"MAX_MCP_RESULT"}},
 		{"MaxMCPRequest", protocol.MaxMCPRequest, []string{"MAX_MCP_REQUEST"}},
+		{"MaxHermesImage", protocol.MaxHermesImage, []string{"MAX_HERMES_IMAGE"}},
 	}
 }
 
