@@ -26,7 +26,7 @@ concurrency:
 
 env:
   # renovate: datasource=github-releases depName=NousResearch/hermes-agent
-  HERMES_VERSION: v0.22.7
+  HERMES_VERSION: v0.23.1
 
 jobs:
   plugin:
