@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,7 +27,8 @@ func TestNoticeDoesNotWaitForTheNetwork(t *testing.T) {
 		_, _ = w.Write([]byte(`{"tag_name":"v0.15.0"}`))
 	}))
 	t.Cleanup(srv.Close)
-	t.Cleanup(func() { close(release) })
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
 	var out bytes.Buffer
 	n := &autoupdate.Notice{
 		Releases: &autoupdate.Releases{APIURL: srv.URL, Owner: "alice", Repo: "hermes-device", Client: srv.Client(),
@@ -45,6 +47,11 @@ func TestNoticeDoesNotWaitForTheNetwork(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Errorf("printed %q with no answer", out.String())
+	}
+	unblock()
+	n.Finish()
+	if _, checked := n.Releases.Cached(); checked.IsZero() {
+		t.Error("the background lookup did not finish")
 	}
 }
 
