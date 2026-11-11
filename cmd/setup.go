@@ -188,7 +188,7 @@ func (b *base) setup(cmd *cobra.Command, sys *setup.System, cfg *config.Config, 
 	}
 	o.Releases.UserAgent = b.userAgent()
 	rep, err := sys.Setup(ctx, o)
-	rep.Print(sys)
+	rep.Print(sys, err)
 	if err != nil {
 		return err
 	}
@@ -278,6 +278,6 @@ func (b *base) uninstall(ctx context.Context, sys *setup.System, cfg *config.Con
 		RemoveHost: func() error { return removeHostManifest(sys.Home) },
 		Unpair:     st.Delete,
 	})
-	rep.Print(sys)
+	rep.Print(sys, err)
 	return err
 }

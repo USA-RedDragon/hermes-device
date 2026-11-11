@@ -564,3 +564,27 @@ func TestSetupPromptStopsOnCancel(t *testing.T) {
 		t.Error("went on after Ctrl-C")
 	}
 }
+
+// TestSetupReportsFailure is a foreign unit in the way: the summary says
+// setup failed, not that nothing is left to do.
+func TestSetupReportsFailure(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.opts.NoShell, f.opts.NoBrowser = true, true
+	writeFile(t, filepath.Join(f.sys.Home, ".config", "systemd", "user", setup.UnitName), "[Service]\nExecStart=/opt/x\n")
+	rep, err := f.sys.Setup(t.Context(), f.opts)
+	if !errors.Is(err, setup.ErrForeignService) {
+		t.Fatalf("err = %v", err)
+	}
+	out := &bytes.Buffer{}
+	f.sys.Out = out
+	rep.Print(f.sys, err)
+	if strings.Contains(out.String(), "Nothing is left to do") || !strings.Contains(out.String(), "Failed:\n  - "+err.Error()+"\n") {
+		t.Errorf("summary:\n%s", out)
+	}
+	out.Reset()
+	rep.Print(f.sys, nil)
+	if !strings.Contains(out.String(), "Nothing is left to do") || strings.Contains(out.String(), "Failed") {
+		t.Errorf("summary without an error:\n%s", out)
+	}
+}

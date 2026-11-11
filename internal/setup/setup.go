@@ -73,14 +73,19 @@ func (r *Report) todo(format string, args ...any) {
 	r.Todo = append(r.Todo, fmt.Sprintf(format, args...))
 }
 
-// Print writes the report.
-func (r *Report) Print(s *System) {
+// Print writes the report, and err when the run stopped with one.
+func (r *Report) Print(s *System, err error) {
 	s.printf("\nDone:\n")
 	for _, d := range r.Done {
 		s.printf("  - %s\n", d)
 	}
+	if err != nil {
+		s.printf("Failed:\n  - %v\n", err)
+	}
 	if len(r.Todo) == 0 {
-		s.printf("Nothing is left to do.\n")
+		if err == nil {
+			s.printf("Nothing is left to do.\n")
+		}
 		return
 	}
 	s.printf("Left to do:\n")
