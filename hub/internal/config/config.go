@@ -118,6 +118,7 @@ type Backend struct {
 	MediaRoots     []string        `name:"media_roots" description:"Absolute folders on this backend's server whose files the hub shows: files a reply names with MEDIA:<path>, browser_screenshot results and images users attached. The hub shows a file only when that chat names it. Empty: only images, in the folders of hermes-device's browser_screenshot (<dir>/cache/screenshots/hermes-device/<session>/<file>) and of attached images (<dir>/cache/images/<file>), under any <dir>. Set it to anchor them to the backend's HERMES_HOME. Other paths, and those the server does not have, are read from the computer or sandbox that runs the chat"`
 	ServiceDevices []ServiceDevice `name:"service_devices" description:"Devices the hub knows from this list instead of pairing, such as each user's sandbox pod that runs hermes-device run. They may use only the exec leg"`
 	Honcho         Honcho          `name:"honcho"`
+	AgentMessages  *bool           `name:"agent_messages" description:"Let the agents of this backend message each other through the hub with the hermes-device plugin's device-agents tools (needs devices). Default: on when users names exactly one user and groups is empty; a backend shared by several people needs true, and then all its chats count as one person's"`
 }
 
 // Honcho is where a backend's Hermes keeps what it learned about its user,

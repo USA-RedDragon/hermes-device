@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/USA-RedDragon/hermes-hub/internal/agents"
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/USA-RedDragon/hermes-hub/internal/device"
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
@@ -104,6 +105,16 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 		webOpts.Devices, webOpts.DeviceAPI, webOpts.OnRevoke = st, devices.Handler(), devices.CloseDevice
 		webOpts.BrowserAPI, webOpts.OnBrowserRevoke = devices.BrowserHandler(), devices.DropBrowser
 		webOpts.Sandboxes, webOpts.Computers = devices.Sandboxes, devices
+	}
+	if devices != nil {
+		router := agents.New(agents.Options{Backends: cfg.Backends, Sessions: svc, Places: devices, Store: st,
+			Plugin: func(id string) agents.Plugin {
+				if p := devices.Plugin(id); p != nil {
+					return p
+				}
+				return nil
+			}})
+		go router.Run(ctx)
 	}
 	if webOpts.Memory, err = newMemory(cfg, svc, dialers); err != nil {
 		return err

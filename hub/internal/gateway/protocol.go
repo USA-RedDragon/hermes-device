@@ -34,6 +34,7 @@ const (
 	MethodSteer         = "session.steer"
 	MethodApproval      = "approval.respond"
 	MethodConfigSet     = "config.set"
+	MethodConfigGet     = "config.get"
 	MethodMutate        = "session.mutate"
 	MethodModelOptions  = "model.options"
 	MethodAttachBytes   = "image.attach_bytes"
@@ -306,6 +307,17 @@ type ModelOptionsResult struct {
 	Model     string          `json:"model"`
 	Provider  string          `json:"provider"`
 }
+
+// ConfigGetParams is config.get's params.
+type ConfigGetParams struct {
+	SessionID string `json:"session_id"`
+	Key       string `json:"key"`
+}
+
+// KeyYolo is the config.get key of a session's approval bypass
+// (gateway/session_busy_controls.py yolo_config): "1" when its commands
+// run without approvals.
+const KeyYolo = "yolo"
 
 // ReasoningKey is the config.set key for a session's reasoning effort
 // (gateway/session_tui_config.py _set_command_setting). It runs the fenced

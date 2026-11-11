@@ -107,6 +107,7 @@ type backendShadow struct {
 	MediaRoots     *[]string              `json:"media_roots"     toml:"media_roots"     yaml:"media_roots"`
 	ServiceDevices *[]serviceDeviceShadow `json:"service_devices" toml:"service_devices" yaml:"service_devices"`
 	Honcho         *honchoShadow          `json:"honcho"          toml:"honcho"          yaml:"honcho"`
+	AgentMessages  *bool                  `json:"agent_messages"  toml:"agent_messages"  yaml:"agent_messages"`
 }
 
 type telegramShadow struct {
@@ -500,6 +501,11 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 					e.Honcho.APIKeyEnv = *esh.Honcho.APIKeyEnv
 					set(idx+".honcho.api_key_env", configulator.LayerFile, file)
 				}
+			}
+			if esh.AgentMessages != nil {
+				v := *esh.AgentMessages
+				e.AgentMessages = &v
+				set(idx+".agent_messages", configulator.LayerFile, file)
 			}
 			out[i] = e
 		}
@@ -2783,6 +2789,19 @@ func (s *backendShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 					return err
 				}
 				s.Honcho = &sub
+			}
+		case "agent_messages":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.AgentMessages = &b
+			default:
+				return configJSONError(path+".agent_messages", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {

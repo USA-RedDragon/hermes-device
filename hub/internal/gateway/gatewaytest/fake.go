@@ -49,6 +49,8 @@ const (
 	kReasoning       = "reasoning"
 	kTotal           = "total"
 	kScope           = "scope"
+	kKey             = "key"
+	kValue           = "value"
 	kSession         = "session"
 	kTerminal        = "terminal"
 	kArgs            = "args"
@@ -84,6 +86,8 @@ type Session struct {
 	Messages      []map[string]any
 	Generation    int64
 	ShowReasoning bool
+	// Yolo is the session's approval bypass, as config.get yolo reads it.
+	Yolo bool
 	// Pending is the snapshot's pending list: queued inputs and lost (unknown) turns.
 	Pending []gateway.PendingAdmission
 	// Revision is the runtime revision session.mutate is fenced on. Turns
@@ -754,6 +758,8 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 		h = g.hEventsSince
 	case gateway.MethodConfigSet:
 		h = g.hConfigSet
+	case gateway.MethodConfigGet:
+		h = g.hConfigGet
 	case gateway.MethodPromptSubmit:
 		h = g.hPromptSubmit
 	case gateway.MethodInterrupt:
@@ -892,6 +898,18 @@ func (g *Gateway) hConfigSet(_ *conn, p map[string]any) (any, string, func()) {
 		return nil, errInvalidParams, nil
 	}
 	return map[string]any{"key": "show_reasoning", "value": "1", kScope: kSession}, "", nil
+}
+
+func (g *Gateway) hConfigGet(c *conn, p map[string]any) (any, string, func()) {
+	s := g.sessions[str(p, kSessionID)]
+	if s == nil || s.subs[c] == "" || !onlyKeys(p, kSessionID, kKey) || str(p, kKey) != gateway.KeyYolo {
+		return nil, errInvalidParams, nil
+	}
+	v := "0"
+	if s.Yolo {
+		v = "1"
+	}
+	return map[string]any{kKey: gateway.KeyYolo, kValue: v, kScope: kSession}, "", nil
 }
 
 func (g *Gateway) hPromptSubmit(c *conn, p map[string]any) (any, string, func()) {
