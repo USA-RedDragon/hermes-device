@@ -14,10 +14,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/USA-RedDragon/hermes-device/internal/browser/nativemsg"
+	"github.com/USA-RedDragon/hermes-device/protocol"
 )
 
 // SocketName is the socket's file name in the state directory.
@@ -40,7 +42,36 @@ const (
 	// TypeReplaced tells an extension that a newer connection took its
 	// place, so it must not reconnect on its own.
 	TypeReplaced = "replaced"
+	// TypeAuth carries the extension's hub credential to the daemon. An
+	// empty token means the extension is signed out.
+	TypeAuth = "auth"
+	// TypeAuthStatus tells the extension what the hub said about its
+	// credential.
+	TypeAuthStatus = "auth_status"
+	// TypeSignIn and TypeSignOut ask the extension to start the hub's
+	// sign-in flow, or to sign out, as its toolbar menu does. The user
+	// still approves a sign-in on the hub's page.
+	TypeSignIn  = "sign_in"
+	TypeSignOut = "sign_out"
 )
+
+// Sign-in states in an AuthStatus.
+const (
+	// AuthSignedOut: the extension holds no credential.
+	AuthSignedOut = "signed_out"
+	// AuthChecking: the daemon sent the credential to the hub and waits
+	// for its answer.
+	AuthChecking = "checking"
+	// AuthSignedIn: the hub accepted the credential for this device.
+	AuthSignedIn = "signed_in"
+	// AuthRefused: the hub refused the credential; Reason says why.
+	AuthRefused = "refused"
+	// AuthOffline: the daemon is not connected to the hub.
+	AuthOffline = "offline"
+)
+
+// maxToken is the longest credential the broker accepts from the extension.
+const maxToken = 256
 
 // CodeRefused is the code of an answer the extension refused on purpose.
 const CodeRefused = "refused"
@@ -66,6 +97,20 @@ type Message struct {
 	HostPID     int             `json:"host_pid,omitempty"`
 	Version     string          `json:"version,omitempty"`
 	Browser     string          `json:"browser,omitempty"`
+	Token       string          `json:"token,omitempty"`
+	HubURL      string          `json:"hub_url,omitempty"`
+	DeviceID    string          `json:"device_id,omitempty"`
+	DeviceName  string          `json:"device_name,omitempty"`
+	State       string          `json:"state,omitempty"`
+	User        string          `json:"user,omitempty"`
+	Reason      string          `json:"reason,omitempty"`
+}
+
+// AuthStatus is the extension's sign-in as the daemon and the hub see it.
+type AuthStatus struct {
+	State  string
+	User   string
+	Reason string
 }
 
 // Hello describes the connected extension.
@@ -87,6 +132,9 @@ type Options struct {
 	AllowHosts []string
 	// HelloTimeout bounds the handshake. Defaults to 10 seconds.
 	HelloTimeout time.Duration
+	// HubURL is the daemon's hub.url, which the extension shows as a hint
+	// for where to sign in.
+	HubURL string
 }
 
 // Error is an operation the extension answered with ok false.
@@ -112,6 +160,12 @@ type Broker struct {
 	cur     *conn
 	changed chan struct{}
 	closed  bool
+	// token is the current extension's credential; it goes with the
+	// connection. deviceID, deviceName and auth go to every extension.
+	token      string
+	deviceID   string
+	deviceName string
+	auth       AuthStatus
 }
 
 type conn struct {
@@ -203,19 +257,22 @@ func (b *Broker) handshake(c net.Conn) {
 		pending: map[string]chan Message{},
 		done:    make(chan struct{}),
 	}
-	if err := cn.write(Message{Type: TypeConfig, AllowHosts: b.opts.AllowHosts}); err != nil {
-		slog.Warn("Could not configure the browser extension", "error", err)
-		_ = c.Close()
-		return
-	}
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
 		_ = c.Close()
 		return
 	}
+	if err := cn.write(b.configLocked()); err != nil {
+		b.mu.Unlock()
+		slog.Warn("Could not configure the browser extension", "error", err)
+		_ = c.Close()
+		return
+	}
+	_ = cn.write(b.authLocked())
 	old := b.cur
 	b.cur = cn
+	b.token = ""
 	b.notifyLocked()
 	b.mu.Unlock()
 	if old != nil {
@@ -223,7 +280,7 @@ func (b *Broker) handshake(c net.Conn) {
 		old.close()
 	}
 	slog.Info("Browser extension connected", "version", eh.Version, "browser", eh.Browser, "host_pid", hh.HostPID)
-	cn.readLoop()
+	b.readLoop(cn)
 	b.drop(cn)
 }
 
@@ -235,12 +292,84 @@ func (b *Broker) drop(cn *conn) {
 	}
 	if b.cur == cn && cn != nil {
 		b.cur = nil
+		b.token = ""
 		b.notifyLocked()
 	}
 	b.mu.Unlock()
 	if cn != nil {
 		cn.close()
 	}
+}
+
+func (b *Broker) configLocked() Message {
+	return Message{Type: TypeConfig, AllowHosts: b.opts.AllowHosts, HubURL: b.opts.HubURL, DeviceID: b.deviceID,
+		DeviceName: b.deviceName}
+}
+
+func (b *Broker) authLocked() Message {
+	a := b.auth
+	if a.State == "" {
+		a.State = AuthOffline
+	}
+	return Message{Type: TypeAuthStatus, State: a.State, User: a.User, Reason: a.Reason}
+}
+
+// Token returns the credential the connected extension sent, or "" when
+// it is signed out or not connected.
+func (b *Broker) Token() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.token
+}
+
+// SetDevice tells the extension which device the daemon is, so it can
+// name it when it signs in.
+func (b *Broker) SetDevice(id, name string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.deviceID == id && b.deviceName == name {
+		return
+	}
+	b.deviceID, b.deviceName = id, name
+	if b.cur != nil {
+		_ = b.cur.write(b.configLocked())
+	}
+}
+
+// SetAuth tells the extension what the hub said about its credential.
+func (b *Broker) SetAuth(a AuthStatus) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.auth == a {
+		return
+	}
+	b.auth = a
+	if b.cur != nil {
+		_ = b.cur.write(b.authLocked())
+	}
+}
+
+// RequestSignIn asks the connected extension to open the hub's sign-in
+// window. It reports whether an extension was connected.
+func (b *Broker) RequestSignIn() bool { return b.request(TypeSignIn) }
+
+// RequestSignOut asks the connected extension to sign out.
+func (b *Broker) RequestSignOut() bool { return b.request(TypeSignOut) }
+
+func (b *Broker) request(typ string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cur != nil && b.cur.write(Message{Type: typ}) == nil
+}
+
+func (b *Broker) setToken(cn *conn, tok string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.cur != cn || b.token == tok {
+		return
+	}
+	b.token = tok
+	b.notifyLocked()
 }
 
 // notifyLocked wakes everyone waiting on Changed. Call with mu held.
@@ -250,7 +379,7 @@ func (b *Broker) notifyLocked() {
 }
 
 // Changed returns a channel that is closed the next time an extension
-// connects or goes away.
+// connects, goes away or sends another credential.
 func (b *Broker) Changed() <-chan struct{} {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -334,7 +463,7 @@ func (cn *conn) write(m Message) error {
 	return nativemsg.Write(cn.c, data, nativemsg.MaxToBrowser)
 }
 
-func (cn *conn) readLoop() {
+func (b *Broker) readLoop(cn *conn) {
 	for {
 		var m Message
 		if err := readMsg(cn.c, &m); err != nil {
@@ -342,6 +471,12 @@ func (cn *conn) readLoop() {
 			return
 		}
 		switch m.Type {
+		case TypeAuth:
+			if m.Token != "" && (len(m.Token) > maxToken || !strings.HasPrefix(m.Token, protocol.BrowserTokenPrefix)) {
+				slog.Warn("Ignoring a malformed browser credential from the extension")
+				continue
+			}
+			b.setToken(cn, m.Token)
 		case TypeResponse:
 			cn.mu.Lock()
 			ch := cn.pending[m.ID]

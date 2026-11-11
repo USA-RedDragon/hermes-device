@@ -15,6 +15,8 @@ import (
 )
 
 const (
+	userAlice  = "alice"
+	idSlow     = "in-flight"
 	opReadText = "read_text"
 	opSnapshot = "snapshot"
 	idKill     = "kill"
@@ -24,6 +26,9 @@ const (
 type fakeBrowser struct {
 	mu      sync.Mutex
 	up      bool
+	token   string
+	device  string
+	auth    []broker.AuthStatus
 	changed chan struct{}
 }
 
@@ -35,6 +40,64 @@ func (f *fakeBrowser) set(up bool) {
 	f.up = up
 	close(f.changed)
 	f.changed = make(chan struct{})
+}
+
+func (f *fakeBrowser) setToken(tok string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.token = tok
+	close(f.changed)
+	f.changed = make(chan struct{})
+}
+
+func (f *fakeBrowser) Token() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.token
+}
+
+func (f *fakeBrowser) SetDevice(id, name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.device = id + " " + name
+}
+
+func (f *fakeBrowser) SetAuth(a broker.AuthStatus) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.auth = append(f.auth, a)
+}
+
+func (f *fakeBrowser) lastAuth() broker.AuthStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.auth) == 0 {
+		return broker.AuthStatus{}
+	}
+	return f.auth[len(f.auth)-1]
+}
+
+// waitStatus reads until a browser_status that ok accepts.
+func waitStatus(ctx context.Context, t *testing.T, conn *websocket.Conn, ok func(protocol.BrowserStatus) bool) protocol.BrowserStatus {
+	t.Helper()
+	for {
+		var st protocol.BrowserStatus
+		if !readType(ctx, t, conn, protocol.TypeBrowserStatus, &st) || ok(st) {
+			return st
+		}
+	}
+}
+
+// signIn plays the hub: it waits for the device's browser_auth and accepts
+// it.
+func signIn(ctx context.Context, t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	var a protocol.BrowserAuth
+	if !readType(ctx, t, conn, protocol.TypeBrowserAuth, &a) {
+		t.Error("no browser_auth")
+		return
+	}
+	writeJSON(ctx, conn, protocol.BrowserAuthResult{Type: protocol.TypeBrowserAuthResult, OK: true, User: userAlice})
 }
 
 func (f *fakeBrowser) Connected() (broker.Hello, bool) {
@@ -166,6 +229,7 @@ func TestBrowserRequests(t *testing.T) {
 		{ID: idKill, Op: opSnapshot, Timeout: 30},
 	}
 	f := &fakeHub{capabilities: []string{protocol.CapabilityBrowser}, handler: func(ctx context.Context, conn *websocket.Conn, _ protocol.Hello) {
+		signIn(ctx, t, conn)
 		for _, r := range reqs {
 			r.Type = protocol.TypeBrowser
 			writeJSON(ctx, conn, r)
@@ -238,5 +302,113 @@ func TestBrowserWithoutCapability(t *testing.T) {
 		case <-timeout:
 			t.Fatal("no pong")
 		}
+	}
+}
+
+// The device refuses every browser request until the hub accepted the
+// extension's credential, presents a new credential when the extension
+// sends one, and reports the hub's answer in browser_status and to the
+// extension.
+func TestBrowserSignIn(t *testing.T) {
+	t.Parallel()
+	fb := newFakeBrowser(true)
+	type step struct {
+		auth   protocol.BrowserAuth
+		result protocol.BrowserResult
+		status protocol.BrowserStatus
+	}
+	steps := make(chan step, 8)
+	f := &fakeHub{capabilities: []string{protocol.CapabilityBrowser}, handler: func(ctx context.Context, conn *websocket.Conn, _ protocol.Hello) {
+		var st step
+		readType(ctx, t, conn, protocol.TypeBrowserAuth, &st.auth)
+		writeJSON(ctx, conn, protocol.BrowserAuthResult{Type: protocol.TypeBrowserAuthResult, Code: protocol.BrowserAuthSignedOut})
+		writeJSON(ctx, conn, protocol.Browser{Type: protocol.TypeBrowser, ID: "a", Op: opReadText})
+		readType(ctx, t, conn, protocol.TypeBrowserResult, &st.result)
+		steps <- st
+
+		st = step{}
+		readType(ctx, t, conn, protocol.TypeBrowserAuth, &st.auth)
+		writeJSON(ctx, conn, protocol.BrowserAuthResult{Type: protocol.TypeBrowserAuthResult, Code: protocol.BrowserAuthWrongUser,
+			Error: "Firefox is signed in to Hermes as bob, not as the account this computer belongs to."})
+		st.status = waitStatus(ctx, t, conn, func(b protocol.BrowserStatus) bool { return strings.Contains(b.Reason, "as bob") })
+		writeJSON(ctx, conn, protocol.Browser{Type: protocol.TypeBrowser, ID: "b", Op: opReadText})
+		readType(ctx, t, conn, protocol.TypeBrowserResult, &st.result)
+		steps <- st
+
+		st = step{}
+		readType(ctx, t, conn, protocol.TypeBrowserAuth, &st.auth)
+		writeJSON(ctx, conn, protocol.BrowserAuthResult{Type: protocol.TypeBrowserAuthResult, OK: true, User: userAlice})
+		st.status = waitStatus(ctx, t, conn, func(b protocol.BrowserStatus) bool { return b.SignedIn })
+		writeJSON(ctx, conn, protocol.Browser{Type: protocol.TypeBrowser, ID: "c", Op: opReadText})
+		readType(ctx, t, conn, protocol.TypeBrowserResult, &st.result)
+		steps <- st
+		<-ctx.Done()
+	}}
+	opts := options(t, serve(t, f).URL, t.TempDir())
+	opts.Browser = fb
+	start(t, opts)
+
+	st := recv(t, steps)
+	if st.auth.Token != "" || st.result.OK || st.result.Code != protocol.BrowserNotSignedIn ||
+		!strings.Contains(st.result.Error, "Firefox is not signed in to Hermes") {
+		t.Fatalf("signed out: %+v", st)
+	}
+	if a := fb.lastAuth(); a.State != broker.AuthSignedOut {
+		t.Errorf("extension told %+v", a)
+	}
+
+	fb.setToken("hbt_bob")
+	st = recv(t, steps)
+	if st.auth.Token != "hbt_bob" || st.status.SignedIn || !strings.Contains(st.status.Reason, "as bob") ||
+		st.result.Code != protocol.BrowserNotSignedIn || !strings.Contains(st.result.Error, "as bob") {
+		t.Fatalf("wrong user: %+v", st)
+	}
+	if a := fb.lastAuth(); a.State != broker.AuthRefused || !strings.Contains(a.Reason, "as bob") {
+		t.Errorf("extension told %+v", a)
+	}
+
+	fb.setToken("hbt_alice")
+	st = recv(t, steps)
+	if st.auth.Token != "hbt_alice" || !st.status.SignedIn || st.status.User != userAlice || !st.status.Connected || !st.result.OK {
+		t.Fatalf("signed in: %+v", st)
+	}
+	if a := fb.lastAuth(); a.State != broker.AuthSignedIn || a.User != userAlice {
+		t.Errorf("extension told %+v", a)
+	}
+}
+
+// A browser_auth_result whose type a decoder could read two ways is
+// ignored, and a sign-in the hub drops cancels the requests in flight.
+func TestBrowserForgedResultAndDrop(t *testing.T) {
+	t.Parallel()
+	fb := newFakeBrowser(true)
+	fb.setToken("hbt_alice")
+	results := make(chan protocol.BrowserResult, 4)
+	f := &fakeHub{capabilities: []string{protocol.CapabilityBrowser}, handler: func(ctx context.Context, conn *websocket.Conn, _ protocol.Hello) {
+		var a protocol.BrowserAuth
+		readType(ctx, t, conn, protocol.TypeBrowserAuth, &a)
+		_ = conn.Write(ctx, websocket.MessageText, []byte(`{"type":"browser_auth_result","type":null,"ok":true,"user":"alice"}`))
+		writeJSON(ctx, conn, protocol.Browser{Type: protocol.TypeBrowser, ID: "forged", Op: opReadText})
+		var r protocol.BrowserResult
+		readType(ctx, t, conn, protocol.TypeBrowserResult, &r)
+		results <- r
+		writeJSON(ctx, conn, protocol.BrowserAuthResult{Type: protocol.TypeBrowserAuthResult, OK: true, User: userAlice})
+		waitStatus(ctx, t, conn, func(b protocol.BrowserStatus) bool { return b.SignedIn })
+		writeJSON(ctx, conn, protocol.Browser{Type: protocol.TypeBrowser, ID: idSlow, Op: opSnapshot, Timeout: 60})
+		time.Sleep(200 * time.Millisecond)
+		writeJSON(ctx, conn, protocol.BrowserAuthResult{Type: protocol.TypeBrowserAuthResult, Code: protocol.BrowserAuthInvalid,
+			Error: "This Firefox sign-in is no longer valid."})
+		readType(ctx, t, conn, protocol.TypeBrowserResult, &r)
+		results <- r
+		<-ctx.Done()
+	}}
+	opts := options(t, serve(t, f).URL, t.TempDir())
+	opts.Browser = fb
+	start(t, opts)
+	if r := recv(t, results); r.ID != "forged" || r.Code != protocol.BrowserNotSignedIn {
+		t.Fatalf("request after a forged result = %+v", r)
+	}
+	if r := recv(t, results); r.ID != idSlow || r.Code != protocol.BrowserCancelled {
+		t.Fatalf("request in flight when the sign-in was dropped = %+v", r)
 	}
 }
