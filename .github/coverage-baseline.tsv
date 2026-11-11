@@ -45,7 +45,7 @@ internal/daemonstate/daemonstate.go	17	13
 internal/device/device.go	662	591
 internal/device/mcp.go	69	60
 internal/executor/executor.go	96	86
-internal/hermesbuild/hermesbuild.go	220	172
+internal/hermesbuild/hermesbuild.go	225	177
 internal/hermesbuild/launch.go	65	62
 internal/hermesbuild/relocate.go	38	31
 internal/hubapi/hubapi.go	77	66
