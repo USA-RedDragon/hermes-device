@@ -13,7 +13,7 @@ import (
 
 const (
 	cbRelease    = "rl"
-	msgNoDevices = "You have no computers. Run hermes-device login on one to connect it."
+	msgNoDevices = "You have no computers. Run talaria setup on one to connect it."
 	msgNoAttach  = "No chat is attached. Send /sessions or /new first."
 )
 
@@ -121,7 +121,7 @@ func (b *Bot) startOnComputer(ctx context.Context, to dest, user, arg string) (s
 		return s, p, false, false
 	}
 	if !c.Online {
-		b.sendText(ctx, to, c.Name+" is offline. Turn it on and check that hermes-device runs on it.")
+		b.sendText(ctx, to, c.Name+" is offline. Turn it on and check that talaria runs on it.")
 		return s, p, true, false
 	}
 	s, p, err = b.computers.StartOn(cctx, user, c.ID, folderFor(c, rest))
@@ -165,7 +165,7 @@ func placeLine(p hub.Place) string {
 		}
 		return "This chat runs in the sandbox. /move NAME [folder] moves it to one of your computers."
 	case hub.PlaceNone:
-		return "This chat is not on a computer, so Hermes cannot run commands for it. /move NAME [folder] fixes that."
+		return "This chat is not on a computer, so Talaria cannot run commands for it. /move NAME [folder] fixes that."
 	case hub.PlaceServer:
 		return "This chat runs on the Hermes server."
 	}
@@ -278,7 +278,7 @@ func (b *Bot) askRelease(ctx context.Context, to dest, user string) {
 	}
 	st := b.chat(to)
 	st.release = &pendingRelease{nonce: uuid.NewString()[:12], backendID: a.backendID, sessionID: a.sessionID}
-	b.sendHTML(ctx, to, "Stop using <b>"+escapeHTML(p.Name)+"</b> for this chat? Hermes then cannot run commands or change files "+
+	b.sendHTML(ctx, to, "Stop using <b>"+escapeHTML(p.Name)+"</b> for this chat? Talaria then cannot run commands or change files "+
 		"for it anywhere, also not in the sandbox, until you /move it to a computer again.",
 		&InlineKeyboard{InlineKeyboard: [][]InlineButton{{{Text: "Stop using " + truncate(p.Name, 30), CallbackData: cbRelease + ":" + st.release.nonce}}}})
 }
@@ -300,7 +300,7 @@ func (b *Bot) confirmRelease(ctx context.Context, q *CallbackQuery, to dest, use
 	}
 	b.answer(ctx, q.ID, "Done")
 	b.editHTML(ctx, q.Message.Chat.ID, q.Message.MessageID,
-		"This chat no longer uses a computer. Hermes cannot run commands for it until you /move it to one again.")
+		"This chat no longer uses a computer. Talaria cannot run commands for it until you /move it to one again.")
 }
 
 // computerErr reports the errors of computer commands. It returns false
@@ -318,7 +318,7 @@ func (b *Bot) computerErr(ctx context.Context, to dest, err error) bool {
 	case errors.Is(err, hub.ErrUnknownDevice):
 		text = "Unknown computer. Send /devices to list yours."
 	case errors.Is(err, hub.ErrComputerOffline):
-		text = "That computer is offline. Turn it on and check that hermes-device runs on it."
+		text = "That computer is offline. Turn it on and check that talaria runs on it."
 	case errors.Is(err, hub.ErrFolderRefused), errors.Is(err, hub.ErrCannotMove):
 		text = reason()
 	case errors.Is(err, hub.ErrOtherBackend):

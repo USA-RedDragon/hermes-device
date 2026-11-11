@@ -317,7 +317,7 @@ func TestNoticeButtonsAnswerOnlyForTheirPerson(t *testing.T) {
 	notices.mu.Lock()
 	notices.msgs[rec.ID] = []hub.NoticeMessage{{ChatID: aliceTG, MessageID: id}}
 	notices.mu.Unlock()
-	sent := h.tg.wait(mSend, "Hermes has a question")
+	sent := h.tg.wait(mSend, "Talaria has a question")
 	for _, want := range []string{"Deploy &lt;prod&gt;", "Cluster", "Ship it?", `href="https://hub.example/#/s/cluster/s9"`} {
 		if !strings.Contains(sent.text(), want) {
 			t.Fatalf("notice %q lacks %q", sent.text(), want)

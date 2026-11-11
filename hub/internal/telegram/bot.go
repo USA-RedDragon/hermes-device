@@ -618,7 +618,7 @@ func (b *Bot) help(ctx context.Context, to dest, user string) {
 		fmt.Fprintf(&sb, "Attached to session <code>%s</code> on <b>%s</b>.\n",
 			escapeHTML(st.att.sessionID), escapeHTML(st.att.backendID))
 	}
-	sb.WriteString("\nSend a message to talk to Hermes. Reply to a question's message to answer it.\n" +
+	sb.WriteString("\nSend a message to talk to Talaria. Reply to a question's message to answer it.\n" +
 		"/sessions list your sessions\n" +
 		"/attach N attach to session N from /sessions\n" +
 		"/new [backend] start a new session\n" +

@@ -107,7 +107,7 @@ func (s *sessionStatus) line() string {
 		pct := min(100, (s.used*100+s.window/2)/s.window)
 		fmt.Fprintf(&b, "Context: %s / %s (%d%%)", tokens(s.used), tokens(s.window), pct)
 		if pct >= 80 {
-			b.WriteString(". Nearly full: Hermes will summarize older messages soon.")
+			b.WriteString(". Nearly full: Talaria will summarize older messages soon.")
 		}
 	case s.window > 0:
 		fmt.Fprintf(&b, "Context: %s window", tokens(s.window))

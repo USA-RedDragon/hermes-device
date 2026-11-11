@@ -31,7 +31,7 @@ func TestStatusShowsContext(t *testing.T) {
 		kUsage: map[string]any{kUsed: 112000, kMax: window}})
 	h.tg.wait(mSend, "second")
 	h.tg.say(dm(aliceTG), aliceTG, "/status")
-	check("112k", "Model: <b>qwen-local</b>\nContext: 112k / 131k (85%). Nearly full: Hermes will summarize older messages soon.")
+	check("112k", "Model: <b>qwen-local</b>\nContext: 112k / 131k (85%). Nearly full: Talaria will summarize older messages soon.")
 
 	h.hub.emit(t, sid, "session.updated", map[string]any{"operation": kModel, kModel: "claude-api"})
 	turn("third")

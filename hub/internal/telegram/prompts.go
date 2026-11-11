@@ -207,7 +207,7 @@ const (
 func settledOutcome(p hub.PromptInfo, shown, now time.Time, cancelled bool,
 	answer func() (hub.ApprovalOutcome, bool)) (head, note string, final bool) {
 	if cancelled {
-		return "Cancelled", "Hermes stopped waiting for an answer.", true
+		return "Cancelled", "Talaria stopped waiting for an answer.", true
 	}
 	if p.Kind != hub.PromptClarify && answer != nil {
 		if o, ok := answer(); ok {
