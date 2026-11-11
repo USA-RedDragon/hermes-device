@@ -60,7 +60,7 @@ func (g *Gateway) mutateParams(p map[string]any) (*Session, string, map[string]a
 	// The keys besides expected_generation (gateway/session_mutations.py
 	// _FIELDS), and the operations that need it (hermes_state_runtime.py).
 	fields := []string{"expected_revision", kOperation, kPayload, "request_id", kSessionID}
-	fenced := []string{gateway.OpDelete, gateway.OpModel, kReasoning}
+	fenced := []string{gateway.OpDelete, gateway.OpModel, kReasoning, gateway.OpRewind, gateway.OpBranch}
 	got := slices.DeleteFunc(keys(p), func(k string) bool { return k == "expected_generation" })
 	s := g.sessions[str(p, kSessionID)]
 	if !slices.Equal(got, fields) {
@@ -124,6 +124,10 @@ func (g *Gateway) applyMutation(s *Session, op string, payload, result map[strin
 			return gateway.ReasonSessionBusy
 		}
 		result["deleted_ids"] = []string{s.ID}
+	case gateway.OpRewind:
+		return g.rewind(s, payload, result)
+	case gateway.OpBranch:
+		return g.branch(s, payload, result)
 	case "workspace":
 		cwd, ok := payload["cwd"].(string)
 		if len(payload) != 1 || !ok || !strings.HasPrefix(cwd, "/") {

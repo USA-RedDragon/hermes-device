@@ -115,6 +115,8 @@ type Plugin struct {
 	// diffs and changes are the answers of the diff and changes routes,
 	// by session.
 	diffs, changes map[string]map[string]any
+	// gw is the gateway whose branches record their parents.
+	gw *gatewaytest.Gateway
 }
 
 // NewPlugin mounts a fake plugin for backendID on gw. It accepts
@@ -124,7 +126,7 @@ func NewPlugin(gw *gatewaytest.Gateway, backendID string, key ed25519.PublicKey)
 		verifier: assertion.NewVerifier([]ed25519.PublicKey{key}), bindings: map[string]Binding{}, ever: map[string]bool{},
 		parents: map[string]string{}, conns: map[string]*Conn{}, refuse: map[string]string{}, Connected: make(chan *Conn, 16),
 		trees: map[string]map[string][]string{}, refuseDev: map[string]string{}, uploads: map[string][]byte{},
-		files: map[string]map[string][]byte{}, diffs: map[string]map[string]any{}, changes: map[string]map[string]any{}}
+		files: map[string]map[string][]byte{}, diffs: map[string]map[string]any{}, changes: map[string]map[string]any{}, gw: gw}
 	base := "/api/plugins/device"
 	gw.Handle("GET "+base+"/info", http.HandlerFunc(p.info), true)
 	gw.Handle("GET "+base+"/devices", http.HandlerFunc(p.devices), true)
@@ -343,12 +345,21 @@ func (p *Plugin) listBindings(w http.ResponseWriter, r *http.Request) {
 	answer(w, map[string]any{"bindings": out})
 }
 
+// parent is a session's parent: the one SetParent recorded, else the one
+// the gateway's branch recorded. p.mu is held.
+func (p *Plugin) parent(id string) string {
+	if parent, ok := p.parents[id]; ok {
+		return parent
+	}
+	return p.gw.Parent(id)
+}
+
 // resolve walks a session's lineage to the nearest binding.
 func (p *Plugin) resolve(sid string) (Binding, map[string]any) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	ever := false
-	for cur, hops := sid, 0; cur != "" && hops < 100; cur, hops = p.parents[cur], hops+1 {
+	for cur, hops := sid, 0; cur != "" && hops < 100; cur, hops = p.parent(cur), hops+1 {
 		if b, ok := p.bindings[cur]; ok {
 			return b, map[string]any{stateKey: stateBound, keyVia: cur}
 		}

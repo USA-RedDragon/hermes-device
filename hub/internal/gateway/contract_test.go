@@ -412,6 +412,93 @@ func contract() map[string][]string {
 		},
 		"gateway/session_authority.py#exists": {"            row = self.db.get_session(ref.session_id)\n            if row is None:\n                raise RuntimeStoreError('not_found')"},
 		"gateway/run_turn_runner.py":          {`setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))`},
+		// The chat list's activity time: session.list with picker.
+		"tui_gateway/contracts/canonical_sessions.py#picker": {"    picker: bool = False", "    last_active_at: float | None = None"},
+		"gateway/session_controls.py#picker": {
+			"if (set(params) - {'limit', 'title', 'include_hidden', 'scope', 'workspace', 'picker'} or type(limit) is not int",
+		},
+		"gateway/session_picker_fields.py": {"last_active_at=listed.get('_effective_last_active') or listed.get('last_active'),"},
+		// Steer: prompt.submit's receipt, then prompt.steer_queued, a transfer that goes back to the queue
+		// when the turn ends before it reads the text.
+		"tui_gateway/contracts/canonical_sessions.py#steer": {
+			"root: AdmissionStatus | CanonicalVoiceStopped",
+			"class CanonicalSteerQueuedParams(CanonicalSessionParams):\n    admission_id: str",
+			"canonical_method('" + gateway.MethodSteerQueued + "', params=CanonicalSteerQueuedParams, result=AdmissionStatus,",
+		},
+		"tui_gateway/contracts/canonical.py#receipt": {
+			"    admission_id: str\n    ref: CanonicalSessionRef\n    sequence: int\n    status: Literal[\"queued\", \"started\", \"unknown\", \"terminal\"]",
+		},
+		"gateway/session_controls.py#steer": {"handlers.update(queued_handlers(self))"},
+		"gateway/session_queued_controls.py": {
+			"return {'" + gateway.MethodSteerQueued + "': partial(steer_queued, connection),",
+			"_INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'acp'})",
+			"raise RuntimeStoreError('" + gateway.ReasonAdmissionStarted + "')",
+			"raise RuntimeStoreError('" + gateway.ReasonUnsupportedControl + "')",
+			"raise RuntimeStoreError('" + gateway.ReasonSessionIdle + "')",
+			"raise RuntimeStoreError('" + gateway.ReasonSteerUnavailable + "', field='admission_id',",
+			"detail='the running turn has no agent to take a steer yet')",
+			"detail='the running turn ended before the steer reached it')",
+		},
+		"hermes_state_runtime.py#steer": {
+			"_requeue_transfer(conn, admission_id=admission_id, epoch=epoch, generation=generation)",
+			"('steered' if outcome == 'completed' else 'interrupted', admission_id, STEERING, epoch, generation))",
+		},
+		// Rewind and branch (session.mutate), both fenced on the generation.
+		"hermes_state_mutations.py#history": {
+			"if (operation == '" + gateway.OpRewind + "' and 'target_message_id' in payload",
+			"return {session_id, physical}, {'rewound_count': len(ids), 'target_message': target,",
+			"target['content'] = typed_prompt_content(target.get('content'), target)",
+			"if set(payload) - {'title', 'through_message_id', 'mcp_servers'}:",
+		},
+		// A branch records its parent and copies the parent's policy, cwd included, so the device plugin
+		// resolves it through the parent's binding (hermes-device protocol.md section 8.3).
+		"hermes_state_mutation_branch.py": {
+			"return {session_id}, {'branched_session_id': child, 'copied_messages': len(ids)}",
+			"db._publish_child_session_row(conn, parent, parent_session_id=target,",
+			"cwd=policy['cwd'], profile_name=parent['profile_name'])",
+		},
+		"gateway/session_mutations.py#branch": {"if operation == '" + gateway.OpBranch + "' and 'session:create' not in actor.capabilities:"},
+		// The transcript: session.transcript, which subscribes nobody.
+		"gateway/session_controls.py#transcript": {"from gateway.session_stored_reads import handlers as stored_read_handlers"},
+		"gateway/session_stored_reads.py": {
+			"return {'" + gateway.MethodTranscript + "': partial(transcript, connection)}",
+			"MAX_PAGE_ROWS = " + strconv.Itoa(gateway.MaxTranscriptPage),
+			"TRANSCRIPT_FIELDS = frozenset({'session_id', 'profile', 'subagent_id', 'cursor', 'limit', 'order', 'inline_images'})",
+		},
+		"tui_gateway/contracts/canonical_stored_reads.py": {
+			"    order: Literal['" + gateway.OrderOldest + "', '" + gateway.OrderLatest + "'] = 'oldest'",
+			"    rows: list[StoredTranscriptRow]", "    next_cursor: str | None", "    reset: bool",
+		},
+		"tui_gateway/contracts/common.py": {"    row_id: int | None = None"},
+		// Slash commands: commands.catalog lists them; slash.exec runs the reviewed ones. prompt.submit would
+		// hand a slash command to the messaging handlers, which Hermes never reviewed for a local session.
+		"gateway/session_controls.py#commands": {
+			"'" + gateway.MethodCommandsCatalog + "': self.command_catalog", "'" + gateway.MethodSlashExec + "': self.slash_exec",
+		},
+		"gateway/session_discovery.py": {"allowed = {'profile', 'text', 'session_id'} if completion else {'profile', 'session_id'}"},
+		"tui_gateway/command_discovery.py": {
+			`"categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],`,
+			`cat.add(f"/{qname}", desc, "User commands")`, `cat.add(key, cat.plugin_commands[pname], "Plugin commands")`,
+			`cat.pairs.append([k, str(info.get("description", "Skill"))])`, `skills[k] = {"usage": usage(name), "origin": origin_of(name)}`,
+		},
+		"locales/en.yaml": {`usage_suffix: "{description} (usage: /{name} {args_hint})"`},
+		"gateway/session_commands.py": {
+			"_READ_COMMANDS = frozenset({'help', 'commands', 'status', 'context', 'version', 'whoami',\n" +
+				"                            'usage', 'insights', 'profile', 'diff', 'memory', 'kanban', 'topup',\n" +
+				"                            'suggestions', 'bundles', 'skills'})",
+			"_CONTROL_COMMANDS = frozenset({'title'})",
+			"_HANDLER_CONTROLS = frozenset({'goal', 'subgoal', 'loop', 'heartbeat', 'review', 'refine', 'debug', 'curator',\n" +
+				"                               'login', 'autoprune'})",
+			"_PROMPT_COMMANDS = frozenset({'plan', 'learn', 'init', 'moa', 'blueprint', 'egress'})",
+			"_SETTING_COMMANDS = frozenset({'reasoning', 'voice', 'approvals', 'codex-runtime', 'footer', 'busy', 'verbose',\n" +
+				"                               'yolo', 'fast', 'personality'})",
+			"_INFO_READS = frozenset({'toolsets', 'platforms'})", "_OWNER_COMMANDS = frozenset({'cron'})",
+			"allowed = {'session_id', 'profile', 'name', 'arg'} if dispatch else {'session_id', 'profile', 'command'}",
+			"raise RuntimeStoreError('" + gateway.ReasonUnsupportedCommand + "', detail=REFUSAL_HINTS.get(canonical))",
+			"return {'type': '" + gateway.SlashOutput + "', 'output': '\\n'.join(filter(None, [*sink.notices, _text(output)]))}",
+			"return {'type': '" + gateway.SlashSend + "', 'message': prompt, 'display': sink.display or typed,",
+		},
+		"gateway/platforms/event.py": {`return self.allow_gateway_control and self._command_text().startswith("/")`},
 	}
 }
 
@@ -434,6 +521,8 @@ func TestContractAgainstSource(t *testing.T) {
 }
 
 const (
+	kTitle     = "title"
+	kProfile   = "profile"
 	kExecGen   = "execution_generation"
 	kSessionID = "session_id"
 	kRequestID = "request_id"
@@ -457,7 +546,7 @@ func jsonKeys(t *testing.T, v any) []string {
 
 func TestParamsUseOnlyKeysTheGatewayAccepts(t *testing.T) {
 	t.Parallel()
-	listKeys := []string{"include_hidden", "limit", "scope", "title"}
+	listKeys := []string{"include_hidden", "limit", "picker", "scope", "title"}
 	cases := []struct {
 		params  any
 		allowed []string
@@ -480,6 +569,14 @@ func TestParamsUseOnlyKeysTheGatewayAccepts(t *testing.T) {
 		{gateway.ListParams{Scope: gateway.ScopeLive, Limit: 200, IncludeHidden: true}, listKeys, false},
 		{gateway.CreateParams{RequestID: "r", Source: gateway.SourceGUI, CWD: "/p", RowCWD: "/home/alice"},
 			[]string{"cwd", kRequestID, "row_cwd", "source"}, true},
+		{gateway.ListParams{Scope: gateway.ScopeLive, Limit: 200, Picker: true}, listKeys, false},
+		{gateway.SteerQueuedParams{SessionID: "s", AdmissionID: "a"}, []string{"admission_id", kSessionID}, true},
+		{gateway.RewindPayload{TargetMessageID: 3}, []string{"target_message_id"}, true},
+		{gateway.BranchPayload{Title: "t", ThroughMessageID: 3}, []string{"through_message_id", kTitle}, true},
+		{gateway.TranscriptParams{SessionID: "s", Cursor: "c", Limit: 10, Order: gateway.OrderLatest},
+			[]string{"cursor", "inline_images", "limit", "order", kProfile, kSessionID, "subagent_id"}, false},
+		{gateway.SlashExecParams{SessionID: "s", Command: "usage"}, []string{"command", kSessionID}, true},
+		{gateway.SessionParams{SessionID: "s"}, []string{kSessionID}, true},
 	}
 	for _, c := range cases {
 		got := jsonKeys(t, c.params)

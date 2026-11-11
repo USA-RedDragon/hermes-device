@@ -110,6 +110,8 @@ type ListParams struct {
 	Scope         string `json:"scope"`
 	Limit         int    `json:"limit"`
 	IncludeHidden bool   `json:"include_hidden,omitempty"`
+	// Picker adds the picker fields to each row, LastActiveAt among them.
+	Picker bool `json:"picker,omitempty"`
 }
 
 // ListRow is one session.list row.
@@ -121,6 +123,9 @@ type ListRow struct {
 	StartedAt    *float64 `json:"started_at"`
 	MessageCount int      `json:"message_count"`
 	Running      bool     `json:"running"`
+	// LastActiveAt is when the session last changed, in Unix seconds; only
+	// with ListParams.Picker, and nil when Hermes did not say.
+	LastActiveAt *float64 `json:"last_active_at"`
 }
 
 // ListResult is session.list's result.

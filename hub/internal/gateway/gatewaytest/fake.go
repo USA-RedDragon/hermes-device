@@ -119,6 +119,11 @@ type Session struct {
 	// Processes are the session's background processes, as process.list
 	// lists them.
 	Processes []gateway.ProcessRow
+	// LastActiveAt is when the session last changed, which session.list
+	// reports with picker; 0 reports none.
+	LastActiveAt float64
+	// Parent is the session this one was branched from.
+	Parent string
 
 	epoch   string
 	seq     int64
@@ -162,6 +167,13 @@ type Gateway struct {
 	steers      []Steer
 	caps        []string
 	audiences   map[string][]string
+	// QueueWhileRunning makes prompt.submit queue a prompt behind the
+	// running turn, as Hermes does, instead of running it at once.
+	QueueWhileRunning bool
+	steerScript       []string
+	steered           []string
+	orphanBranches    bool
+	commands          []string
 }
 
 type submission struct {
@@ -705,7 +717,11 @@ func (g *Gateway) refusalLocked(method string, p map[string]any, reason string) 
 	case reason == errInternal:
 		return map[string]any{kCode: -32603, kMessage: reason}
 	}
+	reason, detail, _ := strings.Cut(reason, "|")
 	data := map[string]any{"reason": reason}
+	if detail != "" {
+		data["detail"] = detail
+	}
 	if s := g.sessions[str(p, kSessionID)]; s != nil && method == gateway.MethodMutate &&
 		(reason == gateway.ReasonRevisionConflict || reason == gateway.ReasonStaleGeneration) {
 		data["revision"], data[kExecGen] = s.Revision, s.Generation
@@ -825,8 +841,6 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 		h = g.hAttachBytes
 	case gateway.MethodFileAttach:
 		h = g.hFileAttach
-	case "session.info":
-		h = g.hSessionInfo
 	case gateway.MethodSubagentList:
 		h = g.hSubagentList
 	case gateway.MethodSubagentTail:
@@ -845,10 +859,10 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 		h = g.hDelegationStatus
 	case gateway.MethodDelegationPause:
 		h = g.hDelegationPause
-	case gateway.MethodPromptBackground:
-		h = g.hBackground
 	default:
-		return nil, "unknown method: " + method, nil
+		if h = g.composeHandler(method); h == nil {
+			return nil, "unknown method: " + method, nil
+		}
 	}
 	return h(c, p)
 }
@@ -861,9 +875,10 @@ func (g *Gateway) hSessionList(_ *conn, p map[string]any) (any, string, func()) 
 		return nil, errInvalidParams, nil
 	case scoped && !onlyKeys(p, "limit", "title", "include_hidden", kScope, "audience", "picker", "workspace"):
 		return nil, errInvalidParams, nil
-	case !scoped && !onlyKeys(p, "limit", "title", "include_hidden", kScope):
+	case !scoped && !onlyKeys(p, "limit", "title", "include_hidden", kScope, "picker"):
 		return nil, errInvalidParams, nil
 	}
+	picker, _ := p["picker"].(bool)
 	scope := str(p, kScope)
 	if scope == "" {
 		scope = "live"
@@ -878,8 +893,15 @@ func (g *Gateway) hSessionList(_ *conn, p map[string]any) (any, string, func()) 
 		if source == "" {
 			source = gateway.SourceACP
 		}
-		rows = append(rows, map[string]any{kSessionID: s.ID, "id": s.ID, kTitle: s.Title, "source": source,
-			"started_at": s.StartedAt, "message_count": len(s.Messages), "running": s.Running, kModel: s.Model})
+		row := map[string]any{kSessionID: s.ID, "id": s.ID, kTitle: s.Title, "source": source,
+			"started_at": s.StartedAt, "message_count": len(s.Messages), "running": s.Running, kModel: s.Model}
+		if picker {
+			row["last_active_at"], row["pinned"] = nil, false
+			if s.LastActiveAt > 0 {
+				row["last_active_at"] = s.LastActiveAt
+			}
+		}
+		rows = append(rows, row)
 	}
 	return map[string]any{"sessions": rows, kScope: scope}, "", nil
 }
@@ -1018,19 +1040,23 @@ func (g *Gateway) hPromptSubmit(c *conn, p map[string]any) (any, string, func())
 		}
 		return old.receipt, "", nil
 	}
+	if g.QueueWhileRunning && s.Running {
+		queued := g.queueLocked(s, str(p, kSubmission), str(p, kText))
+		g.submissions[key] = submission{text: str(p, kText), receipt: queued}
+		return queued, "", nil
+	}
 	s.Generation++
 	s.Running = true
 	s.Attachments = append(s.Attachments, atts)
-	s.Messages = append(s.Messages, map[string]any{kRole: "user", kText: str(p, kText), kSubmission: str(p, kSubmission)})
+	s.Messages = append(s.Messages, map[string]any{kRole: roleUser, kText: str(p, kText), kSubmission: str(p, kSubmission)})
 	admission := randHex()
-	receipt := map[string]any{"admission_id": admission, "ref": map[string]any{kSessionID: s.ID},
-		"sequence": 1, kStatus: "started", "outcome": nil, "authority_epoch": 1, kExecGen: s.Generation}
-	g.submissions[key] = submission{text: str(p, kText), receipt: receipt}
+	started := receipt(s.ID, admission, 1, statusStart, s.Generation)
+	g.submissions[key] = submission{text: str(p, kText), receipt: started}
 	if g.HoldTurns {
-		return receipt, "", nil
+		return started, "", nil
 	}
 	text := str(p, kText)
-	return receipt, "", func() { g.turn(s.ID, admission, str(p, kSubmission), text) }
+	return started, "", func() { g.turn(s.ID, admission, str(p, kSubmission), text) }
 }
 
 func (g *Gateway) hInterrupt(_ *conn, p map[string]any) (any, string, func()) {
