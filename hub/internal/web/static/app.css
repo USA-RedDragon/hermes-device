@@ -164,7 +164,22 @@ details.toolgroup .group-body { display: flex; flex-direction: column; gap: .5re
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .tool.running .state::before { animation: none; } }
 .approval { border: 2px solid var(--warn); border-radius: 10px; padding: .6rem .75rem; background: var(--card); }
-.approval .actions { display: flex; gap: .5rem; margin-top: .5rem; }
+.approval .actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
+.approval .picks { display: grid; gap: .25rem; margin-top: .5rem; }
+.approval .pick { display: flex; gap: .5rem; align-items: center; }
+.approval .typed { display: flex; gap: .5rem; margin-top: .5rem; }
+.approval input.answer { flex: 1; min-width: 0; font: inherit; padding: .4rem .6rem; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--fg); }
+.notify-prefs h3 { font-size: .95rem; margin: 1rem 0 .4rem; }
+.notify-row { display: flex; gap: .6rem; align-items: flex-start; margin: .35rem 0; }
+.notify-row input { margin-top: .25rem; }
+.notify-row small { display: block; }
+.notify-push { margin: .5rem 0; }
+.notify-devices { list-style: none; padding: 0; margin: .5rem 0; }
+.notify-devices li { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+.notify-quiet { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.notify-quiet input { font: inherit; padding: .3rem .4rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
+.notify-prefs .err { color: var(--bad); }
 .status { color: var(--muted); font-size: .85rem; font-style: italic; }
 .composer { flex: none; display: flex; flex-direction: column; gap: .4rem; padding: .5rem .75rem;
   padding-bottom: max(.5rem, env(safe-area-inset-bottom)); padding-right: max(.75rem, env(safe-area-inset-right));

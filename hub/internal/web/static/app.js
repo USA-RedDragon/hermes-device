@@ -805,29 +805,66 @@
       const id = p.prompt_id;
       if (!id || this.approvals.has(id)) return;
       const box = el("div", "approval");
-      box.append(el("b", "", p.kind === "clarify" ? "Question" : t("approval")));
+      const clarify = p.kind === "clarify";
+      box.append(el("b", "", clarify ? "Question" : t("approval")));
       if (p.description) box.append(el("div", "", p.description));
       if (p.command) box.append(el("pre", "", p.command));
       if (p.question) box.append(el("div", "", p.question));
       const actions = el("div", "actions");
-      if (p.kind !== "clarify") {
-        const ok = el("button", "primary", t("allow"));
-        const no = el("button", "danger", t("deny"));
-        ok.type = no.type = "button";
-        const answer = async (allow) => {
-          ok.disabled = no.disabled = true;
-          try {
-            await api("POST", this.base + "/approvals/" + encodeURIComponent(id), { allow });
-          } catch (e) {
-            ok.disabled = no.disabled = false;
-            banner("Could not answer: " + e.message, true);
-          }
-        };
-        ok.onclick = () => answer(true);
-        no.onclick = () => answer(false);
-        actions.append(ok, no);
+      const buttons = [];
+      const answer = async (body) => {
+        for (const b of buttons) b.disabled = true;
+        try {
+          if (body.allow !== undefined) await api("POST", this.base + "/approvals/" + encodeURIComponent(id), body);
+          else await api("POST", this.base + "/prompts/" + encodeURIComponent(id) + "/answer", body);
+        } catch (e) {
+          for (const b of buttons) b.disabled = false;
+          banner("Could not answer: " + e.message, true);
+        }
+      };
+      const button = (cls, text, body) => {
+        const b = el("button", cls, text);
+        b.type = "button";
+        b.onclick = () => answer(typeof body === "function" ? body() : body);
+        buttons.push(b);
+        return b;
+      };
+      const choices = Array.isArray(p.choices) ? p.choices : [];
+      if (!clarify && !choices.length) {
+        actions.append(button("primary", t("allow"), { allow: true }), button("danger", t("deny"), { allow: false }));
+      } else if (!clarify) {
+        const names = { once: t("allow"), session: "Allow in this chat", always: "Always allow", deny: t("deny") };
+        for (const c of choices) actions.append(button(c === "deny" ? "danger" : c === "once" ? "primary" : "", names[c] || c, { choice: c }));
       } else {
-        actions.append(el("span", "status", "Answer this question in the app where the chat started."));
+        const picks = [];
+        if (p.multi_select) {
+          const list = el("div", "picks");
+          for (const c of choices) {
+            const row = el("label", "pick");
+            const cb = el("input");
+            cb.type = "checkbox";
+            cb.value = c;
+            picks.push(cb);
+            buttons.push(cb);
+            row.append(cb, el("span", "", c));
+            list.append(row);
+          }
+          box.append(list);
+          actions.append(button("primary", "Send", () => ({ picks: picks.filter((b) => b.checked).map((b) => b.value) })));
+        } else {
+          for (const c of choices) actions.append(button("", c, { picks: [c] }));
+        }
+        const input = el("input", "answer");
+        input.type = "text";
+        input.placeholder = choices.length ? "Or type an answer" : "Type your answer";
+        input.setAttribute("aria-label", "Answer");
+        buttons.push(input);
+        const send = button(choices.length ? "" : "primary", "Answer", () => ({ text: input.value }));
+        input.onkeydown = (e) => { if (e.key === "Enter" && input.value.trim()) { e.preventDefault(); send.click(); } };
+        const typed = el("div", "typed");
+        typed.append(input, send);
+        box.append(typed);
+        actions.append(button("ghost", "Skip", { skip: true }));
       }
       box.append(actions);
       this.approvals.set(id, box);
@@ -838,6 +875,7 @@
       const box = this.approvals.get(id);
       if (!box) return;
       const actions = box.querySelector(".actions");
+      for (const extra of box.querySelectorAll(".picks, .typed")) extra.remove();
       if (actions) actions.replaceChildren(el("span", "status", text));
     }
 
@@ -2497,6 +2535,8 @@
 
   const memory = window.HubMemory({ api, el, sessions: () => lastList, chatHash, closeSide: () => openSide(false),
     defaultBackend: () => me.default_backend || "" });
+  const notices = window.HubNotify({ api, el, csrf: () => csrf,
+    current: () => (view && view.backend && view.session ? { backend: view.backend, session: view.session } : null) });
 
   async function init() {
     try {
@@ -2517,6 +2557,7 @@
       try { await api("POST", view.base + "/interrupt"); } catch (e) { banner("Could not stop: " + e.message, true); }
     };
     $("logout").onclick = async () => {
+      await notices.logout();
       try { await api("POST", "/auth/logout"); } catch (_) { /* ignore */ }
       closeStream();
       const page = el("main", "page");
@@ -2533,8 +2574,15 @@
       if (view) location.hash = "#/files/" + encodeURIComponent(view.backend) + "/" + encodeURIComponent(view.session);
     };
     $("info").ontoggle = () => { if ($("info").open) settings.load(); };
-    $("prefs").hidden = !me.devices;
-    $("prefs").ontoggle = () => { if ($("prefs").open) devices.load(); };
+    $("prefs").hidden = !me.devices && !me.notify;
+    $("devices-prefs").hidden = !me.devices;
+    $("notify-prefs").hidden = !me.notify;
+    $("prefs").ontoggle = () => {
+      if (!$("prefs").open) return;
+      if (me.devices) devices.load();
+      if (me.notify) notices.load();
+    };
+    notices.start(!!me.notify);
     $("model").onchange = () => settings.pickModel();
     $("effort").onchange = () => settings.pickEffort();
     const input = $("input");

@@ -4,12 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111418">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Hermes">
 <title>Hermes Hub</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/vendor/highlight.min.js" defer></script>
 <script src="/static/markdown.js" defer></script>
 <script src="/static/memory.js" defer></script>
 <script src="/static/insights.js" defer></script>
+<script src="/static/notify.js" defer></script>
 <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -26,9 +32,12 @@
     <details id="prefs" class="prefs" hidden>
       <summary>Settings</summary>
       <div class="prefs-body">
-        <h2>Computers</h2>
-        <p class="hint">Computers where Hermes can run commands and change files for you. To connect one, run <code>hermes-device login</code> on it.</p>
-        <div id="devices" aria-live="polite"></div>
+        <div id="notify-prefs" class="notify-prefs" aria-live="polite" hidden></div>
+        <div id="devices-prefs" hidden>
+          <h2>Computers</h2>
+          <p class="hint">Computers where Hermes can run commands and change files for you. To connect one, run <code>hermes-device login</code> on it.</p>
+          <div id="devices" aria-live="polite"></div>
+        </div>
       </div>
     </details>
     <div class="side-foot">

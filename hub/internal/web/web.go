@@ -68,6 +68,11 @@ type Options struct {
 	Insights hub.Insights
 	// Files serves the file viewer of chats on computers. Nil: none.
 	Files hub.ChatFiles
+	// Notices keeps notification settings, push subscriptions and
+	// presence. Nil: no notification settings.
+	Notices hub.NotifyStore
+	// Notifier sends test notices and has the Web Push key.
+	Notifier Notifier
 }
 
 // Server is the web front end.
@@ -98,6 +103,8 @@ type Server struct {
 	memory       hub.Memory
 	insights     hub.Insights
 	files        hub.ChatFiles
+	notices      hub.NotifyStore
+	notifier     Notifier
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
 	backendNames     map[string]string
@@ -141,6 +148,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	return &Server{
 		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory,
 		insights: opts.Insights, files: opts.Files,
+		notices: opts.Notices, notifier: opts.Notifier,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,
@@ -173,6 +181,16 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFileFS(w, r, static, "index.html")
 	})
+	for _, f := range []struct{ path, file, mime string }{
+		{"/manifest.webmanifest", "manifest.webmanifest", "application/manifest+json"},
+		{"/sw.js", "sw.js", "text/javascript; charset=utf-8"},
+	} {
+		mux.HandleFunc("GET "+f.path, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Content-Type", f.mime)
+			http.ServeFileFS(w, r, static, f.file)
+		})
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if !s.ready.Load() {
@@ -211,6 +229,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/computers/{device}/folders", s.api(s.handleFolders))
 	s.memoryRoutes(mux)
 	s.insightRoutes(mux)
+	s.notifyRoutes(mux)
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
 	mux.HandleFunc("GET /device/pair", s.handlePairPage)
