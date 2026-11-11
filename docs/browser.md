@@ -1,6 +1,6 @@
 # Browser control
 
-Status: built (phase 5). The device side and the plugin's `device-browser` toolset run end to end against a throwaway headless Firefox (section 10). Each release signs the extension on addons.mozilla.org once the AMO secrets are set (section 6.1). No signed release exists yet, so for now it loads only as a temporary add-on.
+Status: built (phase 5). The device side and the plugin's `device-browser` toolset run end to end against a throwaway headless Firefox (section 10). Firefox must be signed in to hermes-hub as the device's owner before the agent can use it (section 13). Each release signs the extension on addons.mozilla.org once the AMO secrets are set (section 6.1). No signed release exists yet, so for now it loads only as a temporary add-on.
 
 The goal: the server Hermes agent uses the user's own Firefox on their PC, with the user's logins, in a way the user can see and stop. This document picks the mechanism, defines the tool surface and the exec leg messages, and states the security model.
 
@@ -19,6 +19,9 @@ device plugin  ==exec leg==> relay ==exec leg==> hermes-device run
                                                   | stdin/stdout, native messaging
                                                   v
                                                 Hermes extension (background page) -> tabs in the "Hermes" tab group
+                                                  | HTTPS, sign-in only (section 13)
+                                                  v
+                                                hermes-hub /browser/authorize, /api/browser/token, /api/browser/revoke
 ```
 
 Reasons:
@@ -28,6 +31,7 @@ Reasons:
 - The agent works in its own tab group, named "Hermes". The user sees every tab it opens, and can hand it a tab by dragging the tab into the group. The toolbar badge shows when the extension is connected and when an operation runs.
 - It works the same on X11 and Wayland, because it does not synthesize OS input.
 - The alternatives change the user's browser in ways that break everyday use (section 2).
+- The user signs Firefox in to the hub explicitly, and the hub refuses browser operations for a device whose browser is not signed in as the device's owner (section 13). Being the same OS user as the daemon is not enough.
 
 The main cost: input from a WebExtension is synthetic (`isTrusted` is false). Most sites accept it; some do not (section 9).
 
@@ -77,7 +81,7 @@ The ACP display formatter reads `title`, `url`, `text` and `snapshot` from the r
 
 | Tool | Parameters | Device op | Result |
 |---|---|---|---|
-| `browser_status` | none | `tabs_list` | `available`, the device, the browser and extension versions, and the agent's tabs; or `available: false` and the `reason` |
+| `browser_status` | none | `tabs_list` | `available`, the device, the browser and extension versions, `signed_in`, the hub `user`, and the agent's tabs; or `available: false` and the `reason`, such as "Firefox is not signed in to Hermes" |
 | `browser_tabs` | `action`: `list`, `open` or `close`; `url` (open); `tab_id` (close) | `tabs_list`, `tab_open`, `tab_close` | Tabs in the Hermes group: `tab_id`, `url`, `title`, `active` |
 | `browser_navigate` | `url`; `tab_id` (optional: without it the plugin opens a tab) | `navigate` or `tab_open` | `tab_id`, `url`, `title` |
 | `browser_back` | `tab_id` | `back` | `tab_id`, `url`, `title` |
@@ -87,9 +91,9 @@ The ACP display formatter reads `title`, `url`, `text` and `snapshot` from the r
 | `browser_vision` | `tab_id`; `question` (optional) | `screenshot` (JPEG, quality 85) | Multimodal result with the image |
 | `browser_screenshot` | `tab_id` | `screenshot` (JPEG, quality 85) | `tab_id`, `url`, `title`, the saved file's `path`, and `show_user`: `MEDIA:<path>` |
 
-Errors are JSON results `{"error": "...", "code": "..."}`. `code` is a `browser_result` code (section 4.2), or `unavailable` (no browser for this session, below), `declined` (the user said no, section 7) or `bad_arguments`.
+Errors are JSON results `{"error": "...", "code": "..."}`. `code` is a `browser_result` code (section 4.2), or `unavailable` (no browser for this session, below, also when Firefox is not signed in), `declined` (the user said no, section 7) or `bad_arguments`.
 
-Every call goes to the device the session is bound to (`/device <device> <dir>`), resolved as for the terminal backend (protocol.md section 8.3). The plugin refuses, without sending anything, when the session is not bound, when it runs in the sandbox device (`fallback: device`, which has no browser), when the device is not connected, when the device did not offer the `browser` capability, or when the device reports that its extension is not connected.
+Every call goes to the device the session is bound to (`/device <device> <dir>`), resolved as for the terminal backend (protocol.md section 8.3). The plugin refuses, without sending anything, when the session is not bound, when it runs in the sandbox device (`fallback: device`, which has no browser), when the device is not connected, when the device did not offer the `browser` capability, when the device reports that its extension is not connected, or when the status says Firefox is not signed in (section 13).
 
 Snapshot format, one element per line, indented by nesting, with refs that later calls use (measured on example.com):
 
@@ -110,7 +114,7 @@ The snapshot covers the top frame only, and not shadow DOM. Sign-in and payment 
 
 `browser_vision` shows the screenshot only to the model. `browser_screenshot` is for the user: it saves the screenshot in the Hermes server's screenshot cache, in `<HERMES_HOME>/cache/screenshots/hermes-device/<session>/shot-<UTC time>-<random>.jpg` (folder mode 0700, file mode 0600), and returns `show_user`, a `MEDIA:<path>` directive, with a note that tells the model to put that line in its reply. Hermes delivers files to users with `MEDIA:<path>` directives in the reply text (source, `gateway/platforms/base.py` `extract_media`), and hermes-hub shows such a file in its web page and sends it to Telegram. The hub reads the file through the Hermes web server's path-bound file tickets (`POST /api/files/ticket`, then `GET /api/fs/download`). The tool does not give the image to the model: a small model is more likely to pick a tool named for what the user asked ("take a screenshot") than to set a flag on `browser_vision`, and a separate tool keeps the two results simple. Before it saves a file, the plugin deletes screenshots older than 7 days and the oldest ones over 200 files, and removes empty session folders.
 
-Tool registration: `ctx.register_tool(name, "device-browser", schema, handler, check_fn=...)`. The toolset is on by default once the plugin is enabled (source, `hermes_cli/tools_config.py:520-527`); the plugin setting `browser: false` hides it. `check_fn` takes no arguments and Hermes caches it for about 30 seconds (source, `tools/registry.py:922-933`), so it cannot look at the session: `browser_status` is listed while any connected device offers the `browser` capability, and the other tools while any such device reports a connected extension. The per-session checks happen in the handler, as above.
+Tool registration: `ctx.register_tool(name, "device-browser", schema, handler, check_fn=...)`. The toolset is on by default once the plugin is enabled (source, `hermes_cli/tools_config.py:520-527`); the plugin setting `browser: false` hides it. `check_fn` takes no arguments and Hermes caches it for about 30 seconds (source, `tools/registry.py:922-933`), so it cannot look at the session: `browser_status` is listed while any connected device offers the `browser` capability, and the other tools while any such device reports a connected and signed-in extension. The per-session checks happen in the handler, as above.
 
 Later additions: `browser_scroll`, `browser_press` (keys), `browser_select` (select options), `browser_get_images`, `browser_console`, and file upload.
 
@@ -167,16 +171,18 @@ Op arguments (`args`):
 | `timeout` | The operation passed its timeout |
 | `cancelled` | Cancelled by `kill` or by the exec leg dropping |
 | `failed` | The operation ran and failed; `error` says why |
+| `not_signed_in` | Firefox is not signed in to the hub as the device's owner. The hub answers it itself and does not forward the request, or the device refuses it (section 13) |
 
 Size: a PNG screenshot of a 1366x682 page is about 80 KB (measured: 79306 bytes) and the JPEG the plugin asks for is about 70 KB (measured: 69471 bytes). A 4K page is a few MB (inference). The device answers `failed` instead of sending a result over <!-- docgen:const pkg=protocol name=MaxBrowserResult code=false -->16777216<!-- /docgen:const --> bytes (16 MiB). Every hop allows that: the native host reads up to 64 MiB from Firefox, hermes-hub reads up to 64 MiB per message on both hops of the exec leg (source, hermes-hub `internal/device/legs.go`: `maxMessage = 64 << 20`, `SetReadLimit` on the device and the backend connection, and the pump copies messages unchanged), and the Hermes gateway's WebSocket allows 384 MiB (source, `hermes_cli/web_server_boundary.py:26`). No hub change is needed.
 
 ### 4.3 browser_status (device to plugin)
 
 ```json
-{"type": "browser_status", "connected": true, "browser": "Firefox 157.0.1", "extension_version": "0.2.0"}
+{"type": "browser_status", "connected": true, "signed_in": true, "user": "alice", "browser": "Firefox 157.0.1", "extension_version": "0.2.0"}
+{"type": "browser_status", "connected": false, "signed_in": false, "reason": "Firefox is not signed in to Hermes", "browser": "Firefox 157.0.1", "extension_version": "0.5.0"}
 ```
 
-The device sends it right after the `welcome` (and the `resume` on version 3), and again whenever the extension connects or goes away. The plugin keeps the last one per connection for `check_fn`, `browser_status` and `GET /devices` (the Device object gains `"capabilities"` and `"browser"`).
+The device sends it right after the `welcome` (and the `resume` on version 3), and again whenever the extension connects, goes away or its sign-in changes. `signed_in` and `user` are the device's view of the hub's answer to its `browser_auth` (section 13). The hub rewrites every `browser_status` from its own view: while the hub has not accepted the browser's credential, it sets `connected` and `signed_in` to false and `reason` to why, so a plugin that does not know `signed_in` offers no browser either. When the extension itself is not connected, `reason` is empty. The plugin keeps the last one per connection for `check_fn`, `browser_status` and `GET /devices` (the Device object gains `"capabilities"` and `"browser"`).
 
 ## 5. Device side
 
@@ -184,13 +190,16 @@ The device sends it right after the `welcome` (and the `resume` on version 3), a
 - `hermes-device browser install` (alias `install-host`) writes, for the current user and without root, the host manifest `hermes_device.json` (`"allowed_extensions": ["browser@hermes-device"]`, `"path"` = the running binary with symlinks resolved) and `hermes_device.socket` (the socket path for the configured state directory) into `~/.mozilla/native-messaging-hosts` (Linux) or `~/Library/Application Support/Mozilla/NativeMessagingHosts` (macOS). Run it again after moving the binary or changing `store.state-dir`. `hermes-device browser uninstall` removes both files.
 - `hermes-device browser extension --out <dir>` writes the extension's files, which the binary embeds, for loading as a temporary add-on.
 - Firefox starts the binary as `<binary> <manifest path> <extension id>`. `main` recognizes that form, checks the extension id, finds the socket (`HERMES_DEVICE_BROWSER_SOCKET`, else the path in `hermes_device.socket` next to the manifest, else the default state directory), dials it and sends `host_hello` with the extension id and its pid. Then it copies native messaging frames both ways and enforces Firefox's 1 MiB limit towards the browser.
-- The extension sends `hello` (its version and the browser's name and version). The broker answers with `config` (`allow_hosts`). The broker accepts one extension connection; a newer one replaces the older, and the older gets `replaced` first. An extension that was replaced does not reconnect on its own; a click on its toolbar button makes it take over again. So two Firefox instances with the extension no longer take turns.
+- The extension sends `hello` (its version and the browser's name and version). The broker answers with `config` (`allow_hosts`; `hub_url`, the daemon's `hub.url`, which the extension shows as a hint; and `device_id` and `device_name` once the exec leg has had a `welcome`, sent again when they change) and `auth_status`. The extension then sends `auth` (section 13). The broker accepts one extension connection; a newer one replaces the older, and the older gets `replaced` first. An extension that was replaced does not reconnect on its own; a click on its toolbar button makes it take over again. So two Firefox instances with the extension no longer take turns.
 - Wire format on the socket: native messaging frames (32-bit little-endian length, then JSON). Requests are `{"type": "request", "id", "op", "args"}`, answers `{"type": "response", "id", "ok", "result" | "error", "code"}`.
+- Sign-in messages: `{"type": "auth", "token": "hbt_..."}` (extension to daemon; an empty token means signed out; the broker ignores a token that does not start with `hbt_` or is longer than 256 bytes and forgets the token when the extension goes away), `{"type": "auth_status", "state", "user", "reason"}` (daemon to extension; `state` is `signed_out`, `checking`, `signed_in`, `refused` or `offline`), and `{"type": "sign_in"}` and `{"type": "sign_out"}` (daemon to extension: start the hub's sign-in window, or sign out, as the toolbar menu does; only the end-to-end test sends them today, since BiDi cannot open or script extension pages).
 
 ## 6. Extension
 
 - Manifest V2 with a persistent background page. Firefox keeps Manifest V2 supported, and a persistent page keeps the native port open. Manifest V3 in Firefox makes host permissions optional at install, which `tabs.captureTab` needs (inference; check before moving).
-- Permissions: `nativeMessaging`, `tabs`, `tabGroups`, `scripting`, `webRequest`, `webRequestBlocking`, `dns`, `<all_urls>`. Firefox shows these at install.
+- Permissions: `nativeMessaging`, `tabs`, `tabGroups`, `scripting`, `webRequest`, `webRequestBlocking`, `dns`, `identity` (the sign-in window), `storage` (the credential and the hub address), `<all_urls>`. Firefox shows these at install, and asks the user again when an update adds one (section 13.7).
+- The toolbar button opens a menu (`popup.html`): the state, the hub address with a "Change" link to the options page (`options.html`), "Sign in to Hermes" or "Sign out", and "Use this Firefox" after another Firefox took over. Its title is "Sign in to Hermes" while the extension holds no credential.
+- The extension refuses every request with `refused` and "Firefox is not signed in to Hermes" unless the daemon reported `signed_in` for its current credential. The daemon and the hub refuse such requests as well (section 13.4).
 - No content scripts are registered, nothing listens for page messages, and there is no `externally_connectable` or web accessible resource. Page code runs only through `scripting.executeScript` during an operation, in the isolated world.
 - It acts only on tabs that are in its tab group now (tabs it opened, and tabs the user moved in; a tab dragged out is no longer the agent's). Anything else gets `refused`. Firefox puts tabs opened from a grouped tab (a link with a target, `window.open`, the user's middle click) into the same group (source, `Tabbrowser.sys.mjs`), so those become agent tabs too. Planned: count only tabs the agent opened or the user granted with a context menu item, since another extension can also move tabs into the group.
 - It reads, snapshots and screenshots only tabs that show an `http` or `https` page, so going back or redirecting to `file:` or `about:` does not expose those pages. Measured: `read_text` on a user's tab is refused, and so is `navigate` to `file:`.
@@ -211,7 +220,7 @@ Updates: the manifest's `browser_specific_settings.gecko.update_url` is `https:/
 
 What the Release workflow does (`.github/workflows/release.yaml`, job `firefox-extension`, after GoReleaser published the release):
 
-1. It builds the extension with `hermes-device browser extension --out DIR --ext-version X`, where X is the tag without its leading `v`. Only the `version` line differs from the files in `extension/firefox`.
+1. It builds the extension with `hermes-device browser extension --out DIR --ext-version X --hub-url-default URL`, where X is the tag without its leading `v` and URL is the repository variable `HUB_DEFAULT_URL` (left out when the variable is not set). Only the `version` line of `manifest.json` and the `DEFAULT_HUB_URL` line of `defaults.js` differ from the files in `extension/firefox`.
 2. It runs `web-ext lint`, the same validator AMO runs, so problems show in the job log. The Tests workflow runs the same lint on every push.
 3. It signs with `web-ext sign --channel unlisted`, with the repository secrets `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`.
 4. It checks that the signed file has a Mozilla signature and the expected version, then uploads `hermes-device-firefox-<version>.xpi` and `updates.json` to the release.
@@ -228,13 +237,14 @@ One-time setup for the maintainer:
 
 1. Sign in at https://addons.mozilla.org/developers/addon/api/key/ and accept the developer agreement. Generate credentials. The JWT issuer looks like `user:12345:67`.
 2. In a clone of the repository, run `gh secret set AMO_JWT_ISSUER` and `gh secret set AMO_JWT_SECRET`, and paste each value at the prompt.
-3. Tag a release. The first upload creates the add-on on AMO under the id `browser@hermes-device`. That id stays fixed: the host manifest's `allowed_extensions` names it.
+3. Optional: set the default hub address of released extensions with `gh variable set HUB_DEFAULT_URL --body https://hermes.example.com`. It is a repository variable, not a secret: anyone can read it in the released extension. It must be `https`, without a user name, password, query or fragment; the build fails otherwise. Without it, the extension asks each user for the address. Users can change it in the extension's options either way.
+4. Tag a release. The first upload creates the add-on on AMO under the id `browser@hermes-device`. That id stays fixed: the host manifest's `allowed_extensions` names it.
 
 AMO runs automated validation. Unlisted add-ons are signed without a review by hand, but Mozilla may review them later (Mozilla's Extension Workshop documentation). AMO requires a new `version` for every upload, and `data_collection_permissions` in the manifest (present: `"required": ["none"]`). The extension has no minified or generated code, so no source code upload is needed.
 
 For development, load the extension as a temporary add-on instead:
 
-1. `hermes-device browser extension --out ~/hermes-browser-extension`. A release binary writes its own version into the manifest; `--ext-version` sets another.
+1. `hermes-device browser extension --out ~/hermes-browser-extension`. A release binary writes its own version into the manifest; `--ext-version` sets another, and `--hub-url-default` sets the default hub address (`http` is accepted only for `localhost`, `127.0.0.1` and `[::1]`).
 2. In Firefox, open `about:debugging#/runtime/this-firefox`, choose "Load Temporary Add-on..." and pick `manifest.json` in that directory.
 
 A temporary add-on stays until Firefox restarts. While it is loaded, it takes the place of an installed add-on with the same id (inference from Mozilla's documentation; not tested). Firefox Developer Edition, Nightly and ESR can instead set `xpinstall.signatures.required` to false and install an unsigned `.xpi` permanently (inference from Mozilla's documentation; not tested).
@@ -270,15 +280,16 @@ Known gaps:
 - Sensitive field detection is heuristic. A sign-in form in a cross-origin iframe (other than the listed payment providers) or in shadow DOM is not seen.
 - Planned: the user's block list (banks, the password manager) in the device config, so a compromised pod cannot remove it.
 
-The user can stop everything at any time: close the Hermes tab group, disable the extension, or stop `hermes-device run`.
+The user can stop everything at any time: close the Hermes tab group, sign Firefox out in the toolbar menu or remove it under Settings, Computers on the hub, disable the extension, or stop `hermes-device run`.
 
 ## 8. Security analysis
 
 Who can drive the browser:
 
+- Anyone, only while Firefox is signed in to the hub as the user who owns the device, and the hub checks that on every operation (section 13). A browser signed in as another hub user, or not signed in, is refused by the hub, the daemon and the extension.
 - Web pages: no. Native messaging is reachable only from the extension's privileged pages. The extension has no page-facing message channel. Content script refs are invisible to the page.
 - Other users on the machine: no. The socket is 0600 in a 0700 directory, and the broker checks the peer uid on Linux. There is no TCP port.
-- Other processes of the same user: yes, by connecting to the socket and pretending to be a host, or by editing the manifest. They can already read the Firefox profile and the device token, so this is not a new boundary. The broker accepts only `host_hello` for the expected extension id, which stops accidents, not attacks.
+- Other processes of the same user: yes, by connecting to the socket and pretending to be a host, or by editing the manifest. They can already read the Firefox profile (with the browser credential in the extension's storage) and the device token, so this is not a new boundary. The sign-in does not defend against them; it makes the link between the browser and a hub user explicit and revocable instead of following from the OS account. The broker accepts only `host_hello` for the expected extension id, which stops accidents, not attacks.
 - Other extensions: no. Firefox starts the host only for ids in `allowed_extensions`, and the host checks the id again.
 - Other extensions: they cannot talk to the host, but one with the `tabs` permission may be able to move a tab into the Hermes group and so hand it to the agent (suspected, not tested).
 - The Hermes pod: yes, within the rules above. A compromised pod can do what the agent can: act in the Hermes tab group with the user's cookies. It cannot read tabs outside the group, cannot read `file:` or `about:` pages, and cannot reach loopback or private network hosts the device did not allow. This matches the exec leg, where a compromised pod can run commands in the device's roots.
@@ -308,7 +319,7 @@ Prompt injection: page text reaches the model. The confirmation rules in section
 - `internal/device`: the `browser` capability, `browser`, `browser_result` and `browser_status` on the exec leg; `cmd/run.go` starts the broker when `browser.enabled` is on; `cmd/browser.go` is `hermes-device browser`.
 - `plugin/device/browser.py`: the `device-browser` toolset and its `pre_tool_call` hook. `plugin/device/core.py` and `dashboard/plugin_api.py`: capability negotiation and browser calls on the exec leg.
 - Unit tests: `internal/device/browser_test.go`, `internal/browser/*/..._test.go`, and `plugin/device/tests/test_browser.py` (the tools, the approvals and the negotiation with a fake device and browser, through a fresh Hermes `ToolRegistry`).
-- `internal/browser/bidi` and `internal/browser/firefoxtest`: an end-to-end test that builds the binary, writes the host manifest into a fresh `HOME`, starts headless Firefox on a fresh profile with `--no-remote`, loads the extension as a temporary add-on over BiDi (`webExtension.install`; temporary add-ons skip signing), and drives it through the broker. When `hermes` is on `PATH` it then runs the real device client against the broker, with `plugin/device/tests/test_browser_e2e.py` on the other end of the exec leg in the Hermes runtime, and drives Firefox through the plugin's tools and approval hook.
+- `internal/browser/bidi` and `internal/browser/firefoxtest`: an end-to-end test that signs the extension in through a fake hub (`signin_test.go`: the consent page, the redirect that `browser.identity` catches, the PKCE code exchange, and sign-out with revocation), builds the binary, writes the host manifest into a fresh `HOME`, starts headless Firefox on a fresh profile with `--no-remote`, loads the extension as a temporary add-on over BiDi (`webExtension.install`; temporary add-ons skip signing), and drives it through the broker. When `hermes` is on `PATH` it then runs the real device client against the broker, with `plugin/device/tests/test_browser_e2e.py` on the other end of the exec leg in the Hermes runtime, and drives Firefox through the plugin's tools and approval hook.
 
 Run the end-to-end test (it needs the network for example.com):
 
@@ -316,7 +327,7 @@ Run the end-to-end test (it needs the network for example.com):
 HERMES_BROWSER_E2E=1 go test -count=1 -v -run TestFirefoxEndToEnd ./internal/browser/firefoxtest/
 ```
 
-It opens example.com in a new tab in the Hermes group, checks the title, the text, the snapshot and a PNG screenshot, checks that a link to another site is refused without approval and followed with it, fills a form on a local test server and checks that its submit is refused without approval and works with it, checks that opening a new site without approval is refused, checks the private network block (also for IPv4-mapped IPv6 literals) and the refusals, checks that a submit button inside a link and one outside its form are submits, and checks that every action on a page with password and one-time code fields needs confirmation. The plugin part does the same through `browser_navigate`, `browser_snapshot`, `browser_vision`, `browser_click`, `browser_back`, `browser_type` and `browser_tabs`. BiDi is used only to install the unsigned extension in the test; the browser control itself goes through the extension.
+It first checks that the extension refuses `tabs_list` before it is signed in, has the daemon start the sign-in (BiDi cannot open extension pages, so the toolbar menu is not clicked), approves the fake hub's consent page in the window `browser.identity` opens, and checks that the credential reaches the daemon. Measured: Firefox loads the authorize URL twice, once as the `checkRedirected` probe and once in the window. At the end it signs out and checks that the fake hub got the revocation and the daemon dropped the credential. It opens example.com in a new tab in the Hermes group, checks the title, the text, the snapshot and a PNG screenshot, checks that a link to another site is refused without approval and followed with it, fills a form on a local test server and checks that its submit is refused without approval and works with it, checks that opening a new site without approval is refused, checks the private network block (also for IPv4-mapped IPv6 literals) and the refusals, checks that a submit button inside a link and one outside its form are submits, and checks that every action on a page with password and one-time code fields needs confirmation. The plugin part does the same through `browser_navigate`, `browser_snapshot`, `browser_vision`, `browser_click`, `browser_back`, `browser_type` and `browser_tabs`. BiDi is used only to install the unsigned extension in the test; the browser control itself goes through the extension.
 
 ## 11. Enable it
 
@@ -327,8 +338,9 @@ On the computer:
 1. Set `browser.enabled: true` in the hermes-device config (and `browser.allow-hosts` for any LAN or loopback host the agent may open).
 2. Run `hermes-device browser install` as the user who runs Firefox.
 3. Restart `hermes-device run`.
-4. Install the signed extension from a release (section 6.1). Its toolbar button shows "Hermes: connected" when it reaches the daemon.
-5. Bind a session to this device with `/device <device> <dir>`. `browser_status` in that session shows whether the agent can use the browser.
+4. Install the signed extension from a release (section 6.1).
+5. Sign it in: the toolbar button's title is "Sign in to Hermes". Open its menu, set the hub address if asked, choose "Sign in to Hermes", sign in on the hub as the account that paired this computer and choose Allow. The title then shows "Hermes: connected as <user>".
+6. Bind a session to this device with `/device <device> <dir>`. `browser_status` in that session shows whether the agent can use the browser.
 
 ## 12. Open risks
 
@@ -342,3 +354,83 @@ On the computer:
 - The approval rules have the gaps listed in section 7.
 - A Firefox container for agent tabs would limit the agent to sites the user chose to sign in to there, which shrinks what a compromised pod or an injected instruction can reach. It costs the user one sign-in per site. Worth trying before release.
 - The extension keeps its group and tab ids in memory: after a Firefox restart it creates a new Hermes group, and old Hermes tabs are no longer the agent's.
+- The browser credential sits in the extension's `storage.local` in the Firefox profile, readable by the user's own processes (section 13.6).
+
+## 13. Hub sign-in
+
+Firefox must be signed in to hermes-hub as the hub user who owns the device before the agent can use it. Before this, the only link between the extension and a hub user was that Firefox could start the native host and reach the daemon's socket as the same OS user.
+
+### 13.1 Flow
+
+The extension uses `browser.identity.launchWebAuthFlow` with the hub as the authorization server and a PKCE (S256) code exchange.
+
+1. The user chooses "Sign in to Hermes" in the toolbar menu. The extension needs the daemon to be connected, because the daemon tells it the device id and name (`config`).
+2. The extension makes a random PKCE verifier and `state`, and keeps a random browser instance id in `storage.local`. It opens `<hub>/browser/authorize` with `response_type=code`, `client_id=browser@hermes-device`, `redirect_uri` (Firefox's `identity.getRedirectURL()`: `https://<SHA-1 of the extension id>.extensions.allizom.org/`, which `protocol.BrowserRedirectURL` computes), `state`, `code_challenge`, `code_challenge_method=S256`, `device_id`, `instance` and `browser` (such as `Firefox 157.0.1`).
+3. Firefox first loads that URL without a window and follows redirects with the user's cookies (source, Firefox 157 `parent/ext-identity.js`, `checkRedirected`). The hub always answers with a page, never with a redirect to the extension, so Firefox then opens a window on it. GET has no side effects.
+4. The hub sends a user without a hub session through its normal Authentik login and back. It shows a consent page that names the hub user, the computer (name and host name) and the browser, with Allow and Do not allow. It refuses, without redirecting, a wrong `client_id` or `redirect_uri`, a device it does not know, and a device of another hub user ("This computer is connected to Hermes as another account").
+5. Allow posts the form with the session's CSRF token and a same-origin check. The hub stores a one-time code (its hash, bound to the user, device, instance, browser, challenge and redirect URI, valid 2 minutes) and redirects with 303 to `redirect_uri?code=...&state=...`. Firefox catches the request to the redirect URL in the window, cancels it and closes the window; the request never leaves the browser.
+6. The extension checks `state` and posts `{grant_type, code, code_verifier, redirect_uri, device_id, instance}` to `<hub>/api/browser/token`. The hub checks the verifier against the challenge and that the device still belongs to the user, and answers `{token, session_id, user, device_id, device_name}`.
+7. The extension stores the token, the hub address, the user and the device in `storage.local` and sends `auth` to the daemon.
+
+Why not a device-code flow: it needs no redirect, but the user copies a code, the extension polls, and a code shown on one screen can be approved by someone tricked into it. `launchWebAuthFlow` is built into Firefox for MV2 extensions, keeps the code inside the browser, and binds it to this extension's redirect URL and the PKCE verifier. Its cost is the `identity` permission.
+
+### 13.2 Credential
+
+The hub issues one long-lived, revocable token per (hub user, device, browser instance): `hbt_` and 43 base64url characters (32 random bytes). The hub stores only its SHA-256. A new sign-in of the same instance on the same device replaces the earlier token.
+
+The token ends when the user removes the browser under Settings, Computers, when the extension signs out (it calls `POST /api/browser/revoke` with the token as a bearer), when the device is removed, or after 90 days without use. A short-lived access token with a refresh token was not chosen: the hub checks the token in its store on every browser operation anyway (section 13.4), so revocation is immediate without short lifetimes, and the only party that presents the token is the device's daemon over its own authenticated exec leg. A refresh token would add rotation state to the extension and the daemon without closing a gap: whoever can read the refresh token from the profile can also read the device token.
+
+### 13.3 Exec leg messages
+
+The device presents the credential on the exec leg; the hub, not the plugin, answers. These messages are part of the `browser` capability.
+
+```json
+{"type": "browser_auth", "token": "hbt_..."}
+{"type": "browser_auth_result", "ok": true, "user": "alice", "session_id": "..."}
+{"type": "browser_auth_result", "ok": false, "code": "wrong_user", "error": "Firefox is signed in to Hermes with another account than the one this computer belongs to. ..."}
+```
+
+| `code` | Meaning |
+|---|---|
+| `signed_out` | The token was empty: the extension is signed out or not connected |
+| `invalid` | The hub does not know the token, or it was revoked or expired |
+| `wrong_user` | The token belongs to another hub user than the device's owner |
+| `other_device` | The token was issued for another device (for example before `hermes-device login` paired this computer again) |
+| `unavailable` | The hub could not check the token; the device sends it again after <!-- docgen:const pkg=internal/device name=AuthRetry print=config -->`30s`<!-- /docgen:const --> |
+
+- The device sends `browser_auth` after the `welcome` (and the `resume`), and whenever the extension sends another token. The hub answers each with one `browser_auth_result` and never forwards `browser_auth` to the plugin. Later, when the hub drops the sign-in (revoked, device removed, expired), it sends an unsolicited `browser_auth_result` with `ok: false`.
+- The hub drops a `browser_auth_result` that comes from the plugin.
+- A device keeps the hub's answer for its current token. While answers are due, it counts as not signed in. A hub that does not answer (a release from before this change) leaves the device not signed in, and the status says the hub may need an update.
+
+### 13.4 Enforcement
+
+At the hub, on each exec leg:
+
+- The hub reads the type of every message both ways with `protocol.MessageType`, and drops a message that is not a single JSON object, that has a member name twice, that has a member other than `type` whose name equals `type` without regard to case, or whose `type` is not a string. The device reads its messages with the same function. Go's struct decoding matches names without regard to case and keeps the first value when a later one is `null`, while Python keeps the last value of a name; without these rules, `{"type": "browser", "type": null}` would be a `browser` request to the device and a message without a type to a lenient hub.
+- For a `browser` request from the plugin, the hub looks the leg's browser session up in its store again (not revoked, not expired, same device, same user as the device's owner). If it does not hold, the hub answers the plugin itself with `browser_result` code `not_signed_in` and does not forward the request.
+- The hub rewrites `browser_status` (section 4.3).
+
+On the device: `hermes-device run` refuses every `browser` request with `not_signed_in` unless the hub accepted the extension's current token on this leg, and cancels the requests in flight (answering `cancelled`) when the hub drops the sign-in or the extension sends another token. The extension may still finish an operation it already started (section 4.1). The extension refuses every request unless the daemon reported `signed_in`, and agent tabs may not open the hub it signs in to or the `extensions.allizom.org` redirect host, so the agent cannot approve a sign-in for itself in its own tabs.
+
+A `browser` request that passed the hub's store check just before a revocation still reaches the device; the device cancels it when the hub's drop arrives.
+
+A browser of another hub user cannot drive the device: the consent page refuses to issue a token for a device the user does not own, and the hub refuses a token whose user is not the device's owner (`wrong_user`) or whose device is another (`other_device`).
+
+### 13.5 Revocation
+
+Settings, Computers on the hub lists each computer's signed-in browsers (browser, when signed in, last used) with Remove. Remove revokes the token in the store. Every replica checks the store before each browser operation, so the next operation is refused on every replica at once. The replica that served Remove also drops the sign-in from the device's leg at once and tells the device and the plugin; another replica does so within `device.recheck_interval` (default 10 seconds), and at the next operation. "Sign out" in the extension revokes the token at the hub and sends an empty token to the daemon, which the hub answers with `signed_out` at once. When the hub cannot be reached, the extension still forgets the token and tells the user to remove the browser on the hub.
+
+### 13.6 Hub address
+
+The extension's own setting decides where it signs in. Released extensions carry a default from the repository variable `HUB_DEFAULT_URL` (section 6.1); otherwise the user enters it. The options page shows the daemon's `hub.url` as a hint and offers to use it. The address must be `https` (`http` only for `localhost`, `127.0.0.1` and `[::1]`, for tests), without a user name, password, query or fragment; trailing slashes are removed. Changing it signs the extension out and revokes the old token at the old hub when that hub can be reached. An extension signed in at another hub than the daemon's gets `invalid` from the daemon's hub: the hub that issued it is not the one that checks it.
+
+The token sits in the extension's `storage.local`, inside the Firefox profile. A process of the same OS user can read it, as it can read the device token; the token is useful only together with that device's exec leg, because the hub accepts it only from the device it was issued for.
+
+The sign-in is a consent and revocation step, not a boundary against code that already runs as the user. A command the agent runs on the device (the exec leg) runs as the same OS user as Firefox and the daemon: it can read the token from the profile, connect to the broker socket, or drive Firefox by other means. The sign-in decides which hub user's agent may use the browser through the extension, and lets the user end that at any time.
+
+### 13.7 Upgrade and rollout
+
+- Exec leg commands keep working in every order: an older hub forwards `browser_auth` to the plugin, which ignores unknown types, and an older device sends none.
+- Browser control stops until all three parts are new and the user signs in: a new hub refuses browser operations of a device that presents no credential, and a new daemon refuses them until the hub accepted one. An older plugin reads only `connected`, which the hub sets to false while the browser is not signed in.
+- Order: the hub first (it adds migration 7 and only refuses; it can roll back without data loss), then `hermes-device` and its plugin, then the extension. The extension updates itself from the next signed release; because it asks for the new `identity` and `storage` permissions, Firefox asks the user to accept them before it installs the update (Mozilla's documentation; not tested here). Then each user signs Firefox in once.
+- A paired device needs nothing new. If the computer is paired again (`hermes-device login`), its device id changes and the old sign-in reports `other_device`: sign in again.
