@@ -1,0 +1,233 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 12:17:38 -0600
+Subject: [PATCH] feat(tool-search): tools.tool_search.eager keeps named tools
+ and toolsets direct
+
+A tool, or every tool of a toolset, named in tools.tool_search.eager is never
+deferred behind the tool_search bridge, so the model calls it directly. A tool
+that defer names itself still defers inside an eager toolset. Default [] keeps
+today's split.
+---
+ hermes_cli/config_defaults.py                 |  4 ++
+ tests/tools/test_tool_search.py               | 51 +++++++++++++++++++
+ tools/tool_search.py                          | 37 +++++++++++---
+ .../docs/user-guide/features/tool-search.md   |  2 +
+ 4 files changed, 86 insertions(+), 8 deletions(-)
+
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 8dca8910e4..e38aa68221 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -2001,6 +2001,10 @@ DEFAULT_CONFIG = {
+                 "show_tip", "desktop_project", "close_terminal",
+                 "set_theme", "read_terminal", "read_window_below", "focus_pane",
+             ],
++            # Tool or toolset names that are never deferred, for tools used on most turns (a
++            # plugin's browser toolset, one MCP read tool). A tool named in `defer` still defers
++            # when only its toolset is listed here. [] keeps the default split.
++            "eager": [],
+         },
+         # Remote connector discovery/lifecycle through the Nous tool gateway.
+         # The flag is the user's off switch; availability additionally requires
+diff --git a/tests/tools/test_tool_search.py b/tests/tools/test_tool_search.py
+index 2a89fab8d6..4c7ff8a8e4 100644
+--- a/tests/tools/test_tool_search.py
++++ b/tests/tools/test_tool_search.py
+@@ -59,6 +59,18 @@ class TestConfigParsing:
+             assert ToolSearchConfig.from_raw({"defer": "todo_list"}).effective_defer_tools == configured
+         assert any(r.levelname == "WARNING" for r in caplog.records)
+ 
++    def test_eager_list_parsed(self, caplog):
++        from hermes_cli.config_defaults import DEFAULT_CONFIG
++        from tools.tool_search import ToolSearchConfig
++
++        assert DEFAULT_CONFIG["tools"]["tool_search"]["eager"] == []
++        assert ToolSearchConfig.from_raw(None).eager_tools == frozenset()
++        cfg = ToolSearchConfig.from_raw({"eager": ["mcp_notes_fetch", " ", "web-plugin "]})
++        assert cfg.eager_tools == frozenset({"mcp_notes_fetch", "web-plugin"})
++        with caplog.at_level("WARNING", logger="tools.tool_search"):
++            assert ToolSearchConfig.from_raw({"eager": "mcp_notes_fetch"}).eager_tools == frozenset()
++        assert any(r.levelname == "WARNING" for r in caplog.records)
++
+     def test_bool_true_maps_to_auto(self):
+         from tools.tool_search import ToolSearchConfig
+         cfg = ToolSearchConfig.from_raw(True)
+@@ -168,6 +180,45 @@ class TestClassification:
+ 
+ 
+ 
++    def test_eager_tool_and_toolset_never_defer(self, monkeypatch):
++        """tools.tool_search.eager keeps named tools, and every tool of a named toolset, out of
++        the bridge; a tool that defer names itself still defers inside an eager toolset."""
++        import tools.tool_search as ts
++        toolsets = {"mcp_notes_fetch": "mcp-notes", "mcp_notes_query": "mcp-notes",
++                    "web_open": "web-plugin", "web_tabs": "web-plugin", "other_tool": "other-plugin"}
++        monkeypatch.setattr(ts, "_registry_toolset", toolsets.get)
++        eager = frozenset({"mcp_notes_fetch", "web-plugin"})
++        assert not ts.is_deferrable_tool_name("mcp_notes_fetch", eager_tools=eager)
++        assert ts.is_deferrable_tool_name("mcp_notes_query", eager_tools=eager)
++        assert not ts.is_deferrable_tool_name("web_open", eager_tools=eager)
++        assert ts.is_deferrable_tool_name("other_tool", eager_tools=eager)
++        assert not ts.is_deferrable_tool_name(
++            "mcp_notes_fetch", frozenset({"mcp_notes_fetch"}), eager_tools=eager)
++        assert ts.is_deferrable_tool_name("web_tabs", frozenset({"web_tabs"}), eager_tools=eager)
++        assert ts.is_deferrable_tool_name("web_open", eager_tools=frozenset())
++
++        visible, deferred = ts.classify_tools([_td(n) for n in toolsets], eager_tools=eager)
++        assert {td["function"]["name"] for td in visible} == {"mcp_notes_fetch", "web_open", "web_tabs"}
++        assert {td["function"]["name"] for td in deferred} == {"mcp_notes_query", "other_tool"}
++
++    def test_eager_config_reaches_assembly_and_bridge_scope(self, monkeypatch):
++        """The configured eager list keeps a plugin toolset direct in the assembled tools array,
++        and tool_call refuses it with the call-it-directly correction."""
++        import tools.tool_search as ts
++        toolsets = {"web_open": "web-plugin", "other_tool": "other-plugin"}
++        monkeypatch.setattr(ts, "_registry_toolset", toolsets.get)
++        cfg = ts.ToolSearchConfig.from_raw({"enabled": "on", "eager": ["web-plugin"]})
++        monkeypatch.setattr(ts, "load_config_readonly", lambda: cfg)
++        defs = [_td("terminal", "Run shell"), _td("web_open", "Open a page"), _td("other_tool", "Other")]
++
++        names = {td["function"]["name"] for td in ts.assemble_tool_defs(
++            defs, context_length=200_000, config=cfg).tool_defs}
++        assert {"terminal", "web_open", ts.TOOL_SEARCH_NAME} <= names
++        assert "other_tool" not in names
++        assert ts.scoped_deferrable_names(defs) == frozenset({"other_tool"})
++        assert ts.is_deferrable_tool_name("other_tool")
++        assert not ts.is_deferrable_tool_name("web_open")
++
+     def test_classify_keeps_unknown_in_visible(self):
+         """A tool we can't classify stays visible — never silently dropped.
+ 
+diff --git a/tools/tool_search.py b/tools/tool_search.py
+index ea4edbf0fc..eb3252f375 100644
+--- a/tools/tool_search.py
++++ b/tools/tool_search.py
+@@ -52,6 +52,9 @@ class ToolSearchConfig:
+     listing_max_tokens: int = 4000  # budget = min(this, threshold_pct% of context)
+     # None = curated default; an explicit list replaces it wholesale ([] = defer no core tools).
+     defer_tools: Optional[frozenset] = None
++    # Tool or toolset names that never defer (``eager``); a tool named in ``defer`` still
++    # defers when only its toolset is eager.
++    eager_tools: frozenset = frozenset()
+ 
+     @property
+     def effective_defer_tools(self) -> frozenset:
+@@ -73,6 +76,12 @@ class ToolSearchConfig:
+                 "(e.g. [todo_list, computer_use]; [] keeps every tool eager) - "
+                 "using the curated default set.", defer_raw)
+             defer_raw = None
++        eager_raw = raw.get("eager")
++        if eager_raw is not None and not isinstance(eager_raw, (list, tuple, set)):
++            logger.warning(
++                "tools.tool_search.eager is %r, expected a YAML list of tool or toolset names "
++                "(e.g. [web_search, mcp-github]) - keeping every tool's default.", eager_raw)
++            eager_raw = None
+         return cls(
+             enabled=_tri_state(raw.get("enabled", "auto")),
+             threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),
+@@ -82,7 +91,8 @@ class ToolSearchConfig:
+             listing=_tri_state(raw.get("listing", "auto")),
+             listing_max_tokens=_clamped_int(raw.get("listing_max_tokens"), 4000, 200, 60000),
+             defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
+-                         if isinstance(defer_raw, (list, tuple, set)) else None))
++                         if isinstance(defer_raw, (list, tuple, set)) else None),
++            eager_tools=frozenset(str(n).strip() for n in eager_raw or () if str(n).strip()))
+ 
+ 
+ _TRI_STATE_ALIASES = {"true": "on", "1": "on", "yes": "on", "false": "off", "0": "off", "no": "off"}
+@@ -150,17 +160,25 @@ _DIRECT_SURFACE_TOOLSETS = CLIENT_SURFACE_TOOLSETS | TOOLSET_SESSION_PLATFORMS.k
+ _DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
+ 
+ 
+-def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:
++def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None,
++                            eager_tools: Optional[frozenset] = None) -> bool:
+     """True if a tool is *eligible* for deferral: named in ``defer_tools`` (curated set or
+     user override), OR an MCP tool, OR neither core nor a session-gated GUI surface (i.e. a
+-    plugin tool). Bridge names never defer."""
++    plugin tool). Bridge names never defer, and neither does a tool named in ``eager_tools``
++    (``None`` reads ``tools.tool_search.eager``) or whose toolset is named there, unless
++    ``defer_tools`` names the tool itself."""
+     if name in BRIDGE_TOOL_NAMES:
+         return False
++    eager = load_config_readonly().eager_tools if eager_tools is None else eager_tools
++    if name in eager:
++        return False
+     if defer_tools is not None and name in defer_tools:
+         return True
+     if name in _core_tool_names():
+         return False
+     toolset = _registry_toolset(name)  # None (unregistered/malformed) never defers
++    if toolset is not None and toolset in eager:
++        return False
+     return toolset is not None and (
+         toolset.startswith("mcp-") or toolset not in _DIRECT_SURFACE_TOOLSETS)
+ 
+@@ -178,20 +196,23 @@ def session_tool_names(tool_defs: Iterable[dict[str, Any]]) -> frozenset[str]:
+ 
+ 
+ def classify_tools(tool_defs: list[dict[str, Any]], defer_tools: Optional[frozenset] = None,
++                   eager_tools: Optional[frozenset] = None,
+                    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+     """Split a tool-defs list into (visible, deferrable); bridge tools are dropped (re-added
+     after classification)."""
+     visible: list[dict[str, Any]] = []
+     deferrable: list[dict[str, Any]] = []
++    eager = load_config_readonly().eager_tools if eager_tools is None else eager_tools
+     for td, name in zip(tool_defs, _tool_def_names(tool_defs)):
+         if name not in BRIDGE_TOOL_NAMES:
+-            (deferrable if is_deferrable_tool_name(name, defer_tools) else visible).append(td)
++            (deferrable if is_deferrable_tool_name(name, defer_tools, eager) else visible).append(td)
+     return visible, deferrable
+ 
+ 
+ def _deferrable_in(tool_defs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+     """Deferrable subset of pre-assembly ``tool_defs`` under the read-only user config."""
+-    return classify_tools(tool_defs, load_config_readonly().effective_defer_tools)[1]
++    config = load_config_readonly()
++    return classify_tools(tool_defs, config.effective_defer_tools, config.eager_tools)[1]
+ 
+ 
+ def estimate_tokens_from_schemas(tool_defs: Iterable[dict[str, Any]]) -> int:
+@@ -351,7 +372,7 @@ def assemble_tool_defs(tool_defs: list[dict[str, Any]], *, context_length: Optio
+     config = config or load_config()
+     incoming = [td for td, name in zip(tool_defs, _tool_def_names(tool_defs))
+                 if name not in BRIDGE_TOOL_NAMES]
+-    visible, deferrable = classify_tools(incoming, config.effective_defer_tools)
++    visible, deferrable = classify_tools(incoming, config.effective_defer_tools, config.eager_tools)
+     connections_granted = connections_in_scope(incoming)
+     if not deferrable:
+         if should_activate(config, 0, context_length, connections_granted=connections_granted):
+@@ -549,9 +570,9 @@ def scoped_deferrable_names(tool_defs: list[dict[str, Any]]) -> frozenset[str]:
+     """Deferrable names in the *pre-assembly* ``tool_defs`` of the session scope — the
+     universe ``tool_call`` may reach. Gates bridge dispatch AND the executor unwrap so a
+     restricted session cannot invoke an out-of-scope tool via the bridge."""
+-    defer_tools = load_config_readonly().effective_defer_tools
++    config = load_config_readonly()
+     return frozenset(n for n in _tool_def_names(tool_defs)
+-                     if n and is_deferrable_tool_name(n, defer_tools))
++                     if n and is_deferrable_tool_name(n, config.effective_defer_tools, config.eager_tools))
+ 
+ 
+ def out_of_scope_reason(name: str) -> Optional[str]:
+diff --git a/website/docs/user-guide/features/tool-search.md b/website/docs/user-guide/features/tool-search.md
+index 9dfc352751..50d8c97b4c 100644
+--- a/website/docs/user-guide/features/tool-search.md
++++ b/website/docs/user-guide/features/tool-search.md
+@@ -122,6 +122,7 @@ tools:
+       - text_to_speech
+       - manage_connections
+       - manage_catalog
++    eager: []           # tool or toolset names that never defer
+ ```
+ 
+ The default `defer` list also includes the selected desktop GUI helpers listed
+@@ -137,6 +138,7 @@ shipped curated set; the runtime fallback uses the same value.
+ | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
+ | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
+ | `defer` | Curated list | Tool names replaced by the bridge by default. The list may include cold built-in tools as well as MCP/plugin tools; an explicit list replaces it, and `[]` disables deferral for every tool. |
++| `eager` | `[]` | Tool or toolset names that are never deferred. Their full schemas stay in the tools array, so the model calls them directly, without `tool_search`, `tool_describe` or `tool_call`. Use it for tools the model needs on most turns, such as one MCP read tool or a plugin toolset (`[mcp-github, my-plugin-toolset]`). A tool's own availability check still applies, so an eager tool that is unavailable is not sent. A tool named in `defer` still defers when only its toolset is listed here. |
+ 
+ Per-call array caps are internal safety bounds, not configuration. Over-cap
+ calls return an error so the model can retry with a smaller batch.
