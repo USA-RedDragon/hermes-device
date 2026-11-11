@@ -69,6 +69,12 @@ func TestNoticeClaimSettleRemind(t *testing.T) {
 		if ms, _ := s.NoticeMessages(ctx, id); len(ms) != 1 || ms[0].MessageID != 9 {
 			t.Fatalf("messages = %+v", ms)
 		}
+		if got, ok, err := s.NoticeForMessage(ctx, 5, 9); got != id || !ok || err != nil {
+			t.Fatalf("notice for message = %q %v %v", got, ok, err)
+		}
+		if _, ok, _ := s.NoticeForMessage(ctx, 5, 10); ok {
+			t.Fatal("found a notice for another message")
+		}
 		due, err := s.DueReminders(ctx, now, now)
 		if err != nil || len(due) != 2 {
 			t.Fatalf("due = %+v %v", due, err)

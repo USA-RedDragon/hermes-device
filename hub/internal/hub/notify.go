@@ -123,8 +123,10 @@ type NotifyStore interface {
 
 	// TelegramIDs lists the Telegram accounts linked to user.
 	TelegramIDs(ctx context.Context, user string) ([]int64, error)
+	// TelegramGroup is the forum group user linked, ok false for none.
+	TelegramGroup(ctx context.Context, user string) (chatID int64, ok bool, err error)
 	// TelegramAttached reports whether one of user's Telegram chats is
-	// attached to the session.
+	// attached to the session, or the session has a topic in user's group.
 	TelegramAttached(ctx context.Context, user, backendID, sessionID string) (bool, error)
 
 	// CronMark is the last run the hub saw of a scheduled job; ok is

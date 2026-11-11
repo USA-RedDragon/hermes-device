@@ -188,6 +188,21 @@ var migrations = []migration{
 			`CREATE TABLE cron_marks (backend_id TEXT NOT NULL, job_id TEXT NOT NULL, mark TEXT NOT NULL, PRIMARY KEY (backend_id, job_id))`,
 		},
 	},
+	{
+		version: 11,
+		sqlite: []string{
+			`CREATE TABLE telegram_groups ("user" TEXT PRIMARY KEY, chat_id INTEGER NOT NULL UNIQUE, linked_at INTEGER NOT NULL)`,
+			`CREATE TABLE telegram_topics (chat_id INTEGER NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL,
+				thread_id INTEGER NOT NULL, "user" TEXT NOT NULL, name TEXT NOT NULL, seen_at INTEGER NOT NULL,
+				PRIMARY KEY (chat_id, backend_id, session_id))`,
+		},
+		postgres: []string{
+			`CREATE TABLE telegram_groups ("user" TEXT PRIMARY KEY, chat_id BIGINT NOT NULL UNIQUE, linked_at BIGINT NOT NULL)`,
+			`CREATE TABLE telegram_topics (chat_id BIGINT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL,
+				thread_id BIGINT NOT NULL, "user" TEXT NOT NULL, name TEXT NOT NULL, seen_at BIGINT NOT NULL,
+				PRIMARY KEY (chat_id, backend_id, session_id))`,
+		},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas

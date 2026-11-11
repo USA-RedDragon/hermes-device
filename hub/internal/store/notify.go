@@ -179,6 +179,16 @@ func (s *Store) AddNoticeMessage(ctx context.Context, id string, m hub.NoticeMes
 		id, m.ChatID, m.MessageID)
 }
 
+// NoticeForMessage is the notice that a Telegram message shows.
+func (s *Store) NoticeForMessage(ctx context.Context, chatID, messageID int64) (string, bool, error) {
+	var id string
+	err := s.row(ctx, `SELECT notice_id FROM notice_messages WHERE chat_id = ? AND message_id = ?`, chatID, messageID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return id, err == nil, err
+}
+
 // NoticeMessages lists the Telegram messages that show a notice.
 func (s *Store) NoticeMessages(ctx context.Context, id string) ([]hub.NoticeMessage, error) {
 	rows, err := s.db.QueryContext(ctx, s.q(`SELECT chat_id, message_id FROM notice_messages WHERE notice_id = ? ORDER BY message_id`), id)
@@ -314,9 +324,21 @@ func (s *Store) TelegramIDs(ctx context.Context, user string) ([]int64, error) {
 // attached to the session.
 func (s *Store) TelegramAttached(ctx context.Context, user, backendID, sessionID string) (bool, error) {
 	var n int
-	err := s.row(ctx, `SELECT COUNT(*) FROM telegram_chats WHERE "user" = ? AND backend_id = ? AND session_id = ?`,
-		user, backendID, sessionID).Scan(&n)
+	err := s.row(ctx, `SELECT (SELECT COUNT(*) FROM telegram_chats WHERE "user" = ? AND backend_id = ? AND session_id = ?)
+		+ (SELECT COUNT(*) FROM telegram_topics t JOIN telegram_groups g ON g.chat_id = t.chat_id AND g."user" = t."user"
+		WHERE t."user" = ? AND t.backend_id = ? AND t.session_id = ? AND t.thread_id <> 0)`,
+		user, backendID, sessionID, user, backendID, sessionID).Scan(&n)
 	return n > 0, err
+}
+
+// TelegramGroup is the forum group user linked.
+func (s *Store) TelegramGroup(ctx context.Context, user string) (int64, bool, error) {
+	var id int64
+	err := s.row(ctx, `SELECT chat_id FROM telegram_groups WHERE "user" = ?`, user).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	return id, err == nil, err
 }
 
 // CronMark is the last run the hub saw of a scheduled job.

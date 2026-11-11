@@ -56,8 +56,10 @@ type Service interface {
 	Backends(ctx context.Context, user string) ([]Backend, error)
 	Sessions(ctx context.Context, user string) ([]Session, error)
 	NewSession(ctx context.Context, user, backendID string) (Session, error)
-	// Attach streams events after sinceSeq (0 for a fresh attach). The
-	// returned func detaches and closes the channel.
+	// Attach streams events after sinceSeq (0 for a fresh attach). With
+	// SinceNow it streams a snapshot, the events of the turn that runs now,
+	// if any, and what comes after. The returned func detaches and closes
+	// the channel.
 	Attach(ctx context.Context, user, backendID, sessionID string, sinceSeq int64) (<-chan Event, func(), error)
 	// Prompt submits text as the session's next input. While the backend
 	// restarts or cannot be reached, the hub holds it and submits it once
@@ -225,14 +227,51 @@ type TelegramChat struct {
 	SessionID string
 }
 
-// TelegramState keeps the Telegram bot's chat attachments and update
-// offset, so the hub replica that takes the bot over carries on where the
-// last one stopped.
+// SinceNow is the sinceSeq of an Attach that skips the turns that ended
+// before it.
+const SinceNow int64 = -1
+
+// TelegramGroup is the forum group a hub user linked to the Telegram bot.
+// Each of the user's chats gets a topic there.
+type TelegramGroup struct {
+	User     string
+	ChatID   int64
+	LinkedAt time.Time
+}
+
+// TelegramTopic is the forum topic of one chat. ThreadID 0 marks a topic
+// that was deleted or closed in Telegram: the chat gets a new one when it
+// runs again a while after Seen.
+type TelegramTopic struct {
+	ChatID    int64
+	ThreadID  int64
+	User      string
+	BackendID string
+	SessionID string
+	// Name is the topic's name as the bot last set it.
+	Name string
+	// Seen is when the bot made or dropped the topic.
+	Seen time.Time
+}
+
+// TelegramState keeps the Telegram bot's chat attachments, linked groups,
+// topics and update offset, so the hub replica that takes the bot over
+// carries on where the last one stopped.
 type TelegramState interface {
 	SaveTelegramChat(ctx context.Context, c TelegramChat) error
 	TelegramChats(ctx context.Context) ([]TelegramChat, error)
 	TelegramOffset(ctx context.Context, botID int64) (int64, error)
 	SetTelegramOffset(ctx context.Context, botID, offset int64) error
+	// LinkTelegramGroup links g.ChatID to g.User. It replaces the user's
+	// earlier group and forgets its topics.
+	LinkTelegramGroup(ctx context.Context, g TelegramGroup) error
+	// UnlinkTelegramGroup forgets a group and its topics.
+	UnlinkTelegramGroup(ctx context.Context, chatID int64) error
+	TelegramGroups(ctx context.Context) ([]TelegramGroup, error)
+	// SaveTelegramTopic records the topic of a chat in a group.
+	SaveTelegramTopic(ctx context.Context, t TelegramTopic) error
+	// TelegramTopics lists the topics of a group.
+	TelegramTopics(ctx context.Context, chatID int64) ([]TelegramTopic, error)
 }
 
 // Snapshot is the Data of a KindSnapshot event. Messages and Prompts are
@@ -305,6 +344,9 @@ type PromptInfo struct {
 	Command     string   `json:"command,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Question    string   `json:"question,omitempty"`
+	// Timeout is how many seconds Hermes waits for the answer, 0 when
+	// it did not say.
+	Timeout float64 `json:"timeout_s,omitempty"`
 }
 
 // Answer answers a PromptInfo. For an approval Choice is one of its
@@ -363,4 +405,7 @@ type Notice struct {
 	// Users limits the notice to these hub users; nil is every user of
 	// the backend.
 	Users []string
+	// Cancelled marks a NoticeSettled of prompts that were cancelled, not
+	// answered.
+	Cancelled bool
 }

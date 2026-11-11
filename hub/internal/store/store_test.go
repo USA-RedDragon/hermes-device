@@ -154,6 +154,60 @@ func TestTelegramState(t *testing.T) {
 	})
 }
 
+func TestTelegramGroupsAndTopics(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		at := time.Unix(1_800_000_000, 0)
+		if err := s.LinkTelegramGroup(ctx, hub.TelegramGroup{User: userAlice, ChatID: -1001, LinkedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+		topic := hub.TelegramTopic{ChatID: -1001, ThreadID: 5, User: userAlice, BackendID: deviceName, SessionID: "s1", Name: "Fix CI", Seen: at}
+		if err := s.SaveTelegramTopic(ctx, topic); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := s.TelegramAttached(ctx, userAlice, deviceName, "s1"); !ok || err != nil {
+			t.Fatalf("attached = %v %v", ok, err)
+		}
+		topic.ThreadID, topic.Name = 0, "Fix CI · laptop"
+		if err := s.SaveTelegramTopic(ctx, topic); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.TelegramTopics(ctx, -1001)
+		if err != nil || len(got) != 1 || got[0] != topic {
+			t.Fatalf("topics = %+v %v", got, err)
+		}
+		if ok, _ := s.TelegramAttached(ctx, userAlice, deviceName, "s1"); ok {
+			t.Fatal("a dropped topic counts as attached")
+		}
+		if id, ok, err := s.TelegramGroup(ctx, userAlice); id != -1001 || !ok || err != nil {
+			t.Fatalf("group = %d %v %v", id, ok, err)
+		}
+		if err := s.SaveTelegramChat(ctx, hub.TelegramChat{ChatID: -1002, User: userAlice, BackendID: deviceName, SessionID: "s9"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.LinkTelegramGroup(ctx, hub.TelegramGroup{User: userAlice, ChatID: -1002, LinkedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+		groups, err := s.TelegramGroups(ctx)
+		if err != nil || len(groups) != 1 || groups[0].ChatID != -1002 || !groups[0].LinkedAt.Equal(at) {
+			t.Fatalf("groups = %+v %v", groups, err)
+		}
+		if chats, _ := s.TelegramChats(ctx); len(chats) != 0 {
+			t.Fatalf("the linked group still has a plain chat: %+v", chats)
+		}
+		if got, _ := s.TelegramTopics(ctx, -1001); len(got) != 0 {
+			t.Fatalf("topics of the old group = %+v", got)
+		}
+		if err := s.UnlinkTelegramGroup(ctx, -1002); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, err := s.TelegramGroup(ctx, userAlice); ok || err != nil {
+			t.Fatalf("group after unlink = %v %v", ok, err)
+		}
+	})
+}
+
 func TestReopenKeepsDataAndSchema(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
