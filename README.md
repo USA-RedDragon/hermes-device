@@ -77,7 +77,7 @@ The agent can also use your own Firefox, with your logins, in its own "Hermes" t
 3. Restart `hermes-device run`.
 4. Install the extension: download `hermes-device-firefox-<version>.xpi` from the [latest release](https://github.com/USA-RedDragon/hermes-device/releases/latest), then in Firefox open `about:addons`, choose the gear menu, "Install Add-on From File..." and pick the file. Mozilla signs it, so it stays installed, and Firefox updates it from later releases. For development, `hermes-device browser extension --out DIR` writes the files to load as a temporary add-on (docs/browser.md section 6.1).
 
-The agent's tools are `browser_status`, `browser_tabs`, `browser_navigate`, `browser_back`, `browser_snapshot`, `browser_click`, `browser_type` and `browser_vision`, for sessions bound to this device. To stop it, close the tab group, disable the extension or stop `run`. [docs/browser.md](docs/browser.md) has the design, the approval rules and the security model.
+The agent's tools are `browser_status`, `browser_tabs`, `browser_navigate`, `browser_back`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_vision` and `browser_screenshot` (a screenshot the user sees in hermes-hub), for sessions bound to this device. To stop it, close the tab group, disable the extension or stop `run`. [docs/browser.md](docs/browser.md) has the design, the approval rules and the security model.
 
 ## Server setup
 
