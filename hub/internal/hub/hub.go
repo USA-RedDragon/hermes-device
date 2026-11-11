@@ -37,6 +37,7 @@ const (
 	KindMessageStart    = "message.start"
 	KindMessageDelta    = "message.delta"
 	KindMessageComplete = "message.complete"
+	KindMessageInterim  = "message.interim"
 	KindApprovalRequest = "approval.request"
 	KindError           = "error"
 )

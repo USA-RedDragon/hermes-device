@@ -214,12 +214,12 @@ func eventsName(ring []hub.Event, p string) bool {
 		switch e.Kind {
 		case hub.KindMessageDelta:
 			reply.WriteString(text)
-		case hub.KindMessageStart, hub.KindMessageComplete, "message.interim":
+		case hub.KindMessageStart, hub.KindMessageComplete, hub.KindMessageInterim:
 			if e.Kind == hub.KindMessageStart && slices.Contains(hub.AttachedImages(text), p) ||
 				e.Kind != hub.KindMessageStart && replyNames(text, p) || replyNames(reply.String(), p) {
 				return true
 			}
-			if e.Kind != "message.interim" {
+			if e.Kind != hub.KindMessageInterim {
 				reply.Reset()
 			}
 		case hub.KindToolComplete:
