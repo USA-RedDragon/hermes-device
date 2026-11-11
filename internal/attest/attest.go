@@ -21,13 +21,16 @@ import (
 )
 
 // The release workflow of this repository, and the numeric IDs of the
-// repository and its owner, which survive a rename.
+// repository and its owner, which survive a rename. LegacyRepo is the
+// repository's name before it was renamed to Repo; releases built under
+// either name verify.
 const (
-	Owner    = "USA-RedDragon"
-	Repo     = "hermes-device"
-	OwnerID  = "13051767"
-	RepoID   = "1452996986"
-	Workflow = ".github/workflows/release.yaml"
+	Owner      = "USA-RedDragon"
+	Repo       = "talaria"
+	LegacyRepo = "hermes-device"
+	OwnerID    = "13051767"
+	RepoID     = "1452996986"
+	Workflow   = ".github/workflows/release.yaml"
 )
 
 // Constants of the Sigstore certificates that GitHub Actions gets.
@@ -64,9 +67,12 @@ var (
 )
 
 // Policy is who must have signed an attestation: the workflow file of a
-// repository, run on GitHub-hosted runners for a push of tag Tag.
+// repository, run on GitHub-hosted runners for a push of tag Tag. The
+// repository is the one with RepoID; its name in the certificate may be
+// Repo or one of OtherNames, names it had before a rename.
 type Policy struct {
 	Owner, Repo     string
+	OtherNames      []string
 	OwnerID, RepoID string
 	Workflow        string
 	Tag             string
@@ -77,13 +83,16 @@ type Policy struct {
 
 // ReleasePolicy is the policy for release tag of this repository.
 func ReleasePolicy(tag string) Policy {
-	return Policy{Owner: Owner, Repo: Repo, OwnerID: OwnerID, RepoID: RepoID, Workflow: Workflow, Tag: tag}
+	return Policy{Owner: Owner, Repo: Repo, OtherNames: []string{LegacyRepo}, OwnerID: OwnerID, RepoID: RepoID,
+		Workflow: Workflow, Tag: tag}
 }
 
 // SAN is the certificate subject the policy requires: the workflow file at
-// the tag ref.
-func (p Policy) SAN() string {
-	return "https://github.com/" + p.Owner + "/" + p.Repo + "/" + p.Workflow + "@refs/tags/" + p.Tag
+// the tag ref, in the repository with its current name.
+func (p Policy) SAN() string { return p.sanFor(p.Repo) }
+
+func (p Policy) sanFor(repo string) string {
+	return "https://github.com/" + p.Owner + "/" + repo + "/" + p.Workflow + "@refs/tags/" + p.Tag
 }
 
 // validate checks that p is a complete policy for a release tag.
@@ -100,13 +109,19 @@ func (p Policy) validate() error {
 // checkCertificate checks the subject and the Fulcio extensions of a
 // signing certificate against p. Every field must match exactly.
 func (p Policy) checkCertificate(san string, e fulcioExtensions) error {
-	if san != p.SAN() {
+	repo := ""
+	for _, name := range append([]string{p.Repo}, p.OtherNames...) {
+		if san == p.sanFor(name) {
+			repo = name
+		}
+	}
+	if repo == "" {
 		return fmt.Errorf("certificate SAN %q, want %q", san, p.SAN())
 	}
-	repoURL := "https://github.com/" + p.Owner + "/" + p.Repo
+	repoURL := "https://github.com/" + p.Owner + "/" + repo
 	for _, f := range []struct{ name, got, want string }{
 		{"OIDC issuer", e.Issuer, Issuer},
-		{"build config URI", e.BuildConfigURI, p.SAN()},
+		{"build config URI", e.BuildConfigURI, p.sanFor(repo)},
 		{"runner environment", e.RunnerEnvironment, GitHubHosted},
 		{"source repository URI", e.SourceRepositoryURI, repoURL},
 		{"source repository identifier", e.SourceRepositoryIdentifier, p.RepoID},

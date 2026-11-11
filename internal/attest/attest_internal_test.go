@@ -93,6 +93,33 @@ func TestPolicyRequiresHostedRunnerAndPush(t *testing.T) {
 	}
 }
 
+func TestPolicyAcceptsTheNameBeforeTheRename(t *testing.T) {
+	t.Parallel()
+	p := ReleasePolicy("v1.2.3")
+	legacy := p
+	legacy.Repo = LegacyRepo
+	e := goodExtensions(legacy)
+	if err := p.checkCertificate(legacy.SAN(), e); err != nil {
+		t.Fatalf("refused a release built under %s: %v", LegacyRepo, err)
+	}
+	mixed := e
+	mixed.SourceRepositoryURI = "https://github.com/" + Owner + "/" + Repo
+	if err := p.checkCertificate(legacy.SAN(), mixed); err == nil {
+		t.Error("accepted a certificate whose SAN and source repository name different repositories")
+	}
+	other := e
+	other.SourceRepositoryIdentifier = "1"
+	if err := p.checkCertificate(legacy.SAN(), other); err == nil {
+		t.Error("accepted another repository id")
+	}
+	stranger := p
+	stranger.Repo = "stranger"
+	se := goodExtensions(stranger)
+	if err := p.checkCertificate(stranger.SAN(), se); err == nil {
+		t.Error("accepted a repository name that the policy does not list")
+	}
+}
+
 func TestNextLink(t *testing.T) {
 	t.Parallel()
 	if got := nextLink(`<https://api.github.com/x?page=2>; rel="next", <https://api.github.com/x?page=9>; rel="last"`); got != "https://api.github.com/x?page=2" {

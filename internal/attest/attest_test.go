@@ -169,7 +169,7 @@ func TestVerifyNeedsSHA256(t *testing.T) {
 
 func TestReleasePolicy(t *testing.T) {
 	t.Parallel()
-	if got := attest.ReleasePolicy("v1.2.3").SAN(); got != "https://github.com/USA-RedDragon/hermes-device/.github/workflows/release.yaml@refs/tags/v1.2.3" {
+	if got := attest.ReleasePolicy("v1.2.3").SAN(); got != "https://github.com/USA-RedDragon/talaria/.github/workflows/release.yaml@refs/tags/v1.2.3" {
 		t.Errorf("SAN = %q", got)
 	}
 }

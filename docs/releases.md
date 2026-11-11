@@ -9,7 +9,7 @@ From v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false 
 1. The `attest-files` job downloads the release's `.tar.gz` archives, its checksum file and the `.xpi`, checks the archives against the checksum file, and attests all of them with `actions/attest-build-provenance`. That is one SLSA build provenance v1 statement with one subject per file.
 2. The `attest-images` job finds the digest of the image index of `ghcr.io/usa-reddragon/hermes-device:<tag>` and `ghcr.io/usa-reddragon/hermes-device-sandbox:<tag>` and attests each digest. It also pushes the attestation to GHCR next to the image.
 
-The attestation is signed with a short-lived certificate from the Sigstore public-good Fulcio. The certificate names the workflow run: the workflow file and ref, the repository and its numeric ID, the owner and its numeric ID, the commit, the event and the runner type. The signature is recorded in the Rekor transparency log. GitHub stores the attestation; anyone can read it with `GET /repos/USA-RedDragon/hermes-device/attestations/sha256:<digest>`.
+The attestation is signed with a short-lived certificate from the Sigstore public-good Fulcio. The certificate names the workflow run: the workflow file and ref, the repository and its numeric ID, the owner and its numeric ID, the commit, the event and the runner type. The signature is recorded in the Rekor transparency log. GitHub stores the attestation; anyone can read it with `GET /repos/USA-RedDragon/talaria/attestations/sha256:<digest>`.
 
 The jobs attest the files as the release holds them after the upload, and the image that the tag names at that time. Someone who can write to the repository's releases or packages in the minutes between the upload and the attestation could swap a file first. Both jobs refuse a release that was published more than 3 hours before, so a re-run of the job cannot attest a file that was changed later in an old release. Inside that window the attestation does not protect against a repository write token: such a token can also push a tag and run the release workflow. It protects against a release file or checksum file changed after that window, a changed download on the way, and a mirror.
 
@@ -29,13 +29,13 @@ The jobs attest the files as the release holds them after the upload, and the im
    - The statement is an in-toto v1 statement with a subject with the archive's SHA-256.
 
    The verifier refuses a JSON object with two equal keys or two keys that differ only in case, and a certificate extension that is not a DER UTF8String. When a bundle is signed by a certificate authority or logged in a log that the built-in trusted root does not have, `update` says that the binary's trusted root may be out of date. Then verify the release by hand (section 5) and install it by hand, or install a newer release the same way, which has a newer trusted root.
-5. It checks the certificate against this policy. Every item must match exactly:
+5. It checks the certificate against this policy. Every item must match exactly. The repository was renamed from `hermes-device` to `talaria` after release 0.19.1, so the repository name in the certificate may be either; the repository ID pins the repository, and the subject, build config URI and source repository must all name the same one of the two:
 
 | Field | Required value |
 | --- | --- |
-| Subject (SAN) and build config URI | `https://github.com/USA-RedDragon/hermes-device/.github/workflows/release.yaml@refs/tags/<tag>` |
+| Subject (SAN) and build config URI | `https://github.com/USA-RedDragon/talaria/.github/workflows/release.yaml@refs/tags/<tag>` (or `.../hermes-device/...`) |
 | OIDC issuer | `https://token.actions.githubusercontent.com` |
-| Source repository | `https://github.com/USA-RedDragon/hermes-device`, ID <!-- docgen:const pkg=internal/attest name=RepoID code=false -->1452996986<!-- /docgen:const --> |
+| Source repository | `https://github.com/USA-RedDragon/talaria` (or `.../hermes-device`), ID <!-- docgen:const pkg=internal/attest name=RepoID code=false -->1452996986<!-- /docgen:const --> |
 | Source repository owner | `https://github.com/USA-RedDragon`, ID <!-- docgen:const pkg=internal/attest name=OwnerID code=false -->13051767<!-- /docgen:const --> |
 | Source ref | `refs/tags/<tag>`, the tag `update` installs |
 | Event | `push` |
@@ -70,18 +70,18 @@ The GitHub API allows 60 requests per hour without a token per IP address. `upda
 With the GitHub CLI:
 
 ```sh
-gh attestation verify hermes-device_0.13.0_linux_amd64.tar.gz --repo USA-RedDragon/hermes-device \
-  --signer-workflow USA-RedDragon/hermes-device/.github/workflows/release.yaml --source-ref refs/tags/v0.13.0
-gh attestation verify oci://ghcr.io/usa-reddragon/hermes-device:v0.13.0 --repo USA-RedDragon/hermes-device
+gh attestation verify hermes-device_0.13.0_linux_amd64.tar.gz --repo USA-RedDragon/talaria \
+  --signer-workflow USA-RedDragon/talaria/.github/workflows/release.yaml --source-ref refs/tags/v0.13.0
+gh attestation verify oci://ghcr.io/usa-reddragon/hermes-device:v0.13.0 --repo USA-RedDragon/talaria
 ```
 
-`gh attestation verify <file> --repo USA-RedDragon/hermes-device` alone checks that a workflow of the repository signed it. The two extra flags make it check the same workflow and tag as `update`. It also works for the checksum file and the `.xpi`.
+`gh attestation verify <file> --repo USA-RedDragon/talaria` alone checks that a workflow of the repository signed it. The two extra flags make it check the same workflow and tag as `update`. It also works for the checksum file and the `.xpi`.
 
 ## 6. Automatic updates
 
 `talaria run` installs new releases by itself when the talaria service runs it, `update.auto` is true (the default) and the device token comes from `login` (README, Updates). Each check does this:
 
-1. It gets the latest release from `GET /repos/USA-RedDragon/hermes-device/releases/latest` with the ETag of the last answer, or reuses an answer less than an hour old. It caches the answer in `release.json` in the user cache directory, which the CLI's notice also reads. After a 403 or 429 answer, nothing asks again until the time in `Retry-After` or `X-RateLimit-Reset` (at least a minute, at most a day). The cache is only a hint: a tag from it must still be a plain `vX.Y.Z`, and a value that cannot be right (a pre-release tag, a time in the future, a pause longer than a day) is dropped.
+1. It gets the latest release from `GET /repos/USA-RedDragon/talaria/releases/latest` with the ETag of the last answer, or reuses an answer less than an hour old. It caches the answer in `release.json` in the user cache directory, which the CLI's notice also reads. After a 403 or 429 answer, nothing asks again until the time in `Retry-After` or `X-RateLimit-Reset` (at least a minute, at most a day). The cache is only a hint: a tag from it must still be a plain `vX.Y.Z`, and a value that cannot be right (a pre-release tag, a time in the future, a pause longer than a day) is dropped.
 2. It goes on only when that release is a stable release (no pre-release flag, no pre-release or build part in the tag) and newer than the running binary.
 3. It installs the release with the same code as `update`, steps 1 to 6 of section 2, with `--force` and `--insecure-skip-attestation` always off. Before it replaces the binary, it also runs the new binary with the daemon's arguments and `--check-config`, so a release that does not accept this computer's config is not installed. A release that fails a check is not installed, and the daemon tries again at the next check, not before.
 4. It waits, for up to 30 minutes, until this device holds no command (running, or with output or an exit the plugin has not confirmed), runs no browser operation and no MCP call, and the chat splice has no TUI open. Then it refuses new work with a message that the device restarts for an update, and exits with status 75. systemd (`Restart=always`) and launchd (`KeepAlive`) start the new binary. When the device stays busy, the new binary stays installed and the daemon tries again at the next check.
