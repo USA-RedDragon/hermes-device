@@ -331,3 +331,25 @@ func TestDescribe(t *testing.T) {
 		t.Errorf("first: %q", got)
 	}
 }
+
+func TestSignInEndedLaterRefreshesTheList(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := context.Background()
+	if _, err := e.svc.StartSignIn(ctx, alice, backendMain, account); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := e.svc.ClaudeAccounts(ctx, alice, backendMain, false); err != nil || list.Accounts[0].SignedIn {
+		t.Fatalf("before = %+v %v", list, err)
+	}
+	e.plugin.Lock()
+	e.plugin.SignIns[account].State = hub.SignInSucceeded
+	e.plugin.Unlock()
+	e.plugin.SetLoggedIn(account, true, aliceEmail)
+	if si, err := e.svc.SignInState(ctx, alice, backendMain, account); err != nil || si.State != hub.SignInSucceeded {
+		t.Fatalf("state = %+v %v", si, err)
+	}
+	if list, err := e.svc.ClaudeAccounts(ctx, alice, backendMain, false); err != nil || !list.Accounts[0].SignedIn {
+		t.Fatalf("after a sign-in that ended later = %+v %v (want a fresh read)", list, err)
+	}
+}

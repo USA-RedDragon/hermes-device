@@ -315,7 +315,13 @@ func (s *Service) SignInState(ctx context.Context, user, backendID, accountID st
 	if !ok {
 		return hub.ClaudeSignIn{}, hub.ErrNoSignIn
 	}
-	return convertSignIn(si), nil
+	out := convertSignIn(si)
+	if out.State == hub.SignInSucceeded {
+		// The sign-in can end after the code was sent, and the account
+		// list fetched since then still says signed out.
+		s.forget(backendID, accountID)
+	}
+	return out, nil
 }
 
 // validCode reports whether code can be a code from the Claude sign-in
