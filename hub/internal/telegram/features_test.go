@@ -661,7 +661,9 @@ func TestLargeImagesSplitIntoAlbumsBySize(t *testing.T) {
 	h.hub.mu.Unlock()
 	sid := h.startTurn(t)
 	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: strings.Join(lines, "\n"), kStatus: statusComplete})
-	h.tg.wait(mPhoto, "")
+	// 45 MB of images through the fake API under -race can take longer
+	// than the usual wait.
+	h.tg.waitFor(mPhoto, "", time.Minute)
 	albums := h.tg.find(mAlbum, "")
 	if len(albums) != 1 {
 		t.Fatalf("%d albums", len(albums))

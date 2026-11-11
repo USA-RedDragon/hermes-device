@@ -332,7 +332,13 @@ func (f *fakeTelegram) waitN(method, contains string, n int) []tgCall {
 // wait polls until one call matches and returns it.
 func (f *fakeTelegram) wait(method, contains string) tgCall {
 	f.t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	return f.waitFor(method, contains, 5*time.Second)
+}
+
+// waitFor is wait with its own deadline, for calls that move many bytes.
+func (f *fakeTelegram) waitFor(method, contains string, d time.Duration) tgCall {
+	f.t.Helper()
+	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		if got := f.find(method, contains); len(got) > 0 {
 			return got[0]
