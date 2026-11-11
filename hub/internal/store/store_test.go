@@ -439,6 +439,7 @@ func TestDeviceFlow(t *testing.T) {
 		now = now.Add(5 * time.Second)
 		token := flowToken(ctx, t, s, code, d)
 		flowSeen(ctx, t, s, d)
+		flowRename(ctx, t, s, d)
 		flowRevoke(ctx, t, s, d, token)
 	})
 }
@@ -504,6 +505,33 @@ func flowSeen(ctx context.Context, t *testing.T, s *store.Store, d hub.Device) {
 	}
 	if ds, _ := s.Devices(ctx, userAlice); !ds[0].AddrChangedAt.IsZero() {
 		t.Fatalf("dismissed = %+v", ds[0])
+	}
+}
+
+func flowRename(ctx context.Context, t *testing.T, s *store.Store, d hub.Device) {
+	t.Helper()
+	if err := s.RenameDevice(ctx, userBob, d.ID, "mine now"); !errors.Is(err, hub.ErrUnknownDevice) {
+		t.Fatalf("bob renamed alice's device: %v", err)
+	}
+	if err := s.RenameDevice(ctx, userAlice, d.ID, "renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if ds, _ := s.Devices(ctx, userAlice); len(ds) != 1 || ds[0].Name != "renamed" {
+		t.Fatalf("after rename = %+v", ds)
+	}
+	_, code, _ := s.StartPairing(ctx, hub.PairingRequest{Name: "second"}, time.Minute)
+	other, err := s.ApprovePairing(ctx, code, userAlice, "pc", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RenameDevice(ctx, userAlice, other.ID, "renamed"); !errors.Is(err, hub.ErrNameTaken) {
+		t.Fatalf("rename to a taken name = %v", err)
+	}
+	if ok, err := s.RevokeDevice(ctx, userAlice, other.ID); !ok || err != nil {
+		t.Fatalf("revoke second = %v %v", ok, err)
+	}
+	if err := s.RenameDevice(ctx, userAlice, d.ID, deviceName); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -250,6 +250,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/devices", s.api(s.handleDevices))
 	mux.Handle("POST /api/devices/{device}/revoke", s.api(s.handleRevokeDevice))
 	mux.Handle("POST /api/devices/{device}/dismiss-address", s.api(s.handleDismissAddress))
+	mux.Handle("POST /api/devices/{device}/rename", s.api(s.handleRenameDevice))
 	if s.deviceAPI != nil {
 		mux.Handle("/api/device/", s.deviceAPI)
 	}

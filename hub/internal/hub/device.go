@@ -134,6 +134,9 @@ type DeviceStore interface {
 	// SeenDevice records a request from the device at addr. A new address
 	// is remembered as a change the user sees until DismissAddressChange.
 	SeenDevice(ctx context.Context, id, addr string) error
+	// RenameDevice renames one of user's devices. It fails with
+	// ErrUnknownDevice or ErrNameTaken.
+	RenameDevice(ctx context.Context, user, id, name string) error
 	// DismissAddressChange clears the address change note of user's device.
 	DismissAddressChange(ctx context.Context, user, id string) error
 	// ExecLegOpened records that the exec leg legID of the device opened,

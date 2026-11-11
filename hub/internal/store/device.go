@@ -356,6 +356,24 @@ func (s *Store) ExecLegClosed(ctx context.Context, id, legID string, c hub.LegCl
 		WHERE id = ? AND exec_leg = ?`, c.Code, c.Reason, c.By, c.At.Unix(), id, legID)
 }
 
+// RenameDevice renames a device. See hub.DeviceStore.
+func (s *Store) RenameDevice(ctx context.Context, user, id, name string) error {
+	res, err := s.db.ExecContext(ctx, s.q(`UPDATE devices SET name = ? WHERE id = ? AND "user" = ? AND revoked_at = 0`), name, id, user)
+	if isUnique(err) {
+		return hub.ErrNameTaken
+	}
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		if err != nil {
+			return err
+		}
+		return hub.ErrUnknownDevice
+	}
+	return nil
+}
+
 // DismissAddressChange clears a device's address change note. See
 // hub.DeviceStore.
 func (s *Store) DismissAddressChange(ctx context.Context, user, id string) error {

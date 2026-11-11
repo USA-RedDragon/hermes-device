@@ -140,6 +140,18 @@ func pairRevoke(t *testing.T, e *hubEnv, c *http.Client, res hub.PairPoll, revok
 	if !strings.Contains(body, `"kind":"sandbox"`) || !strings.Contains(body, `"online":true`) || !strings.Contains(body, `"kind":"paired"`) {
 		t.Fatalf("sandbox not listed: %s", body)
 	}
+	if resp, _ := post(t, c, e.url+"/api/devices/"+res.Device.ID+"/rename", m.CSRF, e.url, map[string]string{fieldName: " "}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("rename to blank = %d", resp.StatusCode)
+	}
+	if resp, _ := post(t, c, e.url+"/api/devices/sandbox-alice/rename", m.CSRF, e.url, map[string]string{fieldName: "x"}); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("rename sandbox = %d", resp.StatusCode)
+	}
+	if resp, _ := post(t, c, e.url+"/api/devices/"+res.Device.ID+"/rename", m.CSRF, e.url, map[string]string{fieldName: " desk "}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("rename = %d", resp.StatusCode)
+	}
+	if _, body := get(t, c, e.url+"/api/devices"); !strings.Contains(body, `"name":"desk"`) {
+		t.Fatalf("renamed device not listed: %s", body)
+	}
 	if resp, _ := post(t, c, e.url+"/api/devices/sandbox-alice/revoke", m.CSRF, e.url, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("revoke sandbox = %d", resp.StatusCode)
 	}

@@ -3,6 +3,7 @@ package web
 import (
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -333,6 +334,34 @@ func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 		s.onRevoke(id)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleRenameDevice(w http.ResponseWriter, r *http.Request) {
+	if s.devices == nil {
+		errorJSON(w, http.StatusNotFound, "no such computer")
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	name, ok := cleanDeviceName(body.Name)
+	if !ok {
+		errorJSON(w, http.StatusBadRequest, fmt.Sprintf("Give the computer a name of 1 to %d characters", maxDeviceName))
+		return
+	}
+	switch err := s.devices.RenameDevice(r.Context(), userFrom(r), r.PathValue("device"), name); {
+	case errors.Is(err, hub.ErrNameTaken):
+		errorJSON(w, http.StatusConflict, "You already have a computer with that name")
+	case errors.Is(err, hub.ErrUnknownDevice):
+		errorJSON(w, http.StatusNotFound, "no such computer")
+	case err != nil:
+		s.fail(w, err)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func (s *Server) handleDismissAddress(w http.ResponseWriter, r *http.Request) {
