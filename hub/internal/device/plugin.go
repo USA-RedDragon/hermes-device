@@ -2,6 +2,7 @@ package device
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -257,4 +258,21 @@ func errorCode(err error) string {
 		return pe.Code
 	}
 	return codeBackendUnavailable
+}
+
+// File is the plugin's answer to an upload: where it wrote the file on
+// the device.
+type File struct {
+	Path     string `json:"path"`
+	Name     string `json:"name"`
+	DeviceID string `json:"device_id"`
+	Bytes    int64  `json:"bytes"`
+}
+
+// PutFile writes a file into the device folder that serves a session
+// (docs/protocol.md section 9, upload rules).
+func (p *Plugin) PutFile(ctx context.Context, sessionID, name string, data []byte) (File, error) {
+	var out File
+	body := map[string]string{"name": name, "content_base64": base64.StdEncoding.EncodeToString(data)}
+	return out, p.call(ctx, http.MethodPost, "/sessions/"+url.PathEscape(sessionID)+"/files", body, &out)
 }

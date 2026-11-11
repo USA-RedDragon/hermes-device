@@ -8,9 +8,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path"
@@ -30,6 +32,9 @@ const (
 	keyVia      = "via"
 	keyDeviceID = "device_id"
 	keyName     = "name"
+	keyPath     = "path"
+	stateBound  = "bound"
+	stateNever  = "never_bound"
 )
 
 // Binding is a session binding of the fake plugin.
@@ -98,6 +103,8 @@ type Plugin struct {
 	Connected chan *Conn
 	// Refused counts refused assertions.
 	refused int
+	// uploads are the files the upload route wrote, by device path.
+	uploads map[string][]byte
 }
 
 // NewPlugin mounts a fake plugin for backendID on gw. It accepts
@@ -106,7 +113,7 @@ func NewPlugin(gw *gatewaytest.Gateway, backendID string, key ed25519.PublicKey)
 	p := &Plugin{BackendID: backendID, Placeholder: "/opt/data/hermes/device-placeholder", HermesVersion: "v0.22.7",
 		verifier: assertion.NewVerifier([]ed25519.PublicKey{key}), bindings: map[string]Binding{}, ever: map[string]bool{},
 		parents: map[string]string{}, conns: map[string]*Conn{}, refuse: map[string]string{}, Connected: make(chan *Conn, 16),
-		trees: map[string]map[string][]string{}, refuseDev: map[string]string{}}
+		trees: map[string]map[string][]string{}, refuseDev: map[string]string{}, uploads: map[string][]byte{}}
 	base := "/api/plugins/device"
 	gw.Handle("GET "+base+"/info", http.HandlerFunc(p.info), true)
 	gw.Handle("GET "+base+"/devices", http.HandlerFunc(p.devices), true)
@@ -115,6 +122,7 @@ func NewPlugin(gw *gatewaytest.Gateway, backendID string, key ed25519.PublicKey)
 	gw.Handle("GET "+base+"/sessions/{session}/binding", http.HandlerFunc(p.getBinding), true)
 	gw.Handle("PUT "+base+"/sessions/{session}/binding", http.HandlerFunc(p.putBinding), true)
 	gw.Handle("DELETE "+base+"/sessions/{session}/binding", http.HandlerFunc(p.deleteBinding), true)
+	gw.Handle("POST "+base+"/sessions/{session}/files", http.HandlerFunc(p.postFile), true)
 	gw.Handle("GET "+protocol.PluginExecPath, http.HandlerFunc(p.exec), false)
 	return p
 }
@@ -287,7 +295,7 @@ func (p *Plugin) dirs(w http.ResponseWriter, r *http.Request) {
 		if dir == "" {
 			dir = "/home/alice"
 		}
-		answer(w, map[string]any{"path": dir, "entries": []map[string]string{{keyName: "src"}}})
+		answer(w, map[string]any{keyPath: dir, "entries": []map[string]string{{keyName: "src"}}})
 		return
 	}
 	if dir == "" && len(c.Hello.Roots) > 0 {
@@ -306,7 +314,7 @@ func (p *Plugin) dirs(w http.ResponseWriter, r *http.Request) {
 	for _, n := range subs {
 		entries = append(entries, map[string]string{keyName: n})
 	}
-	answer(w, map[string]any{"path": path.Clean(dir), "entries": entries})
+	answer(w, map[string]any{keyPath: path.Clean(dir), "entries": entries})
 }
 
 func (p *Plugin) listBindings(w http.ResponseWriter, r *http.Request) {
@@ -327,14 +335,14 @@ func (p *Plugin) resolve(sid string) (Binding, map[string]any) {
 	ever := false
 	for cur, hops := sid, 0; cur != "" && hops < 100; cur, hops = p.parents[cur], hops+1 {
 		if b, ok := p.bindings[cur]; ok {
-			return b, map[string]any{stateKey: "bound", keyVia: cur}
+			return b, map[string]any{stateKey: stateBound, keyVia: cur}
 		}
 		ever = ever || p.ever[cur]
 	}
 	if ever {
 		return Binding{}, map[string]any{stateKey: "fail_closed", keyVia: nil}
 	}
-	res := map[string]any{stateKey: "never_bound", keyVia: nil}
+	res := map[string]any{stateKey: stateNever, keyVia: nil}
 	if p.sandbox != "" {
 		res["sandbox"] = nil
 		if p.conns[p.sandbox] != nil {
@@ -347,7 +355,7 @@ func (p *Plugin) resolve(sid string) (Binding, map[string]any) {
 func (p *Plugin) getBinding(w http.ResponseWriter, r *http.Request) {
 	p.record(r, nil)
 	b, res := p.resolve(r.PathValue("session"))
-	if res[stateKey] != "bound" {
+	if res[stateKey] != stateBound {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		encode(w, map[string]any{keyError: "not_bound", keyMessage: "not bound", "resolved": res})
@@ -687,4 +695,52 @@ func (h *ACPHost) acp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// Uploads returns the files the upload route wrote, by device path.
+func (p *Plugin) Uploads() map[string][]byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return maps.Clone(p.uploads)
+}
+
+// postFile writes an upload as the plugin's upload rules say
+// (docs/protocol.md section 9), into memory.
+func (p *Plugin) postFile(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name          string `json:"name"`
+		ContentBase64 string `json:"content_base64"`
+	}
+	if json.NewDecoder(r.Body).Decode(&body) != nil {
+		pluginError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	data, err := base64.StdEncoding.DecodeString(body.ContentBase64)
+	if err != nil || body.Name == "" || strings.ContainsAny(body.Name, "/\\") {
+		pluginError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	p.record(r, map[string]any{keyName: body.Name, "bytes": len(data)})
+	b, res := p.resolve(r.PathValue("session"))
+	switch {
+	case res[stateKey] == stateBound:
+	case res[stateKey] == stateNever && p.sandbox == "":
+		pluginError(w, http.StatusConflict, "runs_on_pod")
+		return
+	case res[stateKey] == stateNever && res["sandbox"] != nil:
+		sb, _ := res["sandbox"].(map[string]string)
+		b = Binding{DeviceID: sb[keyDeviceID], Dir: sb["dir"]}
+	default:
+		pluginError(w, http.StatusConflict, "fail_closed")
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.conns[b.DeviceID] == nil {
+		pluginError(w, http.StatusConflict, "device_offline")
+		return
+	}
+	target := path.Join(b.Dir, ".hermes", "attachments", body.Name)
+	p.uploads[target] = data
+	answer(w, map[string]any{keyPath: target, keyName: body.Name, keyDeviceID: b.DeviceID, "bytes": len(data)})
 }
