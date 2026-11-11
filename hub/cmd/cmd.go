@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/device"
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/hermes-hub/internal/insights"
 	"github.com/USA-RedDragon/hermes-hub/internal/leader"
 	"github.com/USA-RedDragon/hermes-hub/internal/memory"
 	"github.com/USA-RedDragon/hermes-hub/internal/pdf"
@@ -118,6 +120,10 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	if webOpts.Memory, err = newMemory(cfg, svc, dialers); err != nil {
 		return err
 	}
+	if devices != nil {
+		webOpts.Files = devices
+	}
+	webOpts.Insights = newInsights(cfg, svc, webOpts.Memory, dialers)
 	ui, err := web.New(cfg, webOpts)
 	if err != nil {
 		return err
@@ -194,6 +200,26 @@ func newMemory(cfg *config.Config, svc *service.Service, dialers map[string]*gat
 		rs[id] = d
 	}
 	return memory.New(memory.Options{Access: svc, Backends: cfg.Backends, Requesters: rs})
+}
+
+// newInsights returns the core of chat search and the Usage page, or nil
+// when there is no backend.
+func newInsights(cfg *config.Config, svc *service.Service, mem hub.Memory, dialers map[string]*gateway.Dialer) hub.Insights {
+	if len(cfg.Backends) == 0 {
+		return nil
+	}
+	rs := make(map[string]device.Requester, len(dialers))
+	for id, d := range dialers {
+		rs[id] = d
+	}
+	opts := insights.Options{Access: svc, Requesters: rs, Observer: svc}
+	if b, ok := mem.(insights.Backlogs); ok {
+		opts.Backlogs = b
+	}
+	if cfg.Usage.PrometheusURL != "" {
+		opts.GPU = insights.NewGPU(cfg.Usage.PrometheusURL, &http.Client{Timeout: 15 * time.Second})
+	}
+	return insights.New(opts)
 }
 
 func openStore(ctx context.Context, cfg *config.Store) (*store.Store, error) {
