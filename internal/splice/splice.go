@@ -150,6 +150,17 @@ func NewSecret() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// TUIs returns the number of TUI sockets open on the splice.
+func (s *Server) TUIs() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, te := range s.tokens {
+		n += len(te.conns)
+	}
+	return n
+}
+
 // ControlSecret is the secret chat sends to /control/tokens.
 func (s *Server) ControlSecret() string { return s.controlSecret }
 

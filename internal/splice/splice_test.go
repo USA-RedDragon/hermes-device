@@ -778,3 +778,23 @@ func TestControlBrowser(t *testing.T) {
 		t.Fatalf("old sign-in path: %d", r.StatusCode)
 	}
 }
+
+func TestTUIsCountsOpenSockets(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, splice.Options{})
+	if n := e.splice.TUIs(); n != 0 {
+		t.Fatalf("TUIs = %d before a TUI", n)
+	}
+	c := e.dialTUI()
+	if n := e.splice.TUIs(); n != 1 {
+		t.Fatalf("TUIs = %d with one TUI", n)
+	}
+	_ = c.ws.Close(websocket.StatusNormalClosure, "")
+	deadline := time.Now().Add(10 * time.Second)
+	for e.splice.TUIs() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("TUIs still counts a closed TUI")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
