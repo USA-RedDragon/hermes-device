@@ -146,6 +146,9 @@ type Bot struct {
 	// steps are the steps so far of each running turn, by its status
 	// message, for that message's Steps button.
 	steps map[msgKey]string
+	// deleted are topics whose chat was deleted; the next sync deletes
+	// them.
+	deleted map[dest]bool
 }
 
 type chatState struct {
@@ -237,7 +240,7 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		now:       time.Now,
 		chats:     make(map[dest]*chatState),
 		forums:    make(map[int64]*forum),
-		approvals: make(map[string]*pendingApproval), steps: make(map[msgKey]string),
+		approvals: make(map[string]*pendingApproval), steps: make(map[msgKey]string), deleted: make(map[dest]bool),
 		picks:   make(map[string][]bool),
 		replies: make(map[msgKey]replyTarget),
 		shown:   make(map[msgKey]shownNotice),
@@ -947,6 +950,9 @@ func (b *Bot) pump(a *attachment) {
 	r.expire = b.expireApproval
 	r.shown = func(n int) { a.prompts.Store(int64(n)) }
 	r.gone = func() { b.topicGone(a.to) }
+	if a.to.thread != 0 {
+		r.deleted = func() { b.markDeleted(a.to) }
+	}
 	r.stepsSnap = func(msgID int64, html string) { b.setSteps(msgKey{a.to.chat, msgID}, html) }
 	if pr, ok := b.svc.(hub.Prompter); ok {
 		r.pending = func(ctx context.Context, id string) bool {

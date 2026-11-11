@@ -29,11 +29,19 @@ type forum struct {
 	// guards both.
 	topics  map[hub.SessionRef]hub.TelegramTopic
 	threads map[int64]hub.SessionRef
+	// reconciled is when the bot last checked that the chats of the
+	// topics still exist, and alive the chats it found, by when. b.loop
+	// guards both.
+	reconciled time.Time
+	alive      map[hub.SessionRef]time.Time
+	// toldRights is set once the bot said in General that it lacks the
+	// rights to close or delete topics. b.loop guards it.
+	toldRights bool
 }
 
 func newForum(g hub.TelegramGroup) *forum {
 	return &forum{chatID: g.ChatID, user: g.User, linkedAt: g.LinkedAt,
-		topics: map[hub.SessionRef]hub.TelegramTopic{}, threads: map[int64]hub.SessionRef{}}
+		topics: map[hub.SessionRef]hub.TelegramTopic{}, threads: map[int64]hub.SessionRef{}, alive: map[hub.SessionRef]time.Time{}}
 }
 
 // forum is the linked group with this chat ID, or nil.
@@ -198,7 +206,7 @@ func (b *Bot) linkGroup(ctx context.Context, m *Message) {
 	defer cancel()
 	member, err := b.api.GetChatMember(cctx, m.Chat.ID, b.botID)
 	if err != nil || member.Status != "administrator" || !member.CanManageTopics {
-		b.sendText(ctx, to, "Make me an admin of this group with the right to manage topics, then send /link again.")
+		b.sendText(ctx, to, "Make me an admin of this group with the rights to manage topics and to delete messages, then send /link again.")
 		return
 	}
 	g := hub.TelegramGroup{User: user, ChatID: m.Chat.ID, LinkedAt: b.now()}
@@ -548,13 +556,16 @@ func (b *Bot) syncForum(ctx context.Context, f *forum) {
 		return
 	}
 	b.dropGone(cctx, f)
+	b.deleteMarked(cctx, f)
 	running := map[hub.SessionRef]bool{}
+	listed := make(map[hub.SessionRef]bool, len(sessions))
 	now := b.now()
 	for _, s := range sessions {
+		ref := hub.SessionRef{BackendID: s.BackendID, SessionID: s.ID}
+		listed[ref] = true
 		if !topicSource(s.Source) || cctx.Err() != nil {
 			continue
 		}
-		ref := hub.SessionRef{BackendID: s.BackendID, SessionID: s.ID}
 		p, ok := places[ref]
 		place := placeName(p, ok)
 		if s.Source == sourceCron {
@@ -562,8 +573,15 @@ func (b *Bot) syncForum(ctx context.Context, f *forum) {
 		}
 		name := topicName(s.Title, place)
 		t, ok := b.topic(f, ref)
+		if ok && t.Closed && !s.Archived && t.ThreadID != 0 {
+			t = b.reopenTopic(cctx, f, t)
+		}
 		switch {
 		case s.Archived:
+			if ok && t.ThreadID != 0 && !t.Closed {
+				b.closeTopic(cctx, f, t)
+			}
+			continue
 		case !ok && (s.UpdatedAt.After(f.linkedAt) || s.Running), ok && t.ThreadID == 0 && s.Running && now.Sub(t.Seen) > topicIdle:
 			thread, err := b.openTopic(cctx, f, s, name)
 			if err != nil {
@@ -580,6 +598,7 @@ func (b *Bot) syncForum(ctx context.Context, f *forum) {
 		}
 	}
 	b.detachIdle(f, running)
+	b.reconcile(cctx, f, listed)
 }
 
 func (b *Bot) renameTopic(ctx context.Context, f *forum, t hub.TelegramTopic, name string) {
@@ -666,4 +685,199 @@ func (b *Bot) dropTopic(ctx context.Context, f *forum, thread int64) {
 	t.ThreadID, t.Seen = 0, b.now()
 	b.saveTopic(ctx, f, t)
 	b.logger.Info("Dropped a topic that is gone", "chat", f.chatID, "thread", thread)
+}
+
+// reconcileEvery is how often the bot checks that the chats of a group's
+// topics still exist, and aliveFor how long it trusts a chat it found.
+const (
+	reconcileEvery = 5 * time.Minute
+	aliveFor       = time.Hour
+	// maxChecks bounds the chats one check asks the backends about.
+	maxChecks = 20
+	// generalThread is the thread of a forum's General topic, which the
+	// bot never closes or deletes.
+	generalThread = 1
+)
+
+// reconcile deletes the topics of f whose chats are gone, such as chats
+// deleted while the bot did not follow them. It runs at the first sync
+// and every reconcileEvery after. A chat in listed exists; the others are
+// asked about one by one, since the list holds only recent chats and
+// leaves out a backend it cannot reach. b.loop is held.
+func (b *Bot) reconcile(ctx context.Context, f *forum, listed map[hub.SessionRef]bool) {
+	checker, ok := b.svc.(hub.SessionChecker)
+	now := b.now()
+	if !ok || now.Sub(f.reconciled) < reconcileEvery {
+		return
+	}
+	f.reconciled = now
+	b.fmu.Lock()
+	topics := make([]hub.TelegramTopic, 0, len(f.topics))
+	for _, t := range f.topics {
+		topics = append(topics, t)
+	}
+	b.fmu.Unlock()
+	checks := 0
+	for _, t := range topics {
+		ref := hub.SessionRef{BackendID: t.BackendID, SessionID: t.SessionID}
+		if listed[ref] || now.Sub(f.alive[ref]) < aliveFor || ctx.Err() != nil {
+			continue
+		}
+		if checks++; checks > maxChecks {
+			return
+		}
+		exists, err := checker.SessionExists(ctx, f.user, t.BackendID, t.SessionID)
+		switch {
+		case err != nil:
+			b.logger.Debug("Could not check a topic's chat", "chat", f.chatID, "session", t.SessionID, "error", err)
+		case exists:
+			f.alive[ref] = now
+		default:
+			b.deleteTopic(ctx, f, t)
+		}
+	}
+}
+
+// markDeleted notes the topic of a chat that was deleted; the next sync
+// deletes it.
+func (b *Bot) markDeleted(to dest) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.deleted[to] = true
+}
+
+// deleteMarked deletes the topics of f whose chats were deleted, once the
+// backend confirms it. b.loop is held.
+func (b *Bot) deleteMarked(ctx context.Context, f *forum) {
+	b.mu.Lock()
+	var threads []int64
+	for to := range b.deleted {
+		if to.chat == f.chatID {
+			threads = append(threads, to.thread)
+			delete(b.deleted, to)
+		}
+	}
+	b.mu.Unlock()
+	checker, ok := b.svc.(hub.SessionChecker)
+	for _, thread := range threads {
+		ref, found := b.threadRef(f, thread)
+		if !found {
+			continue
+		}
+		if ok {
+			if exists, err := checker.SessionExists(ctx, f.user, ref.BackendID, ref.SessionID); err != nil || exists {
+				continue
+			}
+		}
+		t, _ := b.topic(f, ref)
+		b.deleteTopic(ctx, f, t)
+	}
+}
+
+// deleteTopic deletes the topic of a chat that is gone, and forgets it.
+// It never deletes General. b.loop is held.
+func (b *Bot) deleteTopic(ctx context.Context, f *forum, t hub.TelegramTopic) {
+	if t.ThreadID != 0 && t.ThreadID != generalThread {
+		err := b.api.DeleteForumTopic(ctx, f.chatID, t.ThreadID)
+		var apiErr *APIError
+		switch {
+		case errors.As(err, &apiErr) && apiErr.TopicMissing():
+		case errors.As(err, &apiErr) && apiErr.NoRights():
+			b.noRights(ctx, f, "delete the topics of deleted chats", err)
+			return
+		case err != nil:
+			b.logger.Warn("Failed to delete a topic", "chat", f.chatID, "thread", t.ThreadID, "error", err)
+			return
+		}
+	}
+	b.forgetTopic(ctx, f, t)
+	b.logger.Info("Deleted the topic of a deleted chat", "chat", f.chatID, "thread", t.ThreadID, "session", t.SessionID)
+}
+
+// forgetTopic drops a topic from the store and from f, and detaches its
+// stream. b.loop is held.
+func (b *Bot) forgetTopic(ctx context.Context, f *forum, t hub.TelegramTopic) {
+	if t.ThreadID != 0 {
+		to := dest{chat: f.chatID, thread: t.ThreadID}
+		if st, ok := b.chats[to]; ok {
+			if st.att != nil {
+				st.att.stop()
+			}
+			delete(b.chats, to)
+		}
+	}
+	if err := b.state.DeleteTelegramTopic(ctx, f.chatID, t.BackendID, t.SessionID); err != nil {
+		b.logger.Error("Failed to forget a topic", "chat", f.chatID, "error", err)
+	}
+	ref := hub.SessionRef{BackendID: t.BackendID, SessionID: t.SessionID}
+	b.fmu.Lock()
+	defer b.fmu.Unlock()
+	if cur, ok := f.topics[ref]; ok {
+		delete(f.threads, cur.ThreadID)
+	}
+	delete(f.topics, ref)
+	delete(f.alive, ref)
+}
+
+// closeTopic closes the topic of an archived chat. b.loop is held.
+func (b *Bot) closeTopic(ctx context.Context, f *forum, t hub.TelegramTopic) {
+	if t.ThreadID == generalThread {
+		return
+	}
+	to := dest{chat: f.chatID, thread: t.ThreadID}
+	if st, ok := b.chats[to]; ok {
+		if st.att != nil {
+			st.att.stop()
+		}
+		delete(b.chats, to)
+	}
+	err := b.api.CloseForumTopic(ctx, f.chatID, t.ThreadID)
+	var apiErr *APIError
+	switch {
+	case errors.As(err, &apiErr) && apiErr.TopicMissing():
+		b.dropTopic(ctx, f, t.ThreadID)
+		return
+	case errors.As(err, &apiErr) && apiErr.NoRights():
+		b.noRights(ctx, f, "close the topics of archived chats", err)
+		return
+	case err != nil:
+		b.logger.Warn("Failed to close a topic", "chat", f.chatID, "thread", t.ThreadID, "error", err)
+		return
+	}
+	t.Closed = true
+	b.saveTopic(ctx, f, t)
+}
+
+// reopenTopic reopens the topic of a chat that is no longer archived and
+// returns it as it is now. b.loop is held.
+func (b *Bot) reopenTopic(ctx context.Context, f *forum, t hub.TelegramTopic) hub.TelegramTopic {
+	err := b.api.ReopenForumTopic(ctx, f.chatID, t.ThreadID)
+	var apiErr *APIError
+	switch {
+	case errors.As(err, &apiErr) && apiErr.TopicMissing():
+		b.dropTopic(ctx, f, t.ThreadID)
+		t, _ = b.topic(f, hub.SessionRef{BackendID: t.BackendID, SessionID: t.SessionID})
+		return t
+	case errors.As(err, &apiErr) && apiErr.NoRights():
+		b.noRights(ctx, f, "reopen the topics of chats taken out of the archive", err)
+		return t
+	case err != nil:
+		b.logger.Warn("Failed to reopen a topic", "chat", f.chatID, "thread", t.ThreadID, "error", err)
+		return t
+	}
+	t.Closed = false
+	b.saveTopic(ctx, f, t)
+	return t
+}
+
+// noRights logs, once per group, that the bot may not manage its topics,
+// and says so in General. b.loop is held.
+func (b *Bot) noRights(ctx context.Context, f *forum, what string, err error) {
+	if f.toldRights {
+		return
+	}
+	f.toldRights = true
+	b.logger.Warn("No rights to manage topics", "chat", f.chatID, "error", err)
+	b.sendText(ctx, dest{chat: f.chatID}, "I could not "+what+". Make me an admin of this group with the "+
+		"\"Manage Topics\" and \"Delete Messages\" rights.")
 }

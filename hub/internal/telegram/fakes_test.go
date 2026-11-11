@@ -97,12 +97,15 @@ type fakeTelegram struct {
 	member map[string]any
 	// goneThreads are topics whose messages Telegram refuses.
 	goneThreads map[int64]bool
+	// topicErr is the error description Telegram gives each topic method,
+	// such as deleteForumTopic.
+	topicErr map[string]string
 }
 
 func newFakeTelegram(t *testing.T) *fakeTelegram {
 	t.Helper()
 	f := &fakeTelegram{t: t, updates: make(chan telegram.Update, 64), fail429: map[string]int{}, nextID: 100,
-		files: map[string][]byte{}, sizes: map[string]int64{}, goneThreads: map[int64]bool{},
+		files: map[string][]byte{}, sizes: map[string]int64{}, goneThreads: map[int64]bool{}, topicErr: map[string]string{},
 		member: map[string]any{kStatus: "administrator", "can_manage_topics": true}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
@@ -176,6 +179,12 @@ func (f *fakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusBadRequest)
 		f.reply(w, map[string]any{"ok": false, kErrorCode: 400, kDesc: "Bad Request: message thread not found"})
+		return
+	}
+	if desc, ok := f.topicErr[method]; ok {
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusBadRequest)
+		f.reply(w, map[string]any{"ok": false, kErrorCode: 400, kDesc: desc})
 		return
 	}
 	f.nextID++
@@ -361,6 +370,9 @@ type fakeHub struct {
 	// media are the files Media opens, by path, and mediaCalls its calls.
 	media      map[string]fakeFile
 	mediaCalls []string
+	// checks are the sessions SessionExists asked about; checkErr fails it.
+	checks   []string
+	checkErr error
 	// pending are the prompts PendingPrompt finds.
 	pending map[string]bool
 }
@@ -671,6 +683,13 @@ func (f *fakeState) SaveTelegramTopic(_ context.Context, t hub.TelegramTopic) er
 	return nil
 }
 
+func (f *fakeState) DeleteTelegramTopic(_ context.Context, chatID int64, backendID, sessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.topics, topicKey(chatID, backendID, sessionID))
+	return nil
+}
+
 func (f *fakeState) TelegramTopics(_ context.Context, chatID int64) ([]hub.TelegramTopic, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -856,6 +875,28 @@ func (h *fakeHub) attachesCopy() []string {
 func (h *fakeHub) ArchiveSession(context.Context, string, string, string, bool) error { return nil }
 
 func (h *fakeHub) DeleteSession(context.Context, string, string, string) error { return nil }
+
+// SessionExists is true for the fake's sessions; check, when set, fails
+// the call.
+func (h *fakeHub) SessionExists(_ context.Context, user, backendID, sessionID string) (bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.allowed(user, backendID); err != nil {
+		return false, err
+	}
+	if h.checkErr != nil {
+		return false, h.checkErr
+	}
+	h.checks = append(h.checks, sessionID)
+	return slices.ContainsFunc(h.sessions, func(s hub.Session) bool { return s.ID == sessionID && s.BackendID == backendID }), nil
+}
+
+// remove drops a session from the fake, as a delete in Hermes does.
+func (h *fakeHub) remove(sessionID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sessions = slices.DeleteFunc(h.sessions, func(s hub.Session) bool { return s.ID == sessionID })
+}
 
 func (h *fakeHub) Models(context.Context, string, string, string) (hub.Models, error) {
 	return hub.Models{}, nil

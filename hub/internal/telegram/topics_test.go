@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,4 +255,158 @@ func TestNoticeInGeneralLinksTheTopic(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("no topic button; calls: %+v", h.tg.snapshot())
+}
+
+const (
+	mDeleteTopic = "deleteForumTopic"
+	mCloseTopic  = "closeForumTopic"
+	mReopenTopic = "reopenForumTopic"
+	sFix         = "fix"
+	sGone        = "gone"
+)
+
+func storedTopic(thread int64, sessionID string, since time.Time) hub.TelegramTopic {
+	return hub.TelegramTopic{ChatID: forumID, ThreadID: thread, User: userAlice, BackendID: beCluster, SessionID: sessionID,
+		Name: sessionID, Seen: since}
+}
+
+// waitNoTopic polls until the store has no topic for a session.
+func (f *fakeState) waitNoTopic(t *testing.T, sessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := f.topic(forumID, beCluster, sessionID); !ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the topic of %s is still stored", sessionID)
+}
+
+func TestDeletedChatDeletesItsTopic(t *testing.T) {
+	t.Parallel()
+	since := time.Now().Add(-time.Hour)
+	h := linked(t, since, storedTopic(42, "s7", since))
+	h.hub.add(hub.Session{ID: "s7", BackendID: beCluster, Title: "s7", UpdatedAt: since})
+	h.tg.sayIn(forumChat(), 42, aliceTG, "hello", nil)
+	h.hub.waitPrompt(t, 1)
+	h.hub.remove("s7")
+	h.hub.emit(t, "s7", hub.KindSessionDeleted, map[string]any{})
+	h.tg.waitCall(mDeleteTopic, func(c tgCall) bool { return c.thread() == 42 })
+	h.state.waitNoTopic(t, "s7")
+	if got := h.tg.find(mSend, "deleted"); len(got) != 0 {
+		t.Fatalf("a deleted chat's topic got a message: %q", got[0].text())
+	}
+}
+
+func TestReconcileDeletesTopicsOfGoneChats(t *testing.T) {
+	t.Parallel()
+	since := time.Now().Add(-time.Hour)
+	h := linked(t, since, storedTopic(50, sGone, since), storedTopic(51, "kept", since), storedTopic(0, "dropped", since),
+		storedTopic(1, "general", since))
+	h.hub.add(hub.Session{ID: "kept", BackendID: beCluster, Title: "kept", UpdatedAt: since})
+	h.tg.waitCall(mDeleteTopic, func(c tgCall) bool { return c.thread() == 50 })
+	for _, id := range []string{sGone, "dropped", "general"} {
+		h.state.waitNoTopic(t, id)
+	}
+	if _, ok := h.state.topic(forumID, beCluster, "kept"); !ok {
+		t.Fatal("the topic of a chat that exists was deleted")
+	}
+	for _, c := range h.tg.snapshot() {
+		if c.Method == mDeleteTopic && c.thread() != 50 {
+			t.Fatalf("deleted topic %d", c.thread())
+		}
+	}
+}
+
+func TestReconcileKeepsTopicsWhenItCannotCheck(t *testing.T) {
+	t.Parallel()
+	since := time.Now().Add(-time.Hour)
+	state := newFakeState()
+	state.groups[forumID] = hub.TelegramGroup{User: userAlice, ChatID: forumID, LinkedAt: since}
+	tp := storedTopic(50, "unknown", since)
+	state.topics[topicKey(tp.ChatID, tp.BackendID, tp.SessionID)] = tp
+	h := startBotWith(t, nil, state, func(fh *fakeHub) hub.Computers {
+		fh.checkErr = hub.ErrUnknownBackend
+		return nil
+	})
+	h.hub.add(hub.Session{ID: "other", BackendID: beCluster, Title: "Other", UpdatedAt: time.Now()})
+	h.tg.waitCall(mTopic, func(c tgCall) bool { return c.name() == "Other" })
+	if _, ok := h.state.topic(forumID, beCluster, "unknown"); !ok || len(h.tg.find(mDeleteTopic, "")) != 0 {
+		t.Fatal("a topic was deleted although its chat could not be checked")
+	}
+}
+
+func TestArchiveClosesAndUnarchiveReopensTheTopic(t *testing.T) {
+	t.Parallel()
+	since := time.Now().Add(-time.Hour)
+	h := linked(t, since, storedTopic(60, sFix, since))
+	h.hub.add(hub.Session{ID: sFix, BackendID: beCluster, Title: sFix, UpdatedAt: since})
+	h.hub.update(sFix, func(s *hub.Session) { s.Archived = true })
+	h.tg.waitCall(mCloseTopic, func(c tgCall) bool { return c.thread() == 60 })
+	waitClosed(t, h.state, sFix, true)
+	h.hub.update(sFix, func(s *hub.Session) { s.Archived = false })
+	h.tg.waitCall(mReopenTopic, func(c tgCall) bool { return c.thread() == 60 })
+	waitClosed(t, h.state, sFix, false)
+	if n := len(h.tg.find(mCloseTopic, "")); n != 1 {
+		t.Fatalf("closed %d times", n)
+	}
+}
+
+func waitClosed(t *testing.T, st *fakeState, sessionID string, closed bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if tp, ok := st.topic(forumID, beCluster, sessionID); ok && tp.Closed == closed {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("topic of %s never became closed=%v", sessionID, closed)
+}
+
+// deleteViaEvent attaches the topic of a chat and deletes the chat, as a
+// delete in the hub does.
+func deleteViaEvent(t *testing.T, h *harness, thread int64, sessionID string, n int) {
+	t.Helper()
+	h.tg.sayIn(forumChat(), thread, aliceTG, "hello", nil)
+	h.hub.waitPrompt(t, n)
+	h.hub.remove(sessionID)
+	h.hub.emit(t, sessionID, hub.KindSessionDeleted, map[string]any{})
+}
+
+func TestTopicErrors(t *testing.T) {
+	t.Parallel()
+	since := time.Now().Add(-time.Hour)
+	h := linked(t, since, storedTopic(70, "a", since), storedTopic(71, "b", since))
+	h.hub.add(hub.Session{ID: "a", BackendID: beCluster, Title: "a", UpdatedAt: since})
+	h.hub.add(hub.Session{ID: "b", BackendID: beCluster, Title: "b", UpdatedAt: since})
+	h.tg.mu.Lock()
+	h.tg.topicErr[mDeleteTopic] = "Bad Request: not enough rights to manage topics in the chat"
+	h.tg.mu.Unlock()
+	deleteViaEvent(t, h, 70, "a", 1)
+	rights := h.tg.wait(mSend, "Manage Topics")
+	if rights.thread() != 0 || !strings.Contains(rights.text(), "Delete Messages") {
+		t.Fatalf("rights notice = %+v", rights.Params)
+	}
+	deleteViaEvent(t, h, 71, "b", 2)
+	h.tg.waitCall(mDeleteTopic, func(c tgCall) bool { return c.thread() == 71 })
+	if _, ok := h.state.topic(forumID, beCluster, "a"); !ok {
+		t.Fatal("a topic the bot could not delete was forgotten")
+	}
+	if n := len(h.tg.find(mSend, "Manage Topics")); n != 1 {
+		t.Fatalf("rights notice sent %d times", n)
+	}
+}
+
+func TestTopicAlreadyDeletedIsForgotten(t *testing.T) {
+	t.Parallel()
+	since := time.Now().Add(-time.Hour)
+	h := linked(t, since, storedTopic(80, sGone, since))
+	h.hub.add(hub.Session{ID: sGone, BackendID: beCluster, Title: sGone, UpdatedAt: since})
+	h.tg.mu.Lock()
+	h.tg.topicErr[mDeleteTopic] = "Bad Request: TOPIC_ID_INVALID"
+	h.tg.mu.Unlock()
+	deleteViaEvent(t, h, 80, sGone, 1)
+	h.state.waitNoTopic(t, sGone)
 }

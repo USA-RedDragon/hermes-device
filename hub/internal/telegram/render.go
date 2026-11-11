@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 )
 
@@ -129,6 +130,9 @@ type renderer struct {
 	// pageURL is the hub URL that opens a page of the session: a PageID or
 	// the path of an HTML file.
 	pageURL func(ref string) string
+	// deleted reports that the chat of a topic was deleted, so its topic
+	// goes too. Nil outside a topic.
+	deleted func()
 	// stepsSnap keeps the steps so far of the running turn for the Steps
 	// button of its status line, and forgets them with "". Nil: no button.
 	stepsSnap func(msgID int64, html string)
@@ -202,13 +206,8 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 		r.decode(ev, &p)
 		r.endTurn(ctx)
 		r.send(ctx, "<b>Error:</b> "+escapeHTML(truncate(p.Message, 3000)), nil)
-	case hub.KindSessionDeleted:
-		r.endTurn(ctx)
-		if r.to.thread != 0 {
-			r.send(ctx, "This chat was deleted in the hub.", nil)
-			return
-		}
-		r.send(ctx, "This session was deleted. Send /sessions to pick another one.", nil)
+	case hub.KindSessionDeleted, gateway.UpdatedEvent:
+		r.sessionGone(ctx, ev)
 	case hub.KindInputNotSent:
 		var p hub.HeldInput
 		r.decode(ev, &p)
@@ -371,6 +370,25 @@ func (t *turnStatus) summary() string {
 		}
 	}
 	return strings.Join(parts, ", ")
+}
+
+// sessionGone ends the stream of a deleted chat. In a topic it hands the
+// topic to the next sync, which deletes it; in a private chat it says so.
+func (r *renderer) sessionGone(ctx context.Context, ev hub.Event) {
+	if ev.Kind == gateway.UpdatedEvent {
+		var p struct {
+			Operation string `json:"operation"`
+		}
+		if !r.decode(ev, &p) || p.Operation != gateway.OpDelete {
+			return
+		}
+	}
+	r.endTurn(ctx)
+	if r.deleted != nil {
+		r.deleted()
+		return
+	}
+	r.send(ctx, "This session was deleted. Send /sessions to pick another one.", nil)
 }
 
 // usageEvent is the gateway's mid-turn usage event.

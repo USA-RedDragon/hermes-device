@@ -45,6 +45,22 @@ func (e *APIError) TopicGone() bool {
 		(strings.Contains(d, "message thread not found") || strings.Contains(d, "topic_deleted") || strings.Contains(d, "topic_closed"))
 }
 
+// TopicMissing reports whether Telegram refused a topic call because the
+// topic no longer exists.
+func (e *APIError) TopicMissing() bool {
+	d := strings.ToLower(e.Description)
+	return e.Code == http.StatusBadRequest && (strings.Contains(d, "topic_id_invalid") || strings.Contains(d, "message thread not found") ||
+		strings.Contains(d, "topic_deleted") || strings.Contains(d, "thread not found"))
+}
+
+// NoRights reports whether Telegram refused a call because the bot lacks
+// an admin right in the chat.
+func (e *APIError) NoRights() bool {
+	d := strings.ToLower(e.Description)
+	return strings.Contains(d, "not enough rights") || strings.Contains(d, "chat_admin_required") ||
+		strings.Contains(d, "right_forbidden") || strings.Contains(d, "have no rights")
+}
+
 // BadEntities reports whether Telegram could not parse the HTML markup.
 func (e *APIError) BadEntities() bool {
 	return e.Code == http.StatusBadRequest && strings.Contains(e.Description, "can't parse entities")
@@ -372,6 +388,36 @@ func (c *Client) CreateForumTopic(ctx context.Context, chatID int64, name string
 // error.
 func (c *Client) EditForumTopic(ctx context.Context, chatID, thread int64, name string) error {
 	err := c.call(ctx, "editForumTopic", topicParams{ChatID: chatID, MessageThreadID: thread, Name: truncate(name, maxTopicName)}, nil)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && strings.Contains(apiErr.Description, "TOPIC_NOT_MODIFIED") {
+		return nil
+	}
+	return err
+}
+
+// topicOnly names a forum topic.
+type topicOnly struct {
+	ChatID          int64 `json:"chat_id"`
+	MessageThreadID int64 `json:"message_thread_id"`
+}
+
+// DeleteForumTopic deletes a topic and its messages.
+func (c *Client) DeleteForumTopic(ctx context.Context, chatID, thread int64) error {
+	return c.call(ctx, "deleteForumTopic", topicOnly{ChatID: chatID, MessageThreadID: thread}, nil)
+}
+
+// CloseForumTopic closes a topic. Closing a closed topic is not an error.
+func (c *Client) CloseForumTopic(ctx context.Context, chatID, thread int64) error {
+	return notModified(c.call(ctx, "closeForumTopic", topicOnly{ChatID: chatID, MessageThreadID: thread}, nil))
+}
+
+// ReopenForumTopic reopens a closed topic. Reopening an open topic is not
+// an error.
+func (c *Client) ReopenForumTopic(ctx context.Context, chatID, thread int64) error {
+	return notModified(c.call(ctx, "reopenForumTopic", topicOnly{ChatID: chatID, MessageThreadID: thread}, nil))
+}
+
+func notModified(err error) error {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && strings.Contains(apiErr.Description, "TOPIC_NOT_MODIFIED") {
 		return nil
