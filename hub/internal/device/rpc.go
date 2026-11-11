@@ -553,6 +553,12 @@ var refusedParams = map[string]map[string]string{
 		"latest":  "resume a session by its id: the hub checks the id before the gateway attaches it",
 		"api_key": "a launch key is not part of a device session",
 	},
+	"session.list": {
+		"picker":         "it returns the first prompt and last reply of every chat of the backend",
+		"workspace":      "it lists chats by a folder of any device",
+		keyTitle:         "it finds a chat of the backend by its title",
+		"include_hidden": "it lists archived and hidden chats of the backend",
+	},
 	methodConfigGet:  {keyCWD: "it runs git in a directory of the Hermes pod"},
 	methodFileAttach: {"staged_upload": "it copies a browser upload out of the Hermes pod"},
 }

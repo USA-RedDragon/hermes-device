@@ -274,6 +274,10 @@ func TestGatewayLegParams(t *testing.T) {
 			{methodList, map[string]any{keyProfile: []any{nameOther}}},
 			{methodList, map[string]any{keyProfile: ""}},
 			{methodList, map[string]any{keyProfile: map[string]any{"name": nameOther}}},
+			{methodList, map[string]any{"limit": 200, "picker": true}},
+			{methodList, map[string]any{"limit": 200, "workspace": podDir}},
+			{methodList, map[string]any{keyTitle: "x"}},
+			{methodList, map[string]any{keyScope: "live", "include_hidden": true}},
 		} {
 			if m := g.request("r-"+tc.method, tc.method, tc.params); reason(m) != reasonDenied {
 				t.Fatalf("%s %v = %v", tc.method, tc.params, m)
