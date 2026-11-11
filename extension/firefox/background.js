@@ -1219,7 +1219,9 @@ function installHelpers() {
         target.field = "password";
       }
     }
-    const name = (actor.getAttribute("aria-label") || actor.innerText || actor.value || actor.getAttribute("title") || "")
+    // A field's value is never a label: it can be a password.
+    const buttonValue = actor.tagName === "INPUT" && ["submit", "button", "reset"].includes(actor.type) ? actor.value : "";
+    const name = (actor.getAttribute("aria-label") || actor.innerText || buttonValue || actor.getAttribute("title") || "")
       .replace(/\s+/g, " ").trim().slice(0, 80);
     if (name) {
       target.label = name;
