@@ -225,6 +225,9 @@ func (b *Bot) linkGroup(ctx context.Context, m *Message) {
 	b.fmu.Unlock()
 	for _, id := range append(old, g.ChatID) {
 		b.dropForum(id)
+		if id != g.ChatID && !isDM(id) {
+			b.groupMenu(ctx, id, false)
+		}
 	}
 	b.fmu.Lock()
 	b.forums[g.ChatID] = newForum(g)
