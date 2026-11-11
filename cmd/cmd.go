@@ -2,8 +2,10 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/configulator/v2"
+	"github.com/USA-RedDragon/hermes-device/internal/autoupdate"
 	"github.com/USA-RedDragon/hermes-device/internal/config"
 	"github.com/USA-RedDragon/hermes-device/internal/setup"
 	"github.com/spf13/cobra"
@@ -55,19 +58,25 @@ func NewCommand(version, commit string, opts ...Option) *cobra.Command {
 		releases: func() *setup.Releases {
 			return &setup.Releases{BaseURL: setup.DefaultReleasesURL, Client: &http.Client{Timeout: 10 * time.Minute}}
 		},
+		releaseLookup: defaultReleaseLookup,
+		executable:    os.Executable,
+		underService:  underService,
+		exit:          os.Exit,
+		getenv:        os.Getenv,
 	}
+	b.verifier = b.attestations
 	for _, o := range opts {
 		o(b)
 	}
 	root.AddCommand(
-		newLoginCommand(b),
+		b.interactive(newLoginCommand(b)),
 		newRunCommand(b),
-		newChatCommand(b),
-		newACPCommand(b),
+		b.interactive(newChatCommand(b)),
+		b.interactive(newACPCommand(b)),
 		newACPHostCommand(b),
 		newPluginCommand(b),
-		newBrowserCommand(b),
-		newSetupCommand(b),
+		browserCommand(b),
+		b.interactive(newSetupCommand(b)),
 		newUpdateCommand(b),
 	)
 	return root
@@ -84,6 +93,23 @@ type base struct {
 	// update work on. Tests replace them.
 	system   func() (*setup.System, error)
 	releases func() *setup.Releases
+	// verifier checks release attestations; releaseLookup finds the
+	// latest release with the shared cache.
+	verifier      func() setup.AttestationVerifier
+	releaseLookup func(userAgent string) *autoupdate.Releases
+	// executable, underService and exit are what run's auto-update needs
+	// of the process. Tests replace them.
+	executable   func() (string, error)
+	underService func() bool
+	exit         func(code int)
+	// runArgs are the arguments of the run daemon (from "run" on).
+	runArgs []string
+	getenv  func(string) string
+	// notice is the update notice of an interactive command, which
+	// writes to noticeOut.
+	notice    *autoupdate.Notice
+	noticeOut io.Writer
+	noticeCtx context.Context //nolint:containedctx // the command's, for the notice's background lookup
 }
 
 // load reads the configuration and sets up logging to stderr. stdout stays
@@ -98,6 +124,7 @@ func (b *base) load() (*config.Config, error) {
 		return nil, err
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	b.startNotice(cfg)
 	return cfg, nil
 }
 
@@ -113,4 +140,14 @@ func defaultConfigFiles() []string {
 		return nil
 	}
 	return []string{filepath.Join(dir, "hermes-device", "config.yaml")}
+}
+
+// browserCommand is the browser command, whose subcommands a person
+// runs. Those that load the config show the update notice.
+func browserCommand(b *base) *cobra.Command {
+	c := newBrowserCommand(b)
+	for _, sub := range c.Commands() {
+		b.interactive(sub)
+	}
+	return c
 }

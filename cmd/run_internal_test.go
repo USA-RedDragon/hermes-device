@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/USA-RedDragon/hermes-device/internal/autoupdate"
 	"github.com/USA-RedDragon/hermes-device/internal/config"
 	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
 	"github.com/USA-RedDragon/hermes-device/internal/device"
@@ -46,6 +47,18 @@ type runHub struct {
 	whoami    int
 	closeCode websocket.StatusCode
 	hellos    atomic.Int32
+	// exec, when set, serves the exec leg after the welcome; root is a
+	// directory commands may run in.
+	exec func(ctx context.Context, conn *websocket.Conn)
+	root string
+}
+
+func writeJSONMsg(ctx context.Context, conn *websocket.Conn, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	_ = conn.Write(ctx, websocket.MessageText, b)
 }
 
 func (h *runHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +96,10 @@ func (h *runHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_ = conn.Close(h.closeCode, "test")
 			return
 		}
+		if h.exec != nil {
+			h.exec(ctx, conn)
+			return
+		}
 		for {
 			if _, _, err := conn.Read(ctx); err != nil {
 				return
@@ -96,6 +113,7 @@ func (h *runHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type fakeSplice struct {
 	ln     chan net.Listener
 	result error
+	tuis   atomic.Int32
 }
 
 func (f *fakeSplice) Serve(ctx context.Context, ln net.Listener) error {
@@ -109,11 +127,14 @@ func (f *fakeSplice) Serve(ctx context.Context, ln net.Listener) error {
 
 func (f *fakeSplice) ControlSecret() string { return "control-secret" }
 
+func (f *fakeSplice) TUIs() int { return int(f.tuis.Load()) }
+
 type runSetup struct {
 	cfg      *config.Config
 	stateDir string
 	splice   *fakeSplice
 	hub      *runHub
+	au       *autoupdate.Daemon
 }
 
 func setupRun(t *testing.T, hub *runHub, spliceResult error) *runSetup { //nolint:unparam // kept for splice failure cases
@@ -148,7 +169,7 @@ func (s *runSetup) start(ctx context.Context) chan error {
 				s.hub.t.Errorf("splice options = %+v", opts)
 			}
 			return s.splice
-		})
+		}, s.au)
 	}()
 	return done
 }
@@ -282,7 +303,7 @@ func TestRunNoSpliceWithTokenFile(t *testing.T) {
 		done <- runDaemon(ctx, s.cfg, "v0.2.0", "hermes-device/test", func(splice.Options) spliceServer {
 			t.Error("splice started with gateway.splice false")
 			return s.splice
-		})
+		}, s.au)
 	}()
 	waitUntil(t, "the exec leg", func() bool { return s.hub.hellos.Load() >= 1 })
 	if fi, err := os.Stat(s.cfg.Device.TempDir); err != nil || !fi.IsDir() {

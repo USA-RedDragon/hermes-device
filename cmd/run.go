@@ -8,9 +8,11 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/USA-RedDragon/hermes-device/internal/allowlist"
+	"github.com/USA-RedDragon/hermes-device/internal/autoupdate"
 	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
 	"github.com/USA-RedDragon/hermes-device/internal/browser/host"
 	"github.com/USA-RedDragon/hermes-device/internal/browser/launch"
@@ -28,10 +30,15 @@ const whoamiTimeout = 15 * time.Second
 
 var errSpliceStopped = errors.New("stopped unexpectedly")
 
+// CheckConfigFlag makes run only check its config.
+const CheckConfigFlag = "check-config"
+
+const runCommand = "run"
+
 func newRunCommand(b *base) *cobra.Command {
-	var noSplice bool
+	var noSplice, checkConfig bool
 	cmd := &cobra.Command{
-		Use:   "run",
+		Use:   runCommand,
 		Short: "Run the device daemon: the exec leg and the chat splice",
 		Long: "Run the device daemon: the exec leg and the chat splice. With --no-splice (or gateway.splice false) " +
 			"it runs only the exec leg, for a headless service device such as the sandbox pod.",
@@ -44,12 +51,29 @@ func newRunCommand(b *base) *cobra.Command {
 			if noSplice {
 				cfg.Gateway.Splice = false
 			}
+			b.runArgs = runArgs(os.Args)
+			if checkConfig {
+				if err := cfg.ForRun(); err != nil {
+					return err
+				}
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), "The config is valid for run.")
+				return err
+			}
 			ctx, stop := signalContext(cmd.Context())
 			defer stop()
-			return runDaemon(ctx, cfg, b.version, b.userAgent(), newSplice)
+			err = runDaemon(ctx, cfg, b.version, b.userAgent(), newSplice, b.daemonUpdater(cfg))
+			var restart *restartError
+			if errors.As(err, &restart) {
+				slog.Info("Exiting so that the service starts the new release", "new", restart.tag)
+				stop()
+				b.exit(exitRestart)
+				return nil
+			}
+			return err
 		},
 	}
 	cmd.Flags().BoolVar(&noSplice, "no-splice", false, "Run only the exec leg, without the chat splice (sets gateway.splice to false)")
+	cmd.Flags().BoolVar(&checkConfig, CheckConfigFlag, false, "Load and check the config the way run does, then exit; auto-update runs a new release with it before it installs it")
 	return cmd
 }
 
@@ -102,13 +126,17 @@ func runToken(cfg *config.Config) (token, deviceID, stateDir string, err error) 
 type spliceServer interface {
 	Serve(ctx context.Context, ln net.Listener) error
 	ControlSecret() string
+	TUIs() int
 }
 
 func newSplice(opts splice.Options) spliceServer { return splice.New(opts) }
 
 // runDaemon runs the exec leg and the splice until ctx ends or the exec leg
-// stops for good.
-func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent string, mkSplice func(splice.Options) spliceServer) error {
+// stops for good. With au it also installs new releases; after an install
+// it waits until the device is idle and returns *restartError.
+func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent string, mkSplice func(splice.Options) spliceServer,
+	au *autoupdate.Daemon,
+) (err error) {
 	if err := cfg.ForRun(); err != nil {
 		return err
 	}
@@ -158,6 +186,16 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 	if err != nil {
 		return err
 	}
+	var live atomic.Value
+	if au != nil {
+		var stopUpdater func() string
+		ctx, stopUpdater = startUpdater(ctx, au, dev, &live)
+		defer func() {
+			if tag := stopUpdater(); tag != "" && err == nil {
+				err = &restartError{tag: tag}
+			}
+		}()
+	}
 	if !cfg.Gateway.Splice {
 		slog.Info("Running the exec leg only (no chat splice)", "roots", allow.Roots())
 		return dev.Run(ctx)
@@ -191,6 +229,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 	}
 	defer ln.Close()
 	srv := mkSplice(splice.Options{Hub: hub, PingInterval: cfg.PingInterval, Browser: spliceBrowser(br)})
+	live.Store(srv)
 
 	pid := os.Getpid()
 	if err := daemonstate.Write(stateDir, daemonstate.State{
@@ -231,6 +270,33 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 			err = errSpliceStopped
 		}
 		return fmt.Errorf("splice: %w", err)
+	}
+}
+
+// startUpdater runs au beside the daemon. The device is idle for au when
+// it holds no work and live holds no splice with an open TUI. It returns
+// the context for the daemon, which ends when au wants a restart, and a
+// function that stops au and returns the tag to restart into, or "".
+func startUpdater(ctx context.Context, au *autoupdate.Daemon, dev *device.Client, live *atomic.Value) (context.Context, func() string) {
+	ctx, cancel := context.WithCancel(ctx)
+	au.Drain = func() bool {
+		if s, ok := live.Load().(spliceServer); ok && s.TUIs() > 0 {
+			return false
+		}
+		return dev.Drain()
+	}
+	var tag string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if tag = au.Run(ctx); tag != "" {
+			cancel()
+		}
+	}()
+	return ctx, func() string {
+		cancel()
+		<-done
+		return tag
 	}
 }
 
@@ -278,4 +344,13 @@ func commandEnv(environ []string) []string {
 		}
 	}
 	return out
+}
+
+// runArgs are the arguments of this run daemon, which auto-update runs a
+// new release with to check that it accepts this config.
+func runArgs(args []string) []string {
+	if len(args) > 1 && args[1] == runCommand {
+		return append([]string{}, args[1:]...)
+	}
+	return []string{runCommand}
 }

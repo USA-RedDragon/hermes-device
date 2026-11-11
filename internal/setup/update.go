@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -49,6 +50,10 @@ type UpdateOptions struct {
 	SkipAttestation bool
 	// Check downloads and verifies the release but installs nothing.
 	Check bool
+	// Preflight, when set, are arguments that the new binary must run
+	// with successfully before it replaces Target, for example a check
+	// that it can load this computer's config.
+	Preflight []string
 }
 
 // Update replaces o.Target with the binary of a release after checking
@@ -119,6 +124,9 @@ func (s *System) Update(ctx context.Context, o *UpdateOptions) (string, error) {
 	if got != want {
 		return "", fmt.Errorf("the downloaded binary reports version %q, want %q", got, want)
 	}
+	if err := s.preflight(ctx, tmp.Name(), o.Preflight); err != nil {
+		return "", err
+	}
 	if o.Check {
 		return tag, nil
 	}
@@ -165,4 +173,15 @@ func (s *System) verifyAttestation(ctx context.Context, o *UpdateOptions, tag st
 	}
 	return fmt.Errorf("%w, so %s was not installed. The file may have been changed after the release workflow built it. "+
 		"Pass --insecure-skip-attestation only if you know why it fails (unsafe): %w", ErrAttestation, name, err)
+}
+
+// preflight runs the new binary at path with args, when there are any.
+func (s *System) preflight(ctx context.Context, path string, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if out, err := s.Run.Output(ctx, nil, path, args...); err != nil {
+		return fmt.Errorf("the downloaded binary failed %q here, so it was not installed: %w: %s", args, err, bytes.TrimSpace(out))
+	}
+	return nil
 }
