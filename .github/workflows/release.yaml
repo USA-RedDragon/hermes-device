@@ -68,8 +68,8 @@ jobs:
           elif [ "$HAVE_ISSUER" != true ] || [ "$HAVE_SECRET" != true ]; then
             echo "::notice title=Firefox extension not signed::The repository secrets AMO_JWT_ISSUER and AMO_JWT_SECRET are not set, so the extension is linted but not signed, and this release has no .xpi or updates.json (docs/browser.md section 6.1)."
             sign=false
-          elif gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx "talaria-firefox-$version.xpi"; then
-            echo "::notice title=Firefox extension already signed::$TAG already has talaria-firefox-$version.xpi."
+          elif gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx updates.json; then
+            echo "::notice title=Firefox extension already published::$TAG already has updates.json."
             sign=false
           fi
           {
@@ -87,15 +87,51 @@ jobs:
       - name: Lint the extension
         run: npx --yes "$WEB_EXT" lint --source-dir "$EXT_DIR" --self-hosted
 
-      - name: Sign the extension on addons.mozilla.org (unlisted)
+      - name: Reuse the last signed extension when it did not change
+        id: carry
         if: steps.plan.outputs.sign == 'true'
+        run: |
+          prev=
+          for tag in $(gh release list --limit 40 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName'); do
+            [ "$tag" = "$TAG" ] && continue
+            if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx updates.json; then
+              prev=$tag
+              break
+            fi
+          done
+          if [ -z "$prev" ]; then
+            echo "carry=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          dir="$RUNNER_TEMP/prev"
+          mkdir -p "$dir/files"
+          gh release download "$prev" --dir "$dir" --pattern updates.json
+          link=$(jq -r '[.addons[].updates[].update_link][0]' "$dir/updates.json")
+          case "$link" in
+            "https://github.com/$GH_REPO/releases/download/"*.xpi) ;;
+            *) echo "::error::$prev updates.json links to $link"; exit 1 ;;
+          esac
+          curl -fsSL -o "$dir/prev.xpi" "$link"
+          unzip -q "$dir/prev.xpi" -d "$dir/files"
+          rm -rf "$dir/files/META-INF"
+          same=true
+          diff -rq -x manifest.json "$dir/files" "$EXT_DIR" || same=false
+          [ "$(jq -S 'del(.version)' "$dir/files/manifest.json")" = "$(jq -S 'del(.version)' "$EXT_DIR/manifest.json")" ] || same=false
+          if [ "$same" = true ]; then
+            echo "::notice title=Firefox extension unchanged::The extension is the same as the one signed for $prev, so $TAG reuses it ($link) and does not ask addons.mozilla.org to sign it again."
+            gh release upload "$TAG" "$dir/updates.json" --clobber
+          fi
+          echo "carry=$same" >> "$GITHUB_OUTPUT"
+
+      - name: Sign the extension on addons.mozilla.org (unlisted)
+        if: steps.plan.outputs.sign == 'true' && steps.carry.outputs.carry != 'true'
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
         run: npx --yes "$WEB_EXT" sign --channel unlisted --source-dir "$EXT_DIR" --artifacts-dir "$SIGNED_DIR"
 
       - name: Publish the signed extension and updates.json
-        if: steps.plan.outputs.sign == 'true'
+        if: steps.plan.outputs.sign == 'true' && steps.carry.outputs.carry != 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
         run: |

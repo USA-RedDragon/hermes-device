@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -210,6 +211,46 @@ func (r *Releases) FetchArchive(ctx context.Context, tag, goos, goarch, goarm st
 
 // XPIName is the signed Firefox extension file of version (without v).
 func XPIName(version string) string { return "talaria-firefox-" + version + ".xpi" }
+
+// updatesLimit caps the size of a release's updates.json.
+const updatesLimit = 64 << 10
+
+// XPIURL returns the download URL of the signed Firefox extension of release
+// tag. A release whose extension did not change carries the earlier signed
+// file, named for the version it was signed as, and its updates.json links
+// to it.
+func (r *Releases) XPIURL(ctx context.Context, tag string) (string, error) {
+	name := XPIName(strings.TrimPrefix(tag, "v"))
+	ok, err := r.Has(ctx, tag, name)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return r.AssetURL(tag, name), nil
+	}
+	data, err := r.Fetch(ctx, tag, "updates.json", updatesLimit)
+	if err != nil {
+		return "", err
+	}
+	var u struct {
+		Addons map[string]struct {
+			Updates []struct {
+				Link string `json:"update_link"`
+			} `json:"updates"`
+		} `json:"addons"`
+	}
+	if err := json.Unmarshal(data, &u); err != nil {
+		return "", fmt.Errorf("%s of %s: %w", "updates.json", tag, err)
+	}
+	for _, a := range u.Addons {
+		for _, up := range a.Updates {
+			if strings.HasPrefix(up.Link, r.BaseURL+"/download/") && strings.HasSuffix(up.Link, ".xpi") {
+				return up.Link, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("%w: %s", ErrNoAsset, r.AssetURL(tag, name))
+}
 
 // Has reports whether release tag has file name.
 func (r *Releases) Has(ctx context.Context, tag, name string) (bool, error) {

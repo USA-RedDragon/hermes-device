@@ -314,14 +314,15 @@ What the Release workflow does (`.github/workflows/release.yaml`, job `firefox-e
 
 1. It builds the extension with `talaria browser extension --out DIR --ext-version X`, where X is the tag without its leading `v`. Only the `version` line differs from the files in `extension/firefox`.
 2. It runs `web-ext lint`, the same validator AMO runs, so problems show in the job log. The Tests workflow runs the same lint on every push.
-3. It signs with `web-ext sign --channel unlisted`, with the repository secrets `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`.
-4. It checks that the signed file has a Mozilla signature and the expected version, then uploads `talaria-firefox-<version>.xpi` and `updates.json` to the release.
+3. It compares the extension with the one signed for the newest earlier release that has an `updates.json`. When only the `version` differs, it uploads that release's `updates.json` to this release and stops: Firefox stays on the signed file of the earlier release, and AMO, which limits how many versions an account can submit per day, is not asked again. `talaria setup` follows `updates.json` to that file.
+4. Otherwise it signs with `web-ext sign --channel unlisted`, with the repository secrets `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`.
+5. It checks that the signed file has a Mozilla signature and the expected version, then uploads `talaria-firefox-<version>.xpi` and `updates.json` to the release.
 
 The job skips signing, with a notice in its log, and the release then has no `.xpi` and no `updates.json`, when:
 
 - The secrets are not set (forks, or before they are added). The binaries and images are still released.
 - The tag is a pre-release or has build metadata (`v1.2.0-rc.1`). Firefox versions are one to four dot-separated numbers, and no such number for `1.2.0-rc.1` sorts before `1.2.0`.
-- The release already has the `.xpi` (a re-run). AMO accepts each version only once.
+- The release already has `updates.json` (a re-run). AMO accepts each version only once.
 
 While the latest release has no `updates.json`, Firefox's update check fails quietly and the installed version stays. The next signed release fixes that.
 

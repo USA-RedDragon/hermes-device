@@ -387,24 +387,15 @@ func (s *System) serviceStep(ctx context.Context, o *Options, st *State, r *Repo
 func (s *System) xpiURL(ctx context.Context, o *Options) (string, error) {
 	rel := o.Releases
 	if v := Canonical(o.Version); v != "" && !strings.Contains(v, "-") {
-		tag := "v" + strings.TrimPrefix(o.Version, "v")
-		if ok, err := rel.Has(ctx, tag, XPIName(strings.TrimPrefix(tag, "v"))); err == nil && ok {
-			return rel.AssetURL(tag, XPIName(strings.TrimPrefix(tag, "v"))), nil
+		if u, err := rel.XPIURL(ctx, "v"+strings.TrimPrefix(o.Version, "v")); err == nil {
+			return u, nil
 		}
 	}
 	tag, err := rel.LatestTag(ctx)
 	if err != nil {
 		return "", err
 	}
-	name := XPIName(strings.TrimPrefix(tag, "v"))
-	ok, err := rel.Has(ctx, tag, name)
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		return "", fmt.Errorf("%w: %s", ErrNoAsset, rel.AssetURL(tag, name))
-	}
-	return rel.AssetURL(tag, name), nil
+	return rel.XPIURL(ctx, tag)
 }
 
 func (s *System) firefoxStep(ctx context.Context, o *Options, ff *Firefox, r *Report, running bool) {
