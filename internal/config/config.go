@@ -48,7 +48,7 @@ type Gateway struct {
 // Chat runs the local Hermes TUI.
 type Chat struct {
 	Managed    bool   `name:"managed" default:"true" description:"On Linux, run the exact Hermes build the server runs: run fetches it from the server's container image by digest when the server reports one, verifies it and keeps it in chat.managed-dir. false, or no image from the server, runs chat.hermes instead"`
-	ManagedDir string `name:"managed-dir" description:"Directory for the managed Hermes builds and their own Hermes home. Defaults to hermes-device/hermes in the user cache directory"`
+	ManagedDir string `name:"managed-dir" description:"Directory for the managed Hermes builds and their own Hermes home. Defaults to talaria/hermes in the user cache directory"`
 	Hermes     string `name:"hermes" default:"hermes" description:"Local Hermes launcher when chat.managed is off or the server reports no image. It must be the same release as the server's Hermes"`
 }
 

@@ -3,8 +3,11 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -164,4 +167,98 @@ func (h *serverHermes) fetchOnce(ctx context.Context, builds *hermesbuild.Store,
 // the same image cannot fix.
 func permanent(err error) bool {
 	return errors.Is(err, oci.ErrPlatform) || errors.Is(err, oci.ErrMediaType) || errors.Is(err, oci.ErrBadReference)
+}
+
+// errNoImage is chat --refresh without an image from the server.
+var errNoImage = errors.New("the server reports no Hermes image; chat uses chat.hermes")
+
+// progress prints the progress of a pull to w.
+func progress(w io.Writer) func(done, total int64) {
+	return func(done, total int64) {
+		if total <= 0 {
+			return
+		}
+		end := ""
+		if done >= total {
+			end = "\n"
+		}
+		_, _ = fmt.Fprintf(w, "\rFetching the server's Hermes build: %3d%% of %.1f GB%s", done*100/total, float64(total)/1e9, end)
+	}
+}
+
+// printStatus shows the server's Hermes and the managed builds.
+func printStatus(w io.Writer, cfg *config.Config, builds *hermesbuild.Store, st *daemonstate.State) error {
+	image := st.HermesImage
+	if image == "" {
+		image = "not reported; chat runs chat.hermes"
+	}
+	version := st.HermesVersion
+	if version == "" {
+		version = "unknown until run connects"
+	}
+	_, _ = fmt.Fprintf(w, "Server Hermes: %s\nServer image:  %s\n", version, image)
+	switch {
+	case !cfg.Chat.Managed:
+		_, _ = fmt.Fprintf(w, "Managed builds: off (chat.managed is false); chat runs %s\n", cfg.Chat.Hermes)
+		return nil
+	case builds == nil:
+		_, _ = fmt.Fprintf(w, "Managed builds: not on %s; chat runs %s\n", runtime.GOOS, cfg.Chat.Hermes)
+		return nil
+	}
+	list, err := builds.List()
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(w, "Managed builds in %s:\n", builds.Dir)
+	if len(list) == 0 {
+		_, _ = fmt.Fprintln(w, "  none")
+	}
+	current := ""
+	if st.HermesImage != "" {
+		current, _ = hermesbuild.Key(st.HermesImage)
+	}
+	const stamp = "2006-01-02 15:04 MST"
+	for _, b := range list {
+		var notes []string
+		if strings.TrimPrefix(b.Digest, "sha256:") == current {
+			notes = append(notes, "current")
+		}
+		if builds.InUse(b) {
+			notes = append(notes, "in use")
+		}
+		_, _ = fmt.Fprintf(w, "  %s\n    from %s, pulled %s, last used %s", b.Meta.Reference, b.Meta.Source,
+			b.Meta.PulledAt.Local().Format(stamp), b.LastUsed.Local().Format(stamp))
+		if len(notes) > 0 {
+			_, _ = fmt.Fprintf(w, " (%s)", strings.Join(notes, ", "))
+		}
+		_, _ = fmt.Fprintln(w)
+	}
+	if current != "" {
+		if _, err := builds.Open(st.HermesImage); errors.Is(err, hermesbuild.ErrNotPulled) {
+			_, _ = fmt.Fprintln(w, "The current build is not on this device yet: run fetches it, or chat does when it starts.")
+		}
+	}
+	return nil
+}
+
+// refreshBuild fetches the server's build again and prunes old ones.
+func refreshBuild(ctx context.Context, w io.Writer, builds *hermesbuild.Store, st *daemonstate.State) error {
+	if builds == nil {
+		return fmt.Errorf("chat --refresh: %w, or chat.managed is false", hermesbuild.ErrUnsupported)
+	}
+	if st.HermesImage == "" {
+		return errNoImage
+	}
+	b, err := builds.Refresh(ctx, st.HermesImage)
+	if errors.Is(err, hermesbuild.ErrInUse) {
+		return fmt.Errorf("%w; end that chat first", err)
+	}
+	if err != nil {
+		return err
+	}
+	if err := builds.Prune(st.HermesImage, keepPrevious); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "Hermes build ready: %s\n  in %s\n", b.Meta.Reference, b.Dir)
+	return err
 }

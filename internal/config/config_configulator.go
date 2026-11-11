@@ -800,7 +800,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[13], "127.0.0.1:0", "Loopback address of the chat splice. Port 0 picks a free port")
 	fs.Bool(names[14], true, "Run the chat splice in run. false (or run --no-splice) runs only the exec leg: no listener, no daemon state file and no whoami call, for a headless service device such as the sandbox pod")
 	fs.Bool(names[15], true, "On Linux, run the exact Hermes build the server runs: run fetches it from the server's container image by digest when the server reports one, verifies it and keeps it in chat.managed-dir. false, or no image from the server, runs chat.hermes instead")
-	fs.String(names[16], "", "Directory for the managed Hermes builds and their own Hermes home. Defaults to hermes-device/hermes in the user cache directory")
+	fs.String(names[16], "", "Directory for the managed Hermes builds and their own Hermes home. Defaults to talaria/hermes in the user cache directory")
 	fs.String(names[17], "hermes", "Local Hermes launcher when chat.managed is off or the server reports no image. It must be the same release as the server's Hermes")
 	fs.String(names[18], ":9130", "Address the ACP host listens on. Only hermes-hub may reach it")
 	fs.String(names[19], "", "This backend's id, the aud the hub puts in its assertions. Needed by acp-host")

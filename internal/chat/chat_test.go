@@ -1,14 +1,18 @@
 package chat_test
 
 import (
+	"archive/tar"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,7 +21,10 @@ import (
 
 	"github.com/USA-RedDragon/hermes-device/internal/chat"
 	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
+	"github.com/USA-RedDragon/hermes-device/internal/hermesbuild"
 	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
+	"github.com/USA-RedDragon/hermes-device/internal/oci"
+	"github.com/USA-RedDragon/hermes-device/internal/oci/ocitest"
 )
 
 const (
@@ -322,6 +329,75 @@ func TestRunVersionMismatch(t *testing.T) {
 	}
 	if created, deleted := f.counts(); created != 1 || len(deleted) != 1 {
 		t.Fatalf("created %d deleted %q", created, deleted)
+	}
+}
+
+// TestRunManagedBuild is not parallel: it execs a launcher that the pull
+// just wrote, which a fork in a parallel test could hold open
+// (go.dev/issue/22315).
+func TestRunManagedBuild(t *testing.T) { //nolint:paralleltest // see above
+	if runtime.GOOS != "linux" {
+		t.Skip("managed builds run on Linux only")
+	}
+	f := newFixture(t)
+	out := filepath.Join(t.TempDir(), "out")
+	launcher := `#!/bin/sh
+printf '%s\n' "$*" "$HOME" "$HERMES_HOME" "$` + chat.GatewayURLEnv + `" > '` + out + `'
+[ -e /proc/self/fd/3 ] && echo fd3 >> '` + out + `'
+exit 3
+`
+	reg := ocitest.New(t, "nousresearch/hermes-agent")
+	img := reg.Push(t, oci.MediaOCILayerGzip, []string{"HERMES_HOME=/opt/data"}, ocitest.Layer(t,
+		ocitest.Entry{Name: "opt/hermes/libexec/hermes", Body: launcher, Mode: 0o755},
+		ocitest.Entry{Name: "opt/hermes/.venv/bin/hermes", Type: tar.TypeSymlink, Link: "../../libexec/hermes"},
+	))
+	builds := &hermesbuild.Store{Dir: filepath.Join(t.TempDir(), "hermes"), HTTP: reg.Client(), Arch: "amd64",
+		Log: slog.New(slog.DiscardHandler)}
+	p := f.params("/nonexistent/hermes", "")
+	p.Builds, p.Image = builds, reg.Reference(img.Index)
+	p.Args = []string{argYolo}
+	code, err := chat.Run(t.Context(), p)
+	if err != nil || code != 3 {
+		t.Fatalf("Run = %d, %v; want 3", code, err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--tui " + argYolo, builds.Home(), builds.HermesHome(),
+		"ws://" + f.control.State.Splice + "/api/ws?token=" + token, "fd3"}
+	if got := strings.Split(strings.TrimSpace(string(data)), "\n"); !slices.Equal(got, want) {
+		t.Fatalf("TUI saw %q, want %q", got, want)
+	}
+	if err := builds.Remove(p.Image); err != nil {
+		t.Errorf("Remove after the chat ended: %v (the in-use mark outlived the TUI)", err)
+	}
+}
+
+func TestRunManagedWithoutThisPlatformUsesHermes(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	reg := ocitest.New(t, "nousresearch/hermes-agent")
+	img := reg.Push(t, oci.MediaOCILayerGzip, nil, ocitest.Layer(t, ocitest.Entry{Name: "opt/hermes/f", Body: "x"}))
+	p := f.params(fakeHermes(t, hermesVersion, "exit 5"), "")
+	p.Builds = &hermesbuild.Store{Dir: t.TempDir(), HTTP: reg.Client(), Arch: "riscv64", Log: slog.New(slog.DiscardHandler)}
+	p.Image = reg.Reference(img.Index)
+	p.Log = slog.New(slog.DiscardHandler)
+	if code, err := chat.Run(t.Context(), p); err != nil || code != 5 {
+		t.Fatalf("Run = %d, %v; want chat.hermes to run", code, err)
+	}
+}
+
+func TestRunImageWithoutDigestUsesHermes(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	hermes := fakeHermes(t, "0.22.6", "exit 0")
+	p := f.params(hermes, "")
+	p.Builds = &hermesbuild.Store{Dir: t.TempDir()}
+	p.Image = "registry.example.com/hermes:v0.23.1"
+	p.Log = slog.New(slog.DiscardHandler)
+	if _, err := chat.Run(t.Context(), p); !errors.Is(err, chat.ErrVersionMismatch) {
+		t.Fatalf("Run: %v, want the version check of chat.hermes", err)
 	}
 }
 

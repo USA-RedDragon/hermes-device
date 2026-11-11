@@ -2,18 +2,24 @@ package cmd
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/USA-RedDragon/hermes-device/internal/config"
 	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
 	"github.com/USA-RedDragon/hermes-device/internal/hermesbuild"
 	"github.com/USA-RedDragon/hermes-device/internal/oci"
 	"github.com/USA-RedDragon/hermes-device/internal/oci/ocitest"
 	"github.com/USA-RedDragon/hermes-device/protocol"
 )
+
+const testVersion = "v0.23.1"
 
 const testImage = "registry.example.com/hermes:v0.23.1@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -85,4 +91,62 @@ func TestFetchLoopFetchesEachImageAndPrunes(t *testing.T) {
 	}
 	h.welcome(protocol.Welcome{HermesImage: "registry.example.com/hermes:v1"})
 	h.welcome(protocol.Welcome{})
+}
+
+// TestStatusAndRefresh is not parallel: a child that a parallel test
+// forks holds a copy of every open lock file until it execs, and the build
+// would then show as in use.
+func TestStatusAndRefresh(t *testing.T) { //nolint:paralleltest // see above
+	r := ocitest.New(t, "nousresearch/hermes-agent")
+	builds := testBuilds(t, r)
+	image := pushHermes(t, r, "1")
+	st := &daemonstate.State{HermesVersion: testVersion, HermesImage: image}
+	cfg := &config.Config{Chat: config.Chat{Managed: true, Hermes: "hermes"}}
+	var out bytes.Buffer
+	if err := printStatus(&out, cfg, builds, st); err != nil {
+		t.Fatal(err)
+	}
+	if s := out.String(); !strings.Contains(s, "Server image:  "+image) || !strings.Contains(s, "  none") ||
+		!strings.Contains(s, "not on this device yet") {
+		t.Errorf("status before the pull:\n%s", s)
+	}
+	out.Reset()
+	if err := refreshBuild(context.Background(), &out, builds, st); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := printStatus(&out, cfg, builds, st); err != nil {
+		t.Fatal(err)
+	}
+	if s := out.String(); !strings.Contains(s, "(current)") || strings.Contains(s, "not on this device yet") {
+		t.Errorf("status after the pull:\n%s", s)
+	}
+	if err := refreshBuild(context.Background(), &out, builds, &daemonstate.State{}); !errors.Is(err, errNoImage) {
+		t.Errorf("refresh without an image: %v", err)
+	}
+	if err := refreshBuild(context.Background(), &out, nil, st); !errors.Is(err, hermesbuild.ErrUnsupported) {
+		t.Errorf("refresh with managed builds off: %v", err)
+	}
+	out.Reset()
+	cfg.Chat.Managed = false
+	if err := printStatus(&out, cfg, nil, st); err != nil || !strings.Contains(out.String(), "chat.managed is false") {
+		t.Errorf("status with managed builds off: %v\n%s", err, out.String())
+	}
+}
+
+func TestServerHermesIgnoresATooLongImage(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	h := newServerHermes()
+	if err := h.start(dir, daemonstate.State{PID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	h.welcome(protocol.Welcome{HermesVersion: testVersion, HermesImage: "registry.example.com/" + strings.Repeat("a", protocol.MaxHermesImage)})
+	st, err := daemonstate.Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.HermesImage != "" || st.HermesVersion != testVersion {
+		t.Errorf("state = %+v", st)
+	}
 }

@@ -29,7 +29,7 @@ import (
 )
 
 // DirName is the directory of this tool in the user cache directory.
-const DirName = "hermes-device"
+const DirName = "talaria"
 
 // Directories and files under Store.Dir and in a build.
 const (

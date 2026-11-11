@@ -23,7 +23,9 @@ import (
 
 	"github.com/USA-RedDragon/hermes-device/internal/config"
 	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
+	"github.com/USA-RedDragon/hermes-device/internal/hermesbuild"
 	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
+	"github.com/USA-RedDragon/hermes-device/internal/oci"
 	"github.com/USA-RedDragon/hermes-device/internal/splice"
 	"github.com/USA-RedDragon/hermes-device/internal/tokenstore"
 )
@@ -361,8 +363,13 @@ func resolveArgs(ctx context.Context, c *Control, args []string) ([]string, erro
 
 // Params configure Run.
 type Params struct {
-	// Hermes is the local Hermes launcher.
+	// Hermes is the local Hermes launcher, used when Builds is nil or
+	// Image is empty.
 	Hermes string
+	// Builds holds the managed Hermes builds; nil turns them off.
+	Builds *hermesbuild.Store
+	// Image is the server's Hermes image from the daemon state.
+	Image string
 	// Args go to Hermes after --tui.
 	Args []string
 	Hub  *hubapi.Client
@@ -383,27 +390,31 @@ type Params struct {
 	Log     *slog.Logger
 }
 
-// Run checks versions, starts the TUI against the splice and returns its
-// exit code. A TUI killed by a signal gives 128 plus the signal number.
+// launch is how runTUI starts the TUI.
+type launch struct {
+	argv []string
+	// env replaces the base environment when set.
+	env []string
+	// keep is passed to the TUI and closed after it.
+	keep *os.File
+}
+
+// Run picks the Hermes to run, starts its TUI against the splice and
+// returns its exit code. A TUI killed by a signal gives 128 plus the
+// signal number. With Builds and an Image pinned by digest it runs that
+// exact build, fetching it first when needed; otherwise it runs Hermes
+// after checking that its version is the server's.
 func Run(ctx context.Context, p Params) (int, error) {
 	log := p.Log
 	if log == nil {
 		log = slog.Default()
 	}
-	who, err := p.Hub.Whoami(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("whoami: %w", err)
-	}
-	local, err := HermesVersion(ctx, p.Hermes)
+	l, err := pickHermes(ctx, p, log)
 	if err != nil {
 		return 0, err
 	}
-	if !SameVersion(local, who.HermesVersion) {
-		if !p.AllowVersionMismatch {
-			return 0, fmt.Errorf("%w: local %s, server %s; install the server's release or pass --allow-version-mismatch",
-				ErrVersionMismatch, local, who.HermesVersion)
-		}
-		log.Warn("local and server Hermes differ", "local", local, "server", who.HermesVersion)
+	if l.keep != nil {
+		defer l.keep.Close()
 	}
 	dir := p.Dir
 	if dir == "" {
@@ -425,19 +436,81 @@ func Run(ctx context.Context, p Params) (int, error) {
 	if p.Args, err = resolveArgs(ctx, p.Control, p.Args); err != nil {
 		return 0, err
 	}
-	return runTUI(p, token)
+	l.argv = append(l.argv, p.Args...)
+	return runTUI(p, l, token)
 }
 
-func runTUI(p Params, token string) (int, error) {
-	env := p.Env
-	if env == nil {
-		env = os.Environ()
+// pickHermes returns the launch of the managed build of p.Image, or of
+// p.Hermes once its version matches the server's.
+func pickHermes(ctx context.Context, p Params, log *slog.Logger) (*launch, error) {
+	base := p.Env
+	if base == nil {
+		base = os.Environ()
 	}
-	argv := Argv(p.Hermes, p.Args)
-	//nolint:gosec,noctx // the launcher is the user's own configured Hermes; chat forwards signals to it and waits, so no context may kill it
+	if p.Builds != nil && p.Image != "" {
+		_, err := oci.ParseReference(p.Image)
+		if err == nil {
+			var l *launch
+			if l, err = managedLaunch(ctx, p.Builds, p.Image, base); !errors.Is(err, oci.ErrPlatform) {
+				return l, err
+			}
+		}
+		log.Warn("Cannot run the server's Hermes build here; using chat.hermes", "image", p.Image, "error", err)
+	}
+	who, err := p.Hub.Whoami(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("whoami: %w", err)
+	}
+	local, err := HermesVersion(ctx, p.Hermes)
+	if err != nil {
+		return nil, err
+	}
+	if !SameVersion(local, who.HermesVersion) {
+		if !p.AllowVersionMismatch {
+			return nil, fmt.Errorf("%w: local %s, server %s; install the server's release or pass --allow-version-mismatch",
+				ErrVersionMismatch, local, who.HermesVersion)
+		}
+		log.Warn("local and server Hermes differ", "local", local, "server", who.HermesVersion)
+	}
+	return &launch{argv: Argv(p.Hermes, nil), env: base}, nil
+}
+
+// managedLaunch fetches image's build when needed and marks it in use.
+func managedLaunch(ctx context.Context, builds *hermesbuild.Store, image string, base []string) (*launch, error) {
+	for range 3 {
+		b, err := builds.Ensure(ctx, image)
+		if err != nil {
+			return nil, err
+		}
+		keep, err := builds.Use(ctx, b)
+		if errors.Is(err, hermesbuild.ErrNotPulled) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		launcher, err := b.Launcher()
+		if err == nil {
+			var env []string
+			if env, err = builds.Env(b, base); err == nil {
+				return &launch{argv: Argv(launcher, nil), env: env, keep: keep}, nil
+			}
+		}
+		_ = keep.Close()
+		return nil, err
+	}
+	return nil, fmt.Errorf("%w: %s was removed while chat started", hermesbuild.ErrNotPulled, image)
+}
+
+func runTUI(p Params, l *launch, token string) (int, error) {
+	argv := l.argv
+	//nolint:gosec,noctx // the user's configured Hermes or the verified server build; chat forwards signals to it and waits, so no context may kill it
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = Env(env, p.Control.State.Splice, token)
+	cmd.Env = Env(l.env, p.Control.State.Splice, token)
 	cmd.Dir = p.Dir
+	if l.keep != nil {
+		cmd.ExtraFiles = []*os.File{l.keep}
+	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = p.Stdin, p.Stdout, p.Stderr
 
 	sigs := p.Signals
@@ -450,7 +523,7 @@ func runTUI(p Params, token string) (int, error) {
 		sigs = ch
 	}
 	if err := cmd.Start(); err != nil {
-		return 0, fmt.Errorf("start %s: %w", p.Hermes, err)
+		return 0, fmt.Errorf("start %s: %w", argv[0], err)
 	}
 	done := make(chan struct{})
 	go func() {

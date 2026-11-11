@@ -505,8 +505,11 @@ Attachments from the TUI. The v0.22.7 Ink TUI on a remote gateway sends a pasted
 `talaria run` writes `<state dir>/daemon.json` (mode `0600`, directory `0700`):
 
 ```json
-{"pid": 4242, "splice": "127.0.0.1:41733", "control_secret": "<43 base64url chars>", "device_id": "d_8f2c", "hub": "https://hub.example.com"}
+{"pid": 4242, "splice": "127.0.0.1:41733", "control_secret": "<43 base64url chars>", "device_id": "d_8f2c", "hub": "https://hub.example.com",
+ "hermes_version": "v0.23.1", "hermes_image": "registry.example.com/hermes-agent:v0.23.1@sha256:<64 hex>"}
 ```
+
+`hermes_version` and `hermes_image` come from the latest exec leg welcome (section 4.1) and are absent until the first one, or when the plugin does not report them. `chat` uses `hermes_image` for the managed Hermes (5.7).
 
 `talaria chat` reads it and calls, on the splice address:
 
@@ -541,6 +544,16 @@ The splice and the hub answer a request they refuse or fail with `{"jsonrpc": "2
 | Size param of `learning.frames` or `pet.cells` that is neither null nor a number (hub only) | `-32602` | none |
 
 When the hub leg drops, the splice closes the TUI's socket with code `1011`; it does not answer held requests (5.3 step 7).
+
+### 5.7 Managed Hermes
+
+On Linux with `chat.managed` (the default), `chat` runs the Hermes build that `welcome.hermes_image` names (section 4.1), so the TUI and the server are the same build.
+
+1. `run` writes the `hermes_version` and `hermes_image` of each welcome into `daemon.json` (5.5), and ignores an image longer than the limit of section 4.1. When the image is pinned by digest, it fetches the build in the background unless it is already on disk, and retries with backoff (1 minute, doubling, at most 1 hour) until it is. A welcome with the same image does not cut the backoff short. It then removes the builds other than the current one and the most recently used other one, skipping builds in use.
+2. A fetch pulls the image by digest only: a reference without `@sha256:` is refused. It takes an anonymous token when the registry answers with a `Bearer` challenge, picks `linux/<GOARCH>` from an image index, and checks the index, the manifest, the config and every layer against their digests and sizes while they stream. Layers must be gzip or plain tar; whiteouts apply as in the OCI image spec. Only `opt/hermes` and `usr/local/bin` of the image are kept, without the browser and ffmpeg in `opt/hermes/tools`; a hard link to a file outside them is skipped. No entry may land outside the build directory: paths with `..`, whiteouts of `.` or `..`, and paths that pass through a symlink out of the tree fail the pull. A request fails when no data arrives for 2 minutes; there is no limit on the total time. When the registry fails before the layers and the repository path starts with a well-known public registry (`<mirror>/docker.io/<repository>`; also `ghcr.io`, `quay.io`, `gcr.io`, `registry.k8s.io`, `public.ecr.aws`, `mcr.microsoft.com`, `registry.gitlab.com` and `nvcr.io`), the fetch pulls the same digest from that registry instead.
+3. A verified tree is written to disk (sync) and then moved into `builds/<digest>` of the managed directory. Absolute symlinks become relative ones inside the tree, and an absolute `home` in a `pyvenv.cfg` moves under the tree, so the image's Python and Node run from there.
+4. `chat` reads `hermes_image` from `daemon.json`, fetches the build when it is missing, and holds a shared lock on `locks/<digest>.lock` (also passed to the TUI process) while the TUI runs. Prune and refresh take that lock exclusively and skip a build they cannot lock. It starts `<build>/opt/hermes/.venv/bin/hermes --tui` with `HOME`, `HERMES_HOME`, `XDG_*_HOME` and `HERMES_MANAGED_DIR` in the managed home, the image's `HERMES_*`, `PYTHON*` and `PLAYWRIGHT_*` variables with their paths moved into the tree, `HERMES_NODE` set to the bundled Node, a `PATH` that starts with the build's `usr/local/bin` and venv `bin` and leaves out the user's directories under `HOME`, and none of the user's variables that point at other Python, Node or Hermes installs or libraries. It does not compare versions.
+5. Without an image in `daemon.json`, with an image that is not pinned by digest or that has no build for `linux/<GOARCH>`, with `chat.managed` false or on macOS, `chat` runs `chat.hermes` after the version check of section 7.3. `run` does not retry such an image.
 
 ## 6. ACP leg
 
@@ -682,7 +695,7 @@ The user revokes a device on the hub page. The hub then refuses the token (secti
 
 Service devices (section 8.10) may call whoami too. Their `user` is `service`.
 
-`hermes_version`, `plugin_version` and `placeholder` come from the plugin's `GET /info` (section 9); if the backend is unreachable the hub answers `502` `{"error": "backend_unavailable"}`. `chat` compares `hermes_version` with the first line of the local `hermes --version` (`Hermes Agent v<version> (<date>)`), exactly after removing a leading `v`, and refuses to start on a mismatch (the local TUI and the server must be the same release).
+`hermes_version`, `plugin_version` and `placeholder` come from the plugin's `GET /info` (section 9); if the backend is unreachable the hub answers `502` `{"error": "backend_unavailable"}`. When `chat` runs `chat.hermes` instead of the managed build (5.7), it compares `hermes_version` with the first line of the local `hermes --version` (`Hermes Agent v<version> (<date>)`), exactly after removing a leading `v`, and refuses to start on a mismatch (the local TUI and the server must be the same release).
 
 ### 7.4 Session binding
 
@@ -970,11 +983,12 @@ These routes read Hermes's session store (`state.db`) through its own `SessionDB
 - A session's browser device (docs/browser.md section 3.2) is one of the connected devices of the session's hub user, never a service device: the user of the computer the session is bound to, else the plugin setting `user`. Without that setting, a session that no computer serves has no browser device. Scheduling unattended work with a browser device asks the user each time. A run of a job that has no browser device has no browser. A scheduled job keeps the browser device of the session that created it in the plugin's own file on the pod, which a device cannot reach. A run of the job uses only that device and fails when it is offline or now reports another user; a revoked device cannot connect, so its jobs fail until the user picks another device. The job's commands still run on the sandbox.
 - MCP servers on a device (4.9) run only when the device's own config lists them; the plugin and the hub cannot add one or change its command. They run as the device's user, outside `device.roots`, with what that user can reach, so list only servers you would let the agent use. A session reaches only the servers of the device it is bound to (8.11). A compromised Hermes pod can call any tool of a connected device's servers with any arguments, as it can run commands there. MCP results come from the server and from what it reads, so they are untrusted data: the plugin marks them so and Hermes wraps them (8.11).
 - The hub's private key is the root of trust for every backend. Keep it in the hub's secret store only.
+- The managed Hermes (5.7) runs the build that the plugin names in `welcome.hermes_image`. That is no new trust: a Hermes pod that can name an image can also run any command on its devices through the exec leg. The device pulls only by digest and checks every byte against it, so a registry or mirror in between cannot change the build. No signature of the Hermes project is checked: Hermes publishes none for its images or releases.
 - With `fallback: local`, the commands of never-bound sessions run in the gateway container and can read its secrets, environment, state database and processes. `fallback: device` (8.10) moves them to a sandbox pod that holds only its own device token and the `/work` volume. The sandbox's commands run as the same user as its daemon, so they can read its token file and open an exec leg of their own, which replaces the daemon's connection (`4409`). That token is a service device token, which the hub accepts on the exec leg only, so it reaches no gateway or ACP leg. `run` removes `TALARIA_HUB_TOKEN` from the environment of the commands it runs, but they can still read it from `/proc` of the daemon, so an environment variable or a flag is no better hidden than the file. All of one person's sessions share the `/work` volume, so one session can read another's directory. Limit the sandbox's network to the internet and the hub.
 
 ## 11. Versions
 
-The device client, the plugin and acp-host come from one talaria release. Release 0.3.0 speaks exec leg protocol versions 2 and 3 and negotiates the newest both sides speak (section 4.1), so a 0.3.0 device works with a 0.2.0 plugin and the other way round, without resume. Upgrade the plugin first: devices then get resume as soon as they upgrade. A side that shares no version with its peer closes with `4426` and a reason that names both versions. The ACP and gateway legs did not change. The local Hermes that `chat` runs must be the same release as the server's Hermes (`chat` checks `hermes_version`).
+The device client, the plugin and acp-host come from one talaria release. Release 0.3.0 speaks exec leg protocol versions 2 and 3 and negotiates the newest both sides speak (section 4.1), so a 0.3.0 device works with a 0.2.0 plugin and the other way round, without resume. Upgrade the plugin first: devices then get resume as soon as they upgrade. A side that shares no version with its peer closes with `4426` and a reason that names both versions. The ACP and gateway legs did not change. On Linux, `chat` runs the server's own Hermes build from `welcome.hermes_image` (5.7). Otherwise the local Hermes that `chat` runs must be the same release as the server's Hermes (`chat` checks `hermes_version`).
 
 | Peers | Exec leg |
 |---|---|
