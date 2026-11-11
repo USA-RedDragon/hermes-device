@@ -123,8 +123,11 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, out)
 }
 
-// maxPromptText bounds a prompt's text.
-const maxPromptText = 1 << 20
+// maxPromptText bounds a prompt's text, maxFileName a file name.
+const (
+	maxPromptText = 1 << 20
+	maxFileName   = 4096
+)
 
 // promptBody reads a prompt: JSON {"text"}, or multipart/form-data with a
 // "text" field and one "file" part per attachment.
@@ -166,7 +169,12 @@ func promptBody(w http.ResponseWriter, r *http.Request) (string, []hub.Attachmen
 				errorJSON(w, http.StatusBadRequest, fmt.Sprintf("Attach at most %d files to one message", hub.MaxAttachments))
 				return "", nil, false
 			}
-			name := hub.CleanName(part.FileName())
+			raw := part.FileName()
+			if len(raw) > maxFileName {
+				errorJSON(w, http.StatusBadRequest, "A file name is too long")
+				return "", nil, false
+			}
+			name := hub.CleanName(raw)
 			b, err := io.ReadAll(io.LimitReader(part, hub.MaxFileBytes+1))
 			if err != nil {
 				bodyError(w, err)

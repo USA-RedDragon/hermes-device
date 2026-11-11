@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // Attachment is a file a user sends with a prompt.
@@ -100,6 +101,9 @@ func CheckAttachments(files []Attachment) error {
 	return nil
 }
 
+// maxNameBytes bounds a cleaned file name.
+const maxNameBytes = 120
+
 var unsafeName = regexp.MustCompile(`[\x00-\x1f\x7f/\\]+`)
 
 // CleanName is a file name fit to show and to send: the last path part,
@@ -110,16 +114,24 @@ func CleanName(name string) string {
 	if i := strings.LastIndex(name, "/"); i >= 0 {
 		name = name[i+1:]
 	}
+	name = cutUTF8(name, 4*maxNameBytes)
 	name = strings.TrimSpace(unsafeName.ReplaceAllString(name, "_"))
-	name = strings.TrimSpace(strings.TrimLeft(name, "."))
-	for len(name) > 120 {
-		r := []rune(name)
-		name = string(r[:len(r)-1])
-	}
+	name = strings.TrimSpace(cutUTF8(strings.TrimLeft(name, "."), maxNameBytes))
 	if name == "" {
 		return "attachment"
 	}
 	return name
+}
+
+// cutUTF8 cuts s to at most n bytes, at a rune boundary.
+func cutUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // FileNote is the line a prompt carries for an attached file, so the
