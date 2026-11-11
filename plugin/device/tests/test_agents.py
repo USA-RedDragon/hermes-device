@@ -171,6 +171,9 @@ class TreeTest(unittest.TestCase):
         self.patch = mock.patch.dict(sys.modules, {"tools": tools, "tools.delegate_tool_registry": self.reg})
         self.patch.start()
         self.addCleanup(self.patch.stop)
+        lifecycle = mock.patch.object(agents, "_LIFECYCLE", None)
+        lifecycle.start()
+        self.addCleanup(lifecycle.stop)
 
     def test_caller_of_subagent(self):
         c = agents.caller_of("c3")
@@ -206,6 +209,148 @@ class TreeTest(unittest.TestCase):
                 agents.deliver({"mode": "steer", "message_id": "am_4", "session_id": "s1", "text": "x"})
             with self.assertRaises(ValueError):
                 agents.deliver({"mode": "shout", "message_id": "am_4", "session_id": "s1", "text": "x"})
+
+
+def snapshot(sid, session, parent="", owner="s1", depth=0, goal="g", steerable=True):
+    """An ActiveSubagent of hermes-patches 0005."""
+    return types.SimpleNamespace(subagent_id=sid, session_id=session, parent_subagent_id=parent or None,
+                                 parent_session_id=owner or None, depth=depth, goal=goal, model="m",
+                                 status="running", started_at=1.0, steerable=steerable)
+
+
+class FakeLifecycle:
+    def __init__(self, active):
+        self.active = active
+        self.steered = []
+
+    def list_active(self):
+        return tuple(self.active)
+
+    def steer_active(self, subagent_id, text):
+        if any(a.subagent_id == subagent_id and a.steerable for a in self.active):
+            self.steered.append((subagent_id, text))
+            return True
+        return False
+
+
+class LifecycleTreeTest(unittest.TestCase):
+    """With subagent_lifecycle.list_active and steer_active, the plugin never reads the registry."""
+
+    def setUp(self):
+        self.lifecycle = FakeLifecycle([
+            snapshot("sa-0-a", "c1"),
+            snapshot("sa-1-b", "c2"),
+            snapshot("sa-0-c", "c3", parent="sa-0-a", owner="c1", depth=1),
+            snapshot("sa-0-z", "z1", owner="other"),
+            snapshot("sa-0-q", "c4", steerable=False),
+            snapshot("sa-0-n", None),
+        ])
+        patch = mock.patch.object(agents, "_LIFECYCLE", self.lifecycle)
+        patch.start()
+        self.addCleanup(patch.stop)
+        broken = types.ModuleType("tools")
+        modules = mock.patch.dict(sys.modules, {"tools": broken, "tools.delegate_tool_registry": None})
+        modules.start()
+        self.addCleanup(modules.stop)
+
+    def test_caller_of_subagent(self):
+        c = agents.caller_of("c3")
+        self.assertEqual(c["root_session_id"], "s1")
+        self.assertEqual((c["subagent_id"], c["parent_session_id"], c["parent_subagent_id"]),
+                         ("sa-0-c", "c1", "sa-0-a"))
+        self.assertEqual(sorted(s["subagent_id"] for s in c["tree"]), ["sa-0-a", "sa-0-c", "sa-1-b"])
+        self.assertEqual(agents.caller_of("c1")["parent_subagent_id"], "")
+
+    def test_deliver_steers_through_the_lifecycle(self):
+        inbox = agents.Inbox(agents.Bus())
+        with mock.patch.object(agents, "INBOX", inbox):
+            self.assertEqual(agents.deliver({"mode": "steer", "message_id": "am_1", "session_id": "c1",
+                                             "subagent_id": "sa-0-a", "text": "stop"}), {"status": "steered"})
+            self.assertEqual(agents.deliver({"mode": "steer", "message_id": "am_2", "session_id": "c4",
+                                             "subagent_id": "sa-0-q", "text": "x"}), {"status": "gone"})
+            self.assertEqual(agents.deliver({"mode": "inbox", "message_id": "am_3", "session_id": "c2",
+                                             "subagent_id": "sa-1-b", "text": "hi"}), {"status": "queued"})
+        self.assertEqual(self.lifecycle.steered, [("sa-0-a", "stop")])
+
+
+class LifecycleContractTest(unittest.TestCase):
+    def test_snapshot_fields_match_hermes(self):
+        try:
+            from agent.subagent_lifecycle import ActiveSubagent, SubagentLifecycleService
+        except ImportError:
+            self.skipTest("this Hermes has no subagent_lifecycle.list_active")
+        import dataclasses
+        names = {f.name for f in dataclasses.fields(ActiveSubagent)}
+        self.assertLessEqual({"subagent_id", "session_id", "parent_subagent_id", "parent_session_id", "depth",
+                              "goal", "steerable"}, names)
+        for name in ("list_active", "steer_active"):
+            self.assertTrue(callable(getattr(SubagentLifecycleService, name)), name)
+
+
+class RecordingCtx:
+    def __init__(self, lifecycle=None):
+        self.hooks: dict[str, list] = {}
+        if lifecycle is not None:
+            self.subagent_lifecycle = lifecycle
+
+    def register_tool(self, *args, **kwargs):
+        pass
+
+    def register_hook(self, name, callback):
+        self.hooks.setdefault(name, []).append(callback)
+
+
+class TurnHookTest(unittest.TestCase):
+    def setUp(self):
+        self.inbox = agents.Inbox(agents.Bus())
+        for patch in (mock.patch.object(agents, "INBOX", self.inbox), mock.patch.object(agents, "_LIFECYCLE", None)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def register(self, hooks, lifecycle=None):
+        ctx = RecordingCtx(lifecycle)
+        agents.register(ctx, types.SimpleNamespace(valid_hooks=lambda: frozenset(hooks)))
+        return ctx
+
+    def test_turn_hooks_when_hermes_has_them(self):
+        lifecycle = FakeLifecycle([])
+        ctx = self.register({"pre_llm_call", "post_llm_call", "agent_turn_start", "agent_turn_end"}, lifecycle)
+        self.assertEqual(sorted(ctx.hooks), ["agent_turn_end", "agent_turn_start", "transform_tool_result"])
+        self.assertIs(agents._LIFECYCLE, lifecycle)
+
+    def test_llm_call_hooks_on_an_older_hermes(self):
+        ctx = self.register({"pre_llm_call", "post_llm_call"}, types.SimpleNamespace(launch=lambda r: None))
+        self.assertEqual(sorted(ctx.hooks), ["post_llm_call", "pre_llm_call", "transform_tool_result"])
+        self.assertIsNone(agents._LIFECYCLE)
+
+    def test_failed_or_stopped_turn_ends_running_state(self):
+        ctx = self.register({"agent_turn_start", "agent_turn_end"})
+        for outcome in ("failed", "cancelled", "timed_out", "success"):
+            payload = {"session_id": "s1", "turn_id": "t1", "task_id": "k", "platform": "tui", "model": "m"}
+            ctx.hooks["agent_turn_start"][0](**payload)
+            self.assertTrue(self.inbox.running("s1"))
+            self.assertEqual(self.inbox.put("s1", "am_1", "hi", running_only=True), "queued")
+            ctx.hooks["agent_turn_end"][0](**payload, outcome=outcome)
+            self.assertFalse(self.inbox.running("s1"), outcome)
+            self.assertEqual(self.inbox.put("s1", "am_2", "hi", running_only=True), "not_running")
+            self.assertEqual(self.inbox.take("s1"), [])
+
+    def test_hermes_turn_events_reach_the_hooks(self):
+        """In a Hermes with hermes-patches 0005, a failed turn's real agent_turn_end clears the state."""
+        try:
+            from agent.turn_lifecycle_events import fire_turn_end, fire_turn_start
+            from hermes_cli import plugins
+        except ImportError:
+            self.skipTest("this Hermes has no agent_turn_start/agent_turn_end")
+        ctx = self.register(plugins.VALID_HOOKS)
+        manager = plugins.get_plugin_manager()
+        hooks = {name: ctx.hooks[name] for name in ("agent_turn_start", "agent_turn_end")}
+        with mock.patch.object(manager, "_discovered", True), mock.patch.dict(manager._hooks, hooks):
+            agent = types.SimpleNamespace(session_id="s9", platform="tui", model="m", _persist_disabled=False)
+            started = fire_turn_start(agent, turn_id="t9", task_id="k9")
+            self.assertTrue(self.inbox.running("s9"))
+            fire_turn_end(started, outcome="failed")
+        self.assertFalse(self.inbox.running("s9"))
 
 
 class ToolTest(unittest.TestCase):

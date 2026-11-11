@@ -219,8 +219,30 @@ INBOX = Inbox(BUS)
 
 # --- the calling agent and its subagent tree ------------------------------------------------------
 
+# Hermes's SubagentLifecycleService (PluginContext.subagent_lifecycle), when it has list_active and
+# steer_active (hermes-patches 0005). Without them the plugin reads tools.delegate_tool_registry.
+_LIFECYCLE: Any = None
+
+
+def _lifecycle(name: str) -> Optional[Callable]:
+    fn = getattr(_LIFECYCLE, name, None)
+    return fn if callable(fn) else None
+
+
 def _registry() -> list[dict]:
-    """Live subagents: ``{subagent_id, session_id, parent_id, depth, goal, owner}``."""
+    """Live subagents: ``{subagent_id, session_id, parent_id, depth, goal, owner, accepting}``."""
+    list_active = _lifecycle("list_active")
+    if list_active is not None:
+        try:
+            snapshots = list(list_active())
+        except Exception:
+            logger.warning("device: subagent_lifecycle.list_active failed", exc_info=True)
+            return []
+        return [{"subagent_id": str(a.subagent_id), "session_id": str(a.session_id),
+                 "parent_id": str(a.parent_subagent_id or ""), "depth": a.depth or 0,
+                 "goal": str(a.goal or "")[:MAX_GOAL], "owner": str(a.parent_session_id or ""),
+                 "accepting": bool(a.steerable)}
+                for a in snapshots if a.session_id and a.subagent_id]
     try:
         from tools import delegate_tool_registry as reg
     except Exception:
@@ -238,6 +260,17 @@ def _registry() -> list[dict]:
                     "goal": str(r.get("goal") or "")[:MAX_GOAL], "owner": str(r.get("owner_agent_session_id") or ""),
                     "accepting": bool(r.get("accepting_steer", True))})
     return out
+
+
+def _steer(subagent_id: str, text: str) -> bool:
+    steer_active = _lifecycle("steer_active")
+    if steer_active is not None:
+        return bool(steer_active(subagent_id, text))
+    try:
+        from tools.delegate_tool_registry import steer_subagent
+    except Exception:
+        return False
+    return bool(steer_subagent(subagent_id, text))
 
 
 def _root_of(session_id: str, records: list[dict]) -> str:
@@ -428,18 +461,29 @@ def deliver(body: dict) -> dict:
     if mode == "steer":
         if not sub:
             raise ValueError("steer needs a subagent_id")
-        try:
-            from tools.delegate_tool_registry import steer_subagent
-        except Exception:
-            return {"status": "gone"}
-        return {"status": "steered" if steer_subagent(sub, text) else "gone"}
+        return {"status": "steered" if _steer(sub, text) else "gone"}
     return {"status": INBOX.put(sid, mid, text, running_only=not sub)}
 
 
+# Hooks that bracket every turn, also one that fails or is stopped (hermes-patches 0005).
+TURN_HOOKS = ("agent_turn_start", "agent_turn_end")
+# The fallback: post_llm_call does not fire when a turn fails or is stopped.
+LLM_CALL_HOOKS = ("pre_llm_call", "post_llm_call")
+
+
 def register(ctx: Any, core: Any) -> None:
+    global _LIFECYCLE
     for name, schema in SCHEMAS.items():
         ctx.register_tool(name, TOOLSET, schema, HANDLERS[name], check_fn=offered,
                           description=schema["description"], emoji=EMOJI)
-    ctx.register_hook("pre_llm_call", on_turn_start)
-    ctx.register_hook("post_llm_call", on_turn_end)
+    start, end = TURN_HOOKS if set(TURN_HOOKS) <= core.valid_hooks() else LLM_CALL_HOOKS
+    ctx.register_hook(start, on_turn_start)
+    ctx.register_hook(end, on_turn_end)
     ctx.register_hook("transform_tool_result", transform_tool_result)
+    try:
+        lifecycle = getattr(ctx, "subagent_lifecycle", None)
+    except Exception:
+        logger.debug("device: no subagent_lifecycle", exc_info=True)
+        lifecycle = None
+    has_api = all(callable(getattr(lifecycle, n, None)) for n in ("list_active", "steer_active"))
+    _LIFECYCLE = lifecycle if has_api else None
