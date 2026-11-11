@@ -3,7 +3,7 @@ internal/config/config.go	111	107
 internal/config/device.go	63	52
 internal/config/honcho.go	26	25
 internal/config/load.go	2	0
-internal/device/acp.go	239	215
+internal/device/acp.go	252	228
 internal/device/binding.go	102	76
 internal/device/browser.go	209	183
 internal/device/browserapi.go	69	50
@@ -12,12 +12,12 @@ internal/device/device.go	201	162
 internal/device/devicetest/devicetest.go	409	368
 internal/device/files.go	71	57
 internal/device/gateway.go	354	270
-internal/device/legs.go	161	145
+internal/device/legs.go	161	143
 internal/device/pair.go	52	29
 internal/device/plugin.go	99	81
 internal/device/rpc.go	198	183
 internal/device/sessioncheck.go	23	22
-internal/gateway/client.go	222	176
+internal/gateway/client.go	222	175
 internal/gateway/gatewaytest/fake.go	512	458
 internal/gateway/gatewaytest/files.go	40	35
 internal/gateway/gatewaytest/mutate.go	117	102
@@ -43,7 +43,7 @@ internal/service/manage.go	121	115
 internal/service/media.go	131	108
 internal/service/page.go	51	47
 internal/service/pdf.go	71	55
-internal/service/service.go	564	517
+internal/service/service.go	564	518
 internal/store/browser.go	77	63
 internal/store/device.go	191	158
 internal/store/import.go	74	61
