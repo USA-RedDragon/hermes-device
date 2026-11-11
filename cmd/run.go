@@ -143,7 +143,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 		if br, err = startBroker(ctx, cfg); err != nil {
 			return err
 		}
-		opts.Browser = br
+		opts.Browser = lockReporter{br}
 		if cfg.Browser.StartFirefox {
 			opts.StartBrowser = launch.New(cfg.Browser.FirefoxCommand).Launch
 		}

@@ -106,3 +106,31 @@ func TestArgv(t *testing.T) {
 		t.Errorf("darwin argv = %q", argv)
 	}
 }
+
+func TestScreenLocked(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, display, hint string
+		want                launch.Lock
+	}{
+		{"locked", "2\n", "yes\n", launch.Lock{Known: true, Locked: true, Source: "logind LockedHint of session 2"}},
+		{"unlocked", "2", "no", launch.Lock{Known: true, Source: "logind LockedHint of session 2"}},
+		{"no session", "", "", launch.Lock{Source: "loginctl found no graphical session for this user"}},
+	} {
+		l := &launch.Launcher{GOOS: "linux", UID: 1000, Output: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			switch strings.Join(append([]string{name}, args...), " ") {
+			case "loginctl show-user 1000 -p Display --value":
+				return []byte(tc.display), nil
+			case "loginctl show-session 2 -p LockedHint --value":
+				return []byte(tc.hint), nil
+			}
+			return nil, errors.New("unexpected")
+		}}
+		if got := l.ScreenLocked(t.Context()); got != tc.want {
+			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+	if got := (&launch.Launcher{GOOS: "darwin"}).ScreenLocked(t.Context()); got.Known {
+		t.Errorf("darwin: %+v", got)
+	}
+}

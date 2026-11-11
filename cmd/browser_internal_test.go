@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	firefox "github.com/USA-RedDragon/hermes-device/extension/firefox"
+	"github.com/USA-RedDragon/hermes-device/internal/browser/launch"
 )
 
 // extArgs is "browser extension --out" followed by rest.
@@ -112,5 +113,16 @@ func TestBrowserExtensionHubDefault(t *testing.T) {
 	root.SetArgs(extArgs(t.TempDir(), "--hub-url-default", "http://hub.example.com"))
 	if err := root.Execute(); err == nil {
 		t.Fatal("want an error for a plain http hub address")
+	}
+}
+
+func TestWithLock(t *testing.T) {
+	t.Parallel()
+	got := string(withLock([]byte(`{"tab_id":3}`), launch.Lock{Known: true, Locked: true, Source: "logind"}))
+	if got != `{"screen_lock":{"known":true,"locked":true,"source":"logind"},"tab_id":3}` {
+		t.Errorf("withLock = %s", got)
+	}
+	if got := string(withLock([]byte(`[1]`), launch.Lock{})); got != `[1]` {
+		t.Errorf("withLock of a non-object = %s", got)
 	}
 }

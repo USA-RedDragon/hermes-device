@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -253,4 +254,40 @@ func (l *Launcher) Launch(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 	return nil
+}
+
+// Lock is what ScreenLocked found out about the user's screen lock.
+type Lock struct {
+	// Known is false when it could not be found out.
+	Known bool `json:"known"`
+	// Locked is logind's LockedHint of the user's graphical session.
+	Locked bool `json:"locked"`
+	// Source says where it came from, or why it is unknown.
+	Source string `json:"source"`
+}
+
+// ScreenLocked reports whether the user's graphical session is locked, from
+// logind's LockedHint for the user's display session. Desktops such as KDE
+// Plasma and GNOME set it when the screen locks. It never starts anything.
+func (l *Launcher) ScreenLocked(ctx context.Context) Lock {
+	l.mu.Lock()
+	l.defaults()
+	l.mu.Unlock()
+	if l.GOOS != "linux" {
+		return Lock{Source: "not known on " + l.GOOS}
+	}
+	out, err := l.Output(ctx, "loginctl", "show-user", strconv.Itoa(l.UID), "-p", "Display", "--value")
+	session := strings.TrimSpace(string(out))
+	if err != nil || session == "" {
+		return Lock{Source: "loginctl found no graphical session for this user"}
+	}
+	out, err = l.Output(ctx, "loginctl", "show-session", session, "-p", "LockedHint", "--value")
+	switch v := strings.TrimSpace(string(out)); {
+	case err != nil:
+		return Lock{Source: "loginctl show-session failed: " + err.Error()}
+	case v == "yes" || v == "no":
+		return Lock{Known: true, Locked: v == "yes", Source: "logind LockedHint of session " + session}
+	default:
+		return Lock{Source: "loginctl gave no LockedHint for session " + session}
+	}
 }
