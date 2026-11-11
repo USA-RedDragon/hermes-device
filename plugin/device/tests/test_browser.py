@@ -132,9 +132,7 @@ class BrowserBase(Base):
         self.confirm = mock.patch.object(browser, "_confirm", return_value=True)
         self.confirmed = self.confirm.start()
         self.addCleanup(self.confirm.stop)
-        self.consent = mock.patch.object(browser, "_consent", return_value=True)
-        self.consented = self.consent.start()
-        self.addCleanup(self.consent.stop)
+        self.answer = True
 
     def registered(self):
         """A fresh Hermes tool registry with the toolset registered through a fake plugin ctx."""
@@ -159,11 +157,14 @@ class BrowserBase(Base):
         return reg
 
     def run_tool(self, name: str, **args):
-        """pre_tool_call, as Hermes runs it, then the handler. An approve counts as approved."""
+        """pre_tool_call, as Hermes runs it, then the handler. An approve counts as the user's
+        answer in self.answer."""
         decision = browser.pre_tool_call(tool_name=name, args=args, task_id="t", session_id=self.session)
         self.decision = decision
         if decision and decision.get("action") == "block":
             return {"error": decision["message"]}
+        if decision and decision.get("action") == "approve" and not self.answer:
+            return {"error": "BLOCKED: the user denied it"}
         out = self.registry.dispatch(name, args, task_id="t", session_id=self.session)
         return out if isinstance(out, dict) else json.loads(out)
 
@@ -1027,13 +1028,14 @@ class BrowserDeviceTests(BrowserBase):
         with mock.patch.object(browser, "_job_id", lambda ref: "job1" if ref in ("job1", "SEV review") else ""):
             self.assertIn("no scheduled job", self.run_tool("browser_use_device", device="d_pc2", job_id="nope")["error"])
             out = self.run_tool("browser_use_device", device="d_pc2", job_id="SEV review")
-            self.assertIsNone(self.decision)
-            self.assertEqual(self.consented.call_count, 2, "asked each time, nothing remembered")
+            self.assertEqual(self.decision["action"], "approve")
+            self.assertTrue(self.decision["rule_key"].startswith("browser:schedule:"))
+            self.assertIn("scheduled job SEV review", self.decision["message"])
             self.assertEqual(out["job_id"], "job1")
-            self.consented.return_value = False
+            self.answer = False
             out = self.run_tool("browser_use_device", device="d_pc", job_id="job1")
-            self.assertIn("did not allow", out["error"])
-            self.consented.return_value = True
+            self.assertIn("denied", out["error"])
+            self.answer = True
             self.assertEqual(browser.choices().job("job1")["device_id"], "d_pc2")
             self.assertTrue(self.run_tool("browser_use_device", device="default", job_id="job1")["ok"])
             self.assertIsNone(self.decision)
@@ -1061,33 +1063,93 @@ class BrowserDeviceTests(BrowserBase):
 
     def test_scheduling_with_a_browser_asks_the_user(self):
         gate = browser.pre_tool_call
-        self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": "create", "prompt": "p", "schedule": "in 2m"},
-                               session_id=self.session))
-        self.assertIn("pc [d_pc]", self.consented.call_args[0][0])
-        self.consented.return_value = False
-        r = gate(tool_name="cronjob_manage", args={"action": "create"}, session_id=self.session)
-        self.assertEqual(r["action"], "block")
-        self.consented.return_value = True
-        self.consented.reset_mock()
+        create = {"action": "create", "prompt": "p", "schedule": "in 2m"}
+        r = gate(tool_name="cronjob_manage", args=create, session_id=self.session)
+        self.assertEqual(r["action"], "approve")
+        self.assertIn("pc [d_pc]", r["message"])
+        self.assertEqual(gate(tool_name="cronjob_manage", args=dict(create), session_id=self.session)["rule_key"],
+                         r["rule_key"], "the same request has the same rule")
+        other = gate(tool_name="cronjob_manage", args=dict(create, prompt="q"), session_id=self.session)
+        self.assertNotEqual(other["rule_key"], r["rule_key"], "an answer for one job covers no other")
         self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": "list"}, session_id=self.session))
         browser.choices().set_job("job1", {"device_id": "d_pc", "name": "pc", "user": "alice"})
         with mock.patch.object(browser, "_job_id", lambda ref: ref):
+            keys = set()
             for action in ("update", "run", "resume"):
-                self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": action, "job_id": "job1"},
-                                       session_id=self.session))
-            self.assertEqual(self.consented.call_count, 3)
+                r = gate(tool_name="cronjob_manage", args={"action": action, "job_id": "job1"}, session_id=self.session)
+                self.assertEqual(r["action"], "approve")
+                self.assertIn("scheduled job job1", r["message"])
+                keys.add(r["rule_key"])
+            self.assertEqual(len(keys), 3)
             self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": "run", "job_id": "job2"},
                                    session_id=self.session))
             for action in ("pause", "remove"):
                 self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": action, "job_id": "job1"},
                                        session_id=self.session))
-            self.assertEqual(self.consented.call_count, 3)
             with mock.patch.object(browser, "no_user", lambda: True):
                 r = gate(tool_name="cronjob_manage", args={"action": "run", "job_id": "job1"}, session_id=self.session)
                 self.assertEqual(r["action"], "block")
         self.hub.detach(self.device.conn)
         self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": "create"}, session_id=self.session),
                           "no browser device, nothing to ask")
+
+    def test_schedule_gate_never_waits_for_the_user(self):
+        """Hermes runs pre_tool_call under plugins.hook_callback_timeout and, while one call of a
+        callback is past it, blocks every tool call that callback sees. The prompt must come from
+        Hermes's approval gate after the hook returned: an unanswered prompt then holds only its
+        own call, and tool calls of other sessions go on."""
+        require_source()
+        import hermes_cli.plugins as plugins
+        mgr = plugins.PluginManager()
+        mgr._hooks["pre_tool_call"] = [browser.pre_tool_call]
+        asked, answer = threading.Event(), threading.Event()
+        prompts = []
+
+        def unanswered(tool_name, reason, *, rule_key="", approval_callback=None):
+            prompts.append((tool_name, rule_key))
+            asked.set()
+            answer.wait(30)
+            return {"approved": True}
+
+        def never(*_a, **_kw):
+            raise AssertionError("the hook asked the user itself")
+
+        timeout = 1.0
+        with mock.patch.object(plugins, "_resolve_hook_callback_timeout", lambda: timeout), \
+                mock.patch("hermes_cli.lifecycle.invoke_hook", mgr.invoke_hook), \
+                mock.patch("tools.approval.request_tool_approval", unanswered), \
+                mock.patch("tools.approval_prompt.request_elicitation_consent", never), \
+                mock.patch.object(browser, "_job_id", lambda ref: ref):
+            browser.choices().set_job("job1", {"device_id": "d_pc", "name": "pc", "user": "alice"})
+            results = {}
+
+            def scheduled():
+                results["run"] = plugins.resolve_pre_tool_block(
+                    "cronjob_manage", {"action": "run", "job_id": "job1"}, session_id=self.session,
+                    tool_call_id="call-1")
+
+            started = time.monotonic()
+            worker = threading.Thread(target=scheduled, daemon=True)
+            worker.start()
+            self.assertTrue(asked.wait(10), "Hermes's approval gate was not asked")
+            self.assertLess(time.monotonic() - started, timeout, "the hook returned before the prompt")
+            self.assertEqual(prompts[0][0], "cronjob_manage")
+            self.assertTrue(prompts[0][1].startswith("browser:schedule:"))
+            time.sleep(timeout * 2)
+            self.assertTrue(worker.is_alive(), "the prompt is still unanswered")
+            for sid, n in (("other-session", 2), (self.session, 3)):
+                t0 = time.monotonic()
+                self.assertIsNone(plugins.resolve_pre_tool_block("terminal", {"command": "id"}, session_id=sid,
+                                                                 tool_call_id=f"call-{n}"))
+                self.assertLess(time.monotonic() - t0, timeout)
+            self.assertIsNone(plugins.resolve_pre_tool_block("skill_view", {"name": "x"}, session_id="other-session",
+                                                             tool_call_id="call-4"))
+            self.assertEqual(mgr._hook_abandoned, {})
+            self.assertEqual(mgr._hook_timeout_suppressed_until, {})
+            answer.set()
+            worker.join(10)
+        self.assertIsNone(results["run"])
+        self.assertEqual(len(prompts), 1)
 
     def test_gate_errors_block(self):
         with mock.patch.object(browser, "resolve", side_effect=RuntimeError("store broke")):

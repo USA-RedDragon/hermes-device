@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 import os
 import re
@@ -756,11 +757,15 @@ _JOB_ACTIONS = frozenset({"update", "run", "resume"})
 
 
 def _schedule_gate(tool_name: str, args: dict, session_id: str) -> Optional[dict]:
-    """Ask the user, every time and without remembering it, before work is scheduled that drives
-    a browser unattended: a job created in a session that has a browser device (only such a job
-    gets one), an update, run or resume of a job that has one, and browser_use_device for a job
-    (section 3.2). A prompt injection could otherwise set up a job that reads the user's
-    logged-in sites with nobody watching."""
+    """Ask the user before work is scheduled that drives a browser unattended: a job created in
+    a session that has a browser device (only such a job gets one), an update, run or resume of
+    a job that has one, and browser_use_device for a job (section 3.2). A prompt injection could
+    otherwise set up a job that reads the user's logged-in sites with nobody watching.
+
+    The hook never waits for the user: it returns an approve request, and Hermes asks through
+    its own approval gate after the hook returned (Once, This chat, Always or Deny). The rule
+    covers only the same request again, so a session or always answer never lets another job,
+    device or change through."""
     action = str(args.get("action") or "").strip().lower()
     raw = args.get("job_id")
     try:
@@ -787,16 +792,9 @@ def _schedule_gate(tool_name: str, args: dict, session_id: str) -> Optional[dict
     if no_user():
         return {"action": "block", "message": f"{tool_name} was not run: {message} Only the user can allow this, "
                                               f"in a chat."}
-    if _consent(message):
-        return None
-    return {"action": "block", "message": f"{tool_name} was not run: the user did not allow it. {message}"}
-
-
-def _consent(text: str) -> bool:
-    from tools.approval_prompt import request_elicitation_consent
-    return request_elicitation_consent(
-        text, "Each scheduled job that uses your browser needs your OK.", surface="device-browser",
-        title="Allow unattended browser use?") == "accept"
+    digest = hashlib.sha256(json.dumps([tool_name, args, device], sort_keys=True, default=str).encode()).hexdigest()
+    return {"action": "approve", "rule_key": _rule("schedule", digest[:16]),
+            "message": f"{message} Approving for the session (or always) allows only this same request again."}
 
 
 def pre_tool_call(tool_name: str = "", args: Optional[dict] = None, task_id: str = "", session_id: str = "",
