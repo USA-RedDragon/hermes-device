@@ -399,15 +399,19 @@ func (s *session) sendCmd(ctx context.Context, v any) uint64 {
 
 // ping writes an application ping and remembers which command messages
 // were written before it: the plugin's pong confirms them, because the hub
-// relays in order and the plugin handles messages in order.
+// relays in order and the plugin handles messages in order. The mark is
+// stored before the write, because the pong can arrive before the write
+// returns.
 func (s *session) ping(ctx context.Context) {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	n := s.pingSeq.Add(1)
-	mark := s.c.seq.Load()
-	if s.write(ctx, protocol.Ping{Type: protocol.TypePing, Seq: n}) == nil {
+	s.pmu.Lock()
+	s.pings[n] = s.c.seq.Load()
+	s.pmu.Unlock()
+	if s.write(ctx, protocol.Ping{Type: protocol.TypePing, Seq: n}) != nil {
 		s.pmu.Lock()
-		s.pings[n] = mark
+		delete(s.pings, n)
 		s.pmu.Unlock()
 	}
 }
