@@ -113,6 +113,43 @@ func TestChatMarks(t *testing.T) {
 	})
 }
 
+func TestPageMarks(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		ref := hub.SessionRef{BackendID: backendB, SessionID: chatOne}
+		if err := s.SetPinned(ctx, userCarol, backendB, chatOne, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MarkPage(ctx, userCarol, backendB, chatOne); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MarkPage(ctx, userCarol, backendB, "s3"); err != nil {
+			t.Fatal(err)
+		}
+		marks, _, err := s.ChatMarks(ctx, userCarol)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m := marks[ref]; !m.Page || !m.Pinned {
+			t.Fatalf("mark after page = %+v", m)
+		}
+		if m := marks[hub.SessionRef{BackendID: backendB, SessionID: "s3"}]; !m.Page || m.Unread || m.Pinned {
+			t.Fatalf("page mark of a new chat = %+v", m)
+		}
+		if err := s.SetPinned(ctx, userCarol, backendB, "s2", true); err != nil {
+			t.Fatal(err)
+		}
+		marks, _, _ = s.ChatMarks(ctx, userCarol)
+		if m := marks[hub.SessionRef{BackendID: backendB, SessionID: "s2"}]; m.Page {
+			t.Fatalf("another chat is a page chat = %+v", m)
+		}
+		if marks, _, _ := s.ChatMarks(ctx, "dave"); len(marks) != 0 {
+			t.Fatalf("another user's marks = %v", marks)
+		}
+	})
+}
+
 func TestUnreadRule(t *testing.T) {
 	t.Parallel()
 	base := time.UnixMilli(1_700_000_000_000)

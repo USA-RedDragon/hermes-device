@@ -270,6 +270,11 @@ var migrations = []migration{
 			`CREATE TABLE read_baselines ("user" TEXT PRIMARY KEY, at BIGINT NOT NULL)`,
 		},
 	},
+	{
+		version:  17,
+		sqlite:   []string{`ALTER TABLE chat_marks ADD COLUMN page INTEGER NOT NULL DEFAULT 0`},
+		postgres: []string{`ALTER TABLE chat_marks ADD COLUMN page INTEGER NOT NULL DEFAULT 0`},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas

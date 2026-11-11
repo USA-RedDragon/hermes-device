@@ -66,6 +66,12 @@ func (s *Store) MarkUnread(ctx context.Context, user, backendID, sessionID strin
 		ON CONFLICT ("user", backend_id, session_id) DO UPDATE SET unread = 1`, user, backendID, sessionID)
 }
 
+// MarkPage marks a chat of user that the page chat started.
+func (s *Store) MarkPage(ctx context.Context, user, backendID, sessionID string) error {
+	return s.exec(ctx, `INSERT INTO chat_marks ("user", backend_id, session_id, page) VALUES (?, ?, ?, 1)
+		ON CONFLICT ("user", backend_id, session_id) DO UPDATE SET page = 1`, user, backendID, sessionID)
+}
+
 // ChatMarks returns user's marks by chat and the user's read baseline,
 // which the first call for a user sets to now.
 func (s *Store) ChatMarks(ctx context.Context, user string) (map[hub.SessionRef]hub.ChatMark, time.Time, error) {
@@ -77,7 +83,7 @@ func (s *Store) ChatMarks(ctx context.Context, user string) (map[hub.SessionRef]
 	if err := s.row(ctx, `SELECT at FROM read_baselines WHERE "user" = ?`, user).Scan(&base); err != nil {
 		return nil, time.Time{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, s.q(`SELECT backend_id, session_id, pinned, seen_at, unread FROM chat_marks WHERE "user" = ?`), user)
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT backend_id, session_id, pinned, seen_at, unread, page FROM chat_marks WHERE "user" = ?`), user)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -85,14 +91,14 @@ func (s *Store) ChatMarks(ctx context.Context, user string) (map[hub.SessionRef]
 	out := map[hub.SessionRef]hub.ChatMark{}
 	for rows.Next() {
 		var (
-			ref            hub.SessionRef
-			pinned, unread int
-			seen           int64
+			ref                  hub.SessionRef
+			pinned, unread, page int
+			seen                 int64
 		)
-		if err := rows.Scan(&ref.BackendID, &ref.SessionID, &pinned, &seen, &unread); err != nil {
+		if err := rows.Scan(&ref.BackendID, &ref.SessionID, &pinned, &seen, &unread, &page); err != nil {
 			return nil, time.Time{}, err
 		}
-		m := hub.ChatMark{Pinned: pinned != 0, Unread: unread != 0}
+		m := hub.ChatMark{Pinned: pinned != 0, Unread: unread != 0, Page: page != 0}
 		if seen > 0 {
 			m.SeenAt = time.UnixMilli(seen)
 		}

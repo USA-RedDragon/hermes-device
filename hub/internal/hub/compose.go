@@ -97,6 +97,8 @@ type ChatMark struct {
 	SeenAt time.Time
 	// Unread is a chat the user marked unread by hand.
 	Unread bool
+	// Page is a chat the Firefox extension's page chat started.
+	Page bool
 }
 
 // ChatStore keeps each user's drafts, pins and read state of chats.
@@ -111,6 +113,8 @@ type ChatStore interface {
 	MarkRead(ctx context.Context, user, backendID, sessionID string, at time.Time) error
 	// MarkUnread marks the chat unread by hand.
 	MarkUnread(ctx context.Context, user, backendID, sessionID string) error
+	// MarkPage marks a chat that the page chat started.
+	MarkPage(ctx context.Context, user, backendID, sessionID string) error
 	// ChatMarks returns user's marks by chat and the user's read baseline:
 	// a chat with no read time counts as read when it last changed before
 	// it. The first call for a user sets the baseline to now.
