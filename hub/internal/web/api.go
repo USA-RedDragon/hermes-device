@@ -3,8 +3,10 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -101,26 +103,95 @@ func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Text string `json:"text"`
-	}
-	if !decode(w, r, &body) {
+	text, files, ok := promptBody(w, r)
+	if !ok {
 		return
 	}
-	if body.Text == "" {
+	if text == "" && len(files) == 0 {
 		errorJSON(w, http.StatusBadRequest, "empty prompt")
 		return
 	}
-	res, err := s.svc.Prompt(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), body.Text)
+	res, err := s.svc.Prompt(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), text, files...)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	out := promptJSON{ID: res.ID, Status: promptSent}
+	out := promptJSON{ID: res.ID, Status: promptSent, Notice: res.Notice}
 	if res.Held {
 		out.Status, out.HeldUntil = promptHeld, res.HeldUntil
 	}
 	writeJSON(w, http.StatusAccepted, out)
+}
+
+// maxPromptText bounds a prompt's text.
+const maxPromptText = 1 << 20
+
+// promptBody reads a prompt: JSON {"text"}, or multipart/form-data with a
+// "text" field and one "file" part per attachment.
+func promptBody(w http.ResponseWriter, r *http.Request) (string, []hub.Attachment, bool) {
+	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mt != "multipart/form-data" {
+		var body struct {
+			Text string `json:"text"`
+		}
+		return body.Text, nil, decode(w, r, &body)
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, hub.MaxAttachmentBytes+maxPromptText+1<<20)
+	mr, err := r.MultipartReader()
+	if err != nil {
+		errorJSON(w, http.StatusBadRequest, "bad form body")
+		return "", nil, false
+	}
+	var text string
+	var files []hub.Attachment
+	for {
+		part, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			return text, files, true
+		}
+		if err != nil {
+			bodyError(w, err)
+			return "", nil, false
+		}
+		switch part.FormName() {
+		case "text":
+			b, err := io.ReadAll(io.LimitReader(part, maxPromptText+1))
+			if err != nil || len(b) > maxPromptText {
+				bodyError(w, err)
+				return "", nil, false
+			}
+			text = string(b)
+		case "file":
+			if len(files) >= hub.MaxAttachments {
+				errorJSON(w, http.StatusBadRequest, fmt.Sprintf("Attach at most %d files to one message", hub.MaxAttachments))
+				return "", nil, false
+			}
+			name := hub.CleanName(part.FileName())
+			b, err := io.ReadAll(io.LimitReader(part, hub.MaxFileBytes+1))
+			if err != nil {
+				bodyError(w, err)
+				return "", nil, false
+			}
+			if len(b) > hub.MaxFileBytes {
+				errorJSON(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("%s is larger than %d MB, the most the hub takes for a file", name, hub.MaxFileBytes>>20))
+				return "", nil, false
+			}
+			files = append(files, hub.Attachment{Name: name, Data: b})
+		default:
+			errorJSON(w, http.StatusBadRequest, "unknown form field")
+			return "", nil, false
+		}
+		_ = part.Close()
+	}
+}
+
+func bodyError(w http.ResponseWriter, err error) {
+	var mbe *http.MaxBytesError
+	if errors.As(err, &mbe) {
+		errorJSON(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("The attachments add up to more than %d MB", hub.MaxAttachmentBytes>>20))
+		return
+	}
+	errorJSON(w, http.StatusBadRequest, "bad form body")
 }
 
 // Prompt statuses: sent to the backend, or held until it is back.
@@ -133,6 +204,7 @@ type promptJSON struct {
 	ID        string    `json:"id"`
 	Status    string    `json:"status"`
 	HeldUntil time.Time `json:"held_until,omitzero"`
+	Notice    string    `json:"notice,omitempty"`
 }
 
 func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {

@@ -212,7 +212,7 @@ func (s *Server) Handler() http.Handler {
 func headers(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		// no-referrer would make browsers send "Origin: null" on form posts, which the origin check refuses
 		h.Set("Referrer-Policy", "same-origin")
@@ -285,6 +285,8 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		errorJSON(w, http.StatusServiceUnavailable, "The hub is restarting. Send the message again in a moment")
 	case errors.Is(err, hub.ErrTitleInUse):
 		errorJSON(w, http.StatusConflict, "Hermes did not accept that name. Another chat may already use it")
+	case errors.Is(err, hub.ErrAttachment):
+		errorJSON(w, http.StatusBadRequest, hub.AttachmentReason(err))
 	case errors.Is(err, hub.ErrBadValue):
 		msg := strings.TrimPrefix(err.Error(), hub.ErrBadValue.Error()+": ")
 		if !strings.Contains(msg, " ") {

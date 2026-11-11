@@ -21,7 +21,9 @@
 
   async function api(method, path, body) {
     const opts = { method, headers: { "X-CSRF-Token": csrf }, credentials: "same-origin" };
-    if (body !== undefined) {
+    if (body instanceof FormData) {
+      opts.body = body;
+    } else if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
@@ -407,6 +409,8 @@
       this.failed = [];
       this.status = null;
       this.info = {};
+      for (const u of this.urls || []) URL.revokeObjectURL(u);
+      this.urls = [];
     }
 
     stick() {
@@ -479,8 +483,15 @@
       });
     }
 
-    userText(text, pending) {
-      const m = this.add(el("div", "msg user" + (pending ? " pending" : ""), text));
+    // userText adds a user message. atts are the files the page sent with
+    // it; without them they come from the lines Hermes keeps in the text.
+    userText(text, pending, atts) {
+      const shown = atts ? { text, atts } : splitAttachments(text);
+      const m = el("div", "msg user" + (pending ? " pending" : ""));
+      if (shown.atts.length) m.append(attachmentRow(shown.atts));
+      if (shown.text) m.append(shown.text);
+      if (atts) for (const a of atts) if (a.url) this.urls.push(a.url);
+      this.add(m);
       if (pending) this.pending.push({ bubble: m, label: null, text, id: null });
       return m;
     }
@@ -866,6 +877,121 @@
 
   const render = (node, raw) => window.hubMarkdown.render(node, raw);
 
+  // Lines Hermes and the hub keep in a user message for its attachments:
+  // the gateway's image hints and placeholders (agent/image_routing.py,
+  // agent/image_replay.py), @image refs, inline image data, and the hub's
+  // note for a file (hub.FileNote).
+  const imageHint = /^\[Image attached at: (.+)\]$/;
+  const imageRef = /^@image:(?:`([^`]+)`|"([^"]+)"|'([^']+)'|(\S+))$/;
+  const imageData = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/;
+  const placeholder = /^\[screenshot(?: detail=\w+)?\]$/;
+  const fileNote = /^\[The user attached a file: (.+)\. It is saved at (\/.*)\. Read it with your tools when the request needs its contents\.\]$/;
+  const baseName = (p) => p.replace(/\/+$/, "").split("/").pop() || p;
+
+  function splitAttachments(text) {
+    const atts = [];
+    const keep = [];
+    for (const line of String(text || "").split("\n")) {
+      let m;
+      if ((m = line.match(imageHint))) atts.push({ name: baseName(m[1]), image: true, title: m[1] });
+      else if ((m = line.match(imageRef))) {
+        const p = m[1] || m[2] || m[3] || m[4];
+        atts.push({ name: baseName(p), image: true, title: p });
+      } else if (imageData.test(line)) atts.push({ name: "image", image: true, url: line });
+      else if ((m = line.match(fileNote))) atts.push({ name: m[1], image: false, title: m[2] });
+      else if (!placeholder.test(line)) keep.push(line);
+    }
+    if (!atts.length) return { text, atts };
+    return { text: keep.join("\n").trim(), atts };
+  }
+
+  // attachmentRow shows a message's attachments: a thumbnail when the page
+  // has the image, else the file's name.
+  function attachmentRow(atts) {
+    const row = el("div", "atts");
+    for (const a of atts) {
+      const box = el("div", "att" + (a.url ? " image" : ""));
+      if (a.title) box.title = a.title;
+      if (a.url) {
+        const img = el("img");
+        img.alt = a.name;
+        img.src = a.url;
+        box.append(img);
+      } else {
+        box.append(el("span", "file", a.image ? "image" : "file"), el("span", "name", a.name));
+      }
+      row.append(box);
+    }
+    return row;
+  }
+
+  const imageTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+  const limits = { count: 10, images: 10, image: 25 << 20, file: 32 << 20, total: 64 << 20 };
+
+  // attachments are the files waiting in the composer.
+  const attachments = {
+    list: [],
+    add(files) {
+      for (const f of files) {
+        const image = imageTypes.includes(f.type);
+        const total = this.list.reduce((n, a) => n + a.file.size, 0) + f.size;
+        let why = "";
+        if (this.list.length >= limits.count) why = "Attach at most " + limits.count + " files to one message.";
+        else if (!f.size) why = f.name + " is empty.";
+        else if (image && f.size > limits.image) why = f.name + " is larger than 25 MB, the most Hermes takes for an image.";
+        else if (!image && f.size > limits.file) why = f.name + " is larger than 32 MB, the most the hub takes for a file.";
+        else if (total > limits.total) why = "The attachments add up to more than 64 MB.";
+        if (why) { banner(why, true); break; }
+        this.list.push({ file: f, image, url: image ? URL.createObjectURL(f) : "" });
+      }
+      this.draw();
+    },
+    remove(a) {
+      this.list = this.list.filter((x) => x !== a);
+      if (a.url) URL.revokeObjectURL(a.url);
+      this.draw();
+    },
+    clear() {
+      for (const a of this.list) if (a.url) URL.revokeObjectURL(a.url);
+      this.list = [];
+      this.draw();
+    },
+    take() {
+      const l = this.list;
+      this.list = [];
+      this.draw();
+      return l;
+    },
+    restore(l) {
+      this.list = l.concat(this.list);
+      this.draw();
+    },
+    draw() {
+      const box = $("chips");
+      box.replaceChildren();
+      box.hidden = !this.list.length;
+      for (const a of this.list) {
+        const chip = el("div", "chip");
+        if (a.url) {
+          const img = el("img");
+          img.alt = "";
+          img.src = a.url;
+          chip.append(img);
+        } else {
+          chip.append(el("span", "file", "file"));
+        }
+        chip.append(el("span", "name", a.file.name || "attachment"), el("span", "size", size(a.file.size)));
+        const x = el("button", "", "\u00d7");
+        x.type = "button";
+        x.title = "Remove " + (a.file.name || "attachment");
+        x.setAttribute("aria-label", x.title);
+        x.onclick = () => this.remove(a);
+        chip.append(x);
+        box.append(chip);
+      }
+    },
+  };
+
   function setTitle(title) {
     $("title").textContent = title || t("newchat");
     document.title = (title || t("newchat")) + " - Hermes";
@@ -1119,6 +1245,7 @@
 
   function showWelcome() {
     closeStream();
+    attachments.clear();
     view = null;
     current = null;
     $("welcome").hidden = false;
@@ -1138,6 +1265,7 @@
 
   function showChat(backend, session) {
     closeStream();
+    attachments.clear();
     current = { b: backend, s: session };
     $("welcome").hidden = true;
     $("log").hidden = false;
@@ -1191,14 +1319,24 @@
     ev.preventDefault();
     const input = $("input");
     const text = input.value.trim();
-    if (!text || !view) return;
+    if ((!text && !attachments.list.length) || !view) return;
     const chat = view;
-    const bubble = chat.userText(text, true);
+    const files = attachments.take();
+    const shown = files.map((a) => ({ name: a.file.name || "attachment", image: a.image,
+      url: a.url ? URL.createObjectURL(a.file) : "" }));
+    const bubble = chat.userText(text, true, files.length ? shown : undefined);
     chat.bottom();
     input.value = "";
     grow();
+    let body = { text };
+    if (files.length) {
+      body = new FormData();
+      body.append("text", text);
+      for (const a of files) body.append("file", a.file, a.file.name || "attachment");
+      $("send").disabled = true;
+    }
     try {
-      const r = await api("POST", chat.base + "/prompt", { text });
+      const r = await api("POST", chat.base + "/prompt", body);
       const p = chat.pending.find((x) => x.bubble === bubble);
       if (r && r.status === "held" && p) {
         if (!p.sent) chat.held(p, r.id);
@@ -1206,12 +1344,49 @@
         if (p && r) p.id = r.id;
         chat.queued(bubble);
       }
+      if (r && r.notice && chat === view) chat.add(el("div", "note", r.notice));
+      for (const a of files) if (a.url) URL.revokeObjectURL(a.url);
     } catch (e) {
       bubble.remove();
       chat.pending = chat.pending.filter((p) => p.bubble !== bubble);
       input.value = text;
+      if (chat === view) attachments.restore(files);
       banner("Could not send: " + e.message, true);
+    } finally {
+      $("send").disabled = false;
     }
+  }
+
+  function dropZone() {
+    const form = $("composer");
+    const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+    const main = document.querySelector(".main");
+    main.addEventListener("dragover", (e) => {
+      if (!hasFiles(e) || form.hidden) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      form.classList.add("drop");
+    });
+    main.addEventListener("dragleave", (e) => {
+      if (!main.contains(e.relatedTarget)) form.classList.remove("drop");
+    });
+    main.addEventListener("drop", (e) => {
+      form.classList.remove("drop");
+      if (!hasFiles(e) || form.hidden) return;
+      e.preventDefault();
+      attachments.add(Array.from(e.dataTransfer.files));
+    });
+    $("attach").onclick = () => $("files").click();
+    $("files").onchange = () => {
+      attachments.add(Array.from($("files").files));
+      $("files").value = "";
+    };
+    $("input").addEventListener("paste", (e) => {
+      const files = Array.from((e.clipboardData && e.clipboardData.files) || []);
+      if (!files.length) return;
+      if (!e.clipboardData.types.includes("text/plain")) e.preventDefault();
+      attachments.add(files);
+    });
   }
 
   // sameText matches a message to an event's text, which another replica
@@ -1505,6 +1680,7 @@
       document.body.replaceChildren(page);
     };
     $("composer").onsubmit = send;
+    dropZone();
     $("search").oninput = () => drawList();
     $("info").ontoggle = () => { if ($("info").open) settings.load(); };
     $("prefs").hidden = !me.devices;

@@ -55,8 +55,13 @@
     </div>
     <div id="log" class="log" aria-live="polite" hidden></div>
     <form id="composer" class="composer" hidden>
-      <textarea id="input" rows="1" placeholder="Message Hermes" aria-label="Message"></textarea>
-      <button id="send" class="primary" type="submit">Send</button>
+      <div id="chips" class="chips" aria-label="Attachments" hidden></div>
+      <div class="composer-row">
+        <button id="attach" class="icon attach" type="button" aria-label="Attach files" title="Attach files"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l9.2-9.2a3.7 3.7 0 0 1 5.2 5.2l-9.2 9.2a1.8 1.8 0 0 1-2.6-2.6l8.5-8.5"/></svg></button>
+        <input id="files" type="file" multiple hidden>
+        <textarea id="input" rows="1" placeholder="Message Hermes" aria-label="Message"></textarea>
+        <button id="send" class="primary" type="submit">Send</button>
+      </div>
     </form>
   </section>
 </div>
