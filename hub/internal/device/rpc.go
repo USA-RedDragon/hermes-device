@@ -561,24 +561,51 @@ var refusedParams = map[string]map[string]string{
 		"latest":  "resume a session by its id: the hub checks the id before the gateway attaches it",
 		"api_key": "a launch key is not part of a device session",
 	},
-	methodList: {
-		"picker":         "it returns the first prompt and last reply of every chat of the backend",
-		"workspace":      "it lists chats by a folder of any device",
-		keyTitle:         "it finds a chat of the backend by its title",
-		"include_hidden": "it lists archived and hidden chats of the backend",
-	},
 	methodConfigGet:  {keyCWD: "it runs git in a directory of the Hermes pod"},
 	methodFileAttach: {"staged_upload": "it copies a browser upload out of the Hermes pod"},
 }
 
+// scopedListParams are the session.list params the gateway leg refuses,
+// with the reason, unless the gateway limits the list to the device's own
+// sessions (audienceHonored).
+//
+//nolint:gochecknoglobals // a fixed table
+var scopedListParams = map[string]string{
+	"picker":         "it returns the first prompt and last reply of every chat of the backend",
+	"workspace":      "it lists chats by a folder of any device",
+	keyTitle:         "it finds a chat of the backend by its title",
+	"include_hidden": "it lists archived and hidden chats of the backend",
+}
+
+// keyAudience is the session.list param that limits the list to the
+// sessions the device plugin keeps for one device (hermes-patches 0004).
+const keyAudience = "audience"
+
+// capListAudience is the runtime.describe capability of a Hermes whose
+// session.list takes an audience.
+const capListAudience = "session-list-audience-v1"
+
 // RefusedParams are the params the gateway leg refuses on each method it
-// allows, with the reason.
+// allows, with the reason. The session.list params in scopedListParams pass
+// when the gateway scopes the list to the device.
 func RefusedParams() map[string]map[string]string {
-	out := make(map[string]map[string]string, len(refusedParams))
+	out := make(map[string]map[string]string, len(refusedParams)+1)
 	for m, p := range refusedParams {
 		out[m] = maps.Clone(p)
 	}
+	out[methodList] = maps.Clone(scopedListParams)
 	return out
+}
+
+// scopedRefusal says why a session.list that the gateway does not scope
+// is refused, or is empty.
+func scopedRefusal(params map[string]json.RawMessage) string {
+	for _, k := range slices.Sorted(maps.Keys(scopedListParams)) {
+		if _, ok := params[k]; ok {
+			return "param " + k + " is refused: " + scopedListParams[k]
+		}
+	}
+	return ""
 }
 
 // paramRefusal says why the params of an allowed method are refused, or

@@ -159,6 +159,7 @@ type Gateway struct {
 	paused      bool
 	steers      []Steer
 	caps        []string
+	audiences   map[string][]string
 }
 
 type submission struct {
@@ -825,7 +826,14 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 }
 
 func (g *Gateway) hSessionList(_ *conn, p map[string]any) (any, string, func()) {
-	if !onlyKeys(p, "limit", "title", "include_hidden", kScope) {
+	audience, scoped := p["audience"].(string)
+	keep, judged := g.audiences[audience]
+	switch {
+	case scoped && !judged:
+		return nil, errInvalidParams, nil
+	case scoped && !onlyKeys(p, "limit", "title", "include_hidden", kScope, "audience", "picker", "workspace"):
+		return nil, errInvalidParams, nil
+	case !scoped && !onlyKeys(p, "limit", "title", "include_hidden", kScope):
 		return nil, errInvalidParams, nil
 	}
 	scope := str(p, kScope)
@@ -835,7 +843,7 @@ func (g *Gateway) hSessionList(_ *conn, p map[string]any) (any, string, func()) 
 	hidden, _ := p["include_hidden"].(bool)
 	rows := []map[string]any{}
 	for _, s := range g.sessions {
-		if scope == "live" && !s.Live || s.Archived && (scope == "stored" || !hidden) {
+		if scope == "live" && !s.Live || s.Archived && (scope == "stored" || !hidden) || scoped && !slices.Contains(keep, s.ID) {
 			continue
 		}
 		source := s.Source

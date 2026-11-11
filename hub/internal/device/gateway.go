@@ -139,6 +139,8 @@ type guard struct {
 	sessions *sessionCheck
 	capsOnce sync.Once
 	caps     []string
+	audOnce  sync.Once
+	audOK    bool
 	gone     bool
 	lost     chan struct{}
 	work     sync.WaitGroup
@@ -317,11 +319,48 @@ func (g *guard) sendChecked(f *frame, params map[string]json.RawMessage) {
 			}
 			g.send(f, params, nil)
 		})
+	case f.Method == methodList:
+		g.work.Go(func() { g.sendList(f, params) })
 	case slices.Contains(listMethods, f.Method):
 		g.send(f, params, &held{kind: heldList, id: f.ID, method: f.Method})
 	default:
 		g.send(f, params, nil)
 	}
+}
+
+// sendList forwards a session.list with the device's audience when the
+// gateway honors it. Otherwise it drops any audience and refuses the params
+// that would read chats of other devices. Either way the hub filters the
+// answer to the device's own sessions.
+func (g *guard) sendList(f *frame, params map[string]json.RawMessage) {
+	delete(params, keyAudience)
+	if g.audienceHonored() {
+		params[keyAudience] = mustRaw(g.audience())
+	} else if why := scopedRefusal(params); why != "" {
+		g.toDevice(answerError(f.ID, codeDenied, methodList+" is not available through hermes-device: "+why,
+			map[string]any{keyReason: reasonDenied}))
+		return
+	}
+	g.send(f, params, &held{kind: heldList, id: f.ID, method: f.Method})
+}
+
+// audience is the session.list audience of this device, which the device
+// plugin judges.
+func (g *guard) audience() string { return "hermes-device:" + g.dev.ID }
+
+// audienceHonored reports whether the gateway scopes session.list to this
+// device: it lists the capability, and a list with the audience is not
+// refused (the gateway refuses an audience no plugin judges). It is checked
+// once per leg.
+func (g *guard) audienceHonored() bool {
+	g.audOnce.Do(func() {
+		if !g.hasCapability(capListAudience) {
+			return
+		}
+		f, err := g.call(methodList, map[string]any{keyAudience: g.audience(), "limit": 1})
+		g.audOK = err == nil && !f.isError()
+	})
+	return g.audOK
 }
 
 // serverRequestPrefix starts the id of every request the gateway sends to

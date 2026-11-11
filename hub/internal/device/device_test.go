@@ -54,6 +54,7 @@ const (
 	keyJSONRPC      = "jsonrpc"
 	keyKey          = "key"
 	keyScope        = "scope"
+	keyPicker       = "picker"
 	scopeStored     = "stored"
 	keyPayload      = "payload"
 	opWorkspace     = "workspace"
@@ -1038,6 +1039,38 @@ func TestGatewayLegImageRender(t *testing.T) {
 		}
 		if got := e.called("image.render"); len(got) != 1 {
 			t.Fatalf("forwarded image.render calls = %v", got)
+		}
+	})
+}
+
+func TestGatewayLegListAudience(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, id := e.pair(e.a)
+		for _, sid := range []string{sessionMine, sessionOther} {
+			e.gw.AddSession(&gatewaytest.Session{ID: sid, Live: true, Title: sid})
+		}
+		e.plugin.SetBinding(sessionMine, id, deviceDir)
+		e.plugin.SetBinding(sessionOther, otherDevice, "/home/bob")
+		e.gw.SetCapabilities("session-list-audience-v1")
+		g := e.gatewayLeg(e.b, tok)
+		if m := g.request("unjudged", methodList, map[string]any{keyPicker: true}); reason(m) != reasonDenied {
+			t.Fatalf("picker with no plugin judging the audience = %v", m)
+		}
+		e.gw.SetAudience("hermes-device:"+id, sessionMine)
+		g = e.gatewayLeg(e.b, tok)
+		m := g.request("scoped", methodList, map[string]any{keyPicker: true, "audience": "hermes-device:" + otherDevice})
+		res, _ := m[keyResult].(map[string]any)
+		if rows, _ := res["sessions"].([]any); len(rows) != 1 {
+			t.Fatalf("scoped list = %v", m)
+		}
+		var last gatewaytest.Call
+		for _, c := range e.called(methodList) {
+			last = c
+		}
+		if last.Params["audience"] != "hermes-device:"+id {
+			t.Fatalf("forwarded params = %v", last.Params)
 		}
 	})
 }
