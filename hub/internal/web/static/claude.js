@@ -53,8 +53,11 @@ window.HubClaude = (ctx) => {
     return (c.data.accounts || []).find((a) => a.provider === provider) || null;
   }
 
-  const pct = (w) => (typeof w.used_percent === "number" ? Math.round(w.used_percent) + "%" : "?");
-  const windowOf = (u, kind) => (u && u.windows || []).find((w) => w.kind === kind);
+  const pct = (w) => Math.round(w.used_percent) + "%";
+  // reported are the windows an account's CLI reports with a share used.
+  // Some plans have no 5-hour window; it is left out, never shown empty.
+  const reported = (u) => (u && u.windows || []).filter((w) => typeof w.used_percent === "number");
+  const windowOf = (u, kind) => reported(u).find((w) => w.kind === kind);
 
   // parts returns the status line's spans for a chat: "Claude API" for the
   // API key route, and the account with its 5-hour and weekly use for a
@@ -271,7 +274,7 @@ window.HubClaude = (ctx) => {
       if (a.status_error) box.append(el("p", "err", a.status_error));
       const u = a.usage;
       if (u && u.unavailable) box.append(el("p", "hint", "Usage not available: " + u.unavailable));
-      const rows = (u && u.windows || []).map((w) => [w.label || w.kind, pct(w) + " used", w.resets_text ? "resets " + w.resets_text : ""]);
+      const rows = reported(u).map((w) => [w.label || w.kind, pct(w) + " used", w.resets_text ? "resets " + w.resets_text : ""]);
       if (rows.length) {
         const list = el("ul", "claude-windows");
         for (const r of rows) list.append(el("li", "", r.filter(Boolean).join(", ")));

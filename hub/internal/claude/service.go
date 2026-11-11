@@ -395,11 +395,17 @@ func planName(t string) string {
 	return t
 }
 
+// convertUsage keeps only the windows the account's CLI reports a share
+// of: some plans have no 5-hour window, and it is left out rather than
+// shown empty.
 func (s *Service) convertUsage(u Usage) hub.ClaudeUsage {
 	out := hub.ClaudeUsage{Windows: make([]hub.ClaudeWindow, 0, len(u.Windows)), Details: u.Details,
 		Unavailable: u.UnavailableReason, FetchedAt: u.FetchedAt}
 	now := s.o.Now()
 	for _, w := range u.Windows {
+		if w.UsedPercent == nil {
+			continue
+		}
 		cw := hub.ClaudeWindow{Kind: w.Kind, Label: w.Label, UsedPercent: w.UsedPercent, ResetsAt: w.ResetsAt}
 		if !w.ResetsAt.IsZero() {
 			cw.ResetsText = ResetText(w.ResetsAt, now, s.o.Location)

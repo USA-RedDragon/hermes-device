@@ -116,7 +116,7 @@ func TestAccountsAndUsage(t *testing.T) {
 		t.Fatalf("accounts = %+v", got)
 	}
 	a := got.Accounts[0]
-	if !a.SignedIn || a.Email != aliceEmail || a.Provider != provider1 || a.Usage == nil || len(a.Usage.Windows) != 3 {
+	if !a.SignedIn || a.Email != aliceEmail || a.Provider != provider1 || a.Usage == nil || len(a.Usage.Windows) != 2 {
 		t.Fatalf("account = %+v", a)
 	}
 	if w := a.Usage.Windows[0]; w.ResetsText != "3:40 PM CST" || *w.UsedPercent != 12 {
@@ -125,8 +125,10 @@ func TestAccountsAndUsage(t *testing.T) {
 	if w := a.Usage.Windows[1]; w.ResetsText != "Fri 9:00 AM CST" {
 		t.Errorf("weekly window = %+v", w)
 	}
-	if w := a.Usage.Windows[2]; w.UsedPercent != nil || w.ResetsText != "" {
-		t.Errorf("unknown window = %+v", w)
+	for _, w := range a.Usage.Windows {
+		if w.Kind == "weekly_opus" {
+			t.Errorf("a window the CLI reports no share of is shown: %+v", w)
+		}
 	}
 
 	if _, err := e.svc.ClaudeAccounts(ctx, alice, backendMain, true); err != nil {
