@@ -11,11 +11,11 @@ in a sibling container is not read as stale.
  cli-config.yaml.example                    |   8 +
  gateway/config.py                          |   6 +-
  gateway/config_loader.py                   |   1 +
- gateway/run_bootstrap.py                   |  88 ++++++++++
+ gateway/run_bootstrap.py                   | 106 ++++++++++++
  gateway/status.py                          |  23 ++-
- tests/gateway/test_runtime_lock_wait.py    | 181 +++++++++++++++++++++
- website/docs/user-guide/messaging/index.md |  20 +++
- 7 files changed, 324 insertions(+), 3 deletions(-)
+ tests/gateway/test_runtime_lock_wait.py    | 185 +++++++++++++++++++++
+ website/docs/user-guide/messaging/index.md |  22 +++
+ 7 files changed, 348 insertions(+), 3 deletions(-)
  create mode 100644 tests/gateway/test_runtime_lock_wait.py
 
 diff --git a/cli-config.yaml.example b/cli-config.yaml.example
@@ -81,14 +81,17 @@ index e251c24f02..2e25a09dd0 100644
      *_presence(
          "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
 diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
-index bfdca3a81a..de65a6d6a0 100644
+index bfdca3a81a..8b41594075 100644
 --- a/gateway/run_bootstrap.py
 +++ b/gateway/run_bootstrap.py
-@@ -622,6 +622,91 @@ def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float | N
+@@ -622,6 +622,109 @@ def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float | N
      return reserve_waiting_out_transient_holders(ownership, homes, wait_s=wait_s)
  
  
 +RUNTIME_LOCK_POLL_S = 0.2
++# Present while a warmed-up standby waits for the profile lock, so a supervisor can stop the owner
++# only once its successor is ready to take over (for example a Kubernetes preStop hook).
++STANDBY_MARKER = "gateway.standby"
 +_RUNTIME_LOCK_PREWARM_MODULES = (
 +    "gateway.run_runtime", "gateway.run_startup", "gateway.run_api", "gateway.run_adapters",
 +    "gateway.session_authorities", "run_agent", "model_tools", "tui_gateway.server",
@@ -125,6 +128,15 @@ index bfdca3a81a..de65a6d6a0 100644
 +    return record is None or not record.home or canonical_home(Path(record.home)) == canonical_home(home)
 +
 +
++def _write_standby_marker(path) -> None:
++    from gateway.status import _build_pid_record
++    from utils import atomic_json_write
++    try:
++        atomic_json_write(path, {**_build_pid_record(), "since": time.time()}, indent=None)
++    except OSError:
++        logger.debug("Could not write %s", path, exc_info=True)
++
++
 +def _remove_predecessor_pid_file() -> None:
 +    """After a takeover the lock is ours, so a gateway.pid naming anyone else is stale: a predecessor
 +    that died without removing it (SIGKILL at the end of its grace) would fail our O_EXCL claim."""
@@ -150,24 +162,30 @@ index bfdca3a81a..de65a6d6a0 100644
 +    started = time.monotonic()
 +    deadline = started + wait_s
 +    _prewarm_before_runtime_lock()
++    marker = launch_home / STANDBY_MARKER
 +    waited = False
-+    while True:
-+        try:
-+            process_ownership.reserve(homes)
-+            break
-+        except OwnershipConflict:
-+            if time.monotonic() >= deadline:
++    try:
++        while True:
++            try:
++                process_ownership.reserve(homes)
++                break
++            except OwnershipConflict:
++                if time.monotonic() >= deadline:
++                    return
++            except OSError:
 +                return
-+        except OSError:
-+            return
-+        if not waited:
-+            logger.info("Another gateway owns %s; waiting up to %.0fs for it to exit", launch_home, wait_s)
++            if not waited:
++                logger.info("Another gateway owns %s; waiting up to %.0fs for it to exit", launch_home, wait_s)
++                _write_standby_marker(marker)
++                waited = True
++            kick_startup_watchdog()  # an idle wait, not a stalled boot
++            await asyncio.sleep(RUNTIME_LOCK_POLL_S)
++        while _host_lock_held_by_predecessor(launch_home) and time.monotonic() < deadline:
 +            waited = True
-+        kick_startup_watchdog()  # an idle wait, not a stalled boot
-+        await asyncio.sleep(RUNTIME_LOCK_POLL_S)
-+    while _host_lock_held_by_predecessor(launch_home) and time.monotonic() < deadline:
-+        waited = True
-+        await asyncio.sleep(RUNTIME_LOCK_POLL_S / 4)
++            await asyncio.sleep(RUNTIME_LOCK_POLL_S / 4)
++    finally:
++        if waited:
++            marker.unlink(missing_ok=True)
 +    if waited:
 +        _remove_predecessor_pid_file()
 +        logger.info("Took over %s after waiting %.1fs", launch_home, time.monotonic() - started)
@@ -176,7 +194,7 @@ index bfdca3a81a..de65a6d6a0 100644
  def _start_gateway_reserve_profiles(profile_homes) -> bool:
      """Reserve the launch home plus every served profile home; False when startup must abort."""
      from gateway.run import get_hermes_home
-@@ -802,6 +887,9 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+@@ -802,6 +905,9 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
          return False
  
      from gateway.status import remove_pid_file, release_gateway_runtime_lock
@@ -235,10 +253,10 @@ index 0762c848eb..9e17902431 100644
              )
 diff --git a/tests/gateway/test_runtime_lock_wait.py b/tests/gateway/test_runtime_lock_wait.py
 new file mode 100644
-index 0000000000..962a171052
+index 0000000000..55714c1a36
 --- /dev/null
 +++ b/tests/gateway/test_runtime_lock_wait.py
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,185 @@
 +"""gateway.runtime_lock_wait_seconds: a standby gateway waits for the profile owner to exit."""
 +import asyncio
 +import json
@@ -290,11 +308,13 @@ index 0000000000..962a171052
 +    await asyncio.sleep(0.3)
 +    assert not waiter.done()
 +    assert not process_ownership.owns(home)
++    assert json.loads((home / "gateway.standby").read_text())["pid"] > 0
 +    released = time.monotonic()
 +    owner.close()
 +    await asyncio.wait_for(waiter, 5)
 +    assert time.monotonic() - released < 1.0
 +    assert process_ownership.owns(home)
++    assert not (home / "gateway.standby").exists()
 +    assert json.loads((home / "gateway.lock").read_text())["pid"] > 0
 +
 +
@@ -309,6 +329,7 @@ index 0000000000..962a171052
 +        await run_bootstrap._start_gateway_wait_for_runtime_lock([], 0.3)
 +        assert 0.3 <= time.monotonic() - started < 2
 +        assert not process_ownership.owns(home)
++        assert not (home / "gateway.standby").exists()
 +        assert not run_bootstrap._start_gateway_reserve_profiles([])
 +    finally:
 +        owner.close()
@@ -322,6 +343,7 @@ index 0000000000..962a171052
 +    await run_bootstrap._start_gateway_wait_for_runtime_lock([], 30)
 +    assert time.monotonic() - started < 0.5
 +    assert process_ownership.owns(home)
++    assert not (home / "gateway.standby").exists()
 +    assert run_bootstrap._start_gateway_reserve_profiles([])
 +
 +
@@ -421,10 +443,10 @@ index 0000000000..962a171052
 +        owner.close()
 +    assert len(kicks) >= 3
 diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
-index a582528077..04f1f0a8fb 100644
+index a582528077..5c65a98320 100644
 --- a/website/docs/user-guide/messaging/index.md
 +++ b/website/docs/user-guide/messaging/index.md
-@@ -707,6 +707,26 @@ An installed unit (or launchd plist) belongs to the `HERMES_HOME` it pins. A gat
+@@ -707,6 +707,28 @@ An installed unit (or launchd plist) belongs to the `HERMES_HOME` it pins. A gat
  If you run multiple Hermes installations on the same machine (with different `HERMES_HOME` directories), each gets its own systemd service name. The default `~/.hermes` uses `hermes-gateway`; other installations use `hermes-gateway-<hash>`. The `hermes gateway` commands automatically target the correct service for your current `HERMES_HOME`.
  :::
  
@@ -444,7 +466,9 @@ index a582528077..04f1f0a8fb 100644
 +or attaches as before. The waiting gateway loads its modules and plugins first, then retries the
 +profile lock and takes over within a fraction of a second of the old gateway's
 +exit. It opens no store, port or platform connection until it owns the
-+profile. When the wait runs out it exits as before. Set the wait above the old
++profile. While it waits, `gateway.standby` exists in `HERMES_HOME`, so a
++supervisor can stop the old gateway only once its successor is ready (for
++example a Kubernetes `preStop` hook that waits for the file). When the wait runs out it exits as before. Set the wait above the old
 +gateway's drain (`agent.restart_drain_timeout`) plus its shutdown. The default
 +`0` keeps the immediate exit.
 +

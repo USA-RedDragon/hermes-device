@@ -141,7 +141,7 @@ index 6695ea4409..3498faea65 100644
                  await send({'type': 'websocket.close', 'code': 1013})
              else:
 diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
-index de65a6d6a0..a1f2e1b4df 100644
+index 8b41594075..744719769b 100644
 --- a/gateway/run_bootstrap.py
 +++ b/gateway/run_bootstrap.py
 @@ -201,6 +201,17 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
@@ -309,10 +309,10 @@ index 0000000000..e2b72263ae
 +    assert not restart_wait_plugin_socket(runner, "websocket", "/api/plugins/device/ws")
 +    assert GatewayConfig().restart_wait_plugin_sockets == []
 diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
-index 04f1f0a8fb..26bcf6ba10 100644
+index 5c65a98320..d25d70d7bb 100644
 --- a/website/docs/user-guide/messaging/index.md
 +++ b/website/docs/user-guide/messaging/index.md
-@@ -727,6 +727,26 @@ profile. When the wait runs out it exits as before. Set the wait above the old
+@@ -729,6 +729,26 @@ example a Kubernetes `preStop` hook that waits for the file). When the wait runs
  gateway's drain (`agent.restart_drain_timeout`) plus its shutdown. The default
  `0` keeps the immediate exit.
  
