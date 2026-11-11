@@ -44,7 +44,7 @@ func (s *Server) Sign(d hub.Device, leg, path string) (string, error) {
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	d := deviceFrom(r)
 	b := s.backends[d.BackendID]
-	s.proxy(w, r, d, assertion.LegExec, gateway.WebSocketURL(b.cfg.URL), protocol.PluginExecPath, (*leg).copyBoth)
+	s.proxy(w, r, d, assertion.LegExec, gateway.WebSocketURL(b.cfg.URL), protocol.PluginExecPath, (*leg).copyExec)
 }
 
 func (s *Server) handleACP(w http.ResponseWriter, r *http.Request) {
@@ -97,13 +97,6 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, d hub.Device, leg
 	carry(l)
 }
 
-// copyBoth copies messages unchanged both ways until the leg ends.
-func (l *leg) copyBoth() {
-	go l.pump(l.down, l.up, true)
-	go l.pump(l.up, l.down, false)
-	l.run()
-}
-
 func (s *Server) isClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -126,6 +119,8 @@ type leg struct {
 	id string
 	// closed is how the leg ended, set once by finish.
 	closed legClose
+	// br is the browser sign-in of an exec leg, nil on other legs.
+	br *browserState
 }
 
 // legClose is how a leg ended: the close code and reason the device hop
@@ -138,6 +133,9 @@ type legClose struct {
 func (s *Server) newLeg(ctx context.Context, d hub.Device, name string, down, up *websocket.Conn) *leg {
 	lctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	l := &leg{s: s, dev: d, name: name, down: down, up: up, ctx: lctx, cancel: cancel, done: make(chan struct{}), id: legID()}
+	if name == assertion.LegExec {
+		l.br = &browserState{}
+	}
 	s.mu.Lock()
 	if s.legs[d.ID] == nil {
 		s.legs[d.ID] = map[*leg]struct{}{}
@@ -263,21 +261,6 @@ func (l *leg) ended(err error, fromDevice bool) {
 	}
 }
 
-// pump copies messages from src to dst unchanged until either fails.
-func (l *leg) pump(src, dst *websocket.Conn, fromDevice bool) {
-	for {
-		typ, data, err := src.Read(l.ctx)
-		if err != nil {
-			l.ended(err, fromDevice)
-			return
-		}
-		if err := dst.Write(l.ctx, typ, data); err != nil {
-			l.ended(err, !fromDevice)
-			return
-		}
-	}
-}
-
 func (l *leg) ping(c *websocket.Conn, device bool) {
 	t := time.NewTicker(l.s.opts.PingInterval)
 	defer t.Stop()
@@ -344,5 +327,6 @@ func (l *leg) recheck() {
 			l.finish(hub.CloseByHub, protocol.CloseUnauthorized, websocket.StatusNormalClosure, "device revoked")
 			return
 		}
+		l.recheckBrowser()
 	}
 }

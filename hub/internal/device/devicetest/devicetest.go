@@ -66,6 +66,13 @@ func (c *Conn) Send(ctx context.Context, v any) error {
 	return c.ws.Write(ctx, websocket.MessageText, b)
 }
 
+// SendRaw writes data to the device as it is.
+func (c *Conn) SendRaw(ctx context.Context, data []byte) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return c.ws.Write(ctx, websocket.MessageText, data)
+}
+
 // Close closes the device's connection with code.
 func (c *Conn) Close(code websocket.StatusCode, reason string) {
 	_ = c.ws.Close(code, reason)
