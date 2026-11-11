@@ -368,7 +368,7 @@ func (r *Router) peers(ctx context.Context, b config.Backend, c device.AgentCall
 // never reach them.
 func peerSource(s string) bool {
 	switch s {
-	case "gui", "cli", "tui", "acp", "desktop":
+	case "gui", "cli", "tui", "acp", "desktop", "local":
 		return true
 	}
 	return false

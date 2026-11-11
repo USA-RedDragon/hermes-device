@@ -138,6 +138,7 @@ func newEnv(t *testing.T) *env {
 			{ID: "s4", BackendID: "b1", Title: "same", Live: true, Source: gui},
 			{ID: "tg", BackendID: "b1", Title: "Family group", Live: true, Source: "telegram"},
 			{ID: "nosrc", BackendID: "b1", Title: "No source", Live: true},
+			{ID: "loc", BackendID: "b1", Title: "Local", Live: true, Source: "local"},
 			{ID: "old", BackendID: "b1", Title: "Old", UpdatedAt: time.Unix(1_700_000_000, 0), Source: gui},
 		}}}
 	st.SetClock(func() time.Time { return e.now })
@@ -434,7 +435,7 @@ func TestNamesAndPeers(t *testing.T) {
 			t.Errorf("s2 = %+v", c)
 		}
 	}
-	if ids["s1"] || ids["old"] || ids["tg"] || ids["nosrc"] || !ids["s2"] {
+	if ids["s1"] || ids["old"] || ids["tg"] || ids["nosrc"] || !ids["s2"] || !ids["loc"] {
 		t.Fatalf("chats %v", ids)
 	}
 	if len(got.Subagents) != 2 || got.Subagents[0]["subagent_id"] != parent || got.Subagents[1]["relation"] != "sibling" {
