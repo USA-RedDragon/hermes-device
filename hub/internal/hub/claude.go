@@ -72,6 +72,11 @@ func isDigits(s string) bool {
 // "Claude API credits" as "Opus 5.5 (caam credits)". Other providers keep
 // their name, IDs and order.
 func ArrangeModels(providers []ModelProvider) {
+	for i := range providers {
+		if providers[i].ID == ClaudePoolProvider {
+			providers[i].Models = newestPerFamily(providers[i].Models)
+		}
+	}
 	labelModels(providers)
 	rank := func(p ModelProvider) int {
 		switch p.Group {
@@ -85,6 +90,67 @@ func ArrangeModels(providers []ModelProvider) {
 		return 2
 	}
 	slices.SortStableFunc(providers, func(a, b ModelProvider) int { return rank(a) - rank(b) })
+}
+
+// newestPerFamily keeps the newest model of each Claude family, Opus,
+// Sonnet, Fable and Haiku first, then other families by name. Hermes can
+// list the pool's older pinned models too; IDs that name no Claude model
+// stay after them, in order.
+func newestPerFamily(models []ModelChoice) []ModelChoice {
+	type best struct {
+		version []int
+		m       ModelChoice
+	}
+	newest := map[string]best{}
+	var other []ModelChoice
+	for _, m := range models {
+		family, version, ok := claudeVersion(m.ID)
+		if !ok {
+			other = append(other, m)
+			continue
+		}
+		if b, seen := newest[family]; !seen || slices.Compare(version, b.version) > 0 {
+			newest[family] = best{version, m}
+		}
+	}
+	families := make([]string, 0, len(newest))
+	for f := range newest {
+		families = append(families, f)
+	}
+	order := []string{"opus", "sonnet", "fable", "haiku"}
+	rank := func(f string) int {
+		if i := slices.Index(order, f); i >= 0 {
+			return i
+		}
+		return len(order)
+	}
+	slices.SortFunc(families, func(a, b string) int {
+		if d := rank(a) - rank(b); d != 0 {
+			return d
+		}
+		return strings.Compare(a, b)
+	})
+	out := make([]ModelChoice, 0, len(families)+len(other))
+	for _, f := range families {
+		out = append(out, newest[f].m)
+	}
+	return append(out, other...)
+}
+
+// claudeVersion splits a Claude model ID into its family and version:
+// "opus", [5 5] for claude-opus-5-5[1m].
+func claudeVersion(id string) (string, []int, bool) {
+	if _, ok := ClaudeModelName(id); !ok {
+		return "", nil, false
+	}
+	parts := strings.Split(strings.TrimPrefix(strings.TrimSuffix(id, "[1m]"), "claude-"), "-")
+	var version []int
+	for _, p := range parts[1:] {
+		if n, err := strconv.Atoi(p); err == nil && len(p) != 8 {
+			version = append(version, n)
+		}
+	}
+	return parts[0], version, true
 }
 
 func labelModels(providers []ModelProvider) {
