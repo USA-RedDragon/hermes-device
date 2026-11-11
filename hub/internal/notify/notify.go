@@ -25,11 +25,12 @@ import (
 
 // Telegram sends notices to Telegram chats.
 type Telegram interface {
-	// SendNotice sends a notice to a private chat and returns the
-	// message's ID.
+	// SendNotice sends a notice to a private chat, or to the General
+	// topic of a linked group, and returns the message's ID.
 	SendNotice(ctx context.Context, chatID int64, n Message) (int64, error)
-	// Settled marks the messages of a notice whose prompt got its answer.
-	Settled(ctx context.Context, msgs []hub.NoticeMessage)
+	// Settled marks the messages of a notice whose prompt got its answer,
+	// or was cancelled.
+	Settled(ctx context.Context, rec hub.NoticeRecord, cancelled bool, msgs []hub.NoticeMessage)
 }
 
 // Message is a notice for one person, as a front end shows it.
@@ -205,7 +206,7 @@ func (n *Notifier) handle(ctx context.Context, nt hub.Notice) {
 	cctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	if nt.Kind == hub.NoticeSettled {
-		n.settle(cctx, nt.BackendID, nt.SessionID, nt.PromptIDs)
+		n.settle(cctx, nt.BackendID, nt.SessionID, nt.PromptIDs, nt.Cancelled)
 		return
 	}
 	users := n.o.Users
@@ -220,7 +221,7 @@ func (n *Notifier) handle(ctx context.Context, nt hub.Notice) {
 	}
 }
 
-func (n *Notifier) settle(ctx context.Context, backendID, sessionID string, ids []string) {
+func (n *Notifier) settle(ctx context.Context, backendID, sessionID string, ids []string, cancelled bool) {
 	recs, err := n.o.Store.SettleNotices(ctx, backendID, sessionID, ids)
 	if err != nil {
 		n.log.Warn("Failed to settle notices", "error", err.Error())
@@ -232,7 +233,7 @@ func (n *Notifier) settle(ctx context.Context, backendID, sessionID string, ids 
 	for _, r := range recs {
 		msgs, err := n.o.Store.NoticeMessages(ctx, r.ID)
 		if err == nil && len(msgs) > 0 {
-			n.tg.Settled(ctx, msgs)
+			n.tg.Settled(ctx, r, cancelled, msgs)
 		}
 	}
 }
@@ -309,15 +310,19 @@ func (n *Notifier) deliver(ctx context.Context, set hub.NotifySettings, m Messag
 
 func (n *Notifier) sendTelegram(ctx context.Context, m Message) {
 	r := m.Record
-	if !m.Reminder && r.SessionID != "" && r.Kind != hub.NoticeClaudeSignIn {
-		if attached, err := n.o.Store.TelegramAttached(ctx, r.User, r.BackendID, r.SessionID); err != nil || attached {
-			return
-		}
-	}
-	ids, err := n.o.Store.TelegramIDs(ctx, r.User)
+	ids, grouped, err := n.telegramChats(ctx, r.User)
 	if err != nil {
 		n.log.Warn("Failed to look up Telegram links", "user", r.User, "error", err.Error())
 		return
+	}
+	// A chat that Telegram shows already shows its prompts and results. In
+	// a linked group its topic shows the prompts, and General gets the
+	// rest with a button to the topic.
+	prompt := r.Kind == hub.NoticeApproval || r.Kind == hub.NoticeQuestion
+	if !m.Reminder && r.SessionID != "" && r.Kind != hub.NoticeClaudeSignIn && (prompt || !grouped) {
+		if attached, err := n.o.Store.TelegramAttached(ctx, r.User, r.BackendID, r.SessionID); err != nil || attached {
+			return
+		}
 	}
 	for _, chat := range ids {
 		msgID, err := n.tg.SendNotice(ctx, chat, m)
@@ -329,6 +334,21 @@ func (n *Notifier) sendTelegram(ctx context.Context, m Message) {
 			n.log.Warn("Failed to record a Telegram notice", "error", err.Error())
 		}
 	}
+}
+
+// telegramChats are where a person's notices go on Telegram: the General
+// topic of their linked group, or else each private chat linked to them.
+// grouped is true for a group.
+func (n *Notifier) telegramChats(ctx context.Context, user string) (ids []int64, grouped bool, err error) {
+	group, ok, err := n.o.Store.TelegramGroup(ctx, user)
+	if err != nil {
+		return nil, false, err
+	}
+	if ok {
+		return []int64{group}, true, nil
+	}
+	ids, err = n.o.Store.TelegramIDs(ctx, user)
+	return ids, false, err
 }
 
 // PushPayload is the whole of a Web Push message: the event kind and a
@@ -438,7 +458,7 @@ func (n *Notifier) Test(ctx context.Context, user string) (TestResult, error) {
 	rec.ID = id
 	m := Message{Record: rec, Backend: "Hermes Hub", Detail: "This is a test. Notices about your chats look like this.", URL: n.o.PublicURL + "/"}
 	if set.Telegram && n.tg != nil {
-		ids, err := n.o.Store.TelegramIDs(ctx, user)
+		ids, _, err := n.telegramChats(ctx, user)
 		if err != nil {
 			return res, err
 		}
@@ -519,7 +539,7 @@ func (n *Notifier) remindOne(ctx context.Context, now time.Time, r hub.NoticeRec
 		_, err := n.o.Prompts.PendingPrompt(ctx, r.User, r.BackendID, r.SessionID, r.PromptID)
 		switch {
 		case errors.Is(err, hub.ErrUnknownApproval), errors.Is(err, hub.ErrUnknownSession):
-			n.settle(ctx, r.BackendID, r.SessionID, []string{r.PromptID})
+			n.settle(ctx, r.BackendID, r.SessionID, []string{r.PromptID}, false)
 			return
 		case errors.Is(err, hub.ErrForbidden), errors.Is(err, hub.ErrUnknownBackend):
 			drop()

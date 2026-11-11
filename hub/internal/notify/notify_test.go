@@ -47,7 +47,9 @@ type fakeTG struct {
 	mu      sync.Mutex
 	sent    []sentTG
 	settled [][]hub.NoticeMessage
-	next    int64
+	// cancelled are the cancelled flags of the settled calls.
+	cancelled []bool
+	next      int64
 }
 
 func (f *fakeTG) SendNotice(_ context.Context, chatID int64, m notify.Message) (int64, error) {
@@ -58,10 +60,11 @@ func (f *fakeTG) SendNotice(_ context.Context, chatID int64, m notify.Message) (
 	return f.next, nil
 }
 
-func (f *fakeTG) Settled(_ context.Context, msgs []hub.NoticeMessage) {
+func (f *fakeTG) Settled(_ context.Context, _ hub.NoticeRecord, cancelled bool, msgs []hub.NoticeMessage) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.settled = append(f.settled, msgs)
+	f.cancelled = append(f.cancelled, cancelled)
 }
 
 func (f *fakeTG) count() int {
@@ -251,6 +254,37 @@ func TestSettledPromptGetsNoReminder(t *testing.T) {
 	e.n.RemindNow(e.ctx)
 	if e.tg.count() != 2 {
 		t.Fatalf("reminded a prompt Hermes no longer has: %d", e.tg.count())
+	}
+}
+
+func TestLinkedGroupGetsNoticesInGeneral(t *testing.T) {
+	t.Parallel()
+	e := setup(t, nil)
+	const group = -1001234
+	if err := e.st.LinkTelegramGroup(e.ctx, hub.TelegramGroup{User: alice, ChatID: group, LinkedAt: e.now}); err != nil {
+		t.Fatal(err)
+	}
+	e.n.HandleNow(e.ctx, approval("k1"))
+	if e.tg.count() != 1 || e.tg.sent[0].chat != group {
+		t.Fatalf("sent = %+v", e.tg.sent)
+	}
+	if err := e.st.SaveTelegramTopic(e.ctx, hub.TelegramTopic{ChatID: group, ThreadID: 7, User: alice, BackendID: backend,
+		SessionID: session, Name: title, Seen: e.now}); err != nil {
+		t.Fatal(err)
+	}
+	e.n.HandleNow(e.ctx, approval("k2"))
+	if e.tg.count() != 1 {
+		t.Fatalf("a prompt of a chat with a topic got a notice in General too: %+v", e.tg.sent)
+	}
+	e.n.HandleNow(e.ctx, hub.Notice{Kind: hub.NoticeFailure, BackendID: backend, SessionID: session, Key: "f1", Title: title,
+		Detail: "needs a sign-in"})
+	if e.tg.count() != 2 || e.tg.sent[1].chat != group || e.tg.sent[1].m.Record.Kind != hub.NoticeFailure {
+		t.Fatalf("a failure of a chat with a topic did not reach General: %+v", e.tg.sent)
+	}
+	e.n.HandleNow(e.ctx, hub.Notice{Kind: hub.NoticeSettled, BackendID: backend, SessionID: session, PromptIDs: []string{"p1"},
+		Cancelled: true})
+	if len(e.tg.cancelled) != 1 || !e.tg.cancelled[0] {
+		t.Fatalf("settled = %+v, cancelled = %v", e.tg.settled, e.tg.cancelled)
 	}
 }
 
