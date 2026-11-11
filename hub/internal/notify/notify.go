@@ -394,17 +394,28 @@ func (n *Notifier) sendTelegram(ctx context.Context, m Message) {
 
 // telegramChats are where a person's notices go on Telegram: the General
 // topic of their linked group, or else each private chat linked to them.
-// grouped is true for a group.
+// A private chat with topics (a group row whose chat ID is positive) comes
+// first, and the person's other private chats still get their notices.
+// grouped is true when the chats have a topic for each chat.
 func (n *Notifier) telegramChats(ctx context.Context, user string) (ids []int64, grouped bool, err error) {
 	group, ok, err := n.o.Store.TelegramGroup(ctx, user)
 	if err != nil {
 		return nil, false, err
 	}
-	if ok {
+	if ok && group < 0 {
 		return []int64{group}, true, nil
 	}
 	ids, err = n.o.Store.TelegramIDs(ctx, user)
-	return ids, false, err
+	if err != nil || !ok {
+		return ids, false, err
+	}
+	out := []int64{group}
+	for _, id := range ids {
+		if id != group {
+			out = append(out, id)
+		}
+	}
+	return out, true, nil
 }
 
 // PushPayload is the whole of a Web Push message: the event kind and a

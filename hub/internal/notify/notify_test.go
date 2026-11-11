@@ -533,3 +533,27 @@ func TestClaudeSignInGoesOnlyToItsUsers(t *testing.T) {
 		t.Fatalf("sent with the setting off: telegram %d, push %d", e.tg.count(), e.push.count())
 	}
 }
+
+func TestPrivateChatWithTopicsGetsNoticesInItsMainChat(t *testing.T) {
+	t.Parallel()
+	e := setup(t, nil)
+	if err := e.st.LinkTelegram(e.ctx, 12, alice); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.LinkTelegramGroup(e.ctx, hub.TelegramGroup{User: alice, ChatID: 11, LinkedAt: e.now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.SaveTelegramTopic(e.ctx, hub.TelegramTopic{ChatID: 11, ThreadID: 7, User: alice, BackendID: backend,
+		SessionID: session, Name: title, Seen: e.now}); err != nil {
+		t.Fatal(err)
+	}
+	e.n.HandleNow(e.ctx, approval("k1"))
+	if e.tg.count() != 0 {
+		t.Fatalf("a prompt of a chat with a topic got a notice: %+v", e.tg.sent)
+	}
+	e.n.HandleNow(e.ctx, hub.Notice{Kind: hub.NoticeFailure, BackendID: backend, SessionID: session, Key: "f1", Title: title,
+		Detail: "needs a sign-in"})
+	if e.tg.count() != 2 || e.tg.sent[0].chat != 11 || e.tg.sent[1].chat != 12 {
+		t.Fatalf("sent = %+v, want the main chat with topics first, then the other private chat", e.tg.sent)
+	}
+}
