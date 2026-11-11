@@ -1,26 +1,33 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"time"
 
+	"github.com/USA-RedDragon/hermes-device/internal/attest"
 	"github.com/USA-RedDragon/hermes-device/internal/setup"
 	"github.com/spf13/cobra"
 )
 
 func newUpdateCommand(b *base) *cobra.Command {
-	var force, noRestart bool
+	var force, noRestart, check, skipAttestation bool
 	c := &cobra.Command{
 		Use:   "update [version]",
 		Short: "Install the latest release (or the given one) for this OS and architecture, and restart the service",
 		Long: "update downloads the release archive for this OS and architecture from GitHub, checks it against the " +
-			"release's checksum file, checks that the new binary runs and reports the release's version, replaces " +
-			"the installed binary (~/" + setup.BinDir + "/hermes-device when it exists, else this binary) and restarts " +
-			"the service when it runs. It refuses a downgrade, and replacing a development build, without --force.",
+			"release's checksum file, verifies the archive's GitHub artifact attestation (Sigstore-signed build provenance " +
+			"from this repository's release workflow at the release tag), checks that the new binary runs and reports the " +
+			"release's version, replaces the installed binary (~/" + setup.BinDir + "/hermes-device when it exists, else this " +
+			"binary) and restarts the service when it runs. It refuses a downgrade, and replacing a development build, " +
+			"without --force. It refuses a release without a valid attestation, which includes every release before v" +
+			setup.FirstAttestedVersion + ", without --insecure-skip-attestation.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sys, err := b.system()
@@ -37,12 +44,17 @@ func newUpdateCommand(b *base) *cobra.Command {
 			o := &setup.UpdateOptions{
 				Target: target, Version: version, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, GOARM: goarm(),
 				Force: force, Restart: !noRestart, Releases: b.releases(),
+				Check: check, SkipAttestation: skipAttestation, Attestations: b.attestations(),
 			}
 			if len(args) == 1 {
 				o.Tag = args[0]
 			}
 			o.Releases.UserAgent = b.userAgent()
 			tag, err := sys.Update(ctx, o)
+			if err == nil && check {
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s passed the checks. Nothing was installed.\n", tag)
+				return err
+			}
 			if errors.Is(err, setup.ErrUpToDate) {
 				_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s is %s, the latest release.\n", target, tag)
 				return err
@@ -56,6 +68,9 @@ func newUpdateCommand(b *base) *cobra.Command {
 	}
 	c.Flags().BoolVar(&force, "force", false, "Install even when it is a downgrade, the same version, or replaces a development build")
 	c.Flags().BoolVar(&noRestart, "no-restart", false, "Do not restart the service")
+	c.Flags().BoolVar(&check, "check", false, "Download and verify the release (checksum, attestation, the binary runs) but install nothing")
+	c.Flags().BoolVar(&skipAttestation, "insecure-skip-attestation", false,
+		"UNSAFE: install without verifying the release's attestation, for emergencies and releases before v"+setup.FirstAttestedVersion)
 	return c
 }
 
@@ -97,4 +112,24 @@ func goarm() string {
 		}
 	}
 	return "6"
+}
+
+// attestations verifies release archives against this repository's
+// release workflow, with the Sigstore public-good trusted root.
+func (b *base) attestations() setup.AttestationVerifier {
+	v := &attest.Verifier{
+		APIURL:    attest.DefaultAPIURL,
+		Client:    &http.Client{Timeout: 2 * time.Minute},
+		UserAgent: b.userAgent(),
+		TUFCache:  attest.DefaultTUFCache(),
+	}
+	return func(ctx context.Context, tag, name string, digest []byte) (string, error) {
+		p := attest.ReleasePolicy(tag)
+		p.Name = name
+		res, err := v.Verify(ctx, digest, p)
+		if err != nil {
+			return "", err
+		}
+		return res.SAN + " (commit " + res.Commit + ")", nil
+	}
 }

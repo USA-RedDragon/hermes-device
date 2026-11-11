@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -17,7 +18,11 @@ import (
 	"github.com/USA-RedDragon/hermes-device/internal/setup"
 )
 
-const newBody = "new"
+const (
+	newBody = "new"
+	oldBody = "old"
+	tagNew  = "v0.9.0"
+)
 
 func tarball(t *testing.T, files map[string]string) []byte {
 	t.Helper()
@@ -83,8 +88,11 @@ func versionRunner(version string) *fakeRunner {
 func updateOpts(t *testing.T, sys *setup.System, rel *setup.Releases, version string) *setup.UpdateOptions {
 	t.Helper()
 	target := filepath.Join(sys.Home, ".hermes-device", "bin", "hermes-device")
-	writeFile(t, target, "old")
-	return &setup.UpdateOptions{Target: target, Version: version, GOOS: linux, GOARCH: "amd64", Restart: true, Releases: rel}
+	writeFile(t, target, oldBody)
+	return &setup.UpdateOptions{
+		Target: target, Version: version, GOOS: linux, GOARCH: "amd64", Restart: true, Releases: rel,
+		Attestations: func(context.Context, string, string, []byte) (string, error) { return "the release workflow", nil },
+	}
 }
 
 func TestUpdateInstallsVerifiedRelease(t *testing.T) {
@@ -95,7 +103,7 @@ func TestUpdateInstallsVerifiedRelease(t *testing.T) {
 	rel := releaseServer(t, tarball(t, map[string]string{"README.md": "x", binName: newBody}), "")
 	o := updateOpts(t, sys, rel, vOld)
 	tag, err := sys.Update(t.Context(), o)
-	if err != nil || tag != "v0.9.0" {
+	if err != nil || tag != tagNew {
 		t.Fatalf("Update = %q, %v", tag, err)
 	}
 	if got := readFile(t, o.Target); got != newBody {
@@ -147,7 +155,7 @@ func TestUpdateRefusals(t *testing.T) {
 			if tc.want != nil && !errors.Is(err, tc.want) || tc.wantText != "" && (err == nil || !strings.Contains(err.Error(), tc.wantText)) {
 				t.Fatalf("err = %v", err)
 			}
-			if got := readFile(t, o.Target); got != "old" {
+			if got := readFile(t, o.Target); got != oldBody {
 				t.Errorf("target replaced: %q", got)
 			}
 		})
@@ -215,5 +223,138 @@ func TestLatestTagNeedsRedirect(t *testing.T) {
 	rel := &setup.Releases{BaseURL: srv.URL + "/r", Client: srv.Client()}
 	if _, err := rel.LatestTag(t.Context()); err == nil {
 		t.Error("accepted a redirect to no release")
+	}
+}
+
+func TestUpdateVerifiesTheArchiveAttestation(t *testing.T) {
+	t.Parallel()
+	archive := tarball(t, map[string]string{binName: newBody})
+	sys := newSystem(t, linux, versionRunner(vNew), nil, nil)
+	o := updateOpts(t, sys, releaseServer(t, archive, ""), vOld)
+	var gotTag, gotName string
+	var gotDigest []byte
+	o.Attestations = func(_ context.Context, tag, name string, digest []byte) (string, error) {
+		gotTag, gotName, gotDigest = tag, name, digest
+		return "the release workflow", nil
+	}
+	if _, err := sys.Update(t.Context(), o); err != nil {
+		t.Fatal(err)
+	}
+	want := sha256.Sum256(archive)
+	if gotTag != tagNew || gotName != "hermes-device_0.9.0_linux_amd64.tar.gz" || !bytes.Equal(gotDigest, want[:]) {
+		t.Errorf("verified %q %q %x, want v0.9.0 %x", gotTag, gotName, gotDigest, want)
+	}
+	if readFile(t, o.Target) != newBody {
+		t.Error("not installed")
+	}
+}
+
+func TestUpdateRefusesUnverifiedArchive(t *testing.T) {
+	t.Parallel()
+	errBad := errors.New("no attestation")
+	for name, tc := range map[string]struct {
+		tag      string
+		verifier setup.AttestationVerifier
+		wantText string
+	}{
+		"failed":         {verifier: func(context.Context, string, string, []byte) (string, error) { return "", errBad }, wantText: "older than v" + setup.FirstAttestedVersion},
+		"failed, new":    {tag: setup.FirstAttestedVersion, verifier: func(context.Context, string, string, []byte) (string, error) { return "", errBad }, wantText: "was not installed"},
+		"no verifier":    {wantText: "no attestation verifier"},
+		"failed, newest": {tag: "99.0.0", verifier: func(context.Context, string, string, []byte) (string, error) { return "", errBad }, wantText: "--insecure-skip-attestation"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			want := vNew
+			if tc.tag != "" {
+				want = tc.tag
+			}
+			archive := tarball(t, map[string]string{binName: newBody})
+			sys := newSystem(t, linux, versionRunner(want), nil, nil)
+			rel := releaseServer(t, archive, "")
+			if tc.tag != "" {
+				rel = taggedReleaseServer(t, tc.tag, archive)
+			}
+			o := updateOpts(t, sys, rel, vOld)
+			o.Tag, o.Attestations = tc.tag, tc.verifier
+			_, err := sys.Update(t.Context(), o)
+			if !errors.Is(err, setup.ErrAttestation) || !strings.Contains(err.Error(), tc.wantText) {
+				t.Fatalf("err = %v", err)
+			}
+			if tc.verifier != nil && !errors.Is(err, errBad) {
+				t.Errorf("err = %v does not wrap the cause", err)
+			}
+			if got := readFile(t, o.Target); got != oldBody {
+				t.Errorf("target replaced: %q", got)
+			}
+		})
+	}
+}
+
+func TestUpdateInsecureSkipAttestation(t *testing.T) {
+	t.Parallel()
+	sys := newSystem(t, linux, versionRunner(vNew), nil, nil)
+	var out bytes.Buffer
+	sys.Out = &out
+	o := updateOpts(t, sys, releaseServer(t, tarball(t, map[string]string{binName: newBody}), ""), vOld)
+	o.SkipAttestation = true
+	o.Attestations = func(context.Context, string, string, []byte) (string, error) {
+		t.Error("verified with --insecure-skip-attestation")
+		return "", nil
+	}
+	if _, err := sys.Update(t.Context(), o); err != nil {
+		t.Fatal(err)
+	}
+	if readFile(t, o.Target) != newBody || !strings.Contains(out.String(), "WARNING: not verifying") {
+		t.Errorf("target %q, output %q", readFile(t, o.Target), out.String())
+	}
+}
+
+func TestUpdateCheckInstallsNothing(t *testing.T) {
+	t.Parallel()
+	r := versionRunner(vNew)
+	sys := newSystem(t, linux, r, map[string]string{"systemctl": "/usr/bin/" + systemctl}, nil)
+	writeFile(t, filepath.Join(sys.Home, ".config", "systemd", "user", setup.UnitName), "unit")
+	o := updateOpts(t, sys, releaseServer(t, tarball(t, map[string]string{binName: newBody}), ""), vNew)
+	o.Check = true
+	tag, err := sys.Update(t.Context(), o)
+	if err != nil || tag != tagNew {
+		t.Fatalf("Update = %q, %v", tag, err)
+	}
+	if readFile(t, o.Target) != oldBody || r.has("systemctl --user --no-block restart "+setup.UnitName) {
+		t.Errorf("--check changed something: %q %q", readFile(t, o.Target), r.Calls())
+	}
+	leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(o.Target), ".hermes-device.new-*"))
+	if len(leftovers) != 0 {
+		t.Errorf("left %q", leftovers)
+	}
+}
+
+// taggedReleaseServer serves release tag (without v) with archive for
+// linux/amd64.
+func taggedReleaseServer(t *testing.T, version string, archive []byte) *setup.Releases {
+	t.Helper()
+	name := setup.ArchiveName(version, linux, "amd64", "")
+	h := sha256.Sum256(archive)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/r/download/v" + version + "/" + setup.ChecksumsName(version):
+			_, _ = w.Write([]byte(hex.EncodeToString(h[:]) + "  " + name + "\n"))
+		case "/r/download/v" + version + "/" + name:
+			_, _ = w.Write(archive)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &setup.Releases{BaseURL: srv.URL + "/r", Client: srv.Client()}
+}
+
+func TestUpdateCheckRefusesSkip(t *testing.T) {
+	t.Parallel()
+	sys := newSystem(t, linux, versionRunner(vNew), nil, nil)
+	o := updateOpts(t, sys, releaseServer(t, tarball(t, map[string]string{binName: newBody}), ""), vOld)
+	o.Check, o.SkipAttestation = true, true
+	if _, err := sys.Update(t.Context(), o); err == nil || !strings.Contains(err.Error(), "--insecure-skip-attestation") {
+		t.Fatalf("err = %v", err)
 	}
 }

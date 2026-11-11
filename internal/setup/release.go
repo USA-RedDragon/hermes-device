@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -160,27 +161,29 @@ func ExtractBinary(archive []byte) ([]byte, error) {
 	}
 }
 
-// FetchBinary downloads the binary of release tag for an OS and
-// architecture and checks it against the release's checksum file.
-func (r *Releases) FetchBinary(ctx context.Context, tag, goos, goarch, goarm string) ([]byte, error) {
+// FetchArchive downloads the release archive of tag for an OS and
+// architecture, checks it against the release's checksum file and returns
+// it with its SHA-256 digest.
+func (r *Releases) FetchArchive(ctx context.Context, tag, goos, goarch, goarm string) ([]byte, []byte, error) {
 	v := strings.TrimPrefix(tag, "v")
 	sums, err := r.Fetch(ctx, tag, ChecksumsName(v), maxChecksums)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	name := ArchiveName(v, goos, goarch, goarm)
 	want, ok := ParseChecksums(sums)[name]
 	if !ok {
-		return nil, fmt.Errorf("%w: %s lists no %s (no build for %s/%s?)", ErrNoAsset, ChecksumsName(v), name, goos, goarch)
+		return nil, nil, fmt.Errorf("%w: %s lists no %s (no build for %s/%s?)", ErrNoAsset, ChecksumsName(v), name, goos, goarch)
 	}
 	archive, err := r.Fetch(ctx, tag, name, maxArchive)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if got := sha256Hex(archive); got != want {
-		return nil, fmt.Errorf("%w: %s has sha256 %s, the checksum file says %s", ErrChecksum, name, got, want)
+	sum := sha256.Sum256(archive)
+	if got := hex.EncodeToString(sum[:]); got != want {
+		return nil, nil, fmt.Errorf("%w: %s has sha256 %s, the checksum file says %s", ErrChecksum, name, got, want)
 	}
-	return ExtractBinary(archive)
+	return archive, sum[:], nil
 }
 
 // XPIName is the signed Firefox extension file of version (without v).

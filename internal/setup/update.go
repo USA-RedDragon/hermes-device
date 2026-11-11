@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,18 @@ import (
 
 // ErrUpToDate is returned when the binary already has the release.
 var ErrUpToDate = errors.New("already up to date")
+
+// ErrAttestation is returned when the release archive has no attestation
+// that passes verification.
+var ErrAttestation = errors.New("the release archive's attestation did not verify")
+
+// FirstAttestedVersion is the first release whose files have GitHub
+// artifact attestations. Older releases cannot be verified.
+const FirstAttestedVersion = "0.13.0"
+
+// AttestationVerifier checks that an attestation of release tag's workflow
+// covers the file name with SHA-256 digest, and returns who signed it.
+type AttestationVerifier func(ctx context.Context, tag, name string, digest []byte) (string, error)
 
 // ErrDevBuild is returned when a development build would be replaced
 // without --force.
@@ -30,11 +43,18 @@ type UpdateOptions struct {
 	// Restart restarts the service when it runs.
 	Restart  bool
 	Releases *Releases
+	// Attestations verifies the release archive before it is installed.
+	Attestations AttestationVerifier
+	// SkipAttestation installs without verifying the attestation. Unsafe.
+	SkipAttestation bool
+	// Check downloads and verifies the release but installs nothing.
+	Check bool
 }
 
 // Update replaces o.Target with the binary of a release after checking
-// the release's checksum and that the new binary runs and reports the
-// release's version. It returns the tag it installed.
+// the release's checksum, the archive's attestation, and that the new
+// binary runs and reports the release's version. It returns the tag it
+// installed. With o.Check it stops after the checks and installs nothing.
 func (s *System) Update(ctx context.Context, o *UpdateOptions) (string, error) {
 	tag := o.Tag
 	if tag == "" {
@@ -46,11 +66,14 @@ func (s *System) Update(ctx context.Context, o *UpdateOptions) (string, error) {
 	} else if !strings.HasPrefix(tag, "v") {
 		tag = "v" + tag
 	}
+	if o.Check && o.SkipAttestation {
+		return "", errors.New("--check with --insecure-skip-attestation would check nothing that matters; leave one out")
+	}
 	want := strings.TrimPrefix(tag, "v")
 	if Canonical(want) == "" {
 		return "", fmt.Errorf("%q is not a release version", o.Tag)
 	}
-	if !o.Force {
+	if !o.Force && !o.Check {
 		c, ok := Compare(want, o.Version)
 		switch {
 		case !ok:
@@ -61,7 +84,14 @@ func (s *System) Update(ctx context.Context, o *UpdateOptions) (string, error) {
 			return "", fmt.Errorf("%w: %s is %s, newer than %s; pass --force to install %s anyway", ErrDowngrade, o.Target, o.Version, tag, tag)
 		}
 	}
-	data, err := o.Releases.FetchBinary(ctx, tag, o.GOOS, o.GOARCH, o.GOARM)
+	archive, digest, err := o.Releases.FetchArchive(ctx, tag, o.GOOS, o.GOARCH, o.GOARM)
+	if err != nil {
+		return "", err
+	}
+	if err := s.verifyAttestation(ctx, o, tag, digest); err != nil {
+		return "", err
+	}
+	data, err := ExtractBinary(archive)
 	if err != nil {
 		return "", err
 	}
@@ -89,6 +119,9 @@ func (s *System) Update(ctx context.Context, o *UpdateOptions) (string, error) {
 	if got != want {
 		return "", fmt.Errorf("the downloaded binary reports version %q, want %q", got, want)
 	}
+	if o.Check {
+		return tag, nil
+	}
 	if err := os.Rename(tmp.Name(), o.Target); err != nil {
 		return "", err
 	}
@@ -107,4 +140,29 @@ func (s *System) Update(ctx context.Context, o *UpdateOptions) (string, error) {
 	}
 	s.printf("Restarted the %s.\n", svc.Name())
 	return tag, nil
+}
+
+// verifyAttestation checks the attestation of the archive with SHA-256
+// digest, which is the archive Update installs from: it is held in
+// memory, so it cannot change between the check and the install.
+func (s *System) verifyAttestation(ctx context.Context, o *UpdateOptions, tag string, digest []byte) error {
+	name := ArchiveName(strings.TrimPrefix(tag, "v"), o.GOOS, o.GOARCH, o.GOARM)
+	if o.SkipAttestation {
+		s.printf("WARNING: not verifying the attestation of %s (--insecure-skip-attestation). Only the checksum file, from the same place, vouches for it.\n", name)
+		return nil
+	}
+	if o.Attestations == nil {
+		return fmt.Errorf("%w: no attestation verifier", ErrAttestation)
+	}
+	signer, err := o.Attestations(ctx, tag, name, digest)
+	if err == nil {
+		s.printf("Verified the attestation of %s (sha256:%s), signed by %s.\n", name, hex.EncodeToString(digest), signer)
+		return nil
+	}
+	if c, ok := Compare(strings.TrimPrefix(tag, "v"), FirstAttestedVersion); ok && c < 0 {
+		return fmt.Errorf("%w: %w. %s is older than v%s, the first release with attestations; releases before it have none and "+
+			"cannot be verified. Pass --insecure-skip-attestation to install it anyway (unsafe)", ErrAttestation, err, tag, FirstAttestedVersion)
+	}
+	return fmt.Errorf("%w, so %s was not installed. The file may have been changed after the release workflow built it. "+
+		"Pass --insecure-skip-attestation only if you know why it fails (unsafe): %w", ErrAttestation, name, err)
 }
