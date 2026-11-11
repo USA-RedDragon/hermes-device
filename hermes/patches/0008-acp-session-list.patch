@@ -69,12 +69,12 @@ index dee1cc402b..da967bb77d 100644
          sid = row.get("_lineage_root_id") or sid
          sid = owners.get(sid, sid)
 diff --git a/cli-config.yaml.example b/cli-config.yaml.example
-index c443905cb4..d63b9ba658 100644
+index de8b861e72..3d14eac0f5 100644
 --- a/cli-config.yaml.example
 +++ b/cli-config.yaml.example
-@@ -1136,6 +1136,10 @@ hosted_rooms:
- # the work back up. A viewer attaching or a message from you starts the count
- # again. A chat you closed (exit or /new) keeps notes. 0 (default) = notes.
+@@ -1138,6 +1138,10 @@ hosted_rooms:
+ # starts the count again. A chat you closed (exit or /new) keeps notes.
+ # 0 (default) = notes.
  #
 +# An ACP editor's session list (session/list) offers only sessions an editor
 +# started (acp_list_sources: [acp]). Add tui, gui (Desktop) or cli to also offer
@@ -83,7 +83,7 @@ index c443905cb4..d63b9ba658 100644
  # Uncomment to change the defaults shown; auto_prune: true bounds the file,
  # auto_prune: false keeps every ended session and silences the low-disk prompt.
  # sessions:
-@@ -1146,6 +1150,7 @@ hosted_rooms:
+@@ -1148,6 +1152,7 @@ hosted_rooms:
  #   min_interval_hours: 24
  #   orphan_end_grace_s: 300
  #   unviewed_completion_turns: 0
@@ -92,7 +92,7 @@ index c443905cb4..d63b9ba658 100644
  # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
  # Leave unset for the safe default: Desktop coordinates cross-gateway rooms and
 diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
-index ba5058f733..5d3fb74310 100644
+index 4987502b16..2935f3a8df 100644
 --- a/hermes_cli/config_defaults.py
 +++ b/hermes_cli/config_defaults.py
 @@ -2274,6 +2274,9 @@ DEFAULT_CONFIG = {
@@ -153,7 +153,7 @@ index 0000000000..59637b79ec
 +    assert 'other-folder' in _listed(db_path, None)
 +    assert 'telegram-chat' not in _listed(db_path, None)
 diff --git a/website/docs/user-guide/sessions.md b/website/docs/user-guide/sessions.md
-index 19eeada10c..dc76496a42 100644
+index 11f6b548c6..92223f474f 100644
 --- a/website/docs/user-guide/sessions.md
 +++ b/website/docs/user-guide/sessions.md
 @@ -142,6 +142,13 @@ Each session is tagged with its source platform:
