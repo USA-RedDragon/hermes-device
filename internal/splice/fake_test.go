@@ -99,7 +99,7 @@ type bindCall struct {
 }
 
 // fakeHub serves the hub's device API: whoami, session bindings and a
-// gateway leg that speaks the canonical JSON-RPC shapes of Hermes v0.22.7.
+// gateway leg that speaks the canonical JSON-RPC shapes of Hermes v0.23.1.
 type fakeHub struct {
 	t   *testing.T
 	srv *httptest.Server

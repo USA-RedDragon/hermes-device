@@ -349,7 +349,7 @@ func slashCommands() []string {
 		"fast", "yolo", "reasoning", "goal", "plan", "review", "whoami", "discard", "tools"}
 }
 
-// slashAliases are the Hermes v0.22.7 aliases (hermes_cli/commands.py) of
+// slashAliases are the Hermes v0.23.1 aliases (hermes_cli/commands.py) of
 // the allowed slash commands.
 func slashAliases() map[string]string {
 	return map[string]string{"reset": "new", "fork": "branch", "compact": "compress", "q": "queue",

@@ -2,7 +2,7 @@
 
 One server Hermes Agent owns every session. `hermes-device` lets that agent run its shell and file operations on your own PC, in a directory you choose, while the session itself stays on the server, where the web UI, Telegram and every other client can see it.
 
-Pinned to Hermes Agent v0.22.7. Linux and macOS only: Windows is not supported, because device paths must be POSIX paths.
+Pinned to Hermes Agent v0.23.1. Linux and macOS only: Windows is not supported, because device paths must be POSIX paths.
 
 ## Parts
 
