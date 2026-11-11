@@ -29,12 +29,13 @@ const (
 type promptTarget struct {
 	prefix    string
 	key       string
-	chatID    int64
+	to        dest
 	backendID string
 	sessionID string
 	prompt    hub.PromptInfo
-	// text is the message's HTML, kept to show the outcome under it.
-	text string
+	// body is the message's HTML under its head, kept to show the outcome
+	// with it.
+	body string
 	// owner is the only person who may answer, for a notice; "" lets
 	// anyone who may use the backend answer, as in an attached chat.
 	owner string
@@ -42,15 +43,35 @@ type promptTarget struct {
 
 func (t promptTarget) id() string { return t.prefix + ":" + t.key }
 
+// replyTarget is a prompt that a reply to a message answers: the
+// question itself, or the message that asked for the answer. question is
+// the message that shows the prompt.
+type replyTarget struct {
+	prefix   string
+	key      string
+	question int64
+	at       time.Time
+}
+
+// shownNotice is a notice the bot sent, kept to show its outcome.
+type shownNotice struct {
+	body string
+	at   time.Time
+}
+
+// keepShown is how long the bot keeps what it needs to answer replies and
+// show outcomes of messages it sent.
+const keepShown = 24 * time.Hour
+
 // approvalLabel names an approval choice on its button.
 func approvalLabel(choice string) string {
 	switch choice {
 	case hub.ChoiceOnce:
-		return "Allow"
+		return "Once"
 	case hub.ChoiceSession:
-		return "Allow in this chat"
+		return "This chat"
 	case hub.ChoiceAlways:
-		return "Always allow"
+		return "Always"
 	case hub.ChoiceDeny:
 		return "Deny"
 	}
@@ -61,42 +82,78 @@ func approvalLabel(choice string) string {
 func approvalVerdict(choice string) string {
 	switch choice {
 	case hub.ChoiceOnce:
-		return "Allowed"
+		return "Approved once"
 	case hub.ChoiceSession:
-		return "Allowed in this chat"
+		return "Approved for this chat"
 	case hub.ChoiceAlways:
-		return "Always allowed"
+		return "Always approved"
 	case hub.ChoiceDeny:
 		return "Denied"
 	}
 	return "Answered"
 }
 
-// promptHTML describes a prompt under head.
-func promptHTML(head string, p *hub.PromptInfo) string {
-	var b strings.Builder
-	b.WriteString(head)
+// promptBody describes a prompt: the command, the description, the
+// question, and choices that get no button of their own.
+func promptBody(p *hub.PromptInfo) string {
 	if p == nil {
-		return b.String()
+		return ""
 	}
+	var parts []string
 	if p.Command != "" {
-		b.WriteString("\n<pre>" + escapeHTML(truncate(p.Command, 2500)) + "</pre>")
+		parts = append(parts, "<pre>"+escapeHTML(truncate(p.Command, 2500))+"</pre>")
 	}
 	if p.Description != "" {
-		b.WriteString("\n" + escapeHTML(truncate(p.Description, 1000)))
+		parts = append(parts, escapeHTML(truncate(p.Description, 1000)))
 	}
 	if p.Question != "" {
-		b.WriteString("\n" + escapeHTML(truncate(p.Question, 2500)))
+		parts = append(parts, escapeHTML(truncate(p.Question, 2500)))
 	}
-	if p.Kind == hub.PromptClarify {
+	if p.Kind == hub.PromptClarify && len(p.Choices) > maxButtons {
 		for i, c := range p.Choices {
-			fmt.Fprintf(&b, "\n%d. %s", i+1, escapeHTML(truncate(c, 300)))
-		}
-		if p.Multi {
-			b.WriteString("\n<i>Pick one or more, then press Send.</i>")
+			parts = append(parts, fmt.Sprintf("%d. %s", i+1, escapeHTML(truncate(c, 300))))
 		}
 	}
-	return b.String()
+	return strings.Join(parts, "\n")
+}
+
+// promptFooter says how to answer a question.
+func promptFooter(p hub.PromptInfo) string {
+	switch {
+	case p.Kind != hub.PromptClarify:
+		return ""
+	case len(p.Choices) == 0:
+		return "\n\n<i>Reply to this message with your answer, or with /skip.</i>"
+	case p.Multi:
+		return "\n\n<i>Pick one or more, then press Send. Or reply to this message with your own answer.</i>"
+	}
+	return "\n\n<i>Or reply to this message with your own answer.</i>"
+}
+
+// outcomeHTML is a prompt's message once it got its answer: what became
+// of it, the prompt, and a note.
+func outcomeHTML(head, body, note string) string {
+	out := "<b>" + escapeHTML(head) + "</b>"
+	if body != "" {
+		out += "\n" + body
+	}
+	if note != "" {
+		out += "\n\n<i>" + escapeHTML(note) + "</i>"
+	}
+	return out
+}
+
+// settledOutcome says what became of a prompt that the bot did not
+// answer: shown is when it was shown.
+func settledOutcome(p hub.PromptInfo, shown, now time.Time, cancelled bool) (string, string) {
+	timeout := time.Duration(p.Timeout * float64(time.Second))
+	switch {
+	case cancelled:
+		return "Cancelled", "Hermes stopped waiting for an answer."
+	case timeout > 0 && now.Sub(shown) >= timeout-slack(timeout):
+		return "Expired", "No answer in " + duration(timeout) + "."
+	}
+	return "Answered elsewhere", "Answered in the hub or another app."
 }
 
 // maxButtons is how many choices get a button of their own.
@@ -120,22 +177,35 @@ func promptKeyboard(prefix, key string, p hub.PromptInfo, picks []bool) *InlineK
 		}
 		return &InlineKeyboard{InlineKeyboard: rows}
 	}
-	for i, c := range p.Choices[:min(len(p.Choices), maxButtons)] {
-		label := truncate(fmt.Sprintf("%d. %s", i+1, c), 40)
-		tok := strconv.Itoa(i)
-		if p.Multi {
-			tok = "t" + tok
-			if i < len(picks) && picks[i] {
-				label = "✓ " + label
+	if len(p.Choices) > maxButtons {
+		var row []InlineButton
+		for i := range p.Choices {
+			row = append(row, InlineButton{Text: strconv.Itoa(i + 1), CallbackData: cb(strconv.Itoa(i))})
+			if len(row) == 5 {
+				rows, row = append(rows, row), nil
 			}
 		}
-		rows = append(rows, []InlineButton{{Text: label, CallbackData: cb(tok)}})
+		if len(row) > 0 {
+			rows = append(rows, row)
+		}
+	} else {
+		for i, c := range p.Choices {
+			label := truncate(c, 40)
+			tok := strconv.Itoa(i)
+			if p.Multi {
+				tok = "t" + tok
+				if i < len(picks) && picks[i] {
+					label = "✓ " + label
+				}
+			}
+			rows = append(rows, []InlineButton{{Text: label, CallbackData: cb(tok)}})
+		}
 	}
 	last := []InlineButton{}
 	if p.Multi {
 		last = append(last, InlineButton{Text: "Send", CallbackData: cb(tokSend)})
 	}
-	other := "Type an answer"
+	other := "Other answer"
 	if len(p.Choices) == 0 {
 		other = "Answer"
 	}
@@ -172,37 +242,111 @@ func noticeHead(m notify.Message) string {
 	return b.String()
 }
 
-// SendNotice sends a notice to a person's private chat, with buttons when
-// it is a prompt and a link that opens the chat in the hub.
+// SendNotice sends a notice to a person's private chat, or to the General
+// topic of their linked group, with buttons when it is a prompt, a button
+// that opens the chat's topic when it has one, and a link that opens the
+// chat in the hub.
 func (b *Bot) SendNotice(ctx context.Context, chatID int64, m notify.Message) (int64, error) {
-	text := promptHTML(noticeHead(m), m.Record.Prompt)
+	rec := m.Record
+	body := noticeHead(m)
+	if pb := promptBody(rec.Prompt); pb != "" {
+		body += "\n" + pb
+	}
+	text := body
+	if rec.Prompt != nil {
+		text += promptFooter(*rec.Prompt)
+	}
 	if m.URL != "" {
 		text += "\n\n<a href=\"" + escapeHTML(m.URL) + "\">Open in the hub</a>"
 	}
-	var kb *InlineKeyboard
-	if m.Record.Prompt != nil {
-		kb = promptKeyboard(cbNotice, m.Record.ID, *m.Record.Prompt, nil)
+	kb := &InlineKeyboard{}
+	if rec.Prompt != nil {
+		kb = promptKeyboard(cbNotice, rec.ID, *rec.Prompt, nil)
 	}
-	id := sendHTML(ctx, b.api, b.logger, chatID, text, kb)
+	if link := b.topicLink(ctx, chatID, rec.BackendID, rec.SessionID); link != "" {
+		kb.InlineKeyboard = append(kb.InlineKeyboard, []InlineButton{{Text: "Open the topic", URL: link}})
+	}
+	if len(kb.InlineKeyboard) == 0 {
+		kb = nil
+	}
+	id := sendHTML(ctx, b.api, b.logger, dest{chat: chatID}, text, kb)
 	if id == 0 {
 		return 0, errors.New("telegram: send failed")
+	}
+	if rec.Prompt == nil {
+		return id, nil
+	}
+	b.mu.Lock()
+	b.shown[msgKey{chatID, id}] = shownNotice{body: body, at: b.now()}
+	if rec.Prompt.Kind == hub.PromptClarify {
+		b.addReplyLocked(msgKey{chatID, id}, replyTarget{prefix: cbNotice, key: rec.ID, question: id})
+	}
+	b.mu.Unlock()
+	if rec.Prompt.Timeout > 0 {
+		timeout := time.Duration(rec.Prompt.Timeout * float64(time.Second))
+		wait := timeout + slack(timeout)
+		if !rec.CreatedAt.IsZero() {
+			wait -= b.now().Sub(rec.CreatedAt)
+		}
+		time.AfterFunc(max(wait, 0), func() { b.expireNotice(chatID, id, rec) })
 	}
 	return id, nil
 }
 
-// Settled takes the buttons off the messages of a prompt that got its
-// answer somewhere else.
-func (b *Bot) Settled(ctx context.Context, msgs []hub.NoticeMessage) {
+// expireNotice shows a notice's prompt as expired when nobody answered it
+// in its time. It runs from a timer, with no request behind it.
+//
+//nolint:contextcheck // see above
+func (b *Bot) expireNotice(chatID, msgID int64, rec hub.NoticeRecord) {
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+	if b.notices != nil {
+		if cur, ok, err := b.notices.Notice(ctx, rec.ID); err != nil || ok && !cur.SettledAt.IsZero() {
+			return
+		}
+	}
+	b.mu.Lock()
+	sn, ok := b.shown[msgKey{chatID, msgID}]
+	delete(b.shown, msgKey{chatID, msgID})
+	b.dropRepliesLocked(cbNotice, rec.ID)
+	b.mu.Unlock()
+	if !ok {
+		return
+	}
+	b.editHTML(ctx, chatID, msgID, outcomeHTML("Expired", sn.body,
+		"No answer in "+duration(time.Duration(rec.Prompt.Timeout*float64(time.Second)))+"."))
+}
+
+// Settled shows the outcome on the messages of a notice whose prompt got
+// its answer, or was cancelled, somewhere else, and takes their buttons
+// off.
+func (b *Bot) Settled(ctx context.Context, rec hub.NoticeRecord, cancelled bool, msgs []hub.NoticeMessage) {
 	for _, m := range msgs {
-		if err := b.api.EditMarkup(ctx, m.ChatID, m.MessageID, nil); err != nil {
-			b.logger.Debug("Failed to take buttons off a notice", "chat", m.ChatID, "error", err)
+		key := msgKey{m.ChatID, m.MessageID}
+		b.mu.Lock()
+		sn, ok := b.shown[key]
+		delete(b.shown, key)
+		b.dropRepliesLocked(cbNotice, rec.ID)
+		b.mu.Unlock()
+		if rec.Prompt == nil {
+			if err := b.api.EditMarkup(ctx, m.ChatID, m.MessageID, nil); err != nil {
+				b.logger.Debug("Failed to take buttons off a notice", "chat", m.ChatID, "error", err)
+			}
+			continue
+		}
+		if !ok {
+			sn = shownNotice{body: "<b>" + escapeHTML(notify.Titles(rec.Kind)) + "</b>\n" + promptBody(rec.Prompt), at: rec.CreatedAt}
+		}
+		head, note := settledOutcome(*rec.Prompt, sn.at, b.now(), cancelled)
+		if err := b.api.EditHTML(ctx, m.ChatID, m.MessageID, outcomeHTML(head, sn.body, note), nil); err != nil {
+			b.logger.Debug("Failed to show a notice's outcome", "chat", m.ChatID, "error", err)
 		}
 	}
 }
 
-// noticeTarget loads the notice a button of a private chat answers. Only
-// the person it was sent to may press it, on a message it was sent in.
-func (b *Bot) noticeTarget(ctx context.Context, q *CallbackQuery, user, key string) (promptTarget, string) {
+// noticeTarget loads the notice that a button or a reply in chat answers.
+// Only the person it was sent to may answer, on a message it was sent in.
+func (b *Bot) noticeTarget(ctx context.Context, to dest, msgID int64, user, key string) (promptTarget, string) {
 	if b.notices == nil {
 		return promptTarget{}, msgNotPending
 	}
@@ -225,27 +369,34 @@ func (b *Bot) noticeTarget(ctx context.Context, q *CallbackQuery, user, key stri
 	}
 	found := false
 	for _, m := range msgs {
-		found = found || (m.ChatID == q.Message.Chat.ID && m.MessageID == q.Message.MessageID)
+		found = found || (m.ChatID == to.chat && m.MessageID == msgID)
 	}
 	if !found {
 		return promptTarget{}, msgNotPending
 	}
-	return promptTarget{prefix: cbNotice, key: key, chatID: q.Message.Chat.ID, backendID: rec.BackendID, sessionID: rec.SessionID,
-		prompt: *rec.Prompt, text: escapeHTML(q.Message.Text), owner: rec.User}, ""
+	b.mu.Lock()
+	sn, ok := b.shown[msgKey{to.chat, msgID}]
+	b.mu.Unlock()
+	if !ok {
+		sn.body = "<b>" + escapeHTML(notify.Titles(rec.Kind)) + "</b>\n" + promptBody(rec.Prompt)
+	}
+	return promptTarget{prefix: cbNotice, key: key, to: to, backendID: rec.BackendID, sessionID: rec.SessionID,
+		prompt: *rec.Prompt, body: sn.body, owner: rec.User}, ""
 }
 
-// attachedTarget loads the prompt a button of an attached chat answers.
-func (b *Bot) attachedTarget(q *CallbackQuery, key string) (promptTarget, string) {
+// attachedTarget loads the prompt that a button or a reply in an attached
+// chat answers.
+func (b *Bot) attachedTarget(to dest, msgID int64, key string) (promptTarget, string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	p, ok := b.approvals[key]
 	// messageID is 0 only between the send and its bind; the random key
 	// alone ties the press to this prompt then.
-	if !ok || p.chatID != q.Message.Chat.ID || (p.messageID != 0 && p.messageID != q.Message.MessageID) {
+	if !ok || p.to.chat != to.chat || (p.messageID != 0 && p.messageID != msgID) {
 		return promptTarget{}, msgNotPending
 	}
-	return promptTarget{prefix: cbApproval, key: key, chatID: p.chatID, backendID: p.backendID, sessionID: p.sessionID,
-		prompt: p.prompt, text: p.text}, ""
+	return promptTarget{prefix: cbApproval, key: key, to: p.to, backendID: p.backendID, sessionID: p.sessionID,
+		prompt: p.prompt, body: p.body}, ""
 }
 
 const (
@@ -265,7 +416,7 @@ func (b *Bot) pressPrompt(ctx context.Context, q *CallbackQuery, user string, t 
 		b.togglePick(ctx, q, user, t, tok[1:])
 		return
 	case p.Kind == hub.PromptClarify && tok == tokOther:
-		b.awaitAnswer(ctx, q, user, t)
+		b.askReply(ctx, q, user, t)
 		return
 	case p.Kind == hub.PromptClarify && tok == tokSkip:
 		a, verdict = hub.Answer{Skip: true}, "Skipped"
@@ -297,7 +448,7 @@ func (b *Bot) pressPrompt(ctx context.Context, q *CallbackQuery, user string, t 
 		return
 	}
 	b.answer(ctx, q.ID, truncate(verdict, 180))
-	b.editHTML(ctx, t.chatID, q.Message.MessageID, t.text+"\n\n<i>"+escapeHTML(truncate(verdict, 300))+" by "+escapeHTML(user)+".</i>")
+	b.editHTML(ctx, t.to.chat, q.Message.MessageID, outcomeHTML(truncate(verdict, 300), t.body, "By "+user+"."))
 }
 
 // sendAnswer sends a to Hermes as user.
@@ -320,57 +471,103 @@ func (b *Bot) submitAnswer(ctx context.Context, callbackID, user string, t promp
 	switch {
 	case errors.Is(err, hub.ErrForbidden):
 		b.logger.Warn("Prompt answer forbidden", "user", user, "backend", t.backendID)
-		b.reply(ctx, callbackID, t.chatID, msgNotYours)
+		b.reply(ctx, callbackID, t.to, msgNotYours)
 		return false
 	case errors.Is(err, hub.ErrUnknownApproval), errors.Is(err, hub.ErrUnknownSession):
 		b.dropPrompt(t)
-		b.reply(ctx, callbackID, t.chatID, msgNotPending)
+		b.reply(ctx, callbackID, t.to, msgNotPending)
 		return false
 	case errors.Is(err, hub.ErrBadValue):
-		b.reply(ctx, callbackID, t.chatID, "Hermes did not take that answer.")
+		b.reply(ctx, callbackID, t.to, "Hermes did not take that answer.")
 		return false
 	case err != nil:
 		b.logger.Error("Failed to answer a prompt", "user", user, "error", err)
-		b.reply(ctx, callbackID, t.chatID, errGeneric)
+		b.reply(ctx, callbackID, t.to, errGeneric)
 		return false
 	}
 	b.dropPrompt(t)
+	b.answeredHere(ctx, t)
 	return true
 }
 
-// reportAnswerErr tells a chat why its typed answer failed.
-func (b *Bot) reportAnswerErr(ctx context.Context, chatID int64, user string, t promptTarget, err error) {
-	switch {
-	case errors.Is(err, hub.ErrForbidden):
-		b.logger.Warn("Prompt answer forbidden", "user", user, "backend", t.backendID)
-		b.sendText(ctx, chatID, msgNotYours)
-	case errors.Is(err, hub.ErrBadValue):
-		b.sendText(ctx, chatID, "Hermes did not take that answer.")
-	default:
-		b.logger.Error("Failed to answer a prompt", "user", user, "error", err)
-		b.sendText(ctx, chatID, errGeneric)
+// answeredHere marks a notice that the bot answered settled, so the
+// settle that follows does not show it as answered elsewhere.
+func (b *Bot) answeredHere(ctx context.Context, t promptTarget) {
+	s, ok := b.notices.(noticeSettler)
+	if t.prefix != cbNotice || !ok {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	if _, err := s.SettleNotices(cctx, t.backendID, t.sessionID, []string{t.prompt.ID}); err != nil {
+		b.logger.Warn("Failed to mark a notice answered", "error", err)
 	}
 }
 
-// awaitTTL is how long the chat's next message counts as the answer
-// after the person pressed Type an answer.
-const awaitTTL = 10 * time.Minute
+// noticeSettler is the optional part of a NoticeStore that marks notices
+// settled.
+type noticeSettler interface {
+	SettleNotices(ctx context.Context, backendID, sessionID string, promptIDs []string) ([]hub.NoticeRecord, error)
+}
+
+// reportAnswerErr tells a chat why its typed answer failed.
+func (b *Bot) reportAnswerErr(ctx context.Context, to dest, user string, t promptTarget, err error) {
+	switch {
+	case errors.Is(err, hub.ErrForbidden):
+		b.logger.Warn("Prompt answer forbidden", "user", user, "backend", t.backendID)
+		b.sendText(ctx, to, msgNotYours)
+	case errors.Is(err, hub.ErrBadValue):
+		b.sendText(ctx, to, "Hermes did not take that answer.")
+	default:
+		b.logger.Error("Failed to answer a prompt", "user", user, "error", err)
+		b.sendText(ctx, to, errGeneric)
+	}
+}
 
 // reply answers a button press, or, for a typed answer, sends text.
-func (b *Bot) reply(ctx context.Context, callbackID string, chatID int64, text string) {
+func (b *Bot) reply(ctx context.Context, callbackID string, to dest, text string) {
 	if callbackID != "" {
 		b.answer(ctx, callbackID, text)
 		return
 	}
-	b.sendText(ctx, chatID, text)
+	b.sendText(ctx, to, text)
 }
 
 func (b *Bot) dropPrompt(t promptTarget) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.picks, t.id())
+	b.dropRepliesLocked(t.prefix, t.key)
 	if t.prefix == cbApproval {
 		delete(b.approvals, t.key)
+	}
+}
+
+// addReplyLocked makes a reply to the message k answer a prompt, and
+// forgets replies older than keepShown. b.mu is held.
+func (b *Bot) addReplyLocked(k msgKey, rt replyTarget) {
+	now := b.now()
+	rt.at = now
+	b.replies[k] = rt
+	for mk, r := range b.replies {
+		if now.Sub(r.at) > keepShown {
+			delete(b.replies, mk)
+		}
+	}
+	for mk, sn := range b.shown {
+		if now.Sub(sn.at) > keepShown {
+			delete(b.shown, mk)
+		}
+	}
+}
+
+// dropRepliesLocked forgets the replies that answer a prompt. b.mu is
+// held.
+func (b *Bot) dropRepliesLocked(prefix, key string) {
+	for mk, r := range b.replies {
+		if r.prefix == prefix && r.key == key {
+			delete(b.replies, mk)
+		}
 	}
 }
 
@@ -394,7 +591,7 @@ func (b *Bot) togglePick(ctx context.Context, q *CallbackQuery, user string, t p
 	shown := append([]bool(nil), picks...)
 	b.mu.Unlock()
 	b.answer(ctx, q.ID, "")
-	if err := b.api.EditMarkup(ctx, t.chatID, q.Message.MessageID, promptKeyboard(t.prefix, t.key, t.prompt, shown)); err != nil {
+	if err := b.api.EditMarkup(ctx, t.to.chat, q.Message.MessageID, promptKeyboard(t.prefix, t.key, t.prompt, shown)); err != nil {
 		b.logger.Warn("Failed to update the answer buttons", "error", err)
 	}
 }
@@ -431,49 +628,116 @@ func (b *Bot) picked(t promptTarget) []string {
 	return out
 }
 
-// awaitAnswer makes the person's next message in the chat the answer.
-func (b *Bot) awaitAnswer(ctx context.Context, q *CallbackQuery, user string, t promptTarget) {
+// noticeFinder is the optional part of a NoticeStore that finds the
+// notice a message shows.
+type noticeFinder interface {
+	NoticeForMessage(ctx context.Context, chatID, messageID int64) (string, bool, error)
+}
+
+// storedReply finds a question notice by its message in the store, for a
+// notice that another replica sent, or one sent before the bot restarted.
+func (b *Bot) storedReply(ctx context.Context, chatID, msgID int64) (replyTarget, bool) {
+	nf, ok := b.notices.(noticeFinder)
+	if !ok {
+		return replyTarget{}, false
+	}
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	id, ok, err := nf.NoticeForMessage(cctx, chatID, msgID)
+	if err != nil || !ok {
+		return replyTarget{}, false
+	}
+	rec, ok, err := b.notices.Notice(cctx, id)
+	if err != nil || !ok || rec.Prompt == nil || rec.Prompt.Kind != hub.PromptClarify {
+		return replyTarget{}, false
+	}
+	return replyTarget{prefix: cbNotice, key: id, question: msgID}, true
+}
+
+// askReply sends a message that opens a reply in the person's app; the
+// reply answers the question.
+func (b *Bot) askReply(ctx context.Context, q *CallbackQuery, user string, t promptTarget) {
 	if !b.mayAnswer(ctx, user, t) {
 		b.answer(ctx, q.ID, msgNotYours)
 		return
 	}
-	st := b.chat(t.chatID)
-	st.awaiting, st.awaitingUser, st.awaitingMsg, st.awaitingAt = &t, user, q.Message.MessageID, time.Now()
 	b.answer(ctx, q.ID, "")
-	b.sendText(ctx, t.chatID, "Send your answer as your next message. Send /cancel to go back.")
+	to := dest{chat: q.Message.Chat.ID}
+	if q.Message.IsTopicMessage {
+		to.thread = q.Message.MessageThreadID
+	}
+	question := t.prompt.Question
+	if question == "" {
+		question = "the question above"
+	}
+	id, err := b.api.SendForceReply(ctx, to.chat, to.thread, "Reply to this message with your answer to: <i>"+
+		escapeHTML(truncate(question, 300))+"</i>", "Your answer")
+	if err != nil || id == 0 {
+		b.logger.Warn("Failed to ask for an answer", "error", err)
+		return
+	}
+	b.mu.Lock()
+	b.addReplyLocked(msgKey{to.chat, id}, replyTarget{prefix: t.prefix, key: t.key, question: q.Message.MessageID})
+	b.mu.Unlock()
 }
 
-// typedAnswer answers the prompt the chat waits on with text, and reports
-// whether the message was such an answer.
-func (b *Bot) typedAnswer(ctx context.Context, chatID int64, user, text string) bool {
-	st := b.chat(chatID)
-	t := st.awaiting
-	if t == nil || st.awaitingUser != user {
+// replyAnswer answers the question whose message m replies to, and
+// reports whether m was such an answer. A reply of /skip skips it.
+func (b *Bot) replyAnswer(ctx context.Context, to dest, user string, m *Message) bool {
+	if m.ReplyToMessage == nil || m.Text == "" {
 		return false
 	}
-	st.awaiting = nil
-	if time.Since(st.awaitingAt) > awaitTTL {
+	if cmd, _ := parseCommand(m.Text); cmd != "" && cmd != "skip" {
 		return false
 	}
-	if strings.HasPrefix(text, "/") {
-		if cmd, _ := parseCommand(text); cmd == "cancel" {
-			b.sendText(ctx, chatID, "Canceled. The question still waits for an answer.")
-			return true
-		}
+	b.mu.Lock()
+	rt, ok := b.replies[msgKey{to.chat, m.ReplyToMessage.MessageID}]
+	b.mu.Unlock()
+	if !ok {
+		rt, ok = b.storedReply(ctx, to.chat, m.ReplyToMessage.MessageID)
+	}
+	if !ok {
 		return false
 	}
-	err := b.sendAnswer(ctx, user, *t, hub.Answer{Text: text})
+	var (
+		t       promptTarget
+		refusal string
+	)
+	if rt.prefix == cbNotice {
+		t, refusal = b.noticeTarget(ctx, to, rt.question, user, rt.key)
+	} else {
+		t, refusal = b.attachedTarget(to, rt.question, rt.key)
+	}
+	switch {
+	case refusal == msgNotPending:
+		b.mu.Lock()
+		b.dropRepliesLocked(rt.prefix, rt.key)
+		b.mu.Unlock()
+		b.sendText(ctx, to, "That question no longer waits for an answer, so your message goes to the chat.")
+		return false
+	case refusal != "":
+		b.sendText(ctx, to, refusal)
+		return true
+	case !b.mayAnswer(ctx, user, t):
+		b.sendText(ctx, to, msgNotYours)
+		return true
+	}
+	a, verdict := hub.Answer{Text: m.Text}, "Answered: "+m.Text
+	if cmd, _ := parseCommand(m.Text); cmd == "skip" {
+		a, verdict = hub.Answer{Skip: true}, "Skipped"
+	}
+	err := b.sendAnswer(ctx, user, t, a)
 	if errors.Is(err, hub.ErrUnknownApproval) || errors.Is(err, hub.ErrUnknownSession) {
-		b.dropPrompt(*t)
-		b.sendText(ctx, chatID, "That question no longer waits for an answer, so your message goes to the chat.")
+		b.dropPrompt(t)
+		b.sendText(ctx, to, "That question no longer waits for an answer, so your message goes to the chat.")
 		return false
 	}
 	if err != nil {
-		b.reportAnswerErr(ctx, chatID, user, *t, err)
+		b.reportAnswerErr(ctx, to, user, t, err)
 		return true
 	}
-	b.dropPrompt(*t)
-	b.editHTML(ctx, chatID, st.awaitingMsg, t.text+"\n\n<i>Answered by "+escapeHTML(user)+".</i>")
-	b.sendText(ctx, chatID, "Sent your answer.")
+	b.dropPrompt(t)
+	b.answeredHere(ctx, t)
+	b.editHTML(ctx, to.chat, rt.question, outcomeHTML(truncate(verdict, 300), t.body, "By "+user+"."))
 	return true
 }

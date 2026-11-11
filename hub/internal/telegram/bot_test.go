@@ -27,7 +27,7 @@ func TestUnknownUserGetsLink(t *testing.T) {
 func TestUnknownUserInGroupGetsNoLink(t *testing.T) {
 	t.Parallel()
 	h := startBot(t, nil)
-	h.tg.say(telegram.Chat{ID: -999, Type: "supergroup"}, 77, "ignored group")
+	h.tg.say(telegram.Chat{ID: -999, Type: chatSuperTest}, 77, "ignored group")
 	h.tg.say(telegram.Chat{ID: -500, Type: "group"}, 77, "allowed group")
 	h.tg.wait(mSend, "direct message")
 	if got := h.tg.find(mSend, "token="); len(got) != 0 {
@@ -105,29 +105,60 @@ func TestReasoningEditsAreThrottled(t *testing.T) {
 		}
 	}
 	last := edits[len(edits)-1].text()
-	if !strings.Contains(last, "Thought for") || !strings.Contains(last, "<blockquote expandable>") ||
+	if !strings.HasPrefix(last, "<i>Thought for") || !strings.Contains(last, "<blockquote expandable>") ||
 		!strings.Contains(last, "LAST") || !strings.Contains(last, "&lt;x&gt;") {
 		t.Fatalf("final thinking edit = %q", last)
 	}
 }
 
-func TestToolStartAndComplete(t *testing.T) {
+func TestStatusLineCollectsSteps(t *testing.T) {
 	t.Parallel()
 	h := startBot(t, nil)
 	sid := h.startTurn(t)
-	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{"tool_id": "t1", "name": toolTerminal, "context": "ls -la /srv"})
-	start := h.tg.wait(mSend, toolTerminal)
-	if start.text() != "▶ <b>terminal</b> <code>ls -la /srv</code>" {
-		t.Fatalf("tool start = %q", start.text())
+	h.hub.emit(t, sid, hub.KindReasoningDelta, map[string]any{kText: "look at the files"})
+	status := h.tg.wait(mSend, "Thinking…")
+	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t1", kName: toolTerminal, kContext: "ls -la /srv"})
+	h.tg.wait(mEdit, "<b>Running</b> <b>terminal</b> <code>ls -la /srv</code>")
+	h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{kToolID: "t1", kName: toolTerminal, "duration_s": 1.234, "summary": "3 files"})
+	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t2", kName: "patch", kContext: "main.go"})
+	h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{kToolID: "t2", kName: "patch"})
+	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t3", kName: toolTerminal, kContext: "go test"})
+	h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{kToolID: "t3", kName: toolTerminal})
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "All fixed.", kStatus: statusComplete})
+	final := h.tg.wait(mEdit, "Worked for")
+	if final.messageID() != status.ResultID {
+		t.Fatalf("final status edited %d, the status line is %d", final.messageID(), status.ResultID)
 	}
-	h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{"tool_id": "t1", "name": toolTerminal, "duration_s": 1.234, "summary": "3 files"})
-	done := h.tg.wait(mEdit, "✓")
-	if done.messageID() != start.ResultID {
-		t.Fatalf("complete edited message %d, start was %d", done.messageID(), start.ResultID)
+	for _, want := range []string{"ran 2 commands, edited 1 file", "<blockquote expandable>",
+		"✓ <b>terminal</b> <code>ls -la /srv</code> <i>(1.2s)</i> 3 files", "✓ <b>patch</b>", "look at the files"} {
+		if !strings.Contains(final.text(), want) {
+			t.Fatalf("final status %q lacks %q", final.text(), want)
+		}
 	}
-	want := "✓ <b>terminal</b> <code>ls -la /srv</code> <i>(1.2s)</i>\n3 files"
-	if done.text() != want {
-		t.Fatalf("tool complete = %q, want %q", done.text(), want)
+	answer := h.tg.wait(mSend, "All fixed.")
+	if answer.ResultID == status.ResultID || answer.text() != "All fixed." {
+		t.Fatalf("answer = %+v", answer)
+	}
+	for _, c := range h.tg.snapshot() {
+		if c.Method == mSend && c.ResultID != status.ResultID && c.ResultID != answer.ResultID && c.text() != "" &&
+			!strings.Contains(c.text(), "hello") {
+			t.Fatalf("a step got a message of its own: %q", c.text())
+		}
+	}
+}
+
+func TestStatusLineStepsOff(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, func(c *telegram.Config) { c.Steps = telegram.StepsOff })
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindReasoningDelta, map[string]any{kText: "secret plan"})
+	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t1", kName: "web_search", kContext: "golang"})
+	h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{kToolID: "t1", kName: "web_search"})
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "Found it.", kStatus: statusComplete})
+	final := h.tg.wait(mEdit, "Worked for")
+	if !strings.Contains(final.text(), "searched 1 time") || strings.Contains(final.text(), "blockquote") ||
+		strings.Contains(final.text(), "secret plan") {
+		t.Fatalf("final status = %q", final.text())
 	}
 }
 
@@ -197,15 +228,18 @@ func TestApprovalButtons(t *testing.T) {
 	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{
 		"request_id": "r1", "command": "rm -rf /srv/x", kDesc: "delete files", "tool_name": toolTerminal,
 	})
-	req := h.tg.wait(mSend, "Approval needed")
+	req := h.tg.wait(mSend, "Needs you")
 	btns := req.buttons()
-	if len(btns) != 2 || btns[0][kText] != "Allow" || btns[1][kText] != "Deny" {
+	if len(btns) != 2 || btns[0][kText] != lblOnce || btns[1][kText] != lblDeny {
 		t.Fatalf("buttons = %+v", btns)
 	}
 	msgID := req.ResultID
 	allow, _ := btns[0]["callback_data"].(string)
 	h.tg.press(dm(aliceTG), aliceTG, msgID, allow)
-	edit := h.tg.wait(mEdit, "Allowed by alice")
+	edit := h.tg.wait(mEdit, "<b>Approved once</b>")
+	if !strings.Contains(edit.text(), "rm -rf /srv/x") || !strings.Contains(edit.text(), "By alice.") {
+		t.Fatalf("approval edit = %q", edit.text())
+	}
 	if edit.messageID() != msgID || edit.Params["reply_markup"] != nil {
 		t.Fatalf("approval edit = %+v", edit)
 	}
@@ -236,7 +270,7 @@ func TestApprovalDeniedForOtherUser(t *testing.T) {
 	h.tg.say(group, aliceTG, "hello")
 	sid := h.hub.waitPrompt(t, 1)[0].SessionID
 	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{"prompt_id": "r9", "command": "reboot"})
-	req := h.tg.wait(mSend, "Approval needed")
+	req := h.tg.wait(mSend, "Needs you")
 	data, _ := req.buttons()[0]["callback_data"].(string)
 	h.tg.press(group, bobTG, req.ResultID, data)
 	deadline := time.Now().Add(5 * time.Second)

@@ -3,8 +3,10 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -53,6 +55,13 @@ type errorPayload struct {
 	Message string `json:"message"`
 }
 
+// Values of telegram.steps.
+const (
+	StepsCollapsed = "collapsed"
+	StepsExpanded  = "expanded"
+	StepsOff       = "off"
+)
+
 // liveMsg is a message that is edited in place, at most once per interval.
 type liveMsg struct {
 	id       int64
@@ -62,27 +71,53 @@ type liveMsg struct {
 }
 
 type shownPrompt struct {
-	key   string
-	msgID int64
+	key    string
+	msgID  int64
+	at     time.Time
+	prompt hub.PromptInfo
 }
 
-type toolMsg struct {
-	liveMsg
-	head string
+// turnStatus is the status line of one turn: a single message, edited in
+// place, that says what Hermes does now and keeps the steps it took.
+type turnStatus struct {
+	msg       liveMsg
+	start     time.Time
+	reasoning strings.Builder
+	// thinking is the latest line of thinking.delta.
+	thinking string
+	// tools are the heads of the running tools by ID, and progress the
+	// latest progress line of each.
+	tools    map[string]string
+	progress map[string]string
+	running  []string
+	steps    []string
+	counts   map[string]int
 }
 
 // renderer turns one attachment's events into Telegram messages. It is used
 // by a single goroutine.
 type renderer struct {
 	api      *Client
-	chatID   int64
+	to       dest
 	interval time.Duration
 	logger   *slog.Logger
 	now      func() time.Time
-	approve  func(p hub.PromptInfo, text string) (string, func(messageID int64))
+	// steps is telegram.steps: how the status line shows the steps.
+	steps   string
+	approve func(p hub.PromptInfo, body string) (string, func(messageID int64))
 	// settle forgets a prompt key that got its answer elsewhere and
-	// returns its message's text; false when it is gone already.
-	settle func(key string) (string, bool)
+	// returns it; false when it is gone already. expire does the same for
+	// a prompt whose time ran out.
+	settle func(key string) (pendingApproval, bool)
+	expire func(key string) (pendingApproval, bool)
+	// pending reports whether a prompt of a snapshot still waits; nil
+	// when the service cannot say.
+	pending func(ctx context.Context, id string) bool
+	// shown reports how many prompts the chat shows.
+	shown func(n int)
+	// gone reports that Telegram refused a message because the topic is
+	// gone.
+	gone func()
 	// prompts are the shown prompts by ID: their key and message.
 	prompts map[string]shownPrompt
 	// media opens a file a reply names; nil when the service cannot.
@@ -91,38 +126,33 @@ type renderer struct {
 	// the path of an HTML file.
 	pageURL func(ref string) string
 
-	think      *liveMsg
-	thinkStart time.Time
-	reasoning  strings.Builder
-	status     string
-
-	tools  map[string]*toolMsg
+	turn   *turnStatus
 	answer strings.Builder
 }
 
-func newRenderer(api *Client, chatID int64, interval time.Duration, logger *slog.Logger,
-	approve func(p hub.PromptInfo, text string) (string, func(messageID int64))) *renderer {
+func newRenderer(api *Client, to dest, interval time.Duration, logger *slog.Logger,
+	approve func(p hub.PromptInfo, body string) (string, func(messageID int64))) *renderer {
 	return &renderer{
-		api: api, chatID: chatID, interval: interval, logger: logger, now: time.Now,
-		approve: approve, tools: make(map[string]*toolMsg), prompts: map[string]shownPrompt{},
+		api: api, to: to, interval: interval, logger: logger, now: time.Now, steps: StepsCollapsed,
+		approve: approve, prompts: map[string]shownPrompt{},
 	}
 }
 
 func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 	switch ev.Kind {
+	case hub.KindSnapshot:
+		r.snapshot(ctx, ev)
 	case hub.KindReasoningDelta:
 		var p streamPayload
 		if r.decode(ev, &p) && p.Text != nil {
-			r.startThinking()
-			r.reasoning.WriteString(*p.Text)
-			r.update(ctx, r.think, r.thinkingHTML(false), false)
+			r.begin().reasoning.WriteString(*p.Text)
+			r.refresh(ctx)
 		}
 	case hub.KindThinkingDelta:
 		var p streamPayload
 		if r.decode(ev, &p) && p.Text != nil && strings.TrimSpace(*p.Text) != "" {
-			r.startThinking()
-			r.status = truncate(strings.TrimSpace(*p.Text), statusLen)
-			r.update(ctx, r.think, r.thinkingHTML(false), false)
+			r.begin().thinking = truncate(strings.TrimSpace(*p.Text), statusLen)
+			r.refresh(ctx)
 		}
 	case hub.KindToolStart:
 		r.toolStart(ctx, ev)
@@ -140,28 +170,35 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 	case hub.KindMessageComplete:
 		r.complete(ctx, ev)
 	case hub.KindApprovalRequest, hub.KindClarifyRequest:
-		r.approval(ctx, ev)
+		var p approvalPayload
+		if r.decode(ev, &p) {
+			r.showPrompt(ctx, ev.Kind, p)
+		}
 	case "approval.settled", "clarify.settled":
 		var p struct {
 			PromptID string `json:"prompt_id"`
 		}
 		if r.decode(ev, &p) {
-			r.settled(ctx, "Answered.", p.PromptID)
+			r.settled(ctx, false, p.PromptID)
 		}
 	case "approval.cancelled":
 		var p struct {
 			RequestIDs []string `json:"request_ids"`
 		}
 		if r.decode(ev, &p) {
-			r.settled(ctx, "Cancelled.", p.RequestIDs...)
+			r.settled(ctx, true, p.RequestIDs...)
 		}
 	case hub.KindError:
 		var p errorPayload
 		r.decode(ev, &p)
-		r.sealThinking(ctx)
+		r.endTurn(ctx)
 		r.send(ctx, "<b>Error:</b> "+escapeHTML(truncate(p.Message, 3000)), nil)
 	case hub.KindSessionDeleted:
-		r.sealThinking(ctx)
+		r.endTurn(ctx)
+		if r.to.thread != 0 {
+			r.send(ctx, "This chat was deleted in the hub.", nil)
+			return
+		}
 		r.send(ctx, "This session was deleted. Send /sessions to pick another one.", nil)
 	case hub.KindInputNotSent:
 		var p hub.HeldInput
@@ -187,35 +224,191 @@ func (r *renderer) decode(ev hub.Event, v any) bool {
 	return true
 }
 
-func (r *renderer) startThinking() {
-	if r.think == nil {
-		r.think = &liveMsg{}
-		r.thinkStart = r.now()
-		r.reasoning.Reset()
-		r.status = ""
+// snapshot shows the prompts of a snapshot that still wait for an answer.
+func (r *renderer) snapshot(ctx context.Context, ev hub.Event) {
+	if r.pending == nil {
+		return
+	}
+	var snap hub.Snapshot
+	if !r.decode(ev, &snap) {
+		return
+	}
+	for _, raw := range snap.Prompts {
+		var p approvalPayload
+		if json.Unmarshal(raw, &p) != nil || p.PromptInfo.ID == "" || !r.pending(ctx, p.PromptInfo.ID) {
+			continue
+		}
+		kind := hub.KindApprovalRequest
+		if p.Kind == hub.PromptClarify {
+			kind = hub.KindClarifyRequest
+		}
+		r.showPrompt(ctx, kind, p)
 	}
 }
 
-func (r *renderer) thinkingHTML(final bool) string {
-	var b strings.Builder
-	if final {
-		secs := int(r.now().Sub(r.thinkStart).Round(time.Second) / time.Second)
-		fmt.Fprintf(&b, "<i>Thought for %ds</i>", secs)
-	} else {
-		b.WriteString("<b>Thinking…</b>")
-		if r.status != "" {
-			b.WriteString("\n<i>" + escapeHTML(r.status) + "</i>")
+// begin returns the status of the turn that runs, and starts one.
+func (r *renderer) begin() *turnStatus {
+	if r.turn == nil {
+		r.turn = &turnStatus{start: r.now(), tools: map[string]string{}, progress: map[string]string{}, counts: map[string]int{}}
+	}
+	return r.turn
+}
+
+// refresh shows the status line of the running turn. Between edits it
+// only marks the line dirty; flushDue renders it when the edit is due.
+func (r *renderer) refresh(ctx context.Context) {
+	t := r.turn
+	if t == nil {
+		return
+	}
+	if !t.msg.lastEdit.IsZero() && r.now().Sub(t.msg.lastEdit) < r.interval {
+		t.msg.dirty, t.msg.pending = true, ""
+		return
+	}
+	r.update(ctx, &t.msg, r.statusHTML(false), true)
+}
+
+// endTurn shows the status line of the turn as done and forgets the turn.
+func (r *renderer) endTurn(ctx context.Context) {
+	if r.turn == nil {
+		return
+	}
+	r.update(ctx, &r.turn.msg, r.statusHTML(true), true)
+	r.turn = nil
+}
+
+// stepKind sorts a tool into the kinds of steps the status line counts.
+func stepKind(name string) string {
+	switch name {
+	case "terminal", "execute_code", "process", "shell", "bash":
+		return "command"
+	case "write_file", "patch", "edit_file":
+		return "edit"
+	case "read_file":
+		return "read"
+	case "search_files", "web_search", "web_extract", "session_search":
+		return "search"
+	}
+	return "other"
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+// summary counts the steps of a turn: "ran 3 commands, edited 1 file".
+func (t *turnStatus) summary() string {
+	var parts []string
+	if n := t.counts["command"]; n > 0 {
+		parts = append(parts, "ran "+plural(n, "command", "commands"))
+	}
+	if n := t.counts["edit"]; n > 0 {
+		parts = append(parts, "edited "+plural(n, "file", "files"))
+	}
+	if n := t.counts["read"]; n > 0 {
+		parts = append(parts, "read "+plural(n, "file", "files"))
+	}
+	if n := t.counts["search"]; n > 0 {
+		parts = append(parts, "searched "+plural(n, "time", "times"))
+	}
+	if n := t.counts["other"]; n > 0 {
+		if len(parts) == 0 {
+			parts = append(parts, "used "+plural(n, "tool", "tools"))
+		} else {
+			parts = append(parts, "used "+plural(n, "other tool", "other tools"))
 		}
 	}
-	if text := strings.TrimSpace(r.reasoning.String()); text != "" {
-		b.WriteString("\n<blockquote expandable>" + fitTail(text, reasoningRoom) + "</blockquote>")
+	return strings.Join(parts, ", ")
+}
+
+// duration writes an elapsed time as 12s, 2m 5s or 1h 3m.
+func duration(d time.Duration) string {
+	s := int(d.Round(time.Second) / time.Second)
+	switch {
+	case s < 60:
+		return fmt.Sprintf("%ds", s)
+	case s < 3600 && s%60 == 0:
+		return fmt.Sprintf("%dm", s/60)
+	case s < 3600:
+		return fmt.Sprintf("%dm %ds", s/60, s%60)
+	}
+	return fmt.Sprintf("%dh %dm", s/3600, s%3600/60)
+}
+
+// statusHTML is the status line: what runs now and how far the turn got,
+// or, when final, what the turn did. The steps and the thinking follow
+// in a quote that telegram.steps opens, folds or leaves out.
+func (r *renderer) statusHTML(final bool) string {
+	t := r.turn
+	elapsed := duration(r.now().Sub(t.start))
+	sum := t.summary()
+	var b strings.Builder
+	switch {
+	case final && sum == "":
+		b.WriteString("<i>Thought for " + elapsed + "</i>")
+	case final:
+		b.WriteString("<i>Worked for " + elapsed + ": " + escapeHTML(sum) + "</i>")
+	default:
+		if len(t.running) > 0 {
+			id := t.running[len(t.running)-1]
+			b.WriteString("<b>Running</b> " + t.tools[id])
+			if line := t.progress[id]; line != "" {
+				b.WriteString("\n<i>" + escapeHTML(line) + "</i>")
+			}
+		} else {
+			b.WriteString("<b>Thinking…</b>")
+			if t.thinking != "" {
+				b.WriteString("\n<i>" + escapeHTML(t.thinking) + "</i>")
+			}
+		}
+		meta := elapsed
+		if sum != "" {
+			meta = sum + " (" + elapsed + ")"
+		}
+		b.WriteString("\n<i>" + escapeHTML(meta) + "</i>")
+	}
+	if details := r.details(); details != "" {
+		tag := "<blockquote expandable>"
+		if r.steps == StepsExpanded {
+			tag = "<blockquote>"
+		}
+		b.WriteString("\n" + tag + details + "</blockquote>")
+	}
+	return b.String()
+}
+
+// details are the steps of the turn and the end of its thinking, as HTML
+// that fits in a message next to the status line.
+func (r *renderer) details() string {
+	if r.steps == StepsOff {
+		return ""
+	}
+	t := r.turn
+	room := reasoningRoom
+	var b strings.Builder
+	steps := t.steps
+	for len(steps) > 0 && utf16Len(strings.Join(steps, "\n")) > room/2 {
+		steps = steps[1:]
+	}
+	if len(steps) < len(t.steps) {
+		fmt.Fprintf(&b, "… %d earlier steps\n", len(t.steps)-len(steps))
+	}
+	b.WriteString(strings.Join(steps, "\n"))
+	if text := strings.TrimSpace(t.reasoning.String()); text != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(fitTail(text, room-utf16Len(b.String())))
 	}
 	return b.String()
 }
 
 // fitTail escapes the end of s so the result fits in room.
 func fitTail(s string, room int) string {
-	n := room
+	n := max(room, 1)
 	for {
 		t, cut := tail(s, n)
 		e := escapeHTML(t)
@@ -229,14 +422,6 @@ func fitTail(s string, room int) string {
 	}
 }
 
-func (r *renderer) sealThinking(ctx context.Context) {
-	if r.think == nil {
-		return
-	}
-	r.update(ctx, r.think, r.thinkingHTML(true), true)
-	r.think = nil
-}
-
 // update shows html in m: a new message when m has none yet, an edit when
 // the interval allows or force is set, and otherwise a pending edit for
 // flushDue.
@@ -244,7 +429,7 @@ func (r *renderer) update(ctx context.Context, m *liveMsg, html string, force bo
 	if m.id == 0 {
 		m.id = r.send(ctx, html, nil)
 		m.lastEdit = r.now()
-		m.dirty = false
+		m.dirty = m.id == 0
 		return
 	}
 	if !force && r.now().Sub(m.lastEdit) < r.interval {
@@ -258,51 +443,94 @@ func (r *renderer) edit(ctx context.Context, m *liveMsg, html string) {
 	m.dirty = false
 	m.pending = ""
 	m.lastEdit = r.now()
-	if err := r.api.EditHTML(ctx, r.chatID, m.id, html, nil); err != nil {
-		r.logger.Warn("Failed to edit message", "chat", r.chatID, "message", m.id, "error", err)
+	if err := r.api.EditHTML(ctx, r.to.chat, m.id, html, nil); err != nil {
+		r.logger.Warn("Failed to edit message", "message", m.id, "error", err)
 	}
 }
 
-func (r *renderer) live() []*liveMsg {
-	out := make([]*liveMsg, 0, len(r.tools)+1)
-	if r.think != nil {
-		out = append(out, r.think)
+// expirySlack is how long after a prompt's timeout the bot marks it
+// expired, so Hermes's own settle comes first when it can.
+const expirySlack = 5 * time.Second
+
+// deadline is when a shown prompt expires, false for one without a
+// timeout.
+func (sp shownPrompt) deadline() (time.Time, bool) {
+	if sp.prompt.Timeout <= 0 {
+		return time.Time{}, false
 	}
-	for _, t := range r.tools {
-		out = append(out, &t.liveMsg)
-	}
-	return out
+	timeout := time.Duration(sp.prompt.Timeout * float64(time.Second))
+	return sp.at.Add(timeout + slack(timeout)), true
 }
 
-// nextFlush returns how long until the next pending edit is due.
+// slack is how long after a timeout the bot marks a prompt expired:
+// expirySlack, or a tenth of a short timeout.
+func slack(timeout time.Duration) time.Duration {
+	return min(expirySlack, timeout/10)
+}
+
+// nextFlush returns how long until the next pending edit or prompt
+// expiry is due.
 func (r *renderer) nextFlush() (time.Duration, bool) {
 	var best time.Duration
 	found := false
-	for _, m := range r.live() {
-		if !m.dirty {
-			continue
-		}
-		d := max(m.lastEdit.Add(r.interval).Sub(r.now()), 0)
+	consider := func(d time.Duration) {
+		d = max(d, 0)
 		if !found || d < best {
 			best, found = d, true
+		}
+	}
+	if r.turn != nil && r.turn.msg.dirty {
+		consider(r.turn.msg.lastEdit.Add(r.interval).Sub(r.now()))
+	}
+	for _, sp := range r.prompts {
+		if at, ok := sp.deadline(); ok {
+			consider(at.Sub(r.now()))
 		}
 	}
 	return best, found
 }
 
 func (r *renderer) flushDue(ctx context.Context) {
-	for _, m := range r.live() {
-		if m.dirty && r.now().Sub(m.lastEdit) >= r.interval {
-			r.edit(ctx, m, m.pending)
-		}
+	if t := r.turn; t != nil && t.msg.dirty && r.now().Sub(t.msg.lastEdit) >= r.interval {
+		r.update(ctx, &t.msg, r.statusHTML(false), true)
 	}
 }
 
 func (r *renderer) flushAll(ctx context.Context) {
-	for _, m := range r.live() {
-		if m.dirty {
-			r.edit(ctx, m, m.pending)
+	if t := r.turn; t != nil && t.msg.dirty {
+		r.update(ctx, &t.msg, r.statusHTML(false), true)
+	}
+}
+
+// expireDue marks the prompts whose time ran out as expired.
+func (r *renderer) expireDue(ctx context.Context) {
+	for id, sp := range r.prompts {
+		at, ok := sp.deadline()
+		if !ok || r.now().Before(at) {
+			continue
 		}
+		delete(r.prompts, id)
+		if r.expire == nil {
+			continue
+		}
+		if p, ok := r.expire(sp.key); ok && sp.msgID != 0 {
+			r.outcome(ctx, sp.msgID, "Expired", p.body, "No answer in "+duration(time.Duration(sp.prompt.Timeout*float64(time.Second)))+".")
+		}
+	}
+	r.reportShown()
+}
+
+func (r *renderer) reportShown() {
+	if r.shown != nil {
+		r.shown(len(r.prompts))
+	}
+}
+
+// outcome shows what became of a prompt in its message and takes its
+// buttons off.
+func (r *renderer) outcome(ctx context.Context, msgID int64, head, body, note string) {
+	if err := r.api.EditHTML(ctx, r.to.chat, msgID, outcomeHTML(head, body, note), nil); err != nil {
+		r.logger.Warn("Failed to show a prompt's outcome", "error", err)
 	}
 }
 
@@ -335,19 +563,20 @@ func (r *renderer) toolStart(ctx context.Context, ev hub.Event) {
 	if !r.decode(ev, &p) {
 		return
 	}
-	r.sealThinking(ctx)
-	t := &toolMsg{head: toolHead(p)}
-	r.tools[p.ToolID] = t
-	r.update(ctx, &t.liveMsg, "▶ "+t.head, true)
+	t := r.begin()
+	if _, ok := t.tools[p.ToolID]; !ok {
+		t.running = append(t.running, p.ToolID)
+	}
+	t.tools[p.ToolID] = toolHead(p)
+	r.refresh(ctx)
 }
 
 func (r *renderer) toolProgress(ctx context.Context, ev hub.Event) {
 	var p toolPayload
-	if !r.decode(ev, &p) {
+	if !r.decode(ev, &p) || r.turn == nil {
 		return
 	}
-	t, ok := r.tools[p.ToolID]
-	if !ok {
+	if _, ok := r.turn.tools[p.ToolID]; !ok {
 		return
 	}
 	line := strings.TrimSpace(p.Message)
@@ -357,7 +586,8 @@ func (r *renderer) toolProgress(ctx context.Context, ev hub.Event) {
 	if line == "" {
 		return
 	}
-	r.update(ctx, &t.liveMsg, "▶ "+t.head+"\n<i>"+escapeHTML(truncate(line, statusLen))+"</i>", false)
+	r.turn.progress[p.ToolID] = truncate(line, statusLen)
+	r.refresh(ctx)
 }
 
 func (r *renderer) toolComplete(ctx context.Context, ev hub.Event) {
@@ -365,35 +595,36 @@ func (r *renderer) toolComplete(ctx context.Context, ev hub.Event) {
 	if !r.decode(ev, &p) {
 		return
 	}
-	t, ok := r.tools[p.ToolID]
+	t := r.begin()
+	head, ok := t.tools[p.ToolID]
 	if !ok {
-		t = &toolMsg{head: toolHead(p)}
+		head = toolHead(p)
 	}
-	delete(r.tools, p.ToolID)
-	html := "✓ " + t.head
+	delete(t.tools, p.ToolID)
+	delete(t.progress, p.ToolID)
+	t.running = slices.DeleteFunc(t.running, func(id string) bool { return id == p.ToolID })
+	step := "✓ " + head
 	if p.DurationS != nil {
-		html += fmt.Sprintf(" <i>(%.1fs)</i>", *p.DurationS)
+		step += fmt.Sprintf(" <i>(%.1fs)</i>", *p.DurationS)
 	}
 	if s := strings.TrimSpace(p.Summary); s != "" {
-		html += "\n" + escapeHTML(truncate(s, statusLen))
-	} else if s := strings.TrimSpace(p.ResultText); s != "" {
-		html += "\n<blockquote expandable>" + escapeHTML(truncate(s, resultLen)) + "</blockquote>"
+		step += " " + escapeHTML(truncate(strings.Join(strings.Fields(s), " "), statusLen))
 	}
-	r.update(ctx, &t.liveMsg, html, true)
+	t.steps = append(t.steps, step)
+	t.counts[stepKind(p.Name)]++
+	r.refresh(ctx)
 }
 
-func (r *renderer) approval(ctx context.Context, ev hub.Event) {
-	var p approvalPayload
-	if !r.decode(ev, &p) {
-		return
-	}
+// showPrompt sends an approval or a question with its buttons. A question
+// without choices asks for a reply to its message instead.
+func (r *renderer) showPrompt(ctx context.Context, kind string, p approvalPayload) {
 	info := p.PromptInfo
 	for _, id := range []string{p.RequestID, p.ID} {
 		if info.ID == "" {
 			info.ID = id
 		}
 	}
-	if ev.Kind == hub.KindClarifyRequest {
+	if kind == hub.KindClarifyRequest {
 		info.Kind = hub.PromptClarify
 	} else {
 		info.Kind = hub.PromptApproval
@@ -401,52 +632,60 @@ func (r *renderer) approval(ctx context.Context, ev hub.Event) {
 	if _, ok := r.prompts[info.ID]; ok || info.ID == "" {
 		return
 	}
-	r.sealThinking(ctx)
+	r.flushAll(ctx)
 	head := "<b>Question</b>"
 	if info.Kind == hub.PromptApproval {
-		head = "<b>Approval needed</b>"
+		head = "<b>Needs you</b>"
 		if p.ToolName != "" {
-			head += " for <b>" + escapeHTML(p.ToolName) + "</b>"
+			head += " <i>(" + escapeHTML(p.ToolName) + ")</i>"
 		}
 	}
-	text := promptHTML(head, &info)
-	key, bind := r.approve(info, text)
-	id := r.send(ctx, text, promptKeyboard(cbApproval, key, info, nil))
+	body := promptBody(&info)
+	key, bind := r.approve(info, body)
+	text := head + "\n" + body + promptFooter(info)
+	var id int64
+	if info.Kind == hub.PromptClarify && len(info.Choices) == 0 {
+		var err error
+		id, err = r.api.SendForceReply(ctx, r.to.chat, r.to.thread, text, "Your answer")
+		r.sendFailed(err)
+	} else {
+		id = r.send(ctx, text, promptKeyboard(cbApproval, key, info, nil))
+	}
 	bind(id)
-	r.prompts[info.ID] = shownPrompt{key: key, msgID: id}
+	r.prompts[info.ID] = shownPrompt{key: key, msgID: id, at: r.now(), prompt: info}
+	r.reportShown()
 }
 
-// settled marks shown prompts that got their answer elsewhere.
-func (r *renderer) settled(ctx context.Context, note string, ids ...string) {
+// settled shows the outcome of shown prompts that got their answer, or
+// were cancelled, elsewhere.
+func (r *renderer) settled(ctx context.Context, cancelled bool, ids ...string) {
 	for _, id := range ids {
 		sp, ok := r.prompts[id]
 		if !ok {
 			continue
 		}
 		delete(r.prompts, id)
-		if r.settle == nil || sp.msgID == 0 {
+		if r.settle == nil {
 			continue
 		}
-		if text, ok := r.settle(sp.key); ok {
-			if err := r.api.EditHTML(ctx, r.chatID, sp.msgID, text+"\n\n<i>"+note+"</i>", nil); err != nil {
-				r.logger.Warn("Failed to mark a prompt answered", "error", err)
-			}
+		if p, ok := r.settle(sp.key); ok && sp.msgID != 0 {
+			head, note := settledOutcome(sp.prompt, sp.at, r.now(), cancelled)
+			r.outcome(ctx, sp.msgID, head, p.body, note)
 		}
 	}
+	r.reportShown()
 }
 
 func (r *renderer) complete(ctx context.Context, ev hub.Event) {
 	var p completePayload
 	r.decode(ev, &p)
-	r.sealThinking(ctx)
-	r.flushAll(ctx)
+	r.endTurn(ctx)
 	text := r.answer.String()
 	var s string
 	if err := json.Unmarshal(p.Text, &s); err == nil && strings.TrimSpace(s) != "" {
 		text = s
 	}
 	r.answer.Reset()
-	r.tools = make(map[string]*toolMsg)
 	pages, text := hub.PageBlocks(text)
 	paths, text := hub.MediaDirectives(text)
 	switch p.Status {
@@ -518,5 +757,15 @@ func (r *renderer) agentMessage(ctx context.Context, text string) {
 // send sends html and returns the message ID, or 0 on failure. When Telegram
 // rejects the markup it resends the text without formatting.
 func (r *renderer) send(ctx context.Context, html string, kb *InlineKeyboard) int64 {
-	return sendHTML(ctx, r.api, r.logger, r.chatID, html, kb)
+	id, err := sendHTMLErr(ctx, r.api, r.logger, r.to, html, kb)
+	r.sendFailed(err)
+	return id
+}
+
+// sendFailed reports a topic that Telegram says is gone.
+func (r *renderer) sendFailed(err error) {
+	var apiErr *APIError
+	if r.to.thread != 0 && r.gone != nil && errors.As(err, &apiErr) && apiErr.TopicGone() {
+		r.gone()
+	}
 }

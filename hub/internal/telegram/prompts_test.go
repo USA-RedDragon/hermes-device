@@ -2,6 +2,7 @@ package telegram_test
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"sync"
@@ -75,13 +76,13 @@ func TestApprovalOffersEveryChoice(t *testing.T) {
 	h := startBot(t, nil)
 	sid := h.startTurn(t)
 	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{kPromptID: "a1", kKind: "approval", kCommand: "ls",
-		kChoices: []string{"once", "deny", "session", "always"}})
-	req := h.tg.wait(mSend, "Approval needed")
-	if got := labels(req); !slices.Equal(got, []string{"Allow", "Deny", "Allow in this chat", "Always allow"}) {
+		kChoices: []string{hub.ChoiceOnce, hub.ChoiceDeny, "session", "always"}})
+	req := h.tg.wait(mSend, "Needs you")
+	if got := labels(req); !slices.Equal(got, []string{lblOnce, lblDeny, "This chat", "Always"}) {
 		t.Fatalf("labels = %v", got)
 	}
 	h.tg.press(dm(aliceTG), aliceTG, req.ResultID, data(req.buttons()[3]))
-	h.tg.wait(mEdit, "Always allowed by alice")
+	h.tg.wait(mEdit, "<b>Always approved</b>")
 	if got := h.hub.waitAnswer(t); got.Answer.Choice != hub.ChoiceAlways || got.PromptID != "a1" {
 		t.Fatalf("answer = %+v", got)
 	}
@@ -92,9 +93,9 @@ func TestMultiSelectQuestion(t *testing.T) {
 	h := startBot(t, nil)
 	sid := h.startTurn(t)
 	h.hub.emit(t, sid, hub.KindClarifyRequest, map[string]any{kPromptID: "q1", kKind: hub.PromptClarify, kQuestion: "Which <envs>?",
-		kChoices: []string{"staging", "prod", "dev"}, "multi_select": true})
+		kChoices: []string{envStaging, envProd, envDev}, "multi_select": true})
 	req := h.tg.wait(mSend, "Which &lt;envs&gt;?")
-	if got := labels(req); !slices.Equal(got, []string{"1. staging", "2. prod", "3. dev", "Send", "Type an answer", "Skip"}) {
+	if got := labels(req); !slices.Equal(got, []string{envStaging, envProd, envDev, "Send", "Other answer", "Skip"}) {
 		t.Fatalf("labels = %v", got)
 	}
 	btns := req.buttons()
@@ -103,34 +104,73 @@ func TestMultiSelectQuestion(t *testing.T) {
 	h.tg.press(dm(aliceTG), aliceTG, req.ResultID, data(btns[0]))
 	h.tg.press(dm(aliceTG), aliceTG, req.ResultID, data(btns[2]))
 	marks := h.tg.waitN(mMarkup, "", 2)
-	if got := labels(marks[1]); got[0] != "✓ 1. staging" || got[2] != "✓ 3. dev" || got[1] != "2. prod" {
+	if got := labels(marks[1]); got[0] != "✓ staging" || got[2] != "✓ dev" || got[1] != "prod" {
 		t.Fatalf("toggled labels = %v", got)
 	}
 	h.tg.press(dm(aliceTG), aliceTG, req.ResultID, data(btns[3]))
-	h.tg.wait(mEdit, "Answered: staging, dev by alice")
-	if got := h.hub.waitAnswer(t); !slices.Equal(got.Answer.Picks, []string{"staging", "dev"}) {
+	h.tg.wait(mEdit, "<b>Answered: staging, dev</b>")
+	if got := h.hub.waitAnswer(t); !slices.Equal(got.Answer.Picks, []string{envStaging, "dev"}) {
 		t.Fatalf("answer = %+v", got)
 	}
 }
 
-func TestTypedAnswer(t *testing.T) {
+func TestReplyAnswersQuestion(t *testing.T) {
 	t.Parallel()
 	h := startBot(t, nil)
 	sid := h.startTurn(t)
 	h.hub.emit(t, sid, hub.KindClarifyRequest, map[string]any{kPromptID: "q2", kKind: hub.PromptClarify, kQuestion: "Name it", kChoices: []string{}})
 	req := h.tg.wait(mSend, "Name it")
-	if got := labels(req); !slices.Equal(got, []string{"Answer", "Skip"}) {
-		t.Fatalf("labels = %v", got)
+	markup, _ := req.Params["reply_markup"].(map[string]any)
+	if markup["force_reply"] != true || len(req.buttons()) != 0 {
+		t.Fatalf("a question without choices should ask for a reply: %+v", req.Params)
 	}
-	h.tg.press(dm(aliceTG), aliceTG, req.ResultID, data(req.buttons()[0]))
-	h.tg.wait(mSend, "Send your answer")
-	h.tg.say(dm(aliceTG), aliceTG, "Bluebird")
-	h.tg.wait(mSend, "Sent your answer.")
+	h.tg.say(dm(aliceTG), aliceTG, "not an answer")
+	h.hub.waitPrompt(t, 2)
+	h.tg.replyTo(dm(aliceTG), aliceTG, req.ResultID, "Bluebird")
+	edit := h.tg.wait(mEdit, "<b>Answered: Bluebird</b>")
+	if edit.messageID() != req.ResultID || !strings.Contains(edit.text(), "Name it") {
+		t.Fatalf("edit = %+v", edit)
+	}
 	if got := h.hub.waitAnswer(t); got.Answer.Text != "Bluebird" || got.PromptID != "q2" {
 		t.Fatalf("answer = %+v", got)
 	}
-	if n := len(h.hub.promptsCopy()); n != 1 {
-		t.Fatalf("the answer also went in as a prompt: %d prompts", n)
+	if p := h.hub.promptsCopy(); len(p) != 2 || p[1].Text != "not an answer" {
+		t.Fatalf("prompts = %+v", p)
+	}
+	h.tg.replyTo(dm(aliceTG), aliceTG, req.ResultID, "again")
+	h.hub.waitPrompt(t, 3)
+	if n := len(h.hub.answersCopy()); n != 1 {
+		t.Fatalf("a reply to an answered question answered it again: %d answers", n)
+	}
+}
+
+func TestOtherAnswerAsksForReply(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindClarifyRequest, map[string]any{kPromptID: "q3", kKind: hub.PromptClarify, kQuestion: "Branch?",
+		kChoices: []string{"main", "fix-ci"}})
+	req := h.tg.wait(mSend, "Branch?")
+	if got := labels(req); !slices.Equal(got, []string{"main", "fix-ci", "Other answer", "Skip"}) {
+		t.Fatalf("labels = %v", got)
+	}
+	if !strings.Contains(req.text(), "Or reply to this message") {
+		t.Fatalf("question = %q", req.text())
+	}
+	h.tg.press(dm(aliceTG), aliceTG, req.ResultID, data(req.buttons()[2]))
+	ask := h.tg.wait(mSend, "Reply to this message with your answer to")
+	if markup, _ := ask.Params["reply_markup"].(map[string]any); markup["force_reply"] != true {
+		t.Fatalf("ask = %+v", ask.Params)
+	}
+	h.tg.replyTo(dm(aliceTG), bobTG, ask.ResultID, "bobs-branch")
+	h.tg.wait(mSend, msgNotYours)
+	h.tg.replyTo(dm(aliceTG), aliceTG, ask.ResultID, "fix-ci-2")
+	edit := h.tg.wait(mEdit, "Answered: fix-ci-2")
+	if edit.messageID() != req.ResultID {
+		t.Fatalf("edited %d, the question is %d", edit.messageID(), req.ResultID)
+	}
+	if got := h.hub.waitAnswer(t); got.Answer.Text != "fix-ci-2" {
+		t.Fatalf("answer = %+v", got)
 	}
 }
 
@@ -139,11 +179,49 @@ func TestPromptSettledElsewhere(t *testing.T) {
 	h := startBot(t, nil)
 	sid := h.startTurn(t)
 	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{kPromptID: "a2", kCommand: "ls"})
-	req := h.tg.wait(mSend, "Approval needed")
+	req := h.tg.wait(mSend, "Needs you")
 	h.hub.emit(t, sid, "approval.settled", map[string]any{kPromptID: "a2"})
-	edit := h.tg.wait(mEdit, "Answered.")
-	if edit.messageID() != req.ResultID {
-		t.Fatalf("edited %d, want %d", edit.messageID(), req.ResultID)
+	edit := h.tg.wait(mEdit, "<b>Answered elsewhere</b>")
+	if edit.messageID() != req.ResultID || edit.Params["reply_markup"] != nil || !strings.Contains(edit.text(), "<pre>ls</pre>") {
+		t.Fatalf("edit = %+v", edit)
+	}
+	h.tg.press(dm(aliceTG), aliceTG, req.ResultID, data(req.buttons()[0]))
+	h.tg.waitAnswerText(msgGone)
+	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{kPromptID: "a4", kCommand: "make deploy"})
+	h.hub.emit(t, sid, "approval.cancelled", map[string]any{"request_ids": []string{"a4"}})
+	h.tg.wait(mEdit, "<b>Cancelled</b>")
+}
+
+func TestSnapshotShowsPendingPrompts(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.hub.mu.Lock()
+	h.hub.pending = map[string]bool{"a9": true}
+	h.hub.mu.Unlock()
+	h.hub.emit(t, sid, hub.KindSnapshot, hub.Snapshot{SessionID: sid, Prompts: []json.RawMessage{
+		json.RawMessage(`{"kind":"approval","prompt_id":"old","command":"stale step","choices":["once","deny"]}`),
+		json.RawMessage(`{"kind":"approval","prompt_id":"a9","command":"open example.com","choices":["once","deny","session","always"]}`),
+	}})
+	req := h.tg.wait(mSend, "open example.com")
+	if got := labels(req); !slices.Equal(got, []string{lblOnce, lblDeny, "This chat", "Always"}) {
+		t.Fatalf("labels = %v", got)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := h.tg.find(mSend, "stale step"); len(got) != 0 {
+		t.Fatalf("a settled prompt of the snapshot was shown: %+v", got)
+	}
+}
+
+func TestPromptExpires(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{kPromptID: "a5", kCommand: "migrate", "timeout_s": 0.05})
+	req := h.tg.wait(mSend, "Needs you")
+	edit := h.tg.wait(mEdit, "<b>Expired</b>")
+	if edit.messageID() != req.ResultID || edit.Params["reply_markup"] != nil || !strings.Contains(edit.text(), "migrate") {
+		t.Fatalf("edit = %+v", edit)
 	}
 	h.tg.press(dm(aliceTG), aliceTG, req.ResultID, data(req.buttons()[0]))
 	h.tg.waitAnswerText(msgGone)
@@ -166,6 +244,40 @@ func (f *fakeNotices) NoticeMessages(_ context.Context, id string) ([]hub.Notice
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.msgs[id]), nil
+}
+
+func (f *fakeNotices) NoticeForMessage(_ context.Context, chatID, messageID int64) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for id, msgs := range f.msgs {
+		for _, m := range msgs {
+			if m.ChatID == chatID && m.MessageID == messageID {
+				return id, true, nil
+			}
+		}
+	}
+	return "", false, nil
+}
+
+func TestReplyToStoredNoticeAnswersIt(t *testing.T) {
+	t.Parallel()
+	rec := hub.NoticeRecord{ID: "nQ", User: userAlice, Kind: hub.NoticeQuestion, BackendID: beCluster, SessionID: "s4",
+		PromptID: "q4", Prompt: &hub.PromptInfo{ID: "q4", Kind: hub.PromptClarify, Question: "Which branch?"}}
+	notices := &fakeNotices{recs: map[string]hub.NoticeRecord{rec.ID: rec},
+		msgs: map[string][]hub.NoticeMessage{rec.ID: {{ChatID: aliceTG, MessageID: 4242}}}}
+	h := startBotNotices(t, nil, newFakeState(), nil, notices)
+	h.tg.replyTo(dm(aliceTG), aliceTG, 4242, "/stop")
+	h.tg.wait(mSend, "No session is attached.")
+	h.tg.replyTo(dm(aliceTG), aliceTG, 4242, "fix-ci")
+	if got := h.hub.waitAnswer(t); got.Answer.Text != "fix-ci" || got.PromptID != "q4" || got.SessionID != "s4" {
+		t.Fatalf("answer = %+v", got)
+	}
+	if edit := h.tg.wait(mEdit, "Answered: fix-ci"); edit.messageID() != 4242 {
+		t.Fatalf("edit = %+v", edit)
+	}
+	if n := len(h.hub.promptsCopy()); n != 0 {
+		t.Fatalf("the reply also went in as a prompt: %d", n)
+	}
 }
 
 func TestNoticeButtonsAnswerOnlyForTheirPerson(t *testing.T) {
@@ -208,14 +320,31 @@ func TestNoticeButtonsAnswerOnlyForTheirPerson(t *testing.T) {
 	}
 }
 
-func TestSettledTakesNoticeButtonsOff(t *testing.T) {
+func TestSettledShowsNoticeOutcome(t *testing.T) {
 	t.Parallel()
 	h := startBotNotices(t, nil, newFakeState(), nil, &fakeNotices{})
-	h.bot.Settled(context.Background(), []hub.NoticeMessage{{ChatID: aliceTG, MessageID: 77}})
+	h.bot.Settled(context.Background(), hub.NoticeRecord{ID: "n0"}, false, []hub.NoticeMessage{{ChatID: aliceTG, MessageID: 77}})
 	c := h.tg.wait(mMarkup, "")
 	if c.messageID() != 77 || c.Params["reply_markup"] != nil {
 		t.Fatalf("markup edit = %+v", c)
 	}
+	rec := hub.NoticeRecord{ID: "n1", User: userAlice, Kind: hub.NoticeApproval, BackendID: beCluster, SessionID: "s1",
+		PromptID: "a1", Prompt: &hub.PromptInfo{ID: "a1", Kind: hub.PromptApproval, Command: "rm -rf build", Choices: []string{hub.ChoiceOnce, hub.ChoiceDeny}},
+		CreatedAt: time.Now()}
+	id, err := h.bot.SendNotice(context.Background(), aliceTG, notify.Message{Record: rec, Backend: beName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.bot.Settled(context.Background(), rec, false, []hub.NoticeMessage{{ChatID: aliceTG, MessageID: id}})
+	edit := h.tg.wait(mEdit, "Answered elsewhere")
+	if edit.messageID() != id || edit.Params["reply_markup"] != nil || !strings.Contains(edit.text(), "rm -rf build") {
+		t.Fatalf("edit = %+v", edit)
+	}
+	h.bot.Settled(context.Background(), rec, true, []hub.NoticeMessage{{ChatID: aliceTG, MessageID: 90}})
+	h.tg.wait(mEdit, "Cancelled")
+	rec.Prompt.Timeout, rec.CreatedAt = 60, time.Now().Add(-2*time.Minute)
+	h.bot.Settled(context.Background(), rec, false, []hub.NoticeMessage{{ChatID: aliceTG, MessageID: 91}})
+	h.tg.wait(mEdit, "No answer in 1m")
 }
 
 var _ notify.Telegram = (*telegram.Bot)(nil)
@@ -224,8 +353,8 @@ func TestAttachedButtonsOnlyWorkOnTheirMessage(t *testing.T) {
 	t.Parallel()
 	h := startBot(t, nil)
 	sid := h.startTurn(t)
-	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{kPromptID: "a3", kCommand: "ls", kChoices: []string{"once", "deny"}})
-	req := h.tg.wait(mSend, "Approval needed")
+	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{kPromptID: "a3", kCommand: "ls", kChoices: []string{hub.ChoiceOnce, hub.ChoiceDeny}})
+	req := h.tg.wait(mSend, "Needs you")
 	allow := data(req.buttons()[0])
 	if !strings.HasPrefix(allow, "pa:") {
 		t.Fatalf("callback = %q", allow)
