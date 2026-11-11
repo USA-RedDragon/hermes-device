@@ -17,7 +17,7 @@ jobs:
       packages: write
     uses: USA-RedDragon/reusable-actions/.github/workflows/goreleaser.yaml@c5ee15922a0ff4229b0f06a8d0551541b5cabfdc # v2.0.34
     with:
-      # The default hub of hermes-device setup, as for the Firefox extension below.
+      # The default hub of talaria setup, as for the Firefox extension below.
       run-before: printf 'HUB_DEFAULT_URL=%s\n' "${{ vars.HUB_DEFAULT_URL }}" >> "$GITHUB_ENV"
     secrets:
       token: ${{ secrets.GITHUB_TOKEN }}
@@ -68,8 +68,8 @@ jobs:
           elif [ "$HAVE_ISSUER" != true ] || [ "$HAVE_SECRET" != true ]; then
             echo "::notice title=Firefox extension not signed::The repository secrets AMO_JWT_ISSUER and AMO_JWT_SECRET are not set, so the extension is linted but not signed, and this release has no .xpi or updates.json (docs/browser.md section 6.1)."
             sign=false
-          elif gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx "hermes-device-firefox-$version.xpi"; then
-            echo "::notice title=Firefox extension already signed::$TAG already has hermes-device-firefox-$version.xpi."
+          elif gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx "talaria-firefox-$version.xpi"; then
+            echo "::notice title=Firefox extension already signed::$TAG already has talaria-firefox-$version.xpi."
             sign=false
           fi
           {
@@ -105,7 +105,7 @@ jobs:
             echo "::error::expected one signed .xpi in $SIGNED_DIR, found ${#signed[@]}"
             exit 1
           fi
-          name="hermes-device-firefox-$VERSION.xpi"
+          name="talaria-firefox-$VERSION.xpi"
           out="$RUNNER_TEMP/release"
           mkdir -p "$out"
           cp "${signed[0]}" "$out/$name"
@@ -123,7 +123,7 @@ jobs:
           gh release upload "$TAG" "$out/$name" "$out/updates.json" --clobber
 
   # Attests the release files that the release and firefox-extension jobs
-  # uploaded. hermes-device update verifies these attestations.
+  # uploaded. talaria update verifies these attestations.
   attest-files:
     name: Attest release files
     needs: [release, firefox-extension]

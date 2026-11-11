@@ -9,7 +9,8 @@ release:
     name: "{{ .ProjectName }}"
 
 dockers_v2:
-  - images:
+  - ids: [hermes-device]
+    images:
       - "ghcr.io/usa-reddragon/{{ .ProjectName }}"
     tags:
       - "{{ .Tag }}"
@@ -30,6 +31,7 @@ dockers_v2:
     flags:
       - "--pull"
   - id: sandbox
+    ids: [hermes-device]
     dockerfile: Dockerfile.sandbox
     images:
       - "ghcr.io/usa-reddragon/{{ .ProjectName }}-sandbox"
@@ -54,8 +56,40 @@ dockers_v2:
       - "--pull"
 
 builds:
-  - main: .
-    binary: "{{ .ProjectName }}"
+  - id: talaria
+    main: .
+    binary: talaria
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm
+      - arm64
+      - riscv64
+    goarm:
+      - "6"
+      - "7"
+    ignore:
+      - goos: darwin
+        goarch: arm
+      - goos: darwin
+        goarch: riscv64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .ShortCommit }}
+      - -X main.hubURL={{ envOrDefault "HUB_DEFAULT_URL" "" }}
+    flags:
+      - -trimpath
+
+  # The same program under its name before the rename, for the archives
+  # that auto-update of older releases looks for, and for the images.
+  - id: hermes-device
+    main: .
+    binary: hermes-device
     goos:
       - linux
       - darwin
@@ -83,7 +117,13 @@ builds:
       - -trimpath
 
 archives:
-  - formats: [tar.gz]
+  - id: talaria
+    ids: [talaria]
+    formats: [tar.gz]
+    name_template: 'talaria_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}'
+  - id: hermes-device
+    ids: [hermes-device]
+    formats: [tar.gz]
 
 milestones:
   - close: true
