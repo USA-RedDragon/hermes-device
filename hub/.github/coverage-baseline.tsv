@@ -47,7 +47,7 @@ internal/memory/memorytest/memorytest.go	206	178
 internal/memory/notes.go	61	49
 internal/notify/jobs.go	49	36
 internal/notify/notify.go	266	167
-internal/pdf/pdf.go	180	159
+internal/pdf/pdf.go	180	160
 internal/pdf/pdftest/pdftest.go	32	32
 internal/server/server.go	40	0
 internal/service/activity.go	96	79
