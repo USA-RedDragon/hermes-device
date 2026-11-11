@@ -379,6 +379,11 @@ class RouteTests(unittest.TestCase):
                 self.assertEqual((r.status_code, r.json()["error"]), (400, "bad_request"))
         r = self.client.post("/api/plugins/device/sessions/s1/files", json={"name": "x", "content_base64": "@@"})
         self.assertEqual((r.status_code, r.json()["error"]), (400, "bad_request"))
+        busy = threading.BoundedSemaphore(1)
+        busy.acquire()
+        with mock.patch.object(core, "UPLOADS", busy):
+            r = self.upload()
+            self.assertEqual((r.status_code, r.json()["error"]), (429, "busy"))
         with mock.patch.object(core, "MAX_UPLOAD_BYTES", 4):
             r = self.upload(sid="s2", data=b"12345")
             self.assertEqual((r.status_code, r.json()["error"]), (413, "too_large"))

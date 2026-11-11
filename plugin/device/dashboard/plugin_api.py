@@ -118,6 +118,15 @@ def delete_binding(session_id: str):
 @router.post("/sessions/{session_id}/files")
 async def post_file(session_id: str, request: Request):
     core = _core()
+    if not core.UPLOADS.acquire(blocking=False):
+        return _error(429, "busy", f"{core.MAX_UPLOADS} uploads are running; try again in a moment")
+    try:
+        return await _post_file(core, session_id, request)
+    finally:
+        core.UPLOADS.release()
+
+
+async def _post_file(core, session_id: str, request: Request):
     limit = 4 * ((core.MAX_UPLOAD_BYTES + 2) // 3) + 64 * 1024
     too_large = f"the file is larger than {core.MAX_UPLOAD_BYTES // (1024 * 1024)} MB"
     length = request.headers.get("content-length", "")
@@ -132,11 +141,12 @@ async def post_file(session_id: str, request: Request):
         body = json.loads(bytes(raw))
     except ValueError:
         body = None
+    del raw
     if not isinstance(body, dict) or not isinstance(body.get("name"), str) \
             or not isinstance(body.get("content_base64"), str):
         return _error(400, "bad_request", 'the body must be {"name": <string>, "content_base64": <string>}')
     try:
-        data = base64.b64decode(body["content_base64"], validate=True)
+        data = base64.b64decode(body.pop("content_base64"), validate=True)
     except ValueError:
         return _error(400, "bad_request", "content_base64 is not valid base64")
     try:

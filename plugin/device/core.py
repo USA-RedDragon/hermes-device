@@ -1539,6 +1539,9 @@ def device_write_denial(conn: DeviceConn, path: str) -> Optional[str]:
 # --- attachment uploads (section 9) ------------------------------------------------------------
 
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
+# Each upload holds its file several times over in the gateway's memory, so only a few run at once.
+MAX_UPLOADS = 2
+UPLOADS = threading.BoundedSemaphore(MAX_UPLOADS)
 MAX_UPLOAD_NAME = 120
 UPLOAD_DIR = (".hermes", "attachments")
 UPLOAD_TIMEOUT_S = 300
@@ -1560,9 +1563,9 @@ pwd -P
 _UPLOAD_WRITE_SCRIPT = r"""
 want=$1; name=$2; stem=$3; ext=$4
 [ "$(pwd -P)" = "$want" ] || { echo "the attachments folder moved" >&2; exit 4; }
-if printf 'YQ==' | base64 -d >/dev/null 2>&1; then dec() { base64 -d; }
-elif printf 'YQ==' | base64 -D >/dev/null 2>&1; then dec() { base64 -D; }
-elif command -v openssl >/dev/null 2>&1; then dec() { openssl base64 -d -A; }
+if [ "$(printf 'YQ==' | base64 -d 2>/dev/null)" = a ]; then dec() { base64 -d; }
+elif [ "$(printf 'YQ==' | base64 -D 2>/dev/null)" = a ]; then dec() { base64 -D; }
+elif [ "$(printf 'YQ==' | openssl base64 -d -A 2>/dev/null)" = a ]; then dec() { openssl base64 -d -A; }
 else echo "the device has no base64 decoder" >&2; exit 5; fi
 umask 077
 n=$name; i=2
@@ -1570,8 +1573,11 @@ while [ -e "$n" ] || [ -L "$n" ]; do
   [ "$i" -le 999 ] || { echo "too many files named $name" >&2; exit 6; }
   n=$stem-$i$ext; i=$((i+1))
 done
-(set -C; : > "$n") 2>/dev/null || { echo "could not create $n" >&2; exit 6; }
-dec > "$n" || { rm -f -- "$n"; echo "could not write $n" >&2; exit 5; }
+set -C
+exec 3> "$n" || { echo "could not create $n" >&2; exit 6; }
+set +C
+dec >&3 || { rm -f -- "$n"; echo "could not write $n" >&2; exit 5; }
+exec 3>&-
 printf '%s\n' "$n"
 """
 
