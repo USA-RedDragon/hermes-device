@@ -1,4 +1,4 @@
-assertion/assertion.go	106	88
+assertion/assertion.go	106	89
 cmd/acp.go	29	1
 cmd/acphost.go	57	23
 cmd/autoupdate.go	72	55
@@ -19,10 +19,10 @@ extension/firefox/embed.go	42	37
 internal/acpbridge/acpbridge.go	487	425
 internal/acpbridge/inline.go	38	35
 internal/acpbridge/place.go	155	141
-internal/acphost/acphost.go	275	219
+internal/acphost/acphost.go	275	218
 internal/acphost/rewrite.go	260	237
-internal/acphost/sweep.go	42	33
-internal/acphost/sweep_linux.go	38	28
+internal/acphost/sweep.go	42	36
+internal/acphost/sweep_linux.go	38	27
 internal/allowlist/allowlist.go	25	25
 internal/attest/attest.go	141	123
 internal/attest/bundle.go	248	212
@@ -33,7 +33,7 @@ internal/autoupdate/daemon.go	68	61
 internal/autoupdate/notice.go	24	23
 internal/autoupdate/release.go	108	85
 internal/browser/bidi/bidi.go	51	0
-internal/browser/broker/broker.go	164	130
+internal/browser/broker/broker.go	174	137
 internal/browser/broker/peercred_linux.go	13	9
 internal/browser/host/host.go	45	29
 internal/browser/launch/launch.go	129	98
@@ -49,7 +49,7 @@ internal/claudeusage/sources.go	53	50
 internal/config/config.go	87	77
 internal/config/load.go	18	17
 internal/daemonstate/daemonstate.go	17	13
-internal/device/device.go	684	611
+internal/device/device.go	685	612
 internal/device/mcp.go	69	60
 internal/executor/executor.go	118	108
 internal/executor/scope.go	79	70
@@ -58,7 +58,7 @@ internal/hermesbuild/launch.go	65	62
 internal/hermesbuild/relocate.go	38	31
 internal/hubapi/hubapi.go	78	69
 internal/legacy/legacy.go	8	8
-internal/mcp/mcp.go	507	446
+internal/mcp/mcp.go	507	447
 internal/mcp/mcptest/fake.go	136	113
 internal/oci/extract.go	130	106
 internal/oci/ocitest/ocitest.go	127	118
