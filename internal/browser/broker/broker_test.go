@@ -222,6 +222,11 @@ func TestConfigHasHubURL(t *testing.T) {
 	if _, err := b.WaitConnected(ctx); err != nil {
 		t.Fatal(err)
 	}
+	b.SetDeviceID("d_8f2c")
+	if data, err = nativemsg.Read(conn, nativemsg.MaxToBrowser); err != nil ||
+		json.Unmarshal(data, &m) != nil || m.Type != broker.TypeConfig || m.DeviceID != "d_8f2c" || m.HubURL == "" {
+		t.Fatalf("config after SetDeviceID = %s, %v", data, err)
+	}
 	ch := b.Changed()
 	send(map[string]string{"type": "auth", "token": "hbt_abc"})
 	select {

@@ -508,6 +508,9 @@ func (c *Client) serveOnce(ctx context.Context) (time.Duration, error) {
 		c.killAll("the plugin speaks protocol 2, which cannot resume commands")
 	}
 	s.browser = c.opts.Browser != nil && slices.Contains(welcome.Capabilities, protocol.CapabilityBrowser)
+	if d, ok := c.opts.Browser.(interface{ SetDeviceID(id string) }); ok && welcome.DeviceID != "" {
+		d.SetDeviceID(welcome.DeviceID)
+	}
 	s.mcp = c.opts.MCP != nil && slices.Contains(c.Hello().Capabilities, protocol.CapabilityMCP) &&
 		slices.Contains(welcome.Capabilities, protocol.CapabilityMCP)
 	connected := time.Now()

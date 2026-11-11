@@ -75,6 +75,10 @@ type Message struct {
 	// HubURL is the daemon's hub.url. The extension keeps agent tabs off
 	// the hub.
 	HubURL string `json:"hub_url,omitempty"`
+	// DeviceID is the id the hub gave this device, once the exec leg
+	// connected. The page chat names it so the hub uses this computer's
+	// Firefox for the chat.
+	DeviceID string `json:"device_id,omitempty"`
 	// State is only in the legacyAuth message.
 	State string `json:"state,omitempty"`
 }
@@ -133,10 +137,11 @@ type Broker struct {
 	opts Options
 	ln   *net.UnixListener
 
-	mu      sync.Mutex
-	cur     *conn
-	changed chan struct{}
-	closed  bool
+	mu       sync.Mutex
+	cur      *conn
+	changed  chan struct{}
+	closed   bool
+	deviceID string
 }
 
 type conn struct {
@@ -272,7 +277,25 @@ func (b *Broker) drop(cn *conn) {
 
 func (b *Broker) configLocked() Message {
 	return Message{Type: TypeConfig, AllowHosts: b.opts.AllowHosts, ConfirmHosts: b.opts.ConfirmHosts,
-		AutologinHosts: b.opts.AutologinHosts, HubURL: b.opts.HubURL}
+		AutologinHosts: b.opts.AutologinHosts, HubURL: b.opts.HubURL, DeviceID: b.deviceID}
+}
+
+// SetDeviceID records the id the hub gave this device and sends the config
+// again to the connected extension when it changed.
+func (b *Broker) SetDeviceID(id string) {
+	b.mu.Lock()
+	if b.deviceID == id {
+		b.mu.Unlock()
+		return
+	}
+	b.deviceID = id
+	cn, m := b.cur, b.configLocked()
+	b.mu.Unlock()
+	if cn != nil {
+		if err := cn.write(m); err != nil {
+			slog.Warn("Could not configure the browser extension", "error", err)
+		}
+	}
 }
 
 // notifyLocked wakes everyone waiting on Changed. Call with mu held.
