@@ -109,6 +109,8 @@ type Session struct {
 	Tools map[string][]string
 	// Attachments are the attachments of each prompt.submit, in order.
 	Attachments [][]gateway.Attachment
+	// Prompts are the prompts pending when the session is added.
+	Prompts []gateway.Prompt
 
 	epoch   string
 	seq     int64
@@ -370,6 +372,9 @@ func (g *Gateway) AddSession(s *Session) {
 	defer g.mu.Unlock()
 	s.epoch = randHex()
 	s.prompts = map[string]gateway.Prompt{}
+	for _, p := range s.Prompts {
+		s.prompts[p.PromptID] = p
+	}
 	s.subs = map[*conn]string{}
 	if s.Model == "" {
 		s.Model, s.Provider = kSmall, kLocal

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,14 @@ type live struct {
 	// vision says whether the session's tools can read images, from the
 	// latest info that listed them; nil when none did.
 	vision *bool
+	// title is the session's title, for notices.
+	title string
+	// turnStart is when the running turn started, or when the hub saw it
+	// running first; zero while idle.
+	turnStart time.Time
+	// watched keeps the session subscribed with no viewer while it runs,
+	// so the hub sees its prompts (see Service.Watch).
+	watched bool
 }
 
 func (ls *live) canSee() *bool {
@@ -209,14 +218,104 @@ func (ls *live) fences(revision, generation *int64) {
 	}
 }
 
+// setPrompts replaces the pending prompts and announces each, so a prompt
+// raised before the hub subscribed reaches its users too. ls.mu is held.
 func (ls *live) setPrompts(ps []gateway.Prompt) {
 	ls.prompts = map[string]gateway.Prompt{}
 	for _, p := range ps {
-		if p.Kind == "approval" {
+		if p.Kind == gateway.PromptApproval || p.Kind == gateway.PromptClarify {
 			ls.prompts[p.PromptID] = p
+			ls.promptNotice(p)
 		}
 	}
 }
+
+func promptInfo(p gateway.Prompt) hub.PromptInfo {
+	str := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return *s
+	}
+	return hub.PromptInfo{ID: p.PromptID, Kind: p.Kind, Choices: append([]string(nil), p.Choices...), Multi: p.MultiSelect,
+		Command: str(p.Command), Description: str(p.Description), Question: str(p.Question)}
+}
+
+// promptNotice announces a pending prompt. ls.mu is held.
+func (ls *live) promptNotice(p gateway.Prompt) {
+	kind := hub.NoticeApproval
+	if p.Kind == gateway.PromptClarify {
+		kind = hub.NoticeQuestion
+	}
+	info := promptInfo(p)
+	ls.b.svc.notice(hub.Notice{Kind: kind, BackendID: ls.b.cfg.ID, SessionID: ls.id, Key: "prompt:" + ls.id + ":" + p.PromptID,
+		Prompt: &info, Title: ls.title})
+}
+
+// settled forgets prompts that got an answer or were cancelled. ls.mu is held.
+func (ls *live) settled(ids ...string) {
+	var gone []string
+	for _, id := range ids {
+		if id != "" {
+			delete(ls.prompts, id)
+			gone = append(gone, id)
+		}
+	}
+	if len(gone) > 0 {
+		ls.b.svc.notice(hub.Notice{Kind: hub.NoticeSettled, BackendID: ls.b.cfg.ID, SessionID: ls.id, PromptIDs: gone})
+	}
+}
+
+// longTurn is how long a turn runs before its end is worth a notice.
+const longTurn = 2 * time.Minute
+
+// turnNotices tracks turns for notices: a long turn that ends, a turn that
+// fails, and a tool an unattended run could not use. ls.mu is held.
+func (ls *live) turnNotices(ev gateway.Event) {
+	switch ev.Type {
+	case hub.KindMessageStart:
+		if ls.turnStart.IsZero() {
+			ls.turnStart = time.Now()
+		}
+	case hub.KindMessageComplete:
+		var p struct {
+			Status string `json:"status"`
+		}
+		_ = json.Unmarshal(ev.Payload, &p)
+		key := ls.id + ":" + ls.epoch + ":" + strconv.FormatInt(ev.Seq, 10)
+		n := hub.Notice{BackendID: ls.b.cfg.ID, SessionID: ls.id, Title: ls.title}
+		switch {
+		case p.Status == "error":
+			n.Kind, n.Key, n.Detail = hub.NoticeFailure, "failed:"+key, "The turn ended with an error."
+			ls.b.svc.notice(n)
+		case p.Status != "interrupted" && !ls.turnStart.IsZero() && time.Since(ls.turnStart) >= longTurn:
+			n.Kind, n.Key = hub.NoticeFinished, "finished:"+key
+			ls.b.svc.notice(n)
+		}
+		ls.turnStart = time.Time{}
+	case hub.KindToolComplete:
+		var p struct {
+			Name       string `json:"name"`
+			ResultText string `json:"result_text"`
+			Summary    string `json:"summary"`
+		}
+		if json.Unmarshal(ev.Payload, &p) != nil || p.Name == "" {
+			return
+		}
+		text := p.ResultText + "\n" + p.Summary
+		if !strings.Contains(text, p.Name+" was not run: ") || !strings.Contains(text, noUserMarker) {
+			return
+		}
+		ls.b.svc.notice(hub.Notice{Kind: hub.NoticeFailure, BackendID: ls.b.cfg.ID, SessionID: ls.id, Title: ls.title,
+			Key:    "blocked:" + ls.id + ":" + ls.epoch + ":" + strconv.FormatInt(ev.Seq, 10),
+			Detail: "An unattended run could not use " + p.Name + ": it needs your approval, given once with Always."})
+	}
+}
+
+// noUserMarker is in the message hermes-device's browser tools give when
+// they refuse a step that needs the user in a run with no user present
+// (hermes-device plugin/device/browser.py).
+const noUserMarker = "no user is present in this run"
 
 // apply passes one gateway frame to viewers once, in order. ls.mu is held.
 func (ls *live) apply(ev gateway.Event) {
@@ -252,39 +351,48 @@ func (ls *live) apply(ev gateway.Event) {
 			ls.fences(p.Revision, nil)
 		}
 	case gateway.UpdatedEvent:
-		var p gateway.MutateResult
+		var p struct {
+			gateway.MutateResult
+			Title *string `json:"title"`
+		}
 		if json.Unmarshal(ev.Payload, &p) == nil {
 			ls.fences(p.Revision, p.ExecutionGeneration)
+			if p.Title != nil {
+				ls.title = *p.Title
+			}
 		}
 	case hub.KindMessageStart:
 		ev.Payload = ls.withText(ev)
 	case hub.KindThinkingDelta:
 		ev.Payload = plainThinking(ev.Payload)
-	case hub.KindApprovalRequest:
+	case hub.KindApprovalRequest, hub.KindClarifyRequest:
 		var p gateway.Prompt
 		if json.Unmarshal(ev.Payload, &p) == nil && p.PromptID != "" {
-			if p.Kind == "" {
-				p.Kind = "approval"
+			switch {
+			case ev.Type == hub.KindClarifyRequest:
+				p.Kind = gateway.PromptClarify
+			case p.Kind == "":
+				p.Kind = gateway.PromptApproval
 			}
 			ls.prompts[p.PromptID] = p
+			ls.promptNotice(p)
 		}
-	case "approval.settled":
+	case "approval.settled", "clarify.settled":
 		var p struct {
 			PromptID string `json:"prompt_id"`
 		}
 		if json.Unmarshal(ev.Payload, &p) == nil {
-			delete(ls.prompts, p.PromptID)
+			ls.settled(p.PromptID)
 		}
 	case "approval.cancelled":
 		var p struct {
 			RequestIDs []string `json:"request_ids"`
 		}
 		if json.Unmarshal(ev.Payload, &p) == nil {
-			for _, id := range p.RequestIDs {
-				delete(ls.prompts, id)
-			}
+			ls.settled(p.RequestIDs...)
 		}
 	}
+	ls.turnNotices(ev)
 	ls.emit(ev.Type, ev.Payload)
 }
 

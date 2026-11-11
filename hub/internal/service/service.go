@@ -76,6 +76,18 @@ type Service struct {
 	files hub.SessionFiles
 	// uploads counts the prompts with attachments being staged.
 	uploads chan struct{}
+	// notify takes the notices of every subscribed session.
+	notify atomic.Pointer[func(hub.Notice)]
+}
+
+// SetNotify makes the service hand each notice to f. f must not block: it
+// runs while a session's lock is held.
+func (s *Service) SetNotify(f func(hub.Notice)) { s.notify.Store(&f) }
+
+func (s *Service) notice(n hub.Notice) {
+	if f := s.notify.Load(); f != nil {
+		(*f)(n)
+	}
 }
 
 var _ hub.Service = (*Service)(nil)
@@ -372,6 +384,40 @@ func (s *Service) Interrupt(ctx context.Context, user, backendID, sessionID stri
 // RespondApproval answers a pending approval: allow runs it once, deny
 // refuses it.
 func (s *Service) RespondApproval(ctx context.Context, user, backendID, sessionID, approvalID string, allow bool) error {
+	choice := gateway.ChoiceDeny
+	if allow {
+		choice = gateway.ChoiceOnce
+	}
+	return s.AnswerPrompt(ctx, user, backendID, sessionID, approvalID, hub.Answer{Choice: choice})
+}
+
+// PendingPrompt returns a prompt of the session that still waits for an
+// answer.
+func (s *Service) PendingPrompt(ctx context.Context, user, backendID, sessionID, promptID string) (hub.PromptInfo, error) {
+	b, err := s.backend(ctx, user, backendID)
+	if err != nil {
+		return hub.PromptInfo{}, err
+	}
+	ls, err := b.session(ctx, sessionID)
+	if err != nil {
+		return hub.PromptInfo{}, refusal(err)
+	}
+	defer ls.unpin()
+	ls.mu.Lock()
+	p, ok := ls.prompts[promptID]
+	ls.mu.Unlock()
+	if !ok {
+		return hub.PromptInfo{}, hub.ErrUnknownApproval
+	}
+	return promptInfo(p), nil
+}
+
+// maxAnswer is the longest answer the gateway takes.
+const maxAnswer = 16384
+
+// AnswerPrompt answers a pending approval with one of its choices, or a
+// question with text, picked choices or a skip.
+func (s *Service) AnswerPrompt(ctx context.Context, user, backendID, sessionID, promptID string, a hub.Answer) error {
 	b, err := s.backend(ctx, user, backendID)
 	if err != nil {
 		return err
@@ -382,18 +428,79 @@ func (s *Service) RespondApproval(ctx context.Context, user, backendID, sessionI
 	}
 	defer ls.unpin()
 	ls.mu.Lock()
-	p, ok := ls.prompts[approvalID]
+	p, ok := ls.prompts[promptID]
 	ls.mu.Unlock()
 	if !ok {
 		return hub.ErrUnknownApproval
 	}
-	choice := gateway.ChoiceDeny
-	if allow {
-		choice = gateway.ChoiceOnce
+	var (
+		method string
+		params any
+	)
+	switch p.Kind {
+	case gateway.PromptApproval:
+		if !slices.Contains(p.Choices, a.Choice) {
+			return fmt.Errorf("%w: this approval does not offer %q", hub.ErrBadValue, a.Choice)
+		}
+		method, params = gateway.MethodApproval, gateway.ApprovalParams{SessionID: ls.id, ExecutionGeneration: p.ExecutionGeneration,
+			PromptID: p.PromptID, Choice: a.Choice}
+	case gateway.PromptClarify:
+		answer, err := clarifyAnswer(p, a)
+		if err != nil {
+			return err
+		}
+		method, params = gateway.MethodClarify, gateway.ClarifyParams{SessionID: ls.id, ExecutionGeneration: p.ExecutionGeneration,
+			PromptID: p.PromptID, Answer: answer}
+	default:
+		return hub.ErrUnknownApproval
 	}
-	return b.call(ctx, ls, gateway.MethodApproval, gateway.ApprovalParams{
-		SessionID: ls.id, ExecutionGeneration: p.ExecutionGeneration, PromptID: p.PromptID, Choice: choice,
-	}, nil)
+	var res struct {
+		Status string `json:"status"`
+	}
+	if err := b.call(ctx, ls, method, params, &res); err != nil {
+		return err
+	}
+	if res.Status == "already_resolved" {
+		ls.mu.Lock()
+		ls.settled(promptID)
+		ls.mu.Unlock()
+		return hub.ErrUnknownApproval
+	}
+	return nil
+}
+
+// clarifyAnswer is the answer clarify.respond takes for a: "" to skip, a
+// JSON array of labels for picks, or the text.
+func clarifyAnswer(p gateway.Prompt, a hub.Answer) (string, error) {
+	switch {
+	case a.Skip:
+		return "", nil
+	case len(a.Picks) > 0:
+		if !p.MultiSelect && len(a.Picks) > 1 {
+			return "", fmt.Errorf("%w: pick one answer", hub.ErrBadValue)
+		}
+		for _, pick := range a.Picks {
+			if !slices.Contains(p.Choices, pick) {
+				return "", fmt.Errorf("%w: that is not one of the answers", hub.ErrBadValue)
+			}
+		}
+		if !p.MultiSelect {
+			return a.Picks[0], nil
+		}
+		out, err := json.Marshal(a.Picks)
+		if err != nil {
+			return "", err
+		}
+		return string(out), nil
+	}
+	text := strings.TrimSpace(a.Text)
+	if text == "" {
+		return "", fmt.Errorf("%w: the answer is empty", hub.ErrBadValue)
+	}
+	if len(text) > maxAnswer {
+		return "", fmt.Errorf("%w: the answer is too long", hub.ErrBadValue)
+	}
+	return text, nil
 }
 
 // CancelInput drops a queued input before it runs.
@@ -941,6 +1048,10 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	defer b.holdMu.Unlock()
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
+	ls.title = title
+	if snap.Running && ls.turnStart.IsZero() {
+		ls.turnStart = time.Now()
+	}
 	ls.subID, ls.epoch, ls.gwSeq = snap.SubscriptionID, snap.ReplayEpoch, snap.LastSequence
 	ls.generation, ls.revision = snap.ExecutionGeneration, snap.Revision
 	if snap.Info.Vision != nil {
@@ -1010,7 +1121,7 @@ func (b *backend) detachIdle(ls *live) {
 	defer ls.opMu.Unlock()
 	b.mu.Lock()
 	ls.mu.Lock()
-	if len(ls.viewers) > 0 || ls.pending || ls.pins > 0 {
+	if len(ls.viewers) > 0 || ls.pending || ls.pins > 0 || ls.watched {
 		ls.mu.Unlock()
 		b.mu.Unlock()
 		return
@@ -1031,5 +1142,77 @@ func (b *backend) detachIdle(ls *live) {
 	defer cancel()
 	if err := c.Call(ctx, gateway.MethodSessionDetach, gateway.DetachParams{SessionID: ls.id, SubscriptionID: sub}, nil); err != nil {
 		b.log.Debug("detach", "session", ls.id, "error", err.Error())
+	}
+}
+
+// Watch keeps each running session of every backend subscribed while it
+// runs, checking every interval, so the hub sees the approvals and
+// questions of chats nobody has open, such as scheduled jobs. Run it on
+// one replica. It returns when ctx ends.
+func (s *Service) Watch(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		for _, id := range s.order {
+			s.backends[id].watchRunning(ctx)
+		}
+		select {
+		case <-ctx.Done():
+			for _, b := range s.backends {
+				b.unwatch(func(string) bool { return true })
+			}
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func (b *backend) watchRunning(ctx context.Context) {
+	c, err := b.conn(ctx)
+	if err != nil {
+		return
+	}
+	cctx, cancel := b.timeout(ctx)
+	var res gateway.ListResult
+	err = c.Call(cctx, gateway.MethodSessionList, gateway.ListParams{Scope: gateway.ScopeLive, Limit: 200}, &res)
+	cancel()
+	if err != nil {
+		b.log.Debug("watch: list sessions", "error", err.Error())
+		return
+	}
+	running := map[string]bool{}
+	for _, r := range res.Sessions {
+		if !r.Running || ctx.Err() != nil {
+			continue
+		}
+		running[r.SessionID] = true
+		ls, err := b.session(ctx, r.SessionID)
+		if err != nil {
+			b.log.Debug("watch: subscribe", "session", r.SessionID, "error", err.Error())
+			continue
+		}
+		ls.mu.Lock()
+		ls.watched = true
+		ls.mu.Unlock()
+		ls.unpin()
+	}
+	b.unwatch(func(id string) bool { return !running[id] })
+}
+
+// unwatch lets the watched sessions that done picks detach when idle.
+func (b *backend) unwatch(done func(id string) bool) {
+	b.mu.Lock()
+	var idle []*live
+	for _, ls := range b.sessions {
+		ls.mu.Lock()
+		if ls.watched && done(ls.id) {
+			ls.watched = false
+			idle = append(idle, ls)
+		}
+		ls.mu.Unlock()
+	}
+	b.mu.Unlock()
+	for _, ls := range idle {
+		ls.idle()
 	}
 }

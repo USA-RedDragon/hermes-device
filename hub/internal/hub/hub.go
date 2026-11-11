@@ -275,3 +275,86 @@ type Pending struct {
 	Status string `json:"status"`
 	Text   string `json:"text"`
 }
+
+// KindClarifyRequest is a question the agent asks the user. Its Data has
+// the shape of a PromptInfo.
+const KindClarifyRequest = "clarify.request"
+
+// Prompt kinds.
+const (
+	PromptApproval = "approval"
+	PromptClarify  = "clarify"
+)
+
+// Approval choices.
+const (
+	ChoiceOnce    = "once"
+	ChoiceSession = "session"
+	ChoiceAlways  = "always"
+	ChoiceDeny    = "deny"
+)
+
+// PromptInfo is a pending approval or question. Choices are the approval
+// choices the gateway offers (once, deny, session, always), or the
+// answers a question offers; a question without choices takes free text.
+type PromptInfo struct {
+	ID          string   `json:"prompt_id"`
+	Kind        string   `json:"kind"`
+	Choices     []string `json:"choices"`
+	Multi       bool     `json:"multi_select,omitempty"`
+	Command     string   `json:"command,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Question    string   `json:"question,omitempty"`
+}
+
+// Answer answers a PromptInfo. For an approval Choice is one of its
+// Choices. For a question Text is free text or one of its Choices, Picks
+// are the picked Choices of a multi-select question, and Skip skips it.
+type Answer struct {
+	Choice string   `json:"choice,omitempty"`
+	Text   string   `json:"text,omitempty"`
+	Picks  []string `json:"picks,omitempty"`
+	Skip   bool     `json:"skip,omitempty"`
+}
+
+// Prompter is the optional part of a Service that answers approvals and
+// questions with every choice the gateway offers.
+type Prompter interface {
+	// PendingPrompt returns a prompt that still waits for an answer, or
+	// ErrUnknownApproval.
+	PendingPrompt(ctx context.Context, user, backendID, sessionID, promptID string) (PromptInfo, error)
+	// AnswerPrompt answers a pending prompt. It fails with ErrBadValue for
+	// an answer the prompt does not take.
+	AnswerPrompt(ctx context.Context, user, backendID, sessionID, promptID string, a Answer) error
+}
+
+// Notice kinds: what a person can be told about while they are away.
+const (
+	NoticeApproval = "approval"
+	NoticeQuestion = "question"
+	NoticeFinished = "finished"
+	NoticeJob      = "job"
+	NoticeFailure  = "failure"
+	// NoticeSettled says a prompt got its answer or was cancelled.
+	NoticeSettled = "settled"
+)
+
+// Notice is something that happened on a backend that its users may want
+// to hear about. Title and Detail may carry chat content: front ends that
+// leave the hub (Web Push) must not send them.
+type Notice struct {
+	Kind      string
+	BackendID string
+	SessionID string
+	// Key is unique per occurrence, so the same notice seen twice (by two
+	// replicas, or again after a reconnect) is sent once.
+	Key    string
+	Prompt *PromptInfo
+	// PromptIDs are the prompts a NoticeSettled settles.
+	PromptIDs []string
+	// Title is the chat's title, "" when unknown.
+	Title string
+	// Detail is a short line about what happened, such as a job's name
+	// or why it failed.
+	Detail string
+}
