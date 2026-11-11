@@ -2,6 +2,7 @@ assertion/assertion.go	106	89
 cmd/acp.go	29	1
 cmd/acphost.go	29	1
 cmd/browser.go	83	22
+cmd/browserlock.go	12	7
 cmd/browserstatus.go	9	2
 cmd/chat.go	27	4
 cmd/cmd.go	26	21
@@ -17,14 +18,14 @@ internal/acpbridge/inline.go	38	35
 internal/acphost/acphost.go	259	203
 internal/acphost/rewrite.go	227	209
 internal/acphost/sweep.go	42	36
-internal/acphost/sweep_linux.go	38	27
+internal/acphost/sweep_linux.go	38	28
 internal/allowlist/allowlist.go	25	25
 internal/attest/attest.go	152	114
 internal/browser/bidi/bidi.go	51	0
 internal/browser/broker/broker.go	208	158
 internal/browser/broker/peercred_linux.go	13	9
 internal/browser/host/host.go	43	29
-internal/browser/launch/launch.go	115	81
+internal/browser/launch/launch.go	129	98
 internal/browser/nativemsg/nativemsg.go	19	18
 internal/chat/chat.go	229	195
 internal/config/config.go	66	57
@@ -34,7 +35,7 @@ internal/device/device.go	716	642
 internal/device/mcp.go	64	56
 internal/executor/executor.go	96	86
 internal/hubapi/hubapi.go	77	66
-internal/mcp/mcp.go	507	447
+internal/mcp/mcp.go	507	451
 internal/mcp/mcptest/fake.go	136	113
 internal/pairing/pairing.go	43	39
 internal/plugininstall/install.go	60	42
