@@ -71,6 +71,7 @@ type browserShadow struct {
 	Enabled        *bool     `json:"enabled"         toml:"enabled"         yaml:"enabled"`
 	AllowHosts     *[]string `json:"allow-hosts"     toml:"allow-hosts"     yaml:"allow-hosts"`
 	ConfirmHosts   *[]string `json:"confirm-hosts"   toml:"confirm-hosts"   yaml:"confirm-hosts"`
+	AutologinHosts *[]string `json:"autologin-hosts" toml:"autologin-hosts" yaml:"autologin-hosts"`
 	StartFirefox   *bool     `json:"start-firefox"   toml:"start-firefox"   yaml:"start-firefox"`
 	FirefoxCommand *string   `json:"firefox-command" toml:"firefox-command" yaml:"firefox-command"`
 }
@@ -327,6 +328,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		if s.Browser.ConfirmHosts != nil {
 			cfg.Browser.ConfirmHosts = *s.Browser.ConfirmHosts
 			set("browser.confirm-hosts", configulator.LayerFile, file)
+		}
+		if s.Browser.AutologinHosts != nil {
+			cfg.Browser.AutologinHosts = *s.Browser.AutologinHosts
+			set("browser.autologin-hosts", configulator.LayerFile, file)
 		}
 		if s.Browser.StartFirefox != nil {
 			cfg.Browser.StartFirefox = *s.Browser.StartFirefox
@@ -596,6 +601,11 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Browser.ConfirmHosts = lst
 		set("browser.confirm-hosts", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "browser", "autologin-hosts"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Browser.AutologinHosts = lst
+		set("browser.autologin-hosts", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "browser", "start-firefox"); ok {
 		p, err := strconv.ParseBool(v)
 		if err != nil {
@@ -669,6 +679,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"browser" + o.Separator + "enabled",
 		"browser" + o.Separator + "allow-hosts",
 		"browser" + o.Separator + "confirm-hosts",
+		"browser" + o.Separator + "autologin-hosts",
 		"browser" + o.Separator + "start-firefox",
 		"browser" + o.Separator + "firefox-command",
 		"mcp" + o.Separator + "idle-timeout",
@@ -717,9 +728,10 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Bool(names[27], false, "Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run hermes-device browser install once")
 	fs.StringSlice(names[28], nil, "Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs")
 	fs.StringSlice(names[29], nil, "More sites where, as on Salesforce, every click and every Enter or Space key press asks the user each time and scripts may only read. Host names; each covers its subdomains. The plugin cannot change this list")
-	fs.Bool(names[30], true, "Let the agent start Firefox, with the user's default profile, in the user's graphical session when the extension is not connected, so a scheduled job works after Firefox was closed. The sandbox image turns it off")
-	fs.String(names[31], "firefox", "Command that starts Firefox for start-firefox: a name on PATH or an absolute path")
-	fs.Duration(names[32], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
+	fs.StringSlice(names[30], nil, "Exact host names where browser_login may submit the login form that Firefox fills from its own saved login, so a scheduled job can sign in without the agent seeing the password. Only https pages whose top-level host is listed; no subdomains. Scripts are refused there, and clicks, typing, key presses and screenshots on its login pages. Example: login.w3.ibm.com. The plugin cannot change this list")
+	fs.Bool(names[31], true, "Let the agent start Firefox, with the user's default profile, in the user's graphical session when the extension is not connected, so a scheduled job works after Firefox was closed. The sandbox image turns it off")
+	fs.String(names[32], "firefox", "Command that starts Firefox for start-firefox: a name on PATH or an absolute path")
+	fs.Duration(names[33], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
 	return nil
 }
 
@@ -1083,6 +1095,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Browser.ConfirmHosts = v
 		set("browser.confirm-hosts", configulator.LayerCLI, "--"+n)
+	}
+	if n := "browser" + o.Separator + "autologin-hosts"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "browser.autologin-hosts",
+				Source: "--" + n,
+			}
+		}
+		cfg.Browser.AutologinHosts = v
+		set("browser.autologin-hosts", configulator.LayerCLI, "--"+n)
 	}
 	if n := "browser" + o.Separator + "start-firefox"; fs.Changed(n) {
 		v, err := fs.GetBool(n)
@@ -1973,6 +1997,36 @@ func (s *browserShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				}
 				s.ConfirmHosts = &out
 			}
+		case "autologin-hosts":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".autologin-hosts", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".autologin-hosts"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.AutologinHosts = &out
+			}
 		case "start-firefox":
 			v, err := dec.ReadToken()
 			if err != nil {
@@ -2271,6 +2325,7 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "browser.enabled = %v\n", c.Browser.Enabled)
 	fmt.Fprintf(&b, "browser.allow-hosts = %v\n", c.Browser.AllowHosts)
 	fmt.Fprintf(&b, "browser.confirm-hosts = %v\n", c.Browser.ConfirmHosts)
+	fmt.Fprintf(&b, "browser.autologin-hosts = %v\n", c.Browser.AutologinHosts)
 	fmt.Fprintf(&b, "browser.start-firefox = %v\n", c.Browser.StartFirefox)
 	fmt.Fprintf(&b, "browser.firefox-command = %v\n", c.Browser.FirefoxCommand)
 	b.WriteString("mcp.servers = (redacted)\n")

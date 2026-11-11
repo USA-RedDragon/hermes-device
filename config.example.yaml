@@ -67,6 +67,8 @@ browser:
   # allow-hosts: []
   # More sites where, as on Salesforce, every click and every Enter or Space key press asks the user each time and scripts may only read. Host names; each covers its subdomains. The plugin cannot change this list
   # confirm-hosts: []
+  # Exact host names where browser_login may submit the login form that Firefox fills from its own saved login, so a scheduled job can sign in without the agent seeing the password. Only https pages whose top-level host is listed; no subdomains. Scripts are refused there, and clicks, typing, key presses and screenshots on its login pages. Example: login.w3.ibm.com. The plugin cannot change this list
+  # autologin-hosts: []
   # Let the agent start Firefox, with the user's default profile, in the user's graphical session when the extension is not connected, so a scheduled job works after Firefox was closed. The sandbox image turns it off
   start-firefox: true
   # Command that starts Firefox for start-firefox: a name on PATH or an absolute path

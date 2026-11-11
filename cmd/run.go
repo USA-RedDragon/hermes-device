@@ -242,7 +242,7 @@ func startBroker(ctx context.Context, cfg *config.Config) (*broker.Broker, error
 		return nil, err
 	}
 	br, err := broker.Listen(broker.Options{Path: sock, ExtensionID: host.ExtensionID, AllowHosts: cfg.Browser.AllowHosts,
-		ConfirmHosts: cfg.Browser.ConfirmHosts, HubURL: cfg.Hub.URL})
+		ConfirmHosts: cfg.Browser.ConfirmHosts, AutologinHosts: cfg.Browser.AutologinHosts, HubURL: cfg.Hub.URL})
 	if err != nil {
 		return nil, fmt.Errorf("browser socket: %w", err)
 	}
@@ -251,7 +251,8 @@ func startBroker(ctx context.Context, cfg *config.Config) (*broker.Broker, error
 			slog.Error("Browser socket stopped", "error", err)
 		}
 	}()
-	slog.Info("Browser control on", "socket", sock, "allow_hosts", cfg.Browser.AllowHosts)
+	slog.Info("Browser control on", "socket", sock, "allow_hosts", cfg.Browser.AllowHosts,
+		"autologin_hosts", cfg.Browser.AutologinHosts)
 	return br, nil
 }
 
