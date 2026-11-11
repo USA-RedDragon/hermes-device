@@ -669,5 +669,14 @@ window.HubFiles = (ctx) => {
     if (cur && cur.pane) preview(abs, 0);
   }
 
-  return { open, hide, close, current: () => (cur ? cur.chat : null) };
+  // state and restore keep the viewer's tab and folder across a reload.
+  const state = () => (cur && !cur.box.hidden ? { tab: cur.tab, path: cur.path } : null);
+  function restore(st) {
+    if (!cur || !st) return;
+    cur.tab = st.tab === "changes" ? "changes" : "folder";
+    drawTabs();
+    if (cur.tab === "folder") folder(st.path || ""); else changes();
+  }
+
+  return { open, hide, close, state, restore, current: () => (cur ? cur.chat : null) };
 };

@@ -933,3 +933,5 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7
   .info summary .metric.hi .meter { background: conic-gradient(var(--warn) calc(var(--p) * 1%), var(--line) 0); }
   .info summary .metric .meter > span { display: none; }
 }
+/* A reload for a new release keeps the view: the list and the chat stay hidden until they are back in place. */
+.restoring #sessions, .restoring #log { visibility: hidden; }

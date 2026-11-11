@@ -756,6 +756,17 @@ window.HubActivity = (ctx) => {
   }
 
   init();
-  return { show, event: (kind, p) => { if (S.chat && event(kind, p)) draw(); }, opens, fromTool, background,
+  // view and restore keep the sidebar as it was across a reload.
+  const view = () => ({ open: isOpen(), tab: S.tab, rows: [...S.open], top: $("actbody").scrollTop });
+  function restore(v) {
+    if (!v || !S.chat) return;
+    S.tab = v.tab === "bg" ? "bg" : "sub";
+    for (const id of v.rows || []) S.open.add(id);
+    setOpen(!!v.open, false);
+    draw();
+    $("actbody").scrollTop = v.top || 0;
+  }
+
+  return { view, restore, show, event: (kind, p) => { if (S.chat && event(kind, p)) draw(); }, opens, fromTool, background,
     running: (on) => { S.running = !!on; draw(); }, usage: (u) => { if (u) { S.usage = u; draw(); } } };
 };

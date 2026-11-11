@@ -209,6 +209,7 @@
     if (q && !found) nav.append(el("p", "none", "No chat titles match."));
     const open = sessions.find(isCurrent);
     if (open) chats.seen(open);
+    if (sideTop !== null) { nav.scrollTop = sideTop; sideTop = null; }
     search.draw(nav);
     const archived = sessions.filter((s) => s.archived).sort(order);
     if (archived.length) {
@@ -979,6 +980,7 @@
       for (const p of s.prompts || []) this.approval(p);
       this.bottom();
       this.jumpTo();
+      if (view === this) restoreView(this);
     }
 
     // jumpTo scrolls to the message a search result opened the chat at.
@@ -2265,7 +2267,13 @@
       if (e.kind === "hub.reconnect") { moving = true; return; }
       chat.event(e.kind, e.data);
     };
-    es.onopen = () => { moving = false; banner(""); };
+    let opened = false;
+    es.onopen = () => {
+      moving = false;
+      banner("");
+      if (opened) updates.check();
+      opened = true;
+    };
     es.onerror = async () => {
       if (moving && es.readyState === EventSource.CONNECTING) return;
       if (es.readyState === EventSource.CLOSED) {
@@ -2711,6 +2719,68 @@
     exportChat: (b, s, title) => msgActs.exportChat(b, s, title), computers: () => computers,
     newChat: () => newChat(), pickFolder: (c) => { openSide(false); picker.open({ computer: c }); }, me: () => me });
 
+  const updates = window.HubUpdate({ api, version: () => me.version, flush: () => composer.flush(), save: saveView,
+    busy: () => !!($("input").value.trim() || attachments.list.length || sending > 0 ||
+      document.querySelector("dialog[open], #sessions .menu, .editbox, .lightbox") || composer.popOpen() || chats.newOpen()) });
+
+  // saveView is what a reload for a new release keeps; restoreView puts it
+  // back once the chat's history is on the page.
+  let sideTop = null;
+  // logAnchor is the first message in view and how far its top is below
+  // the top of the conversation, counted without the action rows.
+  const logItems = (log) => Array.from(log.children).filter((n) => !n.classList.contains("acts"));
+  function logAnchor(log) {
+    const top = log.getBoundingClientRect().top;
+    const items = logItems(log);
+    const i = items.findIndex((n) => n.getBoundingClientRect().bottom > top);
+    return i < 0 ? null : { i, off: items[i].getBoundingClientRect().top - top };
+  }
+
+  function saveView() {
+    const log = $("log");
+    const input = $("input");
+    const tab = document.querySelector("#settabs [aria-selected=\"true\"]");
+    return {
+      hash: location.hash,
+      log: { top: log.scrollTop, pinned: log.scrollHeight - log.scrollTop - log.clientHeight < 120, anchor: logAnchor(log) },
+      side: $("sessions").scrollTop,
+      details: Array.from(log.querySelectorAll("details")).map((d) => d.open),
+      act: view ? activity.view() : null,
+      files: files.state(),
+      settings: $("settings").open && tab ? tab.id.replace(/^settab-/, "") : "",
+      focus: document.activeElement === input ? [input.selectionStart, input.selectionEnd] : null,
+    };
+  }
+
+  function restoreView(chat) {
+    const st = window.HubRestore.state();
+    if (!st) return;
+    window.HubRestore.done();
+    if (lastList) $("sessions").scrollTop = st.side || 0;
+    else sideTop = st.side || 0;
+    if (chat) {
+      const ds = chat.log.querySelectorAll("details");
+      (st.details || []).forEach((open, i) => { if (ds[i]) ds[i].open = open; });
+      const place = () => {
+        if (!st.log || st.log.pinned) { chat.bottom(); return; }
+        const a = st.log.anchor;
+        const n = a && logItems(chat.log)[a.i];
+        if (!n) { chat.log.scrollTop = st.log.top; return; }
+        chat.log.scrollTop += n.getBoundingClientRect().top - chat.log.getBoundingClientRect().top - a.off;
+      };
+      place();
+      requestAnimationFrame(() => requestAnimationFrame(place));
+      activity.restore(st.act);
+      if (st.files) files.restore(st.files);
+      if (st.focus) {
+        const input = $("input");
+        input.focus({ preventScroll: true });
+        try { input.setSelectionRange(st.focus[0], st.focus[1]); } catch (_) { /* text changed */ }
+      }
+    }
+    if (st.settings) prefs.open(st.settings);
+  }
+
   async function stopTurn() {
     if (!view) return;
     try { await api("POST", view.base + "/interrupt"); } catch (e) { banner("Could not stop: " + e.message, true); }
@@ -2800,6 +2870,7 @@
       setInterval(() => { if (!document.hidden) { loadComputers(); loadPlace(); } }, 20000);
     }
     route();
+    if (!view) setTimeout(() => restoreView(null), 300);
   }
 
   init();
