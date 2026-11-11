@@ -36,6 +36,7 @@ func contract() map[string][]string {
 			`canonical_method("` + gateway.MethodPromptCancel + `", params=PromptCancelParams`,
 			`canonical_method("` + gateway.MethodResolveLost + `", params=PromptResolveUnknownParams`,
 			`status: Literal["queued", "started", "unknown", "terminal"]`,
+			`canonical_method("` + gateway.MethodClarify + `", params=ClarifyRespondParams`,
 			"    admission_id: str\n    execution_generation: int\n",
 		},
 		"gateway/run_api.py": {
@@ -58,6 +59,7 @@ func contract() map[string][]string {
 		},
 		"gateway/session_controls.py": {
 			`if set(params) != {"session_id", "execution_generation", "prompt_id", "choice"}:`,
+			`if set(params) != {"session_id", "execution_generation", "prompt_id", "answer"}:`,
 			"if set(params) - {'end_reason'} != {'session_id', 'subscription_id'}:",
 			"if ref.session_id not in self.subscriptions:\n            raise RuntimeStoreError('permission_denied')",
 			"request_id = params.get('submission_id') or params.get('input_id')",
@@ -74,6 +76,8 @@ func contract() map[string][]string {
 		"gateway/session_pending_controls.py": {
 			"choices = ['" + gateway.ChoiceOnce + "', '" + gateway.ChoiceDeny + "']",
 			"prompt = {'kind': 'approval', 'prompt_id': prompt_id,", "event_type='approval.request'",
+			`prompt = {"kind": "clarify", "prompt_id": entry.clarify_id,`, `"multi_select": entry.multi_select}`,
+			`event_type="clarify.request")`, "event_type=prompt['kind'] + '.settled')",
 		},
 		"gateway/session_busy_controls.py": {
 			"if params.get('key') == 'show_reasoning' and not set(params) - allowed and ref.session_id:",
@@ -355,6 +359,7 @@ func TestContractAgainstSource(t *testing.T) {
 }
 
 const (
+	kExecGen   = "execution_generation"
 	kSessionID = "session_id"
 	kRequestID = "request_id"
 )
@@ -383,12 +388,13 @@ func TestParamsUseOnlyKeysTheGatewayAccepts(t *testing.T) {
 		allowed []string
 		exact   bool
 	}{
-		{gateway.ApprovalParams{SessionID: "s", PromptID: "p", Choice: "once"}, []string{"choice", "execution_generation", "prompt_id", kSessionID}, true},
+		{gateway.ApprovalParams{SessionID: "s", PromptID: "p", Choice: "once"}, []string{"choice", kExecGen, "prompt_id", kSessionID}, true},
+		{gateway.ClarifyParams{SessionID: "s", PromptID: "p"}, []string{"answer", kExecGen, "prompt_id", kSessionID}, true},
 		{gateway.DetachParams{SessionID: "s", SubscriptionID: "x"}, []string{kSessionID, "subscription_id"}, true},
 		{gateway.SubmitParams{SessionID: "s", Text: "t", SubmissionID: "id"}, []string{kSessionID, "submission_id", "text"}, true},
 		{gateway.ListParams{Scope: gateway.ScopeLive, Limit: 200}, listKeys, false},
 		{gateway.ConfigSetParams{SessionID: "s", Key: "show_reasoning", Value: "on"}, []string{"key", "profile", kSessionID, "value"}, false},
-		{gateway.InterruptParams{SessionID: "s"}, []string{"execution_generation", kSessionID}, true},
+		{gateway.InterruptParams{SessionID: "s"}, []string{kExecGen, kSessionID}, true},
 		{gateway.EventsSinceParams{SessionID: "s", ReplayEpoch: "e"}, []string{"last_sequence", "replay_epoch", kSessionID}, true},
 		{gateway.MutateParams{SessionID: "s", RequestID: "r", Operation: "rename", Payload: map[string]string{"title": "t"}},
 			[]string{"expected_revision", "operation", "payload", kRequestID, kSessionID}, true},

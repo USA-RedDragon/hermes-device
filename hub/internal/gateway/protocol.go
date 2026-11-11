@@ -33,6 +33,7 @@ const (
 	MethodInterrupt     = "session.interrupt"
 	MethodSteer         = "session.steer"
 	MethodApproval      = "approval.respond"
+	MethodClarify       = "clarify.respond"
 	MethodConfigSet     = "config.set"
 	MethodConfigGet     = "config.get"
 	MethodMutate        = "session.mutate"
@@ -152,7 +153,14 @@ type Prompt struct {
 	Command             *string  `json:"command,omitempty"`
 	Description         *string  `json:"description,omitempty"`
 	Question            *string  `json:"question,omitempty"`
+	MultiSelect         bool     `json:"multi_select,omitempty"`
 }
+
+// Prompt kinds.
+const (
+	PromptApproval = "approval"
+	PromptClarify  = "clarify"
+)
 
 // SnapshotInfo is the part of a snapshot's info, and of a session.info
 // payload, the hub reads (gateway/session_local.py local_session_info and
@@ -467,6 +475,16 @@ type ApprovalParams struct {
 	ExecutionGeneration int64  `json:"execution_generation"`
 	PromptID            string `json:"prompt_id"`
 	Choice              string `json:"choice"`
+}
+
+// ClarifyParams is clarify.respond's params. An empty Answer skips the
+// question; a multi-select answer is a JSON array of choice labels
+// (tools/clarify_tool.py _clean_answer).
+type ClarifyParams struct {
+	SessionID           string `json:"session_id"`
+	ExecutionGeneration int64  `json:"execution_generation"`
+	PromptID            string `json:"prompt_id"`
+	Answer              string `json:"answer"`
 }
 
 // ConfigSetParams is config.set's params for a session control.

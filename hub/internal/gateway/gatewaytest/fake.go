@@ -766,6 +766,8 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 		h = g.hInterrupt
 	case gateway.MethodApproval:
 		h = g.hApproval
+	case gateway.MethodClarify:
+		h = g.hClarify
 	case gateway.MethodPromptCancel:
 		h = g.hPromptCancel
 	case gateway.MethodResolveLost:
@@ -988,6 +990,42 @@ func (g *Gateway) hApproval(_ *conn, p map[string]any) (any, string, func()) {
 	return map[string]any{kStatus: "resolved"}, "", nil
 }
 
+func (g *Gateway) hClarify(_ *conn, p map[string]any) (any, string, func()) {
+	if fmt.Sprint(keys(p)) != "[answer execution_generation prompt_id session_id]" {
+		return nil, errInvalidParams, nil
+	}
+	s := g.sessions[str(p, kSessionID)]
+	pr, ok := s.prompts[str(p, "prompt_id")]
+	if !ok || pr.Kind != "clarify" {
+		return map[string]any{kStatus: "already_resolved"}, "", nil
+	}
+	delete(s.prompts, pr.PromptID)
+	g.publishLocked(s, "clarify.settled", map[string]any{"prompt_id": pr.PromptID, kExecGen: pr.ExecutionGeneration})
+	s.Running = false
+	g.publishLocked(s, "message.complete", map[string]any{kText: "answered: " + str(p, "answer"), kStatus: kComplete})
+	return map[string]any{kStatus: "resolved"}, "", nil
+}
+
+// clarify raises a question: "ask me" asks with choices, "pick many" with
+// several picks, "ask free" with none.
+func (g *Gateway) clarify(s *Session, text string) bool {
+	q := "Which one?"
+	pr := gateway.Prompt{Kind: "clarify", PromptID: "cl-1", ExecutionGeneration: s.Generation, Question: &q}
+	switch text {
+	case "ask me":
+		pr.Choices = []string{"red", "blue"}
+	case "pick many":
+		pr.Choices, pr.MultiSelect = []string{"red", "blue", "green"}, true
+	case "ask free":
+		pr.Choices = []string{}
+	default:
+		return false
+	}
+	s.prompts[pr.PromptID] = pr
+	g.publishLocked(s, "clarify.request", pr)
+	return true
+}
+
 func (g *Gateway) turn(id, admission, text string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -1009,6 +1047,9 @@ func (g *Gateway) turn(id, admission, text string) {
 		s.prompts[pr.PromptID] = pr
 		g.publishLocked(s, "tool.start", map[string]any{kToolID: "t-approve", kName: kTerminal, kArgs: map[string]any{"command": cmd}})
 		g.publishLocked(s, "approval.request", pr)
+		return
+	}
+	if g.clarify(s, text) {
 		return
 	}
 	g.publishLocked(s, "tool.start", map[string]any{kToolID: "t1", kName: toolReadFile, kArgs: map[string]any{kPath: "README.md"}})
