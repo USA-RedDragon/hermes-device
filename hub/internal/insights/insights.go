@@ -272,3 +272,40 @@ func tokens(c device.Counters) hub.Tokens {
 	return hub.Tokens{Input: c.Input, Output: c.Output, CacheRead: c.CacheRead, CacheWrite: c.CacheWrite,
 		Reasoning: c.Reasoning, Calls: c.Calls, CostUSD: cost}
 }
+
+// maxSessionTokens bounds the sessions one SessionTokens call reads.
+const maxSessionTokens = 50
+
+// SessionTokens returns the tokens of the named sessions of a backend that
+// were active in the last day, by session ID. A /bg prompt runs as a
+// session of its own (its task ID), and only Hermes's records know its
+// tokens. Sessions with no record are left out.
+func (s *Service) SessionTokens(ctx context.Context, user, backendID string, ids []string) (map[string]hub.Tokens, error) {
+	if err := s.opts.Access.Allowed(ctx, user, backendID); err != nil {
+		return nil, err
+	}
+	if len(ids) > maxSessionTokens {
+		ids = ids[:maxSessionTokens]
+	}
+	out := map[string]hub.Tokens{}
+	p := s.plugins[backendID]
+	if p == nil || len(ids) == 0 {
+		return out, nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, s.opts.Timeout)
+	defer cancel()
+	u, err := p.Usage(cctx, 1)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", hub.ErrUsageUnavailable, pluginReason(err))
+	}
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	for _, x := range u.Sessions {
+		if want[x.SessionID] {
+			out[x.SessionID] = tokens(x.Counters)
+		}
+	}
+	return out, nil
+}

@@ -207,3 +207,19 @@ func TestGPUCache(t *testing.T) {
 		t.Fatalf("queries = %d, want 9 (one load, then the cache)", calls)
 	}
 }
+
+func TestSessionTokens(t *testing.T) {
+	t.Parallel()
+	s := newService(t, nil)
+	ctx := context.Background()
+	got, err := s.SessionTokens(ctx, alice, "pc", []string{"s0", "bg_missing"})
+	if err != nil || len(got) != 1 || got["s0"].Input != 10 || got["s0"].Output != 2 {
+		t.Fatalf("tokens = %+v, %v", got, err)
+	}
+	if _, err := s.SessionTokens(ctx, alice, "home", []string{"s0"}); !errors.Is(err, hub.ErrUsageUnavailable) {
+		t.Fatalf("home tokens = %v", err)
+	}
+	if _, err := s.SessionTokens(ctx, alice, "bobs", []string{"s0"}); !errors.Is(err, hub.ErrForbidden) {
+		t.Fatalf("alice on bob's backend = %v", err)
+	}
+}
