@@ -7,6 +7,8 @@
     if (text !== undefined && text !== null) e.textContent = text;
     return e;
   };
+  // pageMode is the page chat of the Firefox extension (/pagechat, pagechat.js).
+  const pageMode = document.documentElement.classList.contains("pagechat");
   let csrf = "";
   let stream = null;
   let view = null;
@@ -33,7 +35,8 @@
     }
     const r = await fetch(path, opts);
     if (r.status === 401) {
-      location.href = "/auth/login?next=" + encodeURIComponent(location.pathname + location.hash);
+      if (pageMode) page.signIn();
+      else location.href = "/auth/login?next=" + encodeURIComponent(location.pathname + location.hash);
       throw new Error("login required");
     }
     if (!r.ok) {
@@ -498,6 +501,7 @@
       if (view === this) {
         composer.setRunning(on);
         msgActs.decorate();
+        if (page) page.running(on);
       }
     }
 
@@ -981,6 +985,8 @@
       this.bottom();
       this.jumpTo();
       if (view === this) restoreView(this);
+      if (this.onLoad) this.onLoad();
+      this.onLoad = null;
     }
 
     // jumpTo scrolls to the message a search result opened the chat at.
@@ -1638,7 +1644,17 @@
   const pdfStart = /^<untrusted-pdf-text id="([0-9a-f]{16})">$/;
   const baseName = (p) => p.replace(/\/+$/, "").split("/").pop() || p;
 
+  // cutPage drops the block the hub adds to a page chat message (hub.PageContextHead).
+  const pageHead = "[Talaria page chat.";
+  function cutPage(text) {
+    const s = String(text || "");
+    const i = s.indexOf("\n" + pageHead);
+    if (i >= 0) return s.slice(0, i).replace(/\n+$/, "");
+    return s.startsWith(pageHead) ? "" : s;
+  }
+
   function splitAttachments(text) {
+    text = cutPage(text);
     const atts = [];
     const keep = [];
     let skipTo = "";
@@ -1898,6 +1914,7 @@
     search_files: ["searched files", "searched files %d times"],
     web_search: ["searched the web", "searched the web %d times"],
     web_extract: ["read a web page", "read %d web pages"],
+    browser_snapshot: ["read a tab", "read %d tabs"],
     todo: ["updated the to-do list", "updated the to-do list %d times"],
   };
 
@@ -2037,6 +2054,32 @@
     cl.title = cwd ? "Working folder: " + cwd : "";
     if (view && !$("info").hidden) claude.note($("claudenote"), view.backend, info);
     settings.sync(info);
+    if (page) page.meters(view ? pageMeters(info) : []);
+  }
+
+  // pageMeters are the page chat's meter row: the context window, the
+  // Claude account's windows, and the tokens of the chat.
+  function pageMeters(info) {
+    const out = [];
+    const u = info.usage || {};
+    const max = u.context_max || info.context_length;
+    if (max && typeof u.context_used === "number") {
+      const pct = Math.min(100, Math.round((u.context_used / max) * 100));
+      out.push(metric("ctx", "", pct, (u.context_estimated ? "~" : "") + tokens(u.context_used) + " / " + tokens(max) + " tokens", "",
+        pct + "% of the model's context window is in use" + (u.context_estimated ? " (estimated)" : "") +
+        ". When it fills up, Talaria summarizes older messages to make room."));
+    } else if (max) {
+      out.push(contextPart(info));
+    }
+    out.push(...limitParts(info).parts);
+    const tin = u.prompt || u.input || 0;
+    const tout = u.output || 0;
+    if (tin || tout) {
+      const io = el("span", "metric io", "In " + tokens(tin) + " \u00B7 Out " + tokens(tout));
+      io.title = "Tokens this chat has sent to the model (in) and received (out)";
+      out.push(io);
+    }
+    return out;
   }
 
   // mirrorTokens copies this turn's tokens from the top bar into the line
@@ -2223,6 +2266,12 @@
     document.title = "Talaria";
     banner(notice);
     notice = "";
+    if (page) {
+      $("welcome").hidden = true;
+      $("composer").hidden = false;
+      page.meters([]);
+      page.shown();
+    }
   }
 
   function showChat(backend, session) {
@@ -2284,6 +2333,10 @@
       }
     };
     $("input").focus({ preventScroll: true });
+    if (page) {
+      page.remember(backend, session);
+      page.shown();
+    }
   }
 
   // showMemory opens the Memory page in place of the chat.
@@ -2364,6 +2417,12 @@
     const sc = /^#\/scheduled\/?$/.test(location.hash);
     const dec = (x) => { try { return decodeURIComponent(x); } catch (_) { return null; } };
     const same = (b, s) => view && view.backend === b && view.session === s;
+    if (page) {
+      const b = m && dec(m[1]), s = m && dec(m[2]);
+      if (b !== null && s !== null && m) { if (!same(b, s)) showChat(b, s); } else showWelcome();
+      refreshList();
+      return;
+    }
     if (fl && me.files && dec(fl[1]) !== null && dec(fl[2]) !== null) {
       const b = dec(fl[1]), s = dec(fl[2]);
       pagesView.hide();
@@ -2390,7 +2449,7 @@
     refreshList();
   }
 
-  async function send(ev) {
+  async function send(ev, extra) {
     ev.preventDefault();
     const input = $("input");
     const text = input.value.trim();
@@ -2422,6 +2481,7 @@
     input.value = "";
     grow();
     let body = steer ? { text, steer: true } : { text };
+    if (extra) Object.assign(body, extra);
     if (files.length) {
       body = new FormData();
       body.append("text", text);
@@ -2474,6 +2534,43 @@
     }
   }
   let sending = 0;
+
+  // pageSend sends from the page chat: it starts the page chat on the
+  // first message, then sends with the tabs the extension lets it read.
+  let pageStarting = false;
+  async function pageSend(ev) {
+    ev.preventDefault();
+    const input = $("input");
+    const text = input.value.trim();
+    if (!text || pageStarting) return;
+    if (!view) {
+      pageStarting = true;
+      try {
+        const pc = await api("POST", "/api/pagechats", { backend_id: me.default_backend || "", device_id: page.device() });
+        history.replaceState(null, "", chatHash(pc.backend_id, pc.id));
+        showChat(pc.backend_id, pc.id);
+        const chat = view;
+        await new Promise((resolve) => { chat.onLoad = resolve; setTimeout(resolve, 5000); });
+        if (chat !== view) return;
+        input.value = text;
+        if (pc.browser_error) banner(pc.browser_error, false);
+        refreshList();
+      } catch (e) {
+        banner("Could not start a page chat: " + e.message, true);
+        return;
+      } finally {
+        pageStarting = false;
+      }
+    }
+    let ctx = null;
+    try {
+      ctx = await page.context(view.session);
+    } catch (e) {
+      banner("Could not read the tabs: " + e.message, true);
+      return;
+    }
+    await send(ev, ctx ? { page: ctx } : undefined);
+  }
 
   function dropZone() {
     const form = $("composer");
@@ -2711,7 +2808,8 @@
     defaultBackend: () => me.default_backend || "" });
   const notices = window.HubNotify({ api, el, csrf: () => csrf,
     current: () => (view && view.backend && view.session ? { backend: view.backend, session: view.session } : null) });
-  const composer = window.HubComposer({ api, el, chat: () => view, submit: () => send({ preventDefault() {} }),
+  const composer = window.HubComposer({ api, el, chat: () => view,
+    submit: () => (page ? pageSend({ preventDefault() {} }) : send({ preventDefault() {} })),
     stop: () => stopTurn(), editLast: () => msgActs.editLast(), busy: () => sending > 0, hasFiles: () => attachments.list.length > 0,
     canFiles: (chat) => {
       const pl = chat && chat.place;
@@ -2723,6 +2821,11 @@
   const chats = window.HubChatList({ api, el, toast, banner, refresh: () => refreshList(),
     exportChat: (b, s, title) => msgActs.exportChat(b, s, title), computers: () => computers,
     newChat: () => newChat(), pickFolder: (c) => { openSide(false); picker.open({ computer: c }); }, me: () => me });
+
+  const page = pageMode ? window.HubPageChat({ api, el, toast, banner, view: () => view,
+    sessions: () => (lastList ? lastList.sessions : []), open: (b, s) => { location.hash = chatHash(b, s); },
+    fresh: () => { history.replaceState(null, "", location.pathname); route(); }, hash: chatHash, ago,
+    submit: () => pageSend({ preventDefault() {} }) }) : null;
 
   const updates = window.HubUpdate({ api, version: () => me.version, flush: () => composer.flush(), save: saveView,
     busy: () => !!($("input").value.trim() || attachments.list.length || sending > 0 ||
@@ -2828,10 +2931,11 @@
     $("composer").onsubmit = (e) => {
       e.preventDefault();
       if (composer.mode() === "stop") stopTurn();
+      else if (page) pageSend(e);
       else send(e);
     };
     $("exportbtn").onclick = () => { if (view) msgActs.exportChat(view.backend, view.session, $("title").textContent); };
-    dropZone();
+    if (!page) dropZone();
     $("search").oninput = () => { search.query($("search").value); drawList(); };
     $("search").onkeydown = (e) => {
       if (e.key !== "Escape") return;
@@ -2873,6 +2977,14 @@
     if (me.computers) {
       await loadComputers();
       setInterval(() => { if (!document.hidden) { loadComputers(); loadPlace(); } }, 20000);
+    }
+    if (page) {
+      page.start();
+      await refreshList();
+      const last = page.last();
+      if (!location.hash && last && lastList && lastList.sessions.some((s) => s.backend_id === last.b && s.id === last.s && s.page)) {
+        history.replaceState(null, "", chatHash(last.b, last.s));
+      }
     }
     route();
     if (!view) setTimeout(() => restoreView(null), 300);

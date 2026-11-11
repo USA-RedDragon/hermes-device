@@ -935,3 +935,66 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7
 }
 /* A reload for a new release keeps the view: the list and the chat stay hidden until they are back in place. */
 .restoring #sessions, .restoring #log { visibility: hidden; }
+
+/* Page chat: this page in the Talaria Firefox extension's toolbar popup and sidebar (/pagechat, pagechat.js). */
+html.pagechat, .pagechat body { font-size: 14px; }
+.pagechat body { background: var(--side); }
+.pagechat .app { display: flex; flex-direction: column; height: 100dvh; }
+.pagechat .side, .pagechat .scrim, .pagechat .bar, .pagechat .info, .pagechat .act, .pagechat .welcome, .pagechat .placenote,
+.pagechat .composer .attach, .pagechat .composer .hint, .pagechat .composer .chips { display: none !important; }
+.pagechat .main { flex: 1; min-height: 0; position: relative; }
+.pagechat .banner { font-size: .8rem; padding: .3rem .65rem; }
+.phead { flex: none; display: flex; align-items: center; gap: .2rem; padding: .35rem .4rem .35rem .65rem; border-bottom: 1px solid var(--line);
+  background: var(--card); }
+.phead .logo { width: 1.25rem; height: 1.25rem; color: var(--accent); flex: none; }
+.phead .pttl { flex: 1; min-width: 0; display: flex; align-items: center; gap: .25rem; border: 0; background: transparent; padding: .2rem .35rem;
+  font-weight: 600; font-size: .88rem; text-align: left; }
+.phead .pttl span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phead .pttl .ico { width: .85rem; height: .85rem; color: var(--muted); flex: none; }
+.phead .ib { width: 1.85rem; height: 1.85rem; }
+.phead .ib svg { width: 1.05rem; height: 1.05rem; }
+.phead button.ghost.ib.hover { background: var(--hover); color: var(--fg); }
+.plist { position: absolute; left: .5rem; right: .5rem; top: 2.7rem; max-height: 70%; overflow-y: auto; background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, .2); padding: .3rem; z-index: 6;
+  display: flex; flex-direction: column; }
+.plist button { border: 0; background: transparent; text-align: left; display: flex; gap: .5rem; justify-content: space-between;
+  padding: .4rem .5rem; font-size: .84rem; }
+.plist button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plist button:hover, .plist button.on { background: var(--hover); }
+.plist small { color: var(--muted); white-space: nowrap; }
+.pempty { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; justify-content: center; gap: .4rem; padding: .7rem; }
+.pempty p { margin: 0 0 .2rem; color: var(--muted); font-size: .84rem; text-align: center; }
+.pempty button { text-align: left; font-size: .85rem; padding: .3rem .65rem; }
+.pempty:not([hidden]) + .log { display: none; }
+.pagechat body > .pempty { height: 100%; }
+.pagechat .log { padding: .7rem .7rem .4rem; gap: .55rem; }
+.pagechat .msg { font-size: .88rem; }
+.pagechat .msg.user { max-width: 85%; padding: .4rem .65rem; border-radius: 12px 12px 4px 12px; }
+.pagechat .msg.assistant { background: none; border: 0; padding: 0; line-height: 1.5; }
+.pagechat details.toolgroup { font-size: .78rem; }
+.pagechat details.toolgroup .group-body { gap: .15rem; margin-left: 1.2rem; padding: .35rem .5rem; background: var(--card);
+  border: 1px solid var(--line); border-radius: 8px; color: var(--muted); }
+.pagechat .tool { border: 0; background: none; padding: .1rem 0; font-size: .78rem; color: var(--muted); }
+.pagechat .tool .head .name { font-weight: 400; }
+.pagechat .tool details, .pagechat .tool pre, .pagechat .tool .media, .pagechat .tool .msg { display: none; }
+.pagechat .composer { padding: .45rem .55rem .55rem; gap: .35rem; background: var(--card); }
+.pagechat .composer-row { max-width: none; }
+.pagechat .composer textarea { font-size: inherit; border-radius: 10px; padding: .45rem .55rem; background: var(--bg); }
+.prow { display: flex; gap: .4rem; align-items: center; min-width: 0; }
+.prow .grow { flex: 1; }
+.pchip { display: inline-flex; gap: .3rem; align-items: center; min-width: 0; max-width: 100%; font-size: .74rem; border: 1px solid var(--line);
+  border-radius: 999px; padding: .05rem .5rem; color: var(--muted); background: var(--card); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+button.pchip { cursor: pointer; }
+.pchip .ico { width: .8rem; height: .8rem; flex: none; }
+.pagechat .composer .send.ib { width: 2rem; height: 2rem; border-radius: 8px; flex: none; }
+.pagechat .composer .send.ib svg { width: 1.05rem; height: 1.05rem; }
+.pmeters { display: flex; flex-wrap: wrap; gap: .3rem .6rem; align-items: center; padding: .1rem .1rem 0; font-size: .7rem; color: var(--muted); }
+.pmeters:empty { display: none; }
+.pmeters .metric { display: inline-flex; align-items: center; gap: .25rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pmeters .metric .lbl:empty { display: none; }
+.pmeters .metric .meter { order: -1; width: 1.05rem; height: 1.05rem; border-radius: 50%;
+  background: conic-gradient(var(--accent) calc(var(--p) * 1%), var(--line) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent 58%, #000 60%); mask: radial-gradient(farthest-side, transparent 58%, #000 60%); }
+.pmeters .metric.hi .meter { background: conic-gradient(var(--warn) calc(var(--p) * 1%), var(--line) 0); }
+.pmeters .metric .meter > span { display: none; }

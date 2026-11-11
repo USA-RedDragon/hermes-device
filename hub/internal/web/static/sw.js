@@ -90,7 +90,7 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil((async () => {
     const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     for (const w of wins) {
-      if (new URL(w.url).origin !== self.location.origin) continue;
+      if (new URL(w.url).origin !== self.location.origin || w.frameType === "nested") continue;
       await w.focus();
       w.postMessage({ type: "hub.open", url });
       return;
