@@ -407,6 +407,43 @@ func TestScheduledJobs(t *testing.T) {
 	}
 }
 
+func TestScheduledJobResultsChoice(t *testing.T) {
+	t.Parallel()
+	e := setup(t, nil)
+	_ = e.st.SetNotifySettings(e.ctx, alice, hub.NotifySettings{Failures: true, Telegram: true, Push: true})
+	run := func(at string) {
+		e.jobs.set(`[{"id":"g","name":"General","last_run_at":"` + at + `","last_status":"ok","talaria_results":"general"},
+			{"id":"h","name":"HubOnly","last_run_at":"` + at + `","last_status":"error","last_error":"boom","talaria_results":"hub"},
+			{"id":"t","name":"Topic","last_run_at":"` + at + `","last_status":"ok","talaria_results":"topic","talaria_owner":"alice"},
+			{"id":"o","name":"Others","last_run_at":"` + at + `","last_status":"error","last_error":"x","talaria_owner":"bob"},
+			{"id":"d","name":"Default","last_run_at":"` + at + `","last_status":"ok"}]`)
+		e.n.PollJobsNow(e.ctx)
+	}
+	run("2026-11-10T03:00:00")
+	run("2026-11-11T03:00:00")
+	tg := make([]string, 0, len(e.tg.sent))
+	for _, s := range e.tg.sent {
+		tg = append(tg, s.m.Detail)
+	}
+	// General and Topic (no linked group) go to Telegram although alice
+	// turned job notices off; HubOnly's failure only to Web Push; Others
+	// is bob's; Default follows her settings.
+	if len(tg) != 2 || !strings.Contains(tg[0]+tg[1], "General finished") || !strings.Contains(tg[0]+tg[1], "Topic finished") {
+		t.Fatalf("telegram = %q", tg)
+	}
+	if len(e.push.sent) != 3 {
+		t.Fatalf("push = %d", len(e.push.sent))
+	}
+	// With a linked group, a topic job's success stays out of General.
+	if err := e.st.LinkTelegramGroup(e.ctx, hub.TelegramGroup{User: alice, ChatID: -100, LinkedAt: e.now}); err != nil {
+		t.Fatal(err)
+	}
+	run("2026-11-12T03:00:00")
+	if len(e.tg.sent) != 3 || !strings.Contains(e.tg.sent[2].m.Detail, "General finished") {
+		t.Fatalf("grouped telegram = %+v", e.tg.sent[2:])
+	}
+}
+
 func TestQuietHours(t *testing.T) {
 	t.Parallel()
 	s := hub.NotifySettings{QuietStart: "22:00", QuietEnd: "07:00", TimeZone: "America/Chicago"}

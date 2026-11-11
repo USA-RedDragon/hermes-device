@@ -22,6 +22,10 @@ type cronJob struct {
 	LastError  string          `json:"last_error"`
 	// DeliveryError is why the result could not be delivered.
 	DeliveryError string `json:"last_delivery_error"`
+	// Results and Owner are what the Scheduled page recorded on the job:
+	// where its results go and who made it.
+	Results string `json:"talaria_results"`
+	Owner   string `json:"talaria_owner"`
 }
 
 // maxJobsBody bounds the job list the hub reads.
@@ -78,7 +82,10 @@ func (n *Notifier) checkJob(ctx context.Context, backendID string, j cronJob) {
 	if name == "" {
 		name = j.ID
 	}
-	nt := hub.Notice{BackendID: backendID, Key: "job:" + j.ID + ":" + mark}
+	nt := hub.Notice{BackendID: backendID, Key: "job:" + j.ID + ":" + mark, Results: j.Results}
+	if j.Owner != "" {
+		nt.Users = []string{j.Owner}
+	}
 	switch j.LastStatus {
 	case "ok":
 		nt.Kind, nt.Detail = hub.NoticeJob, "Scheduled job "+name+" finished."
@@ -98,15 +105,28 @@ func loginWords() []string {
 		"expired token", "token expired", "reauth", "authenticate"}
 }
 
-func jobFailure(name, msg string) string {
+// NeedsLogin reports whether a job's error says that it needs the person
+// to sign in again.
+func NeedsLogin(msg string) bool {
 	low := strings.ToLower(msg)
 	for _, w := range loginWords() {
 		if strings.Contains(low, w) {
-			return "Scheduled job " + name + " needs you to sign in again: " + short(msg)
+			return true
 		}
+	}
+	return false
+}
+
+func jobFailure(name, msg string) string {
+	if NeedsLogin(msg) {
+		return "Scheduled job " + name + " needs you to sign in again: " + short(msg)
 	}
 	return "Scheduled job " + name + " failed: " + short(msg)
 }
+
+// Short is a job's error as notices quote it: on one line, at most 300
+// characters, with runs of token characters hidden.
+func Short(s string) string { return short(s) }
 
 // secretLike matches long runs of token characters, as API keys and
 // tokens are, so a job's error does not carry one to a phone.

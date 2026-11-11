@@ -420,6 +420,9 @@ type Notice struct {
 	// Outcome is what became of the approval of a NoticeOutcome, or of a
 	// NoticeSettled whose answer the hub recorded.
 	Outcome *ApprovalOutcome
+	// Results is where a scheduled job's results go (ResultsHub and so
+	// on), for a job notice; "" follows the person's settings.
+	Results string
 }
 
 // SessionChecker is the optional part of a Service that tells whether a

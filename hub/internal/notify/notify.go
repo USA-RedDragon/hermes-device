@@ -47,6 +47,9 @@ type Message struct {
 	Detail  string
 	// URL opens the chat, or the hub, with the person's normal login.
 	URL string
+	// Results is where a scheduled job's results go (hub.ResultsHub and
+	// so on).
+	Results string
 }
 
 // Access says whether a person may use a backend.
@@ -281,7 +284,7 @@ func (n *Notifier) deliverNew(ctx context.Context, user string, nt hub.Notice) {
 		n.log.Warn("Failed to read notification settings", "user", user, "error", err.Error())
 		return
 	}
-	if !set.Wants(nt.Kind) {
+	if !wants(set, nt) {
 		return
 	}
 	rec := hub.NoticeRecord{User: user, Key: nt.Key, Kind: nt.Kind, BackendID: nt.BackendID, SessionID: nt.SessionID, Prompt: nt.Prompt,
@@ -305,7 +308,17 @@ func (n *Notifier) deliverNew(ctx context.Context, user string, nt hub.Notice) {
 		_, _ = n.o.Store.ClaimReminder(ctx, id)
 		return
 	}
-	n.deliver(ctx, set, Message{Record: rec, Title: nt.Title, Detail: nt.Detail})
+	n.deliver(ctx, set, Message{Record: rec, Title: nt.Title, Detail: nt.Detail, Results: nt.Results})
+}
+
+// wants reports whether a person gets a notice: as their settings say,
+// except that a finished scheduled job whose results go to Telegram
+// always sends one.
+func wants(set hub.NotifySettings, nt hub.Notice) bool {
+	if nt.Kind == hub.NoticeJob && (nt.Results == hub.ResultsGeneral || nt.Results == hub.ResultsTopic) {
+		return true
+	}
+	return set.Wants(nt.Kind)
 }
 
 // flooded reports whether a person had more notices than the burst
@@ -338,7 +351,7 @@ func (n *Notifier) deliver(ctx context.Context, set hub.NotifySettings, m Messag
 		m.Backend = r.BackendID
 	}
 	m.URL = n.chatURL(r)
-	if set.Telegram && n.tg != nil {
+	if set.Telegram && n.tg != nil && m.Results != hub.ResultsHub {
 		n.sendTelegram(ctx, m)
 	}
 	if set.Push && n.o.Push != nil {
@@ -357,6 +370,11 @@ func (n *Notifier) sendTelegram(ctx context.Context, m Message) {
 	// a linked group its topic shows the prompts, and General gets the
 	// rest with a button to the topic.
 	prompt := r.Kind == hub.NoticeApproval || r.Kind == hub.NoticeQuestion
+	// A job whose results go to its own topic shows each run in the run
+	// chat's topic, so General gets only its failures.
+	if m.Results == hub.ResultsTopic && grouped && r.Kind == hub.NoticeJob {
+		return
+	}
 	if !m.Reminder && r.SessionID != "" && r.Kind != hub.NoticeClaudeSignIn && (prompt || !grouped) {
 		if attached, err := n.o.Store.TelegramAttached(ctx, r.User, r.BackendID, r.SessionID); err != nil || attached {
 			return
