@@ -1,0 +1,325 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 02:51:56 -0600
+Subject: [PATCH] fix(agent): scope model.ollama_num_ctx to self-hosted routes
+
+model.ollama_num_ctx was applied to whatever route an agent ran on, so a
+config that pins num_ctx for a local Ollama capped the context window of
+hosted and process:// providers in the same config to that value, and a
+live /model switch or fallback kept the previous route's num_ctx.
+
+Apply the pin only when the active route is a self-hosted server Hermes
+recognizes, and re-resolve it on /model switches, fallback activation
+and primary restore.
+---
+ agent/agent_init_ollama.py             |  47 +++++++++-
+ agent/agent_runtime_helpers.py         |   3 +
+ agent/primary_runtime_snapshot.py      |   2 +
+ agent/route_binding.py                 |   2 +
+ cli-config.yaml.example                |   4 +-
+ tests/agent/test_ollama_num_ctx.py     | 125 ++++++++++++++++++++++++-
+ website/docs/integrations/providers.md |   2 +-
+ 7 files changed, 179 insertions(+), 6 deletions(-)
+
+diff --git a/agent/agent_init_ollama.py b/agent/agent_init_ollama.py
+index a5148d441a..1f6f2cad02 100644
+--- a/agent/agent_init_ollama.py
++++ b/agent/agent_init_ollama.py
+@@ -3,7 +3,23 @@
+ from __future__ import annotations
+ 
+ from agent.agent_runtime_helpers import _ra
+-from agent.model_metadata import is_local_endpoint, query_ollama_num_ctx
++from agent.model_metadata import (
++    _infer_provider_from_url, detect_local_server_type, is_local_endpoint, query_ollama_num_ctx,
++)
++
++
++def _route_serves_num_ctx(agent) -> bool:
++    """True when the active route is a self-hosted server Hermes recognizes (Ollama, llama.cpp,
++    vLLM, LM Studio). ``model.ollama_num_ctx`` describes that server's window; a hosted API
++    (Ollama Cloud included) or a ``process://`` provider in the same config must never be clamped
++    to it."""
++    if not agent.base_url or _infer_provider_from_url(agent.base_url) is not None:
++        return False
++    _key = agent.api_key if isinstance(agent.api_key, str) else ""
++    try:
++        return detect_local_server_type(agent.base_url, api_key=_key or "") is not None
++    except Exception:
++        return False
+ 
+ 
+ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
+@@ -13,9 +29,18 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
+     _override = _model_cfg.get("ollama_num_ctx") if isinstance(_model_cfg, dict) else None
+     if _override is not None:
+         try:
+-            agent._ollama_num_ctx = int(_override)
++            _pinned = int(_override)
+         except (TypeError, ValueError):
++            _pinned = None
+             _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _override)
++        if _pinned is not None and _route_serves_num_ctx(agent):
++            agent._ollama_num_ctx = _pinned
++        elif _pinned is not None:
++            _ra().logger.debug(
++                "model.ollama_num_ctx=%d ignored for %s at %s: not a self-hosted inference server",
++                _pinned, agent.model, agent.base_url or agent.provider,
++            )
++            return
+     if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
+         try:
+             # api_key may be a callable (Entra token provider); detection needs a string.
+@@ -38,7 +63,7 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
+             agent._ollama_num_ctx, _config_context_length,
+         )
+         agent._ollama_num_ctx = _config_context_length
+-    if agent._ollama_num_ctx and not agent.quiet_mode:
++    if agent._ollama_num_ctx and not getattr(agent, "quiet_mode", True):
+         # Name the real source: a config override is honoured on any local server, /api/show is Ollama-only.
+         _ra().logger.info(
+             "Local server num_ctx: will request %d tokens (%s)",
+@@ -65,3 +90,19 @@ def _clamp_compressor_to_ollama_num_ctx(agent):
+             model=agent.model, context_length=agent._ollama_num_ctx, base_url=agent.base_url,
+             api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+         )
++
++
++def refresh_ollama_num_ctx(agent) -> None:
++    """Re-resolve num_ctx for the route a live agent was just moved to (``/model``, fallback).
++
++    Construction resolves it once; without this the previous route's value kept being sent and
++    kept clamping the compressor of a hosted model, and a session moved onto Ollama sent none.
++    """
++    try:
++        from hermes_cli.config import load_config_readonly
++        _model_cfg = (load_config_readonly() or {}).get("model", {})
++    except Exception:
++        _model_cfg = {}
++    _configure_ollama_num_ctx(agent, _model_cfg, getattr(agent, "_config_context_length", None))
++    if getattr(agent, "context_compressor", None) is not None:
++        _clamp_compressor_to_ollama_num_ctx(agent)
+diff --git a/agent/agent_runtime_helpers.py b/agent/agent_runtime_helpers.py
+index 78d915d68f..2ae92f05af 100644
+--- a/agent/agent_runtime_helpers.py
++++ b/agent/agent_runtime_helpers.py
+@@ -1110,6 +1110,7 @@ def _apply_primary_runtime_fields(agent, rt: dict[str, Any]) -> None:
+     agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
+     agent.request_overrides = dict(rt.get("request_overrides") or {})
+     agent._client_kwargs = dict(rt["client_kwargs"])
++    agent._ollama_num_ctx = rt.get("ollama_num_ctx", getattr(agent, "_ollama_num_ctx", None))
+ 
+ 
+ def _build_anthropic_client_from_runtime(agent, rt: dict[str, Any]) -> None:
+@@ -2422,6 +2423,8 @@ def switch_model(
+     )
+     if hasattr(agent, "context_compressor") and agent.context_compressor:
+         _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot)
++    from agent.agent_init_ollama import refresh_ollama_num_ctx
++    refresh_ollama_num_ctx(agent)
+     # Re-read the per-model reasoning_effort override so it applies immediately (per-model > global;
+     # YAML False = disabled).
+     try:
+diff --git a/agent/primary_runtime_snapshot.py b/agent/primary_runtime_snapshot.py
+index fe8914020a..a23fc3ff0b 100644
+--- a/agent/primary_runtime_snapshot.py
++++ b/agent/primary_runtime_snapshot.py
+@@ -37,6 +37,7 @@ def _snapshot_primary_runtime(agent):
+         "compressor_provider": getattr(_cc, "provider", agent.provider),
+         "compressor_context_length": _cc.context_length,
+         "compressor_threshold_tokens": _cc.threshold_tokens,
++        "ollama_num_ctx": getattr(agent, "_ollama_num_ctx", None),
+     }
+     if agent.api_mode == "anthropic_messages":
+         agent._primary_runtime.update({
+@@ -74,6 +75,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
+         "compressor_context_length": cc.context_length if cc else 0,
+         "compressor_api_mode": getattr(cc, "api_mode", agent.api_mode),
+         "compressor_threshold_tokens": cc.threshold_tokens if cc else 0,
++        "ollama_num_ctx": getattr(agent, "_ollama_num_ctx", None),
+     }
+     if api_mode == "anthropic_messages":
+         rt.update({
+diff --git a/agent/route_binding.py b/agent/route_binding.py
+index 526aadc667..3da47ddd5b 100644
+--- a/agent/route_binding.py
++++ b/agent/route_binding.py
+@@ -110,6 +110,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
+         provider=provider, base_url=base_url, api_mode=api_mode, model=model)
+     agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
+     _update_fallback_context_compressor(agent)
++    from agent.agent_init_ollama import refresh_ollama_num_ctx
++    refresh_ollama_num_ctx(agent)
+     _reresolve_fallback_reasoning_config(agent)
+     _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+     return old_model, old_provider
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index c97a85ade9..ef7211af5d 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -149,7 +149,9 @@ model:
+   #   Hermes auto-detects the model's window and sends it (Ollama otherwise
+   #   defaults to 2048); context_length, if set, caps the detected value.
+   #   An explicit ollama_num_ctx is sent as-is (never capped) — set it to
+-  #   pin VRAM use.
++  #   pin VRAM use. It applies only while the active route is a self-hosted
++  #   server (Ollama, llama.cpp, vLLM, LM Studio); hosted and process-backed
++  #   providers in the same config keep their own window.
+   #
+   # ollama_num_ctx: 32768
+   #
+diff --git a/tests/agent/test_ollama_num_ctx.py b/tests/agent/test_ollama_num_ctx.py
+index b3eb9d15a0..1bb5d25ca0 100644
+--- a/tests/agent/test_ollama_num_ctx.py
++++ b/tests/agent/test_ollama_num_ctx.py
+@@ -126,9 +126,10 @@ class TestQueryOllamaSupportsVision:
+ # ═══════════════════════════════════════════════════════════════════════
+ 
+ 
+-def _build_agent(cfg, probed_ctx, base_url="http://localhost:11434/v1"):
++def _build_agent(cfg, probed_ctx, base_url="http://localhost:11434/v1", server_type="ollama"):
+     import agent.context_compressor as cc_mod
+     with (
++        patch("agent.agent_init_ollama.detect_local_server_type", return_value=server_type),
+         patch("model_tools.get_tool_definitions", return_value=[]),
+         patch("model_tools.check_toolset_requirements", return_value={}),
+         patch("agent.process_bootstrap.OpenAI"),
+@@ -210,3 +211,125 @@ class TestFloorRefusalNamesTheLocalServerHonestly:
+         with pytest.raises(ValueError, match="model.context_length") as exc:
+             _build_agent({"agent": {}, "model": {}}, probed_ctx=32768, base_url="https://openrouter.ai/api/v1")
+         assert "ollama_num_ctx" not in str(exc.value)
++
++
++# ═══════════════════════════════════════════════════════════════════════
++# Level 4: model.ollama_num_ctx belongs to the self-hosted route only.
++# A config that pins num_ctx for its local Ollama must not clamp a hosted
++# or process-backed model the same session (or another chat) runs on.
++# ═══════════════════════════════════════════════════════════════════════
++
++_OLLAMA_URL = "http://ollama.example.internal:11434/v1"
++_HOSTED_URL = "https://llm.example.com/v1"
++_WINDOWS = {_OLLAMA_URL: 262144, _HOSTED_URL: 1_000_000}
++_PIN_CFG = {"agent": {}, "model": {"ollama_num_ctx": 131072}}
++
++
++def _window_for(model, base_url="", *args, **kwargs):
++    return _WINDOWS.get((base_url or "").rstrip("/"), 262144)
++
++
++def _server_type_for(base_url, api_key=""):
++    return "ollama" if (base_url or "").rstrip("/") == _OLLAMA_URL else None
++
++
++@pytest.fixture
++def route_env():
++    import agent.context_compressor as cc_mod
++    from contextlib import ExitStack
++    with ExitStack() as stack:
++        for target, kwargs in (
++            ("model_tools.get_tool_definitions", {"return_value": []}),
++            ("model_tools.check_toolset_requirements", {"return_value": {}}),
++            ("hermes_cli.config.load_config", {"return_value": _PIN_CFG}),
++            ("hermes_cli.config.load_config_readonly", {"return_value": _PIN_CFG}),
++            ("agent.model_metadata.get_model_context_length", {"side_effect": _window_for}),
++            ("agent.agent_init_ollama.detect_local_server_type", {"side_effect": _server_type_for}),
++            ("agent.agent_init_ollama.query_ollama_num_ctx", {"return_value": None}),
++        ):
++            stack.enter_context(patch(target, **kwargs))
++        stack.enter_context(patch("agent.process_bootstrap.OpenAI"))
++        stack.enter_context(patch.object(cc_mod, "get_model_context_length", side_effect=_window_for))
++        yield
++
++
++def _make_agent(base_url, model, **kwargs):
++    from run_agent import AIAgent
++    return AIAgent(
++        model=model, provider="custom", api_key="sk-test", base_url=base_url,
++        quiet_mode=True, skip_context_files=True, skip_memory=True, **kwargs,
++    )
++
++
++def _wire_options(agent):
++    from agent.chat_completion_helpers import _build_api_kwargs_for_mode
++    kwargs = _build_api_kwargs_for_mode(agent, [{"role": "user", "content": "hi"}], [])
++    return (kwargs.get("extra_body") or {}).get("options")
++
++
++def _assert_on_ollama(agent):
++    assert agent._ollama_num_ctx == 131072
++    assert agent.context_compressor.context_length == 131072
++    assert _wire_options(agent) == {"num_ctx": 131072}
++
++
++def _assert_on_hosted(agent):
++    assert agent._ollama_num_ctx is None
++    assert agent.context_compressor.context_length == 1_000_000
++    assert _wire_options(agent) is None
++
++
++class TestNumCtxPinIsScopedToTheSelfHostedRoute:
++    def test_pin_applies_on_the_ollama_route(self, route_env):
++        _assert_on_ollama(_make_agent(_OLLAMA_URL, "qwen3:32b"))
++
++    def test_pin_neither_sent_nor_capping_on_a_hosted_route(self, route_env):
++        ollama = _make_agent(_OLLAMA_URL, "qwen3:32b")
++        hosted = _make_agent(_HOSTED_URL, "big-model")
++        _assert_on_ollama(ollama)
++        _assert_on_hosted(hosted)
++
++    def test_process_provider_is_not_a_num_ctx_route(self):
++        """``process://`` routes count as local endpoints (unqualified host) but never serve num_ctx."""
++        from types import SimpleNamespace
++        from agent.agent_init_ollama import _route_serves_num_ctx
++        from agent.model_metadata import is_local_endpoint
++        url = "process://claude-subscription"
++        assert is_local_endpoint(url)
++        assert not _route_serves_num_ctx(SimpleNamespace(base_url=url, api_key=""))
++
++    def test_hosted_ollama_cloud_is_not_a_num_ctx_route(self):
++        from types import SimpleNamespace
++        from agent.agent_init_ollama import _route_serves_num_ctx
++        with patch("agent.agent_init_ollama.detect_local_server_type", return_value="ollama") as probe:
++            assert not _route_serves_num_ctx(SimpleNamespace(base_url="https://ollama.com/v1", api_key=""))
++        probe.assert_not_called()
++
++    def test_switch_from_ollama_to_hosted_and_back(self, route_env):
++        agent = _make_agent(_OLLAMA_URL, "qwen3:32b")
++        _assert_on_ollama(agent)
++        agent.switch_model("big-model", "custom", api_key="sk-test", base_url=_HOSTED_URL,
++                           api_mode="chat_completions")
++        _assert_on_hosted(agent)
++        agent.switch_model("qwen3:32b", "custom", api_key="sk-test", base_url=_OLLAMA_URL,
++                           api_mode="chat_completions")
++        _assert_on_ollama(agent)
++
++    def test_switch_from_hosted_onto_ollama_picks_up_the_pin(self, route_env):
++        agent = _make_agent(_HOSTED_URL, "big-model")
++        _assert_on_hosted(agent)
++        agent.switch_model("qwen3:32b", "custom", api_key="sk-test", base_url=_OLLAMA_URL,
++                           api_mode="chat_completions")
++        _assert_on_ollama(agent)
++
++    def test_fallback_to_hosted_and_primary_restore(self, route_env):
++        from agent.error_classifier import FailoverReason
++        agent = _make_agent(_OLLAMA_URL, "qwen3:32b", fallback_model={
++            "provider": "custom", "model": "big-model", "base_url": _HOSTED_URL, "api_key": "sk-test",
++        })
++        assert agent._try_activate_fallback(FailoverReason.rate_limit)
++        _assert_on_hosted(agent)
++        agent._rate_limited_until = 0
++        assert agent._restore_primary_runtime()
++        _assert_on_ollama(agent)
++
+diff --git a/website/docs/integrations/providers.md b/website/docs/integrations/providers.md
+index c1d686f3b5..de404a5c8d 100644
+--- a/website/docs/integrations/providers.md
++++ b/website/docs/integrations/providers.md
+@@ -1131,7 +1131,7 @@ The model outputs something like `{"name": "web_search", "arguments": {...}}` as
+ 
+ **Fix:** Set context to at least **64,000 tokens** for agent use. See each server's section above for the specific flag.
+ 
+-The startup refusal for a local endpoint (`127.0.0.1`, LAN, Docker service names) says which window the server is serving and names the fix for any OpenAI-compatible server, not just Ollama: raise the server's context (llama.cpp `-c 64000`, vLLM `--max-model-len`, Ollama `OLLAMA_CONTEXT_LENGTH`/Modelfile `num_ctx`) or set `model.ollama_num_ctx` in `config.yaml` to the window the server really serves (at least 64K). `model.ollama_num_ctx` is honoured on every local endpoint; only the automatic detection behind it uses Ollama's `/api/show`.
++The startup refusal for a local endpoint (`127.0.0.1`, LAN, Docker service names) says which window the server is serving and names the fix for any OpenAI-compatible server, not just Ollama: raise the server's context (llama.cpp `-c 64000`, vLLM `--max-model-len`, Ollama `OLLAMA_CONTEXT_LENGTH`/Modelfile `num_ctx`) or set `model.ollama_num_ctx` in `config.yaml` to the window the server really serves (at least 64K). `model.ollama_num_ctx` is honoured on every self-hosted server Hermes recognizes (Ollama, llama.cpp, vLLM, LM Studio); only the automatic detection behind it uses Ollama's `/api/show`. Any other route in the same config, such as a hosted API, Ollama Cloud or a `process://` provider, ignores it, including after `/model` or a fallback moves a session there.
+ 
+ #### "Context limit: 2048 tokens" at startup
+ 

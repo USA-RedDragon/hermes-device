@@ -1,0 +1,147 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 02:50:00 -0600
+Subject: [PATCH] fix(acp): attach to a running session loaded from another
+ folder
+
+session/load from a folder other than the session's moves its workspace, which the owner allows only on an idle session, so loading a session mid-turn failed with session_busy. The editor now attaches as a viewer of the running turn and the move runs at its next prompt that finds the session idle.
+---
+ acp_adapter/gateway_server.py                 | 36 ++++++++++++-
+ .../acp_adapter/test_gateway_load_running.py  | 52 +++++++++++++++++++
+ 2 files changed, 87 insertions(+), 1 deletion(-)
+ create mode 100644 tests/acp_adapter/test_gateway_load_running.py
+
+diff --git a/acp_adapter/gateway_server.py b/acp_adapter/gateway_server.py
+index ff78c7e0f3..76dbdf78af 100644
+--- a/acp_adapter/gateway_server.py
++++ b/acp_adapter/gateway_server.py
+@@ -122,6 +122,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+         # Session -> the owner's latest usage dict (``session.usage`` / ``session.stats``).
+         self._usage = {}
+         self._background = set()
++        # Session -> editor folder a load could not move it to while a turn ran (``_move_or_defer``).
++        self._pending_moves = {}
+ 
+     def on_connect(self, conn):
+         self._conn = conn
+@@ -355,8 +357,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+         if session_id != held_id:
+             self._aliases[held_id] = session_id
+         info = await self._attach_info(client, session_id)
++        self._pending_moves.pop(session_id, None)
+         if self._moved(info, cwd):
+-            info = await self._move_workspace(client, session_id, cwd)
++            info = await self._move_or_defer(client, session_id, info, cwd)
+         if "cwd" not in info and self._conn:
+             await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
+                 "Attached to the gateway's existing session policy; editor cwd is not applied.\n"))
+@@ -391,6 +394,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+         for pending in snapshot.get("prompts", []):
+             self._permission(session_id, pending)
+         await self._notify_unknown(session_id)
++        if session_id in self._pending_moves and self._conn:
++            await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
++                f"This session is busy, so it stays in {info['cwd']} for now. It moves to "
++                f"{_translate_acp_cwd(cwd)} at your next prompt that finds it idle.\n"))
+         await self._request_live_reasoning(client, session_id)
+         return await self._session_fields(session_id, {**info, **(snapshot.get("info") or {})}, held_id)
+ 
+@@ -407,6 +414,30 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+         self._mutations.acknowledge(session_id, 'workspace', payload)
+         return await client.rpc("session.info", session_id=session_id)
+ 
++    async def _move_or_defer(self, client, session_id, info, cwd):
++        """Move the session to the editor's folder, or attach as a viewer of a session whose turn is
++        running (or lost): the move is idle-only, so it waits for this editor's next idle prompt."""
++        try:
++            return await self._move_workspace(client, session_id, cwd)
++        except GatewayClientError as exc:
++            if str(exc) not in {"session_busy", "unknown_execution"}:
++                raise
++        self._pending_moves[session_id] = cwd
++        return info
++
++    async def _apply_pending_move(self, session_id):
++        """The deferred move of a session loaded mid-turn; still pending while the session is busy."""
++        cwd = self._pending_moves[session_id]
++        client = await self._client()
++        try:
++            if self._moved(await client.rpc("session.info", session_id=session_id), cwd):
++                await self._move_workspace(client, session_id, cwd)
++        except GatewayClientError as exc:
++            if str(exc) not in {"session_busy", "unknown_execution"}:
++                raise
++            return
++        self._pending_moves.pop(session_id, None)
++
+     async def _rebind_editor_mcp(self, client, session_id, editor):
+         """The owner's ``editor_mcp`` mutation: rediscovers *editor*'s servers into the session's policy."""
+         self._unacked.pop(session_id, None)
+@@ -666,6 +697,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+             content = _content_blocks_to_openai_user_content(prompt)
+             if not isinstance(content, str) or _slash_command(content) != 'discard':
+                 raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
++        if session_id in self._pending_moves and session_id not in self._unacked:
++            # Not before a lost submit's retry: a move would retire the identity that retry reuses.
++            await self._apply_pending_move(session_id)
+         prepared = await self._prepare_submit(session_id, prompt)
+         if prepared is None:
+             return PromptResponse(stop_reason='cancelled')
+diff --git a/tests/acp_adapter/test_gateway_load_running.py b/tests/acp_adapter/test_gateway_load_running.py
+new file mode 100644
+index 0000000000..e1cab525df
+--- /dev/null
++++ b/tests/acp_adapter/test_gateway_load_running.py
+@@ -0,0 +1,52 @@
++"""session/load of a session another surface is running a turn in, from another folder.
++
++The workspace move is idle-only on the owner, so the editor attaches as a viewer of the running turn
++and the session moves to the editor's folder at the editor's next prompt."""
++import asyncio
++import json
++import threading
++
++import pytest
++
++from tests.acp_adapter.test_gateway_sessions import editor, viewer
++from tests.waiting import async_wait_until
++
++
++@pytest.mark.platforms("linux")
++@pytest.mark.asyncio
++async def test_load_of_a_running_session_attaches_and_moves_at_the_next_prompt(daemon, tmp_path, model_peer):
++    started, folder = tmp_path / 'started-here', tmp_path / 'editor-folder'
++    started.mkdir()
++    folder.mkdir()
++    model_peer.blocked, model_peer.release = threading.Event(), threading.Event()
++    async with viewer(daemon) as ws:
++        created = await ws.rpc('session.create', request_id='running-elsewhere', source='tui', cwd=str(started))
++        sid = created['session_id']
++        accepted = await ws.rpc('prompt.submit', session_id=sid, input_id='held-turn', text='BLOCK_FIFO hold')
++        await async_wait_until(model_peer.blocked.is_set, timeout=25, what='turn inside the model call')
++        try:
++            async with editor(daemon, tmp_path) as acp:
++                init = await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
++                assert 'result' in init, init
++                loaded = await acp.rpc('session/load', cwd=str(folder), sessionId=sid, mcpServers=[])
++                assert 'result' in loaded, loaded
++                assert f'stays in {started}' in json.dumps(acp.frames)
++                assert (await ws.rpc('session.info', session_id=sid))['cwd'] == str(started)
++                model_peer.release.set()
++
++                async def settled():
++                    receipt = await ws.rpc('prompt.receipt', session_id=sid, admission_id=accepted['admission_id'])
++                    return receipt['status'] == 'terminal'
++                for _ in range(300):
++                    if await settled():
++                        break
++                    await asyncio.sleep(.1)
++                assert await settled()
++                await async_wait_until(lambda: 'LOCAL_ACK_MESSAGING_WARM' in json.dumps(acp.frames), timeout=10,
++                                       what='the running turn streamed to the editor')
++                reply = await acp.rpc('session/prompt', sessionId=sid,
++                                      prompt=[{'type': 'text', 'text': 'WS_SHARED after the move'}])
++                assert reply.get('result', {}).get('stopReason') == 'end_turn', reply
++                assert (await ws.rpc('session.info', session_id=sid))['cwd'] == str(folder)
++        finally:
++            model_peer.release.set()

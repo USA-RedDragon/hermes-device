@@ -1,0 +1,437 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 02:50:58 -0600
+Subject: [PATCH] feat(compression): summarise listed or larger-window chats on
+ their own main model
+
+auxiliary.compression.main_model_providers lists main providers whose chats
+send their compression summary to their own main model and keep the main
+window's trigger. main_model_when_larger does the same for any chat whose
+window is larger than the compression model's. Both default off.
+---
+ agent/context_compressor_summary.py           |   6 +-
+ agent/conversation_compression.py             |  14 +-
+ agent/conversation_compression_feasibility.py |  16 +-
+ agent/conversation_compression_route.py       |  86 ++++++++++
+ cli-config.yaml.example                       |   4 +
+ hermes_cli/config_defaults.py                 |   2 +-
+ .../test_compression_main_model_route.py      | 160 ++++++++++++++++++
+ website/docs/user-guide/configuration.md      |  11 ++
+ 8 files changed, 279 insertions(+), 20 deletions(-)
+ create mode 100644 agent/conversation_compression_route.py
+ create mode 100644 tests/agent/test_compression_main_model_route.py
+
+diff --git a/agent/context_compressor_summary.py b/agent/context_compressor_summary.py
+index 98cd03ce73..93dd8a3fd2 100644
+--- a/agent/context_compressor_summary.py
++++ b/agent/context_compressor_summary.py
+@@ -33,6 +33,8 @@ class SummaryDispatchMixin:
+         After a fallback, an omitted route is NOT "use the main model": ``call_llm`` re-resolves
+         ``auxiliary.compression`` from config — the model that just failed — and a second fallback
+         is refused, so every later attempt aborts (#123362). Name the main runtime explicitly.
++        A chat that summarises on its own main model (``auxiliary.compression.main_model_providers`` /
++        ``main_model_when_larger``) takes the same main route.
+         A stall-fallback ``pinned`` route replaces the whole route: merged over the main runtime, the
+         main api_key/base_url would ride into the fallback entry's call (to its host, or instead of it).
+         The main route is complete even with empty fields: an authoritative task keeps compression
+@@ -47,7 +49,9 @@ class SummaryDispatchMixin:
+         if self.summary_model:
+             call_kwargs["model"] = self.summary_model
+             return
+-        if not getattr(self, "_summary_model_fallen_back", False):
++        from agent.conversation_compression_route import summarises_on_main_model
++
++        if not getattr(self, "_summary_model_fallen_back", False) and not summarises_on_main_model(self):
+             return
+         from agent.auxiliary_task_config import authoritative_auxiliary_task
+ 
+diff --git a/agent/conversation_compression.py b/agent/conversation_compression.py
+index 16a80384aa..dcd1bab540 100644
+--- a/agent/conversation_compression.py
++++ b/agent/conversation_compression.py
+@@ -1380,6 +1380,7 @@ def run_compress_context_with_progress_timeout(
+ 
+ from agent.conversation_compression_checkpoint import _checkpoint_blocked, _checkpoint_incapable
+ from agent.conversation_compression_feasibility import lazy_compression_feasibility_check
++from agent.conversation_compression_route import _aux_inherits_main_route, keeps_main_model_summariser
+ 
+ 
+ def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
+@@ -1986,15 +1987,6 @@ def _lower_threshold_to_aux_context(
+     )
+ 
+ 
+-def _aux_inherits_main_route(agent: Any, aux_model: str, aux_base_url: str) -> bool:
+-    """True when the auxiliary compression client is the main model on the main endpoint."""
+-    from hermes_cli.route_identity import normalize_route_base_url
+-    if str(aux_model or "").strip().lower() != str(getattr(agent, "model", "") or "").strip().lower():
+-        return False
+-    main_base = normalize_route_base_url(str(getattr(agent, "base_url", "") or ""))
+-    return not main_base or normalize_route_base_url(aux_base_url) == main_base
+-
+-
+ def _configured_compression_context_length(agent: Any) -> Optional[int]:
+     """``auxiliary.compression.context_length`` as configured now (a session's side tasks follow its
+     profile, so the value captured at agent start can belong to an earlier summariser)."""
+@@ -2029,7 +2021,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
+     """Warn at session start if the aux compression context is below the threshold.
+     Called from ``AIAgent.__init__`` (CLI sees it via ``_vprint``); the gateway wires ``status_callback``
+     later, so ``replay_compression_warning`` resends it."""
+-    if not agent.compression_enabled:
++    if not agent.compression_enabled or keeps_main_model_summariser(agent):
+         return
+     try:
+         from agent.auxiliary_client import (
+@@ -2088,6 +2080,8 @@ def check_compression_model_feasibility(agent: Any) -> None:
+                 aux_model, base_url=aux_base_url, api_key=aux_api_key, config_context_length=_aux_cfg_ctx,
+                 provider=_aux_provider, custom_providers=_configured_custom_providers(agent),
+             )
++        if keeps_main_model_summariser(agent, aux_context):
++            return
+         # Aux model must meet MINIMUM_CONTEXT_LENGTH like the main model, else it cannot summarise a full window.
+         if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH:
+             raise ValueError(
+diff --git a/agent/conversation_compression_feasibility.py b/agent/conversation_compression_feasibility.py
+index 3b0d2a7012..de041107e5 100644
+--- a/agent/conversation_compression_feasibility.py
++++ b/agent/conversation_compression_feasibility.py
+@@ -24,11 +24,13 @@ def _mark_checked(agent: Any, route: tuple) -> None:
+ 
+ def compression_route_identity() -> tuple:
+     """The configured compression route a probe measures: the task's provider, model, URL and context
+-    length, the URL of a ``providers:`` / ``custom_providers:`` entry the task names, and the context pin
+-    a provider entry sets for the compression model at the route's URL. A config this
++    length, the URL of a ``providers:`` / ``custom_providers:`` entry the task names, the context pin
++    a provider entry sets for the compression model at the route's URL, and which chats summarise on their
++    own main model (``main_model_providers``, ``main_model_when_larger``). A config this
+     cannot read yields ``("unreadable",)``: the main request carries on and the probe reports the problem."""
+     try:
+-        return _route_identity()
++        from agent.conversation_compression_route import main_model_route_identity
++        return _route_identity() + main_model_route_identity()
+     except Exception:
+         logger.debug("Compression route unreadable for the feasibility latch", exc_info=True)
+         return ("unreadable",)
+@@ -63,11 +65,9 @@ def _drop_stale_ceiling(agent: Any) -> None:
+     clear_cooldown = getattr(compressor, "_clear_compression_failure_cooldown", None)
+     if callable(clear_cooldown):
+         clear_cooldown()
+-    if getattr(compressor, "_aux_context_ceiling", None) is not None:
+-        compressor._aux_context_ceiling = None
+-        compressor.update_model(compressor.model, compressor.context_length, base_url=compressor.base_url,
+-                                api_key=compressor.api_key, provider=compressor.provider,
+-                                api_mode=compressor.api_mode)
++    compressor._aux_context_window = None
++    from agent.conversation_compression_route import restore_main_window_trigger
++    restore_main_window_trigger(compressor)
+ 
+ 
+ def revalidate_compression_feasibility(agent: Any) -> None:
+diff --git a/agent/conversation_compression_route.py b/agent/conversation_compression_route.py
+new file mode 100644
+index 0000000000..501cb3575c
+--- /dev/null
++++ b/agent/conversation_compression_route.py
+@@ -0,0 +1,86 @@
++"""Which model writes a chat's compression summary: the ``auxiliary.compression`` route, or the chat's own
++main model.
++
++``auxiliary.compression.main_model_providers`` lists main providers whose chats summarise on their own main
++model, and ``auxiliary.compression.main_model_when_larger`` does the same for a chat whose main window is
++larger than the compression model's measured window. Both are read when the feasibility probe runs and again
++when each summary is sent, so a chat switched to another provider mid-session follows its current route.
++A chat on its own main model keeps the main window's trigger (``compression.threshold``): the probe never
++lowers it to the compression model's window."""
++
++from __future__ import annotations
++
++import logging
++from typing import Any, Optional
++
++logger = logging.getLogger("agent.conversation_compression")
++
++
++def _main_model_settings() -> tuple[frozenset[str], bool]:
++    """``(main_model_providers, main_model_when_larger)`` as configured now; the defaults (no providers,
++    flag off) when config cannot be read, so every chat keeps the configured compression route."""
++    try:
++        from agent.auxiliary_task_config import _get_auxiliary_task_config
++        cfg = _get_auxiliary_task_config("compression")
++    except Exception:
++        logger.debug("Compression config unreadable; summarising on the configured route", exc_info=True)
++        return frozenset(), False
++    raw = cfg.get("main_model_providers") or []
++    if isinstance(raw, str):
++        raw = [raw]
++    providers = frozenset(str(p).strip().lower() for p in raw if str(p or "").strip())
++    return providers, cfg.get("main_model_when_larger") is True
++
++
++def main_model_route_identity() -> tuple:
++    """The main-model settings as part of the route the feasibility latch compares."""
++    providers, when_larger = _main_model_settings()
++    return (",".join(sorted(providers)), str(when_larger))
++
++
++def summarises_on_main_model(compressor: Any) -> bool:
++    """True when this chat's summary goes to its own main model instead of ``auxiliary.compression``: its
++    provider is listed, or ``main_model_when_larger`` is on and its window is larger than the compression
++    model's window the last probe measured (unmeasured: the configured route)."""
++    providers, when_larger = _main_model_settings()
++    provider = str(getattr(compressor, "provider", "") or "").strip().lower()
++    if provider and provider in providers:
++        return True
++    window = getattr(compressor, "_aux_context_window", None)
++    if not when_larger or not isinstance(window, int) or window <= 0:
++        return False
++    return int(getattr(compressor, "context_length", 0) or 0) > window
++
++
++def restore_main_window_trigger(compressor: Any) -> None:
++    """Drop an installed aux ceiling and recompute the trigger from the main window."""
++    if getattr(compressor, "_aux_context_ceiling", None) is None:
++        return
++    compressor._aux_context_ceiling = None
++    compressor.update_model(compressor.model, compressor.context_length, base_url=compressor.base_url,
++                            api_key=compressor.api_key, provider=compressor.provider,
++                            api_mode=compressor.api_mode)
++
++
++def keeps_main_model_summariser(agent: Any, aux_context: Optional[int] = None) -> bool:
++    """Record the compression model's measured window (None before the probe measures it) and report
++    whether this chat summarises on its own main model. When it does, an aux ceiling from an earlier probe
++    and its "auto-lowered" notice are dropped, so the trigger follows the main window again."""
++    compressor = agent.context_compressor
++    compressor._aux_context_window = aux_context
++    if not summarises_on_main_model(compressor):
++        return False
++    restore_main_window_trigger(compressor)
++    if getattr(agent, "_last_feasibility_notice", None) is not None:
++        agent._last_feasibility_notice = None
++        agent._compression_warning = None
++    return True
++
++
++def _aux_inherits_main_route(agent: Any, aux_model: str, aux_base_url: str) -> bool:
++    """True when the auxiliary compression client is the main model on the main endpoint."""
++    from hermes_cli.route_identity import normalize_route_base_url
++    if str(aux_model or "").strip().lower() != str(getattr(agent, "model", "") or "").strip().lower():
++        return False
++    main_base = normalize_route_base_url(str(getattr(agent, "base_url", "") or ""))
++    return not main_base or normalize_route_base_url(aux_base_url) == main_base
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index c97a85ade9..335f31a04e 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -1006,6 +1006,10 @@ prompt_caching:
+ #     provider: "auto"
+ #     model: ""
+ #     # max_concurrency: 2    # Optional: cap simultaneous compression calls
++#     # main_model_providers: [anthropic]  # Chats on these main providers summarise on
++#                                         # their own main model, at their own threshold.
++#     # main_model_when_larger: false     # true: also any chat whose window is larger
++#                                         # than the compression model's.
+ #     # no_progress_timeout: 60   # Codex/Responses-only: seconds a stream may go without a
+ #                                 # substantive event before it fails fast (default: 60).
+ #                                 # Independent of "timeout" above (the overall request
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 8dca8910e4..da894d201e 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -747,7 +747,7 @@ DEFAULT_CONFIG = {
+         # Compression: raise timeout for local models. no_progress_timeout: seconds a streamed call
+         # goes without a substantive chunk before it fails fast into retry/fallback; None = built-in
+         # 60s default. Independent of "timeout" (the overall request budget). See #108104.
+-        "compression": _aux(120, no_progress_timeout=None),
++        "compression": _aux(120, no_progress_timeout=None, main_model_providers=[], main_model_when_larger=False),
+         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
+         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
+         # delegation.provider pins. "auto" + "" = main agent's model. api_mode forces transport:
+diff --git a/tests/agent/test_compression_main_model_route.py b/tests/agent/test_compression_main_model_route.py
+new file mode 100644
+index 0000000000..f4d1a886b6
+--- /dev/null
++++ b/tests/agent/test_compression_main_model_route.py
+@@ -0,0 +1,160 @@
++"""``auxiliary.compression.main_model_providers`` / ``main_model_when_larger``: chats that summarise on
++their own main model keep the main window's trigger, every other chat keeps the configured route."""
++
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++from agent.auxiliary_task_config import session_auxiliary_scope
++from agent.context_compressor import ContextCompressor
++from agent.conversation_compression_feasibility import (
++    ensure_compression_feasibility_checked, revalidate_compression_feasibility,
++)
++from agent.conversation_compression_route import summarises_on_main_model
++from hermes_cli.config import DEFAULT_CONFIG
++from run_agent import AIAgent
++
++AUX_WINDOW = 131_072
++LOCAL = ("local-model", "custom", "http://localhost:11434/v1", 131_072)
++CLOUD = ("big-model", "acme-cloud", "https://api.example.com/v1", 1_000_000)
++
++
++def _aux_config(**extra):
++    return {"compression": {"provider": "custom", "model": "small-model", "base_url": "http://localhost:11434/v1",
++                            "context_length": AUX_WINDOW, **extra}}
++
++
++def _make_agent(route, threshold_percent=0.50) -> AIAgent:
++    model, provider, base_url, window = route
++    agent = AIAgent.__new__(AIAgent)
++    agent.model, agent.provider, agent.base_url = model, provider, base_url
++    agent.api_key, agent.api_mode = "sk-main", "chat_completions"
++    agent.quiet_mode = True
++    agent.log_prefix = ""
++    agent.compression_enabled = True
++    agent._print_fn = None
++    agent.suppress_status_output = False
++    agent._stream_consumers = []
++    agent._executing_tools = False
++    agent._mute_post_response = False
++    agent.status_callback = None
++    agent.tool_progress_callback = None
++    agent._compression_warning = None
++    agent._aux_compression_context_length_config = None
++    agent._custom_providers = []
++    agent.tools = []
++    agent._emit_status = lambda message: None
++    agent.context_compressor = ContextCompressor(
++        model, config_context_length=window, threshold_percent=threshold_percent, quiet_mode=True,
++        provider=provider, base_url=base_url, api_key="sk-main", api_mode="chat_completions",
++    )
++    return agent
++
++
++def _switch(agent, route):
++    model, provider, base_url, window = route
++    agent.model, agent.provider, agent.base_url = model, provider, base_url
++    agent.context_compressor.update_model(model, window, base_url=base_url, api_key="sk-main",
++                                          provider=provider, api_mode="chat_completions")
++    revalidate_compression_feasibility(agent)
++
++
++@pytest.fixture
++def aux_lookups():
++    client = MagicMock(base_url="http://localhost:11434/v1", api_key="")
++    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "small-model")) as aux, \
++         patch("agent.model_metadata.get_model_context_length", return_value=AUX_WINDOW):
++        yield aux
++
++
++def _summary_call(compressor):
++    captured = {}
++
++    def _capture(**kwargs):
++        captured.update(kwargs)
++        response = MagicMock()
++        response.choices[0].message.content = "summary"
++        response.choices[0].finish_reason = "stop"
++        return response
++
++    with patch("agent.context_compressor.call_llm", side_effect=_capture):
++        compressor._call_summary_llm("prompt", 0.0)
++    return captured
++
++
++def test_defaults_keep_the_configured_route_and_the_aux_clamp(aux_lookups):
++    defaults = DEFAULT_CONFIG["auxiliary"]["compression"]
++    assert defaults["main_model_providers"] == [] and defaults["main_model_when_larger"] is False
++    agent = _make_agent(CLOUD)
++    with session_auxiliary_scope(_aux_config(main_model_providers=[], main_model_when_larger=False)):
++        agent._check_compression_model_feasibility()
++        assert agent.context_compressor.threshold_tokens == AUX_WINDOW
++        call = _summary_call(agent.context_compressor)
++    assert "provider" not in call and "model" not in call
++    assert call["task"] == "compression"
++
++
++def test_listed_provider_summarises_on_main_model_at_its_own_threshold(aux_lookups):
++    agent = _make_agent(CLOUD, threshold_percent=0.30)
++    with session_auxiliary_scope(_aux_config(main_model_providers=["ACME-Cloud"])):
++        agent._check_compression_model_feasibility()
++        compressor = agent.context_compressor
++        assert compressor.threshold_tokens == 300_000
++        assert compressor._aux_context_ceiling is None
++        aux_lookups.assert_not_called()
++        call = _summary_call(compressor)
++    assert (call["provider"], call["model"], call["base_url"], call["api_key"]) == (
++        "acme-cloud", "big-model", "https://api.example.com/v1", "sk-main")
++    assert getattr(call["task"], "route_authoritative", False) is True
++
++
++def test_unlisted_provider_keeps_the_aux_route(aux_lookups):
++    agent = _make_agent(LOCAL, threshold_percent=0.75)
++    with session_auxiliary_scope(_aux_config(main_model_providers=["acme-cloud"])):
++        agent._check_compression_model_feasibility()
++        assert agent.context_compressor.threshold_tokens == 98_304
++        call = _summary_call(agent.context_compressor)
++    assert "provider" not in call and "model" not in call
++
++
++@pytest.mark.parametrize("route,main_model", [(CLOUD, True), (LOCAL, False)])
++def test_when_larger_compares_the_main_window_with_the_measured_aux_window(aux_lookups, route, main_model):
++    agent = _make_agent(route)
++    compressor = agent.context_compressor
++    with session_auxiliary_scope(_aux_config(main_model_when_larger=True)):
++        assert summarises_on_main_model(compressor) is False
++        agent._check_compression_model_feasibility()
++        assert compressor._aux_context_window == AUX_WINDOW
++        assert summarises_on_main_model(compressor) is main_model
++        assert compressor._aux_context_ceiling is None
++        assert compressor.threshold_tokens == (500_000 if main_model else 98_304)
++        assert ("provider" in _summary_call(compressor)) is main_model
++
++
++def test_mid_session_switch_follows_the_current_provider(aux_lookups):
++    agent = _make_agent(LOCAL)
++    compressor = agent.context_compressor
++    with session_auxiliary_scope(_aux_config(main_model_providers=["acme-cloud"])):
++        agent._check_compression_model_feasibility()
++        _switch(agent, CLOUD)
++        assert compressor.threshold_tokens == 500_000
++        assert _summary_call(compressor)["model"] == "big-model"
++        _switch(agent, LOCAL)
++        assert compressor.threshold_tokens == 98_304
++        assert "model" not in _summary_call(compressor)
++
++
++def test_listing_a_provider_later_releases_an_installed_clamp(aux_lookups):
++    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
++
++    agent = _make_agent(CLOUD)
++    compressor = agent.context_compressor
++    with session_auxiliary_scope(_aux_config()):
++        ensure_compression_feasibility_checked(agent, MINIMUM_CONTEXT_LENGTH)
++        assert compressor.threshold_tokens == AUX_WINDOW
++        assert agent._compression_warning
++    with session_auxiliary_scope(_aux_config(main_model_providers="acme-cloud")):
++        ensure_compression_feasibility_checked(agent, MINIMUM_CONTEXT_LENGTH)
++    assert compressor.threshold_tokens == 500_000
++    assert compressor._aux_context_ceiling is None
++    assert agent._compression_warning is None
+diff --git a/website/docs/user-guide/configuration.md b/website/docs/user-guide/configuration.md
+index 84bd856e7e..a6d40794dd 100644
+--- a/website/docs/user-guide/configuration.md
++++ b/website/docs/user-guide/configuration.md
+@@ -1167,6 +1167,17 @@ auxiliary:
+ ```
+ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
+ 
++**Keep large-context chats on their own model:**
++```yaml
++auxiliary:
++  compression:
++    model: qwen3:4b
++    base_url: http://localhost:11434/v1
++    main_model_providers: [anthropic, openrouter]  # these chats summarise on their own main model
++    main_model_when_larger: false                  # true: also any chat whose window is larger than the compression model's
++```
++A chat whose current main provider is in `main_model_providers` sends its compression summary to its own main model on its own endpoint, and its trigger follows its own window and `compression.threshold` (Hermes does not lower it to the compression model's window). With `main_model_when_larger: true` the same applies to any chat whose main context window is larger than the compression model's measured window. Every other chat uses the configured compression route. Hermes checks the chat's provider each time it compresses, so a chat switched to another model mid-session follows the new route. Both settings are off by default.
++
+ ### How the three knobs interact
+ 
+ | `auxiliary.compression.provider` | `auxiliary.compression.base_url` | Result |
