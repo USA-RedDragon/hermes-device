@@ -121,6 +121,10 @@ button.icon { border: 0; background: transparent; font-size: 1.3rem; padding: .2
 .queued { align-self: flex-end; color: var(--muted); font-size: .75rem; margin-top: -.4rem; }
 .msg.assistant { background: var(--card); border: 1px solid var(--line); }
 .msg.result { background: var(--card); border: 1px dashed var(--line); color: var(--muted); }
+.msg.agent { align-self: flex-end; max-width: 88%; background: var(--card); border: 1px solid var(--accent); }
+.msg.agent.pending { opacity: .65; }
+.msg.agent.sent { max-width: 100%; margin-top: .4rem; }
+.agent-tag { font-size: .75rem; color: var(--accent); margin-bottom: .3rem; white-space: normal; }
 .lost { border: 1px dashed var(--warn); border-radius: 10px; padding: .6rem .75rem; display: flex; flex-direction: column;
   gap: .4rem; align-items: flex-start; font-size: .9rem; color: var(--muted); }
 .lost-text { color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }

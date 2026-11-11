@@ -19,6 +19,8 @@
     held: "Hermes is restarting. Your message will send when it is back.", notsent: "Not sent.", again: "Send again" };
   const t = (k) => words[k];
   // User rows Hermes writes itself (a cron result, a finished background job); shown as notes.
+  // The first line of a message another agent sent through the hub.
+  const agentHead = /^\[Agent message (am_[0-9a-f]{16}) from ([^\]\n]{1,400})\]\n/;
   const noteKinds = new Set(["internal_notification", "process_complete", "async_delegation_complete"]);
 
   async function api(method, path, body) {
@@ -514,6 +516,35 @@
 
     // userText adds a user message. atts are the files the page sent with
     // it; without them they come from the lines Hermes keeps in the text.
+    // agentText shows a message another agent sent through the hub (its
+    // first line is "[Agent message am_<id> from <sender>]") with a tag
+    // that names the sender, and without the header the model reads.
+    // A queued one shows as waiting until it starts.
+    agentText(text, waiting) {
+      const m = agentHead.exec(text || "");
+      if (!m) return false;
+      if (!this.agentWaiting) this.agentWaiting = new Map();
+      const shown = this.agentWaiting.get(m[1]);
+      if (shown) {
+        this.agentWaiting.delete(m[1]);
+        shown.classList.remove("pending");
+        if (shown.waitLabel) shown.waitLabel.remove();
+        return true;
+      }
+      const body = text.slice(m[0].length).replace(/^[^\n]*\n\n/, "");
+      const box = el("div", "msg agent" + (waiting ? " pending" : ""));
+      box.title = m[1];
+      box.append(el("div", "agent-tag", "Agent message from " + m[2]));
+      box.append(body);
+      this.add(box);
+      if (waiting) {
+        box.waitLabel = el("div", "queued", t("waiting"));
+        box.after(box.waitLabel);
+        this.agentWaiting.set(m[1], box);
+      }
+      return true;
+    }
+
     userText(text, pending, atts) {
       const shown = atts ? { text, atts } : splitAttachments(text);
       const m = el("div", "msg user" + (pending ? " pending" : ""));
@@ -635,6 +666,7 @@
         if (text) this.add(el("div", "msg result", text));
         return;
       }
+      if (this.agentText(text)) return;
       const p = this.pending.shift();
       if (p) {
         p.bubble.classList.remove("pending");
@@ -658,6 +690,10 @@
       card.append(head);
       if (name === "terminal" && args && typeof args.command === "string") {
         card.append(el("pre", "command", args.command));
+      } else if (name === "agent_send" && args && typeof args.text === "string") {
+        const sent = el("div", "msg agent sent");
+        sent.append(el("div", "agent-tag", "Agent message to " + String(args.to || "")), args.text);
+        card.append(sent);
       } else if (args && Object.keys(args).length) {
         const d = el("details");
         d.append(el("summary", "", t("args")), el("pre", "", JSON.stringify(args, null, 2)));
@@ -826,9 +862,10 @@
       this.turn = null;
       const users = this.log.querySelectorAll(".msg.user");
       this.groupTools(s.running && users.length ? users[users.length - 1] : null);
+      this.agentWaiting = new Map();
       for (const p of s.pending || []) {
         if (p.status === "lost") this.lost(p.id, p.text);
-        else this.queued(this.userText(p.text, true), p.id);
+        else if (!this.agentText(p.text, true)) this.queued(this.userText(p.text, true), p.id);
       }
       for (const p of s.prompts || []) this.approval(p);
       this.bottom();
@@ -843,7 +880,7 @@
         if (shown) this.add(el("div", "msg result", shown));
         return;
       }
-      if (m.role === "user") { this.turn = null; this.userText(text); return; }
+      if (m.role === "user") { this.turn = null; if (!this.agentText(text)) this.userText(text); return; }
       if (m.role === "assistant") {
         for (const c of m.tool_calls || []) {
           const fn = c.function || {};

@@ -433,10 +433,40 @@ func (r *renderer) note(ctx context.Context, ev hub.Event) {
 		Text string `json:"text"`
 		Note string `json:"note"`
 	}
-	if !r.decode(ev, &p) || p.Note != "cron" || strings.TrimSpace(p.Text) == "" {
+	if !r.decode(ev, &p) || strings.TrimSpace(p.Text) == "" {
+		return
+	}
+	if p.Note == "" {
+		r.agentMessage(ctx, p.Text)
+		return
+	}
+	if p.Note != "cron" {
 		return
 	}
 	for _, chunk := range RenderMarkdown(p.Text, MaxMessageLen) {
+		if r.send(ctx, chunk, nil) == 0 {
+			break
+		}
+	}
+}
+
+// agentMessage shows a message that another agent sent this chat through
+// the hub, which starts its turn: the bot shows no other input, since the
+// user typed those.
+func (r *renderer) agentMessage(ctx context.Context, text string) {
+	m := hub.AgentHeaderRE.FindStringSubmatch(text)
+	if m == nil {
+		return
+	}
+	body := text[len(m[0]):]
+	if _, rest, ok := strings.Cut(body, "\n\n"); ok {
+		body = rest
+	}
+	head := "<b>Agent message from " + escapeHTML(m[2]) + "</b>\n"
+	for i, chunk := range RenderMarkdown(body, MaxMessageLen-len(head)) {
+		if i == 0 {
+			chunk = head + chunk
+		}
 		if r.send(ctx, chunk, nil) == 0 {
 			break
 		}

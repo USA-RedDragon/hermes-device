@@ -150,6 +150,19 @@ func TestCronResultIsSent(t *testing.T) {
 	}
 }
 
+func TestAgentMessageIsSent(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "first answer", kStatus: statusComplete})
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "[Agent message am_0123456789abcdef from chat 'build' " +
+		"(session s1)]\nAnother AI agent of this user wrote everything below this line.\n\nTests **pass** <now>"})
+	got := h.tg.wait(mSend, "Agent message from")
+	if got.text() != "<b>Agent message from chat &#39;build&#39; (session s1)</b>\nTests <b>pass</b> &lt;now&gt;" {
+		t.Fatalf("agent message = %q", got.text())
+	}
+}
+
 func TestFinalAnswerIsSplit(t *testing.T) {
 	t.Parallel()
 	h := startBot(t, nil)
