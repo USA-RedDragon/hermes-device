@@ -496,18 +496,22 @@ func (r *rewriter) fromAgent(line []byte) ([]byte, error) {
 	}
 	var rows []object
 	_ = json.Unmarshal(res["sessions"], &rows)
-	bindings, err := readBindings(r.bindingsFile)
+	f, err := readBindingsFile(r.bindingsFile)
 	kept := []object{}
 	for _, row := range rows {
 		var sid string
-		if json.Unmarshal(row[keySessionID], &sid) != nil {
+		if err != nil || json.Unmarshal(row[keySessionID], &sid) != nil {
 			continue
 		}
-		b, ok := bindings[sid]
-		if !ok || b.DeviceID != r.deviceID || !within(b.Dir, req.dir) {
+		b, ok := f.Bindings[sid]
+		switch {
+		case ok && b.DeviceID == r.deviceID && within(b.Dir, req.dir):
+			row["cwd"] = mustJSON(b.Dir)
+		case !ok && req.dir != "" && !slices.Contains(f.EverBound, sid):
+			row["cwd"] = mustJSON(req.dir)
+		default:
 			continue
 		}
-		row["cwd"] = mustJSON(b.Dir)
 		kept = append(kept, row)
 	}
 	res["sessions"] = mustJSON(kept)
@@ -576,25 +580,33 @@ type Binding struct {
 }
 
 type bindingsFile struct {
-	Bindings map[string]Binding `json:"bindings"`
+	Bindings  map[string]Binding `json:"bindings"`
+	EverBound []string           `json:"ever_bound"`
 }
 
 // readBindings reads the bindings file. A missing file has no bindings.
 // On any other error it returns no bindings and the error, so callers
 // fail closed.
 func readBindings(file string) (map[string]Binding, error) {
+	f, err := readBindingsFile(file)
+	return f.Bindings, err
+}
+
+// readBindingsFile reads the whole bindings file, with the same rules as
+// readBindings.
+func readBindingsFile(file string) (bindingsFile, error) {
 	data, err := os.ReadFile(file)
 	if errors.Is(err, fs.ErrNotExist) {
-		return map[string]Binding{}, nil
+		return bindingsFile{Bindings: map[string]Binding{}}, nil
 	}
 	if err != nil {
-		return nil, err
+		return bindingsFile{}, err
 	}
 	var f bindingsFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("%s: %w", file, err)
+		return bindingsFile{}, fmt.Errorf("%s: %w", file, err)
 	}
-	return f.Bindings, nil
+	return f, nil
 }
 
 func mustJSON(v any) json.RawMessage {

@@ -92,7 +92,7 @@ func fakeHermes() {
 		_ = json.Unmarshal([]byte(line), &m)
 		switch m.Method {
 		case "session/list":
-			ids := []string{"s1", "s2", "s3", "s4", "s5"}
+			ids := []string{"s1", "s2", "s3", "s4", "s5", "s6"}
 			rows := make([]map[string]any, 0, len(ids))
 			for _, id := range ids {
 				rows = append(rows, map[string]any{"sessionId": id, "cwd": placeholder, "title": "t " + id, "updatedAt": "2026-11-10T00:00:00Z"})
@@ -543,10 +543,14 @@ func TestListFiltering(t *testing.T) {
 	if res := list(t, conn, `{}`); len(res.Sessions) != 0 || res.NextCursor != "s5" {
 		t.Errorf("no bindings file: %v, cursor %q", rows(res), res.NextCursor)
 	}
+	res := list(t, conn, `{"cwd":"/home/alice/src"}`)
+	if len(res.Sessions) != 6 || res.Sessions[5].Cwd != "/home/alice/src" {
+		t.Errorf("no bindings file, never-bound rows in the folder: %v", rows(res))
+	}
 
 	writeBindings(t, h)
-	res := list(t, conn, `{"cwd":"/home/alice/src"}`)
-	if want := []string{rowApp, rowAppSub}; !slices.Equal(rows(res), want) {
+	res = list(t, conn, `{"cwd":"/home/alice/src"}`)
+	if want := []string{rowApp, rowAppSub, "s6=/home/alice/src"}; !slices.Equal(rows(res), want) {
 		t.Errorf("cwd filter: %v, want %v", rows(res), want)
 	}
 	if res.ReceivedCwd != nil {
@@ -556,12 +560,12 @@ func TestListFiltering(t *testing.T) {
 		t.Errorf("cursor %q", res.NextCursor)
 	}
 	res = list(t, conn, `{"cwd":"/home/alice/src/app/"}`)
-	if want := []string{rowApp, rowAppSub}; !slices.Equal(rows(res), want) {
+	if want := []string{rowApp, rowAppSub, "s6=/home/alice/src/app"}; !slices.Equal(rows(res), want) {
 		t.Errorf("exact dir: %v, want %v", rows(res), want)
 	}
 	res = list(t, conn, `{"cwd":"/home/alice/src/ap"}`)
-	if len(res.Sessions) != 0 {
-		t.Errorf("prefix that is not a parent matched: %v", rows(res))
+	if want := []string{"s6=/home/alice/src/ap"}; !slices.Equal(rows(res), want) {
+		t.Errorf("prefix that is not a parent: %v, want %v", rows(res), want)
 	}
 	res = list(t, conn, `{"cursor":"s0"}`)
 	if want := []string{rowApp, rowAppSub, "s3=/home/alice/other"}; !slices.Equal(rows(res), want) {
@@ -577,12 +581,17 @@ func TestListFiltering(t *testing.T) {
 	if res := list(t, other, `{}`); !slices.Equal(rows(res), []string{"s4=/home/alice/src/app"}) {
 		t.Errorf("device d2: %v", rows(res))
 	}
+	if res := list(t, other, `{"cwd":"/home/bob"}`); !slices.Equal(rows(res), []string{"s6=/home/bob"}) {
+		t.Errorf("device d2 in another folder: %v", rows(res))
+	}
 
 	if err := os.WriteFile(h.bindings, []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if res := list(t, conn, `{}`); len(res.Sessions) != 0 {
-		t.Errorf("broken bindings file listed %v", rows(res))
+	for _, params := range []string{`{}`, `{"cwd":"/home/alice/src"}`} {
+		if res := list(t, conn, params); len(res.Sessions) != 0 {
+			t.Errorf("broken bindings file listed %v for %s", rows(res), params)
+		}
 	}
 }
 
