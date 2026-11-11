@@ -1,11 +1,9 @@
 package device_test
 
 import (
-	"encoding/json"
 	"io/fs"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -13,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/device"
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
+	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
 )
 
 // clientMethods is every gateway method name that the Hermes v0.22.7 Ink TUI
@@ -171,7 +169,7 @@ func sentMethods(t *testing.T, src string, server map[string]bool) map[string]bo
 
 func TestClientMethodsAgainstSource(t *testing.T) {
 	t.Parallel()
-	src := hermesCheckout(t)
+	src := gatewaytest.HermesSource(t, filepath.Join("tui_gateway", "contracts"))
 	sent := sentMethods(t, src, serverMethods(t, src))
 	want := clientMethods()
 	for m := range sent {
@@ -187,36 +185,4 @@ func TestClientMethodsAgainstSource(t *testing.T) {
 	if t.Failed() {
 		t.Logf("sent: %v", slices.Sorted(maps.Keys(sent)))
 	}
-}
-
-// hermesCheckout is the Hermes source named by HERMES_AGENT_SRC (default
-// ~/.hermes/hermes-agent), at the version the hub is pinned to. It skips
-// without one.
-func hermesCheckout(t *testing.T) string {
-	t.Helper()
-	src := os.Getenv("HERMES_AGENT_SRC")
-	if src == "" {
-		home, _ := os.UserHomeDir()
-		src = filepath.Join(home, ".hermes", "hermes-agent")
-	}
-	if _, err := os.Stat(filepath.Join(src, "tui_gateway", "contracts")); err != nil { //nolint:gosec // a test reads the checkout it is told to
-		t.Skipf("no Hermes checkout at %s", src)
-	}
-	version := ""
-	var stamp struct {
-		BaseVersion string `json:"baseVersion"`
-		Distance    int    `json:"distance"`
-		Dirty       bool   `json:"dirty"`
-	}
-	b, err := os.ReadFile(filepath.Join(src, "install-stamp.json")) //nolint:gosec // a test reads the checkout it is told to
-	if err == nil && json.Unmarshal(b, &stamp) == nil &&
-		stamp.BaseVersion != "" && stamp.Distance == 0 && !stamp.Dirty {
-		version = "v" + stamp.BaseVersion
-	} else if out, err := exec.CommandContext(t.Context(), "git", "-C", src, "describe", "--tags", "--exact-match").Output(); err == nil { //nolint:gosec // a test runs git on the checkout it is told to
-		version = strings.TrimSpace(string(out))
-	}
-	if version != gateway.HermesVersion {
-		t.Fatalf("Hermes checkout at %s is %q, the hub is pinned to %s", src, version, gateway.HermesVersion)
-	}
-	return src
 }

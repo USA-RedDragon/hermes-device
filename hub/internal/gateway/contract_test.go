@@ -3,7 +3,6 @@ package gateway_test
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -11,13 +10,14 @@ import (
 	"testing"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
+	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 )
 
 // contract lists source lines of Hermes v0.22.7 this client depends on, by
 // file. A "#name" suffix lets one file have more than one entry.
 // TestContractAgainstSource checks them in a checkout named by
-// HERMES_AGENT_SRC (default ~/.hermes/hermes-agent) and skips without one.
+// gatewaytest.HermesSource.
 func contract() map[string][]string {
 	return map[string][]string{
 		"gateway/session_contract.py":  {"CANONICAL_GATEWAY_PROTOCOL = '" + gateway.Subprotocol + "'"},
@@ -336,44 +336,9 @@ func contract() map[string][]string {
 	}
 }
 
-func hermesSource(t *testing.T) string {
-	t.Helper()
-	src := os.Getenv("HERMES_AGENT_SRC")
-	if src == "" {
-		home, _ := os.UserHomeDir()
-		src = filepath.Join(home, ".hermes", "hermes-agent")
-	}
-	if _, err := os.Stat(filepath.Join(src, "gateway", "session_contract.py")); err != nil { //nolint:gosec // a test reads the checkout it is told to
-		t.Skipf("no Hermes checkout at %s", src)
-	}
-	return src
-}
-
-func sourceVersion(t *testing.T, src string) string {
-	t.Helper()
-	if b, err := os.ReadFile(filepath.Join(src, "install-stamp.json")); err == nil {
-		var stamp struct {
-			BaseVersion string `json:"baseVersion"`
-			Distance    int    `json:"distance"`
-			Dirty       bool   `json:"dirty"`
-		}
-		if json.Unmarshal(b, &stamp) == nil && stamp.BaseVersion != "" && stamp.Distance == 0 && !stamp.Dirty {
-			return "v" + stamp.BaseVersion
-		}
-	}
-	out, err := exec.CommandContext(t.Context(), "git", "-C", src, "describe", "--tags", "--exact-match").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
 func TestContractAgainstSource(t *testing.T) {
 	t.Parallel()
-	src := hermesSource(t)
-	if v := sourceVersion(t, src); v != gateway.HermesVersion {
-		t.Fatalf("Hermes checkout at %s is %q, this client is pinned to %s", src, v, gateway.HermesVersion)
-	}
+	src := gatewaytest.HermesSource(t, filepath.Join("gateway", "session_contract.py"))
 	for key, lines := range contract() {
 		file, _, _ := strings.Cut(key, "#")
 		b, err := os.ReadFile(filepath.Join(src, file))
