@@ -860,7 +860,7 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 /* Message box: attach, text, one send button; suggestions above it. */
 .composer { position: relative; }
 .composer-row, .composer .chips, .composer .hint { width: 100%; max-width: 52rem; margin: 0 auto; }
-.composer button.attach.ib { align-self: flex-end; width: 2.6rem; height: 2.6rem; padding: 0; }
+.composer button.attach.ib { align-self: flex-end; width: 2.1rem; height: 2.6rem; padding: 0 .2rem 0 0; justify-content: flex-end; }
 .composer textarea { min-height: 2.6rem; max-height: 200px; line-height: 1.4; }
 .composer .send.ib { width: 2.6rem; height: 2.6rem; border-radius: 10px; color: #fff; align-self: flex-end; }
 .composer .send.ib svg { width: 1.35rem; height: 1.35rem; }
@@ -885,13 +885,14 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7
 .pop .opt mark { background: none; color: var(--accent); }
 
 /* Message actions: shown on hover; on touch a tap on the message shows them. */
-.log > .acts { display: flex; gap: .15rem; margin-top: -.5rem; opacity: 0; transition: opacity .12s; align-self: flex-start; }
-.log > .acts.mine { align-self: flex-end; }
-.log > .msg:hover + .acts, .log > .msg:hover + .queued + .acts, .log > .acts:hover, .log > .acts:focus-within, .log > .acts.show { opacity: 1; }
-@media (pointer: coarse) { .log > .acts { display: none; } .log > .acts.show { display: flex; opacity: 1; } }
-.log > .acts button { border: 0; background: none; color: var(--muted); padding: .3rem; border-radius: 6px; display: inline-grid; place-items: center; }
+.log > .acts { display: flex; gap: .15rem; height: 0; margin: -1.4rem .5rem 0; overflow: visible; position: relative; z-index: 2; opacity: 0; pointer-events: none; transition: opacity .12s; align-self: flex-end; }
+.log > .acts.mine { align-self: flex-start; }
+.log > .msg:hover + .acts, .log > .msg:hover + .queued + .acts, .log > .acts:hover, .log > .acts:focus-within, .log > .acts.show { opacity: 1; pointer-events: auto; }
+@media (pointer: coarse) { .log > .acts { display: none; } .log > .acts.show { display: flex; opacity: 1; height: auto; margin-top: -.5rem; } }
+.log > .acts button { border: 1px solid var(--line); background: var(--card); color: var(--muted); padding: 0; border-radius: 6px; display: inline-grid; place-items: center; }
+.log > .acts button.ib { width: 1.6rem; height: 1.6rem; }
 .log > .acts button:hover { background: var(--hover); color: var(--fg); }
-.log > .acts svg { width: .95rem; height: .95rem; }
+.log > .acts svg { width: .85rem; height: .85rem; }
 .editbox { display: flex; flex-direction: column; gap: .35rem; width: min(88%, 36rem); align-self: flex-end; }
 .editbox.retrybox { align-self: flex-start; }
 .editbox textarea { font: inherit; border: 1px solid var(--accent); border-radius: 10px; padding: .45rem .6rem; background: var(--card);
