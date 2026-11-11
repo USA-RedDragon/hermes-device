@@ -122,3 +122,102 @@ jobs:
             > "$out/updates.json"
           cat "$out/updates.json"
           gh release upload "$TAG" "$out/$name" "$out/updates.json" --clobber
+
+  # Attests the release files that the release and firefox-extension jobs
+  # uploaded. hermes-device update verifies these attestations.
+  attest-files:
+    name: Attest release files
+    needs: [release, firefox-extension]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      MAX_RELEASE_AGE: 10800
+    steps:
+      - name: Refuse to attest an old release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          published=$(gh release view "$TAG" --json publishedAt --jq .publishedAt)
+          age=$(( $(date +%s) - $(date -d "$published" +%s) ))
+          if [ "$age" -gt "$MAX_RELEASE_AGE" ]; then
+            echo "::error::$TAG was published $age seconds ago. Re-running the attestation of an old release could attest files changed since, so this job attests only releases published in the last $MAX_RELEASE_AGE seconds."
+            exit 1
+          fi
+
+      - name: Download the release files
+        run: |
+          dir="$RUNNER_TEMP/assets"
+          mkdir -p "$dir"
+          gh release download "$TAG" --dir "$dir" --pattern '*.tar.gz' --pattern '*_checksums.txt' --pattern '*.xpi'
+          cd "$dir"
+          ls -l
+          version=${TAG#v}
+          sha256sum --check --strict "hermes-device_${version}_checksums.txt"
+          [ "$(grep -c '\.tar\.gz$' "hermes-device_${version}_checksums.txt")" = "$(ls -1 ./*.tar.gz | wc -l)" ] || { echo "::error::the archives do not match the checksum file"; exit 1; }
+
+      - name: Attest the release files
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/assets/*
+
+  attest-images:
+    name: Attest container images
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: write
+    strategy:
+      matrix:
+        image:
+          - ghcr.io/usa-reddragon/hermes-device
+          - ghcr.io/usa-reddragon/hermes-device-sandbox
+    env:
+      IMAGE: ${{ matrix.image }}
+      TAG: ${{ github.ref_name }}
+      MAX_RELEASE_AGE: 10800
+    steps:
+      - name: Refuse to attest an old release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          published=$(gh release view "$TAG" --json publishedAt --jq .publishedAt)
+          age=$(( $(date +%s) - $(date -d "$published" +%s) ))
+          if [ "$age" -gt "$MAX_RELEASE_AGE" ]; then
+            echo "::error::$TAG was published $age seconds ago. Re-running the attestation of an old release could attest files changed since, so this job attests only releases published in the last $MAX_RELEASE_AGE seconds."
+            exit 1
+          fi
+
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: docker login ghcr.io --username "$ACTOR" --password-stdin <<<"$TOKEN"
+
+      - name: Find the image digest
+        id: digest
+        run: |
+          digest=sha256:$(docker buildx imagetools inspect --raw "$IMAGE:$TAG" | sha256sum | cut -d' ' -f1)
+          docker buildx imagetools inspect "$IMAGE@$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ matrix.image }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
