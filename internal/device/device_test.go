@@ -38,8 +38,9 @@ type fakeHub struct {
 	version    int
 	grace      float64
 	skipResume bool
-	// capabilities are sent in the welcome.
+	// capabilities and image are sent in the welcome.
 	capabilities []string
+	image        string
 	conns        atomic.Int32
 	handler      func(ctx context.Context, conn *websocket.Conn, hello protocol.Hello)
 }
@@ -79,7 +80,7 @@ func (f *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !f.skipWelcome {
 		writeJSON(ctx, conn, protocol.Welcome{
 			Type: protocol.TypeWelcome, Version: version, DeviceID: "d_1", Name: testName, PingInterval: 25,
-			GraceSeconds: f.grace, Capabilities: f.capabilities,
+			GraceSeconds: f.grace, Capabilities: f.capabilities, HermesImage: f.image, HermesVersion: "v0.23.1",
 		})
 		if version >= protocol.ResumeVersion && !f.skipResume {
 			writeJSON(ctx, conn, protocol.Resume{Type: protocol.TypeResume, Commands: []protocol.ResumeCommand{}})
@@ -227,6 +228,25 @@ func TestHelloFields(t *testing.T) {
 	}
 	if !reflect.DeepEqual(hello, want) {
 		t.Errorf("hello = %+v, want %+v", hello, want)
+	}
+}
+
+func TestOnWelcome(t *testing.T) {
+	t.Parallel()
+	const image = "registry.example.com/hermes:v0.23.1@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	f := &fakeHub{image: image, handler: func(ctx context.Context, _ *websocket.Conn, _ protocol.Hello) { <-ctx.Done() }}
+	srv := serve(t, f)
+	got := make(chan protocol.Welcome, 1)
+	opts := options(t, srv.URL, t.TempDir())
+	opts.OnWelcome = func(w protocol.Welcome) { got <- w }
+	start(t, opts)
+	select {
+	case w := <-got:
+		if w.HermesImage != image || w.HermesVersion != "v0.23.1" {
+			t.Errorf("welcome = %+v", w)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("OnWelcome was not called")
 	}
 }
 

@@ -182,6 +182,10 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 		opts.MCP = mgr
 		slog.Info("MCP servers on", "servers", mgr.Names(), "idle_timeout", cfg.MCP.IdleTimeout)
 	}
+	server := newServerHermes()
+	if cfg.Gateway.Splice {
+		opts.OnWelcome = server.welcome
+	}
 	dev, err := device.New(opts)
 	if err != nil {
 		return err
@@ -232,7 +236,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 	live.Store(srv)
 
 	pid := os.Getpid()
-	if err := daemonstate.Write(stateDir, daemonstate.State{
+	if err := server.start(stateDir, daemonstate.State{
 		PID: pid, Splice: ln.Addr().String(), ControlSecret: srv.ControlSecret(), DeviceID: deviceID, Hub: cfg.Hub.URL,
 	}); err != nil {
 		return fmt.Errorf("write the daemon state: %w", err)
@@ -246,6 +250,17 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if builds := hermesBuilds(cfg, userAgent); builds != nil {
+		fetchDone := make(chan struct{})
+		go func() {
+			defer close(fetchDone)
+			server.fetchLoop(ctx, builds)
+		}()
+		defer func() {
+			cancel()
+			<-fetchDone
+		}()
+	}
 	devDone := make(chan error, 1)
 	spliceDone := make(chan error, 1)
 	go func() { devDone <- dev.Run(ctx) }()

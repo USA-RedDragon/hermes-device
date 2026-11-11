@@ -51,6 +51,8 @@ type runHub struct {
 	// directory commands may run in.
 	exec func(ctx context.Context, conn *websocket.Conn)
 	root string
+	// image is the welcome's hermes_image.
+	image string
 }
 
 func writeJSONMsg(ctx context.Context, conn *websocket.Conn, v any) {
@@ -85,7 +87,8 @@ func (h *runHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.hellos.Add(1)
-		b, err := json.Marshal(protocol.Welcome{Type: protocol.TypeWelcome, Version: protocol.Version, DeviceID: whoID, Name: testDevice})
+		b, err := json.Marshal(protocol.Welcome{Type: protocol.TypeWelcome, Version: protocol.Version, DeviceID: whoID, Name: testDevice,
+			HermesImage: h.image})
 		if err != nil {
 			h.t.Error(err)
 			return

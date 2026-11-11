@@ -47,7 +47,9 @@ type gatewayShadow struct {
 }
 
 type chatShadow struct {
-	Hermes *string `json:"hermes" toml:"hermes" yaml:"hermes"`
+	Managed    *bool   `json:"managed"     toml:"managed"     yaml:"managed"`
+	ManagedDir *string `json:"managed-dir" toml:"managed-dir" yaml:"managed-dir"`
+	Hermes     *string `json:"hermes"      toml:"hermes"      yaml:"hermes"`
 }
 
 type aCPHostShadow struct {
@@ -135,6 +137,8 @@ func configApplyDefaults(cfg *Config, _ string, set configulator.SetOrigin) erro
 	set("gateway.listen", configulator.LayerDefault, "default tag")
 	cfg.Gateway.Splice = true
 	set("gateway.splice", configulator.LayerDefault, "default tag")
+	cfg.Chat.Managed = true
+	set("chat.managed", configulator.LayerDefault, "default tag")
 	cfg.Chat.Hermes = "hermes"
 	set("chat.hermes", configulator.LayerDefault, "default tag")
 	cfg.ACPHost.Listen = ":9130"
@@ -259,6 +263,14 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		}
 	}
 	if s.Chat != nil {
+		if s.Chat.Managed != nil {
+			cfg.Chat.Managed = *s.Chat.Managed
+			set("chat.managed", configulator.LayerFile, file)
+		}
+		if s.Chat.ManagedDir != nil {
+			cfg.Chat.ManagedDir = *s.Chat.ManagedDir
+			set("chat.managed-dir", configulator.LayerFile, file)
+		}
 		if s.Chat.Hermes != nil {
 			cfg.Chat.Hermes = *s.Chat.Hermes
 			set("chat.hermes", configulator.LayerFile, file)
@@ -530,6 +542,23 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Gateway.Splice = p
 		set("gateway.splice", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "chat", "managed"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "chat.managed",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Chat.Managed = p
+		set("chat.managed", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "chat", "managed-dir"); ok {
+		cfg.Chat.ManagedDir = v
+		set("chat.managed-dir", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "chat", "hermes"); ok {
 		cfg.Chat.Hermes = v
 		set("chat.hermes", configulator.LayerEnv, n)
@@ -717,6 +746,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"device" + o.Separator + "max-grace",
 		"gateway" + o.Separator + "listen",
 		"gateway" + o.Separator + "splice",
+		"chat" + o.Separator + "managed",
+		"chat" + o.Separator + "managed-dir",
 		"chat" + o.Separator + "hermes",
 		"acp-host" + o.Separator + "listen",
 		"acp-host" + o.Separator + "backend-id",
@@ -768,27 +799,29 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[12], time.Duration(int64(600000000000)), "Longest time run keeps commands running after the exec leg drops, waiting for a resume. The plugin's grace_seconds applies when it is shorter")
 	fs.String(names[13], "127.0.0.1:0", "Loopback address of the chat splice. Port 0 picks a free port")
 	fs.Bool(names[14], true, "Run the chat splice in run. false (or run --no-splice) runs only the exec leg: no listener, no daemon state file and no whoami call, for a headless service device such as the sandbox pod")
-	fs.String(names[15], "hermes", "Local Hermes launcher, the same version as the server's Hermes")
-	fs.String(names[16], ":9130", "Address the ACP host listens on. Only hermes-hub may reach it")
-	fs.String(names[17], "", "This backend's id, the aud the hub puts in its assertions. Needed by acp-host")
-	fs.String(names[18], "", "Hub Ed25519 public keys: PEM PUBLIC KEY blocks or base64 lines of the raw 32 bytes")
-	fs.String(names[19], "", "File holding the hub public keys, in the same format as hub-public-key")
-	fs.String(names[20], "hermes", "Hermes launcher that the host runs as <hermes> acp for each connection")
-	fs.String(names[21], "", "Server directory that stands in for the device directory in ACP session cwds. Must match the device plugin's placeholder. Needed by acp-host")
-	fs.Var(impl.NewInt(8), names[22], "Most hermes acp processes the host runs at once")
-	fs.String(names[23], "", "Bindings file the device plugin writes. Defaults to device/bindings.json in $HERMES_HOME")
-	fs.String(names[24], "http://127.0.0.1:9120/api/health", "Health URL of the pod's Hermes gateway. The host starts hermes acp only while it answers, because hermes acp starts a gateway of its own when none runs. Empty turns the check off")
-	fs.Duration(names[25], time.Duration(int64(1000000000)), "First delay after a lost connection")
-	fs.Duration(names[26], time.Duration(int64(30000000000)), "Longest delay between attempts")
-	fs.Bool(names[27], false, "Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run talaria browser install once")
-	fs.StringSlice(names[28], nil, "Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs")
-	fs.StringSlice(names[29], nil, "More sites where, as on Salesforce, every click and every Enter or Space key press asks the user each time and scripts may only read. Host names; each covers its subdomains. The plugin cannot change this list")
-	fs.StringSlice(names[30], nil, "Exact host names where browser_login may submit the login form that Firefox fills from its own saved login, so a scheduled job can sign in without the agent seeing the password. Only https pages whose top-level host is listed; no subdomains. Scripts are refused there, and clicks, typing, key presses and screenshots on its login pages. Example: login.w3.ibm.com. The plugin cannot change this list")
-	fs.Bool(names[31], true, "Let the agent start Firefox, with the user's default profile, in the user's graphical session when the extension is not connected, so a scheduled job works after Firefox was closed. The sandbox image turns it off")
-	fs.String(names[32], "firefox", "Command that starts Firefox for start-firefox: a name on PATH or an absolute path")
-	fs.Duration(names[33], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
-	fs.Bool(names[34], true, "Let run install new releases by itself: it checks GitHub, verifies the release like talaria update, waits until no command, browser operation, MCP call or chat runs, and exits so the service restarts it. Only when the talaria service runs it and the device token comes from login, so never on a service device that uses hub.token or hub.token-file. The sandbox and device images turn it off")
-	fs.Duration(names[35], time.Duration(int64(21600000000000)), "Time between release checks of run, with up to 10% jitter. At least 1h")
+	fs.Bool(names[15], true, "On Linux, run the exact Hermes build the server runs: run fetches it from the server's container image by digest when the server reports one, verifies it and keeps it in chat.managed-dir. false, or no image from the server, runs chat.hermes instead")
+	fs.String(names[16], "", "Directory for the managed Hermes builds and their own Hermes home. Defaults to hermes-device/hermes in the user cache directory")
+	fs.String(names[17], "hermes", "Local Hermes launcher when chat.managed is off or the server reports no image. It must be the same release as the server's Hermes")
+	fs.String(names[18], ":9130", "Address the ACP host listens on. Only hermes-hub may reach it")
+	fs.String(names[19], "", "This backend's id, the aud the hub puts in its assertions. Needed by acp-host")
+	fs.String(names[20], "", "Hub Ed25519 public keys: PEM PUBLIC KEY blocks or base64 lines of the raw 32 bytes")
+	fs.String(names[21], "", "File holding the hub public keys, in the same format as hub-public-key")
+	fs.String(names[22], "hermes", "Hermes launcher that the host runs as <hermes> acp for each connection")
+	fs.String(names[23], "", "Server directory that stands in for the device directory in ACP session cwds. Must match the device plugin's placeholder. Needed by acp-host")
+	fs.Var(impl.NewInt(8), names[24], "Most hermes acp processes the host runs at once")
+	fs.String(names[25], "", "Bindings file the device plugin writes. Defaults to device/bindings.json in $HERMES_HOME")
+	fs.String(names[26], "http://127.0.0.1:9120/api/health", "Health URL of the pod's Hermes gateway. The host starts hermes acp only while it answers, because hermes acp starts a gateway of its own when none runs. Empty turns the check off")
+	fs.Duration(names[27], time.Duration(int64(1000000000)), "First delay after a lost connection")
+	fs.Duration(names[28], time.Duration(int64(30000000000)), "Longest delay between attempts")
+	fs.Bool(names[29], false, "Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run talaria browser install once")
+	fs.StringSlice(names[30], nil, "Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs")
+	fs.StringSlice(names[31], nil, "More sites where, as on Salesforce, every click and every Enter or Space key press asks the user each time and scripts may only read. Host names; each covers its subdomains. The plugin cannot change this list")
+	fs.StringSlice(names[32], nil, "Exact host names where browser_login may submit the login form that Firefox fills from its own saved login, so a scheduled job can sign in without the agent seeing the password. Only https pages whose top-level host is listed; no subdomains. Scripts are refused there, and clicks, typing, key presses and screenshots on its login pages. Example: login.w3.ibm.com. The plugin cannot change this list")
+	fs.Bool(names[33], true, "Let the agent start Firefox, with the user's default profile, in the user's graphical session when the extension is not connected, so a scheduled job works after Firefox was closed. The sandbox image turns it off")
+	fs.String(names[34], "firefox", "Command that starts Firefox for start-firefox: a name on PATH or an absolute path")
+	fs.Duration(names[35], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
+	fs.Bool(names[36], true, "Let run install new releases by itself: it checks GitHub, verifies the release like talaria update, waits until no command, browser operation, MCP call or chat runs, and exits so the service restarts it. Only when the talaria service runs it and the device token comes from login, so never on a service device that uses hub.token or hub.token-file. The sandbox and device images turn it off")
+	fs.Duration(names[37], time.Duration(int64(21600000000000)), "Time between release checks of run, with up to 10% jitter. At least 1h")
 	return nil
 }
 
@@ -972,6 +1005,30 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Gateway.Splice = v
 		set("gateway.splice", configulator.LayerCLI, "--"+n)
+	}
+	if n := "chat" + o.Separator + "managed"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "chat.managed",
+				Source: "--" + n,
+			}
+		}
+		cfg.Chat.Managed = v
+		set("chat.managed", configulator.LayerCLI, "--"+n)
+	}
+	if n := "chat" + o.Separator + "managed-dir"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "chat.managed-dir",
+				Source: "--" + n,
+			}
+		}
+		cfg.Chat.ManagedDir = v
+		set("chat.managed-dir", configulator.LayerCLI, "--"+n)
 	}
 	if n := "chat" + o.Separator + "hermes"; fs.Changed(n) {
 		v, err := fs.GetString(n)
@@ -1786,6 +1843,32 @@ func (s *chatShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			return nil
 		}
 		switch key := tok.String(); key {
+		case "managed":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Managed = &b
+			default:
+				return configJSONError(path+".managed", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "managed-dir":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.ManagedDir = &str
+			default:
+				return configJSONError(path+".managed-dir", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
 		case "hermes":
 			v, err := dec.ReadToken()
 			if err != nil {
@@ -2462,6 +2545,8 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "device.max-grace = %v\n", c.Device.MaxGrace)
 	fmt.Fprintf(&b, "gateway.listen = %v\n", c.Gateway.Listen)
 	fmt.Fprintf(&b, "gateway.splice = %v\n", c.Gateway.Splice)
+	fmt.Fprintf(&b, "chat.managed = %v\n", c.Chat.Managed)
+	fmt.Fprintf(&b, "chat.managed-dir = %v\n", c.Chat.ManagedDir)
 	fmt.Fprintf(&b, "chat.hermes = %v\n", c.Chat.Hermes)
 	fmt.Fprintf(&b, "acp-host.listen = %v\n", c.ACPHost.Listen)
 	fmt.Fprintf(&b, "acp-host.backend-id = %v\n", c.ACPHost.BackendID)

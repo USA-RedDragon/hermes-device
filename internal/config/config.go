@@ -47,7 +47,9 @@ type Gateway struct {
 
 // Chat runs the local Hermes TUI.
 type Chat struct {
-	Hermes string `name:"hermes" default:"hermes" description:"Local Hermes launcher, the same version as the server's Hermes"`
+	Managed    bool   `name:"managed" default:"true" description:"On Linux, run the exact Hermes build the server runs: run fetches it from the server's container image by digest when the server reports one, verifies it and keeps it in chat.managed-dir. false, or no image from the server, runs chat.hermes instead"`
+	ManagedDir string `name:"managed-dir" description:"Directory for the managed Hermes builds and their own Hermes home. Defaults to hermes-device/hermes in the user cache directory"`
+	Hermes     string `name:"hermes" default:"hermes" description:"Local Hermes launcher when chat.managed is off or the server reports no image. It must be the same release as the server's Hermes"`
 }
 
 // ACPHost is the in-pod ACP process host.
@@ -158,6 +160,7 @@ func (c Config) Validate() error {
 		"device.tmp-dir": c.Device.TempDir, "store.token-file": c.Store.TokenFile, "store.state-dir": c.Store.StateDir,
 		"hub.token-file":       c.Hub.TokenFile,
 		"acp-host.placeholder": c.ACPHost.Placeholder, "acp-host.bindings-file": c.ACPHost.BindingsFile,
+		"chat.managed-dir": c.Chat.ManagedDir,
 	} {
 		if p != "" && !filepath.IsAbs(p) {
 			return fmt.Errorf("%s %q: %w", name, p, ErrRelativePath)

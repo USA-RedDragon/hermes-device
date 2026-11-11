@@ -25,6 +25,11 @@ type State struct {
 	ControlSecret string `json:"control_secret"`
 	DeviceID      string `json:"device_id"`
 	Hub           string `json:"hub"`
+	// HermesVersion and HermesImage are the server's, from the last
+	// welcome of the exec leg. HermesImage is empty when the plugin does
+	// not report it.
+	HermesVersion string `json:"hermes_version,omitempty"`
+	HermesImage   string `json:"hermes_image,omitempty"`
 }
 
 // Write writes st into dir with mode 0600.

@@ -118,6 +118,9 @@ type Options struct {
 	// MaxVersion is the newest protocol version to offer. Defaults to
 	// protocol.Version. Tests use it to act as an older client.
 	MaxVersion int
+	// OnWelcome, when set, is called with each accepted welcome, before
+	// the leg serves requests. It must not block.
+	OnWelcome func(protocol.Welcome)
 }
 
 // Client is the device side of the exec leg. Commands belong to the
@@ -477,6 +480,9 @@ func (c *Client) serveOnce(ctx context.Context) (time.Duration, error) {
 		_ = conn.Close(protocol.CloseUnsupportedVersion, reason)
 		return 0, fmt.Errorf("%w: %s", ErrUnsupportedVersion, reason)
 	}
+	if c.opts.OnWelcome != nil {
+		c.opts.OnWelcome(*welcome)
+	}
 	s.version = welcome.Version
 	s.name = welcome.Name
 	if s.name == "" {
@@ -501,7 +507,8 @@ func (c *Client) serveOnce(ctx context.Context) (time.Duration, error) {
 		slices.Contains(welcome.Capabilities, protocol.CapabilityMCP)
 	connected := time.Now()
 	slog.Info("Exec leg connected", "device_id", welcome.DeviceID, "name", welcome.Name, "protocol", s.version,
-		"plugin_version", welcome.PluginVersion, "hermes_version", welcome.HermesVersion, "roots", c.opts.Allow.Roots(),
+		"plugin_version", welcome.PluginVersion, "hermes_version", welcome.HermesVersion, "hermes_image", welcome.HermesImage,
+		"roots", c.opts.Allow.Roots(),
 		"browser", s.browser, "mcp", s.mcp)
 
 	if s.browser {
