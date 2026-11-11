@@ -8,16 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 )
 
 // Files holds the extension's files.
 //
-//go:embed manifest.json background.js defaults.js hub.js popup.html popup.js popup.css options.html options.js
+//go:embed manifest.json background.js
 var Files embed.FS //nolint:gochecknoglobals // go:embed needs a variable
 
 // ReleasesURL is where each release publishes the signed extension.
@@ -30,58 +28,12 @@ const UpdateURL = ReleasesURL + "/latest/download/updates.json"
 var (
 	versionRE      = regexp.MustCompile(`^(0|[1-9][0-9]{0,8})(\.(0|[1-9][0-9]{0,8})){0,3}$`)
 	versionFieldRE = regexp.MustCompile(`(?m)^(\s*"version":\s*)"[^"]*"`)
-	defaultHubRE   = regexp.MustCompile(`(?m)^const DEFAULT_HUB_URL = "";$`)
 )
 
-// ErrHubURL is returned for a default hub address the extension would not
-// accept.
-var ErrHubURL = errors.New("the hub address must be an https URL (http only for localhost) without a user, password, query or fragment")
-
-// ValidHubURL checks a hub address as the extension's normalizeHubURL does
-// and returns it without a trailing slash.
-func ValidHubURL(raw string) (string, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Host == "" || u.Opaque != "" {
-		return "", fmt.Errorf("%w: %q", ErrHubURL, raw)
-	}
-	host := u.Hostname()
-	local := host == "localhost" || host == "127.0.0.1" || host == "::1"
-	if (u.Scheme != "https" && (u.Scheme != "http" || !local)) || u.User != nil || strings.ContainsAny(raw, "?#") {
-		return "", fmt.Errorf("%w: %q", ErrHubURL, raw)
-	}
-	return u.Scheme + "://" + u.Host + strings.TrimRight(u.EscapedPath(), "/"), nil
-}
-
-// Defaults returns defaults.js with DEFAULT_HUB_URL set to hubURL, or
-// unchanged when hubURL is empty.
-func Defaults(hubURL string) ([]byte, error) {
-	data, err := Files.ReadFile("defaults.js")
-	if err != nil || hubURL == "" {
-		return data, err
-	}
-	hub, err := ValidHubURL(hubURL)
-	if err != nil {
-		return nil, err
-	}
-	val, err := json.Marshal(hub)
-	if err != nil {
-		return nil, err
-	}
-	if !defaultHubRE.Match(data) {
-		return nil, errors.New("defaults.js has no DEFAULT_HUB_URL line")
-	}
-	return defaultHubRE.ReplaceAllLiteral(data, []byte("const DEFAULT_HUB_URL = "+string(val)+";")), nil
-}
-
 // Write writes the extension's files to dir, with the manifest version set
-// to version and the default hub address set to hubURL, when those are not
-// empty.
-func Write(dir, version, hubURL string) error {
+// to version when that is not empty.
+func Write(dir, version string) error {
 	manifest, err := Manifest(version)
-	if err != nil {
-		return err
-	}
-	defaults, err := Defaults(hubURL)
 	if err != nil {
 		return err
 	}
@@ -92,13 +44,8 @@ func Write(dir, version, hubURL string) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		var data []byte
-		switch p {
-		case "manifest.json":
-			data = manifest
-		case "defaults.js":
-			data = defaults
-		default:
+		data := manifest
+		if p != "manifest.json" {
 			if data, err = Files.ReadFile(p); err != nil {
 				return err
 			}

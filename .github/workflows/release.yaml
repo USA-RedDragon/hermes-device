@@ -80,10 +80,9 @@ jobs:
       - name: Build the extension
         env:
           VERSION: ${{ steps.plan.outputs.version }}
-          HUB_DEFAULT_URL: ${{ vars.HUB_DEFAULT_URL }}
         run: |
-          go run . browser extension --out "$EXT_DIR" ${VERSION:+--ext-version "$VERSION"} ${HUB_DEFAULT_URL:+--hub-url-default "$HUB_DEFAULT_URL"}
-          cat "$EXT_DIR/manifest.json" "$EXT_DIR/defaults.js"
+          go run . browser extension --out "$EXT_DIR" ${VERSION:+--ext-version "$VERSION"}
+          cat "$EXT_DIR/manifest.json"
 
       - name: Lint the extension
         run: npx --yes "$WEB_EXT" lint --source-dir "$EXT_DIR" --self-hosted

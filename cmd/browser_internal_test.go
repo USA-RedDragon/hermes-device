@@ -87,35 +87,6 @@ func TestBrowserExtensionBadVersion(t *testing.T) {
 	}
 }
 
-func TestBrowserExtensionHubDefault(t *testing.T) {
-	t.Parallel()
-	dir := filepath.Join(t.TempDir(), "ext")
-	root := NewCommand("dev", "test")
-	root.SetOut(&bytes.Buffer{})
-	root.SetArgs(extArgs(dir, "--hub-url-default", "https://hub.example.com/"))
-	if err := root.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "defaults.js"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `const DEFAULT_HUB_URL = "https://hub.example.com";`) {
-		t.Fatalf("defaults.js = %s", data)
-	}
-	for _, f := range []string{"popup.html", "popup.js", "options.html", "options.js", "hub.js"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
-			t.Error(err)
-		}
-	}
-	root = NewCommand("dev", "test")
-	root.SetOut(&bytes.Buffer{})
-	root.SetArgs(extArgs(t.TempDir(), "--hub-url-default", "http://hub.example.com"))
-	if err := root.Execute(); err == nil {
-		t.Fatal("want an error for a plain http hub address")
-	}
-}
-
 func TestWithLock(t *testing.T) {
 	t.Parallel()
 	got := string(withLock([]byte(`{"tab_id":3}`), launch.Lock{Known: true, Locked: true, Source: "logind"}))

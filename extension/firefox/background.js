@@ -2,9 +2,7 @@
 
 // Hermes browser control. The only way in is the native messaging port to
 // the hermes-device host: there are no content scripts that listen to the
-// page, no external messaging and no web accessible resources. The
-// extension's own pages (the popup and the options page) talk to this page
-// with runtime messages to sign in and out.
+// page, no external messaging and no web accessible resources.
 
 const HOST = "hermes_device";
 const GROUP_TITLE = "Hermes";
@@ -61,249 +59,31 @@ let autologinHosts = new Set();
 const loginGuards = new Map();
 let loginBusy = false;
 
-// The daemon's config: its hub.url (a hint) and which device it is.
-let daemon = {};
-// What the daemon and the hub say about the stored credential.
-let daemonAuth = { state: "offline" };
-// stored is browser.storage.local: hub_url (the user's choice), instance_id
-// (this browser's random id) and auth (token, hub, user, device_id,
-// device_name, signed_in_at).
-let stored = {};
-let signingIn = false;
-let lastError = "";
-
-const NOT_SIGNED_IN = "Firefox is not signed in to Hermes";
+// The daemon's hub.url, from its config message. Agent tabs may not open
+// the hub.
+let hubHost = "";
 
 // Refused marks an error the extension chose: the device reports it with
 // code "refused" instead of "failed".
 class Refused extends Error {}
 
 function setStatus(text, badge) {
-  browser.browserAction.setTitle({ title: text.startsWith("Sign in") ? text : "Hermes: " + text });
+  browser.browserAction.setTitle({ title: "Hermes: " + text });
   browser.browserAction.setBadgeText({ text: badge });
 }
 
-function signedIn() {
-  return Boolean(port && stored.auth && stored.auth.token && daemonAuth.state === "signed_in");
-}
-
-// showStatus sets the toolbar button from the connection and the sign-in.
 function showStatus() {
   if (inflight > 0) {
     return;
   }
-  if (!port) {
-    setStatus(replaced ? "another Firefox took over; open this menu to use this one" : "not connected", "");
-  } else if (!stored.auth || !stored.auth.token) {
-    setStatus("Sign in to Hermes", "!");
-  } else if (daemonAuth.state === "signed_in") {
-    setStatus("connected as " + daemonAuth.user, "on");
-  } else if (daemonAuth.state === "refused") {
-    setStatus(daemonAuth.reason || NOT_SIGNED_IN, "!");
-  } else if (daemonAuth.state === "offline") {
-    setStatus(daemonAuth.reason || "hermes-device is not connected to the hub", "");
-  } else {
-    setStatus("checking the sign-in", "");
-  }
-}
-
-function hubURL() {
-  return stored.hub_url || DEFAULT_HUB_URL || "";
-}
-
-async function save(changes) {
-  Object.assign(stored, changes);
-  await browser.storage.local.set(changes);
-}
-
-function sendAuth() {
   if (port) {
-    port.postMessage({ type: "auth", token: (stored.auth && stored.auth.token) || "" });
+    setStatus("connected to hermes-device", "on");
+  } else if (replaced) {
+    setStatus("another Firefox took over; click to use this one", "");
+  } else {
+    setStatus("not connected to hermes-device", "");
   }
 }
-
-function b64url(bytes) {
-  let s = "";
-  for (const b of new Uint8Array(bytes)) {
-    s += String.fromCharCode(b);
-  }
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function randomB64(n) {
-  return b64url(crypto.getRandomValues(new Uint8Array(n)));
-}
-
-async function hubFetch(hub, path, init) {
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 15000);
-  try {
-    return await fetch(hub + path, Object.assign({ credentials: "omit", redirect: "error", cache: "no-store", signal: ctl.signal }, init));
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// signIn runs the hub's sign-in flow: browser.identity opens the hub's
-// page, where the user signs in and approves this browser for this
-// computer, and the hub redirects to the extension's identity URL with a
-// one-time code. The code and the PKCE verifier buy the credential.
-async function signIn() {
-  const hub = hubURL();
-  if (!hub) {
-    throw new Error("Set the address of your Hermes hub first.");
-  }
-  if (!port) {
-    throw new Error("hermes-device is not running on this computer, so Firefox cannot sign in for it.");
-  }
-  if (!daemon.device_id) {
-    throw new Error("hermes-device has not connected to its hub yet. Check that hermes-device run is running.");
-  }
-  let instance = stored.instance_id;
-  if (!instance) {
-    instance = randomB64(18);
-    await save({ instance_id: instance });
-  }
-  const deviceID = daemon.device_id;
-  const verifier = randomB64(32);
-  const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
-  const state = randomB64(16);
-  const redirect = browser.identity.getRedirectURL();
-  const info = await browser.runtime.getBrowserInfo();
-  const params = new URLSearchParams({
-    response_type: "code", client_id: browser.runtime.id, redirect_uri: redirect, state,
-    code_challenge: challenge, code_challenge_method: "S256", device_id: deviceID, instance,
-    browser: info.name + " " + info.version,
-  });
-  let back;
-  try {
-    back = new URL(await browser.identity.launchWebAuthFlow({ url: hub + "/browser/authorize?" + params, interactive: true }));
-  } catch (e) {
-    throw new Error("Sign-in did not finish: " + (e && e.message ? e.message : e));
-  }
-  if (back.origin + back.pathname !== redirect || back.searchParams.get("state") !== state) {
-    throw new Error("The hub's answer did not match this sign-in. Try again.");
-  }
-  if (back.searchParams.get("error")) {
-    throw new Error("Firefox was not allowed to use Hermes.");
-  }
-  const resp = await hubFetch(hub, "/api/browser/token", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ grant_type: "authorization_code", code: back.searchParams.get("code") || "", code_verifier: verifier,
-      redirect_uri: redirect, device_id: deviceID, instance }),
-  });
-  const body = await resp.json().catch(() => ({}));
-  if (!resp.ok || typeof body.token !== "string" || !body.token.startsWith("hbt_")) {
-    throw new Error(body.message || "The hub did not accept the sign-in (HTTP " + resp.status + ").");
-  }
-  const old = stored.auth;
-  await save({ auth: { token: body.token, hub, user: body.user, device_id: body.device_id, device_name: body.device_name,
-    signed_in_at: Date.now() } });
-  if (old && old.token && old.token !== body.token) {
-    revoke(old).catch(() => {});
-  }
-  daemonAuth = { state: "checking" };
-  sendAuth();
-  showStatus();
-}
-
-async function revoke(auth) {
-  const resp = await hubFetch(auth.hub, "/api/browser/revoke", { method: "POST", headers: { Authorization: "Bearer " + auth.token } });
-  if (!resp.ok) {
-    throw new Error("HTTP " + resp.status);
-  }
-}
-
-// signOut forgets the credential here and revokes it at the hub that
-// issued it.
-async function signOut() {
-  const old = stored.auth;
-  await save({ auth: {} });
-  sendAuth();
-  showStatus();
-  if (old && old.token) {
-    try {
-      await revoke(old);
-    } catch (e) {
-      throw new Error("Signed out here, but " + old.hub + " could not be reached to end the sign-in there (" + e.message +
-        "). Remove this browser under Settings on the hub.");
-    }
-  }
-}
-
-async function setHubURL(text) {
-  const url = text ? normalizeHubURL(text) : "";
-  if (url === (stored.hub_url || "")) {
-    return;
-  }
-  const auth = stored.auth;
-  await save({ hub_url: url });
-  if (auth && auth.token && auth.hub !== hubURL()) {
-    await signOut();
-  }
-}
-
-function publicState() {
-  const a = stored.auth || {};
-  return {
-    connected: Boolean(port), replaced, signed_in: Boolean(a.token), signing_in: signingIn, error: lastError,
-    hub_url: hubURL(), default_hub_url: DEFAULT_HUB_URL, daemon_hub_url: daemon.hub_url || "",
-    device_id: daemon.device_id || "", device_name: daemon.device_name || "",
-    user: a.user || "", token_hub: a.hub || "", token_device: a.device_name || "", signed_in_at: a.signed_in_at || 0,
-    auth_state: daemonAuth.state, auth_user: daemonAuth.user || "", auth_reason: daemonAuth.reason || "",
-  };
-}
-
-async function runCommand(cmd, arg) {
-  switch (cmd) {
-    case "state":
-      return publicState();
-    case "connect":
-      if (!port) {
-        replaced = false;
-        connect();
-      }
-      return publicState();
-    case "signIn":
-      if (signingIn) {
-        throw new Error("A sign-in is already open.");
-      }
-      signingIn = true;
-      try {
-        await signIn();
-      } finally {
-        signingIn = false;
-      }
-      return publicState();
-    case "signOut":
-      await signOut();
-      return publicState();
-    case "setHubURL":
-      await setHubURL(arg);
-      return publicState();
-  }
-  throw new Error("unknown command");
-}
-
-// Only the extension's own pages may sign in or out; page code injected
-// into tabs has the tab's URL as its sender.
-browser.runtime.onMessage.addListener((msg, sender) => {
-  if (sender.id !== browser.runtime.id || !String(sender.url || "").startsWith(browser.runtime.getURL("")) || !msg) {
-    return undefined;
-  }
-  return runCommand(msg.cmd, msg.arg).then(
-    (state) => {
-      if (msg.cmd !== "state") {
-        lastError = "";
-      }
-      return { ok: true, state: Object.assign(state, { error: lastError }) };
-    },
-    (e) => {
-      lastError = String(e && e.message ? e.message : e);
-      return { ok: false, error: lastError, state: publicState() };
-    },
-  );
-});
 
 async function connect() {
   const p = browser.runtime.connectNative(HOST);
@@ -311,7 +91,6 @@ async function connect() {
   p.onMessage.addListener(onMessage);
   p.onDisconnect.addListener(() => {
     port = null;
-    daemonAuth = { state: "offline" };
     showStatus();
     if (!replaced) {
       setTimeout(connect, RETRY_MS);
@@ -324,7 +103,6 @@ async function connect() {
       version: browser.runtime.getManifest().version,
       browser: info.name + " " + info.version,
     });
-    sendAuth();
     showStatus();
   } catch (e) {
     // The port went away before the hello; onDisconnect retries.
@@ -336,27 +114,12 @@ async function onMessage(msg) {
     allowHosts = new Set((msg.allow_hosts || []).map((h) => h.toLowerCase()));
     confirmHosts = (msg.confirm_hosts || []).map((h) => String(h).toLowerCase().replace(/\.$/, "")).filter(Boolean);
     autologinHosts = new Set((msg.autologin_hosts || []).map((h) => String(h).toLowerCase().replace(/\.$/, "")).filter(Boolean));
-    daemon = { hub_url: msg.hub_url || "", device_id: msg.device_id || "", device_name: msg.device_name || "" };
-    return;
-  }
-  if (msg && msg.type === "auth_status") {
-    daemonAuth = { state: msg.state || "offline", user: msg.user || "", reason: msg.reason || "" };
-    showStatus();
-    return;
-  }
-  if (msg && (msg.type === "sign_in" || msg.type === "sign_out")) {
-    runCommand(msg.type === "sign_in" ? "signIn" : "signOut").then(
-      () => {
-        lastError = "";
-      },
-      (e) => {
-        lastError = String(e && e.message ? e.message : e);
-      },
-    );
+    hubHost = hostPortOf(msg.hub_url);
     return;
   }
   if (msg && msg.type === "replaced") {
     replaced = true;
+    showStatus();
     return;
   }
   if (!msg || msg.type !== "request") {
@@ -369,9 +132,6 @@ async function onMessage(msg) {
   try {
     if (!handler) {
       throw new Refused("unknown op " + msg.op);
-    }
-    if (!signedIn()) {
-      throw new Refused(NOT_SIGNED_IN);
     }
     reply = { type: "response", id: msg.id, ok: true, result: await handler(msg.args || {}) };
   } catch (e) {
@@ -596,24 +356,20 @@ function checkVisit(target, from, guard) {
   }
 }
 
-// hermesHost reports whether host (with its port) is the hub this browser
-// signs in to or Firefox's sign-in redirect host. Agent tabs may not open
-// them, so the agent cannot approve a sign-in for itself.
+// hostPortOf is url's host with its port, lower case, or "".
+function hostPortOf(url) {
+  try {
+    return url ? new URL(url).host.toLowerCase() : "";
+  } catch (e) {
+    return "";
+  }
+}
+
+// hermesHost reports whether host (with its port) is the daemon's hub.
+// Agent tabs may not open it, so the agent cannot use the user's hub
+// session, for example to pair another computer.
 function hermesHost(host) {
-  const h = String(host || "").toLowerCase().replace(/\.$/, "");
-  if (h.endsWith(".extensions.allizom.org")) {
-    return true;
-  }
-  for (const hub of [hubURL(), stored.auth && stored.auth.hub]) {
-    try {
-      if (hub && new URL(hub).host.toLowerCase() === h) {
-        return true;
-      }
-    } catch (e) {
-      // An unusable address names no host.
-    }
-  }
-  return false;
+  return hubHost !== "" && String(host || "").toLowerCase().replace(/\.$/, "") === hubHost;
 }
 
 function checkURL(url) {
@@ -622,7 +378,7 @@ function checkURL(url) {
     throw new Refused("only http and https URLs are allowed, got " + u.protocol);
   }
   if (hermesHost(u.host)) {
-    throw new Refused("the agent may not open the Hermes hub or its sign-in pages in its tabs");
+    throw new Refused("the agent may not open the Hermes hub in its tabs");
   }
   if (privateHost(u.hostname) && !allowHosts.has(u.hostname.toLowerCase())) {
     throw new Refused(u.hostname + " is on a loopback or private network; allow it in the device config");
@@ -1141,7 +897,7 @@ async function composeText(tabId) {
 // its result comes back as JSON. fetch and XMLHttpRequest are the page's
 // own, so requests go out as the page's, with its cookies and origin.
 function evalCode(script, site, blocked) {
-  // The extension API (storage with the hub credential, messaging) is
+  // The extension API (native messaging, tabs) is
   // taken out of this world before agent code runs; the helpers keep only
   // getFrameId, saved by installHelpers. The script runs only in a document
   // on the approved site that is not an autologin host and has no filled
@@ -2222,10 +1978,11 @@ const OPS = {
   },
 };
 
-browser.storage.local.get(null).then(
-  (data) => {
-    stored = data || {};
+browser.browserAction.onClicked.addListener(() => {
+  if (!port) {
+    replaced = false;
     connect();
-  },
-  () => connect(),
-);
+  }
+});
+
+connect();

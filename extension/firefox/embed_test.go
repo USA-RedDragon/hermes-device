@@ -81,55 +81,23 @@ func TestManifestUpdateURL(t *testing.T) {
 	}
 }
 
-const hubURL = "https://hub.example.com"
-
-func TestValidHubURL(t *testing.T) {
+// TestManifestPermissions keeps the extension to what browser control
+// needs: it talks only to the native host, so it needs no identity or
+// storage.
+func TestManifestPermissions(t *testing.T) {
 	t.Parallel()
-	for in, want := range map[string]string{
-		hubURL:                               hubURL,
-		hubURL + "/":                         hubURL,
-		"\thttps://hub.example.com/hermes//": hubURL + "/hermes",
-		"http://localhost:8080/":             "http://localhost:8080",
-		"http://127.0.0.1:9000":              "http://127.0.0.1:9000",
-		"http://[::1]:9000":                  "http://[::1]:9000",
-		"http://hub.example.com":             "",
-		"https://alice:pw@hub.example.com":   "",
-		"https://hub.example.com/?x=1":       "",
-		"https://hub.example.com/#x":         "",
-		"https://hub.example.com/#":          "",
-		"ftp://hub.example.com":              "",
-		"hub.example.com":                    "",
-		"":                                   "",
-	} {
-		got, err := firefox.ValidHubURL(in)
-		if (err != nil) != (want == "") || got != want {
-			t.Errorf("ValidHubURL(%q) = %q, %v; want %q", in, got, err, want)
-		}
-	}
-}
-
-func TestDefaults(t *testing.T) {
-	t.Parallel()
-	orig, err := firefox.Files.ReadFile("defaults.js")
+	data, err := firefox.Files.ReadFile("manifest.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	same, err := firefox.Defaults("")
-	if err != nil || !bytes.Equal(same, orig) {
-		t.Fatalf("Defaults(\"\") changed the file: %v", err)
+	var m struct {
+		Permissions []string `json:"permissions"`
 	}
-	got, err := firefox.Defaults("https://hub.example.com/")
-	if err != nil {
+	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(got, []byte(`const DEFAULT_HUB_URL = "https://hub.example.com";`)) {
-		t.Fatalf("defaults.js = %s", got)
-	}
-	quoted, err := firefox.Defaults(`https://hub.example.com/";alert(1)//`)
-	if err != nil || bytes.Contains(quoted, []byte(`";alert`)) {
-		t.Fatalf("an address with a quote escapes the string: %s, %v", quoted, err)
-	}
-	if _, err := firefox.Defaults("http://hub.example.com"); !errors.Is(err, firefox.ErrHubURL) {
-		t.Fatalf("Defaults(http) = %v, want ErrHubURL", err)
+	want := []string{"nativeMessaging", "tabs", "tabGroups", "scripting", "webRequest", "webRequestBlocking", "dns", "<all_urls>"}
+	if !reflect.DeepEqual(m.Permissions, want) {
+		t.Errorf("permissions = %q, want %q", m.Permissions, want)
 	}
 }

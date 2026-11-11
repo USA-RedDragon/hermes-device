@@ -71,7 +71,7 @@ func newBrowserCommand(b *base) *cobra.Command {
 			return err
 		},
 	})
-	var out, extVersion, hubDefault string
+	var out, extVersion string
 	ext := &cobra.Command{
 		Use:   "extension",
 		Short: "Write the Hermes Firefox extension's files to a directory, to load as a temporary add-on",
@@ -84,7 +84,7 @@ func newBrowserCommand(b *base) *cobra.Command {
 			if !cmd.Flags().Changed("ext-version") && firefox.ValidVersion(b.version) {
 				v = b.version
 			}
-			if err := firefox.Write(out, v, hubDefault); err != nil {
+			if err := firefox.Write(out, v); err != nil {
 				return err
 			}
 			_, err := fmt.Fprintf(cmd.OutOrStdout(),
@@ -99,8 +99,6 @@ func newBrowserCommand(b *base) *cobra.Command {
 	ext.Flags().StringVarP(&out, "out", "o", "hermes-browser-extension", "Directory to write the extension to")
 	ext.Flags().StringVar(&extVersion, "ext-version", "",
 		"Version to put in manifest.json (default: this binary's release version, else the embedded one)")
-	ext.Flags().StringVar(&hubDefault, "hub-url-default", "",
-		"Hub address the extension signs in to until the user sets another (https, or http for localhost). Empty: the user enters it")
 	c.AddCommand(ext)
 	return c
 }
