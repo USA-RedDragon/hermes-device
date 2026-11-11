@@ -72,6 +72,18 @@ type browserShadow struct {
 	AllowHosts *[]string `json:"allow-hosts" toml:"allow-hosts" yaml:"allow-hosts"`
 }
 
+type mCPServerShadow struct {
+	Command *string            `json:"command" toml:"command" yaml:"command"`
+	Args    *[]string          `json:"args"    toml:"args"    yaml:"args"`
+	Env     *map[string]string `json:"env"     toml:"env"     yaml:"env"`
+	Dir     *string            `json:"dir"     toml:"dir"     yaml:"dir"`
+}
+
+type mCPShadow struct {
+	Servers     *map[string]mCPServerShadow `json:"servers"      toml:"servers"      yaml:"servers"`
+	IdleTimeout *impl.Duration              `json:"idle-timeout" toml:"idle-timeout" yaml:"idle-timeout"`
+}
+
 type configShadow struct {
 	LogLevel     *string          `json:"log-level"     toml:"log-level"     yaml:"log-level"`
 	PingInterval *impl.Duration   `json:"ping-interval" toml:"ping-interval" yaml:"ping-interval"`
@@ -83,6 +95,7 @@ type configShadow struct {
 	ACPHost      *aCPHostShadow   `json:"acp-host"      toml:"acp-host"      yaml:"acp-host"`
 	Reconnect    *reconnectShadow `json:"reconnect"     toml:"reconnect"     yaml:"reconnect"`
 	Browser      *browserShadow   `json:"browser"       toml:"browser"       yaml:"browser"`
+	MCP          *mCPShadow       `json:"mcp"           toml:"mcp"           yaml:"mcp"`
 }
 
 // ConfigSchema returns the generated schema for Config.
@@ -127,6 +140,8 @@ func configApplyDefaults(cfg *Config, _ string, set configulator.SetOrigin) erro
 	set("reconnect.max-backoff", configulator.LayerDefault, "default tag")
 	cfg.Browser.Enabled = false
 	set("browser.enabled", configulator.LayerDefault, "default tag")
+	cfg.MCP.IdleTimeout = time.Duration(int64(3600000000000))
+	set("mcp.idle-timeout", configulator.LayerDefault, "default tag")
 	return nil
 }
 
@@ -300,6 +315,45 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		if s.Browser.AllowHosts != nil {
 			cfg.Browser.AllowHosts = *s.Browser.AllowHosts
 			set("browser.allow-hosts", configulator.LayerFile, file)
+		}
+	}
+	if s.MCP != nil {
+		if s.MCP.Servers != nil {
+			out := make(map[string]MCPServer, len(*s.MCP.Servers))
+			for k, esh := range *s.MCP.Servers {
+				var e MCPServer
+				key := "mcp.servers." + configQuoteKey(k)
+				if esh.Command != nil {
+					e.Command = *esh.Command
+					set(key+".command", configulator.LayerFile, file)
+				}
+				if esh.Args != nil {
+					e.Args = *esh.Args
+					set(key+".args", configulator.LayerFile, file)
+				}
+				if esh.Env != nil {
+					e.Env = *esh.Env
+					set(key+".env", configulator.LayerFile, file)
+				}
+				if esh.Dir != nil {
+					e.Dir = *esh.Dir
+					set(key+".dir", configulator.LayerFile, file)
+				}
+				out[k] = e
+			}
+			cfg.MCP.Servers = out
+			set("mcp.servers", configulator.LayerFile, file)
+		}
+		if s.MCP.IdleTimeout != nil {
+			v, ok := s.MCP.IdleTimeout.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "mcp.idle-timeout",
+				}
+			}
+			cfg.MCP.IdleTimeout = v
+			set("mcp.idle-timeout", configulator.LayerFile, file)
 		}
 	}
 	return nil
@@ -505,6 +559,19 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Browser.AllowHosts = lst
 		set("browser.allow-hosts", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "mcp", "idle-timeout"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "mcp.idle-timeout",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.MCP.IdleTimeout = d
+		set("mcp.idle-timeout", configulator.LayerEnv, n)
+	}
 	return nil
 }
 
@@ -547,6 +614,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"reconnect" + o.Separator + "max-backoff",
 		"browser" + o.Separator + "enabled",
 		"browser" + o.Separator + "allow-hosts",
+		"mcp" + o.Separator + "idle-timeout",
 	}
 	for i, name := range names {
 		if f := fs.Lookup(name); f != nil {
@@ -591,6 +659,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[26], time.Duration(int64(30000000000)), "Longest delay between attempts")
 	fs.Bool(names[27], false, "Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run hermes-device browser install once")
 	fs.StringSlice(names[28], nil, "Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs")
+	fs.Duration(names[29], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
 	return nil
 }
 
@@ -943,6 +1012,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.Browser.AllowHosts = v
 		set("browser.allow-hosts", configulator.LayerCLI, "--"+n)
 	}
+	if n := "mcp" + o.Separator + "idle-timeout"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "mcp.idle-timeout",
+				Source: "--" + n,
+			}
+		}
+		cfg.MCP.IdleTimeout = v
+		set("mcp.idle-timeout", configulator.LayerCLI, "--"+n)
+	}
 	return nil
 }
 
@@ -1143,6 +1224,25 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Browser = &sub
+			}
+		case "mcp":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("mcp", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub mCPShadow
+				if err := sub.decodeJSON(dec, "mcp"); err != nil {
+					return err
+				}
+				s.MCP = &sub
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -1758,6 +1858,207 @@ func (s *browserShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	}
 }
 
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *mCPShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "servers":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError(path+".servers", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				out := map[string]mCPServerShadow{}
+				for dec.PeekKind() != jsontext.KindEndObject {
+					kt, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					key := kt.String()
+					ep := path + ".servers" + "." + configQuoteKey(key)
+					et, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if et.Kind() != jsontext.KindBeginObject {
+						return configJSONError(ep, et, fmt.Errorf("expected an object, got %v", et.Kind()))
+					}
+					var el mCPServerShadow
+					if err := el.decodeJSON(dec, ep); err != nil {
+						return err
+					}
+					out[key] = el
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.Servers = &out
+			}
+		case "idle-timeout":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".idle-timeout", v, err)
+				}
+				s.IdleTimeout = &slot
+			default:
+				return configJSONError(path+".idle-timeout", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *mCPServerShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "command":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Command = &str
+			default:
+				return configJSONError(path+".command", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "args":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".args", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".args"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.Args = &out
+			}
+		case "env":
+			if err := func() error {
+				if dec.PeekKind() == jsontext.KindNull {
+					if _, err := dec.ReadToken(); err != nil {
+						return err
+					}
+				} else {
+					open, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if open.Kind() != jsontext.KindBeginObject {
+						return configJSONError(path+".env", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+					}
+					out := map[string]string{}
+					for dec.PeekKind() != jsontext.KindEndObject {
+						kt, err := dec.ReadToken()
+						if err != nil {
+							return err
+						}
+						key := kt.String()
+						v, err := dec.ReadToken()
+						if err != nil {
+							return err
+						}
+						if v.Kind() != jsontext.KindString {
+							return configJSONError(path+".env"+"."+configQuoteKey(key), v, fmt.Errorf("expected a string, got %v", v.Kind()))
+						}
+						el := v.String()
+						out[key] = el
+					}
+					if _, err := dec.ReadToken(); err != nil {
+						return err
+					}
+					s.Env = &out
+				}
+				return nil
+			}(); err != nil {
+				return &configulator.ParseError{
+					Err:   errors.New("invalid value"),
+					Path:  path + ".env",
+					Value: "(redacted)",
+				}
+			}
+		case "dir":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Dir = &str
+			default:
+				return configJSONError(path+".dir", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // configJSONError returns a ParseError for the JSON token v at path.
 func configJSONError(path string, v jsontext.Token, err error) error {
 	return &configulator.ParseError{
@@ -1801,6 +2102,8 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "reconnect.max-backoff = %v\n", c.Reconnect.MaxBackoff)
 	fmt.Fprintf(&b, "browser.enabled = %v\n", c.Browser.Enabled)
 	fmt.Fprintf(&b, "browser.allow-hosts = %v\n", c.Browser.AllowHosts)
+	b.WriteString("mcp.servers = (redacted)\n")
+	fmt.Fprintf(&b, "mcp.idle-timeout = %v\n", c.MCP.IdleTimeout)
 	return b.String()
 }
 

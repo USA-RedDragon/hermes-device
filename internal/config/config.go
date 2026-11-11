@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/USA-RedDragon/hermes-device/internal/mcp"
 )
 
 // Hub is where the device connects.
@@ -67,6 +69,21 @@ type Browser struct {
 	AllowHosts []string `name:"allow-hosts" description:"Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs"`
 }
 
+// MCP is the MCP servers the agent may use on this device
+// (docs/protocol.md section 4.9).
+type MCP struct {
+	Servers     map[string]MCPServer `name:"servers" description:"MCP servers the agent may use on this device, by name: lowercase letters, digits, - and _, at most 32 characters. Each one runs on this device with stdio, started on first use. Only servers listed here can run. Config file only"`
+	IdleTimeout time.Duration        `name:"idle-timeout" default:"1h" description:"Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops"`
+}
+
+// MCPServer is one MCP server that runs on this device.
+type MCPServer struct {
+	Command string            `name:"command" description:"Program to run, a path or a name looked up in the daemon's PATH. Needed"`
+	Args    []string          `name:"args" description:"Arguments of the program"`
+	Env     map[string]string `name:"env" secret:"true" description:"Environment variables added to the daemon's environment for this server"`
+	Dir     string            `name:"dir" description:"Absolute working directory. Defaults to $HOME"`
+}
+
 // Reconnect controls the backoff between connection attempts.
 type Reconnect struct {
 	MinBackoff time.Duration `name:"min-backoff" default:"1s" description:"First delay after a lost connection"`
@@ -85,6 +102,7 @@ type Config struct {
 	ACPHost      ACPHost       `name:"acp-host"`
 	Reconnect    Reconnect     `name:"reconnect"`
 	Browser      Browser       `name:"browser"`
+	MCP          MCP           `name:"mcp"`
 }
 
 // Validation errors.
@@ -98,6 +116,7 @@ var (
 	ErrMissing         = errors.New("missing setting")
 	ErrMaxProcesses    = errors.New("acp-host.max-processes must be at least 1")
 	ErrResume          = errors.New("device.resume-buffer must be at least 4096 and device.max-grace must not be negative")
+	ErrMCPServer       = errors.New("invalid mcp.servers entry")
 )
 
 // Validate checks what the tags can't. Settings only some subcommands need
@@ -138,6 +157,9 @@ func (c Config) Validate() error {
 	}
 	if c.Device.ResumeBuffer < 4096 || c.Device.MaxGrace < 0 {
 		return ErrResume
+	}
+	if err := c.MCP.validate(); err != nil {
+		return err
 	}
 	return checkLoopback(c.Gateway.Listen)
 }
@@ -193,6 +215,28 @@ func (c Config) ForACPHost() error {
 		return fmt.Errorf("%w: acp-host.placeholder", ErrMissing)
 	case c.ACPHost.HubPublicKey == "" && c.ACPHost.HubPublicKeyFile == "":
 		return fmt.Errorf("%w: acp-host.hub-public-key or acp-host.hub-public-key-file", ErrMissing)
+	}
+	return nil
+}
+
+func (m MCP) validate() error {
+	if m.IdleTimeout < 0 {
+		return fmt.Errorf("%w: mcp.idle-timeout must not be negative", ErrMCPServer)
+	}
+	for name, srv := range m.Servers {
+		switch {
+		case !mcp.NameRE.MatchString(name):
+			return fmt.Errorf("%w: name %q must be lowercase letters, digits, - and _, at most 32 characters", ErrMCPServer, name)
+		case strings.TrimSpace(srv.Command) == "":
+			return fmt.Errorf("%w: mcp.servers.%s.command is empty", ErrMCPServer, name)
+		case srv.Dir != "" && !filepath.IsAbs(srv.Dir):
+			return fmt.Errorf("%w: mcp.servers.%s.dir %q: %w", ErrMCPServer, name, srv.Dir, ErrRelativePath)
+		}
+		for k := range srv.Env {
+			if k == "" || strings.ContainsAny(k, "=\x00") {
+				return fmt.Errorf("%w: mcp.servers.%s.env has an invalid name %q", ErrMCPServer, name, k)
+			}
+		}
 	}
 	return nil
 }

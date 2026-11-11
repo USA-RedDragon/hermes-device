@@ -101,6 +101,9 @@ type Options struct {
 	// Browser serves browser requests. With it the device offers
 	// protocol.CapabilityBrowser in hello.
 	Browser Browser
+	// MCP serves MCP requests for the servers of the device config. With
+	// servers the device offers protocol.CapabilityMCP in hello.
+	MCP MCP
 	// Shell runs each command as <shell> -c <cmd>.
 	Shell string
 	// TempDir is sent as hello.tmp_dir.
@@ -207,7 +210,11 @@ func (c *Client) Hello() protocol.Hello {
 		Shell: c.opts.Shell, ClientVersion: c.opts.ClientVersion,
 	}
 	if c.opts.Browser != nil {
-		h.Capabilities = []string{protocol.CapabilityBrowser}
+		h.Capabilities = append(h.Capabilities, protocol.CapabilityBrowser)
+	}
+	if c.opts.MCP != nil && len(c.opts.MCP.Names()) > 0 {
+		h.Capabilities = append(h.Capabilities, protocol.CapabilityMCP)
+		h.MCPServers = c.opts.MCP.Names()
 	}
 	return h
 }
@@ -317,6 +324,10 @@ type session struct {
 	sentAt  time.Time
 	retryAt time.Time
 	kick    chan struct{}
+	// mcp is true when the leg negotiated protocol.CapabilityMCP.
+	// mcpCalls holds the cancel function of each MCP request in flight.
+	mcp      bool
+	mcpCalls map[string]context.CancelFunc
 }
 
 func (s *session) write(ctx context.Context, v any) error {
@@ -324,6 +335,15 @@ func (s *session) write(ctx context.Context, v any) error {
 	if err != nil {
 		return err
 	}
+	wctx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	return s.conn.Write(wctx, websocket.MessageText, data)
+}
+
+// sendRaw writes an encoded message.
+func (s *session) sendRaw(ctx context.Context, data []byte) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
 	wctx, cancel := context.WithTimeout(ctx, writeTimeout)
 	defer cancel()
 	return s.conn.Write(wctx, websocket.MessageText, data)
@@ -401,7 +421,7 @@ func (c *Client) serveOnce(ctx context.Context) (time.Duration, error) {
 
 	connCtx, cancel := context.WithCancel(ctx)
 	s := &session{c: c, conn: conn, ctx: connCtx, cancel: cancel, pings: map[int64]uint64{},
-		calls: map[string]context.CancelFunc{}, kick: make(chan struct{}, 1)}
+		calls: map[string]context.CancelFunc{}, mcpCalls: map[string]context.CancelFunc{}, kick: make(chan struct{}, 1)}
 	defer func() {
 		cancel()
 		s.wg.Wait()
@@ -443,10 +463,12 @@ func (c *Client) serveOnce(ctx context.Context) (time.Duration, error) {
 		c.killAll("the plugin speaks protocol 2, which cannot resume commands")
 	}
 	s.browser = c.opts.Browser != nil && slices.Contains(welcome.Capabilities, protocol.CapabilityBrowser)
+	s.mcp = c.opts.MCP != nil && slices.Contains(c.Hello().Capabilities, protocol.CapabilityMCP) &&
+		slices.Contains(welcome.Capabilities, protocol.CapabilityMCP)
 	connected := time.Now()
 	slog.Info("Exec leg connected", "device_id", welcome.DeviceID, "name", welcome.Name, "protocol", s.version,
 		"plugin_version", welcome.PluginVersion, "hermes_version", welcome.HermesVersion, "roots", c.opts.Allow.Roots(),
-		"browser", s.browser)
+		"browser", s.browser, "mcp", s.mcp)
 
 	if c.opts.Browser != nil {
 		c.opts.Browser.SetDevice(welcome.DeviceID, welcome.Name)
@@ -569,6 +591,7 @@ func (s *session) readLoop(ctx context.Context) error {
 			if err := json.Unmarshal(data, &req); err == nil {
 				s.c.kill(req.ID)
 				s.cancelBrowser(req.ID)
+				s.cancelMCP(req.ID)
 			}
 		case protocol.TypeBrowser:
 			if !s.browser {
@@ -581,6 +604,8 @@ func (s *session) readLoop(ctx context.Context) error {
 				continue
 			}
 			s.browserCall(ctx, req)
+		case protocol.TypeMCP:
+			s.mcpRequest(ctx, data)
 		case protocol.TypeBrowserAuthResult:
 			if !s.browser {
 				continue

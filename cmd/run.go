@@ -17,6 +17,7 @@ import (
 	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
 	"github.com/USA-RedDragon/hermes-device/internal/device"
 	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
+	"github.com/USA-RedDragon/hermes-device/internal/mcp"
 	"github.com/USA-RedDragon/hermes-device/internal/splice"
 	"github.com/USA-RedDragon/hermes-device/internal/tokenstore"
 	"github.com/spf13/cobra"
@@ -139,6 +140,12 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 		}
 		opts.Browser = br
 	}
+	if len(cfg.MCP.Servers) > 0 {
+		mgr := newMCP(cfg, version)
+		defer mgr.Close()
+		opts.MCP = mgr
+		slog.Info("MCP servers on", "servers", mgr.Names(), "idle_timeout", cfg.MCP.IdleTimeout)
+	}
 	dev, err := device.New(opts)
 	if err != nil {
 		return err
@@ -238,6 +245,17 @@ func startBroker(ctx context.Context, cfg *config.Config) (*broker.Broker, error
 	}()
 	slog.Info("Browser control on", "socket", sock, "allow_hosts", cfg.Browser.AllowHosts)
 	return br, nil
+}
+
+// newMCP returns the manager of the configured MCP servers. They get the
+// commands' environment, so not the device token either.
+func newMCP(cfg *config.Config, version string) *mcp.Manager {
+	servers := make(map[string]mcp.ServerConfig, len(cfg.MCP.Servers))
+	for name, s := range cfg.MCP.Servers {
+		servers[name] = mcp.ServerConfig{Command: s.Command, Args: s.Args, Env: s.Env, Dir: s.Dir}
+	}
+	return mcp.New(mcp.Options{Servers: servers, Env: commandEnv(os.Environ()), IdleTimeout: cfg.MCP.IdleTimeout,
+		ClientVersion: version})
 }
 
 // tokenEnv is the env var of hub.token, which commands must not inherit.

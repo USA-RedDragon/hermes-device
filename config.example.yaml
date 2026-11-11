@@ -65,3 +65,14 @@ browser:
   enabled: false
   # Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs
   # allow-hosts: []
+mcp:
+  # MCP servers the agent may use on this device, by name: lowercase letters, digits, - and _, at most 32 characters. Each one runs on this device with stdio, started on first use. Only servers listed here can run. Config file only
+  # servers:
+  #   example:
+  #     command: ""
+  #     args: []
+  #     env:
+  #       example: ""
+  #     dir: ""
+  # Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops
+  idle-timeout: "1h"

@@ -97,3 +97,39 @@ func TestServiceDeviceFromEnv(t *testing.T) {
 		t.Errorf("relative token file: %v", err)
 	}
 }
+
+func TestMCPServers(t *testing.T) {
+	t.Parallel()
+	cfg, err := load(nil, `
+mcp:
+  servers:
+    rea:
+      command: npx
+      args: ["-y", "rea-agents@6.7.0", "mcp"]
+      env:
+        HOPPER_LAUNCHER_PATH: /opt/hopper/bin/Hopper
+    tiny:
+      command: /usr/local/bin/tiny-mcp
+      dir: /home/alice
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rea := cfg.MCP.Servers["rea"]
+	if len(cfg.MCP.Servers) != 2 || rea.Command != "npx" || len(rea.Args) != 3 || rea.Args[1] != "rea-agents@6.7.0" ||
+		rea.Env["HOPPER_LAUNCHER_PATH"] != "/opt/hopper/bin/Hopper" || cfg.MCP.Servers["tiny"].Dir != "/home/alice" ||
+		cfg.MCP.IdleTimeout != time.Hour {
+		t.Errorf("mcp = %+v", cfg.MCP)
+	}
+	for name, file := range map[string]string{
+		"name":     "mcp: {servers: {Bad.Name: {command: x}}}\n",
+		"command":  "mcp: {servers: {rea: {args: [x]}}}\n",
+		"dir":      "mcp: {servers: {rea: {command: x, dir: rel}}}\n",
+		"env name": "mcp: {servers: {rea: {command: x, env: {\"A=B\": c}}}}\n",
+		"idle":     "mcp: {idle-timeout: -1s}\n",
+	} {
+		if _, err := load(nil, file); !errors.Is(err, config.ErrMCPServer) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
