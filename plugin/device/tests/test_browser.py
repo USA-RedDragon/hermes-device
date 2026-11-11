@@ -431,31 +431,53 @@ class ToolTests(BrowserBase):
                              "host": "acme.lightning.force.com", "top_host": "acme.lightning.force.com",
                              "sensitive": [], "protected": True, "target": dict({"kind": "other"}, **target)}
 
-    def test_salesforce_click_confirms_every_time(self):
+    def test_salesforce_click_asks_the_host_rule(self):
         self.salesforce(label="Start Session Timer")
+        out = self.run_tool("browser_click", tab_id=7, ref="e9")
+        self.assertEqual(self.decision["action"], "approve")
+        self.assertEqual(self.decision["rule_key"], "browser:click:acme.lightning.force.com")
+        self.assertIn('"Start Session Timer"', self.decision["message"])
+        self.assertIn("Salesforce", self.decision["message"])
+        self.assertNotIn("error", out)
+        self.assertTrue(self.last("click")["args"]["guard"]["confirmed"])
+        self.assertFalse(self.last("click")["args"]["guard"]["sensitive"])
+        self.assertEqual(self.confirmed.call_count, 0, "a Salesforce click no longer asks every time")
+
+    def test_salesforce_keys_and_typing(self):
+        self.salesforce(kind="field", host="acme.lightning.force.com", form=False)
+        for call in (dict(tool="browser_press", key="ArrowDown", ref="e2"), dict(tool="browser_type", ref="e2", text="x")):
+            tool = call.pop("tool")
+            self.run_tool(tool, tab_id=7, **call)
+            self.assertIsNone(self.decision, tool)
+        for call in (dict(tool="browser_press", key="Enter", ref="e2"), dict(tool="browser_press", key="Space", ref="e2"),
+                     dict(tool="browser_type", ref="e2", text="x", submit=True)):
+            tool = call.pop("tool")
+            self.run_tool(tool, tab_id=7, **call)
+            self.assertEqual(self.decision["rule_key"], "browser:click:acme.lightning.force.com", tool)
+        self.assertEqual(self.confirmed.call_count, 0)
+
+    def test_salesforce_secret_page_still_confirms_every_time(self):
+        self.salesforce(label="Save")
+        self.fake.inspect["sensitive"] = ["password"]
+        self.run_tool("browser_click", tab_id=7, ref="e9")
+        self.assertIsNone(self.decision)
+        self.assertEqual(self.confirmed.call_count, 1)
+        self.assertIn("password fields", self.confirmed.call_args.args[0])
+        guard = self.last("click")["args"]["guard"]
+        self.assertTrue(guard["sensitive"] and guard["confirmed"])
+
+    def test_confirm_hosts_still_confirm_every_time(self):
+        self.fake.inspect = {"url": "https://crm.example.com/x", "host": "crm.example.com", "top_host": "crm.example.com",
+                             "sensitive": [], "protected": True, "target": {"kind": "other"}}
         for _ in range(2):
-            out = self.run_tool("browser_click", tab_id=7, ref="e9")
-            self.assertIsNone(self.decision, "Salesforce clicks never use a session or always grant")
-            self.assertNotIn("error", out)
-            self.assertTrue(self.last("click")["args"]["guard"]["confirmed"])
+            self.run_tool("browser_click", tab_id=7, ref="e9")
+            self.assertIsNone(self.decision)
         self.assertEqual(self.confirmed.call_count, 2)
-        self.assertIn('"Start Session Timer"', self.confirmed.call_args.args[0])
-        self.assertIn("Salesforce", self.confirmed.call_args.args[0])
+        self.assertIn("browser.confirm-hosts", self.confirmed.call_args.args[0])
         self.confirmed.return_value = False
         before = len([r for r in self.fake.requests if r["op"] == "click"])
         self.assertEqual(self.run_tool("browser_click", tab_id=7, ref="e9")["code"], "declined")
         self.assertEqual(len([r for r in self.fake.requests if r["op"] == "click"]), before)
-
-    def test_salesforce_keys_and_typing(self):
-        self.salesforce(kind="field", host="acme.lightning.force.com", form=False)
-        self.run_tool("browser_press", tab_id=7, key="ArrowDown", ref="e2")
-        self.run_tool("browser_type", tab_id=7, ref="e2", text="x")
-        self.run_tool("browser_scroll", tab_id=7, direction="down")
-        self.assertEqual(self.confirmed.call_count, 0)
-        self.run_tool("browser_press", tab_id=7, key="Enter", ref="e2")
-        self.run_tool("browser_press", tab_id=7, key="Space", ref="e2")
-        self.run_tool("browser_type", tab_id=7, ref="e2", text="x", submit=True)
-        self.assertEqual(self.confirmed.call_count, 3)
 
     def test_eval_read_asks_script_rule(self):
         out = self.run_tool("browser_eval", tab_id=7, script="return document.title")
@@ -542,12 +564,27 @@ class ToolTests(BrowserBase):
 
     def test_unattended_never_confirms(self):
         self.salesforce()
+        self.fake.inspect["sensitive"] = ["password"]
         with mock.patch.object(browser, "no_user", lambda: True), mock.patch.object(browser, "approved", lambda k: True):
             out = self.run_tool("browser_click", tab_id=7, ref="e9")
         self.assertEqual(self.decision["action"], "block")
         self.assertIn("asks the user every time", out["error"])
         self.assertEqual(self.confirmed.call_count, 0)
         self.assertFalse([r for r in self.fake.requests if r["op"] == "click"])
+
+    def test_unattended_salesforce_click_needs_always(self):
+        self.salesforce()
+        with mock.patch.object(browser, "no_user", lambda: True), mock.patch.object(browser, "approved", lambda k: False):
+            out = self.run_tool("browser_click", tab_id=7, ref="e9")
+        self.assertEqual(self.decision["action"], "block")
+        self.assertIn("plugin_rule:browser:click:acme.lightning.force.com", out["error"])
+        self.assertFalse([r for r in self.fake.requests if r["op"] == "click"])
+        rule = "browser:click:acme.lightning.force.com"
+        with mock.patch.object(browser, "no_user", lambda: True), mock.patch.object(browser, "approved", lambda k: k == rule):
+            out = self.run_tool("browser_click", tab_id=7, ref="e9")
+        self.assertEqual(self.decision["rule_key"], rule)
+        self.assertNotIn("error", out)
+        self.assertTrue(self.last("click")["args"]["guard"]["confirmed"])
 
     def login_page(self, listed: bool = True):
         self.fake.inspect = {"url": "https://login.example.com/authsvc", "host": "login.example.com",

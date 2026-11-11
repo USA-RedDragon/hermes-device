@@ -668,7 +668,7 @@ async function prepare(tabId, ref, kind, guard) {
   if ((kind === "click" || kind === "submit" || kind === "activate") &&
     (protectedHost(hostOf(tab.url)) || protectedHost(frameHost)) && !g.confirmed) {
     throw new Refused("on Salesforce (and the sites in browser.confirm-hosts) every click and every Enter or Space key " +
-      "press needs the user's OK each time");
+      "press needs the user's approval");
   }
   const sensitive = await tabSensitive(tabId);
   if (sensitive.includes("password") && (autologinHost(hostOf(tab.url)) || autologinHost(frameHost))) {

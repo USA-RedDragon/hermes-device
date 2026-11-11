@@ -5,8 +5,9 @@ Every call goes to the session's browser device (:func:`pick`): the device a sch
 session chose, else the computer the session is bound to, else the user's one computer with
 browser control. It never goes to the sandbox, which has no browser.
 ``pre_tool_call`` asks the user, through Hermes's approval gate, the first time per site and
-session before a form submit, a visit to a new site, a script or a saved-login sign-in. On a page with password,
-payment or one-time code fields, and for clicks on Salesforce, the handler asks every time.
+session before a form submit, a visit to a new site, a script, a saved-login sign-in or a click on a
+Salesforce host. On a page with password, payment or one-time code fields, and for clicks on the device's
+browser.confirm-hosts, the handler asks every time.
 With no user present (a scheduled job), only approvals the user gave before count and anything
 else fails at once. The extension checks the same rules again right before it acts, so a page
 that changed after the check cannot slip an action past the user.
@@ -529,8 +530,9 @@ def _rule(kind: str, site: str) -> str:
 
 
 # Salesforce hosts are protected sites (docs/browser.md section 7.1): every click, and every
-# Enter or Space key press, asks the user each time, and scripts may never change data there.
-# The extension holds the same list and enforces it.
+# Enter or Space key press, needs the user's approval of the host (rule browser:click:<host>), and
+# scripts may never change data there. The extension holds the same list and refuses those
+# actions unless the plugin passed them.
 PROTECTED_SUFFIXES = ("force.com", "salesforce.com", "visualforce.com", "cloudforce.com", "salesforce-setup.com",
                       "salesforce-sites.com", "documentforce.com", "force-user-content.com")
 
@@ -765,12 +767,19 @@ def decide(tool_name: str, args: dict, conn: Any) -> tuple[dict, Optional[dict]]
     if on_salesforce and clicks:
         how = (f"press {str(args.get('key'))[:20]} on" if press else
                "submit" if tool_name == "browser_type" else "click")
-        grant["confirm"] = sensitive or ["salesforce"]
         grant["protected_ok"] = True
-        kind_of = "Salesforce" if protected(str(info.get("host") or "")) or protected(
-            str(info.get("top_host") or "")) else "a site in this device's browser.confirm-hosts"
+        salesforce = protected(str(info.get("host") or "")) or protected(str(info.get("top_host") or ""))
+        if salesforce and not sensitive:
+            return grant, {"action": "approve", "rule_key": _rule("click", page),
+                           "message": f"The agent wants to {how} the element{what_el} on {page} (Salesforce) in "
+                                      f"{where}. Approving for this chat (or always) lets the agent click, submit and "
+                                      f"press Enter or Space on {page} again without asking; \"always\" also lets "
+                                      f"scheduled runs do it."}
+        grant["confirm"] = sensitive or ["salesforce"]
+        kind_of = "Salesforce" if salesforce else "a site in this device's browser.confirm-hosts"
         grant["confirm_text"] = (f"The agent wants to {how} the element{what_el} on {page} ({kind_of}) in {where}. "
-                                 f"Every click there needs your OK.")
+                                 + (f"The page has {', '.join(x.replace('_', '-') for x in sensitive)} fields. "
+                                    if sensitive else "") + "Every click there needs your OK.")
         return grant, None
     if sensitive:
         what = "submit a form on" if submits else ("follow a link from" if link_away else "act on")
@@ -1618,8 +1627,9 @@ SCHEMAS = {
         ["tab_id"]),
     "browser_click": _schema(
         "browser_click", "Click an element of an agent tab by its snapshot ref. A form submit or a link to another "
-        "site needs the user's approval once per site; on Salesforce and on pages with password, payment or "
-        "one-time code fields the user confirms every click.", {"tab_id": _TAB, "ref": _REF}, ["tab_id", "ref"]),
+        "site needs the user's approval once per site, and so does clicking on a Salesforce host; on pages with "
+        "password, payment or one-time code fields, and on the device's browser.confirm-hosts, the user confirms "
+        "every click.", {"tab_id": _TAB, "ref": _REF}, ["tab_id", "ref"]),
     "browser_type": _schema(
         "browser_type", "Type text into a field of an agent tab, replacing its value. submit presses Enter and "
         "submits the form, which needs the user's approval once per site.",
