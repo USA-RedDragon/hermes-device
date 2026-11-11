@@ -239,6 +239,11 @@ type Welcome struct {
 	// plugin knows it. chat runs the same build on the device. At most
 	// MaxHermesImage bytes.
 	HermesImage string `json:"hermes_image,omitempty"`
+	// HermesBaseImage is the upstream image that HermesImage builds on,
+	// pinned by digest, when HermesImage is a patched build. A device that
+	// cannot pull HermesImage runs this one's client instead: patched
+	// builds change the server, not the TUI. At most MaxHermesImage bytes.
+	HermesBaseImage string `json:"hermes_base_image,omitempty"`
 }
 
 // MaxHermesImage is the longest Welcome.HermesImage.

@@ -30,6 +30,9 @@ type State struct {
 	// not report it.
 	HermesVersion string `json:"hermes_version,omitempty"`
 	HermesImage   string `json:"hermes_image,omitempty"`
+	// HermesBaseImage is the upstream image that HermesImage builds on,
+	// when the plugin reports one.
+	HermesBaseImage string `json:"hermes_base_image,omitempty"`
 }
 
 // Write writes st into dir with mode 0600.

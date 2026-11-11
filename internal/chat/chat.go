@@ -368,8 +368,10 @@ type Params struct {
 	Hermes string
 	// Builds holds the managed Hermes builds; nil turns them off.
 	Builds *hermesbuild.Store
-	// Image is the server's Hermes image from the daemon state.
-	Image string
+	// Image is the server's Hermes image from the daemon state, and
+	// BaseImage the upstream image it builds on, which chat runs when
+	// Image cannot be fetched.
+	Image, BaseImage string
 	// Args go to Hermes after --tui.
 	Args []string
 	Hub  *hubapi.Client
@@ -451,7 +453,13 @@ func pickHermes(ctx context.Context, p Params, log *slog.Logger) (*launch, error
 		_, err := oci.ParseReference(p.Image)
 		if err == nil {
 			var l *launch
-			if l, err = managedLaunch(ctx, p.Builds, p.Image, base); !errors.Is(err, oci.ErrPlatform) {
+			l, err = managedLaunch(ctx, p.Builds, pickImage(p), base)
+			if err != nil && !errors.Is(err, oci.ErrPlatform) && ctx.Err() == nil && p.BaseImage != "" && pickImage(p) == p.Image {
+				log.Warn("Could not fetch the server's Hermes build; running the upstream build it is based on",
+					"image", p.Image, "base", p.BaseImage, "error", err)
+				l, err = managedLaunch(ctx, p.Builds, p.BaseImage, base)
+			}
+			if !errors.Is(err, oci.ErrPlatform) {
 				return l, err
 			}
 		}
@@ -473,6 +481,23 @@ func pickHermes(ctx context.Context, p Params, log *slog.Logger) (*launch, error
 		log.Warn("local and server Hermes differ", "local", local, "server", who.HermesVersion)
 	}
 	return &launch{argv: Argv(p.Hermes, nil), env: base}, nil
+}
+
+// pickImage is p.Image, or p.BaseImage when only the base image's build
+// is on this device: run fetches the base build when it cannot pull the
+// server's image.
+func pickImage(p Params) string {
+	if p.BaseImage == "" {
+		return p.Image
+	}
+	if _, err := p.Builds.Open(p.Image); errors.Is(err, hermesbuild.ErrNotPulled) {
+		if _, err := oci.ParseReference(p.BaseImage); err == nil {
+			if _, err := p.Builds.Open(p.BaseImage); err == nil {
+				return p.BaseImage
+			}
+		}
+	}
+	return p.Image
 }
 
 // managedLaunch fetches image's build when needed and marks it in use.

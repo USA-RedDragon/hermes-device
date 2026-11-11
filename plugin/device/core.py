@@ -119,6 +119,9 @@ ACP_BINDING_META = "deviceBinding"
 # The image this Hermes runs, reported as welcome.hermes_image (protocol.md section 4.1).
 IMAGE_REPOSITORY_ENV = "HERMES_IMAGE_REPOSITORY"
 IMAGE_TAG_ENV = "HERMES_IMAGE_TAG"
+# The upstream image a patched image builds on, reported as welcome.hermes_base_image, so that a
+# device can run that upstream build's client when it cannot pull the patched image.
+BASE_IMAGE_ENV = "HERMES_BASE_IMAGE"
 MAX_HERMES_IMAGE = 512
 
 SEND_TIMEOUT_S = 15.0
@@ -325,6 +328,18 @@ def hermes_image() -> str:
     if len(ref) > MAX_HERMES_IMAGE or not ref.isprintable() or any(c.isspace() for c in ref):
         logger.warning("device: %s and %s do not form an image reference; not reported",
                        IMAGE_REPOSITORY_ENV, IMAGE_TAG_ENV)
+        return ""
+    return ref
+
+
+def hermes_base_image() -> str:
+    """The upstream image reference from HERMES_BASE_IMAGE, or "" when it is unset or not pinned
+    by digest."""
+    ref = os.environ.get(BASE_IMAGE_ENV, "").strip()
+    if not ref:
+        return ""
+    if len(ref) > MAX_HERMES_IMAGE or not ref.isprintable() or any(c.isspace() for c in ref) or "@sha256:" not in ref:
+        logger.warning("device: %s is not an image reference pinned by digest; not reported", BASE_IMAGE_ENV)
         return ""
     return ref
 

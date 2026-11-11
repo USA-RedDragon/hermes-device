@@ -520,6 +520,9 @@ async def device_socket(ws: WebSocket) -> None:
     image = core.hermes_image()
     if image:
         welcome["hermes_image"] = image
+    base_image = core.hermes_base_image()
+    if base_image and base_image != image:
+        welcome["hermes_base_image"] = base_image
     pinger: Optional[asyncio.Task] = None
     resumable = True
     attached = False

@@ -108,6 +108,7 @@ class RouteTests(unittest.TestCase):
                    mock.patch.object(core, "settings", lambda: self.cfg),
                    mock.patch.object(core, "hermes_version", lambda: "v0.22.7"),
                    mock.patch.object(core, "hermes_image", lambda: ""),
+                   mock.patch.object(core, "hermes_base_image", lambda: ""),
                    mock.patch.dict(os.environ, {"TEST_HUB_KEY": self.signer.public_b64})]
         for p in patches:
             p.start()
@@ -159,6 +160,15 @@ class RouteTests(unittest.TestCase):
         with mock.patch.object(core, "hermes_image", lambda: image):
             welcome, _ = self.online()
         self.assertEqual(welcome["hermes_image"], image)
+        self.assertNotIn("hermes_base_image", welcome)
+
+    def test_welcome_reports_the_base_image(self):
+        image = "registry.example.com/hermes-patches:v0.23.1-p1@sha256:" + "a" * 64
+        base_image = "registry.example.com/hermes-agent:v0.23.1@sha256:" + "b" * 64
+        with mock.patch.object(core, "hermes_image", lambda: image), \
+                mock.patch.object(core, "hermes_base_image", lambda: base_image):
+            welcome, _ = self.online()
+        self.assertEqual((welcome["hermes_image"], welcome["hermes_base_image"]), (image, base_image))
 
     def test_replayed_assertion_refused(self):
         header = self.signer.sign()

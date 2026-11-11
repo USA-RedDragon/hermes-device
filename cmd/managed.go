@@ -51,32 +51,38 @@ type serverHermes struct {
 	dir   string
 	state daemonstate.State
 	ready bool
-	// fetch holds the latest image to fetch.
-	fetch chan string
+	// fetch holds the latest images to fetch.
+	fetch chan images
 }
 
-func newServerHermes() *serverHermes { return &serverHermes{fetch: make(chan string, 1)} }
+// images are the server's image and the upstream image it builds on.
+type images struct{ image, base string }
+
+func newServerHermes() *serverHermes { return &serverHermes{fetch: make(chan images, 1)} }
 
 // start writes st into dir and from then on keeps the server's Hermes in
 // it.
 func (h *serverHermes) start(dir string, st daemonstate.State) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	st.HermesVersion, st.HermesImage = h.state.HermesVersion, h.state.HermesImage
+	st.HermesVersion, st.HermesImage, st.HermesBaseImage = h.state.HermesVersion, h.state.HermesImage, h.state.HermesBaseImage
 	h.dir, h.state, h.ready = dir, st, true
 	return daemonstate.Write(dir, st)
 }
 
 func (h *serverHermes) welcome(w protocol.Welcome) {
-	image := w.HermesImage
-	if len(image) > protocol.MaxHermesImage {
-		slog.Warn("The plugin reported a Hermes image reference that is too long; ignoring it", "length", len(image))
-		image = ""
+	image, base := w.HermesImage, w.HermesBaseImage
+	if len(image) > protocol.MaxHermesImage || len(base) > protocol.MaxHermesImage {
+		slog.Warn("The plugin reported a Hermes image reference that is too long; ignoring it", "length", max(len(image), len(base)))
+		image, base = "", ""
+	}
+	if image == "" {
+		base = ""
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	changed := h.state.HermesVersion != w.HermesVersion || h.state.HermesImage != image
-	h.state.HermesVersion, h.state.HermesImage = w.HermesVersion, image
+	changed := h.state.HermesVersion != w.HermesVersion || h.state.HermesImage != image || h.state.HermesBaseImage != base
+	h.state.HermesVersion, h.state.HermesImage, h.state.HermesBaseImage = w.HermesVersion, image, base
 	if h.ready && changed {
 		if err := daemonstate.Write(h.dir, h.state); err != nil {
 			slog.Warn("Could not record the server's Hermes in the daemon state", "error", err)
@@ -86,30 +92,30 @@ func (h *serverHermes) welcome(w protocol.Welcome) {
 	case <-h.fetch:
 	default:
 	}
-	h.fetch <- image
+	h.fetch <- images{image: image, base: base}
 }
 
-// image is the server's image from the latest welcome.
-func (h *serverHermes) image() string {
+// current is the server's images from the latest welcome.
+func (h *serverHermes) current() images {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.state.HermesImage
+	return images{image: h.state.HermesImage, base: h.state.HermesBaseImage}
 }
 
 // fetchLoop fetches the build of each image the welcomes name, retrying
 // with backoff until it is on disk, and prunes older builds. It runs
 // until ctx ends.
 func (h *serverHermes) fetchLoop(ctx context.Context, builds *hermesbuild.Store) {
-	var image string
+	var want images
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case image = <-h.fetch:
+		case want = <-h.fetch:
 		}
 		delay := fetchRetryMin
-		for image != "" && h.fetchOnce(ctx, builds, image) {
-			slog.Warn("Trying the Hermes build again later", "image", image, "in", delay)
+		for want.image != "" && h.fetchOnce(ctx, builds, want) {
+			slog.Warn("Trying the Hermes build again later", "image", want.image, "in", delay)
 			t := time.NewTimer(delay)
 		wait:
 			for {
@@ -118,12 +124,12 @@ func (h *serverHermes) fetchLoop(ctx context.Context, builds *hermesbuild.Store)
 					t.Stop()
 					return
 				case next := <-h.fetch:
-					if next == image {
-						// A reconnect repeats the image; the backoff stays.
+					if next == want {
+						// A reconnect repeats the images; the backoff stays.
 						continue
 					}
 					t.Stop()
-					image, delay = next, fetchRetryMin
+					want, delay = next, fetchRetryMin
 					break wait
 				case <-t.C:
 					delay = min(delay*2, fetchRetryMax)
@@ -134,22 +140,34 @@ func (h *serverHermes) fetchLoop(ctx context.Context, builds *hermesbuild.Store)
 	}
 }
 
-// fetchOnce fetches image's build and prunes the builds that neither the
-// latest welcome nor recent use needs. It reports whether a later try may
-// work.
-func (h *serverHermes) fetchOnce(ctx context.Context, builds *hermesbuild.Store, image string) (retry bool) {
+// fetchOnce fetches the build of want's image, or when that fails, of its
+// base image, and prunes the builds that neither the latest welcome nor
+// recent use needs. It reports whether a later try may work.
+func (h *serverHermes) fetchOnce(ctx context.Context, builds *hermesbuild.Store, want images) (retry bool) {
+	image := want.image
 	if _, err := oci.ParseReference(image); err != nil {
 		slog.Warn("The server's Hermes image is not pinned by digest; chat uses chat.hermes", "image", image, "error", err)
 		return false
 	}
 	_, err := builds.Ensure(ctx, image)
+	if err != nil && ctx.Err() == nil && want.base != "" {
+		if _, perr := oci.ParseReference(want.base); perr == nil {
+			slog.Info("Could not fetch the server's Hermes build; fetching the upstream build it is based on",
+				"image", image, "base", want.base, "error", err)
+			image = want.base
+			_, err = builds.Ensure(ctx, image)
+		}
+	}
 	switch {
 	case err == nil:
-		current := h.image()
-		if _, perr := oci.ParseReference(current); perr != nil {
-			current = image
+		keep := image
+		if cur := h.current(); cur.image != want.image {
+			keep = cur.image
 		}
-		if err := builds.Prune(current, keepPrevious); err != nil {
+		if _, perr := oci.ParseReference(keep); perr != nil {
+			keep = image
+		}
+		if err := builds.Prune(keep, keepPrevious); err != nil {
 			slog.Warn("Could not remove old Hermes builds", "error", err)
 		}
 		return false
@@ -197,6 +215,9 @@ func printStatus(w io.Writer, cfg *config.Config, builds *hermesbuild.Store, st 
 		version = "unknown until run connects"
 	}
 	_, _ = fmt.Fprintf(w, "Server Hermes: %s\nServer image:  %s\n", version, image)
+	if st.HermesBaseImage != "" {
+		_, _ = fmt.Fprintf(w, "Base image:    %s\n", st.HermesBaseImage)
+	}
 	switch {
 	case !cfg.Chat.Managed:
 		_, _ = fmt.Fprintf(w, "Managed builds: off (chat.managed is false); chat runs %s\n", cfg.Chat.Hermes)
@@ -213,15 +234,21 @@ func printStatus(w io.Writer, cfg *config.Config, builds *hermesbuild.Store, st 
 	if len(list) == 0 {
 		_, _ = fmt.Fprintln(w, "  none")
 	}
-	current := ""
+	current, baseKey := "", ""
 	if st.HermesImage != "" {
 		current, _ = hermesbuild.Key(st.HermesImage)
+	}
+	if st.HermesBaseImage != "" {
+		baseKey, _ = hermesbuild.Key(st.HermesBaseImage)
 	}
 	const stamp = "2006-01-02 15:04 MST"
 	for _, b := range list {
 		var notes []string
-		if strings.TrimPrefix(b.Digest, "sha256:") == current {
+		switch strings.TrimPrefix(b.Digest, "sha256:") {
+		case current:
 			notes = append(notes, "current")
+		case baseKey:
+			notes = append(notes, "upstream base of the current image")
 		}
 		if builds.InUse(b) {
 			notes = append(notes, "in use")
@@ -234,7 +261,9 @@ func printStatus(w io.Writer, cfg *config.Config, builds *hermesbuild.Store, st 
 		_, _ = fmt.Fprintln(w)
 	}
 	if current != "" {
-		if _, err := builds.Open(st.HermesImage); errors.Is(err, hermesbuild.ErrNotPulled) {
+		_, err := builds.Open(st.HermesImage)
+		_, berr := builds.Open(st.HermesBaseImage)
+		if errors.Is(err, hermesbuild.ErrNotPulled) && (baseKey == "" || berr != nil) {
 			_, _ = fmt.Fprintln(w, "The current build is not on this device yet: run fetches it, or chat does when it starts.")
 		}
 	}
@@ -249,14 +278,20 @@ func refreshBuild(ctx context.Context, w io.Writer, builds *hermesbuild.Store, s
 	if st.HermesImage == "" {
 		return errNoImage
 	}
-	b, err := builds.Refresh(ctx, st.HermesImage)
+	image := st.HermesImage
+	b, err := builds.Refresh(ctx, image)
+	if err != nil && !errors.Is(err, hermesbuild.ErrInUse) && ctx.Err() == nil && st.HermesBaseImage != "" {
+		_, _ = fmt.Fprintf(w, "Could not fetch %s (%v); fetching the upstream build it is based on.\n", image, err)
+		image = st.HermesBaseImage
+		b, err = builds.Refresh(ctx, image)
+	}
 	if errors.Is(err, hermesbuild.ErrInUse) {
 		return fmt.Errorf("%w; end that chat first", err)
 	}
 	if err != nil {
 		return err
 	}
-	if err := builds.Prune(st.HermesImage, keepPrevious); err != nil {
+	if err := builds.Prune(image, keepPrevious); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(w, "Hermes build ready: %s\n  in %s\n", b.Meta.Reference, b.Dir)

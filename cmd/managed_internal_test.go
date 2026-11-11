@@ -150,3 +150,35 @@ func TestServerHermesIgnoresATooLongImage(t *testing.T) {
 		t.Errorf("state = %+v", st)
 	}
 }
+
+func TestFetchFallsBackToTheBaseImage(t *testing.T) {
+	t.Parallel()
+	r := ocitest.New(t, "nousresearch/hermes-agent")
+	builds := testBuilds(t, r)
+	base := pushHermes(t, r, "1")
+	at := strings.LastIndex(base, "@sha256:")
+	missing := base[:at] + "@sha256:" + strings.Repeat("f", 64)
+	h := newServerHermes()
+	if err := h.start(t.TempDir(), daemonstate.State{PID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	h.welcome(protocol.Welcome{HermesVersion: testVersion, HermesImage: missing, HermesBaseImage: base})
+	if retry := h.fetchOnce(context.Background(), builds, h.current()); retry {
+		t.Fatal("fetchOnce wants a retry although the base image was fetched")
+	}
+	if _, err := builds.Open(base); err != nil {
+		t.Errorf("base build: %v", err)
+	}
+	if _, err := builds.Open(missing); !errors.Is(err, hermesbuild.ErrNotPulled) {
+		t.Errorf("missing image: %v", err)
+	}
+	st := &daemonstate.State{HermesVersion: testVersion, HermesImage: missing, HermesBaseImage: base}
+	var out bytes.Buffer
+	if err := printStatus(&out, &config.Config{Chat: config.Chat{Managed: true}}, builds, st); err != nil {
+		t.Fatal(err)
+	}
+	if s := out.String(); !strings.Contains(s, "Base image:    "+base) || !strings.Contains(s, "upstream base of the current image") ||
+		strings.Contains(s, "not on this device yet") {
+		t.Errorf("status:\n%s", s)
+	}
+}

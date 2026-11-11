@@ -59,6 +59,7 @@ func newChatCommand(b *base) *cobra.Command {
 				Hermes:               cfg.Chat.Hermes,
 				Builds:               builds,
 				Image:                st.HermesImage,
+				BaseImage:            st.HermesBaseImage,
 				Args:                 args,
 				Hub:                  hubapi.New(cfg.Hub.URL, rec.Token, b.userAgent()),
 				Control:              &chat.Control{State: st},

@@ -1206,6 +1206,18 @@ class HermesImageTests(unittest.TestCase):
             with self.subTest(tag=tag):
                 self.assertEqual(self.image({core.IMAGE_REPOSITORY_ENV: repo, core.IMAGE_TAG_ENV: f" {tag}\n"}), want)
 
+    def test_base_image(self):
+        ref = f"registry.example.com/hermes-agent:v0.23.1@{self.DIGEST}"
+        for value, want in ((ref, ref), (f" {ref}\n", ref), ("", ""), ("registry.example.com/hermes-agent:v0.23.1", None)):
+            with self.subTest(value=value):
+                clean = {k: v for k, v in os.environ.items() if k != core.BASE_IMAGE_ENV}
+                with mock.patch.dict(os.environ, {**clean, core.BASE_IMAGE_ENV: value}, clear=True):
+                    if want is None:
+                        with self.assertLogs(core.logger, "WARNING"):
+                            self.assertEqual(core.hermes_base_image(), "")
+                    else:
+                        self.assertEqual(core.hermes_base_image(), want)
+
     def test_missing_or_bad(self):
         for env in ({}, {core.IMAGE_REPOSITORY_ENV: "a/b"}, {core.IMAGE_TAG_ENV: "v1"},
                     {core.IMAGE_REPOSITORY_ENV: "a b", core.IMAGE_TAG_ENV: "v1"},
