@@ -31,11 +31,13 @@ type sessionJSON struct {
 	MessageCount int       `json:"message_count"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	Source       string    `json:"source,omitempty"`
+	Activity     int       `json:"activity,omitempty"`
 }
 
 func toJSON(s hub.Session) sessionJSON {
 	return sessionJSON{ID: s.ID, BackendID: s.BackendID, Title: s.Title, Live: s.Live,
-		Running: s.Running, Archived: s.Archived, MessageCount: s.MessageCount, UpdatedAt: s.UpdatedAt, Source: s.Source}
+		Running: s.Running, Archived: s.Archived, MessageCount: s.MessageCount, UpdatedAt: s.UpdatedAt, Source: s.Source,
+		Activity: s.Activity}
 }
 
 func (s *Server) handleBackends(w http.ResponseWriter, r *http.Request) {

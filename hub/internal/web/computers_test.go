@@ -296,3 +296,21 @@ func TestSessionsCarrySource(t *testing.T) {
 		t.Fatalf("sources = %v", src)
 	}
 }
+
+func TestBackgroundRefusedOnAComputer(t *testing.T) {
+	t.Parallel()
+	e := setupComputers(t)
+	c := client(t)
+	m := login(t, e.hubEnv, c)
+	started, plain := startChats(t, e, c, m.CSRF)
+	var refused map[string]any
+	if s := apiJSON(t, c, http.MethodPost, e.url+"/api/sessions/pc/"+started+"/background", m.CSRF, map[string]string{kText: "x"}, &refused); s != http.StatusConflict ||
+		!strings.Contains(errText(refused), pcName) {
+		t.Fatalf("bg on a computer = %d %v", s, refused)
+	}
+	var ok map[string]string
+	if s := apiJSON(t, c, http.MethodPost, e.url+"/api/sessions/pc/"+plain+"/background", m.CSRF, map[string]string{kText: "x"}, &ok); s != http.StatusAccepted ||
+		!strings.HasPrefix(ok["task_id"], "bg_") {
+		t.Fatalf("bg in the sandbox = %d %v", s, ok)
+	}
+}
