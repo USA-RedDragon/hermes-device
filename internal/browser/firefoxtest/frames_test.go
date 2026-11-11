@@ -327,8 +327,8 @@ func confirmFlow(ctx context.Context, t *testing.T, b *broker.Broker, tabID int,
 	var snap snapResult
 	call(ctx, t, b, "snapshot", map[string]any{keyTab: tabID}, &snap)
 	button := refByName(snap.Snapshot, `"hover me"`)
-	mustFail(ctx, t, b, "click on a protected site", "needs the user's OK each time", "click", map[string]any{keyTab: tabID, keyRef: button})
-	mustFail(ctx, t, b, "Enter on a protected site", "needs the user's OK each time", "press", map[string]any{keyTab: tabID, keyRef: button, keyKey: "Enter"})
+	mustFail(ctx, t, b, "click on a protected site", "needs the user's approval", "click", map[string]any{keyTab: tabID, keyRef: button})
+	mustFail(ctx, t, b, "Enter on a protected site", "needs the user's approval", "press", map[string]any{keyTab: tabID, keyRef: button, keyKey: "Enter"})
 	call(ctx, t, b, "press", map[string]any{keyTab: tabID, keyRef: button, keyKey: "Tab"}, nil)
 	call(ctx, t, b, "click", map[string]any{keyTab: tabID, keyRef: button, keyGuard: map[string]any{"confirmed": true}}, nil)
 	mustFail(ctx, t, b, "write script on a protected site", "never allowed", "eval", map[string]any{keyTab: tabID,
