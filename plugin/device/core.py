@@ -55,7 +55,7 @@ CAPABILITY_BROWSER = "browser"
 CAPABILITY_MCP = "mcp"
 CAPABILITY_DETACH = "detach"
 TYPE_DETACH = "detach"
-CAPABILITIES = frozenset({CAPABILITY_BROWSER, CAPABILITY_MCP})
+CAPABILITIES = frozenset({CAPABILITY_BROWSER, CAPABILITY_MCP, CAPABILITY_DETACH})
 
 BROWSER_NOT_CONNECTED = "not_connected"
 BROWSER_REFUSED = "refused"
@@ -389,11 +389,20 @@ def verifier() -> Any:
 class DeviceProcess:
     """ProcessHandle for one command running on a device. Output arrives from the WebSocket
     thread through :meth:`feed` and is written to a pipe in order by a pump thread, so the base
-    class's drain thread reads it as it streams."""
+    class's drain thread reads it as it streams.
 
-    def __init__(self, request_id: str, kill_fn: Callable[[], bool]):
+    Hermes's process registry can adopt it as a background process (section 8.4). It has no
+    host process, so ``pid`` is None, and it has no stdin or stderr pipe."""
+
+    pid = None
+    stdin = None
+    stderr = None
+
+    def __init__(self, request_id: str, kill_fn: Callable[[], bool],
+                 detach_fn: Optional[Callable[[], bool]] = None):
         self.request_id = request_id
         self._kill_fn = kill_fn
+        self._detach_fn = detach_fn
         # Output bytes (UTF-8) received so far; a resume asks the device for the rest.
         self.received = 0
         read_fd, self._write_fd = os.pipe()
@@ -478,6 +487,11 @@ class DeviceProcess:
     def kill(self) -> None:
         if not self._kill_fn():
             self.finish(EXIT_KILLED, "[device offline; command abandoned]")
+
+    def detach(self) -> bool:
+        """Ask the device to lift its own timeout of the command (section 4.10). False when the
+        device does not offer ``detach``, the command is not running there, or the send failed."""
+        return self.poll() is None and self._detach_fn is not None and self._detach_fn()
 
 
 def finished_process(code: int, note: str) -> DeviceProcess:
@@ -1101,7 +1115,7 @@ class Hub:
         if failed is not None:
             return failed
         rid = uuid.uuid4().hex
-        proc = DeviceProcess(rid, lambda: self._kill(device_id, rid))
+        proc = DeviceProcess(rid, lambda: self._kill(device_id, rid), lambda: self._detach_command(device_id, rid))
         proc.cwd = cwd
         with conn.lock:
             conn.pending[rid] = proc
@@ -1137,6 +1151,22 @@ class Hub:
             conn.send({"type": TYPE_KILL, "id": rid})
             return True
         except Exception:
+            return False
+
+    def _detach_command(self, device_id: str, rid: str) -> bool:
+        """Send ``detach`` on the connection that holds the command, when it offers ``detach``."""
+        with self._lock:
+            conn = self._devices.get(device_id)
+        if conn is None or CAPABILITY_DETACH not in conn.capabilities:
+            return False
+        with conn.lock:
+            if rid not in conn.pending:
+                return False
+        try:
+            conn.send({"type": TYPE_DETACH, "id": rid})
+            return True
+        except Exception:
+            logger.debug("device: detach of %s failed", rid, exc_info=True)
             return False
 
     def run(self, device_id: str, cmd: str, cwd: str, timeout: float = 20,
@@ -2943,6 +2973,63 @@ def _make_run_background_task(original):
     return _run_background_task
 
 
+# --- background handoff (section 8.4) ------------------------------------------------------------
+
+# The terminal backend name Hermes gives this plugin's environment.
+BACKEND_NAME = "device"
+# How long a kill of an adopted device command waits for the device's exit.
+DEVICE_KILL_WAIT_S = 5.0
+
+
+def adopt_device_process(proc: DeviceProcess, *, command: str, cwd: Optional[str], task_id: str,
+                         owner_task_id: str, session_key: str, output_so_far: str) -> Optional[dict]:
+    """Hand a running device command to Hermes's process registry as a notify-on-complete
+    background process, the way Hermes adopts a local foreground command. The device first lifts
+    its own timeout (``detach``); when it cannot, this declines (None) and the foreground wait
+    goes on."""
+    from tools.process_registry import process_registry
+    from tools.terminal_tool_background import _stamp_routing_if_gateway
+    if not proc.detach():
+        return None
+    session = process_registry.adopt_local(proc, command=command, cwd=cwd, task_id=task_id, owner_task_id=owner_task_id,
+                    session_key=session_key, output_so_far=output_so_far)
+    _stamp_routing_if_gateway(process_registry, session, session_key)
+    logger.info("device: command %s moved to the background as %s", proc.request_id, session.id)
+    return {"output": output_so_far, "returncode": None, "yielded_session_id": session.id, "pid": None}
+
+
+def _make_yield_to_background_handler(original):
+    def yield_to_background_handler(*, command: str, env_type: str, cwd: Optional[str], effective_task_id: str,
+                                    task_id: Optional[str], session_key: str, **kwargs):
+        handler = original(command=command, env_type=env_type, cwd=cwd, effective_task_id=effective_task_id,
+                           task_id=task_id, session_key=session_key, **kwargs)
+        if handler is not None or env_type != BACKEND_NAME:
+            return handler
+        # A never-bound session that runs on the pod gets a local Popen: Hermes's own handoff.
+        local = original(command=command, env_type="local", cwd=cwd, effective_task_id=effective_task_id,
+                         task_id=task_id, session_key=session_key, **kwargs)
+
+        def handoff(proc, output_so_far: str):
+            if isinstance(proc, DeviceProcess):
+                return adopt_device_process(proc, command=command, cwd=cwd, task_id=effective_task_id,
+                                            owner_task_id=task_id or effective_task_id, session_key=session_key,
+                                            output_so_far=output_so_far)
+            return local(proc, output_so_far) if local is not None else None
+        return handoff
+    return yield_to_background_handler
+
+
+def _make_signal_kill(original):
+    def _signal_kill(self, session, *args, **kwargs):
+        proc = getattr(session, "process", None)
+        if not isinstance(proc, DeviceProcess):
+            return original(self, session, *args, **kwargs)
+        proc.kill()
+        proc.wait(DEVICE_KILL_WAIT_S)
+        return None
+    return _signal_kill
+
+
 HOOK_POINTS: tuple[tuple[str, str, str, Callable], ...] = (
     ("agent.context_references", "", "_expand_reference", _make_expand_reference),
     ("gateway.session_context_refs", "", "inbound_references", _make_inbound_references),
@@ -2953,6 +3040,8 @@ HOOK_POINTS: tuple[tuple[str, str, str, Callable], ...] = (
     ("agent.agent_init", "", "_init_session_state", _make_init_session_state),
     ("gateway.session_tui_side", "", "_spawn", _make_side_spawn),
     ("gateway.run_background", "GatewayBackgroundMixin", "_run_background_task", _make_run_background_task),
+    ("tools.terminal_tool", "", "yield_to_background_handler", _make_yield_to_background_handler),
+    ("tools.process_registry", "ProcessRegistry", "_signal_kill", _make_signal_kill),
 )
 
 

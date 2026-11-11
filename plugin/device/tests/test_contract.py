@@ -160,6 +160,27 @@ class HermesContractTests(unittest.TestCase):
         self.assertEqual(params(PluginContext.register_hook)[:3], ["self", "hook_name", "callback"])
         self.assertSource("hermes_cli/plugin_command_dispatch.py", "session_id")
 
+    def test_background_handoff_contract(self):
+        """Section 8.4: the plugin hands a device command to Hermes's process registry."""
+        from tools import terminal_tool, terminal_tool_background
+        from tools.process_registry import ProcessRegistry
+        self.assertTrue(callable(getattr(terminal_tool, "yield_to_background_handler", None)))
+        self.assertTrue(callable(getattr(terminal_tool_background, "_stamp_routing_if_gateway", None)))
+        self.assertEqual(params(terminal_tool_background._stamp_routing_if_gateway),
+                         ["process_registry", "session", "session_key"])
+        handler = params(terminal_tool.yield_to_background_handler)
+        for name in ("command", "env_type", "cwd", "effective_task_id", "task_id", "session_key"):
+            self.assertIn(name, handler)
+        adopt = params(ProcessRegistry.adopt_local)
+        for name in ("proc", "command", "cwd", "task_id", "session_key", "owner_task_id", "output_so_far"):
+            self.assertIn(name, adopt)
+        self.assertEqual(params(ProcessRegistry._signal_kill)[:4],
+                         ["self", "session", "session_id", "consume_output"])
+        self.assertSource("tools/terminal_tool.py", "**_yield_kwargs(command", "yield_to_background_handler(")
+        self.assertSource("tools/process_registry.py", "elif session.process:",
+                          "self._terminate_host_pid(session.process.pid", "_take_handoff_group(session, proc)",
+                          "for stream in (proc.stdout, proc.stderr, proc.stdin):")
+
     def test_terminal_provider_contract(self):
         from agent.terminal_env_provider import TerminalEnvironmentProvider
         self.assertTrue(TerminalEnvironmentProvider.is_container)

@@ -45,6 +45,8 @@ class FakeDevice:
         self.thread.start()
         self.procs: dict[str, subprocess.Popen] = {}
         self.execs: list[dict] = []
+        self.detached: list[str] = []
+        self.kills: list[str] = []
         self.closed: list[tuple[int, str]] = []
         self.conn = self.make_conn(device_id, name, tmp, home)
         hub.attach(self.conn)
@@ -58,10 +60,13 @@ class FakeDevice:
 
     async def _recv(self, text: str) -> None:
         msg = json.loads(text)
-        if msg["type"] == "exec":
+        if msg["type"] == "detach":
+            self.detached.append(msg["id"])
+        elif msg["type"] == "exec":
             self.execs.append(msg)
             threading.Thread(target=self._run, args=(msg,), daemon=True).start()
         elif msg["type"] == "kill" and msg["id"] in self.procs:
+            self.kills.append(msg["id"])
             try:
                 os.killpg(self.procs[msg["id"]].pid, 9)
             except ProcessLookupError:
@@ -507,6 +512,121 @@ class SessionListAudienceTests(Base):
         self.bind()
         for audience in ("alice", "", None, "hermes-devices:d_pc"):
             self.assertIsNone(core.filter_session_list(audience=audience, session_ids=["sess-1"]))
+
+
+def _wait_for(predicate, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return predicate()
+
+
+class BackgroundHandoffTests(Base):
+    """A device command that Hermes moves to the background (section 8.4)."""
+
+    def setUp(self):
+        super().setUp()
+        from tools.process_registry import ProcessRegistry, process_registry
+        from tools.terminal_tool_background import yield_to_background_handler
+        self.registry = process_registry
+        self.original = getattr(yield_to_background_handler, core._WRAPPED_MARK, yield_to_background_handler)
+        core._wrap(ProcessRegistry, "_signal_kill", core._make_signal_kill)
+        self.device.conn.capabilities = frozenset({core.CAPABILITY_DETACH})
+        self.bind()
+        self.sessions: list[str] = []
+        self.addCleanup(self._kill_sessions)
+
+    def _kill_sessions(self):
+        for sid in self.sessions:
+            with contextlib.suppress(Exception):
+                self.registry.kill_process(sid)
+
+    def handler(self, command):
+        wrapped = core._make_yield_to_background_handler(self.original)
+        return wrapped(command=command, env_type=core.BACKEND_NAME, cwd=str(self.root), effective_task_id="t",
+                       task_id="t", session_key="")
+
+    def start(self, command):
+        proc = self.hub.start("d_pc", cmd=command, cwd=str(self.root), login=False, timeout=30, stdin=None)
+        self.assertTrue(_wait_for(lambda: self.device.execs and self.device.execs[-1]["cmd"] == command))
+        return proc
+
+    def handoff(self, command):
+        proc = self.start(command)
+        handed = self.handler(command)(proc, "")
+        self.assertIsNotNone(handed)
+        self.sessions.append(handed["yielded_session_id"])
+        return proc, handed
+
+    def test_device_command_runs_on_as_a_background_process(self):
+        command = "echo started; sleep 1; echo done"
+        proc, handed = self.handoff(command)
+        self.assertEqual((handed["returncode"], handed["pid"]), (None, None))
+        self.assertEqual(self.device.detached, [proc.request_id])
+        session = self.registry.get(handed["yielded_session_id"])
+        self.assertIsNotNone(session)
+        self.assertIs(session.process, proc)
+        done = self.registry.wait(handed["yielded_session_id"], timeout=15)
+        self.assertEqual(done.get("exit_code"), 0, done)
+        self.assertIn("done", done.get("output", ""))
+        self.assertEqual(sum(1 for e in self.device.execs if e["cmd"] == command), 1)
+
+    def test_kill_reaches_the_device(self):
+        proc, handed = self.handoff("sleep 30")
+        began = time.monotonic()
+        out = self.registry.kill_process(handed["yielded_session_id"])
+        self.assertEqual(out.get("status"), "killed", out)
+        self.assertLess(time.monotonic() - began, core.DEVICE_KILL_WAIT_S)
+        self.assertEqual(self.device.kills, [proc.request_id])
+        self.assertIsNotNone(proc.poll())
+
+    def test_device_without_detach_keeps_the_command_in_the_foreground(self):
+        self.device.conn.capabilities = frozenset()
+        proc = self.start("sleep 0.2")
+        self.assertIsNone(self.handler("sleep 0.2")(proc, ""))
+        self.assertEqual(self.device.detached, [])
+        self.assertEqual(proc.wait(10), 0)
+
+    def test_other_backends_and_pod_commands_keep_hermes_handoff(self):
+        calls = []
+
+        def original(*, env_type, **kwargs):
+            calls.append(env_type)
+            return (lambda proc, out: ("local", proc)) if env_type == "local" else None
+        wrapped = core._make_yield_to_background_handler(original)
+        common = dict(command="x", cwd="/", effective_task_id="t", task_id="t", session_key="")
+        self.assertIsNone(wrapped(env_type="docker", **common))
+        handler = wrapped(env_type=core.BACKEND_NAME, **common)
+        self.assertEqual(handler("popen", ""), ("local", "popen"))
+        self.assertEqual(calls, ["docker", core.BACKEND_NAME, "local"])
+
+    def test_auto_background_through_the_device_environment(self):
+        import inspect
+        from tools.environments.base import BaseEnvironment
+        if "yield_after" not in inspect.signature(BaseEnvironment.execute).parameters:
+            self.skipTest("this Hermes has no terminal.auto_background_seconds (hermes-patches 0002)")
+        command = "echo started; sleep 2; echo done"
+        env = self.env()
+        self.addCleanup(env.cleanup)
+        began = time.monotonic()
+        result = env.execute(command, timeout=30, bounded_capture=True, yield_handler=self.handler(command),
+                             yield_after=0.5)
+        self.assertLess(time.monotonic() - began, 2)
+        self.assertEqual(result.get("yield_reason"), "auto_background", result)
+        sid = result["yielded_session_id"]
+        self.sessions.append(sid)
+        self.assertIn("started", result["output"])
+        done = self.registry.wait(sid, timeout=15)
+        self.assertEqual(done.get("exit_code"), 0, done)
+        self.assertIn("done", done.get("output", ""))
+        self.assertEqual(sum(1 for e in self.device.execs if command in e["cmd"]), 1)
+        self.device.conn.capabilities = frozenset()
+        result = env.execute(command, timeout=30, bounded_capture=True, yield_handler=self.handler(command),
+                             yield_after=0.5)
+        self.assertEqual((result.get("returncode"), result.get("yielded_session_id")), (0, None), result)
+        self.assertIn("done", result["output"])
 
 
 class RecordingCtx:
