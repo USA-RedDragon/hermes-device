@@ -73,11 +73,19 @@ func (r *renderer) sendMedia(ctx context.Context, paths []string) {
 		r.sent(ctx, name, r.upload(ctx, r.api.SendDocument, name, data))
 	}
 	for len(photos) > 0 {
-		n := min(len(photos), maxAlbum)
+		n, size := 0, 0
+		for n < min(len(photos), maxAlbum) && (n == 0 || size+len(photos[n].Data) <= maxAlbumBytes) {
+			size += len(photos[n].Data)
+			n++
+		}
 		r.sendPhotos(ctx, photos[:n])
 		photos = photos[n:]
 	}
 }
+
+// maxAlbumBytes bounds the images of one album, which go up in one
+// request: the Bot API takes uploads of up to 50 MB.
+const maxAlbumBytes = 40 << 20
 
 // sendPhotos sends up to ten images as one album, or one image as a
 // photo. When Telegram refuses the album, it sends each image on its own;
@@ -91,7 +99,7 @@ func (r *renderer) sendPhotos(ctx context.Context, photos []Photo) {
 		r.spend()
 		r.draftLost()
 		var apiErr *APIError
-		if !errors.As(err, &apiErr) || apiErr.Code != http.StatusBadRequest {
+		if !errors.As(err, &apiErr) || apiErr.Code == http.StatusTooManyRequests {
 			if err != nil {
 				r.logger.Warn("Failed to send an album", "error", err)
 				for _, p := range photos {
