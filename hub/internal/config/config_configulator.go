@@ -70,6 +70,10 @@ type holdShadow struct {
 	Timeout *impl.Duration `json:"timeout" toml:"timeout" yaml:"timeout"`
 }
 
+type usageShadow struct {
+	PrometheusURL *string `json:"prometheus_url" toml:"prometheus_url" yaml:"prometheus_url"`
+}
+
 type userShadow struct {
 	Sub  *string `json:"sub"  toml:"sub"  yaml:"sub"`
 	Name *string `json:"name" toml:"name" yaml:"name"`
@@ -141,6 +145,7 @@ type configShadow struct {
 	Store    *storeShadow     `json:"store"     toml:"store"     yaml:"store"`
 	Shutdown *shutdownShadow  `json:"shutdown"  toml:"shutdown"  yaml:"shutdown"`
 	Hold     *holdShadow      `json:"hold"      toml:"hold"      yaml:"hold"`
+	Usage    *usageShadow     `json:"usage"     toml:"usage"     yaml:"usage"`
 	Users    *[]userShadow    `json:"users"     toml:"users"     yaml:"users"`
 	Backends *[]backendShadow `json:"backends"  toml:"backends"  yaml:"backends"`
 	Telegram *telegramShadow  `json:"telegram"  toml:"telegram"  yaml:"telegram"`
@@ -372,6 +377,12 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			}
 			cfg.Hold.Timeout = v
 			set("hold.timeout", configulator.LayerFile, file)
+		}
+	}
+	if s.Usage != nil {
+		if s.Usage.PrometheusURL != nil {
+			cfg.Usage.PrometheusURL = *s.Usage.PrometheusURL
+			set("usage.prometheus_url", configulator.LayerFile, file)
 		}
 	}
 	if s.Users != nil {
@@ -791,6 +802,10 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Hold.Timeout = d
 		set("hold.timeout", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "usage", "prometheus_url"); ok {
+		cfg.Usage.PrometheusURL = v
+		set("usage.prometheus_url", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "enabled"); ok {
 		p, err := strconv.ParseBool(v)
 		if err != nil {
@@ -991,6 +1006,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"shutdown" + o.Separator + "drain_delay",
 		"shutdown" + o.Separator + "timeout",
 		"hold" + o.Separator + "timeout",
+		"usage" + o.Separator + "prometheus_url",
 		"telegram" + o.Separator + "enabled",
 		"telegram" + o.Separator + "token",
 		"telegram" + o.Separator + "api_url",
@@ -1048,22 +1064,23 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[22], time.Duration(int64(5000000000)), "How long the hub keeps serving after SIGTERM while /readyz fails, so load balancers stop sending it requests")
 	fs.Duration(names[23], time.Duration(int64(20000000000)), "How long the hub then waits for open requests and the Telegram bot to stop. Keep drain_delay plus timeout below the pod's termination grace period")
 	fs.Duration(names[24], time.Duration(int64(600000000000)), "How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default")
-	fs.Bool(names[25], false, "Run the Telegram bot")
-	fs.String(names[26], "", "Telegram bot token from BotFather")
-	fs.String(names[27], "https://api.telegram.org", "Telegram Bot API base URL")
-	fs.StringSlice(names[28], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
-	fs.Int64Slice(names[29], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
-	fs.Duration(names[30], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
-	fs.Duration(names[31], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
-	fs.Var(impl.NewInt(5), names[32], "Retries of a Bot API call that Telegram answers with 429")
-	fs.Duration(names[33], time.Duration(int64(2000000000)), "With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over")
-	fs.Bool(names[34], false, "Serve the hermes-device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
-	fs.String(names[35], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
-	fs.String(names[36], "", "File that holds device.signing_key. Wins over signing_key")
-	fs.Duration(names[37], time.Duration(int64(600000000000)), "How long a pairing code from hermes-device login stays valid")
-	fs.Duration(names[38], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
-	fs.Duration(names[39], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
-	fs.StringSlice(names[40], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
+	fs.String(names[25], "", "Base URL of a Prometheus query API, such as http://prometheus:9090, that scrapes the metrics of ollama-priority-proxy in front of the local GPU's Ollama. The Usage page then shows how long the GPU was busy. Empty: it does not")
+	fs.Bool(names[26], false, "Run the Telegram bot")
+	fs.String(names[27], "", "Telegram bot token from BotFather")
+	fs.String(names[28], "https://api.telegram.org", "Telegram Bot API base URL")
+	fs.StringSlice(names[29], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
+	fs.Int64Slice(names[30], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
+	fs.Duration(names[31], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
+	fs.Duration(names[32], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
+	fs.Var(impl.NewInt(5), names[33], "Retries of a Bot API call that Telegram answers with 429")
+	fs.Duration(names[34], time.Duration(int64(2000000000)), "With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over")
+	fs.Bool(names[35], false, "Serve the hermes-device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
+	fs.String(names[36], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
+	fs.String(names[37], "", "File that holds device.signing_key. Wins over signing_key")
+	fs.Duration(names[38], time.Duration(int64(600000000000)), "How long a pairing code from hermes-device login stays valid")
+	fs.Duration(names[39], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
+	fs.Duration(names[40], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
+	fs.StringSlice(names[41], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
 	return nil
 }
 
@@ -1367,6 +1384,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Hold.Timeout = v
 		set("hold.timeout", configulator.LayerCLI, "--"+n)
+	}
+	if n := "usage" + o.Separator + "prometheus_url"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "usage.prometheus_url",
+				Source: "--" + n,
+			}
+		}
+		cfg.Usage.PrometheusURL = v
+		set("usage.prometheus_url", configulator.LayerCLI, "--"+n)
 	}
 	if n := "telegram" + o.Separator + "enabled"; fs.Changed(n) {
 		v, err := fs.GetBool(n)
@@ -1725,6 +1754,25 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Hold = &sub
+			}
+		case "usage":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("usage", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub usageShadow
+				if err := sub.decodeJSON(dec, "usage"); err != nil {
+					return err
+				}
+				s.Usage = &sub
 			}
 		case "users":
 			if dec.PeekKind() == jsontext.KindNull {
@@ -2435,6 +2483,42 @@ func (s *holdShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				s.Timeout = &slot
 			default:
 				return configJSONError(path+".timeout", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *usageShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "prometheus_url":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.PrometheusURL = &str
+			default:
+				return configJSONError(path+".prometheus_url", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -3398,6 +3482,7 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "shutdown.drain_delay = %v\n", c.Shutdown.DrainDelay)
 	fmt.Fprintf(&b, "shutdown.timeout = %v\n", c.Shutdown.Timeout)
 	fmt.Fprintf(&b, "hold.timeout = %v\n", c.Hold.Timeout)
+	fmt.Fprintf(&b, "usage.prometheus_url = %v\n", c.Usage.PrometheusURL)
 	fmt.Fprintf(&b, "users = %v\n", c.Users)
 	b.WriteString("backends = (redacted)\n")
 	fmt.Fprintf(&b, "telegram.enabled = %v\n", c.Telegram.Enabled)

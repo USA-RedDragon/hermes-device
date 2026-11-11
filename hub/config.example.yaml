@@ -57,6 +57,9 @@ shutdown:
 hold:
   # How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default
   timeout: "10m"
+usage:
+  # Base URL of a Prometheus query API, such as http://prometheus:9090, that scrapes the metrics of ollama-priority-proxy in front of the local GPU's Ollama. The Usage page then shows how long the GPU was busy. Empty: it does not
+  # prometheus_url: ""
 # Who may log in: each OIDC sub and its hub user name. A login with any other sub is refused. Only settable in the config file
 # users:
 #   - sub: ""

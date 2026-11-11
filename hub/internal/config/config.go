@@ -76,6 +76,11 @@ type Hold struct {
 	Timeout time.Duration `name:"timeout" default:"10m" description:"How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default"`
 }
 
+// Usage configures the Usage page.
+type Usage struct {
+	PrometheusURL string `name:"prometheus_url" description:"Base URL of a Prometheus query API, such as http://prometheus:9090, that scrapes the metrics of ollama-priority-proxy in front of the local GPU's Ollama. The Usage page then shows how long the GPU was busy. Empty: it does not"`
+}
+
 // User maps an OIDC subject to a hub user name.
 type User struct {
 	Sub  string `name:"sub" description:"OIDC sub claim of the user. Authentik's default sub mode is the hashed user ID"`
@@ -167,6 +172,7 @@ type Config struct {
 	Store    Store     `name:"store"`
 	Shutdown Shutdown  `name:"shutdown"`
 	Hold     Hold      `name:"hold"`
+	Usage    Usage     `name:"usage"`
 	Users    []User    `name:"users" description:"Who may log in: each OIDC sub and its hub user name. A login with any other sub is refused. Only settable in the config file"`
 	Backends []Backend `name:"backends" description:"Hermes backends and who may use them. Only settable in the config file"`
 	Telegram Telegram  `name:"telegram"`
@@ -186,6 +192,7 @@ var (
 	ErrImportPath      = errors.New("store.import_path needs store.driver postgres")
 	ErrDuration        = errors.New("shutdown.drain_delay, shutdown.timeout and hold.timeout must not be negative")
 	ErrDevice          = errors.New("invalid device settings")
+	ErrPrometheusURL   = errors.New("usage.prometheus_url must be an absolute http or https URL")
 )
 
 var backendIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -287,6 +294,12 @@ func (c *Config) Validate() error {
 			return ErrPublicURL
 		}
 		c.HTTP.PublicURL = strings.TrimRight(c.HTTP.PublicURL, "/")
+	}
+	if c.Usage.PrometheusURL != "" {
+		if _, ok := webURL(c.Usage.PrometheusURL); !ok {
+			return ErrPrometheusURL
+		}
+		c.Usage.PrometheusURL = strings.TrimRight(c.Usage.PrometheusURL, "/")
 	}
 	if err := c.validateBackends(); err != nil {
 		return err
