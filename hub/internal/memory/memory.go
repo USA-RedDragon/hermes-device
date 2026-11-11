@@ -463,3 +463,13 @@ func (s *Service) ExportLearned(ctx context.Context, user, backendID string, w i
 	_, err = io.WriteString(w, "]\n")
 	return err
 }
+
+// Backlog reads Honcho's queue of work for the backend's workspace. It
+// fails with hub.ErrNoMemory when the backend has no Honcho.
+func (s *Service) Backlog(ctx context.Context, user, backendID string) (hub.Backlog, error) {
+	h, err := s.honcho(ctx, user, backendID)
+	if err != nil {
+		return hub.Backlog{}, err
+	}
+	return h.queue(ctx)
+}

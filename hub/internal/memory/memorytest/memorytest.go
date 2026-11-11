@@ -205,14 +205,23 @@ type Honcho struct {
 	Cards map[string][]string
 	// MissingPeers makes card reads answer 404, as for an unknown peer.
 	MissingPeers bool
+	queue        [4]int64
 	next         int
 }
 
 // NewHoncho starts a fake that accepts key for workspace.
 func NewHoncho(workspace, key string) *Honcho {
 	h := &Honcho{workspace: workspace, key: key, Cards: map[string][]string{}}
-	h.srv = httptest.NewServer(http.HandlerFunc(h.serve))
+	h.srv = httptest.NewServer(http.HandlerFunc(h.route))
 	return h
+}
+
+// SetQueue sets the workspace's queue status: total, completed, in
+// progress and pending work units.
+func (h *Honcho) SetQueue(total, completed, inProgress, pending int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.queue = [4]int64{total, completed, inProgress, pending}
 }
 
 // URL is the fake's base URL.
@@ -270,6 +279,23 @@ func (h *Honcho) match(c Conclusion, f map[string]any) bool {
 		}
 	}
 	return true
+}
+
+// route serves the queue status, and every other route with serve.
+func (h *Honcho) route(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || r.URL.Path != "/v3/workspaces/"+h.workspace+"/queue/status" {
+		h.serve(w, r)
+		return
+	}
+	h.record(r)
+	if r.Header.Get("Authorization") != "Bearer "+h.key {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{keyDetail: "bad key"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"total_work_units": h.queue[0], "completed_work_units": h.queue[1],
+		"in_progress_work_units": h.queue[2], "pending_work_units": h.queue[3], "sessions": map[string]any{}})
 }
 
 func (h *Honcho) serve(w http.ResponseWriter, r *http.Request) {

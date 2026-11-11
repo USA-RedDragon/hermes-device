@@ -274,3 +274,19 @@ func (h *honcho) card(ctx context.Context) ([]string, error) {
 	}
 	return []string{}, nil
 }
+
+// queueJSON is Honcho's GET /queue/status answer.
+type queueJSON struct {
+	Total      int64 `json:"total_work_units"`
+	Completed  int64 `json:"completed_work_units"`
+	InProgress int64 `json:"in_progress_work_units"`
+	Pending    int64 `json:"pending_work_units"`
+}
+
+// queue reads the workspace's queue of work: the messages Honcho has not
+// yet turned into memory.
+func (h *honcho) queue(ctx context.Context) (hub.Backlog, error) {
+	var out queueJSON
+	err := h.do(ctx, http.MethodGet, h.path("queue", "status"), msgNoWorkspace, nil, nil, &out)
+	return hub.Backlog{Total: out.Total, Completed: out.Completed, InProgress: out.InProgress, Pending: out.Pending}, err
+}

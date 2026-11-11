@@ -447,3 +447,20 @@ func TestNewNeedsKey(t *testing.T) {
 		t.Fatal("New without a key")
 	}
 }
+
+func TestBacklog(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	ctx := context.Background()
+	e.honcho.SetQueue(10, 6, 1, 3)
+	got, err := e.svc.Backlog(ctx, bob, homeID)
+	if err != nil || got != (hub.Backlog{Total: 10, Completed: 6, InProgress: 1, Pending: 3}) {
+		t.Fatalf("backlog = %+v, %v", got, err)
+	}
+	if _, err := e.svc.Backlog(ctx, alice, pcID); !errors.Is(err, hub.ErrNoMemory) {
+		t.Fatalf("backlog without Honcho: %v", err)
+	}
+	if _, err := e.svc.Backlog(ctx, alice, homeID); !errors.Is(err, hub.ErrForbidden) {
+		t.Fatalf("backlog of another user's backend: %v", err)
+	}
+}
