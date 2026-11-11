@@ -158,6 +158,14 @@ func contract() map[string][]string {
 			"usage.update(context_used=used, context_max=maximum,",
 			"context_percent=max(0, min(100, round(used / maximum * 100))),",
 			`for key, source_key in (("avg_latency_s", "avg_latency_s"), ("avg_tps", "tokens_per_s")):`,
+			`usage["compressions"] = stats.get("compression_count") or 0`,
+			`turn._publish_execution("session.usage", usage_frame(stats))`,
+		},
+		// The context readout's compaction note: a local viewer gets the raw status kinds.
+		"agent/conversation_compression.py": {`status_callback("compacted", COMPACTION_DONE_STATUS)`},
+		"gateway/run.py#compaction":         {`_GATEWAY_RAW_TEXT_PLATFORMS = frozenset({"local", "api_server", "webhook", "msgraph_webhook"})`},
+		"gateway/run_turn_progress.py#compaction": {
+			`return "compacting" if kind == "lifecycle" and is_compaction_progress_status(text) else str(kind)`,
 		},
 		"gateway/session_settlement_recovery.py": {"complete['usage'] = tui_usage(captured['session_usage'])"},
 		"gateway/run_turn_progress.py":           {`payload = {**_tool_lifecycle_payload(call_id, tool_name, args), "is_error": bool(is_error),`},
