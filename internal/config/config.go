@@ -85,6 +85,8 @@ type MCPServer struct {
 	Args    []string          `name:"args" description:"Arguments of the program"`
 	Env     map[string]string `name:"env" secret:"true" description:"Environment variables added to the daemon's environment for this server"`
 	Dir     string            `name:"dir" description:"Absolute working directory. Defaults to $HOME"`
+	// IdleTimeout overrides mcp.idle-timeout for this server; nil uses it.
+	IdleTimeout *time.Duration `name:"idle-timeout" description:"Stop this server after this long without a request, instead of mcp.idle-timeout. 0 keeps it running until run stops"`
 }
 
 // Reconnect controls the backoff between connection attempts.
@@ -252,6 +254,8 @@ func (m MCP) validate() error {
 			return fmt.Errorf("%w: mcp.servers.%s.command is empty", ErrMCPServer, name)
 		case srv.Dir != "" && !filepath.IsAbs(srv.Dir):
 			return fmt.Errorf("%w: mcp.servers.%s.dir %q: %w", ErrMCPServer, name, srv.Dir, ErrRelativePath)
+		case srv.IdleTimeout != nil && *srv.IdleTimeout < 0:
+			return fmt.Errorf("%w: mcp.servers.%s.idle-timeout must not be negative", ErrMCPServer, name)
 		}
 		for k := range srv.Env {
 			if k == "" || strings.ContainsAny(k, "=\x00") {

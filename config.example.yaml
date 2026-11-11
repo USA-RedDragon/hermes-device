@@ -80,5 +80,6 @@ mcp:
   #     env:
   #       example: ""
   #     dir: ""
+  #     idle-timeout: "0s"
   # Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops
   idle-timeout: "1h"

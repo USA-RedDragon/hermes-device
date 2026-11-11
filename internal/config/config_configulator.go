@@ -76,10 +76,11 @@ type browserShadow struct {
 }
 
 type mCPServerShadow struct {
-	Command *string            `json:"command" toml:"command" yaml:"command"`
-	Args    *[]string          `json:"args"    toml:"args"    yaml:"args"`
-	Env     *map[string]string `json:"env"     toml:"env"     yaml:"env"`
-	Dir     *string            `json:"dir"     toml:"dir"     yaml:"dir"`
+	Command     *string            `json:"command"      toml:"command"      yaml:"command"`
+	Args        *[]string          `json:"args"         toml:"args"         yaml:"args"`
+	Env         *map[string]string `json:"env"          toml:"env"          yaml:"env"`
+	Dir         *string            `json:"dir"          toml:"dir"          yaml:"dir"`
+	IdleTimeout *impl.Duration     `json:"idle-timeout" toml:"idle-timeout" yaml:"idle-timeout"`
 }
 
 type mCPShadow struct {
@@ -357,6 +358,18 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 				if esh.Dir != nil {
 					e.Dir = *esh.Dir
 					set(key+".dir", configulator.LayerFile, file)
+				}
+				if esh.IdleTimeout != nil {
+					v, ok := esh.IdleTimeout.Value()
+					if !ok {
+						return &configulator.OpaqueSpellingError{
+							Hint: "\"30s\"",
+							Path: key + ".idle-timeout",
+						}
+					}
+					pv := v
+					e.IdleTimeout = &pv
+					set(key+".idle-timeout", configulator.LayerFile, file)
 				}
 				out[k] = e
 			}
@@ -2186,6 +2199,22 @@ func (s *mCPServerShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				s.Dir = &str
 			default:
 				return configJSONError(path+".dir", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "idle-timeout":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".idle-timeout", v, err)
+				}
+				s.IdleTimeout = &slot
+			default:
+				return configJSONError(path+".idle-timeout", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {

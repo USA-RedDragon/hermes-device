@@ -114,6 +114,7 @@ mcp:
       args: ["-y", "rea-agents@6.7.0", "mcp"]
       env:
         HOPPER_LAUNCHER_PATH: /opt/hopper/bin/Hopper
+      idle-timeout: 12h
     tiny:
       command: /usr/local/bin/tiny-mcp
       dir: /home/alice
@@ -127,12 +128,16 @@ mcp:
 		cfg.MCP.IdleTimeout != time.Hour {
 		t.Errorf("mcp = %+v", cfg.MCP)
 	}
+	if rea.IdleTimeout == nil || *rea.IdleTimeout != 12*time.Hour || cfg.MCP.Servers["tiny"].IdleTimeout != nil {
+		t.Errorf("per-server idle-timeout: rea %v, tiny %v", rea.IdleTimeout, cfg.MCP.Servers["tiny"].IdleTimeout)
+	}
 	for name, file := range map[string]string{
-		"name":     "mcp: {servers: {Bad.Name: {command: x}}}\n",
-		"command":  "mcp: {servers: {rea: {args: [x]}}}\n",
-		"dir":      "mcp: {servers: {rea: {command: x, dir: rel}}}\n",
-		"env name": "mcp: {servers: {rea: {command: x, env: {\"A=B\": c}}}}\n",
-		"idle":     "mcp: {idle-timeout: -1s}\n",
+		"name":        "mcp: {servers: {Bad.Name: {command: x}}}\n",
+		"command":     "mcp: {servers: {rea: {args: [x]}}}\n",
+		"dir":         "mcp: {servers: {rea: {command: x, dir: rel}}}\n",
+		"env name":    "mcp: {servers: {rea: {command: x, env: {\"A=B\": c}}}}\n",
+		"idle":        "mcp: {idle-timeout: -1s}\n",
+		"server idle": "mcp: {servers: {rea: {command: x, idle-timeout: -1s}}}\n",
 	} {
 		if _, err := load(nil, file); !errors.Is(err, config.ErrMCPServer) {
 			t.Errorf("%s: %v", name, err)

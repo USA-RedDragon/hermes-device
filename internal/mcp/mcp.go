@@ -91,6 +91,9 @@ type ServerConfig struct {
 	Args    []string
 	Env     map[string]string
 	Dir     string
+	// IdleTimeout overrides Options.IdleTimeout for this server; nil uses
+	// it.
+	IdleTimeout *time.Duration
 }
 
 // NameRE is what a server name must match.
@@ -284,16 +287,25 @@ func (s *server) acquire() error {
 	return nil
 }
 
+// idleTimeout is how long the server may sit without a request.
+func (s *server) idleTimeout() time.Duration {
+	if s.cfg.IdleTimeout != nil {
+		return *s.cfg.IdleTimeout
+	}
+	return s.m.opts.IdleTimeout
+}
+
 func (s *server) release() {
 	<-s.m.total
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.active--
-	if s.active > 0 || s.proc == nil || s.m.opts.IdleTimeout <= 0 {
+	idle := s.idleTimeout()
+	if s.active > 0 || s.proc == nil || idle <= 0 {
 		return
 	}
 	p := s.proc
-	s.idle = time.AfterFunc(s.m.opts.IdleTimeout, func() {
+	s.idle = time.AfterFunc(idle, func() {
 		s.mu.Lock()
 		current := s.proc == p && s.active == 0
 		if current {
@@ -301,7 +313,7 @@ func (s *server) release() {
 		}
 		s.mu.Unlock()
 		if current {
-			slog.Info("Stopping idle MCP server", "server", s.name, "idle", s.m.opts.IdleTimeout)
+			slog.Info("Stopping idle MCP server", "server", s.name, "idle", idle)
 			p.stop()
 		}
 	})

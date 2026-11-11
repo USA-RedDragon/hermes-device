@@ -260,7 +260,7 @@ func startBroker(ctx context.Context, cfg *config.Config) (*broker.Broker, error
 func newMCP(cfg *config.Config, version string) *mcp.Manager {
 	servers := make(map[string]mcp.ServerConfig, len(cfg.MCP.Servers))
 	for name, s := range cfg.MCP.Servers {
-		servers[name] = mcp.ServerConfig{Command: s.Command, Args: s.Args, Env: s.Env, Dir: s.Dir}
+		servers[name] = mcp.ServerConfig{Command: s.Command, Args: s.Args, Env: s.Env, Dir: s.Dir, IdleTimeout: s.IdleTimeout}
 	}
 	return mcp.New(mcp.Options{Servers: servers, Env: commandEnv(os.Environ()), IdleTimeout: cfg.MCP.IdleTimeout,
 		ClientVersion: version})

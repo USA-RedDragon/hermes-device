@@ -365,3 +365,43 @@ func TestHungInitializeDoesNotHoldCallers(t *testing.T) {
 		t.Fatalf("after the failed start: %v", err)
 	}
 }
+
+func TestServerIdleTimeoutOverrides(t *testing.T) {
+	t.Parallel()
+	ctx := ctxT(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	never, short := time.Duration(0), 200*time.Millisecond
+	env := map[string]string{mcptest.Env: "1"}
+	m := newManager(t, mcp.Options{IdleTimeout: 200 * time.Millisecond, Servers: map[string]mcp.ServerConfig{
+		"keep": {Command: exe, Env: env, IdleTimeout: &never},
+		"stop": {Command: exe, Env: env, IdleTimeout: &short},
+	}})
+	for _, name := range []string{"keep", "stop"} {
+		if _, err := m.Call(ctx, name, mcptest.ToolCount, nil); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	running := func(name string) bool {
+		for _, st := range m.List() {
+			if st.Name == name {
+				return st.Running
+			}
+		}
+		t.Fatalf("no server %s", name)
+		return false
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for running("stop") {
+		if time.Now().After(deadline) {
+			t.Fatal("server with a short idle-timeout not stopped")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(400 * time.Millisecond)
+	if !running("keep") {
+		t.Fatal("server with idle-timeout 0 stopped although the global timeout passed")
+	}
+}
