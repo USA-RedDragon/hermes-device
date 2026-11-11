@@ -2201,12 +2201,16 @@
     },
     // route fills the line under the model picker: which account a chat on
     // the Claude pool runs on, or what an API credit provider bills.
+    // Only the newest call writes the line: a pool lookup that started
+    // before a model change can end after it.
+    routeSeq: 0,
     async route(provider, model) {
       const chat = view;
       const line = $("model-route");
+      const seq = ++this.routeSeq;
       if (!chat || !me.claude) { line.hidden = true; return; }
       const r = await claude.route(chat.backend, chat.session, provider, model);
-      if (chat !== view) return;
+      if (chat !== view || seq !== this.routeSeq) return;
       line.hidden = !r;
       line.classList.toggle("bad", !!(r && r.bad));
       line.replaceChildren(...(r ? r.parts.filter((x) => x !== "") : []));
