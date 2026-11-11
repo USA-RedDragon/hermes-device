@@ -3,9 +3,9 @@ on the user's own device, which dials in through hermes-hub.
 
 Registers the ``device`` terminal environment provider, the ``pre_tool_call`` guard, the
 ``/device`` command, the ``@device:`` context reference and the ``device-browser`` and
-``device-mcp`` toolsets, and wraps the Hermes internals that read server files directly. The exec
-leg and the HTTP routes live in ``dashboard/plugin_api.py``; both halves share ``core.py`` through
-one module object.
+``device-mcp`` toolsets, hides the built-in ``browser_vault`` tool, and wraps the Hermes internals
+that read server files directly. The exec leg and the HTTP routes live in
+``dashboard/plugin_api.py``; both halves share ``core.py`` through one module object.
 docs/protocol.md section 8.
 """
 from __future__ import annotations
@@ -102,8 +102,47 @@ def make_reference_provider(core):
     return DeviceReferenceProvider()
 
 
+# Built-in tools the plugin takes out of the tool list (docs/browser.md section 3.1).
+HIDDEN_TOOLS = ("browser_vault",)
+
+
+def hide_builtin_tools(**_kwargs) -> list[str]:
+    """Deregister HIDDEN_TOOLS from Hermes's tool registry and return the ones removed.
+
+    Hermes allows a plugin to remove a built-in tool only with the operator's opt-in
+    (plugins.entries.device.granted_capabilities: [tools.override], or the older
+    allow_tool_override: true). This runs from this module so that the registry sees the
+    plugin as the caller and applies that check. Without the opt-in it logs once and keeps
+    the tool. It runs at load and again at each session start, because the built-in tools can
+    be imported after the plugin."""
+    try:
+        from tools.registry import registry
+    except ImportError:
+        return []
+    removed = []
+    for name in HIDDEN_TOOLS:
+        if registry.get_entry(name) is None:
+            continue
+        try:
+            registry.deregister(name)
+        except PermissionError:
+            if name not in _WARNED:
+                _WARNED.add(name)
+                _core().logger.warning(
+                    "device: cannot hide the built-in tool %s: set plugins.entries.device.granted_capabilities "
+                    "to include tools.override in config.yaml", name)
+            continue
+        removed.append(name)
+    return removed
+
+
+_WARNED: set[str] = set()
+
+
 def register(ctx) -> None:
     core = _core()
+    hide_builtin_tools()
+    ctx.register_hook("on_session_start", hide_builtin_tools)
     ctx.register_terminal_environment_provider(make_provider(core))
     ctx.register_hook("pre_tool_call", core.pre_tool_call)
     ctx.register_command("device", device_command, description="Bind this session to a device directory",

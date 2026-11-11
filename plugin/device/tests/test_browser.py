@@ -876,6 +876,29 @@ class HermesBrowserContract(unittest.TestCase):
         for name in ("surface", "title", "remember_key"):
             self.assertEqual(p[name].kind, inspect.Parameter.KEYWORD_ONLY)
 
+    def test_hides_browser_vault_only_with_opt_in(self):
+        import importlib.util
+        import tools.browser_use_cli  # noqa: F401  registers browser_exec
+        import tools.browser_vault_tool  # noqa: F401  registers browser_vault
+        from tools.registry import registry
+        vault = registry.get_entry("browser_vault")
+        self.assertIsNotNone(vault)
+        self.addCleanup(lambda: registry._tools.setdefault("browser_vault", vault))
+        name = "hermes_plugins.device_hide_test"
+        spec = importlib.util.spec_from_file_location(name, Path(core.__file__).with_name("__init__.py"))
+        plugin = importlib.util.module_from_spec(spec)
+        sys.modules[name] = plugin
+        self.addCleanup(sys.modules.pop, name, None)
+        spec.loader.exec_module(plugin)
+        registry.register_plugin_override_policy(name, False)
+        self.assertEqual(plugin.hide_builtin_tools(), [], "no opt-in: Hermes keeps the tool")
+        self.assertIsNotNone(registry.get_entry("browser_vault"))
+        registry.register_plugin_override_policy(name, True)
+        self.assertEqual(plugin.hide_builtin_tools(), ["browser_vault"])
+        self.assertIsNone(registry.get_entry("browser_vault"))
+        self.assertIsNotNone(registry.get_entry("browser_exec"))
+        self.assertEqual(plugin.hide_builtin_tools(), [], "a second run finds nothing to do")
+
     def test_unattended_helpers(self):
         from tools import approval, approval_context
         self.assertTrue(callable(approval_context._no_user_can_answer))
