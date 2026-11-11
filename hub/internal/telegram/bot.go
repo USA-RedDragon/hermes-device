@@ -564,7 +564,7 @@ func (b *Bot) handleAlbum(ctx context.Context, ms []*Message) {
 		b.refreshMe(ctx)
 	}
 	if f := b.forum(m.Chat.ID); f != nil {
-		if !isDM(f.chatID) || b.dmTopics() || b.me.Load() == nil {
+		if !isDM(f.chatID) || (b.dmTopics() || b.me.Load() == nil) && b.dmOwner(ctx, f, m.From.ID) {
 			b.handleForum(ctx, f, ms, media)
 			return
 		}

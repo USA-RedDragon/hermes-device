@@ -693,3 +693,35 @@ func TestExecLegClose(t *testing.T) {
 		}
 	})
 }
+
+func TestRelinkDropsThePrivateChatTopics(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		if err := s.LinkTelegram(ctx, 42, userAlice); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.LinkTelegramGroup(ctx, hub.TelegramGroup{User: userAlice, ChatID: 42, LinkedAt: time.Unix(1, 0)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SaveTelegramTopic(ctx, hub.TelegramTopic{ChatID: 42, ThreadID: 7, User: userAlice, BackendID: "b", SessionID: "s",
+			Seen: time.Unix(1, 0)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.LinkTelegram(ctx, 42, userAlice); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, _ := s.TelegramGroup(ctx, userAlice); !ok {
+			t.Fatal("linking the same user again dropped the private chat's topics")
+		}
+		if err := s.LinkTelegram(ctx, 42, userBob); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, _ := s.TelegramGroup(ctx, userAlice); ok {
+			t.Fatal("the old user keeps the private chat")
+		}
+		if topics, err := s.TelegramTopics(ctx, 42); err != nil || len(topics) != 0 {
+			t.Fatalf("topics = %+v %v", topics, err)
+		}
+	})
+}

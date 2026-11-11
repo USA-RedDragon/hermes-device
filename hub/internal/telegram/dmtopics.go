@@ -93,9 +93,21 @@ func (b *Bot) dmForum(ctx context.Context, chatID int64, user string) *forum {
 	if b.state == nil || !b.dmTopics() || b.hasForum(user) {
 		return nil
 	}
-	g := hub.TelegramGroup{User: user, ChatID: chatID, LinkedAt: b.now()}
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
+	// The store decides: linking replaces the user's group, so a group
+	// that the bot failed to load must not be lost here.
+	groups, err := b.state.TelegramGroups(cctx)
+	if err != nil {
+		b.logger.Warn("Failed to read the linked groups, keeping the private chat without topics", "error", err)
+		return nil
+	}
+	for _, g := range groups {
+		if g.User == user {
+			return nil
+		}
+	}
+	g := hub.TelegramGroup{User: user, ChatID: chatID, LinkedAt: b.now()}
 	if err := b.state.LinkTelegramGroup(cctx, g); err != nil {
 		b.logger.Error("Failed to turn on topics in a private chat", "chat", chatID, "error", err)
 		return nil
@@ -109,6 +121,39 @@ func (b *Bot) dmForum(ctx context.Context, chatID int64, user string) *forum {
 	b.sendText(ctx, dest{chat: chatID}, "Each of your chats now gets its own topic here, named after the chat. "+
 		"A message here in the main chat starts a new chat in a new topic. Notices come here.")
 	return f
+}
+
+// dmOwner reports whether the Telegram account from is still linked to
+// the user of the private chat f. When it is not, the chat is that
+// account's own again, and the bot must not route the old user's chats
+// and notices there. An error to look it up counts as linked. b.loop is
+// held.
+func (b *Bot) dmOwner(ctx context.Context, f *forum, from int64) bool {
+	user, linked, err := b.lookupUser(ctx, from)
+	return err != nil || linked && user == f.user
+}
+
+// dropDMs turns topics off in every private chat after @BotFather turned
+// them off for the bot. b.loop is not held.
+func (b *Bot) dropDMs(ctx context.Context) {
+	b.fmu.Lock()
+	var dms []*forum
+	for _, f := range b.forums {
+		if isDM(f.chatID) {
+			dms = append(dms, f)
+		}
+	}
+	b.fmu.Unlock()
+	if len(dms) == 0 {
+		return
+	}
+	b.loop.Lock()
+	defer b.loop.Unlock()
+	for _, f := range dms {
+		if b.forum(f.chatID) == f {
+			b.dropDM(ctx, f)
+		}
+	}
 }
 
 // dropDM turns topics off in a private chat after they were turned off in

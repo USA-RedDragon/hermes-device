@@ -546,8 +546,11 @@ func (b *Bot) syncTopics(ctx context.Context, done chan<- struct{}) {
 	t := time.NewTicker(b.cfg.TopicSync)
 	defer t.Stop()
 	for {
-		b.refreshMe(ctx)
+		me := b.refreshMe(ctx)
 		dm := b.dmTopics()
+		if me != nil && !dm {
+			b.dropDMs(ctx)
+		}
 		b.fmu.Lock()
 		forums := make([]*forum, 0, len(b.forums))
 		for _, f := range b.forums {

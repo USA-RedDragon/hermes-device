@@ -131,10 +131,30 @@ func (s *Store) UserForTelegram(ctx context.Context, telegramID int64) (string, 
 
 // LinkTelegram links a Telegram user ID to a hub user, replacing any
 // earlier link of that Telegram ID.
+//
+// A private chat with topics belongs to the user the account was linked
+// to (a telegram_groups row whose chat_id is the account's ID). Linking
+// the account to another user forgets it and its topics, so the old
+// user's chats and notices stop going there.
 func (s *Store) LinkTelegram(ctx context.Context, telegramID int64, user string) error {
-	return s.exec(ctx, `INSERT INTO telegram_links (telegram_id, "user", linked_at) VALUES (?, ?, ?)
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		for _, q := range []struct {
+			query string
+			args  []any
+		}{
+			{`DELETE FROM telegram_topics WHERE chat_id IN (SELECT chat_id FROM telegram_groups WHERE chat_id = ? AND "user" <> ?)`,
+				[]any{telegramID, user}},
+			{`DELETE FROM telegram_groups WHERE chat_id = ? AND "user" <> ?`, []any{telegramID, user}},
+			{`INSERT INTO telegram_links (telegram_id, "user", linked_at) VALUES (?, ?, ?)
 		ON CONFLICT(telegram_id) DO UPDATE SET "user" = excluded."user", linked_at = excluded.linked_at`,
-		telegramID, user, s.now().Unix())
+				[]any{telegramID, user, s.now().Unix()}},
+		} {
+			if _, err := tx.ExecContext(ctx, s.q(q.query), q.args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func tokenHash(token string) string {
