@@ -36,7 +36,7 @@ type FileConfig struct {
 	} `yaml:"browser"`
 }
 
-const configHeader = "# Written by hermes-device setup. config.example.yaml in the repository lists every setting.\n"
+const configHeader = "# Written by talaria setup. config.example.yaml in the repository lists every setting.\n"
 
 // ConfigYAML is the config file setup writes.
 func ConfigYAML(hub string, roots []string, browser bool) ([]byte, error) {

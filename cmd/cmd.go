@@ -1,4 +1,4 @@
-// Package cmd wires the hermes-device command line.
+// Package cmd wires the talaria command line.
 package cmd
 
 import (
@@ -20,8 +20,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// ErrWindows is returned on Windows, which hermes-device does not support.
-var ErrWindows = errors.New("hermes-device does not support Windows: device paths must be POSIX")
+// ErrWindows is returned on Windows, which talaria does not support.
+var ErrWindows = errors.New("talaria does not support Windows: device paths must be POSIX")
 
 // Option changes how NewCommand builds the command.
 type Option func(*base)
@@ -35,20 +35,14 @@ func WithDefaultHub(url string) Option {
 // NewCommand returns the root command.
 func NewCommand(version, commit string, opts ...Option) *cobra.Command {
 	root := &cobra.Command{
-		Use:   "hermes-device",
+		Use:   "talaria",
 		Short: "Run a server Hermes agent's shell and file operations on this device",
-		Long: "hermes-device sets this computer up in one step (setup), pairs it with hermes-hub (login), runs the agent's commands here (run), " +
+		Long: "talaria sets this computer up in one step (setup), pairs it with hermes-hub (login), runs the agent's commands here (run), " +
 			"opens the local Hermes TUI against the server (chat) and bridges editors over ACP (acp). " +
 			"In the Hermes pod it installs the device plugin (plugin install) and hosts ACP processes (acp-host).",
 		Version:       fmt.Sprintf("%s - %s", version, commit),
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		PersistentPreRunE: func(*cobra.Command, []string) error {
-			if runtime.GOOS == "windows" {
-				return ErrWindows
-			}
-			return nil
-		},
 	}
 	b := &base{
 		version: version,
@@ -62,11 +56,18 @@ func NewCommand(version, commit string, opts ...Option) *cobra.Command {
 		executable:    os.Executable,
 		underService:  underService,
 		exit:          os.Exit,
-		getenv:        os.Getenv,
+		getenv:        config.Getenv,
 	}
 	b.verifier = b.attestations
 	for _, o := range opts {
 		o(b)
+	}
+	root.PersistentPreRunE = func(c *cobra.Command, _ []string) error {
+		if runtime.GOOS == "windows" {
+			return ErrWindows
+		}
+		b.migrateOnStart(c)
+		return nil
 	}
 	root.AddCommand(
 		b.interactive(newLoginCommand(b)),
@@ -104,6 +105,8 @@ type base struct {
 	exit         func(code int)
 	// runArgs are the arguments of the run daemon (from "run" on).
 	runArgs []string
+	// migrate moves the files of a release before the rename on start.
+	migrate bool
 	getenv  func(string) string
 	// notice is the update notice of an interactive command, which
 	// writes to noticeOut.
@@ -129,17 +132,17 @@ func (b *base) load() (*config.Config, error) {
 }
 
 func (b *base) userAgent() string {
-	return "hermes-device/" + b.version
+	return "talaria/" + b.version
 }
 
-// defaultConfigFiles is only the user config file: hermes-device runs from
+// defaultConfigFiles is only the user config file: talaria runs from
 // any directory, and a config.yaml of another tool there must not win.
 func defaultConfigFiles() []string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return nil
 	}
-	return []string{filepath.Join(dir, "hermes-device", "config.yaml")}
+	return []string{filepath.Join(dir, "talaria", "config.yaml")}
 }
 
 // browserCommand is the browser command, whose subcommands a person

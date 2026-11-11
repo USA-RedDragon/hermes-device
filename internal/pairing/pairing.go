@@ -14,7 +14,7 @@ import (
 
 // Errors that end pairing without a token.
 var (
-	ErrExpired = errors.New("the pairing code expired; run hermes-device login again")
+	ErrExpired = errors.New("the pairing code expired; run talaria login again")
 	ErrDenied  = errors.New("pairing was declined on the hub")
 )
 

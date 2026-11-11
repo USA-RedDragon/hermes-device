@@ -1,4 +1,4 @@
-// Package setup installs hermes-device for a desktop user: the binary at a
+// Package setup installs talaria for a desktop user: the binary at a
 // stable path, the config file, the background service, Firefox's native
 // messaging host and extension, and a shell environment that agent commands
 // share. Uninstall reverses what setup recorded in its state file.

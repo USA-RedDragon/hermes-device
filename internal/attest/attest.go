@@ -1,4 +1,4 @@
-// Package attest verifies the GitHub artifact attestations of hermes-device
+// Package attest verifies the GitHub artifact attestations of talaria
 // release files: SLSA build provenance that the release workflow signs with
 // the Sigstore public-good instance, as `gh attestation verify` checks it.
 // It uses only the standard library and the public-good trusted root that

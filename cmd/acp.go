@@ -18,7 +18,7 @@ func newACPCommand(b *base) *cobra.Command {
 		Use:   "acp",
 		Short: "Bridge an editor's ACP over stdio to the server",
 		Long: "acp speaks the Agent Client Protocol with an editor on stdin and stdout and relays it to the " +
-			"server's Hermes through hermes-hub. Point the editor's agent command at `hermes-device acp`. " +
+			"server's Hermes through hermes-hub. Point the editor's agent command at `talaria acp`. " +
 			"Logs go to stderr.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -49,7 +49,7 @@ func newACPCommand(b *base) *cobra.Command {
 			defer stop()
 			err = br.Run(ctx)
 			if errors.Is(err, hubapi.ErrUnauthorized) || errors.Is(err, acpbridge.ErrUnsupportedVersion) {
-				fmt.Fprintln(os.Stderr, "hermes-device acp: "+err.Error())
+				fmt.Fprintln(os.Stderr, "talaria acp: "+err.Error())
 			}
 			return err
 		},

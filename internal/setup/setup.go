@@ -34,7 +34,7 @@ type Options struct {
 	BrowserEnabled bool
 	// StateDir holds the state file.
 	StateDir string
-	// BinDir is where the binary goes. Empty means ~/.hermes-device/bin.
+	// BinDir is where the binary goes. Empty means ~/.talaria/bin.
 	BinDir string
 	// Force replaces a newer binary or a service file setup did not write.
 	Force bool
@@ -99,7 +99,7 @@ func (s *System) BinPath(o *Options) string {
 	return filepath.Join(dir, BinaryName)
 }
 
-// Setup installs hermes-device for the user. Every step is recorded in
+// Setup installs talaria for the user. Every step is recorded in
 // the state file as soon as it is done, so a run that fails part way can
 // be run again, or undone with Uninstall.
 func (s *System) Setup(ctx context.Context, o *Options) (*Report, error) {
@@ -157,6 +157,13 @@ func (s *System) Setup(ctx context.Context, o *Options) (*Report, error) {
 func (s *System) binaryStep(ctx context.Context, o *Options, st *State, r *Report, bin string) (bool, error) {
 	_, statErr := os.Lstat(bin)
 	wrote, err := s.InstallBinary(ctx, o.Exe, bin, o.Version, o.Force)
+	if err == nil {
+		if linked, lerr := LinkAlias(bin); lerr != nil {
+			r.todo("Could not link %s to %s: %v", AliasName, bin, lerr)
+		} else if linked {
+			r.done("Linked %s to %s", filepath.Join(filepath.Dir(bin), AliasName), bin)
+		}
+	}
 	if err != nil || !wrote {
 		if err == nil {
 			r.done("The binary at %s is up to date", bin)
@@ -269,7 +276,7 @@ func (s *System) shellStep(ctx context.Context, st *State, r *Report) error {
 		return nil
 	}
 	plan := s.PlanShell(rep)
-	s.printf("\nYour login shell is %s, but hermes-device runs agent commands with bash -l, which lacks these PATH directories:\n", rep.Shell)
+	s.printf("\nYour login shell is %s, but talaria runs agent commands with bash -l, which lacks these PATH directories:\n", rep.Shell)
 	for _, d := range rep.Missing {
 		s.printf("  %s\n", d)
 	}
@@ -405,7 +412,7 @@ func (s *System) firefoxStep(ctx context.Context, o *Options, ff *Firefox, r *Re
 		u, err := s.xpiURL(ctx, o)
 		switch {
 		case err != nil:
-			r.todo("Install the Hermes Firefox extension: download hermes-device-firefox-<version>.xpi from %s/latest, then in Firefox open about:addons, choose the gear menu, \"Install Add-on From File...\" and pick the file (setup could not find it: %v)", o.Releases.BaseURL, err)
+			r.todo("Install the Hermes Firefox extension: download talaria-firefox-<version>.xpi from %s/latest, then in Firefox open about:addons, choose the gear menu, \"Install Add-on From File...\" and pick the file (setup could not find it: %v)", o.Releases.BaseURL, err)
 		case len(ff.Command) == 0 || !s.hasDesktop():
 			r.todo("Open %s in Firefox and choose \"Continue to Installation\", then \"Add\"", u)
 		default:
@@ -419,7 +426,7 @@ func (s *System) firefoxStep(ctx context.Context, o *Options, ff *Firefox, r *Re
 		r.done("The Hermes Firefox extension is installed")
 	}
 	if !running || o.Wait <= 0 || o.BrowserStatus == nil {
-		r.todo("Check that the Hermes button in Firefox's toolbar says it is connected to hermes-device")
+		r.todo("Check that the Hermes button in Firefox's toolbar says it is connected to talaria")
 		return
 	}
 	s.waitBrowser(ctx, o, r)
@@ -443,7 +450,7 @@ func (s *System) waitBrowser(ctx context.Context, o *Options, r *Report) {
 				r.todo("The running daemon has browser control off. Check browser.enabled in %s and restart the service", o.ConfigFile)
 				return
 			case st.Connected:
-				r.done("The Firefox extension is connected to hermes-device")
+				r.done("The Firefox extension is connected to talaria")
 				return
 			}
 		}
@@ -635,6 +642,10 @@ func (s *System) uninstallBinary(st *State, r *Report) error {
 		return err
 	}
 	r.done("Removed %s", st.Binary)
+	alias := filepath.Join(filepath.Dir(st.Binary), AliasName)
+	if target, err := os.Readlink(alias); err == nil && (target == filepath.Base(st.Binary) || target == st.Binary) {
+		_ = os.Remove(alias)
+	}
 	if dir := filepath.Join(s.Home, BinDir); filepath.Dir(st.Binary) == dir && os.Remove(dir) == nil {
 		_ = os.Remove(filepath.Dir(dir))
 	}

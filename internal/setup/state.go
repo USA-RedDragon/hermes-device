@@ -131,7 +131,7 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// backup copies path to path.hermes-device-<time>.bak and returns the copy.
+// backup copies path to path.talaria-<time>.bak and returns the copy.
 func (s *System) backup(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -141,7 +141,7 @@ func (s *System) backup(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	base := fmt.Sprintf("%s.hermes-device-%s", path, s.Now().Format("20060102-150405"))
+	base := fmt.Sprintf("%s.talaria-%s", path, s.Now().Format("20060102-150405"))
 	var f *os.File
 	var dst string
 	for i := 0; f == nil; i++ {

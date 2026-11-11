@@ -16,7 +16,7 @@ import (
 const FileName = "daemon.json"
 
 // ErrNotRunning is returned when no daemon state file exists.
-var ErrNotRunning = errors.New("hermes-device run is not running")
+var ErrNotRunning = errors.New("talaria run is not running")
 
 // State is the content of daemon.json.
 type State struct {

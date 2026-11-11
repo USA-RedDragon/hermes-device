@@ -269,7 +269,7 @@ func TestDeniedMethods(t *testing.T) {
 	for i, tc := range cases {
 		m := c.call(i, tc.method, tc.params)
 		if m.Error == nil || m.Error.Code != splice.CodeDenied || m.Error.Data[keyReason] != splice.ReasonDenied ||
-			m.Error.Message != tc.method+" is not available through hermes-device" {
+			m.Error.Message != tc.method+" is not available through talaria" {
 			t.Errorf("%s %v: answer %+v", tc.method, tc.params, m)
 		}
 	}

@@ -164,7 +164,7 @@ func setupRun(t *testing.T, hub *runHub, spliceResult error) *runSetup { //nolin
 func (s *runSetup) start(ctx context.Context) chan error {
 	done := make(chan error, 1)
 	go func() {
-		done <- runDaemon(ctx, s.cfg, "v0.2.0", "hermes-device/test", func(opts splice.Options) spliceServer {
+		done <- runDaemon(ctx, s.cfg, "v0.2.0", "talaria/test", func(opts splice.Options) spliceServer {
 			if opts.Hub == nil || opts.PingInterval != s.cfg.PingInterval {
 				s.hub.t.Errorf("splice options = %+v", opts)
 			}
@@ -300,7 +300,7 @@ func TestRunNoSpliceWithTokenFile(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- runDaemon(ctx, s.cfg, "v0.2.0", "hermes-device/test", func(splice.Options) spliceServer {
+		done <- runDaemon(ctx, s.cfg, "v0.2.0", "talaria/test", func(splice.Options) spliceServer {
 			t.Error("splice started with gateway.splice false")
 			return s.splice
 		}, s.au)
@@ -378,8 +378,8 @@ func TestRunTokenFileRules(t *testing.T) {
 
 func TestCommandEnvDropsToken(t *testing.T) {
 	t.Parallel()
-	got := commandEnv([]string{"HOME=/work", "HERMES_DEVICE_HUB_TOKEN=hdt_x", "HERMES_DEVICE_HUB_TOKEN_FILE=/t", "PATH=/bin"})
-	want := []string{"HOME=/work", "HERMES_DEVICE_HUB_TOKEN_FILE=/t", "PATH=/bin"}
+	got := commandEnv([]string{"HOME=/work", "TALARIA_HUB_TOKEN=hdt_x", "TALARIA_HUB_TOKEN_FILE=/t", "PATH=/bin"})
+	want := []string{"HOME=/work", "TALARIA_HUB_TOKEN_FILE=/t", "PATH=/bin"}
 	if len(got) != len(want) {
 		t.Fatalf("env = %v", got)
 	}

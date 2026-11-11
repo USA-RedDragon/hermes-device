@@ -40,7 +40,7 @@ const (
 
 // ErrUnauthorized is returned when the hub refuses the device token. The
 // token is revoked or wrong; only login fixes it.
-var ErrUnauthorized = errors.New("hub refused the device token; run hermes-device login")
+var ErrUnauthorized = errors.New("hub refused the device token; run talaria login")
 
 // Error is an error answer from the hub.
 type Error struct {

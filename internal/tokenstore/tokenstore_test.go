@@ -51,7 +51,7 @@ func TestKeyring(t *testing.T) {
 	if err != nil || where != "keyring" {
 		t.Fatalf("Save = %q, %v", where, err)
 	}
-	if _, ok := kr.m["hermes-device/hub.example.com"]; !ok {
+	if _, ok := kr.m["talaria/hub.example.com"]; !ok {
 		t.Errorf("keyring = %v", kr.m)
 	}
 	got, err := s.Load(rec.Hub)
@@ -91,5 +91,23 @@ func TestFileFallback(t *testing.T) {
 	}
 	if _, err := s.Load(rec.Hub); err == nil {
 		t.Error("loaded a world-readable token file")
+	}
+}
+
+func TestLoadMovesLegacyKeyringEntry(t *testing.T) {
+	t.Parallel()
+	kr := &fakeKeyring{m: map[string]string{
+		"hermes-device/hub.example.com": `{"hub":"https://hub.example.com","token":"t","device_id":"d1"}`,
+	}}
+	s := &tokenstore.Store{Keyring: kr, File: filepath.Join(t.TempDir(), "token")}
+	r, err := s.Load("https://hub.example.com")
+	if err != nil || r.Token != "t" || r.DeviceID != "d1" {
+		t.Fatalf("Load = %+v, %v", r, err)
+	}
+	if _, ok := kr.m["hermes-device/hub.example.com"]; ok {
+		t.Error("legacy entry left")
+	}
+	if _, ok := kr.m["talaria/hub.example.com"]; !ok {
+		t.Error("no talaria entry")
 	}
 }

@@ -13,7 +13,7 @@ import (
 
 const (
 	hubURL    = "https://hub.example.com"
-	hubURLEnv = "HERMES_DEVICE_HUB_URL"
+	hubURLEnv = "TALARIA_HUB_URL"
 	aliceHome = "/home/alice"
 	workRoot  = "/work"
 )
@@ -29,7 +29,7 @@ func load(env map[string]string, file string) (*config.Config, error) {
 
 func TestLoadFileAndEnv(t *testing.T) {
 	t.Parallel()
-	cfg, err := load(map[string]string{"HERMES_DEVICE_HUB_URL": hubURL}, `
+	cfg, err := load(map[string]string{"TALARIA_HUB_URL": hubURL}, `
 device:
   roots: [/home/alice/src, /home/alice/work]
 acp-host:
@@ -85,9 +85,9 @@ func TestValidate(t *testing.T) {
 func TestServiceDeviceFromEnv(t *testing.T) {
 	t.Parallel()
 	cfg, err := load(map[string]string{ //nolint:gosec // a fake token
-		"HERMES_DEVICE_HUB_URL": hubURL, "HERMES_DEVICE_HUB_TOKEN_FILE": "/var/run/secrets/token",
-		"HERMES_DEVICE_HUB_TOKEN": "hdt_x", "HERMES_DEVICE_DEVICE_ROOTS": "/work", "HERMES_DEVICE_GATEWAY_SPLICE": "false",
-		"HERMES_DEVICE_STORE_KEYRING": "false",
+		"TALARIA_HUB_URL": hubURL, "TALARIA_HUB_TOKEN_FILE": "/var/run/secrets/token",
+		"TALARIA_HUB_TOKEN": "hdt_x", "TALARIA_DEVICE_ROOTS": "/work", "TALARIA_GATEWAY_SPLICE": "false",
+		"TALARIA_STORE_KEYRING": "false",
 	}, "{}")
 	if err != nil {
 		t.Fatal(err)
@@ -184,5 +184,20 @@ func TestSetupConfigLoads(t *testing.T) {
 	}
 	if cfg.Hub.URL != hubURL || len(cfg.Device.Roots) != 1 || cfg.Device.Roots[0] != aliceHome || !cfg.Browser.Enabled {
 		t.Errorf("cfg = %+v", cfg)
+	}
+}
+
+func TestLegacyEnvironmentVariables(t *testing.T) {
+	t.Parallel()
+	env := map[string]string{"HERMES_DEVICE_HUB_URL": hubURL, "HERMES_DEVICE_DEVICE_SHELL": "zsh", "TALARIA_DEVICE_SHELL": "fish"}
+	c := configulator.New(config.ConfigSchema()).
+		WithEnvironmentVariables(&configulator.EnvironmentVariableOptions{Prefix: config.EnvPrefix, Separator: config.EnvSeparator}).
+		WithEnviron(config.LegacyEnviron(func(k string) (string, bool) { v, ok := env[k]; return v, ok }))
+	cfg, err := c.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Hub.URL != hubURL || cfg.Device.Shell != "fish" {
+		t.Errorf("hub.url %q, device.shell %q: want the legacy name read and the new one to win", cfg.Hub.URL, cfg.Device.Shell)
 	}
 }

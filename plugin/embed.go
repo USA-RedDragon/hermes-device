@@ -1,5 +1,5 @@
 // Package plugin embeds the Hermes device plugin's files so the
-// hermes-device binary can install them (hermes-device plugin install).
+// talaria binary can install them (talaria plugin install).
 package plugin
 
 import (

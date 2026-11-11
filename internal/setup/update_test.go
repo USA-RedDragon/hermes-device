@@ -50,7 +50,7 @@ func tarball(t *testing.T, files map[string]string) []byte {
 // linux/amd64 and a checksum file that lists sum for it.
 func releaseServer(t *testing.T, archive []byte, sum string) *setup.Releases {
 	t.Helper()
-	name := "hermes-device_0.9.0_linux_amd64.tar.gz"
+	name := "talaria_0.9.0_linux_amd64.tar.gz"
 	if sum == "" {
 		h := sha256.Sum256(archive)
 		sum = hex.EncodeToString(h[:])
@@ -58,9 +58,9 @@ func releaseServer(t *testing.T, archive []byte, sum string) *setup.Releases {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/r/latest":
-			http.Redirect(w, r, "https://github.com/alice/hermes-device/releases/tag/v0.9.0", http.StatusFound)
+			http.Redirect(w, r, "https://github.com/alice/talaria/releases/tag/v0.9.0", http.StatusFound)
 		case "/r/download/v0.9.0/hermes-device_0.9.0_checksums.txt":
-			_, _ = w.Write([]byte(sum + "  " + name + "\n" + strings.Repeat("0", 64) + "  hermes-device_0.9.0_darwin_arm64.tar.gz\n"))
+			_, _ = w.Write([]byte(sum + "  " + name + "\n" + strings.Repeat("0", 64) + "  talaria_0.9.0_darwin_arm64.tar.gz\n"))
 		case "/r/download/v0.9.0/" + name:
 			_, _ = w.Write(archive)
 		default:
@@ -75,7 +75,7 @@ func versionRunner(version string) *fakeRunner {
 	return &fakeRunner{respond: func(name string, args []string) ([]byte, error) {
 		switch {
 		case len(args) == 1 && args[0] == "--version":
-			return []byte("hermes-device version " + version + " - abc1234\n"), nil
+			return []byte("talaria version " + version + " - abc1234\n"), nil
 		case name == systemctl && len(args) > 1 && args[1] == "is-system-running":
 			return []byte("running\n"), nil
 		case name == systemctl && len(args) > 1 && args[1] == "is-active":
@@ -87,7 +87,7 @@ func versionRunner(version string) *fakeRunner {
 
 func updateOpts(t *testing.T, sys *setup.System, rel *setup.Releases, version string) *setup.UpdateOptions {
 	t.Helper()
-	target := filepath.Join(sys.Home, ".hermes-device", "bin", "hermes-device")
+	target := filepath.Join(sys.Home, ".talaria", "bin", "talaria")
 	writeFile(t, target, oldBody)
 	return &setup.UpdateOptions{
 		Target: target, Version: version, GOOS: linux, GOARCH: "amd64", Restart: true, Releases: rel,
@@ -112,7 +112,7 @@ func TestUpdateInstallsVerifiedRelease(t *testing.T) {
 	if !r.has("systemctl --user --no-block restart " + setup.UnitName) {
 		t.Errorf("calls %q", r.Calls())
 	}
-	leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(o.Target), ".hermes-device.new-*"))
+	leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(o.Target), ".talaria.new-*"))
 	if len(leftovers) != 0 {
 		t.Errorf("left %q", leftovers)
 	}
@@ -139,7 +139,7 @@ func TestUpdateRefusals(t *testing.T) {
 		"downgrade":     {archive: good, reported: vNew, current: "0.10.0", want: setup.ErrDowngrade},
 		"same":          {archive: good, reported: vNew, current: vNew, want: setup.ErrUpToDate},
 		"dev build":     {archive: good, reported: vNew, current: "dev", want: setup.ErrDevBuild},
-		"no binary":     {archive: func(t *testing.T) []byte { t.Helper(); return tarball(t, map[string]string{"x": "y"}) }, reported: vNew, current: vOld, wantText: "has no hermes-device"},
+		"no binary":     {archive: func(t *testing.T) []byte { t.Helper(); return tarball(t, map[string]string{"x": "y"}) }, reported: vNew, current: vOld, wantText: "has no talaria"},
 		"no arch":       {archive: good, reported: vNew, current: vOld, goarch: "riscv64", want: setup.ErrNoAsset},
 		"bad tag":       {archive: good, reported: vNew, current: vOld, tag: "latest", wantText: "not a release version"},
 	} {
@@ -178,22 +178,22 @@ func TestUpdateForceAllowsDowngrade(t *testing.T) {
 func TestArchiveNames(t *testing.T) {
 	t.Parallel()
 	for _, tc := range [][5]string{
-		{vOld, linux, "amd64", "", "hermes-device_0.8.1_linux_amd64.tar.gz"},
-		{vOld, linux, "arm", "7", "hermes-device_0.8.1_linux_armv7.tar.gz"},
-		{vOld, "darwin", "arm64", "", "hermes-device_0.8.1_darwin_arm64.tar.gz"},
+		{vOld, linux, "amd64", "", "talaria_0.8.1_linux_amd64.tar.gz"},
+		{vOld, linux, "arm", "7", "talaria_0.8.1_linux_armv7.tar.gz"},
+		{vOld, "darwin", "arm64", "", "talaria_0.8.1_darwin_arm64.tar.gz"},
 	} {
 		if got := setup.ArchiveName(tc[0], tc[1], tc[2], tc[3]); got != tc[4] {
 			t.Errorf("ArchiveName = %q, want %q", got, tc[4])
 		}
 	}
-	if setup.ChecksumsName(vOld) != "hermes-device_0.8.1_checksums.txt" || setup.XPIName(vOld) != "hermes-device-firefox-0.8.1.xpi" {
+	if setup.ChecksumsName(vOld) != "hermes-device_0.8.1_checksums.txt" || setup.XPIName(vOld) != "talaria-firefox-0.8.1.xpi" {
 		t.Error("asset names")
 	}
 }
 
 func TestVersions(t *testing.T) {
 	t.Parallel()
-	if v := setup.ParseVersion("hermes-device version 0.8.1 - abc1234\n"); v != vOld {
+	if v := setup.ParseVersion("talaria version 0.8.1 - abc1234\n"); v != vOld {
 		t.Errorf("ParseVersion = %q", v)
 	}
 	if v := setup.ParseVersion("garbage"); v != "" {
@@ -241,7 +241,7 @@ func TestUpdateVerifiesTheArchiveAttestation(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := sha256.Sum256(archive)
-	if gotTag != tagNew || gotName != "hermes-device_0.9.0_linux_amd64.tar.gz" || !bytes.Equal(gotDigest, want[:]) {
+	if gotTag != tagNew || gotName != "talaria_0.9.0_linux_amd64.tar.gz" || !bytes.Equal(gotDigest, want[:]) {
 		t.Errorf("verified %q %q %x, want v0.9.0 %x", gotTag, gotName, gotDigest, want)
 	}
 	if readFile(t, o.Target) != newBody {
@@ -323,7 +323,7 @@ func TestUpdateCheckInstallsNothing(t *testing.T) {
 	if readFile(t, o.Target) != oldBody || r.has("systemctl --user --no-block restart "+setup.UnitName) {
 		t.Errorf("--check changed something: %q %q", readFile(t, o.Target), r.Calls())
 	}
-	leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(o.Target), ".hermes-device.new-*"))
+	leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(o.Target), ".talaria.new-*"))
 	if len(leftovers) != 0 {
 		t.Errorf("left %q", leftovers)
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,10 +15,14 @@ import (
 )
 
 // Service is the keyring service name. The account is the hub URL's host.
-const Service = "hermes-device"
+const Service = "talaria"
+
+// LegacyService is the keyring service name before the rename to talaria.
+// Load moves an entry from it to Service.
+const LegacyService = "hermes-device"
 
 // ErrNoToken is returned when no token is stored for the hub.
-var ErrNoToken = errors.New("no device token stored; run hermes-device login")
+var ErrNoToken = errors.New("no device token stored; run talaria login")
 
 // Record is what login stores.
 type Record struct {
@@ -58,13 +63,13 @@ func New(useKeyring bool, file string) *Store {
 	return s
 }
 
-// DefaultStateDir is hermes-device in the user config directory.
+// DefaultStateDir is talaria in the user config directory.
 func DefaultStateDir() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "hermes-device"), nil
+	return filepath.Join(dir, "talaria"), nil
 }
 
 func account(hub string) (string, error) {
@@ -114,6 +119,9 @@ func (s *Store) Load(hub string) (*Record, error) {
 			}
 			return &r, nil
 		}
+		if r, ok := s.moveLegacy(acct); ok {
+			return r, nil
+		}
 	}
 	data, err := os.ReadFile(s.File)
 	if errors.Is(err, os.ErrNotExist) {
@@ -135,6 +143,30 @@ func (s *Store) Load(hub string) (*Record, error) {
 	return &r, nil
 }
 
+// moveLegacy reads the keyring entry that a release before the rename
+// stored, and moves it to Service. When the move fails, the entry stays
+// where it is and is still returned.
+func (s *Store) moveLegacy(acct string) (*Record, bool) {
+	v, err := s.Keyring.Get(LegacyService, acct)
+	if err != nil {
+		return nil, false
+	}
+	var r Record
+	if json.Unmarshal([]byte(v), &r) != nil {
+		return nil, false
+	}
+	if err := s.Keyring.Set(Service, acct, v); err != nil {
+		slog.Warn("Could not move the device token to the talaria keyring entry; using the old entry", "error", err)
+		return &r, true
+	}
+	if err := s.Keyring.Delete(LegacyService, acct); err != nil {
+		slog.Warn("Moved the device token to the talaria keyring entry, but could not delete the old one", "error", err)
+	} else {
+		slog.Info("Moved the device token in the keyring from the hermes-device entry to the talaria entry", "account", acct)
+	}
+	return &r, true
+}
+
 // Delete removes the record for hub from the keyring and the file.
 func (s *Store) Delete(hub string) error {
 	acct, err := account(hub)
@@ -142,8 +174,10 @@ func (s *Store) Delete(hub string) error {
 		return err
 	}
 	if s.Keyring != nil {
-		if err := s.Keyring.Delete(Service, acct); err != nil && !errors.Is(err, keyring.ErrNotFound) {
-			return err
+		for _, svc := range []string{Service, LegacyService} {
+			if err := s.Keyring.Delete(svc, acct); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+				return err
+			}
 		}
 	}
 	if err := os.Remove(s.File); err != nil && !errors.Is(err, os.ErrNotExist) {

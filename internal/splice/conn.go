@@ -257,7 +257,7 @@ func (c *conn) forwardParams(id json.RawMessage, data []byte, params map[string]
 func (c *conn) rewriteCreate(id json.RawMessage, key string, params map[string]json.RawMessage, data []byte) {
 	dir := rawString(params["cwd"])
 	if dir == "" || !filepath.IsAbs(dir) {
-		c.toTUI(cwdAnswer(id, "session.create needs an absolute cwd: run hermes-device chat in the device directory"))
+		c.toTUI(cwdAnswer(id, "session.create needs an absolute cwd: run talaria chat in the device directory"))
 		return
 	}
 	if isTrue(params["safe_mode"]) || isTrue(params["ignore_user_config"]) {

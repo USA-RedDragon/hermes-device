@@ -126,7 +126,7 @@ func TestCheckInstallsAndRestartsWhenIdle(t *testing.T) {
 	if len(f.installs) != 1 || f.drains != 3 {
 		t.Errorf("installs %v, drains %d", f.installs, f.drains)
 	}
-	if !strings.Contains(f.logs.String(), `level=INFO msg="Installed a new hermes-device release" old=0.14.0 new=v0.15.0`) {
+	if !strings.Contains(f.logs.String(), `level=INFO msg="Installed a new talaria release" old=0.14.0 new=v0.15.0`) {
 		t.Errorf("no install log:\n%s", f.logs.String())
 	}
 }

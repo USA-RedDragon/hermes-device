@@ -20,7 +20,7 @@ jobs:
     with:
       dir: internal/config
       type: Config
-      env-prefix: HERMES_DEVICE_
+      env-prefix: TALARIA_
       app-id: ${{ vars.AUTO_COMMIT_APP_ID }}
     secrets:
       app-key: ${{ secrets.AUTO_COMMIT_APP_KEY }}

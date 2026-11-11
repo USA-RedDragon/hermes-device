@@ -28,9 +28,9 @@ import (
 
 // Errors that stop Run. hubapi.ErrUnauthorized also stops it.
 var (
-	ErrReplaced           = errors.New("another hermes-device run with the same token took over this device (close 4409); stop the other daemon or run login again on one of them")
-	ErrUnsupportedVersion = errors.New("the Hermes device plugin and this hermes-device share no protocol version (close 4426); upgrade hermes-device and the plugin together")
-	ErrWindows            = errors.New("hermes-device does not support Windows: device paths must be POSIX")
+	ErrReplaced           = errors.New("another talaria run with the same token took over this device (close 4409); stop the other daemon or run login again on one of them")
+	ErrUnsupportedVersion = errors.New("the Hermes device plugin and this talaria share no protocol version (close 4426); upgrade talaria and the plugin together")
+	ErrWindows            = errors.New("talaria does not support Windows: device paths must be POSIX")
 	ErrUnsupportedOS      = errors.New("the Hermes device plugin does not serve this device's operating system (close 4427)")
 	ErrNoWelcome          = errors.New("no welcome from the device plugin")
 	ErrNoResume           = errors.New("no resume from the device plugin after a version 3 welcome")
@@ -472,7 +472,7 @@ func (c *Client) serveOnce(ctx context.Context) (time.Duration, error) {
 		return 0, err
 	}
 	if welcome.Version < protocol.MinVersion || welcome.Version > c.opts.MaxVersion {
-		reason := fmt.Sprintf("hermes-device %s speaks protocol %d to %d; plugin %s chose %d",
+		reason := fmt.Sprintf("talaria %s speaks protocol %d to %d; plugin %s chose %d",
 			c.opts.ClientVersion, protocol.MinVersion, c.opts.MaxVersion, cut(welcome.PluginVersion, 16), welcome.Version)
 		_ = conn.Close(protocol.CloseUnsupportedVersion, reason)
 		return 0, fmt.Errorf("%w: %s", ErrUnsupportedVersion, reason)
@@ -1333,7 +1333,7 @@ func (s *session) startAndWait(ctx context.Context, timeout time.Duration) (star
 			if errors.Is(ctx.Err(), context.Canceled) {
 				return res, protocol.BrowserCancelled, "browser start cancelled"
 			}
-			return res, protocol.BrowserTimeout, fmt.Sprintf("Firefox did not connect to hermes-device on %s within %s: "+
+			return res, protocol.BrowserTimeout, fmt.Sprintf("Firefox did not connect to talaria on %s within %s: "+
 				"check that the Hermes extension is installed and enabled in the default Firefox profile", s.name, timeout)
 		case <-changed:
 		case <-tick.C:

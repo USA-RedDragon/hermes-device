@@ -47,7 +47,7 @@ func withFakeSystem(home string) Option {
 
 func setupArgs(dir string, extra ...string) []string {
 	return append([]string{
-		"setup", "--config", filepath.Join(dir, "home", ".config", "hermes-device", "config.yaml"),
+		"setup", "--config", filepath.Join(dir, "home", ".config", "talaria", "config.yaml"),
 		"--store.keyring=false", "--store.state-dir", filepath.Join(dir, "state"), "--wait", "0",
 	}, extra...)
 }
@@ -66,7 +66,7 @@ func TestSetupCommandNeedsHub(t *testing.T) {
 func TestSetupCommandHubMismatch(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	cfg := filepath.Join(dir, "home", ".config", "hermes-device", "config.yaml")
+	cfg := filepath.Join(dir, "home", ".config", "talaria", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestSetupCommandPairsWithDefaultHub(t *testing.T) {
 	if err != nil || rec.Token != pairedToken {
 		t.Fatalf("token: %+v, %v", rec, err)
 	}
-	cfg, err := os.ReadFile(filepath.Join(home, ".config", "hermes-device", "config.yaml"))
+	cfg, err := os.ReadFile(filepath.Join(home, ".config", "talaria", "config.yaml"))
 	if err != nil || !strings.Contains(string(cfg), "url: "+srv.URL) || !strings.Contains(string(cfg), "- "+home) {
 		t.Fatalf("config %q, %v", cfg, err)
 	}
@@ -121,7 +121,7 @@ func TestSetupCommandPairsWithDefaultHub(t *testing.T) {
 	if _, err := tokenstore.New(false, filepath.Join(dir, "state", "token")).Load(srv.URL); !errors.Is(err, tokenstore.ErrNoToken) {
 		t.Errorf("token after uninstall: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".hermes-device")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(home, ".talaria")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("binary directory after uninstall: %v", err)
 	}
 }

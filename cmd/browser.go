@@ -50,7 +50,7 @@ func newBrowserCommand(b *base) *cobra.Command {
 			out := cmd.OutOrStdout()
 			_, err = fmt.Fprintf(out, "Wrote %s\nThe extension reaches the run daemon at %s.\n", path, sock)
 			if err == nil && !cfg.Browser.Enabled {
-				_, err = fmt.Fprintln(out, "Set browser.enabled to true in the config and restart hermes-device run.")
+				_, err = fmt.Fprintln(out, "Set browser.enabled to true in the config and restart talaria run.")
 			}
 			return err
 		},
@@ -90,7 +90,7 @@ func newBrowserCommand(b *base) *cobra.Command {
 			_, err := fmt.Fprintf(cmd.OutOrStdout(),
 				"Wrote the extension to %s. In Firefox, open about:debugging#/runtime/this-firefox, choose "+
 					"\"Load Temporary Add-on\" and pick %s.\n"+
-					"To install it for good, with updates, install hermes-device-firefox-<version>.xpi from %s "+
+					"To install it for good, with updates, install talaria-firefox-<version>.xpi from %s "+
 					"(docs/browser.md section 6.1).\n",
 				out, filepath.Join(out, "manifest.json"), firefox.ReleasesURL)
 			return err
@@ -119,7 +119,7 @@ func browserSocket(cfg *config.Config) (string, error) {
 // removeHostManifest removes what installHostManifest wrote under home.
 func removeHostManifest(home string) error {
 	dir := host.ManifestDir(home)
-	for _, name := range []string{host.Name + ".json", host.SocketFileName} {
+	for _, name := range []string{host.Name + ".json", host.SocketFileName, host.LegacyName + ".json", host.LegacyName + ".socket"} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
@@ -150,10 +150,10 @@ func installHostManifest(exe, home, sock string) (string, error) {
 }
 
 // nativeHostSocket finds the run daemon's browser socket for the native
-// host: HERMES_DEVICE_BROWSER_SOCKET, else the path install wrote next to
+// host: TALARIA_BROWSER_SOCKET (or the legacy TALARIA_BROWSER_SOCKET), else the path install wrote next to
 // the manifest, else the default state directory.
 func nativeHostSocket(manifest string) (string, error) {
-	if p := os.Getenv(broker.SocketEnv); p != "" {
+	if p := config.Getenv(broker.SocketEnv); p != "" {
 		return p, nil
 	}
 	if p := host.SocketFromManifest(manifest); p != "" {

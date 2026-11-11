@@ -115,9 +115,16 @@ func ArchiveName(version, goos, goarch, goarm string) string {
 	return fmt.Sprintf("%s_%s_%s_%s.tar.gz", BinaryName, version, goos, arch)
 }
 
+// LegacyArchiveName is the archive name of releases from before the
+// rename, which hold a hermes-device binary. Releases keep publishing it
+// for the auto-update of older installs.
+func LegacyArchiveName(version, goos, goarch, goarm string) string {
+	return LegacyBinaryName + strings.TrimPrefix(ArchiveName(version, goos, goarch, goarm), BinaryName)
+}
+
 // ChecksumsName is the release's checksum file of version (without v).
 func ChecksumsName(version string) string {
-	return fmt.Sprintf("%s_%s_checksums.txt", BinaryName, version)
+	return fmt.Sprintf("%s_%s_checksums.txt", ReleaseName, version)
 }
 
 // ParseChecksums reads a sha256sum file: "<hex>  <name>" lines.
@@ -135,8 +142,8 @@ func ParseChecksums(data []byte) map[string]string {
 	return out
 }
 
-// ExtractBinary returns the hermes-device file at the top of a tar.gz
-// release archive.
+// ExtractBinary returns the talaria file at the top of a tar.gz release
+// archive, or the hermes-device file of a release from before the rename.
 func ExtractBinary(archive []byte) ([]byte, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
@@ -152,7 +159,7 @@ func ExtractBinary(archive []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if h.Typeflag == tar.TypeReg && path.Clean(h.Name) == BinaryName {
+		if name := path.Clean(h.Name); h.Typeflag == tar.TypeReg && (name == BinaryName || name == LegacyBinaryName) {
 			if h.Size > maxArchive {
 				return nil, fmt.Errorf("%s in the archive is too large", BinaryName)
 			}
@@ -163,31 +170,38 @@ func ExtractBinary(archive []byte) ([]byte, error) {
 
 // FetchArchive downloads the release archive of tag for an OS and
 // architecture, checks it against the release's checksum file and returns
-// it with its SHA-256 digest.
-func (r *Releases) FetchArchive(ctx context.Context, tag, goos, goarch, goarm string) ([]byte, []byte, error) {
+// it with its name and SHA-256 digest. A release from before the rename has
+// only the legacy archive.
+func (r *Releases) FetchArchive(ctx context.Context, tag, goos, goarch, goarm string) ([]byte, string, []byte, error) {
 	v := strings.TrimPrefix(tag, "v")
 	sums, err := r.Fetch(ctx, tag, ChecksumsName(v), maxChecksums)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
+	listed := ParseChecksums(sums)
 	name := ArchiveName(v, goos, goarch, goarm)
-	want, ok := ParseChecksums(sums)[name]
+	want, ok := listed[name]
 	if !ok {
-		return nil, nil, fmt.Errorf("%w: %s lists no %s (no build for %s/%s?)", ErrNoAsset, ChecksumsName(v), name, goos, goarch)
+		name = LegacyArchiveName(v, goos, goarch, goarm)
+		want, ok = listed[name]
+	}
+	if !ok {
+		return nil, "", nil, fmt.Errorf("%w: %s lists no %s (no build for %s/%s?)", ErrNoAsset, ChecksumsName(v),
+			ArchiveName(v, goos, goarch, goarm), goos, goarch)
 	}
 	archive, err := r.Fetch(ctx, tag, name, maxArchive)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 	sum := sha256.Sum256(archive)
 	if got := hex.EncodeToString(sum[:]); got != want {
-		return nil, nil, fmt.Errorf("%w: %s has sha256 %s, the checksum file says %s", ErrChecksum, name, got, want)
+		return nil, "", nil, fmt.Errorf("%w: %s has sha256 %s, the checksum file says %s", ErrChecksum, name, got, want)
 	}
-	return archive, sum[:], nil
+	return archive, name, sum[:], nil
 }
 
 // XPIName is the signed Firefox extension file of version (without v).
-func XPIName(version string) string { return "hermes-device-firefox-" + version + ".xpi" }
+func XPIName(version string) string { return "talaria-firefox-" + version + ".xpi" }
 
 // Has reports whether release tag has file name.
 func (r *Releases) Has(ctx context.Context, tag, name string) (bool, error) {

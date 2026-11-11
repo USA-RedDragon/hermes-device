@@ -309,7 +309,7 @@ func (h *fakeHub) gateway(w http.ResponseWriter, r *http.Request) {
 			_, latest := p[keyLatest]
 			if sid == "" || title || latest {
 				send(map[string]any{keyJSONRPC: jsonRPC, "id": m.ID, keyError: map[string]any{keyCode: -32601,
-					keyMessage: "session.resume is not available through hermes-device", keyData: map[string]any{
+					keyMessage: "session.resume is not available through talaria", keyData: map[string]any{
 						keyReason: "hermes_device_denied"}}})
 				continue
 			}

@@ -21,7 +21,7 @@ const (
 	linux     = "linux"
 	vNew      = "0.9.0"
 	vOld      = "0.8.1"
-	binName   = "hermes-device"
+	binName   = "talaria"
 	zshrcText = "export EDITOR=vi\n"
 )
 

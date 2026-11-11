@@ -8,7 +8,7 @@ import (
 
 func TestInvocation(t *testing.T) {
 	t.Parallel()
-	const bin = "hermes-device"
+	const bin = "talaria"
 	cases := []struct {
 		args []string
 		ok   bool

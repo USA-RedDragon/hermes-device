@@ -1,4 +1,4 @@
-// Package acpbridge is `hermes-device acp`. It speaks ACP (newline-delimited
+// Package acpbridge is `talaria acp`. It speaks ACP (newline-delimited
 // JSON-RPC 2.0) with an editor on stdio and copies it to the hub's ACP leg,
 // with the device-side behavior of docs/protocol.md section 6.3: file links
 // are inlined, sessions are bound to the editor's directory, and a lost leg
@@ -47,7 +47,7 @@ const (
 
 // MsgLost is the error message of editor requests that were in flight when
 // the ACP leg dropped.
-const MsgLost = "hermes-device: connection to Hermes lost; retry"
+const MsgLost = "talaria: connection to Hermes lost; retry"
 
 // IDPrefix starts the ids of requests the bridge sends itself.
 const IDPrefix = "hermes-device-"
@@ -73,7 +73,7 @@ const (
 
 // ErrUnsupportedVersion is returned when the hub or acp-host closes the leg
 // with protocol.CloseUnsupportedVersion.
-var ErrUnsupportedVersion = errors.New("the server does not support this hermes-device version; upgrade hermes-device")
+var ErrUnsupportedVersion = errors.New("the server does not support this talaria version; upgrade talaria")
 
 var (
 	errLost    = errors.New("ACP leg lost")
@@ -266,9 +266,9 @@ func (b *Bridge) fromEditor(ctx context.Context, data []byte) error {
 	var m object
 	if err := json.Unmarshal(data, &m); err != nil {
 		if json.Valid(data) {
-			b.writeEditor(errorMsg(nil, CodeInvalidReq, "hermes-device: a message must be one JSON-RPC object"))
+			b.writeEditor(errorMsg(nil, CodeInvalidReq, "talaria: a message must be one JSON-RPC object"))
 		} else {
-			b.writeEditor(errorMsg(nil, CodeParse, "hermes-device: parse error"))
+			b.writeEditor(errorMsg(nil, CodeParse, "talaria: parse error"))
 		}
 		return nil
 	}
@@ -294,7 +294,7 @@ func (b *Bridge) fromEditor(ctx context.Context, data []byte) error {
 		session = str(p["sessionId"])
 		if !filepath.IsAbs(cwd) {
 			if withID {
-				b.writeEditor(errorMsg(m["id"], CodeInvalidParams, "hermes-device: cwd must be an absolute path"))
+				b.writeEditor(errorMsg(m["id"], CodeInvalidParams, "talaria: cwd must be an absolute path"))
 			}
 			return nil
 		}
@@ -332,7 +332,7 @@ func stripMeta(m object) {
 func (b *Bridge) forward(ctx context.Context, m object, p pendingReq, withID bool) error {
 	if data, err := json.Marshal(m); err != nil || len(data) > maxForward {
 		if withID {
-			b.writeEditor(errorMsg(p.id, CodeInvalidReq, "hermes-device: message too large"))
+			b.writeEditor(errorMsg(p.id, CodeInvalidReq, "talaria: message too large"))
 		}
 		return nil
 	}
@@ -433,7 +433,7 @@ func (b *Bridge) bind(ctx context.Context, session, dir string) error {
 }
 
 func bindError(id json.RawMessage, dir string, err error) []byte {
-	return errorMsg(id, CodeInternal, fmt.Sprintf("hermes-device: could not bind the session to %s: %v", dir, err))
+	return errorMsg(id, CodeInternal, fmt.Sprintf("talaria: could not bind the session to %s: %v", dir, err))
 }
 
 // connect keeps one ACP leg up, with backoff between attempts.
@@ -800,7 +800,7 @@ func (b *Bridge) closeSession(ctx context.Context, m object, withID bool) {
 	session := str(params(m)["sessionId"])
 	if session == "" {
 		if withID {
-			b.writeEditor(errorMsg(m["id"], CodeInvalidParams, "hermes-device: sessionId must be a non-empty string"))
+			b.writeEditor(errorMsg(m["id"], CodeInvalidParams, "talaria: sessionId must be a non-empty string"))
 		}
 		return
 	}

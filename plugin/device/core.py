@@ -901,8 +901,8 @@ class Hub:
         if CAPABILITY_BROWSER not in conn.capabilities:
             raise BrowserError(BROWSER_NOT_CONNECTED,
                                f"device {conn.name} [{device_id}] does not offer browser control: set browser.enabled "
-                               f"to true in its hermes-device config, run hermes-device browser install, and restart "
-                               f"hermes-device run")
+                               f"to true in its talaria config, run talaria browser install, and restart "
+                               f"talaria run")
         timeout = max(1.0, min(float(timeout), BROWSER_MAX_TIMEOUT_S))
         rid = uuid.uuid4().hex
         call = BrowserCall(rid)
@@ -955,7 +955,7 @@ class Hub:
             raise MCPError(MCP_NOT_CONNECTED, f"device {device_id} is not connected")
         if CAPABILITY_MCP not in conn.capabilities:
             raise MCPError(MCP_NOT_CONNECTED, f"device {conn.name} [{device_id}] has no MCP servers: list them under "
-                                              f"mcp.servers in its hermes-device config and restart hermes-device run")
+                                              f"mcp.servers in its talaria config and restart talaria run")
         if op != MCP_OP_LIST and server not in conn.mcp_servers:
             raise MCPError(MCP_UNKNOWN_SERVER, f"device {conn.name} has no MCP server named {server[:64]!r}; it has: "
                                                + (", ".join(conn.mcp_servers) or "none"))
@@ -1682,9 +1682,9 @@ def device_homes(conn: DeviceConn) -> list[str]:
 
 
 # Credential folders and file types under a device home that the read route also refuses, beyond
-# Hermes's own lists: other agents' and tools' sign-ins, the hermes-device daemon state (its
+# Hermes's own lists: other agents' and tools' sign-ins, the talaria daemon state (also under its name before the rename) (its
 # control secret), and key files.
-EXTRA_READ_DENIED_DIRS = (".config/hermes-device", ".claude", ".codex", ".terraform.d", ".config/hermes")
+EXTRA_READ_DENIED_DIRS = (".config/talaria", ".config/hermes-device", ".claude", ".codex", ".terraform.d", ".config/hermes")
 READ_DENIED_EXTS = (".key", ".pem", ".p12", ".pfx")
 
 

@@ -66,11 +66,11 @@ func (n *Notice) Finish() {
 
 func (n *Notice) print(tag string) {
 	n.printed = true
-	how := "Run hermes-device update to install it."
+	how := "Run talaria update to install it."
 	if n.Auto {
-		how = "The hermes-device service installs it by itself (update.auto is on), or run hermes-device update."
+		how = "The talaria service installs it by itself (update.auto is on), or run talaria update."
 	}
-	_, _ = fmt.Fprintf(n.Out, "hermes-device %s is available (this is %s). %s\n", tag, vPrefix(n.Version), how)
+	_, _ = fmt.Fprintf(n.Out, "talaria %s is available (this is %s). %s\n", tag, vPrefix(n.Version), how)
 }
 
 func vPrefix(v string) string {

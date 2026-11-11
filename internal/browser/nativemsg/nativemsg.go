@@ -1,6 +1,6 @@
 // Package nativemsg reads and writes WebExtension native messaging frames:
 // a 32-bit length in native byte order (little-endian on every platform
-// hermes-device supports) followed by that many bytes of UTF-8 JSON.
+// talaria supports) followed by that many bytes of UTF-8 JSON.
 package nativemsg
 
 import (

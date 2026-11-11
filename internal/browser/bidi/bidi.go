@@ -1,4 +1,4 @@
-// Package bidi is a minimal WebDriver BiDi client. hermes-device uses it
+// Package bidi is a minimal WebDriver BiDi client. talaria uses it
 // only in tests, to load the Hermes extension as a temporary add-on into a
 // throwaway Firefox profile.
 package bidi

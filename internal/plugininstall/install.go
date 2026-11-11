@@ -12,12 +12,12 @@ import (
 )
 
 // VersionFile is written last, next to plugin.yaml, and names the
-// hermes-device build that wrote the tree.
+// talaria build that wrote the tree.
 const VersionFile = "VERSION"
 
 // ErrNotPluginDir is returned when dest exists and does not look like a
 // device plugin directory written by this installer, so it is not replaced.
-var ErrNotPluginDir = errors.New("destination exists and is not a hermes-device plugin directory")
+var ErrNotPluginDir = errors.New("destination exists and is not a talaria plugin directory")
 
 // Install writes every file of src into dest and then VERSION holding
 // version. The tree is built in a sibling directory and swapped in with

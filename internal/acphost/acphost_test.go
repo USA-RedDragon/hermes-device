@@ -446,7 +446,7 @@ func TestPromptLinks(t *testing.T) {
 			}
 			continue
 		}
-		if blk["type"] != blockText || blk[blockText] != "[hermes-device: link "+u+" removed; the bridge inlines device files]" {
+		if blk["type"] != blockText || blk[blockText] != "[talaria: link "+u+" removed; the bridge inlines device files]" {
 			t.Errorf("%q: not replaced: %v", u, blk)
 		}
 	}
@@ -826,7 +826,7 @@ func TestSlashCommands(t *testing.T) {
 	} {
 		send(t, conn, prompt(texts...))
 		r, data := recv(t, conn)
-		if r.Error == nil || r.Error.Code != codeInvalidParams || !strings.Contains(r.Error.Message, "is not available through hermes-device") {
+		if r.Error == nil || r.Error.Code != codeInvalidParams || !strings.Contains(r.Error.Message, "is not available through talaria") {
 			t.Errorf("%q: got %s", texts, data)
 		}
 	}

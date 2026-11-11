@@ -1,5 +1,5 @@
 // Package launch starts the user's Firefox in the user's graphical session
-// for hermes-device run, which usually runs as a systemd user service
+// for talaria run, which usually runs as a systemd user service
 // without the session's display variables (docs/browser.md section 5.1).
 package launch
 
@@ -177,7 +177,7 @@ func (l *Launcher) Env(ctx context.Context) ([]string, error) {
 	case xOK:
 		delete(env, "WAYLAND_DISPLAY")
 	case env["WAYLAND_DISPLAY"] == "" && env["DISPLAY"] == "":
-		return nil, fmt.Errorf("%w: neither hermes-device nor the systemd user manager has WAYLAND_DISPLAY or DISPLAY "+
+		return nil, fmt.Errorf("%w: neither talaria nor the systemd user manager has WAYLAND_DISPLAY or DISPLAY "+
 			"set. Sign in to the desktop on this computer; Firefox needs a display", ErrNoSession)
 	default:
 		return nil, fmt.Errorf("%w: the display in WAYLAND_DISPLAY=%q DISPLAY=%q has no socket, so the desktop "+
@@ -198,7 +198,7 @@ func join(env map[string]string, order []string) []string {
 
 // Argv is the command line that starts Firefox. On Linux with systemd it
 // runs in a scope of its own under the user manager, so stopping
-// hermes-device run does not stop Firefox.
+// talaria run does not stop Firefox.
 func (l *Launcher) Argv() ([]string, error) {
 	l.defaults()
 	if l.GOOS == "darwin" && !filepath.IsAbs(l.Command) {
@@ -218,7 +218,7 @@ func (l *Launcher) Argv() ([]string, error) {
 	var b [6]byte
 	_, _ = rand.Read(b[:])
 	return []string{run, "--user", "--scope", "--collect", "--quiet", "--unit=app-hermes-firefox-" + hex.EncodeToString(b[:]) + ".scope",
-		"--description=Firefox started by hermes-device", "--", path}, nil
+		"--description=Firefox started by talaria", "--", path}, nil
 }
 
 // Launch starts Firefox with the user's default profile and returns once

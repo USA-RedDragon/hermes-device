@@ -332,14 +332,18 @@ func newMCP(cfg *config.Config, version string) *mcp.Manager {
 		ClientVersion: version})
 }
 
-// tokenEnv is the env var of hub.token, which commands must not inherit.
-const tokenEnv = config.EnvPrefix + "HUB" + config.EnvSeparator + "TOKEN"
+// tokenEnv is the env var of hub.token, which commands must not inherit,
+// and legacyTokenEnv its name before the rename.
+const (
+	tokenEnv       = config.EnvPrefix + "HUB" + config.EnvSeparator + "TOKEN"
+	legacyTokenEnv = config.LegacyEnvPrefix + "HUB" + config.EnvSeparator + "TOKEN"
+)
 
 // commandEnv is environ without the device token.
 func commandEnv(environ []string) []string {
 	out := make([]string, 0, len(environ))
 	for _, kv := range environ {
-		if !strings.HasPrefix(kv, tokenEnv+"=") {
+		if !strings.HasPrefix(kv, tokenEnv+"=") && !strings.HasPrefix(kv, legacyTokenEnv+"=") {
 			out = append(out, kv)
 		}
 	}

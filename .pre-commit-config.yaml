@@ -5,7 +5,7 @@ repos:
       - id: configulator-generate
         args: [-dir, internal/config, -type, Config]
       - id: configulator-markdown
-        args: [-dir, internal/config, -type, Config, -markdown-file, README.md, -env-prefix, HERMES_DEVICE_]
+        args: [-dir, internal/config, -type, Config, -markdown-file, README.md, -env-prefix, TALARIA_]
       - id: configulator-sample
         args: [-dir, internal/config, -type, Config, -sample-file, config.example.yaml]
   - repo: https://github.com/USA-RedDragon/docgen

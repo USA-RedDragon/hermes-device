@@ -1,4 +1,4 @@
-// Package autoupdate finds new hermes-device releases and installs them
+// Package autoupdate finds new talaria releases and installs them
 // from the run daemon, and tells a person who runs a command about them.
 package autoupdate
 
@@ -76,14 +76,14 @@ type Releases struct {
 	Now func() time.Time
 }
 
-// DefaultCachePath is release.json in hermes-device's user cache
+// DefaultCachePath is release.json in talaria's user cache
 // directory, or "" when there is none.
 func DefaultCachePath() string {
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "hermes-device", "release.json")
+	return filepath.Join(dir, "talaria", "release.json")
 }
 
 func (r *Releases) now() time.Time {

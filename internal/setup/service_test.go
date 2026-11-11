@@ -19,8 +19,8 @@ func TestSystemdUnitPaths(t *testing.T) {
 	if svc.Path() != "/xdg/systemd/user/"+setup.UnitName {
 		t.Errorf("path %s", svc.Path())
 	}
-	unit := string(svc.Content("/opt/my apps/hermes-device", sys.Home+"/50%/config.yaml"))
-	if !strings.Contains(unit, `ExecStart="/opt/my apps/hermes-device" run -c %h/50%%/config.yaml`+"\n") {
+	unit := string(svc.Content("/opt/my apps/talaria", sys.Home+"/50%/config.yaml"))
+	if !strings.Contains(unit, `ExecStart="/opt/my apps/talaria" run -c %h/50%%/config.yaml`+"\n") {
 		t.Errorf("unit:\n%s", unit)
 	}
 }
@@ -48,14 +48,14 @@ func TestLaunchdAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(sys.Home, ".hermes-device", "bin", "hermes-device")
-	cfg := filepath.Join(sys.Home, "Library", "Application Support", "hermes-device", "config.yaml")
+	bin := filepath.Join(sys.Home, ".talaria", "bin", "talaria")
+	cfg := filepath.Join(sys.Home, "Library", "Application Support", "talaria", "config.yaml")
 	res, err := sys.WriteServiceFile(svc, bin, cfg, "", false)
 	if err != nil || !res.Wrote {
 		t.Fatalf("WriteServiceFile = %+v, %v", res, err)
 	}
 	plist := readFile(t, filepath.Join(sys.Home, "Library", "LaunchAgents", setup.LaunchdLabel+".plist"))
-	for _, want := range []string{"<string>" + bin + "</string>", "<string>" + cfg + "</string>", "<key>KeepAlive</key>\n\t<true/>", "hermes-device.log"} {
+	for _, want := range []string{"<string>" + bin + "</string>", "<string>" + cfg + "</string>", "<key>KeepAlive</key>\n\t<true/>", "talaria.log"} {
 		if !strings.Contains(plist, want) {
 			t.Errorf("plist lacks %q:\n%s", want, plist)
 		}

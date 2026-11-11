@@ -1,4 +1,4 @@
-// Package config holds the configuration of every hermes-device subcommand.
+// Package config holds the configuration of every talaria subcommand.
 package config
 
 //go:generate go tool configulator -type Config
@@ -26,7 +26,7 @@ type Hub struct {
 type Store struct {
 	Keyring   bool   `name:"keyring" default:"true" description:"Keep the device token in the OS keyring when one is available"`
 	TokenFile string `name:"token-file" description:"File (mode 0600) for the device token when the keyring is off or unavailable. Defaults to token in the state directory"`
-	StateDir  string `name:"state-dir" description:"Directory for the token file and the daemon's state file. Defaults to hermes-device in the user config directory"`
+	StateDir  string `name:"state-dir" description:"Directory for the token file and the daemon's state file. Defaults to talaria in the user config directory"`
 }
 
 // Device is what the run daemon lets the agent use on this device.
@@ -65,7 +65,7 @@ type ACPHost struct {
 
 // Browser is Firefox browser control (docs/browser.md).
 type Browser struct {
-	Enabled        bool     `name:"enabled" default:"false" description:"Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run hermes-device browser install once"`
+	Enabled        bool     `name:"enabled" default:"false" description:"Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run talaria browser install once"`
 	AllowHosts     []string `name:"allow-hosts" description:"Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs"`
 	ConfirmHosts   []string `name:"confirm-hosts" description:"More sites where, as on Salesforce, every click and every Enter or Space key press asks the user each time and scripts may only read. Host names; each covers its subdomains. The plugin cannot change this list"`
 	AutologinHosts []string `name:"autologin-hosts" description:"Exact host names where browser_login may submit the login form that Firefox fills from its own saved login, so a scheduled job can sign in without the agent seeing the password. Only https pages whose top-level host is listed; no subdomains. Scripts are refused there, and clicks, typing, key presses and screenshots on its login pages. Example: login.w3.ibm.com. The plugin cannot change this list"`
@@ -96,9 +96,9 @@ type Reconnect struct {
 	MaxBackoff time.Duration `name:"max-backoff" default:"30s" description:"Longest delay between attempts"`
 }
 
-// Update is how run keeps hermes-device up to date (README, Updates).
+// Update is how run keeps talaria up to date (README, Updates).
 type Update struct {
-	Auto     bool          `name:"auto" default:"true" description:"Let run install new releases by itself: it checks GitHub, verifies the release like hermes-device update, waits until no command, browser operation, MCP call or chat runs, and exits so the service restarts it. Only when the hermes-device service runs it and the device token comes from login, so never on a service device that uses hub.token or hub.token-file. The sandbox and device images turn it off"`
+	Auto     bool          `name:"auto" default:"true" description:"Let run install new releases by itself: it checks GitHub, verifies the release like talaria update, waits until no command, browser operation, MCP call or chat runs, and exits so the service restarts it. Only when the talaria service runs it and the device token comes from login, so never on a service device that uses hub.token or hub.token-file. The sandbox and device images turn it off"`
 	Interval time.Duration `name:"interval" default:"6h" description:"Time between release checks of run, with up to 10% jitter. At least 1h"`
 }
 

@@ -73,7 +73,7 @@ def target(session_id: str = "") -> tuple[Any, Any]:
         raise Unavailable(f"hermes-device: device {device_id} is not connected, so its MCP servers cannot be used.")
     if core.CAPABILITY_MCP not in conn.capabilities or not conn.mcp_servers:
         raise Unavailable(f"hermes-device: device {conn.name} [{device_id}] offers no MCP servers. On that computer, "
-                          f"list them under mcp.servers in the hermes-device config and restart hermes-device run.")
+                          f"list them under mcp.servers in the talaria config and restart talaria run.")
     return res, conn
 
 

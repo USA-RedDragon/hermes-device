@@ -659,7 +659,7 @@ func (s *server) start() (*proc, error) {
 	params, err := json.Marshal(map[string]any{
 		"protocolVersion": ProtocolVersion,
 		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]string{"name": "hermes-device", "version": s.m.opts.ClientVersion},
+		"clientInfo":      map[string]string{"name": "talaria", "version": s.m.opts.ClientVersion},
 	})
 	var raw json.RawMessage
 	if err == nil {
@@ -978,7 +978,7 @@ func (p *proc) answer(m rpcMessage) {
 	if m.Method == "ping" {
 		reply.Result = struct{}{}
 	} else {
-		reply.Error = &rpcError{Code: -32601, Message: "hermes-device does not serve " + cut(m.Method, 64)}
+		reply.Error = &rpcError{Code: -32601, Message: "talaria does not serve " + cut(m.Method, 64)}
 	}
 	_ = p.send(context.Background(), reply, false)
 }

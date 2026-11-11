@@ -21,7 +21,12 @@ import (
 )
 
 // Name is the native messaging host name the extension connects to.
-const Name = "hermes_device"
+const Name = "talaria"
+
+// LegacyName is the host name of extension versions before the rename to
+// talaria. Migrate keeps its manifest, pointed at the talaria binary, so
+// that such a version still connects until Firefox updates it.
+const LegacyName = "hermes_device"
 
 // ExtensionID is the id of the Hermes Firefox extension.
 const ExtensionID = "browser@hermes-device"
@@ -57,7 +62,7 @@ func Run(in io.Reader, out io.Writer, sock, extensionID string) error {
 	var d net.Dialer
 	c, err := d.DialContext(dctx, "unix", sock)
 	if err != nil {
-		return fmt.Errorf("the hermes-device daemon is not running (dial %s): %w", sock, err)
+		return fmt.Errorf("the talaria daemon is not running (dial %s): %w", sock, err)
 	}
 	defer c.Close()
 	hello, err := json.Marshal(broker.Message{Type: broker.TypeHostHello, ExtensionID: extensionID, HostPID: os.Getpid()})
@@ -101,7 +106,7 @@ type Manifest struct {
 // NewManifest returns the manifest for the binary at path.
 func NewManifest(path string) Manifest {
 	return Manifest{
-		Name: Name, Description: "hermes-device browser control", Path: path, Type: "stdio",
+		Name: Name, Description: "talaria browser control", Path: path, Type: "stdio",
 		AllowedExtensions: []string{ExtensionID},
 	}
 }
@@ -109,9 +114,12 @@ func NewManifest(path string) Manifest {
 // SocketFromManifest returns the socket path that install wrote next to
 // the manifest at manifestPath, or "" when there is none.
 func SocketFromManifest(manifestPath string) string {
-	data, err := os.ReadFile(filepath.Join(filepath.Dir(manifestPath), SocketFileName))
+	dir := filepath.Dir(manifestPath)
+	data, err := os.ReadFile(filepath.Join(dir, strings.TrimSuffix(filepath.Base(manifestPath), ".json")+".socket"))
 	if err != nil {
-		return ""
+		if data, err = os.ReadFile(filepath.Join(dir, SocketFileName)); err != nil {
+			return ""
+		}
 	}
 	p := strings.TrimSpace(string(data))
 	if !filepath.IsAbs(p) {

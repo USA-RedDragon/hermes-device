@@ -359,7 +359,7 @@ func TestBindFailures(t *testing.T) {
 	a.answer(a.recv(), map[string]any{keySessionID: "local-9"})
 	r := ed.recv()
 	code, msg := errCode(r)
-	if r["id"] != float64(1) || code != acpbridge.CodeInternal || !strings.HasPrefix(msg, "hermes-device: could not bind the session to /home/alice/offline: ") ||
+	if r["id"] != float64(1) || code != acpbridge.CodeInternal || !strings.HasPrefix(msg, "talaria: could not bind the session to /home/alice/offline: ") ||
 		!strings.Contains(msg, "device_offline") {
 		t.Errorf("editor got %v", r)
 	}
@@ -669,7 +669,7 @@ func TestEditorIDs(t *testing.T) {
 	hub := newFakeHub(t)
 	ed := startBridge(t, hub)
 	a := hub.accept()
-	for _, id := range []string{`"hermes-device-1"`, `"\u00e9"`, `1e0`, `null`, `-3`} {
+	for _, id := range []string{`"talaria-1"`, `"\u00e9"`, `1e0`, `null`, `-3`} {
 		ed.send(`{"jsonrpc":"2.0","id":` + id + `,"method":"session/set_mode","params":{"sessionId":"s","modeId":"m"}}`)
 		req := a.recv()
 		ownID, _ := req["id"].(string)

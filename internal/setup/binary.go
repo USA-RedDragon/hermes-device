@@ -14,17 +14,32 @@ import (
 )
 
 // BinDir is where setup installs the binary, under the home directory.
-const BinDir = ".hermes-device/bin"
+const BinDir = ".talaria/bin"
 
-// BinaryName is the binary's file name.
-const BinaryName = "hermes-device"
+// BinaryName is the binary's file name, and AliasName the short name
+// setup links to it.
+const (
+	BinaryName = "talaria"
+	AliasName  = "tal"
+)
+
+// LegacyBinDir and LegacyBinaryName are where releases before the rename to
+// talaria installed the binary. Migrate moves it and leaves a link there.
+const (
+	LegacyBinDir     = ".hermes-device/bin"
+	LegacyBinaryName = "hermes-device"
+)
+
+// ReleaseName names the release files that do not carry the binary's
+// name, such as the checksum file. It is the repository's name.
+const ReleaseName = "hermes-device"
 
 // ErrDowngrade is returned when the installed binary is newer than the one
 // that would replace it.
-var ErrDowngrade = errors.New("refusing to replace a newer hermes-device")
+var ErrDowngrade = errors.New("refusing to replace a newer talaria")
 
-// ParseVersion returns the version that hermes-device --version printed
-// ("hermes-device version 0.8.1 - abc1234").
+// ParseVersion returns the version that talaria --version printed
+// ("talaria version 0.8.1 - abc1234").
 func ParseVersion(out string) string {
 	_, rest, ok := strings.Cut(strings.TrimSpace(out), " version ")
 	if !ok {
@@ -100,4 +115,37 @@ func (s *System) InstallBinary(ctx context.Context, src, dst, version string, fo
 		return false, err
 	}
 	return true, writeFileAtomic(dst, data, 0o755)
+}
+
+// InstalledPath is the binary setup installed under home: the talaria one,
+// or the one a release before the rename installed when only that exists.
+func InstalledPath(home string) string {
+	p := filepath.Join(home, BinDir, BinaryName)
+	if _, err := os.Lstat(p); err != nil {
+		if legacy := filepath.Join(home, LegacyBinDir, LegacyBinaryName); fileExists(legacy) {
+			return legacy
+		}
+	}
+	return p
+}
+
+func fileExists(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
+}
+
+// LinkAlias links tal next to bin to bin's file name, unless a file other
+// than such a link is there. It reports whether it made the link.
+func LinkAlias(bin string) (bool, error) {
+	alias := filepath.Join(filepath.Dir(bin), AliasName)
+	target := filepath.Base(bin)
+	if cur, err := os.Readlink(alias); err == nil {
+		if cur == target || cur == bin {
+			return false, nil
+		}
+		return false, fmt.Errorf("%s already links to %s", alias, cur)
+	} else if fileExists(alias) {
+		return false, fmt.Errorf("%s exists and is not a link", alias)
+	}
+	return true, os.Symlink(target, alias)
 }

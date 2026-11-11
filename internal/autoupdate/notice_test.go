@@ -31,7 +31,7 @@ func TestNoticeDoesNotWaitForTheNetwork(t *testing.T) {
 	t.Cleanup(unblock)
 	var out bytes.Buffer
 	n := &autoupdate.Notice{
-		Releases: &autoupdate.Releases{APIURL: srv.URL, Owner: "alice", Repo: "hermes-device", Client: srv.Client(),
+		Releases: &autoupdate.Releases{APIURL: srv.URL, Owner: "alice", Repo: "talaria", Client: srv.Client(),
 			Path: filepath.Join(t.TempDir(), "release.json")},
 		Version: verNow, Out: &out,
 	}
@@ -74,7 +74,7 @@ func TestNoticeIsCachedForADay(t *testing.T) {
 		t.Errorf("first run printed %q", got)
 	}
 	got = run(verNow, false, now.Add(time.Hour))
-	if strings.Count(got, "\n") != 1 || !strings.Contains(got, "Run hermes-device update to install it.") {
+	if strings.Count(got, "\n") != 1 || !strings.Contains(got, "Run talaria update to install it.") {
 		t.Errorf("second run printed %q", got)
 	}
 	if run("0.15.0", true, now.Add(2*time.Hour)) != "" || run("dev", true, now.Add(3*time.Hour)) != "" {

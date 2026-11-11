@@ -25,7 +25,7 @@ const (
 	keyTried = "tried_at"
 )
 
-// fakeGitHub serves /repos/alice/hermes-device/releases/latest with an
+// fakeGitHub serves /repos/alice/talaria/releases/latest with an
 // ETag, answers 304 to a matching If-None-Match, and counts requests.
 type fakeGitHub struct {
 	t          *testing.T
@@ -39,7 +39,7 @@ type fakeGitHub struct {
 
 func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.requests.Add(1)
-	if r.URL.Path != "/repos/alice/hermes-device/releases/latest" {
+	if r.URL.Path != "/repos/alice/talaria/releases/latest" {
 		f.t.Errorf("path %q", r.URL.Path)
 		http.NotFound(w, r)
 		return
@@ -66,7 +66,7 @@ func newReleases(t *testing.T, f *fakeGitHub) *autoupdate.Releases {
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return &autoupdate.Releases{
-		APIURL: srv.URL, Owner: "alice", Repo: "hermes-device", Client: srv.Client(),
+		APIURL: srv.URL, Owner: "alice", Repo: "talaria", Client: srv.Client(),
 		Path: filepath.Join(t.TempDir(), "cache", "release.json"),
 	}
 }

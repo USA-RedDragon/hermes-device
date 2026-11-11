@@ -24,7 +24,7 @@ import (
 const SocketName = "browser.sock"
 
 // SocketEnv overrides the socket path for the native host.
-const SocketEnv = "HERMES_DEVICE_BROWSER_SOCKET"
+const SocketEnv = "TALARIA_BROWSER_SOCKET"
 
 // maxSocketPath is the longest Unix socket path Linux and macOS accept.
 const maxSocketPath = 103

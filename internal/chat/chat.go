@@ -41,8 +41,8 @@ const (
 
 // Errors from chat.
 var (
-	ErrNotRunning      = errors.New("hermes-device run is not running; start it first")
-	ErrOtherHub        = errors.New("the running hermes-device run uses another hub")
+	ErrNotRunning      = errors.New("talaria run is not running; start it first")
+	ErrOtherHub        = errors.New("the running talaria run uses another hub")
 	ErrVersionMismatch = errors.New("local Hermes and server Hermes are different releases")
 	ErrNoVersion       = errors.New("could not read the version from hermes --version")
 )
@@ -171,7 +171,7 @@ func (c *Control) do(ctx context.Context, method, path string, body any, timeout
 	resp, err := client.Do(req)
 	var ue *url.Error
 	if errors.As(err, &ue) && ue.Timeout() {
-		return nil, fmt.Errorf("the hermes-device run daemon did not answer in time: %w", err)
+		return nil, fmt.Errorf("the talaria run daemon did not answer in time: %w", err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNotRunning, err)

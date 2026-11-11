@@ -77,15 +77,16 @@ func (b *base) startNotice(cfg *config.Config) {
 	b.notice.Start(ctx)
 }
 
-// underService reports whether the hermes-device service runs this
+// underService reports whether the talaria service runs this
 // process, so that it starts again after an exit.
 func underService() bool {
 	switch runtime.GOOS {
 	case "linux":
 		data, err := os.ReadFile("/proc/self/cgroup")
-		return err == nil && strings.Contains(string(data), "/"+setup.UnitName)
+		return err == nil && (strings.Contains(string(data), "/"+setup.UnitName) || strings.Contains(string(data), "/"+setup.LegacyUnitName))
 	case "darwin":
-		return os.Getenv("XPC_SERVICE_NAME") == setup.LaunchdLabel
+		name := os.Getenv("XPC_SERVICE_NAME")
+		return name == setup.LaunchdLabel || name == setup.LegacyLaunchdLabel
 	}
 	return false
 }
@@ -97,7 +98,7 @@ var errNotInstalled = errors.New("this daemon does not run the binary setup inst
 // autoTarget is the binary the daemon updates: the one setup installed,
 // and only when the daemon runs it.
 func (b *base) autoTarget(home string) (string, error) {
-	installed := filepath.Join(home, setup.BinDir, setup.BinaryName)
+	installed := setup.InstalledPath(home)
 	exe, err := b.executable()
 	if err != nil {
 		return "", err
@@ -129,7 +130,7 @@ func (b *base) daemonUpdater(cfg *config.Config) *autoupdate.Daemon {
 	case !autoupdate.Stable("v" + strings.TrimPrefix(b.version, "v")):
 		return off("this is a development build", "version", b.version)
 	case !b.underService():
-		return off("the hermes-device service does not run this daemon; run hermes-device update to update")
+		return off("the talaria service does not run this daemon; run talaria update to update")
 	}
 	sys, err := b.system()
 	if err != nil {
@@ -137,7 +138,7 @@ func (b *base) daemonUpdater(cfg *config.Config) *autoupdate.Daemon {
 	}
 	target, err := b.autoTarget(sys.Home)
 	if err != nil {
-		return off("run hermes-device update to update", "error", err)
+		return off("run talaria update to update", "error", err)
 	}
 	rel := b.releaseLookup(b.userAgent())
 	slog.Info("Auto-update is on", "interval", cfg.Update.Interval, "binary", target)
@@ -151,7 +152,7 @@ func (b *base) daemonUpdater(cfg *config.Config) *autoupdate.Daemon {
 }
 
 // autoInstall installs release tag at target through the same steps as
-// hermes-device update: checksum, attestation and a run of the new
+// talaria update: checksum, attestation and a run of the new
 // binary. It never skips a check, never installs an older or the same
 // release, and restarts nothing.
 func (b *base) autoInstall(ctx context.Context, sys *setup.System, target, tag string) error {

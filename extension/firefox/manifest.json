@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "name": "Hermes browser control",
+  "name": "Talaria: Hermes browser control",
   "version": "0.2.0",
-  "description": "Lets your Hermes agent use tabs in its own tab group, through the local hermes-device daemon.",
+  "description": "Lets your Hermes agent use tabs in its own tab group, through the local talaria daemon.",
   "browser_specific_settings": {
     "gecko": {
       "id": "browser@hermes-device",

@@ -118,41 +118,41 @@ func (d *Daemon) Check(ctx context.Context) string {
 	log := d.log()
 	latest, err := d.Latest(ctx)
 	if err != nil {
-		log.Warn("Could not look up the latest hermes-device release; trying again at the next check", "error", err)
+		log.Warn("Could not look up the latest talaria release; trying again at the next check", "error", err)
 		return ""
 	}
 	if !Newer(latest, d.Version) {
-		log.Debug("hermes-device is up to date", "version", d.Version, "latest", latest)
+		log.Debug("talaria is up to date", "version", d.Version, "latest", latest)
 		return ""
 	}
 	disk, err := d.Installed(ctx)
 	if err != nil {
-		log.Warn("Could not read the version of the installed hermes-device", "error", err)
+		log.Warn("Could not read the version of the installed talaria", "error", err)
 		return ""
 	}
 	switch {
 	case Newer(latest, disk):
-		log.Debug("Installing a new hermes-device release", "version", d.Version, "latest", latest)
+		log.Debug("Installing a new talaria release", "version", d.Version, "latest", latest)
 		if err := d.Install(ctx, latest); err != nil {
 			if ctx.Err() == nil {
-				log.Warn("Did not install the new hermes-device release; trying again at the next check", "version", latest, "error", err)
+				log.Warn("Did not install the new talaria release; trying again at the next check", "version", latest, "error", err)
 			}
 			return ""
 		}
-		log.Info("Installed a new hermes-device release", "old", d.Version, "new", latest)
+		log.Info("Installed a new talaria release", "old", d.Version, "new", latest)
 	case "v"+trimV(disk) == latest:
-		log.Debug("The new hermes-device release is installed and waits for a restart", "version", latest)
+		log.Debug("The new talaria release is installed and waits for a restart", "version", latest)
 	default:
-		log.Debug("The installed hermes-device is newer than the latest release; leaving it", "installed", disk, "latest", latest)
+		log.Debug("The installed talaria is newer than the latest release; leaving it", "installed", disk, "latest", latest)
 		return ""
 	}
 	if !d.waitIdle(ctx) {
 		if ctx.Err() == nil {
-			log.Info("Work is running; restarting into the new hermes-device release at a later check", "new", latest)
+			log.Info("Work is running; restarting into the new talaria release at a later check", "new", latest)
 		}
 		return ""
 	}
-	log.Info("Restarting into the new hermes-device release", "old", d.Version, "new", latest)
+	log.Info("Restarting into the new talaria release", "old", d.Version, "new", latest)
 	return latest
 }
 

@@ -137,7 +137,7 @@ func answerResult(id json.RawMessage, result any) []byte {
 }
 
 func deniedAnswer(id json.RawMessage, method string) []byte {
-	return answerError(id, CodeDenied, method+" is not available through hermes-device",
+	return answerError(id, CodeDenied, method+" is not available through talaria",
 		map[string]any{keyReason: ReasonDenied})
 }
 
@@ -146,13 +146,13 @@ func cwdAnswer(id json.RawMessage, message string) []byte {
 }
 
 func bindAnswer(id json.RawMessage, err error) []byte {
-	return answerError(id, CodeDevice, "hermes-device could not bind the session to this device: "+err.Error(),
+	return answerError(id, CodeDevice, "talaria could not bind the session to this device: "+err.Error(),
 		map[string]any{keyReason: ReasonBind, "hub_error": hubErrorCode(err)})
 }
 
 func bypassAnswer(id json.RawMessage) []byte {
 	return answerError(id, CodeDevice,
-		"safe mode and ignore-user-config sessions run outside the device plugin, so hermes-device refuses them",
+		"safe mode and ignore-user-config sessions run outside the device plugin, so talaria refuses them",
 		map[string]any{keyReason: ReasonBypass})
 }
 

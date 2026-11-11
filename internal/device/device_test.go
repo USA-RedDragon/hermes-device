@@ -147,8 +147,8 @@ func options(t *testing.T, url, root string) device.Options {
 		t.Fatal(err)
 	}
 	return device.Options{
-		Hub: hubapi.New(url, testToken, "hermes-device/test"), Allow: allow, Shell: "bash",
-		TempDir: "/home/alice/.cache/hermes-device/tmp", Home: "/home/alice", Hostname: testName, ClientVersion: "v0.2.0",
+		Hub: hubapi.New(url, testToken, "talaria/test"), Allow: allow, Shell: "bash",
+		TempDir: "/home/alice/.cache/talaria/tmp", Home: "/home/alice", Hostname: testName, ClientVersion: "v0.2.0",
 		MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond,
 	}
 }
@@ -222,7 +222,7 @@ func TestHelloFields(t *testing.T) {
 	}
 	resolved, _ := filepath.EvalSymlinks(root)
 	want := protocol.Hello{
-		Type: protocol.TypeHello, Version: 2, MaxVersion: 3, Roots: []string{resolved}, TempDir: "/home/alice/.cache/hermes-device/tmp",
+		Type: protocol.TypeHello, Version: 2, MaxVersion: 3, Roots: []string{resolved}, TempDir: "/home/alice/.cache/talaria/tmp",
 		Home: "/home/alice", Hostname: testName, OS: runtime.GOOS, Arch: runtime.GOARCH, Shell: "bash", ClientVersion: "v0.2.0",
 	}
 	if !reflect.DeepEqual(hello, want) {

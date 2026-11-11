@@ -108,7 +108,7 @@ func run(t *testing.T, f *fakeHub) (*hubapi.PairResult, *clock, *hubapi.PairStar
 	clk := &clock{now: time.Unix(1_800_000_000, 0)}
 	var prompted *hubapi.PairStart
 	p := &pairing.Pairer{
-		Hub: hubapi.New(srv.URL, "", "hermes-device/test"), Sleep: clk.Sleep, Now: clk.Now,
+		Hub: hubapi.New(srv.URL, "", "talaria/test"), Sleep: clk.Sleep, Now: clk.Now,
 		Prompt: func(s *hubapi.PairStart) { prompted = s },
 	}
 	res, err := p.Pair(context.Background(), hubapi.PairRequest{Name: testName, Hostname: testName, OS: "linux", Arch: "amd64", ClientVersion: "v0.2.0"})

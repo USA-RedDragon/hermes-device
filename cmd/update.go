@@ -24,7 +24,7 @@ func newUpdateCommand(b *base) *cobra.Command {
 		Long: "update downloads the release archive for this OS and architecture from GitHub, checks it against the " +
 			"release's checksum file, verifies the archive's GitHub artifact attestation (Sigstore-signed build provenance " +
 			"from this repository's release workflow at the release tag), checks that the new binary runs and reports the " +
-			"release's version, replaces the installed binary (~/" + setup.BinDir + "/hermes-device when it exists, else this " +
+			"release's version, replaces the installed binary (~/" + setup.BinDir + "/talaria when it exists, else this " +
 			"binary) and restarts the service when it runs. It refuses a downgrade, and replacing a development build, " +
 			"without --force. It refuses a release without a valid attestation, which includes every release before v" +
 			setup.FirstAttestedVersion + ", without --insecure-skip-attestation.",
@@ -77,7 +77,7 @@ func newUpdateCommand(b *base) *cobra.Command {
 // updateTarget is the binary update replaces and its version: the one
 // setup installed when it exists, else this binary.
 func (b *base) updateTarget(cmd *cobra.Command, sys *setup.System) (string, string, error) {
-	installed := filepath.Join(sys.Home, setup.BinDir, setup.BinaryName)
+	installed := setup.InstalledPath(sys.Home)
 	exe, err := os.Executable()
 	if err != nil {
 		return "", "", err

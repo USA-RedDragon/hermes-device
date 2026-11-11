@@ -443,7 +443,7 @@ def pick(session_id: str, res: Any) -> tuple[Any, str]:
         return found[0], "only"
     if not found:
         raise Unavailable(f"hermes-device: session {session_id or '(none)'} is not bound to a computer, and none of "
-                          f"the user's computers with browser control is connected. Start hermes-device run with "
+                          f"the user's computers with browser control is connected. Start talaria run with "
                           f"browser.enabled on your computer.")
     raise Unavailable(f"hermes-device: session {session_id or '(none)'} is not bound to a computer, and several "
                       f"computers offer a browser ({', '.join(f'{c.name} [{c.device_id}]' for c in found)}). Choose "
@@ -469,9 +469,9 @@ def target(session_id: str = "", start: bool = True) -> tuple[Any, Any]:
     device_id = conn.device_id
     if core.CAPABILITY_BROWSER not in conn.capabilities:
         raise Unavailable(f"hermes-device: device {conn.name} [{device_id}] does not offer browser control. On "
-                          f"that computer: set browser.enabled to true in the hermes-device config, run "
-                          f"hermes-device browser install, load the Hermes Firefox extension, and restart "
-                          f"hermes-device run.")
+                          f"that computer: set browser.enabled to true in the talaria config, run "
+                          f"talaria browser install, load the Hermes Firefox extension, and restart "
+                          f"talaria run.")
     if not_running(conn):
         if not start:
             raise Unavailable(f"hermes-device: Firefox is not running on device {conn.name} [{device_id}]. Any other "

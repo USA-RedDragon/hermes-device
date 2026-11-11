@@ -156,7 +156,7 @@ const (
 	e2eHubURL  = "https://" + e2eHubHost
 )
 
-// startFirefox builds hermes-device, registers it as the native host in a
+// startFirefox builds talaria, registers it as the native host in a
 // fresh HOME, starts a headless Firefox on a fresh profile, loads the
 // extension as a temporary add-on over BiDi and waits for it to connect.
 func startFirefox(ctx context.Context, t *testing.T) (*broker.Broker, *bidi.Client) {
@@ -174,7 +174,7 @@ func startFirefox(ctx context.Context, t *testing.T) (*broker.Broker, *bidi.Clie
 			t.Fatal(err)
 		}
 	}
-	bin := filepath.Join(root, "hermes-device")
+	bin := filepath.Join(root, "talaria")
 	if out, err := exec.CommandContext(ctx, "go", "build", "-o", bin, "../../..").CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}

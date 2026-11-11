@@ -1,10 +1,14 @@
 "use strict";
 
 // Hermes browser control. The only way in is the native messaging port to
-// the hermes-device host: there are no content scripts that listen to the
+// the talaria host: there are no content scripts that listen to the
 // page, no external messaging and no web accessible resources.
 
-const HOST = "hermes_device";
+// The native messaging host. Before the rename to talaria it was
+// hermes_device; the extension tries that name too, so it works with a
+// computer that has only the old host manifest.
+const HOSTS = ["talaria", "hermes_device"];
+let hostIndex = 0;
 const GROUP_TITLE = "Hermes";
 const RETRY_MS = 5000;
 const LOAD_TIMEOUT_MS = 30000;
@@ -77,19 +81,26 @@ function showStatus() {
     return;
   }
   if (port) {
-    setStatus("connected to hermes-device", "on");
+    setStatus("connected to talaria", "on");
   } else if (replaced) {
     setStatus("another Firefox took over; click to use this one", "");
   } else {
-    setStatus("not connected to hermes-device", "");
+    setStatus("not connected to talaria", "");
   }
 }
 
 async function connect() {
-  const p = browser.runtime.connectNative(HOST);
+  const p = browser.runtime.connectNative(HOSTS[hostIndex]);
+  let answered = false;
   port = p;
-  p.onMessage.addListener(onMessage);
+  p.onMessage.addListener((msg) => {
+    answered = true;
+    return onMessage(msg);
+  });
   p.onDisconnect.addListener(() => {
+    if (!answered) {
+      hostIndex = (hostIndex + 1) % HOSTS.length;
+    }
     port = null;
     showStatus();
     if (!replaced) {

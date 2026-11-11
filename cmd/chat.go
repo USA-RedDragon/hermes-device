@@ -16,7 +16,7 @@ func newChatCommand(b *base) *cobra.Command {
 		Use:   "chat [-- hermes-args...]",
 		Short: "Open the local Hermes TUI on the server, in this directory",
 		Long: "chat starts the local Hermes TUI (<chat.hermes> --tui) in the current directory and points it at " +
-			"the running hermes-device run daemon, which carries it to the server's Hermes. Arguments after -- go to Hermes. " +
+			"the running talaria run daemon, which carries it to the server's Hermes. Arguments after -- go to Hermes. " +
 			"Hermes' -c/--continue and -r/--resume flags are looked up on the server: -c alone continues the most recent " +
 			"session bound to this device.",
 		RunE: func(cmd *cobra.Command, args []string) error {

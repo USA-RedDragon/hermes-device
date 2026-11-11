@@ -1,6 +1,6 @@
 # Release verification
 
-From v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false -->0.13.0<!-- /docgen:const --> on, every release has GitHub artifact attestations, and `hermes-device update` installs a release only when the attestation of its archive verifies. This page says what is attested, what `update` checks, what it trusts, and how to check a file by hand.
+From v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false -->0.13.0<!-- /docgen:const --> on, every release has GitHub artifact attestations, and `talaria update` installs a release only when the attestation of its archive verifies. This page says what is attested, what `update` checks, what it trusts, and how to check a file by hand.
 
 ## 1. What the release workflow attests
 
@@ -49,7 +49,7 @@ A release before v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion
 
 The binary that runs `update` does the checks. A binary before v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false -->0.13.0<!-- /docgen:const --> does not check attestations, so the update from it to the first attested release is checked only against the checksum file. Every update after that is verified.
 
-`hermes-device update --check [version]` does steps 1 to 6 but installs nothing and restarts nothing. It also checks a release that is the same as or older than the installed one. It refuses `--insecure-skip-attestation`.
+`talaria update --check [version]` does steps 1 to 6 but installs nothing and restarts nothing. It also checks a release that is the same as or older than the installed one. It refuses `--insecure-skip-attestation`.
 
 ## 3. What it trusts
 
@@ -63,7 +63,7 @@ The GitHub API allows 60 requests per hour without a token per IP address. `upda
 
 ## 4. Unsafe override
 
-`hermes-device update --insecure-skip-attestation` installs without step 2 to 5. Then only the checksum file, which comes from the same place as the archive, vouches for the archive. Use it only in an emergency, for example when the GitHub attestations API is down, or to install a release before v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false -->0.13.0<!-- /docgen:const -->. `update` prints a warning when you use it.
+`talaria update --insecure-skip-attestation` installs without step 2 to 5. Then only the checksum file, which comes from the same place as the archive, vouches for the archive. Use it only in an emergency, for example when the GitHub attestations API is down, or to install a release before v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false -->0.13.0<!-- /docgen:const -->. `update` prints a warning when you use it.
 
 ## 5. Verify by hand
 
@@ -79,7 +79,7 @@ gh attestation verify oci://ghcr.io/usa-reddragon/hermes-device:v0.13.0 --repo U
 
 ## 6. Automatic updates
 
-`hermes-device run` installs new releases by itself when the hermes-device service runs it, `update.auto` is true (the default) and the device token comes from `login` (README, Updates). Each check does this:
+`talaria run` installs new releases by itself when the talaria service runs it, `update.auto` is true (the default) and the device token comes from `login` (README, Updates). Each check does this:
 
 1. It gets the latest release from `GET /repos/USA-RedDragon/hermes-device/releases/latest` with the ETag of the last answer, or reuses an answer less than an hour old. It caches the answer in `release.json` in the user cache directory, which the CLI's notice also reads. After a 403 or 429 answer, nothing asks again until the time in `Retry-After` or `X-RateLimit-Reset` (at least a minute, at most a day). The cache is only a hint: a tag from it must still be a plain `vX.Y.Z`, and a value that cannot be right (a pre-release tag, a time in the future, a pause longer than a day) is dropped.
 2. It goes on only when that release is a stable release (no pre-release flag, no pre-release or build part in the tag) and newer than the running binary.

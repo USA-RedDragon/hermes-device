@@ -22,11 +22,12 @@ const testHub = "https://hub.example.com"
 
 // workingUnit is a hand-written unit that runs the daemon as setup does.
 const workingUnit = `[Unit]
-Description=hermes-device: runs the Hermes agent's commands on this PC
-After=network-online.target
+Description=talaria: runs the Hermes agent's commands on this PC
+After=network-online.target hermes-device.service
+Conflicts=hermes-device.service
 
 [Service]
-ExecStart=%h/.hermes-device/bin/hermes-device run -c %h/.config/hermes-device/config.yaml
+ExecStart=%h/.talaria/bin/talaria run -c %h/.config/talaria/config.yaml
 Restart=always
 RestartSec=5
 MemoryMax=2G
@@ -94,11 +95,11 @@ func newFixture(t *testing.T) *fixture {
 	}
 	writeFile(t, filepath.Join(home, ".mozilla", "firefox", "abc.default", "prefs.js"), "")
 	writeFile(t, filepath.Join(home, ".zshrc"), zshrcText)
-	f.exe = filepath.Join(home, "Downloads", "hermes-device")
+	f.exe = filepath.Join(home, "Downloads", "talaria")
 	writeFile(t, f.exe, "binary v0.9.0")
 
 	xpi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/releases/download/v0.9.0/hermes-device-firefox-0.9.0.xpi" {
+		if r.URL.Path == "/releases/download/v0.9.0/talaria-firefox-0.9.0.xpi" {
 			return
 		}
 		http.NotFound(w, r)
@@ -106,8 +107,8 @@ func newFixture(t *testing.T) *fixture {
 	t.Cleanup(xpi.Close)
 	f.opts = &setup.Options{
 		Version: vNew, Exe: f.exe, HubURL: testHub,
-		ConfigFile: filepath.Join(home, ".config", "hermes-device", "config.yaml"),
-		StateDir:   filepath.Join(home, ".config", "hermes-device"),
+		ConfigFile: filepath.Join(home, ".config", "talaria", "config.yaml"),
+		StateDir:   filepath.Join(home, ".config", "talaria"),
 		Wait:       5 * time.Second, Poll: time.Millisecond,
 		Releases: &setup.Releases{BaseURL: xpi.URL + "/releases", Client: xpi.Client()},
 		Pair: func(context.Context) (bool, error) {
@@ -147,7 +148,7 @@ func TestSetupInstallsEverythingAndUninstallUndoesIt(t *testing.T) {
 	checkInstalled(t, f, rep)
 	checkSecondRun(t, f)
 
-	bin := filepath.Join(home, ".hermes-device", "bin", "hermes-device")
+	bin := filepath.Join(home, ".talaria", "bin", "talaria")
 	f.run.Reset()
 	var removed []string
 	_, err = f.sys.Uninstall(t.Context(), &setup.UninstallOptions{
@@ -167,7 +168,7 @@ func TestSetupInstallsEverythingAndUninstallUndoesIt(t *testing.T) {
 		t.Errorf("calls %q", f.run.Calls())
 	}
 	for _, p := range []string{
-		bin, filepath.Join(home, ".hermes-device"), f.opts.ConfigFile, filepath.Join(home, ".config", "systemd", "user", setup.UnitName),
+		bin, filepath.Join(home, ".talaria"), f.opts.ConfigFile, filepath.Join(home, ".config", "systemd", "user", setup.UnitName),
 		filepath.Join(home, ".config", "shell", "env.sh"), filepath.Join(home, ".bash_profile"),
 		filepath.Join(home, ".mozilla", "native-messaging-hosts", "hermes_device.json"), filepath.Join(f.opts.StateDir, setup.StateFileName),
 	} {
@@ -178,7 +179,7 @@ func TestSetupInstallsEverythingAndUninstallUndoesIt(t *testing.T) {
 	if got := readFile(t, filepath.Join(home, ".zshrc")); got != zshrcText {
 		t.Errorf(".zshrc after uninstall = %q", got)
 	}
-	if !exists(filepath.Join(home, ".zshrc.hermes-device-20261110-120000.bak")) {
+	if !exists(filepath.Join(home, ".zshrc.talaria-20261110-120000.bak")) {
 		t.Error("uninstall removed the backup")
 	}
 	if len(removed) != 1 || removed[0] != testHub {
@@ -244,7 +245,7 @@ func TestSetupRefusesForeignUnitAndRecovers(t *testing.T) {
 	if _, err := f.sys.Setup(t.Context(), f.opts); err != nil {
 		t.Fatalf("Setup --force: %v", err)
 	}
-	if !strings.Contains(readFile(t, unit), "MemoryMax=2G") || !exists(unit+".hermes-device-20261110-120000.bak") {
+	if !strings.Contains(readFile(t, unit), "MemoryMax=2G") || !exists(unit+".talaria-20261110-120000.bak") {
 		t.Error("force did not replace the unit after a backup")
 	}
 	st, _ = setup.LoadState(f.opts.StateDir)
@@ -263,7 +264,7 @@ func TestSetupWithoutServiceManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(rep.Todo, "\n")
-	if !strings.Contains(joined, "no systemd user manager") || !strings.Contains(joined, "connected to hermes-device") {
+	if !strings.Contains(joined, "no systemd user manager") || !strings.Contains(joined, "connected to talaria") {
 		t.Errorf("todo %q", rep.Todo)
 	}
 	if f.run.has(systemctl) {
@@ -326,7 +327,7 @@ func checkSecondRun(t *testing.T, f *fixture) {
 func checkInstalled(t *testing.T, f *fixture, rep *setup.Report) {
 	t.Helper()
 	home := f.sys.Home
-	bin := filepath.Join(home, ".hermes-device", "bin", "hermes-device")
+	bin := filepath.Join(home, ".talaria", "bin", "talaria")
 	if got := readFile(t, bin); got != "binary v0.9.0" {
 		t.Errorf("binary = %q", got)
 	}
@@ -340,7 +341,7 @@ func checkInstalled(t *testing.T, f *fixture, rep *setup.Report) {
 		}
 	}
 	unit := readFile(t, filepath.Join(home, ".config", "systemd", "user", setup.UnitName))
-	if !strings.HasPrefix(unit, "# Written by hermes-device setup") || !strings.HasSuffix(unit, workingUnit) {
+	if !strings.HasPrefix(unit, "# Written by talaria setup") || !strings.HasSuffix(unit, workingUnit) {
 		t.Errorf("unit:\n%s", unit)
 	}
 	for _, want := range []string{"systemctl --user daemon-reload", "systemctl --user enable " + setup.UnitName, "systemctl --user start " + setup.UnitName} {
@@ -351,7 +352,7 @@ func checkInstalled(t *testing.T, f *fixture, rep *setup.Report) {
 	if f.run.has("systemctl --user --no-block restart") {
 		t.Error("restarted a service it had just started")
 	}
-	if len(f.run.started) != 1 || !strings.HasPrefix(f.run.started[0], "/usr/bin/firefox http") || !strings.HasSuffix(f.run.started[0], "/releases/download/v0.9.0/hermes-device-firefox-0.9.0.xpi") {
+	if len(f.run.started) != 1 || !strings.HasPrefix(f.run.started[0], "/usr/bin/firefox http") || !strings.HasSuffix(f.run.started[0], "/releases/download/v0.9.0/talaria-firefox-0.9.0.xpi") {
 		t.Errorf("started %q", f.run.started)
 	}
 	env := readFile(t, filepath.Join(home, ".config", "shell", "env.sh"))
@@ -362,7 +363,7 @@ func checkInstalled(t *testing.T, f *fixture, rep *setup.Report) {
 	if !strings.HasPrefix(zshrc, "export EDITOR=vi\n\n# >>> hermes-device setup >>>\n") || !strings.Contains(zshrc, `. "$HOME/.config/shell/env.sh"`) {
 		t.Errorf(".zshrc:\n%s", zshrc)
 	}
-	if got := readFile(t, filepath.Join(home, ".zshrc.hermes-device-20261110-120000.bak")); got != zshrcText {
+	if got := readFile(t, filepath.Join(home, ".zshrc.talaria-20261110-120000.bak")); got != zshrcText {
 		t.Errorf("backup = %q", got)
 	}
 	if !strings.Contains(readFile(t, filepath.Join(home, ".bash_profile")), "env.sh") {
@@ -376,7 +377,7 @@ func checkInstalled(t *testing.T, f *fixture, rep *setup.Report) {
 	for _, d := range rep.Done {
 		done.WriteString(d + "\n")
 	}
-	if !strings.Contains(done.String(), "extension is connected to hermes-device") || len(rep.Todo) != 0 {
+	if !strings.Contains(done.String(), "extension is connected to talaria") || len(rep.Todo) != 0 {
 		t.Errorf("report %+v", rep)
 	}
 }
@@ -395,7 +396,7 @@ func TestUninstallKeepsBinaryWhenServiceWillNotStop(t *testing.T) {
 	if err == nil {
 		t.Fatal("no error when the service would not stop")
 	}
-	bin := filepath.Join(f.sys.Home, ".hermes-device", "bin", "hermes-device")
+	bin := filepath.Join(f.sys.Home, ".talaria", "bin", "talaria")
 	if !exists(bin) || !exists(f.opts.ConfigFile) || len(rep.Todo) == 0 {
 		t.Errorf("removed the binary or config of a running service: %+v", rep)
 	}
@@ -481,7 +482,7 @@ func TestSetupEditedOwnUnitIsBackedUp(t *testing.T) {
 	if _, err := f.sys.Setup(t.Context(), f.opts); err != nil {
 		t.Fatal(err)
 	}
-	if readFile(t, unit+".hermes-device-20261110-120000.bak") != edited {
+	if readFile(t, unit+".talaria-20261110-120000.bak") != edited {
 		t.Error("the user's edit of setup's unit is lost")
 	}
 }

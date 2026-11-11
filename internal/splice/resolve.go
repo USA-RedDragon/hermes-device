@@ -182,7 +182,7 @@ func lookupAnswer(id json.RawMessage, err error) []byte {
 	if errors.As(err, &le) && le.HubError != "" {
 		code = le.HubError
 	}
-	return answerError(id, CodeDevice, "hermes-device could not look up the session: "+err.Error(),
+	return answerError(id, CodeDevice, "talaria could not look up the session: "+err.Error(),
 		map[string]any{keyReason: ReasonBind, "hub_error": code})
 }
 

@@ -26,7 +26,7 @@ import (
 )
 
 // ErrNoHub is returned when setup has no hub URL.
-var ErrNoHub = errors.New("give the hub URL: hermes-device setup https://hub.example.com")
+var ErrNoHub = errors.New("give the hub URL: talaria setup https://hub.example.com")
 
 // ErrHubMismatch is returned when the hub URL argument and the config
 // file's hub.url differ.
@@ -46,7 +46,7 @@ func newSetupCommand(b *base) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "setup [hub-url]",
 		Short: "Set this computer up: install the binary, pair, write the config, start the service and connect Firefox",
-		Long: "setup installs hermes-device for this user in one step: it copies this binary to ~/.hermes-device/bin, " +
+		Long: "setup installs talaria for this user in one step: it copies this binary to ~/.talaria/bin, " +
 			"pairs the computer with the hub (as login does), writes the config file when there is none, registers " +
 			"Firefox's native messaging host and opens the extension's install page, starts a systemd user service " +
 			"(launchd agent on macOS) and offers to fix bash's PATH for zsh and fish users. Run it again at any time; " +
@@ -97,7 +97,7 @@ func (b *base) loadMaybeMissing(cmd *cobra.Command) (*config.Config, error) {
 	if _, err := os.Stat(named); !errors.Is(err, fs.ErrNotExist) {
 		return b.load()
 	}
-	empty, err := os.CreateTemp("", "hermes-device-setup-*.yaml")
+	empty, err := os.CreateTemp("", "talaria-setup-*.yaml")
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func configFile(cmd *cobra.Command, sys *setup.System) (string, error) {
 	if fl := cmd.Flag("config"); fl != nil && fl.Value.String() != "" {
 		return filepath.Abs(fl.Value.String())
 	}
-	return filepath.Join(sys.ConfigDir, "hermes-device", "config.yaml"), nil
+	return filepath.Join(sys.ConfigDir, "talaria", "config.yaml"), nil
 }
 
 func (b *base) setup(cmd *cobra.Command, sys *setup.System, cfg *config.Config, f *setupFlags, arg string) error {
@@ -191,7 +191,7 @@ func (b *base) setup(cmd *cobra.Command, sys *setup.System, cfg *config.Config, 
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(out, "Run hermes-device setup again at any time; it only changes what is missing.")
+	_, err = fmt.Fprintln(out, "Run talaria setup again at any time; it only changes what is missing.")
 	return err
 }
 

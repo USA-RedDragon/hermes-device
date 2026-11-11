@@ -50,7 +50,7 @@ func (f fileRunner) Output(_ context.Context, _ []string, name string, args ...s
 	if err != nil || len(args) != 1 || args[0] != "--version" {
 		return nil, errNoProgram
 	}
-	return []byte("hermes-device version " + strings.TrimSpace(string(data)) + " - abc\n"), nil
+	return []byte("talaria version " + strings.TrimSpace(string(data)) + " - abc\n"), nil
 }
 
 func (fileRunner) Start(string, ...string) error { return errNoProgram }
@@ -148,7 +148,7 @@ func TestAutoInstallRefusesAReleaseThatRejectsTheConfig(t *testing.T) {
 
 func TestRunArgs(t *testing.T) {
 	t.Parallel()
-	if got := runArgs([]string{"/bin/hermes-device", runCommand, "-c", "a.yaml"}); strings.Join(got, " ") != "run -c a.yaml" {
+	if got := runArgs([]string{"/bin/talaria", runCommand, "-c", "a.yaml"}); strings.Join(got, " ") != "run -c a.yaml" {
 		t.Errorf("runArgs = %q", got)
 	}
 	if got := runArgs([]string{"cmd.test", "-test.v"}); strings.Join(got, " ") != runCommand {
@@ -161,7 +161,7 @@ func TestAutoInstallVerifies(t *testing.T) {
 	var calls atomic.Int32
 	ok := func(_ context.Context, tag, name string, digest []byte) (string, error) {
 		calls.Add(1)
-		if tag != tagNext || !strings.HasPrefix(name, "hermes-device_0.15.0_") || len(digest) != 32 {
+		if tag != tagNext || !strings.HasPrefix(name, "talaria_0.15.0_") || len(digest) != 32 {
 			t.Errorf("verifier got %s %s %x", tag, name, digest)
 		}
 		return "the release workflow", nil
@@ -219,7 +219,7 @@ func TestAutoInstallNeverDowngradesOrInstallsPrerelease(t *testing.T) {
 func TestDaemonUpdaterDefaults(t *testing.T) {
 	t.Parallel()
 	ok := func(context.Context, string, string, []byte) (string, error) { return "x", nil }
-	cfg := defaultConfig(t, map[string]string{"HERMES_DEVICE_HUB_URL": "https://hub.example.com"})
+	cfg := defaultConfig(t, map[string]string{"TALARIA_HUB_URL": "https://hub.example.com"})
 	if !cfg.Update.Auto || cfg.Update.Interval != 6*time.Hour {
 		t.Fatalf("defaults: %+v", cfg.Update)
 	}
@@ -253,13 +253,13 @@ func TestImagesTurnAutoUpdateOff(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(data), "HERMES_DEVICE_UPDATE_AUTO=false") {
-			t.Errorf("%s does not set HERMES_DEVICE_UPDATE_AUTO=false", f)
+		if !strings.Contains(string(data), "TALARIA_UPDATE_AUTO=false") {
+			t.Errorf("%s does not set TALARIA_UPDATE_AUTO=false", f)
 		}
 	}
-	cfg := defaultConfig(t, map[string]string{"HERMES_DEVICE_UPDATE_AUTO": "false"})
+	cfg := defaultConfig(t, map[string]string{"TALARIA_UPDATE_AUTO": "false"})
 	if cfg.Update.Auto {
-		t.Error("HERMES_DEVICE_UPDATE_AUTO=false left auto-update on")
+		t.Error("TALARIA_UPDATE_AUTO=false left auto-update on")
 	}
 }
 
@@ -279,7 +279,7 @@ func TestInteractiveNoticeDoesNotBlock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "release.json")
 	b, _ := autoBase(t, verNow, nil)
 	b.releaseLookup = func(string) *autoupdate.Releases {
-		return &autoupdate.Releases{APIURL: srv.URL, Owner: "alice", Repo: "hermes-device", Client: srv.Client(), Path: path}
+		return &autoupdate.Releases{APIURL: srv.URL, Owner: "alice", Repo: "talaria", Client: srv.Client(), Path: path}
 	}
 	stale := time.Now().Add(-2 * autoupdate.NoticeMaxAge).Format(time.RFC3339)
 	if err := os.WriteFile(path, []byte(`{"tag":"v0.15.0","tried_at":"`+stale+`"}`), 0o600); err != nil {

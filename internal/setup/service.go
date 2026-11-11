@@ -14,22 +14,32 @@ import (
 
 // Service names.
 const (
-	UnitName     = "hermes-device.service"
-	LaunchdLabel = "io.github.usa-reddragon.hermes-device"
+	UnitName     = "talaria.service"
+	LaunchdLabel = "io.github.usa-reddragon.talaria"
 )
 
-// serviceMarker starts every service file setup writes.
-const serviceMarker = "Written by hermes-device setup"
+// Service names before the rename to talaria. Migrate replaces them.
+const (
+	LegacyUnitName     = "hermes-device.service"
+	LegacyLaunchdLabel = "io.github.usa-reddragon.hermes-device"
+)
+
+// serviceMarker starts every service file setup writes, and
+// legacyServiceMarker every one that setup wrote before the rename.
+const (
+	serviceMarker       = "Written by talaria setup"
+	legacyServiceMarker = "Written by hermes-device setup"
+)
 
 // ErrNoServiceManager is returned when the computer has no systemd user
 // manager or launchd that setup can use.
-var ErrNoServiceManager = errors.New("no systemd user manager or launchd to run hermes-device run")
+var ErrNoServiceManager = errors.New("no systemd user manager or launchd to run talaria run")
 
 // ErrForeignService is returned when a service file that setup did not
 // write is in the way.
 var ErrForeignService = errors.New("a service file that setup did not write is in the way")
 
-// Service is the background service that runs hermes-device run.
+// Service is the background service that runs talaria run.
 type Service interface {
 	// Path is the unit or agent file.
 	Path() string
@@ -83,7 +93,7 @@ func (s *System) WriteServiceFile(svc Service, bin, cfg, ours string, force bool
 	want := svc.Content(bin, cfg)
 	old, err := os.ReadFile(svc.Path())
 	var res ServiceFile
-	foreign := err == nil && !bytes.Contains(old, []byte(serviceMarker))
+	foreign := err == nil && !bytes.Contains(old, []byte(serviceMarker)) && !bytes.Contains(old, []byte(legacyServiceMarker))
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 	case err != nil:
@@ -126,12 +136,14 @@ func sameSettings(a, b []byte) bool {
 
 type systemdService struct{ s *System }
 
-func (d *systemdService) Path() string {
+func (d *systemdService) Path() string { return filepath.Join(d.dir(), UnitName) }
+
+func (d *systemdService) dir() string {
 	base := d.s.Getenv("XDG_CONFIG_HOME")
 	if base == "" || !filepath.IsAbs(base) {
 		base = filepath.Join(d.s.Home, ".config")
 	}
-	return filepath.Join(base, "systemd", "user", UnitName)
+	return filepath.Join(base, "systemd", "user")
 }
 
 func (d *systemdService) Name() string { return "systemd user service " + UnitName }
@@ -170,10 +182,11 @@ func (d *systemdService) unitPath(p string) string {
 }
 
 func (d *systemdService) Content(bin, cfg string) []byte {
-	return []byte("# " + serviceMarker + ". hermes-device setup --uninstall removes it.\n" +
+	return []byte("# " + serviceMarker + ". talaria setup --uninstall removes it.\n" +
 		"[Unit]\n" +
-		"Description=hermes-device: runs the Hermes agent's commands on this PC\n" +
-		"After=network-online.target\n" +
+		"Description=talaria: runs the Hermes agent's commands on this PC\n" +
+		"After=network-online.target " + LegacyUnitName + "\n" +
+		"Conflicts=" + LegacyUnitName + "\n" +
 		"\n" +
 		"[Service]\n" +
 		"ExecStart=" + d.unitPath(bin) + " run -c " + d.unitPath(cfg) + "\n" +
@@ -207,7 +220,7 @@ func (d *systemdService) Start(ctx context.Context) error {
 }
 
 // Restart does not wait for the job, so it also works from a command that
-// runs inside the service, such as hermes-device update run by the agent.
+// runs inside the service, such as talaria update run by the agent.
 func (d *systemdService) Restart(ctx context.Context) error {
 	_, err := d.systemctl(ctx, "--no-block", "restart", UnitName)
 	return err
@@ -243,7 +256,7 @@ func (l *launchdService) Available(context.Context) error {
 
 // LogFile is where the launchd agent writes the daemon's logs.
 func (l *launchdService) LogFile() string {
-	return filepath.Join(l.s.Home, "Library", "Logs", "hermes-device.log")
+	return filepath.Join(l.s.Home, "Library", "Logs", "talaria.log")
 }
 
 func xmlEscape(s string) string {
@@ -254,7 +267,7 @@ func (l *launchdService) Content(bin, cfg string) []byte {
 	str := func(v string) string { return "\t\t<string>" + xmlEscape(v) + "</string>\n" }
 	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- ` + serviceMarker + `. hermes-device setup --uninstall removes it. -->
+<!-- ` + serviceMarker + `. talaria setup --uninstall removes it. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>

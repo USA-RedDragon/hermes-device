@@ -150,14 +150,14 @@ func (r *rewriter) fromEditor(data []byte) ([]byte, error) {
 	var m object
 	if err := json.Unmarshal(data, &m); err != nil {
 		if json.Valid(data) {
-			return nil, &rpcError{code: codeInvalidReq, message: "hermes-device acp-host: a message must be one JSON-RPC object"}
+			return nil, &rpcError{code: codeInvalidReq, message: "talaria acp-host: a message must be one JSON-RPC object"}
 		}
-		return nil, &rpcError{code: codeParse, message: "hermes-device acp-host: parse error"}
+		return nil, &rpcError{code: codeParse, message: "talaria acp-host: parse error"}
 	}
 	var method string
 	if raw, ok := m["method"]; ok {
 		if err := json.Unmarshal(raw, &method); err != nil {
-			return nil, &rpcError{id: m["id"], code: codeInvalidReq, message: "hermes-device acp-host: method must be a string", notify: isNotification(m)}
+			return nil, &rpcError{id: m["id"], code: codeInvalidReq, message: "talaria acp-host: method must be a string", notify: isNotification(m)}
 		}
 	}
 	if method != "" {
@@ -211,11 +211,11 @@ func (r *rewriter) rewriteParams(m object, fn func(object) error) error {
 	p := object{}
 	if raw, ok := m["params"]; ok && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &p); err != nil {
-			return &rpcError{id: m["id"], code: codeInvalidParams, message: "hermes-device acp-host: params must be an object", notify: isNotification(m)}
+			return &rpcError{id: m["id"], code: codeInvalidParams, message: "talaria acp-host: params must be an object", notify: isNotification(m)}
 		}
 	}
 	if err := fn(p); err != nil {
-		e := &rpcError{id: m["id"], code: codeInvalidParams, message: "hermes-device acp-host: " + err.Error(), notify: isNotification(m)}
+		e := &rpcError{id: m["id"], code: codeInvalidParams, message: "talaria acp-host: " + err.Error(), notify: isNotification(m)}
 		switch {
 		case errors.Is(err, errOtherDevice), errors.Is(err, errNotBound):
 			e.message = err.Error()
@@ -306,7 +306,7 @@ func (r *rewriter) checkSession(raw json.RawMessage, present bool) error {
 
 // errBindings refuses a session call when the bindings file cannot be read,
 // so a broken file never lets a call through.
-var errBindings = errors.New("hermes-device acp-host: cannot read the bindings file")
+var errBindings = errors.New("talaria acp-host: cannot read the bindings file")
 
 func rewritePrompt(p object) error {
 	raw, ok := p["prompt"]
@@ -330,7 +330,7 @@ func rewritePrompt(p object) error {
 		_ = json.Unmarshal(blk["uri"], &uri)
 		blocks[i] = mustJSON(map[string]string{
 			"type":    blockText,
-			blockText: fmt.Sprintf("[hermes-device: link %s removed; the bridge inlines device files]", uri),
+			blockText: fmt.Sprintf("[talaria: link %s removed; the bridge inlines device files]", uri),
 		})
 	}
 	p["prompt"] = mustJSON(blocks)
@@ -417,7 +417,7 @@ func checkSlash(blocks []json.RawMessage) error {
 		name = alias
 	}
 	if !isASCII(word) || !commandAllowed(name, arg) {
-		return fmt.Errorf("/%s is not available through hermes-device", word)
+		return fmt.Errorf("/%s is not available through talaria", word)
 	}
 	return nil
 }

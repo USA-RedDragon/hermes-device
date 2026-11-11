@@ -89,11 +89,11 @@ func (s *System) Update(ctx context.Context, o *UpdateOptions) (string, error) {
 			return "", fmt.Errorf("%w: %s is %s, newer than %s; pass --force to install %s anyway", ErrDowngrade, o.Target, o.Version, tag, tag)
 		}
 	}
-	archive, digest, err := o.Releases.FetchArchive(ctx, tag, o.GOOS, o.GOARCH, o.GOARM)
+	archive, name, digest, err := o.Releases.FetchArchive(ctx, tag, o.GOOS, o.GOARCH, o.GOARM)
 	if err != nil {
 		return "", err
 	}
-	if err := s.verifyAttestation(ctx, o, tag, digest); err != nil {
+	if err := s.verifyAttestation(ctx, o, tag, name, digest); err != nil {
 		return "", err
 	}
 	data, err := ExtractBinary(archive)
@@ -101,7 +101,7 @@ func (s *System) Update(ctx context.Context, o *UpdateOptions) (string, error) {
 		return "", err
 	}
 	dir := filepath.Dir(o.Target)
-	tmp, err := os.CreateTemp(dir, ".hermes-device.new-")
+	tmp, err := os.CreateTemp(dir, ".talaria.new-")
 	if err != nil {
 		return "", err
 	}
@@ -153,8 +153,7 @@ func (s *System) Update(ctx context.Context, o *UpdateOptions) (string, error) {
 // verifyAttestation checks the attestation of the archive with SHA-256
 // digest, which is the archive Update installs from: it is held in
 // memory, so it cannot change between the check and the install.
-func (s *System) verifyAttestation(ctx context.Context, o *UpdateOptions, tag string, digest []byte) error {
-	name := ArchiveName(strings.TrimPrefix(tag, "v"), o.GOOS, o.GOARCH, o.GOARM)
+func (s *System) verifyAttestation(ctx context.Context, o *UpdateOptions, tag, name string, digest []byte) error {
 	if o.SkipAttestation {
 		s.printf("WARNING: not verifying the attestation of %s (--insecure-skip-attestation). Only the checksum file, from the same place, vouches for it.\n", name)
 		return nil

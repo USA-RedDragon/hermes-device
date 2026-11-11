@@ -96,7 +96,7 @@ type Server struct {
 	dirs map[string]string
 }
 
-// tokenEntry is one per-run secret: one hermes-device chat.
+// tokenEntry is one per-run secret: one talaria chat.
 type tokenEntry struct {
 	// dir is the device directory chat runs in.
 	dir   string
@@ -197,7 +197,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	s.tokens = map[string]*tokenEntry{}
 	s.mu.Unlock()
 	for _, c := range all {
-		c.closeTUI(websocket.StatusGoingAway, "hermes-device run is stopping")
+		c.closeTUI(websocket.StatusGoingAway, "talaria run is stopping")
 	}
 	s.active.Wait()
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
