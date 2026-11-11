@@ -18,13 +18,13 @@ internal/device/device.go	201	162
 internal/device/devicetest/devicetest.go	470	421
 internal/device/files.go	71	57
 internal/device/gateway.go	354	270
-internal/device/legs.go	169	151
+internal/device/legs.go	169	149
 internal/device/pair.go	52	29
 internal/device/plugin.go	99	83
 internal/device/rpc.go	200	185
 internal/device/sessioncheck.go	23	22
 internal/device/views.go	17	17
-internal/gateway/client.go	222	175
+internal/gateway/client.go	222	176
 internal/gateway/gatewaytest/fake.go	546	491
 internal/gateway/gatewaytest/files.go	40	35
 internal/gateway/gatewaytest/mutate.go	117	102
@@ -46,7 +46,7 @@ internal/memory/memorytest/memorytest.go	206	178
 internal/memory/notes.go	61	49
 internal/notify/jobs.go	49	36
 internal/notify/notify.go	258	160
-internal/pdf/pdf.go	180	159
+internal/pdf/pdf.go	180	160
 internal/pdf/pdftest/pdftest.go	32	32
 internal/server/server.go	40	0
 internal/service/agents.go	21	17
