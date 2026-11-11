@@ -10,6 +10,7 @@ One Go binary, `hermes-device`, with these subcommands:
 
 | Subcommand | Runs on | What it does |
 |---|---|---|
+| `setup` | your PC | Sets the PC up in one step: installs the binary, pairs, writes the config, starts the service and connects Firefox |
 | `login` | your PC | Pairs the PC with hermes-hub and stores its device token |
 | `run` | your PC | Daemon: runs the agent's commands on this PC (the exec leg), and serves the loopback splice that `chat` uses |
 | `chat` | your PC | Opens your local Hermes TUI on a server session in the current directory |
@@ -31,21 +32,40 @@ Your PC dials only the hub, over HTTPS and WebSockets. The hub checks the device
 
 A session is bound to a device and a directory. Every command of a bound session runs on that device, in that directory, and only inside the roots you allow in the config. The session's server-side working directory is a placeholder directory in the pod. A session that was ever bound never falls back to the pod shell, also after compression, branching or a subagent. Sessions that were never bound (web or Telegram sessions, for example) run where the plugin's `fallback` setting says: in the pod (`local`, the default), nowhere (`refuse`), or in a per-person sandbox pod (`device`, see [Agent sandbox](#agent-sandbox)).
 
-### Pairing
+### Setup
+
+Download the archive for your OS and architecture from the [latest release](https://github.com/USA-RedDragon/hermes-device/releases/latest), check it against `hermes-device_<version>_checksums.txt` (`sha256sum --ignore-missing -c hermes-device_<version>_checksums.txt`, or `shasum -a 256 --ignore-missing -c ...` on macOS), unpack it and run:
 
 ```sh
-hermes-device login --hub.url https://hub.example.com
+./hermes-device setup https://hub.example.com
 ```
 
-`login` prints a link and a code. Open the link, sign in to the hub, check the code, name the device and confirm. `login` then stores the device token in the OS keyring (Secret Service on Linux, Keychain on macOS), or in a file with mode 0600 when no keyring is available. You can revoke a device on the hub at any time.
+Release builds know the default hub, so `./hermes-device setup` without the URL also works with them. `setup` does each of these steps, and only the ones that are not done yet, so you can run it again at any time:
+
+1. It copies itself to `~/.hermes-device/bin/hermes-device`. It refuses to replace a newer release there without `--force`.
+2. It pairs the computer with the hub, as `login` does: it prints a link and a code, and opens the link in your browser when it can. Sign in to the hub, check the code, name the device and confirm. The device token goes into the OS keyring (Secret Service on Linux, Keychain on macOS), or into a file with mode 0600 when no keyring is available. A stored token that the hub still accepts is kept.
+3. It writes `~/.config/hermes-device/config.yaml` (or the file `-c` names) when the file does not exist, with `hub.url`, `device.roots` set to your home directory, and `browser.enabled: true` when it finds Firefox. It never changes an existing config file unless you pass `--overwrite-config`, and then it backs the old one up first.
+4. With browser control on, it registers the binary as Firefox's native messaging host (as `hermes-device browser install` does).
+5. When your login shell is zsh or fish, it compares that shell's `PATH` with the one `bash -l` gets, because agent commands run with `bash -l`. When bash lacks directories, it lists them and asks before it adds them to `~/.config/shell/env.sh` and sources that file from bash's startup file (`~/.bash_profile`, `~/.bash_login` or `~/.profile`, whichever bash reads) and `~/.zshrc`. It backs each file up first (`<file>.hermes-device-<time>.bak`) and changes nothing without a yes.
+6. It installs and starts the daemon as a service that starts at login: the systemd user unit `~/.config/systemd/user/hermes-device.service` on Linux, the launchd agent `~/Library/LaunchAgents/io.github.usa-reddragon.hermes-device.plist` on macOS. It restarts the service when it changed the binary, the config or the unit. It keeps a unit that it did not write when that unit has the same settings, and replaces another one only with `--force`, after a backup.
+7. When the Hermes extension is not installed in Firefox, it opens Firefox at the signed `.xpi` of the matching release. Choose "Continue to Installation", then "Add". Then it waits (`--wait`, 10 minutes by default) for the extension to connect to the daemon, asks the extension to open the hub's sign-in window, and reports when Firefox is signed in. Sign in on the hub as the account that paired this computer, check the computer and browser names, and choose Allow.
+8. It prints what it did and what is left for you.
+
+`--no-service`, `--no-browser` and `--no-shell-check` skip those steps. `--bin-dir` installs the binary elsewhere.
+
+`setup --uninstall` reverses what setup did, from the record it keeps in `setup.json` in the state directory: it stops and disables the service and removes its file, removes the native messaging host and the device token, removes the config file unless you changed it since, puts back a config or service file that setup replaced, takes its lines out of your shell files (the backups stay), and removes the binary. When it cannot stop the service, it keeps the binary, the config and the token, so you can stop the service and run it again. Remove the extension in Firefox and the computer on the hub (Settings, Computers) yourself.
+
+`login` and `run` still work on their own, for example for a service device or a computer without a desktop.
 
 ### The daemon
+
+The service runs `hermes-device run -c ~/.config/hermes-device/config.yaml`. To run it yourself:
 
 ```sh
 hermes-device run --hub.url https://hub.example.com --device.roots /home/alice/src
 ```
 
-Keep `run` running, for example as a systemd user service. It reconnects by itself. A command whose working directory is outside `device.roots` is refused.
+It reconnects by itself. A command whose working directory is outside `device.roots` (by default your home directory) is refused. On Linux, `journalctl --user -u hermes-device -f` shows its logs; on macOS, `~/Library/Logs/hermes-device.log`.
 
 `run --no-splice` (or `gateway.splice: false`) runs only the exec leg: no loopback listener, no daemon state file and no whoami call, so `chat` cannot use it. Use it for a headless service device such as the sandbox pod. There, give the token with `hub.token` or `hub.token-file` (a file that holds only the token and that others cannot read) instead of `login` and the keyring.
 
@@ -70,9 +90,11 @@ Each editor window costs one `hermes acp` process in the pod.
 
 ### Firefox
 
-The agent can also use your own Firefox, with your logins, in its own "Hermes" tab group. It sees and acts only on tabs in that group. It asks you the first time it opens a site or submits a form on a site in a session, and every time it acts on a page with password, payment or one-time code fields. To turn it on:
+The agent can also use your own Firefox, with your logins, in its own "Hermes" tab group. It sees and acts only on tabs in that group. It asks you the first time it opens a site or submits a form on a site in a session, and every time it acts on a page with password, payment or one-time code fields.
 
-1. Set `browser.enabled: true` in the config (and `browser.allow-hosts` for LAN or loopback hosts the agent may open; all others are blocked in its tabs).
+`hermes-device setup` turns it on when it finds Firefox (section [Setup](#setup), steps 3, 4 and 7). Add `browser.allow-hosts` to the config for LAN or loopback hosts the agent may open; all others are blocked in its tabs. To turn it on by hand instead:
+
+1. Set `browser.enabled: true` in the config.
 2. Run `hermes-device browser install`. It registers this binary as Firefox's native messaging host for the Hermes extension, for your user only.
 3. Restart `hermes-device run`.
 4. Install the extension: download `hermes-device-firefox-<version>.xpi` from the [latest release](https://github.com/USA-RedDragon/hermes-device/releases/latest), then in Firefox open `about:addons`, choose the gear menu, "Install Add-on From File..." and pick the file. Mozilla signs it, so it stays installed, and Firefox updates it from later releases. For development, `hermes-device browser extension --out DIR` writes the files to load as a temporary add-on (docs/browser.md section 6.1).
@@ -168,7 +190,7 @@ A restart of the Hermes gateway (also a rollout) cannot keep commands: they belo
 
 ## Configuration
 
-The client and `acp-host` read `hermes-device/config.yaml` under the user config directory (`~/.config/hermes-device/config.yaml` on Linux), or the file given with `-c`, then environment variables, then flags. A `config.yaml` in the current directory is not read.
+The client and `acp-host` read `hermes-device/config.yaml` under the user config directory (`~/.config/hermes-device/config.yaml` on Linux), or the file given with `-c`, then environment variables, then flags. A `config.yaml` in the current directory is not read. `hermes-device setup` writes the file when it does not exist.
 
 <!-- configulator:begin -->
 

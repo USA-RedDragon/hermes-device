@@ -7,6 +7,7 @@ import (
 
 	"github.com/USA-RedDragon/configulator/v2"
 	"github.com/USA-RedDragon/hermes-device/internal/config"
+	"github.com/USA-RedDragon/hermes-device/internal/setup"
 	"github.com/goccy/go-yaml"
 )
 
@@ -163,5 +164,20 @@ func TestRootsDefaultToHome(t *testing.T) {
 	cfg.Device.Roots = []string{workRoot}
 	if roots, err := cfg.Roots(home("/", nil)); err != nil || len(roots) != 1 || roots[0] != workRoot {
 		t.Errorf("set roots: %q, %v", roots, err)
+	}
+}
+
+func TestSetupConfigLoads(t *testing.T) {
+	t.Parallel()
+	data, err := setup.ConfigYAML(hubURL, []string{aliceHome}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := load(nil, string(data))
+	if err != nil {
+		t.Fatalf("load:\n%s\n%v", data, err)
+	}
+	if cfg.Hub.URL != hubURL || len(cfg.Device.Roots) != 1 || cfg.Device.Roots[0] != aliceHome || !cfg.Browser.Enabled {
+		t.Errorf("cfg = %+v", cfg)
 	}
 }

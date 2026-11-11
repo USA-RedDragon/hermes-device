@@ -50,8 +50,12 @@ func login(ctx context.Context, out io.Writer, hub string, p *pairing.Pairer, st
 	if name == "" {
 		name = hostname
 	}
+	then := p.Prompt
 	p.Prompt = func(s *hubapi.PairStart) {
 		_, _ = fmt.Fprintf(out, "Open %s\nsign in, enter the code %s and confirm this device.\n", s.VerificationURI, s.UserCode)
+		if then != nil {
+			then(s)
+		}
 	}
 	res, err := p.Pair(ctx, hubapi.PairRequest{
 		Name: name, Hostname: hostname, OS: runtime.GOOS, Arch: runtime.GOARCH, ClientVersion: version,

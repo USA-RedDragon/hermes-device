@@ -35,7 +35,15 @@ func newBrowserCommand(b *base) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			path, err := installHostManifest(sock)
+			exe, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return err
+			}
+			path, err := installHostManifest(exe, home, sock)
 			if err != nil {
 				return err
 			}
@@ -56,13 +64,10 @@ func newBrowserCommand(b *base) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			dir := host.ManifestDir(home)
-			for _, name := range []string{host.Name + ".json", host.SocketFileName} {
-				if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-					return err
-				}
+			if err := removeHostManifest(home); err != nil {
+				return err
 			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), "Removed the native messaging host from", dir)
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), "Removed the native messaging host from", host.ManifestDir(home))
 			return err
 		},
 	})
@@ -113,15 +118,21 @@ func browserSocket(cfg *config.Config) (string, error) {
 	return filepath.Join(dir, broker.SocketName), nil
 }
 
-func installHostManifest(sock string) (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", err
+// removeHostManifest removes what installHostManifest wrote under home.
+func removeHostManifest(home string) error {
+	dir := host.ManifestDir(home)
+	for _, name := range []string{host.Name + ".json", host.SocketFileName} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
 	}
-	if exe, err = filepath.EvalSymlinks(exe); err != nil {
-		return "", err
-	}
-	home, err := os.UserHomeDir()
+	return nil
+}
+
+// installHostManifest registers the binary exe as the native messaging
+// host for Firefox under home, with the daemon socket sock.
+func installHostManifest(exe, home, sock string) (string, error) {
+	exe, err := filepath.EvalSymlinks(exe)
 	if err != nil {
 		return "", err
 	}

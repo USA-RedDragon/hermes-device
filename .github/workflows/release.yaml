@@ -16,6 +16,9 @@ jobs:
       contents: write
       packages: write
     uses: USA-RedDragon/reusable-actions/.github/workflows/goreleaser.yaml@c5ee15922a0ff4229b0f06a8d0551541b5cabfdc # v2.0.34
+    with:
+      # The default hub of hermes-device setup, as for the Firefox extension below.
+      run-before: printf 'HUB_DEFAULT_URL=%s\n' "${{ vars.HUB_DEFAULT_URL }}" >> "$GITHUB_ENV"
     secrets:
       token: ${{ secrets.GITHUB_TOKEN }}
 

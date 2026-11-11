@@ -14,6 +14,9 @@ import (
 var (
 	version = "dev"
 	commit  = "none"
+	// hubURL is the hub setup pairs with by default. The release sets it
+	// from the repository variable HUB_DEFAULT_URL.
+	hubURL = ""
 )
 
 func main() {
@@ -24,7 +27,7 @@ func main() {
 		}
 		return
 	}
-	rootCmd := cmd.NewCommand(version, commit)
+	rootCmd := cmd.NewCommand(version, commit, cmd.WithDefaultHub(hubURL))
 	if err := rootCmd.Execute(); err != nil {
 		slog.Error("Encountered an error.", "error", err.Error())
 		os.Exit(1)

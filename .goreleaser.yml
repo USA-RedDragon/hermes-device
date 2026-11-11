@@ -78,6 +78,7 @@ builds:
       - -s -w
       - -X main.version={{ .Version }}
       - -X main.commit={{ .ShortCommit }}
+      - -X main.hubURL={{ envOrDefault "HUB_DEFAULT_URL" "" }}
     flags:
       - -trimpath
 

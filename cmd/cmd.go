@@ -5,24 +5,36 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/USA-RedDragon/configulator/v2"
 	"github.com/USA-RedDragon/hermes-device/internal/config"
+	"github.com/USA-RedDragon/hermes-device/internal/setup"
 	"github.com/spf13/cobra"
 )
 
 // ErrWindows is returned on Windows, which hermes-device does not support.
 var ErrWindows = errors.New("hermes-device does not support Windows: device paths must be POSIX")
 
+// Option changes how NewCommand builds the command.
+type Option func(*base)
+
+// WithDefaultHub sets the hub URL that setup uses when neither the command
+// line nor the config gives one. The release sets it from the build.
+func WithDefaultHub(url string) Option {
+	return func(b *base) { b.hubDefault = url }
+}
+
 // NewCommand returns the root command.
-func NewCommand(version, commit string) *cobra.Command {
+func NewCommand(version, commit string, opts ...Option) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "hermes-device",
 		Short: "Run a server Hermes agent's shell and file operations on this device",
-		Long: "hermes-device pairs this device with hermes-hub (login), runs the agent's commands here (run), " +
+		Long: "hermes-device sets this computer up in one step (setup), pairs it with hermes-hub (login), runs the agent's commands here (run), " +
 			"opens the local Hermes TUI against the server (chat) and bridges editors over ACP (acp). " +
 			"In the Hermes pod it installs the device plugin (plugin install) and hosts ACP processes (acp-host).",
 		Version:       fmt.Sprintf("%s - %s", version, commit),
@@ -39,6 +51,13 @@ func NewCommand(version, commit string) *cobra.Command {
 		version: version,
 		commit:  commit,
 		loader:  config.NewLoader(root.PersistentFlags(), defaultConfigFiles()),
+		system:  func() (*setup.System, error) { return setup.LocalSystem(runtime.GOOS) },
+		releases: func() *setup.Releases {
+			return &setup.Releases{BaseURL: setup.DefaultReleasesURL, Client: &http.Client{Timeout: 10 * time.Minute}}
+		},
+	}
+	for _, o := range opts {
+		o(b)
 	}
 	root.AddCommand(
 		newLoginCommand(b),
@@ -48,6 +67,7 @@ func NewCommand(version, commit string) *cobra.Command {
 		newACPHostCommand(b),
 		newPluginCommand(b),
 		newBrowserCommand(b),
+		newSetupCommand(b),
 	)
 	return root
 }
@@ -57,6 +77,12 @@ type base struct {
 	version string
 	commit  string
 	loader  *configulator.Configulator[config.Config]
+	// hubDefault is the build's default hub URL for setup.
+	hubDefault string
+	// system and releases are the computer and the release site setup and
+	// update work on. Tests replace them.
+	system   func() (*setup.System, error)
+	releases func() *setup.Releases
 }
 
 // load reads the configuration and sets up logging to stderr. stdout stays

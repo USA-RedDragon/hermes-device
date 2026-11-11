@@ -236,7 +236,7 @@ The device starts Firefox when the extension is not connected (section 5.1), wai
 - Firefox starts the binary as `<binary> <manifest path> <extension id>`. `main` recognizes that form, checks the extension id, finds the socket (`HERMES_DEVICE_BROWSER_SOCKET`, else the path in `hermes_device.socket` next to the manifest, else the default state directory), dials it and sends `host_hello` with the extension id and its pid. Then it copies native messaging frames both ways and enforces Firefox's 1 MiB limit towards the browser.
 - The extension sends `hello` (its version and the browser's name and version). The broker answers with `config` (`allow_hosts`; `hub_url`, the daemon's `hub.url`, which the extension shows as a hint; and `device_id` and `device_name` once the exec leg has had a `welcome`, sent again when they change) and `auth_status`. The extension then sends `auth` (section 13). The broker accepts one extension connection; a newer one replaces the older, and the older gets `replaced` first. An extension that was replaced does not reconnect on its own; a click on its toolbar button makes it take over again. So two Firefox instances with the extension no longer take turns.
 - Wire format on the socket: native messaging frames (32-bit little-endian length, then JSON). Requests are `{"type": "request", "id", "op", "args"}`, answers `{"type": "response", "id", "ok", "result" | "error", "code"}`.
-- Sign-in messages: `{"type": "auth", "token": "hbt_..."}` (extension to daemon; an empty token means signed out; the broker ignores a token that does not start with `hbt_` or is longer than 256 bytes and forgets the token when the extension goes away), `{"type": "auth_status", "state", "user", "reason"}` (daemon to extension; `state` is `signed_out`, `checking`, `signed_in`, `refused` or `offline`), and `{"type": "sign_in"}` and `{"type": "sign_out"}` (daemon to extension: start the hub's sign-in window, or sign out, as the toolbar menu does; only the end-to-end test sends them today, since BiDi cannot open or script extension pages).
+- Sign-in messages: `{"type": "auth", "token": "hbt_..."}` (extension to daemon; an empty token means signed out; the broker ignores a token that does not start with `hbt_` or is longer than 256 bytes and forgets the token when the extension goes away), `{"type": "auth_status", "state", "user", "reason"}` (daemon to extension; `state` is `signed_out`, `checking`, `signed_in`, `refused` or `offline`), and `{"type": "sign_in"}` and `{"type": "sign_out"}` (daemon to extension: start the hub's sign-in window, or sign out, as the toolbar menu does; `hermes-device setup` sends `sign_in` through `POST /control/browser/sign-in` (docs/protocol.md section 5.5) once the extension connects signed out, and the end-to-end test sends both, since BiDi cannot open or script extension pages).
 
 ### 5.1 Starting Firefox
 
@@ -268,7 +268,7 @@ Not tested end to end: the test suite does not start a Firefox on the user's dis
 
 Release and Beta Firefox install only add-ons that Mozilla signed; `xpinstall.signatures.required` has no effect there (Mozilla's documentation; not tested here). Each release tag publishes the extension signed by addons.mozilla.org (AMO) as a self-distributed ("unlisted") add-on. It is not listed on AMO.
 
-Install it once:
+`hermes-device setup` opens Firefox at the `.xpi` of the release that matches the binary (the latest release for a development build) when no Firefox profile has the extension, and GitHub serves the file as `application/x-xpinstall`, so Firefox offers to install it (measured: the content type; the Firefox prompt is an inference, not tested). To install it by hand:
 
 1. Open the latest release at https://github.com/USA-RedDragon/hermes-device/releases/latest and download `hermes-device-firefox-<version>.xpi`.
 2. In Firefox, open `about:addons`, choose the gear menu, then "Install Add-on From File...", and pick the file. You can also drag the file onto a Firefox window.
@@ -454,7 +454,7 @@ It first checks that the extension refuses `tabs_list` before it is signed in, h
 
 On the server: the device plugin of this release, with the toolset on (the default; `plugins.entries.device.settings.browser: false` turns it off). To hide Hermes's `browser_vault`, also set `plugins.entries.device.granted_capabilities: [tools.override]` (section 3.1). In a profile that also enables the camofox plugin, only one of the two gets the tool names.
 
-On the computer:
+On the computer, `hermes-device setup` does steps 1 to 5 (README, section Setup). By hand:
 
 1. Set `browser.enabled: true` in the hermes-device config (and `browser.allow-hosts` for any LAN or loopback host the agent may open).
 2. Run `hermes-device browser install` as the user who runs Firefox.
