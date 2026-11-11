@@ -111,6 +111,10 @@ telegram:
   max_retries: 5
   # With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over
   leader_retry: "2s"
+  # How often the bot reads the chats of each linked group to add topics for new chats, rename topics and follow the chats that run
+  topic_sync: "20s"
+  # How the status line of a turn shows its steps and thinking: collapsed (a quote that opens on a tap), expanded, or off
+  steps: "collapsed"
 device:
   # Serve the hermes-device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices
   enabled: false

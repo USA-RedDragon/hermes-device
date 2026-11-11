@@ -124,6 +124,8 @@ type telegramShadow struct {
 	EditInterval    *impl.Duration `json:"edit_interval"    toml:"edit_interval"    yaml:"edit_interval"`
 	MaxRetries      *int           `json:"max_retries"      toml:"max_retries"      yaml:"max_retries"`
 	LeaderRetry     *impl.Duration `json:"leader_retry"     toml:"leader_retry"     yaml:"leader_retry"`
+	TopicSync       *impl.Duration `json:"topic_sync"       toml:"topic_sync"       yaml:"topic_sync"`
+	Steps           *string        `json:"steps"            toml:"steps"            yaml:"steps"`
 }
 
 type deviceShadow struct {
@@ -228,6 +230,10 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("telegram.max_retries", configulator.LayerDefault, "default tag")
 	cfg.Telegram.LeaderRetry = time.Duration(int64(2000000000))
 	set("telegram.leader_retry", configulator.LayerDefault, "default tag")
+	cfg.Telegram.TopicSync = time.Duration(int64(20000000000))
+	set("telegram.topic_sync", configulator.LayerDefault, "default tag")
+	cfg.Telegram.Steps = "collapsed"
+	set("telegram.steps", configulator.LayerDefault, "default tag")
 	cfg.Device.Enabled = false
 	set("device.enabled", configulator.LayerDefault, "default tag")
 	cfg.Device.PairingTTL = time.Duration(int64(600000000000))
@@ -604,6 +610,21 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			}
 			cfg.Telegram.LeaderRetry = v
 			set("telegram.leader_retry", configulator.LayerFile, file)
+		}
+		if s.Telegram.TopicSync != nil {
+			v, ok := s.Telegram.TopicSync.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "telegram.topic_sync",
+				}
+			}
+			cfg.Telegram.TopicSync = v
+			set("telegram.topic_sync", configulator.LayerFile, file)
+		}
+		if s.Telegram.Steps != nil {
+			cfg.Telegram.Steps = *s.Telegram.Steps
+			set("telegram.steps", configulator.LayerFile, file)
 		}
 	}
 	if s.Device != nil {
@@ -984,6 +1005,23 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Telegram.LeaderRetry = d
 		set("telegram.leader_retry", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "topic_sync"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.topic_sync",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Telegram.TopicSync = d
+		set("telegram.topic_sync", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "steps"); ok {
+		cfg.Telegram.Steps = v
+		set("telegram.steps", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "enabled"); ok {
 		p, err := strconv.ParseBool(v)
 		if err != nil {
@@ -1157,6 +1195,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"telegram" + o.Separator + "edit_interval",
 		"telegram" + o.Separator + "max_retries",
 		"telegram" + o.Separator + "leader_retry",
+		"telegram" + o.Separator + "topic_sync",
+		"telegram" + o.Separator + "steps",
 		"device" + o.Separator + "enabled",
 		"device" + o.Separator + "signing_key",
 		"device" + o.Separator + "signing_key_file",
@@ -1223,21 +1263,23 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[32], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
 	fs.Var(impl.NewInt(5), names[33], "Retries of a Bot API call that Telegram answers with 429")
 	fs.Duration(names[34], time.Duration(int64(2000000000)), "With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over")
-	fs.Bool(names[35], false, "Serve the hermes-device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
-	fs.String(names[36], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
-	fs.String(names[37], "", "File that holds device.signing_key. Wins over signing_key")
-	fs.Duration(names[38], time.Duration(int64(600000000000)), "How long a pairing code from hermes-device login stays valid")
-	fs.Duration(names[39], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
-	fs.Duration(names[40], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
-	fs.StringSlice(names[41], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
-	fs.String(names[42], "", "Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription")
-	fs.String(names[43], "", "File that holds notify.vapid_private_key. Wins over vapid_private_key")
-	fs.String(names[44], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url")
-	fs.Duration(names[45], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
-	fs.Duration(names[46], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
-	fs.Duration(names[47], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
-	fs.StringSlice(names[48], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
-	fs.String(names[49], "America/Chicago", "IANA time zone of the reset times of Claude usage windows")
+	fs.Duration(names[35], time.Duration(int64(20000000000)), "How often the bot reads the chats of each linked group to add topics for new chats, rename topics and follow the chats that run")
+	fs.String(names[36], "collapsed", "How the status line of a turn shows its steps and thinking: collapsed (a quote that opens on a tap), expanded, or off")
+	fs.Bool(names[37], false, "Serve the hermes-device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
+	fs.String(names[38], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
+	fs.String(names[39], "", "File that holds device.signing_key. Wins over signing_key")
+	fs.Duration(names[40], time.Duration(int64(600000000000)), "How long a pairing code from hermes-device login stays valid")
+	fs.Duration(names[41], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
+	fs.Duration(names[42], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
+	fs.StringSlice(names[43], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
+	fs.String(names[44], "", "Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription")
+	fs.String(names[45], "", "File that holds notify.vapid_private_key. Wins over vapid_private_key")
+	fs.String(names[46], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url")
+	fs.Duration(names[47], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
+	fs.Duration(names[48], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
+	fs.Duration(names[49], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
+	fs.StringSlice(names[50], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
+	fs.String(names[51], "America/Chicago", "IANA time zone of the reset times of Claude usage windows")
 	return nil
 }
 
@@ -1661,6 +1703,30 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Telegram.LeaderRetry = v
 		set("telegram.leader_retry", configulator.LayerCLI, "--"+n)
+	}
+	if n := "telegram" + o.Separator + "topic_sync"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.topic_sync",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.TopicSync = v
+		set("telegram.topic_sync", configulator.LayerCLI, "--"+n)
+	}
+	if n := "telegram" + o.Separator + "steps"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.steps",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.Steps = v
+		set("telegram.steps", configulator.LayerCLI, "--"+n)
 	}
 	if n := "device" + o.Separator + "enabled"; fs.Changed(n) {
 		v, err := fs.GetBool(n)
@@ -3574,6 +3640,35 @@ func (s *telegramShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			default:
 				return configJSONError(path+".leader_retry", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
 			}
+		case "topic_sync":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".topic_sync", v, err)
+				}
+				s.TopicSync = &slot
+			default:
+				return configJSONError(path+".topic_sync", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		case "steps":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Steps = &str
+			default:
+				return configJSONError(path+".steps", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
 				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
@@ -3970,6 +4065,8 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "telegram.edit_interval = %v\n", c.Telegram.EditInterval)
 	fmt.Fprintf(&b, "telegram.max_retries = %v\n", c.Telegram.MaxRetries)
 	fmt.Fprintf(&b, "telegram.leader_retry = %v\n", c.Telegram.LeaderRetry)
+	fmt.Fprintf(&b, "telegram.topic_sync = %v\n", c.Telegram.TopicSync)
+	fmt.Fprintf(&b, "telegram.steps = %v\n", c.Telegram.Steps)
 	fmt.Fprintf(&b, "device.enabled = %v\n", c.Device.Enabled)
 	b.WriteString("device.signing_key = (redacted)\n")
 	fmt.Fprintf(&b, "device.signing_key_file = %v\n", c.Device.SigningKeyFile)
