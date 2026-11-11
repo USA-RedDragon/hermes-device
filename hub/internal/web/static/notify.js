@@ -194,7 +194,8 @@ window.HubNotify = (ctx) => {
     }
     const s = state.settings;
     root.append(el("p", "hint", "Hermes tells you on your phone when it needs you or is done, while the chat is not open on a screen."));
-    for (const [k, text, hint] of kinds) root.append(check(k, text, hint, s[k], (v) => save({ [k]: v })));
+    const shown = state.claude_admin ? [...kinds, ["claude_signin", "Claude sign-ins", "A Claude account that Hermes uses lost its login"]] : kinds;
+    for (const [k, text, hint] of shown) root.append(check(k, text, hint, s[k], (v) => save({ [k]: v })));
 
     root.append(el("h3", "", "Where"));
     const tg = check("telegram", "Telegram", state.telegram ? "Your linked Telegram chat, with buttons to answer" :

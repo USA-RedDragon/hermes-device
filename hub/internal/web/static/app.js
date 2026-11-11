@@ -1025,6 +1025,7 @@
           for (const card of this.tools.values()) if (card.classList.contains("running")) this.toolDone(card, {});
           this.groupTools(null);
           if (p.usage) this.showInfo({ usage: p.usage });
+          claude.afterReply(this.backend, this.info.provider);
           this.turn = null;
           this.setRunning(false);
           refreshList();
@@ -1047,6 +1048,7 @@
           for (const id of p.request_ids || []) this.settle(id, "Cancelled");
           break;
         case "error": this.add(el("div", "note bad", p.message || "Error")); break;
+        case "claude.signin": this.add(claude.chatNotice(this.backend, p)); break;
         default: break;
       }
     }
@@ -1853,6 +1855,7 @@
     const model = info.model || u.model;
     const parts = [];
     if (model) parts.push(["model", model, "Model"]);
+    if (view) parts.push(...claude.parts(view.backend, info));
     const ctx = contextPart(info);
     if (ctx) parts.push(ctx);
     if (typeof u.avg_tps === "number" && u.avg_tps > 0) parts.push(["speed", Math.round(u.avg_tps) + " tokens/s", "Reply speed"]);
@@ -1871,6 +1874,7 @@
       line.append(sp);
     }
     if (!parts.length) line.append(el("span", "", "Chat settings"));
+    if (view && !$("info").hidden) claude.note($("claudenote"), view.backend, info);
     settings.sync(info);
   }
 
@@ -2034,6 +2038,7 @@
     $("info").hidden = true;
     $("place").hidden = true;
     $("placenote").hidden = true;
+    $("claudenote").hidden = true;
     settings.reset();
     $("title").textContent = "Hermes";
     $("subtitle").textContent = "";
@@ -2061,6 +2066,7 @@
     view = new Chat(backend, session);
     $("place").hidden = true;
     $("placenote").hidden = true;
+    $("claudenote").hidden = true;
     $("input").placeholder = "Message Hermes";
     drawInfo({});
     $("info").hidden = false;
@@ -2100,7 +2106,7 @@
     attachments.clear();
     view = null;
     current = null;
-    for (const id of ["welcome", "log", "composer", "stop", "info", "place", "placenote"]) $(id).hidden = true;
+    for (const id of ["welcome", "log", "composer", "stop", "info", "place", "placenote", "claudenote"]) $(id).hidden = true;
     settings.reset();
     $("title").textContent = "Memory";
     $("subtitle").textContent = "";
@@ -2118,7 +2124,7 @@
     attachments.clear();
     view = null;
     current = null;
-    for (const id of ["welcome", "log", "composer", "stop", "info", "place", "placenote", "filesbtn"]) $(id).hidden = true;
+    for (const id of ["welcome", "log", "composer", "stop", "info", "place", "placenote", "claudenote", "filesbtn"]) $(id).hidden = true;
     settings.reset();
     $("title").textContent = "Usage";
     $("subtitle").textContent = "";
@@ -2527,7 +2533,9 @@
     if (view && view.backend === j.b && view.session === j.s) view.jumpTo();
   },
     closeSide: () => openSide(false) });
-  const usage = window.HubUsage({ api, el, chatHash, defaultBackend: () => me.default_backend || "" });
+  const claude = window.HubClaude({ api, el, me: () => me, redraw: () => { if (view) drawInfo(view.info); } });
+  const usage = window.HubUsage({ api, el, chatHash, defaultBackend: () => me.default_backend || "",
+    claudePanel: (b) => (me.claude ? claude.panel(b) : Promise.resolve(null)) });
   const files = window.HubFiles({ api, el, back: () => {
     if (view) location.hash = chatHash(view.backend, view.session);
     else history.back();

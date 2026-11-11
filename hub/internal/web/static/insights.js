@@ -130,8 +130,9 @@ window.HubSearch = (ctx) => {
   return { query, draw };
 };
 
-// HubUsage builds the Usage page: tokens by day, chat and model, rate
-// limits, the local GPU's time and Honcho's backlog.
+// HubUsage builds the Usage page: the Claude accounts (from ctx.claudePanel),
+// tokens by day, chat and model, rate limits, the local GPU's time and
+// Honcho's backlog.
 window.HubUsage = (ctx) => {
   const { api, el } = ctx;
   const root = document.getElementById("usage");
@@ -210,16 +211,20 @@ window.HubUsage = (ctx) => {
       return;
     }
     body.append(el("p", "none", "Loading..."));
+    const claude = el("div");
+    (ctx.claudePanel ? ctx.claudePanel(backend) : Promise.resolve(null)).then((p) => {
+      if (mine === gen && p) claude.replaceChildren(p);
+    }, () => {});
     let r;
     try {
       r = await api("GET", "/api/usage/" + encodeURIComponent(backend) + "?days=" + days);
     } catch (e) {
       if (mine !== gen) return;
-      body.replaceChildren(el("p", "err", "Could not load usage: " + e.message));
+      body.replaceChildren(claude, el("p", "err", "Could not load usage: " + e.message));
       return;
     }
     if (mine !== gen) return;
-    body.replaceChildren(...draw(r));
+    body.replaceChildren(claude, ...draw(r));
   }
 
   function section(title, hint) {

@@ -508,3 +508,20 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
   .files-split.showing .files-preview { display: block; }
   .files-phead .files-close { display: inline-block; }
 }
+.info summary .claude { color: var(--fg); }
+.info summary .claude-off { color: var(--bad); }
+.info summary .claude-use { font-variant-numeric: tabular-nums; }
+.info summary .claude-use.full { color: var(--warn); }
+@media (max-width: 480px) { .info summary .claude-use { font-size: .75rem; } }
+.claude-notice button, .placenote .hint { margin-left: .4rem; }
+.claude-dialog .ok, .claude-panel .ok { color: var(--ok); }
+.claude-dialog .err, .claude-panel .err { color: var(--bad); }
+.claude-dialog .hint, .claude-panel .hint { color: var(--muted); font-size: .9rem; }
+.claude-dialog .claude-who { font-weight: 600; }
+.claude-dialog .claude-code { width: 100%; box-sizing: border-box; font: inherit; padding: .4rem; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg); color: var(--fg); }
+.claude-account { border: 1px solid var(--line); border-radius: 8px; padding: .5rem .7rem; margin: .5rem 0; }
+.claude-account .claude-top { display: flex; flex-wrap: wrap; gap: .3rem .8rem; align-items: baseline; }
+.claude-account .claude-meta { margin: .2rem 0; color: var(--muted); overflow-wrap: anywhere; }
+.claude-account .claude-windows { margin: .3rem 0; padding-left: 1.2rem; }
+.claude-account button { margin-top: .3rem; }
