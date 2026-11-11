@@ -18,7 +18,7 @@ internal/device/device.go	201	162
 internal/device/devicetest/devicetest.go	470	421
 internal/device/files.go	71	57
 internal/device/gateway.go	354	270
-internal/device/legs.go	169	149
+internal/device/legs.go	169	151
 internal/device/pair.go	52	29
 internal/device/plugin.go	99	83
 internal/device/rpc.go	200	185
