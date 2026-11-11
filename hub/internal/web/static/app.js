@@ -2439,7 +2439,12 @@
         if (!p.sent) chat.held(p, r.id);
       } else {
         if (p && r) p.id = r.id;
-        if (r && r.steered && p) {
+        if (r && r.status === "command" && p) {
+          chat.pending = chat.pending.filter((x) => x !== p);
+          bubble.classList.remove("pending");
+          if (p.label) p.label.remove();
+          if (r.output) chat.add(el("div", "msg result", r.output));
+        } else if (r && r.steered && p) {
           p.steered = true;
           bubble.classList.remove("pending");
           chat.label(p, el("div", "queued", "Sent to the running turn"));
