@@ -137,6 +137,7 @@ func TestEachChatGetsATopic(t *testing.T) {
 	h.hub.add(hub.Session{ID: "tg", BackendID: beCluster, Title: "Family group", Source: "telegram", UpdatedAt: since.Add(time.Minute)})
 	h.hub.add(hub.Session{ID: srcCron, BackendID: beCluster, Title: "SEV-1 review", Source: srcCron, UpdatedAt: since.Add(time.Minute)})
 	h.hub.add(hub.Session{ID: "busy", BackendID: beCluster, Title: titleLong, Running: true, UpdatedAt: since.Add(-time.Hour)})
+	h.hub.add(hub.Session{ID: "bg_abc123", BackendID: beCluster, Title: "Background prompt", Source: "desktop", UpdatedAt: since.Add(time.Minute)})
 	h.hub.add(hub.Session{ID: "fix", BackendID: beCluster, Title: titleFixCI, UpdatedAt: since.Add(time.Minute)})
 	h.tg.waitCall(mTopic, func(c tgCall) bool { return c.name() == "SEV-1 review · scheduled" })
 	h.tg.waitCall(mTopic, func(c tgCall) bool { return c.name() == titleLong })
