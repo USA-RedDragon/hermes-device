@@ -146,6 +146,11 @@ var migrations = []migration{
 			`CREATE UNIQUE INDEX agent_names_key ON agent_names (backend_id, name_key)`,
 		},
 	},
+	{
+		version:  9,
+		sqlite:   []string{`DROP TABLE browser_codes`, `DROP TABLE browser_sessions`},
+		postgres: []string{`DROP TABLE browser_codes`, `DROP TABLE browser_sessions`},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas
