@@ -31,7 +31,7 @@ internal/memory/honcho.go	84	74
 internal/memory/memory.go	189	165
 internal/memory/memorytest/memorytest.go	186	162
 internal/memory/notes.go	61	49
-internal/pdf/pdf.go	180	159
+internal/pdf/pdf.go	180	160
 internal/pdf/pdftest/pdftest.go	32	32
 internal/server/server.go	40	0
 internal/service/attach.go	82	68
@@ -40,7 +40,7 @@ internal/service/live.go	201	157
 internal/service/manage.go	121	115
 internal/service/media.go	113	91
 internal/service/pdf.go	71	55
-internal/service/service.go	564	518
+internal/service/service.go	564	517
 internal/store/browser.go	77	63
 internal/store/device.go	191	158
 internal/store/import.go	74	61
