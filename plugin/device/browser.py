@@ -361,10 +361,18 @@ def save_shot(session_id: str, data_url: str, *, root: Optional[Path] = None) ->
     folder = root / _session_dir_name(session_id)
     name = time.strftime("shot-%Y%m%d-%H%M%S-", time.gmtime()) + secrets.token_hex(4)
     path = folder / (name + (".png" if m.group(1) == "image/png" else ".jpg"))
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     with _SHOTS_LOCK:
         prune_shots(root, max_files=SHOT_MAX_FILES - 1)
-        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        for attempt in range(2):
+            folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                fd = os.open(path, flags, 0o600)
+                break
+            except FileNotFoundError:
+                # Another Hermes process on this home pruned the empty folder in between.
+                if attempt:
+                    raise
         with os.fdopen(fd, "wb") as f:
             f.write(raw)
     return path
