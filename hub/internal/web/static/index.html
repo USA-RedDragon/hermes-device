@@ -18,6 +18,7 @@
 <script src="/static/notify.js" defer></script>
 <script src="/static/claude.js" defer></script>
 <script src="/static/activity.js" defer></script>
+<script src="/static/settings.js" defer></script>
 <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -25,27 +26,17 @@
   <aside id="side" class="side" aria-label="Chats">
     <div class="side-head">
       <span class="brand">Talaria</span>
-      <button id="newchat" class="primary" type="button">New chat</button>
+      <button id="searchbtn" class="ghost ib" type="button" aria-label="Search chats" title="Search chats (Ctrl+K)" aria-expanded="false" aria-controls="searchbox"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
+      <button id="newchat" class="primary ib" type="button" aria-label="New chat" title="New chat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
     </div>
     <div id="newon-row" class="newon-row" hidden><button id="newon" class="link" type="button">New chat on a computer</button></div>
-    <div class="search"><input id="search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off"></div>
+    <div id="searchbox" class="search" hidden><input id="search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off"></div>
     <nav id="sessions" class="sessions"></nav>
     <a id="memnav" class="memnav" href="#/memory" hidden><span class="memdot" aria-hidden="true"></span>Memory<span id="memcount" class="memcount" title="Changes waiting for approval" hidden></span></a>
-    <details id="prefs" class="prefs" hidden>
-      <summary>Settings</summary>
-      <div class="prefs-body">
-        <div id="notify-prefs" class="notify-prefs" aria-live="polite" hidden></div>
-        <div id="devices-prefs" hidden>
-          <h2>Computers</h2>
-          <p class="hint">Computers where Talaria can run commands and change files for you. To connect one, run <code>talaria setup</code> on it.</p>
-          <div id="devices" aria-live="polite"></div>
-        </div>
-      </div>
-    </details>
     <div class="side-foot">
       <span id="who" class="who"></span>
-      <a id="usagenav" class="footlink" href="#/usage" hidden>Usage</a>
-      <button id="logout" class="ghost" type="button">Log out</button>
+      <a id="usagenav" class="ghost ib" href="#/usage" aria-label="Usage" title="Usage" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></a>
+      <button id="gearbtn" class="ghost ib gear" type="button" aria-label="Settings" title="Settings" aria-haspopup="dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span id="geardot" class="badge" aria-hidden="true" hidden></span></button>
     </div>
   </aside>
   <div id="scrim" class="scrim" hidden></div>
@@ -99,5 +90,20 @@
 </div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 <dialog id="picker" class="picker" aria-labelledby="picker-title"></dialog>
+<dialog id="settings" class="settings" aria-labelledby="settings-title">
+  <div class="set-head"><h1 id="settings-title">Settings</h1><button id="setclose" class="ghost ib" type="button" aria-label="Close settings" title="Close (Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+  <div id="settabs" class="set-tabs" role="tablist" aria-label="Settings sections"></div>
+  <div class="set-panes">
+    <section id="set-computers" class="set-pane" role="tabpanel" hidden>
+      <h2>Computers</h2>
+      <p class="hint">Where Talaria can run commands and change files for you. To add one, run <code>talaria setup</code> on it.</p>
+      <div id="devices" aria-live="polite"></div>
+    </section>
+    <section id="set-notifications" class="set-pane" role="tabpanel" hidden><div id="notify-prefs" class="notify-prefs" aria-live="polite"></div></section>
+    <section id="set-telegram" class="set-pane" role="tabpanel" hidden></section>
+    <section id="set-claude" class="set-pane" role="tabpanel" hidden></section>
+    <section id="set-account" class="set-pane" role="tabpanel" hidden></section>
+  </div>
+</dialog>
 </body>
 </html>

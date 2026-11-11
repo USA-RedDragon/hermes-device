@@ -2364,91 +2364,6 @@
     ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.4) + "px";
   }
 
-  // devices is the list of the user's computers in Settings: when each was
-  // last used and from where, a note when one connected from a new
-  // address, and a way to remove one.
-  const devices = {
-    async load() {
-      const box = $("devices");
-      try {
-        this.draw(await api("GET", "/api/devices"));
-      } catch (e) {
-        box.replaceChildren(el("p", "err", "Could not load your computers: " + e.message));
-      }
-    },
-    // closeText says how a computer's latest connection to Hermes ended.
-    closeText(c) {
-      const who = { device: "The computer", backend: "Hermes", hub: "The hub" }[c.by] || "Something";
-      return "Disconnected " + this.when(c.at) + ". " + who + " closed the connection" +
-        (c.reason ? ": " + c.reason : "") + " (code " + c.code + ").";
-    },
-    when(iso) {
-      const v = Date.parse(iso);
-      return v ? new Date(v).toLocaleString() : "";
-    },
-    draw(list) {
-      const box = $("devices");
-      box.replaceChildren();
-      if (!list.length) {
-        box.append(el("p", "none", "No computers are connected."));
-        return;
-      }
-      const many = new Set(list.map((d) => d.backend_id)).size > 1;
-      for (const d of list) {
-        const row = el("div", "device");
-        row.append(el("div", "dname", d.name));
-        if (d.kind === "sandbox") {
-          row.append(el("div", "dmeta", "Sandbox: where Talaria runs commands for chats that are not on one of your computers. It is set up by the owner."));
-          if (many) row.append(el("div", "dmeta", "Works with " + d.backend_name));
-          row.append(el("div", "dmeta", d.online === true ? "Online" : d.online === false ? "Offline" : "Could not check if it is online"));
-          box.append(row);
-          continue;
-        }
-        const meta = [];
-        if (many) meta.push("Works with " + d.backend_name);
-        if (!d.paired) meta.push("Waiting for the computer to finish connecting");
-        else if (!d.last_seen_at) meta.push("Not used yet");
-        else meta.push("Last used " + this.when(d.last_seen_at) + (d.last_addr ? " from " + d.last_addr : ""));
-        if (d.hostname) meta.push("Computer name: " + d.hostname);
-        for (const m of meta) row.append(el("div", "dmeta", m));
-        if (d.last_close) row.append(el("div", "dnote", this.closeText(d.last_close)));
-        const acts = el("div", "dacts");
-        if (d.addr_changed_at) {
-          row.append(el("div", "dnote", "Connected from a new address on " + this.when(d.addr_changed_at) +
-            (d.prev_addr ? ". Before that it used " + d.prev_addr + "." : ".") +
-            " If that was not you, remove this computer."));
-          const ok = el("button", "", "That was me");
-          ok.type = "button";
-          ok.onclick = () => this.act(d, "dismiss-address");
-          acts.append(ok);
-        }
-        const rm = el("button", "", "Remove");
-        rm.type = "button";
-        rm.onclick = () => {
-          acts.replaceChildren(el("span", "dmeta", "Remove " + d.name + "? Talaria can no longer use it until you connect it again."));
-          const yes = el("button", "danger", "Remove");
-          yes.type = "button";
-          yes.onclick = () => this.act(d, "revoke");
-          const no = el("button", "", "Cancel");
-          no.type = "button";
-          no.onclick = () => this.load();
-          acts.append(yes, no);
-        };
-        acts.append(rm);
-        row.append(acts);
-        box.append(row);
-      }
-    },
-    async act(d, what) {
-      try {
-        await api("POST", "/api/devices/" + encodeURIComponent(d.id) + "/" + what);
-      } catch (e) {
-        banner("Could not change " + d.name + ": " + e.message, true);
-      }
-      this.load();
-    },
-  };
-
   // picker chooses a computer and a folder on it, to start a chat there or
   // to move a chat there.
   const picker = {
@@ -2622,6 +2537,36 @@
     defaultBackend: () => me.default_backend || "" });
   const notices = window.HubNotify({ api, el, csrf: () => csrf,
     current: () => (view && view.backend && view.session ? { backend: view.backend, session: view.session } : null) });
+  const prefs = window.HubSettings({ api, el, me: () => me, computers: () => computers, notices, logout,
+    closeSide: () => openSide(false) });
+
+  async function logout() {
+    await notices.logout();
+    try { await api("POST", "/auth/logout"); } catch (_) { /* ignore */ }
+    closeStream();
+    const page = el("main", "page");
+    const a = el("a", "", "Log in again");
+    a.href = "/auth/login";
+    page.append(el("h1", "", "Logged out"), a);
+    document.body.replaceChildren(page);
+  }
+
+  // showSearch shows or hides the search box of the chat list. Hiding it
+  // clears the search.
+  function showSearch(on) {
+    const box = $("searchbox");
+    box.hidden = !on;
+    $("searchbtn").setAttribute("aria-expanded", String(on));
+    if (on) {
+      $("search").focus();
+      return;
+    }
+    if ($("search").value) {
+      $("search").value = "";
+      search.query("");
+      drawList();
+    }
+  }
 
   async function init() {
     try {
@@ -2641,32 +2586,19 @@
       if (!view) return;
       try { await api("POST", view.base + "/interrupt"); } catch (e) { banner("Could not stop: " + e.message, true); }
     };
-    $("logout").onclick = async () => {
-      await notices.logout();
-      try { await api("POST", "/auth/logout"); } catch (_) { /* ignore */ }
-      closeStream();
-      const page = el("main", "page");
-      const a = el("a", "", "Log in again");
-      a.href = "/auth/login";
-      page.append(el("h1", "", "Logged out"), a);
-      document.body.replaceChildren(page);
-    };
     $("composer").onsubmit = send;
     dropZone();
     $("search").oninput = () => { search.query($("search").value); drawList(); };
+    $("search").onkeydown = (e) => {
+      if (e.key === "Escape" && !$("search").value) { e.stopPropagation(); showSearch(false); $("searchbtn").focus(); }
+    };
+    $("searchbtn").onclick = () => showSearch($("searchbox").hidden);
     $("usagenav").hidden = !me.usage;
     $("filesbtn").onclick = () => {
       if (view) location.hash = "#/files/" + encodeURIComponent(view.backend) + "/" + encodeURIComponent(view.session);
     };
     $("info").ontoggle = () => { if ($("info").open) settings.load(); };
-    $("prefs").hidden = !me.devices && !me.notify;
-    $("devices-prefs").hidden = !me.devices;
-    $("notify-prefs").hidden = !me.notify;
-    $("prefs").ontoggle = () => {
-      if (!$("prefs").open) return;
-      if (me.devices) devices.load();
-      if (me.notify) notices.load();
-    };
+    prefs.start();
     notices.start(!!me.notify);
     $("model").onchange = () => settings.pickModel();
     $("effort").onchange = () => settings.pickEffort();
@@ -2675,7 +2607,14 @@
     input.onkeydown = (e) => {
       if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer: coarse)").matches) send(e);
     };
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape") openSide(false); });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") openSide(false);
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k" && !$("settings").open) {
+        e.preventDefault();
+        openSide(true);
+        showSearch(true);
+      }
+    });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshList(); });
     setInterval(() => { if (!document.hidden) refreshList(); }, 20000);
     window.onhashchange = route;
