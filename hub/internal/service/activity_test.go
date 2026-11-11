@@ -198,9 +198,11 @@ func TestBackgroundPromptReachesViewers(t *testing.T) {
 	if err != nil || len(id) < 4 || id[:3] != "bg_" {
 		t.Fatalf("background = %q, %v", id, err)
 	}
-	evs := until(t, ch, gateway.BackgroundCompleteEvent)
+	// The answer may come before the hub's background.start: the fake
+	// answers at once.
 	var start, done map[string]any
-	for _, ev := range evs {
+	for start == nil || done == nil {
+		ev := next(t, ch)
 		switch ev.Kind {
 		case service.BackgroundStartEvent:
 			_ = json.Unmarshal(ev.Data, &start)
