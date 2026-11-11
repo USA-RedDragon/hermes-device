@@ -29,6 +29,12 @@ const (
 	PathTUI           = "/api/ws"
 	PathControlTokens = "/control/tokens"
 	PathControlLookup = "/control/lookup"
+	// PathControlBrowser answers GET with the Firefox extension's state, a
+	// BrowserStatus.
+	PathControlBrowser = "/control/browser"
+	// PathControlBrowserSignIn asks the connected extension to open the
+	// hub's sign-in window.
+	PathControlBrowserSignIn = "/control/browser/sign-in"
 )
 
 const (
@@ -49,6 +55,32 @@ type Options struct {
 	PingTimeout time.Duration
 	// Logger gets the splice's logs. Nil means slog.Default().
 	Logger *slog.Logger
+	// Browser is the daemon's Firefox control, or nil when browser.enabled
+	// is off.
+	Browser Browser
+}
+
+// Browser is what the control endpoints need of the daemon's Firefox
+// control.
+type Browser interface {
+	Status() BrowserStatus
+	// RequestSignIn asks the extension to open the hub's sign-in window
+	// and reports whether an extension was connected.
+	RequestSignIn() bool
+}
+
+// BrowserStatus is the answer to GET /control/browser.
+type BrowserStatus struct {
+	// Enabled is false when browser.enabled is off; the other fields are
+	// then empty.
+	Enabled   bool   `json:"enabled"`
+	Connected bool   `json:"connected"`
+	Version   string `json:"version,omitempty"`
+	Browser   string `json:"browser,omitempty"`
+	// Auth is one of the broker's Auth* sign-in states.
+	Auth   string `json:"auth,omitempty"`
+	User   string `json:"user,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // Server serves /api/ws for the TUI and /control/tokens for chat.
@@ -138,6 +170,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	mux.HandleFunc("POST "+PathControlTokens, s.handleCreateToken)
 	mux.HandleFunc("DELETE "+PathControlTokens+"/{token}", s.handleDeleteToken)
 	mux.HandleFunc("POST "+PathControlLookup, s.handleLookup)
+	mux.HandleFunc("GET "+PathControlBrowser, s.handleBrowser)
+	mux.HandleFunc("POST "+PathControlBrowserSignIn, s.handleBrowserSignIn)
 	mux.HandleFunc(PathTUI, s.handleTUI)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { forbidden(w) })
 	srv := &http.Server{
@@ -278,6 +312,34 @@ func (s *Server) handleLookup(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.writeControlJSON(w, http.StatusOK, map[string]string{keySessionID: sid})
 	}
+}
+
+func (s *Server) handleBrowser(w http.ResponseWriter, r *http.Request) {
+	if !s.controlAllowed(r) {
+		forbidden(w)
+		return
+	}
+	var st BrowserStatus
+	if s.opts.Browser != nil {
+		st = s.opts.Browser.Status()
+		st.Enabled = true
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(st); err != nil {
+		s.log.Debug("browser status not written", keyError, err)
+	}
+}
+
+func (s *Server) handleBrowserSignIn(w http.ResponseWriter, r *http.Request) {
+	if !s.controlAllowed(r) {
+		forbidden(w)
+		return
+	}
+	if s.opts.Browser == nil || !s.opts.Browser.RequestSignIn() {
+		http.Error(w, "the Hermes Firefox extension is not connected", http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) writeControlJSON(w http.ResponseWriter, status int, v map[string]string) {

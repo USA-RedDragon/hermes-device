@@ -321,6 +321,17 @@ func (b *Broker) authLocked() Message {
 	return Message{Type: TypeAuthStatus, State: a.State, User: a.User, Reason: a.Reason}
 }
 
+// Auth returns the sign-in state the daemon last gave the extension.
+func (b *Broker) Auth() AuthStatus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	a := b.auth
+	if a.State == "" {
+		a.State = AuthOffline
+	}
+	return a
+}
+
 // Token returns the credential the connected extension sent, or "" when
 // it is signed out or not connected.
 func (b *Broker) Token() string {

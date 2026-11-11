@@ -516,6 +516,11 @@ Attachments from the TUI. The v0.22.7 Ink TUI on a remote gateway sends a pasted
 - `DELETE /control/tokens/<token>` with the same header when the TUI exits: `204`. Open TUI sockets that used it are closed.
 - `POST /control/lookup` with the same header and `{"session": "<id or title>"}` or `{"latest": true}`: the daemon opens a gateway leg of its own, looks the session up as for a resume (5.3, at most 2 minutes), and closes the leg. It binds and attaches nothing. Answers `200` `{"session_id": "<id>"}`, `404` `{"error": "not_found"}`, `502` `{"error": <hub error code, else hub_unreachable>, "message": <text>}` when the lookup fails, and `400` for a body that is not JSON or has neither or both of `session` (non-empty) and `latest` (true). Other members are ignored.
 
+`hermes-device setup` calls, with the same header:
+
+- `GET /control/browser`: answers `200` with `{"enabled", "connected", "version", "browser", "auth", "user", "reason"}`. `enabled` is false, and the other members are empty, when `browser.enabled` is off. `connected` is true while the Firefox extension is connected to the daemon, with its `version` and `browser`. `auth` is the sign-in state the daemon last sent the extension (`signed_out`, `checking`, `signed_in`, `refused` or `offline`, docs/browser.md section 5), with `user` and `reason`.
+- `POST /control/browser/sign-in`: sends the extension `sign_in`, so it opens the hub's sign-in window. Answers `204`, or `409` when no extension is connected or `browser.enabled` is off.
+
 The daemon refuses the control endpoints from non-loopback peers and with a wrong secret (`403`). It removes `daemon.json` on a clean exit.
 
 ### 5.6 Errors to the TUI

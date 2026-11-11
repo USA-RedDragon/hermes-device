@@ -134,9 +134,9 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 		MinBackoff: cfg.Reconnect.MinBackoff, MaxBackoff: cfg.Reconnect.MaxBackoff, PingInterval: cfg.PingInterval,
 		ResumeBuffer: cfg.Device.ResumeBuffer, MaxGrace: cfg.Device.MaxGrace,
 	}
+	var br *broker.Broker
 	if cfg.Browser.Enabled {
-		br, err := startBroker(ctx, cfg)
-		if err != nil {
+		if br, err = startBroker(ctx, cfg); err != nil {
 			return err
 		}
 		opts.Browser = br
@@ -186,7 +186,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 		return fmt.Errorf("listen on gateway.listen %s: %w", cfg.Gateway.Listen, err)
 	}
 	defer ln.Close()
-	srv := mkSplice(splice.Options{Hub: hub, PingInterval: cfg.PingInterval})
+	srv := mkSplice(splice.Options{Hub: hub, PingInterval: cfg.PingInterval, Browser: spliceBrowser(br)})
 
 	pid := os.Getpid()
 	if err := daemonstate.Write(stateDir, daemonstate.State{
