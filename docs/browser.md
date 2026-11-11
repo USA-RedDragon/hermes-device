@@ -1,6 +1,6 @@
 # Browser control
 
-Status: built (phase 5). The device side and the plugin's `device-browser` toolset run end to end against a throwaway headless Firefox (section 10). The extension is not signed yet, so it loads only as a temporary add-on (section 6.1).
+Status: built (phase 5). The device side and the plugin's `device-browser` toolset run end to end against a throwaway headless Firefox (section 10). Each release signs the extension on addons.mozilla.org once the AMO secrets are set (section 6.1). No signed release exists yet, so for now it loads only as a temporary add-on.
 
 The goal: the server Hermes agent uses the user's own Firefox on their PC, with the user's logins, in a way the user can see and stop. This document picks the mechanism, defines the tool surface and the exec leg messages, and states the security model.
 
@@ -197,19 +197,44 @@ The device sends it right after the `welcome` (and the `resume` on version 3), a
 
 ### 6.1 Loading and signing
 
-Release and Beta Firefox install only add-ons that Mozilla signed; `xpinstall.signatures.required` has no effect there (Mozilla's documentation; not tested here). Until the extension is signed, load it as a temporary add-on:
+Release and Beta Firefox install only add-ons that Mozilla signed; `xpinstall.signatures.required` has no effect there (Mozilla's documentation; not tested here). Each release tag publishes the extension signed by addons.mozilla.org (AMO) as a self-distributed ("unlisted") add-on. It is not listed on AMO.
 
-1. `hermes-device browser extension --out ~/hermes-browser-extension`
+Install it once:
+
+1. Open the latest release at https://github.com/USA-RedDragon/hermes-device/releases/latest and download `hermes-device-firefox-<version>.xpi`.
+2. In Firefox, open `about:addons`, choose the gear menu, then "Install Add-on From File...", and pick the file. You can also drag the file onto a Firefox window.
+
+Updates: the manifest's `browser_specific_settings.gecko.update_url` is `https://github.com/USA-RedDragon/hermes-device/releases/latest/download/updates.json`. Firefox checks it about once a day (the default `extensions.update.interval`) and installs a newer version from the `update_link` in that file, after it checks the file's `update_hash` (SHA-256). GitHub answers that URL with a redirect to the latest release's asset. Firefox follows redirects for update manifests: `AddonUpdateChecker.sys.mjs` loads the manifest with an XHR and its `CertUtils.BadCertHandler` lets every redirect through, after a certificate check when `extensions.update.requireBuiltInCerts` is on (source, mozilla-firefox `toolkit/mozapps/extensions/internal/AddonUpdateChecker.sys.mjs` and `toolkit/modules/CertUtils.sys.mjs`; not yet tested with a real update). To check now, choose "Check for Updates" in the gear menu of `about:addons`.
+
+What the Release workflow does (`.github/workflows/release.yaml`, job `firefox-extension`, after GoReleaser published the release):
+
+1. It builds the extension with `hermes-device browser extension --out DIR --ext-version X`, where X is the tag without its leading `v`. Only the `version` line differs from the files in `extension/firefox`.
+2. It runs `web-ext lint`, the same validator AMO runs, so problems show in the job log. The Tests workflow runs the same lint on every push.
+3. It signs with `web-ext sign --channel unlisted`, with the repository secrets `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`.
+4. It checks that the signed file has a Mozilla signature and the expected version, then uploads `hermes-device-firefox-<version>.xpi` and `updates.json` to the release.
+
+The job skips signing, with a notice in its log, and the release then has no `.xpi` and no `updates.json`, when:
+
+- The secrets are not set (forks, or before they are added). The binaries and images are still released.
+- The tag is a pre-release or has build metadata (`v1.2.0-rc.1`). Firefox versions are one to four dot-separated numbers, and no such number for `1.2.0-rc.1` sorts before `1.2.0`.
+- The release already has the `.xpi` (a re-run). AMO accepts each version only once.
+
+While the latest release has no `updates.json`, Firefox's update check fails quietly and the installed version stays. The next signed release fixes that.
+
+One-time setup for the maintainer:
+
+1. Sign in at https://addons.mozilla.org/developers/addon/api/key/ and accept the developer agreement. Generate credentials. The JWT issuer looks like `user:12345:67`.
+2. In a clone of the repository, run `gh secret set AMO_JWT_ISSUER` and `gh secret set AMO_JWT_SECRET`, and paste each value at the prompt.
+3. Tag a release. The first upload creates the add-on on AMO under the id `browser@hermes-device`. That id stays fixed: the host manifest's `allowed_extensions` names it.
+
+AMO runs automated validation. Unlisted add-ons are signed without a review by hand, but Mozilla may review them later (Mozilla's Extension Workshop documentation). AMO requires a new `version` for every upload, and `data_collection_permissions` in the manifest (present: `"required": ["none"]`). The extension has no minified or generated code, so no source code upload is needed.
+
+For development, load the extension as a temporary add-on instead:
+
+1. `hermes-device browser extension --out ~/hermes-browser-extension`. A release binary writes its own version into the manifest; `--ext-version` sets another.
 2. In Firefox, open `about:debugging#/runtime/this-firefox`, choose "Load Temporary Add-on..." and pick `manifest.json` in that directory.
 
-A temporary add-on stays until Firefox restarts, so this has to be done after every restart. Firefox Developer Edition, Nightly and ESR can instead set `xpinstall.signatures.required` to false and install an unsigned `.xpi` permanently (inference from Mozilla's documentation; not tested).
-
-For a permanent install in release Firefox, the extension needs an unlisted (self-distributed) signature from addons.mozilla.org. Nothing has been signed or submitted. The steps:
-
-1. An AMO developer account and API credentials (JWT issuer and secret) from the AMO developer hub.
-2. `web-ext sign --channel unlisted --source-dir <dir> --api-key ... --api-secret ...` with the files from `hermes-device browser extension`. The id `browser@hermes-device` in `browser_specific_settings.gecko.id` stays fixed: the host manifest's `allowed_extensions` names it. AMO runs automated validation; unlisted add-ons are not reviewed by hand before signing, but Mozilla may review them later (inference from Mozilla's Extension Workshop documentation; not tried here).
-3. AMO requires a new `version` for every upload, and `data_collection_permissions` in the manifest (present: `"required": ["none"]`).
-4. Host the signed `.xpi` (for example on the hub's device page) and, for updates, add `browser_specific_settings.gecko.update_url` pointing at an update manifest. Each extension release needs a new signature.
+A temporary add-on stays until Firefox restarts. While it is loaded, it takes the place of an installed add-on with the same id (inference from Mozilla's documentation; not tested). Firefox Developer Edition, Nightly and ESR can instead set `xpinstall.signatures.required` to false and install an unsigned `.xpi` permanently (inference from Mozilla's documentation; not tested).
 
 ## 7. Permission and confirmation model
 
@@ -265,7 +290,7 @@ Prompt injection: page text reaches the model. The confirmation rules in section
 
 | Platform | Needs |
 |---|---|
-| Linux (X11 or Wayland) | A Firefox with the `tabs.group` API (measured on 157; the extension asks for 139 or later, which is an inference from Mozilla's release notes, not tested). Without the API the extension still works but shows no group. `hermes-device browser install` writes `~/.mozilla/native-messaging-hosts/hermes_device.json` (measured: Firefox 157 reads it from `$HOME/.mozilla/native-messaging-hosts`). The extension as a temporary add-on for now (section 6.1). Nothing depends on the display server |
+| Linux (X11 or Wayland) | A Firefox with the `tabs.group` API (measured on 157; the extension asks for 139 or later, which is an inference from Mozilla's release notes, not tested). Without the API the extension still works but shows no group. `hermes-device browser install` writes `~/.mozilla/native-messaging-hosts/hermes_device.json` (measured: Firefox 157 reads it from `$HOME/.mozilla/native-messaging-hosts`). The signed extension from a release (section 6.1). Nothing depends on the display server |
 | Linux, Firefox as Snap | The Snap sandbox does not see host manifests in `~/.mozilla` by default and cannot run binaries outside the snap without the `native-messaging` portal (inference from Snap's confinement; not tested). Arch packages are not Snaps |
 | Linux, Firefox as Flatpak | Same problem; needs the WebExtensions portal or a manual `--filesystem` override (inference; not tested) |
 | macOS | Manifest in `~/Library/Application Support/Mozilla/NativeMessagingHosts/` (the code handles it). No `SO_PEERCRED`: the socket's mode is the only check (it could use `LOCAL_PEERCRED`) |
@@ -276,7 +301,7 @@ Prompt injection: page text reaches the model. The confirmation rules in section
 - `internal/browser/nativemsg`: native messaging framing.
 - `internal/browser/broker`: the daemon's socket server and request calls.
 - `internal/browser/host`: the native host relay and its manifest.
-- `extension/firefox`: the extension (`manifest.json`, `background.js`), embedded in the binary.
+- `extension/firefox`: the extension (`manifest.json`, `background.js`), embedded in the binary. The `firefox-extension` job in `.github/workflows/release.yaml` signs and publishes it.
 - `internal/device`: the `browser` capability, `browser`, `browser_result` and `browser_status` on the exec leg; `cmd/run.go` starts the broker when `browser.enabled` is on; `cmd/browser.go` is `hermes-device browser`.
 - `plugin/device/browser.py`: the `device-browser` toolset and its `pre_tool_call` hook. `plugin/device/core.py` and `dashboard/plugin_api.py`: capability negotiation and browser calls on the exec leg.
 - Unit tests: `internal/device/browser_test.go`, `internal/browser/*/..._test.go`, and `plugin/device/tests/test_browser.py` (the tools, the approvals and the negotiation with a fake device and browser, through a fresh Hermes `ToolRegistry`).
@@ -299,7 +324,7 @@ On the computer:
 1. Set `browser.enabled: true` in the hermes-device config (and `browser.allow-hosts` for any LAN or loopback host the agent may open).
 2. Run `hermes-device browser install` as the user who runs Firefox.
 3. Restart `hermes-device run`.
-4. Load the extension (section 6.1). Its toolbar button shows "Hermes: connected" when it reaches the daemon.
+4. Install the signed extension from a release (section 6.1). Its toolbar button shows "Hermes: connected" when it reaches the daemon.
 5. Bind a session to this device with `/device <device> <dir>`. `browser_status` in that session shows whether the agent can use the browser.
 
 ## 12. Open risks
@@ -307,7 +332,7 @@ On the computer:
 - The measurements come from a Firefox started with `--remote-debugging-port` (needed to load the unsigned extension in the test), which applies the Remote Agent's recommended preferences, among them the popup blocker off. Behavior in the user's own Firefox can differ, so the first manual test in a normal profile is still due.
 - Synthetic input: `isTrusted` is false for every click and key. Sites that check it, canvas editors and some anti-bot flows will not work. Firefox gives WebExtensions no debugger API. If this blocks real use, the BiDi dynamic start mode (2.2) is the path, once Firefox ships it.
 - Screenshots of background tabs: measured headless only. In a headed Firefox, `tabs.captureTab` of a tab that was never shown may return a blank or stale image (inference). The fix is to activate the tab in its own window briefly, or to open the Hermes group in a separate window.
-- Signing: every extension release needs an AMO unlisted signature, and AMO review rules can change. Until then the extension must be loaded again after every Firefox restart.
+- Signing: every release signs the extension on AMO (section 6.1). AMO validation rules can change and fail the signing step, and Mozilla may still review the unlisted add-on by hand.
 - Snap and Flatpak Firefox (section 9).
 - Iframes and shadow DOM are not covered (section 3).
 - Cancelled operations are not stopped in the browser (section 4.1).
