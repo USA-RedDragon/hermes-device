@@ -1,0 +1,61 @@
+name: Hermes compatibility
+
+# Runs the contract tests against the Hermes release in HERMES_VERSION. Renovate
+# opens a PR here for each new Hermes release, so the check on that PR says whether
+# the hub still works with it. See docs/hermes-upgrade.md.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/hermes-compat.yaml
+      - internal/gateway/contract_test.go
+      - internal/gateway/gatewaytest/source.go
+      - internal/device/inventory_test.go
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Hermes release tag to check, such as v0.23.1. Empty means HERMES_VERSION.
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }} @ ${{ github.ref }}"
+  cancel-in-progress: true
+
+env:
+  # renovate: datasource=github-releases depName=NousResearch/hermes-agent
+  HERMES_VERSION: v0.22.7
+
+jobs:
+  contract:
+    name: Hermes contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check out Hermes
+        env:
+          VERSION: ${{ inputs.version || env.HERMES_VERSION }}
+        run: |
+          case "$VERSION" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "bad version: $VERSION" >&2; exit 1 ;; esac
+          git clone --quiet --depth 1 --branch "$VERSION" -c advice.detachedHead=false \
+            https://github.com/NousResearch/hermes-agent "$RUNNER_TEMP/hermes-agent"
+          echo "HERMES_AGENT_SRC=$RUNNER_TEMP/hermes-agent" >> "$GITHUB_ENV"
+          echo "HERMES_AGENT_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Hermes $VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Contract tests
+        shell: bash
+        run: |
+          go test -count=1 -v -run 'AgainstSource$' ./internal/gateway/ ./internal/device/ | tee "$RUNNER_TEMP/test.txt"
+          for t in TestContractAgainstSource TestClientMethodsAgainstSource; do
+            grep -q -- "--- PASS: $t " "$RUNNER_TEMP/test.txt" || { echo "$t did not run" >&2; exit 1; }
+          done
