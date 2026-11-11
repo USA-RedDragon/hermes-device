@@ -189,6 +189,7 @@ type Conclusion struct {
 	ObserverID string    `json:"observer_id"`
 	ObservedID string    `json:"observed_id"`
 	SessionID  *string   `json:"session_id"`
+	Level      string    `json:"level"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
@@ -220,12 +221,17 @@ func (h *Honcho) URL() string { return h.srv.URL }
 // Close stops the fake.
 func (h *Honcho) Close() { h.srv.Close() }
 
-// Add adds a conclusion as the newest.
+// Add adds an explicit conclusion as the newest.
 func (h *Honcho) Add(observer, observed, content, session string) string {
+	return h.AddLevel(observer, observed, content, session, "explicit")
+}
+
+// AddLevel adds a conclusion of a level as the newest.
+func (h *Honcho) AddLevel(observer, observed, content, session, level string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.next++
-	c := Conclusion{ID: fmt.Sprintf("c%d", h.next), Content: content, ObserverID: observer, ObservedID: observed,
+	c := Conclusion{ID: fmt.Sprintf("c%d", h.next), Content: content, ObserverID: observer, ObservedID: observed, Level: level,
 		CreatedAt: time.Date(2026, 11, 1, 0, 0, h.next, 0, time.UTC)}
 	if session != "" {
 		c.SessionID = &session
@@ -234,23 +240,29 @@ func (h *Honcho) Add(observer, observed, content, session string) string {
 	return c.ID
 }
 
+// isIn matches a filter value: a string, or {"in": [...]}.
+func isIn(v any, have string) bool {
+	if m, ok := v.(map[string]any); ok {
+		in, _ := m["in"].([]any)
+		return slices.Contains(in, any(have))
+	}
+	want, _ := v.(string)
+	return have == want
+}
+
 func (h *Honcho) match(c Conclusion, f map[string]any) bool {
 	for k, v := range f {
-		want, _ := v.(string)
 		switch k {
 		case "observer_id":
-			if m, ok := v.(map[string]any); ok {
-				in, _ := m["in"].([]any)
-				if !slices.Contains(in, any(c.ObserverID)) {
-					return false
-				}
-				continue
-			}
-			if c.ObserverID != want {
+			if !isIn(v, c.ObserverID) {
 				return false
 			}
 		case "observed_id":
-			if c.ObservedID != want {
+			if !isIn(v, c.ObservedID) {
+				return false
+			}
+		case "level":
+			if !isIn(v, c.Level) {
 				return false
 			}
 		default:
@@ -319,7 +331,7 @@ func (h *Honcho) serve(w http.ResponseWriter, r *http.Request) {
 			s := func(k string) string { v, _ := m[k].(string); return v }
 			h.next++
 			c := Conclusion{ID: fmt.Sprintf("c%d", h.next), Content: s("content"), ObserverID: s("observer_id"), ObservedID: s("observed_id"),
-				CreatedAt: time.Date(2026, 11, 1, 0, 0, h.next, 0, time.UTC)}
+				Level: "explicit", CreatedAt: time.Date(2026, 11, 1, 0, 0, h.next, 0, time.UTC)}
 			h.Items = append([]Conclusion{c}, h.Items...)
 			out = append(out, c)
 		}

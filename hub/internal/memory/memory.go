@@ -16,11 +16,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/USA-RedDragon/hermes-hub/internal/device"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"golang.org/x/sync/errgroup"
 )
 
 // Access says which backends a user may use. *service.Service is one.
@@ -239,31 +238,44 @@ func (s *Service) Learned(ctx context.Context, user, backendID string, q hub.Lea
 		if r := []rune(text); len(r) > 500 {
 			text = string(r[:500])
 		}
-		hits, err := s.search(ctx, h, v, text)
+		hits, err := s.search(ctx, h, v, text, q.All)
 		if err != nil {
 			return hub.LearnedPage{}, err
 		}
-		seen := map[*fact]bool{}
+		var found []*fact
 		for _, c := range hits {
-			f := byKey[factKey(c.Content)]
-			if f == nil {
+			k := factKey(c.Content)
+			f := byKey[k]
+			switch {
+			case f == nil:
 				f = h.newFact(c)
+				byKey[k] = f
+			case !slices.Contains(f.IDs, c.ID):
+				f.IDs = append(f.IDs, c.ID)
+				f.add(h, c)
 			}
-			if seen[f] || !f.in(v) {
-				continue
+			if !slices.Contains(found, f) {
+				found = append(found, f)
 			}
-			seen[f] = true
-			out.Items = append(out.Items, f.Conclusion)
-			out.Copies += len(f.IDs)
+		}
+		for _, f := range found {
+			if f.in(v) && (q.All || condensed(f.Level)) {
+				out.Items = append(out.Items, f.Conclusion)
+				out.Copies += len(f.IDs)
+			}
 		}
 		out.Total, out.Page = len(out.Items), 1
 		return out, nil
 	}
 	var pick []*fact
 	for _, f := range all {
-		if f.in(v) {
+		switch {
+		case !f.in(v):
+		case q.All || condensed(f.Level):
 			pick = append(pick, f)
 			out.Copies += len(f.IDs)
+		default:
+			out.Hidden++
 		}
 	}
 	if !q.Oldest {
@@ -280,13 +292,13 @@ func (s *Service) Learned(ctx context.Context, user, backendID string, q hub.Lea
 
 // search runs one search for each observer of the view, since Honcho's
 // search takes one observer, and takes their results in turn.
-func (s *Service) search(ctx context.Context, h *honcho, v, text string) ([]conclusionJSON, error) {
+func (s *Service) search(ctx context.Context, h *honcho, v, text string, all bool) ([]conclusionJSON, error) {
 	obs := h.observers(v)
 	res := make([][]conclusionJSON, len(obs))
 	g, gctx := errgroup.WithContext(ctx)
 	for i, o := range obs {
 		g.Go(func() error {
-			r, err := h.query(gctx, o, text)
+			r, err := h.query(gctx, o, text, all)
 			res[i] = r
 			return err
 		})
@@ -335,6 +347,11 @@ func (s *Service) LearnedInfo(ctx context.Context, user, backendID string) (hub.
 		}
 		if f.hermes && f.self {
 			out.Both++
+		}
+		if condensed(f.Level) {
+			out.Condensed++
+		} else {
+			out.Raw++
 		}
 	}
 	card, err := h.card(ctx)
@@ -410,7 +427,7 @@ func (s *Service) ExportLearned(ctx context.Context, user, backendID string, w i
 	if err != nil {
 		return err
 	}
-	p, err := h.list(ctx, 1, true)
+	p, err := h.list(ctx, 1)
 	if err != nil {
 		return err
 	}
@@ -439,7 +456,7 @@ func (s *Service) ExportLearned(ctx context.Context, user, backendID string, w i
 		if page >= p.Pages || page >= maxExportPages || len(p.Items) == 0 {
 			break
 		}
-		if p, err = h.list(ctx, page+1, true); err != nil {
+		if p, err = h.list(ctx, page+1); err != nil {
 			return err
 		}
 	}

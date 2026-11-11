@@ -128,7 +128,7 @@ func (s *Server) handleLearned(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	page, _ := strconv.Atoi(q.Get("page"))
 	p, err := s.memory.Learned(r.Context(), userFrom(r), r.PathValue("backend"),
-		hub.LearnedQuery{View: q.Get("view"), Query: q.Get("q"), Page: page, Oldest: q.Get("order") == "oldest"})
+		hub.LearnedQuery{View: q.Get("view"), Query: q.Get("q"), Page: page, Oldest: q.Get("order") == "oldest", All: q.Get("show") == "all"})
 	if err != nil {
 		s.memoryFail(w, err)
 		return

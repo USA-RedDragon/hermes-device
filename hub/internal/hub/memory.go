@@ -32,6 +32,16 @@ const (
 	ViewBoth   = "both"
 )
 
+// Levels of a conclusion, as Honcho marks them. Honcho's deriver writes
+// LevelExplicit facts from single messages; its dreams write the others
+// from facts it already has.
+const (
+	LevelExplicit      = "explicit"
+	LevelDeductive     = "deductive"
+	LevelInductive     = "inductive"
+	LevelContradiction = "contradiction"
+)
+
 // MaxLearnedDelete bounds the conclusions one delete may remove.
 const MaxLearnedDelete = 100
 
@@ -84,42 +94,47 @@ type NoteChange struct {
 
 // Conclusion is one fact Honcho drew from the user's chats. On the
 // Learned tab it is one distinct fact: IDs holds every stored copy of it,
-// ID the oldest, and View is ViewBoth when both views hold a copy. An exported conclusion is one
+// ID the oldest, and View is ViewBoth when both views hold a copy. Level
+// is the most condensed level of its copies. An exported conclusion is one
 // stored copy and has no IDs.
 type Conclusion struct {
 	ID        string    `json:"id"`
 	IDs       []string  `json:"ids,omitempty"`
 	Content   string    `json:"content"`
 	View      string    `json:"view"`
+	Level     string    `json:"level"`
 	SessionID string    `json:"session_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
 // LearnedQuery selects conclusions. Query non-empty searches by meaning;
 // otherwise Page (from 1) pages through them newest first, or oldest first
-// with Oldest.
+// with Oldest. Without All, only facts Honcho condensed in its dreams show.
 type LearnedQuery struct {
 	View   string
 	Query  string
 	Page   int
 	Oldest bool
+	All    bool
 }
 
 // LearnedPage is one page of distinct facts. Pages is 0 for a search.
-// Total counts the distinct facts that match and Copies their stored
-// copies. Partial is true when the user has more stored copies
+// Total counts the distinct facts that match, Copies their stored copies,
+// and Hidden the distinct facts the query hid because they come from
+// single messages. Partial is true when the user has more stored copies
 // than the hub reads, so the oldest are left out.
 type LearnedPage struct {
 	Items   []Conclusion `json:"items"`
 	Total   int          `json:"total"`
 	Copies  int          `json:"copies"`
+	Hidden  int          `json:"hidden"`
 	Page    int          `json:"page"`
 	Pages   int          `json:"pages"`
 	Partial bool         `json:"partial,omitempty"`
 }
 
-// LearnedInfo is the Advanced part of the Learned tab. Total, Hermes, Self
-// and Both count distinct facts; Copies counts stored
+// LearnedInfo is the Advanced part of the Learned tab. Total, Hermes, Self,
+// Both, Condensed and Raw count distinct facts; Copies counts stored
 // copies.
 type LearnedInfo struct {
 	Workspace string   `json:"workspace"`
@@ -128,6 +143,8 @@ type LearnedInfo struct {
 	Hermes    int      `json:"hermes"`
 	Self      int      `json:"self"`
 	Both      int      `json:"both"`
+	Condensed int      `json:"condensed"`
+	Raw       int      `json:"raw"`
 	Partial   bool     `json:"partial,omitempty"`
 	Card      []string `json:"card"`
 }

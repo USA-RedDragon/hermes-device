@@ -7,6 +7,34 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 )
 
+// condensedLevels are the levels of conclusions Honcho's dreams write.
+func condensedLevels() []string {
+	return []string{hub.LevelDeductive, hub.LevelInductive, hub.LevelContradiction}
+}
+
+// level is a conclusion's level. Honcho's default is explicit.
+func level(l string) string {
+	if l == "" {
+		return hub.LevelExplicit
+	}
+	return l
+}
+
+func condensed(l string) bool { return level(l) != hub.LevelExplicit }
+
+// levelRank orders levels from single message to most condensed.
+func levelRank(l string) int {
+	switch level(l) {
+	case hub.LevelDeductive:
+		return 1
+	case hub.LevelInductive:
+		return 2
+	case hub.LevelContradiction:
+		return 3
+	}
+	return 0
+}
+
 // factKey is the text two copies of one fact share: case and runs of
 // white space do not count. Any other difference, such as punctuation or
 // wording, makes two facts, so a delete never removes text the user did not
@@ -37,6 +65,9 @@ func (f *fact) add(h *honcho, c conclusionJSON) {
 		f.hermes = true
 	case h.user:
 		f.self = true
+	}
+	if levelRank(c.Level) > levelRank(f.Level) {
+		f.Level = level(c.Level)
 	}
 	if c.CreatedAt.Before(f.CreatedAt) {
 		f.ID, f.CreatedAt = c.ID, c.CreatedAt

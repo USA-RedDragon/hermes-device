@@ -187,29 +187,48 @@ func TestLearned(t *testing.T) {
 	e.honcho.Add("hermes", "hermes", "Hermes runs on a 5090.", "")
 	e.honcho.Add("uid-1000", "uid-1000", "stale", "")
 	other := e.honcho.Add("carol", bob, "Carol thinks Bob snores.", "")
-	p, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{})
-	if err != nil || p.Total != 2 || len(p.Items) != 2 || p.Items[0].View != hub.ViewSelf || p.Items[1].SessionID != "local-abc" {
+	p, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{All: true})
+	if err != nil || p.Total != 2 || len(p.Items) != 2 || p.Items[0].View != hub.ViewSelf || p.Items[1].SessionID != "local-abc" ||
+		p.Items[0].Level != hub.LevelExplicit {
 		t.Fatalf("all = %+v, %v", p, err)
 	}
 	if _, err := e.svc.DeleteLearned(ctx, bob, homeID, []string{other}); status(err) != http.StatusNotFound {
 		t.Fatalf("delete another observer's fact: %v", err)
 	}
-	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{View: hub.ViewHermes})
+	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{View: hub.ViewHermes, All: true})
 	if err != nil || len(p.Items) != 1 || p.Items[0].Content != "Prefers restic over borg." {
 		t.Fatalf("hermes = %+v, %v", p, err)
 	}
-	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{View: hub.ViewSelf, Oldest: true})
+	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{View: hub.ViewSelf, Oldest: true, All: true})
 	if err != nil || len(p.Items) != 1 || p.Items[0].View != hub.ViewSelf {
 		t.Fatalf("self = %+v, %v", p, err)
 	}
+	if _, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{View: "everyone"}); status(err) != http.StatusBadRequest {
+		t.Fatalf("bad view: %v", err)
+	}
+	e.honcho.Cards["hermes>"+bob] = []string{"Name: Bob", "Uses Flux"}
+	info, err := e.svc.LearnedInfo(ctx, bob, homeID)
+	if err != nil || info.Workspace != "bobs" || info.Total != 2 || info.Copies != 2 || info.Hermes != 1 || info.Self != 1 ||
+		info.Both != 0 || info.Raw != 2 || info.Condensed != 0 || len(info.Card) != 2 {
+		t.Fatalf("info = %+v, %v", info, err)
+	}
+}
+
+func TestLearnedSearch(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	ctx := context.Background()
+	e.honcho.Add("hermes", bob, "Prefers restic over borg.", "local-abc")
+	e.honcho.Add(bob, bob, "I keep backups on B2.", "")
+	e.honcho.Add("carol", bob, "Carol keeps backups on tape.", "")
 	for _, q := range []string{"restic", "b2"} {
-		p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: q})
+		p, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: q, All: true})
 		if err != nil || len(p.Items) != 1 {
 			t.Fatalf("search %q = %+v, %v", q, p, err)
 		}
 	}
-	if _, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{View: "everyone"}); status(err) != http.StatusBadRequest {
-		t.Fatalf("bad view: %v", err)
+	if p, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: "backups", All: true}); err != nil || p.Total != 1 {
+		t.Fatalf("search must skip other observers: %+v, %v", p, err)
 	}
 	for _, r := range e.honcho.Requests() {
 		if r.Auth != "Bearer "+key {
@@ -219,12 +238,6 @@ func TestLearned(t *testing.T) {
 		if ok && (f["observed_id"] != bob || f["observer_id"] == nil) {
 			t.Fatalf("request not scoped to the user: %+v", r)
 		}
-	}
-	e.honcho.Cards["hermes>"+bob] = []string{"Name: Bob", "Uses Flux"}
-	info, err := e.svc.LearnedInfo(ctx, bob, homeID)
-	if err != nil || info.Workspace != "bobs" || info.Total != 2 || info.Copies != 2 || info.Hermes != 1 || info.Self != 1 ||
-		info.Both != 0 || len(info.Card) != 2 {
-		t.Fatalf("info = %+v, %v", info, err)
 	}
 }
 
@@ -237,7 +250,7 @@ func TestLearnedPairs(t *testing.T) {
 	e.honcho.Add(bob, bob, "Bob uses zstd!", "")
 	e.honcho.Add("hermes", bob, "Bob has a cat.", "")
 	e.honcho.Add("carol", bob, "Bob uses zstd.", "")
-	p, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Oldest: true})
+	p, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{All: true, Oldest: true})
 	if err != nil || p.Total != 3 || p.Copies != 4 || len(p.Items) != 3 {
 		t.Fatalf("all = %+v, %v", p, err)
 	}
@@ -249,16 +262,26 @@ func TestLearnedPairs(t *testing.T) {
 		t.Fatalf("punctuation must not pair: %+v", p.Items[1])
 	}
 	for _, v := range []string{hub.ViewHermes, hub.ViewSelf} {
-		p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{View: v, Oldest: true})
+		p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{View: v, All: true, Oldest: true})
 		if err != nil || p.Total != 2 || p.Items[0].ID != a || len(p.Items[0].IDs) != 2 {
 			t.Fatalf("%s = %+v, %v", v, p, err)
 		}
 	}
-	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: "zstd."})
+}
+
+func TestLearnedPairsSearchDelete(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	ctx := context.Background()
+	e.honcho.Add("hermes", bob, "Bob uses zstd.", "s1")
+	e.honcho.Add(bob, bob, "  bob USES   zstd. ", "")
+	e.honcho.Add(bob, bob, "Bob uses zstd!", "")
+	e.honcho.Add("hermes", bob, "Bob has a cat.", "")
+	p, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: "zstd.", All: true})
 	if err != nil || p.Total != 1 || p.Copies != 2 || p.Items[0].View != hub.ViewBoth {
 		t.Fatalf("search = %+v, %v", p, err)
 	}
-	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: "zstd.", View: hub.ViewSelf})
+	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: "zstd.", View: hub.ViewSelf, All: true})
 	if err != nil || p.Total != 1 || len(p.Items[0].IDs) != 2 {
 		t.Fatalf("self search = %+v, %v", p, err)
 	}
@@ -266,12 +289,48 @@ func TestLearnedPairs(t *testing.T) {
 	if err != nil || info.Total != 3 || info.Copies != 4 || info.Both != 1 || info.Hermes != 2 || info.Self != 2 {
 		t.Fatalf("info = %+v, %v", info, err)
 	}
-	n, err := e.svc.DeleteLearned(ctx, bob, homeID, pair.IDs)
+	n, err := e.svc.DeleteLearned(ctx, bob, homeID, p.Items[0].IDs)
 	if err != nil || n != 2 {
 		t.Fatalf("delete pair = %d, %v", n, err)
 	}
-	if p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{}); err != nil || p.Total != 2 || p.Copies != 2 {
+	if p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{All: true}); err != nil || p.Total != 2 || p.Copies != 2 {
 		t.Fatalf("after delete = %+v, %v", p, err)
+	}
+}
+
+func TestLearnedLevels(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	ctx := context.Background()
+	raw := e.honcho.Add("hermes", bob, "Bob said he moved to Austin.", "s1")
+	e.honcho.AddLevel("hermes", bob, "Bob lives in Austin.", "", hub.LevelDeductive)
+	e.honcho.AddLevel(bob, bob, "Bob lives in Austin.", "", hub.LevelExplicit)
+	e.honcho.AddLevel("hermes", bob, "Bob tends to work late.", "", hub.LevelInductive)
+	p, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Oldest: true})
+	if err != nil || p.Total != 2 || p.Hidden != 1 || p.Copies != 3 {
+		t.Fatalf("condensed = %+v, %v", p, err)
+	}
+	if p.Items[0].Level != hub.LevelDeductive || p.Items[0].View != hub.ViewBoth || p.Items[1].Level != hub.LevelInductive {
+		t.Fatalf("levels = %+v", p.Items)
+	}
+	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{All: true, Oldest: true})
+	if err != nil || p.Total != 3 || p.Hidden != 0 || p.Items[0].ID != raw || p.Items[0].Level != hub.LevelExplicit {
+		t.Fatalf("all = %+v, %v", p, err)
+	}
+	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: "bob"})
+	if err != nil || p.Total != 2 {
+		t.Fatalf("condensed search = %+v, %v", p, err)
+	}
+	if p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: "moved"}); err != nil || p.Total != 0 {
+		t.Fatalf("search for a raw fact = %+v, %v", p, err)
+	}
+	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: "moved", All: true})
+	if err != nil || p.Total != 1 {
+		t.Fatalf("search all = %+v, %v", p, err)
+	}
+	info, err := e.svc.LearnedInfo(ctx, bob, homeID)
+	if err != nil || info.Condensed != 2 || info.Raw != 1 || info.Total != 3 || info.Copies != 4 {
+		t.Fatalf("info = %+v, %v", info, err)
 	}
 }
 
@@ -284,11 +343,11 @@ func TestLearnedPages(t *testing.T) {
 		e.honcho.Add("hermes", bob, text, "")
 		e.honcho.Add(bob, bob, text, "")
 	}
-	p, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{})
+	p, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{All: true})
 	if err != nil || p.Total != 130 || p.Copies != 260 || p.Pages != 2 || len(p.Items) != 100 || p.Items[0].Content != "fact 129" {
 		t.Fatalf("page 1 = %d items, %+v, %v", len(p.Items), p.Total, err)
 	}
-	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Page: 2})
+	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{All: true, Page: 2})
 	if err != nil || len(p.Items) != 30 || p.Items[29].Content != "fact 0" || len(p.Items[29].IDs) != 2 {
 		t.Fatalf("page 2 = %+v, %v", p, err)
 	}

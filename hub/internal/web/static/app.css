@@ -377,6 +377,7 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .mem-fact .meta { grid-column: 2; font-size: .78rem; color: var(--muted); display: flex; flex-wrap: wrap; gap: .2rem .75rem; }
 .mem-fact .meta span:empty { display: none; }
 .mem-tag { border: 1px solid var(--line); border-radius: 99px; padding: 0 .45rem; cursor: help; }
+.mem-tag.kind { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--accent); }
 .mem-fact .meta a { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
 .mem-fact .meta a:hover { text-decoration: underline; }
 .mem-fact .x { grid-row: 1 / span 2; grid-column: 3; align-self: center; font-size: .8rem; padding: .15rem .5rem; }

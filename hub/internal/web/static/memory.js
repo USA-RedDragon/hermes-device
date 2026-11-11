@@ -33,7 +33,7 @@ window.HubMemory = (ctx) => {
   let learned = null;
 
   function freshLearned() {
-    return { q: "", view: "all", oldest: false, items: [], page: 0, pages: 0, total: 0, partial: false, loading: false, err: "",
+    return { q: "", view: "all", oldest: false, all: false, items: [], page: 0, pages: 0, total: 0, hidden: 0, partial: false, loading: false, err: "",
       sel: new Set(), confirm: false, info: null, infoErr: "", card: false, adding: false, gen: 0, armed: "" };
   }
 
@@ -381,7 +381,13 @@ window.HubMemory = (ctx) => {
     return d;
   }
 
-  // Learned facts.
+  // Learned facts. kinds names each Honcho level for the page.
+  const kinds = {
+    explicit: ["From one message", "Taken straight from one message."],
+    deductive: ["Deduced", "Honcho worked this out from other facts."],
+    inductive: ["Pattern", "Honcho saw this pattern across several facts."],
+    contradiction: ["Conflict", "Honcho found facts that disagree."],
+  };
 
   function day(iso) {
     const d = new Date(iso);
@@ -408,6 +414,7 @@ window.HubMemory = (ctx) => {
     draw();
     const q = new URLSearchParams({ view: L.view, page: String(L.page + 1), order: L.oldest ? "oldest" : "newest" });
     if (L.q.trim()) q.set("q", L.q.trim());
+    if (L.all) q.set("show", "all");
     try {
       const p = await api("GET", path("/learned?" + q));
       if (gen !== L.gen || L !== learned) return;
@@ -418,6 +425,7 @@ window.HubMemory = (ctx) => {
       L.page = p.page;
       L.pages = p.pages;
       L.total = p.total;
+      L.hidden = p.hidden;
       L.partial = !!p.partial;
     } catch (e) {
       if (gen !== L.gen || L !== learned) return;
@@ -471,9 +479,13 @@ window.HubMemory = (ctx) => {
     f.append(s,
       chip("Newest first", !L.oldest, () => { L.oldest = !L.oldest; loadFacts(true); }),
       chip("Hermes's view", L.view === "hermes", () => { L.view = L.view === "hermes" ? "all" : "hermes"; loadFacts(true); }),
-      chip("Your own words", L.view === "self", () => { L.view = L.view === "self" ? "all" : "self"; loadFacts(true); }));
+      chip("Your own words", L.view === "self", () => { L.view = L.view === "self" ? "all" : "self"; loadFacts(true); }),
+      chip("Show all", L.all, () => { L.all = !L.all; loadFacts(true); }));
     body.append(f);
-    if (L.partial) body.append(el("p", "mem-hint", "You have more than 10,000 stored facts. Only the newest 10,000 show here."));
+    if (!L.all && L.hidden && !L.q.trim()) {
+      body.append(el("p", "mem-hint", fmt(L.hidden) + (L.hidden === 1 ? " fact taken from a single message is" : " facts taken from single messages are") + " hidden. Show all brings them back."));
+    }
+    if (L.partial) body.append(el("p", "mem-hint", "Honcho stores more than 10,000 copies. Only the newest 10,000 show here."));
     status(body);
     if (L.sel.size) body.append(selBar(L));
     if (L.err) body.append(el("p", "mem-note bad", "Could not load what Hermes learned: " + L.err));
@@ -482,7 +494,16 @@ window.HubMemory = (ctx) => {
       for (const c of L.items) list.append(factRow(L, c));
       body.append(list);
     } else if (!L.loading && !L.err) {
-      body.append(el("p", "mem-hint", L.q.trim() ? "Nothing matches that search." : "Hermes has not learned anything here yet."));
+      if (L.q.trim()) {
+        body.append(el("p", "mem-hint", L.all ? "Nothing matches that search." : "Nothing condensed matches that search. Show all searches facts from single messages too."));
+      } else if (!L.all && L.hidden) {
+        body.append(el("p", "mem-hint", L.view === "all" ? "Honcho has not condensed any facts yet. It does that from time to time in the background." : "No condensed facts in this view yet."));
+        const a = el("div", "mem-acts");
+        a.append(btn("", "Show all " + fmt(L.hidden) + (L.hidden === 1 ? " fact" : " facts"), () => { L.all = true; loadFacts(true); }));
+        body.append(a);
+      } else {
+        body.append(el("p", "mem-hint", "Hermes has not learned anything here yet."));
+      }
     }
     if (L.loading) body.append(el("p", "mem-hint", "Loading."));
     else if (!L.q.trim() && L.page < L.pages) {
@@ -496,7 +517,7 @@ window.HubMemory = (ctx) => {
   // copies lists the stored copies of the facts with these ids.
   function copies(L, ids) {
     const want = new Set(ids);
-    return L.items.filter((c) => want.has(c.id)).flatMap((c) => c.ids && c.ids.length ? c.ids : [c.id]);
+    return [...new Set(L.items.filter((c) => want.has(c.id)).flatMap((c) => c.ids && c.ids.length ? c.ids : [c.id]))];
   }
 
   function selBar(L) {
@@ -563,6 +584,10 @@ window.HubMemory = (ctx) => {
       t.title = "Stored twice: once as Hermes's view and once in your own words. Delete removes both.";
       meta.append(t);
     }
+    const k = kinds[c.level] || kinds.explicit;
+    const lv = el("span", c.level && c.level !== "explicit" ? "mem-tag kind" : "", k[0]);
+    lv.title = k[1];
+    meta.append(lv);
     const title = c.session_id ? chatTitle(c.session_id) : "";
     if (title) {
       const a = el("a", "", "from “" + title + "”");
@@ -589,6 +614,7 @@ window.HubMemory = (ctx) => {
       add("Stored in", "Honcho, workspace “" + L.info.workspace + "”");
       add("Facts", fmt(L.info.total) + " (" + fmt(L.info.copies) + " stored " + (L.info.copies === 1 ? "copy" : "copies") + ")");
       add("Views", "Hermes's view " + fmt(L.info.hermes) + ", your own words " + fmt(L.info.self) + ", both " + fmt(L.info.both));
+      add("Kinds", "Condensed " + fmt(L.info.condensed) + ", from one message " + fmt(L.info.raw));
       if (L.info.partial) add("Counted", "The newest 10,000 stored copies");
       add("Profile card", fmt(L.info.card.length) + (L.info.card.length === 1 ? " line" : " lines"));
       d.append(dl);
@@ -629,7 +655,8 @@ window.HubMemory = (ctx) => {
           await api("POST", path("/learned"), { content: v });
           L.adding = false;
           L.draft = "";
-          ui.note = "Saved.";
+          L.all = true;
+          ui.note = "Saved. Show all is on so you can see it.";
           ui.bad = false;
         } catch (e) {
           ui.note = "Could not save the fact: " + e.message;

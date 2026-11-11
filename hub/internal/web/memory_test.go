@@ -171,9 +171,13 @@ func TestLearnedAPI(t *testing.T) {
 	e.honcho.Add(userBob, userBob, "<script>alert(1)</script>", "")
 	other := e.honcho.Add("hermes", "hermes", "Runs on a GPU.", "")
 	var p hub.LearnedPage
-	if code := apiJSON(t, c, http.MethodGet, e.url+"/api/memory/home/learned?view=hermes", "", nil, &p); code != http.StatusOK ||
+	if code := apiJSON(t, c, http.MethodGet, e.url+"/api/memory/home/learned?view=hermes&show=all", "", nil, &p); code != http.StatusOK ||
 		len(p.Items) != 1 || p.Items[0].ID != a || p.Items[0].SessionID != "s1" {
 		t.Fatalf("hermes view = %d %+v", code, p)
+	}
+	if code := apiJSON(t, c, http.MethodGet, e.url+"/api/memory/home/learned?view=hermes", "", nil, &p); code != http.StatusOK ||
+		len(p.Items) != 0 || p.Hidden != 1 {
+		t.Fatalf("condensed hermes view = %d %+v", code, p)
 	}
 	var info hub.LearnedInfo
 	if code := apiJSON(t, c, http.MethodGet, e.url+"/api/memory/home/learned/info", "", nil, &info); code != http.StatusOK || info.Total != 2 {
