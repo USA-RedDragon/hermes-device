@@ -30,6 +30,8 @@ const (
 	kMessage   = "message"
 	scopeChat  = "chat"
 	pdfData    = "%PDF-1.7"
+	cmdMake    = "make"
+	mimePNG    = "image/png"
 	shotName   = "shot.jpg"
 )
 
@@ -214,7 +216,7 @@ func TestDraftFallsBackToEdits(t *testing.T) {
 	h.tg.mu.Unlock()
 	sid := h.startTurn(t)
 	h.ownTurn(t, sid)
-	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t1", kName: toolTerminal, kContext: "make"})
+	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t1", kName: toolTerminal, kContext: cmdMake})
 	h.hub.emit(t, sid, hub.KindToolProgress, map[string]any{kToolID: "t1", "message": "half"})
 	h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{kToolID: "t1", kName: toolTerminal})
 	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t2", kName: toolTerminal, kContext: "make install"})
@@ -235,7 +237,7 @@ func TestNoDraftsInGroups(t *testing.T) {
 	}, nil)
 	h.tg.sayIn(forumChat(), 60, aliceTG, "hello", nil)
 	h.ownTurn(t, sFix)
-	h.hub.emit(t, sFix, hub.KindToolStart, map[string]any{kToolID: "t1", kName: toolTerminal, kContext: "make"})
+	h.hub.emit(t, sFix, hub.KindToolStart, map[string]any{kToolID: "t1", kName: toolTerminal, kContext: cmdMake})
 	h.tg.waitCall(mSend, func(c tgCall) bool { return c.thread() == 60 && strings.Contains(c.text(), "Running") })
 	h.hub.emit(t, sFix, hub.KindMessageDelta, map[string]any{kText: "partial"})
 	h.hub.emit(t, sFix, hub.KindMessageComplete, map[string]any{kText: "done here", kStatus: statusComplete})
@@ -332,7 +334,7 @@ func TestReplyImagesGoAsOneAlbum(t *testing.T) {
 	t.Parallel()
 	h := startBot(t, nil)
 	h.hub.mu.Lock()
-	h.hub.media = map[string]fakeFile{shotPath: {mime: hub.MIMEJPEG, data: jpegData}, "/opt/data/out/plot.png": {mime: "image/png", data: pngData},
+	h.hub.media = map[string]fakeFile{shotPath: {mime: hub.MIMEJPEG, data: jpegData}, "/opt/data/out/plot.png": {mime: mimePNG, data: pngData},
 		"/opt/data/out/report.pdf": {data: pdfData}}
 	h.hub.mu.Unlock()
 	sid := h.startTurn(t)
@@ -362,7 +364,7 @@ func TestRefusedAlbumIsSentPhotoByPhoto(t *testing.T) {
 	h.tg.topicErr[mAlbum] = "Bad Request: PHOTO_INVALID_DIMENSIONS"
 	h.tg.mu.Unlock()
 	h.hub.mu.Lock()
-	h.hub.media = map[string]fakeFile{shotPath: {mime: hub.MIMEJPEG, data: jpegData}, "/opt/data/out/plot.png": {mime: "image/png", data: pngData}}
+	h.hub.media = map[string]fakeFile{shotPath: {mime: hub.MIMEJPEG, data: jpegData}, "/opt/data/out/plot.png": {mime: mimePNG, data: pngData}}
 	h.hub.mu.Unlock()
 	sid := h.startTurn(t)
 	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "MEDIA:" + shotPath + "\nMEDIA:/opt/data/out/plot.png", kStatus: statusComplete})
@@ -517,5 +519,119 @@ func TestPrivateChatTopicsTurnedOff(t *testing.T) {
 	}
 	if n := len(h.tg.find(mTopic, "")); n != 0 {
 		t.Fatalf("%d topics made", n)
+	}
+}
+
+// reactionIn reports whether the bot set a reaction on message msg of
+// chat.
+func (f *fakeTelegram) reactionIn(chat, msg int64) bool {
+	for _, c := range f.snapshot() {
+		if id, _ := c.Params["chat_id"].(float64); c.Method == mReact && int64(id) == chat && c.messageID() == msg {
+			return true
+		}
+	}
+	return false
+}
+
+func TestReactionStaysInTheChatOfThePrompt(t *testing.T) {
+	t.Parallel()
+	since := time.Now().Add(-time.Hour)
+	h := linkedWith(t, since, []string{sFix}, storedTopic(60, sFix, since))
+	h.tg.sayIn(forumChat(), 60, aliceTG, firstAnswer, nil)
+	p := h.hub.waitPrompt(t, 1)[0]
+	h.tg.say(dm(aliceTG), aliceTG, "/sessions")
+	list := h.tg.wait(mSend, "<b>Sessions</b>")
+	data, _ := list.buttons()[0]["callback_data"].(string)
+	h.tg.press(dm(aliceTG), aliceTG, list.ResultID, data)
+	h.tg.wait(mSend, "Attached to")
+	h.hub.emit(t, sFix, hub.KindMessageStart, map[string]any{kText: firstAnswer, kSubmitID: p.SubmissionID})
+	echo := h.tg.wait(mSend, "You, in Telegram")
+	h.tg.waitReaction(t, echo.ResultID, "👀")
+	if h.tg.reactionIn(aliceTG, 1) {
+		t.Fatal("the private chat reacted to a message of the group")
+	}
+}
+
+func TestRelinkedAccountLeavesThePrivateChatTopics(t *testing.T) {
+	t.Parallel()
+	since := time.Now().Add(-time.Hour)
+	h := startBotFake(t, dmTopicsOn, nil, dmState(since), withSession(since, sFix), nil)
+	h.links.mu.Lock()
+	h.links.users[aliceTG] = userBob
+	h.links.mu.Unlock()
+	h.tg.say(dm(aliceTG), aliceTG, "hello")
+	p := h.hub.waitPrompt(t, 1)[0]
+	if p.User != userBob {
+		t.Fatalf("prompt = %+v", p)
+	}
+	h.state.mu.Lock()
+	g, ok := h.state.groups[aliceTG]
+	h.state.mu.Unlock()
+	if ok && g.User == userAlice {
+		t.Fatal("the old user keeps the private chat's topics")
+	}
+}
+
+func TestTopicsTurnedOffWithoutAMessage(t *testing.T) {
+	t.Parallel()
+	since := time.Now().Add(-time.Hour)
+	h := startBotFake(t, nil, nil, dmState(since), withSession(since, sFix), nil)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		h.state.mu.Lock()
+		_, ok := h.state.groups[aliceTG]
+		h.state.mu.Unlock()
+		if !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the private chat kept its topics after they were turned off")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestBadDraftFrameKeepsDrafts(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, withDrafts)
+	h.tg.mu.Lock()
+	h.tg.topicErr[mDraft] = "Bad Request: can't parse entities: unclosed tag"
+	h.tg.mu.Unlock()
+	sid := h.startTurn(t)
+	h.ownTurn(t, sid)
+	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t1", kName: toolTerminal, kContext: cmdMake})
+	h.hub.emit(t, sid, hub.KindMessageDelta, map[string]any{kText: "one"})
+	h.tg.wait(mDraft, "one")
+	time.Sleep(1200 * time.Millisecond)
+	h.hub.emit(t, sid, hub.KindMessageDelta, map[string]any{kText: " two"})
+	h.tg.wait(mDraft, "one two")
+	if n := len(h.tg.find(mEdit, "Running")); n != 0 {
+		t.Fatalf("drafts stopped after a bad frame: %d status edits", n)
+	}
+}
+
+func TestLargeImagesSplitIntoAlbumsBySize(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	big := strings.Repeat("x", 9<<20)
+	media := map[string]fakeFile{}
+	lines := make([]string, 0, 5)
+	for i := range 5 {
+		p := "/opt/data/out/p" + itoa(int64(i)) + ".png"
+		media[p] = fakeFile{mime: mimePNG, data: big}
+		lines = append(lines, "MEDIA:"+p)
+	}
+	h.hub.mu.Lock()
+	h.hub.media = media
+	h.hub.mu.Unlock()
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: strings.Join(lines, "\n"), kStatus: statusComplete})
+	h.tg.wait(mPhoto, "")
+	albums := h.tg.find(mAlbum, "")
+	if len(albums) != 1 {
+		t.Fatalf("%d albums", len(albums))
+	}
+	if names, _ := albums[0].Params["names"].([]string); len(names) != 4 {
+		t.Fatalf("album of %d images", len(names))
 	}
 }
