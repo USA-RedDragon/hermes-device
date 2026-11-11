@@ -26,6 +26,7 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/memory"
 	"github.com/USA-RedDragon/hermes-hub/internal/notify"
 	"github.com/USA-RedDragon/hermes-hub/internal/pdf"
+	"github.com/USA-RedDragon/hermes-hub/internal/scheduled"
 	"github.com/USA-RedDragon/hermes-hub/internal/server"
 	"github.com/USA-RedDragon/hermes-hub/internal/service"
 	"github.com/USA-RedDragon/hermes-hub/internal/store"
@@ -137,6 +138,9 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	if cs != nil {
 		svc.SetTurnErrors(cs.TurnFailed)
 		webOpts.Claude = cs
+	}
+	if sc := newScheduled(cfg, svc, st, dialers); sc != nil {
+		webOpts.Scheduled = sc
 	}
 	ui, err := web.New(cfg, webOpts)
 	if err != nil {
@@ -312,6 +316,20 @@ func newClaude(cfg *config.Config, svc *service.Service, n *notify.Notifier, dia
 	}
 	return claude.New(claude.Options{Access: svc, Admins: admins, Location: cfg.Claude.Location(), Requesters: rs,
 		Notify: n.Notify, Announce: svc.Announce})
+}
+
+// newScheduled returns the Scheduled page's core, or nil when there is no
+// backend. Every Hermes has the cron routes of its dashboard.
+func newScheduled(cfg *config.Config, svc *service.Service, st *store.Store, dialers map[string]*gateway.Dialer) *scheduled.Service {
+	if len(cfg.Backends) == 0 {
+		return nil
+	}
+	rs := make(map[string]scheduled.Requester, len(dialers))
+	for id, d := range dialers {
+		rs[id] = d
+	}
+	return scheduled.New(scheduled.Options{Access: svc, Backends: cfg.Backends, Requesters: rs, Devices: st,
+		Location: cfg.UI.Location()})
 }
 
 func openStore(ctx context.Context, cfg *config.Store) (*store.Store, error) {

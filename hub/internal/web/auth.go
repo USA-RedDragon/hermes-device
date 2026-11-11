@@ -218,7 +218,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"user": sess.User, "display": sess.Display, "groups": sess.Groups, "csrf": sess.CSRF,
 		"default_backend": s.defaults[sess.User], "devices": s.devices != nil, "computers": s.computers != nil,
 		"memory": s.memory != nil, "usage": s.insights != nil, "files": s.files != nil, "notify": s.notices != nil,
-		"claude": s.claude != nil, "claude_admin": s.isClaudeAdmin(sess.User), "telegram_steps": s.telegramSteps, "version": s.version})
+		"claude": s.claude != nil, "claude_admin": s.isClaudeAdmin(sess.User), "telegram_steps": s.telegramSteps, "version": s.version,
+		"scheduled": s.scheduled != nil})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

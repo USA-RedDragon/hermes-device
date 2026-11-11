@@ -78,6 +78,8 @@ type Options struct {
 	Claude hub.Claude
 	// Version is the hub's release, shown in Settings.
 	Version string
+	// Scheduled serves the Scheduled page. Nil: no Scheduled page.
+	Scheduled hub.Scheduled
 }
 
 // Server is the web front end.
@@ -111,6 +113,7 @@ type Server struct {
 	notices      hub.NotifyStore
 	notifier     Notifier
 	claude       hub.Claude
+	scheduled    hub.Scheduled
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
 	backendNames     map[string]string
@@ -156,7 +159,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	return &Server{
 		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory,
 		insights: opts.Insights, files: opts.Files,
-		notices: opts.Notices, notifier: opts.Notifier, claude: opts.Claude,
+		notices: opts.Notices, notifier: opts.Notifier, claude: opts.Claude, scheduled: opts.Scheduled,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,
@@ -259,6 +262,7 @@ func (s *Server) Handler() http.Handler {
 	s.insightRoutes(mux)
 	s.notifyRoutes(mux)
 	s.claudeRoutes(mux)
+	s.scheduledRoutes(mux)
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
 	mux.HandleFunc("GET /device/pair", s.handlePairPage)
