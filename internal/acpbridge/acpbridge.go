@@ -205,7 +205,9 @@ func (b *Bridge) Run(ctx context.Context) error {
 	}
 	cancel()
 	if !editorDone {
-		<-editorErr
+		if eerr := <-editorErr; eerr != nil {
+			b.log.Debug("Editor loop ended after the bridge stopped", "error", eerr)
+		}
 	}
 	if !connDone {
 		if cerr := <-connErr; err == nil {

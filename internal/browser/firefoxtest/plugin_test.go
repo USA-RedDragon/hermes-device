@@ -88,7 +88,9 @@ func pluginLayer(ctx context.Context, t *testing.T, b *broker.Broker, formURL, p
 	go func() { devDone <- dev.Run(pyCtx) }()
 	defer func() {
 		pyCancel()
-		<-devDone
+		if err := <-devDone; err != nil {
+			t.Errorf("device Run: %v", err)
+		}
 	}()
 
 	repo, err := filepath.Abs("../../..")

@@ -222,7 +222,10 @@ func startBridgeReady(t *testing.T, hub *fakeHub, readyTimeout time.Duration) *e
 		_ = inW.Close()
 		cancel()
 		select {
-		case <-e.done:
+		case err := <-e.done:
+			if err != nil {
+				t.Logf("bridge returned after cancel: %v", err)
+			}
 		case <-time.After(10 * time.Second):
 			t.Error("bridge did not stop")
 		}

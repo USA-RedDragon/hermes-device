@@ -219,8 +219,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 	select {
 	case err := <-devDone:
 		cancel()
-		<-spliceDone
-		return err
+		return errors.Join(err, <-spliceDone)
 	case err := <-spliceDone:
 		stopped := ctx.Err() != nil
 		cancel()

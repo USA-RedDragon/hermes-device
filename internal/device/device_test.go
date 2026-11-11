@@ -165,7 +165,10 @@ func start(t *testing.T, opts device.Options) chan error {
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-done:
+		case err := <-done:
+			if err != nil {
+				t.Logf("Run returned after cancel: %v", err)
+			}
 		case <-time.After(10 * time.Second):
 			t.Error("Run did not return after cancel")
 		}

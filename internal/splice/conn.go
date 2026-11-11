@@ -83,7 +83,9 @@ func (c *conn) run(parent context.Context) {
 		c.s.log.Debug("TUI socket ended", "error", err)
 		c.cancel()
 		_ = c.hub.Close(websocket.StatusNormalClosure, "")
-		<-hubDone
+		if err := <-hubDone; err != nil {
+			c.s.log.Debug("gateway leg closed", "error", err)
+		}
 	case err := <-hubDone:
 		c.s.log.Info("gateway leg ended", "error", err)
 	}
@@ -91,7 +93,9 @@ func (c *conn) run(parent context.Context) {
 	c.work.Wait()
 	c.closeTUI(websocket.StatusInternalError, "hub gateway leg lost")
 	if !tuiEnded {
-		<-tuiDone
+		if err := <-tuiDone; err != nil {
+			c.s.log.Debug("TUI socket closed", "error", err)
+		}
 	}
 	_ = c.hub.CloseNow()
 	_ = c.tui.CloseNow()

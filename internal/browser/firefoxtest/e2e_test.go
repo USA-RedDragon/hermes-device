@@ -259,10 +259,11 @@ func runFirefox(ctx context.Context, t *testing.T, profile string, env []string)
 	t.Cleanup(func() {
 		_ = syscall.Kill(-ff.Process.Pid, syscall.SIGTERM)
 		select {
-		case <-done:
+		case err := <-done:
+			t.Logf("firefox exited: %v", err)
 		case <-time.After(10 * time.Second):
 			_ = syscall.Kill(-ff.Process.Pid, syscall.SIGKILL)
-			<-done
+			t.Logf("firefox killed: %v", <-done)
 		}
 		if t.Failed() {
 			t.Logf("firefox output:\n%s", log.String())

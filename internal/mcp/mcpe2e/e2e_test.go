@@ -141,7 +141,9 @@ func TestMCPEndToEnd(t *testing.T) { //nolint:paralleltest // one plugin server 
 	pyErr := <-pyDone
 	t.Logf("plugin side:\n%s", out.String())
 	devCancel()
-	<-devDone
+	if err := <-devDone; err != nil {
+		t.Errorf("device Run: %v", err)
+	}
 	mgr.Close()
 	if pyErr != nil {
 		t.Fatalf("plugin side failed: %v", pyErr)
