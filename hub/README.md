@@ -267,7 +267,7 @@ To set it up:
 1. Link your Telegram account first: send any message to the bot in a private chat and follow the link.
 2. In Telegram, make a new group. Add the bot to it.
 3. Open the group's settings and turn on Topics. (This turns the group into a supergroup. Do this before step 5: the group's ID changes.)
-4. Make the bot an admin of the group, with the right to manage topics.
+4. Make the bot an admin of the group, with the rights to manage topics and to delete messages (it deletes the topics of deleted chats).
 5. In the group, send `/link`. The bot checks that Topics are on and that it may manage topics, and links the group to the hub user of the Telegram account that sent `/link`. Only a linked Telegram account can link a group, and only to its own hub user. Linking a new group replaces the person's earlier group.
 
 How it works:
@@ -277,6 +277,7 @@ How it works:
 - **Following.** The bot follows a topic's chat while it runs, also when it started on the page, in an editor or in a scheduled job, and while someone talks in the topic. It shows the turn that runs when it starts following, not the turns before, and the approvals and questions that still wait. It stops following a chat that has not run and showed no prompt for <!-- docgen:const pkg=internal/telegram name=topicIdle -->`15m0s`<!-- /docgen:const -->.
 - **General.** Notices go to General instead of the private chat: scheduled job results, failures, long tasks that ended, and reminders of prompts that still wait, each with a button that opens the chat's topic when it has one. An approval or question of a chat with a topic shows in that topic only, until its reminder.
 - **Deleted topics.** When Telegram refuses a message because its topic was deleted or closed, the bot forgets the topic. The chat gets a new topic when it runs again, at least <!-- docgen:const pkg=internal/telegram name=topicIdle -->`15m0s`<!-- /docgen:const --> later.
+- **Deleted and archived chats.** When a chat is deleted, in the hub, in Hermes or by an agent, the bot deletes its topic (`deleteForumTopic`) and forgets it. It learns of a delete from the chat's stream when it follows the chat, and otherwise when it checks the topics: when it starts and every <!-- docgen:const pkg=internal/telegram name=reconcileEvery -->`5m0s`<!-- /docgen:const --> after, it asks the backend (`session.info`) about each topic whose chat is not in the chat list, and deletes the topic only when the backend says the chat does not exist; a backend it cannot reach deletes nothing. Archiving a chat closes its topic (`closeForumTopic`), and taking it out of the archive opens it again. A topic that Telegram says is gone is forgotten. When the bot lacks the rights, it says once in General that it needs "Manage Topics" and "Delete Messages". It never closes or deletes General.
 - `/unlink` in the group stops all of this. `/help` in the group lists the commands.
 
 The bot needs to be an admin to see every message in the group (with Telegram's privacy mode, the default, a bot that is not an admin sees only commands and replies to its own messages) and to make and rename topics. Every member of the group sees each topic, so keep the group to yourself.
