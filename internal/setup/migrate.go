@@ -480,7 +480,9 @@ func (s *System) migrateHost(p migratePaths, m *Migration) error {
 }
 
 // migrateServiceContent renames the paths, names and label in a legacy
-// unit or launchd agent file, and keeps every other setting. A unit
+// unit or launchd agent file, and keeps every other setting. A file that
+// setup did not write gets migratedServiceMarker, so that setup treats the
+// result as its own. A unit
 // without an OOMPolicy gets OOMPolicy=continue, so that an agent command
 // the kernel kills for memory does not stop the service.
 func (s *System) migrateServiceContent(p migratePaths, data string) string {
@@ -493,8 +495,15 @@ func (s *System) migrateServiceContent(p migratePaths, data string) string {
 		filepath.Join("Library", "Logs", "hermes-device.log"), filepath.Join("Library", "Logs", "talaria.log"),
 	}
 	out := s.rewriteConfigPaths(p, strings.NewReplacer(r...).Replace(data))
+	own := strings.Contains(out, serviceMarker)
 	if s.GOOS == darwin {
+		if i := strings.Index(out, "<plist"); i >= 0 && !own {
+			out = out[:i] + "<!-- " + migratedServiceMarker + ". talaria setup replaces it with its own file. -->\n" + out[i:]
+		}
 		return out
+	}
+	if !own {
+		out = "# " + migratedServiceMarker + ". talaria setup replaces it with its own unit.\n" + out
 	}
 	if !strings.Contains(out, "\nOOMPolicy=") {
 		if i := strings.Index(out, "[Service]\n"); i >= 0 {

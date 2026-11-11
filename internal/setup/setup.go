@@ -595,7 +595,7 @@ func (s *System) uninstallService(ctx context.Context, st *State, r *Report) err
 			st.Service = ""
 		case err != nil:
 			return err
-		case sha256Hex(data) != st.ServiceSHA256 && !strings.Contains(string(data), serviceMarker):
+		case sha256Hex(data) != st.ServiceSHA256 && !ownService(data):
 			r.todo("Left %s alone: it is no longer the file setup wrote", st.Service)
 			st.Service, st.ServiceOn = "", false
 			return nil

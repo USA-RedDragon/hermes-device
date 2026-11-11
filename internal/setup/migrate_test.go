@@ -120,6 +120,7 @@ func TestMigrateMovesEverything(t *testing.T) {
 	for _, want := range []string{
 		"ExecStart=%h/.talaria/bin/talaria run -c %h/.config/talaria/config.yaml", "MemoryMax=8G",
 		"[Service]\nOOMPolicy=continue\n", "Description=talaria:", "Conflicts=hermes-device.service", "After=hermes-device.service",
+		"# Moved from hermes-device by talaria.",
 	} {
 		if !strings.Contains(unit, want) {
 			t.Errorf("unit lacks %q:\n%s", want, unit)
@@ -309,5 +310,67 @@ func TestMigrateNoPathNoteWhenOnPath(t *testing.T) {
 		if strings.Contains(n, "PATH") {
 			t.Errorf("note %q", n)
 		}
+	}
+}
+
+// migratedUnit is a unit that Migrate wrote, before it marked them, from a
+// hand-written legacy unit.
+const migratedUnit = `[Unit]
+After=hermes-device.service
+Conflicts=hermes-device.service
+Description=talaria: runs the Hermes agent's commands on this PC
+After=network-online.target
+
+[Service]
+ExecStart=%h/.talaria/bin/talaria run -c %h/.config/talaria/config.yaml
+Restart=always
+
+[Install]
+WantedBy=default.target
+`
+
+// TestSetupReplacesMigratedUnits runs setup over a unit Migrate wrote now
+// and one it wrote before it marked them: setup treats both as its own,
+// backs them up and leaves their drop-ins alone.
+func TestSetupReplacesMigratedUnits(t *testing.T) {
+	t.Parallel()
+	l := newLegacyLayout(t)
+	if _, err := l.sys.Migrate(t.Context(), setup.MigrateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for name, unit := range map[string]string{"marked": readFile(t, l.unitPath), "unmarked": migratedUnit} {
+		f := newFixture(t)
+		f.opts.NoShell, f.opts.NoBrowser = true, true
+		path := filepath.Join(f.sys.Home, ".config", "systemd", "user", setup.UnitName)
+		dropIn := filepath.Join(path+".d", "oom.conf")
+		writeFile(t, path, unit)
+		writeFile(t, dropIn, "[Service]\nOOMPolicy=continue\n")
+		rep, err := f.sys.Setup(t.Context(), f.opts)
+		if err != nil {
+			t.Fatalf("%s: Setup: %v", name, err)
+		}
+		if got := readFile(t, path); !strings.HasPrefix(got, "# Written by talaria setup") {
+			t.Errorf("%s: unit not replaced:\n%s", name, got)
+		}
+		if readFile(t, path+".talaria-20261110-120000.bak") != unit || readFile(t, dropIn) != "[Service]\nOOMPolicy=continue\n" {
+			t.Errorf("%s: backup or drop-in wrong", name)
+		}
+		if !strings.Contains(strings.Join(rep.Done, "\n"), "Replaced "+path) {
+			t.Errorf("%s: report %+v", name, rep)
+		}
+	}
+}
+
+func TestMigrateMarksLaunchdAgent(t *testing.T) {
+	t.Parallel()
+	sys := newSystem(t, "darwin", &fakeRunner{}, map[string]string{launchctl: binLaunchctl}, nil)
+	legacy := filepath.Join(sys.Home, "Library", "LaunchAgents", "io.github.usa-reddragon.hermes-device.plist")
+	writeFile(t, legacy, "<?xml version=\"1.0\"?>\n<plist><dict><key>Label</key><string>io.github.usa-reddragon.hermes-device</string></dict></plist>\n")
+	if _, err := sys.Migrate(t.Context(), setup.MigrateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, filepath.Join(sys.Home, "Library", "LaunchAgents", "io.github.usa-reddragon.talaria.plist"))
+	if !strings.HasPrefix(got, "<?xml version=\"1.0\"?>\n<!-- Moved from hermes-device by talaria.") {
+		t.Errorf("plist:\n%s", got)
 	}
 }

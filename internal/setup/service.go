@@ -27,12 +27,29 @@ const (
 	LegacyLaunchdLabel = "io.github.usa-reddragon.hermes-device"
 )
 
-// serviceMarker starts every service file setup writes, and
-// legacyServiceMarker every one that setup wrote before the rename.
+// serviceMarker starts every service file setup writes,
+// legacyServiceMarker every one that setup wrote before the rename, and
+// migratedServiceMarker every one that Migrate wrote from a legacy file
+// that setup did not write.
 const (
-	serviceMarker       = "Written by talaria setup"
-	legacyServiceMarker = "Written by hermes-device setup"
+	serviceMarker         = "Written by talaria setup"
+	legacyServiceMarker   = "Written by hermes-device setup"
+	migratedServiceMarker = "Moved from hermes-device by talaria"
 )
+
+// migratedUnitLines follow [Unit] in every unit Migrate wrote, also in
+// those it wrote before it added migratedServiceMarker.
+const migratedUnitLines = "[Unit]\nAfter=" + LegacyUnitName + "\nConflicts=" + LegacyUnitName + "\n"
+
+// ownService reports whether setup or Migrate wrote the service file data.
+func ownService(data []byte) bool {
+	for _, m := range []string{serviceMarker, legacyServiceMarker, migratedServiceMarker, migratedUnitLines} {
+		if bytes.Contains(data, []byte(m)) {
+			return true
+		}
+	}
+	return false
+}
 
 // ErrNoServiceManager is returned when the computer has no systemd user
 // manager or launchd that setup can use.
@@ -89,14 +106,14 @@ type ServiceFile struct {
 
 // WriteServiceFile writes the service file for bin and cfg. A file that
 // setup wrote (its hash is ours, the hash setup recorded) is replaced; one
-// the user edited since is backed up first. A file setup did not write is
+// the user edited since, or one Migrate wrote, is backed up first. A file setup did not write is
 // kept when it has the same settings, and is replaced after a backup only
 // with force.
 func (s *System) WriteServiceFile(svc Service, bin, cfg, ours string, force bool) (ServiceFile, error) {
 	want := svc.Content(bin, cfg)
 	old, err := os.ReadFile(svc.Path())
 	var res ServiceFile
-	foreign := err == nil && !bytes.Contains(old, []byte(serviceMarker)) && !bytes.Contains(old, []byte(legacyServiceMarker))
+	foreign := err == nil && !ownService(old)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 	case err != nil:
