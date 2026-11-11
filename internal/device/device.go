@@ -64,28 +64,9 @@ type Dialer interface {
 type Browser interface {
 	Call(ctx context.Context, op string, args any) (json.RawMessage, error)
 	Connected() (broker.Hello, bool)
-	// Changed is closed the next time the extension connects, goes away
-	// or sends another credential.
+	// Changed is closed the next time the extension connects or goes away.
 	Changed() <-chan struct{}
-	// Token is the hub credential the extension holds, "" when signed out.
-	Token() string
-	// SetDevice and SetAuth tell the extension which device this is and
-	// what the hub said about its credential.
-	SetDevice(id, name string)
-	SetAuth(a broker.AuthStatus)
 }
-
-// NotSignedIn is the reason the browser cannot be used while the extension
-// holds no credential.
-const NotSignedIn = "Firefox is not signed in to Hermes"
-
-// AuthRetry is how long the device waits before it presents a credential
-// again after the hub could not check it.
-const AuthRetry = 30 * time.Second
-
-// authSlow is how long the device waits for the hub's answer to a
-// browser_auth before it says the hub does not answer.
-const authSlow = 10 * time.Second
 
 // BrowserOps are the operations the device passes to the browser
 // extension. Anything else is refused on the device.
@@ -325,16 +306,7 @@ type session struct {
 	bmu     sync.Mutex
 	calls   map[string]context.CancelFunc
 	// starts holds the cancel function of each browser_start in flight.
-	// A change of the sign-in does not cancel them; they wait for it.
 	starts map[string]context.CancelFunc
-	// auth is the hub's view of the extension's credential on this leg.
-	// pending counts browser_auth messages the hub has not answered yet.
-	amu     sync.Mutex
-	auth    broker.AuthStatus
-	pending int
-	sentAt  time.Time
-	retryAt time.Time
-	kick    chan struct{}
 	// mcp is true when the leg negotiated protocol.CapabilityMCP.
 	// mcpCalls holds the cancel function of each MCP request in flight.
 	mcp      bool
@@ -432,7 +404,7 @@ func (c *Client) serveOnce(ctx context.Context) (time.Duration, error) {
 
 	connCtx, cancel := context.WithCancel(ctx)
 	s := &session{c: c, conn: conn, ctx: connCtx, cancel: cancel, pings: map[int64]uint64{},
-		calls: map[string]context.CancelFunc{}, mcpCalls: map[string]context.CancelFunc{}, kick: make(chan struct{}, 1)}
+		calls: map[string]context.CancelFunc{}, mcpCalls: map[string]context.CancelFunc{}}
 	defer func() {
 		cancel()
 		s.wg.Wait()
@@ -481,19 +453,12 @@ func (c *Client) serveOnce(ctx context.Context) (time.Duration, error) {
 		"plugin_version", welcome.PluginVersion, "hermes_version", welcome.HermesVersion, "roots", c.opts.Allow.Roots(),
 		"browser", s.browser, "mcp", s.mcp)
 
-	if c.opts.Browser != nil {
-		c.opts.Browser.SetDevice(welcome.DeviceID, welcome.Name)
-	}
 	if s.browser {
-		s.wg.Go(func() { s.browserAuth(connCtx) })
 		s.wg.Go(func() { s.browserStatus(connCtx) })
 	}
 	s.wg.Go(func() { s.controlPings(connCtx) })
 	s.wg.Go(func() { s.appPings(connCtx) })
 	err = s.readLoop(connCtx)
-	if s.browser {
-		c.opts.Browser.SetAuth(broker.AuthStatus{State: broker.AuthOffline, Reason: "hermes-device is not connected to the hub"})
-	}
 	up := time.Since(connected)
 	_ = conn.CloseNow()
 	cancel()
@@ -584,12 +549,12 @@ func (s *session) readLoop(ctx context.Context) error {
 			return fmt.Errorf("read: %w", err)
 		}
 		s.touch()
-		typ, _, err := protocol.MessageType(data)
-		if err != nil {
+		var env protocol.Envelope
+		if err := json.Unmarshal(data, &env); err != nil {
 			slog.Warn("Ignoring malformed message", "error", err)
 			continue
 		}
-		switch typ {
+		switch env.Type {
 		case protocol.TypeExec:
 			var req protocol.Exec
 			if err := json.Unmarshal(data, &req); err != nil {
@@ -627,16 +592,6 @@ func (s *session) readLoop(ctx context.Context) error {
 				continue
 			}
 			s.browserStart(ctx, req)
-		case protocol.TypeBrowserAuthResult:
-			if !s.browser {
-				continue
-			}
-			var r protocol.BrowserAuthResult
-			if err := json.Unmarshal(data, &r); err != nil {
-				slog.Warn("Ignoring malformed browser_auth_result", "error", err)
-				continue
-			}
-			s.authResult(r)
 		case protocol.TypePing:
 			var p protocol.Ping
 			if err := json.Unmarshal(data, &p); err == nil {
@@ -648,7 +603,7 @@ func (s *session) readLoop(ctx context.Context) error {
 				s.pong(p.Seq)
 			}
 		default:
-			slog.Debug("Ignoring message", "type", typ)
+			slog.Debug("Ignoring message", "type", env.Type)
 		}
 	}
 }
@@ -1104,7 +1059,7 @@ func completeUTF8(b []byte) int {
 }
 
 // browserStatus sends a BrowserStatus now and each time the extension
-// connects, goes away or its sign-in changes.
+// connects or goes away.
 func (s *session) browserStatus(ctx context.Context) {
 	b := s.c.opts.Browser
 	var last protocol.BrowserStatus
@@ -1113,7 +1068,6 @@ func (s *session) browserStatus(ctx context.Context) {
 		st := protocol.BrowserStatus{Type: protocol.TypeBrowserStatus}
 		if h, ok := b.Connected(); ok {
 			st.Connected, st.Browser, st.ExtensionVersion = true, h.Browser, h.Version
-			st.SignedIn, st.User, st.Reason = s.signedIn()
 		}
 		st.CanStart = s.c.opts.StartBrowser != nil
 		if st != last {
@@ -1126,140 +1080,7 @@ func (s *session) browserStatus(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-changed:
-		case <-s.kick:
 		}
-	}
-}
-
-func (s *session) kickStatus() {
-	select {
-	case s.kick <- struct{}{}:
-	default:
-	}
-}
-
-// browserAuth presents the extension's credential to the hub after the
-// welcome and each time it changes, and again after AuthRetry when the hub
-// could not check it (docs/browser.md section 13).
-func (s *session) browserAuth(ctx context.Context) {
-	b := s.c.opts.Browser
-	sent, first := "", true
-	for {
-		changed := b.Changed()
-		if tok := b.Token(); first || tok != sent || s.retryDue() {
-			first, sent = false, tok
-			st := broker.AuthStatus{State: broker.AuthChecking}
-			if tok == "" {
-				st = broker.AuthStatus{State: broker.AuthSignedOut, Reason: NotSignedIn}
-			}
-			s.amu.Lock()
-			s.pending++
-			s.sentAt = time.Now()
-			s.auth = st
-			s.amu.Unlock()
-			s.cancelAllBrowser()
-			b.SetAuth(st)
-			s.kickStatus()
-			if err := s.send(ctx, protocol.BrowserAuth{Type: protocol.TypeBrowserAuth, Token: tok}); err != nil {
-				return
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-changed:
-		case <-time.After(authSlow):
-			s.kickStatus()
-		}
-	}
-}
-
-// retryDue reports, once, that AuthRetry passed since the hub could not
-// check the credential.
-func (s *session) retryDue() bool {
-	s.amu.Lock()
-	defer s.amu.Unlock()
-	if s.retryAt.IsZero() || time.Now().Before(s.retryAt) {
-		return false
-	}
-	s.retryAt = time.Time{}
-	return true
-}
-
-// authResult applies the hub's answer to a browser_auth, or a sign-in the
-// hub dropped. While answers are still due, only the last one counts.
-func (s *session) authResult(r protocol.BrowserAuthResult) {
-	s.amu.Lock()
-	if s.pending > 0 {
-		s.pending--
-	}
-	var st broker.AuthStatus
-	switch {
-	case r.OK:
-		st = broker.AuthStatus{State: broker.AuthSignedIn, User: cut(r.User, 256)}
-	case r.Code == protocol.BrowserAuthSignedOut:
-		st = broker.AuthStatus{State: broker.AuthSignedOut, Reason: NotSignedIn}
-	default:
-		reason := cut(r.Error, 300)
-		if reason == "" {
-			reason = "the hub refused the Firefox sign-in (" + cut(r.Code, 32) + ")"
-		}
-		st = broker.AuthStatus{State: broker.AuthRefused, Reason: reason}
-	}
-	apply := s.pending == 0
-	if apply {
-		s.auth = st
-		s.retryAt = time.Time{}
-		if r.Code == protocol.BrowserAuthUnavailable {
-			s.retryAt = time.Now().Add(AuthRetry)
-		}
-	}
-	s.amu.Unlock()
-	if !apply {
-		return
-	}
-	if st.State != broker.AuthSignedIn {
-		s.cancelAllBrowser()
-	}
-	if st.State == broker.AuthRefused {
-		slog.Warn("The hub refused the Firefox sign-in", "code", r.Code, "reason", st.Reason)
-	} else {
-		slog.Info("Firefox sign-in", "state", st.State, "user", st.User)
-	}
-	s.c.opts.Browser.SetAuth(st)
-	s.kickStatus()
-}
-
-// signedIn reports whether the hub accepted the extension's current
-// credential on this leg, as which user, and otherwise why not.
-func (s *session) signedIn() (bool, string, string) {
-	s.amu.Lock()
-	defer s.amu.Unlock()
-	switch {
-	case s.pending > 0 && time.Since(s.sentAt) > authSlow:
-		return false, "", "the hub did not confirm the Firefox sign-in; hermes-hub may need an update"
-	case s.pending > 0:
-		return false, "", "the hub has not confirmed the Firefox sign-in yet"
-	case s.auth.State == broker.AuthSignedIn:
-		return true, s.auth.User, ""
-	case s.auth.Reason != "":
-		return false, "", s.auth.Reason
-	}
-	return false, "", NotSignedIn
-}
-
-// cancelAllBrowser cancels every browser request in flight, when the
-// sign-in that admitted them ends. The extension may still finish an
-// operation it already started.
-func (s *session) cancelAllBrowser() {
-	s.bmu.Lock()
-	cancels := make([]context.CancelFunc, 0, len(s.calls))
-	for _, c := range s.calls {
-		cancels = append(cancels, c)
-	}
-	s.bmu.Unlock()
-	for _, c := range cancels {
-		c()
 	}
 }
 
@@ -1283,10 +1104,6 @@ func (s *session) browserCall(ctx context.Context, req protocol.Browser) {
 	}
 	if !BrowserOps[req.Op] {
 		fail(protocol.BrowserRefused, fmt.Sprintf("device %s refused: unknown browser operation %q", s.name, cut(req.Op, 32)))
-		return
-	}
-	if ok, _, why := s.signedIn(); !ok {
-		fail(protocol.BrowserNotSignedIn, fmt.Sprintf("device %s refused: %s", s.name, why))
 		return
 	}
 	timeout := time.Duration(req.Timeout * float64(time.Second))
@@ -1357,7 +1174,7 @@ func (c *Client) startCooldown() time.Duration {
 }
 
 // browserStart starts Firefox when the extension is not connected and
-// waits until it is connected and signed in (docs/browser.md section 5.1).
+// waits until it is connected (docs/browser.md section 5.1).
 func (s *session) browserStart(ctx context.Context, req protocol.BrowserStart) {
 	fail := func(code, msg string) {
 		_ = s.send(ctx, protocol.BrowserResult{Type: protocol.TypeBrowserResult, ID: req.ID, Code: code, Error: msg})
@@ -1404,9 +1221,7 @@ func (s *session) browserStart(ctx context.Context, req protocol.BrowserStart) {
 }
 
 type startResult struct {
-	Started  bool   `json:"started"`
-	SignedIn bool   `json:"signed_in"`
-	User     string `json:"user,omitempty"`
+	Started bool `json:"started"`
 }
 
 func (s *session) startAndWait(ctx context.Context, timeout time.Duration) (startResult, string, string) {
@@ -1432,10 +1247,7 @@ func (s *session) startAndWait(ctx context.Context, timeout time.Duration) (star
 	defer tick.Stop()
 	for {
 		changed := b.Changed()
-		_, connected := b.Connected()
-		ok, user, why := s.signedIn()
-		if connected && ok {
-			res.SignedIn, res.User = true, user
+		if _, connected := b.Connected(); connected {
 			return res, "", ""
 		}
 		select {
@@ -1443,11 +1255,8 @@ func (s *session) startAndWait(ctx context.Context, timeout time.Duration) (star
 			if errors.Is(ctx.Err(), context.Canceled) {
 				return res, protocol.BrowserCancelled, "browser start cancelled"
 			}
-			if !connected {
-				return res, protocol.BrowserTimeout, fmt.Sprintf("Firefox did not connect to hermes-device on %s within %s: "+
-					"check that the Hermes extension is installed and enabled in the default Firefox profile", s.name, timeout)
-			}
-			return res, protocol.BrowserNotSignedIn, fmt.Sprintf("Firefox runs on %s but is not signed in: %s", s.name, why)
+			return res, protocol.BrowserTimeout, fmt.Sprintf("Firefox did not connect to hermes-device on %s within %s: "+
+				"check that the Hermes extension is installed and enabled in the default Firefox profile", s.name, timeout)
 		case <-changed:
 		case <-tick.C:
 		}
