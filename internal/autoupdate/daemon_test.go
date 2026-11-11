@@ -68,7 +68,7 @@ func TestScheduleAndJitter(t *testing.T) {
 		if got := d.NextDelay(); got.Round(time.Minute) != want {
 			t.Errorf("NextDelay at %v = %s, want %s", r, got, want)
 		}
-		if got := d.FirstDelay(); got < autoupdate.DefaultFirstMin || got > autoupdate.DefaultFirstMax {
+		if got := d.FirstDelay(); got < autoupdate.DefaultFirstEarliest || got > autoupdate.DefaultFirstLatest {
 			t.Errorf("FirstDelay at %v = %s", r, got)
 		}
 	}

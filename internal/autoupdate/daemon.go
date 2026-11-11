@@ -9,10 +9,10 @@ import (
 
 // Defaults of Daemon.
 const (
-	DefaultFirstMin = time.Minute
-	DefaultFirstMax = 5 * time.Minute
-	DefaultIdleWait = 30 * time.Minute
-	DefaultIdlePoll = 10 * time.Second
+	DefaultFirstEarliest = time.Minute
+	DefaultFirstLatest   = 5 * time.Minute
+	DefaultIdleWait      = 30 * time.Minute
+	DefaultIdlePoll      = 10 * time.Second
 	// Jitter is the most a check moves from the interval, as a fraction.
 	Jitter = 0.1
 )
@@ -80,10 +80,10 @@ func (d *Daemon) log() *slog.Logger {
 func (d *Daemon) FirstDelay() time.Duration {
 	lo, hi := d.FirstMin, d.FirstMax
 	if lo <= 0 {
-		lo = DefaultFirstMin
+		lo = DefaultFirstEarliest
 	}
 	if hi < lo {
-		hi = max(lo, DefaultFirstMax)
+		hi = max(lo, DefaultFirstLatest)
 	}
 	return lo + time.Duration(d.rand()*float64(hi-lo))
 }

@@ -212,7 +212,12 @@ func TestBusyAndDrain(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- c.Run(ctx) }()
-	t.Cleanup(func() { cancel(); <-done })
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Logf("Run returned after cancel: %v", err)
+		}
+	})
 	expect := func(want string) {
 		t.Helper()
 		select {
