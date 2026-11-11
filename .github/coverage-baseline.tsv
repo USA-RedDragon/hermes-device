@@ -1,4 +1,4 @@
-assertion/assertion.go	106	88
+assertion/assertion.go	106	89
 cmd/acp.go	29	1
 cmd/acphost.go	29	1
 cmd/browser.go	83	22
@@ -14,7 +14,7 @@ cmd/update.go	64	7
 extension/firefox/embed.go	67	60
 internal/acpbridge/acpbridge.go	485	421
 internal/acpbridge/inline.go	38	35
-internal/acphost/acphost.go	259	204
+internal/acphost/acphost.go	259	203
 internal/acphost/rewrite.go	227	209
 internal/acphost/sweep.go	42	36
 internal/acphost/sweep_linux.go	38	27
@@ -23,7 +23,7 @@ internal/attest/attest.go	152	114
 internal/browser/bidi/bidi.go	51	0
 internal/browser/broker/broker.go	208	158
 internal/browser/broker/peercred_linux.go	13	9
-internal/browser/host/host.go	43	27
+internal/browser/host/host.go	43	29
 internal/browser/launch/launch.go	115	81
 internal/browser/nativemsg/nativemsg.go	19	18
 internal/chat/chat.go	229	195
