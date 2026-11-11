@@ -38,6 +38,7 @@ const (
 	methodMutate       = "session.mutate"
 	methodConfigSet    = "config.set"
 	methodCompletePath = "complete.path"
+	methodProcessList  = "process.list"
 	opWorkspace        = "workspace"
 	opBranch           = "branch"
 	opDelete           = "delete"
@@ -187,7 +188,7 @@ func denied(method string, params map[string]json.RawMessage) bool {
 	case "model.save_key", "profiles.create", "shell.exec", "cli.exec", "image.attach", "input.detect_drop",
 		"clipboard.paste", "mcp.servers.add", "mcp.servers.test", "mcp.servers.remove", "plugins.manage",
 		"skills.manage", "cron.manage", "cron.submit", "kanban.run", "browser.manage", "display.install",
-		"display.start", "a2a.forward", "process.kill", "process.list", "rollback.restore", "set_api_key",
+		"display.start", "a2a.forward", "process.kill", "rollback.restore", "set_api_key",
 		"diagnostics.share_nous", "free_tier.provision", "session.foreign.import", "prompt.background":
 		return true
 	case methodConfigSet:

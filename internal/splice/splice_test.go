@@ -257,7 +257,6 @@ func TestDeniedMethods(t *testing.T) {
 		{"a2a.forward", map[string]any{}},
 		{"worker.spawn", map[string]any{}},
 		{"process.kill", map[string]any{}},
-		{"process.list", map[string]any{}},
 		{"rollback.restore", map[string]any{}},
 		{"connectors.add", map[string]any{}},
 		{"set_api_key", map[string]any{}},
@@ -312,6 +311,19 @@ func TestCompletePathEmpty(t *testing.T) {
 	}
 	if _, ok := e.hub.find("complete.path", nil); ok {
 		t.Fatal("complete.path reached the gateway")
+	}
+}
+
+func TestProcessListEmpty(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, splice.Options{})
+	c := e.dialTUI()
+	m := c.call("r1", "process.list", map[string]any{keySessionID: "s"})
+	if m.Error != nil || string(m.Result) != `{"processes":[]}` {
+		t.Fatalf("answer %+v %s", m, m.Result)
+	}
+	if _, ok := e.hub.find("process.list", nil); ok {
+		t.Fatal("process.list reached the gateway")
 	}
 }
 
