@@ -292,13 +292,14 @@ What a restart does:
 
 ### 4.8 Browser control (capability `browser`)
 
-On a leg where `welcome.capabilities` names `browser`, three more message types run on the exec leg. docs/browser.md section 4 defines their fields, ops and codes.
+On a leg where `welcome.capabilities` names `browser`, more message types run on the exec leg. docs/browser.md section 4 defines their fields, ops and codes.
 
 | Type | Direction | Meaning |
 |---|---|---|
-| `browser` | plugin to device | Run one browser operation: `{"type", "id", "op", "args", "timeout"}`. `id` is unique per connection; `kill` with the same `id` cancels it |
+| `browser` | plugin to device | Run one browser operation: `{"type", "id", "op", "args", "timeout"}`. `id` is unique per connection; `kill` with the same `id` cancels it. `op` is one of `tabs_list`, `tab_open`, `tab_close`, `navigate`, `back`, `read_text`, `snapshot`, `inspect`, `click`, `type`, `press`, `hover`, `scroll`, `wait`, `eval`, `screenshot` |
+| `browser_start` | plugin to device | Start Firefox when the extension is not connected, and wait until it is connected and signed in: `{"type", "id", "timeout"}`. Answered by one `browser_result` with the same `id` (`result`: `{"started", "signed_in", "user"}`); `kill` cancels it. The hub forwards it like any other message (docs/browser.md section 5.1) |
 | `browser_result` | device to plugin | Exactly one answer per `browser`: `{"type", "id", "ok", "result"}` or `{"type", "id", "ok": false, "code", "error"}`, `code` one of `not_connected`, `refused`, `timeout`, `cancelled`, `failed` |
-| `browser_status` | device to plugin | Whether the browser extension is connected and signed in: `{"type", "connected", "signed_in", "user", "reason", "browser", "extension_version"}`. Sent after the `welcome` (and the `resume`) and on every change. The hub rewrites it: while the hub has not accepted the browser's credential, `connected` and `signed_in` are false and `reason` says why |
+| `browser_status` | device to plugin | Whether the browser extension is connected and signed in: `{"type", "connected", "signed_in", "user", "reason", "browser", "extension_version", "can_start"}` (`can_start`: the device answers `browser_start`). Sent after the `welcome` (and the `resume`) and on every change. The hub rewrites it: while the hub has not accepted the browser's credential, `connected` and `signed_in` are false and `reason` says why |
 | `browser_auth` | device to hub | The browser credential the extension holds: `{"type", "token"}`, `""` when signed out. Sent after the `welcome` (and the `resume`) and whenever it changes. The hub answers it and never forwards it |
 | `browser_auth_result` | hub to device | `{"type", "ok", "user", "session_id"}` or `{"type", "ok": false, "code", "error"}`, `code` one of `signed_out`, `invalid`, `wrong_user`, `other_device`, `unavailable`. The answer to each `browser_auth`, and unsolicited when the hub drops the sign-in. The hub drops any that the plugin sends |
 

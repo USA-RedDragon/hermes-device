@@ -1,6 +1,6 @@
 # Browser control
 
-Status: built (phase 5). The device side and the plugin's `device-browser` toolset run end to end against a throwaway headless Firefox (section 10). Firefox must be signed in to hermes-hub as the device's owner before the agent can use it (section 13). Each release signs the extension on addons.mozilla.org once the AMO secrets are set (section 6.1). No signed release exists yet, so for now it loads only as a temporary add-on.
+Status: built (phase 5). The device side and the plugin's `device-browser` toolset run end to end against a throwaway headless Firefox (section 10). Frames, shadow DOM, scrolling, keys, hover, waiting, full-page screenshots, scripts (`browser_eval`), Salesforce click confirmation and starting Firefox from the device were added in phase 6. Firefox must be signed in to hermes-hub as the device's owner before the agent can use it (section 13). Each release signs the extension on addons.mozilla.org once the AMO secrets are set (section 6.1). No signed release exists yet, so for now it loads only as a temporary add-on.
 
 The goal: the server Hermes agent uses the user's own Firefox on their PC, with the user's logins, in a way the user can see and stop. This document picks the mechanism, defines the tool surface and the exec leg messages, and states the security model.
 
@@ -85,13 +85,17 @@ The ACP display formatter reads `title`, `url`, `text` and `snapshot` from the r
 | `browser_tabs` | `action`: `list`, `open` or `close`; `url` (open); `tab_id` (close) | `tabs_list`, `tab_open`, `tab_close` | Tabs in the Hermes group: `tab_id`, `url`, `title`, `active` |
 | `browser_navigate` | `url`; `tab_id` (optional: without it the plugin opens a tab) | `navigate` or `tab_open` | `tab_id`, `url`, `title` |
 | `browser_back` | `tab_id` | `back` | `tab_id`, `url`, `title` |
-| `browser_snapshot` | `tab_id`; `interactive_only` (bool); `full_text` (bool, also return page text) | `snapshot`, `read_text` | `title`, `url`, `snapshot`, optional `text` |
+| `browser_snapshot` | `tab_id`; `interactive_only` (bool); `full_text` (bool, also return page text); `text_only` (bool, only the text); `text_offset`; `wait_for` (text) or `wait_selector` (CSS) and `wait_seconds` (at most 30) | `wait`, `snapshot`, `read_text` | `title`, `url`, `snapshot`, optional `text`, `text_truncated`, `text_next_offset`, `waited` |
 | `browser_click` | `tab_id`; `ref` (`e12` or `@e12`) | `inspect` (in `pre_tool_call`), then `click` | `tab_id`, `url`, `title` after the click settles |
 | `browser_type` | `tab_id`; `ref`; `text`; `submit` (bool) | `inspect`, then `type` | as click |
-| `browser_vision` | `tab_id`; `question` (optional) | `screenshot` (JPEG, quality 85) | Multimodal result with the image |
-| `browser_screenshot` | `tab_id` | `screenshot` (JPEG, quality 85) | `tab_id`, `url`, `title`, the saved file's `path`, and `show_user`: `MEDIA:<path>` |
+| `browser_vision` | `tab_id`; `question` (optional); `full_page` (bool) | `screenshot` (JPEG, quality 85) | Multimodal result with the image |
+| `browser_screenshot` | `tab_id`; `full_page` (bool) | `screenshot` (JPEG, quality 85) | `tab_id`, `url`, `title`, the saved file's `path`, and `show_user`: `MEDIA:<path>` |
+| `browser_press` | `tab_id`; `key` (`Enter`, `Tab`, `Shift+Tab`, `Escape`, `Space`, `ArrowDown`, `Control+a`, one character, ...); `ref` (optional: the element to press it on, else the focused element) | `inspect` (in `pre_tool_call`), then `press` | `tab_id`, `url`, `title`, `pressed`, `default_action`, `focused` |
+| `browser_hover` | `tab_id`; `ref` | `hover` | `tab_id`, `url`, `title` |
+| `browser_scroll` | `tab_id`; `direction` (`down`, `up`, `top`, `bottom`) and `pages`; `ref` (alone: bring it into view; with `direction`: scroll the area that holds it); `to_text`; `frame` | `scroll` | `scrolled` (`page` or `area`), `scroll_y`, `scroll_height`, `view_height`, `at_top`, `at_bottom`, `found` |
+| `browser_eval` | `tab_id`; `script` (the body of an async function); `frame` (optional, such as `f2`); `allow_writes` (bool); `max_chars` | `inspect` (in `pre_tool_call`), then `eval` | `tab_id`, `url`, `title`, `read_only`, and `result` (the returned value) or `result_text` and `truncated` when the JSON is longer than `max_chars`; `note` as for snapshots |
 
-Errors are JSON results `{"error": "...", "code": "..."}`. `code` is a `browser_result` code (section 4.2), or `unavailable` (no browser for this session, below, also when Firefox is not signed in), `declined` (the user said no, section 7) or `bad_arguments`.
+Errors are JSON results `{"error": "...", "code": "..."}`. `code` is a `browser_result` code (section 4.2), or `unavailable` (no browser for this session, below, also when Firefox is not signed in), `declined` (the user said no, section 7), `started` (Firefox was closed and is started now: make the same call again, section 5.1) or `bad_arguments`.
 
 Every call goes to the device the session is bound to (`/device <device> <dir>`), resolved as for the terminal backend (protocol.md section 8.3). The plugin refuses, without sending anything, when the session is not bound, when it runs in the sandbox device (`fallback: device`, which has no browser), when the device is not connected, when the device did not offer the `browser` capability, when the device reports that its extension is not connected, or when the status says Firefox is not signed in (section 13).
 
@@ -102,13 +106,28 @@ Snapshot format, one element per line, indented by nesting, with refs that later
 - link "Learn more" [ref=e7]
 ```
 
+Frames (measured on a local page with a same-origin and a cross-origin iframe): each visible `iframe` gets a line with its frame name, and its elements follow it, indented, with refs that carry the frame:
+
+```text
+- heading "Frames" [level=1] [ref=e1]
+- iframe "same" [frame=f1]
+  - paragraph "inner 127.0.0.1" [ref=f1e1]
+  - button "Inner button" [ref=f1e2]
+- iframe "cross" [frame=f2]
+  - paragraph "inner 127.0.0.2" [ref=f2e1]
+  - button "Inner button" [ref=f2e2]
+- button "Shadow button" [ref=e2]
+```
+
+The extension runs the snapshot in every frame of the tab (`scripting.executeScript` with `allFrames`) and joins the outlines under the frame lines; `runtime.getFrameId` maps each `iframe` element to its frame. Frame names (`f1`, `f2`) stay the same for a frame while the tab lives. A frame that shows no http(s) page, or that Firefox does not let the extension into, shows `[frame not readable]`. Shadow DOM: the outline follows the rendered tree, so an element with a shadow root shows its shadow tree (open or closed, through Firefox's `openOrClosedShadowRoot`) and a `slot` shows its assigned elements. Text (`full_text`) is the top frame's `innerText`, then the text of shadow trees that `innerText` leaves out, then each frame's text under a `[frame f2: <host>]` line. It is cut at 100,000 characters per call; `text_next_offset` gives the start of the next part.
+
 `browser_snapshot` adds `"note"`, which tells the model that page content is untrusted and that it must not follow instructions in it.
 
 Interactive elements carry their state (`value="..."`, `[checked]`, `[level=1]` for headings). The values of password, card and one-time code fields (by type, `autocomplete` or field name) are never included. Refs live in the extension's isolated content script world (a `WeakRef` map), not in the DOM, so the page cannot read or move them. A new snapshot replaces the refs of that page.
 
 Page text cannot forge lines: roles come from a fixed list (an unknown `role` attribute is dropped), names and values are JSON-encoded strings, and brackets are removed from them. The page still controls the order of elements and so the ref numbers; the model must use refs from the line it means.
 
-The snapshot covers the top frame only, and not shadow DOM. Sign-in and payment forms in iframes are out of reach; `scripting.executeScript` with `allFrames` and a walk through open shadow roots would add them.
+Secret field detection (section 7) covers every frame and shadow trees: a password field in any frame of the tab makes every action in the tab ask.
 
 `browser_vision` returns the Hermes multimodal envelope (`{"_multimodal": true, "content": [text, image_url data URL], "text_summary": ...}`, source `tools/vision_tools.py:594-614`) as a Python dict, which is the only form the registry passes on as multimodal (source, `tools/registry.py:955-970`). The plugin writes the screenshot to a temporary file and downscales it with the helper `browser_exec` uses (`_resize_image_for_vision` with `resolve_embed_target_bytes()`, `_EMBED_MAX_DIMENSION` and `force_jpeg`), and returns text only when `_should_use_native_vision_fast_path()` says the model cannot take images in tool results, as `browser_exec` does (source, `tools/browser_use_cli.py:306-325`).
 
@@ -116,7 +135,15 @@ The snapshot covers the top frame only, and not shadow DOM. Sign-in and payment 
 
 Tool registration: `ctx.register_tool(name, "device-browser", schema, handler, check_fn=...)`. The toolset is on by default once the plugin is enabled (source, `hermes_cli/tools_config.py:520-527`); the plugin setting `browser: false` hides it. `check_fn` takes no arguments and Hermes caches it for about 30 seconds (source, `tools/registry.py:922-933`), so it cannot look at the session: `browser_status` is listed while any connected device offers the `browser` capability, and the other tools while any such device reports a connected and signed-in extension. The per-session checks happen in the handler, as above.
 
-Later additions: `browser_scroll`, `browser_press` (keys), `browser_select` (select options), `browser_get_images`, `browser_console`, and file upload.
+Synthetic key events have no default action in Firefox, so `press` does the usual one itself when the page did not cancel the `keydown`: Enter and Space click a button, link or checkbox, Enter in a field submits its form (both checked against the guard like a click or a submit), Tab and Shift+Tab move the focus, the arrow, page, Home and End keys scroll when the focus is not in a text field, a character is typed into a text field, Backspace deletes, and Control+a selects all. `hover` sends `pointerover`, `pointerenter`, `mouseover`, `mouseenter`, `pointermove` and `mousemove` at the element's center. A full-page screenshot uses `tabs.captureTab` with a `rect` of the whole document (measured: a 5,000 pixel page comes back whole), at most 4,096 by 16,384 CSS pixels and 16 million pixels (larger pages are scaled down, and `clipped` is set when the page is longer). A page that scrolls inside an inner element shows only one screen this way; scroll it and look again.
+
+Later additions: `browser_select` (select options), `browser_get_images`, `browser_console`, and file upload.
+
+### 3.1 Hidden built-in tool
+
+Hermes v0.22.7 has a built-in `browser_vault` tool in its core `browser` toolset, next to `browser_exec`, `browser_cdp` and `browser_dialog` (source, `toolsets.py`). It drives Hermes's own CDP browser, not the user's Firefox, and Hermes has no switch to turn off one tool of a toolset. The plugin removes `browser_vault` from the tool registry when it loads, and again at each session start (the built-in tools can be imported after the plugin), so the model never sees it. `browser_exec` and the rest stay.
+
+Hermes lets a plugin remove a built-in tool only with the operator's opt-in (source, `tools/registry.py` `deregister`, `_PluginOverridePolicy`): set `plugins.entries.device.granted_capabilities: [tools.override]` in the Hermes `config.yaml` (the older `plugins.entries.device.allow_tool_override: true` also works). The removal runs from the plugin's own module, so the registry applies that check. Without the opt-in the plugin logs one warning and the tool stays. `tools.override` also lets the plugin override other built-in tools; it uses it for nothing else.
 
 ## 4. Exec leg messages
 
@@ -133,7 +160,7 @@ Browser requests are not kept across a drop: when the leg drops, the device canc
 | Field | Meaning |
 |---|---|
 | `id` | Request id, unique per connection (32 hex characters) |
-| `op` | One of `tabs_list`, `tab_open`, `tab_close`, `navigate`, `back`, `read_text`, `snapshot`, `inspect`, `click`, `type`, `screenshot`. The device refuses any other op |
+| `op` | One of `tabs_list`, `tab_open`, `tab_close`, `navigate`, `back`, `read_text`, `snapshot`, `inspect`, `click`, `type`, `press`, `hover`, `scroll`, `wait`, `eval`, `screenshot`. The device refuses any other op |
 | `args` | Op arguments, as in section 3 |
 | `timeout` | Seconds. Default <!-- docgen:const pkg=protocol name=BrowserDefaultTimeout print=config -->`1m0s`<!-- /docgen:const -->, capped at <!-- docgen:const pkg=protocol name=BrowserMaxTimeout print=config -->`5m0s`<!-- /docgen:const --> by the device. The plugin waits 10 seconds more for the answer, then sends `kill` and fails the call with `timeout` |
 
@@ -147,15 +174,20 @@ Op arguments (`args`):
 | `tab_open` | `url`; `guard` | the tab |
 | `tab_close` | `tab_id` | `{"closed": tab_id}` |
 | `navigate` | `tab_id`; `url`; `guard` | the tab, after the load completes |
-| `back` | `tab_id` | as navigate |
-| `read_text` | `tab_id`; `max_chars` (at most 100000) | `{"title", "url", "text", "truncated"}` |
-| `snapshot` | `tab_id`; `interactive_only` | `{"title", "url", "snapshot", "element_count"}` |
-| `inspect` | `tab_id`, `ref` and `url`, each optional | `{"url", "host", "sensitive": [...], "target": {"kind", "host", "url"}}` for the tab and ref, and `url_host`, the host of `url` as the browser parses it (section 7) |
+| `back` | `tab_id` | as navigate. Refused in a tab that ran a script (section 7.2) |
+| `read_text` | `tab_id`; `max_chars` (at most 100000); `offset` | `{"title", "url", "text", "truncated", "total_chars", "next_offset"}`, every frame's text (section 3) |
+| `snapshot` | `tab_id`; `interactive_only` | `{"title", "url", "snapshot", "element_count"}`, every frame (section 3) |
+| `inspect` | `tab_id`, `ref` (`e12` or `f2e12`), `frame` (`f2`), `focus` (bool: the focused element) and `url`, each optional | `{"url", "host", "top_host", "sensitive": [...], "protected", "scripted", "target": {"kind", "host", "url", "form", "label"}}`: `host` is the frame's host, `sensitive` covers every frame of the tab, `protected` is true on a protected site (section 7.1), `label` is the element's text (at most 80 characters); and `url_host`, the host of `url` as the browser parses it (section 7) |
 | `click` | `tab_id`; `ref`; `guard` | the tab after the click settles, plus `clicked` |
 | `type` | `tab_id`; `ref`; `text`; `submit`; `guard` | as click, plus `typed` and `submitted` |
-| `screenshot` | `tab_id`; `format` (`png` or `jpeg`); `quality` (jpeg, 10 to 100) | `{"tab_id", "url", "title", "data_url"}` |
+| `press` | `tab_id`; `key`; `ref` (optional); `guard` | as click, plus `pressed`, `default_action` (`typed`, `clicked`, `submitted`, `focus moved`, `scrolled`, `none`, or `cancelled by the page`) and `focused` |
+| `hover` | `tab_id`; `ref` | the tab, plus `hovered` |
+| `scroll` | `tab_id`; `direction` and `pages` (0.1 to 20), `ref`, `to_text`, `frame` | `{"scrolled", "scroll_y", "scroll_height", "view_height", "at_top", "at_bottom", "found", "frame"}` |
+| `wait` | `tab_id`; `text` or `selector`; `timeout_ms` (at most 30000) | `{"found", "waited_ms", "frame"}`; checks every frame every 300 ms |
+| `eval` | `tab_id`; `script`; `frame`; `allow_writes`; `max_chars` (at most 1000000, default 100000); `guard` | `{"tab_id", "url", "title", "frame", "read_only", "result"}` or `"result_text", "truncated", "result_chars"`; `hint` when the script returned nothing (section 7.2) |
+| `screenshot` | `tab_id`; `format` (`png` or `jpeg`); `quality` (jpeg, 10 to 100); `full_page` | `{"tab_id", "url", "title", "data_url"}`, plus `page_height`, `clipped` and `scale` for a full page |
 
-`guard` is `{"submit_hosts": [...], "visit_hosts": [...], "sensitive": bool}`: what the user approved for this call (section 7). A missing `guard` approves nothing. `navigate` and `tab_open` refuse a URL on another site than the tab's current one (any site, for a new tab) unless `visit_hosts` names it.
+`guard` is `{"submit_hosts": [...], "visit_hosts": [...], "sensitive": bool, "confirmed": bool}` for actions and `{"script_hosts": [...], "write_hosts": [...], "sensitive": bool}` for `eval`: what the user approved for this call (section 7). `sensitive` and `confirmed` mean the user confirmed this one call. A missing `guard` approves nothing. `navigate` and `tab_open` refuse a URL on another site than the tab's current one (any site, for a new tab) unless `visit_hosts` names it.
 
 ### 4.2 browser_result (device to plugin)
 
@@ -180,19 +212,44 @@ Size: a PNG screenshot of a 1366x682 page is about 80 KB (measured: 79306 bytes)
 ```json
 {"type": "browser_status", "connected": true, "signed_in": true, "user": "alice", "browser": "Firefox 157.0.1", "extension_version": "0.2.0"}
 {"type": "browser_status", "connected": false, "signed_in": false, "reason": "Firefox is not signed in to Hermes", "browser": "Firefox 157.0.1", "extension_version": "0.5.0"}
+{"type": "browser_status", "connected": false, "signed_in": false, "can_start": true}
 ```
 
+`can_start` is true when the device answers `browser_start` (section 4.4). With `connected` false, no `reason` and `can_start` true, Firefox is closed and the plugin may start it.
+
 The device sends it right after the `welcome` (and the `resume` on version 3), and again whenever the extension connects, goes away or its sign-in changes. `signed_in` and `user` are the device's view of the hub's answer to its `browser_auth` (section 13). The hub rewrites every `browser_status` from its own view: while the hub has not accepted the browser's credential, it sets `connected` and `signed_in` to false and `reason` to why, so a plugin that does not know `signed_in` offers no browser either. When the extension itself is not connected, `reason` is empty. The plugin keeps the last one per connection for `check_fn`, `browser_status` and `GET /devices` (the Device object gains `"capabilities"` and `"browser"`).
+
+### 4.4 browser_start (plugin to device)
+
+```json
+{"type": "browser_start", "id": "5a1e...", "timeout": 90}
+```
+
+The device starts Firefox when the extension is not connected (section 5.1), waits until the extension is connected and the hub accepted its sign-in, and answers with one `browser_result` with the same `id`: `{"started": bool, "signed_in": true, "user"}`, or `refused` (`browser.start-firefox` is off), `failed` (Firefox could not start, for example with no graphical session; `error` says why), `timeout` (Firefox did not connect in time), `not_signed_in` (it connected but is not signed in) or `cancelled` (`kill`). A change of the sign-in does not cancel it; it waits for one. The hub forwards `browser_start` without a sign-in check: while Firefox is closed there is nothing to check, starting it gives no access to pages, and the exec leg could already start any program on the device.
 
 ## 5. Device side
 
 - `hermes-device run` with `browser.enabled: true` listens on `<state dir>/browser.sock` (the state directory is `store.state-dir`, by default `hermes-device` in the user config directory). The directory is made mode 0700 and the socket 0600; on Linux it also checks the peer's uid with `SO_PEERCRED` and refuses other users. `browser.allow-hosts` lists loopback or private network host names the agent may open (section 6).
 - `hermes-device browser install` (alias `install-host`) writes, for the current user and without root, the host manifest `hermes_device.json` (`"allowed_extensions": ["browser@hermes-device"]`, `"path"` = the running binary with symlinks resolved) and `hermes_device.socket` (the socket path for the configured state directory) into `~/.mozilla/native-messaging-hosts` (Linux) or `~/Library/Application Support/Mozilla/NativeMessagingHosts` (macOS). Run it again after moving the binary or changing `store.state-dir`. `hermes-device browser uninstall` removes both files.
+- `browser.start-firefox` (default true; the sandbox image sets `HERMES_DEVICE_BROWSER_START_FIREFOX=false`) lets the agent start Firefox (section 5.1). `browser.firefox-command` (default `firefox`) is the command. `browser.confirm-hosts` adds sites that are handled like Salesforce (section 7.1); the plugin cannot change this list.
 - `hermes-device browser extension --out <dir>` writes the extension's files, which the binary embeds, for loading as a temporary add-on.
 - Firefox starts the binary as `<binary> <manifest path> <extension id>`. `main` recognizes that form, checks the extension id, finds the socket (`HERMES_DEVICE_BROWSER_SOCKET`, else the path in `hermes_device.socket` next to the manifest, else the default state directory), dials it and sends `host_hello` with the extension id and its pid. Then it copies native messaging frames both ways and enforces Firefox's 1 MiB limit towards the browser.
 - The extension sends `hello` (its version and the browser's name and version). The broker answers with `config` (`allow_hosts`; `hub_url`, the daemon's `hub.url`, which the extension shows as a hint; and `device_id` and `device_name` once the exec leg has had a `welcome`, sent again when they change) and `auth_status`. The extension then sends `auth` (section 13). The broker accepts one extension connection; a newer one replaces the older, and the older gets `replaced` first. An extension that was replaced does not reconnect on its own; a click on its toolbar button makes it take over again. So two Firefox instances with the extension no longer take turns.
 - Wire format on the socket: native messaging frames (32-bit little-endian length, then JSON). Requests are `{"type": "request", "id", "op", "args"}`, answers `{"type": "response", "id", "ok", "result" | "error", "code"}`.
 - Sign-in messages: `{"type": "auth", "token": "hbt_..."}` (extension to daemon; an empty token means signed out; the broker ignores a token that does not start with `hbt_` or is longer than 256 bytes and forgets the token when the extension goes away), `{"type": "auth_status", "state", "user", "reason"}` (daemon to extension; `state` is `signed_out`, `checking`, `signed_in`, `refused` or `offline`), and `{"type": "sign_in"}` and `{"type": "sign_out"}` (daemon to extension: start the hub's sign-in window, or sign out, as the toolbar menu does; only the end-to-end test sends them today, since BiDi cannot open or script extension pages).
+
+### 5.1 Starting Firefox
+
+A scheduled job must work after the user closed Firefox. When the extension is not connected and the device offers it (`can_start`), any browser tool except `browser_status` sends `browser_start` first and then answers `started` ("Firefox was not running on device X, so it was started and is signed in now. Make the same browser call again."). The call is not run in the same step, so its approvals are asked against the running browser. `browser_status` only reports that Firefox is not running. The tools stay listed while Firefox is closed and the device can start it.
+
+The daemon usually runs as a systemd user service, which has no display variables. To start Firefox in the user's graphical session it:
+
+1. Takes its own environment. When that has neither `WAYLAND_DISPLAY` nor `DISPLAY`, it adds the session variables (`WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP` and a few more) from `systemctl --user show-environment`. Desktops import them into the user manager at login (measured on this project's KDE Plasma desktop: the user manager has `WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY` and `DBUS_SESSION_BUS_ADDRESS`, the service's own environment does not). `XDG_RUNTIME_DIR` defaults to `/run/user/<uid>` and the bus to `$XDG_RUNTIME_DIR/bus` when they exist.
+2. Checks that the display's socket exists (`$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`, or `/tmp/.X11-unix/X<n>` for `:<n>`). If there is no display, or its socket is gone (the user logged out), it fails with "no graphical session" and says to sign in to the desktop.
+3. Runs `systemd-run --user --scope --collect --unit=app-hermes-firefox-<random>.scope -- <firefox>` (plain `<firefox>` without systemd), in a new session, with standard streams on `/dev/null`. The scope keeps Firefox out of the daemon's cgroup, so restarting `hermes-device run` does not stop Firefox. Without `-P` or `--profile` Firefox opens the user's default profile, where the extension, its sign-in and the user's logins are. When Firefox already runs, the command opens a window there and exits. On macOS it runs `open -a Firefox`.
+4. Starts Firefox at most once a minute (a second `browser_start` within a minute is refused), then waits until the extension connects and the hub accepts its stored credential (the extension keeps it in `storage.local`, so no new sign-in is needed), at most 90 seconds.
+
+Not tested end to end: the test suite does not start a Firefox on the user's display. The environment, the command line and the device's `browser_start` handling have unit tests.
 
 ## 6. Extension
 
@@ -200,7 +257,7 @@ The device sends it right after the `welcome` (and the `resume` on version 3), a
 - Permissions: `nativeMessaging`, `tabs`, `tabGroups`, `scripting`, `webRequest`, `webRequestBlocking`, `dns`, `identity` (the sign-in window), `storage` (the credential and the hub address), `<all_urls>`. Firefox shows these at install, and asks the user again when an update adds one (section 13.7).
 - The toolbar button opens a menu (`popup.html`): the state, the hub address with a "Change" link to the options page (`options.html`), "Sign in to Hermes" or "Sign out", and "Use this Firefox" after another Firefox took over. Its title is "Sign in to Hermes" while the extension holds no credential.
 - The extension refuses every request with `refused` and "Firefox is not signed in to Hermes" unless the daemon reported `signed_in` for its current credential. The daemon and the hub refuse such requests as well (section 13.4).
-- No content scripts are registered, nothing listens for page messages, and there is no `externally_connectable` or web accessible resource. Page code runs only through `scripting.executeScript` during an operation, in the isolated world.
+- No content scripts are registered, nothing listens for page messages, and there is no `externally_connectable` or web accessible resource. Page code runs only through `scripting.executeScript` during an operation, in the isolated world, in one frame or in all frames of the tab. Agent scripts (`eval`) run through `tabs.executeScript` with `code` in the same isolated world (section 7.2). No new permission was needed for frames, keys or scripts, so updating the extension asks the user nothing.
 - It acts only on tabs that are in its tab group now (tabs it opened, and tabs the user moved in; a tab dragged out is no longer the agent's). Anything else gets `refused`. Firefox puts tabs opened from a grouped tab (a link with a target, `window.open`, the user's middle click) into the same group (source, `Tabbrowser.sys.mjs`), so those become agent tabs too. Planned: count only tabs the agent opened or the user granted with a context menu item, since another extension can also move tabs into the group.
 - It reads, snapshots and screenshots only tabs that show an `http` or `https` page, so going back or redirecting to `file:` or `about:` does not expose those pages. Measured: `read_text` on a user's tab is refused, and so is `navigate` to `file:`.
 - It blocks every request from an agent tab (navigations, redirects, links, forms, subresources, WebSockets) to loopback, RFC 1918, link-local, CGNAT (100.64/10, which Tailscale uses), unique-local IPv6 and `.local`, `.localhost`, `.internal` and `.home.arpa` names, unless the host is in `browser.allow-hosts`. Host names are resolved with `dns.resolve`, so public names that point at private addresses are also caught. Without this, an injected instruction could use the user's browser against local services, such as a router or Hermes's own loopback-trusted web server. This needs the `webRequest`, `webRequestBlocking` and `dns` permissions. A name the resolver cannot resolve is blocked. IPv4-mapped and NAT64 IPv6 literals are checked as the IPv4 address they hold (measured: `http://[::ffff:127.0.0.1]/` is refused). DNS rebinding between the check and the connection is still possible (inference). Requests a page's service worker makes have no tab (`tabId` -1) and are not checked (suspected; not tested). `tab_open` puts the tab in the group while it is still blank, so the first request is checked.
@@ -259,14 +316,21 @@ The agent acts with the user's logins, so a page's text is untrusted input to th
 | Click or type that does not submit and does not leave the site | Allowed |
 | Open a site the session did not use yet: `browser_navigate` or `browser_tabs` `open` to another host than the tab's, or a click on a link to another host | Ask once per site per session (`rule_key` `browser:visit:<site>`) |
 | Submit a form: a click on a submit control, or `browser_type` with `submit` | Ask once per site per session (`rule_key` `browser:submit:<site>`, the site of the form's action) |
-| Any click or type on a page with a password, payment or one-time code field | Ask every time |
+| Any click or type on a page with a password, payment or one-time code field in any frame | Ask every time |
+| Key press (`browser_press`): Enter or Space on a submit control or Enter in a form field | As a submit |
+| Hover, scroll, wait | Allowed |
+| Run a read-only script (`browser_eval`) on a site | Ask once per site per session (`rule_key` `browser:script:<site>`, the site of the frame it runs in) |
+| Run a script that changes data (`browser_eval` with `allow_writes`) | Ask once per site per session (`rule_key` `browser:script-write:<site>`); covers read-only scripts there too |
+| Any click, Enter or Space key press, or `browser_type` with `submit` on Salesforce (section 7.1) | Ask every time |
+| A script that changes data on Salesforce | Refused; no approval can allow it |
+| Any script on a page with a password, payment or one-time code field | Ask every time |
 | Downloads, file uploads, permission prompts, browser dialogs | Not offered |
 
 A site is the host name in lower case without a leading `www.`. It is not the registrable domain: `accounts.example.com` and `example.com` are separate sites. That asks more often, but an approval never covers a host the user did not see.
 
 How the plugin asks:
 
-1. Its `pre_tool_call` hook runs for `browser_navigate`, `browser_tabs`, `browser_click` and `browser_type`. It first drops any grant left from an earlier call with the same arguments (one the user denied). For a click or type it sends `inspect` for the target ref; for a navigate or a new tab it sends `inspect` with the URL (and the tab), so the site it asks about is the host the browser itself parses from the URL, not the plugin's reading of it. When that `inspect` fails, it asks about the raw URL and approves no host, so the extension refuses to open another site. `inspect` returns the page's host, the kinds of secret fields on the page (`sensitive`: `password` for `type=password` or a password `autocomplete`; `payment` for `cc-*` `autocomplete`, card, CVC or expiry field names, or an iframe of a known payment provider; `one_time_code` for `autocomplete="one-time-code"` or OTP, 2FA or verification code field names) and what the ref is (`submit` with the host of the button's `formaction` or its form's action, for a submit button around the ref, a label's control, or a button outside its form through `form=`; else `link` with its host; `field`; or `other`).
+1. Its `pre_tool_call` hook runs for `browser_navigate`, `browser_tabs`, `browser_click`, `browser_type`, `browser_press` and `browser_eval`. It first drops any grant left from an earlier call with the same arguments (one the user denied). For a click or type it sends `inspect` for the target ref; for a navigate or a new tab it sends `inspect` with the URL (and the tab), so the site it asks about is the host the browser itself parses from the URL, not the plugin's reading of it. When that `inspect` fails, it asks about the raw URL and approves no host, so the extension refuses to open another site. `inspect` returns the page's host, the kinds of secret fields on the page (`sensitive`: `password` for `type=password` or a password `autocomplete`; `payment` for `cc-*` `autocomplete`, card, CVC or expiry field names, or an iframe of a known payment provider; `one_time_code` for `autocomplete="one-time-code"` or OTP, 2FA or verification code field names) and what the ref is (`submit` with the host of the button's `formaction` or its form's action, for a submit button around the ref, a label's control, or a button outside its form through `form=`; else `link` with its host; `field`; or `other`).
 2. For a submit or a new site it returns `{"action": "approve", "message": ..., "rule_key": ...}`. Hermes sends that to its approval gate, which asks wherever the user talks to the agent (CLI prompt, web UI, Telegram buttons, the ACP editor) and offers once, session, always and deny. "Session" remembers the rule key for the session and "always" for good, in `command_allowlist` (source, `hermes_cli/plugins.py:1987-2016`, `tools/approval.py:996-1068`, `412-425`). The gate approves at once in yolo mode or with `approvals.mode: off`, and denies when no human can answer (cron, `-q`, webhooks) unless `approvals.cron_mode`, `single_query_mode` or `unattended_mode` say approve.
 3. On a page with secret fields the hook asks nothing. The handler calls `request_elicitation_consent` (source, `tools/approval_prompt.py:296-376`) without a `remember_key`, so the user can only allow this one call or deny it. Yolo and `approvals.mode: off` do not skip it, and it denies when no human can answer.
 4. The hook hands the handler what was approved, and the handler sends it as the `guard` of the `click`, `type`, `navigate` or `tab_open`. The extension classifies the element and the page again in the page before it acts, and again after the synthetic pointer and mouse events and right before the activation (page handlers of those events can rewrite links and forms). It refuses (`refused`) a submit to a host not in `submit_hosts`, a link or navigation to another site not in `visit_hosts`, and any action on a page with secret fields without `sensitive`. So a page that changed between the hook and the action cannot slip a submit, a new site or a secret field past the user, and a handler call without the hook (or after a failed `inspect`) can do only what needs no approval.
@@ -277,8 +341,64 @@ Known gaps:
 
 - Navigation that a page starts by itself after a click (a script that sets `location`, a redirect, a `target` link) is not classified. The extension's private network block still applies to requests from agent tabs.
 - Script-driven submits are not seen: a `type=button` or `role=button` control that posts with `fetch`, as most single-page apps do, counts as a plain click and needs no approval. Only a page with secret fields then asks.
-- Sensitive field detection is heuristic. A sign-in form in a cross-origin iframe (other than the listed payment providers) or in shadow DOM is not seen.
+- Sensitive field detection is heuristic. It covers every frame and shadow tree the extension can reach.
 - Planned: the user's block list (banks, the password manager) in the device config, so a compromised pod cannot remove it.
+
+### 7.1 Salesforce (protected sites)
+
+On Salesforce every click needs the user's OK each time. A site is protected when its host is, or ends in `.` and, one of `force.com`, `salesforce.com`, `visualforce.com`, `cloudforce.com`, `salesforce-setup.com`, `salesforce-sites.com`, `documentforce.com` and `force-user-content.com` (Salesforce's own domains for Lightning, My Domain, Visualforce, Setup, Sites and files), or one of the device's `browser.confirm-hosts` (with its subdomains). The check uses the tab's host and the host of the frame the action runs in. Experience Cloud sites on `*.my.site.com` and customer domains are not covered by default; add them to `browser.confirm-hosts`.
+
+On a protected site:
+
+- `browser_click`, `browser_press` with Enter or Space, and `browser_type` with `submit` ask every time, with the element's text in the question ("The agent wants to click the element "Start Session Timer" on ... (Salesforce)"). The handler asks through `request_elicitation_consent` without a remember key, so the user can only allow this one call or deny it, as on pages with secret fields. No "session" or "always" answer and no `command_allowlist` entry covers it. Yolo and `approvals.mode: off` do not skip it.
+- With no user present (section 7.3) such a call fails at once with a message that it needs the user each time.
+- Typing without submit, other keys (Tab, Escape, arrows), hover, scroll, snapshots, text and screenshots need nothing more than on other sites.
+- `browser_eval` with `allow_writes` is refused by the plugin and by the extension. Read-only scripts use the normal approval (`browser:script:<site>`, "always" allowed), so a scheduled job can read. A read-only script cannot send anything but GET and HEAD requests to the site (section 7.2).
+
+The extension enforces the same list (the plugin's and the device config's): it refuses a click, an activating key press or a submit on a protected site without `guard.confirmed`, and every script with `allow_writes`.
+
+### 7.2 Scripts (browser_eval)
+
+`browser_eval` runs agent JavaScript in an agent tab, as the body of an async function, and returns the value it returns, as JSON. Only the agent's tool call starts it: the op comes over native messaging from the daemon, and pages have no way to reach the extension (section 8).
+
+Where it runs: in the extension's isolated content script world of the frame, through `tabs.executeScript` with `code`, which the page's Content Security Policy does not block. It sees the page's DOM, not the page's JavaScript objects. `fetch` and `XMLHttpRequest` in the script are the page's own (`content.fetch`, `content.XMLHttpRequest`), so requests go out as the page's, with its cookies, origin and same-origin rules, as a script in the developer console would (measured: a GET of a local JSON API returns its value, and an approved PUT reaches the server with its headers and body). Values put on `window` stay for later scripts in the same page (measured). Before agent code runs, the extension API (`browser`, `chrome`) is removed from that world, so a script cannot read the hub credential in `storage.local` or message the extension (measured: `typeof browser` is "undefined", also through `globalThis`, and `browser.storage` cannot be reached); the extension's helpers keep only `runtime.getFrameId`. Same-origin frames' documents are reachable from the script (measured: `iframe.contentDocument`), cross-origin ones are not.
+
+Approval: the site of the frame the script runs in (section 7 table). The question shows the first 400 characters of the script. A script in a cross-origin frame needs that frame's site (measured: refused with only the page's approval).
+
+Limits the extension sets before the script runs, kept until the agent loads a page in the tab again with `browser_navigate`. That navigation first loads `about:blank` (no request), so the page that ran the script is gone before the limits end, and the new page loads without them:
+
+- Requests from the tab may go only to the sites of the page and of the frame the script ran in. Everything else is cancelled: the page's fetch, images, beacons, script-driven navigations, and tabs the page opens (they inherit the limits). Requests from content scripts with the extension's own `fetch` and `XMLHttpRequest` carry no tab and no origin (measured: `tabId` -1, no `originUrl`); while any tab holds limits, all such requests are cancelled (measured: none of seven ways to reach another site from a script got through). This also cancels such requests of other extensions while a tab that ran a script is open.
+- A read-only script (no `allow_writes`): the tab may send only GET and HEAD requests and may not open WebSockets (measured: a PUT fails with NetworkError and the server gets nothing). This covers what the script does through the page too, such as clicking a button whose handler posts. The page's own writes are cancelled as well until the next navigation, so a Salesforce page that ran a read-only script stops saving anything.
+- Writes are tracked per site: a script with `allow_writes` lifts the read-only limit only for the site the user approved writes on. Every other site in the tab's list (the top page's, another frame's) stays read-only (measured: after an approved write on the page, a POST to a frame's site is refused).
+- A script in a frame of a tab that already ran a script is refused until the next navigation, and the top frame's address is taken from the browser, not from the page's world, because an earlier script could have changed what that world reports.
+- A tab opened from another tab (it has an opener) may not run scripts, since a script could navigate its opener, which has no limits. Agent tabs that `browser_navigate` opens have no opener.
+- Scripts with `allow_writes` are refused on pages with password, payment or one-time code fields; read-only scripts there ask every time.
+- Clicks, typing and key presses are refused in the tab, because the script could have changed the extension's helpers in that world. Scroll, hover, snapshots, text and screenshots still work.
+- `browser_back` is refused in a tab that ever ran a script, so a page that ran agent code is not restored from the history cache without its limits.
+
+Writes and "always": `browser:script-write:<site>` is a separate approval, so the user grants it knowingly. "Always" for `browser:script:<site>` covers only read-only scripts; "always" for `browser:script-write:<site>` covers writes and reads there. Both are entries `plugin_rule:browser:script:<site>` and `plugin_rule:browser:script-write:<site>` in Hermes's `command_allowlist`; remove the entry (Hermes picks up the change at once) to revoke it.
+
+Known gaps:
+
+- The page's own code can see and change what the script does on the page (it shares the DOM, and the page's `fetch` can be replaced by the page). Approve scripts only on sites you trust.
+- The script can read anything the page can, including cookies that are not HttpOnly, and returns it to the agent.
+- A GET can change data on a badly built site; read-only means only GET and HEAD.
+- Requests a page's service worker makes have no tab and an origin, so the limits do not cover them (suspected; not tested). A WebSocket the page opened before the script stays open.
+- A page that a script ran in can still be restored from the history cache by a page that calls `history.back()` itself after the agent navigated.
+- Pages a script opens with `noopener` may get no opener id and then no limits; Firefox's popup blocker usually stops `window.open` from a script (inference; not tested).
+- The block on requests from the extension's own `fetch` and `XMLHttpRequest` rests on how Firefox 157 reports them (no tab, no origin). If a later Firefox sets an origin there, scripts could reach other sites through them; the end-to-end test checks it on every run.
+- Yolo mode and `approvals.mode: off` approve every `browser:visit`, `browser:submit`, `browser:script` and `browser:script-write` rule at once in an attended session (Hermes's gate); only the per-call confirmations (secret fields, Salesforce) still ask.
+- Firefox add-on policies restrict running code that is not part of the add-on. These scripts are the user's agent's tool calls, not code the add-on loads, but AMO's reviewers may judge otherwise (inference; the add-on is unlisted and signed without a manual review today).
+
+### 7.3 Runs with no user present
+
+A scheduled job (cron), a one-shot query (`-q`) or a webhook session has no user to answer. The plugin checks this with Hermes's own test (`tools.approval_context._no_user_can_answer`) before it asks:
+
+- An approval kind the user granted before ("always", or "session" in the same session) counts as granted, through Hermes's `tools.approval.is_approved` for `plugin_rule:<rule_key>`. The call then runs with no prompt.
+- Anything else is blocked at once, in `pre_tool_call`, with a message that names the rule (`plugin_rule:browser:visit:<site>` and so on) and says the user must grant it once with "always" or add it to `command_allowlist`. This holds whatever `approvals.cron_mode` says: browser approvals are not granted by default in an unattended run.
+- Actions that ask every time (pages with secret fields, clicks on Salesforce) are blocked at once with a message that they need the user each time.
+
+To prepare a scheduled job: run it once in a chat and answer "always" for each site and kind it needs, or add the `plugin_rule:browser:...` entries to `command_allowlist` in the Hermes config. A config managed in git keeps them across rebuilds.
 
 The user can stop everything at any time: close the Hermes tab group, sign Firefox out in the toolbar menu or remove it under Settings, Computers on the hub, disable the extension, or stop `hermes-device run`.
 
@@ -315,10 +435,11 @@ Prompt injection: page text reaches the model. The confirmation rules in section
 - `internal/browser/nativemsg`: native messaging framing.
 - `internal/browser/broker`: the daemon's socket server and request calls.
 - `internal/browser/host`: the native host relay and its manifest.
+- `internal/browser/launch`: starting Firefox in the user's graphical session (section 5.1).
 - `extension/firefox`: the extension (`manifest.json`, `background.js`), embedded in the binary. The `firefox-extension` job in `.github/workflows/release.yaml` signs and publishes it.
 - `internal/device`: the `browser` capability, `browser`, `browser_result` and `browser_status` on the exec leg; `cmd/run.go` starts the broker when `browser.enabled` is on; `cmd/browser.go` is `hermes-device browser`.
 - `plugin/device/browser.py`: the `device-browser` toolset and its `pre_tool_call` hook. `plugin/device/core.py` and `dashboard/plugin_api.py`: capability negotiation and browser calls on the exec leg.
-- Unit tests: `internal/device/browser_test.go`, `internal/browser/*/..._test.go`, and `plugin/device/tests/test_browser.py` (the tools, the approvals and the negotiation with a fake device and browser, through a fresh Hermes `ToolRegistry`).
+- Unit tests: `internal/device/browser_test.go` (also `browser_start`), `internal/browser/*/..._test.go` (also the launch environment and command line), and `plugin/device/tests/test_browser.py` (the tools, the approvals, Salesforce, unattended runs, starting Firefox, hiding `browser_vault` and the negotiation with a fake device and browser, through a fresh Hermes `ToolRegistry`).
 - `internal/browser/bidi` and `internal/browser/firefoxtest`: an end-to-end test that signs the extension in through a fake hub (`signin_test.go`: the consent page, the redirect that `browser.identity` catches, the PKCE code exchange, and sign-out with revocation), builds the binary, writes the host manifest into a fresh `HOME`, starts headless Firefox on a fresh profile with `--no-remote`, loads the extension as a temporary add-on over BiDi (`webExtension.install`; temporary add-ons skip signing), and drives it through the broker. When `hermes` is on `PATH` it then runs the real device client against the broker, with `plugin/device/tests/test_browser_e2e.py` on the other end of the exec leg in the Hermes runtime, and drives Firefox through the plugin's tools and approval hook.
 
 Run the end-to-end test (it needs the network for example.com):
@@ -327,11 +448,11 @@ Run the end-to-end test (it needs the network for example.com):
 HERMES_BROWSER_E2E=1 go test -count=1 -v -run TestFirefoxEndToEnd ./internal/browser/firefoxtest/
 ```
 
-It first checks that the extension refuses `tabs_list` before it is signed in, has the daemon start the sign-in (BiDi cannot open extension pages, so the toolbar menu is not clicked), approves the fake hub's consent page in the window `browser.identity` opens, and checks that the credential reaches the daemon. Measured: Firefox loads the authorize URL twice, once as the `checkRedirected` probe and once in the window. At the end it signs out and checks that the fake hub got the revocation and the daemon dropped the credential. It opens example.com in a new tab in the Hermes group, checks the title, the text, the snapshot and a PNG screenshot, checks that a link to another site is refused without approval and followed with it, fills a form on a local test server and checks that its submit is refused without approval and works with it, checks that opening a new site without approval is refused, checks the private network block (also for IPv4-mapped IPv6 literals) and the refusals, checks that a submit button inside a link and one outside its form are submits, and checks that every action on a page with password and one-time code fields needs confirmation. The plugin part does the same through `browser_navigate`, `browser_snapshot`, `browser_vision`, `browser_click`, `browser_back`, `browser_type` and `browser_tabs`. BiDi is used only to install the unsigned extension in the test; the browser control itself goes through the extension.
+It first checks that the extension refuses `tabs_list` before it is signed in, has the daemon start the sign-in (BiDi cannot open extension pages, so the toolbar menu is not clicked), approves the fake hub's consent page in the window `browser.identity` opens, and checks that the credential reaches the daemon. Measured: Firefox loads the authorize URL twice, once as the `checkRedirected` probe and once in the window. At the end it signs out and checks that the fake hub got the revocation and the daemon dropped the credential. It opens example.com in a new tab in the Hermes group, checks the title, the text, the snapshot and a PNG screenshot, checks that a link to another site is refused without approval and followed with it, fills a form on a local test server and checks that its submit is refused without approval and works with it, checks that opening a new site without approval is refused, checks the private network block (also for IPv4-mapped IPv6 literals) and the refusals, checks that a submit button inside a link and one outside its form are submits, and checks that every action on a page with password and one-time code fields needs confirmation. `frames_test.go` then checks, on local servers on 127.0.0.1, 127.0.0.2 and 127.0.0.3: a page with a same-origin and a cross-origin iframe and an open shadow root (snapshot, clicks in both frames and in the shadow tree, text of all of them, paged text), scrolling by page, to the bottom and to a text, key presses (a character, Tab, Escape, an unknown key), hover, waiting for late text and a selector, a full-page screenshot, and scripts: no approval, a GET fetch, state kept on `window`, a script without `return`, a script error, a PUT refused in a read-only script and without the write approval, an approved PUT that reaches the server, seven ways to reach another site from a script (none arrive), clicks and back refused after a script, a script in the cross-origin frame, and a protected site from `browser.confirm-hosts` (clicks and Enter refused without confirmation, Tab allowed, writes refused, reads allowed). The plugin part does the same through `browser_navigate`, `browser_snapshot`, `browser_vision`, `browser_click`, `browser_back`, `browser_type` and `browser_tabs`, and frames, keys, scrolling and scripts (a read, a write the hook did not approve, an approved write, and a blocked script with no user present) through `browser_snapshot`, `browser_press`, `browser_scroll` and `browser_eval`. BiDi is used only to install the unsigned extension in the test; the browser control itself goes through the extension.
 
 ## 11. Enable it
 
-On the server: the device plugin of this release, with the toolset on (the default; `plugins.entries.device.settings.browser: false` turns it off). In a profile that also enables the camofox plugin, only one of the two gets the tool names.
+On the server: the device plugin of this release, with the toolset on (the default; `plugins.entries.device.settings.browser: false` turns it off). To hide Hermes's `browser_vault`, also set `plugins.entries.device.granted_capabilities: [tools.override]` (section 3.1). In a profile that also enables the camofox plugin, only one of the two gets the tool names.
 
 On the computer:
 
@@ -349,7 +470,8 @@ On the computer:
 - Screenshots of background tabs: measured headless only. In a headed Firefox, `tabs.captureTab` of a tab that was never shown may return a blank or stale image (inference). The fix is to activate the tab in its own window briefly, or to open the Hermes group in a separate window.
 - Signing: every release signs the extension on AMO (section 6.1). AMO validation rules can change and fail the signing step, and Mozilla may still review the unlisted add-on by hand.
 - Snap and Flatpak Firefox (section 9).
-- Iframes and shadow DOM are not covered (section 3).
+- Scripts: the gaps in section 7.2, and the add-on policy question there.
+- Starting Firefox is not tested end to end (section 5.1).
 - Cancelled operations are not stopped in the browser (section 4.1).
 - The approval rules have the gaps listed in section 7.
 - A Firefox container for agent tabs would limit the agent to sites the user chose to sign in to there, which shrinks what a compromised pod or an injected instruction can reach. It costs the user one sign-in per site. Worth trying before release.
