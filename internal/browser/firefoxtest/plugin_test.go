@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,7 +40,7 @@ func (d dialer) DialLeg(ctx context.Context, path string) (*websocket.Conn, erro
 // with a welcome that accepts the browser capability, answers the device's
 // browser_auth, and copies every other message between the leg and the
 // Python test as JSON lines.
-func pluginLayer(ctx context.Context, t *testing.T, b *broker.Broker, formURL string) {
+func pluginLayer(ctx context.Context, t *testing.T, b *broker.Broker, formURL, pagesURL string, rec *recorder) {
 	if _, err := exec.LookPath("hermes"); err != nil {
 		t.Skip("hermes is not on PATH; the plugin layer needs the Hermes runtime")
 	}
@@ -99,11 +100,15 @@ func pluginLayer(ctx context.Context, t *testing.T, b *broker.Broker, formURL st
 	py := exec.CommandContext(ctx, "sh", filepath.Join(repo, "scripts", "test-plugin.sh"), //nolint:gosec // repo script
 		"-s", tests, "-t", tests, "-p", "test_browser_e2e.py", "-v")
 	py.Env = append(os.Environ(), "HERMES_BROWSER_E2E_SOCKET="+sock, "HERMES_BROWSER_E2E_FORM_URL="+formURL,
+		"HERMES_BROWSER_E2E_PAGES_URL="+pagesURL,
 		"HERMES_BROWSER_E2E_ROOT="+root)
 	out, err := py.CombinedOutput()
 	t.Logf("plugin layer:\n%s", out)
 	if err != nil {
 		t.Fatalf("plugin layer test failed: %v", err)
+	}
+	if puts, leaks := rec.counts(); puts != 2 || leaks != 0 || !strings.Contains(rec.puts[1], `"from":"plugin"`) {
+		t.Errorf("after the plugin layer: PUTs %q, leaks %d", rec.puts, leaks)
 	}
 }
 

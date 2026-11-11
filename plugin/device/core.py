@@ -889,9 +889,10 @@ class Hub:
         error = msg.get("error") if isinstance(msg.get("error"), str) else "browser operation failed"
         call.finish(False, code=code, error=error)
 
-    def browser_call(self, device_id: str, op: str, args: dict, timeout: float = BROWSER_DEFAULT_TIMEOUT_S) -> Any:
+    def browser_call(self, device_id: str, op: str, args: dict, timeout: float = BROWSER_DEFAULT_TIMEOUT_S,
         """Run one browser operation on the device (docs/browser.md section 4) and return its
         result. Raises BrowserError. Call from a worker thread, never the event loop."""
+        Raises BrowserError. Call from a worker thread, never the event loop."""
         conn = self.device(device_id)
         if conn is None:
             raise BrowserError(BROWSER_NOT_CONNECTED, f"device {device_id} is not connected")

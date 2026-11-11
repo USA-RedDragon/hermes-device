@@ -84,26 +84,29 @@ var (
 
 // Message is every frame on the socket. Unused fields are empty.
 type Message struct {
-	Type        string          `json:"type"`
-	ID          string          `json:"id,omitempty"`
-	Op          string          `json:"op,omitempty"`
-	Args        json.RawMessage `json:"args,omitempty"`
-	OK          bool            `json:"ok,omitempty"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	Error       string          `json:"error,omitempty"`
-	Code        string          `json:"code,omitempty"`
-	AllowHosts  []string        `json:"allow_hosts,omitempty"`
-	ExtensionID string          `json:"extension_id,omitempty"`
-	HostPID     int             `json:"host_pid,omitempty"`
-	Version     string          `json:"version,omitempty"`
-	Browser     string          `json:"browser,omitempty"`
-	Token       string          `json:"token,omitempty"`
-	HubURL      string          `json:"hub_url,omitempty"`
-	DeviceID    string          `json:"device_id,omitempty"`
-	DeviceName  string          `json:"device_name,omitempty"`
-	State       string          `json:"state,omitempty"`
-	User        string          `json:"user,omitempty"`
-	Reason      string          `json:"reason,omitempty"`
+	Type       string          `json:"type"`
+	ID         string          `json:"id,omitempty"`
+	Op         string          `json:"op,omitempty"`
+	Args       json.RawMessage `json:"args,omitempty"`
+	OK         bool            `json:"ok,omitempty"`
+	Result     json.RawMessage `json:"result,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Code       string          `json:"code,omitempty"`
+	AllowHosts []string        `json:"allow_hosts,omitempty"`
+	// ConfirmHosts are sites, besides Salesforce, where every click asks
+	// the user (docs/browser.md section 7.1).
+	ConfirmHosts []string `json:"confirm_hosts,omitempty"`
+	ExtensionID  string   `json:"extension_id,omitempty"`
+	HostPID      int      `json:"host_pid,omitempty"`
+	Version      string   `json:"version,omitempty"`
+	Browser      string   `json:"browser,omitempty"`
+	Token        string   `json:"token,omitempty"`
+	HubURL       string   `json:"hub_url,omitempty"`
+	DeviceID     string   `json:"device_id,omitempty"`
+	DeviceName   string   `json:"device_name,omitempty"`
+	State        string   `json:"state,omitempty"`
+	User         string   `json:"user,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
 }
 
 // AuthStatus is the extension's sign-in as the daemon and the hub see it.
@@ -130,6 +133,10 @@ type Options struct {
 	// AllowHosts are loopback or private network host names the extension
 	// may open in agent tabs. All others are blocked there.
 	AllowHosts []string
+	// ConfirmHosts are host names (with their subdomains) where every
+	// click and every Enter or Space key press needs the user's OK, and
+	// scripts may only read, as on Salesforce.
+	ConfirmHosts []string
 	// HelloTimeout bounds the handshake. Defaults to 10 seconds.
 	HelloTimeout time.Duration
 	// HubURL is the daemon's hub.url, which the extension shows as a hint
@@ -302,7 +309,7 @@ func (b *Broker) drop(cn *conn) {
 }
 
 func (b *Broker) configLocked() Message {
-	return Message{Type: TypeConfig, AllowHosts: b.opts.AllowHosts, HubURL: b.opts.HubURL, DeviceID: b.deviceID,
+	return Message{Type: TypeConfig, AllowHosts: b.opts.AllowHosts, ConfirmHosts: b.opts.ConfirmHosts, HubURL: b.opts.HubURL, DeviceID: b.deviceID,
 		DeviceName: b.deviceName}
 }
 

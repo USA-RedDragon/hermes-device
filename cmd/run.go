@@ -234,7 +234,7 @@ func startBroker(ctx context.Context, cfg *config.Config) (*broker.Broker, error
 		return nil, err
 	}
 	br, err := broker.Listen(broker.Options{Path: sock, ExtensionID: host.ExtensionID, AllowHosts: cfg.Browser.AllowHosts,
-		HubURL: cfg.Hub.URL})
+		ConfirmHosts: cfg.Browser.ConfirmHosts, HubURL: cfg.Hub.URL})
 	if err != nil {
 		return nil, fmt.Errorf("browser socket: %w", err)
 	}

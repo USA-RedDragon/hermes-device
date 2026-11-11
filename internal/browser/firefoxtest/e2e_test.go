@@ -79,7 +79,7 @@ func TestFirefoxEndToEnd(t *testing.T) { //nolint:paralleltest // one Firefox at
 	if os.Getenv("HERMES_BROWSER_E2E") != "1" {
 		t.Skip("set HERMES_BROWSER_E2E=1 to drive a throwaway headless Firefox")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
 	hub := &fakeHub{t: t}
 	hubSrv := httptest.NewServer(hub)
@@ -143,11 +143,12 @@ func TestFirefoxEndToEnd(t *testing.T) { //nolint:paralleltest // one Firefox at
 	defer srv.Close()
 	formFlow(ctx, t, b, tab.TabID, srv.URL)
 	refusals(ctx, t, b, tab.TabID)
+	pages, rec := frameFlow(ctx, t, b, tab.TabID)
 	if _, err := b.Call(ctx, "navigate", map[string]any{keyTab: tab.TabID, keyURL: hubSrv.URL + "/browser/authorize",
 		keyGuard: map[string]any{keyVisit: []string{loopback}}}); err == nil || !strings.Contains(err.Error(), "Hermes hub") {
 		t.Errorf("navigate an agent tab to the hub: err = %v", err)
 	}
-	t.Run("plugin", func(t *testing.T) { pluginLayer(ctx, t, b, srv.URL) })
+	t.Run("plugin", func(t *testing.T) { pluginLayer(ctx, t, b, srv.URL, pages, rec) })
 	signOutFlow(ctx, t, b, hub)
 }
 
@@ -185,7 +186,8 @@ func startFirefox(ctx context.Context, t *testing.T, hubURL string) (*broker.Bro
 	}
 
 	sock := filepath.Join(root, "state", broker.SocketName)
-	b, err := broker.Listen(broker.Options{Path: sock, ExtensionID: host.ExtensionID, AllowHosts: []string{loopback}})
+	b, err := broker.Listen(broker.Options{Path: sock, ExtensionID: host.ExtensionID,
+		AllowHosts: []string{loopback, crossHost, confirmHost}, ConfirmHosts: []string{confirmHost}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,6 +23,7 @@ browser = core._load_sibling("hermes_device_browser", "browser.py")
 SOCK = os.environ.get("HERMES_BROWSER_E2E_SOCKET", "")
 FORM = os.environ.get("HERMES_BROWSER_E2E_FORM_URL", "")
 ROOT = os.environ.get("HERMES_BROWSER_E2E_ROOT", "")
+PAGES = os.environ.get("HERMES_BROWSER_E2E_PAGES_URL", "")
 
 
 @unittest.skipUnless(SOCK, "run by internal/browser/firefoxtest with HERMES_BROWSER_E2E=1")
@@ -151,7 +152,44 @@ class PluginEndToEnd(unittest.TestCase):
         self.assertEqual(asked.call_count, 2)
         self.assertIn("one-time-code, password", asked.call_args.args[0])
 
+        self.frames_and_scripts(tab)
         self.assertIn("closed", self.tool("browser_tabs", action="close", tab_id=tab))
+
+    def frames_and_scripts(self, tab: int):
+        """Frames, keys, scrolling and scripts through the tools, with the approval rules for
+        scripts: a read asks browser:script, a write asks browser:script-write, and a write the
+        hook did not approve is refused by the extension."""
+        self.tool("browser_navigate", None, tab_id=tab, url=PAGES + "/frames")
+        snap = self.tool("browser_snapshot", tab_id=tab, full_text=True, wait_for="inner 127.0.0.2")
+        self.assertTrue(snap["waited"]["found"])
+        self.assertIn('- iframe "cross" [frame=f', snap["snapshot"])
+        self.assertIn("inner 127.0.0.2", snap["text"])
+        inner = [ln.rsplit("[ref=", 1)[1].rstrip("]") for ln in snap["snapshot"].splitlines() if '"Inner button"' in ln]
+        self.assertTrue(inner[0].startswith("f"), inner)
+        self.tool("browser_click", None, tab_id=tab, ref=inner[0])
+        keys = self.ref(snap["snapshot"], 'textbox "keys"')
+        out = self.tool("browser_press", None, tab_id=tab, key="y", ref=keys)
+        self.assertEqual(out["default_action"], "typed")
+        self.assertFalse(self.tool("browser_scroll", tab_id=tab, direction="down")["at_top"])
+        self.assertTrue(self.tool("browser_scroll", tab_id=tab, to_text="Frames")["found"])
+
+        read = self.tool("browser_eval", "browser:script:127.0.0.1", tab_id=tab,
+                         script='const r = await fetch("/api/data"); return (await r.json()).value;')
+        self.assertEqual(read["result"], 42)
+        self.assertIn("untrusted", read["note"])
+        write = 'const r = await fetch("/api/data", {method: "PUT", body: JSON.stringify({from: "plugin"})}); return r.status;'
+        unapproved = json.loads(self.registry.dispatch("browser_eval", {"tab_id": tab, "script": write, "allow_writes": True},
+                                                       task_id="t", session_id="e2e"))
+        self.assertEqual(unapproved["code"], "refused", "the extension refuses a write the user did not approve")
+        out = self.tool("browser_eval", "browser:script-write:127.0.0.1", tab_id=tab, script=write, allow_writes=True)
+        self.assertEqual(out["result"], 200)
+        refused = self.tool("browser_click", None, tab_id=tab, ref=inner[0])
+        self.assertIn("ran a script", refused["error"])
+        with mock.patch.object(browser, "no_user", lambda: True), mock.patch.object(browser, "approved", lambda k: False):
+            blocked = browser.pre_tool_call(tool_name="browser_eval", args={"tab_id": tab, "script": "return 1"},
+                                            session_id="e2e")
+        self.assertEqual(blocked["action"], "block")
+        self.assertIn("no user is present", blocked["message"])
 
 
 if __name__ == "__main__":

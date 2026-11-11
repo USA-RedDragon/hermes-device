@@ -65,8 +65,9 @@ type ACPHost struct {
 
 // Browser is Firefox browser control (docs/browser.md).
 type Browser struct {
-	Enabled    bool     `name:"enabled" default:"false" description:"Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run hermes-device browser install once"`
-	AllowHosts []string `name:"allow-hosts" description:"Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs"`
+	Enabled        bool     `name:"enabled" default:"false" description:"Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run hermes-device browser install once"`
+	AllowHosts     []string `name:"allow-hosts" description:"Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs"`
+	ConfirmHosts   []string `name:"confirm-hosts" description:"More sites where, as on Salesforce, every click and every Enter or Space key press asks the user each time and scripts may only read. Host names; each covers its subdomains. The plugin cannot change this list"`
 }
 
 // MCP is the MCP servers the agent may use on this device

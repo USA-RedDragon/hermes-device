@@ -3,10 +3,11 @@ session is bound to, through the Hermes extension and the exec leg (docs/browser
 
 Every call goes to the session's bound device and never to the sandbox, which has no browser.
 ``pre_tool_call`` asks the user, through Hermes's approval gate, the first time per site and
-session before a form submit or a visit to a new site. On a page with password, payment or
-one-time code fields the handler asks every time. The extension checks the same rules again
-right before it acts, so a page that changed after the check cannot slip an action past the
-user.
+session before a form submit, a visit to a new site or a script. On a page with password,
+payment or one-time code fields, and for clicks on Salesforce, the handler asks every time.
+With no user present (a scheduled job), only approvals the user gave before count and anything
+else fails at once. The extension checks the same rules again right before it acts, so a page
+that changed after the check cannot slip an action past the user.
 """
 from __future__ import annotations
 
@@ -90,7 +91,7 @@ def target(session_id: str = "") -> tuple[Any, Any]:
         raise Unavailable(f"hermes-device: Firefox on device {conn.name} [{device_id}] cannot be used: {reason}")
     if not conn.browser.get("connected"):
         raise Unavailable(f"hermes-device: the Hermes Firefox extension on device {conn.name} [{device_id}] is "
-                          f"not connected. Firefox must be running with the extension loaded.")
+                          f"not connected. Firefox must be running with the extension loaded"
     return res, conn
 
 
@@ -111,6 +112,51 @@ def site_of(url_or_host: str) -> str:
 
 def _rule(kind: str, site: str) -> str:
     return f"browser:{kind}:{site}"
+
+
+# Salesforce hosts are protected sites (docs/browser.md section 7.1): every click, and every
+# Enter or Space key press, asks the user each time, and scripts may never change data there.
+# The extension holds the same list and enforces it.
+PROTECTED_SUFFIXES = ("force.com", "salesforce.com", "visualforce.com", "cloudforce.com", "salesforce-setup.com",
+                      "salesforce-sites.com", "documentforce.com", "force-user-content.com")
+
+
+def protected(host: str) -> bool:
+    """A Salesforce host: the host or a subdomain of one of PROTECTED_SUFFIXES."""
+    h = (host or "").strip().lower().rstrip(".")
+    return any(h == s or h.endswith("." + s) for s in PROTECTED_SUFFIXES)
+
+
+def no_user() -> bool:
+    """No human can answer an approval now: a cron job, a one-shot query or an unattended
+    platform (Hermes's own test, tools.approval_context._no_user_can_answer)."""
+    try:
+        from tools.approval_context import _no_user_can_answer
+        return bool(_no_user_can_answer())
+    except Exception:
+        return False
+
+
+def approved(rule_key: str) -> bool:
+    """The user approved rule_key for this session or always (Hermes's command_allowlist)."""
+    try:
+        from tools.approval import is_approved
+        from tools.approval_context import get_current_session_key
+        return bool(is_approved(get_current_session_key(), "plugin_rule:" + rule_key))
+    except Exception:
+        return False
+
+
+_KEY_ACTIVATES = {"enter", "return", "space", "spacebar", " "}
+
+
+def key_activates(key: str) -> tuple[bool, bool]:
+    """``(activates, enter)`` for a browser_press key such as "Enter" or "Shift+Tab": Enter
+    and Space can click a button, follow a link or submit a form."""
+    text = str(key or "")
+    base = "+" if text.endswith("+") and len(text) > 1 else text.split("+")[-1]
+    name = base.strip().lower() if len(base) > 1 else base
+    return name in _KEY_ACTIVATES, name in ("enter", "return")
 
 
 _GRANTS: dict[str, tuple[float, dict]] = {}
@@ -151,11 +197,61 @@ def _tab_id(args: dict) -> Optional[int]:
         return None
 
 
+def _decide_eval(args: dict, conn: Any, where: str) -> tuple[dict, Optional[dict]]:
+    tab = _tab_id(args)
+    script = str(args.get("script") or "")
+    if tab is None or not script.strip():
+        return {}, None
+    req: dict = {"tab_id": tab}
+    frame = str(args.get("frame") or "").strip()
+    if frame:
+        req["frame"] = frame
+    info = call(conn, "inspect", req, INSPECT_TIMEOUT_S)
+    if not isinstance(info, dict) or info.get("error"):
+        return {}, None
+    host = str(info.get("host") or "")
+    site = site_of(host)
+    if not site:
+        return {}, None
+    writes = bool(args.get("allow_writes"))
+    if writes and (info.get("protected") or protected(host) or protected(str(info.get("top_host") or ""))):
+        return {}, {"action": "block", "message": f"browser_eval: scripts that change data are never allowed on "
+                                                  f"Salesforce or the device's browser.confirm-hosts ({site}). Run "
+                                                  f"the script without allow_writes; it may only read there."}
+    grant: dict = {"script_hosts": [host], "write_hosts": [host] if writes else []}
+    shown = script.strip()
+    shown = shown if len(shown) <= 400 else shown[:400] + " ..."
+    sensitive = [s for s in (info.get("sensitive") or []) if isinstance(s, str)]
+    if sensitive and writes:
+        return {}, {"action": "block", "message": f"browser_eval: scripts that change data are not allowed on a page "
+                                                  f"with {', '.join(sensitive)} fields ({site})."}
+    if sensitive:
+        grant["confirm"] = sensitive
+        grant["confirm_text"] = (f"The agent wants to run a read-only script on {site} in {where}. The page has "
+                                 f"{', '.join(s.replace('_', '-') for s in sensitive)} fields. Script:\n{shown}")
+        return grant, None
+    if writes:
+        return grant, {"action": "approve", "rule_key": _rule("script-write", site),
+                       "message": f"Run a script that can change data on {site} in {where} with the user's logins "
+                                  f"(it may send POST, PUT and DELETE requests to {site}). Approving for the session "
+                                  f"(or always) lets the agent run such scripts on {site} again without asking. "
+                                  f"Script:\n{shown}"}
+    if approved(_rule("script-write", site)):
+        return grant, None
+    return grant, {"action": "approve", "rule_key": _rule("script", site),
+                   "message": f"Run a read-only script on {site} in {where} with the user's logins (it can read "
+                              f"what the page shows and send GET requests to {site}, nothing else). Approving for "
+                              f"the session (or always) lets the agent run read-only scripts on {site} again "
+                              f"without asking. Script:\n{shown}"}
+
+
 def decide(tool_name: str, args: dict, conn: Any) -> tuple[dict, Optional[dict]]:
     """What a browser call needs: ``(grant, approval)``. ``grant`` goes to the handler (and
     from there to the extension as its guard); ``approval`` is the pre_tool_call approve
-    request, or None when nothing needs the approval gate."""
+    request (or a block), or None when nothing needs the approval gate."""
     where = f"the Firefox on device {conn.name}"
+    if tool_name == "browser_eval":
+        return _decide_eval(args, conn, where)
     if tool_name in ("browser_navigate", "browser_tabs"):
         if tool_name == "browser_tabs" and args.get("action") != "open":
             return {}, None
@@ -185,23 +281,49 @@ def decide(tool_name: str, args: dict, conn: Any) -> tuple[dict, Optional[dict]]
             "action": "approve", "rule_key": _rule("visit", dest),
             "message": f"Open {dest} in {where} with the user's logins. Approving for the session (or always) "
                        f"lets the agent open {dest} again without asking."}
-    if tool_name not in ("browser_click", "browser_type"):
+    if tool_name not in ("browser_click", "browser_type", "browser_press"):
         return {}, None
     tab = _tab_id(args)
     ref = str(args.get("ref") or "")
-    if tab is None or not ref:
+    press = tool_name == "browser_press"
+    if tab is None or (not ref and not press):
         return {}, None
-    info = call(conn, "inspect", {"tab_id": tab, "ref": ref}, INSPECT_TIMEOUT_S)
+    activates, enter = key_activates(str(args.get("key") or "")) if press else (False, False)
+    req: dict = {"tab_id": tab}
+    if ref:
+        req["ref"] = ref
+    else:
+        req["focus"] = True
+    info = call(conn, "inspect", req, INSPECT_TIMEOUT_S)
     if not isinstance(info, dict) or info.get("error"):
         return {}, None
     page = site_of(info.get("host") or "")
     t = info.get("target") if isinstance(info.get("target"), dict) else {}
     kind, host = t.get("kind"), str(t.get("host") or info.get("host") or "")
-    submits = (tool_name == "browser_click" and kind == "submit") or (
-        tool_name == "browser_type" and bool(args.get("submit")))
-    link_away = tool_name == "browser_click" and kind == "link" and bool(host) and site_of(host) != page
+    if press:
+        submits = activates and (kind == "submit" or (enter and kind == "field" and bool(t.get("form"))))
+        link_away = enter and kind == "link" and bool(host) and site_of(host) != page
+    else:
+        submits = (tool_name == "browser_click" and kind == "submit") or (
+            tool_name == "browser_type" and bool(args.get("submit")))
+        link_away = tool_name == "browser_click" and kind == "link" and bool(host) and site_of(host) != page
     grant: dict = {"submit_hosts": [host] if submits else [], "visit_hosts": [host] if link_away else []}
     sensitive = [s for s in (info.get("sensitive") or []) if isinstance(s, str)]
+    on_salesforce = bool(info.get("protected")) or protected(str(info.get("host") or "")) or protected(
+        str(info.get("top_host") or ""))
+    clicks = tool_name == "browser_click" or (tool_name == "browser_type" and bool(args.get("submit"))) or activates
+    label = str(t.get("label") or "").strip()
+    what_el = f" {json.dumps(label[:80], ensure_ascii=False)}" if label else ""
+    if on_salesforce and clicks:
+        how = (f"press {str(args.get('key'))[:20]} on" if press else
+               "submit" if tool_name == "browser_type" else "click")
+        grant["confirm"] = sensitive or ["salesforce"]
+        grant["protected_ok"] = True
+        kind_of = "Salesforce" if protected(str(info.get("host") or "")) or protected(
+            str(info.get("top_host") or "")) else "a site in this device's browser.confirm-hosts"
+        grant["confirm_text"] = (f"The agent wants to {how} the element{what_el} on {page} ({kind_of}) in {where}. "
+                                 f"Every click there needs your OK.")
+        return grant, None
     if sensitive:
         what = "submit a form on" if submits else ("follow a link from" if link_away else "act on")
         grant["confirm"] = sensitive
@@ -219,13 +341,15 @@ def decide(tool_name: str, args: dict, conn: Any) -> tuple[dict, Optional[dict]]
     return grant, None
 
 
-GATED = frozenset({"browser_navigate", "browser_tabs", "browser_click", "browser_type"})
+GATED = frozenset({"browser_navigate", "browser_tabs", "browser_click", "browser_type", "browser_press",
+                   "browser_eval"})
 
 
 def pre_tool_call(tool_name: str = "", args: Optional[dict] = None, task_id: str = "", session_id: str = "",
                   **_kwargs) -> Optional[dict]:
-    """Ask before a submit or a visit to a new site (section 7). Problems that the handler
-    reports better (no device, no extension) pass through; the handler then refuses."""
+    """Ask before a submit, a visit to a new site or a script (section 7). Problems that the
+    handler reports better (no device, no extension) pass through; the handler then refuses.
+    With no user present, anything the user did not approve before is blocked at once."""
     if tool_name not in GATED:
         return None
     args = args if isinstance(args, dict) else {}
@@ -243,6 +367,23 @@ def pre_tool_call(tool_name: str = "", args: Optional[dict] = None, task_id: str
         return None
     if grant:
         _put_grant(key, grant)
+    if approval and approval.get("action") == "block":
+        _take_grant(key)
+        return approval
+    if no_user():
+        if grant.get("confirm"):
+            _take_grant(key)
+            return {"action": "block", "message": (
+                f"{tool_name} was not run: {grant.get('confirm_text') or 'it needs the user'} This asks the user "
+                f"every time, and no user is present in this run (a scheduled job or a one-shot query). Do not "
+                f"retry it; report that this step needs the user.")}
+        if approval and not approved(approval.get("rule_key") or ""):
+            _take_grant(key)
+            return {"action": "block", "message": (
+                f"{tool_name} was not run: it needs the user's approval (rule {approval.get('rule_key')}), and no "
+                f"user is present in this run (a scheduled job or a one-shot query). Only approvals the user gave "
+                f"as \"always\" count here. Do not retry it; report that the user must approve it once with "
+                f"\"always\" in a chat, or add plugin_rule:{approval.get('rule_key')} to command_allowlist.")}
     return approval
 
 
@@ -437,8 +578,8 @@ def _need_tab(args: dict) -> int:
 
 def _need_ref(args: dict) -> str:
     ref = str(args.get("ref") or "").strip()
-    if not re.fullmatch(r"@?e\d{1,6}", ref):
-        raise ValueError("ref must be an element ref from the last browser_snapshot, such as e12")
+    if not re.fullmatch(r"@?(f\d{1,6})?e\d{1,6}", ref):
+        raise ValueError("ref must be an element ref from the last browser_snapshot, such as e12 or f1e3")
     return ref
 
 
@@ -492,51 +633,156 @@ def _back(args: dict, conn: Any, _sid: str) -> str:
     return _ok(_page(call(conn, "back", {"tab_id": _need_tab(args)})))
 
 
+def _int(args: dict, name: str, default: float, low: float, high: float) -> float:
+    value = args.get(name)
+    if value is None or value == "" or isinstance(value, bool):
+        return default
+    try:
+        return min(max(float(value), low), high)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number") from None
+
+
+MAX_WAIT_S = 30
+
+
 def _snapshot(args: dict, conn: Any, _sid: str) -> str:
     tab = _need_tab(args)
-    snap = call(conn, "snapshot", {"tab_id": tab, "interactive_only": bool(args.get("interactive_only"))})
-    snap = snap if isinstance(snap, dict) else {}
-    out = {"tab_id": tab, "title": snap.get("title", ""), "url": snap.get("url", ""),
-           "snapshot": snap.get("snapshot", ""), "element_count": snap.get("element_count", 0)}
-    if args.get("full_text"):
-        text = call(conn, "read_text", {"tab_id": tab})
+    out: dict = {"tab_id": tab}
+    wait_text, wait_sel = str(args.get("wait_for") or ""), str(args.get("wait_selector") or "")
+    if wait_text or wait_sel:
+        seconds = _int(args, "wait_seconds", 10, 0, MAX_WAIT_S)
+        waited = call(conn, "wait", {"tab_id": tab, "text": wait_text, "selector": wait_sel,
+                                     "timeout_ms": int(seconds * 1000)}, seconds + 30)
+        out["waited"] = waited if isinstance(waited, dict) else {}
+    if not args.get("text_only"):
+        snap = call(conn, "snapshot", {"tab_id": tab, "interactive_only": bool(args.get("interactive_only"))})
+        snap = snap if isinstance(snap, dict) else {}
+        out.update({"title": snap.get("title", ""), "url": snap.get("url", ""),
+                    "snapshot": snap.get("snapshot", ""), "element_count": snap.get("element_count", 0)})
+    if args.get("full_text") or args.get("text_only"):
+        req: dict = {"tab_id": tab}
+        offset = int(_int(args, "text_offset", 0, 0, 1 << 40))
+        if offset:
+            req["offset"] = offset
+        text = call(conn, "read_text", req)
         if isinstance(text, dict):
+            out.setdefault("title", text.get("title", ""))
+            out.setdefault("url", text.get("url", ""))
             out["text"] = text.get("text", "")
             out["text_truncated"] = bool(text.get("truncated"))
+            if text.get("next_offset") is not None:
+                out["text_next_offset"] = text["next_offset"]
+                out["text_total_chars"] = text.get("total_chars")
     return _ok(_untrusted(out))
 
 
 def _act(op: str) -> Callable[[dict, Any, str], str]:
+    tool = "browser_" + op
+
     def act(args: dict, conn: Any, sid: str) -> str:
-        tab, ref = _need_tab(args), _need_ref(args)
-        tool = "browser_click" if op == "click" else "browser_type"
+        tab = _need_tab(args)
+        req: dict = {"tab_id": tab}
+        if op == "press":
+            key = str(args.get("key") or "").strip()
+            if not key or len(key) > 40:
+                raise ValueError("key is required, such as Enter, Tab, Escape, ArrowDown or Shift+Tab")
+            req["key"] = key
+            if str(args.get("ref") or "").strip():
+                req["ref"] = _need_ref(args)
+        else:
+            req["ref"] = _need_ref(args)
         grant = _take_grant(_grant_key(_session(sid), tool, args))
         if grant.get("confirm") and not _confirm(grant.get("confirm_text") or "Allow this browser action?"):
-            return _err("the user did not allow this action on a page with secret fields", "declined")
-        guard = {"submit_hosts": grant.get("submit_hosts") or [], "visit_hosts": grant.get("visit_hosts") or [],
-                 "sensitive": bool(grant.get("confirm"))}
-        req: dict = {"tab_id": tab, "ref": ref, "guard": guard}
+            return _err("the user did not allow this action", "declined")
+        req["guard"] = {"submit_hosts": grant.get("submit_hosts") or [], "visit_hosts": grant.get("visit_hosts") or [],
+                        "sensitive": bool(grant.get("confirm")), "confirmed": bool(grant.get("protected_ok"))}
         if op == "type":
             req["text"] = str(args.get("text") or "")
             req["submit"] = bool(args.get("submit"))
         res = call(conn, op, req)
-        return _ok(_page(res))
+        out = _page(res)
+        if op == "press" and isinstance(res, dict):
+            out.update({k: res[k] for k in ("pressed", "default_action", "focused") if k in res})
+        return _ok(out)
     act.__name__ = op
     return act
 
 
+def _hover(args: dict, conn: Any, _sid: str) -> str:
+    res = call(conn, "hover", {"tab_id": _need_tab(args), "ref": _need_ref(args)})
+    out = _page(res)
+    out["note"] = "Take a browser_snapshot to read what the hover showed (a preview card or a menu)."
+    return _ok(out)
+
+
+def _scroll(args: dict, conn: Any, _sid: str) -> str:
+    tab = _need_tab(args)
+    req: dict = {"tab_id": tab}
+    direction = str(args.get("direction") or "").strip().lower()
+    if direction:
+        if direction not in ("down", "up", "top", "bottom"):
+            raise ValueError("direction must be down, up, top or bottom")
+        req["direction"] = direction
+        req["pages"] = _int(args, "pages", 1, 0.1, 20)
+    if str(args.get("ref") or "").strip():
+        req["ref"] = _need_ref(args)
+    to_text = str(args.get("to_text") or "")
+    if to_text:
+        req["to_text"] = to_text[:500]
+    frame = str(args.get("frame") or "").strip()
+    if frame and "ref" not in req:
+        req["frame"] = frame
+    if not (direction or "ref" in req or to_text):
+        raise ValueError("give direction (down, up, top, bottom), ref (to bring an element into view) or to_text")
+    res = call(conn, "scroll", req)
+    return _ok(res if isinstance(res, dict) else {})
+
+
+EVAL_TIMEOUT_S = 120
+
+
+def _eval(args: dict, conn: Any, sid: str) -> Any:
+    tab = _need_tab(args)
+    script = str(args.get("script") or "")
+    if not script.strip():
+        raise ValueError("script is required: the body of an async function that ends with return <value>")
+    grant = _take_grant(_grant_key(_session(sid), "browser_eval", args))
+    if grant.get("confirm") and not _confirm(grant.get("confirm_text") or "Allow this script?"):
+        return _err("the user did not allow this script", "declined")
+    req: dict = {"tab_id": tab, "script": script, "allow_writes": bool(args.get("allow_writes")),
+                 "max_chars": int(_int(args, "max_chars", 100000, 1, 1000000)),
+                 "guard": {"script_hosts": grant.get("script_hosts") or [], "write_hosts": grant.get("write_hosts") or [],
+                           "sensitive": bool(grant.get("confirm"))}}
+    frame = str(args.get("frame") or "").strip()
+    if frame:
+        if not re.fullmatch(r"f\d{1,6}", frame):
+            raise ValueError("frame must be a frame name from browser_snapshot, such as f2")
+        req["frame"] = frame
+    res = call(conn, "eval", req, EVAL_TIMEOUT_S)
+    res = res if isinstance(res, dict) else {}
+    keep = ("tab_id", "url", "title", "frame", "read_only", "result", "result_text", "truncated", "result_chars", "hint")
+    return _ok(_untrusted({k: res[k] for k in keep if k in res}))
+
+
+def _shot(conn: Any, args: dict, tab: int) -> dict:
+    req: dict = {"tab_id": tab, "format": "jpeg", "quality": 85}
+    if args.get("full_page"):
+        req["full_page"] = True
+    shot = call(conn, "screenshot", req)
+    return shot if isinstance(shot, dict) else {}
+
+
 def _vision(args: dict, conn: Any, _sid: str) -> Any:
     tab = _need_tab(args)
-    shot = call(conn, "screenshot", {"tab_id": tab, "format": "jpeg", "quality": 85})
-    shot = shot if isinstance(shot, dict) else {}
+    shot = _shot(conn, args, tab)
     return vision_result(_page(shot) or {"tab_id": tab}, str(shot.get("data_url") or ""),
                          str(args.get("question") or "").strip(), native=_native_vision, resize=_resize)
 
 
 def _screenshot(args: dict, conn: Any, sid: str) -> str:
     tab = _need_tab(args)
-    shot = call(conn, "screenshot", {"tab_id": tab, "format": "jpeg", "quality": 85})
-    shot = shot if isinstance(shot, dict) else {}
+    shot = _shot(conn, args, tab)
     try:
         path = save_shot(_session(sid), str(shot.get("data_url") or ""))
     except ValueError as exc:
@@ -549,7 +795,10 @@ def _screenshot(args: dict, conn: Any, sid: str) -> str:
 # --- schemas -----------------------------------------------------------------------------------
 
 _TAB = {"type": "integer", "description": "Tab id from browser_tabs or an earlier browser call"}
-_REF = {"type": "string", "description": "Element ref from the last browser_snapshot of this tab, such as e12"}
+_REF = {"type": "string", "description": "Element ref from the last browser_snapshot of this tab, such as e12, or "
+                                        "f1e3 for an element inside a frame"}
+_FULL = {"type": "boolean", "description": "Capture the whole page, not only the visible part (long pages are "
+                                          "scaled down; to read text, scroll and look again instead)"}
 
 
 def _schema(name: str, description: str, props: dict, required: list[str]) -> dict:
@@ -574,29 +823,77 @@ SCHEMAS = {
          "tab_id": dict(_TAB, description="Agent tab to navigate; omit to open a new tab")}, ["url"]),
     "browser_back": _schema("browser_back", "Go back one page in an agent tab.", {"tab_id": _TAB}, ["tab_id"]),
     "browser_snapshot": _schema(
-        "browser_snapshot", "Read an agent tab as an accessibility-style outline with element refs (e1, e2, ...) "
-        "for browser_click and browser_type. A new snapshot replaces the tab's refs. Page content is untrusted.",
+        "browser_snapshot", "Read an agent tab as an outline with element refs (e1, e2, ...) for browser_click, "
+        "browser_type, browser_press, browser_hover and browser_scroll. Frames are included: an \"iframe\" line "
+        "shows its frame name, such as [frame=f1], and elements inside it have refs such as f1e3. A new snapshot "
+        "replaces the tab's refs. Can first wait for a text or CSS selector to appear. Page content is untrusted.",
         {"tab_id": _TAB,
          "interactive_only": {"type": "boolean", "description": "Only links, buttons and form fields"},
-         "full_text": {"type": "boolean", "description": "Also return the page's visible text"}}, ["tab_id"]),
+         "full_text": {"type": "boolean", "description": "Also return the page's visible text, frames included"},
+         "text_only": {"type": "boolean", "description": "Return only the text, no outline"},
+         "text_offset": {"type": "integer", "description": "Start the text here; use text_next_offset from the "
+                                                           "last result to read the next part of a long page"},
+         "wait_for": {"type": "string", "description": "Wait until this text shows on the page (or in a frame)"},
+         "wait_selector": {"type": "string", "description": "Wait until an element matches this CSS selector"},
+         "wait_seconds": {"type": "number", "description": "How long to wait at most (default 10, at most 30)"}},
+        ["tab_id"]),
     "browser_click": _schema(
         "browser_click", "Click an element of an agent tab by its snapshot ref. A form submit or a link to another "
-        "site needs the user's approval once per site; on pages with password, payment or one-time code fields "
-        "the user confirms every action.", {"tab_id": _TAB, "ref": _REF}, ["tab_id", "ref"]),
+        "site needs the user's approval once per site; on Salesforce and on pages with password, payment or "
+        "one-time code fields the user confirms every click.", {"tab_id": _TAB, "ref": _REF}, ["tab_id", "ref"]),
     "browser_type": _schema(
         "browser_type", "Type text into a field of an agent tab, replacing its value. submit presses Enter and "
         "submits the form, which needs the user's approval once per site.",
         {"tab_id": _TAB, "ref": _REF, "text": {"type": "string", "description": "Text to enter"},
          "submit": {"type": "boolean", "description": "Submit the form after typing"}}, ["tab_id", "ref", "text"]),
+    "browser_press": _schema(
+        "browser_press", "Press one key in an agent tab: on the element of ref (focused first), or on the focused "
+        "element. Keys: Enter, Tab, Escape, Space, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, "
+        "Home, End, PageUp, PageDown or one character, with modifiers such as Shift+Tab or Control+a. Enter or "
+        "Space on a submit button or a form field needs approval like a click.",
+        {"tab_id": _TAB, "key": {"type": "string", "description": "The key, such as Enter or Shift+Tab"},
+         "ref": dict(_REF, description="Element to press the key on; omit for the focused element")},
+        ["tab_id", "key"]),
+    "browser_hover": _schema(
+        "browser_hover", "Move the mouse over an element of an agent tab, to open a preview card, a tooltip or a "
+        "menu. Then take a browser_snapshot to read it.", {"tab_id": _TAB, "ref": _REF}, ["tab_id", "ref"]),
+    "browser_scroll": _schema(
+        "browser_scroll", "Scroll an agent tab. Use direction to scroll the page (or, with ref, the scrollable "
+        "list or pane that holds that element) by pages; ref alone or to_text brings that element into view. "
+        "The result says whether the end was reached.",
+        {"tab_id": _TAB,
+         "direction": {"type": "string", "enum": ["down", "up", "top", "bottom"], "description": "Where to scroll"},
+         "pages": {"type": "number", "description": "How many screens to scroll (default 1)"},
+         "ref": dict(_REF, description="Element to bring into view, or (with direction) inside the area to scroll"),
+         "to_text": {"type": "string", "description": "Bring the first element with this text into view"},
+         "frame": {"type": "string", "description": "Frame to scroll, such as f1 from browser_snapshot"}},
+        ["tab_id"]),
+    "browser_eval": _schema(
+        "browser_eval", "Run JavaScript in an agent tab (or one of its frames) and get the result as JSON. The script "
+        "is the body of an async function: use await, and end with return <value>. It can read the page's DOM; "
+        "fetch() runs as the page, with the user's session, and may reach only the page's own site. By default the "
+        "script may only read (GET and HEAD requests); set allow_writes for POST, PUT or DELETE, which needs a "
+        "separate approval and is never allowed on Salesforce. Values you put on window stay for later scripts in "
+        "the same page. After a script, browser_click, browser_type and browser_press are refused in that tab "
+        "until browser_navigate loads a page in it again. The user approves scripts once per site.",
+        {"tab_id": _TAB,
+         "script": {"type": "string", "description": "Body of an async function, ending with return <value>"},
+         "frame": {"type": "string", "description": "Frame to run in, such as f1 from browser_snapshot; omit for "
+                                                    "the page itself"},
+         "allow_writes": {"type": "boolean", "description": "The script sends requests that change data (POST, PUT, "
+                                                           "DELETE). Needs its own approval"},
+         "max_chars": {"type": "integer", "description": "Longest JSON result to return (default 100000)"}},
+        ["tab_id", "script"]),
     "browser_vision": _schema(
         "browser_vision", "Take a screenshot of an agent tab and look at it. Use it when the snapshot does not "
         "show what you need (layout, images, canvas).",
-        {"tab_id": _TAB, "question": {"type": "string", "description": "What to look for"}}, ["tab_id"]),
+        {"tab_id": _TAB, "question": {"type": "string", "description": "What to look for"}, "full_page": _FULL},
+        ["tab_id"]),
     "browser_screenshot": _schema(
         "browser_screenshot", "Take a screenshot of an agent tab to show the user. It saves the picture and returns "
         "a show_user line; put that line in your reply and the user sees the picture. Use it when the user asks "
         "for a screenshot. It does not show you the picture: use browser_vision for that.",
-        {"tab_id": _TAB}, ["tab_id"]),
+        {"tab_id": _TAB, "full_page": _FULL}, ["tab_id"]),
 }
 
 HANDLERS = {
@@ -607,6 +904,10 @@ HANDLERS = {
     "browser_snapshot": _tool(_snapshot),
     "browser_click": _tool(_act("click")),
     "browser_type": _tool(_act("type")),
+    "browser_press": _tool(_act("press")),
+    "browser_hover": _tool(_hover),
+    "browser_scroll": _tool(_scroll),
+    "browser_eval": _tool(_eval),
     "browser_vision": _tool(_vision),
     "browser_screenshot": _tool(_screenshot),
 }

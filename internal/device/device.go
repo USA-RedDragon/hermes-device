@@ -92,6 +92,7 @@ const authSlow = 10 * time.Second
 var BrowserOps = map[string]bool{ //nolint:gochecknoglobals // fixed table
 	"tabs_list": true, "tab_open": true, "tab_close": true, "navigate": true, "back": true,
 	"read_text": true, "snapshot": true, "inspect": true, "click": true, "type": true, "screenshot": true,
+	"press": true, "hover": true, "scroll": true, "wait": true, "eval": true,
 }
 
 // Options configure a Client. Zero durations take the protocol defaults.
@@ -140,6 +141,10 @@ type Options struct {
 // after a reconnect (docs/protocol.md section 4.7).
 type Client struct {
 	opts Options
+
+	// startMu guards lastStart, the time of the last Firefox start.
+	startMu   sync.Mutex
+	lastStart time.Time
 
 	// seq numbers every command message written, across connections.
 	// acked is the highest seq the plugin confirmed by answering a ping

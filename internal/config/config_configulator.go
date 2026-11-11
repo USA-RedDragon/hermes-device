@@ -68,8 +68,9 @@ type reconnectShadow struct {
 }
 
 type browserShadow struct {
-	Enabled    *bool     `json:"enabled"     toml:"enabled"     yaml:"enabled"`
-	AllowHosts *[]string `json:"allow-hosts" toml:"allow-hosts" yaml:"allow-hosts"`
+	Enabled      *bool     `json:"enabled"       toml:"enabled"       yaml:"enabled"`
+	AllowHosts   *[]string `json:"allow-hosts"   toml:"allow-hosts"   yaml:"allow-hosts"`
+	ConfirmHosts *[]string `json:"confirm-hosts" toml:"confirm-hosts" yaml:"confirm-hosts"`
 }
 
 type mCPServerShadow struct {
@@ -316,6 +317,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			cfg.Browser.AllowHosts = *s.Browser.AllowHosts
 			set("browser.allow-hosts", configulator.LayerFile, file)
 		}
+		if s.Browser.ConfirmHosts != nil {
+			cfg.Browser.ConfirmHosts = *s.Browser.ConfirmHosts
+			set("browser.confirm-hosts", configulator.LayerFile, file)
+		}
 	}
 	if s.MCP != nil {
 		if s.MCP.Servers != nil {
@@ -559,6 +564,11 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Browser.AllowHosts = lst
 		set("browser.allow-hosts", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "browser", "confirm-hosts"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Browser.ConfirmHosts = lst
+		set("browser.confirm-hosts", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "mcp", "idle-timeout"); ok {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -614,6 +624,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"reconnect" + o.Separator + "max-backoff",
 		"browser" + o.Separator + "enabled",
 		"browser" + o.Separator + "allow-hosts",
+		"browser" + o.Separator + "confirm-hosts",
 		"mcp" + o.Separator + "idle-timeout",
 	}
 	for i, name := range names {
@@ -659,7 +670,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[26], time.Duration(int64(30000000000)), "Longest delay between attempts")
 	fs.Bool(names[27], false, "Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run hermes-device browser install once")
 	fs.StringSlice(names[28], nil, "Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs")
-	fs.Duration(names[29], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
+	fs.StringSlice(names[29], nil, "More sites where, as on Salesforce, every click and every Enter or Space key press asks the user each time and scripts may only read. Host names; each covers its subdomains. The plugin cannot change this list")
+	fs.Duration(names[30], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
 	return nil
 }
 
@@ -1011,6 +1023,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Browser.AllowHosts = v
 		set("browser.allow-hosts", configulator.LayerCLI, "--"+n)
+	}
+	if n := "browser" + o.Separator + "confirm-hosts"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "browser.confirm-hosts",
+				Source: "--" + n,
+			}
+		}
+		cfg.Browser.ConfirmHosts = v
+		set("browser.confirm-hosts", configulator.LayerCLI, "--"+n)
 	}
 	if n := "mcp" + o.Separator + "idle-timeout"; fs.Changed(n) {
 		v, err := fs.GetDuration(n)
@@ -1847,6 +1871,36 @@ func (s *browserShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				}
 				s.AllowHosts = &out
 			}
+		case "confirm-hosts":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".confirm-hosts", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".confirm-hosts"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.ConfirmHosts = &out
+			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
 				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
@@ -2102,6 +2156,7 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "reconnect.max-backoff = %v\n", c.Reconnect.MaxBackoff)
 	fmt.Fprintf(&b, "browser.enabled = %v\n", c.Browser.Enabled)
 	fmt.Fprintf(&b, "browser.allow-hosts = %v\n", c.Browser.AllowHosts)
+	fmt.Fprintf(&b, "browser.confirm-hosts = %v\n", c.Browser.ConfirmHosts)
 	b.WriteString("mcp.servers = (redacted)\n")
 	fmt.Fprintf(&b, "mcp.idle-timeout = %v\n", c.MCP.IdleTimeout)
 	return b.String()

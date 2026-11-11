@@ -21,6 +21,7 @@ const (
 	opSnapshot = "snapshot"
 	idKill     = "kill"
 	opNavigate = "navigate"
+	idOff      = "off"
 )
 
 type fakeBrowser struct {
@@ -220,7 +221,7 @@ func TestBrowserRequests(t *testing.T) {
 	reqs := []protocol.Browser{
 		{ID: "ok", Op: opReadText, Args: json.RawMessage(`{"tab_id":2}`)},
 		{ID: "bad", Op: "eval_js"},
-		{ID: "off", Op: "tabs_list"},
+		{ID: idOff, Op: "tabs_list"},
 		{ID: "closed", Op: "back"},
 		{ID: "scope", Op: opNavigate},
 		{ID: "err", Op: "click"},
@@ -251,7 +252,7 @@ func TestBrowserRequests(t *testing.T) {
 	start(t, opts)
 	got := recv(t, results)
 	want := map[string]string{
-		"bad": protocol.BrowserRefused, "off": protocol.BrowserNotConnected, "closed": protocol.BrowserNotConnected,
+		"bad": protocol.BrowserRefused, idOff: protocol.BrowserNotConnected, "closed": protocol.BrowserNotConnected,
 		"scope": protocol.BrowserRefused, "err": protocol.BrowserFailed, "big": protocol.BrowserFailed,
 		"slow": protocol.BrowserTimeout, idKill: protocol.BrowserCancelled,
 	}
