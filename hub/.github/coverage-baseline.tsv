@@ -40,7 +40,7 @@ internal/service/live.go	201	157
 internal/service/manage.go	121	115
 internal/service/media.go	113	91
 internal/service/pdf.go	71	55
-internal/service/service.go	564	517
+internal/service/service.go	564	518
 internal/store/browser.go	77	63
 internal/store/device.go	191	158
 internal/store/import.go	74	61
