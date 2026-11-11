@@ -510,6 +510,7 @@ async def device_socket(ws: WebSocket) -> None:
             capabilities = capabilities - {core.CAPABILITY_MCP}
             conn.capabilities = capabilities
     hub = core.hub()
+    handoff = core._load_sibling("hermes_device_handoff", "handoff.py")
     welcome = {"type": core.TYPE_WELCOME, "version": version, "device_id": device_id, "name": display,
                "ping_interval": core.PING_INTERVAL_S, "plugin_version": core.PLUGIN_VERSION,
                "hermes_version": core.hermes_version()}
@@ -530,7 +531,10 @@ async def device_socket(ws: WebSocket) -> None:
         async with send_lock:
             # attach runs with the send lock held, so no exec reaches the device before the
             # welcome and the resume.
-            resume = hub.attach(conn)
+            resume = handoff.attach(hub, conn)
+            if resume is None:
+                await _close(ws, handoff.CLOSE_TRY_AGAIN, "gateway handoff in progress")
+                return
             attached = True
             await ws.send_text(json.dumps(welcome))
             if version >= core.RESUME_VERSION:

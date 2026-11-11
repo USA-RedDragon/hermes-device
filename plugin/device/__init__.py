@@ -153,6 +153,7 @@ def register(ctx) -> None:
     core._load_sibling("hermes_device_browser", "browser.py").register(ctx, core)
     core._load_sibling("hermes_device_mcp", "mcptools.py").register(ctx, core)
     core._load_sibling("hermes_device_agents", "agents.py").register(ctx, core)
+    core._load_sibling("hermes_device_handoff", "handoff.py").register(ctx, core)
     missing = core.install_hooks()
     if missing:
         core.logger.error("device: Hermes internals not wrapped: %s", ", ".join(missing))
