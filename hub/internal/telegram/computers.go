@@ -23,27 +23,27 @@ type pendingRelease struct {
 	backendID, sessionID string
 }
 
-func (b *Bot) computerList(ctx context.Context, chatID int64, user string) ([]hub.Computer, bool) {
+func (b *Bot) computerList(ctx context.Context, to dest, user string) ([]hub.Computer, bool) {
 	if b.computers == nil {
-		b.sendText(ctx, chatID, "Computers are not turned on in this hub.")
+		b.sendText(ctx, to, "Computers are not turned on in this hub.")
 		return nil, false
 	}
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	cs, err := b.computers.Computers(cctx, user)
 	if err != nil {
-		b.reportErr(ctx, chatID, user, "list computers", err)
+		b.reportErr(ctx, to, user, "list computers", err)
 		return nil, false
 	}
 	if len(cs) == 0 {
-		b.sendText(ctx, chatID, msgNoDevices)
+		b.sendText(ctx, to, msgNoDevices)
 		return nil, false
 	}
 	return cs, true
 }
 
-func (b *Bot) listComputers(ctx context.Context, chatID int64, user string) {
-	cs, ok := b.computerList(ctx, chatID, user)
+func (b *Bot) listComputers(ctx context.Context, to dest, user string) {
+	cs, ok := b.computerList(ctx, to, user)
 	if !ok {
 		return
 	}
@@ -60,7 +60,7 @@ func (b *Bot) listComputers(ctx context.Context, chatID int64, user string) {
 		}
 	}
 	sb.WriteString("\n\n/new NAME [folder] starts a chat on one.")
-	b.sendHTML(ctx, chatID, sb.String(), nil)
+	b.sendHTML(ctx, to, sb.String(), nil)
 }
 
 // matchComputer finds the computer whose name starts arg, longest name
@@ -102,38 +102,42 @@ func folderFor(c hub.Computer, arg string) string {
 	return path.Join(root, arg)
 }
 
-// newOnComputer handles "/new NAME [folder]". It reports false when arg
-// names no computer, so the caller can say so.
-func (b *Bot) newOnComputer(ctx context.Context, chatID int64, user, arg string) bool {
+// startOnComputer handles "/new NAME [folder]": it starts a chat on the
+// computer arg names. matched is false when arg names no computer, so the
+// caller can say so; ok is false when it failed and said why.
+func (b *Bot) startOnComputer(ctx context.Context, to dest, user, arg string) (s hub.Session, p hub.Place, matched, ok bool) {
 	if b.computers == nil {
-		return false
+		return s, p, false, false
 	}
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	cs, err := b.computers.Computers(cctx, user)
 	if err != nil {
-		b.reportErr(ctx, chatID, user, "list computers", err)
-		return true
+		b.reportErr(ctx, to, user, "list computers", err)
+		return s, p, true, false
 	}
-	c, rest, ok := matchComputer(cs, arg)
-	if !ok {
-		return false
+	c, rest, found := matchComputer(cs, arg)
+	if !found {
+		return s, p, false, false
 	}
 	if !c.Online {
-		b.sendText(ctx, chatID, c.Name+" is offline. Turn it on and check that hermes-device runs on it.")
-		return true
+		b.sendText(ctx, to, c.Name+" is offline. Turn it on and check that hermes-device runs on it.")
+		return s, p, true, false
 	}
-	s, p, err := b.computers.StartOn(cctx, user, c.ID, folderFor(c, rest))
+	s, p, err = b.computers.StartOn(cctx, user, c.ID, folderFor(c, rest))
 	if err != nil {
-		b.reportErr(ctx, chatID, user, "start session on a computer", err)
-		return true
+		b.reportErr(ctx, to, user, "start session on a computer", err)
+		return s, p, true, false
 	}
-	if err := b.attach(ctx, chatID, user, s.BackendID, s.ID, 0); err != nil {
-		b.reportErr(ctx, chatID, user, "attach", err)
-		return true
+	if p.Name == "" {
+		p.Name = c.Name
 	}
-	b.sendHTML(ctx, chatID, "New chat on <b>"+escapeHTML(c.Name)+"</b> in <code>"+escapeHTML(p.Dir)+"</code>. Send a message to begin.", nil)
-	return true
+	return s, p, true, true
+}
+
+// computerStarted says where a chat that /new started on a computer runs.
+func computerStarted(p hub.Place) string {
+	return "New chat on <b>" + escapeHTML(p.Name) + "</b> in <code>" + escapeHTML(p.Dir) + "</code>. Send a message to begin."
 }
 
 // placeLine says where a chat runs, for /where.
@@ -191,21 +195,21 @@ func placeTag(p hub.Place, ok bool) string {
 	return ""
 }
 
-func (b *Bot) attached(ctx context.Context, chatID int64, user string) (*attachment, bool) {
-	st := b.chat(chatID)
+func (b *Bot) attached(ctx context.Context, to dest, user string) (*attachment, bool) {
+	st := b.chat(to)
 	if st.att == nil || st.user != user {
-		b.sendText(ctx, chatID, msgNoAttach)
+		b.sendText(ctx, to, msgNoAttach)
 		return nil, false
 	}
 	return st.att, true
 }
 
-func (b *Bot) where(ctx context.Context, chatID int64, user string) {
+func (b *Bot) where(ctx context.Context, to dest, user string) {
 	if b.computers == nil {
-		b.sendText(ctx, chatID, "Computers are not turned on in this hub.")
+		b.sendText(ctx, to, "Computers are not turned on in this hub.")
 		return
 	}
-	a, ok := b.attached(ctx, chatID, user)
+	a, ok := b.attached(ctx, to, user)
 	if !ok {
 		return
 	}
@@ -213,51 +217,51 @@ func (b *Bot) where(ctx context.Context, chatID int64, user string) {
 	defer cancel()
 	p, err := b.computers.Place(cctx, user, a.backendID, a.sessionID)
 	if err != nil {
-		b.reportErr(ctx, chatID, user, "look up place", err)
+		b.reportErr(ctx, to, user, "look up place", err)
 		return
 	}
-	b.sendHTML(ctx, chatID, placeLine(p), nil)
+	b.sendHTML(ctx, to, placeLine(p), nil)
 }
 
 // move handles "/move NAME [folder]" and "/move off".
-func (b *Bot) move(ctx context.Context, chatID int64, user, arg string) {
+func (b *Bot) move(ctx context.Context, to dest, user, arg string) {
 	if arg == "" {
-		b.sendText(ctx, chatID, "Send /move NAME [folder] to run this chat on one of your computers, or /move off to stop using its computer.")
+		b.sendText(ctx, to, "Send /move NAME [folder] to run this chat on one of your computers, or /move off to stop using its computer.")
 		return
 	}
 	if strings.EqualFold(arg, "off") {
-		b.askRelease(ctx, chatID, user)
+		b.askRelease(ctx, to, user)
 		return
 	}
-	cs, ok := b.computerList(ctx, chatID, user)
+	cs, ok := b.computerList(ctx, to, user)
 	if !ok {
 		return
 	}
-	a, ok := b.attached(ctx, chatID, user)
+	a, ok := b.attached(ctx, to, user)
 	if !ok {
 		return
 	}
 	c, rest, ok := matchComputer(cs, arg)
 	if !ok {
-		b.sendText(ctx, chatID, "Unknown computer. Send /devices to list yours.")
+		b.sendText(ctx, to, "Unknown computer. Send /devices to list yours.")
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	p, err := b.computers.MoveTo(cctx, user, a.backendID, a.sessionID, c.ID, folderFor(c, rest))
 	if err != nil {
-		b.reportErr(ctx, chatID, user, "move session", err)
+		b.reportErr(ctx, to, user, "move session", err)
 		return
 	}
-	b.sendHTML(ctx, chatID, "Moved. "+placeLine(p), nil)
+	b.sendHTML(ctx, to, "Moved. "+placeLine(p), nil)
 }
 
-func (b *Bot) askRelease(ctx context.Context, chatID int64, user string) {
+func (b *Bot) askRelease(ctx context.Context, to dest, user string) {
 	if b.computers == nil {
-		b.sendText(ctx, chatID, "Computers are not turned on in this hub.")
+		b.sendText(ctx, to, "Computers are not turned on in this hub.")
 		return
 	}
-	a, ok := b.attached(ctx, chatID, user)
+	a, ok := b.attached(ctx, to, user)
 	if !ok {
 		return
 	}
@@ -265,22 +269,22 @@ func (b *Bot) askRelease(ctx context.Context, chatID int64, user string) {
 	defer cancel()
 	p, err := b.computers.Place(cctx, user, a.backendID, a.sessionID)
 	if err != nil {
-		b.reportErr(ctx, chatID, user, "look up place", err)
+		b.reportErr(ctx, to, user, "look up place", err)
 		return
 	}
 	if p.Kind != hub.PlaceComputer || p.Inherited || !p.Mine {
-		b.sendHTML(ctx, chatID, placeLine(p), nil)
+		b.sendHTML(ctx, to, placeLine(p), nil)
 		return
 	}
-	st := b.chat(chatID)
+	st := b.chat(to)
 	st.release = &pendingRelease{nonce: uuid.NewString()[:12], backendID: a.backendID, sessionID: a.sessionID}
-	b.sendHTML(ctx, chatID, "Stop using <b>"+escapeHTML(p.Name)+"</b> for this chat? Hermes then cannot run commands or change files "+
+	b.sendHTML(ctx, to, "Stop using <b>"+escapeHTML(p.Name)+"</b> for this chat? Hermes then cannot run commands or change files "+
 		"for it anywhere, also not in the sandbox, until you /move it to a computer again.",
 		&InlineKeyboard{InlineKeyboard: [][]InlineButton{{{Text: "Stop using " + truncate(p.Name, 30), CallbackData: cbRelease + ":" + st.release.nonce}}}})
 }
 
-func (b *Bot) confirmRelease(ctx context.Context, q *CallbackQuery, user, nonce string) {
-	st := b.chat(q.Message.Chat.ID)
+func (b *Bot) confirmRelease(ctx context.Context, q *CallbackQuery, to dest, user, nonce string) {
+	st := b.chat(to)
 	r := st.release
 	if r == nil || r.nonce != nonce || st.user != user {
 		b.answer(ctx, q.ID, "That question is out of date. Send /move off again.")
@@ -291,7 +295,7 @@ func (b *Bot) confirmRelease(ctx context.Context, q *CallbackQuery, user, nonce 
 	defer cancel()
 	if err := b.computers.Release(cctx, user, r.backendID, r.sessionID); err != nil {
 		b.answer(ctx, q.ID, "")
-		b.reportErr(ctx, q.Message.Chat.ID, user, "release session", err)
+		b.reportErr(ctx, to, user, "release session", err)
 		return
 	}
 	b.answer(ctx, q.ID, "Done")
@@ -301,7 +305,7 @@ func (b *Bot) confirmRelease(ctx context.Context, q *CallbackQuery, user, nonce 
 
 // computerErr reports the errors of computer commands. It returns false
 // for any other error.
-func (b *Bot) computerErr(ctx context.Context, chatID int64, err error) bool {
+func (b *Bot) computerErr(ctx context.Context, to dest, err error) bool {
 	reason := func() string {
 		_, msg, _ := strings.Cut(err.Error(), ": ")
 		if msg == "" {
@@ -326,6 +330,6 @@ func (b *Bot) computerErr(ctx context.Context, chatID int64, err error) bool {
 	default:
 		return false
 	}
-	b.sendText(ctx, chatID, text)
+	b.sendText(ctx, to, text)
 	return true
 }

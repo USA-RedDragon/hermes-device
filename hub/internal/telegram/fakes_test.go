@@ -27,6 +27,7 @@ const (
 	mAnswer      = "answerCallbackQuery"
 	mPhoto       = "sendPhoto"
 	mDocument    = "sendDocument"
+	mTopic       = "createForumTopic"
 	kText        = "text"
 	kStatus      = "status"
 	kDesc        = "description"
@@ -92,12 +93,17 @@ type fakeTelegram struct {
 	files map[string][]byte
 	// sizes overrides the file_size getFile reports.
 	sizes map[string]int64
+	// member is what getChatMember says of the bot.
+	member map[string]any
+	// goneThreads are topics whose messages Telegram refuses.
+	goneThreads map[int64]bool
 }
 
 func newFakeTelegram(t *testing.T) *fakeTelegram {
 	t.Helper()
 	f := &fakeTelegram{t: t, updates: make(chan telegram.Update, 64), fail429: map[string]int{}, nextID: 100,
-		files: map[string][]byte{}, sizes: map[string]int64{}}
+		files: map[string][]byte{}, sizes: map[string]int64{}, goneThreads: map[int64]bool{},
+		member: map[string]any{kStatus: "administrator", "can_manage_topics": true}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -166,13 +172,24 @@ func (f *fakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
 			kDesc: "Bad Request: can't parse entities: unexpected end tag"})
 		return
 	}
+	if thread, _ := params["message_thread_id"].(float64); method == mSend && f.goneThreads[int64(thread)] {
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusBadRequest)
+		f.reply(w, map[string]any{"ok": false, kErrorCode: 400, kDesc: "Bad Request: message thread not found"})
+		return
+	}
 	f.nextID++
 	id := f.nextID
-	if method == mSend {
+	if method == mSend || method == mTopic {
 		f.calls[idx].ResultID = id
 	}
+	member := f.member
 	f.mu.Unlock()
 	switch method {
+	case mTopic:
+		f.reply(w, map[string]any{"ok": true, kResult: map[string]any{"message_thread_id": id, kName: params[kName]}})
+	case "getChatMember":
+		f.reply(w, map[string]any{"ok": true, kResult: member})
 	case mSend:
 		f.reply(w, map[string]any{"ok": true, kResult: map[string]any{
 			"message_id": id, "chat": map[string]any{"id": params["chat_id"], "type": "private"}, kText: params[kText]}})
@@ -244,6 +261,14 @@ func (f *fakeTelegram) push(u telegram.Update) {
 func (f *fakeTelegram) say(chat telegram.Chat, from int64, text string) {
 	f.push(telegram.Update{Message: &telegram.Message{
 		MessageID: 1, From: &telegram.User{ID: from, FirstName: "u"}, Chat: chat, Text: text,
+	}})
+}
+
+// replyTo sends text as a reply to the message replyTo.
+func (f *fakeTelegram) replyTo(chat telegram.Chat, from, replyTo int64, text string) {
+	f.push(telegram.Update{Message: &telegram.Message{
+		MessageID: 1, From: &telegram.User{ID: from, FirstName: "u"}, Chat: chat, Text: text,
+		ReplyToMessage: &telegram.Message{MessageID: replyTo, Chat: chat},
 	}})
 }
 
@@ -336,6 +361,8 @@ type fakeHub struct {
 	// media are the files Media opens, by path, and mediaCalls its calls.
 	media      map[string]fakeFile
 	mediaCalls []string
+	// pending are the prompts PendingPrompt finds.
+	pending map[string]bool
 }
 
 type fakeFile struct {
@@ -481,7 +508,12 @@ func (h *fakeHub) AnswerPrompt(_ context.Context, user, backendID, sessionID, pr
 	return nil
 }
 
-func (h *fakeHub) PendingPrompt(context.Context, string, string, string, string) (hub.PromptInfo, error) {
+func (h *fakeHub) PendingPrompt(_ context.Context, _, _, _, promptID string) (hub.PromptInfo, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.pending[promptID] {
+		return hub.PromptInfo{ID: promptID}, nil
+	}
 	return hub.PromptInfo{}, hub.ErrUnknownApproval
 }
 
@@ -581,9 +613,82 @@ type fakeState struct {
 	mu     sync.Mutex
 	chats  map[int64]hub.TelegramChat
 	offset int64
+	groups map[int64]hub.TelegramGroup
+	topics map[string]hub.TelegramTopic
 }
 
-func newFakeState() *fakeState { return &fakeState{chats: map[int64]hub.TelegramChat{}} }
+func newFakeState() *fakeState {
+	return &fakeState{chats: map[int64]hub.TelegramChat{}, groups: map[int64]hub.TelegramGroup{}, topics: map[string]hub.TelegramTopic{}}
+}
+
+func topicKey(chatID int64, backendID, sessionID string) string {
+	return fmt.Sprintf("%d/%s/%s", chatID, backendID, sessionID)
+}
+
+func (f *fakeState) LinkTelegramGroup(_ context.Context, g hub.TelegramGroup) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for id, old := range f.groups {
+		if old.User == g.User || id == g.ChatID {
+			delete(f.groups, id)
+			for k, t := range f.topics {
+				if t.ChatID == id {
+					delete(f.topics, k)
+				}
+			}
+		}
+	}
+	f.groups[g.ChatID] = g
+	return nil
+}
+
+func (f *fakeState) UnlinkTelegramGroup(_ context.Context, chatID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.groups, chatID)
+	for k, t := range f.topics {
+		if t.ChatID == chatID {
+			delete(f.topics, k)
+		}
+	}
+	return nil
+}
+
+func (f *fakeState) TelegramGroups(context.Context) ([]hub.TelegramGroup, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]hub.TelegramGroup, 0, len(f.groups))
+	for _, g := range f.groups {
+		out = append(out, g)
+	}
+	return out, nil
+}
+
+func (f *fakeState) SaveTelegramTopic(_ context.Context, t hub.TelegramTopic) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.topics[topicKey(t.ChatID, t.BackendID, t.SessionID)] = t
+	return nil
+}
+
+func (f *fakeState) TelegramTopics(_ context.Context, chatID int64) ([]hub.TelegramTopic, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []hub.TelegramTopic
+	for _, t := range f.topics {
+		if t.ChatID == chatID {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeState) topic(chatID int64, backendID, sessionID string) (hub.TelegramTopic, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.topics[topicKey(chatID, backendID, sessionID)]
+	return t, ok
+}
 
 func (f *fakeState) SaveTelegramChat(_ context.Context, c hub.TelegramChat) error {
 	f.mu.Lock()
@@ -629,6 +734,7 @@ func testConfig(f *fakeTelegram) telegram.Config {
 		AllowedGroups:   []int64{-500},
 		PollTimeout:     time.Second,
 		LeaderRetry:     time.Second,
+		TopicSync:       50 * time.Millisecond,
 		EditInterval:    300 * time.Millisecond,
 		MaxRetries:      3,
 	}
@@ -711,7 +817,37 @@ func (h *fakeHub) DismissLost(context.Context, string, string, string, string) e
 	return hub.ErrUnknownInput
 }
 
-func (h *fakeHub) RenameSession(context.Context, string, string, string, string) error { return nil }
+func (h *fakeHub) RenameSession(_ context.Context, user, backendID, sessionID, title string) error {
+	if err := h.allowed(user, backendID); err != nil {
+		return err
+	}
+	h.update(sessionID, func(s *hub.Session) { s.Title = title })
+	return nil
+}
+
+// update changes a session of the fake.
+func (h *fakeHub) update(sessionID string, f func(*hub.Session)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := range h.sessions {
+		if h.sessions[i].ID == sessionID {
+			f(&h.sessions[i])
+		}
+	}
+}
+
+// add adds a session to the fake.
+func (h *fakeHub) add(s hub.Session) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sessions = append(h.sessions, s)
+}
+
+func (h *fakeHub) attachesCopy() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.attaches)
+}
 
 func (h *fakeHub) ArchiveSession(context.Context, string, string, string, bool) error { return nil }
 

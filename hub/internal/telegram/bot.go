@@ -40,10 +40,22 @@ const (
 	cbApproval   = "pa"
 	cbAttach     = "at"
 	untitledName = "(untitled)"
+	cmdLink      = "link"
 	msgHeld      = "Hermes is restarting. Your message will send when it is back."
 )
 
 var tagRe = regexp.MustCompile(`<[^>]*>`)
+
+// dest is where the bot writes: a chat, and in a forum group a topic. A
+// thread of 0 is a private chat, a plain group or a forum's General topic.
+type dest struct {
+	chat, thread int64
+}
+
+// msgKey names one message.
+type msgKey struct {
+	chat, msg int64
+}
 
 // ErrMissingPublicURL is returned by New without Options.PublicURL.
 var ErrMissingPublicURL = errors.New("telegram bot needs the hub public URL")
@@ -100,15 +112,29 @@ type Bot struct {
 	logger    *slog.Logger
 	defaults  map[string]string
 	groups    map[int64]bool
+	now       func() time.Time
 
-	chats map[int64]*chatState
+	// loop serializes the handling of updates with the topic sync; it
+	// guards chats.
+	loop  sync.Mutex
+	chats map[dest]*chatState
 	wg    sync.WaitGroup
+
+	// fmu guards forums, the linked groups by chat ID.
+	fmu    sync.Mutex
+	forums map[int64]*forum
 
 	mu        sync.Mutex
 	approvals map[string]*pendingApproval
 	// picks are the toggled choices of multi-select questions, by
 	// promptTarget.id.
 	picks map[string][]bool
+	// replies are the messages a reply to which answers a question.
+	replies map[msgKey]replyTarget
+	// shown are the texts of sent notices, to show their outcome.
+	shown map[msgKey]shownNotice
+	// gone are topics Telegram refused a message for.
+	gone map[dest]bool
 }
 
 type chatState struct {
@@ -117,18 +143,12 @@ type chatState struct {
 	listGen int
 	list    []hub.Session
 	release *pendingRelease
-	// awaiting is the question whose answer the chat's next message from
-	// awaitingUser is; awaitingMsg is the message that asked it.
-	awaiting     *promptTarget
-	awaitingUser string
-	awaitingMsg  int64
-	awaitingAt   time.Time
 }
 
 type attachment struct {
 	ctx       context.Context //nolint:containedctx // lives as long as the attachment; cancelled by stop
 	cancel    context.CancelFunc
-	chatID    int64
+	to        dest
 	user      string
 	backendID string
 	sessionID string
@@ -138,6 +158,10 @@ type attachment struct {
 	lastSeq   atomic.Int64
 	once      sync.Once
 	status    sessionStatus
+	// lastEvent is when the stream last had an event, in Unix nanoseconds,
+	// and prompts how many prompts it shows; the topic sync reads both.
+	lastEvent atomic.Int64
+	prompts   atomic.Int64
 }
 
 func (a *attachment) stop() {
@@ -158,12 +182,13 @@ func (a *attachment) closed() bool {
 }
 
 type pendingApproval struct {
-	chatID    int64
+	to        dest
 	messageID int64
 	backendID string
 	sessionID string
 	prompt    hub.PromptInfo
-	text      string
+	// body is the message's HTML under its head, kept to show the outcome.
+	body string
 }
 
 // New validates cfg and returns a Bot.
@@ -197,9 +222,14 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		logger:    logger,
 		defaults:  defaults,
 		groups:    make(map[int64]bool, len(cfg.AllowedGroups)),
-		chats:     make(map[int64]*chatState),
+		now:       time.Now,
+		chats:     make(map[dest]*chatState),
+		forums:    make(map[int64]*forum),
 		approvals: make(map[string]*pendingApproval),
 		picks:     make(map[string][]bool),
+		replies:   make(map[msgKey]replyTarget),
+		shown:     make(map[msgKey]shownNotice),
+		gone:      make(map[dest]bool),
 	}
 	for _, id := range cfg.AllowedGroups {
 		b.groups[id] = true
@@ -214,9 +244,14 @@ func New(cfg Config, opts Options) (*Bot, error) {
 // handled is finished and the rest of its batch is left for the next
 // leader.
 func (b *Bot) Run(ctx context.Context) error {
-	b.chats = make(map[int64]*chatState)
-	defer b.shutdown()
+	b.loop.Lock()
+	b.chats = make(map[dest]*chatState)
 	offset := b.restore(ctx)
+	b.loop.Unlock()
+	defer b.shutdown()
+	syncDone := make(chan struct{})
+	go b.syncTopics(ctx, syncDone)
+	defer func() { <-syncDone }()
 	hctx := context.WithoutCancel(ctx)
 	backoff := time.Second
 	b.logger.Info("Telegram bot polling")
@@ -243,12 +278,14 @@ func (b *Bot) Run(ctx context.Context) error {
 			}
 			u := updates[i]
 			sctx := hub.WithSubmissionID(hctx, b.submissionID(u.UpdateID))
+			b.loop.Lock()
 			if album := albumAt(updates, i); len(album) > 1 {
 				i += len(album) - 1
 				b.handleAlbum(sctx, album)
 			} else {
 				b.handleUpdate(sctx, u)
 			}
+			b.loop.Unlock()
 			offset = updates[i].UpdateID + 1
 			b.saveOffset(hctx, offset)
 		}
@@ -336,23 +373,25 @@ func (b *Bot) restore(ctx context.Context) int64 {
 		b.logger.Error("Failed to load Telegram chats", "error", err)
 	}
 	for _, c := range chats {
-		if err := b.attach(ctx, c.ChatID, c.User, c.BackendID, c.SessionID, 0); err != nil {
+		to := dest{chat: c.ChatID}
+		if err := b.attach(ctx, to, c.User, c.BackendID, c.SessionID, 0); err != nil {
 			b.logger.Warn("Failed to attach a stored Telegram chat, it attaches on its next message",
 				"chat", c.ChatID, "session", c.SessionID, "error", err)
-			st := b.chat(c.ChatID)
-			st.user, st.att = c.User, detached(c)
+			st := b.chat(to)
+			st.user, st.att = c.User, detached(to, c.User, c.BackendID, c.SessionID)
 		}
 	}
 	if len(chats) > 0 {
 		b.logger.Info("Restored Telegram chats", "chats", len(chats))
 	}
+	b.restoreForums(cctx)
 	return offset
 }
 
 // detached is an attachment that ended, so the chat's next message
 // attaches its session again.
-func detached(c hub.TelegramChat) *attachment {
-	a := &attachment{chatID: c.ChatID, user: c.User, backendID: c.BackendID, sessionID: c.SessionID,
+func detached(to dest, user, backendID, sessionID string) *attachment {
+	a := &attachment{to: to, user: user, backendID: backendID, sessionID: sessionID,
 		cancel: func() {}, detach: func() {}, done: make(chan struct{})}
 	close(a.done)
 	return a
@@ -381,6 +420,8 @@ func sleep(ctx context.Context, d time.Duration) bool {
 }
 
 func (b *Bot) shutdown() {
+	b.loop.Lock()
+	defer b.loop.Unlock()
 	for _, st := range b.chats {
 		if st.att != nil {
 			st.att.stop()
@@ -409,11 +450,12 @@ func (b *Bot) chatAllowed(c Chat) bool {
 	}
 }
 
-func (b *Bot) chat(id int64) *chatState {
-	st, ok := b.chats[id]
+// chat is the state of a chat or topic. b.loop is held.
+func (b *Bot) chat(to dest) *chatState {
+	st, ok := b.chats[to]
 	if !ok {
 		st = &chatState{}
-		b.chats[id] = st
+		b.chats[to] = st
 	}
 	return st
 }
@@ -438,54 +480,76 @@ func (b *Bot) handleMessage(ctx context.Context, m *Message) {
 func (b *Bot) handleAlbum(ctx context.Context, ms []*Message) {
 	m := ms[0]
 	media := slices.ContainsFunc(ms, hasMedia)
-	if m.From == nil || m.From.IsBot || m.Text == "" && !media || !b.chatAllowed(m.Chat) {
+	if m.From == nil || m.From.IsBot || m.Text == "" && !media {
 		return
 	}
+	if f := b.forum(m.Chat.ID); f != nil {
+		b.handleForum(ctx, f, ms, media)
+		return
+	}
+	if cmd, _ := parseCommand(m.Text); cmd == cmdLink && m.Chat.Type != chatPrivate {
+		b.linkGroup(ctx, m)
+		return
+	}
+	if !b.chatAllowed(m.Chat) {
+		return
+	}
+	to := dest{chat: m.Chat.ID}
 	user, linked, err := b.lookupUser(ctx, m.From.ID)
 	if err != nil {
-		b.sendText(ctx, m.Chat.ID, errGeneric)
+		b.sendText(ctx, to, errGeneric)
 		return
 	}
 	if !linked {
 		b.sendLink(ctx, m)
 		return
 	}
-	if media {
-		b.promptMedia(ctx, m.Chat.ID, user, ms)
+	if !media && b.replyAnswer(ctx, to, user, m) {
 		return
 	}
-	if b.typedAnswer(ctx, m.Chat.ID, user, m.Text) {
+	if media {
+		b.promptMedia(ctx, to, user, ms)
 		return
 	}
 	cmd, arg := parseCommand(m.Text)
 	b.logger.Debug("Telegram message", "user", user, "chat", m.Chat.ID, "command", cmd)
 	switch cmd {
 	case "":
-		b.prompt(ctx, m.Chat.ID, user, m.Text)
+		b.prompt(ctx, to, user, m.Text)
 	case "start", "help":
-		b.help(ctx, m.Chat.ID, user)
+		b.help(ctx, to, user)
 	case "backends":
-		b.listBackends(ctx, m.Chat.ID, user)
+		b.listBackends(ctx, to, user)
 	case "sessions":
-		b.listSessions(ctx, m.Chat.ID, user)
+		b.listSessions(ctx, to, user)
 	case "attach":
-		b.attachCommand(ctx, m.Chat.ID, user, arg)
+		b.attachCommand(ctx, to, user, arg)
 	case "new":
-		b.newSession(ctx, m.Chat.ID, user, arg)
-	case "stop":
-		b.stop(ctx, m.Chat.ID, user)
-	case "status":
-		b.status(ctx, m.Chat.ID, user)
-	case "devices", "computers":
-		b.listComputers(ctx, m.Chat.ID, user)
-	case "where":
-		b.where(ctx, m.Chat.ID, user)
-	case "move":
-		b.move(ctx, m.Chat.ID, user, arg)
-	case "cancel":
-		b.sendText(ctx, m.Chat.ID, "Nothing to cancel.")
+		b.newSession(ctx, to, user, arg)
+	case cmdLink:
+		b.sendText(ctx, to, "This account is linked. To get a topic for each chat, send /link in a group with Topics.")
 	default:
-		b.sendText(ctx, m.Chat.ID, "Unknown command. Send /help for the list.")
+		b.sessionCommand(ctx, to, user, cmd, arg)
+	}
+}
+
+// sessionCommand handles the commands that act on the chat's session.
+func (b *Bot) sessionCommand(ctx context.Context, to dest, user, cmd, arg string) {
+	switch cmd {
+	case "stop":
+		b.stop(ctx, to, user)
+	case "status":
+		b.status(ctx, to, user)
+	case "devices", "computers":
+		b.listComputers(ctx, to, user)
+	case "where":
+		b.where(ctx, to, user)
+	case "move":
+		b.move(ctx, to, user, arg)
+	case "cancel", "skip":
+		b.sendText(ctx, to, "Nothing to cancel. To answer a question, reply to its message.")
+	default:
+		b.sendText(ctx, to, "Unknown command. Send /help for the list.")
 	}
 }
 
@@ -499,8 +563,9 @@ func parseCommand(text string) (string, string) {
 }
 
 func (b *Bot) sendLink(ctx context.Context, m *Message) {
+	to := dest{chat: m.Chat.ID}
 	if m.Chat.Type != chatPrivate {
-		b.sendText(ctx, m.Chat.ID, "Send me a direct message to link your Telegram account first.")
+		b.sendText(ctx, to, "Send me a direct message to link your Telegram account first.")
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
@@ -508,24 +573,24 @@ func (b *Bot) sendLink(ctx context.Context, m *Message) {
 	token, err := b.tokens.CreateLinkToken(cctx, m.From.ID)
 	if err != nil {
 		b.logger.Error("Failed to create link token", "telegram_id", m.From.ID, "error", err)
-		b.sendText(ctx, m.Chat.ID, errGeneric)
+		b.sendText(ctx, to, errGeneric)
 		return
 	}
 	link := b.link + "?token=" + url.QueryEscape(token)
 	b.logger.Info("Sent Telegram link", "telegram_id", m.From.ID)
-	b.sendHTML(ctx, m.Chat.ID, "This Telegram account is not linked to a hub user yet.\n"+
+	b.sendHTML(ctx, to, "This Telegram account is not linked to a hub user yet.\n"+
 		`Open <a href="`+escapeHTML(link)+`">this link</a> and sign in to link it. `+
 		"The link works once and expires in a few minutes. Then send your message again.", nil)
 }
 
-func (b *Bot) help(ctx context.Context, chatID int64, user string) {
+func (b *Bot) help(ctx context.Context, to dest, user string) {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Signed in as <b>%s</b>.\n", escapeHTML(user))
-	if st := b.chat(chatID); st.att != nil && st.user == user {
+	if st := b.chat(to); st.att != nil && st.user == user {
 		fmt.Fprintf(&sb, "Attached to session <code>%s</code> on <b>%s</b>.\n",
 			escapeHTML(st.att.sessionID), escapeHTML(st.att.backendID))
 	}
-	sb.WriteString("\nSend a message to talk to Hermes.\n" +
+	sb.WriteString("\nSend a message to talk to Hermes. Reply to a question's message to answer it.\n" +
 		"/sessions list your sessions\n" +
 		"/attach N attach to session N from /sessions\n" +
 		"/new [backend] start a new session\n" +
@@ -539,26 +604,27 @@ func (b *Bot) help(ctx context.Context, chatID int64, user string) {
 			"/move NAME [folder] run this session on a computer\n" +
 			"/move off stop using its computer")
 	}
-	b.sendHTML(ctx, chatID, sb.String(), nil)
+	sb.WriteString("\n\nFor a topic per chat, make a group with Topics, add me as an admin who may manage topics, and send /link there.")
+	b.sendHTML(ctx, to, sb.String(), nil)
 }
 
-func (b *Bot) backends(ctx context.Context, chatID int64, user string) ([]hub.Backend, bool) {
+func (b *Bot) backends(ctx context.Context, to dest, user string) ([]hub.Backend, bool) {
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	list, err := b.svc.Backends(cctx, user)
 	if err != nil {
-		b.reportErr(ctx, chatID, user, "list backends", err)
+		b.reportErr(ctx, to, user, "list backends", err)
 		return nil, false
 	}
 	if len(list) == 0 {
-		b.sendText(ctx, chatID, "You have no backends.")
+		b.sendText(ctx, to, "You have no backends.")
 		return nil, false
 	}
 	return list, true
 }
 
-func (b *Bot) listBackends(ctx context.Context, chatID int64, user string) {
-	list, ok := b.backends(ctx, chatID, user)
+func (b *Bot) listBackends(ctx context.Context, to dest, user string) {
+	list, ok := b.backends(ctx, to, user)
 	if !ok {
 		return
 	}
@@ -570,30 +636,30 @@ func (b *Bot) listBackends(ctx context.Context, chatID int64, user string) {
 			sb.WriteString(" <i>(default)</i>")
 		}
 	}
-	b.sendHTML(ctx, chatID, sb.String(), nil)
+	b.sendHTML(ctx, to, sb.String(), nil)
 }
 
-func (b *Bot) listSessions(ctx context.Context, chatID int64, user string) {
+func (b *Bot) listSessions(ctx context.Context, to dest, user string) {
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	list, err := b.svc.Sessions(cctx, user)
 	if err != nil {
-		b.reportErr(ctx, chatID, user, "list sessions", err)
+		b.reportErr(ctx, to, user, "list sessions", err)
 		return
 	}
 	list = slices.DeleteFunc(list, func(s hub.Session) bool { return s.Archived })
 	down := b.unreachable(cctx, user)
 	if len(list) == 0 {
 		if len(down) > 0 {
-			b.sendText(ctx, chatID, "Can't reach "+strings.Join(down, ", ")+" right now. It may be restarting; try again in a minute.")
+			b.sendText(ctx, to, "Can't reach "+strings.Join(down, ", ")+" right now. It may be restarting; try again in a minute.")
 			return
 		}
-		b.sendText(ctx, chatID, "No sessions yet. Send a message or /new to start one.")
+		b.sendText(ctx, to, "No sessions yet. Send a message or /new to start one.")
 		return
 	}
 	slices.SortStableFunc(list, func(x, y hub.Session) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
 	list = list[:min(len(list), maxListed)]
-	st := b.chat(chatID)
+	st := b.chat(to)
 	st.listGen++
 	st.list = list
 	places := b.places(cctx, user, list)
@@ -625,7 +691,7 @@ func (b *Bot) listSessions(ctx context.Context, chatID int64, user string) {
 	if len(down) > 0 {
 		fmt.Fprintf(&sb, "\n\n<i>Can't reach %s right now, so its sessions are missing.</i>", escapeHTML(strings.Join(down, ", ")))
 	}
-	b.sendHTML(ctx, chatID, sb.String(), &InlineKeyboard{InlineKeyboard: rows})
+	b.sendHTML(ctx, to, sb.String(), &InlineKeyboard{InlineKeyboard: rows})
 }
 
 // places looks up where the listed sessions run, when computers are on.
@@ -652,42 +718,52 @@ func sourceName(source string) string {
 	return ""
 }
 
-func (b *Bot) attachCommand(ctx context.Context, chatID int64, user, arg string) {
+func (b *Bot) attachCommand(ctx context.Context, to dest, user, arg string) {
 	n, err := strconv.Atoi(arg)
-	st := b.chat(chatID)
+	st := b.chat(to)
 	if err != nil || n < 1 || n > len(st.list) {
-		b.sendText(ctx, chatID, "Send /sessions, then /attach N with a number from that list.")
+		b.sendText(ctx, to, "Send /sessions, then /attach N with a number from that list.")
 		return
 	}
-	b.attachListed(ctx, chatID, user, st.list[n-1])
+	b.attachListed(ctx, to, user, st.list[n-1])
 }
 
-func (b *Bot) attachListed(ctx context.Context, chatID int64, user string, s hub.Session) {
-	if err := b.attach(ctx, chatID, user, s.BackendID, s.ID, 0); err != nil {
-		b.reportErr(ctx, chatID, user, "attach", err)
+func (b *Bot) attachListed(ctx context.Context, to dest, user string, s hub.Session) {
+	if err := b.attach(ctx, to, user, s.BackendID, s.ID, 0); err != nil {
+		b.reportErr(ctx, to, user, "attach", err)
 		return
 	}
 	title := s.Title
 	if title == "" {
 		title = untitledName
 	}
-	b.sendHTML(ctx, chatID, "Attached to <b>"+escapeHTML(title)+"</b> on <b>"+escapeHTML(s.BackendID)+"</b>.", nil)
+	b.sendHTML(ctx, to, "Attached to <b>"+escapeHTML(title)+"</b> on <b>"+escapeHTML(s.BackendID)+"</b>.", nil)
 }
 
-func (b *Bot) newSession(ctx context.Context, chatID int64, user, arg string) {
-	if arg != "" && !b.isBackend(ctx, user, arg) && b.newOnComputer(ctx, chatID, user, arg) {
-		return
+func (b *Bot) newSession(ctx context.Context, to dest, user, arg string) {
+	if arg != "" && !b.isBackend(ctx, user, arg) {
+		if s, p, matched, ok := b.startOnComputer(ctx, to, user, arg); matched {
+			if !ok {
+				return
+			}
+			if err := b.attach(ctx, to, user, s.BackendID, s.ID, 0); err != nil {
+				b.reportErr(ctx, to, user, "attach", err)
+				return
+			}
+			b.sendHTML(ctx, to, computerStarted(p), nil)
+			return
+		}
 	}
-	backendID, ok := b.pickBackend(ctx, chatID, user, arg)
+	backendID, ok := b.pickBackend(ctx, to, user, arg)
 	if !ok {
 		return
 	}
-	s, err := b.startSession(ctx, chatID, user, backendID)
+	s, err := b.startSession(ctx, to, user, backendID)
 	if err != nil {
-		b.reportErr(ctx, chatID, user, "start session", err)
+		b.reportErr(ctx, to, user, "start session", err)
 		return
 	}
-	b.sendHTML(ctx, chatID, "New session on <b>"+escapeHTML(s.BackendID)+"</b>. Send a message to begin.", nil)
+	b.sendHTML(ctx, to, "New session on <b>"+escapeHTML(s.BackendID)+"</b>. Send a message to begin.", nil)
 }
 
 // isBackend reports whether arg names one of user's backends.
@@ -707,13 +783,13 @@ func (b *Bot) isBackend(ctx context.Context, user, arg string) bool {
 }
 
 // pickBackend resolves arg (an ID or name) or the user's default.
-func (b *Bot) pickBackend(ctx context.Context, chatID int64, user, arg string) (string, bool) {
+func (b *Bot) pickBackend(ctx context.Context, to dest, user, arg string) (string, bool) {
 	if arg == "" {
 		if id, ok := b.defaults[user]; ok {
 			return id, true
 		}
 	}
-	list, ok := b.backends(ctx, chatID, user)
+	list, ok := b.backends(ctx, to, user)
 	if !ok {
 		return "", false
 	}
@@ -726,21 +802,21 @@ func (b *Bot) pickBackend(ctx context.Context, chatID int64, user, arg string) (
 		}
 	}
 	if b.computers != nil {
-		b.sendText(ctx, chatID, "Unknown backend or computer. Send /backends or /devices to list yours.")
+		b.sendText(ctx, to, "Unknown backend or computer. Send /backends or /devices to list yours.")
 		return "", false
 	}
-	b.sendText(ctx, chatID, "Unknown backend. Send /backends to list yours.")
+	b.sendText(ctx, to, "Unknown backend. Send /backends to list yours.")
 	return "", false
 }
 
-func (b *Bot) startSession(ctx context.Context, chatID int64, user, backendID string) (hub.Session, error) {
+func (b *Bot) startSession(ctx context.Context, to dest, user, backendID string) (hub.Session, error) {
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	s, err := b.svc.NewSession(cctx, user, backendID)
 	if err != nil {
 		return hub.Session{}, fmt.Errorf("failed to create session: %w", err)
 	}
-	if err := b.attach(ctx, chatID, user, s.BackendID, s.ID, 0); err != nil {
+	if err := b.attach(ctx, to, user, s.BackendID, s.ID, 0); err != nil {
 		return hub.Session{}, err
 	}
 	return s, nil
@@ -748,8 +824,8 @@ func (b *Bot) startSession(ctx context.Context, chatID int64, user, backendID st
 
 // attach replaces the chat's attachment. The stream lives on ctx, the bot's
 // run context.
-func (b *Bot) attach(ctx context.Context, chatID int64, user, backendID, sessionID string, since int64) error {
-	st := b.chat(chatID)
+func (b *Bot) attach(ctx context.Context, to dest, user, backendID, sessionID string, since int64) error {
+	st := b.chat(to)
 	if st.att != nil {
 		st.att.stop()
 		st.att = nil
@@ -761,45 +837,50 @@ func (b *Bot) attach(ctx context.Context, chatID int64, user, backendID, session
 		return fmt.Errorf("failed to attach: %w", err)
 	}
 	a := &attachment{
-		ctx: actx, cancel: acancel, chatID: chatID, user: user, backendID: backendID, sessionID: sessionID,
+		ctx: actx, cancel: acancel, to: to, user: user, backendID: backendID, sessionID: sessionID,
 		events: events, detach: detach, done: make(chan struct{}),
 	}
-	a.lastSeq.Store(since)
+	a.lastSeq.Store(max(since, 0))
+	a.lastEvent.Store(b.now().UnixNano())
 	st.att, st.user = a, user
-	b.logger.Info("Attached Telegram chat", "chat", chatID, "user", user, "backend", backendID, "session", sessionID, "since", since)
+	b.logger.Info("Attached Telegram chat", "chat", to.chat, "thread", to.thread, "user", user, "backend", backendID, "session", sessionID, "since", since)
 	b.wg.Add(1)
 	go b.pump(a)
-	if b.state != nil {
+	if b.state != nil && b.forum(to.chat) == nil {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), callTimeout)
 		defer cancel()
-		err := b.state.SaveTelegramChat(cctx, hub.TelegramChat{ChatID: chatID, User: user, BackendID: backendID, SessionID: sessionID})
+		err := b.state.SaveTelegramChat(cctx, hub.TelegramChat{ChatID: to.chat, User: user, BackendID: backendID, SessionID: sessionID})
 		if err != nil {
-			b.logger.Error("Failed to store the Telegram chat", "chat", chatID, "error", err)
+			b.logger.Error("Failed to store the Telegram chat", "chat", to.chat, "error", err)
 		}
 	}
 	return nil
 }
 
-func (b *Bot) prompt(ctx context.Context, chatID int64, user, text string, files ...hub.Attachment) {
-	st := b.chat(chatID)
+func (b *Bot) prompt(ctx context.Context, to dest, user, text string, files ...hub.Attachment) {
+	st := b.chat(to)
 	a := st.att
 	switch {
 	case a == nil || st.user != user:
-		backendID, ok := b.pickBackend(ctx, chatID, user, "")
+		backendID, ok := b.pickBackend(ctx, to, user, "")
 		if !ok {
 			return
 		}
-		if _, err := b.startSession(ctx, chatID, user, backendID); err != nil {
-			b.reportErr(ctx, chatID, user, "start session", err)
+		if _, err := b.startSession(ctx, to, user, backendID); err != nil {
+			b.reportErr(ctx, to, user, "start session", err)
 			return
 		}
 	case a.closed():
-		err := b.attach(ctx, chatID, user, a.backendID, a.sessionID, a.lastSeq.Load())
+		err := b.attach(ctx, to, user, a.backendID, a.sessionID, a.lastSeq.Load())
+		if errors.Is(err, hub.ErrUnknownSession) && to.thread != 0 {
+			b.sendText(ctx, to, "This chat is gone from the hub. Send a message in General to start a new one.")
+			return
+		}
 		if errors.Is(err, hub.ErrUnknownSession) {
-			_, err = b.startSession(ctx, chatID, user, a.backendID)
+			_, err = b.startSession(ctx, to, user, a.backendID)
 		}
 		if err != nil {
-			b.reportErr(ctx, chatID, user, "reattach", err)
+			b.reportErr(ctx, to, user, "reattach", err)
 			return
 		}
 	}
@@ -809,39 +890,58 @@ func (b *Bot) prompt(ctx context.Context, chatID int64, user, text string, files
 	res, err := b.svc.Prompt(cctx, user, a.backendID, a.sessionID, text, files...)
 	switch {
 	case err != nil:
-		b.reportErr(ctx, chatID, user, "prompt", err)
+		b.reportErr(ctx, to, user, "prompt", err)
 	case res.Held:
-		b.sendText(ctx, chatID, msgHeld)
+		b.sendText(ctx, to, msgHeld)
 	}
 	if err == nil && res.Notice != "" {
-		b.sendText(ctx, chatID, res.Notice)
+		b.sendText(ctx, to, res.Notice)
 	}
 }
 
-func (b *Bot) stop(ctx context.Context, chatID int64, user string) {
-	st := b.chat(chatID)
+func (b *Bot) stop(ctx context.Context, to dest, user string) {
+	st := b.chat(to)
 	if st.att == nil || st.user != user {
-		b.sendText(ctx, chatID, "No session is attached.")
+		b.sendText(ctx, to, "No session is attached.")
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	if err := b.svc.Interrupt(cctx, user, st.att.backendID, st.att.sessionID); err != nil {
-		b.reportErr(ctx, chatID, user, "interrupt", err)
+		b.reportErr(ctx, to, user, "interrupt", err)
 		return
 	}
-	b.sendText(ctx, chatID, "Stop requested.")
+	b.sendText(ctx, to, "Stop requested.")
 }
 
 func (b *Bot) pump(a *attachment) {
 	defer b.wg.Done()
 	defer close(a.done)
 	ctx := a.ctx
-	r := newRenderer(b.api, a.chatID, b.cfg.EditInterval, b.logger.With("chat", a.chatID, "session", a.sessionID),
-		func(p hub.PromptInfo, text string) (string, func(int64)) {
-			return b.addApproval(a, p, text)
+	interval := b.cfg.EditInterval
+	if a.to.thread != 0 {
+		interval = max(interval, groupEditInterval)
+	}
+	r := newRenderer(b.api, a.to, interval, b.logger.With("chat", a.to.chat, "thread", a.to.thread, "session", a.sessionID),
+		func(p hub.PromptInfo, body string) (string, func(int64)) {
+			return b.addApproval(a, p, body)
 		})
+	r.now = b.now
+	if b.cfg.Steps != "" {
+		r.steps = b.cfg.Steps
+	}
 	r.settle = b.settleApproval
+	r.expire = b.expireApproval
+	r.shown = func(n int) { a.prompts.Store(int64(n)) }
+	r.gone = func() { b.topicGone(a.to) }
+	if pr, ok := b.svc.(hub.Prompter); ok {
+		r.pending = func(ctx context.Context, id string) bool {
+			cctx, cancel := context.WithTimeout(ctx, callTimeout)
+			defer cancel()
+			_, err := pr.PendingPrompt(cctx, a.user, a.backendID, a.sessionID, id)
+			return err == nil
+		}
+	}
 	if m, ok := b.svc.(hub.Media); ok {
 		r.media = func(ctx context.Context, p string) (*hub.MediaFile, error) {
 			return m.Media(ctx, a.user, a.backendID, a.sessionID, p)
@@ -860,9 +960,10 @@ func (b *Bot) pump(a *attachment) {
 		case ev, ok := <-a.events:
 			if !ok {
 				r.flushAll(ctx)
-				b.logger.Info("Session stream ended", "chat", a.chatID, "session", a.sessionID)
+				b.logger.Info("Session stream ended", "chat", a.to.chat, "thread", a.to.thread, "session", a.sessionID)
 				return
 			}
+			a.lastEvent.Store(b.now().UnixNano())
 			a.status.track(ev)
 			r.handle(ctx, ev)
 			if ev.Seq > a.lastSeq.Load() {
@@ -870,6 +971,7 @@ func (b *Bot) pump(a *attachment) {
 			}
 		case <-timer.C:
 			r.flushDue(ctx)
+			r.expireDue(ctx)
 		}
 		if d, ok := r.nextFlush(); ok {
 			timer.Reset(d)
@@ -877,27 +979,35 @@ func (b *Bot) pump(a *attachment) {
 	}
 }
 
-func (b *Bot) addApproval(a *attachment, prompt hub.PromptInfo, text string) (string, func(int64)) {
+// addApproval keeps a prompt that an attached chat shows. Its bind
+// records the message, which a reply to answers a question.
+func (b *Bot) addApproval(a *attachment, prompt hub.PromptInfo, body string) (string, func(int64)) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	raw := make([]byte, 9)
 	_, _ = rand.Read(raw)
 	key := base64.RawURLEncoding.EncodeToString(raw)
-	p := &pendingApproval{chatID: a.chatID, backendID: a.backendID, sessionID: a.sessionID, prompt: prompt, text: text}
+	p := &pendingApproval{to: a.to, backendID: a.backendID, sessionID: a.sessionID, prompt: prompt, body: body}
 	b.approvals[key] = p
 	return key, func(id int64) {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		p.messageID = id
+		if id != 0 && prompt.Kind == hub.PromptClarify {
+			b.addReplyLocked(msgKey{a.to.chat, id}, replyTarget{prefix: cbApproval, key: key, question: id})
+		}
 	}
 }
 
 func (b *Bot) handleCallback(ctx context.Context, q *CallbackQuery) {
-	if q.Message == nil || !b.chatAllowed(q.Message.Chat) {
+	if q.Message == nil || !b.chatAllowed(q.Message.Chat) && b.forum(q.Message.Chat.ID) == nil {
 		b.answer(ctx, q.ID, "")
 		return
 	}
-	chatID := q.Message.Chat.ID
+	to := dest{chat: q.Message.Chat.ID}
+	if q.Message.IsTopicMessage {
+		to.thread = q.Message.MessageThreadID
+	}
 	user, linked, err := b.lookupUser(ctx, q.From.ID)
 	if err != nil {
 		b.answer(ctx, q.ID, errGeneric)
@@ -907,12 +1017,16 @@ func (b *Bot) handleCallback(ctx context.Context, q *CallbackQuery) {
 		b.answer(ctx, q.ID, "Link your Telegram account first: send me a direct message.")
 		return
 	}
+	if f := b.forum(to.chat); f != nil && f.user != user {
+		b.answer(ctx, q.ID, msgNotYours)
+		return
+	}
 	parts := strings.Split(q.Data, ":")
 	switch {
 	case len(parts) == 3 && (parts[0] == cbApproval || parts[0] == cbNotice):
-		t, refusal := b.attachedTarget(q, parts[1])
+		t, refusal := b.attachedTarget(to, q.Message.MessageID, parts[1])
 		if parts[0] == cbNotice {
-			t, refusal = b.noticeTarget(ctx, q, user, parts[1])
+			t, refusal = b.noticeTarget(ctx, to, q.Message.MessageID, user, parts[1])
 		}
 		if refusal != "" {
 			b.answer(ctx, q.ID, refusal)
@@ -920,9 +1034,9 @@ func (b *Bot) handleCallback(ctx context.Context, q *CallbackQuery) {
 		}
 		b.pressPrompt(ctx, q, user, t, parts[2])
 	case len(parts) == 2 && parts[0] == cbRelease && b.computers != nil:
-		b.confirmRelease(ctx, q, user, parts[1])
+		b.confirmRelease(ctx, q, to, user, parts[1])
 	case len(parts) == 3 && parts[0] == cbAttach:
-		st := b.chat(chatID)
+		st := b.chat(to)
 		gen, err1 := strconv.Atoi(parts[1])
 		n, err2 := strconv.Atoi(parts[2])
 		if err1 != nil || err2 != nil || gen != st.listGen || n < 1 || n > len(st.list) {
@@ -930,47 +1044,53 @@ func (b *Bot) handleCallback(ctx context.Context, q *CallbackQuery) {
 			return
 		}
 		b.answer(ctx, q.ID, "")
-		b.attachListed(ctx, chatID, user, st.list[n-1])
+		b.attachListed(ctx, to, user, st.list[n-1])
 	default:
 		b.answer(ctx, q.ID, "")
 	}
 }
 
 // settleApproval forgets the prompt of an attached chat that got its
-// answer, and returns its message's text, or false when it was answered
-// here.
-func (b *Bot) settleApproval(key string) (string, bool) {
+// answer, and returns it, or false when it was answered here.
+func (b *Bot) settleApproval(key string) (pendingApproval, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	p, ok := b.approvals[key]
 	if !ok {
-		return "", false
+		return pendingApproval{}, false
 	}
 	delete(b.approvals, key)
 	delete(b.picks, cbApproval+":"+key)
-	return p.text, true
+	b.dropRepliesLocked(cbApproval, key)
+	return *p, true
 }
 
-func (b *Bot) reportErr(ctx context.Context, chatID int64, user, action string, err error) {
-	if b.computerErr(ctx, chatID, err) {
+// expireApproval forgets the prompt of an attached chat that Hermes no
+// longer waits for, and returns it, or false when it got its answer.
+func (b *Bot) expireApproval(key string) (pendingApproval, bool) {
+	return b.settleApproval(key)
+}
+
+func (b *Bot) reportErr(ctx context.Context, to dest, user, action string, err error) {
+	if b.computerErr(ctx, to, err) {
 		b.logger.Info("Telegram computer request refused", "user", user, "action", action, "error", err)
 		return
 	}
 	switch {
 	case errors.Is(err, hub.ErrForbidden):
 		b.logger.Warn("Hub denied Telegram request", "user", user, "action", action, "error", err)
-		b.sendText(ctx, chatID, "You do not have access to that backend.")
+		b.sendText(ctx, to, "You do not have access to that backend.")
 	case errors.Is(err, hub.ErrUnknownBackend):
-		b.sendText(ctx, chatID, "Unknown backend. Send /backends to list yours.")
+		b.sendText(ctx, to, "Unknown backend. Send /backends to list yours.")
 	case errors.Is(err, hub.ErrShuttingDown):
-		b.sendText(ctx, chatID, "The hub is restarting. Send your message again in a moment.")
+		b.sendText(ctx, to, "The hub is restarting. Send your message again in a moment.")
 	case errors.Is(err, hub.ErrAttachment):
-		b.sendText(ctx, chatID, hub.AttachmentReason(err)+".")
+		b.sendText(ctx, to, hub.AttachmentReason(err)+".")
 	case errors.Is(err, hub.ErrHoldFull):
-		b.sendText(ctx, chatID, "Too many messages are waiting for Hermes to come back. Send this one again later.")
+		b.sendText(ctx, to, "Too many messages are waiting for Hermes to come back. Send this one again later.")
 	default:
 		b.logger.Error("Telegram request failed", "user", user, "action", action, "error", err)
-		b.sendText(ctx, chatID, errGeneric)
+		b.sendText(ctx, to, errGeneric)
 	}
 }
 
@@ -980,14 +1100,14 @@ func (b *Bot) answer(ctx context.Context, id, text string) {
 	}
 }
 
-func (b *Bot) sendText(ctx context.Context, chatID int64, text string) {
-	if _, err := b.api.SendText(ctx, chatID, text); err != nil {
-		b.logger.Warn("Failed to send message", "chat", chatID, "error", err)
+func (b *Bot) sendText(ctx context.Context, to dest, text string) {
+	if _, err := b.api.SendText(ctx, to.chat, to.thread, text); err != nil {
+		b.logger.Warn("Failed to send message", "chat", to.chat, "error", err)
 	}
 }
 
-func (b *Bot) sendHTML(ctx context.Context, chatID int64, text string, kb *InlineKeyboard) {
-	sendHTML(ctx, b.api, b.logger, chatID, text, kb)
+func (b *Bot) sendHTML(ctx context.Context, to dest, text string, kb *InlineKeyboard) {
+	sendHTML(ctx, b.api, b.logger, to, text, kb)
 }
 
 func (b *Bot) editHTML(ctx context.Context, chatID, messageID int64, text string) {
@@ -998,23 +1118,29 @@ func (b *Bot) editHTML(ctx context.Context, chatID, messageID int64, text string
 
 // sendHTML sends text as HTML and returns the message ID, or 0 on failure.
 // When Telegram rejects the markup it resends the text without tags.
-func sendHTML(ctx context.Context, api *Client, logger *slog.Logger, chatID int64, text string, kb *InlineKeyboard) int64 {
-	id, err := api.SendHTML(ctx, chatID, text, kb)
+func sendHTML(ctx context.Context, api *Client, logger *slog.Logger, to dest, text string, kb *InlineKeyboard) int64 {
+	id, _ := sendHTMLErr(ctx, api, logger, to, text, kb)
+	return id
+}
+
+// sendHTMLErr is sendHTML that also returns the error.
+func sendHTMLErr(ctx context.Context, api *Client, logger *slog.Logger, to dest, text string, kb *InlineKeyboard) (int64, error) {
+	id, err := api.SendHTML(ctx, to.chat, to.thread, text, kb)
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.BadEntities() {
-		logger.Warn("Telegram rejected HTML, sending plain text", "chat", chatID, "error", err)
+		logger.Warn("Telegram rejected HTML, sending plain text", "chat", to.chat, "error", err)
 		plain := html.UnescapeString(tagRe.ReplaceAllString(text, ""))
 		var m Message
 		err = api.call(ctx, "sendMessage", sendMessageParams{
-			ChatID: chatID, Text: plain, ReplyMarkup: kb, LinkPreview: &linkPreview{IsDisabled: true},
+			ChatID: to.chat, MessageThreadID: to.thread, Text: plain, ReplyMarkup: markup(kb), LinkPreview: &linkPreview{IsDisabled: true},
 		}, &m)
 		id = m.MessageID
 	}
 	if err != nil {
-		logger.Warn("Failed to send message", "chat", chatID, "error", err)
-		return 0
+		logger.Warn("Failed to send message", "chat", to.chat, "error", err)
+		return 0, err
 	}
-	return id
+	return id, nil
 }
 
 // statusReporter is the optional part of a hub.Service that reports

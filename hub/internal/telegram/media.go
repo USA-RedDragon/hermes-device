@@ -56,7 +56,7 @@ func mediaOf(m *Message) media {
 
 // promptMedia downloads the files of a message or an album and sends them
 // with the caption as one prompt.
-func (b *Bot) promptMedia(ctx context.Context, chatID int64, user string, ms []*Message) {
+func (b *Bot) promptMedia(ctx context.Context, to dest, user string, ms []*Message) {
 	text := ""
 	var files []hub.Attachment
 	for _, m := range ms {
@@ -68,22 +68,22 @@ func (b *Bot) promptMedia(ctx context.Context, chatID int64, user string, ms []*
 			continue
 		}
 		if f.size > MaxDownload {
-			b.sendText(ctx, chatID, fmt.Sprintf(msgTooBig, MaxDownload>>20, f.name))
+			b.sendText(ctx, to, fmt.Sprintf(msgTooBig, MaxDownload>>20, f.name))
 			return
 		}
 		cctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 		data, err := b.api.Download(cctx, f.id, MaxDownload)
 		cancel()
 		if errors.Is(err, ErrTooLarge) {
-			b.sendText(ctx, chatID, fmt.Sprintf(msgTooBig, MaxDownload>>20, f.name))
+			b.sendText(ctx, to, fmt.Sprintf(msgTooBig, MaxDownload>>20, f.name))
 			return
 		}
 		if err != nil {
-			b.logger.Warn("Failed to download a Telegram file", "chat", chatID, "error", err)
-			b.sendText(ctx, chatID, fmt.Sprintf(msgNoDownload, f.name))
+			b.logger.Warn("Failed to download a Telegram file", "chat", to.chat, "error", err)
+			b.sendText(ctx, to, fmt.Sprintf(msgNoDownload, f.name))
 			return
 		}
 		files = append(files, hub.Attachment{Name: f.name, Data: data})
 	}
-	b.prompt(ctx, chatID, user, text, files...)
+	b.prompt(ctx, to, user, text, files...)
 }

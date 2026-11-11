@@ -128,10 +128,10 @@ func tokens(n int64) string {
 	return strconv.FormatInt(n, 10)
 }
 
-func (b *Bot) status(ctx context.Context, chatID int64, user string) {
-	a, ok := b.attached(ctx, chatID, user)
+func (b *Bot) status(ctx context.Context, to dest, user string) {
+	a, ok := b.attached(ctx, to, user)
 	if !ok {
 		return
 	}
-	b.sendHTML(ctx, chatID, a.status.line(), nil)
+	b.sendHTML(ctx, to, a.status.line(), nil)
 }

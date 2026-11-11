@@ -37,6 +37,14 @@ func (e *APIError) NotModified() bool {
 	return e.Code == http.StatusBadRequest && strings.Contains(e.Description, "message is not modified")
 }
 
+// TopicGone reports whether Telegram refused a message because its forum
+// topic was deleted or closed.
+func (e *APIError) TopicGone() bool {
+	d := strings.ToLower(e.Description)
+	return e.Code == http.StatusBadRequest &&
+		(strings.Contains(d, "message thread not found") || strings.Contains(d, "topic_deleted") || strings.Contains(d, "topic_closed"))
+}
+
 // BadEntities reports whether Telegram could not parse the HTML markup.
 func (e *APIError) BadEntities() bool {
 	return e.Code == http.StatusBadRequest && strings.Contains(e.Description, "can't parse entities")
@@ -54,21 +62,37 @@ type User struct {
 type Chat struct {
 	ID   int64  `json:"id"`
 	Type string `json:"type"`
+	// IsForum is true for a supergroup with Topics turned on.
+	IsForum bool `json:"is_forum,omitempty"`
+}
+
+// ForumTopic is a topic of a forum supergroup.
+type ForumTopic struct {
+	MessageThreadID int64  `json:"message_thread_id,omitempty"`
+	Name            string `json:"name"`
 }
 
 // Message is a Telegram message.
 type Message struct {
-	MessageID    int64       `json:"message_id"`
-	From         *User       `json:"from,omitempty"`
-	Chat         Chat        `json:"chat"`
-	Text         string      `json:"text,omitempty"`
-	Caption      string      `json:"caption,omitempty"`
-	MediaGroupID string      `json:"media_group_id,omitempty"`
-	Photo        []PhotoSize `json:"photo,omitempty"`
-	Document     *File       `json:"document,omitempty"`
-	Video        *File       `json:"video,omitempty"`
-	Audio        *File       `json:"audio,omitempty"`
-	Voice        *File       `json:"voice,omitempty"`
+	MessageID int64 `json:"message_id"`
+	From      *User `json:"from,omitempty"`
+	Chat      Chat  `json:"chat"`
+	// MessageThreadID is the forum topic of a message in a topic.
+	MessageThreadID int64 `json:"message_thread_id,omitempty"`
+	IsTopicMessage  bool  `json:"is_topic_message,omitempty"`
+	// ReplyToMessage is the message this one replies to. In a forum topic
+	// it is the topic's first message when the person did not reply to
+	// anything.
+	ReplyToMessage    *Message    `json:"reply_to_message,omitempty"`
+	ForumTopicCreated *ForumTopic `json:"forum_topic_created,omitempty"`
+	Text              string      `json:"text,omitempty"`
+	Caption           string      `json:"caption,omitempty"`
+	MediaGroupID      string      `json:"media_group_id,omitempty"`
+	Photo             []PhotoSize `json:"photo,omitempty"`
+	Document          *File       `json:"document,omitempty"`
+	Video             *File       `json:"video,omitempty"`
+	Audio             *File       `json:"audio,omitempty"`
+	Voice             *File       `json:"voice,omitempty"`
 }
 
 // PhotoSize is one size of a photo.
@@ -105,10 +129,17 @@ type Update struct {
 	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
 }
 
-// InlineButton is one inline keyboard button.
+// InlineButton is one inline keyboard button: a callback, or a link.
 type InlineButton struct {
 	Text         string `json:"text"`
-	CallbackData string `json:"callback_data"`
+	CallbackData string `json:"callback_data,omitempty"`
+	URL          string `json:"url,omitempty"`
+}
+
+// ForceReply makes the person's app open a reply to the message.
+type ForceReply struct {
+	ForceReply  bool   `json:"force_reply"`
+	Placeholder string `json:"input_field_placeholder,omitempty"`
 }
 
 // InlineKeyboard is an inline keyboard markup.
@@ -121,20 +152,29 @@ type linkPreview struct {
 }
 
 type sendMessageParams struct {
-	ChatID      int64           `json:"chat_id"`
-	Text        string          `json:"text"`
-	ParseMode   string          `json:"parse_mode,omitempty"`
-	ReplyMarkup *InlineKeyboard `json:"reply_markup,omitempty"`
-	LinkPreview *linkPreview    `json:"link_preview_options,omitempty"`
+	ChatID          int64        `json:"chat_id"`
+	MessageThreadID int64        `json:"message_thread_id,omitempty"`
+	Text            string       `json:"text"`
+	ParseMode       string       `json:"parse_mode,omitempty"`
+	ReplyMarkup     any          `json:"reply_markup,omitempty"`
+	LinkPreview     *linkPreview `json:"link_preview_options,omitempty"`
+}
+
+// markup is kb as a reply_markup value, nil when kb is nil.
+func markup(kb *InlineKeyboard) any {
+	if kb == nil {
+		return nil
+	}
+	return kb
 }
 
 type editMessageParams struct {
-	ChatID      int64           `json:"chat_id"`
-	MessageID   int64           `json:"message_id"`
-	Text        string          `json:"text"`
-	ParseMode   string          `json:"parse_mode,omitempty"`
-	ReplyMarkup *InlineKeyboard `json:"reply_markup,omitempty"`
-	LinkPreview *linkPreview    `json:"link_preview_options,omitempty"`
+	ChatID      int64        `json:"chat_id"`
+	MessageID   int64        `json:"message_id"`
+	Text        string       `json:"text"`
+	ParseMode   string       `json:"parse_mode,omitempty"`
+	ReplyMarkup any          `json:"reply_markup,omitempty"`
+	LinkPreview *linkPreview `json:"link_preview_options,omitempty"`
 }
 
 type getUpdatesParams struct {
@@ -276,30 +316,92 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 	return out, err
 }
 
-// SendHTML sends an HTML message and returns its ID.
-func (c *Client) SendHTML(ctx context.Context, chatID int64, html string, kb *InlineKeyboard) (int64, error) {
+// SendHTML sends an HTML message to a chat, or to a topic of a forum
+// when thread is not 0, and returns its ID.
+func (c *Client) SendHTML(ctx context.Context, chatID, thread int64, html string, kb *InlineKeyboard) (int64, error) {
 	var m Message
 	err := c.call(ctx, "sendMessage", sendMessageParams{
-		ChatID: chatID, Text: html, ParseMode: "HTML", ReplyMarkup: kb,
+		ChatID: chatID, MessageThreadID: thread, Text: html, ParseMode: parseHTML, ReplyMarkup: markup(kb),
+		LinkPreview: &linkPreview{IsDisabled: true},
+	}, &m)
+	return m.MessageID, err
+}
+
+// SendForceReply sends an HTML message that opens a reply to itself in
+// the person's app, and returns its ID.
+func (c *Client) SendForceReply(ctx context.Context, chatID, thread int64, html, placeholder string) (int64, error) {
+	var m Message
+	err := c.call(ctx, "sendMessage", sendMessageParams{
+		ChatID: chatID, MessageThreadID: thread, Text: html, ParseMode: parseHTML,
+		ReplyMarkup: ForceReply{ForceReply: true, Placeholder: truncate(placeholder, 64)},
 		LinkPreview: &linkPreview{IsDisabled: true},
 	}, &m)
 	return m.MessageID, err
 }
 
 // SendText sends a plain text message and returns its ID.
-func (c *Client) SendText(ctx context.Context, chatID int64, text string) (int64, error) {
+func (c *Client) SendText(ctx context.Context, chatID, thread int64, text string) (int64, error) {
 	var m Message
 	err := c.call(ctx, "sendMessage", sendMessageParams{
-		ChatID: chatID, Text: text, LinkPreview: &linkPreview{IsDisabled: true},
+		ChatID: chatID, MessageThreadID: thread, Text: text, LinkPreview: &linkPreview{IsDisabled: true},
 	}, &m)
 	return m.MessageID, err
+}
+
+type topicParams struct {
+	ChatID          int64  `json:"chat_id"`
+	MessageThreadID int64  `json:"message_thread_id,omitempty"`
+	Name            string `json:"name"`
+}
+
+// parseHTML is the parse_mode of messages in HTML.
+const parseHTML = "HTML"
+
+// maxTopicName is the longest forum topic name Telegram takes.
+const maxTopicName = 128
+
+// CreateForumTopic creates a topic in a forum supergroup and returns its
+// thread ID.
+func (c *Client) CreateForumTopic(ctx context.Context, chatID int64, name string) (int64, error) {
+	var t ForumTopic
+	err := c.call(ctx, "createForumTopic", topicParams{ChatID: chatID, Name: truncate(name, maxTopicName)}, &t)
+	return t.MessageThreadID, err
+}
+
+// EditForumTopic renames a topic. A rename that changes nothing is not an
+// error.
+func (c *Client) EditForumTopic(ctx context.Context, chatID, thread int64, name string) error {
+	err := c.call(ctx, "editForumTopic", topicParams{ChatID: chatID, MessageThreadID: thread, Name: truncate(name, maxTopicName)}, nil)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && strings.Contains(apiErr.Description, "TOPIC_NOT_MODIFIED") {
+		return nil
+	}
+	return err
+}
+
+// ChatMember is what getChatMember says of a member of a chat.
+type ChatMember struct {
+	Status          string `json:"status"`
+	CanManageTopics bool   `json:"can_manage_topics"`
+}
+
+type chatMemberParams struct {
+	ChatID int64 `json:"chat_id"`
+	UserID int64 `json:"user_id"`
+}
+
+// GetChatMember reads a member of a chat.
+func (c *Client) GetChatMember(ctx context.Context, chatID, userID int64) (ChatMember, error) {
+	var m ChatMember
+	err := c.call(ctx, "getChatMember", chatMemberParams{ChatID: chatID, UserID: userID}, &m)
+	return m, err
 }
 
 // EditHTML replaces the text of a message. An edit that changes nothing is
 // not an error.
 func (c *Client) EditHTML(ctx context.Context, chatID, messageID int64, html string, kb *InlineKeyboard) error {
 	err := c.call(ctx, "editMessageText", editMessageParams{
-		ChatID: chatID, MessageID: messageID, Text: html, ParseMode: "HTML", ReplyMarkup: kb,
+		ChatID: chatID, MessageID: messageID, Text: html, ParseMode: parseHTML, ReplyMarkup: markup(kb),
 		LinkPreview: &linkPreview{IsDisabled: true},
 	}, nil)
 	var apiErr *APIError
@@ -382,20 +484,25 @@ const (
 )
 
 // SendPhoto sends an image that the chat shows inline.
-func (c *Client) SendPhoto(ctx context.Context, chatID int64, name string, data []byte) error {
-	return c.upload(ctx, "sendPhoto", "photo", chatID, name, data)
+func (c *Client) SendPhoto(ctx context.Context, chatID, thread int64, name string, data []byte) error {
+	return c.upload(ctx, "sendPhoto", "photo", chatID, thread, name, data)
 }
 
 // SendDocument sends a file.
-func (c *Client) SendDocument(ctx context.Context, chatID int64, name string, data []byte) error {
-	return c.upload(ctx, "sendDocument", "document", chatID, name, data)
+func (c *Client) SendDocument(ctx context.Context, chatID, thread int64, name string, data []byte) error {
+	return c.upload(ctx, "sendDocument", "document", chatID, thread, name, data)
 }
 
-func (c *Client) upload(ctx context.Context, method, field string, chatID int64, name string, data []byte) error {
+func (c *Client) upload(ctx context.Context, method, field string, chatID, thread int64, name string, data []byte) error {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 	if err := w.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
 		return err
+	}
+	if thread != 0 {
+		if err := w.WriteField("message_thread_id", strconv.FormatInt(thread, 10)); err != nil {
+			return err
+		}
 	}
 	fw, err := w.CreateFormFile(field, name)
 	if err != nil {

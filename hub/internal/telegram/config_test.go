@@ -13,7 +13,7 @@ func TestConfigValidate(t *testing.T) {
 	good := telegram.Config{
 		Enabled: true, Token: "t",
 		DefaultBackends: []string{"alice=cluster", " bob = hers "},
-		PollTimeout:     time.Second, EditInterval: time.Second, LeaderRetry: time.Second,
+		PollTimeout:     time.Second, EditInterval: time.Second, LeaderRetry: time.Second, TopicSync: time.Second,
 	}
 	if err := good.Validate(); err != nil {
 		t.Fatalf("good config: %v", err)
@@ -28,6 +28,8 @@ func TestConfigValidate(t *testing.T) {
 		{func(c *telegram.Config) { c.Token = "" }, telegram.ErrMissingToken},
 		{func(c *telegram.Config) { c.EditInterval = 0 }, telegram.ErrBadInterval},
 		{func(c *telegram.Config) { c.LeaderRetry = 0 }, telegram.ErrBadInterval},
+		{func(c *telegram.Config) { c.TopicSync = 0 }, telegram.ErrBadInterval},
+		{func(c *telegram.Config) { c.Steps = "loud" }, telegram.ErrBadSteps},
 		{func(c *telegram.Config) { c.DefaultBackends = []string{userAlice} }, telegram.ErrBadDefaultBackend},
 		{func(c *telegram.Config) { c.DefaultBackends = []string{"=x"} }, telegram.ErrBadDefaultBackend},
 	}

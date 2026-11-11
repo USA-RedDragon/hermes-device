@@ -77,10 +77,10 @@ func (r *renderer) sendMedia(ctx context.Context, paths []string) {
 	}
 }
 
-func (r *renderer) upload(ctx context.Context, send func(context.Context, int64, string, []byte) error, name string, data []byte) error {
+func (r *renderer) upload(ctx context.Context, send func(context.Context, int64, int64, string, []byte) error, name string, data []byte) error {
 	cctx, cancel := context.WithTimeout(ctx, uploadTimeout)
 	defer cancel()
-	return send(cctx, r.chatID, name, data)
+	return send(cctx, r.to.chat, r.to.thread, name, data)
 }
 
 func (r *renderer) readMedia(ctx context.Context, p string) ([]byte, string, error) {
