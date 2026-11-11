@@ -134,7 +134,7 @@ class ToolTests(Base):
 
     def test_registers_toolset(self):
         names = {"browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_vision",
-                 "browser_tabs", "browser_back", "browser_status"}
+                 "browser_tabs", "browser_back", "browser_status", "browser_screenshot"}
         self.assertEqual(set(browser.SCHEMAS), names)
         self.assertEqual(self.registry.get_toolset_for_tool("browser_click"), "device-browser")
         defs = {d["function"]["name"] if "function" in d else d["name"]
@@ -350,6 +350,67 @@ class ToolTests(Base):
         self.assertEqual(browser.vision_result(page, "data:image/png;base64,!!", "", native=lambda: True,
                                                resize=browser._resize), json.dumps({"error": "the browser returned a "
                                                                                     "screenshot that is not valid base64"}))
+
+    def test_screenshot_saves_a_file_to_show(self):
+        out = self.run_tool("browser_screenshot", tab_id=7)
+        path = Path(out["path"])
+        self.assertEqual(out["show_user"], "MEDIA:" + out["path"])
+        self.assertEqual(path.parent.parent, browser.shots_root())
+        self.assertEqual(path.parent.name, self.session)
+        self.assertEqual(path.suffix, ".png")
+        self.assertEqual(path.read_bytes(), base64.b64decode(PNG))
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(out["title"], "Example Domain")
+        self.assertEqual(self.last("screenshot")["args"], {"tab_id": 7, "format": "jpeg", "quality": 85})
+        again = self.run_tool("browser_screenshot", tab_id=7)
+        self.assertNotEqual(again["path"], out["path"])
+
+    def test_screenshot_bad_data(self):
+        def shots():
+            return sorted(browser.shots_root().rglob("*")) if browser.shots_root().exists() else []
+        before = shots()
+        self.fake.answer = lambda msg: {"ok": True, "result": {"tab_id": 7, "data_url": "data:image/png;base64,!!"}}
+        out = self.run_tool("browser_screenshot", tab_id=7)
+        self.assertIn("not valid base64", out["error"])
+        self.assertEqual(shots(), before)
+
+    def test_screenshot_session_folder_name(self):
+        self.assertEqual(browser._session_dir_name("../a/b c"), "_a_b_c")
+        self.assertEqual(browser._session_dir_name(""), "no-session")
+        self.assertEqual(browser._session_dir_name(".."), "no-session")
+
+    def test_prune_shots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = time.time()
+            made = []
+            for i in range(5):
+                d = root / f"s{i % 2}"
+                d.mkdir(exist_ok=True)
+                f = d / f"shot{i}.jpg"
+                f.write_bytes(b"x")
+                os.utime(f, (now - 100 + i, now - 100 + i))
+                made.append(f)
+            old = root / "s9"
+            old.mkdir()
+            stale = old / "old.jpg"
+            stale.write_bytes(b"x")
+            os.utime(stale, (now - 10_000, now - 10_000))
+            outside = root.parent / (root.name + "-target")
+            outside.write_bytes(b"keep")
+            self.addCleanup(outside.unlink)
+            (root / "s0" / "link.jpg").symlink_to(outside)
+            self.assertEqual(browser.prune_shots(root, now=now, max_age=1000, max_files=3), 3)
+            self.assertEqual(sorted(p.name for p in root.rglob("shot*.jpg")), ["shot2.jpg", "shot3.jpg", "shot4.jpg"])
+            self.assertFalse(old.exists())
+            self.assertEqual(outside.read_bytes(), b"keep")
+
+    def test_screenshot_keeps_at_most_max_files(self):
+        with mock.patch.object(browser, "SHOT_MAX_FILES", 2):
+            paths = [self.run_tool("browser_screenshot", tab_id=7)["path"] for _ in range(3)]
+        left = sorted(str(p) for p in browser.shots_root().rglob("*.png"))
+        self.assertEqual(len(left), 2)
+        self.assertIn(paths[-1], left)
 
     def test_timeout_kills_request(self):
         self.fake.hold.add("snapshot")

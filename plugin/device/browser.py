@@ -15,6 +15,7 @@ import binascii
 import json
 import os
 import re
+import secrets
 import tempfile
 import threading
 import time
@@ -292,6 +293,94 @@ def vision_result(page: dict, data_url: str, question: str, *, native: Callable[
                         {"type": "image_url", "image_url": {"url": embedded}}]}
 
 
+SHOT_MAX_AGE_S = 7 * 24 * 3600
+SHOT_MAX_FILES = 200
+_SHOTS_LOCK = threading.Lock()
+
+
+def shots_root() -> Path:
+    """Where browser_screenshot keeps its files: one folder per session under the Hermes
+    screenshot cache, which the Hermes web server serves to the hub."""
+    return _core().hermes_home() / "cache" / "screenshots" / "hermes-device"
+
+
+def _session_dir_name(session_id: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id or "")[:128].strip(".")
+    return name or "no-session"
+
+
+def prune_shots(root: Path, *, now: Optional[float] = None, max_age: float = SHOT_MAX_AGE_S,
+                max_files: int = SHOT_MAX_FILES) -> int:
+    """Delete screenshots older than max_age, then the oldest ones over max_files, and empty
+    session folders. Returns how many files it deleted."""
+    now = time.time() if now is None else now
+    files: list[tuple[float, Path]] = []
+    try:
+        dirs = [d for d in root.iterdir() if d.is_dir() and not d.is_symlink()]
+    except OSError:
+        return 0
+    for d in dirs:
+        try:
+            for f in d.iterdir():
+                try:
+                    st = f.lstat()
+                except OSError:
+                    continue
+                if f.is_file() and not f.is_symlink():
+                    files.append((st.st_mtime, f))
+        except OSError:
+            continue
+    files.sort()
+    keep = max(max_files, 0)
+    doomed = [f for i, (mtime, f) in enumerate(files) if now - mtime > max_age or len(files) - i > keep]
+    removed = 0
+    for f in doomed:
+        try:
+            f.unlink()
+            removed += 1
+        except OSError:
+            pass
+    for d in dirs:
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+    return removed
+
+
+def save_shot(session_id: str, data_url: str, *, root: Optional[Path] = None) -> Path:
+    """Write a screenshot data URL to a new file in the session's folder and prune old ones."""
+    m = _DATA_URL.fullmatch(data_url or "")
+    if not m:
+        raise ValueError("the browser returned no screenshot")
+    try:
+        raw = base64.b64decode(m.group(2), validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError("the browser returned a screenshot that is not valid base64") from None
+    root = shots_root() if root is None else root
+    folder = root / _session_dir_name(session_id)
+    name = time.strftime("shot-%Y%m%d-%H%M%S-", time.gmtime()) + secrets.token_hex(4)
+    path = folder / (name + (".png" if m.group(1) == "image/png" else ".jpg"))
+    with _SHOTS_LOCK:
+        prune_shots(root, max_files=SHOT_MAX_FILES - 1)
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
+    return path
+
+
+def screenshot_result(page: dict, path: Path) -> str:
+    """The browser_screenshot result: the saved file and how to show it to the user."""
+    out = dict(page)
+    out["path"] = str(path)
+    out["show_user"] = f"MEDIA:{path}"
+    out["note"] = ("The screenshot is saved. To show it to the user, put the show_user line, exactly as written, "
+                   "on its own line in your reply. The user sees the picture there, not the path. To look at the "
+                   "page yourself, use browser_vision.")
+    return _ok(out)
+
+
 def _native_vision() -> bool:
     from tools.vision_tools import _should_use_native_vision_fast_path
     return bool(_should_use_native_vision_fast_path())
@@ -427,6 +516,19 @@ def _vision(args: dict, conn: Any, _sid: str) -> Any:
                          str(args.get("question") or "").strip(), native=_native_vision, resize=_resize)
 
 
+def _screenshot(args: dict, conn: Any, sid: str) -> str:
+    tab = _need_tab(args)
+    shot = call(conn, "screenshot", {"tab_id": tab, "format": "jpeg", "quality": 85})
+    shot = shot if isinstance(shot, dict) else {}
+    try:
+        path = save_shot(_session(sid), str(shot.get("data_url") or ""))
+    except ValueError as exc:
+        return _err(str(exc))
+    except OSError as exc:
+        return _err(f"could not save the screenshot: {exc.strerror or exc}", "failed")
+    return screenshot_result(_page(shot) or {"tab_id": tab}, path)
+
+
 # --- schemas -----------------------------------------------------------------------------------
 
 _TAB = {"type": "integer", "description": "Tab id from browser_tabs or an earlier browser call"}
@@ -473,6 +575,11 @@ SCHEMAS = {
         "browser_vision", "Take a screenshot of an agent tab and look at it. Use it when the snapshot does not "
         "show what you need (layout, images, canvas).",
         {"tab_id": _TAB, "question": {"type": "string", "description": "What to look for"}}, ["tab_id"]),
+    "browser_screenshot": _schema(
+        "browser_screenshot", "Take a screenshot of an agent tab to show the user. It saves the picture and returns "
+        "a show_user line; put that line in your reply and the user sees the picture. Use it when the user asks "
+        "for a screenshot. It does not show you the picture: use browser_vision for that.",
+        {"tab_id": _TAB}, ["tab_id"]),
 }
 
 HANDLERS = {
@@ -484,6 +591,7 @@ HANDLERS = {
     "browser_click": _tool(_act("click")),
     "browser_type": _tool(_act("type")),
     "browser_vision": _tool(_vision),
+    "browser_screenshot": _tool(_screenshot),
 }
 
 EMOJI = "\U0001F310"
