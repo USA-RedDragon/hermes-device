@@ -2552,8 +2552,10 @@
     closeSide: () => openSide(false) });
   const activity = window.HubActivity({ api, el, showText });
   const claude = window.HubClaude({ api, el, me: () => me, redraw: () => { if (view) drawInfo(view.info); } });
+  const claudeCode = window.HubClaudeCode({ api, el });
   const usage = window.HubUsage({ api, el, chatHash, defaultBackend: () => me.default_backend || "",
-    claudePanel: (b) => (me.claude ? claude.panel(b) : Promise.resolve(null)) });
+    claudePanel: (b) => (me.claude ? claude.panel(b) : Promise.resolve(null)),
+    claudeCodePanel: () => (me.claude_code ? claudeCode.panel() : null) });
   const files = window.HubFiles({ api, el, back: () => {
     if (view) location.hash = chatHash(view.backend, view.session);
     else history.back();

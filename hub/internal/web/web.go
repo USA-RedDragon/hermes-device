@@ -76,6 +76,8 @@ type Options struct {
 	// Claude serves the Claude accounts of backends with the
 	// claude-accounts plugin. Nil: none.
 	Claude hub.Claude
+	// ClaudeCode serves the Usage page's Claude Code panel. Nil: no panel.
+	ClaudeCode hub.ClaudeCode
 	// Version is the hub's release, shown in Settings.
 	Version string
 	// Scheduled serves the Scheduled page. Nil: no Scheduled page.
@@ -114,6 +116,7 @@ type Server struct {
 	notifier     Notifier
 	claude       hub.Claude
 	scheduled    hub.Scheduled
+	claudeCode   hub.ClaudeCode
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
 	backendNames     map[string]string
@@ -160,6 +163,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory,
 		insights: opts.Insights, files: opts.Files,
 		notices: opts.Notices, notifier: opts.Notifier, claude: opts.Claude, scheduled: opts.Scheduled,
+		claudeCode:       opts.ClaudeCode,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,
@@ -261,6 +265,7 @@ func (s *Server) Handler() http.Handler {
 	s.memoryRoutes(mux)
 	s.insightRoutes(mux)
 	s.notifyRoutes(mux)
+	s.claudeCodeRoutes(mux)
 	s.claudeRoutes(mux)
 	s.scheduledRoutes(mux)
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)

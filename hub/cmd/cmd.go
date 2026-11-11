@@ -17,6 +17,7 @@ import (
 
 	"github.com/USA-RedDragon/hermes-hub/internal/agents"
 	"github.com/USA-RedDragon/hermes-hub/internal/claude"
+	"github.com/USA-RedDragon/hermes-hub/internal/claudecode"
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/USA-RedDragon/hermes-hub/internal/device"
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
@@ -126,6 +127,15 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 				return nil
 			}})
 		go router.Run(ctx)
+	}
+	if devices != nil {
+		cc, err := newClaudeCode(cfg, st, svc, devices)
+		if err != nil {
+			return err
+		}
+		devices.SetUsage(cc)
+		webOpts.ClaudeCode = cc
+		go cc.Run(ctx)
 	}
 	if webOpts.Memory, err = newMemory(cfg, svc, dialers); err != nil {
 		return err
@@ -264,6 +274,18 @@ func newDevices(cfg *config.Config, st *store.Store, svc *service.Service, diale
 	pub, _ := key.Public().(ed25519.PublicKey)
 	slog.Info("Devices enabled", "backends", len(backends), "public_key", base64.StdEncoding.EncodeToString(pub))
 	return srv, nil
+}
+
+// newClaudeCode returns the core of the Usage page's Claude Code panel.
+// It needs devices: computers send their usage on the device API, and the
+// hub asks each acp-host with a device assertion.
+func newClaudeCode(cfg *config.Config, st *store.Store, svc *service.Service, devices *device.Server) (*claudecode.Service, error) {
+	backends := make([]claudecode.Backend, 0, len(cfg.Backends))
+	for _, b := range cfg.Backends {
+		backends = append(backends, claudecode.Backend{ID: b.ID, Name: b.Name, Hermes: b.Devices && b.ACPURL != ""})
+	}
+	return claudecode.New(claudecode.Options{Store: st, Access: svc, Devices: st, Backends: backends, Fetch: devices.HermesUsage,
+		Location: cfg.Claude.Location()})
 }
 
 // newMemory returns the Memory page's core, or nil when no backend has

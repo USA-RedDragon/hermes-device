@@ -131,6 +131,7 @@ window.HubSearch = (ctx) => {
 };
 
 // HubUsage builds the Usage page: the Claude accounts (from ctx.claudePanel),
+// Claude Code's tokens on the user's computers (from ctx.claudeCodePanel),
 // tokens by day, chat and model, rate limits, the local GPU's time and
 // Honcho's backlog.
 window.HubUsage = (ctx) => {
@@ -141,6 +142,7 @@ window.HubUsage = (ctx) => {
   let days = 30;
   let shown = false;
   let gen = 0;
+  let ccPanel = null;
 
   function setHash() {
     const h = "#/usage/" + encodeURIComponent(backend) + "/" + days;
@@ -166,6 +168,7 @@ window.HubUsage = (ctx) => {
   function hide() {
     shown = false;
     gen++;
+    ccPanel = null;
     root.hidden = true;
     root.replaceChildren();
     nav.classList.remove("on");
@@ -197,7 +200,7 @@ window.HubUsage = (ctx) => {
     range.onchange = () => { days = Number(range.value); setHash(); load(backends); };
     const again = el("button", "", "Refresh");
     again.type = "button";
-    again.onclick = () => load(backends);
+    again.onclick = () => { ccPanel = null; load(backends); };
     bar.append(range, again);
     return bar;
   }
@@ -206,8 +209,12 @@ window.HubUsage = (ctx) => {
     const mine = ++gen;
     const body = el("div", "mem-body usage-body");
     root.replaceChildren(head(backends), body);
+    // The Claude Code panel is the user's, not the backend's: it stays
+    // when the Hermes changes.
+    if (!ccPanel && ctx.claudeCodePanel) ccPanel = ctx.claudeCodePanel();
+    const code = ccPanel ? [ccPanel] : [];
     if (!backend) {
-      body.append(el("p", "none", "No assistant is set up for you yet."));
+      body.append(...code, el("p", "none", "No assistant is set up for you yet."));
       return;
     }
     body.append(el("p", "none", "Loading..."));
@@ -220,11 +227,11 @@ window.HubUsage = (ctx) => {
       r = await api("GET", "/api/usage/" + encodeURIComponent(backend) + "?days=" + days);
     } catch (e) {
       if (mine !== gen) return;
-      body.replaceChildren(claude, el("p", "err", "Could not load usage: " + e.message));
+      body.replaceChildren(claude, ...code, el("p", "err", "Could not load usage: " + e.message));
       return;
     }
     if (mine !== gen) return;
-    body.replaceChildren(claude, ...draw(r));
+    body.replaceChildren(claude, ...code, ...draw(r));
   }
 
   function section(title, hint) {

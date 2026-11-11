@@ -217,7 +217,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	sess, _ := s.session(r)
 	writeJSON(w, http.StatusOK, map[string]any{"user": sess.User, "display": sess.Display, "groups": sess.Groups, "csrf": sess.CSRF,
 		"default_backend": s.defaults[sess.User], "devices": s.devices != nil, "computers": s.computers != nil,
-		"memory": s.memory != nil, "usage": s.insights != nil, "files": s.files != nil, "notify": s.notices != nil,
+		"memory": s.memory != nil, "usage": s.insights != nil || s.claudeCode != nil, "claude_code": s.claudeCode != nil,
+		"files": s.files != nil, "notify": s.notices != nil,
 		"claude": s.claude != nil, "claude_admin": s.isClaudeAdmin(sess.User), "telegram_steps": s.telegramSteps, "version": s.version,
 		"scheduled": s.scheduled != nil})
 }
