@@ -145,6 +145,8 @@ def register(ctx) -> None:
     ctx.register_hook("on_session_start", hide_builtin_tools)
     ctx.register_terminal_environment_provider(make_provider(core))
     ctx.register_hook("pre_tool_call", core.pre_tool_call)
+    if "filter_session_list" in core.valid_hooks():
+        ctx.register_hook("filter_session_list", core.filter_session_list)
     ctx.register_command("device", device_command, description="Bind this session to a device directory",
                          args_hint="<device> <dir> | off | list")
     ctx.register_context_reference(make_reference_provider(core))

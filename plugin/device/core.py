@@ -1515,6 +1515,44 @@ def resolve_current() -> Resolution:
     return resolve_session(current_session_id())
 
 
+def valid_hooks() -> frozenset[str]:
+    """The plugin hook names this Hermes knows. Hooks that a patched Hermes adds are registered
+    only when it has them."""
+    try:
+        from hermes_cli.plugins import VALID_HOOKS
+    except ImportError:
+        return frozenset()
+    return frozenset(VALID_HOOKS)
+
+
+# The session.list audience of one device: hermes-hub sends it on the device's gateway leg.
+LIST_AUDIENCE_PREFIX = "hermes-device:"
+
+
+def filter_session_list(audience: Any = None, session_ids: Any = None, **_kwargs) -> Optional[list[str]]:
+    """The ``filter_session_list`` hook (hermes-patches 0004): for audience ``hermes-device:<id>``,
+    the ids among ``session_ids`` whose lineage is bound to device ``<id>``. None for any other
+    audience, which this plugin does not judge. A session that cannot be resolved is left out."""
+    if not isinstance(audience, str) or not audience.startswith(LIST_AUDIENCE_PREFIX):
+        return None
+    device_id = audience[len(LIST_AUDIENCE_PREFIX):]
+    kept: list[str] = []
+    if not device_id:
+        return kept
+    h = hub()
+    for sid in session_ids or ():
+        if not isinstance(sid, str) or not sid:
+            continue
+        try:
+            res = h.resolve(sid)
+        except Exception:
+            logger.debug("device: cannot resolve %s for a session list", sid, exc_info=True)
+            continue
+        if res.state == STATE_BOUND and res.binding is not None and res.binding.device_id == device_id:
+            kept.append(sid)
+    return kept
+
+
 def runs_on_pod(res: Resolution) -> bool:
     return res.state == STATE_NEVER_BOUND and fallback() == "local"
 

@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -483,6 +484,66 @@ class LineageTests(Base):
         self.hub.resolve("c1")
         self.assertEqual(self.store.calls.count("c1"), 1)
         self.assertEqual(self.store.calls.count("sess-1"), 2)
+
+
+class SessionListAudienceTests(Base):
+    def test_keeps_only_sessions_bound_to_the_audience_device(self):
+        self.store.rows.update({"c1": "sess-1", "other": None, "free": None, "was": None, "lap": None})
+        self.bind()
+        self.hub.bind("was", "d_pc", str(self.root))
+        self.hub.unbind("was")
+        laptop = FakeDevice(self.hub, str(self.root), str(self.devtmp), str(self.home), device_id="d_lap",
+                            name="laptop")
+        self.addCleanup(laptop.close)
+        self.hub.bind("lap", "d_lap", str(self.root))
+        ids = ["sess-1", "c1", "free", "was", "lap", "ghost", 7]
+        self.assertEqual(core.filter_session_list(audience="hermes-device:d_pc", session_ids=ids),
+                         ["sess-1", "c1"])
+        self.assertEqual(core.filter_session_list(audience="hermes-device:d_lap", session_ids=ids), ["lap"])
+        self.assertEqual(core.filter_session_list(audience="hermes-device:d_pc", session_ids=[]), [])
+        self.assertEqual(core.filter_session_list(audience="hermes-device:", session_ids=ids), [])
+
+    def test_other_audiences_are_not_judged(self):
+        self.bind()
+        for audience in ("alice", "", None, "hermes-devices:d_pc"):
+            self.assertIsNone(core.filter_session_list(audience=audience, session_ids=["sess-1"]))
+
+
+class RecordingCtx:
+    """A PluginContext stand-in that records the hooks registered."""
+
+    def __init__(self):
+        self.hooks: dict[str, list] = {}
+
+    def register_hook(self, name, callback):
+        self.hooks.setdefault(name, []).append(callback)
+
+    def __getattr__(self, name):
+        if name.startswith("register_"):
+            return lambda *a, **k: None
+        raise AttributeError(name)
+
+
+class RegisterTests(unittest.TestCase):
+    def test_session_list_hook_only_when_hermes_has_it(self):
+        sys.path.insert(0, str(Path(core.__file__).parent.parent))
+        try:
+            import device as plugin
+        finally:
+            sys.path.pop(0)
+        sibling = types.SimpleNamespace(register=lambda ctx, core: None)
+        for hooks, want in ((frozenset({"pre_tool_call"}), False),
+                            (frozenset({"pre_tool_call", "filter_session_list"}), True)):
+            ctx = RecordingCtx()
+            with mock.patch.object(core, "valid_hooks", lambda hooks=hooks: hooks), \
+                    mock.patch.object(core, "install_hooks", lambda: []), \
+                    mock.patch.object(core, "apply_safe_root_policy", lambda: None), \
+                    mock.patch.object(core, "_load_sibling", lambda *a: sibling), \
+                    mock.patch.object(core, "settings", lambda: {"placeholder": "/", "backend_id": "alice"}):
+                plugin.register(ctx)
+            self.assertEqual("filter_session_list" in ctx.hooks, want, hooks)
+            if want:
+                self.assertIs(ctx.hooks["filter_session_list"][0], core.filter_session_list)
 
 
 class GuardTests(Base):

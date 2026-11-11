@@ -859,6 +859,10 @@ Approval. Before `mcp_device_call`, the plugin's `pre_tool_call` asks the user t
 
 Results. The result is JSON with `device`, `server`, `tool`, `is_error`, `content` (the text blocks joined, with notes for resource links, embedded resources and other content; cut in the middle above 2,000,000 characters), `structured_content` when the server sent it, and a `note` that the content is untrusted data. Up to 4 PNG, JPEG, GIF or WebP images of valid base64 and at most 5 MiB each come back as Hermes's multimodal tool result when the model can take images in tool results. Every tool name starts with `mcp_`, so Hermes wraps the results in its untrusted tool result markers and applies its MCP result size budget (agent/tool_dispatch_helpers.py, tools/budget_config.py). A Hermes interrupt (`/stop`) of the turn sends `kill` for the request.
 
+### 8.12 Session list audience
+
+With a Hermes that has the plugin hook `filter_session_list` (hermes-patches 0004, `runtime.describe` lists `session-list-audience-v1`), the plugin registers it. A gateway `session.list` with `audience` `hermes-device:<device id>` then lists only the sessions whose lineage the plugin resolves (8.3, stored bindings only) as bound to that device. Sessions that are never bound, fail closed, run on the sandbox device or are bound to another device are left out. The plugin returns `None` for any other audience, so it judges only its own. hermes-hub sends that audience on a device's gateway leg once a probe listing with it succeeds. On a Hermes without the hook the plugin does not register it, and the gateway refuses every `audience`.
+
 ## 9. Plugin HTTP routes
 
 Mounted by the dashboard under `/api/plugins/device/` on the gateway listener (9120). They are behind dashboard sign-in, so the hub calls them with its dashboard session for the user. Errors are `{"error": "<code>", "message": "<text>"}`.
