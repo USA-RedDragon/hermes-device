@@ -1,4 +1,4 @@
-cmd/cmd.go	118	0
+cmd/cmd.go	121	0
 internal/config/config.go	109	105
 internal/config/device.go	63	52
 internal/config/load.go	2	0
@@ -25,12 +25,15 @@ internal/hub/attach.go	45	39
 internal/hub/hub.go	4	4
 internal/hub/media.go	93	92
 internal/leader/leader.go	32	29
+internal/pdf/pdf.go	180	159
+internal/pdf/pdftest/pdftest.go	32	32
 internal/server/server.go	40	0
-internal/service/attach.go	67	55
+internal/service/attach.go	82	68
 internal/service/hold.go	229	198
 internal/service/live.go	201	157
 internal/service/manage.go	121	115
 internal/service/media.go	113	91
+internal/service/pdf.go	71	55
 internal/service/service.go	564	518
 internal/store/browser.go	77	63
 internal/store/device.go	191	158
@@ -46,10 +49,10 @@ internal/telegram/bot.go	519	406
 internal/telegram/computers.go	187	146
 internal/telegram/config.go	16	16
 internal/telegram/format.go	114	111
-internal/telegram/media.go	38	36
+internal/telegram/media.go	39	37
 internal/telegram/render.go	191	147
 internal/telegram/replymedia.go	46	37
-internal/web/api.go	203	140
+internal/web/api.go	224	160
 internal/web/auth.go	112	84
 internal/web/browser.go	107	84
 internal/web/computers.go	85	58
