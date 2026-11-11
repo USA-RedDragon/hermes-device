@@ -147,7 +147,10 @@ func (e *env) replica() *replica {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.Config.Handler = d.Handler()
+	mux := http.NewServeMux()
+	mux.Handle("/api/device/", d.Handler())
+	mux.Handle("/api/browser/", d.BrowserHandler())
+	srv.Config.Handler = mux
 	srv.Start()
 	t.Cleanup(srv.Close)
 	t.Cleanup(d.Drain)
