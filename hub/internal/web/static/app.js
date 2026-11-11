@@ -471,7 +471,7 @@
       node.raw = tn.raw;
       if (!streamed) {
         node.queued = false;
-        this.follow(() => render(node, node.raw));
+        this.follow(() => this.showText(node, true));
         return;
       }
       if (node.queued) return;
@@ -479,8 +479,25 @@
       requestAnimationFrame(() => {
         if (!node.queued) return;
         node.queued = false;
-        this.follow(() => render(node, node.raw));
+        this.follow(() => this.showText(node, false));
       });
+    }
+
+    // showText renders a reply without its MEDIA directives. Once the reply
+    // is final it shows the files they name; while it streams it also hides
+    // a directive that is still being typed.
+    showText(node, final) {
+      const m = mediaDirectives(node.raw || "");
+      render(node, final ? m.text : hidePending(m.text));
+      if (final && m.paths.length) node.append(mediaRow(this.base, m.paths));
+    }
+
+    // endText shows the files of the reply segment that ends here.
+    endText() {
+      const tn = this.turn;
+      if (!tn || !tn.text) return;
+      tn.text.queued = false;
+      this.follow(() => this.showText(tn.text, true));
     }
 
     // userText adds a user message. atts are the files the page sent with
@@ -488,7 +505,7 @@
     userText(text, pending, atts) {
       const shown = atts ? { text, atts } : splitAttachments(text);
       const m = el("div", "msg user" + (pending ? " pending" : ""));
-      if (shown.atts.length) m.append(attachmentRow(shown.atts));
+      if (shown.atts.length) m.append(attachmentRow(shown.atts, this.base));
       if (shown.text) m.append(shown.text);
       if (atts) for (const a of atts) if (a.url) this.urls.push(a.url);
       this.add(m);
@@ -631,6 +648,7 @@
         card.append(d);
       }
       this.tools.set(id, card);
+      this.endText();
       this.ensureTurn().text = null;
       this.add(card);
       return card;
@@ -652,6 +670,9 @@
         state.textContent += " in " + duration(p.duration_s);
       }
       for (const n of card.querySelectorAll("progress, .progress")) n.remove();
+      if (card.toolName === "browser_screenshot" && !failed && res && typeof res.path === "string" && mediaPath(res.path)) {
+        card.append(mediaRow(this.base, [res.path], "shot"));
+      }
       if (p.inline_diff) card.append(diffView(p.inline_diff));
       let out = p.result_text;
       if (!out && res && card.toolName === "terminal" && "output" in res) {
@@ -844,6 +865,7 @@
           this.setStatus("");
           const tn = this.ensureTurn();
           if (!tn.text && !tn.raw && typeof p.text === "string" && p.text) this.assistantText(p.text);
+          else this.endText();
           if (tn.reasoning) tn.reasoning.open = false;
           if (p.status && p.status !== "complete" && p.status !== "completed") {
             this.add(el("div", "note" + (p.status === "error" || p.status === "failed" ? " bad" : ""), "Turn " + p.status + (p.error ? ": " + p.error : "")));
@@ -880,6 +902,137 @@
 
   const render = (node, raw) => window.hubMarkdown.render(node, raw);
 
+  // MEDIA:<path> directives in a reply name files on the Hermes server for
+  // the user. This follows hub.MediaDirectives in the hub, which decides
+  // what the media route serves; the page only shows what it finds.
+  const mediaExts = new Set(("png jpg jpeg gif webp bmp tiff svg mp4 mov avi mkv webm 3gp mp3 m2a wav ogg opus m4a " +
+    "flac pdf docx doc odt rtf txt md epub xlsx xls ods csv tsv json xml yaml yml kmz kml geojson gpx pptx ppt odp key " +
+    "zip tar gz tgz bz2 xz 7z rar apk ipa html htm").split(" "));
+  const imageExts = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
+  const extOf = (p) => { const b = baseName(p); const i = b.lastIndexOf("."); return i > 0 ? b.slice(i + 1).toLowerCase() : ""; };
+  const imagePath = (p) => imageExts.has(extOf(p));
+  const utf8 = new TextEncoder();
+
+  function mediaPath(p) {
+    if (typeof p !== "string" || p.length < 2 || p[0] !== "/" || utf8.encode(p).length > 4096) return false;
+    if (/[\x00-\x1f\x7f]/.test(p)) return false;
+    if (p.slice(1).split("/").some((s) => s === "" || s === "." || s === "..")) return false;
+    return mediaExts.has(extOf(p));
+  }
+
+  // maskMedia blanks fenced code, inline code and quote lines, so examples
+  // there are not directives. Inline code that is a whole directive, or the
+  // quoted path of one, stays.
+  function maskMedia(text) {
+    const lines = text.split("\n");
+    let fence = "";
+    for (let i = 0; i < lines.length; i++) {
+      const f = lines[i].match(/^[ \t]{0,3}(```|~~~)/);
+      if (fence) {
+        if (f && f[1] === fence) fence = "";
+        lines[i] = " ".repeat(lines[i].length);
+      } else if (f) {
+        fence = f[1];
+        lines[i] = " ".repeat(lines[i].length);
+      } else if (/^[ \t]*>/.test(lines[i])) {
+        lines[i] = " ".repeat(lines[i].length);
+      }
+    }
+    const masked = lines.join("\n");
+    return masked.replace(/`[^`\n]+`/g, (code, at) => {
+      if (/MEDIA:[ \t]*$/i.test(masked.slice(Math.max(0, at - 20), at))) return code;
+      if (/^MEDIA:/i.test(code.slice(1, -1).trim())) return code;
+      return " ".repeat(code.length);
+    });
+  }
+
+  function mediaDirectives(text) {
+    if (!/MEDIA:/i.test(text)) return { paths: [], text };
+    const scan = maskMedia(text);
+    const tag = /[`"'*_]{0,3}MEDIA:[ \t]*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\/[^\s`"'<>]+)/gi;
+    const spans = [];
+    const paths = [];
+    let m;
+    while ((m = tag.exec(scan))) {
+      const pStart = m.index + m[0].length - m[1].length;
+      let raw = text.slice(pStart, pStart + m[1].length);
+      let p;
+      if ("`\"'".includes(raw[0])) {
+        p = raw.slice(1, -1).trim();
+      } else {
+        const glued = raw.search(/MEDIA:/i);
+        if (glued > 0) {
+          raw = raw.slice(0, glued);
+          tag.lastIndex = pStart + glued;
+        }
+        raw = raw.replace(/[.,;:!?)\]}*_]+$/, "");
+        p = raw;
+      }
+      if (!mediaPath(p)) continue;
+      let end = pStart + raw.length;
+      for (let n = 0; n < 3 && end < text.length && "`\"'*_".includes(text[end]); n++) end++;
+      if (text[end] === "." && (end + 1 === text.length || text[end + 1] === " " || text[end + 1] === "\n")) end++;
+      spans.push([m.index, end]);
+      if (!paths.includes(p)) paths.push(p);
+    }
+    if (!spans.length) return { paths: [], text };
+    let out = "";
+    let last = 0;
+    for (const [a, b] of spans) {
+      out += text.slice(last, a);
+      last = b;
+    }
+    out += text.slice(last);
+    return { paths, text: out.replace(/\n{3,}/g, "\n\n").trim() };
+  }
+
+  // hidePending cuts a directive still being typed at the end of a
+  // streamed reply, so its path never flashes on screen.
+  function hidePending(text) {
+    const cut = text.search(/(?:[`"'*_]{0,3}MEDIA:[ \t]*(?:[`"'~/][^\n]*)?|(?<![A-Za-z0-9])[`"'*_]{0,3}M(?:E(?:D(?:I(?:A)?)?)?)?)$/i);
+    return cut < 0 ? text : text.slice(0, cut);
+  }
+
+  const mediaURL = (base, p) => base + "/media?path=" + encodeURIComponent(p);
+
+  // mediaImage is a thumbnail of an image on the Hermes server that opens
+  // full size. It turns into the file's name when the hub cannot show it.
+  function mediaImage(base, p, cls) {
+    const a = el("a", cls || "media-img");
+    a.href = mediaURL(base, p);
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.title = baseName(p);
+    const img = el("img");
+    img.alt = baseName(p);
+    img.loading = "lazy";
+    img.src = a.href;
+    img.onerror = () => a.replaceWith(mediaFile(base, p, true));
+    a.append(img);
+    return a;
+  }
+
+  // mediaFile is a chip that downloads a file from the Hermes server.
+  function mediaFile(base, p, gone) {
+    const chip = el(gone ? "span" : "a", "att media-file" + (gone ? " gone" : ""));
+    chip.title = gone ? "This file is no longer on the Hermes server." : p;
+    if (!gone) {
+      chip.href = mediaURL(base, p) + "&download=1";
+      chip.download = baseName(p);
+      chip.rel = "noopener";
+    }
+    chip.append(el("span", "file", extOf(p) || "file"), el("span", "name", baseName(p)));
+    if (gone) chip.append(el("span", "size", "gone"));
+    return chip;
+  }
+
+  // mediaRow shows the files a reply names: images inline, others as chips.
+  function mediaRow(base, paths, cls) {
+    const row = el("div", "media" + (cls ? " " + cls : ""));
+    for (const p of paths) row.append(imagePath(p) ? mediaImage(base, p) : mediaFile(base, p));
+    return row;
+  }
+
   // Lines Hermes and the hub keep in a user message for its attachments:
   // the gateway's image hints and placeholders (agent/image_routing.py,
   // agent/image_replay.py), @image refs, inline image data, and the hub's
@@ -897,10 +1050,10 @@
     const keep = [];
     for (const line of String(text || "").split("\n")) {
       let m;
-      if ((m = line.match(imageHint))) atts.push({ name: baseName(m[1]), image: true, title: m[1] });
+      if ((m = line.match(imageHint))) atts.push({ name: baseName(m[1]), image: true, title: m[1], path: m[1] });
       else if ((m = line.match(imageRef))) {
         const p = m[1] || m[2] || m[3] || m[4];
-        atts.push({ name: baseName(p), image: true, title: p });
+        atts.push({ name: baseName(p), image: true, title: p, path: p });
       } else if (imageData.test(line)) atts.push({ name: "image", image: true, url: line });
       else if ((m = line.match(fileNote))) atts.push({ name: m[1], image: false, title: m[2] });
       else if (!placeholder.test(line)) keep.push(line);
@@ -912,10 +1065,15 @@
   }
 
   // attachmentRow shows a message's attachments: a thumbnail when the page
-  // has the image, else the file's name.
-  function attachmentRow(atts) {
+  // has the image or the hub can fetch it from Hermes, else the file's name.
+  function attachmentRow(atts, base) {
     const row = el("div", "atts");
     for (const a of atts) {
+      const fetched = !a.url && base && a.path && imagePath(a.path) && mediaPath(a.path);
+      if (fetched) {
+        row.append(mediaImage(base, a.path, "att image"));
+        continue;
+      }
       const box = el("div", "att" + (a.url ? " image" : ""));
       if (a.title) box.title = a.title;
       if (a.url) {
