@@ -1043,6 +1043,34 @@ func TestGatewayLegImageRender(t *testing.T) {
 	})
 }
 
+func TestGatewayLegClientCapabilities(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, _ := e.pair(e.a)
+		g := e.gatewayLeg(e.b, tok)
+		g.request("ok", "client.capabilities", map[string]any{"server_requests": true})
+		got := e.called("client.capabilities")
+		if len(got) != 1 || len(got[0].Params) != 1 || got[0].Params["server_requests"] != true {
+			t.Fatalf("forwarded client.capabilities calls = %v", got)
+		}
+		for name, params := range map[string]map[string]any{
+			"local":   {"desktop_local": true},
+			"both":    {"server_requests": true, "desktop_local": true},
+			"string":  {"server_requests": "yes"},
+			"null":    {"server_requests": nil},
+			"nothing": {},
+		} {
+			if m := g.request(name, "client.capabilities", params); reason(m) != reasonDenied {
+				t.Fatalf("client.capabilities %s = %v", name, m)
+			}
+		}
+		if got := e.called("client.capabilities"); len(got) != 1 {
+			t.Fatalf("forwarded client.capabilities calls = %v", got)
+		}
+	})
+}
+
 func TestGatewayLegListAudience(t *testing.T) {
 	t.Parallel()
 	stores(t, func(t *testing.T, st *store.Store) {

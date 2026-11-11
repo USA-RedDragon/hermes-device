@@ -15,7 +15,8 @@ import (
 )
 
 // clientMethods is every gateway method name that the Hermes v0.23.1 Ink TUI
-// (ui-tui/src, and the gateway.ping heartbeat of apps/shared), the classic
+// (ui-tui/src, and the gateway.ping heartbeat and client.capabilities of
+// apps/shared), the classic
 // CLI (hermes_cli) and tui_gateway/owner_forward.py mention, with the rule
 // the gateway leg applies. TestClientMethodsAgainstSource rebuilds the list
 // from a checkout, so a Hermes upgrade that adds or renames one fails.
@@ -26,7 +27,7 @@ func clientMethods() map[string]string {
 		"approval.respond": device.RuleAllowed, "billing.auto_reload": device.RuleDenied, "billing.charge": device.RuleDenied,
 		"billing.charge_status": device.RuleDenied, "billing.keep_going_on_credits": device.RuleDenied,
 		"billing.state": device.RuleDenied, "billing.step_up": device.RuleDenied, "browser.manage": device.RuleDenied,
-		"clarify.lock": device.RuleAllowed, "clarify.respond": device.RuleAllowed, "clipboard.paste": device.RuleDenied,
+		"clarify.lock": device.RuleAllowed, "client.capabilities": device.RuleChecked, "clarify.respond": device.RuleAllowed, "clipboard.paste": device.RuleDenied,
 		"command.dispatch": device.RuleChecked, "command.observe": device.RuleAllowed, "commands.catalog": device.RuleAllowed,
 		"complete.path": device.RuleRewritten, "complete.slash": device.RuleAllowed, "config.get": device.RuleChecked,
 		"config.set": device.RuleChecked, "connection.respond": device.RuleDenied, "connectors.accounts": device.RuleDenied,
@@ -163,6 +164,9 @@ func sentMethods(t *testing.T, src string, server map[string]bool) map[string]bo
 	}
 	if strings.Contains(string(b), "method: 'gateway.ping'") {
 		out["gateway.ping"] = true
+	}
+	if strings.Contains(string(b), "'client.capabilities', { server_requests: true }") {
+		out["client.capabilities"] = true
 	}
 	return out
 }

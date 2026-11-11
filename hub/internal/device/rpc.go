@@ -62,6 +62,8 @@ const (
 	methodActiveList   = "session.active_list"
 	methodMostRecent   = "session.most_recent"
 	methodImageRender  = "image.render"
+	methodCapabilities = "client.capabilities"
+	keyServerRequests  = "server_requests"
 	keyCols            = "cols"
 	keyRows            = "rows"
 	opCompress         = "compress"
@@ -192,6 +194,8 @@ func deniedAnswer(id json.RawMessage, method string, params map[string]json.RawM
 			why = "operation " + strconv.Quote(rawString(params["operation"])) + " is refused"
 		case method == methodImageRender:
 			why = "it takes only " + strings.Join(imageRenderParams, ", ")
+		case method == methodCapabilities:
+			why = "it takes only " + keyServerRequests + ", as true or false"
 		}
 	}
 	return answerError(id, codeDenied, method+" is not available through hermes-device: "+why, map[string]any{keyReason: reasonDenied})
@@ -253,7 +257,8 @@ var gatewayRules = map[string]string{
 	methodConfigSet: RuleChecked, methodConfigGet: RuleChecked, "model.options": RuleRewritten,
 	methodSlashExec: RuleChecked, methodDispatch: RuleChecked, "command.observe": RuleAllowed, "commands.catalog": RuleAllowed,
 	"complete.slash": RuleAllowed, "plugins.list": RuleAllowed, "tools.show": RuleAllowed,
-	"subagent.list": RuleAllowed, "subagent.tail": RuleAllowed, "subagent.steer": RuleAllowed, "subagent.interrupt": RuleAllowed,
+	methodCapabilities: RuleChecked,
+	"subagent.list":    RuleAllowed, "subagent.tail": RuleAllowed, "subagent.steer": RuleAllowed, "subagent.interrupt": RuleAllowed,
 	"image.attach_bytes": RuleAllowed, "image.detach": RuleAllowed, methodImageRender: RuleChecked, methodFileAttach: RuleChecked,
 	"learning.frames": RuleRewritten, "learning.detail": RuleAllowed, "pet.info.meta": RuleAllowed, "pet.cells": RuleRewritten,
 	"pet.gallery": RuleAllowed, "i18n.catalog": RuleAllowed, "system.battery": RuleAllowed,
@@ -651,8 +656,21 @@ func denied(method string, params map[string]json.RawMessage) bool {
 				return true
 			}
 		}
+	case methodCapabilities:
+		return !capabilitiesAllowed(params)
 	}
 	return false
+}
+
+// capabilitiesAllowed reports whether a client.capabilities names only
+// server_requests, as a bool. It tells the gateway that the client answers
+// server requests such as approvals and questions; without it the gateway
+// fails them at once. Other capabilities, such as desktop_local, describe
+// the client's machine and are refused.
+func capabilitiesAllowed(params map[string]json.RawMessage) bool {
+	raw, ok := params[keyServerRequests]
+	v := string(bytes.TrimSpace(raw))
+	return ok && len(params) == 1 && (v == "true" || v == "false")
 }
 
 // imageRenderParams are the params of image.render
