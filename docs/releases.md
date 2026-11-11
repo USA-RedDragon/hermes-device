@@ -76,3 +76,14 @@ gh attestation verify oci://ghcr.io/usa-reddragon/hermes-device:v0.13.0 --repo U
 ```
 
 `gh attestation verify <file> --repo USA-RedDragon/hermes-device` alone checks that a workflow of the repository signed it. The two extra flags make it check the same workflow and tag as `update`. It also works for the checksum file and the `.xpi`.
+
+## 6. Automatic updates
+
+`hermes-device run` installs new releases by itself when the hermes-device service runs it, `update.auto` is true (the default) and the device token comes from `login` (README, Updates). Each check does this:
+
+1. It gets the latest release from `GET /repos/USA-RedDragon/hermes-device/releases/latest` with the ETag of the last answer, or reuses an answer less than an hour old. It caches the answer in `release.json` in the user cache directory, which the CLI's notice also reads. After a 403 or 429 answer, nothing asks again until the time in `Retry-After` or `X-RateLimit-Reset` (at least a minute, at most a day). The cache is only a hint: a tag from it must still be a plain `vX.Y.Z`, and a value that cannot be right (a pre-release tag, a time in the future, a pause longer than a day) is dropped.
+2. It goes on only when that release is a stable release (no pre-release flag, no pre-release or build part in the tag) and newer than the running binary.
+3. It installs the release with the same code as `update`, steps 1 to 6 of section 2, with `--force` and `--insecure-skip-attestation` always off. Before it replaces the binary, it also runs the new binary with the daemon's arguments and `--check-config`, so a release that does not accept this computer's config is not installed. A release that fails a check is not installed, and the daemon tries again at the next check, not before.
+4. It waits, for up to 30 minutes, until this device holds no command (running, or with output or an exit the plugin has not confirmed), runs no browser operation and no MCP call, and the chat splice has no TUI open. Then it refuses new work with a message that the device restarts for an update, and exits with status 75. systemd (`Restart=always`) and launchd (`KeepAlive`) start the new binary. When the device stays busy, the new binary stays installed and the daemon tries again at the next check.
+
+The first check comes 1 to 5 minutes after `run` starts, and the next ones every `update.interval` (default 6h, at least 1h) with up to 10% jitter. So each daemon makes about 4 conditional API requests a day, plus the attestation request of section 2 when it installs a release.
