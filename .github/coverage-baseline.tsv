@@ -14,7 +14,7 @@ internal/acpbridge/inline.go	38	35
 internal/acphost/acphost.go	242	186
 internal/acphost/rewrite.go	227	209
 internal/acphost/sweep.go	42	36
-internal/acphost/sweep_linux.go	38	28
+internal/acphost/sweep_linux.go	38	27
 internal/allowlist/allowlist.go	25	25
 internal/browser/bidi/bidi.go	49	0
 internal/browser/broker/broker.go	198	154
@@ -26,11 +26,11 @@ internal/chat/chat.go	206	176
 internal/config/config.go	59	49
 internal/config/load.go	2	2
 internal/daemonstate/daemonstate.go	17	13
-internal/device/device.go	709	634
+internal/device/device.go	709	637
 internal/device/mcp.go	64	56
 internal/executor/executor.go	80	70
 internal/hubapi/hubapi.go	77	66
-internal/mcp/mcp.go	489	429
+internal/mcp/mcp.go	489	428
 internal/mcp/mcptest/fake.go	121	98
 internal/pairing/pairing.go	43	39
 internal/plugininstall/install.go	60	42
