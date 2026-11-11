@@ -3,6 +3,8 @@ package setup_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -20,6 +22,8 @@ import (
 
 const testHub = "https://hub.example.com"
 
+const daemonReload = "systemctl --user daemon-reload"
+
 // workingUnit is a hand-written unit that runs the daemon as setup does.
 const workingUnit = `[Unit]
 Description=talaria: runs the Hermes agent's commands on this PC
@@ -31,6 +35,7 @@ ExecStart=%h/.talaria/bin/talaria run -c %h/.config/talaria/config.yaml
 Restart=always
 RestartSec=5
 MemoryMax=2G
+OOMPolicy=continue
 TasksMax=512
 
 [Install]
@@ -228,6 +233,46 @@ func TestSetupKeepsUserFiles(t *testing.T) {
 	}
 }
 
+// TestSetupUpgradesOwnUnit checks that setup replaces a unit an older
+// release of setup wrote, so an existing install gets new settings such as
+// OOMPolicy=continue.
+func TestSetupUpgradesOwnUnit(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.opts.NoShell, f.opts.NoBrowser = true, true
+	if _, err := f.sys.Setup(t.Context(), f.opts); err != nil {
+		t.Fatal(err)
+	}
+	unit := filepath.Join(f.sys.Home, ".config", "systemd", "user", setup.UnitName)
+	old := strings.Replace(readFile(t, unit), "OOMPolicy=continue\n", "", 1)
+	writeFile(t, unit, old)
+	st, err := setup.LoadState(f.opts.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(old))
+	st.ServiceSHA256 = hex.EncodeToString(sum[:])
+	if err := st.Save(f.opts.StateDir); err != nil {
+		t.Fatal(err)
+	}
+	f.sd.active = true
+	f.run.Reset()
+	if _, err := f.sys.Setup(t.Context(), f.opts); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, unit); !strings.Contains(got, "\nOOMPolicy=continue\n") {
+		t.Errorf("unit not upgraded:\n%s", got)
+	}
+	if matches, _ := filepath.Glob(unit + ".*.bak"); len(matches) != 0 {
+		t.Errorf("backed up a unit setup wrote: %q", matches)
+	}
+	for _, want := range []string{daemonReload, "systemctl --user --no-block restart " + setup.UnitName} {
+		if !f.run.has(want) {
+			t.Errorf("no %q in %q", want, f.run.Calls())
+		}
+	}
+}
+
 func TestSetupRefusesForeignUnitAndRecovers(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -344,7 +389,7 @@ func checkInstalled(t *testing.T, f *fixture, rep *setup.Report) {
 	if !strings.HasPrefix(unit, "# Written by talaria setup") || !strings.HasSuffix(unit, workingUnit) {
 		t.Errorf("unit:\n%s", unit)
 	}
-	for _, want := range []string{"systemctl --user daemon-reload", "systemctl --user enable " + setup.UnitName, "systemctl --user start " + setup.UnitName} {
+	for _, want := range []string{daemonReload, "systemctl --user enable " + setup.UnitName, "systemctl --user start " + setup.UnitName} {
 		if !f.run.has(want) {
 			t.Errorf("no %q in %q", want, f.run.Calls())
 		}

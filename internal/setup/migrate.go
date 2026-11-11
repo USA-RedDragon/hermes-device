@@ -475,7 +475,9 @@ func (s *System) migrateHost(p migratePaths, m *Migration) error {
 }
 
 // migrateServiceContent renames the paths, names and label in a legacy
-// unit or launchd agent file, and keeps every other setting.
+// unit or launchd agent file, and keeps every other setting. A unit
+// without an OOMPolicy gets OOMPolicy=continue, so that an agent command
+// the kernel kills for memory does not stop the service.
 func (s *System) migrateServiceContent(p migratePaths, data string) string {
 	r := []string{
 		filepath.Join(s.Home, LegacyBinDir, LegacyBinaryName), p.bin,
@@ -488,6 +490,11 @@ func (s *System) migrateServiceContent(p migratePaths, data string) string {
 	out := s.rewriteConfigPaths(p, strings.NewReplacer(r...).Replace(data))
 	if s.GOOS == darwin {
 		return out
+	}
+	if !strings.Contains(out, "\nOOMPolicy=") {
+		if i := strings.Index(out, "[Service]\n"); i >= 0 {
+			out = out[:i+len("[Service]\n")] + "OOMPolicy=continue\n" + out[i+len("[Service]\n"):]
+		}
 	}
 	extra := "After=" + LegacyUnitName + "\nConflicts=" + LegacyUnitName + "\n"
 	if i := strings.Index(out, "[Unit]\n"); i >= 0 {

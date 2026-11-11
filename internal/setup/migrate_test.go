@@ -116,7 +116,7 @@ func TestMigrateMovesEverything(t *testing.T) {
 	unit := readFile(t, l.unitPath)
 	for _, want := range []string{
 		"ExecStart=%h/.talaria/bin/talaria run -c %h/.config/talaria/config.yaml", "MemoryMax=8G",
-		"Description=talaria:", "Conflicts=hermes-device.service", "After=hermes-device.service",
+		"[Service]\nOOMPolicy=continue\n", "Description=talaria:", "Conflicts=hermes-device.service", "After=hermes-device.service",
 	} {
 		if !strings.Contains(unit, want) {
 			t.Errorf("unit lacks %q:\n%s", want, unit)
@@ -131,7 +131,7 @@ func TestMigrateMovesEverything(t *testing.T) {
 	calls := l.run.Calls()
 	last := -1
 	for _, want := range []string{
-		"systemctl --user daemon-reload", "systemctl --user enable talaria.service",
+		daemonReload, "systemctl --user enable talaria.service",
 		"systemctl --user --no-block start talaria.service", "systemctl --user disable hermes-device.service",
 	} {
 		i := slices.Index(calls, want)

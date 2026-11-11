@@ -196,6 +196,7 @@ func (d *systemdService) Content(bin, cfg string) []byte {
 		"Restart=always\n" +
 		"RestartSec=5\n" +
 		"MemoryMax=2G\n" +
+		"OOMPolicy=continue\n" +
 		"TasksMax=512\n" +
 		"\n" +
 		"[Install]\n" +
