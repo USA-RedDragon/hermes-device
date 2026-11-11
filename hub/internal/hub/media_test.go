@@ -74,3 +74,17 @@ func TestMediaPath(t *testing.T) {
 		}
 	}
 }
+
+func TestAttachedImages(t *testing.T) {
+	t.Parallel()
+	in := "look at these\n\n[Image attached at: /opt/data/cache/images/a.png]\n[Image attached: https://example.com/b.png]\n" +
+		"@image:`/opt/data/cache/images/my c.jpg`\n@image:/opt/data/cache/images/d.webp\n@image:/opt/data/cache/images/a.png\n" +
+		"[Image attached at: /etc/../x.png]\n[Image attached at: /opt/data/notes.txt]\nsee [Image attached at: /opt/data/cache/images/e.png]"
+	want := []string{"/opt/data/cache/images/a.png", "/opt/data/cache/images/my c.jpg", "/opt/data/cache/images/d.webp"}
+	if got := hub.AttachedImages(in); !slices.Equal(got, want) {
+		t.Fatalf("AttachedImages = %q, want %q", got, want)
+	}
+	if got := hub.AttachedImages("no images"); got != nil {
+		t.Fatalf("no images = %q", got)
+	}
+}

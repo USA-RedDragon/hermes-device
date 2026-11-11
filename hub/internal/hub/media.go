@@ -6,6 +6,7 @@ import (
 	"io"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -47,16 +48,9 @@ const ScreenshotTool = "browser_screenshot"
 
 // mediaExts are the extensions of files Hermes delivers with a MEDIA
 // directive (gateway/platforms/base.py MEDIA_DELIVERY_EXTS).
-var mediaExts = map[string]bool{}
-
-func init() {
-	for _, e := range strings.Fields(`.png .jpg .jpeg .gif .webp .bmp .tiff .svg .mp4 .mov .avi .mkv .webm .3gp
-		.mp3 .m2a .wav .ogg .opus .m4a .flac .pdf .docx .doc .odt .rtf .txt .md .epub .xlsx .xls .ods .csv .tsv
-		.json .xml .yaml .yml .kmz .kml .geojson .gpx .pptx .ppt .odp .key .zip .tar .gz .tgz .bz2 .xz .7z .rar
-		.apk .ipa .html .htm`) {
-		mediaExts[e] = true
-	}
-}
+const mediaExts = `.png .jpg .jpeg .gif .webp .bmp .tiff .svg .mp4 .mov .avi .mkv .webm .3gp .mp3 .m2a .wav .ogg
+	.opus .m4a .flac .pdf .docx .doc .odt .rtf .txt .md .epub .xlsx .xls .ods .csv .tsv .json .xml .yaml .yml .kmz .kml
+	.geojson .gpx .pptx .ppt .odp .key .zip .tar .gz .tgz .bz2 .xz .7z .rar .apk .ipa .html .htm`
 
 // MediaPath reports whether p is a path the hub may ask a backend for: an
 // absolute, clean path of at most 4096 bytes, without control characters,
@@ -68,7 +62,8 @@ func MediaPath(p string) bool {
 	if strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return false
 	}
-	return mediaExts[strings.ToLower(path.Ext(p))]
+	ext := strings.ToLower(path.Ext(p))
+	return ext != "" && slices.Contains(strings.Fields(mediaExts), ext)
 }
 
 var (
@@ -104,7 +99,7 @@ func MediaDirectives(text string) (paths []string, cleaned string) {
 			break
 		}
 		start, pStart, pEnd := pos+m[0], pos+m[2], pos+m[3]
-		pos = pos + m[1]
+		pos += m[1]
 		raw := text[pStart:pEnd]
 		var p string
 		switch raw[0] {
@@ -187,6 +182,45 @@ func maskMedia(text string) string {
 		blank(m[0], m[1])
 	}
 	return string(b)
+}
+
+var (
+	imageHint = regexp.MustCompile(`^\[Image attached at: (.+)\]$`)
+	imageRef  = regexp.MustCompile("^@image:(?:`([^`]+)`|\"([^\"]+)\"|'([^']+)'|(\\S+))$")
+)
+
+// AttachedImages are the paths of the images a user message carries, from
+// the lines Hermes keeps in its text for them: "[Image attached at: <path>]"
+// (agent/image_routing.py) and "@image:<path>" refs
+// (tui_gateway/session_history.py). Only MediaPath images count.
+func AttachedImages(text string) []string {
+	if !strings.Contains(text, "[Image attached at: ") && !strings.Contains(text, "@image:") {
+		return nil
+	}
+	var out []string
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		var p string
+		if m := imageHint.FindStringSubmatch(line); m != nil {
+			p = m[1]
+		} else if m := imageRef.FindStringSubmatch(line); m != nil {
+			p = m[1] + m[2] + m[3] + m[4]
+		}
+		if MediaPath(p) && ImagePath(p) && !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// ImagePath reports whether p names an image the hub shows inline, by its
+// extension.
+func ImagePath(p string) bool {
+	switch strings.ToLower(path.Ext(p)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+		return true
+	}
+	return false
 }
 
 // ScreenshotPath is the path a browser_screenshot result names, or "".

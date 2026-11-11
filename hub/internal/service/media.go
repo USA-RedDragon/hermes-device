@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
@@ -22,15 +23,18 @@ type fileReader interface {
 	File(ctx context.Context, path string) (*http.Response, error)
 }
 
-// screenshotFile is where hermes-device's browser_screenshot saves files:
-// <HERMES_HOME>/cache/screenshots/hermes-device/<session>/<file>.
-var screenshotFile = regexp.MustCompile(`^/.+/cache/screenshots/hermes-device/[^/]+/[^/]+$`)
+// defaultMedia are the files the hub shows on a backend without media
+// roots: hermes-device's browser_screenshot files,
+// <HERMES_HOME>/cache/screenshots/hermes-device/<session>/<file>, and the
+// images users attach, which the gateway stages in <HERMES_HOME>/cache/images
+// (<HERMES_HOME>/image_cache on older installs).
+var defaultMedia = regexp.MustCompile(`^/.+/(?:cache/screenshots/hermes-device/[^/]+|cache/images|image_cache)/[^/]+$`)
 
 // inMediaRoots reports whether p is under one of roots, or, with no roots,
-// in a hermes-device screenshot folder.
+// one of the default media files.
 func inMediaRoots(roots []string, p string) bool {
 	if len(roots) == 0 {
-		return screenshotFile.MatchString(p)
+		return defaultMedia.MatchString(p)
 	}
 	for _, r := range roots {
 		if strings.HasPrefix(p, r+"/") {
@@ -40,8 +44,8 @@ func inMediaRoots(roots []string, p string) bool {
 	return false
 }
 
-// Media opens a file that the session's replies or browser_screenshot
-// results name. See hub.Media.
+// Media opens a file that the session's replies, browser_screenshot results
+// or user image attachments name. See hub.Media.
 func (s *Service) Media(ctx context.Context, user, backendID, sessionID, p string) (*hub.MediaFile, error) {
 	b, err := s.backend(ctx, user, backendID)
 	if err != nil {
@@ -116,8 +120,9 @@ type readCloser struct {
 	io.Closer
 }
 
-// names reports whether a reply or a browser_screenshot result of the
-// session names p: the snapshot's transcript or the events since.
+// names reports whether a reply, a browser_screenshot result or a user's
+// image attachment of the session names p: in the snapshot's transcript or
+// the events since.
 func (ls *live) names(p string) bool {
 	ls.mu.Lock()
 	snap := ls.snapshot.Data
@@ -162,6 +167,10 @@ func rowsName(rows []json.RawMessage, p string) bool {
 			_ = json.Unmarshal(r.Content, &content)
 		}
 		switch r.Role {
+		case "user":
+			if slices.Contains(hub.AttachedImages(content), p) {
+				return true
+			}
 		case "assistant":
 			for _, c := range r.ToolCalls {
 				for _, id := range []string{c.ID, c.CallID} {
@@ -203,21 +212,15 @@ func eventsName(ring []hub.Event, p string) bool {
 			text = *d.Text
 		}
 		switch e.Kind {
-		case hub.KindMessageStart:
-			reply.Reset()
 		case hub.KindMessageDelta:
 			reply.WriteString(text)
-		case "message.interim":
-			if replyNames(text, p) {
+		case hub.KindMessageStart, hub.KindMessageComplete, "message.interim":
+			if e.Kind == hub.KindMessageStart && slices.Contains(hub.AttachedImages(text), p) ||
+				e.Kind != hub.KindMessageStart && replyNames(text, p) || replyNames(reply.String(), p) {
 				return true
 			}
-		case hub.KindMessageComplete:
-			if text == "" {
-				text = reply.String()
-			}
-			reply.Reset()
-			if replyNames(text, p) {
-				return true
+			if e.Kind != "message.interim" {
+				reply.Reset()
 			}
 		case hub.KindToolComplete:
 			if d.Name != hub.ScreenshotTool {
@@ -232,7 +235,7 @@ func eventsName(ring []hub.Event, p string) bool {
 			}
 		}
 	}
-	return false
+	return replyNames(reply.String(), p)
 }
 
 func replyNames(text, p string) bool {

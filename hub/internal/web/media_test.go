@@ -12,8 +12,12 @@ import (
 )
 
 const (
-	shotDir  = "/opt/data/hermes/cache/screenshots/hermes-device/m1/"
-	shotJPEG = "\xff\xd8\xff\xe0jpeg"
+	shotDir       = "/opt/data/hermes/cache/screenshots/hermes-device/m1/"
+	shotJPEG      = "\xff\xd8\xff\xe0jpeg"
+	shotPNG       = "\x89PNG\r\n\x1a\npng"
+	kRole         = "role"
+	roleUser      = "user"
+	roleAssistant = "assistant"
 )
 
 func mediaURL(e *hubEnv, backend, p string) string {
@@ -24,17 +28,20 @@ func TestMedia(t *testing.T) {
 	t.Parallel()
 	e := setup(t)
 	named, tool, report := shotDir+"named.jpg", shotDir+"tool.jpg", shotDir+"report.pdf"
-	fake, unnamed, secret := shotDir+"fake.png", shotDir+"unnamed.jpg", "/opt/data/hermes/config.yaml"
+	fake, unnamed, private := shotDir+"fake.png", shotDir+"unnamed.jpg", "/opt/data/hermes/config.yaml"
+	upload, ref, typed := "/opt/data/hermes/cache/images/up.png", "/opt/data/hermes/cache/images/my ref.png", "/opt/data/hermes/cache/images/typed.png"
 	for p, data := range map[string]string{named: shotJPEG, tool: shotJPEG, report: "%PDF-1.7", fake: "<script>alert(1)</script>",
-		unnamed: shotJPEG, secret: "key: value"} {
+		unnamed: shotJPEG, private: "key: value", upload: shotPNG, ref: shotPNG, typed: shotPNG} {
 		e.gw.SetFile(p, []byte(data))
 	}
 	e.gw.AddSession(&gatewaytest.Session{ID: "m1", Title: "Media", Live: true, StartedAt: 200, Messages: []map[string]any{
-		{"role": "user", "text": "screenshot please"},
-		{"role": "assistant", "text": "", "tool_calls": []map[string]any{{"id": "c1", "function": map[string]any{"name": "browser_screenshot"}}}},
-		{"role": "tool", "tool_call_id": "c1", "content": `{"path":"` + tool + `","show_user":"MEDIA:` + tool + `"}`},
-		{"role": "assistant", "text": "Here:\nMEDIA:" + named + "\nMEDIA:" + report + "\nMEDIA:" + fake + "\nMEDIA:" + secret},
-		{"role": "user", "text": "MEDIA:" + unnamed},
+		{kRole: roleUser, kText: "what is this?\n\n[Image attached at: " + upload + "]\n@image:`" + ref + "`"},
+		{kRole: roleUser, kText: "MEDIA:" + typed + " and see [Image attached at: " + typed + "]"},
+		{kRole: roleUser, kText: "screenshot please"},
+		{kRole: roleAssistant, kText: "", "tool_calls": []map[string]any{{"id": "c1", "function": map[string]any{"name": "browser_screenshot"}}}},
+		{kRole: "tool", "tool_call_id": "c1", "content": `{"path":"` + tool + `","show_user":"MEDIA:` + tool + `"}`},
+		{kRole: roleAssistant, kText: "Here:\nMEDIA:" + named + "\nMEDIA:" + report + "\nMEDIA:" + fake + "\nMEDIA:" + private},
+		{kRole: roleUser, kText: "MEDIA:" + unnamed},
 	}})
 	c := client(t)
 	login(t, e, c)
@@ -49,6 +56,11 @@ func TestMedia(t *testing.T) {
 	if resp, body = get(t, c, mediaURL(e, "pc", tool)); resp.StatusCode != http.StatusOK || body != shotJPEG {
 		t.Fatalf("tool result = %d %q", resp.StatusCode, body)
 	}
+	for _, p := range []string{upload, ref} {
+		if resp, body = get(t, c, mediaURL(e, "pc", p)); resp.StatusCode != http.StatusOK || body != shotPNG || resp.Header.Get("Content-Type") != "image/png" {
+			t.Fatalf("attached image %s = %d %q", p, resp.StatusCode, body)
+		}
+	}
 	for _, p := range []string{report, fake} {
 		resp, body = get(t, c, mediaURL(e, "pc", p))
 		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/octet-stream" ||
@@ -60,7 +72,7 @@ func TestMedia(t *testing.T) {
 		t.Fatalf("download = %v", resp.Header)
 	}
 	before := len(e.gw.FileReads())
-	for _, p := range []string{unnamed, secret, shotDir + "../../../../../../etc/passwd.txt", "/opt/data/hermes/cache/screenshots/hermes-device/m1/missing.jpg", "relative.jpg", ""} {
+	for _, p := range []string{unnamed, typed, private, shotDir + "../../../../../../etc/passwd.txt", "/opt/data/hermes/cache/screenshots/hermes-device/m1/missing.jpg", "relative.jpg", ""} {
 		if resp, body = get(t, c, mediaURL(e, "pc", p)); resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("%q = %d %s", p, resp.StatusCode, body)
 		}
@@ -100,8 +112,8 @@ func TestMediaFromLiveReply(t *testing.T) {
 		t.Fatalf("before the reply = %d", resp.StatusCode)
 	}
 	e.gw.Publish("m1", "message.start", map[string]any{})
-	e.gw.Publish("m1", "message.delta", map[string]any{"text": "Here it is.\nMEDIA:" + shotDir})
-	e.gw.Publish("m1", "message.delta", map[string]any{"text": "later.jpg"})
+	e.gw.Publish("m1", "message.delta", map[string]any{kText: "Here it is.\nMEDIA:" + shotDir})
+	e.gw.Publish("m1", "message.delta", map[string]any{kText: "later.jpg"})
 	e.gw.Publish("m1", "message.complete", map[string]any{"status": "complete"})
 	deadline := time.Now().Add(5 * time.Second)
 	for {
