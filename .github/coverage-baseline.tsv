@@ -30,7 +30,7 @@ internal/device/device.go	709	634
 internal/device/mcp.go	64	56
 internal/executor/executor.go	80	70
 internal/hubapi/hubapi.go	77	66
-internal/mcp/mcp.go	489	428
+internal/mcp/mcp.go	489	429
 internal/mcp/mcptest/fake.go	121	98
 internal/pairing/pairing.go	43	39
 internal/plugininstall/install.go	60	42
