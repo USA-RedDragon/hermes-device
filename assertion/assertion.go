@@ -45,8 +45,9 @@ const MaxEncodedLen = 4096
 
 // Legs name the endpoint an assertion is for.
 const (
-	LegExec = "exec"
-	LegACP  = "acp"
+	LegExec  = "exec"
+	LegACP   = "acp"
+	LegUsage = "usage"
 )
 
 // Errors returned by Verify and ParsePublicKeys.

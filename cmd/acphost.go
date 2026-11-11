@@ -10,6 +10,8 @@ import (
 
 	"github.com/USA-RedDragon/hermes-device/assertion"
 	"github.com/USA-RedDragon/hermes-device/internal/acphost"
+	"github.com/USA-RedDragon/hermes-device/internal/claudeusage"
+	"github.com/USA-RedDragon/hermes-device/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -49,10 +51,18 @@ func newACPHostCommand(b *base) *cobra.Command {
 				}
 				bindings = filepath.Join(home, "device", "bindings.json")
 			}
-			ln, err := (&net.ListenConfig{}).Listen(cmd.Context(), "tcp", cfg.ACPHost.Listen)
+			ctx, stop := signalContext(cmd.Context())
+			defer stop()
+			ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ACPHost.Listen)
 			if err != nil {
 				return err
 			}
+			var usage acphost.UsageReporter
+			col := hermesUsage(cfg)
+			if col != nil {
+				usage = col
+			}
+			defer startUsage(ctx, col, nil)()
 			srv := acphost.New(acphost.Options{
 				Verifier:         assertion.NewVerifier(keys),
 				BackendID:        cfg.ACPHost.BackendID,
@@ -62,14 +72,51 @@ func newACPHostCommand(b *base) *cobra.Command {
 				MaxProcesses:     cfg.ACPHost.MaxProcesses,
 				PingInterval:     cfg.PingInterval,
 				GatewayHealthURL: cfg.ACPHost.GatewayHealthURL,
+				Usage:            usage,
 				Logger:           slog.Default(),
 			})
 			slog.Info("acp-host listening", "addr", ln.Addr().String(), "backend", cfg.ACPHost.BackendID,
 				"hermes", cfg.ACPHost.Hermes, "max_processes", cfg.ACPHost.MaxProcesses, "bindings", bindings,
-				"gateway_health", cfg.ACPHost.GatewayHealthURL)
-			ctx, stop := signalContext(cmd.Context())
-			defer stop()
+				"gateway_health", cfg.ACPHost.GatewayHealthURL, "claude_usage", usage != nil)
 			return srv.Serve(ctx, ln)
 		},
 	}
+}
+
+// hermesUsage returns the collector of the Hermes pod's Claude Code
+// usage: the claude-accounts slots, labeled from the plugin's settings,
+// then usage.claude-dirs. Nil when usage.enabled is false.
+func hermesUsage(cfg *config.Config) *claudeusage.Collector {
+	if cfg.Usage.Enabled != nil && !*cfg.Usage.Enabled {
+		return nil
+	}
+	hermesHome := os.Getenv("HERMES_HOME")
+	root := cfg.Usage.HermesAccountsDir
+	if root == "" {
+		root = os.Getenv("CLAUDE_ACCOUNTS_ROOT")
+	}
+	if root == "" && hermesHome != "" {
+		root = filepath.Join(hermesHome, "claude")
+	}
+	var sources []claudeusage.Source
+	if root != "" {
+		var slots []claudeusage.Slot
+		if hermesHome != "" {
+			slots = claudeusage.HermesSlots(filepath.Join(hermesHome, "config.yaml"))
+		}
+		sources = claudeusage.HermesSources(root, slots)
+	}
+	// Only the slots and usage.claude-dirs: ~/.claude may belong to a
+	// computer whose own run daemon already counts it.
+	for _, d := range cfg.Usage.ClaudeDirs {
+		sources = append(sources, claudeusage.Source{Dir: d})
+	}
+	state := cfg.Usage.StateFile
+	if state == "" && hermesHome != "" {
+		state = filepath.Join(hermesHome, "device", "claude-usage.gob")
+	}
+	slog.Info("Counting Claude Code usage", "sources", len(sources))
+	c := claudeusage.New(claudeusage.Options{Sources: sources, StateFile: state})
+	c.Load()
+	return c
 }

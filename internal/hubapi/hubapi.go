@@ -27,6 +27,7 @@ const (
 	PathExecLeg     = "/api/device/exec"
 	PathACPLeg      = "/api/device/acp"
 	PathGatewayLeg  = "/api/device/gateway"
+	PathUsage       = "/api/device/usage"
 	maxResponseBody = 1 << 20
 )
 
@@ -189,6 +190,11 @@ func (c *Client) PollPairing(ctx context.Context, deviceCode string) (*PairResul
 		return nil, err
 	}
 	return &out, nil
+}
+
+// SendUsage posts a Claude Code usage report (docs/protocol.md section 13).
+func (c *Client) SendUsage(ctx context.Context, report any) error {
+	return c.do(ctx, http.MethodPost, PathUsage, report, nil, true)
 }
 
 // Whoami returns the device and backend the token belongs to.

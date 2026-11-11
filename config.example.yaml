@@ -94,3 +94,12 @@ update:
   auto: true
   # Time between release checks of run, with up to 10% jitter. At least 1h
   interval: "6h"
+usage:
+  # Count the tokens Claude Code used here and send the counts to the hub: only token counts, model names, account ids, the signed-in account's email and project folder names, never what was said. Unset: on for run, except in a container, and on for acp-host
+  # enabled: false
+  # More Claude Code config directories (CLAUDE_CONFIG_DIR values) to count, besides $CLAUDE_CONFIG_DIR or ~/.claude
+  # claude-dirs: []
+  # acp-host: directory of the claude-accounts plugin's per-account Claude Code directories. Defaults to $CLAUDE_ACCOUNTS_ROOT, else claude in $HERMES_HOME
+  # hermes-accounts-dir: ""
+  # File that keeps what was counted across restarts. Defaults to claude-usage.gob in the state directory for run, and device/claude-usage.gob in $HERMES_HOME for acp-host
+  # state-file: ""

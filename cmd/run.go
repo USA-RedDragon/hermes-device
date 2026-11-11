@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
 	"github.com/USA-RedDragon/hermes-device/internal/browser/host"
 	"github.com/USA-RedDragon/hermes-device/internal/browser/launch"
+	"github.com/USA-RedDragon/hermes-device/internal/claudeusage"
 	"github.com/USA-RedDragon/hermes-device/internal/config"
 	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
 	"github.com/USA-RedDragon/hermes-device/internal/device"
@@ -190,6 +192,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 	if err != nil {
 		return err
 	}
+	defer startUsage(ctx, deviceUsage(cfg, stateDir), func(ctx context.Context, r claudeusage.Report) error { return hub.SendUsage(ctx, r) })()
 	var live atomic.Value
 	if au != nil {
 		var stopUpdater func() string
@@ -286,6 +289,57 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 		}
 		return fmt.Errorf("splice: %w", err)
 	}
+}
+
+// startUsage runs col with send until the returned stop is called. A nil
+// col runs nothing.
+func startUsage(ctx context.Context, col *claudeusage.Collector, send claudeusage.Sender) (stop func()) {
+	if col == nil {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		col.Run(ctx, send)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// deviceUsage returns the collector of this computer's Claude Code usage,
+// or nil when usage.enabled is false, or unset in a container.
+func deviceUsage(cfg *config.Config, stateDir string) *claudeusage.Collector {
+	on := !claudeusage.InContainer(os.Getenv)
+	if cfg.Usage.Enabled != nil {
+		on = *cfg.Usage.Enabled
+	}
+	if !on {
+		return nil
+	}
+	state := cfg.Usage.StateFile
+	if state == "" {
+		dir := stateDir
+		if dir == "" {
+			dir = cfg.Store.StateDir
+		}
+		if dir == "" {
+			d, err := tokenstore.DefaultStateDir()
+			if err != nil {
+				slog.Warn("No state directory; Claude usage is counted again after each restart", "error", err)
+			}
+			dir = d
+		}
+		if dir != "" {
+			state = filepath.Join(dir, "claude-usage.gob")
+		}
+	}
+	home, _ := os.UserHomeDir()
+	sources := claudeusage.DefaultSources(home, os.Getenv, cfg.Usage.ClaudeDirs)
+	slog.Info("Counting Claude Code usage", "sources", len(sources))
+	return claudeusage.New(claudeusage.Options{Sources: sources, StateFile: state})
 }
 
 // startUpdater runs au beside the daemon. The device is idle for au when

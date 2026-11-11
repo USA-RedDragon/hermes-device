@@ -104,6 +104,15 @@ type Update struct {
 	Interval time.Duration `name:"interval" default:"6h" description:"Time between release checks of run, with up to 10% jitter. At least 1h"`
 }
 
+// Usage is the Claude Code token count that run and acp-host send to the
+// hub (docs/protocol.md section 7).
+type Usage struct {
+	Enabled           *bool    `name:"enabled" description:"Count the tokens Claude Code used here and send the counts to the hub: only token counts, model names, account ids, the signed-in account's email and project folder names, never what was said. Unset: on for run, except in a container, and on for acp-host"`
+	ClaudeDirs        []string `name:"claude-dirs" description:"More Claude Code config directories (CLAUDE_CONFIG_DIR values) to count, besides $CLAUDE_CONFIG_DIR or ~/.claude"`
+	HermesAccountsDir string   `name:"hermes-accounts-dir" description:"acp-host: directory of the claude-accounts plugin's per-account Claude Code directories. Defaults to $CLAUDE_ACCOUNTS_ROOT, else claude in $HERMES_HOME"`
+	StateFile         string   `name:"state-file" description:"File that keeps what was counted across restarts. Defaults to claude-usage.gob in the state directory for run, and device/claude-usage.gob in $HERMES_HOME for acp-host"`
+}
+
 // Config is the configuration of every subcommand.
 type Config struct {
 	LogLevel     string        `name:"log-level" default:"info" description:"Log level: debug, info, warn or error"`
@@ -118,6 +127,7 @@ type Config struct {
 	Browser      Browser       `name:"browser"`
 	MCP          MCP           `name:"mcp"`
 	Update       Update        `name:"update"`
+	Usage        Usage         `name:"usage"`
 }
 
 // Validation errors.
@@ -160,10 +170,16 @@ func (c Config) Validate() error {
 		"device.tmp-dir": c.Device.TempDir, "store.token-file": c.Store.TokenFile, "store.state-dir": c.Store.StateDir,
 		"hub.token-file":       c.Hub.TokenFile,
 		"acp-host.placeholder": c.ACPHost.Placeholder, "acp-host.bindings-file": c.ACPHost.BindingsFile,
-		"chat.managed-dir": c.Chat.ManagedDir,
+		"chat.managed-dir":          c.Chat.ManagedDir,
+		"usage.hermes-accounts-dir": c.Usage.HermesAccountsDir, "usage.state-file": c.Usage.StateFile,
 	} {
 		if p != "" && !filepath.IsAbs(p) {
 			return fmt.Errorf("%s %q: %w", name, p, ErrRelativePath)
+		}
+	}
+	for i, d := range c.Usage.ClaudeDirs {
+		if !filepath.IsAbs(d) {
+			return fmt.Errorf("usage.claude-dirs[%d] %q: %w", i, d, ErrRelativePath)
 		}
 	}
 	if c.Reconnect.MinBackoff <= 0 || c.Reconnect.MinBackoff > c.Reconnect.MaxBackoff {

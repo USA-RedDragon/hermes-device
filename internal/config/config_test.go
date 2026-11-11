@@ -56,11 +56,13 @@ func TestValidate(t *testing.T) {
 		file string
 		want error
 	}{
-		"bad hub url":   {"hub: {url: ws://x}\n", config.ErrInvalidHubURL},
-		"relative root": {"device: {roots: [rel]}\n", config.ErrRelativePath},
-		"public splice": {"gateway: {listen: \"0.0.0.0:1\"}\n", config.ErrNotLoopback},
-		"slow pings":    {"ping-interval: 1m\n", config.ErrPingInterval},
-		"no processes":  {"acp-host: {max-processes: 0}\n", config.ErrMaxProcesses},
+		"bad hub url":          {"hub: {url: ws://x}\n", config.ErrInvalidHubURL},
+		"relative root":        {"device: {roots: [rel]}\n", config.ErrRelativePath},
+		"relative claude dir":  {"usage: {claude-dirs: [rel]}\n", config.ErrRelativePath},
+		"relative usage state": {"usage: {state-file: rel}\n", config.ErrRelativePath},
+		"public splice":        {"gateway: {listen: \"0.0.0.0:1\"}\n", config.ErrNotLoopback},
+		"slow pings":           {"ping-interval: 1m\n", config.ErrPingInterval},
+		"no processes":         {"acp-host: {max-processes: 0}\n", config.ErrMaxProcesses},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

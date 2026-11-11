@@ -96,6 +96,13 @@ type updateShadow struct {
 	Interval *impl.Duration `json:"interval" toml:"interval" yaml:"interval"`
 }
 
+type usageShadow struct {
+	Enabled           *bool     `json:"enabled"             toml:"enabled"             yaml:"enabled"`
+	ClaudeDirs        *[]string `json:"claude-dirs"         toml:"claude-dirs"         yaml:"claude-dirs"`
+	HermesAccountsDir *string   `json:"hermes-accounts-dir" toml:"hermes-accounts-dir" yaml:"hermes-accounts-dir"`
+	StateFile         *string   `json:"state-file"          toml:"state-file"          yaml:"state-file"`
+}
+
 type configShadow struct {
 	LogLevel     *string          `json:"log-level"     toml:"log-level"     yaml:"log-level"`
 	PingInterval *impl.Duration   `json:"ping-interval" toml:"ping-interval" yaml:"ping-interval"`
@@ -109,6 +116,7 @@ type configShadow struct {
 	Browser      *browserShadow   `json:"browser"       toml:"browser"       yaml:"browser"`
 	MCP          *mCPShadow       `json:"mcp"           toml:"mcp"           yaml:"mcp"`
 	Update       *updateShadow    `json:"update"        toml:"update"        yaml:"update"`
+	Usage        *usageShadow     `json:"usage"         toml:"usage"         yaml:"usage"`
 }
 
 // ConfigSchema returns the generated schema for Config.
@@ -432,6 +440,25 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			set("update.interval", configulator.LayerFile, file)
 		}
 	}
+	if s.Usage != nil {
+		if s.Usage.Enabled != nil {
+			v := *s.Usage.Enabled
+			cfg.Usage.Enabled = &v
+			set("usage.enabled", configulator.LayerFile, file)
+		}
+		if s.Usage.ClaudeDirs != nil {
+			cfg.Usage.ClaudeDirs = *s.Usage.ClaudeDirs
+			set("usage.claude-dirs", configulator.LayerFile, file)
+		}
+		if s.Usage.HermesAccountsDir != nil {
+			cfg.Usage.HermesAccountsDir = *s.Usage.HermesAccountsDir
+			set("usage.hermes-accounts-dir", configulator.LayerFile, file)
+		}
+		if s.Usage.StateFile != nil {
+			cfg.Usage.StateFile = *s.Usage.StateFile
+			set("usage.state-file", configulator.LayerFile, file)
+		}
+	}
 	return nil
 }
 
@@ -718,6 +745,33 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Update.Interval = d
 		set("update.interval", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "usage", "enabled"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "usage.enabled",
+				Source: n,
+				Value:  v,
+			}
+		}
+		pv := p
+		cfg.Usage.Enabled = &pv
+		set("usage.enabled", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "usage", "claude-dirs"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Usage.ClaudeDirs = lst
+		set("usage.claude-dirs", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "usage", "hermes-accounts-dir"); ok {
+		cfg.Usage.HermesAccountsDir = v
+		set("usage.hermes-accounts-dir", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "usage", "state-file"); ok {
+		cfg.Usage.StateFile = v
+		set("usage.state-file", configulator.LayerEnv, n)
+	}
 	return nil
 }
 
@@ -769,6 +823,10 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"mcp" + o.Separator + "idle-timeout",
 		"update" + o.Separator + "auto",
 		"update" + o.Separator + "interval",
+		"usage" + o.Separator + "enabled",
+		"usage" + o.Separator + "claude-dirs",
+		"usage" + o.Separator + "hermes-accounts-dir",
+		"usage" + o.Separator + "state-file",
 	}
 	for i, name := range names {
 		if f := fs.Lookup(name); f != nil {
@@ -822,6 +880,10 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[35], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
 	fs.Bool(names[36], true, "Let run install new releases by itself: it checks GitHub, verifies the release like talaria update, waits until no command, browser operation, MCP call or chat runs, and exits so the service restarts it. Only when the talaria service runs it and the device token comes from login, so never on a service device that uses hub.token or hub.token-file. The sandbox and device images turn it off")
 	fs.Duration(names[37], time.Duration(int64(21600000000000)), "Time between release checks of run, with up to 10% jitter. At least 1h")
+	fs.Bool(names[38], false, "Count the tokens Claude Code used here and send the counts to the hub: only token counts, model names, account ids, the signed-in account's email and project folder names, never what was said. Unset: on for run, except in a container, and on for acp-host")
+	fs.StringSlice(names[39], nil, "More Claude Code config directories (CLAUDE_CONFIG_DIR values) to count, besides $CLAUDE_CONFIG_DIR or ~/.claude")
+	fs.String(names[40], "", "acp-host: directory of the claude-accounts plugin's per-account Claude Code directories. Defaults to $CLAUDE_ACCOUNTS_ROOT, else claude in $HERMES_HOME")
+	fs.String(names[41], "", "File that keeps what was counted across restarts. Defaults to claude-usage.gob in the state directory for run, and device/claude-usage.gob in $HERMES_HOME for acp-host")
 	return nil
 }
 
@@ -1282,6 +1344,55 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.Update.Interval = v
 		set("update.interval", configulator.LayerCLI, "--"+n)
 	}
+	if n := "usage" + o.Separator + "enabled"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "usage.enabled",
+				Source: "--" + n,
+			}
+		}
+		pv := v
+		cfg.Usage.Enabled = &pv
+		set("usage.enabled", configulator.LayerCLI, "--"+n)
+	}
+	if n := "usage" + o.Separator + "claude-dirs"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "usage.claude-dirs",
+				Source: "--" + n,
+			}
+		}
+		cfg.Usage.ClaudeDirs = v
+		set("usage.claude-dirs", configulator.LayerCLI, "--"+n)
+	}
+	if n := "usage" + o.Separator + "hermes-accounts-dir"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "usage.hermes-accounts-dir",
+				Source: "--" + n,
+			}
+		}
+		cfg.Usage.HermesAccountsDir = v
+		set("usage.hermes-accounts-dir", configulator.LayerCLI, "--"+n)
+	}
+	if n := "usage" + o.Separator + "state-file"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "usage.state-file",
+				Source: "--" + n,
+			}
+		}
+		cfg.Usage.StateFile = v
+		set("usage.state-file", configulator.LayerCLI, "--"+n)
+	}
 	return nil
 }
 
@@ -1520,6 +1631,25 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Update = &sub
+			}
+		case "usage":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("usage", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub usageShadow
+				if err := sub.decodeJSON(dec, "usage"); err != nil {
+					return err
+				}
+				s.Usage = &sub
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -2516,6 +2646,98 @@ func (s *updateShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	}
 }
 
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *usageShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "enabled":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Enabled = &b
+			default:
+				return configJSONError(path+".enabled", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "claude-dirs":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".claude-dirs", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".claude-dirs"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.ClaudeDirs = &out
+			}
+		case "hermes-accounts-dir":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.HermesAccountsDir = &str
+			default:
+				return configJSONError(path+".hermes-accounts-dir", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "state-file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.StateFile = &str
+			default:
+				return configJSONError(path+".state-file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // configJSONError returns a ParseError for the JSON token v at path.
 func configJSONError(path string, v jsontext.Token, err error) error {
 	return &configulator.ParseError{
@@ -2569,6 +2791,14 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "mcp.idle-timeout = %v\n", c.MCP.IdleTimeout)
 	fmt.Fprintf(&b, "update.auto = %v\n", c.Update.Auto)
 	fmt.Fprintf(&b, "update.interval = %v\n", c.Update.Interval)
+	if c.Usage.Enabled == nil {
+		b.WriteString("usage.enabled = <unset>\n")
+	} else {
+		fmt.Fprintf(&b, "usage.enabled = %v\n", *c.Usage.Enabled)
+	}
+	fmt.Fprintf(&b, "usage.claude-dirs = %v\n", c.Usage.ClaudeDirs)
+	fmt.Fprintf(&b, "usage.hermes-accounts-dir = %v\n", c.Usage.HermesAccountsDir)
+	fmt.Fprintf(&b, "usage.state-file = %v\n", c.Usage.StateFile)
 	return b.String()
 }
 

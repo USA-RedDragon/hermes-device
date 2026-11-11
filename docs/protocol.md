@@ -1056,3 +1056,58 @@ Security notes:
 - Hermes keeps the first string that a `transform_tool_result` hook returns. When another plugin's hook wins for a tool call, the inbox texts that the plugin added to that result are lost, though the hub recorded them as delivered.
 - The hub delivers no input to a chat in yolo mode, and only the agents of the hub, an editor or the terminal (not conversations of a messaging platform) are peers.
 - Without `subagent_lifecycle.list_active()` the plugin uses Hermes internals that are not a public plugin API (`tools.delegate_tool_registry`), so a Hermes release can break subagent messages; chat messages need only `prompt.submit`.
+
+## 13. Claude Code usage
+
+`run` on a computer and `acp-host` in the Hermes pod count the tokens that Claude Code used there, so that the hub can show them on its Usage page. `usage.enabled` turns this off. When it is unset, `run` counts except in a container (a Kubernetes pod, or a Docker or Podman container), and `acp-host` counts.
+
+### 13.1 What is read
+
+Claude Code writes one JSONL transcript per session under `<config dir>/projects/<project>/`, and subagent transcripts under `<session>/subagents/`. For `run`, the config directories are each directory in `$CLAUDE_CONFIG_DIR` (comma separated), else `~/.claude`, plus `usage.claude-dirs`. In the Hermes pod, `acp-host` reads only `usage.claude-dirs` and each claude-accounts slot directory, never `~/.claude`, so that a computer that runs both does not count its own sessions twice. The slot directories are `<usage.hermes-accounts-dir>/<id>` (default `$CLAUDE_ACCOUNTS_ROOT`, else `$HERMES_HOME/claude`); `acp-host` takes the slot labels from `plugins.entries.claude-accounts.settings.accounts` in `$HERMES_HOME/config.yaml`.
+
+Only lines that contain `"usage":{` or `"session-owner"` are decoded, and only these fields of them:
+
+| Line | Fields |
+|---|---|
+| response | `timestamp`, `sessionId`, `version`, `requestId`, `isSidechain`, `cwd`, `requestedModel`, `message.id`, `message.model`, the token counts in `message.usage` (`input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `cache_creation.ephemeral_5m_input_tokens`, `cache_creation.ephemeral_1h_input_tokens`, `speed`), and the model and the same token counts of `advisor_message` items in `message.usage.iterations` |
+| `session-owner` | `sessionId`, `accountUuid`, `organizationUuid` |
+
+From each config directory's `.claude.json` (`~/.claude.json` for `~/.claude`), only `oauthAccount.accountUuid`, `oauthAccount.organizationUuid` and `oauthAccount.emailAddress` are read. Message text, tool input and output, file contents and every other field are never decoded or kept.
+
+`cwd` is reduced to its last path element, the project folder's base name. The ids and timestamps are used only to find duplicates and are not sent.
+
+### 13.2 Counting
+
+Duplicates are found as ccusage does (`rust/adapters/claude/src/lib.rs`): a response with `message.id` and `requestId` counts once across all files and sessions; without `requestId`, the key is `message.id` and the session, plus the timestamp unless the id starts with `msg_` or `resp_`; a sidechain line that replays a main-thread response of the same session (same `message.id`, and the same timestamp unless neither has a `requestId`) counts once, as the main-thread line. Of two duplicates, the main-thread one wins, then the one with more tokens. A line without `message.id` always counts. A `<synthetic>` model counts with an empty model name, and a `speed` of `fast` adds `-fast` to the model name. Lines that ccusage skips (a version that is not semver, an empty session, request or message id, or model) are skipped.
+
+A response counts for the account of its session's `session-owner` line, wherever in the session's files that line is. A session without one counts for no account (`""`), except in a claude-accounts slot directory, which counts it for the slot's signed-in account.
+
+The collector keeps a byte offset per file and reads only what was appended; a file that shrank or was replaced is read again from the start, and duplicates of what was already counted are found as above. It scans every 30 seconds, reads at most 128 MiB/s, and counts only responses from the last 35 days. Its state (offsets, the hashed duplicate keys, session owners and counts) stays on the computer, matched to the config directories by path, so adding or removing one keeps the others' state, in `usage.state-file` (default `claude-usage.gob` in the state directory for `run`, `$HERMES_HOME/device/claude-usage.gob` for `acp-host`).
+
+### 13.3 Report
+
+The report is a JSON object. Each row sums the responses of one UTC hour, account, organization, model, project and thread kind:
+
+```json
+{
+  "hours": [1794326400],
+  "rows": [
+    {"hour": 1794326400, "account_uuid": "6f1c…", "org_uuid": "0b7e…", "model": "claude-opus-5-5", "project": "app",
+     "sidechain": false, "input": 120, "output": 3400, "cache_write": 52000, "cache_write_1h": 50000,
+     "cache_read": 910000, "requests": 12}
+  ],
+  "accounts": [
+    {"account_uuid": "6f1c…", "org_uuid": "0b7e…", "label": "alice@example.com"},
+    {"account_uuid": "", "org_uuid": "", "label": "Claude (work)", "slot": "work"}
+  ]
+}
+```
+
+`hour` is the Unix time of the hour's start. `cache_write` includes `cache_write_1h`. The numbers are totals, not increments. The rows of a report replace all of the hub's rows of the same computer (or Hermes) for each hour in `hours`, and for every hour from `since` on when `since` is set, so a row that is gone (for example after a `session-owner` line moved a session to its account) goes away on the hub too. `accounts` lists the account each config directory is signed in as, labeled with its email, or for a slot with the slot's label; a slot that is not signed in has an empty `account_uuid`.
+
+A collector that starts without its state file sends nothing older than 28 days, because Claude Code removes transcripts after `cleanupPeriodDays` (30 by default) and older hours could be missing sessions that the hub already has.
+
+| Who | How |
+|---|---|
+| `run` | `POST /api/device/usage` with the device token and the report as body; the hub answers `204`. After a start and once a day it sends every hour from the start of the window to now; otherwise only the hours whose rows changed, with about 2000 rows per request and never part of an hour. After a failure it waits 30 s, doubling to 30 minutes |
+| `acp-host` | Answers `GET /usage` with the report of every row from `since` on. The request needs a hub assertion (section 3) with `leg` `usage`, `htm` `GET` and `htp` `/usage`; without one it answers `401`, `404` when usage is off, and `503` until its first scan after a start is done, so that the hub never replaces its rows with an empty report |

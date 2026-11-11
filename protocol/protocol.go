@@ -192,6 +192,8 @@ const ACPBindingMeta = "deviceBinding"
 const (
 	PluginExecPath = "/api/plugins/device/ws"
 	ACPHostPath    = "/acp"
+	// ACPHostUsagePath is acp-host's Claude Code usage report (section 13).
+	ACPHostUsagePath = "/usage"
 )
 
 // Envelope carries the type of a message so it can be decoded in two steps.

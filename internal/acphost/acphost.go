@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/hermes-device/assertion"
+	"github.com/USA-RedDragon/hermes-device/internal/claudeusage"
 	"github.com/USA-RedDragon/hermes-device/protocol"
 	"github.com/coder/websocket"
 )
@@ -61,7 +62,18 @@ type Options struct {
 	// child's process group (a gateway that hermes acp started). It
 	// defaults to 2s.
 	SweepInterval time.Duration
-	Logger        *slog.Logger
+	// Usage answers GET /usage with the Claude Code usage of this pod
+	// (docs/protocol.md section 13). Nil: /usage answers 404.
+	Usage  UsageReporter
+	Logger *slog.Logger
+}
+
+// UsageReporter returns the current usage report, once Ready. A report
+// before the first scan would be empty, and the hub would drop its rows.
+// *claudeusage.Collector is one.
+type UsageReporter interface {
+	Ready() bool
+	Report() claudeusage.Report
 }
 
 // Server hosts hermes acp processes for hub connections.
@@ -111,10 +123,11 @@ func New(opts Options) *Server {
 	return s
 }
 
-// Handler serves GET /acp and GET /healthz.
+// Handler serves GET /acp, GET /usage and GET /healthz.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+protocol.ACPHostPath, s.handleACP)
+	mux.HandleFunc("GET "+protocol.ACPHostUsagePath, s.handleUsage)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io.WriteString(w, "ok\n")
@@ -193,6 +206,32 @@ func (s *Server) handleACP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	c.serve() //nolint:contextcheck // a connection derives from the server's base context so Close ends it
+}
+
+// handleUsage answers the hub's request for the Claude Code usage of this
+// pod. Only a hub assertion for the usage leg opens it.
+func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.opts.Verifier.Verify(r.Header.Get(assertion.Header), assertion.Expect{
+		Audience: s.opts.BackendID, Leg: assertion.LegUsage, Method: r.Method, Path: r.URL.Path,
+	}); err != nil {
+		s.opts.Logger.Warn("Refused the hub assertion for usage", "remote", r.RemoteAddr, "error", err)
+		http.Error(w, "assertion refused", http.StatusUnauthorized)
+		return
+	}
+	if s.opts.Usage == nil {
+		http.Error(w, "usage is off", http.StatusNotFound)
+		return
+	}
+	if !s.opts.Usage.Ready() {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "still reading the transcripts", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(s.opts.Usage.Report()); err != nil {
+		s.opts.Logger.Warn("Could not send the usage report", "error", err)
+	}
 }
 
 func (s *Server) gatewayUp(ctx context.Context) bool {
