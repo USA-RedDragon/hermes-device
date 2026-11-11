@@ -127,6 +127,7 @@ type telegramShadow struct {
 	LeaderRetry     *impl.Duration `json:"leader_retry"     toml:"leader_retry"     yaml:"leader_retry"`
 	TopicSync       *impl.Duration `json:"topic_sync"       toml:"topic_sync"       yaml:"topic_sync"`
 	Steps           *string        `json:"steps"            toml:"steps"            yaml:"steps"`
+	Drafts          *bool          `json:"drafts"           toml:"drafts"           yaml:"drafts"`
 }
 
 type deviceShadow struct {
@@ -237,6 +238,8 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("telegram.topic_sync", configulator.LayerDefault, "default tag")
 	cfg.Telegram.Steps = "collapsed"
 	set("telegram.steps", configulator.LayerDefault, "default tag")
+	cfg.Telegram.Drafts = true
+	set("telegram.drafts", configulator.LayerDefault, "default tag")
 	cfg.Device.Enabled = false
 	set("device.enabled", configulator.LayerDefault, "default tag")
 	cfg.Device.PairingTTL = time.Duration(int64(600000000000))
@@ -632,6 +635,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		if s.Telegram.Steps != nil {
 			cfg.Telegram.Steps = *s.Telegram.Steps
 			set("telegram.steps", configulator.LayerFile, file)
+		}
+		if s.Telegram.Drafts != nil {
+			cfg.Telegram.Drafts = *s.Telegram.Drafts
+			set("telegram.drafts", configulator.LayerFile, file)
 		}
 	}
 	if s.Device != nil {
@@ -1033,6 +1040,19 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Telegram.Steps = v
 		set("telegram.steps", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "drafts"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.drafts",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Telegram.Drafts = p
+		set("telegram.drafts", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "device", "enabled"); ok {
 		p, err := strconv.ParseBool(v)
 		if err != nil {
@@ -1209,6 +1229,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"telegram" + o.Separator + "leader_retry",
 		"telegram" + o.Separator + "topic_sync",
 		"telegram" + o.Separator + "steps",
+		"telegram" + o.Separator + "drafts",
 		"device" + o.Separator + "enabled",
 		"device" + o.Separator + "signing_key",
 		"device" + o.Separator + "signing_key_file",
@@ -1278,21 +1299,22 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[35], time.Duration(int64(2000000000)), "With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over")
 	fs.Duration(names[36], time.Duration(int64(20000000000)), "How often the bot reads the chats of each linked group to add topics for new chats, rename topics and follow the chats that run")
 	fs.String(names[37], "collapsed", "How the status line of a turn shows its steps and thinking: collapsed (a quote that opens on a tap), expanded, or off")
-	fs.Bool(names[38], false, "Serve the talaria device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
-	fs.String(names[39], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
-	fs.String(names[40], "", "File that holds device.signing_key. Wins over signing_key")
-	fs.Duration(names[41], time.Duration(int64(600000000000)), "How long a pairing code from talaria setup or talaria login stays valid")
-	fs.Duration(names[42], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
-	fs.Duration(names[43], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
-	fs.StringSlice(names[44], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
-	fs.String(names[45], "", "Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription")
-	fs.String(names[46], "", "File that holds notify.vapid_private_key. Wins over vapid_private_key")
-	fs.String(names[47], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url")
-	fs.Duration(names[48], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
-	fs.Duration(names[49], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
-	fs.Duration(names[50], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
-	fs.StringSlice(names[51], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
-	fs.String(names[52], "America/Chicago", "IANA time zone of the reset times of Claude usage windows")
+	fs.Bool(names[38], true, "In private chats, stream each turn into a draft (sendMessageDraft) that shows what runs and the reply as it is written, instead of editing the status line")
+	fs.Bool(names[39], false, "Serve the talaria device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
+	fs.String(names[40], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
+	fs.String(names[41], "", "File that holds device.signing_key. Wins over signing_key")
+	fs.Duration(names[42], time.Duration(int64(600000000000)), "How long a pairing code from talaria setup or talaria login stays valid")
+	fs.Duration(names[43], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
+	fs.Duration(names[44], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
+	fs.StringSlice(names[45], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
+	fs.String(names[46], "", "Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription")
+	fs.String(names[47], "", "File that holds notify.vapid_private_key. Wins over vapid_private_key")
+	fs.String(names[48], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url")
+	fs.Duration(names[49], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
+	fs.Duration(names[50], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
+	fs.Duration(names[51], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
+	fs.StringSlice(names[52], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
+	fs.String(names[53], "America/Chicago", "IANA time zone of the reset times of Claude usage windows")
 	return nil
 }
 
@@ -1752,6 +1774,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Telegram.Steps = v
 		set("telegram.steps", configulator.LayerCLI, "--"+n)
+	}
+	if n := "telegram" + o.Separator + "drafts"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.drafts",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.Drafts = v
+		set("telegram.drafts", configulator.LayerCLI, "--"+n)
 	}
 	if n := "device" + o.Separator + "enabled"; fs.Changed(n) {
 		v, err := fs.GetBool(n)
@@ -3707,6 +3741,19 @@ func (s *telegramShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			default:
 				return configJSONError(path+".steps", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
+		case "drafts":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Drafts = &b
+			default:
+				return configJSONError(path+".drafts", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
 				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
@@ -4106,6 +4153,7 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "telegram.leader_retry = %v\n", c.Telegram.LeaderRetry)
 	fmt.Fprintf(&b, "telegram.topic_sync = %v\n", c.Telegram.TopicSync)
 	fmt.Fprintf(&b, "telegram.steps = %v\n", c.Telegram.Steps)
+	fmt.Fprintf(&b, "telegram.drafts = %v\n", c.Telegram.Drafts)
 	fmt.Fprintf(&b, "device.enabled = %v\n", c.Device.Enabled)
 	b.WriteString("device.signing_key = (redacted)\n")
 	fmt.Fprintf(&b, "device.signing_key_file = %v\n", c.Device.SigningKeyFile)

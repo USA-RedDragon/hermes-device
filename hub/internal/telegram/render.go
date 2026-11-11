@@ -165,6 +165,30 @@ type renderer struct {
 	// time again when nothing else changed it.
 	statusTick time.Duration
 
+	// budget spaces the optional edits of the chat, shared with its other
+	// topics; nil spaces none.
+	budget *budget
+	// drafts streams each turn into a draft (sendMessageDraft), which
+	// works only in private chats; the status line then changes only when
+	// the turn ends. draftSeq numbers the drafts.
+	drafts   bool
+	draft    draftState
+	draftSeq int64
+	// userMsg finds the Telegram message of a prompt the bot sent, by its
+	// submission ID; nil finds none.
+	userMsg func(id string) (int64, bool)
+	// reactTo is the message whose reaction shows how the running turn
+	// goes, reacted its reaction, and noReact is set once the chat refused
+	// one.
+	reactTo  int64
+	reacted  string
+	noReact  bool
+	noTyping bool
+	typedAt  time.Time
+	// busy is set from a turn's start to its end.
+	busy  bool
+	todos todoState
+
 	turn   *turnStatus
 	answer strings.Builder
 	// open is the prompt of the turn a snapshot found running, until the
@@ -305,6 +329,10 @@ func (r *renderer) delta(ctx context.Context, ev hub.Event) {
 		return
 	}
 	r.answer.WriteString(*p.Text)
+	if *p.Text != "" && r.drafts {
+		r.busy = true
+		r.markDraft(ctx)
+	}
 	if t := r.turn; t != nil && *p.Text != "" && !t.writing && len(t.running) == 0 {
 		t.writing = true
 		r.refresh(ctx)
@@ -321,6 +349,7 @@ func (r *renderer) begin(ctx context.Context) *turnStatus {
 			start = r.startedAt
 		}
 		r.turn = &turnStatus{start: start, tools: map[string]string{}, progress: map[string]string{}, counts: map[string]int{}}
+		r.busy = true
 	}
 	return r.turn
 }
@@ -330,6 +359,10 @@ func (r *renderer) begin(ctx context.Context) *turnStatus {
 func (r *renderer) refresh(ctx context.Context) {
 	t := r.turn
 	if t == nil {
+		return
+	}
+	if r.drafts {
+		r.running(ctx)
 		return
 	}
 	if !t.msg.lastEdit.IsZero() && r.now().Sub(t.msg.lastEdit) < r.interval {
@@ -343,8 +376,30 @@ func (r *renderer) refresh(ctx context.Context) {
 // running shows the status line of the running turn: one line with the
 // Steps button. Telegram folds an expandable quote again on every edit of
 // its message, so the steps go to a message of their own on request.
+//
+// A turn that streams into a draft shows what runs now in the draft; its
+// status line is sent once and changes only when the turn ends. Otherwise
+// the edit waits when the chat's budget is spent.
 func (r *renderer) running(ctx context.Context) {
-	r.update(ctx, &r.turn.msg, r.statusHTML(false), r.stepsButton())
+	t := r.turn
+	if r.drafts {
+		if t.msg.id == 0 {
+			r.update(ctx, &t.msg, workingHTML, r.stepsButton())
+		}
+		t.msg.dirty, t.msg.pending = false, ""
+		r.snapSteps()
+		r.markDraft(ctx)
+		return
+	}
+	html, kb := r.statusHTML(false), r.stepsButton()
+	if t.msg.id != 0 && r.budget != nil && (html != t.msg.shown || (kb != nil) != t.msg.buttons) {
+		if d := r.budget.take(r.to.chat); d > 0 {
+			t.msg.dirty, t.msg.retry = true, r.now().Add(d)
+			r.snapSteps()
+			return
+		}
+	}
+	r.update(ctx, &t.msg, html, kb)
 	r.snapSteps()
 }
 
@@ -379,6 +434,9 @@ func (r *renderer) quote(details string) string {
 // endTurn shows the status line of the turn as done and forgets the turn.
 func (r *renderer) endTurn(ctx context.Context) {
 	r.open, r.startedAt, r.echoed = nil, time.Time{}, false
+	r.busy = false
+	r.draft = draftState{}
+	r.endTodo(ctx)
 	if r.turn == nil {
 		return
 	}
@@ -584,6 +642,7 @@ func fitTail(s string, room int) string {
 func (r *renderer) update(ctx context.Context, m *liveMsg, html string, kb *InlineKeyboard) {
 	if m.id == 0 {
 		m.id = r.send(ctx, html, kb)
+		m.pending = ""
 		m.lastEdit = r.now()
 		m.dirty = m.id == 0
 		m.shown, m.buttons = html, kb != nil
@@ -645,10 +704,23 @@ func (r *renderer) nextFlush() (time.Duration, bool) {
 			best, found = d, true
 		}
 	}
-	if t := r.turn; t != nil && t.msg.dirty {
-		consider(t.msg.lastEdit.Add(r.interval).Sub(r.now()))
-	} else if t != nil && t.msg.id != 0 {
+	if t := r.turn; t != nil && !r.drafts && t.msg.dirty {
+		at := t.msg.lastEdit.Add(r.interval)
+		if t.msg.retry.After(at) {
+			at = t.msg.retry
+		}
+		consider(at.Sub(r.now()))
+	} else if t != nil && !r.drafts && t.msg.id != 0 {
 		consider(t.msg.lastEdit.Add(r.tick()).Sub(r.now()))
+	}
+	if m := r.todos.msg; m.dirty && m.id != 0 {
+		consider(m.retry.Sub(r.now()))
+	}
+	if d, ok := r.draftDue(); ok {
+		consider(d)
+	}
+	if d, ok := r.typingDue(); ok {
+		consider(d)
 	}
 	for _, sp := range r.prompts {
 		if at, ok := sp.deadline(); ok {
@@ -670,6 +742,12 @@ func (r *renderer) tick() time.Duration {
 // when it has not changed for a tick, so its time keeps going while the
 // model thinks or writes.
 func (r *renderer) flushDue(ctx context.Context) {
+	r.typingTick(ctx)
+	r.flushTodo(ctx, false)
+	if r.drafts {
+		r.draftTick(ctx)
+		return
+	}
 	t := r.turn
 	if t == nil || t.msg.id == 0 && !t.msg.dirty {
 		return
@@ -681,7 +759,8 @@ func (r *renderer) flushDue(ctx context.Context) {
 }
 
 func (r *renderer) flushAll(ctx context.Context) {
-	if t := r.turn; t != nil && t.msg.dirty {
+	r.flushTodo(ctx, true)
+	if t := r.turn; t != nil && t.msg.dirty && !r.drafts {
 		r.running(ctx)
 	}
 }
@@ -834,6 +913,8 @@ func (r *renderer) showPrompt(ctx context.Context, kind string, p approvalPayloa
 		var err error
 		id, err = r.api.SendForceReply(ctx, r.to.chat, r.to.thread, text, "Your answer")
 		r.sendFailed(err)
+		r.spend()
+		r.draftLost()
 	} else {
 		id = r.send(ctx, text, promptKeyboard(cbApproval, key, info, nil))
 	}
@@ -964,6 +1045,8 @@ func (r *renderer) agentMessage(ctx context.Context, text string) {
 func (r *renderer) send(ctx context.Context, html string, kb *InlineKeyboard) int64 {
 	id, err := sendHTMLErr(ctx, r.api, r.logger, r.to, html, kb)
 	r.sendFailed(err)
+	r.spend()
+	r.draftLost()
 	return id
 }
 

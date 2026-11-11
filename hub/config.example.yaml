@@ -117,6 +117,8 @@ telegram:
   topic_sync: "20s"
   # How the status line of a turn shows its steps and thinking: collapsed (a quote that opens on a tap), expanded, or off
   steps: "collapsed"
+  # In private chats, stream each turn into a draft (sendMessageDraft) that shows what runs and the reply as it is written, instead of editing the status line
+  drafts: true
 device:
   # Serve the talaria device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices
   enabled: false

@@ -984,6 +984,9 @@ func (b *Bot) pump(a *attachment) {
 		})
 	r.now = b.now
 	r.statusTick = b.tick
+	r.budget = b.budget
+	r.drafts = b.cfg.Drafts && a.to.chat > 0
+	r.userMsg = b.sentMessage
 	if b.cfg.Steps != "" {
 		r.steps = b.cfg.Steps
 	}
