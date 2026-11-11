@@ -89,6 +89,13 @@ func TestPromptPlacesFiles(t *testing.T) {
 		t.Fatalf("submit = %q, PutFile calls %v", text, files.got)
 	}
 
+	if _, err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "", hub.Attachment{Name: aPNG, Data: []byte(pngHead)}); err != nil {
+		t.Fatal(err)
+	}
+	if text, atts := lastSubmit(t, e.gw); len(atts) != 1 || text != hub.FileNote("notes-2.txt", files.path) {
+		t.Fatalf("an image on a computer = %q %+v", text, atts)
+	}
+
 	files.ok, files.path = false, ""
 	if _, err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "", doc); err != nil {
 		t.Fatal(err)
@@ -149,7 +156,7 @@ func TestPromptNoticeWithoutVision(t *testing.T) {
 	e.gw.AddSession(&gatewaytest.Session{ID: "sees", Live: true, Tools: map[string][]string{"vision": {gateway.VisionTool}}})
 	img := hub.Attachment{Name: aPNG, Data: []byte(pngHead)}
 	res, err := e.svc.Prompt(ctx, userAlice, backendPC, "blind", "look", img)
-	if err != nil || !strings.Contains(res.Notice, "cannot read images") {
+	if err != nil || !strings.Contains(res.Notice, "no image reader") {
 		t.Fatalf("blind Prompt = %+v, %v", res, err)
 	}
 	if res, err = e.svc.Prompt(ctx, userAlice, backendPC, "blind", "text only", hub.Attachment{Name: "a.txt", Data: []byte("a")}); err != nil || res.Notice != "" {

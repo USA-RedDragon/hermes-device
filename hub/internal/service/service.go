@@ -71,6 +71,8 @@ type Service struct {
 	stop         context.CancelFunc
 	// files places attached files on devices. Nil without devices.
 	files hub.SessionFiles
+	// uploads counts the prompts with attachments being staged.
+	uploads chan struct{}
 }
 
 var _ hub.Service = (*Service)(nil)
@@ -107,7 +109,8 @@ func New(cfgs []config.Backend, dir Directory, opts Options) *Service {
 		opts.HoldRetryMax = 5 * time.Second
 	}
 	ctx, stop := context.WithCancel(context.Background())
-	s := &Service{backends: map[string]*backend{}, dir: dir, opts: opts, log: opts.Logger, origin: uuid.NewString(), stop: stop}
+	s := &Service{backends: map[string]*backend{}, dir: dir, opts: opts, log: opts.Logger, origin: uuid.NewString(), stop: stop,
+		uploads: make(chan struct{}, maxUploads)}
 	for _, c := range cfgs {
 		b := &backend{svc: s, cfg: c, dialer: opts.Dialer(c), sessions: map[string]*live{},
 			log: s.log.With("backend", c.ID), held: map[string][]*heldPrompt{}, remote: map[string][]hub.HeldInput{},

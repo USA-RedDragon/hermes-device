@@ -15,8 +15,13 @@ import (
 var errAway = fmt.Errorf("%w: Hermes is restarting or cannot be reached, so the attachments were not sent. "+
 	"Send them again when it is back", hub.ErrAttachment)
 
-const noticeNoVision = "This chat's model cannot read images, and Hermes has no image reader set up, " +
-	"so the agent may not see the images."
+const noticeNoVision = "This chat's tools have no image reader (vision_analyze), so the model may not be able to see the images."
+
+// maxUploads bounds the prompts with attachments the hub handles at once,
+// since each one holds its files in memory.
+const maxUploads = 4
+
+var errBusyUploads = fmt.Errorf("%w: The hub is busy with other uploads. Send the attachments again in a moment", hub.ErrAttachment)
 
 // SetFiles makes the service place attached files on the devices that run
 // sessions. Without it every file goes to Hermes.
@@ -42,6 +47,12 @@ func imageExt(mime string) string {
 // gets a line that says where each one is. It returns the text, the
 // staged images and a notice for the user.
 func (b *backend) stage(ctx context.Context, user, sessionID, text string, files []hub.Attachment) (string, []gateway.Attachment, string, error) {
+	select {
+	case b.svc.uploads <- struct{}{}:
+		defer func() { <-b.svc.uploads }()
+	default:
+		return "", nil, "", errBusyUploads
+	}
 	ls, err := b.session(ctx, sessionID)
 	if err != nil {
 		return "", nil, "", stageError("the attachments", err)
@@ -62,6 +73,9 @@ func (b *backend) stage(ctx context.Context, user, sessionID, text string, files
 				return "", nil, "", fmt.Errorf("%w: Hermes did not take %s", hub.ErrAttachment, name)
 			}
 			atts = append(atts, gateway.Attachment{Path: out.Path, MIME: mime})
+			if p := b.deviceCopy(ctx, user, sessionID, name, f.Data); p != "" {
+				notes = append(notes, hub.FileNote(path.Base(p), p))
+			}
 			continue
 		}
 		p, err := b.placeFile(ctx, ls, user, sessionID, name, f.Data)
@@ -81,6 +95,24 @@ func (b *backend) stage(ctx context.Context, user, sessionID, text string, files
 		notice = noticeNoVision
 	}
 	return text, atts, notice, nil
+}
+
+// deviceCopy also writes an image to the device that runs the session, so
+// the agent's tools there can open it, and returns its path, or "" when no
+// device runs the session or the copy failed: the model has the image
+// anyway.
+func (b *backend) deviceCopy(ctx context.Context, user, sessionID, name string, data []byte) string {
+	if b.svc.files == nil {
+		return ""
+	}
+	p, ok, err := b.svc.files.PutFile(ctx, user, b.cfg.ID, sessionID, name, data)
+	if err != nil || !ok {
+		if err != nil {
+			b.log.Info("could not copy an image to the device", "session", sessionID, "error", err.Error())
+		}
+		return ""
+	}
+	return p
 }
 
 // placeFile puts a file where the session's tools can read it and returns
