@@ -100,3 +100,33 @@ func TestReplyMediaIsCapped(t *testing.T) {
 		t.Fatalf("media calls = %d", n)
 	}
 }
+
+func TestReplyPagesAreLinks(t *testing.T) {
+	t.Parallel()
+	const page = "<!doctype html><title>Pick &lt;entries&gt;</title><p>hi</p>"
+	file := "/opt/data/out/pages/plan.html"
+	h := startBot(t, nil)
+	h.hub.mu.Lock()
+	h.hub.media = map[string]fakeFile{file: {data: "<title>The plan</title>"}}
+	h.hub.mu.Unlock()
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "Pick some.\n```page\n" + page + "\n```\nMEDIA:" + file +
+		"\nMEDIA:/opt/data/out/gone.html", kStatus: statusComplete})
+	text := h.tg.wait(mSend, "Pick some.")
+	if strings.Contains(text.text(), "doctype") || strings.Contains(text.text(), "MEDIA:") {
+		t.Fatalf("text = %q", text.text())
+	}
+	link := h.tg.wait(mSend, "Pick &lt;entries&gt;")
+	want := "https://hub.example/#/page/" + beCluster + "/" + sid + "/" + hub.PageID(page)
+	if !strings.Contains(link.text(), `<a href="`+want+`">`) {
+		t.Fatalf("page link = %q, want %q", link.text(), want)
+	}
+	file1 := h.tg.wait(mSend, "The plan")
+	if !strings.Contains(file1.text(), "/"+sid+"/%2Fopt%2Fdata%2Fout%2Fpages%2Fplan.html\"") {
+		t.Fatalf("file page link = %q", file1.text())
+	}
+	h.tg.wait(mSend, "gone.html: it is no longer on the Hermes server")
+	if len(h.tg.find(mDocument, "")) != 0 {
+		t.Fatal("a page went as a file")
+	}
+}

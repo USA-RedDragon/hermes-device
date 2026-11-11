@@ -34,6 +34,10 @@ func (r *renderer) sendMedia(ctx context.Context, paths []string) {
 	}
 	for _, p := range paths {
 		name := hub.CleanName(path.Base(p))
+		if hub.PagePath(p) && r.pageURL != nil {
+			r.sendPageFile(ctx, p, name)
+			continue
+		}
 		if r.media == nil {
 			r.notice(ctx, msgMediaFailed, name)
 			continue
@@ -100,4 +104,46 @@ func (r *renderer) sent(ctx context.Context, name string, err error) {
 
 func (r *renderer) notice(ctx context.Context, format string, args ...any) {
 	r.send(ctx, escapeHTML(fmt.Sprintf(format, args...)), nil)
+}
+
+// sendPages sends a link to the hub page that opens each page block of a
+// reply. Telegram cannot run a page, and the user's browser opens the link.
+func (r *renderer) sendPages(ctx context.Context, pages []string) {
+	if r.pageURL == nil {
+		return
+	}
+	for _, p := range pages {
+		r.pageLink(ctx, hub.PageTitle(p), r.pageURL(hub.PageID(p)))
+	}
+}
+
+// sendPageFile sends a link that opens an HTML file a reply names as a page.
+func (r *renderer) sendPageFile(ctx context.Context, p, name string) {
+	title := ""
+	if r.media != nil {
+		cctx, cancel := context.WithTimeout(ctx, downloadTimeout)
+		f, err := r.media(cctx, p)
+		if errors.Is(err, hub.ErrNoMedia) {
+			cancel()
+			r.notice(ctx, msgMediaGone, name)
+			return
+		}
+		if err == nil {
+			head, _ := io.ReadAll(io.LimitReader(f.Body, 64<<10))
+			_ = f.Body.Close()
+			title = hub.PageTitle(string(head))
+		}
+		cancel()
+	}
+	if title == "" {
+		title = name
+	}
+	r.pageLink(ctx, title, r.pageURL(p))
+}
+
+func (r *renderer) pageLink(ctx context.Context, title, link string) {
+	if title == "" {
+		title = "Page"
+	}
+	r.send(ctx, "<b>"+escapeHTML(title)+"</b>\n<a href=\""+escapeHTML(link)+"\">Open the page in the hub</a>", nil)
 }

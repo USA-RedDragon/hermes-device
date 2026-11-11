@@ -79,6 +79,9 @@ type renderer struct {
 	approve  func(approvalID, text string) (string, func(messageID int64))
 	// media opens a file a reply names; nil when the service cannot.
 	media func(ctx context.Context, path string) (*hub.MediaFile, error)
+	// pageURL is the hub URL that opens a page of the session: a PageID or
+	// the path of an HTML file.
+	pageURL func(ref string) string
 
 	think      *liveMsg
 	thinkStart time.Time
@@ -402,6 +405,7 @@ func (r *renderer) complete(ctx context.Context, ev hub.Event) {
 	}
 	r.answer.Reset()
 	r.tools = make(map[string]*toolMsg)
+	pages, text := hub.PageBlocks(text)
 	paths, text := hub.MediaDirectives(text)
 	switch p.Status {
 	case "interrupted":
@@ -418,6 +422,7 @@ func (r *renderer) complete(ctx context.Context, ev hub.Event) {
 			}
 		}
 	}
+	r.sendPages(ctx, pages)
 	r.sendMedia(ctx, paths)
 }
 

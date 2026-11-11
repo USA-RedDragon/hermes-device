@@ -76,6 +76,7 @@ func BotID(token string) int64 {
 type Bot struct {
 	cfg       Config
 	link      string
+	public    string
 	api       *Client
 	svc       hub.Service
 	links     hub.Links
@@ -163,6 +164,7 @@ func New(cfg Config, opts Options) (*Bot, error) {
 	b := &Bot{
 		cfg:       cfg,
 		link:      strings.TrimRight(opts.PublicURL, "/") + linkPath,
+		public:    strings.TrimRight(opts.PublicURL, "/"),
 		api:       NewClient(cfg.APIURL, cfg.Token, opts.HTTPClient, cfg.MaxRetries, logger),
 		svc:       opts.Service,
 		links:     opts.Links,
@@ -815,6 +817,9 @@ func (b *Bot) pump(a *attachment) {
 		r.media = func(ctx context.Context, p string) (*hub.MediaFile, error) {
 			return m.Media(ctx, a.user, a.backendID, a.sessionID, p)
 		}
+	}
+	r.pageURL = func(ref string) string {
+		return b.public + "/#/page/" + url.PathEscape(a.backendID) + "/" + url.PathEscape(a.sessionID) + "/" + url.PathEscape(ref)
 	}
 	timer := time.NewTimer(time.Hour)
 	timer.Stop()
