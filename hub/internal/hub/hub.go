@@ -246,8 +246,10 @@ type TelegramChat struct {
 // before it.
 const SinceNow int64 = -1
 
-// TelegramGroup is the forum group a hub user linked to the Telegram bot.
-// Each of the user's chats gets a topic there.
+// TelegramGroup is the forum group a hub user linked to the Telegram bot,
+// or, with a positive ChatID, the user's private chat with the bot when
+// the bot has topics in private chats and the user linked no group. Each
+// of the user's chats gets a topic there.
 type TelegramGroup struct {
 	User     string
 	ChatID   int64

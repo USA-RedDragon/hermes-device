@@ -111,17 +111,17 @@ func topicURL(chatID, thread int64) string {
 	return fmt.Sprintf("https://t.me/c/%d/%d", internal, thread)
 }
 
-// topicLink opens the topic of a chat in the linked group chatID, or is
-// "" when it has none.
+// topicLink opens the topic of a chat in the linked group or private chat
+// chatID, or is "" when it has none.
 func (b *Bot) topicLink(ctx context.Context, chatID int64, backendID, sessionID string) string {
 	if sessionID == "" {
 		return ""
 	}
 	if f := b.forum(chatID); f != nil {
 		t, _ := b.topic(f, hub.SessionRef{BackendID: backendID, SessionID: sessionID})
-		return topicURL(chatID, t.ThreadID)
+		return b.topicURL(ctx, chatID, t.ThreadID)
 	}
-	if b.state == nil || chatID > -1_000_000_000_000 {
+	if b.state == nil || chatID > -1_000_000_000_000 && !isDM(chatID) {
 		return ""
 	}
 	// A replica that does not run the bot sends notices too: it reads the
@@ -134,7 +134,7 @@ func (b *Bot) topicLink(ctx context.Context, chatID int64, backendID, sessionID 
 	}
 	for _, t := range topics {
 		if t.BackendID == backendID && t.SessionID == sessionID {
-			return topicURL(chatID, t.ThreadID)
+			return b.topicURL(ctx, chatID, t.ThreadID)
 		}
 	}
 	return ""
@@ -278,20 +278,33 @@ func (b *Bot) handleForum(ctx context.Context, f *forum, ms []*Message, media bo
 		cmd, arg = parseCommand(m.Text)
 	}
 	b.logger.Debug("Telegram group message", "user", user, "chat", to.chat, "thread", to.thread, "command", cmd)
+	dm := isDM(f.chatID)
 	switch cmd {
 	case cmdLink:
+		if dm {
+			b.sendText(ctx, to, "Each chat has its own topic here already. To use a group with Topics instead, send /link there.")
+			return
+		}
 		b.sendText(ctx, to, "This group is linked to you already.")
-	case "unlink":
+	case cmdUnlink:
+		if dm {
+			b.unlinkFromDM(ctx, to, user)
+			return
+		}
 		b.unlinkGroup(ctx, f, to)
-	case "start", "help":
-		b.forumHelp(ctx, to, user)
-	case "new":
+	case "start", cmdHelp:
+		b.forumHelp(ctx, to, user, dm)
+	case cmdNew:
 		b.forumNew(ctx, f, to, user, arg, nil)
-	case "sessions", "attach":
-		b.sendText(ctx, to, "In this group each chat has its own topic. Send /new or a message in General to start one.")
-	case "backends":
+	case cmdSessions, "attach":
+		where := "In this group"
+		if dm {
+			where = "Here"
+		}
+		b.sendText(ctx, to, where+" each chat has its own topic. Send /new or a message in "+generalName(f.chatID)+" to start one.")
+	case cmdBackends:
 		b.listBackends(ctx, to, user)
-	case "devices", "computers":
+	case cmdDevices, "device", "computers":
 		b.listComputers(ctx, to, user)
 	case "":
 		if to.thread == 0 {
@@ -317,16 +330,28 @@ func (b *Bot) handleForum(ctx context.Context, f *forum, ms []*Message, media bo
 	}
 }
 
-func (b *Bot) forumHelp(ctx context.Context, to dest, user string) {
+func (b *Bot) forumHelp(ctx context.Context, to dest, user string, dm bool) {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "This group belongs to <b>%s</b>. Each chat has its own topic.\n\n", escapeHTML(user))
-	sb.WriteString("A message in General starts a new chat in a new topic. A message in a topic goes to its chat. " +
+	if dm {
+		fmt.Fprintf(&sb, "Signed in as <b>%s</b>. Each chat has its own topic here.\n\n", escapeHTML(user))
+		sb.WriteString("A message in the main chat starts a new chat in a new topic. ")
+	} else {
+		fmt.Fprintf(&sb, "This group belongs to <b>%s</b>. Each chat has its own topic.\n\n", escapeHTML(user))
+		sb.WriteString("A message in General starts a new chat in a new topic. ")
+	}
+	sb.WriteString("A message in a topic goes to its chat. " +
 		"Reply to a question's message to answer it.\n" +
 		"/new [backend] start a new chat\n" +
 		"/stop interrupt the turn of this topic's chat\n" +
 		"/status show the model and how full its context is\n" +
-		"/backends list your backends\n" +
-		"/unlink stop using this group")
+		"/model show or switch the model of this topic's chat\n" +
+		"/bg TEXT run a prompt in the background\n" +
+		"/backends list your backends")
+	if dm {
+		sb.WriteString("\n/unlink stop using your linked group")
+	} else {
+		sb.WriteString("\n/unlink stop using this group")
+	}
 	if b.computers != nil {
 		sb.WriteString("\n/devices list your computers\n" +
 			"/new NAME [folder] start a chat on a computer\n" +
@@ -401,7 +426,7 @@ func (b *Bot) forumNew(ctx context.Context, f *forum, general dest, user, arg st
 		b.reportErr(ctx, to, user, "attach", err)
 		return
 	}
-	link := &InlineKeyboard{InlineKeyboard: [][]InlineButton{{{Text: "Open the topic", URL: topicURL(f.chatID, thread)}}}}
+	link := &InlineKeyboard{InlineKeyboard: [][]InlineButton{{{Text: "Open the topic", URL: b.topicURL(ctx, f.chatID, thread)}}}}
 	if link.InlineKeyboard[0][0].URL == "" {
 		link = nil
 	}
@@ -410,7 +435,7 @@ func (b *Bot) forumNew(ctx context.Context, f *forum, general dest, user, arg st
 		b.sendHTML(ctx, general, "Started a new chat: <b>"+escapeHTML(name)+"</b>.", link)
 		return
 	}
-	b.sendHTML(ctx, to, "<i>From General:</i>\n"+escapeHTML(truncate(text, 3000)), nil)
+	b.sendHTML(ctx, to, "<i>From "+generalName(f.chatID)+":</i>\n"+escapeHTML(truncate(text, 3000)), nil)
 	b.sendHTML(ctx, general, "Started a new chat for that: <b>"+escapeHTML(name)+"</b>.", link)
 	if slices.ContainsFunc(ms, hasMedia) {
 		b.promptMedia(ctx, to, user, ms)
@@ -464,7 +489,7 @@ func (b *Bot) ensureTopic(ctx context.Context, f *forum, to dest, user string, m
 	if ref, ok := b.threadRef(f, to.thread); ok {
 		err := b.attach(ctx, to, user, ref.BackendID, ref.SessionID, hub.SinceNow)
 		if errors.Is(err, hub.ErrUnknownSession) {
-			b.sendText(ctx, to, "This chat is gone from the hub. Send a message in General to start a new one.")
+			b.sendText(ctx, to, "This chat is gone from the hub. Send a message in "+generalName(to.chat)+" to start a new one.")
 			return false
 		}
 		if err != nil {
@@ -521,9 +546,14 @@ func (b *Bot) syncTopics(ctx context.Context, done chan<- struct{}) {
 	t := time.NewTicker(b.cfg.TopicSync)
 	defer t.Stop()
 	for {
+		b.refreshMe(ctx)
+		dm := b.dmTopics()
 		b.fmu.Lock()
 		forums := make([]*forum, 0, len(b.forums))
 		for _, f := range b.forums {
+			if isDM(f.chatID) && !dm {
+				continue
+			}
 			forums = append(forums, f)
 		}
 		b.fmu.Unlock()
@@ -780,7 +810,7 @@ func (b *Bot) deleteMarked(ctx context.Context, f *forum) {
 // deleteTopic deletes the topic of a chat that is gone, and forgets it.
 // It never deletes General. b.loop is held.
 func (b *Bot) deleteTopic(ctx context.Context, f *forum, t hub.TelegramTopic) {
-	if t.ThreadID != 0 && t.ThreadID != generalThread {
+	if t.ThreadID != 0 && (t.ThreadID != generalThread || isDM(f.chatID)) {
 		err := b.api.DeleteForumTopic(ctx, f.chatID, t.ThreadID)
 		var apiErr *APIError
 		switch {
@@ -823,8 +853,11 @@ func (b *Bot) forgetTopic(ctx context.Context, f *forum, t hub.TelegramTopic) {
 }
 
 // closeTopic closes the topic of an archived chat. b.loop is held.
+//
+// Telegram cannot close a topic of a private chat, so there the bot marks
+// the topic's name instead.
 func (b *Bot) closeTopic(ctx context.Context, f *forum, t hub.TelegramTopic) {
-	if t.ThreadID == generalThread {
+	if t.ThreadID == generalThread && !isDM(f.chatID) {
 		return
 	}
 	to := dest{chat: f.chatID, thread: t.ThreadID}
@@ -834,7 +867,15 @@ func (b *Bot) closeTopic(ctx context.Context, f *forum, t hub.TelegramTopic) {
 		}
 		delete(b.chats, to)
 	}
-	err := b.api.CloseForumTopic(ctx, f.chatID, t.ThreadID)
+	var err error
+	if isDM(f.chatID) {
+		name := archivedName(t.Name)
+		if err = b.api.EditForumTopic(ctx, f.chatID, t.ThreadID, name); err == nil {
+			t.Name = name
+		}
+	} else {
+		err = b.api.CloseForumTopic(ctx, f.chatID, t.ThreadID)
+	}
 	var apiErr *APIError
 	switch {
 	case errors.As(err, &apiErr) && apiErr.TopicMissing():
@@ -854,7 +895,15 @@ func (b *Bot) closeTopic(ctx context.Context, f *forum, t hub.TelegramTopic) {
 // reopenTopic reopens the topic of a chat that is no longer archived and
 // returns it as it is now. b.loop is held.
 func (b *Bot) reopenTopic(ctx context.Context, f *forum, t hub.TelegramTopic) hub.TelegramTopic {
-	err := b.api.ReopenForumTopic(ctx, f.chatID, t.ThreadID)
+	var err error
+	if isDM(f.chatID) {
+		name := strings.TrimSuffix(t.Name, archivedSuffix)
+		if err = b.api.EditForumTopic(ctx, f.chatID, t.ThreadID, name); err == nil {
+			t.Name = name
+		}
+	} else {
+		err = b.api.ReopenForumTopic(ctx, f.chatID, t.ThreadID)
+	}
 	var apiErr *APIError
 	switch {
 	case errors.As(err, &apiErr) && apiErr.TopicMissing():

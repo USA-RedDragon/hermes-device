@@ -50,8 +50,9 @@ const (
 
 var tagRe = regexp.MustCompile(`<[^>]*>`)
 
-// dest is where the bot writes: a chat, and in a forum group a topic. A
-// thread of 0 is a private chat, a plain group or a forum's General topic.
+// dest is where the bot writes: a chat, and in a forum group or a private
+// chat with topics a topic. A thread of 0 is a private chat or its main
+// thread, a plain group or a forum's General topic.
 type dest struct {
 	chat, thread int64
 }
@@ -559,9 +560,15 @@ func (b *Bot) handleAlbum(ctx context.Context, ms []*Message) {
 	if m.From == nil || m.From.IsBot || m.Text == "" && !media {
 		return
 	}
+	if m.Chat.Type == chatPrivate {
+		b.refreshMe(ctx)
+	}
 	if f := b.forum(m.Chat.ID); f != nil {
-		b.handleForum(ctx, f, ms, media)
-		return
+		if !isDM(f.chatID) || b.dmTopics() || b.me.Load() == nil {
+			b.handleForum(ctx, f, ms, media)
+			return
+		}
+		b.dropDM(ctx, f)
 	}
 	if cmd, _ := parseCommand(m.Text); cmd == cmdLink && m.Chat.Type != chatPrivate {
 		b.linkGroup(ctx, m)
@@ -579,6 +586,12 @@ func (b *Bot) handleAlbum(ctx context.Context, ms []*Message) {
 	if !linked {
 		b.sendLink(ctx, m)
 		return
+	}
+	if m.Chat.Type == chatPrivate {
+		if f := b.dmForum(ctx, m.Chat.ID, user); f != nil {
+			b.handleForum(ctx, f, ms, media)
+			return
+		}
 	}
 	if !media && (b.claudeReply(ctx, to, user, m) || b.replyAnswer(ctx, to, user, m)) {
 		return
@@ -604,6 +617,8 @@ func (b *Bot) handleAlbum(ctx context.Context, ms []*Message) {
 		b.newSession(ctx, to, user, arg)
 	case cmdLink:
 		b.sendText(ctx, to, "This account is linked. To get a topic for each chat, send /link in a group with Topics.")
+	case cmdUnlink:
+		b.unlinkFromDM(ctx, to, user)
 	default:
 		b.sessionCommand(ctx, to, user, cmd, arg)
 	}
@@ -974,7 +989,7 @@ func (b *Bot) prompt(ctx context.Context, to dest, user string, msg int64, text 
 	case a.closed():
 		err := b.attach(ctx, to, user, a.backendID, a.sessionID, a.lastSeq.Load())
 		if errors.Is(err, hub.ErrUnknownSession) && to.thread != 0 {
-			b.sendText(ctx, to, "This chat is gone from the hub. Send a message in General to start a new one.")
+			b.sendText(ctx, to, "This chat is gone from the hub. Send a message in "+generalName(to.chat)+" to start a new one.")
 			return
 		}
 		if errors.Is(err, hub.ErrUnknownSession) {
