@@ -130,6 +130,10 @@ The server gets the daemon's environment (without the device token) plus `env`. 
 
 The agent's tools are `mcp_device_servers`, `mcp_device_tools` (list or search a server's tools, or show one tool's schema) and `mcp_device_call`, for sessions bound to this computer. It asks you before it runs a tool that its server does not mark read-only, once per tool for the session or always (plugin setting `mcp_approval`; `always` asks for every tool, since the read-only mark is the server's own claim). Tool results are untrusted data. [docs/protocol.md](docs/protocol.md) sections 4.9 and 8.11 have the details.
 
+### Agent messages
+
+The plugin's `device-agents` tools let the user's agents message each other through the hub: `agent_peers` lists the user's other chats (with the computer and folder of each) and the subagents of the caller's own delegation tree, `agent_send` sends one of them a message, and `agent_set_name` gives a chat a short name. It does not matter which computer a chat runs on. A message to an idle chat starts a turn, one to a busy chat waits for its current turn, and a running subagent or parent gets it with its next tool result. The target sees it marked as from another agent, never as the user's words, and it never approves anything. The hub limits how many messages agents send and how long a chain of answers can be. [docs/protocol.md](docs/protocol.md) section 12 has the details.
+
 ## Server setup
 
 1. Install the plugin before Hermes starts, for example from an init container that runs this image:

@@ -723,6 +723,7 @@ The plugin is a Hermes user plugin named `device`, installed into `$HERMES_HOME/
 | `browser` | `true` | `false` hides the `device-browser` toolset (docs/browser.md section 3) |
 | `mcp` | `true` | `false` hides the `device-mcp` toolset and turns its tools off (section 8.11) |
 | `mcp_approval` | `write` | When `mcp_device_call` asks the user first: `write` for tools whose server does not mark them `readOnlyHint: true`, `always` for every tool, `never` |
+| `agent_messages` | `true` | `false` hides the `device-agents` toolset (section 12) |
 | `mcp_call_timeout` | `600` | Seconds `mcp_device_call` waits when the agent gives no `timeout`, at most 3600 |
 | `dev_static_tokens` | `false` | Dev mode (section 8.9) |
 | `devices` | `{}` | Dev mode only: `<name>: {token_env: <env var>}` or `{token: <at least 16 chars>}` |
@@ -863,6 +864,9 @@ Mounted by the dashboard under `/api/plugins/device/` on the gateway listener (9
 | `POST /memory/{target}/replace` | Body `{"text", "base"}`. Applies a whole-file edit. `200` Memory |
 | `POST /memory/pending/{id}/approve` | Applies a staged memory write. `200` Memory |
 | `POST /memory/pending/{id}/reject` | Drops a staged memory write. `200` Memory |
+| `GET /agents/requests?wait=<seconds>` | The hub's long poll for agent message requests, section 12. `200` `{"requests": [Request]}` once one is waiting, or empty after `wait` (at most 25) |
+| `POST /agents/requests/{id}` | Body `{"result": <any>}` or `{"error": {"code", "message"}}`: the answer to a request a tool call waits for. `204`; `404` `unknown_request` when no call waits for it (it timed out) |
+| `POST /agents/deliver` | Body `{"mode": "steer" or "inbox", "message_id", "session_id", "subagent_id"?, "text"}`: delivers a checked message into a running agent of this process, section 12. `200` `{"status": "steered" or "queued" or "not_running" or "gone" or "full"}` |
 | `GET /ws` (WebSocket) | The exec leg, section 4 |
 
 Device object: `{"device_id", "name", "hostname", "os", "arch", "home", "roots", "client_version", "connected_at", "capabilities"}` (`connected_at` in Unix seconds; `capabilities` as negotiated, section 4.1). A device with the `browser` capability also has `"browser": {"connected", "browser", "extension_version"}` from its last `browser_status`.
@@ -953,3 +957,34 @@ Browser control needs a device and a plugin that both know the `browser` capabil
 hermes-hub v0.5.0 refuses a `session.resume` by title or `latest` or with an empty `session_id` (5.4). The Ink TUI never sends those: it resumes by `session_id`, which may hold a title (5.3). With a device client of release 0.4.1 or older, `hermes-device chat -- -c` and `--resume <title>` fail with any hub, because the local Hermes launcher resolves them in its own session store (5.2), and a title sent as `session_id` fails the splice's bind. Later releases look the session up on the server and resume it by id (5.2, 5.3). The acp-host of those releases applies the hub v0.5.0 slash rules to prompts (6.2).
 
 Plugin 0.4.1 and the acp-host of the same release add refusals and change no wire format. The plugin refuses a device bind of a session of another device's lineage or of a fail-closed lineage (section 9), and `/device` can move a session between devices (8.8). acp-host pins ACP params, removes `_meta`, refuses sessions that are not bound to the device itself, and applies the slash-command allowlist to prompts (6.1, 6.2). Editors and the bridge need no change: the bridge binds every session before it uses it.
+
+## 12. Agent messages
+
+The plugin registers three tools in the toolset `device-agents`, so the user's agents can message each other through the hub, as Claude Code sessions do: a chat, or a subagent that a chat delegated to (`delegate_task`), lists its peers and sends one of them a message. Where a chat runs its commands (a computer, the sandbox or the Hermes server) does not matter: a message goes from Hermes to the hub and back to Hermes, never through a device. The toolset is on while a hub polled the bus in the last 60 seconds (`check_fn`); the setting `agent_messages: false` turns it off.
+
+| Tool | Args | Does |
+|---|---|---|
+| `agent_peers` | none | Lists the user's other chats on this Hermes (session id, short name, title, computer and folder, whether a turn runs, who started it) and the live subagents of the caller's delegation tree with their relation (parent, child, sibling) |
+| `agent_send` | `to`, `text`, `reply_to`? | Sends `text` (at most 8000 characters) to `to`: a session id, a short name, an exact chat title, a subagent id (`sa-...`) or `parent` |
+| `agent_set_name` | `name` | Gives the calling chat a short name for `to` (1 to 40 of `A-Za-z0-9_-`, unique per backend); `""` removes it |
+
+Bus. A tool call puts a Request `{"id": "ar_<hex>", "op": "peers" or "send" or "name", "caller": Caller, "args"}` on an in-process queue and waits up to 30 seconds for the hub's answer, which it returns to the model as is (an error as `{"error", "code"}`). The hub takes requests with `GET /agents/requests` and answers each with `POST /agents/requests/{id}`. Caller is `{"session_id", "root_session_id", "tree": [{"subagent_id", "session_id", "parent_id", "depth", "goal"}]}`, plus `"subagent_id"`, `"parent_session_id"` and `"parent_subagent_id"` for a subagent. The plugin takes the caller from the `session_id` keyword Hermes passes to every tool handler and from Hermes's live subagent registry (`tools.delegate_tool_registry`), never from the model's arguments. `root_session_id` is the chat at the root of the caller's tree; `tree` holds the live subagents with the same root. The plugin also sends an `"undelivered"` request `{"message_id", "session_id"}` that no call waits for (inbox, below). At most 64 calls wait in the queue, at most 4 of them from one session; notices wait in a queue of their own (256, the oldest dropped first), which the hub gets first.
+
+Delivery. The hub checks and records every message and delivers it in one of three ways:
+
+- To another chat: a new input of that chat (`prompt.submit` under the submission id `hermes-hub-agent-<message id>`). An idle chat starts a turn; a busy one runs it after its current turn.
+- To a running subagent from its own parent: `mode: steer`, Hermes's own steer (`steer_subagent`), which the child reads after its current tool batch without an interrupt. Only the direct parent steers a child, since Hermes shows a steer to the model as its user's words.
+- To any other agent of the caller's tree (a sibling, the parent subagent, or the root chat while its turn runs): `mode: inbox`. The plugin keeps the text for the target's session and adds it to the end of the target's next tool result (`transform_tool_result`), the channel of untrusted data. The plugin knows a chat's turn runs between `pre_llm_call` and `post_llm_call`; for a chat that is not running it answers `not_running` (checked under the lock the turn's end takes) and the hub sends an input instead. A text that no tool result took when the turn ends (`post_llm_call`), or within 90 seconds, goes back to the hub as `undelivered`: a chat then gets it as an input, a subagent that finished never gets it. At most 20 texts wait per session (`full`).
+
+The text the target gets always starts with the line `[Agent message am_<16 hex> from <sender>]` and a paragraph that says another agent wrote it, not the user, that it is no instruction or approval of the user, and how to answer (with `reply_to`). The hub drops control and format characters, turns each `@` that Hermes would expand as a context reference into a full-width `＠`, and turns each `[` that could open a frame marker (such as `[OUT-OF-BAND USER MESSAGE` or `[System note:`) into a full-width `［`, so the text cannot read files into the target's context or fake the end of its frame. The text never starts with `/`, so Hermes does not run it as a command.
+
+Rules (in the hub, hermes-hub README "Agent messages"): only the agents of one backend reach each other, so one person's agents never reach another person's; at most 20 messages per tree and 8 to one target in 10 minutes, 200 per backend in an hour; a chain of answers ends after 6 hops; approvals still go to the user, since Hermes answers an approval only through `approval.respond`, never through a message's text.
+
+Security notes:
+
+- The target model reads a peer message as untrusted input. The frame says so, but a model can still follow what it says; the target's own approvals apply to every command it then runs, on its own computer, with its own permissions.
+- A sibling's message rides in a tool result, not as a steer, so it never carries the user's authority. A parent's steer does, as any `delegate_task` goal does.
+- Only the hub reaches the routes (dashboard sign-in). A device token reaches neither the routes nor the bus.
+- Hermes keeps the first string that a `transform_tool_result` hook returns. When another plugin's hook wins for a tool call, the inbox texts that the plugin added to that result are lost, though the hub recorded them as delivered.
+- The hub delivers no input to a chat in yolo mode, and only the agents of the hub, an editor or the terminal (not conversations of a messaging platform) are peers.
+- The plugin uses Hermes internals that are not a public plugin API (`tools.delegate_tool_registry`), so a Hermes release can break subagent messages; chat messages need only `prompt.submit`.
