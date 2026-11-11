@@ -31,6 +31,9 @@ type Telegram interface {
 	// Settled marks the messages of a notice whose prompt got its answer,
 	// or was cancelled.
 	Settled(ctx context.Context, rec hub.NoticeRecord, cancelled bool, msgs []hub.NoticeMessage)
+	// Outcome shows on the messages of a settled approval notice what
+	// became of the approval, when the hub worked it out later.
+	Outcome(ctx context.Context, rec hub.NoticeRecord, o hub.ApprovalOutcome, msgs []hub.NoticeMessage)
 }
 
 // Message is a notice for one person, as a front end shows it.
@@ -155,7 +158,7 @@ func (n *Notifier) PushKey() string {
 // notice is dropped.
 func (n *Notifier) Notify(nt hub.Notice) {
 	ch := n.in
-	if nt.Kind == hub.NoticeSettled {
+	if nt.Kind == hub.NoticeSettled || nt.Kind == hub.NoticeOutcome {
 		ch = n.settled
 	}
 	select {
@@ -205,8 +208,12 @@ func (n *Notifier) Lead(ctx context.Context) {
 func (n *Notifier) handle(ctx context.Context, nt hub.Notice) {
 	cctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	if nt.Kind == hub.NoticeSettled {
+	switch nt.Kind {
+	case hub.NoticeSettled:
 		n.settle(cctx, nt.BackendID, nt.SessionID, nt.PromptIDs, nt.Cancelled)
+		return
+	case hub.NoticeOutcome:
+		n.outcome(cctx, nt)
 		return
 	}
 	users := n.o.Users
@@ -234,6 +241,36 @@ func (n *Notifier) settle(ctx context.Context, backendID, sessionID string, ids 
 		msgs, err := n.o.Store.NoticeMessages(ctx, r.ID)
 		if err == nil && len(msgs) > 0 {
 			n.tg.Settled(ctx, r, cancelled, msgs)
+		}
+	}
+}
+
+// outcome shows what became of an approval on its settled notices. The
+// replicas that follow the session all see the outcome; the one that
+// claims it shows it.
+func (n *Notifier) outcome(ctx context.Context, nt hub.Notice) {
+	if n.tg == nil || nt.Outcome == nil {
+		return
+	}
+	id := nt.Outcome.PromptID
+	if as, ok := n.o.Store.(hub.AnswerStore); ok {
+		claimed, err := as.ClaimOutcome(ctx, nt.BackendID, id, nt.Outcome.Allowed)
+		if err != nil {
+			n.log.Warn("Failed to claim an approval's outcome", "error", err.Error())
+		}
+		if !claimed {
+			return
+		}
+	}
+	recs, err := n.o.Store.PromptNotices(ctx, nt.BackendID, nt.SessionID, id)
+	if err != nil {
+		n.log.Warn("Failed to read an approval's notices", "error", err.Error())
+		return
+	}
+	for _, r := range recs {
+		msgs, err := n.o.Store.NoticeMessages(ctx, r.ID)
+		if err == nil && len(msgs) > 0 && r.Prompt != nil {
+			n.tg.Outcome(ctx, r, *nt.Outcome, msgs)
 		}
 	}
 }

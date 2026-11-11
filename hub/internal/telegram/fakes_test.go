@@ -500,11 +500,13 @@ func (h *fakeHub) RespondApproval(_ context.Context, user, backendID, sessionID,
 type answerCall struct {
 	User, BackendID, SessionID, PromptID string
 	Answer                               hub.Answer
+	// Via is where the answer came from, as its context says.
+	Via string
 }
 
 // AnswerPrompt records answers; an approval choice also counts as an
 // approval, allowed when it is once.
-func (h *fakeHub) AnswerPrompt(_ context.Context, user, backendID, sessionID, promptID string, a hub.Answer) error {
+func (h *fakeHub) AnswerPrompt(ctx context.Context, user, backendID, sessionID, promptID string, a hub.Answer) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err := h.allowed(user, backendID); err != nil {
@@ -513,7 +515,7 @@ func (h *fakeHub) AnswerPrompt(_ context.Context, user, backendID, sessionID, pr
 	if h.approvalErr != nil {
 		return h.approvalErr
 	}
-	h.answers = append(h.answers, answerCall{user, backendID, sessionID, promptID, a})
+	h.answers = append(h.answers, answerCall{user, backendID, sessionID, promptID, a, hub.AnsweredVia(ctx)})
 	if a.Choice != "" {
 		h.approvals = append(h.approvals, approvalCall{user, backendID, sessionID, promptID, a.Choice == hub.ChoiceOnce})
 	}

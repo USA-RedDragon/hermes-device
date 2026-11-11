@@ -49,6 +49,7 @@ type fakeTG struct {
 	settled [][]hub.NoticeMessage
 	// cancelled are the cancelled flags of the settled calls.
 	cancelled []bool
+	outcomes  []hub.ApprovalOutcome
 	next      int64
 }
 
@@ -65,6 +66,12 @@ func (f *fakeTG) Settled(_ context.Context, _ hub.NoticeRecord, cancelled bool, 
 	defer f.mu.Unlock()
 	f.settled = append(f.settled, msgs)
 	f.cancelled = append(f.cancelled, cancelled)
+}
+
+func (f *fakeTG) Outcome(_ context.Context, _ hub.NoticeRecord, o hub.ApprovalOutcome, _ []hub.NoticeMessage) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outcomes = append(f.outcomes, o)
 }
 
 func (f *fakeTG) count() int {
@@ -254,6 +261,43 @@ func TestSettledPromptGetsNoReminder(t *testing.T) {
 	e.n.RemindNow(e.ctx)
 	if e.tg.count() != 2 {
 		t.Fatalf("reminded a prompt Hermes no longer has: %d", e.tg.count())
+	}
+}
+
+func TestOutcomeShowsOnceOnSettledNotices(t *testing.T) {
+	t.Parallel()
+	e := setup(t, nil)
+	ask := func(id string) {
+		n := approval("prompt:s1:" + id)
+		n.Prompt.ID = id
+		e.n.HandleNow(e.ctx, n)
+	}
+	settle := func(id string) {
+		e.n.HandleNow(e.ctx, hub.Notice{Kind: hub.NoticeSettled, BackendID: backend, SessionID: session, PromptIDs: []string{id}})
+	}
+	outcome := func(id string) {
+		e.n.HandleNow(e.ctx, hub.Notice{Kind: hub.NoticeOutcome, BackendID: backend, SessionID: session, PromptIDs: []string{id},
+			Outcome: &hub.ApprovalOutcome{PromptID: id, Allowed: true, Via: hub.AnsweredElsewhere}})
+	}
+	ask("p1")
+	settle("p1")
+	outcome("p2")
+	if len(e.tg.outcomes) != 0 {
+		t.Fatalf("outcome of a prompt with no notice shown: %+v", e.tg.outcomes)
+	}
+	outcome("p1")
+	outcome("p1")
+	if len(e.tg.outcomes) != 1 || e.tg.outcomes[0].PromptID != "p1" {
+		t.Fatalf("outcomes = %+v", e.tg.outcomes)
+	}
+	if _, err := e.st.RecordAnswer(e.ctx, backend, "p3", hub.PromptAnswer{Choice: hub.ChoiceOnce, Via: hub.AnsweredInHub}); err != nil {
+		t.Fatal(err)
+	}
+	ask("p3")
+	settle("p3")
+	outcome("p3")
+	if len(e.tg.outcomes) != 1 {
+		t.Fatalf("outcome shown over a recorded answer: %+v", e.tg.outcomes)
 	}
 }
 

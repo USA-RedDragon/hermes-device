@@ -962,6 +962,11 @@ func (b *Bot) pump(a *attachment) {
 			return err == nil
 		}
 	}
+	if _, ok := b.notices.(answerFinder); ok {
+		r.recorded = func(ctx context.Context, id string) (hub.ApprovalOutcome, bool) {
+			return b.recordedAnswer(ctx, a.backendID, id)
+		}
+	}
 	if m, ok := b.svc.(hub.Media); ok {
 		r.media = func(ctx context.Context, p string) (*hub.MediaFile, error) {
 			return m.Media(ctx, a.user, a.backendID, a.sessionID, p)

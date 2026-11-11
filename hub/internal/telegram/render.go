@@ -72,6 +72,14 @@ type liveMsg struct {
 	dirty    bool
 }
 
+// elsewherePrompt is an approval answered where the hub could not see
+// the choice.
+type elsewherePrompt struct {
+	msgID int64
+	body  string
+	at    time.Time
+}
+
 type shownPrompt struct {
 	key    string
 	msgID  int64
@@ -118,6 +126,12 @@ type renderer struct {
 	// pending reports whether a prompt of a snapshot still waits; nil
 	// when the service cannot say.
 	pending func(ctx context.Context, id string) bool
+	// recorded finds the answer the hub recorded for an approval; nil
+	// when the hub records none.
+	recorded func(ctx context.Context, id string) (hub.ApprovalOutcome, bool)
+	// elsewhere are the approvals shown as answered elsewhere whose
+	// outcome may follow, by prompt ID.
+	elsewhere map[string]elsewherePrompt
 	// shown reports how many prompts the chat shows.
 	shown func(n int)
 	// gone reports that Telegram refused a message because the topic is
@@ -145,7 +159,7 @@ func newRenderer(api *Client, to dest, interval time.Duration, logger *slog.Logg
 	approve func(p hub.PromptInfo, body string) (string, func(messageID int64))) *renderer {
 	return &renderer{
 		api: api, to: to, interval: interval, logger: logger, now: time.Now, steps: StepsCollapsed,
-		approve: approve, prompts: map[string]shownPrompt{},
+		approve: approve, prompts: map[string]shownPrompt{}, elsewhere: map[string]elsewherePrompt{},
 	}
 }
 
@@ -200,6 +214,11 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 		}
 		if r.decode(ev, &p) {
 			r.settled(ctx, true, p.RequestIDs...)
+		}
+	case hub.KindApprovalOutcome:
+		var o hub.ApprovalOutcome
+		if r.decode(ev, &o) {
+			r.approvalOutcome(ctx, o)
 		}
 	case hub.KindError:
 		var p errorPayload
@@ -754,11 +773,39 @@ func (r *renderer) settled(ctx context.Context, cancelled bool, ids ...string) {
 			continue
 		}
 		if p, ok := r.settle(sp.key); ok && sp.msgID != 0 {
-			head, note := settledOutcome(sp.prompt, sp.at, r.now(), cancelled)
+			var answer func() (hub.ApprovalOutcome, bool)
+			if r.recorded != nil {
+				answer = func() (hub.ApprovalOutcome, bool) { return r.recorded(ctx, id) }
+			}
+			head, note, final := settledOutcome(sp.prompt, sp.at, r.now(), cancelled, answer)
 			r.outcome(ctx, sp.msgID, head, p.body, note)
+			if !final {
+				r.waitOutcome(id, elsewherePrompt{msgID: sp.msgID, body: p.body, at: r.now()})
+			}
 		}
 	}
 	r.reportShown()
+}
+
+// waitOutcome keeps an approval answered elsewhere until its outcome
+// follows, and forgets those older than keepShown.
+func (r *renderer) waitOutcome(id string, ep elsewherePrompt) {
+	for k, e := range r.elsewhere {
+		if ep.at.Sub(e.at) > keepShown {
+			delete(r.elsewhere, k)
+		}
+	}
+	r.elsewhere[id] = ep
+}
+
+// approvalOutcome shows what became of an approval answered elsewhere.
+func (r *renderer) approvalOutcome(ctx context.Context, o hub.ApprovalOutcome) {
+	ep, ok := r.elsewhere[o.PromptID]
+	if !ok {
+		return
+	}
+	delete(r.elsewhere, o.PromptID)
+	r.outcome(ctx, ep.msgID, outcomeHead(o), ep.body, "")
 }
 
 func (r *renderer) complete(ctx context.Context, ev hub.Event) {

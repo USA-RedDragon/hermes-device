@@ -93,6 +93,57 @@ func approvalVerdict(choice string) string {
 	return "Answered"
 }
 
+// outcomeHead says what became of an approval and where it got its
+// answer, such as "Allowed always (in the hub)". An outcome the hub worked
+// out from the tool call has no choice, so it names no scope.
+func outcomeHead(o hub.ApprovalOutcome) string {
+	head := "Allowed"
+	switch {
+	case !o.Allowed:
+		head = "Denied"
+	case o.Choice == hub.ChoiceOnce:
+		head = "Allowed once"
+	case o.Choice == hub.ChoiceSession:
+		head = "Allowed for this chat"
+	case o.Choice == hub.ChoiceAlways:
+		head = "Allowed always"
+	}
+	switch o.Via {
+	case hub.AnsweredInHub:
+		return head + " (in the hub)"
+	case hub.AnsweredInTelegram:
+		return head + " (in Telegram)"
+	case hub.AnsweredOnDevice:
+		if o.Device == "" {
+			return head + " (on a paired device)"
+		}
+		return head + " (on " + o.Device + ")"
+	}
+	return head + " (in another app)"
+}
+
+// answerFinder is the optional part of a NoticeStore that reads the
+// recorded answer to an approval.
+type answerFinder interface {
+	PromptAnswer(ctx context.Context, backendID, promptID string) (hub.PromptAnswer, bool, error)
+}
+
+// recordedAnswer is the outcome of the answer the hub recorded for an
+// approval.
+func (b *Bot) recordedAnswer(ctx context.Context, backendID, promptID string) (hub.ApprovalOutcome, bool) {
+	af, ok := b.notices.(answerFinder)
+	if !ok {
+		return hub.ApprovalOutcome{}, false
+	}
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	a, ok, err := af.PromptAnswer(cctx, backendID, promptID)
+	if err != nil {
+		b.logger.Warn("Failed to read an approval's answer", "error", err)
+	}
+	return a.Outcome(promptID), ok
+}
+
 // promptBody describes a prompt: the command, the description, the
 // question, and choices that get no button of their own.
 func promptBody(p *hub.PromptInfo) string {
@@ -143,17 +194,36 @@ func outcomeHTML(head, body, note string) string {
 	return out
 }
 
+const (
+	answeredElsewhere = "Answered elsewhere"
+	answeredSomewhere = "Answered in the hub or another app."
+)
+
 // settledOutcome says what became of a prompt that the bot did not
-// answer: shown is when it was shown.
-func settledOutcome(p hub.PromptInfo, shown, now time.Time, cancelled bool) (string, string) {
+// answer: shown is when it was shown. answer finds the answer the hub
+// recorded for an approval; nil when it cannot. final is false for an
+// approval answered where the hub could not see the choice, whose outcome
+// may follow.
+func settledOutcome(p hub.PromptInfo, shown, now time.Time, cancelled bool,
+	answer func() (hub.ApprovalOutcome, bool)) (head, note string, final bool) {
+	if cancelled {
+		return "Cancelled", "Hermes stopped waiting for an answer.", true
+	}
+	if p.Kind != hub.PromptClarify && answer != nil {
+		if o, ok := answer(); ok {
+			return outcomeHead(o), "", true
+		}
+	}
 	timeout := time.Duration(p.Timeout * float64(time.Second))
 	switch {
-	case cancelled:
-		return "Cancelled", "Hermes stopped waiting for an answer."
 	case timeout > 0 && now.Sub(shown) >= timeout-slack(timeout):
-		return "Expired", "No answer in " + duration(timeout) + "."
+		return "Expired", "No answer in " + duration(timeout) + ".", true
+	case p.Kind == hub.PromptClarify:
+		return answeredElsewhere, answeredSomewhere, true
+	case answer == nil:
+		return answeredElsewhere, answeredSomewhere, false
 	}
-	return "Answered elsewhere", "Answered in the hub or another app."
+	return answeredElsewhere, "Answered in another app.", false
 }
 
 // maxButtons is how many choices get a button of their own.
@@ -326,27 +396,102 @@ func (b *Bot) expireNotice(chatID, msgID int64, rec hub.NoticeRecord) {
 // its answer, or was cancelled, somewhere else, and takes their buttons
 // off.
 func (b *Bot) Settled(ctx context.Context, rec hub.NoticeRecord, cancelled bool, msgs []hub.NoticeMessage) {
+	var answer func() (hub.ApprovalOutcome, bool)
+	if _, ok := b.notices.(answerFinder); ok && rec.Prompt != nil && rec.Prompt.Kind != hub.PromptClarify {
+		var (
+			o      hub.ApprovalOutcome
+			found  bool
+			looked bool
+		)
+		answer = func() (hub.ApprovalOutcome, bool) {
+			if !looked {
+				o, found = b.recordedAnswer(ctx, rec.BackendID, rec.PromptID)
+				looked = true
+			}
+			return o, found
+		}
+	}
 	for _, m := range msgs {
 		key := msgKey{m.ChatID, m.MessageID}
 		b.mu.Lock()
 		sn, ok := b.shown[key]
-		delete(b.shown, key)
 		b.dropRepliesLocked(cbNotice, rec.ID)
 		b.mu.Unlock()
 		if rec.Prompt == nil {
+			b.forgetShown(key)
 			if err := b.api.EditMarkup(ctx, m.ChatID, m.MessageID, nil); err != nil {
 				b.logger.Debug("Failed to take buttons off a notice", "chat", m.ChatID, "error", err)
 			}
 			continue
 		}
 		if !ok {
-			sn = shownNotice{body: "<b>" + escapeHTML(notify.Titles(rec.Kind)) + "</b>\n" + promptBody(rec.Prompt), at: rec.CreatedAt}
+			sn = shownNotice{body: noticeBody(rec), at: rec.CreatedAt}
 		}
-		head, note := settledOutcome(*rec.Prompt, sn.at, b.now(), cancelled)
+		head, note, final := settledOutcome(*rec.Prompt, sn.at, b.now(), cancelled, answer)
+		if final {
+			b.forgetShown(key)
+		}
 		if err := b.api.EditHTML(ctx, m.ChatID, m.MessageID, outcomeHTML(head, sn.body, note), nil); err != nil {
 			b.logger.Debug("Failed to show a notice's outcome", "chat", m.ChatID, "error", err)
 		}
+		if !final {
+			b.claimedLate(ctx, rec, m)
+		}
 	}
+}
+
+// claimedFinder is the optional part of a NoticeStore that reads the
+// outcome another replica claimed to show.
+type claimedFinder interface {
+	ClaimedOutcome(ctx context.Context, backendID, promptID string) (hub.ApprovalOutcome, bool, error)
+}
+
+// claimedLate shows the outcome of an approval that another replica worked
+// out and showed while this one showed it as answered elsewhere, so the
+// later edit does not hide the outcome. Either this read sees the claim, or
+// the claim comes after this edit, and so does the other replica's edit.
+func (b *Bot) claimedLate(ctx context.Context, rec hub.NoticeRecord, m hub.NoticeMessage) {
+	cf, ok := b.notices.(claimedFinder)
+	if !ok {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	o, ok, err := cf.ClaimedOutcome(cctx, rec.BackendID, rec.PromptID)
+	if err != nil || !ok {
+		return
+	}
+	b.Outcome(ctx, rec, o, []hub.NoticeMessage{m})
+}
+
+// Outcome shows on the messages of a settled approval notice what became
+// of the approval, once the hub worked it out from the tool call.
+func (b *Bot) Outcome(ctx context.Context, rec hub.NoticeRecord, o hub.ApprovalOutcome, msgs []hub.NoticeMessage) {
+	for _, m := range msgs {
+		key := msgKey{m.ChatID, m.MessageID}
+		b.mu.Lock()
+		sn, ok := b.shown[key]
+		delete(b.shown, key)
+		b.mu.Unlock()
+		if !ok {
+			sn.body = noticeBody(rec)
+		}
+		if err := b.api.EditHTML(ctx, m.ChatID, m.MessageID, outcomeHTML(outcomeHead(o), sn.body, ""), nil); err != nil {
+			b.logger.Debug("Failed to show an approval's outcome", "chat", m.ChatID, "error", err)
+		}
+	}
+}
+
+// noticeBody is the text of a notice's prompt when the bot no longer has
+// the message it sent.
+func noticeBody(rec hub.NoticeRecord) string {
+	return "<b>" + escapeHTML(notify.Titles(rec.Kind)) + "</b>\n" + promptBody(rec.Prompt)
+}
+
+func (b *Bot) forgetShown(key msgKey) {
+	b.mu.Lock()
+	delete(b.shown, key)
+	b.mu.Unlock()
 }
 
 // noticeTarget loads the notice that a button or a reply in chat answers.
@@ -383,7 +528,7 @@ func (b *Bot) noticeTarget(ctx context.Context, to dest, msgID int64, user, key 
 	sn, ok := b.shown[msgKey{to.chat, msgID}]
 	b.mu.Unlock()
 	if !ok {
-		sn.body = "<b>" + escapeHTML(notify.Titles(rec.Kind)) + "</b>\n" + promptBody(rec.Prompt)
+		sn.body = noticeBody(rec)
 	}
 	return promptTarget{prefix: cbNotice, key: key, to: to, backendID: rec.BackendID, sessionID: rec.SessionID,
 		prompt: *rec.Prompt, body: sn.body, owner: rec.User}, ""
@@ -461,7 +606,7 @@ func (b *Bot) sendAnswer(ctx context.Context, user string, t promptTarget, a hub
 	if t.owner != "" && t.owner != user {
 		return hub.ErrForbidden
 	}
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cctx, cancel := context.WithTimeout(hub.WithAnsweredVia(ctx, hub.AnsweredInTelegram), callTimeout)
 	defer cancel()
 	if pr, ok := b.svc.(hub.Prompter); ok {
 		return pr.AnswerPrompt(cctx, user, t.backendID, t.sessionID, t.prompt.ID, a)

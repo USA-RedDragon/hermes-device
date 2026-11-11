@@ -83,7 +83,7 @@ func TestApprovalOffersEveryChoice(t *testing.T) {
 	}
 	h.tg.press(dm(aliceTG), aliceTG, req.ResultID, data(req.buttons()[3]))
 	h.tg.wait(mEdit, "<b>Always approved</b>")
-	if got := h.hub.waitAnswer(t); got.Answer.Choice != hub.ChoiceAlways || got.PromptID != "a1" {
+	if got := h.hub.waitAnswer(t); got.Answer.Choice != hub.ChoiceAlways || got.PromptID != "a1" || got.Via != hub.AnsweredInTelegram {
 		t.Fatalf("answer = %+v", got)
 	}
 }
@@ -233,6 +233,28 @@ type fakeNotices struct {
 	msgs map[string][]hub.NoticeMessage
 }
 
+// fakeAnswers is a fakeNotices that also has the answers the hub
+// recorded, by prompt ID.
+type fakeAnswers struct {
+	fakeNotices
+	answers map[string]hub.PromptAnswer
+	claimed map[string]hub.ApprovalOutcome
+}
+
+func (f *fakeAnswers) ClaimedOutcome(_ context.Context, _, promptID string) (hub.ApprovalOutcome, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	o, ok := f.claimed[promptID]
+	return o, ok, nil
+}
+
+func (f *fakeAnswers) PromptAnswer(_ context.Context, _, promptID string) (hub.PromptAnswer, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, ok := f.answers[promptID]
+	return a, ok, nil
+}
+
 func (f *fakeNotices) Notice(_ context.Context, id string) (hub.NoticeRecord, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -345,6 +367,97 @@ func TestSettledShowsNoticeOutcome(t *testing.T) {
 	rec.Prompt.Timeout, rec.CreatedAt = 60, time.Now().Add(-2*time.Minute)
 	h.bot.Settled(context.Background(), rec, false, []hub.NoticeMessage{{ChatID: aliceTG, MessageID: 91}})
 	h.tg.wait(mEdit, "No answer in 1m")
+}
+
+func TestApprovalOutcomeInAttachedChat(t *testing.T) {
+	t.Parallel()
+	answers := &fakeAnswers{answers: map[string]hub.PromptAnswer{"a2": {Choice: hub.ChoiceAlways, Via: hub.AnsweredInHub}}}
+	h := startBotNotices(t, nil, newFakeState(), nil, answers)
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{kPromptID: "a2", kCommand: "ls"})
+	req := h.tg.wait(mSend, "Needs you")
+	h.hub.emit(t, sid, "approval.settled", map[string]any{kPromptID: "a2"})
+	edit := h.tg.wait(mEdit, "<b>Allowed always (in the hub)</b>")
+	if edit.messageID() != req.ResultID || edit.Params["reply_markup"] != nil || !strings.Contains(edit.text(), "<pre>ls</pre>") {
+		t.Fatalf("edit = %+v", edit)
+	}
+	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{kPromptID: "a3", kCommand: "make deploy"})
+	req = h.tg.wait(mSend, "make deploy")
+	h.hub.emit(t, sid, "approval.settled", map[string]any{kPromptID: "a3"})
+	if edit := h.tg.wait(mEdit, "Answered in another app."); edit.messageID() != req.ResultID {
+		t.Fatalf("edit = %+v", edit)
+	}
+	h.hub.emit(t, sid, hub.KindApprovalOutcome, hub.ApprovalOutcome{PromptID: "a9", Allowed: true, Via: hub.AnsweredElsewhere})
+	h.hub.emit(t, sid, hub.KindApprovalOutcome, hub.ApprovalOutcome{PromptID: "a3", Allowed: false, Via: hub.AnsweredElsewhere})
+	edit = h.tg.wait(mEdit, "<b>Denied (in another app)</b>")
+	if edit.messageID() != req.ResultID || !strings.Contains(edit.text(), "make deploy") || strings.Contains(edit.text(), "Answered") {
+		t.Fatalf("edit = %+v", edit)
+	}
+	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{kPromptID: "a4", kCommand: "make clean"})
+	h.tg.wait(mSend, "make clean")
+	h.hub.emit(t, sid, "approval.cancelled", map[string]any{"request_ids": []string{"a4"}})
+	h.tg.wait(mEdit, "<b>Cancelled</b>")
+	h.hub.emit(t, sid, hub.KindApprovalOutcome, hub.ApprovalOutcome{PromptID: "a4", Allowed: true, Via: hub.AnsweredElsewhere})
+	h.hub.emit(t, sid, hub.KindApprovalOutcome, hub.ApprovalOutcome{PromptID: "a3", Allowed: true, Via: hub.AnsweredElsewhere})
+	h.hub.emit(t, sid, hub.KindApprovalRequest, map[string]any{kPromptID: "a5", kCommand: "sync"})
+	h.tg.wait(mSend, "sync")
+	if n := len(h.tg.find(mEdit, "")); n != 4 {
+		t.Fatalf("%d edits, want 4", n)
+	}
+}
+
+func TestNoticeApprovalOutcome(t *testing.T) {
+	t.Parallel()
+	answers := &fakeAnswers{answers: map[string]hub.PromptAnswer{
+		"a1": {Choice: hub.ChoiceDeny, Via: hub.AnsweredInTelegram},
+		"a2": {Choice: hub.ChoiceOnce, Via: hub.AnsweredOnDevice, Device: "laptop"},
+		"a3": {Choice: hub.ChoiceSession, Via: hub.AnsweredInHub},
+	}}
+	h := startBotNotices(t, nil, newFakeState(), nil, answers)
+	ctx := context.Background()
+	notice := func(id string) (hub.NoticeRecord, []hub.NoticeMessage) {
+		rec := hub.NoticeRecord{ID: "n-" + id, User: userAlice, Kind: hub.NoticeApproval, BackendID: beCluster, SessionID: "s1",
+			PromptID: id, Prompt: &hub.PromptInfo{ID: id, Kind: hub.PromptApproval, Command: "rm " + id, Choices: []string{hub.ChoiceOnce, hub.ChoiceDeny}},
+			CreatedAt: time.Now()}
+		msg, err := h.bot.SendNotice(ctx, aliceTG, notify.Message{Record: rec, Backend: beName})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec, []hub.NoticeMessage{{ChatID: aliceTG, MessageID: msg}}
+	}
+	for id, head := range map[string]string{"a1": "Denied (in Telegram)", "a2": "Allowed once (on laptop)", "a3": "Allowed for this chat (in the hub)"} {
+		rec, msgs := notice(id)
+		h.bot.Settled(ctx, rec, false, msgs)
+		if edit := h.tg.wait(mEdit, "<b>"+head+"</b>"); edit.messageID() != msgs[0].MessageID || !strings.Contains(edit.text(), "rm "+id) {
+			t.Fatalf("edit = %+v", edit)
+		}
+	}
+	rec, msgs := notice("a4")
+	h.bot.Settled(ctx, rec, false, msgs)
+	h.tg.wait(mEdit, "Answered in another app.")
+	h.bot.Outcome(ctx, rec, hub.ApprovalOutcome{PromptID: "a4", Allowed: true, Via: hub.AnsweredElsewhere}, msgs)
+	edit := h.tg.wait(mEdit, "<b>Allowed (in another app)</b>")
+	if edit.messageID() != msgs[0].MessageID || !strings.Contains(edit.text(), "rm a4") || !strings.Contains(edit.text(), beName) {
+		t.Fatalf("edit = %+v", edit)
+	}
+	rec.Prompt.Timeout, rec.CreatedAt = 60, time.Now().Add(-2*time.Minute)
+	h.bot.Settled(ctx, rec, false, []hub.NoticeMessage{{ChatID: aliceTG, MessageID: 991}})
+	h.tg.wait(mEdit, "No answer in 1m")
+	rec, _ = notice("a1")
+	rec.Prompt.Timeout, rec.CreatedAt = 60, time.Now().Add(-2*time.Minute)
+	h.bot.Settled(ctx, rec, false, []hub.NoticeMessage{{ChatID: aliceTG, MessageID: 992}})
+	if edits := h.tg.find(mEdit, "Denied (in Telegram)"); len(edits) != 2 || edits[1].messageID() != 992 {
+		t.Fatalf("an answer at the deadline shows as expired: %+v", edits)
+	}
+	answers.mu.Lock()
+	answers.claimed = map[string]hub.ApprovalOutcome{"a6": {PromptID: "a6", Allowed: false, Via: hub.AnsweredElsewhere}}
+	answers.mu.Unlock()
+	rec, msgs = notice("a6")
+	h.bot.Settled(ctx, rec, false, msgs)
+	edits := h.tg.waitN(mEdit, "rm a6", 2)
+	if !strings.Contains(edits[0].text(), "Answered in another app.") || !strings.Contains(edits[1].text(), "<b>Denied (in another app)</b>") {
+		t.Fatalf("edits = %+v", edits)
+	}
 }
 
 var _ notify.Telegram = (*telegram.Bot)(nil)
