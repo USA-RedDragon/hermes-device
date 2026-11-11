@@ -12,6 +12,7 @@ One web front end, behind OpenID Connect login, for many [Hermes Agent](https://
 - Images and files attached to a message, on the page and in Telegram (see [Attachments](#attachments)).
 - Images and files the agent shows the user, such as browser screenshots, on the page and in Telegram (see [Files from the agent](#files-from-the-agent)).
 - Pages: interactive HTML that the agent writes, opened full screen in a sandboxed frame, with a way to send an answer back to the chat (see [Pages](#pages)).
+- Claude subscription accounts and the Claude API as models, with each account's usage and a sign-in from the hub (see [Claude](#claude)).
 - Replies in Markdown, with colored code blocks and a Copy button. Model output never becomes HTML, and links open only `http`, `https` and `mailto` targets.
 - A line under the chat title with the model, how full its context is (such as `41k / 131k context`, with a small meter), reply speed and the working folder. It opens to pick the model and the thinking level.
 - Rename, archive and delete chats, and search their titles.
@@ -144,6 +145,33 @@ The hub asks each backend's hermes-device plugin (`GET /api/plugins/device/searc
 - **Local GPU**: with `usage.prometheus_url` set to a Prometheus query API that scrapes [ollama-priority-proxy](https://github.com/USA-RedDragon/ollama-priority-proxy)'s metrics, the time in the last 24 hours, 7 days and 30 days that Ollama had a request running (`ollama_priority_proxy_in_flight` above 0, checked each minute), the summed request time of people's and of background requests (`ollama_priority_proxy_upstream_duration_seconds`), and the number of requests. Hermes itself records no request times.
 - **Memory backlog**: Honcho's queue for the backend's workspace (`GET /v3/workspaces/<workspace>/queue/status`), for a backend with `backends[].honcho`.
 
+## Claude
+
+A backend's Hermes can offer Claude models two ways. Each chat picks one in the model list, like any other model:
+
+- **Subscription accounts.** The claude-accounts Hermes plugin adds one model provider per Claude account, named `claude-<slot>` (such as `claude-account1`). It runs the official `claude` CLI with that account's config folder. The model list shows Hermes's name for each provider, such as "Claude (account1)".
+- **API key.** Hermes's built-in provider `anthropic`. The hub shows it as "Claude API" in the model list and on the line under the chat title. Hermes does not record Anthropic's `anthropic-ratelimit-*` headers, and no Anthropic API tells an API key how much of a plan's monthly API credit is spent, so the hub shows only the name. If Hermes reports limits for `anthropic` some day, the API limits on the Usage page show them.
+
+The hub calls the plugin's routes on the Hermes web server with its dashboard login, as for the device plugin: `GET /api/plugins/claude-accounts/accounts`, and for one account `GET .../accounts/{id}/usage`, `GET .../accounts/{id}/status`, `POST`, `GET` and `DELETE .../accounts/{id}/signin` and `POST .../accounts/{id}/signin/code`. A backend whose Hermes answers 404 has no plugin, and the hub shows none of this for it.
+
+**Line under the chat title.** For a chat whose provider is one of the plugin's accounts (the hub looks the provider up in the account list), the line shows the account's name, the share of the 5-hour session and of the week that it used, and when each resets, in `claude.time_zone` (default America/Chicago): for example "5h 12% (resets 3:40 PM CST)". The page reads the accounts at most once a minute, and the chat's account again after each reply. The hub keeps what it read for a minute, or 15 seconds when a reply asks again. An account that is not signed in shows "not signed in", with a note under the title.
+
+**Usage page.** "Claude accounts" lists each account: its name, the email it is signed in to (or was last signed in to), its plan, whether it is signed in, and each usage window with the share used and the reset time. Claude admins also get Sign in, or Sign in again.
+
+**Sign-in.** The plugin runs `claude auth login` for the account. Sign in starts it (`POST .../signin`; a sign-in that already runs is reused) and opens a dialog. The dialog first names the account: its name, the email it was last signed in as when known, and why it needs a sign-in (its first sign-in, or the login expired or was revoked). Then it shows the link to the Claude sign-in page and a box for the code that page shows. The hub passes the code to the plugin (`POST .../signin/code`) and shows the result: the email the account signed in to, or why it failed. Cancel sign-in stops it (`DELETE .../signin`). The plugin stops the CLI 10 minutes after it started.
+
+**Lost login.** When a turn on a Claude account ends with the plugin's error "Claude Code is installed but has no usable login", or with an upstream 401 (`status 401` or `authentication_failed`), the hub asks the plugin for the account's status. When the account is signed out:
+
+- The chat gets a note that names the account, the email it was last signed in as and why, with Sign in for Claude admins.
+- Each Claude admin of the backend gets a "Claude sign-ins" notice on Telegram and Web Push (see [Notifications](#notifications)), at most one per account in 30 minutes. The notice names the account in the same words and says to open the hub to sign in, with the chat's link. It never carries the sign-in link. Telegram cannot take the code; sign in on the page.
+
+**Security.**
+
+- `claude.admins` lists who may sign the accounts of each backend in, as `user=backend` pairs (environment variable `HUB_CLAUDE_ADMINS`, such as `alice=main`). Empty, the default, is nobody. Only these users see the sign-in controls, and the hub refuses (403) every other user who tries to start, read, answer or cancel a sign-in. The other users of the backend see usage only.
+- The sign-in routes need the session's CSRF token and a same-origin request, like the rest of the API.
+- The sign-in link goes only in the answer to the admin who asked for it. The account list leaves it out, and chat notes and notices never carry it.
+- The hub passes the code straight to the plugin. It never logs, stores or sends back the code, and it does not log the link. The page clears the code box when it sends the code.
+
 ## Chat files
 
 For a chat that runs on one of the user's own computers or in the sandbox, "Files" in the chat's header opens a read-only view of the chat's folder:
@@ -225,6 +253,7 @@ The hub tells each person on their phone when their Hermes needs them or is done
 | Failures | on | A turn ends with an error, a scheduled job fails or cannot deliver its result, or an unattended run could not use a tool that needs the person |
 | Long tasks done | off | A reply that ran for <!-- docgen:const pkg=internal/service name=longTurn -->`2m0s`<!-- /docgen:const --> or more is ready |
 | Scheduled jobs | off | A scheduled job (Hermes cron) finished |
+| Claude sign-ins | on | A Claude account that a chat uses lost its login (only for the backend's Claude admins, see [Claude](#claude)) |
 
 Each person picks the events, the channels and quiet hours under Settings, Notifications on the page. During quiet hours the hub sends nothing; an approval or question that still waits afterwards gets its reminder then. "Send a test" sends one test notice to each channel, at most once a minute.
 
@@ -385,6 +414,8 @@ Configuration is read from `config.yaml` in the working directory, or from the f
 | `notify.remind_after`                | string          | `5m`                       | `HUB_NOTIFY_REMIND_AFTER`           | `--notify.remind_after`           | How long an approval or question waits before the hub reminds its person once. 0 is the default                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `notify.watch_interval`              | string          | `15s`                      | `HUB_NOTIFY_WATCH_INTERVAL`         | `--notify.watch_interval`         | How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `notify.job_interval`                | string          | `1m`                       | `HUB_NOTIFY_JOB_INTERVAL`           | `--notify.job_interval`           | How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `claude.admins`                      | list of string  |                            | `HUB_CLAUDE_ADMINS`                 | `--claude.admins`                 | Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody                                                                                                                                                                                                                                                                                                                                                                                  |
+| `claude.time_zone`                   | string          | `America/Chicago`          | `HUB_CLAUDE_TIME_ZONE`              | `--claude.time_zone`              | IANA time zone of the reset times of Claude usage windows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 <!-- configulator:end -->
 
