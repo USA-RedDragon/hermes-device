@@ -544,6 +544,37 @@ class GuardTests(Base):
         self.assertEqual(self.guard("cronjob_manage", action="create")["action"], "block")
         self.assertIsNone(self.guard("web_search", query="x"))
 
+    def test_bound_session_schedules_jobs_that_run_in_the_sandbox(self):
+        """With fallback: device a job's runs go to the sandbox, so a bound session may schedule,
+        list, pause and remove jobs, but never with the fields that run on the pod."""
+        self.cfg.update(fallback="device", fallback_device="d_sb")
+        for action in ("create", "list", "pause", "remove"):
+            self.assertIsNone(self.guard("cronjob_manage", action=action, prompt="p", schedule="in 2m"))
+        for pod_arg in ({"script": "s.py"}, {"monitor": "https://example.com"}, {"no_agent": True},
+                        {"workdir": "/opt/data"}, {"monitor_url": "https://example.com"},
+                        {"monitor_script": "m.py"}):
+            r = self.guard("cronjob_manage", action="update", job_id="j", **pod_arg)
+            self.assertEqual(r["action"], "block")
+            self.assertIn("would run on the server", r["message"])
+        self.assertEqual(self.guard("kanban_create")["action"], "block")
+        jobs = {"pod": {"id": "pod", "script": "s.py"}, "agent": {"id": "agent", "prompt": "p"}}
+        with mock.patch("cron.jobs.resolve_job_ref", lambda ref: jobs.get(ref)):
+            for action in ("run", "resume", "update"):
+                r = self.guard("cronjob_manage", action=action, job_id="pod")
+                self.assertEqual(r["action"], "block")
+                self.assertIn("scheduled job pod has script", r["message"])
+                self.assertIsNone(self.guard("cronjob_manage", action=action, job_id="agent"))
+            for action in ("pause", "remove", "cancel"):
+                self.assertIsNone(self.guard("cronjob_manage", action=action, job_id="pod"))
+        marks = []
+        fake = mock.Mock()
+        fake.choices.return_value.mark_device_job = lambda job, sid: marks.append((job, sid))
+        with mock.patch("cron.jobs.resolve_job_ref", lambda ref: jobs.get(ref)), \
+                mock.patch.dict(sys.modules, {"hermes_device_browser": fake}):
+            self.assertIsNone(self.guard("cronjob_manage", action="update", job_id="agent", prompt="q"))
+            self.assertIsNone(self.guard("cronjob_manage", action="run", job_id="agent"))
+        self.assertEqual(marks, [("agent", self.session)], "an update from a device session marks the job")
+
     def test_fail_closed_blocks_file_tools(self):
         self.hub.unbind(self.session)
         self.assertEqual(self.guard("read_file", path="f.txt")["action"], "block")

@@ -144,10 +144,15 @@ FILE_AND_COMMAND_TOOLS = frozenset({
     "search_files", "execute_code"})
 FILE_PATH_TOOLS = ("read_file", "write_file", "patch", "search_files")
 POD_ONLY_TOOLS = frozenset({"cronjob_manage", "kanban_create", "kanban_schedule", "kanban_unblock"})
-# A cron run is a never-bound session, so with ``fallback: device`` its tools run on the sandbox too.
-# Sandbox sessions may schedule jobs, but not the job fields that run or fetch on the pod itself.
-SANDBOX_CRON_TOOL = "cronjob_manage"
+# A cron run is a never-bound session, so with ``fallback: device`` its tools run on the sandbox.
+# Sandbox and bound sessions may then schedule jobs, but not the job fields that run or fetch on
+# the pod itself.
+CRON_TOOL = "cronjob_manage"
 CRON_POD_ARGS = ("script", "monitor", "monitor_script", "monitor_url", "no_agent", "workdir")
+# The stored job fields that run or fetch on the pod, and the actions that may still act on such a
+# job from a device or sandbox session.
+CRON_JOB_POD_FIELDS = ("script", "monitor_script", "monitor_url", "no_agent", "workdir")
+CRON_SAFE_ACTIONS = frozenset({"create", "list", "remove", "pause", "cancel"})
 _BOM = "\ufeff"
 
 
@@ -2646,6 +2651,17 @@ def _record_cwd(task_id: str, cwd: str) -> None:
             record_session_cwd(key, cwd)
 
 
+def device_job_run(session_id: str) -> str:
+    """The job id when the session is a run of a scheduled job that a device or sandbox session
+    created (docs/protocol.md section 8.3 rule 6), else "". Such a job must never run commands on
+    the pod, also after ``fallback`` changed from ``device``."""
+    br = sys.modules.get("hermes_device_browser")
+    if br is None:
+        return ""
+    job_id = br.cron_job_id(session_id)
+    return job_id if job_id and br.choices().device_job(job_id) else ""
+
+
 def _block(message: str) -> dict:
     return {"action": "block", "message": message}
 
@@ -2663,18 +2679,36 @@ def pre_tool_call(tool_name: str = "", args: Optional[dict] = None, task_id: str
 def _guard(tool_name: str, args: dict, task_id: str) -> Optional[dict]:
     res = resolve_current()
     if runs_on_pod(res):
+        job_id = device_job_run(res.session_id)
+        if job_id:
+            return _block(f"hermes-device: scheduled job {job_id} was created or changed in a session that runs on a "
+                          f"device or the sandbox, and this server now runs sessions that are not bound on the server "
+                          f"itself (fallback: {fallback()}), so its runs may not use tools.")
         return None
     if res.state != STATE_BOUND:
         if tool_name in FILE_AND_COMMAND_TOOLS or tool_name in POD_ONLY_TOOLS:
             return _block(refusal_message(res))
         return None
     b = res.binding
-    if tool_name == SANDBOX_CRON_TOOL and res.sandbox:
+    if tool_name == CRON_TOOL and (res.sandbox or fallback() == "device"):
         pod_args = [k for k in CRON_POD_ARGS if args.get(k) not in (None, "", False)]
         if pod_args:
             return _block(f"hermes-device: session {res.session_id} {where(res)}; cronjob_manage "
                           f"{', '.join(pod_args)} would run on the server, so it is refused. Schedule a "
-                          f"prompt-only job; its run uses the sandbox too.")
+                          f"prompt-only job; its run uses the sandbox.")
+        action = str(args.get("action") or "").strip().lower()
+        job_id = args.get("job_id")
+        if job_id and action not in CRON_SAFE_ACTIONS:
+            from cron.jobs import resolve_job_ref
+            job = resolve_job_ref(str(job_id)) or {}
+            stored = [k for k in CRON_JOB_POD_FIELDS if job.get(k) not in (None, "", False)]
+            if stored:
+                return _block(f"hermes-device: session {res.session_id} {where(res)}; scheduled job {job_id} has "
+                              f"{', '.join(stored)}, which run on the server, so cronjob_manage {action} is refused "
+                              f"here. Change that job on the server itself.")
+            br = sys.modules.get("hermes_device_browser")
+            if action == "update" and job.get("id") and br is not None:
+                br.choices().mark_device_job(str(job["id"]), res.session_id)
     elif tool_name in POD_ONLY_TOOLS:
         return _block(f"hermes-device: session {res.session_id} {where(res)}; {tool_name} "
                       f"creates work that runs on the server, so it is refused for device sessions.")
