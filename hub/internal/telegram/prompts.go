@@ -536,18 +536,34 @@ func (b *Bot) noticeTarget(ctx context.Context, to dest, msgID int64, user, key 
 
 // attachedTarget loads the prompt that a button or a reply in an attached
 // chat answers.
-func (b *Bot) attachedTarget(to dest, msgID int64, key string) (promptTarget, string) {
+func (b *Bot) attachedTarget(ctx context.Context, to dest, msgID int64, key string) (promptTarget, string) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	p, ok := b.approvals[key]
-	// messageID is 0 only between the send and its bind; nobody can have
-	// seen the message's buttons before then.
+	if ok && p.messageID == 0 && p.bound != nil {
+		// Telegram can deliver a press of the message's buttons before the
+		// bot has the answer to its send, so wait for the bind.
+		bound := p.bound
+		b.mu.Unlock()
+		wctx, cancel := context.WithTimeout(ctx, bindWait)
+		select {
+		case <-bound:
+		case <-wctx.Done():
+		}
+		cancel()
+		b.mu.Lock()
+		p, ok = b.approvals[key]
+	}
+	defer b.mu.Unlock()
 	if !ok || p.to.chat != to.chat || p.messageID != msgID {
 		return promptTarget{}, msgNotPending
 	}
 	return promptTarget{prefix: cbApproval, key: key, to: p.to, backendID: p.backendID, sessionID: p.sessionID,
 		prompt: p.prompt, body: p.body}, ""
 }
+
+// bindWait bounds how long a button press waits for the bot to learn the
+// message ID of the prompt it sent.
+const bindWait = 5 * time.Second
 
 const (
 	msgNotPending = "This request is no longer pending."
@@ -856,7 +872,7 @@ func (b *Bot) replyAnswer(ctx context.Context, to dest, user string, m *Message)
 	if rt.prefix == cbNotice {
 		t, refusal = b.noticeTarget(ctx, to, rt.question, user, rt.key)
 	} else {
-		t, refusal = b.attachedTarget(to, rt.question, rt.key)
+		t, refusal = b.attachedTarget(ctx, to, rt.question, rt.key)
 	}
 	switch {
 	case refusal == msgNotPending:

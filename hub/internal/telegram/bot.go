@@ -203,6 +203,8 @@ type pendingApproval struct {
 	prompt    hub.PromptInfo
 	// body is the message's HTML under its head, kept to show the outcome.
 	body string
+	// bound is closed once messageID is set.
+	bound chan struct{}
 }
 
 // New validates cfg and returns a Bot.
@@ -1012,12 +1014,18 @@ func (b *Bot) addApproval(a *attachment, prompt hub.PromptInfo, body string) (st
 	raw := make([]byte, 9)
 	_, _ = rand.Read(raw)
 	key := base64.RawURLEncoding.EncodeToString(raw)
-	p := &pendingApproval{to: a.to, backendID: a.backendID, sessionID: a.sessionID, prompt: prompt, body: body}
+	p := &pendingApproval{to: a.to, backendID: a.backendID, sessionID: a.sessionID, prompt: prompt, body: body,
+		bound: make(chan struct{})}
 	b.approvals[key] = p
 	return key, func(id int64) {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		p.messageID = id
+		select {
+		case <-p.bound:
+		default:
+			close(p.bound)
+		}
 		if id != 0 && prompt.Kind == hub.PromptClarify {
 			b.addReplyLocked(msgKey{a.to.chat, id}, replyTarget{prefix: cbApproval, key: key, question: id})
 		}
@@ -1049,7 +1057,7 @@ func (b *Bot) handleCallback(ctx context.Context, q *CallbackQuery) {
 	parts := strings.Split(q.Data, ":")
 	switch {
 	case len(parts) == 3 && (parts[0] == cbApproval || parts[0] == cbNotice):
-		t, refusal := b.attachedTarget(to, q.Message.MessageID, parts[1])
+		t, refusal := b.attachedTarget(ctx, to, q.Message.MessageID, parts[1])
 		if parts[0] == cbNotice {
 			t, refusal = b.noticeTarget(ctx, to, q.Message.MessageID, user, parts[1])
 		}
