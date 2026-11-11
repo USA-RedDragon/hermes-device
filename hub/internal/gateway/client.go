@@ -446,3 +446,60 @@ func (c *Client) Call(ctx context.Context, method string, params, out any) error
 		return fmt.Errorf("%s: %w", method, ctx.Err())
 	}
 }
+
+// ErrNoFile is a file the listener does not serve: missing, not a regular
+// file, refused by its read rules, or too large.
+var ErrNoFile = errors.New("the backend has no such file")
+
+// File opens a file of the listener's server the way the Hermes Webapp
+// page downloads one: POST /api/files/ticket mints a ticket bound to the
+// path, and GET /api/fs/download with that ticket streams the file. Only
+// ctx bounds the download. The caller closes the response body.
+func (d *Dialer) File(ctx context.Context, path string) (*http.Response, error) {
+	body, err := json.Marshal(map[string]string{"route": "download", "path": path})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := d.Request(ctx, http.MethodPost, "/api/files/ticket", body)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Ticket string `json:"ticket"`
+	}
+	err = fileStatus(resp, "file ticket")
+	if err == nil && (json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out) != nil || out.Ticket == "") {
+		err = errors.New("file ticket: bad answer")
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{"path": {path}, "ticket": {out.Ticket}}
+	resp, err = d.send(ctx, d.slow, http.MethodGet, "/api/fs/download?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := fileStatus(resp, "download"); err != nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+		_ = resp.Body.Close()
+		return nil, err
+	}
+	return resp, nil
+}
+
+func fileStatus(resp *http.Response, what string) error {
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound, http.StatusConflict,
+		http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity:
+		return fmt.Errorf("%s: %w: status %d", what, ErrNoFile, resp.StatusCode)
+	case http.StatusServiceUnavailable:
+		return fmt.Errorf("%s: %w", what, ErrNotReady)
+	case http.StatusUnauthorized:
+		return fmt.Errorf("%s: %w", what, ErrUnauthorized)
+	}
+	return fmt.Errorf("%s: status %d", what, resp.StatusCode)
+}

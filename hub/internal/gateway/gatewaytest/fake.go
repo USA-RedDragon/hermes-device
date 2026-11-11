@@ -141,6 +141,7 @@ type Gateway struct {
 	// submissions are the admissions by session and submission_id, which
 	// outlive a restart as Hermes' session_admissions rows do.
 	submissions map[string]submission
+	files       fileStore
 }
 
 type submission struct {
@@ -221,6 +222,8 @@ func New(username, password string) *Gateway {
 	mux.HandleFunc("POST /auth/password-login", g.login)
 	mux.HandleFunc("POST /api/webapp/socket-ticket", g.ticket)
 	mux.HandleFunc("GET /api/ws", g.ws)
+	g.Handle("POST /api/files/ticket", http.HandlerFunc(g.fileTicket), true)
+	g.Handle("GET /api/fs/download", http.HandlerFunc(g.fileDownload), true)
 	g.submissions = map[string]submission{}
 	g.Server = httptest.NewUnstartedServer(g.notReadyGate(mux))
 	g.down = &gatedListener{Listener: g.Server.Listener}
