@@ -461,6 +461,7 @@
     // assistantText adds to the reply. A streamed delta renders at most
     // once per frame; anything else renders at once.
     assistantText(text, streamed) {
+      if (typeof text !== "string") text = "";
       const tn = this.ensureTurn();
       if (!tn.text) {
         tn.text = this.add(el("div", "msg assistant md"));
@@ -885,7 +886,7 @@
           break;
         }
         case "tool.complete": this.toolDone(this.toolCard(p.tool_id, p.name, p.args), p); break;
-        case "message.delta": this.setStatus(""); this.assistantText(p.text === undefined ? "" : p.text, true); break;
+        case "message.delta": this.setStatus(""); if (typeof p.text === "string" && p.text) this.assistantText(p.text, true); break;
         case "message.interim": if (p.text && !p.already_streamed) { this.assistantText(p.text); this.turn.text = null; } break;
         case "message.complete": {
           this.setStatus("");
@@ -1021,6 +1022,46 @@
 
   const mediaURL = (base, p) => base + "/media?path=" + encodeURIComponent(p);
 
+  // openImage shows an image full size over the page. A click anywhere or
+  // Escape closes it; the link opens the original in a new tab.
+  function openImage(src, name) {
+    const prev = document.activeElement;
+    const box = el("div", "lightbox");
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
+    box.setAttribute("aria-label", name || "Image");
+    box.tabIndex = -1;
+    const img = el("img");
+    img.src = src;
+    img.alt = name || "";
+    const bar = el("div", "lightbox-bar");
+    const open = el("a", "", "Open original");
+    open.href = src;
+    open.target = "_blank";
+    open.rel = "noopener";
+    const shut = el("button", "", "Close");
+    shut.type = "button";
+    bar.append(el("span", "name", name || ""), open, shut);
+    box.append(img, bar);
+    const close = () => { box.remove(); document.removeEventListener("keydown", onKey, true); if (prev && prev.focus) prev.focus(); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+    box.addEventListener("click", (e) => { if (e.target !== open) close(); });
+    document.addEventListener("keydown", onKey, true);
+    document.body.append(box);
+    box.focus();
+  }
+
+  // zoomable makes a thumbnail open in the in-page viewer; a modified or
+  // middle click keeps the browser's own behavior.
+  function zoomable(node, src, name) {
+    node.style.cursor = "zoom-in";
+    node.addEventListener("click", (e) => {
+      if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      openImage(src, name);
+    });
+  }
+
   // mediaImage is a thumbnail of an image on the Hermes server that opens
   // full size. It turns into the file's name when the hub cannot show it.
   function mediaImage(base, p, cls) {
@@ -1035,6 +1076,7 @@
     img.src = a.href;
     img.onerror = () => a.replaceWith(mediaFile(base, p, true));
     a.append(img);
+    zoomable(a, a.href, baseName(p));
     return a;
   }
 
@@ -1123,6 +1165,7 @@
         img.alt = a.name;
         img.src = a.url;
         box.append(img);
+        zoomable(box, a.url, a.name);
       } else if (a.pdf || /\.pdf$/i.test(a.name)) {
         box.append(pdfIcon(), el("span", "name", a.name));
         if (a.pages) box.append(el("span", "size", pages(a.pages)));
