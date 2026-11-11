@@ -273,8 +273,8 @@ const (
 var deniedWhy = map[string]string{
 	"shell.exec": whyPodExec, "process.list": whyPodExec, "process.stop": whyPodExec, "process.kill": whyPodExec,
 	"reload.mcp": whyPodExec, "browser.manage": whyPodExec, "kanban.run": whyPodExec, "prompt.background": whyBackground,
-	"session.save": whyPodFiles, "spawn_tree.save": whyPodFiles, "image.attach": whyPodFiles, "clipboard.paste": whyPodFiles,
-	"input.detect_drop": whyPodFiles, "paste.collapse": whyPodFiles, "rollback.list": whyPodFiles, "rollback.diff": whyPodFiles,
+	"session.save": whyPodFiles, "spawn_tree.save": whyPodFiles, "image.attach": whyPodFiles, "image.render": whyPodFiles,
+	"clipboard.paste": whyPodFiles, "input.detect_drop": whyPodFiles, "paste.collapse": whyPodFiles, "rollback.list": whyPodFiles, "rollback.diff": whyPodFiles,
 	"rollback.restore": whyPodFiles, "rollback.session_diff": whyPodFiles,
 	"tools.configure": whyProfile, "plugins.manage": whyProfile, "skills.manage": whyProfile, "skills.reload": whyProfile,
 	"reload.env": whyProfile, "delegation.pause": whyProfile, "pet.select": whyProfile, "learning.edit": whyProfile,
