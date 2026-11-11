@@ -11,7 +11,7 @@ One web front end, behind OpenID Connect login, for many [Hermes Agent](https://
 - Images and files attached to a message, on the page and in Telegram (see [Attachments](#attachments)).
 - Images and files the agent shows the user, such as browser screenshots, on the page and in Telegram (see [Files from the agent](#files-from-the-agent)).
 - Replies in Markdown, with colored code blocks and a Copy button. Model output never becomes HTML, and links open only `http`, `https` and `mailto` targets.
-- A line under the chat title with the model, how full its context is, reply speed and the working folder. It opens to pick the model and the thinking level.
+- A line under the chat title with the model, how full its context is (such as `41k / 131k context`, with a small meter), reply speed and the working folder. It opens to pick the model and the thinking level.
 - Rename, archive and delete chats, and search their titles.
 - An optional Telegram bot (`telegram.*`) that uses the same backends and permissions.
 - Optional [hermes-device](https://github.com/USA-RedDragon/hermes-device) support (`device.*`): users pair their own computers, start or move chats onto a computer and folder from the web page or Telegram, and Hermes runs commands, edits files and serves VS Code there.
@@ -45,6 +45,8 @@ When the hub attaches to a session, it sets the session's `show_reasoning` contr
 Every user gets the same page. It opens one chat with the user's default backend (`ui.default_backends`, as `user=backend`, else their first backend), with live activity in plain words. "New chat" starts a fresh session there. "More" opens all backends and sessions, and each tool step keeps its details behind "details". Users differ only in which backends they may use.
 
 When a reply is done, its tool steps fold into one line ("Read a file, ran a command (3.4s)") that opens to show them. File edits show their diff and commands show their output.
+
+The context readout comes from the `usage` object that Hermes sends in `session.usage` during a turn, in `message.complete` and in the session's snapshot: `context_used` (the tokens of the last request) of `context_max` (the model's window). Before the first reply after a restart, only the window (`context_length` in the snapshot info) is known, so the line shows only that. The meter turns the warning color at 80 percent. When Hermes summarizes older messages to make room (a `status.update` of kind `compacted`, or a higher `compressions` count in the usage), the chat gets the note "Older messages were summarized to make room." After a model switch the line drops the old window, and shows the new one after the next reply, since Hermes builds the new model's agent only then. A leading `~` means Hermes estimated the count.
 
 Chat changes use the gateway's `session.mutate` (rename, archive, delete, model), fenced on the session's revision. The model list comes from `model.options` and shows only models of providers that Hermes is signed in to. The thinking level is `config.set` with the key `reasoning`; Hermes applies it from the next turn. A chat that is working or has messages waiting cannot be deleted.
 
@@ -94,6 +96,24 @@ dashboard:
 - Open TCP port 9120 only to the hub (on a device: a host firewall rule for the cluster's node addresses or the tailnet; in the cluster: a network policy).
 - Put the same user name and password in the hub's `backends[]` entry, with `provider: basic` (the default).
 
+### Context size
+
+Set the context window of a local model in the backend's Hermes `config.yaml`, once for that model:
+
+```yaml
+model:
+  context_length: 131072
+  ollama_num_ctx: 131072
+```
+
+- `model.context_length` is the window that Hermes plans for: the readout's total and the point where Hermes summarizes older messages. It also caps the window that Hermes reads from Ollama.
+- `model.ollama_num_ctx` is the `num_ctx` that Hermes sends to Ollama with each request. Without it, Hermes asks Ollama for the model's largest window, capped by `model.context_length`.
+- Set both to the same value, sized for the GPU's memory. Hermes reads them when it builds a chat's agent. Restart the gateway after a change so that every chat picks it up.
+
+The size is not a per-chat setting on purpose. Ollama loads a model again when a request asks for a different `num_ctx`, so two chats with different sizes on the shared GPU would make Ollama reload the model each time they take turns. The hub has no per-chat choice for API models either: Hermes v0.22.7 has no session-scoped context or compression setting on the gateway. `session.mutate` with operation `model` takes only `model`, `provider`, `confirm` and `reasoning`, and `config.set` takes no `model.context_length` or `compression.*` key.
+
+When a chat switches to another model, Hermes drops `model.context_length` from that chat's settings and takes the new model's window from its model data. To pin the window of another local model, give it a `context_length` under its name in the `models` of its `custom_providers` entry.
+
 ## Set up Authentik
 
 1. Create an OAuth2/OpenID provider: client type confidential, redirect URI `https://<public host>/auth/callback` (strict), signing key set, scopes `openid`, `profile` and `email`. Authentik's default `profile` scope mapping sends `preferred_username` and `groups`.
@@ -105,6 +125,8 @@ dashboard:
 ## Telegram
 
 Set `telegram.enabled`, `telegram.token` and `http.public_url`. A Telegram user sends `/link` to the bot and gets a link to `/link/telegram?token=...`. That page needs a hub login and asks the user to confirm; only the confirmation (a POST with the CSRF token) links the account. A link token is valid for <!-- docgen:const pkg=internal/store name=LinkTokenTTL -->`10m0s`<!-- /docgen:const --> and works once.
+
+`/status` shows the attached chat's model and how full its context is, such as `Context: 41k / 131k (31%)`, from the same usage figures as the page.
 
 A photo, an image or other file, a video or a voice note sent to the bot goes to the chat like an attachment on the page, with its caption as the message. A PDF gets its text and first pages read as on the page; the bot cannot pick its pages. The photos and files of one album go as one message. Telegram lets bots download files of up to 20 MB, so the bot answers a larger one with a note instead.
 
