@@ -1,0 +1,164 @@
+package telegram_test
+
+import (
+	"encoding/json"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+)
+
+const (
+	echoHub     = "<i>You, in the hub:</i>\nfrom the hub"
+	kSubmitID   = "submission_id"
+	kThinking   = "Thinking"
+	kPondering  = "pondering"
+	tuiSession  = "term"
+	firstAnswer = "first answer"
+)
+
+// finishFirst ends the turn the harness started, so the next events are a
+// new turn.
+func (h *harness) finishFirst(t *testing.T, sid string) {
+	t.Helper()
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: firstAnswer, kStatus: statusComplete})
+	h.tg.wait(mSend, firstAnswer)
+}
+
+// before reports whether the first sent message that contains a comes
+// before the first that contains b.
+func (f *fakeTelegram) before(a, b string) bool {
+	ia, ib := -1, -1
+	for i, c := range f.snapshot() {
+		if c.Method != mSend {
+			continue
+		}
+		if ia < 0 && strings.Contains(c.text(), a) {
+			ia = i
+		}
+		if ib < 0 && strings.Contains(c.text(), b) {
+			ib = i
+		}
+	}
+	return ia >= 0 && ib >= 0 && ia < ib
+}
+
+func TestPromptFromElsewhereIsShown(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.finishFirst(t, sid)
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "from the hub", kSubmitID: hub.NewSubmissionID()})
+	h.hub.emit(t, sid, hub.KindThinkingDelta, map[string]any{kText: kPondering})
+	h.tg.wait(mSend, kThinking)
+	if got := h.tg.wait(mSend, "from the hub"); got.text() != echoHub {
+		t.Fatalf("echo = %q", got.text())
+	}
+	if !h.tg.before("You, in the hub", kThinking) {
+		t.Fatal("the prompt does not come before the status line")
+	}
+}
+
+func TestPromptSentHereIsNotShown(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	own := h.hub.waitPrompt(t, 1)[0].SubmissionID
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "hello", kSubmitID: own})
+	h.finishFirst(t, sid)
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "from another chat", kSubmitID: "tg:999:0:x"})
+	if got := h.tg.wait(mSend, "another chat"); got.text() != "<i>You, in Telegram:</i>\nfrom another chat" {
+		t.Fatalf("echo = %q", got.text())
+	}
+	for _, c := range h.tg.snapshot() {
+		if c.Method == mSend && strings.Contains(c.text(), "You,") && strings.Contains(c.text(), "hello") {
+			t.Fatalf("own prompt echoed: %q", c.text())
+		}
+	}
+}
+
+func TestLongPromptIsCutAndAttachmentsNamed(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.finishFirst(t, sid)
+	text := strings.Repeat("a", 1500) + "\n\n[The user attached a file: notes.txt. It is saved at /work/notes.txt. " +
+		"Read it with your tools when the request needs its contents.]\n[Image attached: /tmp/shot.png]"
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: text})
+	got := h.tg.wait(mSend, "You, in another app").text()
+	want := "<i>You, in another app:</i>\n" + strings.Repeat("a", 1000) + " (…, full text in the hub)\n" +
+		"<i>Attached: notes.txt, shot.png</i>"
+	if got != want {
+		t.Fatalf("echo = %q", got)
+	}
+}
+
+// A topic that attaches to a chat already running in the terminal shows
+// the prompt from the snapshot, named after where it came from.
+func TestTopicShowsPromptOfRunningTurn(t *testing.T) {
+	t.Parallel()
+	since := time.Now()
+	state := newFakeState()
+	state.groups[forumID] = hub.TelegramGroup{User: userAlice, ChatID: forumID, LinkedAt: since}
+	h := startBotState(t, nil, state)
+	h.hub.add(hub.Session{ID: tuiSession, BackendID: beCluster, Title: "Refactor", Source: "tui", Running: true, UpdatedAt: since.Add(time.Minute)})
+	created := h.tg.waitCall(mTopic, func(c tgCall) bool { return c.name() == "Refactor" })
+	deadline := time.Now().Add(5 * time.Second)
+	for !slices.Contains(h.hub.attachesCopy(), tuiSession) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	h.hub.emit(t, tuiSession, hub.KindSnapshot, hub.Snapshot{SessionID: tuiSession, BackendID: beCluster, Running: true,
+		Messages: raws(t, map[string]any{"role": "user", kText: "rename the package"})})
+	h.hub.emit(t, tuiSession, hub.KindMessageStart, map[string]any{})
+	h.hub.emit(t, tuiSession, hub.KindToolStart, map[string]any{kToolID: "t1", "name": toolTerminal})
+	got := h.tg.wait(mSend, "rename the package")
+	if got.text() != "<i>You, in the terminal:</i>\nrename the package" || got.thread() != created.ResultID {
+		t.Fatalf("echo = %q in thread %d", got.text(), got.thread())
+	}
+	h.tg.wait(mSend, "Running")
+	if !h.tg.before("rename the package", "Running") {
+		t.Fatal("the prompt does not come before the status line")
+	}
+}
+
+// With no message.start replayed, the first step shows the prompt of the
+// snapshot's running turn, and only once.
+func TestSnapshotPromptShownAtFirstStep(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.finishFirst(t, sid)
+	snap := hub.Snapshot{SessionID: sid, BackendID: beCluster, Running: true,
+		Messages: raws(t, map[string]any{"role": "user", "content": "from vs code"})}
+	h.hub.emit(t, sid, hub.KindSnapshot, snap)
+	h.hub.emit(t, sid, hub.KindThinkingDelta, map[string]any{kText: kPondering})
+	h.hub.emit(t, sid, hub.KindSnapshot, snap)
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{})
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "second answer", kStatus: statusComplete})
+	h.tg.wait(mSend, "second answer")
+	n := 0
+	for _, c := range h.tg.snapshot() {
+		if c.Method == mSend && strings.Contains(c.text(), "from vs code") {
+			n++
+		}
+	}
+	if n != 1 || !h.tg.before("from vs code", kThinking) {
+		t.Fatalf("prompt shown %d times", n)
+	}
+}
+
+// raws encodes transcript rows.
+func raws(t *testing.T, rows ...map[string]any) []json.RawMessage {
+	t.Helper()
+	out := make([]json.RawMessage, 0, len(rows))
+	for _, r := range rows {
+		b, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, b)
+	}
+	return out
+}

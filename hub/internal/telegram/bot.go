@@ -149,6 +149,9 @@ type Bot struct {
 	// deleted are topics whose chat was deleted; the next sync deletes
 	// them.
 	deleted map[dest]bool
+	// sources are the surfaces that started the chats the bot listed, to
+	// say where a prompt from elsewhere came from.
+	sources map[hub.SessionRef]string
 }
 
 type chatState struct {
@@ -248,6 +251,7 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		shown:   make(map[msgKey]shownNotice),
 		gone:    make(map[dest]bool),
 		claudes: make(map[msgKey]claudePrompt),
+		sources: make(map[hub.SessionRef]string),
 	}
 	for _, id := range cfg.AllowedGroups {
 		b.groups[id] = true
@@ -665,6 +669,7 @@ func (b *Bot) listSessions(ctx context.Context, to dest, user string) {
 		b.reportErr(ctx, to, user, "list sessions", err)
 		return
 	}
+	b.noteSources(list)
 	list = slices.DeleteFunc(list, func(s hub.Session) bool { return s.Archived })
 	down := b.unreachable(cctx, user)
 	if len(list) == 0 {
@@ -722,6 +727,22 @@ func (b *Bot) places(ctx context.Context, user string, list []hub.Session) map[h
 		refs = append(refs, hub.SessionRef{BackendID: s.BackendID, SessionID: s.ID})
 	}
 	return b.computers.Places(ctx, user, refs)
+}
+
+// noteSources keeps the surfaces that started the listed chats.
+func (b *Bot) noteSources(list []hub.Session) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, s := range list {
+		b.sources[hub.SessionRef{BackendID: s.BackendID, SessionID: s.ID}] = s.Source
+	}
+}
+
+// source is the surface that started a chat the bot listed, or "".
+func (b *Bot) source(ref hub.SessionRef) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.sources[ref]
 }
 
 // sourceName names the surface that started a session, for one that was
@@ -903,7 +924,7 @@ func (b *Bot) prompt(ctx context.Context, to dest, user, text string, files ...h
 		}
 	}
 	a = st.att
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cctx, cancel := context.WithTimeout(hub.WithSubmissionID(ctx, promptID(to, hub.SubmissionID(ctx))), callTimeout)
 	defer cancel()
 	res, err := b.svc.Prompt(cctx, user, a.backendID, a.sessionID, text, files...)
 	switch {
@@ -956,6 +977,7 @@ func (b *Bot) pump(a *attachment) {
 		r.deleted = func() { b.markDeleted(a.to) }
 	}
 	r.stepsSnap = func(msgID int64, html string) { b.setSteps(msgKey{a.to.chat, msgID}, html) }
+	r.source = func() string { return b.source(hub.SessionRef{BackendID: a.backendID, SessionID: a.sessionID}) }
 	if pr, ok := b.svc.(hub.Prompter); ok {
 		r.pending = func(ctx context.Context, id string) bool {
 			cctx, cancel := context.WithTimeout(ctx, callTimeout)

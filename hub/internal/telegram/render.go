@@ -150,9 +150,16 @@ type renderer struct {
 	// stepsSnap keeps the steps so far of the running turn for the Steps
 	// button of its status line, and forgets them with "". Nil: no button.
 	stepsSnap func(msgID int64, html string)
+	// source is the surface that started the chat, "" when unknown.
+	source func() string
 
 	turn   *turnStatus
 	answer strings.Builder
+	// open is the prompt of the turn a snapshot found running, until the
+	// turn's message.start or first step shows it; echoed is set once the
+	// running turn's prompt was shown or skipped.
+	open   *hub.OpenPrompt
+	echoed bool
 }
 
 func newRenderer(api *Client, to dest, interval time.Duration, logger *slog.Logger,
@@ -170,13 +177,13 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 	case hub.KindReasoningDelta:
 		var p streamPayload
 		if r.decode(ev, &p) && p.Text != nil {
-			r.begin().reasoning.WriteString(*p.Text)
+			r.begin(ctx).reasoning.WriteString(*p.Text)
 			r.refresh(ctx)
 		}
 	case hub.KindThinkingDelta:
 		var p streamPayload
 		if r.decode(ev, &p) && p.Text != nil && strings.TrimSpace(*p.Text) != "" {
-			r.begin().thinking = truncate(strings.TrimSpace(*p.Text), statusLen)
+			r.begin(ctx).thinking = truncate(strings.TrimSpace(*p.Text), statusLen)
 			r.refresh(ctx)
 		}
 	case hub.KindToolStart:
@@ -191,7 +198,7 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 			r.answer.WriteString(*p.Text)
 		}
 	case hub.KindMessageStart:
-		r.note(ctx, ev)
+		r.turnStart(ctx, ev)
 	case hub.KindMessageComplete:
 		r.complete(ctx, ev)
 	case usageEvent:
@@ -251,13 +258,19 @@ func (r *renderer) decode(ev hub.Event, v any) bool {
 	return true
 }
 
-// snapshot shows the prompts of a snapshot that still wait for an answer.
+// snapshot keeps the prompt of the turn a snapshot finds running, and
+// shows the prompts of the snapshot that still wait for an answer.
 func (r *renderer) snapshot(ctx context.Context, ev hub.Event) {
-	if r.pending == nil {
-		return
-	}
 	var snap hub.Snapshot
 	if !r.decode(ev, &snap) {
+		return
+	}
+	if r.open = nil; snap.Running && r.turn == nil && !r.echoed {
+		if p, ok := hub.OpenTurnPrompt(snap.Messages); ok {
+			r.open = &p
+		}
+	}
+	if r.pending == nil {
 		return
 	}
 	for _, raw := range snap.Prompts {
@@ -273,9 +286,11 @@ func (r *renderer) snapshot(ctx context.Context, ev hub.Event) {
 	}
 }
 
-// begin returns the status of the turn that runs, and starts one.
-func (r *renderer) begin() *turnStatus {
+// begin returns the status of the turn that runs, and starts one, after
+// the prompt of a turn found running when the chat attached.
+func (r *renderer) begin(ctx context.Context) *turnStatus {
 	if r.turn == nil {
+		r.echoOpen(ctx)
 		r.turn = &turnStatus{start: r.now(), tools: map[string]string{}, progress: map[string]string{}, counts: map[string]int{}}
 	}
 	return r.turn
@@ -334,6 +349,7 @@ func (r *renderer) quote(details string) string {
 
 // endTurn shows the status line of the turn as done and forgets the turn.
 func (r *renderer) endTurn(ctx context.Context) {
+	r.open, r.echoed = nil, false
 	if r.turn == nil {
 		return
 	}
@@ -667,7 +683,7 @@ func (r *renderer) toolStart(ctx context.Context, ev hub.Event) {
 	if !r.decode(ev, &p) {
 		return
 	}
-	t := r.begin()
+	t := r.begin(ctx)
 	if _, ok := t.tools[p.ToolID]; !ok {
 		t.running = append(t.running, p.ToolID)
 	}
@@ -699,7 +715,7 @@ func (r *renderer) toolComplete(ctx context.Context, ev hub.Event) {
 	if !r.decode(ev, &p) {
 		return
 	}
-	t := r.begin()
+	t := r.begin(ctx)
 	head, ok := t.tools[p.ToolID]
 	if !ok {
 		head = toolHead(p)
@@ -842,24 +858,13 @@ func (r *renderer) complete(ctx context.Context, ev hub.Event) {
 	r.sendMedia(ctx, paths)
 }
 
-// note sends the text of a cron result Hermes delivered into the session. A
-// cron result is a note, not a turn, so no reply follows it.
-func (r *renderer) note(ctx context.Context, ev hub.Event) {
-	var p struct {
-		Text string `json:"text"`
-		Note string `json:"note"`
-	}
-	if !r.decode(ev, &p) || strings.TrimSpace(p.Text) == "" {
+// cronResult sends the text of a cron result Hermes delivered into the
+// session. A cron result is a note, not a turn, so no reply follows it.
+func (r *renderer) cronResult(ctx context.Context, text string) {
+	if strings.TrimSpace(text) == "" {
 		return
 	}
-	if p.Note == "" {
-		r.agentMessage(ctx, p.Text)
-		return
-	}
-	if p.Note != "cron" {
-		return
-	}
-	for _, chunk := range RenderMarkdown(p.Text, MaxMessageLen) {
+	for _, chunk := range RenderMarkdown(text, MaxMessageLen) {
 		if r.send(ctx, chunk, nil) == 0 {
 			break
 		}
@@ -867,8 +872,7 @@ func (r *renderer) note(ctx context.Context, ev hub.Event) {
 }
 
 // agentMessage shows a message that another agent sent this chat through
-// the hub, which starts its turn: the bot shows no other input, since the
-// user typed those.
+// the hub, which starts its turn.
 func (r *renderer) agentMessage(ctx context.Context, text string) {
 	m := hub.AgentHeaderRE.FindStringSubmatch(text)
 	if m == nil {

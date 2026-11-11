@@ -549,6 +549,7 @@ func (b *Bot) syncForum(ctx context.Context, f *forum) {
 		b.logger.Warn("Failed to list chats for topics", "user", f.user, "error", err)
 		return
 	}
+	b.noteSources(sessions)
 	places := b.places(cctx, f.user, sessions)
 	b.loop.Lock()
 	defer b.loop.Unlock()

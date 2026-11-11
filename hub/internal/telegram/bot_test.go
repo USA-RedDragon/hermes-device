@@ -1,6 +1,7 @@
 package telegram_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -168,7 +169,7 @@ func TestCronResultIsSent(t *testing.T) {
 	sid := h.startTurn(t)
 	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "first answer", kStatus: statusComplete})
 	h.tg.wait(mSend, "first answer")
-	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "a user message"})
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "a user message", "submission_id": h.hub.waitPrompt(t, 1)[0].SubmissionID})
 	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "Cronjob Response: **ping**", "note": srcCron})
 	got := h.tg.wait(mSend, "Cronjob Response")
 	if got.text() != "Cronjob Response: <b>ping</b>" {
@@ -447,7 +448,7 @@ func TestRestoresChatsAndOffset(t *testing.T) {
 	if p[0].SessionID != sOld || p[0].BackendID != beLaptop {
 		t.Fatalf("prompt = %+v", p[0])
 	}
-	want := uuid.NewSHA1(uuid.NameSpaceURL, []byte("hermes-hub:telegram:123:1")).String()
+	want := fmt.Sprintf("tg:%d:0:", aliceTG) + uuid.NewSHA1(uuid.NameSpaceURL, []byte("hermes-hub:telegram:123:1")).String()
 	if p[0].SubmissionID != want {
 		t.Fatalf("submission id = %q, want %q", p[0].SubmissionID, want)
 	}
