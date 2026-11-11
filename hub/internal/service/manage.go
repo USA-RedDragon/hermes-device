@@ -238,3 +238,34 @@ func (b *backend) gone(ls *live) {
 		delete(ls.viewers, v)
 	}
 }
+
+// methodSessionInfo answers a session's info; for a session the backend
+// does not know it is the not_found refusal.
+const methodSessionInfo = "session.info"
+
+var _ hub.SessionChecker = (*Service)(nil)
+
+// SessionExists asks the backend whether it still has a session, without
+// subscribing to it. Hermes answers session.info with not_found for a
+// deleted session.
+func (s *Service) SessionExists(ctx context.Context, user, backendID, sessionID string) (bool, error) {
+	b, err := s.backend(ctx, user, backendID)
+	if err != nil {
+		return false, err
+	}
+	c, err := b.conn(ctx)
+	if err != nil {
+		return false, err
+	}
+	cctx, cancel := b.timeout(ctx)
+	defer cancel()
+	err = c.Call(cctx, methodSessionInfo, gateway.SessionParams{SessionID: sessionID}, nil)
+	var rerr *gateway.RPCError
+	switch {
+	case errors.As(err, &rerr) && rerr.Message == gateway.ReasonNotFound:
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return true, nil
+}

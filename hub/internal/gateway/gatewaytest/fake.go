@@ -793,6 +793,8 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 		h = g.hAttachBytes
 	case gateway.MethodFileAttach:
 		h = g.hFileAttach
+	case "session.info":
+		h = g.hSessionInfo
 	case gateway.MethodSubagentList:
 		h = g.hSubagentList
 	case gateway.MethodSubagentTail:

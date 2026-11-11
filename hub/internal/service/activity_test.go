@@ -230,3 +230,23 @@ func TestSessionsCountActivity(t *testing.T) {
 		t.Fatalf("activity = %v", got)
 	}
 }
+
+func TestSessionExists(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ctx := context.Background()
+	if ok, err := e.svc.SessionExists(ctx, userAlice, backendPC, "s-old"); !ok || err != nil {
+		t.Fatalf("stored session = %v, %v", ok, err)
+	}
+	if ok, err := e.svc.SessionExists(ctx, userAlice, backendPC, "s-deleted"); ok || err != nil {
+		t.Fatalf("deleted session = %v, %v", ok, err)
+	}
+	if _, err := e.svc.SessionExists(ctx, userBob, backendPC, "s-old"); !errors.Is(err, hub.ErrForbidden) {
+		t.Fatalf("bob = %v", err)
+	}
+	for _, c := range e.gw.Calls() {
+		if c.Method == gateway.MethodSessionResume {
+			t.Fatal("SessionExists subscribed to a session")
+		}
+	}
+}

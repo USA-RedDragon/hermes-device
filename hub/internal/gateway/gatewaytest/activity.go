@@ -16,6 +16,7 @@ const (
 	statusKill   = "killed"
 	kTruncated   = "truncated"
 	kInterrupted = "interrupted"
+	kNotFound    = "not_found"
 )
 
 // Steer is one message the fake queued for a subagent.
@@ -46,7 +47,7 @@ func (g *Gateway) sessionLocked(p map[string]any, allowed ...string) (*Session, 
 	}
 	s := g.sessions[str(p, kSessionID)]
 	if s == nil {
-		return nil, "not_found"
+		return nil, kNotFound
 	}
 	return s, ""
 }
@@ -155,7 +156,7 @@ func (g *Gateway) hDelegationPause(_ *conn, p map[string]any) (any, string, func
 		return nil, errInvalidParams, nil
 	}
 	if id := str(p, kSessionID); id != "" && g.sessions[id] == nil {
-		return nil, "not_found", nil
+		return nil, kNotFound, nil
 	}
 	g.paused = paused
 	return map[string]any{kPaused: paused}, "", nil
@@ -197,4 +198,18 @@ func (g *Gateway) hRoster(_ *conn, _ map[string]any) (any, string, func()) {
 		}
 	}
 	return map[string]any{"sessions": rows}, "", nil
+}
+
+// hSessionInfo answers a session's info without subscribing, and
+// not_found for a session the fake does not have
+// (gateway/session_controls.py info).
+func (g *Gateway) hSessionInfo(_ *conn, p map[string]any) (any, string, func()) {
+	if len(p) != 1 || str(p, kSessionID) == "" {
+		return nil, errInvalidParams, nil
+	}
+	s := g.sessions[str(p, kSessionID)]
+	if s == nil {
+		return nil, kNotFound, nil
+	}
+	return g.infoLocked(s, false), "", nil
 }

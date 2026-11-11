@@ -389,7 +389,12 @@ func contract() map[string][]string {
 			`"reasoning": stats.get("reasoning_tokens") or 0, "prompt": stats.get("prompt_tokens") or 0,`,
 			`return {"usage": tui_usage(stats), **stats}`,
 		},
-		"gateway/run_turn_runner.py": {`setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))`},
+		// Telegram topics: session.info refuses a deleted session with not_found, without a subscribe.
+		"gateway/session_controls.py#info": {
+			"        if set(params) != {'session_id'}:\n            raise RuntimeStoreError('invalid_params')\n        await self.authority.resolve(self.actor, ref)",
+		},
+		"gateway/session_authority.py#exists": {"            row = self.db.get_session(ref.session_id)\n            if row is None:\n                raise RuntimeStoreError('not_found')"},
+		"gateway/run_turn_runner.py":          {`setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))`},
 	}
 }
 
