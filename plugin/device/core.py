@@ -1098,15 +1098,19 @@ class Hub:
             stdin: Optional[str] = None) -> tuple[int, str, DeviceProcess]:
         """Run a short command synchronously and return ``(code, output, process)``."""
         proc = self.start(device_id, cmd=cmd, cwd=cwd, login=False, timeout=timeout, stdin=stdin)
+        # Read while the command runs: output past the pipe's buffer would block the pump thread.
+        chunks: list[str] = []
+        reader = threading.Thread(target=lambda: chunks.append(proc.stdout.read()), daemon=True,
+                                  name=f"device-run-{proc.request_id[:8]}")
+        reader.start()
         if proc.wait(timeout + 5) is None:
             proc.kill()
             proc.wait(5)
-            with proc.stdout:
-                proc.stdout.read()
+            reader.join(5)
             return EXIT_KILLED, "timed out", proc
-        with proc.stdout:
-            out = proc.stdout.read()
-        return proc.returncode if proc.returncode is not None else 1, out, proc
+        reader.join()
+        proc.stdout.close()
+        return proc.returncode if proc.returncode is not None else 1, "".join(chunks), proc
 
     # bindings
     def binding(self, session_id: str) -> Optional[Binding]:
