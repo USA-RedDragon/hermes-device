@@ -415,7 +415,7 @@ func contract() map[string][]string {
 		// The chat list's activity time: session.list with picker.
 		"tui_gateway/contracts/canonical_sessions.py#picker": {"    picker: bool = False", "    last_active_at: float | None = None"},
 		"gateway/session_controls.py#picker": {
-			"if (set(params) - {'limit', 'title', 'include_hidden', 'scope', 'workspace', 'picker'} or type(limit) is not int",
+			"if (set(params) - {'limit', 'title', 'include_hidden', 'scope', 'workspace', 'picker'",
 		},
 		"gateway/session_picker_fields.py": {"last_active_at=listed.get('_effective_last_active') or listed.get('last_active'),"},
 		// Steer: prompt.submit's receipt, then prompt.steer_queued, a transfer that goes back to the queue
