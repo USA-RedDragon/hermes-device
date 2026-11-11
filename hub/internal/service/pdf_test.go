@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
@@ -152,5 +153,37 @@ func TestPromptRealPDF(t *testing.T) {
 	if len(atts) != 2 || !strings.Contains(text, "[The PDF $(touch x).pdf has 2 pages. Pages 1 to 2 of 2 are attached as images.") ||
 		!strings.Contains(text, "[page 1]\nQuarterly numbers") || !strings.Contains(text, "[page 2]\nSecond page") {
 		t.Fatalf("submit = %q %+v", text, atts)
+	}
+}
+
+type slowPDF struct{}
+
+func (slowPDF) Read(ctx context.Context, _ pdf.Request) (*pdf.Doc, error) {
+	<-ctx.Done()
+	return nil, pdf.ErrTooHeavy
+}
+
+func TestPromptPDFFitsCallerDeadline(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{PDF: slowPDF{}})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	res, err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "read", hub.Attachment{Name: aPDF, Data: []byte("%PDF-1.7")})
+	if err != nil || !strings.Contains(res.Notice, "took too long") ||
+		!strings.Contains(userText(t, e.gw), "[The hub could not read the PDF report.pdf") {
+		t.Fatalf("Prompt = %+v, %v", res, err)
+	}
+}
+
+func TestPromptPDFRenderStopped(t *testing.T) {
+	t.Parallel()
+	r := &fakePDF{doc: pdf.Doc{Pages: 5, From: 1, To: 5, Text: "x", Images: [][]byte{[]byte(pngHead)}, RenderStopped: true}}
+	e := setup(t, service.Options{PDF: r})
+	if _, err := e.svc.Prompt(context.Background(), userAlice, backendPC, sLive, "", hub.Attachment{Name: aPDF, Data: []byte("%PDF-1.7")}); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := lastSubmit(t, e.gw)
+	if !strings.Contains(text, "Page 1 of 5 is attached as an image. Later pages took too long or too much memory to render. ") {
+		t.Fatalf("submit = %q", text)
 	}
 }

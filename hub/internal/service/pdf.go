@@ -23,8 +23,9 @@ const (
 	// maxPDFText bounds the PDF text one prompt carries, shared by its
 	// PDFs.
 	maxPDFText = 60000
-	// maxPDFTime bounds the time the hub spends reading one prompt's PDFs.
-	// Those it has not read by then go as plain files.
+	// maxPDFTime bounds the time the hub spends reading one prompt's PDFs,
+	// and so does half of the time the caller has left, so that staging
+	// still fits. PDFs the hub has not read by then go as plain files.
 	maxPDFTime = 2 * time.Minute
 )
 
@@ -56,7 +57,11 @@ func (b *backend) readPDFs(ctx context.Context, files []hub.Attachment) (map[int
 		return map[int]*pdfRead{}, nil
 	}
 	slots := max(hub.MaxImages-images, 0)
-	rctx, cancel := context.WithTimeout(ctx, maxPDFTime)
+	budget := maxPDFTime
+	if dl, ok := ctx.Deadline(); ok {
+		budget = min(budget, time.Until(dl)/2)
+	}
+	rctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	reads := map[int]*pdfRead{}
 	for i, f := range files {
@@ -100,6 +105,8 @@ func pdfWhy(err error) string {
 		return "it is damaged or not a PDF"
 	case errors.Is(err, pdf.ErrTooHeavy):
 		return "it took too long or too much memory to read"
+	case errors.Is(err, pdf.ErrBusy):
+		return "the hub ran out of time while it read other PDFs"
 	}
 	return ""
 }
@@ -127,8 +134,13 @@ func pdfNotes(name string, d *pdf.Doc) string {
 		fmt.Fprintf(&sb, "Page %d of %d is attached as an image. ", d.From, d.Pages)
 	case k > 1:
 		fmt.Fprintf(&sb, "Pages %d to %d of %d are attached as images. ", d.From, d.From+k-1, d.Pages)
+	case d.RenderStopped:
+		sb.WriteString("No pages are attached as images, since they took too long or too much memory to render. ")
 	default:
 		sb.WriteString("No pages are attached as images, since the message has no room for more images. ")
+	}
+	if k > 0 && d.RenderStopped {
+		sb.WriteString("Later pages took too long or too much memory to render. ")
 	}
 	if strings.TrimSpace(d.Text) == "" {
 		sb.WriteString("It has no text the hub could extract, so it may be scanned. Read the saved file for the rest.]")
