@@ -2844,7 +2844,36 @@ def device_command(raw_args: str = "", session_id: str = "", **_kwargs) -> str:
         return "Not bound: this surface did not give a session id."
     try:
         conn = h.find_device(args[0])
+        refused = _other_user(h, sid, conn)
+        if refused:
+            return f"Not bound: {refused}"
         b = h.bind(sid, conn.device_id, args[1].strip(), operator=True)
     except DeviceError as exc:
         return f"Not bound: {exc}"
     return f"Session {sid} now runs commands on {conn.name} [{b.device_id}] in {b.dir}."
+
+
+def _other_user(h: "Hub", sid: str, conn: "DeviceConn") -> str:
+    """Why /device may not bind session sid to conn, or "". Every chat reaches Hermes through the
+    hub's one login, so the command cannot tell who typed it. The session's user is the user of
+    the computer it is bound to, else the plugin setting ``user``, else the one hub user whose
+    computers are connected. A computer of another user, or of an unknown one, is refused. The
+    sandbox device runs commands for everyone, as the fallback does."""
+    if conn.user == SERVICE_USER:
+        return ""
+    res = h.resolve(sid)
+    cur = h.device(res.binding.device_id) if res.state == STATE_BOUND else None
+    owner: Optional[str] = cur.user if cur is not None and cur.user != SERVICE_USER else None
+    if owner is None:
+        value = settings().get("user")
+        owner = value.strip() if isinstance(value, str) and value.strip() else None
+    if owner is None:
+        users = {c.user for c in h.devices() if c.user != SERVICE_USER}
+        if len(users) == 1:
+            owner = users.pop()
+    if owner is None:
+        return ("computers of more than one hub user are connected, so /device cannot tell whose this session is; "
+                "move the chat on the hub instead")
+    if conn.user != owner:
+        return f"device {conn.name} [{conn.device_id}] belongs to another hub user than this session"
+    return ""

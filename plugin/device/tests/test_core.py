@@ -792,6 +792,22 @@ class CommandTests(Base):
         self.assertIn("Not bound", out)
         self.assertIn("/device off", out)
 
+    def test_device_command_refuses_other_users(self):
+        """/device binds only to a computer of the session's hub user (docs/browser.md section 13)."""
+        self.device.conn.user = "alice"
+        bob = FakeDevice(self.hub, str(self.root), str(self.devtmp), str(self.home), device_id="d_bob", name="bob")
+        self.addCleanup(bob.close)
+        bob.conn.user = "bob"
+        out = core.device_command(f"bob {self.root}", session_id=self.session)
+        self.assertIn("more than one hub user", out)
+        self.assertIsNone(self.hub.binding(self.session))
+        self.cfg["user"] = "alice"
+        self.assertIn("another hub user", core.device_command(f"bob {self.root}", session_id=self.session))
+        self.assertIn("now runs commands on pc", core.device_command(f"pc {self.root}", session_id=self.session))
+        del self.cfg["user"]
+        self.assertIn("another hub user", core.device_command(f"bob {self.root}", session_id=self.session))
+        self.assertEqual(self.hub.binding(self.session).device_id, "d_pc")
+
 
 class SandboxTests(Base):
     """``fallback: device``: never-bound sessions run on the sandbox device, never on the pod."""
