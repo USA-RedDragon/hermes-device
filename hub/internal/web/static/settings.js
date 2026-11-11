@@ -10,6 +10,9 @@ window.HubSettings = (ctx) => {
   const gear = document.getElementById("gearbtn");
   const gearDot = document.getElementById("geardot");
   const devBox = document.getElementById("devices");
+  const back = document.getElementById("setback");
+  const title = document.getElementById("settings-title");
+  const phone = matchMedia("(max-width: 700px)");
   const tabs = [
     ["computers", "Computers", (me) => me.devices],
     ["notifications", "Notifications", (me) => me.notify],
@@ -25,6 +28,8 @@ window.HubSettings = (ctx) => {
   let confirming = "";
   let busy = false;
   let note = "";
+  // inPane is true on a phone while a section shows instead of the list.
+  let inPane = false;
 
   const shownTabs = () => tabs.filter(([, , on]) => on(ctx.me()));
   const review = () => list.filter((d) => d.addr_changed_at).length;
@@ -60,7 +65,7 @@ window.HubSettings = (ctx) => {
         w.setAttribute("aria-label", review() + " to review");
         b.append(w);
       }
-      b.onclick = () => show(k);
+      b.onclick = () => { inPane = true; show(k); };
       tabsBox.append(b);
       if (hadFocus && k === tab) b.focus();
       if (k === tab) requestAnimationFrame(() => b.scrollIntoView({ block: "nearest", inline: "nearest" }));
@@ -85,13 +90,25 @@ window.HubSettings = (ctx) => {
     const next = { ArrowRight: i + 1, ArrowDown: i + 1, ArrowLeft: i - 1, ArrowUp: i - 1, Home: 0, End: keys.length - 1 }[e.key];
     if (next === undefined || !keys.length) return;
     e.preventDefault();
+    inPane = false;
     show(keys[(next + keys.length) % keys.length]);
     document.getElementById("settab-" + tab).focus();
   });
 
+  // mode switches a phone between the list of sections and one section.
+  function mode() {
+    const mob = phone.matches;
+    dlg.classList.toggle("m-list", mob && !inPane);
+    dlg.classList.toggle("m-pane", mob && inPane);
+    back.hidden = !(mob && inPane);
+    const t = tabs.find(([k]) => k === tab);
+    title.textContent = mob && inPane && t ? t[1] : "Settings";
+  }
+
   function show(k) {
     tab = k;
     drawTabs();
+    mode();
     if (k === "computers") loadDevices();
     if (k === "notifications") ctx.notices.load();
     if (k === "telegram") drawTelegram();
@@ -333,6 +350,7 @@ window.HubSettings = (ctx) => {
     open = {};
     editing = confirming = "";
     if (review()) list.filter((d) => d.addr_changed_at).forEach((d) => { open[d.id] = true; });
+    inPane = false;
     ctx.closeSide();
     dlg.showModal();
     show(tab);
@@ -348,6 +366,12 @@ window.HubSettings = (ctx) => {
   function start() {
     gear.onclick = () => openDialog(review() ? "computers" : "");
     document.getElementById("setclose").onclick = close;
+    back.onclick = () => {
+      inPane = false;
+      mode();
+      document.getElementById("settab-" + tab)?.focus();
+    };
+    phone.addEventListener("change", mode);
     dlg.addEventListener("keydown", trap);
     dlg.addEventListener("click", (e) => { if (e.target === dlg) close(); });
     dlg.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
