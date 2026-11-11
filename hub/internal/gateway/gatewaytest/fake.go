@@ -111,6 +111,12 @@ type Session struct {
 	Attachments [][]gateway.Attachment
 	// Prompts are the prompts pending when the session is added.
 	Prompts []gateway.Prompt
+	// Subagents are the subagents the session runs, as subagent.list
+	// lists them.
+	Subagents []gateway.SubagentRow
+	// Processes are the session's background processes, as process.list
+	// lists them.
+	Processes []gateway.ProcessRow
 
 	epoch   string
 	seq     int64
@@ -150,6 +156,8 @@ type Gateway struct {
 	// outlive a restart as Hermes' session_admissions rows do.
 	submissions map[string]submission
 	files       fileStore
+	paused      bool
+	steers      []Steer
 }
 
 type submission struct {
@@ -785,6 +793,26 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 		h = g.hAttachBytes
 	case gateway.MethodFileAttach:
 		h = g.hFileAttach
+	case gateway.MethodSubagentList:
+		h = g.hSubagentList
+	case gateway.MethodSubagentTail:
+		h = g.hSubagentTail
+	case gateway.MethodSubagentSteer:
+		h = g.hSubagentSteer
+	case gateway.MethodSubagentInterrupt:
+		h = g.hSubagentInterrupt
+	case gateway.MethodSubagentRoster:
+		h = g.hRoster
+	case gateway.MethodProcessList:
+		h = g.hProcessList
+	case gateway.MethodProcessKill:
+		h = g.hProcessKill
+	case gateway.MethodDelegationStatus:
+		h = g.hDelegationStatus
+	case gateway.MethodDelegationPause:
+		h = g.hDelegationPause
+	case gateway.MethodPromptBackground:
+		h = g.hBackground
 	default:
 		return nil, "unknown method: " + method, nil
 	}
@@ -876,7 +904,7 @@ func (g *Gateway) hEventsSince(_ *conn, p map[string]any) (any, string, func()) 
 	last, _ := num(p, kLastSequence)
 	if str(p, kReplayEpoch) != s.epoch || last > s.seq {
 		return map[string]any{"events": []any{}, kLastSequence: s.seq, kReplayEpoch: s.epoch,
-			"snapshot_required": true, "truncated": true}, "", nil
+			"snapshot_required": true, kTruncated: true}, "", nil
 	}
 	evs := []gateway.Event{}
 	for _, ev := range s.ring {
@@ -885,7 +913,7 @@ func (g *Gateway) hEventsSince(_ *conn, p map[string]any) (any, string, func()) 
 		}
 	}
 	return map[string]any{"events": evs, kLastSequence: s.seq, kReplayEpoch: s.epoch,
-		"snapshot_required": false, "truncated": false, "count": len(evs)}, "", nil
+		"snapshot_required": false, kTruncated: false, "count": len(evs)}, "", nil
 }
 
 func (g *Gateway) hConfigSet(_ *conn, p map[string]any) (any, string, func()) {
@@ -971,7 +999,7 @@ func (g *Gateway) hInterrupt(_ *conn, p map[string]any) (any, string, func()) {
 		return nil, "stale_generation", nil
 	}
 	s.Running = false
-	g.publishLocked(s, "message.complete", map[string]any{kText: "", kStatus: "interrupted"})
+	g.publishLocked(s, "message.complete", map[string]any{kText: "", kStatus: kInterrupted})
 	return map[string]any{"execution_state": "idle", kExecGen: s.Generation}, "", nil
 }
 
@@ -1112,7 +1140,7 @@ func (g *Gateway) dropPending(sid, id, status string, gen *int64) (any, string, 
 			return nil, "stale_generation", nil
 		}
 		s.Pending = slices.Delete(s.Pending, i, i+1)
-		return map[string]any{"admission_id": id, kStatus: kTerminal, "outcome": "interrupted"}, "", nil
+		return map[string]any{"admission_id": id, kStatus: kTerminal, "outcome": kInterrupted}, "", nil
 	}
 	return nil, gateway.ReasonNotFound, nil
 }

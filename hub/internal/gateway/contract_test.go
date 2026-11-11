@@ -337,6 +337,59 @@ func contract() map[string][]string {
 			`event("message.start"`, `event("message.delta"`, `event("reasoning.delta"`, `event("thinking.delta"`,
 			`event("message.complete"`, `event("tool.start"`, `event("tool.progress"`, `event("tool.complete"`,
 		},
+		// The Activity sidebar: the owner's session-scoped verbs, which act only on the named
+		// session's children and processes, and the frames and counters it reads.
+		"gateway/session_ancillary.py#activity": {
+			"'" + gateway.MethodSubagentList + "': 'subagents', '" + gateway.MethodSubagentTail + "': 'tail',",
+			"'" + gateway.MethodProcessKill + "': partial(kill_process, connection),",
+			"fields = {'session_id', 'profile', 'subagent_id'} | ({'text'} if steer else set())",
+			"return {'status': 'queued' if queued else 'rejected', 'subagent_id': sub, 'text': params['text']}",
+			"return {'found': child is not None and bool(request_hard_interrupt(child, f'Interrupted via Desktop ({sub})')),",
+			"if (set(params) - {'session_id', 'process_id', 'profile'} or not ref.session_id",
+			"raise RuntimeStoreError('process_not_found')",
+			"return {'subagents': [subagent_row(record) for record in records], 'delegations': []}",
+			"'started_at', 'status', 'tool_count', 'last_tool', 'accepting_steer',",
+			"return [{'session_id': p.id, 'command': p.command[:200],",
+			"'status': 'exited' if p.exited else 'running', 'exit_code': p.exit_code,",
+			"'started_epoch': p.started_at, 'exited_at': p.exited_at or None,",
+			"'completion_reason': p.completion_reason if p.exited else None,",
+			"'output_tail': p.output_buffer[-_PROCESS_TAIL_CHARS:]}",
+		},
+		"gateway/session_tui_side.py": {
+			"return {'" + gateway.MethodPromptBackground + "': partial(background, connection),",
+			"live, policy, text, task_id = _admit(connection, ref, params, 'bg')",
+			"return {'task_id': task_id}",
+			"return _spawn(authority, ref, task_id, '" + gateway.BackgroundCompleteEvent + "', body, holder=holder)",
+		},
+		"gateway/session_tui_ops.py": {
+			"'" + gateway.MethodDelegationPause + "': partial(pause_delegation, connection),",
+			"if set(params) - {'paused', 'profile', 'session_id'} or type(paused) is not bool:",
+			"return {'paused': set_spawn_paused(paused)}",
+		},
+		"tui_gateway/ws_legacy_fallback.py#activity": {
+			`_PROCESS_GLOBAL = frozenset({"process.stop", "delegation.pause", "reload.mcp", "reload.env", "agents.list"})`,
+		},
+		"tui_gateway/methods_session.py#activity": {
+			`@method("` + gateway.MethodDelegationStatus + `")`,
+			`return _ok(rid, {"active": dt.list_active_subagents(), "paused": dt.is_spawn_paused(),`,
+		},
+		"tui_gateway/methods_subagents.py": {
+			`@method("` + gateway.MethodSubagentRoster + `")`,
+			`counts.setdefault(sid, {"subagents": 0, "background": 0})[kind] += 1`,
+			`return _ok(rid, {"sessions": [{"session_id": sid, **c} for sid, c in counts.items()]})`,
+		},
+		"tui_gateway/contracts/events.py#activity": {
+			"    input_tokens: int | None = None\n    output_tokens: int | None = None",
+			`event("` + gateway.BackgroundCompleteEvent + `", SideAgentCompletePayload`,
+			`("subagent.complete", "A child finished (status + observability rollup)."),`,
+		},
+		"tools/delegate_tool_child_run.py": {`"input_tokens": _num(getattr(child, "session_prompt_tokens", 0)),`},
+		"gateway/session_usage.py#turn": {
+			`last_turn_tokens=max(0, stats["output_tokens"] - base) if isinstance(base, int) else 0,`,
+			`"reasoning": stats.get("reasoning_tokens") or 0, "prompt": stats.get("prompt_tokens") or 0,`,
+			`return {"usage": tui_usage(stats), **stats}`,
+		},
+		"gateway/run_turn_runner.py": {`setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))`},
 	}
 }
 
