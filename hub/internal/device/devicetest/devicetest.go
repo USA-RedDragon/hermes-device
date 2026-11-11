@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"path"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,8 @@ const (
 	keyDeviceID = "device_id"
 	keyName     = "name"
 	keyPath     = "path"
+	keyDir      = "dir"
+	keyEntries  = "entries"
 	stateBound  = "bound"
 	stateNever  = "never_bound"
 )
@@ -109,6 +112,9 @@ type Plugin struct {
 	files map[string]map[string][]byte
 	// busyReads is how many reads still get the busy answer.
 	busyReads int
+	// diffs and changes are the answers of the diff and changes routes,
+	// by session.
+	diffs, changes map[string]map[string]any
 }
 
 // NewPlugin mounts a fake plugin for backendID on gw. It accepts
@@ -118,7 +124,7 @@ func NewPlugin(gw *gatewaytest.Gateway, backendID string, key ed25519.PublicKey)
 		verifier: assertion.NewVerifier([]ed25519.PublicKey{key}), bindings: map[string]Binding{}, ever: map[string]bool{},
 		parents: map[string]string{}, conns: map[string]*Conn{}, refuse: map[string]string{}, Connected: make(chan *Conn, 16),
 		trees: map[string]map[string][]string{}, refuseDev: map[string]string{}, uploads: map[string][]byte{},
-		files: map[string]map[string][]byte{}}
+		files: map[string]map[string][]byte{}, diffs: map[string]map[string]any{}, changes: map[string]map[string]any{}}
 	base := "/api/plugins/device"
 	gw.Handle("GET "+base+"/info", http.HandlerFunc(p.info), true)
 	gw.Handle("GET "+base+"/devices", http.HandlerFunc(p.devices), true)
@@ -129,6 +135,9 @@ func NewPlugin(gw *gatewaytest.Gateway, backendID string, key ed25519.PublicKey)
 	gw.Handle("DELETE "+base+"/sessions/{session}/binding", http.HandlerFunc(p.deleteBinding), true)
 	gw.Handle("POST "+base+"/sessions/{session}/files", http.HandlerFunc(p.postFile), true)
 	gw.Handle("GET "+base+"/sessions/{session}/files", http.HandlerFunc(p.getFile), true)
+	gw.Handle("GET "+base+"/sessions/{session}/tree", http.HandlerFunc(p.tree), true)
+	gw.Handle("GET "+base+"/sessions/{session}/diff", http.HandlerFunc(p.diff), true)
+	gw.Handle("GET "+base+"/sessions/{session}/changes", http.HandlerFunc(p.getChanges), true)
 	gw.Handle("GET "+protocol.PluginExecPath, http.HandlerFunc(p.exec), false)
 	return p
 }
@@ -301,7 +310,7 @@ func (p *Plugin) dirs(w http.ResponseWriter, r *http.Request) {
 		if dir == "" {
 			dir = "/home/alice"
 		}
-		answer(w, map[string]any{keyPath: dir, "entries": []map[string]string{{keyName: "src"}}})
+		answer(w, map[string]any{keyPath: dir, keyEntries: []map[string]string{{keyName: "src"}}})
 		return
 	}
 	if dir == "" && len(c.Hello.Roots) > 0 {
@@ -320,7 +329,7 @@ func (p *Plugin) dirs(w http.ResponseWriter, r *http.Request) {
 	for _, n := range subs {
 		entries = append(entries, map[string]string{keyName: n})
 	}
-	answer(w, map[string]any{keyPath: path.Clean(dir), "entries": entries})
+	answer(w, map[string]any{keyPath: path.Clean(dir), keyEntries: entries})
 }
 
 func (p *Plugin) listBindings(w http.ResponseWriter, r *http.Request) {
@@ -352,7 +361,7 @@ func (p *Plugin) resolve(sid string) (Binding, map[string]any) {
 	if p.sandbox != "" {
 		res["sandbox"] = nil
 		if p.conns[p.sandbox] != nil {
-			res["sandbox"] = map[string]string{keyDeviceID: p.sandbox, "dir": path.Join(p.sandboxRoot, sid)}
+			res["sandbox"] = map[string]string{keyDeviceID: p.sandbox, keyDir: path.Join(p.sandboxRoot, sid)}
 		}
 	}
 	return Binding{}, res
@@ -367,7 +376,7 @@ func (p *Plugin) getBinding(w http.ResponseWriter, r *http.Request) {
 		encode(w, map[string]any{keyError: "not_bound", keyMessage: "not bound", "resolved": res})
 		return
 	}
-	answer(w, map[string]any{"session_id": b.SessionID, keyDeviceID: b.DeviceID, "dir": b.Dir, "generation": b.Generation,
+	answer(w, map[string]any{"session_id": b.SessionID, keyDeviceID: b.DeviceID, keyDir: b.Dir, "generation": b.Generation,
 		"bound_at": b.BoundAt, "resolved": res})
 }
 
@@ -380,7 +389,7 @@ func (p *Plugin) putBinding(w http.ResponseWriter, r *http.Request) {
 	p.record(r, body)
 	sid := r.PathValue("session")
 	deviceID, _ := body[keyDeviceID].(string)
-	dir, ok := body["dir"].(string)
+	dir, ok := body[keyDir].(string)
 	if deviceID == "" || !ok {
 		pluginError(w, http.StatusBadRequest, "bad_request")
 		return
@@ -737,7 +746,7 @@ func (p *Plugin) sessionDevice(sid string) (Binding, string) {
 		return Binding{}, "runs_on_pod"
 	case res[stateKey] == stateNever && res["sandbox"] != nil:
 		sb, _ := res["sandbox"].(map[string]string)
-		b = Binding{DeviceID: sb[keyDeviceID], Dir: sb["dir"]}
+		b = Binding{DeviceID: sb[keyDeviceID], Dir: sb[keyDir]}
 	default:
 		return Binding{}, "fail_closed"
 	}
@@ -821,4 +830,99 @@ func (p *Plugin) postFile(w http.ResponseWriter, r *http.Request) {
 	target := path.Join(b.Dir, ".hermes", "attachments", body.Name)
 	p.uploads[target] = data
 	answer(w, map[string]any{keyPath: target, keyName: body.Name, keyDeviceID: b.DeviceID, "bytes": len(data)})
+}
+
+// SetDiff sets the diff route's answer for a session.
+func (p *Plugin) SetDiff(sessionID string, d map[string]any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.diffs[sessionID] = d
+}
+
+// SetChanges sets the changes route's answer for a session.
+func (p *Plugin) SetChanges(sessionID string, c map[string]any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.changes[sessionID] = c
+}
+
+// tree lists a folder of the device that serves a session from the files
+// the read route serves (docs/protocol.md section 9, listing rules).
+func (p *Plugin) tree(w http.ResponseWriter, r *http.Request) {
+	dir := r.URL.Query().Get(keyPath)
+	p.record(r, map[string]any{keyPath: dir})
+	b, code := p.sessionDevice(r.PathValue("session"))
+	if code != "" {
+		pluginError(w, http.StatusConflict, code)
+		return
+	}
+	if dir == "" {
+		dir = b.Dir
+	}
+	if !path.IsAbs(dir) || path.Clean(dir) != dir {
+		pluginError(w, http.StatusBadRequest, "bad_path")
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	inRoots := false
+	for _, root := range p.conns[b.DeviceID].Hello.Roots {
+		inRoots = inRoots || dir == root || strings.HasPrefix(dir, root+"/")
+	}
+	if !inRoots {
+		pluginError(w, http.StatusUnprocessableEntity, "read_refused")
+		return
+	}
+	seen := map[string]bool{}
+	entries := []map[string]any{}
+	for fp, data := range p.files[b.DeviceID] {
+		rest, ok := strings.CutPrefix(fp, strings.TrimSuffix(dir, "/")+"/")
+		if !ok {
+			continue
+		}
+		name, sub, deeper := strings.Cut(rest, "/")
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if deeper && sub != "" {
+			entries = append(entries, map[string]any{keyName: name, "kind": keyDir, "link": false, "size": 0})
+		} else {
+			entries = append(entries, map[string]any{keyName: name, "kind": "file", "link": false, "size": len(data)})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return fmt.Sprint(entries[i][keyName]) < fmt.Sprint(entries[j][keyName]) })
+	answer(w, map[string]any{keyPath: dir, keyDir: b.Dir, keyDeviceID: b.DeviceID, keyEntries: entries, "truncated": false})
+}
+
+// diff answers with the session's diff set by SetDiff, or no git.
+func (p *Plugin) diff(w http.ResponseWriter, r *http.Request) {
+	p.record(r, nil)
+	b, code := p.sessionDevice(r.PathValue("session"))
+	if code != "" {
+		pluginError(w, http.StatusConflict, code)
+		return
+	}
+	p.mu.Lock()
+	d, ok := p.diffs[r.PathValue("session")]
+	p.mu.Unlock()
+	if ok {
+		d = maps.Clone(d)
+		d[keyDeviceID] = b.DeviceID
+	} else {
+		d = map[string]any{keyDir: b.Dir, keyDeviceID: b.DeviceID, "git": false, "files": []any{}, "untracked": []any{}, "diff": ""}
+	}
+	answer(w, d)
+}
+
+// getChanges answers with the session's written files set by SetChanges.
+func (p *Plugin) getChanges(w http.ResponseWriter, r *http.Request) {
+	p.record(r, nil)
+	p.mu.Lock()
+	c, ok := p.changes[r.PathValue("session")]
+	p.mu.Unlock()
+	if !ok {
+		c = map[string]any{"session_id": r.PathValue("session"), "files": []any{}}
+	}
+	answer(w, c)
 }

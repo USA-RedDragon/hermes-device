@@ -15,7 +15,9 @@ import (
 // routes on the gateway listener (docs/protocol.md section 9).
 const PluginBase = "/api/plugins/device"
 
-const maxPluginBody = 4 << 20
+// maxPluginBody bounds a JSON answer of the plugin. A diff of 1 MiB can
+// take about six times that as JSON.
+const maxPluginBody = 16 << 20
 
 // Requester sends HTTP requests to a backend's gateway listener with the
 // hub's dashboard session. *gateway.Dialer is one.

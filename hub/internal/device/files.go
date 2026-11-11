@@ -25,6 +25,13 @@ const codeBusy = "busy"
 // codeOffline is the plugin's answer for a device that is not connected.
 const codeOffline = "device_offline"
 
+// Plugin error codes of file routes.
+const (
+	codeRunsOnPod = "runs_on_pod"
+	codeTooLarge  = "too_large"
+	codeNotFound  = "not_found"
+)
+
 var _ hub.SessionFiles = (*Server)(nil)
 
 // PutFile writes a file a user attached into the device folder that runs a
@@ -41,7 +48,7 @@ func (s *Server) PutFile(ctx context.Context, user, backendID, sessionID, name s
 	defer cancel()
 	f, err := b.plugin.PutFile(cctx, sessionID, name, data)
 	var pe *PluginError
-	if errors.As(err, &pe) && pe.Code == "runs_on_pod" {
+	if errors.As(err, &pe) && pe.Code == codeRunsOnPod {
 		return "", false, nil
 	}
 	if err != nil {
@@ -65,9 +72,9 @@ func uploadError(name string, err error) error {
 		return fmt.Errorf("%w: The computer this chat runs on is offline, so %s cannot reach it", hub.ErrAttachment, name)
 	case pe.Code == codeBusy:
 		return fmt.Errorf("%w: Hermes is busy with other uploads. Send %s again in a moment", hub.ErrAttachment, name)
-	case pe.Code == "too_large":
+	case pe.Code == codeTooLarge:
 		return fmt.Errorf("%w: The file %s is too large for the computer: %s", hub.ErrAttachment, name, pe.Message)
-	case pe.Code == "fail_closed":
+	case pe.Code == StateFailClosed:
 		return fmt.Errorf("%w: This chat runs on no computer now, so %s has nowhere to go (%s)", hub.ErrAttachment, name, pe.Message)
 	case pe.Code == "write_refused":
 		return fmt.Errorf("%w: The computer refused to save %s: %s", hub.ErrAttachment, name, pe.Message)
@@ -113,15 +120,15 @@ func (s *Server) DeviceMedia(ctx context.Context, user, backendID, sessionID, p 
 			return nil, false, err
 		}
 		switch {
-		case pe.Code == "runs_on_pod" || pe.Code == "fail_closed":
+		case pe.Code == codeRunsOnPod || pe.Code == StateFailClosed:
 			return nil, false, nil
 		case pe.Code == codeOffline:
 			return nil, true, hub.ErrMediaOffline
-		case pe.Code == "too_large":
+		case pe.Code == codeTooLarge:
 			return nil, true, hub.ErrMediaTooLarge
 		case pe.Status == http.StatusNotFound || pe.Status == http.StatusMethodNotAllowed ||
-			pe.Code == "not_found" || pe.Code == "bad_path" || pe.Code == "read_refused" || pe.Code == "read_failed":
-			if pe.Code != "not_found" {
+			pe.Code == codeNotFound || pe.Code == "bad_path" || pe.Code == "read_refused" || pe.Code == "read_failed":
+			if pe.Code != codeNotFound {
 				s.log.Info("the device plugin did not read a file", "session", sessionID, "error", pe.Error())
 			}
 			return nil, true, hub.ErrNoMedia
