@@ -128,6 +128,30 @@ The hub checks on every request that the user may use the backend, so a user see
 
 The whole-file editor sends the entries it showed with the edited text. Entries Hermes added meanwhile stay; when Hermes changed or removed one of the shown entries meanwhile, the save fails and asks for a reload. The Learned tab shows only conclusions whose observer is `ai_peer` or `user_peer`, so conclusions of other peers in the workspace never show and cannot be deleted from the hub. A fact links to its chat only when Hermes names its Honcho sessions after its own session ids (Honcho `sessionStrategy: per-session` without a peer prefix); with other strategies the link does not show. Honcho errors go to the hub log; users get a short message.
 
+## Search
+
+The search box over the chat list matches chat titles as the user types. From the second character it also searches the messages of every chat on each backend the user may use, and lists the chats with matching messages under "In messages": the title, the date the chat was last used and up to two short excerpts with the matches marked. A click opens the chat at the first matching message, or says that the message is further back than the chat shows.
+
+The hub asks each backend's hermes-device plugin (`GET /api/plugins/device/search?q=<text>`, hermes-device docs/protocol.md section 9.2), which runs Hermes's own full-text search (`SessionDB.search_messages`, FTS5 with Hermes's fallbacks) over user and assistant messages, without the background sources that Hermes's `session_search` tool hides. A match in an earlier part of a chat that Hermes compressed opens the chat that continues it. The search takes Hermes's syntax: words, `"phrases"`, `AND`, `OR`, `NOT` and `prefix*`. Hermes's gateway has no search call, so the search needs a hermes-device plugin with that route; a backend without one shows a note under the results. The excerpts are text: the page never renders them as HTML.
+
+## Usage
+
+"Usage" at the foot of the chat list opens a page for one backend and the last 7, 30 or 90 days:
+
+- **Tokens by day**, **Chats** and **Models**: the token counters Hermes keeps for each session and each model in its session store, read through the plugin (`GET /api/plugins/device/usage`). Hermes keeps one total per session, not one per call, so a chat counts on the day it was last used. Context is how full a chat's context was in the latest usage event the hub saw for it.
+- **API limits**: the rate limits each provider last reported, from the `rate_limit` of the `session.usage` events the hub sees while chats run. Hermes parses only `x-ratelimit-*` headers (`agent/rate_limit_tracker.py`); it does not read Anthropic's own `anthropic-ratelimit-*` headers or any spending limit of an API key, so for Anthropic the section stays empty until Hermes does. Ollama has no API limits; the section shows the tokens per second and seconds per call that Hermes measured in the latest chat of each model. Each hub replica keeps what it saw in memory, since it started.
+- **Local GPU**: with `usage.prometheus_url` set to a Prometheus query API that scrapes [ollama-priority-proxy](https://github.com/USA-RedDragon/ollama-priority-proxy)'s metrics, the time in the last 24 hours, 7 days and 30 days that Ollama had a request running (`ollama_priority_proxy_in_flight` above 0, checked each minute), the summed request time of people's and of background requests (`ollama_priority_proxy_upstream_duration_seconds`), and the number of requests. Hermes itself records no request times.
+- **Memory backlog**: Honcho's queue for the backend's workspace (`GET /v3/workspaces/<workspace>/queue/status`), for a backend with `backends[].honcho`.
+
+## Chat files
+
+For a chat that runs on one of the user's own computers or in the sandbox, "Files" in the chat's header opens a read-only view of the chat's folder:
+
+- **Folder** lists the chat's folder and lets the user go into its folders and up to the computer's root. It shows a text file with syntax colors (up to 1 MB), an image, and offers any file, such as a PDF, as a download. The browser reads every file as a download (`application/octet-stream`, `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`) and never as a page.
+- **Changes** lists the files the agent wrote in the chat with `write_file` and `patch`, from the tool calls Hermes stored, and, when the folder is in a git repository, what git shows as changed in the folder since the last commit, with its diff.
+
+The hub asks the device plugin (`GET /api/plugins/device/sessions/<session>/tree`, `/files`, `/diff` and `/changes`, hermes-device docs/protocol.md sections 9 and 9.2). The plugin applies the read rules of file tools to every folder, file and changed path: inside the device's roots and not a credential path, for the path and its real path on the device. It leaves protected entries out of listings and diffs, runs git read-only, and limits a diff to 1 MiB and to the chat's folder. The hub shows the view only for a chat on the user's own computer or the sandbox; a chat on another person's computer or on the Hermes server has none.
+
 ## Set up a Hermes backend
 
 The hub needs the Hermes Webapp listener on an address that it can reach, with a password sign-in. On a non-loopback bind, Hermes always requires sign-in. Add this to the backend's Hermes `config.yaml` (the device's `~/.hermes/config.yaml`, or the cluster instance's config) and restart its gateway:

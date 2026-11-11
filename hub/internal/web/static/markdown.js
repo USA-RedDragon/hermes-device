@@ -451,5 +451,5 @@ window.hubMarkdown = (() => {
     }
   }
 
-  return { render, safeURL };
+  return { render, safeURL, codeBlock };
 })();

@@ -9,6 +9,7 @@
 <script src="/static/vendor/highlight.min.js" defer></script>
 <script src="/static/markdown.js" defer></script>
 <script src="/static/memory.js" defer></script>
+<script src="/static/insights.js" defer></script>
 <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -32,6 +33,7 @@
     </details>
     <div class="side-foot">
       <span id="who" class="who"></span>
+      <a id="usagenav" class="footlink" href="#/usage" hidden>Usage</a>
       <button id="logout" class="ghost" type="button">Log out</button>
     </div>
   </aside>
@@ -40,6 +42,7 @@
     <header class="bar">
       <button id="menu" class="icon menu" type="button" aria-label="Show chats">&#9776;</button>
       <div class="title"><span id="title">Hermes</span><span id="subtitle" class="sub"></span><button id="place" class="place" type="button" hidden></button></div>
+      <button id="filesbtn" type="button" hidden title="See this chat's folder and what Hermes changed">Files</button>
       <button id="stop" class="danger" type="button" hidden>Stop</button>
     </header>
     <details id="info" class="info" hidden>
@@ -56,6 +59,7 @@
       <p>Pick a chat, or start a new one.</p>
     </div>
     <div id="memory" class="memory" hidden></div>
+    <div id="usage" class="memory" hidden></div>
     <div id="log" class="log" aria-live="polite" hidden></div>
     <form id="composer" class="composer" hidden>
       <div id="chips" class="chips" aria-label="Attachments" hidden></div>

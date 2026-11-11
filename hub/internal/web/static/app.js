@@ -187,7 +187,8 @@
       for (const s of hits) group.append(chatItem(s));
       nav.append(group);
     }
-    if (q && !found) nav.append(el("p", "none", "No chats match."));
+    if (q && !found) nav.append(el("p", "none", "No chat titles match."));
+    search.draw(nav);
     const archived = sessions.filter((s) => s.archived).sort(order);
     if (archived.length) {
       const tg = el("button", "link archived-toggle", (showArchived ? "Hide" : "Show") + " archived chats (" + archived.length + ")");
@@ -352,6 +353,8 @@
     line.textContent = placeText(chat.place, true);
     line.classList.toggle("off", !!chat.place && !chat.place.online);
     line.title = computers.some((c) => c.backend_id === chat.backend) ? "Change where this chat runs" : "";
+    const pl = chat.place;
+    $("filesbtn").hidden = !me.files || !pl || !((pl.kind === "computer" && pl.mine) || pl.kind === "sandbox");
     note.replaceChildren();
     note.hidden = true;
     input.placeholder = "Message Hermes";
@@ -869,6 +872,22 @@
       }
       for (const p of s.prompts || []) this.approval(p);
       this.bottom();
+      this.jumpTo();
+    }
+
+    // jumpTo scrolls to the message a search result opened the chat at.
+    jumpTo() {
+      const j = jump;
+      if (!j || j.b !== this.backend || j.s !== this.session) return;
+      jump = null;
+      const n = Number.isInteger(j.row) ? this.log.querySelector('[data-row="' + j.row + '"]') : null;
+      if (!n) {
+        this.add(el("div", "note", "The message you searched for is further back than this chat shows."));
+        return;
+      }
+      n.scrollIntoView({ block: "center" });
+      n.classList.add("flash");
+      setTimeout(() => n.classList.remove("flash"), 2500);
     }
 
     row(m) {
@@ -880,7 +899,14 @@
         if (shown) this.add(el("div", "msg result", shown));
         return;
       }
-      if (m.role === "user") { this.turn = null; if (!this.agentText(text)) this.userText(text); return; }
+      const rid = Number.isInteger(m.row_id) ? m.row_id : m._row_id;
+      if (m.role === "user") {
+        this.turn = null;
+        if (this.agentText(text)) return;
+        const b = this.userText(text);
+        if (b && Number.isInteger(rid)) b.dataset.row = rid;
+        return;
+      }
       if (m.role === "assistant") {
         for (const c of m.tool_calls || []) {
           const fn = c.function || {};
@@ -894,7 +920,11 @@
         }
         const r = m.reasoning || m.reasoning_content;
         if (r) { this.reasoning(r); this.turn.reasoning.open = false; }
-        if (text) { this.assistantText(text); this.turn.text = null; }
+        if (text) {
+          this.assistantText(text);
+          if (Number.isInteger(rid)) this.turn.text.dataset.row = rid;
+          this.turn.text = null;
+        }
         return;
       }
       if (m.role === "tool") {
@@ -1952,6 +1982,9 @@
   function showWelcome() {
     pagesView.destroy();
     memory.hide();
+    usage.hide();
+    files.close();
+    $("filesbtn").hidden = true;
     closeStream();
     attachments.clear();
     view = null;
@@ -1974,6 +2007,9 @@
   function showChat(backend, session) {
     pagesView.destroy();
     memory.hide();
+    usage.hide();
+    files.close();
+    $("filesbtn").hidden = true;
     closeStream();
     attachments.clear();
     current = { b: backend, s: session };
@@ -2019,6 +2055,9 @@
   // showMemory opens the Memory page in place of the chat.
   function showMemory(rest) {
     pagesView.destroy();
+    usage.hide();
+    files.close();
+    $("filesbtn").hidden = true;
     closeStream();
     attachments.clear();
     view = null;
@@ -2032,6 +2071,24 @@
     memory.show(rest);
   }
 
+  // showUsage opens the Usage page in place of the chat.
+  function showUsage(rest) {
+    pagesView.destroy();
+    memory.hide();
+    files.close();
+    closeStream();
+    attachments.clear();
+    view = null;
+    current = null;
+    for (const id of ["welcome", "log", "composer", "stop", "info", "place", "placenote", "filesbtn"]) $(id).hidden = true;
+    settings.reset();
+    $("title").textContent = "Usage";
+    $("subtitle").textContent = "";
+    document.title = "Usage - Hermes Hub";
+    banner("");
+    usage.show(rest);
+  }
+
   // route shows what the hash names. A page opens over its chat, and going
   // between a chat and its page keeps the chat as it is.
   let lastHash = "";
@@ -2041,18 +2098,28 @@
     const m = location.hash.match(/^#\/s\/([^/]+)\/(.+)$/);
     const mem = location.hash.match(/^#\/memory(?:\/(.*))?$/);
     const pg = location.hash.match(/^#\/page\/([^/]+)\/([^/]+)\/(.+)$/);
+    const fl = location.hash.match(/^#\/files\/([^/]+)\/([^/]+)$/);
+    const us = location.hash.match(/^#\/usage(?:\/(.*))?$/);
     const dec = (x) => { try { return decodeURIComponent(x); } catch (_) { return null; } };
     const same = (b, s) => view && view.backend === b && view.session === s;
-    if (pg && dec(pg[1]) !== null && dec(pg[2]) !== null && dec(pg[3]) !== null) {
+    if (fl && me.files && dec(fl[1]) !== null && dec(fl[2]) !== null) {
+      const b = dec(fl[1]), s = dec(fl[2]);
+      pagesView.hide();
+      if (!same(b, s)) showChat(b, s);
+      files.open(view, $("title").textContent);
+    } else if (pg && dec(pg[1]) !== null && dec(pg[2]) !== null && dec(pg[3]) !== null) {
+      files.hide();
       const b = dec(pg[1]), s = dec(pg[2]);
       if (!same(b, s)) showChat(b, s);
       pagesView.open(view, dec(pg[3]));
     } else {
       pagesView.openedHere = false;
       pagesView.hide();
-      const under = m && /^#\/page\//.test(prev) && same(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+      files.hide();
+      const under = m && /^#\/(page|files)\//.test(prev) && same(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
       if (m && !under) showChat(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
       else if (!m && mem && me.memory) showMemory(mem[1] || "");
+      else if (!m && us && me.usage) showUsage(us[1] || "");
       else if (!m) showWelcome();
     }
     menuOpen = false;
@@ -2415,6 +2482,19 @@
     },
   };
 
+  // jump is the chat and message a search result opens.
+  let jump = null;
+  const search = window.HubSearch({ api, el, chatHash, redraw: () => drawList(), jump: (j) => {
+    jump = j;
+    if (view && view.backend === j.b && view.session === j.s) view.jumpTo();
+  },
+    closeSide: () => openSide(false) });
+  const usage = window.HubUsage({ api, el, chatHash, defaultBackend: () => me.default_backend || "" });
+  const files = window.HubFiles({ api, el, back: () => {
+    if (view) location.hash = chatHash(view.backend, view.session);
+    else history.back();
+  } });
+
   const memory = window.HubMemory({ api, el, sessions: () => lastList, chatHash, closeSide: () => openSide(false),
     defaultBackend: () => me.default_backend || "" });
 
@@ -2447,7 +2527,11 @@
     };
     $("composer").onsubmit = send;
     dropZone();
-    $("search").oninput = () => drawList();
+    $("search").oninput = () => { search.query($("search").value); drawList(); };
+    $("usagenav").hidden = !me.usage;
+    $("filesbtn").onclick = () => {
+      if (view) location.hash = "#/files/" + encodeURIComponent(view.backend) + "/" + encodeURIComponent(view.session);
+    };
     $("info").ontoggle = () => { if ($("info").open) settings.load(); };
     $("prefs").hidden = !me.devices;
     $("prefs").ontoggle = () => { if ($("prefs").open) devices.load(); };

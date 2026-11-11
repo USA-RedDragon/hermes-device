@@ -64,6 +64,10 @@ type Options struct {
 	Computers hub.Computers
 	// Memory serves the Memory page. Nil: the hub has no Memory page.
 	Memory hub.Memory
+	// Insights serves chat search and the Usage page. Nil: neither.
+	Insights hub.Insights
+	// Files serves the file viewer of chats on computers. Nil: none.
+	Files hub.ChatFiles
 }
 
 // Server is the web front end.
@@ -92,6 +96,8 @@ type Server struct {
 	sandboxes    func(context.Context, string) []hub.Sandbox
 	computers    hub.Computers
 	memory       hub.Memory
+	insights     hub.Insights
+	files        hub.ChatFiles
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
 	backendNames     map[string]string
@@ -134,6 +140,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	}
 	return &Server{
 		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory,
+		insights: opts.Insights, files: opts.Files,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,
@@ -203,6 +210,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/computers", s.api(s.handleComputers))
 	mux.Handle("GET /api/computers/{device}/folders", s.api(s.handleFolders))
 	s.memoryRoutes(mux)
+	s.insightRoutes(mux)
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
 	mux.HandleFunc("GET /device/pair", s.handlePairPage)

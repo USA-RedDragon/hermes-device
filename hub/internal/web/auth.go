@@ -217,7 +217,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	sess, _ := s.session(r)
 	writeJSON(w, http.StatusOK, map[string]any{"user": sess.User, "display": sess.Display, "groups": sess.Groups, "csrf": sess.CSRF,
 		"default_backend": s.defaults[sess.User], "devices": s.devices != nil, "computers": s.computers != nil,
-		"memory": s.memory != nil})
+		"memory": s.memory != nil, "usage": s.insights != nil, "files": s.files != nil})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
