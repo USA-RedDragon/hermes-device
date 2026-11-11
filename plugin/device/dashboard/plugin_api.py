@@ -116,6 +116,45 @@ def delete_binding(session_id: str):
     return Response(status_code=204)
 
 
+def _agents():
+    return _core()._load_sibling("hermes_device_agents", "agents.py")
+
+
+@router.get("/agents/requests")
+def agent_requests(wait: float = 0.0) -> dict:
+    """The hub's long poll for agent message requests (section 12)."""
+    agents = _agents()
+    agents.INBOX.sweep()
+    return {"requests": agents.BUS.take(wait)}
+
+
+@router.post("/agents/requests/{request_id}")
+async def agent_answer(request_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict) or ("result" in body) == ("error" in body):
+        return _error(400, "bad_request", 'the body must be {"result": ...} or {"error": {"code", "message"}}')
+    if not _agents().BUS.answer(request_id, body):
+        return _error(404, "unknown_request", "no tool call waits for this request")
+    return Response(status_code=204)
+
+
+@router.post("/agents/deliver")
+async def agent_deliver(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return _error(400, "bad_request", "the body must be a JSON object")
+    try:
+        return await asyncio.to_thread(_agents().deliver, body)
+    except ValueError as exc:
+        return _error(400, "bad_request", str(exc))
+
+
 @router.post("/sessions/{session_id}/files")
 async def post_file(session_id: str, request: Request):
     core = _core()

@@ -2,8 +2,8 @@
 on the user's own device, which dials in through hermes-hub.
 
 Registers the ``device`` terminal environment provider, the ``pre_tool_call`` guard, the
-``/device`` command, the ``@device:`` context reference and the ``device-browser`` and
-``device-mcp`` toolsets, hides the built-in ``browser_vault`` tool, and wraps the Hermes internals
+``/device`` command, the ``@device:`` context reference and the ``device-browser``,
+``device-mcp`` and ``device-agents`` toolsets, hides the built-in ``browser_vault`` tool, and wraps the Hermes internals
 that read server files directly. The exec leg and the HTTP routes live in
 ``dashboard/plugin_api.py``; both halves share ``core.py`` through one module object.
 docs/protocol.md section 8.
@@ -150,6 +150,7 @@ def register(ctx) -> None:
     ctx.register_context_reference(make_reference_provider(core))
     core._load_sibling("hermes_device_browser", "browser.py").register(ctx, core)
     core._load_sibling("hermes_device_mcp", "mcptools.py").register(ctx, core)
+    core._load_sibling("hermes_device_agents", "agents.py").register(ctx, core)
     missing = core.install_hooks()
     if missing:
         core.logger.error("device: Hermes internals not wrapped: %s", ", ".join(missing))
