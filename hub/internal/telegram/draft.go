@@ -88,23 +88,24 @@ func (r *renderer) draftLost() {
 	}
 }
 
-// draftHTML is the draft: the status line of the running turn and the end
-// of the reply so far. It is "" before either exists, which Telegram shows
-// as a "Thinking…" placeholder.
+// draftHTML is the draft: the end of the reply so far, else the status
+// line of the running turn. It is "" before either exists, which Telegram
+// shows as a "Thinking…" placeholder. The reply goes without the status
+// line: Telegram animates a draft that only grows, but redraws all of it
+// when its start changes, and the status line's clock changes every frame.
 func (r *renderer) draftHTML() string {
-	head := ""
-	if r.turn != nil {
-		head = "<i>" + r.statusHTML(false) + "</i>"
-	}
 	_, text := hub.MediaDirectives(r.answer.String())
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return head
+		if r.turn == nil {
+			return ""
+		}
+		return "<i>" + r.statusHTML(false) + "</i>"
 	}
-	room := MaxMessageLen - utf16Len(head) - 2
+	room := MaxMessageLen
 	chunks := RenderMarkdown(text, room)
 	if len(chunks) == 0 {
-		return head
+		return ""
 	}
 	body := chunks[len(chunks)-1]
 	if len(chunks) > 1 {
@@ -113,10 +114,7 @@ func (r *renderer) draftHTML() string {
 			body = chunks[len(chunks)-1]
 		}
 	}
-	if head == "" {
-		return body
-	}
-	return head + "\n\n" + body
+	return body
 }
 
 // flushDraft sends the draft when it changed and its gap allows.

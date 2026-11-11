@@ -194,8 +194,8 @@ func TestDraftStreamsTheReplyInAPrivateChat(t *testing.T) {
 	if id, _ := draft.Params["chat_id"].(float64); int64(id) != aliceTG || draft.Params["draft_id"] == nil || draft.Params["parse_mode"] != "HTML" {
 		t.Fatalf("draft = %+v", draft.Params)
 	}
-	if !strings.Contains(draft.text(), "<i><b>Writing…</b>") {
-		t.Fatalf("draft has no status line: %q", draft.text())
+	if strings.Contains(draft.text(), "Writing…") || !strings.HasPrefix(draft.text(), "Hello") {
+		t.Fatalf("a draft with reply text also has the status line: %q", draft.text())
 	}
 	h.tg.wait(mSend, "Working…")
 	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "Hello **world**", kStatus: statusComplete})
