@@ -124,6 +124,8 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 		if r.decode(ev, &p) && p.Text != nil {
 			r.answer.WriteString(*p.Text)
 		}
+	case hub.KindMessageStart:
+		r.note(ctx, ev)
 	case hub.KindMessageComplete:
 		r.complete(ctx, ev)
 	case hub.KindApprovalRequest:
@@ -417,6 +419,23 @@ func (r *renderer) complete(ctx context.Context, ev hub.Event) {
 		}
 	}
 	r.sendMedia(ctx, paths)
+}
+
+// note sends the text of a cron result Hermes delivered into the session. A
+// cron result is a note, not a turn, so no reply follows it.
+func (r *renderer) note(ctx context.Context, ev hub.Event) {
+	var p struct {
+		Text string `json:"text"`
+		Note string `json:"note"`
+	}
+	if !r.decode(ev, &p) || p.Note != "cron" || strings.TrimSpace(p.Text) == "" {
+		return
+	}
+	for _, chunk := range RenderMarkdown(p.Text, MaxMessageLen) {
+		if r.send(ctx, chunk, nil) == 0 {
+			break
+		}
+	}
 }
 
 // send sends html and returns the message ID, or 0 on failure. When Telegram

@@ -145,6 +145,8 @@ Telegram lets only one process long-poll a bot token. With `store.driver: postgr
 
 The bot streams each chat's session through a subscription in the leader's own process. Hermes sends every session event to every subscriber, so a turn that a page started on another replica still reaches the chat. The store keeps each chat's session and the bot's update offset, so a new leader attaches every chat again and carries on from the last update the old leader finished. A leader that loses its lock stops after the update it is handling. The bot sends each message under a submission ID derived from its Telegram update, so if a new leader handles an update again, Hermes still runs the message once. If a turn runs while the leader changes, the new leader can repeat that turn's progress messages in the chat.
 
+A chat can ask Hermes to schedule a task (Hermes cron, `cronjob_manage`). Hermes writes each result into the chat it was scheduled from as a note, not as a turn. The page shows the note as a result card, and the bot sends it to every Telegram chat attached to that session. A chat started on the page sends its results only to the page until a Telegram chat attaches to it.
+
 ## Devices
 
 With `device.enabled` the hub is the server side of [hermes-device](https://github.com/USA-RedDragon/hermes-device) v0.1.0, as its `docs/protocol.md` describes. The hub imports that module's `protocol` and `assertion` packages for the wire names and the hub assertion.

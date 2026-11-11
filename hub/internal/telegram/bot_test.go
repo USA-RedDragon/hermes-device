@@ -86,7 +86,7 @@ func TestReasoningEditsAreThrottled(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	h.hub.emit(t, sid, hub.KindReasoningDelta, map[string]any{kText: "LAST"})
-	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "done", kStatus: "complete"})
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "done", kStatus: statusComplete})
 	h.tg.wait(mSend, "done")
 
 	first := h.tg.wait(mSend, "Thinking")
@@ -131,13 +131,32 @@ func TestToolStartAndComplete(t *testing.T) {
 	}
 }
 
+func TestCronResultIsSent(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "first answer", kStatus: statusComplete})
+	h.tg.wait(mSend, "first answer")
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "a user message"})
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "Cronjob Response: **ping**", "note": "cron"})
+	got := h.tg.wait(mSend, "Cronjob Response")
+	if got.text() != "Cronjob Response: <b>ping</b>" {
+		t.Fatalf("cron result = %q", got.text())
+	}
+	for _, c := range h.tg.snapshot() {
+		if c.Method == mSend && strings.Contains(c.text(), "a user message") {
+			t.Fatalf("user message echoed: %q", c.text())
+		}
+	}
+}
+
 func TestFinalAnswerIsSplit(t *testing.T) {
 	t.Parallel()
 	h := startBot(t, nil)
 	sid := h.startTurn(t)
 	long := strings.Repeat("word & <tag> ", 900)
 	h.hub.emit(t, sid, hub.KindMessageDelta, map[string]any{kText: "partial"})
-	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: long, kStatus: "complete"})
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: long, kStatus: statusComplete})
 	want := len(telegram.RenderMarkdown(long, telegram.MaxMessageLen))
 	if want < 3 {
 		t.Fatalf("expected at least 3 chunks, RenderMarkdown gives %d", want)
