@@ -55,7 +55,7 @@ The hub relays the backend's close code and reason to the device unchanged. Code
 
 | Code | Name | Sent by | Client action |
 |---|---|---|---|
-| `1000`, `1001` | normal, going away | any | reconnect with backoff |
+| `1000`, `1001` | normal, going away | any (the plugin sends `1001` to hand its commands to the next gateway, section 4.7) | reconnect with backoff |
 | <!-- docgen:const pkg=protocol name=CloseUnauthorized code=false -->4401<!-- /docgen:const --> | unauthorized | hub (token), plugin (dev static token) | stop, ask for login |
 | <!-- docgen:const pkg=protocol name=CloseAssertionRefused code=false -->4403<!-- /docgen:const --> | assertion refused | plugin, acp-host | reconnect with backoff (a hub or pod misconfiguration) |
 | <!-- docgen:const pkg=protocol name=ClosePingTimeout code=false -->4408<!-- /docgen:const --> | ping timeout | any | reconnect |
@@ -65,7 +65,7 @@ The hub relays the backend's close code and reason to the device unchanged. Code
 | <!-- docgen:const pkg=protocol name=CloseBackendUnavailable code=false -->4502<!-- /docgen:const --> | backend unavailable | hub (also when the backend hop drops without a close frame) | reconnect with backoff |
 | `1008` | policy | Hermes plugin gate | reconnect with backoff (plugin disabled) |
 | `1011` | `hermes acp` exited | acp-host | reconnect with backoff |
-| `1013` | try again later | acp-host (process limit, or no gateway) | reconnect with backoff |
+| `1013` | try again later | acp-host (process limit, or no gateway), plugin (before `welcome`, while the gateway hands off, section 4.7) | reconnect with backoff |
 | `1002` | protocol error | plugin (no hello in time), device (no resume in time) | reconnect with backoff |
 | <!-- docgen:const pkg=protocol name=CloseServiceRestart code=false -->1012<!-- /docgen:const --> | service restart | plugin (uvicorn, when the gateway stops) | reconnect with backoff; on the exec leg the device kills its commands at once (section 4.7) |
 
@@ -274,6 +274,7 @@ The plugin side:
 4. A killed command is never listed in a `resume`, so the device kills it on the resume. This covers a `kill` sent into a connection that was already dead and a `kill` while the command waits for a resume; in the second case the plugin finishes it at once with exit 130.
 5. When an `output` arrives with an `offset` below the bytes the plugin has, it drops the bytes it already has. When it arrives above, the plugin adds a note to the output that says how many bytes were lost.
 6. A leg that ends with `1012`, or whose handler the server cancels, is not parked: its pending commands fail at once with exit 255. uvicorn ends every socket with `1012` when the gateway stops, and the device kills its commands on `1012`, so nothing would resume them. Commands already parked for other devices keep their grace; in a stopping gateway they end with the process.
+7. Restart handoff. When Hermes restarts the gateway gracefully and `terminal.process_handoff_backends` lists `device`, Hermes hands its background processes to the next gateway, and the plugin hands over the device commands among them (commands moved to the background, section 8.4). The plugin closes every exec leg with `1001`, so the devices park their commands, and refuses new legs with `1013` before `welcome` until the process ends. It takes each handed-off command out of its own hub, so the stopping gateway never fails it, and writes the commands (device, `id`, offset) to `$HERMES_HOME/device/handoff.json`. The next gateway reads and deletes that file before it accepts its first exec leg and parks the commands for the rest of `grace_seconds`, counted from when the file was written. The device's first connection to it resumes them as in point 2, and Hermes reads their output and reports their exit as before. A command that a tool call still waits for in the foreground is not handed off: the next gateway's `resume` does not name it, so the device kills it. `grace_seconds` must cover the time from the stop to the device's first connection to the next gateway, including the device's reconnect backoff (up to 30s); set it to the device's `device.max-grace` (default 10 minutes, so `600`), because the device keeps commands only for the shorter of the two.
 
 The device side:
 
@@ -289,7 +290,8 @@ What a restart does:
 |---|---|
 | hub (close `1001`, then upgrades refused with `502` until it is back) | Commands keep running and resume when the device reconnects within the grace |
 | network drop, ping timeout (`4408`) | Same |
-| Hermes gateway, also a rollout to a new pod | The plugin's pending commands live in the gateway process's memory, so they cannot survive it. Hermes stops the running turns before it stops the listener (gateway/run_runtime.py), the plugin fails every command still pending on a connected device at once (point 6 above), and the device, which sees `1012`, kills its commands at once. If the device misses the `1012` (for example a pod that was killed), its next connection gets an empty `resume` from the new plugin process and it kills them then; if it cannot connect at all, it kills them after the grace. Nothing waits for the grace in either case |
+| Hermes gateway graceful restart, also a rollout to a new pod on the same `HERMES_HOME`, with `device` in `terminal.process_handoff_backends` | Commands moved to the background keep running and resume on the next gateway when it starts within the grace (point 7). Commands still in the foreground are lost: the next gateway's `resume` does not name them, so the device kills them |
+| Hermes gateway, also a rollout to a new pod, otherwise | The plugin's pending commands live in the gateway process's memory, so they cannot survive it. Hermes stops the running turns before it stops the listener (gateway/run_runtime.py), the plugin fails every command still pending on a connected device at once (point 6 above), and the device, which sees `1012`, kills its commands at once. If the device misses the `1012` (for example a pod that was killed), its next connection gets an empty `resume` from the new plugin process and it kills them then; if it cannot connect at all, it kills them after the grace. Nothing waits for the grace in either case |
 | `talaria run` | The daemon kills its commands when it stops. The plugin's `resume` to the new daemon names them, the daemon answers exit 255 for each, and the tool calls end at once |
 
 ### 4.8 Browser control (capability `browser`)
@@ -744,7 +746,7 @@ The plugin is a Hermes user plugin named `device`, installed into `$HERMES_HOME/
 | `device_write_roots` | `[]` | Device directories the operator added to `HERMES_WRITE_SAFE_ROOT` so file tools can write to devices (section 8.7) |
 | `fallback` | `local` | What an unbound, never-bound session runs on: `local` (the pod shell, as without the plugin), `refuse`, or `device` (the sandbox device, section 8.10). `device` without `fallback_device` acts as `refuse` |
 | `fallback_device` | none | `fallback: device` only: the sandbox device, by device id (preferred) or by the unique name of a connected device |
-| `grace_seconds` | `120` | How long the pending commands of a dropped version 3 exec leg wait for the device to reconnect and resume them (section 4.7). At most 3600. `0` turns resume off |
+| `grace_seconds` | `120` | How long the pending commands of a dropped version 3 exec leg wait for the device to reconnect and resume them (section 4.7). At most 3600. `0` turns resume off, and with it the restart handoff. For the restart handoff, set it to the devices' `device.max-grace` (`600` for the default) |
 | `fallback_root` | `/work` | `fallback: device` only: absolute directory on the sandbox device that holds one working directory per session lineage. Must be inside the sandbox's roots |
 | `user` | none | The hub user name of the one person who uses this backend. Sessions that no computer serves act for this user when they pick a browser device (docs/browser.md section 3.2). Leave it unset on a backend that more than one hub user may use |
 | `browser` | `true` | `false` hides the `device-browser` toolset (docs/browser.md section 3) |
@@ -772,6 +774,8 @@ The plugin is a Hermes user plugin named `device`, installed into `$HERMES_HOME/
 ```
 
 `ever_bound` lists every session id that ever had a binding, including unbound ones. It only grows.
+
+During a restart handoff (section 4.7, point 7) the stopping gateway writes `$HERMES_HOME/device/handoff.json` (`{"version": 1, "written_at": <unix time>, "commands": [{"device_id", "rid", "offset", "cwd"}]}`), and the next gateway reads and deletes it.
 
 The browser devices that sessions and scheduled jobs chose are in a separate file, `$HERMES_HOME/device/browser.json` (docs/browser.md section 3.2). acp-host does not read it.
 
