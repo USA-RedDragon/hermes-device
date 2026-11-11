@@ -24,6 +24,8 @@ type Plugin struct {
 	Accounts []claude.Account
 	// Usages are the usage answers by account.
 	Usages map[string]claude.Usage
+	// Credits are the API credit estimates by account, sent with usage.
+	Credits map[string]*claude.Credits
 	// Pools are the pool answers by session; a session without one gets
 	// Pool.
 	Pools map[string]claude.Pool
@@ -43,7 +45,7 @@ type Plugin struct {
 // account2, on gw.
 func New(gw *gatewaytest.Gateway) *Plugin {
 	p := &Plugin{Usages: map[string]claude.Usage{}, SignIns: map[string]*claude.SignIn{}, Codes: map[string]string{},
-		Pools: map[string]claude.Pool{}, SignInEmail: "alice@example.com"}
+		Credits: map[string]*claude.Credits{}, Pools: map[string]claude.Pool{}, SignInEmail: "alice@example.com"}
 	for _, id := range []string{"account1", "account2"} {
 		p.Accounts = append(p.Accounts, claude.Account{ID: id, Label: "Claude (" + id + ")", Provider: "claude-" + id,
 			ConfigDir: "/opt/data/hermes/claude/" + id, Status: claude.Status{CheckedAt: time.Now().UTC()}})
@@ -124,6 +126,7 @@ func (p *Plugin) list(w http.ResponseWriter, r *http.Request) {
 			if u, ok := p.Usages[a.ID]; ok {
 				a.Usage = &u
 			}
+			a.Credits = p.Credits[a.ID]
 		}
 		out.Accounts = append(out.Accounts, a)
 	}

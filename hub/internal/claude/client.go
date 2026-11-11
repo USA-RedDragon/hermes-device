@@ -73,16 +73,29 @@ type SignIn struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// Credits is the plugin's estimate of an account's API credits.
+type Credits struct {
+	Provider      string    `json:"provider"`
+	MonthlyUSD    *float64  `json:"monthly_usd"`
+	SpentUSD      *float64  `json:"spent_usd"`
+	LeftUSD       *float64  `json:"left_usd"`
+	Since         time.Time `json:"since"`
+	ResetsAt      time.Time `json:"resets_at"`
+	UnpricedCalls int       `json:"unpriced_calls"`
+	Error         string    `json:"error"`
+}
+
 // Account is one Claude account slot of the plugin.
 type Account struct {
-	ID        string  `json:"id"`
-	Label     string  `json:"label"`
-	Provider  string  `json:"provider"`
-	ConfigDir string  `json:"config_dir"`
-	Status    Status  `json:"status"`
-	LastEmail string  `json:"last_email"`
-	SignIn    *SignIn `json:"signin"`
-	Usage     *Usage  `json:"usage"`
+	ID        string   `json:"id"`
+	Label     string   `json:"label"`
+	Provider  string   `json:"provider"`
+	ConfigDir string   `json:"config_dir"`
+	Status    Status   `json:"status"`
+	LastEmail string   `json:"last_email"`
+	SignIn    *SignIn  `json:"signin"`
+	Usage     *Usage   `json:"usage"`
+	Credits   *Credits `json:"api_credits"`
 }
 
 // Pool is the plugin's GET /pool answer: the account the pool runs a

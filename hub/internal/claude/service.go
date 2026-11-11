@@ -244,6 +244,9 @@ func (s *Service) ClaudeAccounts(ctx context.Context, user, backendID string, us
 			u := s.convertUsage(*x.Usage)
 			h.Usage = &u
 		}
+		if usage && x.Credits != nil {
+			h.Credits = s.convertCredits(*x.Credits)
+		}
 		if admin && x.SignIn != nil {
 			si := convertSignIn(*x.SignIn)
 			si.URL = ""
@@ -401,6 +404,17 @@ func (s *Service) ClaudePool(ctx context.Context, user, backendID, sessionID, mo
 		out.Message = "No Claude account can run this chat now."
 	}
 	return out, nil
+}
+
+// convertCredits copies the plugin's API credit estimate, with the reset
+// day in the backend's time zone.
+func (s *Service) convertCredits(x Credits) *hub.ClaudeCredits {
+	out := &hub.ClaudeCredits{Provider: x.Provider, MonthlyUSD: x.MonthlyUSD, SpentUSD: x.SpentUSD, LeftUSD: x.LeftUSD,
+		Since: x.Since, ResetsAt: x.ResetsAt, Unpriced: x.UnpricedCalls, Error: x.Error}
+	if !x.ResetsAt.IsZero() {
+		out.ResetsText = x.ResetsAt.In(s.o.Location).Format("Jan 2")
+	}
+	return out
 }
 
 func convertSignIn(x SignIn) hub.ClaudeSignIn {

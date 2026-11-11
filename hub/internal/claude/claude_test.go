@@ -388,3 +388,26 @@ func TestPool(t *testing.T) {
 		t.Errorf("backend without the plugin: %v", err)
 	}
 }
+
+func TestAccountsCredits(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := context.Background()
+	e.plugin.Lock()
+	e.plugin.Credits[account] = &claude.Credits{Provider: "claude-api-account1", MonthlyUSD: pct(100), SpentUSD: pct(27.4),
+		LeftUSD: pct(72.6), Since: time.Date(2026, 11, 1, 5, 0, 0, 0, time.UTC), ResetsAt: time.Date(2026, 12, 1, 6, 0, 0, 0, time.UTC),
+		UnpricedCalls: 2}
+	e.plugin.Unlock()
+
+	got, err := e.svc.ClaudeAccounts(ctx, bob, backendMain, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := got.Accounts[0].Credits
+	if c == nil || *c.LeftUSD != 72.6 || *c.MonthlyUSD != 100 || c.ResetsText != "Dec 1" || c.Unpriced != 2 || c.Provider != "claude-api-account1" {
+		t.Fatalf("credits = %+v", c)
+	}
+	if got.Accounts[1].Credits != nil {
+		t.Errorf("an account without a key has credits: %+v", got.Accounts[1].Credits)
+	}
+}

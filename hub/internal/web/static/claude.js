@@ -2,8 +2,8 @@
 // HubClaude shows the Claude accounts of a backend with the claude-accounts
 // Hermes plugin: the account and its usage on the line under a chat's
 // title (for a chat on the Claude pool, the account the pool runs it on),
-// a panel on the Usage page, the notice in a chat whose account lost its
-// login, and the sign-in dialog. Only the backend's Claude admins see
+// a panel on the Usage page with each account's API credit estimate, the
+// notice in a chat whose account lost its login, and the sign-in dialog. Only the backend's Claude admins see
 // the sign-in controls; the hub refuses everyone else too. The sign-in
 // link and code stay in the dialog: the code input is cleared as soon as it
 // is sent, and neither is stored. ctx gives it the app's api and el
@@ -97,6 +97,20 @@ window.HubClaude = (ctx) => {
     }
     if (provider && provider.startsWith(creditsPrefix)) return { parts: ["Bills that account's monthly API credits."] };
     return null;
+  }
+
+  // money is a dollar amount as the credits line shows it: whole dollars
+  // from $10 up, cents below.
+  const money = (v) => "$" + (v >= 10 ? Math.round(v).toString() : v.toFixed(2));
+
+  // creditsLine is an account's API credit estimate for the Usage page.
+  function creditsLine(c) {
+    if (c.error || typeof c.spent_usd !== "number") return "API credits: no estimate" + (c.error ? " (" + c.error + ")" : "") + ".";
+    const resets = c.resets_text ? ", resets " + c.resets_text : "";
+    if (typeof c.left_usd === "number" && typeof c.monthly_usd === "number") {
+      return "API credits: about " + money(c.left_usd) + " of " + money(c.monthly_usd) + " left" + resets + ".";
+    }
+    return "API credits: about " + money(c.spent_usd) + " spent this month" + resets + ".";
   }
 
   const pct = (w) => Math.round(w.used_percent) + "%";
@@ -307,7 +321,9 @@ window.HubClaude = (ctx) => {
       return s;
     }
     s.append(el("p", "mem-hint", "The Claude subscription accounts this Hermes can use, with the share of each usage window used. " +
-      "Reset times are in " + (data.time_zone || "UTC") + " time. The Claude API route with an API key has no usage the hub can read."));
+      "Reset times are in " + (data.time_zone || "UTC") + " time. API credits are an estimate: the credit the plan includes each " +
+      "month, less what Hermes spent through the account's API key since the month started. Anthropic does not report the balance, " +
+      "so use outside Hermes is not counted."));
     if (!(data.accounts || []).length) s.append(el("p", "none", "No accounts."));
     for (const a of data.accounts || []) {
       const box = el("div", "claude-account");
@@ -329,6 +345,12 @@ window.HubClaude = (ctx) => {
         box.append(list);
       }
       for (const d of (u && u.details) || []) box.append(el("p", "hint", d));
+      if (a.credits) {
+        const line = el("p", "claude-meta", creditsLine(a.credits));
+        line.title = "An estimate that counts only Hermes's own use of this account's API key" +
+          (a.credits.unpriced ? "; " + a.credits.unpriced + " calls had no known price and are not counted" : "");
+        box.append(line);
+      }
       if (data.admin) {
         const run = a.signin && (a.signin.state === "waiting_code" || a.signin.state === "starting" || a.signin.state === "verifying");
         const b = el("button", "", run ? "Continue sign-in" : a.signed_in ? "Sign in again" : "Sign in");

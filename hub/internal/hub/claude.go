@@ -153,8 +153,31 @@ type ClaudeAccount struct {
 	Plan        string       `json:"plan,omitempty"`
 	StatusError string       `json:"status_error,omitempty"`
 	Usage       *ClaudeUsage `json:"usage,omitempty"`
+	// Credits is the API credit estimate of the account's API key, with the
+	// usage, when Hermes has a key for the account.
+	Credits *ClaudeCredits `json:"credits,omitempty"`
 	// SignIn is the running or last sign-in, for admins only.
 	SignIn *ClaudeSignIn `json:"signin,omitempty"`
+}
+
+// ClaudeCredits estimates the API credits of a Claude account's API key:
+// the credit its plan includes each month, less what Hermes spent through
+// the key since the cycle started. Anthropic has no API that returns the
+// balance, so it counts only Hermes's own use. MonthlyUSD and LeftUSD are
+// nil when the plan's credit is unknown; SpentUSD is nil when Hermes's use
+// could not be read.
+type ClaudeCredits struct {
+	Provider   string    `json:"provider"`
+	MonthlyUSD *float64  `json:"monthly_usd"`
+	SpentUSD   *float64  `json:"spent_usd"`
+	LeftUSD    *float64  `json:"left_usd"`
+	Since      time.Time `json:"since,omitzero"`
+	ResetsAt   time.Time `json:"resets_at,omitzero"`
+	// ResetsText is ResetsAt's day in the backend's time zone, "Dec 1".
+	ResetsText string `json:"resets_text,omitempty"`
+	// Unpriced counts calls whose cost is unknown, left out of SpentUSD.
+	Unpriced int    `json:"unpriced,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 // ClaudePool says which account the Claude pool runs a chat's next turn
