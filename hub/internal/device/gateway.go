@@ -272,7 +272,7 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 			map[string]any{keyReason: reasonDenied}))
 		return
 	case ownRequestID(params):
-		g.toDevice(answerError(f.ID, codeInvalid, "request_id values starting with "+OwnIDPrefix+" are the hub's", nil))
+		g.toDevice(answerError(f.ID, codeInvalid, "request_id, submission_id and input_id values starting with "+OwnIDPrefix+" are the hub's", nil))
 		return
 	case !rewriteParams(f.Method, params):
 		g.toDevice(answerError(f.ID, codeInvalidParams, "size params must be numbers", nil))

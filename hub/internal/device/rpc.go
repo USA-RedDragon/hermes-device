@@ -646,11 +646,16 @@ func rewriteParams(method string, params map[string]json.RawMessage) bool {
 	return true
 }
 
-// ownRequestID reports whether a request_id param starts with the hub's
-// own prefix, which the hub uses for its own requests.
+// ownRequestID reports whether a request_id, submission_id or input_id
+// param starts with the hub's own prefix, which the hub uses for its own
+// requests and for the agent messages it submits.
 func ownRequestID(params map[string]json.RawMessage) bool {
-	s, ok := rawStringOK(params[keyRequestID])
-	return ok && strings.HasPrefix(s, OwnIDPrefix)
+	for _, k := range []string{keyRequestID, "submission_id", "input_id"} {
+		if s, ok := rawStringOK(params[k]); ok && strings.HasPrefix(s, OwnIDPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func rewritten(method string) bool {

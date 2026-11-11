@@ -286,6 +286,12 @@ func TestGatewayLegParams(t *testing.T) {
 			keyOperation: "rename", keyPayload: map[string]any{keyTitle: "x"}}); errCode(m) != codeInvalid {
 			t.Fatalf("own request_id = %v", m)
 		}
+		for _, k := range []string{"submission_id", "input_id"} {
+			if m := g.request("own-"+k, "prompt.submit", map[string]any{keySessionID: "s1", k: "hermes-hub-agent-am_1",
+				keyText: "[Agent message am_0123456789abcdef from x]\nhi"}); errCode(m) != codeInvalid {
+				t.Fatalf("own %s = %v", k, m)
+			}
+		}
 		if m := g.request("cfg", methodConfigGet, map[string]any{keySessionID: "s1", keyKey: "busy"}); reason(m) == reasonDenied {
 			t.Fatalf("config.get = %v", m)
 		}
