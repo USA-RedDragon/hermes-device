@@ -166,9 +166,9 @@ The first `talaria` command on a computer that has the old names moves them, and
 - It moves the config and cache directories, and changes paths in `config.yaml` and in setup's record that named the old directory.
 - It writes the new unit or launchd agent from the old one (with your changes to it, such as `MemoryMax`, and the unit's drop-in directory), removes the old one, and enables and starts the new one in its place. The new unit has `Conflicts=hermes-device.service`, so starting it stops the old one first, also when the old one runs the process that migrates.
 - It registers the `talaria` native messaging host and points the old `hermes_device` host at the new binary too, because Firefox updates the extension on its own schedule. The extension tries `talaria` first, then `hermes_device`.
-- It moves the device token in the keyring the first time it reads it.
+- It copies the device token in the keyring to the `talaria` entry the first time it reads it, and keeps the old entry for older binaries.
 
-A file that is already at the new place wins; the old one is left where it is and the log says so. `run --check-config`, `acp-host` and `plugin install` move nothing. The auto-update of 0.17.0 and 0.18.0 installs 0.19.0 by itself (the release still has `hermes-device_*` archives for it), and the new daemon then migrates the computer.
+A file that is already at the new place wins; the old one is left where it is and the log says so. `run --check-config`, `acp-host` and `plugin install` move nothing, and neither does a `talaria` that is not the installed binary (one you downloaded and run from elsewhere), except `setup`. While the old service runs, other commands (`chat` or an editor's `acp`, for example) move the files but leave the service alone, so that work the old daemon runs is not stopped; the service moves when the daemon restarts, for example after its automatic update. The auto-update of 0.17.0 and 0.18.0 installs 0.19.0 by itself (the release still has `hermes-device_*` archives for it), and the new daemon then migrates the computer.
 
 `TALARIA_*` environment variables win; an unset one falls back to the `HERMES_DEVICE_*` one, with a deprecation warning. A later release stops reading the old variables, stops publishing the `hermes-device_*` archives and no longer keeps the old host manifest.
 

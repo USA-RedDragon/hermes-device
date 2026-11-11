@@ -94,7 +94,7 @@ func TestFileFallback(t *testing.T) {
 	}
 }
 
-func TestLoadMovesLegacyKeyringEntry(t *testing.T) {
+func TestLoadCopiesLegacyKeyringEntry(t *testing.T) {
 	t.Parallel()
 	kr := &fakeKeyring{m: map[string]string{
 		"hermes-device/hub.example.com": `{"hub":"https://hub.example.com","token":"t","device_id":"d1"}`,
@@ -104,8 +104,8 @@ func TestLoadMovesLegacyKeyringEntry(t *testing.T) {
 	if err != nil || r.Token != "t" || r.DeviceID != "d1" {
 		t.Fatalf("Load = %+v, %v", r, err)
 	}
-	if _, ok := kr.m["hermes-device/hub.example.com"]; ok {
-		t.Error("legacy entry left")
+	if _, ok := kr.m["hermes-device/hub.example.com"]; !ok {
+		t.Error("legacy entry removed")
 	}
 	if _, ok := kr.m["talaria/hub.example.com"]; !ok {
 		t.Error("no talaria entry")

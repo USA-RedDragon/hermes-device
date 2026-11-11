@@ -16,6 +16,7 @@ import (
 	"github.com/USA-RedDragon/configulator/v2"
 	"github.com/USA-RedDragon/hermes-device/internal/autoupdate"
 	"github.com/USA-RedDragon/hermes-device/internal/config"
+	"github.com/USA-RedDragon/hermes-device/internal/legacy"
 	"github.com/USA-RedDragon/hermes-device/internal/setup"
 	"github.com/spf13/cobra"
 )
@@ -142,7 +143,7 @@ func defaultConfigFiles() []string {
 	if err != nil {
 		return nil
 	}
-	return []string{filepath.Join(dir, "talaria", "config.yaml")}
+	return []string{filepath.Join(legacy.Dir(filepath.Join(dir, "talaria")), "config.yaml")}
 }
 
 // browserCommand is the browser command, whose subcommands a person

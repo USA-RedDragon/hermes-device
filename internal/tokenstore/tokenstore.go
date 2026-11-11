@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/USA-RedDragon/hermes-device/internal/legacy"
 	"github.com/zalando/go-keyring"
 )
 
@@ -18,7 +19,7 @@ import (
 const Service = "talaria"
 
 // LegacyService is the keyring service name before the rename to talaria.
-// Load moves an entry from it to Service.
+// Load copies an entry from it to Service.
 const LegacyService = "hermes-device"
 
 // ErrNoToken is returned when no token is stored for the hub.
@@ -63,13 +64,15 @@ func New(useKeyring bool, file string) *Store {
 	return s
 }
 
-// DefaultStateDir is talaria in the user config directory.
+// DefaultStateDir is talaria in the user config directory, or the
+// hermes-device one of a release before the rename until the migration
+// moves it.
 func DefaultStateDir() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "talaria"), nil
+	return legacy.Dir(filepath.Join(dir, legacy.Name)), nil
 }
 
 func account(hub string) (string, error) {
@@ -144,8 +147,8 @@ func (s *Store) Load(hub string) (*Record, error) {
 }
 
 // moveLegacy reads the keyring entry that a release before the rename
-// stored, and moves it to Service. When the move fails, the entry stays
-// where it is and is still returned.
+// stored, and copies it to Service. The legacy entry stays, so that an
+// older binary still finds it; Delete removes both.
 func (s *Store) moveLegacy(acct string) (*Record, bool) {
 	v, err := s.Keyring.Get(LegacyService, acct)
 	if err != nil {
@@ -156,14 +159,10 @@ func (s *Store) moveLegacy(acct string) (*Record, bool) {
 		return nil, false
 	}
 	if err := s.Keyring.Set(Service, acct, v); err != nil {
-		slog.Warn("Could not move the device token to the talaria keyring entry; using the old entry", "error", err)
+		slog.Warn("Could not copy the device token to the talaria keyring entry; using the hermes-device entry", "error", err)
 		return &r, true
 	}
-	if err := s.Keyring.Delete(LegacyService, acct); err != nil {
-		slog.Warn("Moved the device token to the talaria keyring entry, but could not delete the old one", "error", err)
-	} else {
-		slog.Info("Moved the device token in the keyring from the hermes-device entry to the talaria entry", "account", acct)
-	}
+	slog.Info("Copied the device token in the keyring from the hermes-device entry to the talaria entry", "account", acct)
 	return &r, true
 }
 

@@ -27,7 +27,7 @@ func main() {
 		}
 		return
 	}
-	rootCmd := cmd.NewCommand(version, commit, cmd.WithDefaultHub(hubURL))
+	rootCmd := cmd.NewCommand(version, commit, cmd.WithDefaultHub(hubURL), cmd.WithMigration())
 	if err := rootCmd.Execute(); err != nil {
 		slog.Error("Encountered an error.", "error", err.Error())
 		os.Exit(1)

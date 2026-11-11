@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// stateActive is systemctl is-active's answer for a running unit.
+const stateActive = "active"
+
 // Service names.
 const (
 	UnitName     = "talaria.service"
@@ -211,7 +214,7 @@ func (d *systemdService) LoadStarts() bool { return false }
 
 func (d *systemdService) Active(ctx context.Context) bool {
 	out, _ := d.systemctl(ctx, "is-active", UnitName)
-	return strings.TrimSpace(string(out)) == "active"
+	return strings.TrimSpace(string(out)) == stateActive
 }
 
 func (d *systemdService) Start(ctx context.Context) error {

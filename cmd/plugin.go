@@ -8,6 +8,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// installCommand is the name of the install subcommands.
+const installCommand = "install"
+
 func newPluginCommand(b *base) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plugin",
@@ -15,7 +18,7 @@ func newPluginCommand(b *base) *cobra.Command {
 	}
 	var dest string
 	install := &cobra.Command{
-		Use:   "install",
+		Use:   installCommand,
 		Short: "Write the embedded device plugin into a Hermes plugins directory",
 		Long: "Writes the device plugin files and a VERSION file into --dest, replacing an older copy. " +
 			"Run it before Hermes starts, for example from an init container, then enable the plugin with hermes plugins enable device.",

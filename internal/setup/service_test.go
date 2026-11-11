@@ -31,7 +31,7 @@ func TestLaunchdAgent(t *testing.T) {
 	r := &fakeRunner{}
 	r.respond = func(_ string, args []string) ([]byte, error) {
 		switch args[0] {
-		case "print":
+		case lcPrint:
 			if loaded {
 				return []byte("state = running\n"), nil
 			}
@@ -43,7 +43,7 @@ func TestLaunchdAgent(t *testing.T) {
 		}
 		return nil, nil
 	}
-	sys := newSystem(t, "darwin", r, map[string]string{"launchctl": "/bin/launchctl"}, nil)
+	sys := newSystem(t, "darwin", r, map[string]string{launchctl: binLaunchctl}, nil)
 	svc, err := sys.NewService()
 	if err != nil {
 		t.Fatal(err)
@@ -185,7 +185,7 @@ func TestSetupOnMacStartsAgentOnce(t *testing.T) {
 			return nil, nil
 		}
 		switch args[0] {
-		case "print":
+		case lcPrint:
 			if loaded {
 				return []byte("state = running\n"), nil
 			}

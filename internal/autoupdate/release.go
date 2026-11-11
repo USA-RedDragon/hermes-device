@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/USA-RedDragon/hermes-device/internal/legacy"
 	"golang.org/x/mod/semver"
 )
 
@@ -83,7 +84,7 @@ func DefaultCachePath() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "talaria", "release.json")
+	return filepath.Join(legacy.Dir(filepath.Join(dir, legacy.Name)), "release.json")
 }
 
 func (r *Releases) now() time.Time {

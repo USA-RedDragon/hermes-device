@@ -22,7 +22,7 @@ func newBrowserCommand(b *base) *cobra.Command {
 		Short: "Firefox browser control (docs/browser.md)",
 	}
 	c.AddCommand(&cobra.Command{
-		Use:     "install",
+		Use:     installCommand,
 		Aliases: []string{"install-host"},
 		Short:   "Register this binary as the native messaging host of the Hermes Firefox extension, for this user",
 		Args:    cobra.NoArgs,

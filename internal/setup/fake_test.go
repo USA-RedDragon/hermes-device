@@ -17,12 +17,15 @@ import (
 var errNotFound = errors.New("not found")
 
 const (
-	systemctl = "systemctl"
-	linux     = "linux"
-	vNew      = "0.9.0"
-	vOld      = "0.8.1"
-	binName   = "talaria"
-	zshrcText = "export EDITOR=vi\n"
+	systemctl    = "systemctl"
+	launchctl    = "launchctl"
+	binLaunchctl = "/bin/launchctl"
+	lcPrint      = "print"
+	linux        = "linux"
+	vNew         = "0.9.0"
+	vOld         = "0.8.1"
+	binName      = "talaria"
+	zshrcText    = "export EDITOR=vi\n"
 )
 
 // fakeRunner answers commands with respond and records them.

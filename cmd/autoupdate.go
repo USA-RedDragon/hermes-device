@@ -84,7 +84,7 @@ func underService() bool {
 	case "linux":
 		data, err := os.ReadFile("/proc/self/cgroup")
 		return err == nil && (strings.Contains(string(data), "/"+setup.UnitName) || strings.Contains(string(data), "/"+setup.LegacyUnitName))
-	case "darwin":
+	case goosDarwin:
 		name := os.Getenv("XPC_SERVICE_NAME")
 		return name == setup.LaunchdLabel || name == setup.LegacyLaunchdLabel
 	}

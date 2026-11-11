@@ -224,7 +224,7 @@ func (b *base) pairIfNeeded(ctx context.Context, out io.Writer, sys *setup.Syste
 // openURL opens u in the default browser when there is a desktop.
 func openURL(sys *setup.System, u string) {
 	prog := "xdg-open"
-	if sys.GOOS == "darwin" {
+	if sys.GOOS == goosDarwin {
 		prog = "open"
 	} else if sys.Getenv("DISPLAY") == "" && sys.Getenv("WAYLAND_DISPLAY") == "" {
 		return
