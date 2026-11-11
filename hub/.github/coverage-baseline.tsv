@@ -9,7 +9,7 @@ internal/config/device.go	63	52
 internal/config/honcho.go	26	25
 internal/config/load.go	2	0
 internal/config/notify.go	30	28
-internal/device/acp.go	252	228
+internal/device/acp.go	254	229
 internal/device/agents.go	12	0
 internal/device/answers.go	59	47
 internal/device/binding.go	102	76
@@ -19,7 +19,7 @@ internal/device/device.go	201	162
 internal/device/devicetest/devicetest.go	479	430
 internal/device/files.go	71	57
 internal/device/gateway.go	419	331
-internal/device/legs.go	169	149
+internal/device/legs.go	169	151
 internal/device/pair.go	52	29
 internal/device/plugin.go	99	83
 internal/device/rpc.go	214	199
@@ -52,7 +52,7 @@ internal/memory/memorytest/memorytest.go	214	186
 internal/memory/notes.go	61	49
 internal/notify/jobs.go	49	36
 internal/notify/notify.go	285	182
-internal/pdf/pdf.go	180	159
+internal/pdf/pdf.go	180	160
 internal/pdf/pdftest/pdftest.go	32	32
 internal/server/server.go	40	0
 internal/service/activity.go	96	79
@@ -67,7 +67,7 @@ internal/service/observe.go	61	50
 internal/service/outcome.go	89	85
 internal/service/page.go	51	47
 internal/service/pdf.go	71	55
-internal/service/service.go	693	630
+internal/service/service.go	693	632
 internal/service/turn.go	75	68
 internal/store/agents.go	52	43
 internal/store/answers.go	22	20
@@ -92,7 +92,7 @@ internal/telegram/prompts.go	454	348
 internal/telegram/render.go	410	358
 internal/telegram/replymedia.go	74	62
 internal/telegram/status.go	59	53
-internal/telegram/topics.go	479	354
+internal/telegram/topics.go	479	355
 internal/web/activity.go	108	70
 internal/web/api.go	224	160
 internal/web/auth.go	112	84
