@@ -1,0 +1,14 @@
+{
+  "attestations": [
+    {
+      "bundle": null,
+      "repository_id": 212613049,
+      "bundle_url": "BUNDLE_URL/60066569.json.sn"
+    },
+    {
+      "bundle": null,
+      "repository_id": 212613049,
+      "bundle_url": "BUNDLE_URL/60065904.json.sn"
+    }
+  ]
+}
