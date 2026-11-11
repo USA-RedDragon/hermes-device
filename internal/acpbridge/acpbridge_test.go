@@ -86,7 +86,7 @@ func newFakeHub(t *testing.T) *fakeHub {
 			_, _ = io.WriteString(w, `{"error":"device_offline","message":"device desktop is not connected"}`)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"session_id": r.PathValue("id"), "device_id": "d1", "dir": body.Dir})
+		_ = json.NewEncoder(w).Encode(map[string]any{"session_id": r.PathValue("id"), "device_id": "d1", keyDir: body.Dir})
 	})
 	h.ts = httptest.NewServer(mux)
 	t.Cleanup(func() {
@@ -266,12 +266,12 @@ func (e *editor) none() {
 }
 
 func errCode(m map[string]any) (int, string) {
-	e, _ := m["error"].(map[string]any)
+	e, _ := m[keyError].(map[string]any)
 	if e == nil {
 		return 0, ""
 	}
-	code, _ := e["code"].(float64)
-	msg, _ := e["message"].(string)
+	code, _ := e[keyCode].(float64)
+	msg, _ := e[keyMessage].(string)
 	return int(code), msg
 }
 
@@ -325,8 +325,8 @@ func TestSessionNewBindsAndIDs(t *testing.T) {
 	}
 
 	ed.send(`{"jsonrpc":"2.0","id":"f1","method":"session/fork","params":{"sessionId":"local-1","cwd":"/home/alice/src/app/sub/","mcpServers":[]}}`)
-	a.answer(a.recv(), map[string]any{keySessionID: "local-2"})
-	if r := ed.recv(); r["id"] != "f1" || r["error"] != nil {
+	a.answer(a.recv(), map[string]any{keySessionID: session2})
+	if r := ed.recv(); r["id"] != "f1" || r[keyError] != nil {
 		t.Fatalf("editor got %v", r)
 	}
 	if got := hub.bindLog(); len(got) != 2 || got[1] != "local-2=/home/alice/src/app/sub" {
@@ -361,24 +361,6 @@ func TestBindFailures(t *testing.T) {
 	code, msg := errCode(r)
 	if r["id"] != float64(1) || code != acpbridge.CodeInternal || !strings.HasPrefix(msg, "talaria: could not bind the session to /home/alice/offline: ") ||
 		!strings.Contains(msg, "device_offline") {
-		t.Errorf("editor got %v", r)
-	}
-
-	ed.send(`{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"local-3","cwd":"/home/alice/offline","mcpServers":[]}}`)
-	r = ed.recv()
-	if code, _ := errCode(r); r["id"] != float64(2) || code != acpbridge.CodeInternal {
-		t.Errorf("editor got %v", r)
-	}
-	ed.send(`{"jsonrpc":"2.0","id":3,"method":"session/resume","params":{"sessionId":"local-3","cwd":"/home/alice/src","mcpServers":[]}}`)
-	req := a.recv()
-	if req["method"] != "session/resume" {
-		t.Fatalf("a failed load was forwarded: %v", req)
-	}
-	if got := hub.bindLog(); got[len(got)-1] != "local-3=/home/alice/src" {
-		t.Errorf("binds %v", got)
-	}
-	a.answer(req, map[string]any{})
-	if r := ed.recv(); r["id"] != float64(3) {
 		t.Errorf("editor got %v", r)
 	}
 }
@@ -488,8 +470,10 @@ func openSessions(t *testing.T, ed *editor, a *agent) string {
 	if r := ed.recv(); r["method"] != methodUpdate {
 		t.Fatalf("history of an editor load not passed: %v", r)
 	}
-	a.answer(req, map[string]any{})
-	ed.recv()
+	a.answer(req, map[string]any{"_meta": map[string]any{protocol.ACPBindingMeta: map[string]any{keyDir: "/home/alice/src/lib"}}})
+	if r := ed.recv(); r["id"] != float64(3) || len(asMap(t, r["result"])) != 0 {
+		t.Fatalf("load of a session bound here got %v", r)
+	}
 
 	a.send(`{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"local-1"}}`)
 	stale, ok := ed.recv()["id"].(string)
@@ -537,9 +521,9 @@ func testReconnectReplay(t *testing.T, drop func(*agent), outage bool) {
 	}
 	ed.send(`{"jsonrpc":"2.0","id":6,"method":"session/prompt","params":{"sessionId":"local-1","prompt":[]}}`)
 	b.answer(init, map[string]any{keyProtocolVersion: 1})
-	for _, want := range []struct{ sid, cwd string }{{localSession, "/home/alice/src/app"}, {"local-2", "/home/alice/src/lib"}} {
+	for _, want := range []struct{ sid, cwd string }{{localSession, "/home/alice/src/app"}, {session2, "/home/alice/src/lib"}} {
 		load := b.recv()
-		if load["method"] != "session/load" || param(load, keySessionID) != want.sid || param(load, "cwd") != want.cwd {
+		if load["method"] != methodLoad || param(load, keySessionID) != want.sid || param(load, "cwd") != want.cwd {
 			t.Fatalf("replay load %v", load)
 		}
 		if s, ok := param(load, "mcpServers").([]any); !ok || len(s) != 0 {
@@ -554,26 +538,26 @@ func testReconnectReplay(t *testing.T, drop func(*agent), outage bool) {
 		b.answer(load, map[string]any{})
 	}
 	waiting := b.recv()
-	if waiting["method"] != "session/prompt" {
+	if waiting["method"] != methodPrompt {
 		t.Fatalf("editor request sent during the replay: agent got %v", waiting)
 	}
 	ed.none()
-	b.answer(waiting, map[string]any{"stopReason": "end_turn"})
+	b.answer(waiting, map[string]any{keyStopReason: stopEndTurn})
 	if r := ed.recv(); r["id"] != float64(6) || r["result"] == nil {
 		t.Fatalf("editor got %v", r)
 	}
 
 	ed.send(`{"jsonrpc":"2.0","id":"` + stale + `","result":{"outcome":{"outcome":"cancelled"}}}`)
 	ed.send(`{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"local-1","prompt":[]}}`)
-	if got := b.recv(); got["method"] != "session/prompt" {
+	if got := b.recv(); got["method"] != methodPrompt {
 		t.Fatalf("stale answer reached the new agent, or the prompt did not: %v", got)
 	}
 	b.send(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"local-1","update":{"sessionUpdate":"agent_message_chunk"}}}`)
 	if r := ed.recv(); r["method"] != methodUpdate {
 		t.Errorf("live update after replay %v", r)
 	}
-	if len(hub.bindLog()) != 2 {
-		t.Errorf("replay bound again: %v", hub.bindLog())
+	if len(hub.bindLog()) != 1 {
+		t.Errorf("load or replay bound: %v", hub.bindLog())
 	}
 	if !outage && hub.refusedCount() != 0 {
 		t.Errorf("hub refused %d upgrades", hub.refusedCount())
@@ -596,7 +580,7 @@ func TestReplayDropsFailedLoad(t *testing.T) {
 	b := hub.accept()
 	b.answer(b.recv(), map[string]any{})
 	load := b.recv()
-	b.send(map[string]any{keyJSONRPC: jsonRPC, "id": load["id"], "error": map[string]any{"code": -32002, "message": "not found"}})
+	b.send(map[string]any{keyJSONRPC: jsonRPC, "id": load["id"], keyError: map[string]any{keyCode: -32002, keyMessage: "not found"}})
 	ed.none()
 
 	_ = b.conn.Close(websocket.StatusGoingAway, "")
@@ -607,7 +591,7 @@ func TestReplayDropsFailedLoad(t *testing.T) {
 		c.answer(init, map[string]any{})
 	}
 	ed.send(`{"jsonrpc":"2.0","id":3,"method":"session/list","params":{}}`)
-	if got := c.recv(); got["method"] != "session/list" {
+	if got := c.recv(); got["method"] != methodList {
 		t.Errorf("a session that failed to load was loaded again: %v", got)
 	}
 }
@@ -743,7 +727,7 @@ func TestSessionClose(t *testing.T) {
 	b := hub.accept()
 	b.answer(b.recv(), map[string]any{})
 	ed.send(`{"jsonrpc":"2.0","id":7,"method":"session/list","params":{}}`)
-	if got := b.recv(); got["method"] != "session/list" {
+	if got := b.recv(); got["method"] != methodList {
 		t.Errorf("a closed session was loaded again: %v", got)
 	}
 }
@@ -786,7 +770,7 @@ func TestStripsTopLevelMeta(t *testing.T) {
 	if len(blocks) != 1 || asMap(t, blocks[0])["_meta"] == nil {
 		t.Errorf("prompt blocks %v", blocks)
 	}
-	a.answer(req, map[string]any{"stopReason": "end_turn"})
+	a.answer(req, map[string]any{keyStopReason: stopEndTurn})
 	ed.recv()
 
 	ed.send(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s","_meta":null}}`)

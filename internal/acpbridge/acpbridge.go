@@ -1,9 +1,10 @@
 // Package acpbridge is `talaria acp`. It speaks ACP (newline-delimited
 // JSON-RPC 2.0) with an editor on stdio and copies it to the hub's ACP leg,
 // with the device-side behavior of docs/protocol.md section 6.3: file links
-// are inlined, sessions are bound to the editor's directory, and a lost leg
-// is reconnected and its sessions loaded again without replaying their
-// history to the editor.
+// are inlined, new sessions are bound to the editor's directory, a session
+// bound to another place is opened without moving it until the user asks,
+// and a lost leg is reconnected and its sessions loaded again without
+// replaying their history to the editor.
 package acpbridge
 
 import (
@@ -113,6 +114,9 @@ type pendingReq struct {
 	cwd     string
 	session string
 	gen     uint64
+	// move is set for the session/load the bridge sends after the user's
+	// MoveCommand; id is then the prompt's.
+	move bool
 }
 
 // agentReq is an agent request passed to the editor under a bridge id.
@@ -129,6 +133,7 @@ type ownCall struct {
 
 type openSession struct {
 	id, cwd string
+	place   place
 }
 
 // Bridge copies ACP between an editor and the hub.
@@ -284,6 +289,9 @@ func (b *Bridge) fromEditor(ctx context.Context, data []byte) error {
 	var cwd, session string
 	switch method {
 	case methodPrompt:
+		if done, err := b.guardPrompt(ctx, m, withID); done || err != nil {
+			return err
+		}
 		b.inlinePrompt(m)
 	case methodClose:
 		b.closeSession(ctx, m, withID)
@@ -299,17 +307,6 @@ func (b *Bridge) fromEditor(ctx context.Context, data []byte) error {
 			return nil
 		}
 		cwd = filepath.Clean(cwd)
-		if method == methodLoad || method == methodResume {
-			if err := b.bind(ctx, session, cwd); err != nil {
-				if withID {
-					b.writeEditor(bindError(m["id"], cwd, err))
-				}
-				if errors.Is(err, hubapi.ErrUnauthorized) {
-					return err
-				}
-				return nil
-			}
-		}
 	}
 	return b.forward(ctx, m, pendingReq{id: m["id"], method: method, params: m["params"], cwd: cwd, session: session}, withID)
 }
@@ -556,6 +553,9 @@ func (b *Bridge) replay(ctx context.Context, conn *websocket.Conn, procDone <-ch
 		return fmt.Errorf("initialize failed: %s", e)
 	}
 	for _, s := range sessions {
+		if s.place == placeNotHere {
+			continue
+		}
 		params, err := json.Marshal(map[string]any{"sessionId": s.id, "cwd": s.cwd, "mcpServers": []any{}})
 		if err != nil {
 			return err
@@ -569,6 +569,7 @@ func (b *Bridge) replay(ctx context.Context, conn *websocket.Conn, procDone <-ch
 			b.dropSession(s.id)
 			continue
 		}
+		b.checkReplayed(s, resp["result"])
 		b.log.Info("Loaded a session again", "session", s.id)
 	}
 	return nil
@@ -659,6 +660,7 @@ func (b *Bridge) fromAgent(ctx context.Context, gen uint64, data []byte) {
 			if drop {
 				return
 			}
+			m = b.addMoveCommand(m)
 		}
 		b.writeEditor(mustJSON(m))
 	case withID:
@@ -718,11 +720,14 @@ func (b *Bridge) finish(ctx context.Context, p pendingReq, m object) {
 			}
 			return
 		}
-		b.addSession(res.SessionID, p.cwd)
+		b.addSession(res.SessionID, p.cwd, placeHere)
 	case methodLoad, methodResume:
-		if ok {
-			b.addSession(p.session, p.cwd)
+		if p.move {
+			b.finishMove(p, ok, m)
+		} else {
+			b.finishLoad(p, ok, m)
 		}
+		return
 	}
 	b.writeEditor(mustJSON(m))
 }
@@ -765,16 +770,16 @@ func member(raw json.RawMessage) (object, bool) {
 	return o, true
 }
 
-func (b *Bridge) addSession(id, cwd string) {
+func (b *Bridge) addSession(id, cwd string, p place) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for i := range b.sessions {
 		if b.sessions[i].id == id {
-			b.sessions[i].cwd = cwd
+			b.sessions[i].cwd, b.sessions[i].place = cwd, p
 			return
 		}
 	}
-	b.sessions = append(b.sessions, openSession{id: id, cwd: cwd})
+	b.sessions = append(b.sessions, openSession{id: id, cwd: cwd, place: p})
 }
 
 // dropSession forgets a session the editor opened. It reports whether the
