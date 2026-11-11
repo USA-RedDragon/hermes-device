@@ -114,6 +114,7 @@ SERVICE_USER = "service"
 
 PLUGIN_EXEC_PATH = "/api/plugins/device/ws"
 ACP_HOST_PATH = "/acp"
+ACP_HOST_USAGE_PATH = "/usage"
 # acp-host adds this _meta member, {"dir": <binding dir>}, to session/load and session/resume results
 # (docs/protocol.md 6.2); the plugin only keeps the name in step with Go.
 ACP_BINDING_META = "deviceBinding"
