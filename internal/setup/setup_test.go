@@ -78,7 +78,6 @@ type fixture struct {
 	exe      string
 	opts     *setup.Options
 	paired   int
-	signIns  int
 	statuses []setup.BrowserStatus
 }
 
@@ -122,15 +121,11 @@ func newFixture(t *testing.T) *fixture {
 		},
 		BrowserStatus: func(context.Context) (*setup.BrowserStatus, error) {
 			if len(f.statuses) == 0 {
-				return &setup.BrowserStatus{Enabled: true, Connected: true, Auth: setup.AuthSignedIn, User: "alice"}, nil
+				return &setup.BrowserStatus{Enabled: true, Connected: true}, nil
 			}
 			st := f.statuses[0]
 			f.statuses = f.statuses[1:]
 			return &st, nil
-		},
-		SignIn: func(context.Context) error {
-			f.signIns++
-			return nil
 		},
 	}
 	return f
@@ -142,7 +137,7 @@ func TestSetupInstallsEverythingAndUninstallUndoesIt(t *testing.T) {
 	home := f.sys.Home
 	f.sys.Interactive, f.sys.In = true, strings.NewReader("y\n")
 	f.statuses = []setup.BrowserStatus{
-		{Enabled: true}, {Enabled: true, Connected: true, Auth: setup.AuthSignedOut},
+		{Enabled: true}, {Enabled: true},
 	}
 	rep, err := f.sys.Setup(t.Context(), f.opts)
 	if err != nil {
@@ -268,7 +263,7 @@ func TestSetupWithoutServiceManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(rep.Todo, "\n")
-	if !strings.Contains(joined, "no systemd user manager") || !strings.Contains(joined, "Sign Firefox in") {
+	if !strings.Contains(joined, "no systemd user manager") || !strings.Contains(joined, "connected to hermes-device") {
 		t.Errorf("todo %q", rep.Todo)
 	}
 	if f.run.has(systemctl) {
@@ -359,9 +354,6 @@ func checkInstalled(t *testing.T, f *fixture, rep *setup.Report) {
 	if len(f.run.started) != 1 || !strings.HasPrefix(f.run.started[0], "/usr/bin/firefox http") || !strings.HasSuffix(f.run.started[0], "/releases/download/v0.9.0/hermes-device-firefox-0.9.0.xpi") {
 		t.Errorf("started %q", f.run.started)
 	}
-	if f.signIns != 1 {
-		t.Errorf("sign-in requests = %d", f.signIns)
-	}
 	env := readFile(t, filepath.Join(home, ".config", "shell", "env.sh"))
 	if !strings.Contains(env, `for hermes_device_dir in "$HOME/.local/bin"; do`) || strings.Contains(env, "gone") {
 		t.Errorf("env.sh:\n%s", env)
@@ -384,7 +376,7 @@ func checkInstalled(t *testing.T, f *fixture, rep *setup.Report) {
 	for _, d := range rep.Done {
 		done.WriteString(d + "\n")
 	}
-	if !strings.Contains(done.String(), "signed in to the hub as alice") || len(rep.Todo) != 0 {
+	if !strings.Contains(done.String(), "extension is connected to hermes-device") || len(rep.Todo) != 0 {
 		t.Errorf("report %+v", rep)
 	}
 }

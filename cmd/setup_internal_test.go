@@ -132,18 +132,13 @@ func TestDaemonBrowserStatus(t *testing.T) {
 	if _, err := daemonBrowserStatus(t.Context(), dir); !errors.Is(err, daemonstate.ErrNotRunning) {
 		t.Fatalf("no daemon: %v", err)
 	}
-	signIns := 0
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer s3cret" {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		switch r.URL.Path {
-		case splice.PathControlBrowser:
-			_, _ = w.Write([]byte(`{"enabled":true,"connected":true,"auth":"signed_in","user":"alice"}`))
-		case splice.PathControlBrowserSignIn:
-			signIns++
-			w.WriteHeader(http.StatusNoContent)
+		if r.URL.Path == splice.PathControlBrowser {
+			_, _ = w.Write([]byte(`{"enabled":true,"connected":true}`))
 		}
 	}))
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -157,11 +152,8 @@ func TestDaemonBrowserStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	st, err := daemonBrowserStatus(t.Context(), dir)
-	if err != nil || !st.Enabled || !st.Connected || st.Auth != setup.AuthSignedIn || st.User != testUser {
+	if err != nil || !st.Enabled || !st.Connected {
 		t.Fatalf("status %+v, %v", st, err)
-	}
-	if err := daemonSignIn(t.Context(), dir); err != nil || signIns != 1 {
-		t.Fatalf("sign-in: %v, %d", err, signIns)
 	}
 }
 
@@ -185,12 +177,5 @@ func TestPairIfNeededKeepsAcceptedToken(t *testing.T) {
 	paired, err := b.pairIfNeeded(t.Context(), &out, nil, srv.URL, st, pairedName)
 	if err != nil || paired || !strings.Contains(out.String(), pairedID) {
 		t.Fatalf("pairIfNeeded = %t, %v, %q", paired, err, out.String())
-	}
-}
-
-func TestBrowserStatesMatchBroker(t *testing.T) {
-	t.Parallel()
-	if setup.AuthSignedIn != "signed_in" || setup.AuthSignedOut != "signed_out" || setup.AuthRefused != "refused" {
-		t.Fatal("setup's sign-in states")
 	}
 }

@@ -32,9 +32,6 @@ const (
 	// PathControlBrowser answers GET with the Firefox extension's state, a
 	// BrowserStatus.
 	PathControlBrowser = "/control/browser"
-	// PathControlBrowserSignIn asks the connected extension to open the
-	// hub's sign-in window.
-	PathControlBrowserSignIn = "/control/browser/sign-in"
 )
 
 const (
@@ -64,9 +61,6 @@ type Options struct {
 // control.
 type Browser interface {
 	Status() BrowserStatus
-	// RequestSignIn asks the extension to open the hub's sign-in window
-	// and reports whether an extension was connected.
-	RequestSignIn() bool
 }
 
 // BrowserStatus is the answer to GET /control/browser.
@@ -77,10 +71,6 @@ type BrowserStatus struct {
 	Connected bool   `json:"connected"`
 	Version   string `json:"version,omitempty"`
 	Browser   string `json:"browser,omitempty"`
-	// Auth is one of the broker's Auth* sign-in states.
-	Auth   string `json:"auth,omitempty"`
-	User   string `json:"user,omitempty"`
-	Reason string `json:"reason,omitempty"`
 }
 
 // Server serves /api/ws for the TUI and /control/tokens for chat.
@@ -171,7 +161,6 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	mux.HandleFunc("DELETE "+PathControlTokens+"/{token}", s.handleDeleteToken)
 	mux.HandleFunc("POST "+PathControlLookup, s.handleLookup)
 	mux.HandleFunc("GET "+PathControlBrowser, s.handleBrowser)
-	mux.HandleFunc("POST "+PathControlBrowserSignIn, s.handleBrowserSignIn)
 	mux.HandleFunc(PathTUI, s.handleTUI)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { forbidden(w) })
 	srv := &http.Server{
@@ -328,18 +317,6 @@ func (s *Server) handleBrowser(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(st); err != nil {
 		s.log.Debug("browser status not written", keyError, err)
 	}
-}
-
-func (s *Server) handleBrowserSignIn(w http.ResponseWriter, r *http.Request) {
-	if !s.controlAllowed(r) {
-		forbidden(w)
-		return
-	}
-	if s.opts.Browser == nil || !s.opts.Browser.RequestSignIn() {
-		http.Error(w, "the Hermes Firefox extension is not connected", http.StatusConflict)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) writeControlJSON(w http.ResponseWriter, status int, v map[string]string) {

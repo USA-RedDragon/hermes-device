@@ -82,7 +82,7 @@ func newSetupCommand(b *base) *cobra.Command {
 	fl.BoolVar(&f.noBrowser, "no-browser", false, "Leave Firefox alone and write browser.enabled false into a new config")
 	fl.BoolVar(&f.noShell, "no-shell-check", false, "Do not compare the login shell's PATH with bash's")
 	fl.BoolVar(&f.uninstall, "uninstall", false, "Undo what setup did, as its state file records")
-	fl.DurationVar(&f.wait, "wait", 10*time.Minute, "How long to wait for the Firefox extension to connect and sign in; 0 skips")
+	fl.DurationVar(&f.wait, "wait", 10*time.Minute, "How long to wait for the Firefox extension to connect; 0 skips")
 	return c
 }
 
@@ -184,7 +184,6 @@ func (b *base) setup(cmd *cobra.Command, sys *setup.System, cfg *config.Config, 
 		BrowserStatus: func(ctx context.Context) (*setup.BrowserStatus, error) {
 			return daemonBrowserStatus(ctx, stateDir)
 		},
-		SignIn: func(ctx context.Context) error { return daemonSignIn(ctx, stateDir) },
 	}
 	o.Releases.UserAgent = b.userAgent()
 	rep, err := sys.Setup(ctx, o)
@@ -265,20 +264,7 @@ func daemonBrowserStatus(ctx context.Context, stateDir string) (*setup.BrowserSt
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&st); err != nil {
 		return nil, err
 	}
-	return &setup.BrowserStatus{Enabled: st.Enabled, Connected: st.Connected, Auth: st.Auth, User: st.User, Reason: st.Reason}, nil
-}
-
-// daemonSignIn asks the running daemon to open the extension's sign-in.
-func daemonSignIn(ctx context.Context, stateDir string) error {
-	resp, err := daemonControl(ctx, stateDir, http.MethodPost, splice.PathControlBrowserSignIn)
-	if err != nil {
-		return err
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("%s: %s", splice.PathControlBrowserSignIn, resp.Status)
-	}
-	return nil
+	return &setup.BrowserStatus{Enabled: st.Enabled, Connected: st.Connected}, nil
 }
 
 func (b *base) uninstall(ctx context.Context, sys *setup.System, cfg *config.Config) error {

@@ -16,17 +16,7 @@ import (
 type BrowserStatus struct {
 	Enabled   bool
 	Connected bool
-	Auth      string
-	User      string
-	Reason    string
 }
-
-// Sign-in states of BrowserStatus.Auth, as the daemon reports them.
-const (
-	AuthSignedIn  = "signed_in"
-	AuthSignedOut = "signed_out"
-	AuthRefused   = "refused"
-)
 
 // Options configure Setup.
 type Options struct {
@@ -67,8 +57,6 @@ type Options struct {
 	HostManifest string
 	// BrowserStatus asks the running daemon about the extension.
 	BrowserStatus func(ctx context.Context) (*BrowserStatus, error)
-	// SignIn asks the daemon to open the extension's sign-in window.
-	SignIn func(ctx context.Context) error
 	// Releases finds the signed extension.
 	Releases *Releases
 }
@@ -431,7 +419,7 @@ func (s *System) firefoxStep(ctx context.Context, o *Options, ff *Firefox, r *Re
 		r.done("The Hermes Firefox extension is installed")
 	}
 	if !running || o.Wait <= 0 || o.BrowserStatus == nil {
-		r.todo("Sign Firefox in: choose the Hermes button in Firefox's toolbar, then \"Sign in to Hermes\", and Allow on the hub")
+		r.todo("Check that the Hermes button in Firefox's toolbar says it is connected to hermes-device")
 		return
 	}
 	s.waitBrowser(ctx, o, r)
@@ -446,7 +434,6 @@ func (s *System) waitBrowser(ctx context.Context, o *Options, r *Report) {
 	defer cancel()
 	s.printf("Waiting up to %s for the Firefox extension (Ctrl-C stops waiting; setup is done otherwise)...\n", o.Wait)
 	var last *BrowserStatus
-	asked := false
 	for {
 		st, err := o.BrowserStatus(ctx)
 		if err == nil {
@@ -455,28 +442,17 @@ func (s *System) waitBrowser(ctx context.Context, o *Options, r *Report) {
 			case !st.Enabled:
 				r.todo("The running daemon has browser control off. Check browser.enabled in %s and restart the service", o.ConfigFile)
 				return
-			case st.Connected && st.Auth == AuthSignedIn:
-				r.done("Firefox is connected and signed in to the hub as %s", st.User)
+			case st.Connected:
+				r.done("The Firefox extension is connected to hermes-device")
 				return
-			case st.Connected && st.Auth == AuthRefused:
-				r.todo("The hub refused Firefox's sign-in: %s. Sign in again from the Hermes button in Firefox's toolbar", st.Reason)
-				return
-			case st.Connected && st.Auth == AuthSignedOut && !asked:
-				if o.SignIn != nil && o.SignIn(ctx) == nil {
-					asked = true
-					s.printf("The extension is connected. Firefox opens the hub's sign-in window: sign in, check the computer and browser names, and choose Allow.\n")
-				}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			switch {
-			case last == nil:
+			if last == nil {
 				r.todo("Setup could not reach the daemon to check Firefox. See the service's logs")
-			case !last.Connected:
+			} else {
 				r.todo("The Firefox extension has not connected yet. Install it, or restart Firefox if it is installed")
-			default:
-				r.todo("Sign Firefox in: choose the Hermes button in Firefox's toolbar, then \"Sign in to Hermes\", and Allow on the hub")
 			}
 			return
 		case <-time.After(poll):

@@ -743,16 +743,10 @@ func TestPingTimeoutClosesHub(t *testing.T) {
 
 type fakeBrowser struct {
 	connected atomic.Bool
-	signIns   atomic.Int32
 }
 
 func (b *fakeBrowser) Status() splice.BrowserStatus {
-	return splice.BrowserStatus{Connected: b.connected.Load(), Auth: "signed_out", Version: "0.9.0"}
-}
-
-func (b *fakeBrowser) RequestSignIn() bool {
-	b.signIns.Add(1)
-	return b.connected.Load()
+	return splice.BrowserStatus{Connected: b.connected.Load(), Version: "0.9.0"}
 }
 
 func TestControlBrowser(t *testing.T) {
@@ -767,25 +761,20 @@ func TestControlBrowser(t *testing.T) {
 	if err := json.NewDecoder(r.Body).Decode(&st); err != nil || st.Enabled {
 		t.Fatalf("browser off: %+v, %v", st, err)
 	}
-	if r := off.control(http.MethodPost, splice.PathControlBrowserSignIn, secret); r.StatusCode != http.StatusConflict {
-		t.Fatalf("sign-in with browser off: %d", r.StatusCode)
-	}
 
 	b := &fakeBrowser{}
 	on := newEnv(t, splice.Options{Browser: b})
 	secret = on.splice.ControlSecret()
-	if r := on.control(http.MethodPost, splice.PathControlBrowserSignIn, secret); r.StatusCode != http.StatusConflict {
-		t.Fatalf("sign-in while disconnected: %d", r.StatusCode)
+	r = on.control(http.MethodGet, splice.PathControlBrowser, secret)
+	if err := json.NewDecoder(r.Body).Decode(&st); err != nil || !st.Enabled || st.Connected {
+		t.Fatalf("browser on, disconnected: %+v, %v", st, err)
 	}
 	b.connected.Store(true)
 	r = on.control(http.MethodGet, splice.PathControlBrowser, secret)
-	if err := json.NewDecoder(r.Body).Decode(&st); err != nil || !st.Enabled || !st.Connected || st.Auth != "signed_out" || st.Version != "0.9.0" {
+	if err := json.NewDecoder(r.Body).Decode(&st); err != nil || !st.Enabled || !st.Connected || st.Version != "0.9.0" {
 		t.Fatalf("browser on: %+v, %v", st, err)
 	}
-	if r := on.control(http.MethodPost, splice.PathControlBrowserSignIn, "wrong"); r.StatusCode != http.StatusForbidden {
-		t.Fatalf("sign-in with wrong secret: %d", r.StatusCode)
-	}
-	if r := on.control(http.MethodPost, splice.PathControlBrowserSignIn, secret); r.StatusCode != http.StatusNoContent || b.signIns.Load() != 2 {
-		t.Fatalf("sign-in: %d, %d", r.StatusCode, b.signIns.Load())
+	if r := on.control(http.MethodPost, "/control/browser/sign-in", secret); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("old sign-in path: %d", r.StatusCode)
 	}
 }
