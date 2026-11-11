@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
+	"github.com/USA-RedDragon/hermes-hub/internal/store"
+	"github.com/USA-RedDragon/hermes-hub/internal/web"
 )
 
 const (
@@ -18,6 +21,8 @@ const (
 	kRole         = "role"
 	roleUser      = "user"
 	roleAssistant = "assistant"
+	titleMedia    = "Media"
+	octetStream   = "application/octet-stream"
 )
 
 func mediaURL(e *hubEnv, backend, p string) string {
@@ -34,7 +39,7 @@ func TestMedia(t *testing.T) {
 		unnamed: shotJPEG, private: "key: value", upload: shotPNG, ref: shotPNG, typed: shotPNG} {
 		e.gw.SetFile(p, []byte(data))
 	}
-	e.gw.AddSession(&gatewaytest.Session{ID: "m1", Title: "Media", Live: true, StartedAt: 200, Messages: []map[string]any{
+	e.gw.AddSession(&gatewaytest.Session{ID: "m1", Title: titleMedia, Live: true, StartedAt: 200, Messages: []map[string]any{
 		{kRole: roleUser, kText: "what is this?\n\n[Image attached at: " + upload + "]\n@image:`" + ref + "`"},
 		{kRole: roleUser, kText: "MEDIA:" + typed + " and see [Image attached at: " + typed + "]"},
 		{kRole: roleUser, kText: "screenshot please"},
@@ -61,18 +66,18 @@ func TestMedia(t *testing.T) {
 			t.Fatalf("attached image %s = %d %q", p, resp.StatusCode, body)
 		}
 	}
-	for _, p := range []string{report, fake} {
+	for _, p := range []string{fake} {
 		resp, body = get(t, c, mediaURL(e, "pc", p))
-		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/octet-stream" ||
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != octetStream ||
 			!strings.HasPrefix(resp.Header.Get("Content-Disposition"), "attachment") {
 			t.Fatalf("%s = %d %q %v", p, resp.StatusCode, body, resp.Header)
 		}
 	}
-	if resp, _ = get(t, c, mediaURL(e, "pc", named)+"&download=1"); resp.Header.Get("Content-Type") != "application/octet-stream" {
+	if resp, _ = get(t, c, mediaURL(e, "pc", named)+"&download=1"); resp.Header.Get("Content-Type") != octetStream {
 		t.Fatalf("download = %v", resp.Header)
 	}
 	before := len(e.gw.FileReads())
-	for _, p := range []string{unnamed, typed, private, shotDir + "../../../../../../etc/passwd.txt", "/opt/data/hermes/cache/screenshots/hermes-device/m1/missing.jpg", "relative.jpg", ""} {
+	for _, p := range []string{report, unnamed, typed, private, shotDir + "../../../../../../etc/passwd.txt", "/opt/data/hermes/cache/screenshots/hermes-device/m1/missing.jpg", "relative.jpg", ""} {
 		if resp, body = get(t, c, mediaURL(e, "pc", p)); resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("%q = %d %s", p, resp.StatusCode, body)
 		}
@@ -105,7 +110,7 @@ func TestMediaFromLiveReply(t *testing.T) {
 	e := setup(t)
 	later := shotDir + "later.jpg"
 	e.gw.SetFile(later, []byte(shotJPEG))
-	e.gw.AddSession(&gatewaytest.Session{ID: "m1", Title: "Media", Live: true, StartedAt: 200})
+	e.gw.AddSession(&gatewaytest.Session{ID: "m1", Title: titleMedia, Live: true, StartedAt: 200})
 	c := client(t)
 	login(t, e, c)
 	if resp, _ := get(t, c, mediaURL(e, "pc", later)); resp.StatusCode != http.StatusNotFound {
@@ -128,5 +133,27 @@ func TestMediaFromLiveReply(t *testing.T) {
 	}
 	if reads := e.gw.FileReads(); !slices.Contains(reads, later) {
 		t.Fatalf("reads = %v", reads)
+	}
+}
+
+func TestMediaRootsServeFiles(t *testing.T) {
+	t.Parallel()
+	e := setupWith(t, func(cfg *config.Config, _ *web.Options, _ *store.Store) {
+		cfg.Backends[0].MediaRoots = []string{"/srv/out"}
+	})
+	report, shot := "/srv/out/report.pdf", shotDir+"named.jpg"
+	e.gw.SetFile(report, []byte("%PDF-1.7"))
+	e.gw.SetFile(shot, []byte(shotJPEG))
+	e.gw.AddSession(&gatewaytest.Session{ID: "m1", Title: titleMedia, Live: true, StartedAt: 200, Messages: []map[string]any{
+		{kRole: roleAssistant, kText: "MEDIA:" + report + "\nMEDIA:" + shot}}})
+	c := client(t)
+	login(t, e, c)
+	resp, body := get(t, c, mediaURL(e, "pc", report))
+	if resp.StatusCode != http.StatusOK || body != "%PDF-1.7" || resp.Header.Get("Content-Type") != octetStream ||
+		!strings.HasPrefix(resp.Header.Get("Content-Disposition"), "attachment") {
+		t.Fatalf("report = %d %q %v", resp.StatusCode, body, resp.Header)
+	}
+	if resp, _ = get(t, c, mediaURL(e, "pc", shot)); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outside the roots = %d", resp.StatusCode)
 	}
 }
