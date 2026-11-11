@@ -32,6 +32,7 @@ var importTables = []struct{ name, columns, key string }{
 	{"devices", `id, "user", backend_id, name, hostname, os, arch, client_version, token_hash, created_at, last_seen_at,
 		last_addr, prev_addr, addr_changed_at, revoked_at`, "id"},
 	{"device_dirs", "device_id, dir, used_at", "device_id, dir"},
+	{"browser_sessions", `id, token_hash, "user", device_id, instance_id, browser, created_at, last_used_at, revoked_at`, "id"},
 }
 
 // ImportSQLite copies every row of the SQLite database at path into the

@@ -108,6 +108,7 @@ var (
 // DeviceStore keeps devices and pairing requests. Only hashes of device
 // tokens and device codes are stored.
 type DeviceStore interface {
+	BrowserStore
 	// StartPairing records a pairing request valid for ttl and returns its
 	// secret device code and the user code the user types.
 	StartPairing(ctx context.Context, req PairingRequest, ttl time.Duration) (deviceCode, userCode string, err error)

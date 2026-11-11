@@ -331,6 +331,10 @@ func (s *Store) RevokeDevice(ctx context.Context, user, id string) (bool, error)
 	if err != nil || n == 0 {
 		return false, err
 	}
+	if err := s.exec(ctx, `UPDATE browser_sessions SET revoked_at = ? WHERE device_id = ? AND revoked_at = 0`,
+		s.now().Unix(), id); err != nil {
+		return true, err
+	}
 	return true, s.exec(ctx, `DELETE FROM device_dirs WHERE device_id = ?`, id)
 }
 
