@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111418">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Hermes">
-<title>Hermes Hub</title>
+<meta name="apple-mobile-web-app-title" content="Talaria">
+<title>Talaria</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/static/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
@@ -24,7 +24,7 @@
 <div id="app" class="app act-closed act-none">
   <aside id="side" class="side" aria-label="Chats">
     <div class="side-head">
-      <span class="brand">Hermes</span>
+      <span class="brand">Talaria</span>
       <button id="newchat" class="primary" type="button">New chat</button>
     </div>
     <div id="newon-row" class="newon-row" hidden><button id="newon" class="link" type="button">New chat on a computer</button></div>
@@ -37,7 +37,7 @@
         <div id="notify-prefs" class="notify-prefs" aria-live="polite" hidden></div>
         <div id="devices-prefs" hidden>
           <h2>Computers</h2>
-          <p class="hint">Computers where Hermes can run commands and change files for you. To connect one, run <code>hermes-device login</code> on it.</p>
+          <p class="hint">Computers where Talaria can run commands and change files for you. To connect one, run <code>talaria setup</code> on it.</p>
           <div id="devices" aria-live="polite"></div>
         </div>
       </div>
@@ -52,9 +52,9 @@
   <section class="main">
     <header class="bar">
       <button id="menu" class="icon menu" type="button" aria-label="Show chats">&#9776;</button>
-      <div class="title"><span id="title">Hermes</span><span id="subtitle" class="sub"></span><button id="place" class="place" type="button" hidden></button></div>
+      <div class="title"><span id="title">Talaria</span><span id="subtitle" class="sub"></span><button id="place" class="place" type="button" hidden></button></div>
       <div id="tok" class="tok" title="Tokens of this chat's own turns. Subagents and background prompts count apart, in Activity." hidden><span id="tokturn"></span><span id="toksub" class="tsub"></span></div>
-      <button id="filesbtn" type="button" hidden title="See this chat's folder and what Hermes changed">Files</button>
+      <button id="filesbtn" type="button" hidden title="See this chat's folder and what Talaria changed">Files</button>
       <button id="stop" class="danger" type="button" hidden>Stop</button>
       <button id="actbtn" class="actbtn" type="button" aria-expanded="false" aria-controls="act" aria-label="Activity" hidden><span class="lbl">Activity</span><svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg><span id="actcount" class="count" hidden>0</span></button>
     </header>
@@ -80,7 +80,7 @@
       <div class="composer-row">
         <button id="attach" class="icon attach" type="button" aria-label="Attach files" title="Attach files"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l9.2-9.2a3.7 3.7 0 0 1 5.2 5.2l-9.2 9.2a1.8 1.8 0 0 1-2.6-2.6l8.5-8.5"/></svg></button>
         <input id="files" type="file" multiple hidden>
-        <textarea id="input" rows="1" placeholder="Message Hermes" aria-label="Message"></textarea>
+        <textarea id="input" rows="1" placeholder="Message Talaria" aria-label="Message"></textarea>
         <button id="send" class="primary" type="submit">Send</button>
       </div>
     </form>

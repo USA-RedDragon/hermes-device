@@ -602,7 +602,7 @@ window.HubFiles = (ctx) => {
     const [w, d] = await Promise.allSettled([api("GET", c.chat.base + "/changes"), api("GET", c.chat.base + "/diff")]);
     if (c !== cur || mine !== c.gen) return;
     const box = el("div", "files-changes");
-    box.append(el("h2", "", "Files Hermes wrote in this chat"));
+    box.append(el("h2", "", "Files Talaria wrote in this chat"));
     box.append(el("p", "mem-hint", "From its write_file and patch calls. A file may have changed since."));
     if (w.status === "rejected") box.append(el("p", "err", w.reason.message));
     else if (!w.value.files.length) box.append(el("p", "none", "None."));
@@ -621,7 +621,7 @@ window.HubFiles = (ctx) => {
     }
     box.append(el("h2", "", "Git changes in this folder"));
     if (d.status === "rejected") box.append(el("p", "err", d.reason.message));
-    else if (d.value.refused) box.append(el("p", "none", "This folder's git repository is outside the folders Hermes may read on this computer, so its changes are not shown."));
+    else if (d.value.refused) box.append(el("p", "none", "This folder's git repository is outside the folders Talaria may read on this computer, so its changes are not shown."));
     else if (!d.value.git) box.append(el("p", "none", "This folder is not in a git repository."));
     else {
       const g = d.value;

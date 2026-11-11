@@ -8,7 +8,7 @@ import (
 
 const linkHTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Link Telegram - Hermes Hub</title><link rel="stylesheet" href="/static/app.css"></head>
+<title>Link Telegram - Talaria</title><link rel="stylesheet" href="/static/app.css"></head>
 <body class="doc"><main class="page">
 <h1>Link Telegram</h1>
 {{if .Done}}<p>Your Telegram account is now linked to <b>{{.User}}</b>. You can close this page and go back to the bot.</p>
@@ -22,9 +22,9 @@ const linkHTML = `<!doctype html>
 
 const refusedHTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Not set up - Hermes Hub</title><link rel="stylesheet" href="/static/app.css"></head>
+<title>Not set up - Talaria</title><link rel="stylesheet" href="/static/app.css"></head>
 <body class="doc"><main class="page"><h1>Not set up</h1>
-<p>You are signed in, but your account is not set up for Hermes Hub. Ask the owner to add you.</p></main></body></html>`
+<p>You are signed in, but your account is not set up for Talaria. Ask the owner to add you.</p></main></body></html>`
 
 // renderRefused answers a login whose sub is not in users. It sets no
 // session.

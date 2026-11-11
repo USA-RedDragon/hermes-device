@@ -170,7 +170,7 @@ func computerError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, hub.ErrUnknownDevice):
 		errorJSON(w, http.StatusNotFound, "No such computer. It may have been removed")
 	case errors.Is(err, hub.ErrComputerOffline):
-		errorJSON(w, http.StatusConflict, "That computer is offline. Turn it on and check that hermes-device runs on it, then try again")
+		errorJSON(w, http.StatusConflict, "That computer is offline. Turn it on and check that talaria runs on it, then try again")
 	case errors.Is(err, hub.ErrFolderRefused):
 		errorJSON(w, http.StatusBadRequest, reason())
 	case errors.Is(err, hub.ErrCannotMove):

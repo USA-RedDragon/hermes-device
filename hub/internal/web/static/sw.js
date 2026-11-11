@@ -3,7 +3,7 @@
 // offline and shows Web Push notifications. It never caches the hub's
 // pages, API answers or streams: those carry the person's chats and need
 // their login.
-const CACHE = "hub-offline-1";
+const CACHE = "hub-offline-2";
 const OFFLINE = "/static/offline.html";
 const ICON = "/static/icon-192.png";
 const BADGE = "/static/badge-96.png";
@@ -37,7 +37,7 @@ function sameOrigin(raw) {
 self.addEventListener("push", (event) => {
   let p = {};
   try { p = event.data ? event.data.json() : {}; } catch (_) { p = {}; }
-  const title = typeof p.title === "string" && p.title ? p.title.slice(0, 80) : "Hermes";
+  const title = typeof p.title === "string" && p.title ? p.title.slice(0, 80) : "Talaria";
   const body = typeof p.body === "string" ? p.body.slice(0, 200) : "";
   event.waitUntil(self.registration.showNotification(title, {
     body, icon: ICON, badge: BADGE, tag: typeof p.tag === "string" ? p.tag.slice(0, 64) : undefined,

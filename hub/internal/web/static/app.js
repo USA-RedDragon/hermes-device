@@ -12,9 +12,9 @@
   let view = null;
   let me = {};
   let current = null;
-  const words = { approval: "Hermes asks to run this", allow: "Allow", deny: "Deny",
+  const words = { approval: "Talaria asks to run this", allow: "Allow", deny: "Deny",
     args: "Input", result: "Output", running: "Running", done: "Done", failed: "Failed",
-    working: "Working", queued: "Waiting for Hermes to start", waiting: "Waiting to run", newchat: "New chat",
+    working: "Working", queued: "Waiting for Talaria to start", waiting: "Waiting to run", newchat: "New chat",
     lost: "Hermes restarted before it finished replying to this message. Messages sent after it wait until you dismiss it.",
     held: "Hermes is restarting. Your message will send when it is back.", notsent: "Not sent.", again: "Send again" };
   const t = (k) => words[k];
@@ -88,7 +88,7 @@
       const [backends, sessions] = await Promise.all([api("GET", "/api/backends"), api("GET", "/api/sessions")]);
       lastList = { backends, sessions };
       if (unhid) {
-        if (sessions.some((s) => s.id === unhid && s.archived)) banner("Hermes keeps this chat hidden, so it stays with the archived chats.");
+        if (sessions.some((s) => s.id === unhid && s.archived)) banner("Talaria keeps this chat hidden, so it stays with the archived chats.");
         unhid = "";
       }
       if (!menuOpen || !document.querySelector("#sessions .menu")) drawList();
@@ -310,7 +310,7 @@
     if (p && p.kind === "computer" && p.mine && !p.inherited) {
       const rel = button("", "Stop using this computer", () => {
         const box = el("div", "confirm");
-        box.append(el("p", "", "Stop using " + p.name + " for this chat? Hermes then cannot run commands or change files " +
+        box.append(el("p", "", "Stop using " + p.name + " for this chat? Talaria then cannot run commands or change files " +
           "for this chat anywhere, also not in the sandbox, until you move it to a computer again."));
         const yes = button("danger", "Stop using it");
         const no = button("", "Cancel", close);
@@ -361,19 +361,19 @@
     $("filesbtn").hidden = !me.files || !pl || !((pl.kind === "computer" && pl.mine) || pl.kind === "sandbox");
     note.replaceChildren();
     note.hidden = true;
-    input.placeholder = "Message Hermes";
+    input.placeholder = "Message Talaria";
     if (chat.place && chat.place.kind === "computer" && !chat.place.online) {
       const name = chat.place.mine ? chat.place.name : "The computer";
-      note.append(el("span", "", name + " is offline. Hermes cannot run commands or change files there until it is back, " +
+      note.append(el("span", "", name + " is offline. Talaria cannot run commands or change files there until it is back, " +
         "so messages you send now will fail. Nothing waits for it."));
       input.placeholder = name + " is offline";
       note.hidden = false;
     } else if (chat.place && chat.place.kind === "sandbox" && !chat.place.online) {
-      note.append(el("span", "", "The sandbox is not running right now. Hermes cannot run commands for this chat until it is back."));
+      note.append(el("span", "", "The sandbox is not running right now. Talaria cannot run commands for this chat until it is back."));
       input.placeholder = "The sandbox is not running";
       note.hidden = false;
     } else if (chat.place && chat.place.kind === "none") {
-      note.append(el("span", "", "This chat is not on a computer, so Hermes cannot run commands or change files for it."));
+      note.append(el("span", "", "This chat is not on a computer, so Talaria cannot run commands or change files for it."));
       input.placeholder = "Not on a computer";
       note.hidden = false;
     }
@@ -1710,7 +1710,7 @@
         let why = "";
         if (this.list.length >= limits.count) why = "Attach at most " + limits.count + " files to one message.";
         else if (!f.size) why = f.name + " is empty.";
-        else if (image && f.size > limits.image) why = f.name + " is larger than 25 MB, the most Hermes takes for an image.";
+        else if (image && f.size > limits.image) why = f.name + " is larger than 25 MB, the most Talaria takes for an image.";
         else if (!image && f.size > limits.file) why = f.name + " is larger than 32 MB, the most the hub takes for a file.";
         else if (total > limits.total) why = "The attachments add up to more than 64 MB.";
         if (why) { banner(why, true); break; }
@@ -1798,7 +1798,7 @@
 
   function setTitle(title) {
     $("title").textContent = title || t("newchat");
-    document.title = (title || t("newchat")) + " - Hermes";
+    document.title = (title || t("newchat")) + " - Talaria";
   }
 
   function parseResult(r) {
@@ -1903,7 +1903,7 @@
     sp.append(meter, (u.context_estimated ? "~" : "") + tokens(used) + " / " + tokens(max) + " context");
     if (pct >= 80) sp.classList.add("full");
     sp.title = pct + "% of the model's context window is in use" + (u.context_estimated ? " (estimated)" : "") +
-      ". When it fills up, Hermes summarizes older messages to make room.";
+      ". When it fills up, Talaria summarizes older messages to make room.";
     return sp;
   }
 
@@ -2099,9 +2099,9 @@
     $("placenote").hidden = true;
     $("claudenote").hidden = true;
     settings.reset();
-    $("title").textContent = "Hermes";
+    $("title").textContent = "Talaria";
     $("subtitle").textContent = "";
-    document.title = "Hermes Hub";
+    document.title = "Talaria";
     banner(notice);
     notice = "";
   }
@@ -2127,7 +2127,7 @@
     $("place").hidden = true;
     $("placenote").hidden = true;
     $("claudenote").hidden = true;
-    $("input").placeholder = "Message Hermes";
+    $("input").placeholder = "Message Talaria";
     drawInfo({});
     $("info").hidden = false;
     const known = places.get(placeKey(backend, session));
@@ -2171,7 +2171,7 @@
     settings.reset();
     $("title").textContent = "Memory";
     $("subtitle").textContent = "";
-    document.title = "Memory - Hermes Hub";
+    document.title = "Memory - Talaria";
     banner("");
     memory.show(rest);
   }
@@ -2190,7 +2190,7 @@
     settings.reset();
     $("title").textContent = "Usage";
     $("subtitle").textContent = "";
-    document.title = "Usage - Hermes Hub";
+    document.title = "Usage - Talaria";
     banner("");
     usage.show(rest);
   }
@@ -2398,7 +2398,7 @@
         const row = el("div", "device");
         row.append(el("div", "dname", d.name));
         if (d.kind === "sandbox") {
-          row.append(el("div", "dmeta", "Sandbox: where Hermes runs commands for chats that are not on one of your computers. It is set up by the owner."));
+          row.append(el("div", "dmeta", "Sandbox: where Talaria runs commands for chats that are not on one of your computers. It is set up by the owner."));
           if (many) row.append(el("div", "dmeta", "Works with " + d.backend_name));
           row.append(el("div", "dmeta", d.online === true ? "Online" : d.online === false ? "Offline" : "Could not check if it is online"));
           box.append(row);
@@ -2425,7 +2425,7 @@
         const rm = el("button", "", "Remove");
         rm.type = "button";
         rm.onclick = () => {
-          acts.replaceChildren(el("span", "dmeta", "Remove " + d.name + "? Hermes can no longer use it until you connect it again."));
+          acts.replaceChildren(el("span", "dmeta", "Remove " + d.name + "? Talaria can no longer use it until you connect it again."));
           const yes = el("button", "danger", "Remove");
           yes.type = "button";
           yes.onclick = () => this.act(d, "revoke");
@@ -2467,13 +2467,13 @@
     close() { if (this.dlg && this.dlg.open) this.dlg.close(); },
     intro() {
       const m = this.opts.move;
-      if (!m) return "Hermes runs this chat's commands and file changes on the computer, in the folder you pick.";
+      if (!m) return "Talaria runs this chat's commands and file changes on the computer, in the folder you pick.";
       const p = this.opts.place;
       if (p && p.kind === "computer") {
-        return "Hermes will run this chat's commands and file changes on the computer and in the folder you pick, " +
+        return "Talaria will run this chat's commands and file changes on the computer and in the folder you pick, " +
           "instead of " + (p.mine ? p.name : "the computer it uses now") + (p.dir ? ", " + p.dir : "") + ".";
       }
-      return "Hermes will run this chat's commands and file changes on the computer and in the folder you pick. " +
+      return "Talaria will run this chat's commands and file changes on the computer and in the folder you pick. " +
         (p && p.kind === "server" ? "They then no longer run on the Hermes server." : "The chat then stops using the sandbox.");
     },
     frame(title, body, foot) {
@@ -2490,7 +2490,7 @@
       const title = this.opts.move ? "Move to a computer" : "New chat on a computer";
       if (!this.list.length) {
         this.frame(title, [el("p", "", this.opts.move ? "None of your computers works with this chat's Hermes." :
-          "You have no computers yet. To connect one, run hermes-device login on it.")]);
+          "You have no computers yet. To connect one, run talaria setup on it.")]);
         return;
       }
       const body = [el("div", "label", "Pick a computer")];
@@ -2501,7 +2501,7 @@
         body.push(b);
       }
       if (!this.list.some((c) => c.online)) {
-        body.push(el("p", "status", "All your computers are offline. Turn one on and check that hermes-device runs on it."));
+        body.push(el("p", "status", "All your computers are offline. Turn one on and check that talaria runs on it."));
       }
       this.frame(title, body);
     },

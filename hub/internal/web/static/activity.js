@@ -547,7 +547,7 @@ window.HubActivity = (ctx) => {
     if (r.kind === "sub" && running) {
       const p = el("button", "", S.paused ? "Resume" : "Pause");
       p.type = "button";
-      p.title = S.paused ? "Let Hermes start new subagents again" : "Stop Hermes from starting new subagents on this backend. Running ones go on.";
+      p.title = S.paused ? "Let Talaria start new subagents again" : "Stop Talaria from starting new subagents on this backend. Running ones go on.";
       p.onclick = () => act(async () => {
         const got = await api("POST", chat.base + "/subagents-paused", { paused: !S.paused });
         S.paused = !!(got && got.paused);

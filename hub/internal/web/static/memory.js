@@ -15,12 +15,12 @@ window.HubMemory = (ctx) => {
     { id: "learned", label: "Learned" },
   ];
   const copy = {
-    notes: "Hermes reads these notes at the start of every chat. Keep them short. Changes apply to new chats.",
-    you: "What Hermes knows about you as a person. It reads this in every chat, on every device and in Telegram. Changes apply to new chats.",
-    learned: "Facts Hermes picked up from your chats over time. It looks these up when they seem relevant. Delete anything wrong or out of date.",
-    help: "Hermes keeps two short files that it reads at the start of every chat: its own notes and what it knows about you. It also learns facts from your chats over time and looks them up when they seem relevant. Here you can read, fix and delete all of it. Chats that are already open keep what they started with; changes apply to new chats.",
-    full: "Almost full. Shorten or remove a line before Hermes needs room for a new one.",
-    off: "This file is turned off in Hermes's memory settings (memory.memory_enabled or memory.user_profile_enabled), so Hermes does not read it and it cannot be changed here.",
+    notes: "Talaria reads these notes at the start of every chat. Keep them short. Changes apply to new chats.",
+    you: "What Talaria knows about you as a person. It reads this in every chat, on every device and in Telegram. Changes apply to new chats.",
+    learned: "Facts Talaria picked up from your chats over time. It looks these up when they seem relevant. Delete anything wrong or out of date.",
+    help: "Talaria keeps two short files that it reads at the start of every chat: its own notes and what it knows about you. It also learns facts from your chats over time and looks them up when they seem relevant. Here you can read, fix and delete all of it. Chats that are already open keep what they started with; changes apply to new chats.",
+    full: "Almost full. Shorten or remove a line before Talaria needs room for a new one.",
+    off: "This file is turned off in the Hermes memory settings (memory.memory_enabled or memory.user_profile_enabled), so Talaria does not read it and it cannot be changed here.",
   };
 
   let backends = [];
@@ -250,7 +250,7 @@ window.HubMemory = (ctx) => {
       store.entries.forEach((text) => list.append(entryRow(t, store, text)));
       if (ui.adding) list.append(editor(t, store, "", null));
       if (!store.entries.length && !ui.adding && !notes.pending.some((x) => x.target === t.target)) {
-        list.append(el("p", "mem-hint", t.id === "you" ? "Hermes knows nothing about you yet." : "Hermes has no notes yet."));
+        list.append(el("p", "mem-hint", t.id === "you" ? "Talaria knows nothing about you yet." : "Talaria has no notes yet."));
       }
     }
     body.append(list);
@@ -271,7 +271,7 @@ window.HubMemory = (ctx) => {
     const row = el("div", "mem-entry pending");
     const text = el("div", "mem-text");
     for (const c of p.changes) {
-      text.append(el("div", "who", "Hermes wants to " + changeWord(c)));
+      text.append(el("div", "who", "Talaria wants to " + changeWord(c)));
       if (c.action === "remove") {
         text.append(el("div", "", c.entry || c.old_text));
       } else if (c.action === "add") {
@@ -369,7 +369,7 @@ window.HubMemory = (ctx) => {
     const dl = el("dl");
     const add = (k, v) => dl.append(el("dt", "", k), el("dd", "", v));
     add("File", store.file);
-    add("Ask before Hermes saves", (notes.approval ? "On" : "Off") + " (memory.write_approval)");
+    add("Ask before Talaria saves", (notes.approval ? "On" : "Off") + " (memory.write_approval)");
     add("Limit", fmt(store.limit) + " characters");
     d.append(dl);
     const acts = el("div", "mem-acts");
@@ -377,7 +377,7 @@ window.HubMemory = (ctx) => {
     acts.append(btn("", notes.approval ? "Turn off approval" : "Turn on approval",
       () => change("POST", "/approval", { enabled: !notes.approval })));
     d.append(acts);
-    if (notes.approval) d.append(el("p", "mem-hint", "Hermes asks before it saves a note. Its proposed notes wait here, and the sidebar shows a count."));
+    if (notes.approval) d.append(el("p", "mem-hint", "Talaria asks before it saves a note. Its proposed notes wait here, and the sidebar shows a count."));
     return d;
   }
 
@@ -461,7 +461,7 @@ window.HubMemory = (ctx) => {
     const s = el("input");
     s.type = "search";
     s.dataset.k = "search";
-    s.placeholder = "Search what Hermes learned";
+    s.placeholder = "Search what Talaria learned";
     s.setAttribute("aria-label", "Search learned facts");
     s.value = L.q;
     s.oninput = () => {
@@ -478,7 +478,7 @@ window.HubMemory = (ctx) => {
     };
     f.append(s,
       chip("Newest first", !L.oldest, () => { L.oldest = !L.oldest; loadFacts(true); }),
-      chip("Hermes's view", L.view === "hermes", () => { L.view = L.view === "hermes" ? "all" : "hermes"; loadFacts(true); }),
+      chip("Talaria's view", L.view === "hermes", () => { L.view = L.view === "hermes" ? "all" : "hermes"; loadFacts(true); }),
       chip("Your own words", L.view === "self", () => { L.view = L.view === "self" ? "all" : "self"; loadFacts(true); }),
       chip("Show all", L.all, () => { L.all = !L.all; loadFacts(true); }));
     body.append(f);
@@ -488,7 +488,7 @@ window.HubMemory = (ctx) => {
     if (L.partial) body.append(el("p", "mem-hint", "Honcho stores more than 10,000 copies. Only the newest 10,000 show here."));
     status(body);
     if (L.sel.size) body.append(selBar(L));
-    if (L.err) body.append(el("p", "mem-note bad", "Could not load what Hermes learned: " + L.err));
+    if (L.err) body.append(el("p", "mem-note bad", "Could not load what Talaria learned: " + L.err));
     if (L.items.length) {
       const list = el("div", "mem-facts");
       for (const c of L.items) list.append(factRow(L, c));
@@ -502,7 +502,7 @@ window.HubMemory = (ctx) => {
         a.append(btn("", "Show all " + fmt(L.hidden) + (L.hidden === 1 ? " fact" : " facts"), () => { L.all = true; loadFacts(true); }));
         body.append(a);
       } else {
-        body.append(el("p", "mem-hint", "Hermes has not learned anything here yet."));
+        body.append(el("p", "mem-hint", "Talaria has not learned anything here yet."));
       }
     }
     if (L.loading) body.append(el("p", "mem-hint", "Loading."));
@@ -578,10 +578,10 @@ window.HubMemory = (ctx) => {
     txt.onclick = () => { box.checked = !box.checked; box.onchange(); };
     const meta = el("div", "meta");
     meta.append(el("span", "", day(c.created_at)));
-    meta.append(el("span", "", c.view === "self" ? "Your own words" : c.view === "hermes" ? "Hermes's view" : ""));
+    meta.append(el("span", "", c.view === "self" ? "Your own words" : c.view === "hermes" ? "Talaria's view" : ""));
     if (c.view === "both") {
       const t = el("span", "mem-tag", "Both views");
-      t.title = "Stored twice: once as Hermes's view and once in your own words. Delete removes both.";
+      t.title = "Stored twice: once as Talaria's view and once in your own words. Delete removes both.";
       meta.append(t);
     }
     const k = kinds[c.level] || kinds.explicit;
@@ -613,7 +613,7 @@ window.HubMemory = (ctx) => {
       const add = (k, v) => dl.append(el("dt", "", k), el("dd", "", v));
       add("Stored in", "Honcho, workspace “" + L.info.workspace + "”");
       add("Facts", fmt(L.info.total) + " (" + fmt(L.info.copies) + " stored " + (L.info.copies === 1 ? "copy" : "copies") + ")");
-      add("Views", "Hermes's view " + fmt(L.info.hermes) + ", your own words " + fmt(L.info.self) + ", both " + fmt(L.info.both));
+      add("Views", "Talaria's view " + fmt(L.info.hermes) + ", your own words " + fmt(L.info.self) + ", both " + fmt(L.info.both));
       add("Kinds", "Condensed " + fmt(L.info.condensed) + ", from one message " + fmt(L.info.raw));
       if (L.info.partial) add("Counted", "The newest 10,000 stored copies");
       add("Profile card", fmt(L.info.card.length) + (L.info.card.length === 1 ? " line" : " lines"));
@@ -631,7 +631,7 @@ window.HubMemory = (ctx) => {
     acts.append(btn("", L.card ? "Hide profile card" : "View profile card", () => { L.card = !L.card; draw(); }));
     const a = el("a", "mem-button", "Export as JSON");
     a.href = path("/learned/export");
-    a.download = "hermes-learned-" + backend + ".json";
+    a.download = "talaria-learned-" + backend + ".json";
     acts.append(a);
     d.append(acts);
     return d;
@@ -646,7 +646,7 @@ window.HubMemory = (ctx) => {
     ta.oninput = () => { L.draft = ta.value; };
     ta.placeholder = "A fact about you, such as: Prefers short answers.";
     const er = el("div", "mem-editrow");
-    er.append(el("span", "", "Saved as Hermes's view of you."), btn("ghost", "Cancel", () => { L.adding = false; draw(); }),
+    er.append(el("span", "", "Saved as Talaria's view of you."), btn("ghost", "Cancel", () => { L.adding = false; draw(); }),
       btn("primary", "Save", async () => {
         const v = ta.value.trim();
         if (!v || ui.busy) return;

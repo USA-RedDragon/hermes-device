@@ -1,7 +1,7 @@
 {
-  "name": "Hermes Hub",
-  "short_name": "Hermes",
-  "description": "Chats with your Hermes agents",
+  "name": "Talaria",
+  "short_name": "Talaria",
+  "description": "Chats with your Talaria agents",
   "id": "/",
   "start_url": "/",
   "scope": "/",

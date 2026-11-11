@@ -325,7 +325,7 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, hub.ErrUnknownSession):
 		errorJSON(w, http.StatusNotFound, "that chat no longer exists")
 	case errors.Is(err, hub.ErrBusy):
-		errorJSON(w, http.StatusConflict, "Hermes is still working on this chat. Stop it or wait until it is done, then try again")
+		errorJSON(w, http.StatusConflict, "Talaria is still working on this chat. Stop it or wait until it is done, then try again")
 	case errors.Is(err, hub.ErrHoldFull):
 		errorJSON(w, http.StatusTooManyRequests, "Too many messages are waiting for Hermes to come back. Send this one again later")
 	case errors.Is(err, hub.ErrShuttingDown):

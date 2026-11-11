@@ -23,7 +23,7 @@ const (
 
 const pairHTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Connect a computer - Hermes Hub</title><link rel="stylesheet" href="/static/app.css"></head>
+<title>Connect a computer - Talaria</title><link rel="stylesheet" href="/static/app.css"></head>
 <body class="doc"><main class="page">
 <h1>Connect a computer</h1>
 {{if .Done}}<p><b>{{.Name}}</b> is now connected to {{.BackendName}}. Go back to the computer: it finishes on its own in a few seconds.</p>
@@ -36,7 +36,7 @@ const pairHTML = `<!doctype html>
 <dt>System</dt><dd>{{.Pairing.OS}} {{.Pairing.Arch}}</dd>
 <dt>Address</dt><dd>{{.Pairing.Addr}}</dd>
 <dt>Asked at</dt><dd>{{.Asked}}</dd>
-<dt>hermes-device</dt><dd>{{.Pairing.ClientVersion}}</dd>
+<dt>talaria</dt><dd>{{.Pairing.ClientVersion}}</dd>
 </dl>
 {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
 <form method="post" action="/device/pair">
@@ -47,7 +47,7 @@ const pairHTML = `<!doctype html>
 <div class="buttons"><button class="primary" type="submit" name="action" value="approve">Connect this computer</button>
 <button class="ghost" type="submit" name="action" value="deny">Do not connect</button></div>
 </form>
-{{else}}<p>Type the code that <code>hermes-device login</code> shows on the computer you want to connect.</p>
+{{else}}<p>Type the code that <code>talaria setup</code> shows on the computer you want to connect.</p>
 {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
 {{if not .Locked}}<form method="post" action="/device/pair">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -155,7 +155,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		if _, err := s.devices.CodeFailure(ctx, sess.User, codeFailureWindow); err != nil {
 			s.log.Error("record pairing code failure", "error", err.Error())
 		}
-		v.Error = "That code is wrong or has expired. Check it and try again, or run hermes-device login again for a new code."
+		v.Error = "That code is wrong or has expired. Check it and try again, or run talaria setup again for a new code."
 		s.renderPair(w, http.StatusBadRequest, v)
 		return
 	}
@@ -216,7 +216,7 @@ func (s *Server) approvePairing(w http.ResponseWriter, r *http.Request, user str
 		return
 	case errors.Is(err, hub.ErrUnknownPairing):
 		s.renderPair(w, http.StatusBadRequest, pairView{User: user, CSRF: v.CSRF,
-			Error: "This code has expired. Run hermes-device login again for a new code."})
+			Error: "This code has expired. Run talaria setup again for a new code."})
 		return
 	case err != nil:
 		s.pairFailed(w, v, "approve pairing", err)
