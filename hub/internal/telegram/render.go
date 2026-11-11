@@ -75,6 +75,8 @@ type liveMsg struct {
 	// buttons, so an edit that would change nothing is skipped.
 	shown   string
 	buttons bool
+	// retry is when the chat's budget allows the pending edit.
+	retry time.Time
 }
 
 // elsewherePrompt is an approval answered where the hub could not see
@@ -597,11 +599,19 @@ func (r *renderer) edit(ctx context.Context, m *liveMsg, html string, kb *Inline
 	if html == m.shown && (kb != nil) == m.buttons {
 		return
 	}
+	r.spend()
 	if err := r.api.EditHTML(ctx, r.to.chat, m.id, html, kb); err != nil {
 		r.logger.Warn("Failed to edit message", "message", m.id, "error", err)
 		return
 	}
 	m.shown, m.buttons = html, kb != nil
+}
+
+// spend records a message or edit in the chat's budget.
+func (r *renderer) spend() {
+	if r.budget != nil {
+		r.budget.spend(r.to.chat)
+	}
 }
 
 // expirySlack is how long after a prompt's timeout the bot marks it
@@ -665,7 +675,7 @@ func (r *renderer) flushDue(ctx context.Context) {
 		return
 	}
 	since := r.now().Sub(t.msg.lastEdit)
-	if t.msg.dirty && since >= r.interval || since >= r.tick() {
+	if t.msg.dirty && since >= r.interval && !r.now().Before(t.msg.retry) || since >= r.tick() {
 		r.running(ctx)
 	}
 }
@@ -703,6 +713,7 @@ func (r *renderer) reportShown() {
 // outcome shows what became of a prompt in its message and takes its
 // buttons off.
 func (r *renderer) outcome(ctx context.Context, msgID int64, head, body, note string) {
+	r.spend()
 	if err := r.api.EditHTML(ctx, r.to.chat, msgID, outcomeHTML(head, body, note), nil); err != nil {
 		r.logger.Warn("Failed to show a prompt's outcome", "error", err)
 	}

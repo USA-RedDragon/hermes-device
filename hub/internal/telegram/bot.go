@@ -86,6 +86,9 @@ type Options struct {
 	HTTPClient *http.Client
 	// statusTick replaces the package's statusTick in tests.
 	statusTick time.Duration
+	// editGaps replaces the edit gaps of private chats and groups in
+	// tests.
+	editGaps [2]time.Duration
 }
 
 // NoticeStore is the part of hub.NotifyStore the bot reads.
@@ -258,6 +261,11 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		gone:    make(map[dest]bool),
 		claudes: make(map[msgKey]claudePrompt),
 		sources: make(map[hub.SessionRef]string),
+		sent:    make(map[string]sentPrompt),
+	}
+	b.budget = newBudget(func() time.Time { return b.now() })
+	if opts.editGaps[0] > 0 {
+		b.budget.private, b.budget.group = opts.editGaps[0], opts.editGaps[1]
 	}
 	for _, id := range cfg.AllowedGroups {
 		b.groups[id] = true

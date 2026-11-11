@@ -7,3 +7,9 @@ import "time"
 func WithStatusTick(d time.Duration) func(*Options) {
 	return func(o *Options) { o.statusTick = d }
 }
+
+// WithEditGaps sets the least time between two edits in a private chat
+// and in a group.
+func WithEditGaps(private, group time.Duration) func(*Options) {
+	return func(o *Options) { o.editGaps = [2]time.Duration{private, group} }
+}
