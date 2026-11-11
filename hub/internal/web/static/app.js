@@ -668,13 +668,20 @@
       }
     }
 
-    started(text, note) {
+    // started shows the input a turn started with: this page's own message
+    // when it sent it, else the message sent from another app.
+    started(text, note, id, admission) {
       if (note) {
         if (text) this.add(el("div", "msg result", text));
         return;
       }
       if (this.agentText(text)) return;
-      const p = this.pending.shift();
+      let i = id || admission ? this.pending.findIndex((x) => x.id && (x.id === id || x.id === admission)) : 0;
+      if (i < 0 && text) {
+        const typed = splitAttachments(text).text;
+        i = this.pending.findIndex((x) => !x.id && sameText(x.text, typed));
+      }
+      const p = i >= 0 ? this.pending.splice(i, 1)[0] : null;
       if (p) {
         p.bubble.classList.remove("pending");
         if (p.label) p.label.remove();
@@ -1000,7 +1007,7 @@
         case "message.start":
           this.turn = null;
           this.setRunning(true);
-          this.started(p.text, p.note);
+          this.started(p.text, p.note, p.submission_id, p.admission_id);
           break;
         case "reasoning.delta": this.reasoning(p.text || ""); break;
         case "reasoning.available":
