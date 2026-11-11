@@ -28,6 +28,8 @@ device:
   resume-buffer: 1048576
   # Longest time run keeps commands running after the exec leg drops, waiting for a resume. The plugin's grace_seconds applies when it is shorter
   max-grace: "10m"
+  # Memory cap of each agent command, as bytes or with a K, M, G or T suffix (powers of 1024), for example 4G. On Linux with a systemd user manager, run starts each command in a systemd scope of its own with this MemoryMax, so the kernel kills only a command that uses more, and the agent is told so. auto is 75% of the MemoryMax of the cgroup that run runs in (the talaria service), or 4G when that has no limit. 0 or off runs commands in run's own cgroup, without a cap of their own. No effect on macOS
+  command-memory-max: "auto"
 gateway:
   # Loopback address of the chat splice. Port 0 picks a free port
   listen: "127.0.0.1:0"

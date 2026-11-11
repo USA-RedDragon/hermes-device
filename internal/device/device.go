@@ -91,6 +91,9 @@ type Options struct {
 	StartBrowser func(ctx context.Context) error
 	// Shell runs each command as <shell> -c <cmd>.
 	Shell string
+	// Scope, when set, runs each command in a systemd scope of its own
+	// with a memory cap.
+	Scope *executor.Scope
 	// TempDir is sent as hello.tmp_dir.
 	TempDir string
 	// Home is sent as hello.home. Defaults to $HOME.
@@ -1123,7 +1126,7 @@ func (c *Client) exec(ctx context.Context, s *session, req protocol.Exec) {
 	}
 	timeout := time.Duration(req.Timeout * float64(time.Second))
 	p, err := executor.Start(c.opts.Shell, executor.Request{
-		Cmd: req.Cmd, Cwd: cwd, Login: req.Login, Timeout: timeout, Stdin: req.Stdin, Env: c.opts.Env,
+		Cmd: req.Cmd, Cwd: cwd, Login: req.Login, Timeout: timeout, Stdin: req.Stdin, Env: c.opts.Env, Scope: c.opts.Scope,
 	}, cmd.onOutput)
 	if err != nil {
 		refuse(fmt.Sprintf("device %s could not start the command: %s", s.name, err))

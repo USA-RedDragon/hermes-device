@@ -36,6 +36,8 @@ type Request struct {
 	Timeout time.Duration
 	Stdin   *string
 	Env     []string
+	// Scope, when set, runs the command in a systemd scope of its own.
+	Scope *Scope
 }
 
 // Result is how a command ended.
@@ -55,6 +57,9 @@ type Process struct {
 	// timer kills the command at its timeout plus TimeoutGrace; nil
 	// without a timeout or after Detach.
 	timer *time.Timer
+	// scope and unit are the systemd scope the command runs in, if any.
+	scope *Scope
+	unit  string
 }
 
 // Start runs req with shell. Output chunks go to out from one goroutine, in
@@ -64,12 +69,17 @@ func Start(shell string, req Request, out func([]byte)) (*Process, error) {
 }
 
 func start(shell string, req Request, out func([]byte), grace time.Duration) (*Process, error) {
-	args := []string{}
+	argv := []string{shell}
 	if req.Login {
-		args = append(args, "-l")
+		argv = append(argv, "-l")
 	}
-	args = append(args, "-c", req.Cmd)
-	cmd := exec.Command(shell, args...) //nolint:gosec,noctx // running the agent's command is the purpose; Kill stops its process group
+	argv = append(argv, "-c", req.Cmd)
+	unit := ""
+	if req.Scope != nil {
+		unit = scopeUnit()
+		argv = req.Scope.argv(unit, argv)
+	}
+	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec,noctx // running the agent's command is the purpose; Kill stops its process group
 	cmd.Dir = req.Cwd
 	cmd.Env = req.Env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -90,7 +100,7 @@ func start(shell string, req Request, out func([]byte), grace time.Duration) (*P
 	}
 	_ = pw.Close()
 
-	p := &Process{cmd: cmd, done: make(chan struct{})}
+	p := &Process{cmd: cmd, done: make(chan struct{}), scope: req.Scope, unit: unit}
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)

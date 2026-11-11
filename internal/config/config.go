@@ -6,9 +6,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +38,8 @@ type Device struct {
 	Shell        string        `name:"shell" default:"bash" description:"Shell used to run commands"`
 	ResumeBuffer int           `name:"resume-buffer" default:"1048576" description:"Most output bytes per command that run keeps for a resume of the exec leg until the plugin confirms them. Older output of a command is dropped, and the plugin shows the gap"`
 	MaxGrace     time.Duration `name:"max-grace" default:"10m" description:"Longest time run keeps commands running after the exec leg drops, waiting for a resume. The plugin's grace_seconds applies when it is shorter"`
+	// CommandMemoryMax is parsed by CommandMemory.
+	CommandMemoryMax string `name:"command-memory-max" default:"auto" description:"Memory cap of each agent command, as bytes or with a K, M, G or T suffix (powers of 1024), for example 4G. On Linux with a systemd user manager, run starts each command in a systemd scope of its own with this MemoryMax, so the kernel kills only a command that uses more, and the agent is told so. auto is 75% of the MemoryMax of the cgroup that run runs in (the talaria service), or 4G when that has no limit. 0 or off runs commands in run's own cgroup, without a cap of their own. No effect on macOS"`
 }
 
 // Gateway is the run daemon's loopback splice that chat points the local
@@ -143,6 +147,7 @@ var (
 	ErrResume          = errors.New("device.resume-buffer must be at least 4096 and device.max-grace must not be negative")
 	ErrMCPServer       = errors.New("invalid mcp.servers entry")
 	ErrUpdateInterval  = errors.New("update.interval must be at least 1h")
+	ErrMemorySize      = errors.New("device.command-memory-max must be auto, off, 0, or a size such as 4G")
 )
 
 // Validate checks what the tags can't. Settings only some subcommands need
@@ -190,6 +195,9 @@ func (c Config) Validate() error {
 	}
 	if c.Device.ResumeBuffer < 4096 || c.Device.MaxGrace < 0 {
 		return ErrResume
+	}
+	if _, _, err := c.Device.CommandMemory(); err != nil {
+		return err
 	}
 	if c.Update.Interval < time.Hour {
 		return ErrUpdateInterval
@@ -295,4 +303,37 @@ func (m MCP) validate() error {
 		}
 	}
 	return nil
+}
+
+// CommandMemoryAuto is the device.command-memory-max value that takes the
+// cap from the daemon's own memory limit.
+const CommandMemoryAuto = "auto"
+
+// MinCommandMemory is the smallest command memory cap that
+// device.command-memory-max accepts.
+const MinCommandMemory = 16 << 20
+
+// CommandMemory parses device.command-memory-max. It returns auto true for
+// auto, 0 for off or 0, and otherwise the cap in bytes.
+func (d Device) CommandMemory() (n int64, auto bool, err error) {
+	v := strings.TrimSpace(strings.ToLower(d.CommandMemoryMax))
+	switch v {
+	case CommandMemoryAuto:
+		return 0, true, nil
+	case "off", "0":
+		return 0, false, nil
+	}
+	shift := 0
+	num := strings.TrimSuffix(strings.TrimSuffix(v, "b"), "i")
+	if num != "" {
+		if i := strings.IndexByte("kmgt", num[len(num)-1]); i >= 0 {
+			shift = 10 * (i + 1)
+			num = num[:len(num)-1]
+		}
+	}
+	n, perr := strconv.ParseInt(num, 10, 64)
+	if perr != nil || n < 0 || n > math.MaxInt64>>shift || n<<shift < MinCommandMemory {
+		return 0, false, fmt.Errorf("%w (at least 16M): %q", ErrMemorySize, d.CommandMemoryMax)
+	}
+	return n << shift, false, nil
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/USA-RedDragon/hermes-device/internal/config"
 	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
 	"github.com/USA-RedDragon/hermes-device/internal/device"
+	"github.com/USA-RedDragon/hermes-device/internal/executor"
 	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
 	"github.com/USA-RedDragon/hermes-device/internal/mcp"
 	"github.com/USA-RedDragon/hermes-device/internal/splice"
@@ -168,6 +169,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 		MinBackoff: cfg.Reconnect.MinBackoff, MaxBackoff: cfg.Reconnect.MaxBackoff, PingInterval: cfg.PingInterval,
 		ResumeBuffer: cfg.Device.ResumeBuffer, MaxGrace: cfg.Device.MaxGrace,
 	}
+	opts.Scope = commandScope(ctx, cfg, opts.Env)
 	var br *broker.Broker
 	if cfg.Browser.Enabled {
 		if br, err = startBroker(ctx, cfg); err != nil {
@@ -426,4 +428,22 @@ func runArgs(args []string) []string {
 		return append([]string{}, args[1:]...)
 	}
 	return []string{runCommand}
+}
+
+// commandScope returns the systemd scope that each command runs in, or nil
+// when device.command-memory-max is off or commands cannot have a scope,
+// which it logs.
+func commandScope(ctx context.Context, cfg *config.Config, env []string) *executor.Scope {
+	limit, auto, err := cfg.Device.CommandMemory()
+	if err != nil || limit == 0 && !auto {
+		slog.Info("Commands run in the daemon's cgroup, without a memory cap of their own", "device.command-memory-max", cfg.Device.CommandMemoryMax)
+		return nil
+	}
+	scope, err := executor.NewScope(ctx, executor.SystemProbe(env), limit, auto)
+	if err != nil {
+		slog.Info("Commands run in the daemon's cgroup, without a memory cap of their own", "reason", err)
+		return nil
+	}
+	slog.Info("Each command runs in a systemd scope of its own", "memory_max", scope.MemoryMax, "tasks_max", scope.TasksMax, "part_of", scope.PartOf)
+	return scope
 }
