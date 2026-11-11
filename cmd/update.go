@@ -121,7 +121,6 @@ func (b *base) attestations() setup.AttestationVerifier {
 		APIURL:    attest.DefaultAPIURL,
 		Client:    &http.Client{Timeout: 2 * time.Minute},
 		UserAgent: b.userAgent(),
-		TUFCache:  attest.DefaultTUFCache(),
 	}
 	return func(ctx context.Context, tag, name string, digest []byte) (string, error) {
 		p := attest.ReleasePolicy(tag)

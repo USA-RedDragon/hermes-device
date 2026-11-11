@@ -1,6 +1,8 @@
 // Package attest verifies the GitHub artifact attestations of hermes-device
 // release files: SLSA build provenance that the release workflow signs with
 // the Sigstore public-good instance, as `gh attestation verify` checks it.
+// It uses only the standard library and the public-good trusted root that
+// is built in.
 package attest
 
 import (
@@ -13,18 +15,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
-
-	in_toto "github.com/in-toto/attestation/go/v1"
-	"github.com/klauspost/compress/snappy"
-	"github.com/sigstore/sigstore-go/pkg/bundle"
-	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
-	"github.com/sigstore/sigstore-go/pkg/root"
-	"github.com/sigstore/sigstore-go/pkg/tuf"
-	"github.com/sigstore/sigstore-go/pkg/verify"
+	"time"
 )
 
 // The release workflow of this repository, and the numeric IDs of the
@@ -59,9 +52,16 @@ var (
 	ErrNoAttestation = errors.New("GitHub has no attestation for this file")
 	ErrNotVerified   = errors.New("no attestation of this file passed verification")
 	ErrPolicy        = errors.New("invalid attestation policy")
+	// ErrUntrustedRoot is part of the error when a bundle is signed by a
+	// certificate authority or logged in a log that the trusted root does
+	// not have.
+	ErrUntrustedRoot = errors.New("signed with Sigstore keys or certificates that this binary does not trust")
 )
 
-var tagPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
+var (
+	tagPattern    = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
+	commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+)
 
 // Policy is who must have signed an attestation: the workflow file of a
 // repository, run on GitHub-hosted runners for a push of tag Tag.
@@ -86,32 +86,43 @@ func (p Policy) SAN() string {
 	return "https://github.com/" + p.Owner + "/" + p.Repo + "/" + p.Workflow + "@refs/tags/" + p.Tag
 }
 
-func (p Policy) identity() (verify.CertificateIdentity, error) {
+// validate checks that p is a complete policy for a release tag.
+func (p Policy) validate() error {
 	if !tagPattern.MatchString(p.Tag) {
-		return verify.CertificateIdentity{}, fmt.Errorf("%w: %q is not a release tag", ErrPolicy, p.Tag)
+		return fmt.Errorf("%w: %q is not a release tag", ErrPolicy, p.Tag)
 	}
 	if p.Owner == "" || p.Repo == "" || p.OwnerID == "" || p.RepoID == "" || !strings.HasPrefix(p.Workflow, ".github/workflows/") {
-		return verify.CertificateIdentity{}, fmt.Errorf("%w: %+v", ErrPolicy, p)
+		return fmt.Errorf("%w: %+v", ErrPolicy, p)
 	}
-	san, err := verify.NewSANMatcher(p.SAN(), "")
-	if err != nil {
-		return verify.CertificateIdentity{}, err
-	}
-	issuer, err := verify.NewIssuerMatcher(Issuer, "")
-	if err != nil {
-		return verify.CertificateIdentity{}, err
+	return nil
+}
+
+// checkCertificate checks the subject and the Fulcio extensions of a
+// signing certificate against p. Every field must match exactly.
+func (p Policy) checkCertificate(san string, e fulcioExtensions) error {
+	if san != p.SAN() {
+		return fmt.Errorf("certificate SAN %q, want %q", san, p.SAN())
 	}
 	repoURL := "https://github.com/" + p.Owner + "/" + p.Repo
-	return verify.NewCertificateIdentity(san, issuer, certificate.Extensions{
-		BuildConfigURI:                  p.SAN(),
-		RunnerEnvironment:               GitHubHosted,
-		SourceRepositoryURI:             repoURL,
-		SourceRepositoryIdentifier:      p.RepoID,
-		SourceRepositoryOwnerURI:        "https://github.com/" + p.Owner,
-		SourceRepositoryOwnerIdentifier: p.OwnerID,
-		SourceRepositoryRef:             "refs/tags/" + p.Tag,
-		BuildTrigger:                    "push",
-	})
+	for _, f := range []struct{ name, got, want string }{
+		{"OIDC issuer", e.Issuer, Issuer},
+		{"build config URI", e.BuildConfigURI, p.SAN()},
+		{"runner environment", e.RunnerEnvironment, GitHubHosted},
+		{"source repository URI", e.SourceRepositoryURI, repoURL},
+		{"source repository identifier", e.SourceRepositoryIdentifier, p.RepoID},
+		{"source repository owner URI", e.SourceRepositoryOwnerURI, "https://github.com/" + p.Owner},
+		{"source repository owner identifier", e.SourceRepositoryOwnerIdentifier, p.OwnerID},
+		{"source repository ref", e.SourceRepositoryRef, "refs/tags/" + p.Tag},
+		{"build trigger", e.BuildTrigger, "push"},
+	} {
+		if f.got != f.want {
+			return fmt.Errorf("certificate %s %q, want %q", f.name, f.got, f.want)
+		}
+	}
+	if !commitPattern.MatchString(e.SourceRepositoryDigest) {
+		return fmt.Errorf("certificate source repository digest %q is not a commit", e.SourceRepositoryDigest)
+	}
+	return nil
 }
 
 // Verifier fetches attestations from the GitHub API and verifies them.
@@ -120,43 +131,11 @@ type Verifier struct {
 	APIURL    string
 	Client    *http.Client
 	UserAgent string
-	// TrustedRoot returns the Sigstore keys and certificates to trust;
-	// nil means the public-good instance's, from its TUF repository.
-	TrustedRoot func(ctx context.Context) (root.TrustedMaterial, error)
-	// TUFCache is where the public-good TUF metadata is cached; empty
-	// means no cache.
-	TUFCache string
-}
-
-// DefaultTUFCache is the TUF cache under the user's cache directory, or ""
-// when there is none.
-func DefaultTUFCache() string {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "hermes-device", "sigstore-tuf")
-}
-
-// PublicGoodRoot returns the trusted root of the Sigstore public-good
-// instance from its TUF repository, checked against the TUF root that
-// sigstore-go embeds.
-func PublicGoodRoot(ctx context.Context, cache string) (root.TrustedMaterial, error) {
-	opts := tuf.DefaultOptions().WithContext(ctx).WithCacheValidity(1)
-	if cache == "" {
-		opts = opts.WithDisableLocalCache()
-	} else {
-		opts = opts.WithCachePath(cache)
-	}
-	c, err := tuf.New(opts)
-	if err != nil {
-		return nil, fmt.Errorf("read the Sigstore TUF repository: %w", err)
-	}
-	tr, err := root.GetTrustedRoot(c)
-	if err != nil {
-		return nil, fmt.Errorf("read the Sigstore trusted root: %w", err)
-	}
-	return tr, nil
+	// TrustedRoot is the Sigstore trust material; nil means the
+	// public-good instance's that is built into this binary.
+	TrustedRoot *TrustedRoot
+	// Now is the clock; nil means time.Now.
+	Now func() time.Time
 }
 
 // Result is a verified attestation.
@@ -169,65 +148,88 @@ type Result struct {
 
 // Verify checks that an attestation signed under policy p covers the file
 // with SHA-256 digest. It fetches the attestations of the digest from the
-// GitHub API and accepts the first one that is signed by a Sigstore
-// certificate of the policy's workflow, logged in the transparency log,
-// has a statement with a subject of this digest, and has SLSA provenance
-// v1 as its predicate.
+// GitHub API and accepts the first one whose Sigstore bundle verifies
+// against the trusted root, whose certificate matches the policy, and
+// whose statement has SLSA provenance v1 as its predicate and a subject
+// with this digest (and the policy's file name, when set).
 func (v *Verifier) Verify(ctx context.Context, digest []byte, p Policy) (*Result, error) {
 	if len(digest) != 32 {
 		return nil, fmt.Errorf("%w: a SHA-256 digest has 32 bytes, not %d", ErrPolicy, len(digest))
 	}
-	id, err := p.identity()
+	if err := p.validate(); err != nil {
+		return nil, err
+	}
+	list, err := v.fetch(ctx, digest, p)
 	if err != nil {
 		return nil, err
 	}
-	bundles, err := v.fetch(ctx, digest, p)
-	if err != nil {
-		return nil, err
+	tr := v.TrustedRoot
+	if tr == nil {
+		tr = PublicGoodRoot()
 	}
-	trustedRoot := v.TrustedRoot
-	if trustedRoot == nil {
-		trustedRoot = func(ctx context.Context) (root.TrustedMaterial, error) { return PublicGoodRoot(ctx, v.TUFCache) }
+	now := time.Now
+	if v.Now != nil {
+		now = v.Now
 	}
-	tm, err := trustedRoot(ctx)
-	if err != nil {
-		return nil, err
-	}
-	sv, err := verify.NewVerifier(tm, verify.WithSignedCertificateTimestamps(1), verify.WithTransparencyLog(1), verify.WithObserverTimestamps(1))
-	if err != nil {
-		return nil, err
-	}
-	policy := verify.NewPolicy(verify.WithArtifactDigest("sha256", digest), verify.WithCertificateIdentity(id))
 	var errs []error
-	for i, b := range bundles {
-		res, err := sv.Verify(b, policy)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("attestation %d: %w", i+1, err))
-			continue
+	untrusted := false
+	for i, a := range list {
+		raw, err := v.bundle(ctx, a)
+		if err == nil {
+			var res *Result
+			if res, err = verifyOne(tr, raw, now(), digest, p); err == nil {
+				return res, nil
+			}
 		}
-		if err := checkStatement(res.Statement, digest, p.Name); err != nil {
-			errs = append(errs, fmt.Errorf("attestation %d: %w", i+1, err))
-			continue
-		}
-		return &Result{SAN: res.Signature.Certificate.SubjectAlternativeName, Commit: res.Signature.Certificate.SourceRepositoryDigest}, nil
+		untrusted = untrusted || errors.Is(err, ErrUntrustedRoot)
+		errs = append(errs, fmt.Errorf("attestation %d: %w", i+1, err))
 	}
-	return nil, fmt.Errorf("%w (sha256:%s, required signer %s): %w", ErrNotVerified, hex.EncodeToString(digest), p.SAN(), errors.Join(errs...))
+	err = fmt.Errorf("%w (sha256:%s, required signer %s): %w", ErrNotVerified, hex.EncodeToString(digest), p.SAN(), errors.Join(errs...))
+	if untrusted {
+		err = fmt.Errorf("%w\nThis binary's Sigstore trusted root (recorded %s) may be out of date. Download the file yourself, "+
+			"check it with `gh attestation verify <file> --repo %s/%s`, which reads the current trusted root, and install it by hand",
+			err, PublicGoodRootDate, p.Owner, p.Repo)
+	}
+	return nil, err
 }
 
-// checkStatement checks the predicate type of a verified statement and,
-// when name is set, that a subject of that name has the digest.
-func checkStatement(st *in_toto.Statement, digest []byte, name string) error {
-	if pt := st.GetPredicateType(); pt != PredicateSLSAv1 {
-		return fmt.Errorf("predicate type %q, want %q", pt, PredicateSLSAv1)
+func verifyOne(tr *TrustedRoot, raw []byte, now time.Time, digest []byte, p Policy) (*Result, error) {
+	v, err := tr.verifyBundle(raw, now)
+	if err != nil {
+		return nil, err
 	}
-	if name == "" {
-		return nil
+	if err := p.checkCertificate(v.san, v.ext); err != nil {
+		return nil, err
+	}
+	if err := checkStatement(&v.statement, digest, p.Name); err != nil {
+		return nil, err
+	}
+	return &Result{SAN: v.san, Commit: v.ext.SourceRepositoryDigest}, nil
+}
+
+// checkStatement checks the predicate type of a verified statement, that
+// a subject has the digest and, when name is set, that a subject of that
+// name has the digest.
+func checkStatement(st *statement, digest []byte, name string) error {
+	if st == nil {
+		return errors.New("no statement")
+	}
+	if st.PredicateType != PredicateSLSAv1 {
+		return fmt.Errorf("predicate type %q, want %q", st.PredicateType, PredicateSLSAv1)
 	}
 	want := hex.EncodeToString(digest)
-	for _, sub := range st.GetSubject() {
-		if sub.GetName() == name && strings.EqualFold(sub.GetDigest()["sha256"], want) {
+	found := false
+	for _, sub := range st.Subject {
+		if !strings.EqualFold(sub.Digest["sha256"], want) {
+			continue
+		}
+		found = true
+		if name == "" || sub.Name == name {
 			return nil
 		}
+	}
+	if !found {
+		return fmt.Errorf("the artifact digest sha256:%s is not a subject of the statement", want)
 	}
 	return fmt.Errorf("no subject named %q has sha256:%s", name, want)
 }
@@ -284,7 +286,7 @@ func nextLink(h string) string {
 	return ""
 }
 
-func (v *Verifier) fetch(ctx context.Context, digest []byte, p Policy) ([]*bundle.Bundle, error) {
+func (v *Verifier) fetch(ctx context.Context, digest []byte, p Policy) ([]apiAttestation, error) {
 	base := v.APIURL
 	if base == "" {
 		base = DefaultAPIURL
@@ -322,28 +324,14 @@ func (v *Verifier) fetch(ctx context.Context, digest []byte, p Policy) ([]*bundl
 	if len(all) == 0 {
 		return nil, fmt.Errorf("%w (sha256:%s in %s/%s)", ErrNoAttestation, hex.EncodeToString(digest), p.Owner, p.Repo)
 	}
-	body := struct{ Attestations []apiAttestation }{all}
-	out := make([]*bundle.Bundle, 0, len(body.Attestations))
-	var errs []error
-	for i, a := range body.Attestations[:min(len(body.Attestations), maxAttestations)] {
-		b, err := v.bundle(ctx, a)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("attestation %d: %w", i+1, err))
-			continue
-		}
-		out = append(out, b)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("%w: %w", ErrNotVerified, errors.Join(errs...))
-	}
-	return out, nil
+	return all[:min(len(all), maxAttestations)], nil
 }
 
 // bundle reads the Sigstore bundle of an attestation: inline, or
 // snappy-compressed JSON at bundle_url.
-func (v *Verifier) bundle(ctx context.Context, a apiAttestation) (*bundle.Bundle, error) {
+func (v *Verifier) bundle(ctx context.Context, a apiAttestation) ([]byte, error) {
 	raw := []byte(a.Bundle)
-	if len(raw) == 0 || string(raw) == "null" {
+	if len(raw) == 0 || string(raw) == jsonNull {
 		bu, err := url.Parse(a.BundleURL)
 		if err != nil || bu.Scheme != "https" || bu.Host == "" {
 			return nil, fmt.Errorf("no bundle and no https bundle URL")
@@ -355,16 +343,12 @@ func (v *Verifier) bundle(ctx context.Context, a apiAttestation) (*bundle.Bundle
 		if status != http.StatusOK {
 			return nil, fmt.Errorf("bundle URL answered %d", status)
 		}
-		if n, err := snappy.DecodedLen(data); err != nil || n > maxBundle {
-			return nil, fmt.Errorf("bundle is not snappy data of at most %d bytes", maxBundle)
-		}
-		if raw, err = snappy.Decode(nil, data); err != nil {
+		if raw, err = decodeSnappy(data, maxBundle); err != nil {
 			return nil, err
 		}
 	}
-	var b bundle.Bundle
-	if err := b.UnmarshalJSON(raw); err != nil {
-		return nil, err
+	if len(raw) > maxBundle {
+		return nil, fmt.Errorf("bundle is larger than %d bytes", maxBundle)
 	}
-	return &b, nil
+	return raw, nil
 }

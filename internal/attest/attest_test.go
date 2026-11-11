@@ -1,7 +1,6 @@
 package attest_test
 
 import (
-	"context"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -12,15 +11,14 @@ import (
 	"testing"
 
 	"github.com/USA-RedDragon/hermes-device/internal/attest"
-	"github.com/sigstore/sigstore-go/pkg/root"
 )
 
 // Recorded on 2026-11-11 from the GitHub API: the attestations of
 // goreleaser_Linux_x86_64.tar.gz of goreleaser/goreleaser v2.20.1, signed by
 // its release workflow at the tag, and of gh_2.103.3_linux_amd64.tar.gz of
 // cli/cli, signed by its deployment workflow on the trunk branch, whose API
-// answer has only bundle URLs. The trusted roots are `gh attestation
-// trusted-root` of the same day.
+// answer has only bundle URLs. The GitHub trusted root is `gh attestation
+// trusted-root` of the same day; the public-good one is built in.
 const (
 	goreleaserDigest = "79e0589ca9efd70e8db85158a21334cbb57811d4034b39b61d55789f361341a5"
 	ghDigest         = "4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d"
@@ -58,13 +56,18 @@ func readTestdata(t *testing.T, name string) []byte {
 	return data
 }
 
-func trustedRoot(t *testing.T, name string) func(context.Context) (root.TrustedMaterial, error) {
+// trustedRoot is the trusted root in testdata file name; "" is the
+// built-in public-good root.
+func trustedRoot(t *testing.T, name string) *attest.TrustedRoot {
 	t.Helper()
-	tr, err := root.NewTrustedRootFromJSON(readTestdata(t, name))
+	if name == "" {
+		return nil
+	}
+	tr, err := attest.ParseTrustedRoot(readTestdata(t, name))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return func(context.Context) (root.TrustedMaterial, error) { return tr, nil }
+	return tr
 }
 
 // apiServer answers every attestation request with the recorded answer
@@ -96,7 +99,7 @@ func apiServer(t *testing.T, recorded, body string) *attest.Verifier {
 
 func TestVerifyRecordedRelease(t *testing.T) {
 	t.Parallel()
-	v := apiServer(t, "trusted_root_public_good.json", string(readTestdata(t, "goreleaser_v2.20.1.json")))
+	v := apiServer(t, "", string(readTestdata(t, "goreleaser_v2.20.1.json")))
 	res, err := v.Verify(t.Context(), digest(t, goreleaserDigest), goreleaserPolicy())
 	if err != nil {
 		t.Fatal(err)
@@ -123,15 +126,15 @@ func TestVerifyRefusals(t *testing.T) {
 		want     error
 		wantText string
 	}{
-		"wrong repo":       {body: goreleaser, policy: with(func(p *attest.Policy) { p.Repo = "nfpm" }), want: attest.ErrNotVerified, wantText: `expected SAN value "https://github.com/goreleaser/nfpm/`},
-		"wrong owner":      {body: goreleaser, policy: with(func(p *attest.Policy) { p.Owner = "goreleaser-pro" }), want: attest.ErrNotVerified, wantText: `expected SAN value "https://github.com/goreleaser-pro/`},
+		"wrong repo":       {body: goreleaser, policy: with(func(p *attest.Policy) { p.Repo = "nfpm" }), want: attest.ErrNotVerified, wantText: `want "https://github.com/goreleaser/nfpm/`},
+		"wrong owner":      {body: goreleaser, policy: with(func(p *attest.Policy) { p.Owner = "goreleaser-pro" }), want: attest.ErrNotVerified, wantText: `want "https://github.com/goreleaser-pro/`},
 		"wrong file name":  {body: goreleaser, policy: with(func(p *attest.Policy) { p.Name = "goreleaser_Linux_arm64.tar.gz" }), want: attest.ErrNotVerified, wantText: `no subject named "goreleaser_Linux_arm64.tar.gz"`},
-		"wrong repo id":    {body: goreleaser, policy: with(func(p *attest.Policy) { p.RepoID = "1" }), want: attest.ErrNotVerified, wantText: "SourceRepositoryIdentifier"},
-		"wrong owner id":   {body: goreleaser, policy: with(func(p *attest.Policy) { p.OwnerID = "1" }), want: attest.ErrNotVerified, wantText: "SourceRepositoryOwnerIdentifier"},
-		"wrong workflow":   {body: goreleaser, policy: with(func(p *attest.Policy) { p.Workflow = ".github/workflows/build.yml" }), want: attest.ErrNotVerified, wantText: "expected SAN value"},
-		"other tag":        {body: goreleaser, policy: with(func(p *attest.Policy) { p.Tag = "v2.20.0" }), want: attest.ErrNotVerified, wantText: `release.yml@refs/tags/v2.20.0", got`},
-		"tampered digest":  {body: goreleaser, digest: ghDigest, policy: goreleaserPolicy(), want: attest.ErrNotVerified, wantText: "artifact digest"},
-		"untrusted root":   {body: goreleaser, root: "trusted_root_github.json", policy: goreleaserPolicy(), want: attest.ErrNotVerified, wantText: "transparency log"},
+		"wrong repo id":    {body: goreleaser, policy: with(func(p *attest.Policy) { p.RepoID = "1" }), want: attest.ErrNotVerified, wantText: `source repository identifier "77071454", want "1"`},
+		"wrong owner id":   {body: goreleaser, policy: with(func(p *attest.Policy) { p.OwnerID = "1" }), want: attest.ErrNotVerified, wantText: `source repository owner identifier "24697112", want "1"`},
+		"wrong workflow":   {body: goreleaser, policy: with(func(p *attest.Policy) { p.Workflow = ".github/workflows/build.yml" }), want: attest.ErrNotVerified, wantText: `want "https://github.com/goreleaser/goreleaser/.github/workflows/build.yml@refs/tags/v2.20.1"`},
+		"other tag":        {body: goreleaser, policy: with(func(p *attest.Policy) { p.Tag = "v2.20.0" }), want: attest.ErrNotVerified, wantText: `want "https://github.com/goreleaser/goreleaser/.github/workflows/release.yml@refs/tags/v2.20.0"`},
+		"tampered digest":  {body: goreleaser, digest: ghDigest, policy: goreleaserPolicy(), want: attest.ErrNotVerified, wantText: "artifact digest sha256:4c80"},
+		"untrusted root":   {body: goreleaser, root: "trusted_root_github.json", policy: goreleaserPolicy(), want: attest.ErrNotVerified, wantText: "may be out of date"},
 		"branch ref":       {body: gh, digest: ghDigest, policy: ghPolicy(), want: attest.ErrNotVerified, wantText: "refs/heads/trunk"},
 		"no attestation":   {policy: goreleaserPolicy(), want: attest.ErrNoAttestation},
 		"empty list":       {body: `{"attestations":[]}`, policy: goreleaserPolicy(), want: attest.ErrNoAttestation},
@@ -144,9 +147,6 @@ func TestVerifyRefusals(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			r := tc.root
-			if r == "" {
-				r = "trusted_root_public_good.json"
-			}
 			d := tc.digest
 			if d == "" {
 				d = goreleaserDigest
@@ -161,7 +161,7 @@ func TestVerifyRefusals(t *testing.T) {
 
 func TestVerifyNeedsSHA256(t *testing.T) {
 	t.Parallel()
-	v := apiServer(t, "trusted_root_public_good.json", "")
+	v := apiServer(t, "", "")
 	if _, err := v.Verify(t.Context(), []byte{1, 2}, goreleaserPolicy()); !errors.Is(err, attest.ErrPolicy) {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestVerifyFollowsPages(t *testing.T) {
 		_, _ = w.Write([]byte(`{"attestations":[{"bundle":{"mediaType":"x"}}]}`))
 	}))
 	t.Cleanup(srv.Close)
-	v := &attest.Verifier{APIURL: srv.URL, Client: srv.Client(), TrustedRoot: trustedRoot(t, "trusted_root_public_good.json")}
+	v := &attest.Verifier{APIURL: srv.URL, Client: srv.Client(), TrustedRoot: trustedRoot(t, "")}
 	if _, err := v.Verify(t.Context(), digest(t, goreleaserDigest), goreleaserPolicy()); err != nil {
 		t.Fatal(err)
 	}
