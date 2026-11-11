@@ -907,7 +907,6 @@ func TestPongConfirmsExit(t *testing.T) {
 								var p protocol.Ping
 								_ = json.Unmarshal(data, &p)
 								writeJSON(ctx, conn, protocol.Ping{Type: protocol.TypePong, Seq: p.Seq})
-								time.Sleep(300 * time.Millisecond)
 							}
 							_ = conn.Close(websocket.StatusGoingAway, "hub shutting down")
 							return

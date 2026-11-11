@@ -996,9 +996,10 @@ func (c *Client) expire(gen uint64) {
 	killEach(cmds, "no resume within the grace period")
 }
 
-// resume answers the plugin's resume on s: it kills and forgets every
-// command the plugin no longer waits for, and sends the rest their missing
-// output and exit.
+// resume answers the plugin's resume on s: it forgets every command
+// whose exit the plugin confirmed, kills and forgets every command the
+// plugin no longer waits for, and sends the rest their missing output and
+// exit.
 func (c *Client) resume(ctx context.Context, s *session, r *protocol.Resume) {
 	want := make(map[string]int64, len(r.Commands))
 	order := make([]string, 0, len(r.Commands))
@@ -1009,6 +1010,12 @@ func (c *Client) resume(ctx context.Context, s *session, r *protocol.Resume) {
 		}
 	}
 	held := c.takeAll()
+	acked := c.acked.Load()
+	for id, cmd := range held {
+		if cmd.trim(acked) {
+			delete(held, id)
+		}
+	}
 	orphans := map[string]*command{}
 	c.mu.Lock()
 	for id, cmd := range held {
