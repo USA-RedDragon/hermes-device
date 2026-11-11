@@ -1,0 +1,650 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 12:26:30 -0600
+Subject: [PATCH] feat(compression): keep the newest skill across compaction
+
+compression.keep_last_skill_chars (0 = off): the handoff carries the most recently loaded skill's body when it is at most N chars, instead of a [SKILL_PRUNED] marker that makes the model reload it. When a kept head or tail row still holds the body, the markers for it are dropped. Older skills and larger bodies keep their markers.
+---
+ agent/agent_init.py                           |   4 +-
+ agent/compaction_skill_pin.py                 | 157 +++++++++++
+ agent/context_compressor.py                   |  30 ++-
+ agent/skill_commands.py                       |  16 ++
+ cli-config.yaml.example                       |   9 +
+ gateway/run.py                                |   3 +-
+ hermes_cli/config_defaults.py                 |   4 +
+ tests/agent/test_compaction_skill_pin.py      | 244 ++++++++++++++++++
+ tui_gateway/session_compression.py            |   1 +
+ .../context-compression-and-caching.md        |   2 +
+ website/docs/user-guide/configuration.md      |   1 +
+ 11 files changed, 466 insertions(+), 5 deletions(-)
+ create mode 100644 agent/compaction_skill_pin.py
+ create mode 100644 tests/agent/test_compaction_skill_pin.py
+
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index 50cb0f1b3a..ccea847ad9 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1407,6 +1407,8 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
+         tail_mode=str(cfg.get("tail_mode", "lean")).strip().lower(),
+         # Actionable user messages guaranteed to survive in the tail (default 1, floor 1).
+         min_tail_users=max(1, _parse_config_int(cfg.get("min_tail_user_messages", 1), 1)),
++        # Opt-in: newest skill body up to this many chars rides the handoff (0 = off).
++        keep_last_skill_chars=max(0, _parse_config_int(cfg.get("keep_last_skill_chars", 0), 0)),
+         max_attempts=min(max_attempts, 10),
+         # Opt-in proactive tool-result prune trigger (0 = disabled; negatives = disabled).
+         proactive_prune_tokens=max(0, _parse_config_int(cfg.get("proactive_prune_tokens", 0), 0)),
+@@ -1859,7 +1861,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
+             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
+             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
+             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
+-            custom_providers=_custom_providers,
++            custom_providers=_custom_providers, keep_last_skill_chars=cs.keep_last_skill_chars,
+         )
+     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
+     if callable(_bind_session_state):
+diff --git a/agent/compaction_skill_pin.py b/agent/compaction_skill_pin.py
+new file mode 100644
+index 0000000000..d81bf2fa82
+--- /dev/null
++++ b/agent/compaction_skill_pin.py
+@@ -0,0 +1,157 @@
++"""Opt-in ``compression.keep_last_skill_chars``: the most recently loaded skill stays usable across compaction.
++
++A skill loaded early in a session is far outside the just-loaded window that spares ``skill_view`` bodies
++from demotion, so compaction turns it into a ``[SKILL_PRUNED]`` reload marker and the model reloads the whole
++body. With the cap set, the newest skill's body rides the handoff when it is at most the cap, and when a kept
++head or tail row still holds the body, the markers for it are dropped instead of asking for a reload. Older
++skills keep their markers, and a body over the cap falls back to the marker, so a large skill cannot defeat
++compaction on a small window."""
++
++from __future__ import annotations
++
++import re
++from typing import Any, Optional
++
++ACTIVE_SKILL_HEADING = "## Active Skill"
++_ACTIVE_SKILL_OPEN = "<active-skill>"
++_ACTIVE_SKILL_CLOSE = "</active-skill>"
++_ACTIVE_SKILL_RE = re.compile(
++    r"\n*" + re.escape(ACTIVE_SKILL_HEADING) + r": (?P<name>[^\n]+)\n[^\n]*\n"
++    + re.escape(_ACTIVE_SKILL_OPEN) + r"\n(?P<body>.*?)\n" + re.escape(_ACTIVE_SKILL_CLOSE),
++    re.DOTALL,
++)
++
++
++def active_skill_block(name: str, body: str) -> str:
++    """The handoff section that carries *body* as the active instructions of skill *name*."""
++    return (
++        f"\n\n{ACTIVE_SKILL_HEADING}: {name}\n"
++        f"Exception to the reference-only note above: these are the current instructions of the skill '{name}', "
++        "the most recently loaded one, kept verbatim through compaction. Follow them; do not reload this skill, "
++        f"and treat any [SKILL_PRUNED] marker for '{name}' as satisfied by this copy.\n"
++        f"{_ACTIVE_SKILL_OPEN}\n{body}\n{_ACTIVE_SKILL_CLOSE}"
++    )
++
++
++def active_skills(text: str) -> list[tuple[str, str]]:
++    """``(name, body)`` of every active-skill section in *text*, in order."""
++    return [(m.group("name"), m.group("body")) for m in _ACTIVE_SKILL_RE.finditer(text or "")]
++
++
++def active_skills_as_markers(text: str) -> str:
++    """*text* with each active-skill section replaced by that skill's reload marker. For copies of a handoff
++    that must not carry a body: the summarizer's previous-summary input and the salvage cap."""
++    from agent.context_compressor import _skill_pruned_marker
++
++    return _ACTIVE_SKILL_RE.sub(lambda m: "\n" + _skill_pruned_marker(m.group("name")), text or "")
++
++
++def _skill_load(message: dict[str, Any], calls: dict[str, tuple]) -> Optional[tuple[str, Optional[str]]]:
++    """``(name, body)`` when *message* loaded a skill (body ``None`` once only a stub is left), else ``None``.
++    A ``skill_view`` of a supporting file, a failed view and a repeat-view dedup result load no skill."""
++    from agent.context_compressor import (
++        _content_text_for_contains, _json_dict, _skill_view_failed, is_compaction_summary_message,
++    )
++    from agent.skill_commands import skill_invocation_body, skills_loaded_by_scaffold
++
++    role, content = message.get("role"), message.get("content")
++    if role == "tool":
++        tool, raw_args = calls.get(str(message.get("tool_call_id") or ""), ("", ""))
++        args = _json_dict(raw_args)
++        name = args.get("name")
++        if (
++            tool != "skill_view" or args.get("file_path") or not isinstance(name, str) or not name
++            or not isinstance(content, str) or _skill_view_failed(content)
++        ):
++            return None
++        payload = _json_dict(content)
++        if payload.get("dedup"):
++            return None
++        body = payload.get("content") if payload.get("success") else None
++        if not isinstance(body, str) or not body.strip():
++            return name, None
++        linked = payload.get("linked_files") if isinstance(payload.get("linked_files"), dict) else {}
++        paths = [str(p) for group in linked.values() if isinstance(group, list) for p in group]
++        if paths:
++            body += f"\n\n[Linked files, load with skill_view(name='{name}', file_path=...): {', '.join(paths)}]"
++        return name, body
++    text = _content_text_for_contains(content)
++    if is_compaction_summary_message(message):
++        found = active_skills(text)
++        return found[-1] if found else None
++    if role == "user" and (names := skills_loaded_by_scaffold(text)):
++        return names[-1], skill_invocation_body(text) if len(names) == 1 else None
++    return None
++
++
++def _kept_note(name: str) -> str:
++    return f"[SKILL_KEPT: the body of '{name}' is still in context]"
++
++
++_KEPT_NOTE_RE = re.compile(r"\[SKILL_KEPT: the body of '([^']+)' is still in context\]")
++
++
++def _retag_kept_rows(rows: list[dict[str, Any]], indices: list[int], kept: Optional[str]) -> list[dict[str, Any]]:
++    """*rows* with the reload marker on kept tool rows for skill *kept* turned into a kept note, and the kept
++    note of any other skill turned back into its marker. Changed rows are copies."""
++    from agent.context_compressor import _skill_pruned_marker
++
++    out = rows
++    for i in indices:
++        content = rows[i].get("content")
++        if rows[i].get("role") != "tool" or not isinstance(content, str):
++            continue
++        new = content.replace(_skill_pruned_marker(kept), _kept_note(kept)) if kept else content
++        new = _KEPT_NOTE_RE.sub(lambda m: m.group(0) if m.group(1) == kept else _skill_pruned_marker(m.group(1)), new)
++        if new != content:
++            out = list(out) if out is rows else out
++            out[i] = {**rows[i], "content": new}
++    return out
++
++
++def keep_last_skill(
++    summary: str, messages: list[dict[str, Any]], working: list[dict[str, Any]], head_end: int, tail_start: int,
++    max_chars: int,
++) -> tuple[str, list[dict[str, Any]], Optional[str]]:
++    """``(summary, working, pinned_name)`` for one compaction. *messages* is the unpruned transcript, *working*
++    its pruned copy whose rows before *head_end* and from *tail_start* stay around the handoff.
++
++    The newest skill load in *messages* is kept when a kept row still holds its body, or else when its body is
++    at most *max_chars*: then it rides *summary* as an active-skill section (``pinned_name``). A kept skill's
++    reload markers leave the summary and the kept rows. A skill an earlier compaction kept that is not kept
++    now gets its markers back, also with ``max_chars <= 0`` (the key turned off); with nothing kept earlier
++    that returns the input unchanged."""
++    from agent.context_compressor import (
++        _PRUNED_SKILLS_SECTION_HEADING, _content_text_for_contains, _redact_compaction_text,
++        _reinject_pruned_skill_markers, _skill_pruned_marker, _tool_calls_by_id, is_compaction_summary_message,
++    )
++
++    carried: list[str] = []
++    for m in messages:
++        text = _content_text_for_contains(m.get("content"))
++        carried += _KEPT_NOTE_RE.findall(text)
++        if is_compaction_summary_message(m) and (found := active_skills(text)):
++            carried.append(found[-1][0])
++    kept_rows = [*range(min(head_end, len(working))), *range(tail_start, len(working))]
++    name = body = None
++    held = False
++    if max_chars > 0:
++        calls = _tool_calls_by_id(messages)
++        name, body = next(filter(None, (_skill_load(m, calls) for m in reversed(messages))), (None, None))
++        held = name is not None and any(
++            not is_compaction_summary_message(working[i]) and (load := _skill_load(working[i], calls))
++            and load[0] == name and load[1] for i in kept_rows
++        )
++        if not (held or (body is not None and len(body) <= max_chars)):
++            name = None
++    working = _retag_kept_rows(working, kept_rows, name)
++    carried = list(dict.fromkeys(n for n in carried if n != name))
++    if name is None:
++        return _reinject_pruned_skill_markers(summary, carried), working, None
++    marker = _skill_pruned_marker(name)
++    summary = summary.replace(marker + "\n", "").replace(marker, "")
++    summary = re.sub(r"\n*" + re.escape(_PRUNED_SKILLS_SECTION_HEADING) + r"\s*(?=\n\n## |\Z)", "", summary)
++    summary = _reinject_pruned_skill_markers(summary, carried)
++    if held:
++        return summary, working, None
++    return summary + _redact_compaction_text(active_skill_block(name, body)), working, name
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+index daa5e27bcd..977bbe2758 100644
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -591,7 +591,9 @@ def salvage_grown_transcript(
+             and len(content) > _SALVAGE_SUMMARY_MAX_CHARS
+             and _looks_like_compaction_summary(msg, content)
+         ):
+-            msg["content"] = elide_keeping_skill_safety_rule(content, _SALVAGE_SUMMARY_MAX_CHARS) + "\n\n" + _SUMMARY_END_MARKER
++            from agent.compaction_skill_pin import active_skills_as_markers
++            msg["content"] = elide_keeping_skill_safety_rule(
++                active_skills_as_markers(content), _SALVAGE_SUMMARY_MAX_CHARS) + "\n\n" + _SUMMARY_END_MARKER
+     _prune_stale_reasoning_replay(out)
+     if estimate_messages_tokens_rough(out) >= budget:
+         _salvage_reduce_todo_snapshot(out)
+@@ -2804,7 +2806,7 @@ class ContextCompressor(
+         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
+         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
+         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
+-        custom_providers: list | None = None,
++        custom_providers: list | None = None, keep_last_skill_chars: int = 0,
+     ):
+         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
+@@ -2837,6 +2839,8 @@ class ContextCompressor(
+         # distinct reason + rearm snapshot instead of every iteration.
+         self._last_reclaim_block_warn: tuple[str, int] | None = None
+         self.min_tail_user_messages = min_tail_user_messages
++        # Newest skill body up to this many chars rides the handoff instead of a reload marker. 0 = off.
++        self.keep_last_skill_chars = max(0, int(keep_last_skill_chars or 0))
+         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
+         self.quiet_mode = quiet_mode
+         # Usable input = context_length - max_tokens; only a positive int counts as a reservation.
+@@ -5111,7 +5115,10 @@ Write only the summary body. Do not include any preamble or prefix."""
+ 
+         summary_idx, summary_body = summary_hits[-1]
+         if not self._previous_summary:
+-            self._previous_summary = "\n\n".join(body for _, body in summary_hits if body) or self._previous_summary
++            from agent.compaction_skill_pin import active_skills_as_markers
++            self._previous_summary = "\n\n".join(
++                active_skills_as_markers(body) for _, body in summary_hits if body
++            ) or self._previous_summary
+         # Zero-user provenance (#64650) rides on the newest handoff hit.
+         provenance = messages[summary_idx].get(COMPRESSED_SUMMARY_HAS_USER_TURN_KEY)
+         if real_user_present:
+@@ -5514,10 +5521,27 @@ Write only the summary body. Do not include any preamble or prefix."""
+             summary = self._fallback_summary_for_window(
+                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,
+             )
++        summary, messages = self._keep_last_skill(
++            summary, canonical_messages, messages, compress_start, max(compress_end, scan.tail_start),
++        )
+         # Phase 4: Assemble compressed message list
+         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
+         return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images, pruned_count)
+ 
++    def _keep_last_skill(
++        self, summary: str, canonical: list[dict[str, Any]], messages: list[dict[str, Any]], head_end: int,
++        tail_start: int,
++    ) -> tuple[str, list[dict[str, Any]]]:
++        """``compression.keep_last_skill_chars``: keep the newest skill's body across this compaction."""
++        from agent.compaction_skill_pin import keep_last_skill
++
++        summary, messages, pinned = keep_last_skill(
++            summary, canonical, messages, head_end, tail_start, self.keep_last_skill_chars,
++        )
++        if pinned and not self.quiet_mode:
++            logger.info("Compaction kept the body of skill %r on the handoff", pinned)
++        return summary, messages
++
+     def _assemble_compressed(
+         self, messages: list[dict[str, Any]], compress_start: int, compress_end: int, scan: _HandoffScan, summary: str,
+     ) -> list[dict[str, Any]]:
+diff --git a/agent/skill_commands.py b/agent/skill_commands.py
+index 76f088bb7e..55b771cfa4 100644
+--- a/agent/skill_commands.py
++++ b/agent/skill_commands.py
+@@ -203,6 +203,22 @@ def skills_loaded_by_scaffold(content: Any) -> list[str]:
+     return [match.group(1)] if header.endswith(_SINGLE_SKILL_MARKER) and match and match.group(1) else []
+ 
+ 
++def skill_invocation_body(content: Any) -> Optional[str]:
++    """The skill payload a single ``/skill`` turn carries inline, without the activation note, the user's
++    instruction or a runtime note; ``None`` for any other text, bundles and gateway auto-loads included."""
++    if not isinstance(content, str) or not content.startswith(_SKILL_INVOCATION_PREFIX):
++        return None
++    header, _, payload = content.partition("\n")
++    if not header.endswith(_SINGLE_SKILL_MARKER) or _BUNDLE_MARKER in header:
++        return None
++    # The instruction follows the skill body (which may quote the marker): LAST marker is the user's.
++    for marker in ("\n" + _SINGLE_SKILL_INSTRUCTION, _RUNTIME_NOTE):
++        if (cut := payload.rfind(marker)) >= 0:
++            payload = payload[:cut]
++            break
++    return payload.strip() or None
++
++
+ def _cut_after(message: str, marker: str, stop_marker: str, find) -> Optional[str]:
+     """Text between *marker* (located with ``find``) and *stop_marker*, stripped; None if absent/empty."""
+     marker_idx = find(marker)
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index c97a85ade9..1e2e329e52 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -762,6 +762,15 @@ compression:
+   # cut back; the guarantee wins over the budget by design.
+   min_tail_user_messages: 1
+ 
++  # Keep the most recently loaded skill through compaction (default: 0 = off).
++  # When > 0, the compaction handoff carries the body of the newest skill load
++  # (skill_view of a SKILL.md, or a /skill turn) verbatim when it is at most
++  # this many characters, instead of a [SKILL_PRUNED] marker that makes the
++  # model reload it. Larger bodies and older skills keep the marker. The kept
++  # body is sent on every request until the next compaction, so keep the cap
++  # small next to the context window (e.g. 12000 chars is ~3K tokens).
++  keep_last_skill_chars: 0
++
+   # Compression retry rounds before a turn gives up with "max compression
+   # attempts reached" (default: 3, same as the previous hardcoded value).
+   # Raise (e.g. 6) for tool-schema-heavy sessions where 3 rounds cannot bring
+diff --git a/gateway/run.py b/gateway/run.py
+index 7c3585b14e..0e6907f921 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -4084,7 +4084,8 @@ class GatewayRunner(
+         ("compression", "proactive_prune_tokens"),
+         ("compression", "proactive_prune_min_result_chars"),
+         ("compression", "proactive_prune_min_reclaim_tokens"),
+-        ("compression", "min_tail_user_messages"), ("agent", "disabled_toolsets"),
++        ("compression", "min_tail_user_messages"), ("compression", "keep_last_skill_chars"),
++        ("agent", "disabled_toolsets"),
+         ("memory", "provider"), ("checkpoints", "enabled"), ("checkpoints", "max_snapshots"),
+         ("checkpoints", "max_total_size_mb"), ("checkpoints", "max_file_size_mb"))
+ 
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index e38aa68221..bd5c02d808 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -590,6 +590,10 @@ DEFAULT_CONFIG = {
+         # min_tail_user_messages: REAL (actionable) user messages guaranteed to survive in the tail.
+         # 1 = single last-user anchor; raise (e.g. 3) when bulky tool outputs fill the tail budget.
+         "min_tail_user_messages": 1,
++        # keep_last_skill_chars: opt-in — the handoff carries the most recently loaded skill's body
++        # (skill_view of SKILL.md or a /skill turn) verbatim when it is at most this many chars, instead
++        # of a [SKILL_PRUNED] reload marker. Larger bodies keep the marker. 0 = off.
++        "keep_last_skill_chars": 0,
+         # max_attempts: retry rounds before a turn gives up with "max compression attempts reached".
+         # Raise (e.g. 6) for tool-schema-heavy sessions. Validated >= 1, cap 10.
+         "max_attempts": 3,
+diff --git a/tests/agent/test_compaction_skill_pin.py b/tests/agent/test_compaction_skill_pin.py
+new file mode 100644
+index 0000000000..ace3c43f28
+--- /dev/null
++++ b/tests/agent/test_compaction_skill_pin.py
+@@ -0,0 +1,244 @@
++"""``compression.keep_last_skill_chars``: the handoff keeps the most recently loaded skill's body.
++
++Without it, a skill loaded early in a session sits outside the just-loaded window
++(``_SKILL_PRUNE_RECENT_WINDOW``) and the protected tail, so compaction replaces its body with a
++``[SKILL_PRUNED]`` marker and the model reloads the whole skill on the next turn.
++"""
++
++import json
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++from agent.compaction_skill_pin import ACTIVE_SKILL_HEADING, active_skills, active_skills_as_markers
++from agent.context_compressor import SUMMARY_PREFIX, ContextCompressor, _skill_pruned_marker
++from agent.context_compressor_tail import SKILL_SAFETY_RULE
++from agent.skill_commands import _build_skill_message, skill_invocation_body
++from hermes_cli.config_defaults import DEFAULT_CONFIG
++
++PDF_BODY = "# pdf\nRULE: cite page numbers.\n" + "pdf skill prose. " * 200
++SHEET_BODY = "# sheets\nRULE: freeze the header row.\n" + "sheet skill prose. " * 100
++
++
++def _compressor(**overrides):
++    kwargs = dict(model="test/model", quiet_mode=True, protect_first_n=1, protect_last_n=2)
++    kwargs.update(overrides)
++    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
++        return ContextCompressor(**kwargs)
++
++
++def _skill_view(call_id, name, body, file_path=None):
++    args = {"name": name, **({"file_path": file_path} if file_path else {})}
++    return [
++        {"role": "assistant", "content": "", "tool_calls": [{
++            "id": call_id, "type": "function", "function": {"name": "skill_view", "arguments": json.dumps(args)},
++        }]},
++        {"role": "tool", "tool_call_id": call_id,
++         "content": json.dumps({"success": True, "name": name, "content": body})},
++    ]
++
++
++def _chatter(n):
++    return [
++        {"role": "user" if i % 2 == 0 else "assistant", "content": f"turn {i} " + "w" * 300}
++        for i in range(n)
++    ]
++
++
++def _ask(text):
++    return [{"role": "user", "content": text}, {"role": "assistant", "content": "ok"}]
++
++
++def _compress(c, msgs, summary="## Goal\nWork on the report."):
++    response = MagicMock()
++    response.choices = [MagicMock()]
++    response.choices[0].message.content = summary
++    with (
++        patch.object(c, "_find_tail_cut_by_tokens", return_value=len(msgs) - 2),
++        patch("agent.context_compressor.call_llm", return_value=response),
++    ):
++        return c.compress(msgs, force=True)
++
++
++def _handoff(result):
++    return next(m["content"] for m in result if ContextCompressor.classify_summary_content(m.get("content")))
++
++
++def _early_skill_transcript(body=PDF_BODY):
++    return (
++        [{"role": "system", "content": "System prompt"}, {"role": "user", "content": "Build the PDF report"}]
++        + _skill_view("call_pdf", "pdf", body)
++        + _chatter(12)
++        + [{"role": "user", "content": "latest ask"}, {"role": "assistant", "content": "ack"}]
++    )
++
++
++def test_off_by_default_an_early_skill_becomes_a_reload_marker():
++    assert DEFAULT_CONFIG["compression"]["keep_last_skill_chars"] == 0
++    c = _compressor()
++    assert c.keep_last_skill_chars == 0
++    handoff = _handoff(_compress(c, _early_skill_transcript()))
++    assert _skill_pruned_marker("pdf") in handoff
++    assert "RULE: cite page numbers." not in handoff
++    assert ACTIVE_SKILL_HEADING not in handoff
++
++
++def test_early_skill_body_rides_the_handoff_without_its_marker():
++    c = _compressor(keep_last_skill_chars=8_000)
++    result = _compress(c, _early_skill_transcript())
++    handoff = _handoff(result)
++    assert active_skills(handoff) == [("pdf", PDF_BODY)]
++    assert _skill_pruned_marker("pdf") not in "\n".join(str(m.get("content")) for m in result)
++    assert "## Pruned Skills" not in handoff and SKILL_SAFETY_RULE not in handoff
++    # The iterative-summary base never carries the body: the next summarizer call would pay for it.
++    assert "RULE: cite page numbers." not in c._previous_summary
++
++
++def test_body_over_the_cap_keeps_the_marker():
++    c = _compressor(keep_last_skill_chars=len(PDF_BODY) - 1)
++    handoff = _handoff(_compress(c, _early_skill_transcript()))
++    assert _skill_pruned_marker("pdf") in handoff
++    assert active_skills(handoff) == []
++
++
++def test_only_the_newest_skill_is_kept():
++    msgs = _early_skill_transcript()
++    msgs[4:4] = _skill_view("call_sheets", "sheets", SHEET_BODY)
++    c = _compressor(keep_last_skill_chars=8_000)
++    handoff = _handoff(_compress(c, msgs))
++    assert active_skills(handoff) == [("sheets", SHEET_BODY)]
++    assert _skill_pruned_marker("pdf") in handoff
++    assert _skill_pruned_marker("sheets") not in handoff
++
++
++def test_kept_skill_view_body_lists_its_linked_files():
++    msgs = _early_skill_transcript()
++    payload = json.loads(msgs[3]["content"])
++    payload["linked_files"] = {"references": ["references/api.md"], "scripts": ["scripts/build.py"]}
++    msgs[3]["content"] = json.dumps(payload)
++    [(name, body)] = active_skills(_handoff(_compress(_compressor(keep_last_skill_chars=8_000), msgs)))
++    assert name == "pdf" and body.startswith(PDF_BODY)
++    assert body.endswith("file_path=...): references/api.md, scripts/build.py]")
++
++
++def test_supporting_files_and_repeat_view_stubs_are_not_skill_loads():
++    msgs = _early_skill_transcript()
++    dedup = _skill_view("call_again", "pdf", "")
++    dedup[1]["content"] = json.dumps({"success": True, "status": "unchanged", "name": "pdf", "dedup": True})
++    msgs[4:4] = _skill_view("call_ref", "pdf", "reference text", file_path="references/api.md") + dedup
++    c = _compressor(keep_last_skill_chars=8_000)
++    assert active_skills(_handoff(_compress(c, msgs))) == [("pdf", PDF_BODY)]
++
++
++def test_slash_skill_turn_keeps_the_body_but_not_the_typed_instruction():
++    note = ('[IMPORTANT: The user has invoked the "pdf" skill, indicating they want '
++            "you to follow its instructions. The full skill content is loaded below.]")
++    invocation = _build_skill_message({"name": "pdf", "content": PDF_BODY}, Path("/skills/pdf"), note,
++                                      user_instruction="remember PLUM-77")
++    body = skill_invocation_body(invocation)
++    assert body.startswith(PDF_BODY.strip()) and "PLUM-77" not in body and note not in body
++    msgs = _early_skill_transcript()
++    msgs[2:4] = [{"role": "assistant", "content": "ok"}, {"role": "user", "content": invocation},
++                 {"role": "assistant", "content": "loaded"}]
++    handoff = _handoff(_compress(_compressor(keep_last_skill_chars=8_000), msgs))
++    assert active_skills(handoff) == [("pdf", body)]
++    assert _skill_pruned_marker("pdf") not in handoff
++    assert "/pdf remember PLUM-77" in handoff
++    # The same turn in the protected head still holds the body: nothing is copied and no marker is added.
++    head = [msgs[0], msgs[3], *_chatter(13)[1:], *_ask("latest ask")]
++    handoff = _handoff(_compress(_compressor(keep_last_skill_chars=8_000), head))
++    assert active_skills(handoff) == [] and _skill_pruned_marker("pdf") not in handoff
++
++
++def test_body_still_in_the_kept_tail_is_not_copied():
++    msgs = _early_skill_transcript()[:-2] + _skill_view("call_late", "pdf", PDF_BODY) + [
++        {"role": "user", "content": "latest ask"}]
++    c = _compressor(keep_last_skill_chars=8_000)
++    response = MagicMock()
++    response.choices = [MagicMock()]
++    response.choices[0].message.content = "## Goal\nWork."
++    with (
++        patch.object(c, "_find_tail_cut_by_tokens", return_value=len(msgs) - 3),
++        patch("agent.context_compressor.call_llm", return_value=response),
++    ):
++        handoff = _handoff(c.compress(msgs, force=True))
++    assert active_skills(handoff) == []
++    assert _skill_pruned_marker("pdf") not in handoff
++
++
++def test_kept_skill_survives_the_next_compaction_until_a_newer_skill_loads():
++    c = _compressor(keep_last_skill_chars=8_000)
++    first = _compress(c, _early_skill_transcript())
++    second = _compress(c, first + _chatter(12) + _ask("next ask"))
++    assert active_skills(_handoff(second)) == [("pdf", PDF_BODY)]
++    third = _compress(c, second + _skill_view("call_sheets", "sheets", SHEET_BODY) + _chatter(12) + _ask("third ask"))
++    handoff = _handoff(third)
++    assert active_skills(handoff) == [("sheets", SHEET_BODY)]
++    assert _skill_pruned_marker("pdf") in handoff
++
++
++def test_turning_the_key_off_restores_the_marker():
++    c = _compressor(keep_last_skill_chars=8_000)
++    first = _compress(c, _early_skill_transcript())
++    c.keep_last_skill_chars = 0
++    handoff = _handoff(_compress(c, first + _chatter(12) + _ask("next")))
++    assert active_skills(handoff) == []
++    assert _skill_pruned_marker("pdf") in handoff
++
++
++def test_rehydrated_previous_summary_and_salvage_carry_a_marker_not_the_body():
++    from agent.context_compressor import _SUMMARY_END_MARKER, COMPRESSED_SUMMARY_METADATA_KEY, salvage_grown_transcript
++    from agent.compaction_skill_pin import active_skill_block
++
++    handoff = SUMMARY_PREFIX + "\n\n## Goal\nOld work." + active_skill_block("pdf", PDF_BODY)
++    assert active_skills_as_markers(handoff).endswith(_skill_pruned_marker("pdf"))
++    # A restarted process rebuilds the summarizer's previous-summary input from the handoff row.
++    c = _compressor()
++    msgs = [{"role": "system", "content": "System prompt"}, {"role": "user", "content": handoff}] + _chatter(8)
++    response = MagicMock()
++    response.choices = [MagicMock()]
++    response.choices[0].message.content = "## Goal\nWork."
++    with (
++        patch.object(c, "_find_tail_cut_by_tokens", return_value=len(msgs) - 2),
++        patch("agent.context_compressor.call_llm", return_value=response) as call,
++    ):
++        c.compress(msgs, force=True)
++    prompt = json.dumps(call.call_args.kwargs.get("messages") or call.call_args.args)
++    assert "RULE: cite page numbers." not in prompt
++    assert "reload with skill_view(name='pdf')" in prompt
++    # The salvage cap cuts a long handoff from the end; it must not leave half a skill body behind.
++    original = msgs + [{"role": "tool", "tool_call_id": "x", "content": "z" * 200_000}]
++    long_handoff = SUMMARY_PREFIX + "\n\n## Goal\nOld work." + active_skill_block("pdf", PDF_BODY * 3)
++    carrier = {"role": "user", "content": f"{long_handoff}\n\n{_SUMMARY_END_MARKER}",
++               COMPRESSED_SUMMARY_METADATA_KEY: True}
++    candidate = [msgs[0], carrier, {"role": "user", "content": "latest"}]
++    salvaged = salvage_grown_transcript(original, candidate)
++    assert salvaged and "RULE: cite page numbers." not in salvaged[1]["content"]
++    assert _skill_pruned_marker("pdf") in salvaged[1]["content"]
++
++
++def test_head_stub_does_not_ask_to_reload_a_body_the_head_still_holds():
++    """First compaction protects the head: a /skill turn keeps its body there while the skill_view right after
++    it is demoted to a stub whose marker asked for a needless reload of the same body."""
++    note = ('[IMPORTANT: The user has invoked the "pdf" skill, indicating they want '
++            "you to follow its instructions. The full skill content is loaded below.]")
++    big = PDF_BODY * 20
++    invocation = _build_skill_message({"name": "pdf", "content": big}, Path("/skills/pdf"), note, user_instruction="go")
++    msgs = (
++        [{"role": "system", "content": "System prompt"}, {"role": "user", "content": invocation}]
++        + _skill_view("call_pdf", "pdf", big) + _chatter(13)[1:]
++        + [{"role": "user", "content": "latest ask"}, {"role": "assistant", "content": "ack"}]
++    )
++    off = "\n".join(str(m.get("content")) for m in _compress(_compressor(protect_first_n=3), msgs))
++    assert _skill_pruned_marker("pdf") in off
++
++    c = _compressor(protect_first_n=3, keep_last_skill_chars=1_000)
++    result = _compress(c, msgs)
++    texts = "\n".join(str(m.get("content")) for m in result)
++    assert "[SKILL_PRUNED:" not in texts and SKILL_SAFETY_RULE not in texts
++    assert texts.count("RULE: cite page numbers.") == 20 and active_skills(texts) == []
++    assert "[SKILL_KEPT: the body of 'pdf' is still in context]" in result[3]["content"]
++
++    # Turned off, the next compaction folds the head away and lists the skill for reload again.
++    c.keep_last_skill_chars = 0
++    handoff = _handoff(_compress(c, result + _chatter(12) + _ask("next")))
++    assert _skill_pruned_marker("pdf") in handoff
+diff --git a/tui_gateway/session_compression.py b/tui_gateway/session_compression.py
+index 2d10ea89e7..469326387b 100644
+--- a/tui_gateway/session_compression.py
++++ b/tui_gateway/session_compression.py
+@@ -80,6 +80,7 @@ _COMPRESSION_INT_KEYS = (
+     ("proactive_prune_min_reclaim_tokens", 4096, 0),
+     ("protect_last_n", 20, 0),
+     ("min_tail_user_messages", 1, 1),
++    ("keep_last_skill_chars", 0, 0),
+ )
+ 
+ 
+diff --git a/website/docs/developer-guide/context-compression-and-caching.md b/website/docs/developer-guide/context-compression-and-caching.md
+index d2c80435c6..3106425eab 100644
+--- a/website/docs/developer-guide/context-compression-and-caching.md
++++ b/website/docs/developer-guide/context-compression-and-caching.md
+@@ -301,6 +301,7 @@ compression:
+   tail_mode: lean            # Tail retention policy: lean | legacy (default: lean)
+   protect_last_n: 20         # Minimum protected tail messages (default: 20)
+   min_tail_user_messages: 1  # Real user messages guaranteed in the tail (default: 1)
++  keep_last_skill_chars: 0   # Opt-in: keep the newest skill body up to N chars (default: 0 = off)
+   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
+   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
+   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
+@@ -328,6 +329,7 @@ auxiliary:
+ | `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
+ | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
+ | `min_tail_user_messages` | `1` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `1` = the existing single last-user anchor (behavior-preserving default). Raise to e.g. `3` to keep the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
++| `keep_last_skill_chars` | `0` | ≥0 chars | Opt-in. When > 0, the compaction handoff carries the body of the most recently loaded skill (a `skill_view` of its `SKILL.md`, or a `/skill` turn) verbatim when it is at most this many characters, so the model does not reload it after compaction. Older skills, supporting files and bodies over the cap keep the `[SKILL_PRUNED]` reload marker. Nothing changes when the newest body is still in the kept head or tail. The kept body is sent with every request until the next compaction; keep the cap small next to the context window. `0` = off |
+ | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
+ | `idle_compact_after_seconds` | `0` | ≥0 seconds | Opt-in: compact up front when a session resumes after this many seconds idle (0 = disabled). Skips when context ≤ threshold × target_ratio; honors cooldown/anti-thrash/lock guards |
+ | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.4/5.5/5.6 and gpt-6 Astra on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
+diff --git a/website/docs/user-guide/configuration.md b/website/docs/user-guide/configuration.md
+index 84bd856e7e..e3e04a0dfc 100644
+--- a/website/docs/user-guide/configuration.md
++++ b/website/docs/user-guide/configuration.md
+@@ -1090,6 +1090,7 @@ compression:
+   proactive_prune_tokens: 0                         # Opt-in tokens trigger for the no-LLM tool-result prune (0 = off; see below)
+   proactive_prune_min_result_chars: 8000            # Prune's summarize pass only touches tool results larger than this (clamped >= 200)
+   proactive_prune_min_reclaim_tokens: 4096          # Prune only commits when it reclaims at least this many tokens (0 = commit any)
++  keep_last_skill_chars: 0                          # Opt-in: the handoff keeps the newest skill body up to this many chars instead of a reload marker (0 = off)
+ 
+ # The summarization model/provider is configured under auxiliary:
+ auxiliary:

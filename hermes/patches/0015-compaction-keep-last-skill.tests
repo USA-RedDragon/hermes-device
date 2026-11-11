@@ -1,0 +1,15 @@
+tests/agent/test_ghost_skill_pruning.py
+tests/agent/test_compression_skill_safety_single_copy.py
+tests/agent/test_compression_config_defaults.py
+tests/agent/test_prepared_compaction.py
+tests/agent/test_context_compressor.py
+tests/agent/test_context_compressor_tail.py
+tests/agent/test_context_compressor_summary_continuity.py
+tests/agent/test_salvage_grown_transcript.py
+tests/agent/test_skill_commands.py
+tests/agent/test_skill_invocation_description.py
+tests/agent/test_memory_skill_scaffolding.py
+tests/agent/test_skill_todo_retention_parity.py
+tests/agent/test_proactive_prune_config.py
+tests/gateway/test_agent_cache.py
+tests/tui_gateway/test_compression_config_hot_reload.py
