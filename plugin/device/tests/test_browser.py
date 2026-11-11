@@ -134,7 +134,8 @@ class ToolTests(Base):
                 hooks.append((name, cb))
 
         browser.register(Ctx(), core)
-        self.assertEqual(hooks, [("pre_tool_call", browser.pre_tool_call)])
+        self.assertEqual(hooks, [("pre_tool_call", browser.pre_tool_call),
+                                 ("on_session_delete", browser.on_session_delete)])
         return reg
 
     def run_tool(self, name: str, **args):
@@ -653,14 +654,12 @@ class ToolTests(Base):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             now = time.time()
-            made = []
             for i in range(5):
                 d = root / f"s{i % 2}"
                 d.mkdir(exist_ok=True)
                 f = d / f"shot{i}.jpg"
                 f.write_bytes(b"x")
                 os.utime(f, (now - 100 + i, now - 100 + i))
-                made.append(f)
             old = root / "s9"
             old.mkdir()
             stale = old / "old.jpg"
@@ -670,17 +669,37 @@ class ToolTests(Base):
             outside.write_bytes(b"keep")
             self.addCleanup(outside.unlink)
             (root / "s0" / "link.jpg").symlink_to(outside)
-            self.assertEqual(browser.prune_shots(root, now=now, max_age=1000, max_files=3), 3)
-            self.assertEqual(sorted(p.name for p in root.rglob("shot*.jpg")), ["shot2.jpg", "shot3.jpg", "shot4.jpg"])
+            self.assertEqual(browser.prune_shots(root, now=now, max_age=1000, max_files=2), 2)
+            self.assertEqual(sorted(p.name for p in root.rglob("shot*.jpg")),
+                             ["shot1.jpg", "shot2.jpg", "shot3.jpg", "shot4.jpg"])
             self.assertFalse(old.exists())
             self.assertEqual(outside.read_bytes(), b"keep")
+            self.assertEqual(browser.prune_shots(root, now=now, max_age=1000, max_files=2, room_in=root / "s1"), 1)
+            self.assertEqual(sorted(p.name for p in root.rglob("shot*.jpg")), ["shot2.jpg", "shot3.jpg", "shot4.jpg"])
 
-    def test_screenshot_keeps_at_most_max_files(self):
-        with mock.patch.object(browser, "SHOT_MAX_FILES", 2):
+    def test_screenshot_cap_is_per_session(self):
+        with mock.patch.object(browser, "SHOT_MAX_PER_SESSION", 2):
+            other = browser.save_shot("other", "data:image/png;base64," + PNG)
             paths = [self.run_tool("browser_screenshot", tab_id=7)["path"] for _ in range(3)]
-        left = sorted(str(p) for p in browser.shots_root().rglob("*.png"))
-        self.assertEqual(len(left), 2)
-        self.assertIn(paths[-1], left)
+        left = sorted(str(p) for p in (browser.shots_root() / self.session).glob("*.png"))
+        self.assertEqual(left, sorted(paths[1:]))
+        self.assertTrue(other.exists())
+
+    def test_deleted_sessions_lose_their_screenshots(self):
+        kept = browser.save_shot("kept", "data:image/png;base64," + PNG)
+        gone = browser.save_shot("gone", "data:image/png;base64," + PNG)
+        child = browser.save_shot("gone-child", "data:image/png;base64," + PNG)
+        odd = browser.save_shot("odd id", "data:image/png;base64," + PNG)
+        browser.on_session_delete(session_id="kept", reason="archive", profile="default")
+        browser.on_session_delete(session_id="kept", reason="profile_repair", profile="work")
+        self.assertTrue(kept.exists())
+        browser.on_session_delete(session_id="gone", reason="delete", profile="default",
+                                  deleted_ids=["gone", "gone-child", "odd id", "../kept"])
+        self.assertFalse(gone.parent.exists())
+        self.assertFalse(child.parent.exists())
+        self.assertTrue(kept.exists())
+        self.assertTrue(odd.exists())
+        browser.on_session_delete(session_id="never-had-shots", reason="prune", profile=None)
 
     def test_timeout_kills_request(self):
         self.fake.hold.add("snapshot")

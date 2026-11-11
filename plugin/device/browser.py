@@ -480,8 +480,10 @@ def vision_result(page: dict, data_url: str, question: str, *, native: Callable[
                         {"type": "image_url", "image_url": {"url": embedded}}]}
 
 
+# Screenshots older than a week go, and each session folder keeps its newest 50, so a busy chat
+# never pushes out another chat's screenshots (docs/browser.md section 3).
 SHOT_MAX_AGE_S = 7 * 24 * 3600
-SHOT_MAX_FILES = 200
+SHOT_MAX_PER_SESSION = 50
 _SHOTS_LOCK = threading.Lock()
 
 
@@ -497,16 +499,19 @@ def _session_dir_name(session_id: str) -> str:
 
 
 def prune_shots(root: Path, *, now: Optional[float] = None, max_age: float = SHOT_MAX_AGE_S,
-                max_files: int = SHOT_MAX_FILES) -> int:
-    """Delete screenshots older than max_age, then the oldest ones over max_files, and empty
-    session folders. Returns how many files it deleted."""
+                max_files: Optional[int] = None, room_in: Optional[Path] = None) -> int:
+    """Delete screenshots older than max_age, then in each session folder the oldest ones over
+    max_files (SHOT_MAX_PER_SESSION by default; one fewer in room_in, the folder about to get a
+    new one), and remove empty session folders. Returns how many files it deleted."""
     now = time.time() if now is None else now
-    files: list[tuple[float, Path]] = []
+    max_files = SHOT_MAX_PER_SESSION if max_files is None else max_files
     try:
         dirs = [d for d in root.iterdir() if d.is_dir() and not d.is_symlink()]
     except OSError:
         return 0
+    removed = 0
     for d in dirs:
+        files: list[tuple[float, Path]] = []
         try:
             for f in d.iterdir():
                 try:
@@ -517,22 +522,67 @@ def prune_shots(root: Path, *, now: Optional[float] = None, max_age: float = SHO
                     files.append((st.st_mtime, f))
         except OSError:
             continue
-    files.sort()
-    keep = max(max_files, 0)
-    doomed = [f for i, (mtime, f) in enumerate(files) if now - mtime > max_age or len(files) - i > keep]
-    removed = 0
-    for f in doomed:
-        try:
-            f.unlink()
-            removed += 1
-        except OSError:
-            pass
-    for d in dirs:
+        files.sort()
+        keep = max(max_files - (1 if d == room_in else 0), 0)
+        for i, (mtime, f) in enumerate(files):
+            if now - mtime > max_age or len(files) - i > keep:
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    pass
         try:
             d.rmdir()
         except OSError:
             pass
     return removed
+
+
+def remove_session_shots(session_ids: Any, *, root: Optional[Path] = None) -> int:
+    """Delete the screenshot folders of deleted sessions. A folder whose name is not the session
+    id itself (an id with characters the folder name replaces) is left to the age limit, since
+    another session's id could map to the same name. Returns how many files it deleted."""
+    root = shots_root() if root is None else root
+    removed = 0
+    with _SHOTS_LOCK:
+        for sid in sorted({s for s in session_ids or () if isinstance(s, str) and s}):
+            if _session_dir_name(sid) != sid:
+                continue
+            d = root / sid
+            try:
+                fd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+            except OSError:
+                continue
+            try:
+                with os.scandir(fd) as entries:
+                    names = [e.name for e in entries if not e.is_dir(follow_symlinks=False)]
+                for name in names:
+                    try:
+                        os.unlink(name, dir_fd=fd)
+                        removed += 1
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+            finally:
+                os.close(fd)
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+    return removed
+
+
+def on_session_delete(session_id: str = "", reason: str = "", deleted_ids: Any = None, **_kwargs) -> None:
+    """Hermes's on_session_delete hook: drop the screenshots of deleted sessions. An archived
+    session keeps them, since it can come back, and so does one that moved to another profile
+    (``profile_repair``); the age limit removes them later."""
+    if reason in ("archive", "profile_repair"):
+        return
+    try:
+        remove_session_shots([session_id, *(deleted_ids or ())])
+    except Exception:
+        _core().logger.warning("device: could not remove the screenshots of deleted sessions", exc_info=True)
 
 
 def save_shot(session_id: str, data_url: str, *, root: Optional[Path] = None) -> Path:
@@ -550,7 +600,7 @@ def save_shot(session_id: str, data_url: str, *, root: Optional[Path] = None) ->
     path = folder / (name + (".png" if m.group(1) == "image/png" else ".jpg"))
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     with _SHOTS_LOCK:
-        prune_shots(root, max_files=SHOT_MAX_FILES - 1)
+        prune_shots(root, room_in=folder)
         for attempt in range(2):
             folder.mkdir(mode=0o700, parents=True, exist_ok=True)
             try:
@@ -982,3 +1032,4 @@ def register(ctx: Any, core: Any) -> None:
                           check_fn=offered if name == "browser_status" else available,
                           description=schema["description"], emoji=EMOJI)
     ctx.register_hook("pre_tool_call", pre_tool_call)
+    ctx.register_hook("on_session_delete", on_session_delete)
