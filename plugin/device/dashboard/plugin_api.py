@@ -365,8 +365,9 @@ async def device_socket(ws: WebSocket) -> None:
             await _close(ws, core.CLOSE_UNAUTHORIZED, "unknown device or bad token")
             return
         device_id = display = name
+        user = ""
     else:
-        device_id, display = claims.device_id, claims.device_name
+        device_id, display, user = claims.device_id, claims.device_name, claims.sub
 
     def text_field(key: str) -> str:
         value = hello.get(key)
@@ -387,7 +388,7 @@ async def device_socket(ws: WebSocket) -> None:
         device_id=device_id, name=display, send_text=send_text, loop=asyncio.get_running_loop(), roots=roots,
         tmp_dir=text_field("tmp_dir"), home=text_field("home"), hostname=text_field("hostname"),
         os=text_field("os"), arch=text_field("arch"), shell=text_field("shell"),
-        client_version=text_field("client_version"), version=version, capabilities=capabilities,
+        client_version=text_field("client_version"), version=version, capabilities=capabilities, user=user,
         close=lambda code, reason: _close(ws, code, reason))
     if core.CAPABILITY_MCP in capabilities:
         names = hello.get("mcp_servers")

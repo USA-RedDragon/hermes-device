@@ -121,6 +121,9 @@ SILENCE_TIMEOUT_S = 60
 DEFAULT_GRACE_S = 120
 MAX_GRACE_S = 3600
 
+# The assertion ``sub`` of a hub service device, such as the sandbox (protocol.md section 7.3).
+SERVICE_USER = "service"
+
 PLUGIN_EXEC_PATH = "/api/plugins/device/ws"
 ACP_HOST_PATH = "/acp"
 
@@ -468,6 +471,9 @@ class DeviceConn:
     shell: str = ""
     client_version: str = ""
     close: Optional[Callable[[int, str], Any]] = None
+    # The hub user the device belongs to (the assertion ``sub``; SERVICE_USER for a service
+    # device, "" in dev mode).
+    user: str = ""
     # The negotiated exec leg protocol version (section 4.1).
     version: int = MIN_PROTOCOL_VERSION
     # The capabilities both sides accepted (section 4.1).
