@@ -5,6 +5,8 @@
 package protocol
 
 import (
+	"crypto/sha1" //nolint:gosec // see BrowserRedirectURL
+	"encoding/hex"
 	"encoding/json"
 	"time"
 )
@@ -40,8 +42,18 @@ const (
 	TypeBrowser       = "browser"
 	TypeBrowserResult = "browser_result"
 	// TypeBrowserStatus is sent by the device after the welcome (and the
-	// resume) and whenever the browser extension connects or goes away.
+	// resume) and whenever the browser extension connects, goes away or
+	// changes its sign-in. The hub rewrites it (docs/browser.md section 13).
 	TypeBrowserStatus = "browser_status"
+	// TypeBrowserAuth is sent by the device to the hub with the browser
+	// credential the extension holds, after the welcome (and the resume)
+	// and whenever it changes. The hub answers with TypeBrowserAuthResult
+	// and never forwards it to the plugin.
+	TypeBrowserAuth = "browser_auth"
+	// TypeBrowserAuthResult is sent by the hub to the device: the answer
+	// to a TypeBrowserAuth, or a sign-in the hub dropped later. The hub
+	// drops any the plugin sends.
+	TypeBrowserAuthResult = "browser_auth_result"
 )
 
 // Capabilities a device offers in Hello.Capabilities. The plugin answers
@@ -59,7 +71,43 @@ const (
 	BrowserTimeout      = "timeout"
 	BrowserCancelled    = "cancelled"
 	BrowserFailed       = "failed"
+	// BrowserNotSignedIn: the browser is not signed in to the hub as the
+	// device's owner. The hub or the device refused the request.
+	BrowserNotSignedIn = "not_signed_in"
 )
+
+// Codes of a BrowserAuthResult that is not OK.
+const (
+	// BrowserAuthSignedOut answers an empty token.
+	BrowserAuthSignedOut = "signed_out"
+	// BrowserAuthInvalid: the hub does not know the token, or it was
+	// revoked or expired.
+	BrowserAuthInvalid = "invalid"
+	// BrowserAuthWrongUser: the token belongs to another hub user than
+	// the device's owner.
+	BrowserAuthWrongUser = "wrong_user"
+	// BrowserAuthOtherDevice: the token was issued for another device.
+	BrowserAuthOtherDevice = "other_device"
+	// BrowserAuthUnavailable: the hub could not check the token. The
+	// device sends it again after a while.
+	BrowserAuthUnavailable = "unavailable"
+)
+
+// BrowserTokenPrefix starts every browser credential the hub issues.
+const BrowserTokenPrefix = "hbt_"
+
+// BrowserExtensionID is the id of the Hermes Firefox extension. The hub
+// accepts only its browser.identity redirect URL in the sign-in flow.
+const BrowserExtensionID = "browser@hermes-device"
+
+// BrowserRedirectURL is what Firefox's browser.identity.getRedirectURL()
+// returns for the extension with id: the SHA-1 of the id in hex, under
+// extensions.allizom.org. Firefox ends the sign-in flow when the hub
+// redirects there, before any request leaves the browser.
+func BrowserRedirectURL(id string) string {
+	sum := sha1.Sum([]byte(id)) //nolint:gosec // Firefox derives the redirect host with SHA-1; nothing secret
+	return "https://" + hex.EncodeToString(sum[:]) + ".extensions.allizom.org/"
+}
 
 // Browser request limits.
 const (
@@ -244,10 +292,34 @@ type BrowserResult struct {
 	Error  string          `json:"error,omitempty"`
 }
 
-// BrowserStatus reports whether the browser extension is connected.
+// BrowserStatus reports whether the browser extension is connected and
+// signed in to the hub as the device's owner. The hub sets Connected to
+// false while SignedIn is false, so a plugin that does not know SignedIn
+// offers no browser either. Reason says why the browser cannot be used.
 type BrowserStatus struct {
 	Type             string `json:"type"`
 	Connected        bool   `json:"connected"`
+	SignedIn         bool   `json:"signed_in"`
+	User             string `json:"user,omitempty"`
+	Reason           string `json:"reason,omitempty"`
 	Browser          string `json:"browser,omitempty"`
 	ExtensionVersion string `json:"extension_version,omitempty"`
+}
+
+// BrowserAuth carries the extension's browser credential from the device
+// to the hub. Token is empty when the browser is signed out.
+type BrowserAuth struct {
+	Type  string `json:"type"`
+	Token string `json:"token"`
+}
+
+// BrowserAuthResult tells the device whether the hub accepted its browser
+// credential. User and SessionID are set when OK; Code and Error when not.
+type BrowserAuthResult struct {
+	Type      string `json:"type"`
+	OK        bool   `json:"ok"`
+	User      string `json:"user,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
