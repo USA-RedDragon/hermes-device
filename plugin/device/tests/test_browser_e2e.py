@@ -102,10 +102,10 @@ class PluginEndToEnd(unittest.TestCase):
     def test_tools_drive_firefox(self):
         deadline = threading.Event()
         for _ in range(100):
-            if self.conn.browser.get("connected"):
+            if self.conn.browser.get("connected") and self.conn.browser.get("signed_in"):
                 break
             deadline.wait(0.1)
-        self.assertTrue(self.conn.browser.get("connected"), "no browser_status from the device")
+        self.assertTrue(self.conn.browser.get("signed_in"), "no signed-in browser_status from the device")
         self.hub.bind("e2e", "d_e2e", ROOT)
 
         status = self.tool("browser_status")
