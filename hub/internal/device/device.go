@@ -103,8 +103,6 @@ type Server struct {
 	proxies  []netip.Prefix
 	pairs    *limiter
 	polls    *limiter
-	tokens   *limiter
-	revokes  *limiter
 
 	// service maps the SHA-256 of each service device token to its device.
 	service map[[32]byte]hub.Device
@@ -157,7 +155,6 @@ func New(opts Options) (*Server, error) {
 	}
 	s := &Server{opts: opts, log: opts.Logger.With("component", "device"), store: opts.Store, backends: map[string]*backend{},
 		proxies: proxies, pairs: newLimiter(20, 10*time.Minute), polls: newLimiter(400, 10*time.Minute),
-		tokens: newLimiter(60, 10*time.Minute), revokes: newLimiter(240, time.Hour),
 		legs: map[string]map[*leg]struct{}{}, binds: map[string]bindEntry{}, created: map[string]time.Time{}, stopped: make(chan struct{}),
 		service: map[[32]byte]hub.Device{}}
 	for _, b := range opts.Backends {
