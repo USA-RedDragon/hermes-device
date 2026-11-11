@@ -4,6 +4,7 @@
 package telegram
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -83,6 +84,8 @@ type Options struct {
 	Claude     hub.Claude
 	Logger     *slog.Logger
 	HTTPClient *http.Client
+	// statusTick replaces the package's statusTick in tests.
+	statusTick time.Duration
 }
 
 // NoticeStore is the part of hub.NotifyStore the bot reads.
@@ -119,6 +122,8 @@ type Bot struct {
 	defaults  map[string]string
 	groups    map[int64]bool
 	now       func() time.Time
+	// tick is how often a status line shows the time again (statusTick).
+	tick time.Duration
 
 	// loop serializes the handling of updates with the topic sync; it
 	// guards chats.
@@ -243,6 +248,7 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		defaults:  defaults,
 		groups:    make(map[int64]bool, len(cfg.AllowedGroups)),
 		now:       time.Now,
+		tick:      cmp.Or(opts.statusTick, statusTick),
 		chats:     make(map[dest]*chatState),
 		forums:    make(map[int64]*forum),
 		approvals: make(map[string]*pendingApproval), steps: make(map[msgKey]string), deleted: make(map[dest]bool),
@@ -966,6 +972,7 @@ func (b *Bot) pump(a *attachment) {
 			return b.addApproval(a, p, body)
 		})
 	r.now = b.now
+	r.statusTick = b.tick
 	if b.cfg.Steps != "" {
 		r.steps = b.cfg.Steps
 	}

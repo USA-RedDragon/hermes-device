@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/hermes-hub/internal/telegram"
 )
 
 const (
@@ -147,6 +148,31 @@ func TestSnapshotPromptShownAtFirstStep(t *testing.T) {
 	if n != 1 || !h.tg.before("from vs code", kThinking) {
 		t.Fatalf("prompt shown %d times", n)
 	}
+}
+
+// The status line shows the time again while the model thinks with no
+// events, and keeps the turn's start from the hub.
+func TestStatusLineKeepsTime(t *testing.T) {
+	t.Parallel()
+	h := startBotNotices(t, nil, newFakeState(), nil, nil, telegram.WithStatusTick(400*time.Millisecond))
+	sid := h.startTurn(t)
+	h.finishFirst(t, sid)
+	started := time.Now().Add(-90 * time.Second)
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "from the hub", kSubmitID: hub.NewSubmissionID(),
+		"started_at": started.UnixMilli()})
+	h.hub.emit(t, sid, hub.KindThinkingDelta, map[string]any{kText: kPondering})
+	first := h.tg.wait(mSend, kThinking)
+	if !strings.Contains(first.text(), "1m 30s") {
+		t.Fatalf("status = %q", first.text())
+	}
+	edit := h.tg.waitCall(mEdit, func(c tgCall) bool {
+		return c.messageID() == first.ResultID && strings.Contains(c.text(), kThinking) && !strings.Contains(c.text(), "1m 30s")
+	})
+	if edit.At.Sub(first.At) > 3*time.Second {
+		t.Fatalf("the status line took %s to show the time again", edit.At.Sub(first.At))
+	}
+	h.hub.emit(t, sid, hub.KindMessageDelta, map[string]any{kText: "Sure"})
+	h.tg.waitCall(mEdit, func(c tgCall) bool { return c.messageID() == first.ResultID && strings.Contains(c.text(), "Writing") })
 }
 
 // raws encodes transcript rows.

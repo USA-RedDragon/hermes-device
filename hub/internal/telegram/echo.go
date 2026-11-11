@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 	"github.com/google/uuid"
@@ -156,6 +157,7 @@ type startPayload struct {
 	Text         string `json:"text"`
 	Note         string `json:"note"`
 	SubmissionID string `json:"submission_id"`
+	StartedAt    int64  `json:"started_at"`
 }
 
 // turnStart handles message.start: a cron result or an agent message it
@@ -167,6 +169,9 @@ func (r *renderer) turnStart(ctx context.Context, ev hub.Event) {
 	}
 	open := r.open
 	r.open = nil
+	if p.StartedAt > 0 {
+		r.startedAt = time.UnixMilli(p.StartedAt)
+	}
 	switch {
 	case p.Note == "cron":
 		r.cronResult(ctx, p.Text)

@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -70,6 +71,10 @@ type liveMsg struct {
 	lastEdit time.Time
 	pending  string
 	dirty    bool
+	// shown is the HTML the message shows and buttons whether it has
+	// buttons, so an edit that would change nothing is skipped.
+	shown   string
+	buttons bool
 }
 
 // elsewherePrompt is an approval answered where the hub could not see
@@ -105,6 +110,8 @@ type turnStatus struct {
 	// tokens are the turn's tokens so far, from the hub's count; nil
 	// until the first usage event of the turn.
 	tokens *hub.TurnTokens
+	// writing is set once the reply streams and no tool runs.
+	writing bool
 }
 
 // renderer turns one attachment's events into Telegram messages. It is used
@@ -152,14 +159,19 @@ type renderer struct {
 	stepsSnap func(msgID int64, html string)
 	// source is the surface that started the chat, "" when unknown.
 	source func() string
+	// statusTick is how often the status line of a running turn shows the
+	// time again when nothing else changed it.
+	statusTick time.Duration
 
 	turn   *turnStatus
 	answer strings.Builder
 	// open is the prompt of the turn a snapshot found running, until the
-	// turn's message.start or first step shows it; echoed is set once the
-	// running turn's prompt was shown or skipped.
-	open   *hub.OpenPrompt
-	echoed bool
+	// turn's message.start or first step shows it; startedAt is when the
+	// hub saw the running turn start, zero when it did not say; echoed is
+	// set once the running turn's prompt was shown or skipped.
+	open      *hub.OpenPrompt
+	startedAt time.Time
+	echoed    bool
 }
 
 func newRenderer(api *Client, to dest, interval time.Duration, logger *slog.Logger,
@@ -193,10 +205,7 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 	case hub.KindToolComplete:
 		r.toolComplete(ctx, ev)
 	case hub.KindMessageDelta:
-		var p streamPayload
-		if r.decode(ev, &p) && p.Text != nil {
-			r.answer.WriteString(*p.Text)
-		}
+		r.delta(ctx, ev)
 	case hub.KindMessageStart:
 		r.turnStart(ctx, ev)
 	case hub.KindMessageComplete:
@@ -286,12 +295,30 @@ func (r *renderer) snapshot(ctx context.Context, ev hub.Event) {
 	}
 }
 
+// delta keeps a chunk of the reply, and shows on the status line that
+// the reply streams.
+func (r *renderer) delta(ctx context.Context, ev hub.Event) {
+	var p streamPayload
+	if !r.decode(ev, &p) || p.Text == nil {
+		return
+	}
+	r.answer.WriteString(*p.Text)
+	if t := r.turn; t != nil && *p.Text != "" && !t.writing && len(t.running) == 0 {
+		t.writing = true
+		r.refresh(ctx)
+	}
+}
+
 // begin returns the status of the turn that runs, and starts one, after
 // the prompt of a turn found running when the chat attached.
 func (r *renderer) begin(ctx context.Context) *turnStatus {
 	if r.turn == nil {
 		r.echoOpen(ctx)
-		r.turn = &turnStatus{start: r.now(), tools: map[string]string{}, progress: map[string]string{}, counts: map[string]int{}}
+		start := r.now()
+		if !r.startedAt.IsZero() && r.startedAt.Before(start) {
+			start = r.startedAt
+		}
+		r.turn = &turnStatus{start: start, tools: map[string]string{}, progress: map[string]string{}, counts: map[string]int{}}
 	}
 	return r.turn
 }
@@ -349,7 +376,7 @@ func (r *renderer) quote(details string) string {
 
 // endTurn shows the status line of the turn as done and forgets the turn.
 func (r *renderer) endTurn(ctx context.Context) {
-	r.open, r.echoed = nil, false
+	r.open, r.startedAt, r.echoed = nil, time.Time{}, false
 	if r.turn == nil {
 		return
 	}
@@ -478,9 +505,12 @@ func (r *renderer) statusHTML(final bool) string {
 	used := t.tokenText()
 	if !final {
 		var b strings.Builder
-		if len(t.running) > 0 {
+		switch {
+		case len(t.running) > 0:
 			b.WriteString("<b>Running</b> " + t.tools[t.running[len(t.running)-1]])
-		} else {
+		case t.writing:
+			b.WriteString("<b>Writing…</b>")
+		default:
 			b.WriteString("<b>Thinking…</b>")
 		}
 		if n := len(t.steps); n > 0 {
@@ -554,6 +584,7 @@ func (r *renderer) update(ctx context.Context, m *liveMsg, html string, kb *Inli
 		m.id = r.send(ctx, html, kb)
 		m.lastEdit = r.now()
 		m.dirty = m.id == 0
+		m.shown, m.buttons = html, kb != nil
 		return
 	}
 	r.edit(ctx, m, html, kb)
@@ -563,9 +594,14 @@ func (r *renderer) edit(ctx context.Context, m *liveMsg, html string, kb *Inline
 	m.dirty = false
 	m.pending = ""
 	m.lastEdit = r.now()
+	if html == m.shown && (kb != nil) == m.buttons {
+		return
+	}
 	if err := r.api.EditHTML(ctx, r.to.chat, m.id, html, kb); err != nil {
 		r.logger.Warn("Failed to edit message", "message", m.id, "error", err)
+		return
 	}
+	m.shown, m.buttons = html, kb != nil
 }
 
 // expirySlack is how long after a prompt's timeout the bot marks it
@@ -599,8 +635,10 @@ func (r *renderer) nextFlush() (time.Duration, bool) {
 			best, found = d, true
 		}
 	}
-	if r.turn != nil && r.turn.msg.dirty {
-		consider(r.turn.msg.lastEdit.Add(r.interval).Sub(r.now()))
+	if t := r.turn; t != nil && t.msg.dirty {
+		consider(t.msg.lastEdit.Add(r.interval).Sub(r.now()))
+	} else if t != nil && t.msg.id != 0 {
+		consider(t.msg.lastEdit.Add(r.tick()).Sub(r.now()))
 	}
 	for _, sp := range r.prompts {
 		if at, ok := sp.deadline(); ok {
@@ -610,8 +648,24 @@ func (r *renderer) nextFlush() (time.Duration, bool) {
 	return best, found
 }
 
+// statusTick is how often the status line of a running turn shows the
+// time again when nothing else changed it.
+const statusTick = 10 * time.Second
+
+func (r *renderer) tick() time.Duration {
+	return max(r.interval, cmp.Or(r.statusTick, statusTick))
+}
+
+// flushDue renders the status line when an edit is pending and due, or
+// when it has not changed for a tick, so its time keeps going while the
+// model thinks or writes.
 func (r *renderer) flushDue(ctx context.Context) {
-	if t := r.turn; t != nil && t.msg.dirty && r.now().Sub(t.msg.lastEdit) >= r.interval {
+	t := r.turn
+	if t == nil || t.msg.id == 0 && !t.msg.dirty {
+		return
+	}
+	since := r.now().Sub(t.msg.lastEdit)
+	if t.msg.dirty && since >= r.interval || since >= r.tick() {
 		r.running(ctx)
 	}
 }
@@ -684,6 +738,7 @@ func (r *renderer) toolStart(ctx context.Context, ev hub.Event) {
 		return
 	}
 	t := r.begin(ctx)
+	t.writing = false
 	if _, ok := t.tools[p.ToolID]; !ok {
 		t.running = append(t.running, p.ToolID)
 	}
