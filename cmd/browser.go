@@ -66,22 +66,34 @@ func newBrowserCommand(b *base) *cobra.Command {
 			return err
 		},
 	})
-	var out string
+	var out, extVersion string
 	ext := &cobra.Command{
 		Use:   "extension",
 		Short: "Write the Hermes Firefox extension's files to a directory, to load as a temporary add-on",
-		Args:  cobra.NoArgs,
+		Long: "Write the Hermes Firefox extension's files to a directory, to load as a temporary add-on. " +
+			"Each release also publishes the extension signed by Mozilla, which installs for good and updates itself " +
+			"(docs/browser.md section 6.1).",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := writeExtension(out); err != nil {
+			v := extVersion
+			if !cmd.Flags().Changed("ext-version") && firefox.ValidVersion(b.version) {
+				v = b.version
+			}
+			if err := writeExtension(out, v); err != nil {
 				return err
 			}
 			_, err := fmt.Fprintf(cmd.OutOrStdout(),
 				"Wrote the extension to %s. In Firefox, open about:debugging#/runtime/this-firefox, choose "+
-					"\"Load Temporary Add-on\" and pick %s.\n", out, filepath.Join(out, "manifest.json"))
+					"\"Load Temporary Add-on\" and pick %s.\n"+
+					"To install it for good, with updates, install hermes-device-firefox-<version>.xpi from %s "+
+					"(docs/browser.md section 6.1).\n",
+				out, filepath.Join(out, "manifest.json"), firefox.ReleasesURL)
 			return err
 		},
 	}
 	ext.Flags().StringVarP(&out, "out", "o", "hermes-browser-extension", "Directory to write the extension to")
+	ext.Flags().StringVar(&extVersion, "ext-version", "",
+		"Version to put in manifest.json (default: this binary's release version, else the embedded one)")
 	c.AddCommand(ext)
 	return c
 }
@@ -126,7 +138,13 @@ func installHostManifest(sock string) (string, error) {
 	return path, os.WriteFile(path, append(data, '\n'), 0o644) //nolint:gosec // as above
 }
 
-func writeExtension(dir string) error {
+// writeExtension writes the extension's files to dir, with its manifest
+// version set to version when that is not empty.
+func writeExtension(dir, version string) error {
+	manifest, err := firefox.Manifest(version)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // extension source, no secret
 		return err
 	}
@@ -134,9 +152,11 @@ func writeExtension(dir string) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		data, err := firefox.Files.ReadFile(p)
-		if err != nil {
-			return err
+		data := manifest
+		if p != "manifest.json" {
+			if data, err = firefox.Files.ReadFile(p); err != nil {
+				return err
+			}
 		}
 		return os.WriteFile(filepath.Join(dir, p), data, 0o644) //nolint:gosec // as above
 	})
