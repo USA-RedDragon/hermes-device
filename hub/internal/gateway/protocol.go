@@ -1,6 +1,6 @@
 // Package gateway is a client for the Hermes Agent gateway's canonical
 // session WebSocket (/api/ws, JSON-RPC 2.0, one JSON object per message),
-// pinned to Hermes v0.22.7.
+// pinned to Hermes v0.23.1.
 package gateway
 
 import (
@@ -9,7 +9,7 @@ import (
 )
 
 // HermesVersion is the Hermes Agent release this client was checked against.
-const HermesVersion = "v0.22.7"
+const HermesVersion = "v0.23.1"
 
 // Wire names from gateway/session_contract.py and hermes_cli/gateway_client.py.
 const (

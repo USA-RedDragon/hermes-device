@@ -356,7 +356,7 @@ func finishPairing(t *testing.T, e *env, poll func() (int, map[string]any), out 
 	tok := str(t, out, keyToken)
 	if s, who := call(t, http.MethodGet, e.a.url+"/api/device/whoami", tok, nil); s != http.StatusOK ||
 		who[keyDeviceID] != out[keyDeviceID] || who["user"] != userAlice || who["placeholder"] != placeholder ||
-		who["hermes_version"] != "v0.22.7" {
+		who["hermes_version"] != "v0.23.1" {
 		t.Fatalf("whoami = %d %v", s, who)
 	}
 	if s, _ := call(t, http.MethodGet, e.a.url+"/api/device/whoami", tok+"x", nil); s != http.StatusUnauthorized {

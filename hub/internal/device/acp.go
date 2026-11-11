@@ -56,7 +56,7 @@ const (
 )
 
 // acpEditorRules are the editor-to-agent methods a device may send on the
-// ACP leg: those of the ACP SDK that Hermes v0.22.7's gateway ACP agent
+// ACP leg: those of the ACP SDK that Hermes v0.23.1's gateway ACP agent
 // implements (acp_adapter/gateway_server.py). Others, such as
 // session/close, which that agent does not implement, are refused.
 //

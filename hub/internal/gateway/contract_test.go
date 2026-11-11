@@ -14,7 +14,7 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 )
 
-// contract lists source lines of Hermes v0.22.7 this client depends on, by
+// contract lists source lines of Hermes v0.23.1 this client depends on, by
 // file. A "#name" suffix lets one file have more than one entry.
 // TestContractAgainstSource checks them in a checkout named by
 // gatewaytest.HermesSource.
@@ -40,8 +40,8 @@ func contract() map[string][]string {
 			"    admission_id: str\n    execution_generation: int\n",
 		},
 		"gateway/run_api.py": {
-			"if reason == 'none' or ws.headers.get('origin'):",
-			"or not ws.client or ws.client.host not in {'127.0.0.1', '::1'}):",
+			"native_peer = bool(ws.client) and ws.client.host in {'127.0.0.1', '::1'}",
+			"if reason == 'none' or ws.headers.get('origin') or (reason == 'ok' and not native_peer):",
 		},
 		"tui_gateway/contracts/canonical_sessions.py": {
 			"('session.create', CanonicalCreateParams, CanonicalSnapshot)",

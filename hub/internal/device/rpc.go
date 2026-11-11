@@ -227,7 +227,7 @@ const (
 )
 
 // gatewayRules is the gateway leg allowlist: every method the Hermes
-// v0.22.7 Ink TUI and classic CLI send for chatting, except those in
+// v0.23.1 Ink TUI and classic CLI send for chatting, except those in
 // deniedWhy. Every other method is refused. Session ids in session_id and
 // parent_session_id are checked for every method.
 //
@@ -266,7 +266,7 @@ const (
 	whyNotChat    = "it is not part of chatting"
 )
 
-// deniedWhy are the methods the Hermes v0.22.7 TUI or CLI send that the
+// deniedWhy are the methods the Hermes v0.23.1 TUI or CLI send that the
 // hub refuses, with the reason.
 //
 //nolint:gochecknoglobals // a fixed table
@@ -330,7 +330,7 @@ func DeniedReason(method string) string {
 // SessionConfigKeys are the config.set keys that change only the one
 // session, so a device may set them. Every other key writes the profile's
 // config.yaml or other profile-wide state of the pod and is refused. From
-// Hermes v0.22.7 gateway/session_busy_controls.py (busy, verbose,
+// Hermes v0.23.1 gateway/session_busy_controls.py (busy, verbose,
 // show_reasoning, service_tier, yolo without scope) and
 // gateway/session_tui_config.py (fast, and reasoning with scope session).
 func SessionConfigKeys() []string {
@@ -394,7 +394,7 @@ const (
 	keyText        = "text"
 )
 
-// slashAliases are the Hermes v0.22.7 aliases (hermes_cli/commands.py) of
+// slashAliases are the Hermes v0.23.1 aliases (hermes_cli/commands.py) of
 // the allowed slash commands.
 //
 //nolint:gochecknoglobals // a fixed table

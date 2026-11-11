@@ -18,7 +18,7 @@ One web front end, behind OpenID Connect login, for many [Hermes Agent](https://
 - An optional Telegram bot (`telegram.*`) that uses the same backends and permissions.
 - Optional [hermes-device](https://github.com/USA-RedDragon/hermes-device) support (`device.*`): users pair their own computers, start or move chats onto a computer and folder from the web page or Telegram, and Hermes runs commands, edits files and serves VS Code there.
 
-The hub speaks the canonical session protocol of Hermes <!-- docgen:const pkg=internal/gateway name=HermesVersion -->`v0.22.7`<!-- /docgen:const -->: JSON-RPC over the gateway's `/api/ws` WebSocket. A contract test (`internal/gateway/contract_test.go`) checks the protocol lines it depends on against a Hermes checkout (`HERMES_AGENT_SRC`, default `~/.hermes/hermes-agent`). Set `HERMES_AGENT_VERSION` to check a newer release. Before a Hermes upgrade, follow [docs/hermes-upgrade.md](docs/hermes-upgrade.md).
+The hub speaks the canonical session protocol of Hermes <!-- docgen:const pkg=internal/gateway name=HermesVersion -->`v0.23.1`<!-- /docgen:const -->: JSON-RPC over the gateway's `/api/ws` WebSocket. A contract test (`internal/gateway/contract_test.go`) checks the protocol lines it depends on against a Hermes checkout (`HERMES_AGENT_SRC`, default `~/.hermes/hermes-agent`). Set `HERMES_AGENT_VERSION` to check a newer release. Before a Hermes upgrade, follow [docs/hermes-upgrade.md](docs/hermes-upgrade.md).
 
 ## How it works
 
@@ -188,7 +188,7 @@ model:
 - `model.ollama_num_ctx` is the `num_ctx` that Hermes sends to Ollama with each request. Without it, Hermes asks Ollama for the model's largest window, capped by `model.context_length`.
 - Set both to the same value, sized for the GPU's memory. Hermes reads them when it builds a chat's agent. Restart the gateway after a change so that every chat picks it up.
 
-The size is not a per-chat setting on purpose. Ollama loads a model again when a request asks for a different `num_ctx`, so two chats with different sizes on the shared GPU would make Ollama reload the model each time they take turns. The hub has no per-chat choice for API models either: Hermes v0.22.7 has no session-scoped context or compression setting on the gateway. `session.mutate` with operation `model` takes only `model`, `provider`, `confirm` and `reasoning`, and `config.set` takes no `model.context_length` or `compression.*` key.
+The size is not a per-chat setting on purpose. Ollama loads a model again when a request asks for a different `num_ctx`, so two chats with different sizes on the shared GPU would make Ollama reload the model each time they take turns. The hub has no per-chat choice for API models either: Hermes v0.23.1 has no session-scoped context or compression setting on the gateway. `session.mutate` with operation `model` takes only `model`, `provider`, `confirm` and `reasoning`, and `config.set` takes no `model.context_length` or `compression.*` key.
 
 When a chat switches to another model, Hermes drops `model.context_length` from that chat's settings and takes the new model's window from its model data. To pin the window of another local model, give it a `context_length` under its name in the `models` of its `custom_providers` entry.
 

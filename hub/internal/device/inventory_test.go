@@ -14,7 +14,7 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
 )
 
-// clientMethods is every gateway method name that the Hermes v0.22.7 Ink TUI
+// clientMethods is every gateway method name that the Hermes v0.23.1 Ink TUI
 // (ui-tui/src, and the gateway.ping heartbeat of apps/shared), the classic
 // CLI (hermes_cli) and tui_gateway/owner_forward.py mention, with the rule
 // the gateway leg applies. TestClientMethodsAgainstSource rebuilds the list

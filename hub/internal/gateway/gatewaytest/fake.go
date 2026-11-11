@@ -1,4 +1,4 @@
-// Package gatewaytest is an in-process fake of the Hermes v0.22.7 gateway
+// Package gatewaytest is an in-process fake of the Hermes v0.23.1 gateway
 // Webapp listener: password login, WebSocket tickets and the subset of the
 // canonical session contract the hub uses. Its checks on params follow
 // gateway/session_controls.py.

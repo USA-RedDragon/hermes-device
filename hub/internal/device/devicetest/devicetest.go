@@ -120,7 +120,7 @@ type Plugin struct {
 // NewPlugin mounts a fake plugin for backendID on gw. It accepts
 // assertions signed by key.
 func NewPlugin(gw *gatewaytest.Gateway, backendID string, key ed25519.PublicKey) *Plugin {
-	p := &Plugin{BackendID: backendID, Placeholder: "/opt/data/hermes/device-placeholder", HermesVersion: "v0.22.7",
+	p := &Plugin{BackendID: backendID, Placeholder: "/opt/data/hermes/device-placeholder", HermesVersion: "v0.23.1",
 		verifier: assertion.NewVerifier([]ed25519.PublicKey{key}), bindings: map[string]Binding{}, ever: map[string]bool{},
 		parents: map[string]string{}, conns: map[string]*Conn{}, refuse: map[string]string{}, Connected: make(chan *Conn, 16),
 		trees: map[string]map[string][]string{}, refuseDev: map[string]string{}, uploads: map[string][]byte{},
