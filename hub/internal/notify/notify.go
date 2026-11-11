@@ -405,21 +405,21 @@ type PushPayload struct {
 func Titles(kind string) string {
 	switch kind {
 	case hub.NoticeApproval:
-		return "Hermes needs your approval"
+		return "Talaria needs your approval"
 	case hub.NoticeQuestion:
-		return "Hermes has a question"
+		return "Talaria has a question"
 	case hub.NoticeFinished:
-		return "Hermes finished a long task"
+		return "Talaria finished a long task"
 	case hub.NoticeJob:
 		return "A scheduled job finished"
 	case hub.NoticeFailure:
-		return "Something failed in Hermes"
+		return "Something failed in Talaria"
 	case hub.NoticeClaudeSignIn:
 		return "A Claude account needs a sign-in"
 	case KindTest:
-		return "Test notification from Hermes Hub"
+		return "Test notification from Talaria"
 	}
-	return "Hermes"
+	return "Talaria"
 }
 
 func pushPayload(m Message) PushPayload {
@@ -494,7 +494,7 @@ func (n *Notifier) Test(ctx context.Context, user string) (TestResult, error) {
 		return res, ErrTooSoon
 	}
 	rec.ID = id
-	m := Message{Record: rec, Backend: "Hermes Hub", Detail: "This is a test. Notices about your chats look like this.", URL: n.o.PublicURL + "/"}
+	m := Message{Record: rec, Backend: "Talaria", Detail: "This is a test. Notices about your chats look like this.", URL: n.o.PublicURL + "/"}
 	if set.Telegram && n.tg != nil {
 		ids, _, err := n.telegramChats(ctx, user)
 		if err != nil {
