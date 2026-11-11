@@ -81,6 +81,16 @@ type serviceDeviceShadow struct {
 	Token *string `json:"token" toml:"token" yaml:"token"`
 }
 
+type honchoShadow struct {
+	URL        *string `json:"url"          toml:"url"          yaml:"url"`
+	Workspace  *string `json:"workspace"    toml:"workspace"    yaml:"workspace"`
+	UserPeer   *string `json:"user_peer"    toml:"user_peer"    yaml:"user_peer"`
+	AIPeer     *string `json:"ai_peer"      toml:"ai_peer"      yaml:"ai_peer"`
+	APIKey     *string `json:"api_key"      toml:"api_key"      yaml:"api_key"`
+	APIKeyFile *string `json:"api_key_file" toml:"api_key_file" yaml:"api_key_file"`
+	APIKeyEnv  *string `json:"api_key_env"  toml:"api_key_env"  yaml:"api_key_env"`
+}
+
 type backendShadow struct {
 	ID             *string                `json:"id"              toml:"id"              yaml:"id"`
 	Name           *string                `json:"name"            toml:"name"            yaml:"name"`
@@ -96,6 +106,7 @@ type backendShadow struct {
 	ACPURL         *string                `json:"acp_url"         toml:"acp_url"         yaml:"acp_url"`
 	MediaRoots     *[]string              `json:"media_roots"     toml:"media_roots"     yaml:"media_roots"`
 	ServiceDevices *[]serviceDeviceShadow `json:"service_devices" toml:"service_devices" yaml:"service_devices"`
+	Honcho         *honchoShadow          `json:"honcho"          toml:"honcho"          yaml:"honcho"`
 }
 
 type telegramShadow struct {
@@ -459,6 +470,36 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 				}
 				e.ServiceDevices = out1
 				set(idx+".service_devices", configulator.LayerFile, file)
+			}
+			if esh.Honcho != nil {
+				if esh.Honcho.URL != nil {
+					e.Honcho.URL = *esh.Honcho.URL
+					set(idx+".honcho.url", configulator.LayerFile, file)
+				}
+				if esh.Honcho.Workspace != nil {
+					e.Honcho.Workspace = *esh.Honcho.Workspace
+					set(idx+".honcho.workspace", configulator.LayerFile, file)
+				}
+				if esh.Honcho.UserPeer != nil {
+					e.Honcho.UserPeer = *esh.Honcho.UserPeer
+					set(idx+".honcho.user_peer", configulator.LayerFile, file)
+				}
+				if esh.Honcho.AIPeer != nil {
+					e.Honcho.AIPeer = *esh.Honcho.AIPeer
+					set(idx+".honcho.ai_peer", configulator.LayerFile, file)
+				}
+				if esh.Honcho.APIKey != nil {
+					e.Honcho.APIKey = *esh.Honcho.APIKey
+					set(idx+".honcho.api_key", configulator.LayerFile, file)
+				}
+				if esh.Honcho.APIKeyFile != nil {
+					e.Honcho.APIKeyFile = *esh.Honcho.APIKeyFile
+					set(idx+".honcho.api_key_file", configulator.LayerFile, file)
+				}
+				if esh.Honcho.APIKeyEnv != nil {
+					e.Honcho.APIKeyEnv = *esh.Honcho.APIKeyEnv
+					set(idx+".honcho.api_key_env", configulator.LayerFile, file)
+				}
 			}
 			out[i] = e
 		}
@@ -2724,6 +2765,25 @@ func (s *backendShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				}
 				s.ServiceDevices = &out
 			}
+		case "honcho":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError(path+".honcho", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub honchoShadow
+				if err := sub.decodeJSON(dec, path+".honcho"); err != nil {
+					return err
+				}
+				s.Honcho = &sub
+			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
 				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
@@ -2794,6 +2854,129 @@ func (s *serviceDeviceShadow) decodeJSON(dec *jsontext.Decoder, path string) err
 					Path:  path + ".token",
 					Value: "(redacted)",
 				}
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *honchoShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "url":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.URL = &str
+			default:
+				return configJSONError(path+".url", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "workspace":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Workspace = &str
+			default:
+				return configJSONError(path+".workspace", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "user_peer":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.UserPeer = &str
+			default:
+				return configJSONError(path+".user_peer", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "ai_peer":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.AIPeer = &str
+			default:
+				return configJSONError(path+".ai_peer", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "api_key":
+			if err := func() error {
+				v, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				switch v.Kind() {
+				case jsontext.KindNull:
+				case jsontext.KindString:
+					str := v.String()
+					s.APIKey = &str
+				default:
+					return configJSONError(path+".api_key", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+				}
+				return nil
+			}(); err != nil {
+				return &configulator.ParseError{
+					Err:   errors.New("invalid value"),
+					Path:  path + ".api_key",
+					Value: "(redacted)",
+				}
+			}
+		case "api_key_file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.APIKeyFile = &str
+			default:
+				return configJSONError(path+".api_key_file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "api_key_env":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.APIKeyEnv = &str
+			default:
+				return configJSONError(path+".api_key_env", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {

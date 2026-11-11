@@ -80,6 +80,14 @@ hold:
 #       - id: ""
 #         name: ""
 #         token: "(secret)"
+#     honcho:
+#       url: ""
+#       workspace: ""
+#       user_peer: ""
+#       ai_peer: ""
+#       api_key: "(secret)"
+#       api_key_file: ""
+#       api_key_env: ""
 telegram:
   # Run the Telegram bot
   enabled: false

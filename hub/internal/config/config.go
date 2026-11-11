@@ -117,6 +117,19 @@ type Backend struct {
 	ACPURL         string          `name:"acp_url" description:"Base URL of this backend's acp-host, such as http://desktop:9130, for editors that connect with hermes-device acp. Only the hub may reach it. Empty: editors cannot connect"`
 	MediaRoots     []string        `name:"media_roots" description:"Absolute folders on this backend's server whose files the hub shows: files a reply names with MEDIA:<path>, browser_screenshot results and images users attached. The hub shows a file only when that chat names it. Empty: only images, in the folders of hermes-device's browser_screenshot (<dir>/cache/screenshots/hermes-device/<session>/<file>) and of attached images (<dir>/cache/images/<file>), under any <dir>. Set it to anchor them to the backend's HERMES_HOME"`
 	ServiceDevices []ServiceDevice `name:"service_devices" description:"Devices the hub knows from this list instead of pairing, such as each user's sandbox pod that runs hermes-device run. They may use only the exec leg"`
+	Honcho         Honcho          `name:"honcho"`
+}
+
+// Honcho is where a backend's Hermes keeps what it learned about its user,
+// for the Learned tab of the Memory page.
+type Honcho struct {
+	URL        string `name:"url" description:"Base URL of the Honcho API that this backend's Hermes uses, such as http://honcho.example.svc:8000. Empty: the Memory page has no Learned tab for this backend"`
+	Workspace  string `name:"workspace" description:"Honcho workspace of this backend's user. Required with url"`
+	UserPeer   string `name:"user_peer" description:"Honcho peer id of the user. Required with url"`
+	AIPeer     string `name:"ai_peer" description:"Honcho peer id of Hermes. Default hermes"`
+	APIKey     string `name:"api_key" secret:"true" description:"Honcho API key (a JWT scoped to the workspace). The hub never sends it to browsers. Required with url unless api_key_file or api_key_env is set"`
+	APIKeyFile string `name:"api_key_file" description:"File that holds the Honcho API key. Wins over api_key_env and api_key"`
+	APIKeyEnv  string `name:"api_key_env" description:"Environment variable that holds the Honcho API key. Wins over api_key"`
 }
 
 // Device configures hermes-device: computers that users pair with one of
@@ -312,6 +325,9 @@ func (c *Config) validateBackends() error {
 			if !strings.HasPrefix(r, "/") || path.Clean(r) != r || r == "/" {
 				return fmt.Errorf("%w: backends[%d].media_roots[%d] must be a clean absolute folder other than /", ErrBackend, i, j)
 			}
+		}
+		if err := b.Honcho.validate(i); err != nil {
+			return err
 		}
 		if b.ACPURL != "" {
 			if _, ok := webURL(b.ACPURL); !ok {
