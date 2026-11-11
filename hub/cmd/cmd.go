@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/agents"
+	"github.com/USA-RedDragon/hermes-hub/internal/claude"
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/USA-RedDragon/hermes-hub/internal/device"
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
@@ -130,6 +131,10 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 		webOpts.Files = devices
 	}
 	webOpts.Insights = newInsights(cfg, svc, webOpts.Memory, dialers)
+	if cs := newClaude(cfg, svc, notifier, dialers); cs != nil {
+		svc.SetTurnErrors(cs.TurnFailed)
+		webOpts.Claude = cs
+	}
 	ui, err := web.New(cfg, webOpts)
 	if err != nil {
 		return err
@@ -283,6 +288,24 @@ func newInsights(cfg *config.Config, svc *service.Service, mem hub.Memory, diale
 		opts.GPU = insights.NewGPU(cfg.Usage.PrometheusURL, &http.Client{Timeout: 15 * time.Second})
 	}
 	return insights.New(opts)
+}
+
+// newClaude returns the Claude accounts core, or nil when there is no
+// backend. Any backend's Hermes may have the claude-accounts plugin.
+func newClaude(cfg *config.Config, svc *service.Service, n *notify.Notifier, dialers map[string]*gateway.Dialer) *claude.Service {
+	if len(cfg.Backends) == 0 {
+		return nil
+	}
+	rs := make(map[string]device.Requester, len(dialers))
+	for id, d := range dialers {
+		rs[id] = d
+	}
+	admins, err := cfg.Claude.AdminMap()
+	if err != nil {
+		return nil
+	}
+	return claude.New(claude.Options{Access: svc, Admins: admins, Location: cfg.Claude.Location(), Requesters: rs,
+		Notify: n.Notify, Announce: svc.Announce})
 }
 
 func openStore(ctx context.Context, cfg *config.Store) (*store.Store, error) {
