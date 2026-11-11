@@ -18,3 +18,103 @@ jobs:
     uses: USA-RedDragon/reusable-actions/.github/workflows/goreleaser.yaml@c5ee15922a0ff4229b0f06a8d0551541b5cabfdc # v2.0.34
     secrets:
       token: ${{ secrets.GITHUB_TOKEN }}
+
+  firefox-extension:
+    name: Firefox extension
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      WEB_EXT: web-ext@10.8.0
+      EXT_DIR: ${{ github.workspace }}/firefox-extension
+      SIGNED_DIR: ${{ github.workspace }}/firefox-signed
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Decide whether to sign
+        id: plan
+        env:
+          HAVE_ISSUER: ${{ secrets.AMO_JWT_ISSUER != '' }}
+          HAVE_SECRET: ${{ secrets.AMO_JWT_SECRET != '' }}
+        run: |
+          version=${TAG#v}
+          sign=true
+          if ! grep -Eq '^(0|[1-9][0-9]{0,8})(\.(0|[1-9][0-9]{0,8})){0,3}$' <<<"$version"; then
+            echo "::notice title=Firefox extension not signed::$TAG is a pre-release or has build metadata. Firefox versions are one to four numbers, and no number for $TAG sorts before the final release, so the extension is signed only for final releases."
+            sign=false
+            version=
+          elif [ "$HAVE_ISSUER" != true ] || [ "$HAVE_SECRET" != true ]; then
+            echo "::notice title=Firefox extension not signed::The repository secrets AMO_JWT_ISSUER and AMO_JWT_SECRET are not set, so the extension is linted but not signed, and this release has no .xpi or updates.json (docs/browser.md section 6.1)."
+            sign=false
+          elif gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx "hermes-device-firefox-$version.xpi"; then
+            echo "::notice title=Firefox extension already signed::$TAG already has hermes-device-firefox-$version.xpi."
+            sign=false
+          fi
+          {
+            echo "version=$version"
+            echo "sign=$sign"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build the extension
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          go run . browser extension --out "$EXT_DIR" ${VERSION:+--ext-version "$VERSION"}
+          cat "$EXT_DIR/manifest.json"
+
+      - name: Lint the extension
+        run: npx --yes "$WEB_EXT" lint --source-dir "$EXT_DIR" --self-hosted
+
+      - name: Sign the extension on addons.mozilla.org (unlisted)
+        if: steps.plan.outputs.sign == 'true'
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: npx --yes "$WEB_EXT" sign --channel unlisted --source-dir "$EXT_DIR" --artifacts-dir "$SIGNED_DIR"
+
+      - name: Publish the signed extension and updates.json
+        if: steps.plan.outputs.sign == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          shopt -s nullglob
+          signed=("$SIGNED_DIR"/*.xpi)
+          if [ "${#signed[@]}" -ne 1 ]; then
+            echo "::error::expected one signed .xpi in $SIGNED_DIR, found ${#signed[@]}"
+            exit 1
+          fi
+          name="hermes-device-firefox-$VERSION.xpi"
+          out="$RUNNER_TEMP/release"
+          mkdir -p "$out"
+          cp "${signed[0]}" "$out/$name"
+          unzip -l "$out/$name" | grep -Eq 'META-INF/(cose\.sig|mozilla\.rsa)' || { echo "::error::$name has no Mozilla signature"; exit 1; }
+          got=$(unzip -p "$out/$name" manifest.json | jq -r .version)
+          [ "$got" = "$VERSION" ] || { echo "::error::$name has version $got, want $VERSION"; exit 1; }
+          id=$(jq -r .browser_specific_settings.gecko.id "$EXT_DIR/manifest.json")
+          hash=$(sha256sum "$out/$name" | cut -d' ' -f1)
+          jq -n --arg id "$id" --arg version "$VERSION" \
+            --arg link "https://github.com/$GH_REPO/releases/download/$TAG/$name" \
+            --arg hash "sha256:$hash" \
+            '{addons: {($id): {updates: [{version: $version, update_link: $link, update_hash: $hash}]}}}' \
+            > "$out/updates.json"
+          cat "$out/updates.json"
+          gh release upload "$TAG" "$out/$name" "$out/updates.json" --clobber
