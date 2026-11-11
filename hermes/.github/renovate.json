@@ -1,0 +1,24 @@
+{
+    "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+    "extends": [
+        "local>USA-RedDragon/renovate-configs"
+    ],
+    "packageRules": [
+        {
+            "description": "Each Hermes release gets its own PR at once. CI applies the patches to it and runs their tests and the hub and device checks; a green PR merges and the Release workflow publishes v<release>-p1. Rolling it out stays a manual Flux merge.",
+            "matchDatasources": [
+                "docker"
+            ],
+            "matchPackageNames": [
+                "/(^|\\/)nousresearch\\/hermes-agent$/"
+            ],
+            "groupName": "Hermes Agent",
+            "schedule": [
+                "at any time"
+            ],
+            "minimumReleaseAge": "0 days",
+            "dependencyDashboardApproval": false,
+            "automerge": true
+        }
+    ]
+}

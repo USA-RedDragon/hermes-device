@@ -1,0 +1,158 @@
+name: Release
+
+# Each change to the Dockerfile or the patches on main, after the tests pass,
+# becomes release v<upstream>-p<n>: v0.23.1-p1, v0.23.1-p2, then v0.24.0-p1
+# after Renovate moves the base. Run it by hand to release HEAD again.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Dockerfile
+      - patches/**
+      - scripts/**
+      - .github/workflows/release.yaml
+      - .github/workflows/test.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}"
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/usa-reddragon/hermes-patches
+
+jobs:
+  test:
+    name: Test
+    uses: ./.github/workflows/test.yaml
+
+  version:
+    name: Version
+    needs: test
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.next.outputs.release }}
+      tag: ${{ steps.next.outputs.tag }}
+      upstream: ${{ steps.next.outputs.upstream }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Next release
+        id: next
+        env:
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          upstream=$(scripts/base-version.sh)
+          last=$(git tag -l "$upstream-p*" | grep -E "^$upstream-p[0-9]+$" | sort -V | tail -n1 || true)
+          release=true
+          if [ -n "$last" ] && [ "$MANUAL" != true ] && git diff --quiet "$last" HEAD -- Dockerfile patches scripts; then
+            release=false
+            echo "Nothing changed since $last" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          n=$(( ${last##*-p} + 0 ))
+          tag="$upstream-p$(( n + 1 ))"
+          {
+            echo "upstream=$upstream"
+            echo "tag=$tag"
+            echo "release=$release"
+          } >> "$GITHUB_OUTPUT"
+          [ "$release" = true ] && echo "Release $tag on Hermes $upstream" >> "$GITHUB_STEP_SUMMARY" || true
+
+  image:
+    name: Image
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      UPSTREAM: ${{ needs.version.outputs.upstream }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # New layers are zstd. The upstream layers keep their gzip compression and
+      # digests (no force-compression), so nodes reuse the upstream layers they
+      # already have and a release pushes only the patched files.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          pull: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          labels: |
+            org.opencontainers.image.title=hermes-patches
+            org.opencontainers.image.description=Hermes Agent ${{ env.UPSTREAM }} with the patches in this repository
+            org.opencontainers.image.version=${{ env.TAG }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.base.name=docker.io/nousresearch/hermes-agent:${{ env.UPSTREAM }}
+          outputs: type=image,push=true,oci-mediatypes=true,compression=zstd,compression-level=19
+
+      - name: Attest the image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "$IMAGE:$TAG@$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: GitHub release
+    needs: [version, image]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+          UPSTREAM: ${{ needs.version.outputs.upstream }}
+        run: |
+          {
+            echo "Hermes Agent $UPSTREAM with these patches:"
+            echo
+            for p in patches/*.patch; do
+              echo "- $(basename "$p" .patch): $(sed -n 's/^Subject: \(\[PATCH[^]]*\] \)\{0,1\}//p' "$p" | head -n1)"
+            done
+            echo
+            echo "Image: \`$IMAGE:$TAG\`"
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
