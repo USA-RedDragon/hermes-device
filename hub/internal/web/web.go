@@ -68,6 +68,8 @@ type Options struct {
 	// Computers lets users start and move chats on their computers. Nil
 	// when device.enabled is off.
 	Computers hub.Computers
+	// Memory serves the Memory page. Nil: the hub has no Memory page.
+	Memory hub.Memory
 }
 
 // Server is the web front end.
@@ -98,6 +100,7 @@ type Server struct {
 	consentPage  *template.Template
 	sandboxes    func(context.Context, string) []hub.Sandbox
 	computers    hub.Computers
+	memory       hub.Memory
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
 	backendNames     map[string]string
@@ -140,7 +143,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	}
 	return &Server{
 		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke,
-		browserAPI: opts.BrowserAPI, onBrowserOut: opts.OnBrowserRevoke, consentPage: newConsentPage(), sandboxes: opts.Sandboxes, computers: opts.Computers,
+		browserAPI: opts.BrowserAPI, onBrowserOut: opts.OnBrowserRevoke, consentPage: newConsentPage(), sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,
@@ -207,6 +210,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/places", s.api(s.handlePlaces))
 	mux.Handle("GET /api/computers", s.api(s.handleComputers))
 	mux.Handle("GET /api/computers/{device}/folders", s.api(s.handleFolders))
+	s.memoryRoutes(mux)
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
 	mux.HandleFunc("GET /device/pair", s.handlePairPage)
