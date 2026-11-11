@@ -11,7 +11,7 @@ cmd/signal.go	1	1
 extension/firefox/embed.go	21	18
 internal/acpbridge/acpbridge.go	468	404
 internal/acpbridge/inline.go	38	35
-internal/acphost/acphost.go	242	185
+internal/acphost/acphost.go	242	186
 internal/acphost/rewrite.go	227	209
 internal/acphost/sweep.go	42	36
 internal/acphost/sweep_linux.go	38	28
@@ -30,7 +30,7 @@ internal/executor/executor.go	80	70
 internal/hubapi/hubapi.go	77	66
 internal/pairing/pairing.go	43	39
 internal/plugininstall/install.go	60	42
-internal/splice/conn.go	293	251
+internal/splice/conn.go	293	252
 internal/splice/resolve.go	122	106
 internal/splice/rpc.go	97	83
 internal/splice/splice.go	203	180
