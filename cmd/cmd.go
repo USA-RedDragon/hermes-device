@@ -68,6 +68,7 @@ func NewCommand(version, commit string, opts ...Option) *cobra.Command {
 		newPluginCommand(b),
 		newBrowserCommand(b),
 		newSetupCommand(b),
+		newUpdateCommand(b),
 	)
 	return root
 }

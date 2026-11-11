@@ -11,6 +11,7 @@ One Go binary, `hermes-device`, with these subcommands:
 | Subcommand | Runs on | What it does |
 |---|---|---|
 | `setup` | your PC | Sets the PC up in one step: installs the binary, pairs, writes the config, starts the service and connects Firefox |
+| `update` | your PC | Installs the latest release for this OS and architecture and restarts the service |
 | `login` | your PC | Pairs the PC with hermes-hub and stores its device token |
 | `run` | your PC | Daemon: runs the agent's commands on this PC (the exec leg), and serves the loopback splice that `chat` uses |
 | `chat` | your PC | Opens your local Hermes TUI on a server session in the current directory |
@@ -56,6 +57,14 @@ Release builds know the default hub, so `./hermes-device setup` without the URL 
 `setup --uninstall` reverses what setup did, from the record it keeps in `setup.json` in the state directory: it stops and disables the service and removes its file, removes the native messaging host and the device token, removes the config file unless you changed it since, puts back a config or service file that setup replaced, takes its lines out of your shell files (the backups stay), and removes the binary. When it cannot stop the service, it keeps the binary, the config and the token, so you can stop the service and run it again. Remove the extension in Firefox and the computer on the hub (Settings, Computers) yourself.
 
 `login` and `run` still work on their own, for example for a service device or a computer without a desktop.
+
+### Updates
+
+```sh
+hermes-device update
+```
+
+`update` downloads the latest release's archive for this OS and architecture, checks its SHA-256 against the release's checksum file, checks that the new binary runs here and reports the release's version, replaces `~/.hermes-device/bin/hermes-device` (or this binary when that does not exist) and restarts the service. It refuses a downgrade and replacing a development build without `--force`. `hermes-device update 0.9.0` installs that release. The checksum file is not signed, so the check guards against a broken download, and HTTPS to GitHub guards against the rest. Firefox updates the extension by itself.
 
 ### The daemon
 
