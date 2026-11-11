@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	msgMediaGone     = "Could not send %s: it is no longer on the Hermes server."
+	msgMediaGone     = "Could not send %s: it is no longer there."
+	msgMediaOffline  = "Could not send %s: the computer that has it is offline. Open it in the hub's web page when the computer is back."
 	msgMediaTooLarge = "Could not send %s: Telegram takes files up to %d MB from bots. Open it in the hub's web page."
 	msgMediaFailed   = "Could not send %s. Open it in the hub's web page."
 	msgMediaMany     = "The reply names %d files; this chat gets the first %d. Open the chat in the hub's web page for the rest."
@@ -21,6 +22,11 @@ const (
 
 // maxReplyMedia bounds the files the bot sends for one reply.
 const maxReplyMedia = 10
+
+// mediaReadTimeout bounds reading one file a reply names. A file on a
+// device can take the plugin's 120 seconds and its transfer (hermes-device
+// plugin/device/core.py FILE_READ_TIMEOUT_S).
+const mediaReadTimeout = 150 * time.Second
 
 // uploadTimeout bounds one upload to Telegram.
 const uploadTimeout = 2 * time.Minute
@@ -50,6 +56,9 @@ func (r *renderer) sendMedia(ctx context.Context, paths []string) {
 		case errors.Is(err, hub.ErrMediaTooLarge):
 			r.notice(ctx, msgMediaTooLarge, name, MaxDocumentUpload>>20)
 			continue
+		case errors.Is(err, hub.ErrMediaOffline):
+			r.notice(ctx, msgMediaOffline, name)
+			continue
 		case err != nil:
 			r.logger.Warn("Failed to read a file a reply names", "error", err)
 			r.notice(ctx, msgMediaFailed, name)
@@ -75,7 +84,7 @@ func (r *renderer) upload(ctx context.Context, send func(context.Context, int64,
 }
 
 func (r *renderer) readMedia(ctx context.Context, p string) ([]byte, string, error) {
-	cctx, cancel := context.WithTimeout(ctx, downloadTimeout)
+	cctx, cancel := context.WithTimeout(ctx, mediaReadTimeout)
 	defer cancel()
 	f, err := r.media(cctx, p)
 	if err != nil {

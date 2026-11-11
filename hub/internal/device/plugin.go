@@ -296,3 +296,28 @@ func (p *Plugin) PutFile(ctx context.Context, sessionID, name string, data []byt
 	}
 	return out, p.callWith(ctx, send, http.MethodPost, "/sessions/"+url.PathEscape(sessionID)+"/files", body, &out)
 }
+
+// ReadFile opens a file of the device that serves a session
+// (docs/protocol.md section 9, read rules). Only ctx bounds it. On a 200
+// answer the caller closes the response body; any other answer is a
+// *PluginError.
+func (p *Plugin) ReadFile(ctx context.Context, sessionID, path string) (*http.Response, error) {
+	send := p.r.Request
+	if s, ok := p.r.(slowRequester); ok {
+		send = s.RequestSlow
+	}
+	resp, err := send(ctx, http.MethodGet, PluginBase+"/sessions/"+url.PathEscape(sessionID)+"/files?path="+url.QueryEscape(path), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	if resp.StatusCode == http.StatusOK {
+		return resp, nil
+	}
+	defer resp.Body.Close()
+	e := &PluginError{Status: resp.StatusCode}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(e)
+	if e.Code == "" {
+		e.Code = http.StatusText(resp.StatusCode)
+	}
+	return nil, e
+}

@@ -20,7 +20,10 @@ type MediaFile struct {
 	MIME string
 	// Size is the file's size in bytes, or -1 when the backend did not say.
 	Size int64
-	Body io.ReadCloser
+	// NoStore says browsers must not cache the file: it comes from a
+	// device, where it may change or go away.
+	NoStore bool
+	Body    io.ReadCloser
 }
 
 // Media reads the files the agent named in a session's replies.
@@ -32,9 +35,24 @@ type Media interface {
 	Media(ctx context.Context, user, backendID, sessionID, path string) (*MediaFile, error)
 }
 
+// DeviceMedia reads the files the agent names from the device that runs a
+// session: the user's computer or the sandbox.
+type DeviceMedia interface {
+	// DeviceMedia opens path on the device that runs the session. ok is
+	// false when no device runs it (a backend without devices, or a session
+	// that runs on the Hermes server). It fails with ErrNoMedia when the
+	// device has no such file or refuses it, ErrMediaTooLarge for a file
+	// over the plugin's limit and ErrMediaOffline when the device is not
+	// connected. It does not check that the session names path.
+	DeviceMedia(ctx context.Context, user, backendID, sessionID, path string) (f *MediaFile, ok bool, err error)
+}
+
 // ErrNoMedia is a file the hub does not show: the session never named it,
 // it is outside the media roots, or it is gone.
 var ErrNoMedia = errors.New("no such file in this chat")
+
+// ErrMediaOffline is a file on a device that is not connected.
+var ErrMediaOffline = errors.New("the computer that has this file is offline")
 
 // ErrMediaTooLarge is a file over MaxMediaBytes.
 var ErrMediaTooLarge = errors.New("file too large")

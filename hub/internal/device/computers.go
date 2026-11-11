@@ -269,7 +269,7 @@ func computerError(err error) error {
 		return err
 	}
 	switch pe.Code {
-	case "device_offline", "unknown_device":
+	case codeOffline, "unknown_device":
 		return hub.ErrComputerOffline
 	case "bad_dir":
 		return fmt.Errorf("%w: pick a full folder path", hub.ErrFolderRefused)

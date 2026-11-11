@@ -45,14 +45,22 @@ func inMediaRoots(roots []string, p string) bool {
 }
 
 // Media opens a file that the session's replies, browser_screenshot results
-// or user image attachments name. See hub.Media.
+// or user image attachments name. A path under the media roots comes from
+// the backend's server; any other path, and one the server does not have,
+// comes from the device that runs the session, when one does. See
+// hub.Media.
 func (s *Service) Media(ctx context.Context, user, backendID, sessionID, p string) (*hub.MediaFile, error) {
 	b, err := s.backend(ctx, user, backendID)
 	if err != nil {
 		return nil, err
 	}
-	fr, ok := b.dialer.(fileReader)
-	if !ok || !hub.MediaPath(p) || !inMediaRoots(b.cfg.MediaRoots, p) {
+	if !hub.MediaPath(p) {
+		return nil, hub.ErrNoMedia
+	}
+	fr, server := b.dialer.(fileReader)
+	server = server && inMediaRoots(b.cfg.MediaRoots, p)
+	dm, device := s.files.(hub.DeviceMedia)
+	if !server && !device {
 		return nil, hub.ErrNoMedia
 	}
 	ls, err := b.session(ctx, sessionID)
@@ -64,6 +72,28 @@ func (s *Service) Media(ctx context.Context, user, backendID, sessionID, p strin
 	if !named {
 		return nil, hub.ErrNoMedia
 	}
+	if server {
+		f, err := serverMedia(ctx, fr, p)
+		if !device || !errors.Is(err, hub.ErrNoMedia) {
+			return f, err
+		}
+	}
+	f, ok, err := dm.DeviceMedia(ctx, user, backendID, sessionID, p)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, hub.ErrNoMedia
+	}
+	m, err := sniffMedia(p, f.Size, f.Body)
+	if m != nil {
+		m.NoStore = f.NoStore
+	}
+	return m, err
+}
+
+// serverMedia opens a file of the backend's server.
+func serverMedia(ctx context.Context, fr fileReader, p string) (*hub.MediaFile, error) {
 	resp, err := fr.File(ctx, p)
 	if errors.Is(err, gateway.ErrNoFile) {
 		return nil, hub.ErrNoMedia
@@ -71,25 +101,30 @@ func (s *Service) Media(ctx context.Context, user, backendID, sessionID, p strin
 	if err != nil {
 		return nil, err
 	}
-	if resp.ContentLength > hub.MaxMediaBytes {
-		_ = resp.Body.Close()
+	return sniffMedia(p, resp.ContentLength, resp.Body)
+}
+
+// sniffMedia reads the first bytes of a file to type an image, and caps
+// the body at hub.MaxMediaBytes. It closes body on failure.
+func sniffMedia(p string, size int64, body io.ReadCloser) (*hub.MediaFile, error) {
+	if size > hub.MaxMediaBytes {
+		_ = body.Close()
 		return nil, hub.ErrMediaTooLarge
 	}
 	head := make([]byte, 16)
-	n, err := io.ReadFull(resp.Body, head)
+	n, err := io.ReadFull(body, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		_ = resp.Body.Close()
+		_ = body.Close()
 		return nil, err
 	}
 	head = head[:n]
 	mime := ""
-	switch strings.ToLower(path.Ext(p)) {
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+	if hub.ImagePath(p) {
 		mime = hub.ImageMIME(head)
 	}
-	body := io.MultiReader(bytes.NewReader(head), resp.Body)
-	return &hub.MediaFile{Name: hub.CleanName(path.Base(p)), MIME: mime, Size: resp.ContentLength,
-		Body: readCloser{&capReader{r: body, left: hub.MaxMediaBytes}, resp.Body}}, nil
+	r := io.MultiReader(bytes.NewReader(head), body)
+	return &hub.MediaFile{Name: hub.CleanName(path.Base(p)), MIME: mime, Size: size,
+		Body: readCloser{&capReader{r: r, left: hub.MaxMediaBytes}, body}}, nil
 }
 
 // capReader fails with hub.ErrMediaTooLarge past left bytes.

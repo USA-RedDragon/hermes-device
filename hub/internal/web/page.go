@@ -170,6 +170,8 @@ func (s *Server) pageError(w http.ResponseWriter, err error) {
 		errorJSON(w, http.StatusNotFound, hub.ErrNoPage.Error())
 	case errors.Is(err, hub.ErrMediaTooLarge):
 		errorJSON(w, http.StatusRequestEntityTooLarge, "the page is too large")
+	case errors.Is(err, hub.ErrMediaOffline):
+		errorJSON(w, http.StatusServiceUnavailable, hub.ErrMediaOffline.Error())
 	default:
 		s.fail(w, err)
 	}

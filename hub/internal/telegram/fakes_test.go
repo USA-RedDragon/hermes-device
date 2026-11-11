@@ -340,6 +340,7 @@ type fakeHub struct {
 type fakeFile struct {
 	mime string
 	data string
+	err  error
 }
 
 // Media opens a file of h.media for a user who may use the backend.
@@ -353,6 +354,9 @@ func (h *fakeHub) Media(_ context.Context, user, backendID, sessionID, p string)
 	f, ok := h.media[p]
 	if !ok {
 		return nil, hub.ErrNoMedia
+	}
+	if f.err != nil {
+		return nil, f.err
 	}
 	return &hub.MediaFile{Name: path.Base(p), MIME: f.mime, Size: int64(len(f.data)), Body: io.NopCloser(strings.NewReader(f.data))}, nil
 }

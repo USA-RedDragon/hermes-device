@@ -19,11 +19,12 @@ func TestReplyMediaIsSent(t *testing.T) {
 	t.Parallel()
 	h := startBot(t, nil)
 	h.hub.mu.Lock()
-	h.hub.media = map[string]fakeFile{shotPath: {mime: hub.MIMEJPEG, data: jpegData}, "/opt/data/out/report.pdf": {data: "%PDF-1.7"}}
+	h.hub.media = map[string]fakeFile{shotPath: {mime: hub.MIMEJPEG, data: jpegData}, "/opt/data/out/report.pdf": {data: "%PDF-1.7"},
+		"/home/alice/src/plot.png": {err: hub.ErrMediaOffline}}
 	h.hub.mu.Unlock()
 	sid := h.startTurn(t)
 	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "Here is the page.\nMEDIA:" + shotPath +
-		"\nAnd the report: MEDIA:/opt/data/out/report.pdf\nMEDIA:/opt/data/out/gone.png", kStatus: statusComplete})
+		"\nAnd the report: MEDIA:/opt/data/out/report.pdf\nMEDIA:/opt/data/out/gone.png\nMEDIA:/home/alice/src/plot.png", kStatus: statusComplete})
 	text := h.tg.wait(mSend, "Here is the page")
 	if strings.Contains(text.text(), "MEDIA:") || !strings.Contains(text.text(), "And the report:") {
 		t.Fatalf("text = %q", text.text())
@@ -36,11 +37,12 @@ func TestReplyMediaIsSent(t *testing.T) {
 	if doc.Params["field"] != "document" || doc.Params["name"] != "report.pdf" || doc.Params["data"] != "%PDF-1.7" {
 		t.Fatalf("document = %+v", doc.Params)
 	}
-	h.tg.wait(mSend, "gone.png: it is no longer on the Hermes server")
+	h.tg.wait(mSend, "gone.png: it is no longer there")
+	h.tg.wait(mSend, "plot.png: the computer that has it is offline")
 	h.hub.mu.Lock()
 	calls := h.hub.mediaCalls
 	h.hub.mu.Unlock()
-	if len(calls) != 3 || calls[0] != userAlice+" "+beCluster+" "+sid+" "+shotPath {
+	if len(calls) != 4 || calls[0] != userAlice+" "+beCluster+" "+sid+" "+shotPath {
 		t.Fatalf("media calls = %q", calls)
 	}
 }
@@ -92,7 +94,7 @@ func TestReplyMediaIsCapped(t *testing.T) {
 	}
 	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: text.String(), kStatus: statusComplete})
 	h.tg.wait(mSend, "The reply names 15 files; this chat gets the first 10")
-	h.tg.wait(mSend, "f9.png: it is no longer on the Hermes server")
+	h.tg.wait(mSend, "f9.png: it is no longer there")
 	h.hub.mu.Lock()
 	n := len(h.hub.mediaCalls)
 	h.hub.mu.Unlock()
@@ -125,7 +127,7 @@ func TestReplyPagesAreLinks(t *testing.T) {
 	if !strings.Contains(file1.text(), "/"+sid+"/%2Fopt%2Fdata%2Fout%2Fpages%2Fplan.html\"") {
 		t.Fatalf("file page link = %q", file1.text())
 	}
-	h.tg.wait(mSend, "gone.html: it is no longer on the Hermes server")
+	h.tg.wait(mSend, "gone.html: it is no longer there")
 	if len(h.tg.find(mDocument, "")) != 0 {
 		t.Fatal("a page went as a file")
 	}

@@ -112,6 +112,10 @@ type Plugin struct {
 	refused int
 	// uploads are the files the upload route wrote, by device path.
 	uploads map[string][]byte
+	// files are the files the read route serves, by device ID and path.
+	files map[string]map[string][]byte
+	// busyReads is how many reads still get the busy answer.
+	busyReads int
 }
 
 // NewPlugin mounts a fake plugin for backendID on gw. It accepts
@@ -120,7 +124,8 @@ func NewPlugin(gw *gatewaytest.Gateway, backendID string, key ed25519.PublicKey)
 	p := &Plugin{BackendID: backendID, Placeholder: "/opt/data/hermes/device-placeholder", HermesVersion: "v0.22.7",
 		verifier: assertion.NewVerifier([]ed25519.PublicKey{key}), bindings: map[string]Binding{}, ever: map[string]bool{},
 		parents: map[string]string{}, conns: map[string]*Conn{}, refuse: map[string]string{}, Connected: make(chan *Conn, 16),
-		trees: map[string]map[string][]string{}, refuseDev: map[string]string{}, uploads: map[string][]byte{}}
+		trees: map[string]map[string][]string{}, refuseDev: map[string]string{}, uploads: map[string][]byte{},
+		files: map[string]map[string][]byte{}}
 	base := "/api/plugins/device"
 	gw.Handle("GET "+base+"/info", http.HandlerFunc(p.info), true)
 	gw.Handle("GET "+base+"/devices", http.HandlerFunc(p.devices), true)
@@ -130,6 +135,7 @@ func NewPlugin(gw *gatewaytest.Gateway, backendID string, key ed25519.PublicKey)
 	gw.Handle("PUT "+base+"/sessions/{session}/binding", http.HandlerFunc(p.putBinding), true)
 	gw.Handle("DELETE "+base+"/sessions/{session}/binding", http.HandlerFunc(p.deleteBinding), true)
 	gw.Handle("POST "+base+"/sessions/{session}/files", http.HandlerFunc(p.postFile), true)
+	gw.Handle("GET "+base+"/sessions/{session}/files", http.HandlerFunc(p.getFile), true)
 	gw.Handle("GET "+protocol.PluginExecPath, http.HandlerFunc(p.exec), false)
 	return p
 }
@@ -711,6 +717,90 @@ func (p *Plugin) Uploads() map[string][]byte {
 	return maps.Clone(p.uploads)
 }
 
+// SetDeviceFile puts a file on a device for the read route.
+func (p *Plugin) SetDeviceFile(deviceID, filePath string, data []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.files[deviceID] == nil {
+		p.files[deviceID] = map[string][]byte{}
+	}
+	p.files[deviceID][filePath] = data
+}
+
+// BusyReads makes the next n reads get the plugin's busy answer.
+func (p *Plugin) BusyReads(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.busyReads = n
+}
+
+// sessionDevice is the binding that serves a session's files, as the
+// upload and read rules say, or the error code of the plugin.
+func (p *Plugin) sessionDevice(sid string) (Binding, string) {
+	b, res := p.resolve(sid)
+	switch {
+	case res[stateKey] == stateBound:
+	case res[stateKey] == stateNever && p.sandbox == "":
+		return Binding{}, "runs_on_pod"
+	case res[stateKey] == stateNever && res["sandbox"] != nil:
+		sb, _ := res["sandbox"].(map[string]string)
+		b = Binding{DeviceID: sb[keyDeviceID], Dir: sb["dir"]}
+	default:
+		return Binding{}, "fail_closed"
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.conns[b.DeviceID] == nil {
+		return Binding{}, "device_offline"
+	}
+	return b, ""
+}
+
+// getFile serves a file of the device that serves a session
+// (docs/protocol.md section 9, read rules), from memory. Paths outside
+// the device's roots are refused, and a file over 32 MiB is too large.
+func (p *Plugin) getFile(w http.ResponseWriter, r *http.Request) {
+	fp := r.URL.Query().Get(keyPath)
+	p.record(r, map[string]any{keyPath: fp})
+	p.mu.Lock()
+	busy := p.busyReads > 0
+	if busy {
+		p.busyReads--
+	}
+	p.mu.Unlock()
+	if busy {
+		pluginError(w, http.StatusTooManyRequests, "busy")
+		return
+	}
+	if !path.IsAbs(fp) || path.Clean(fp) != fp {
+		pluginError(w, http.StatusBadRequest, "bad_path")
+		return
+	}
+	b, code := p.sessionDevice(r.PathValue("session"))
+	if code != "" {
+		pluginError(w, http.StatusConflict, code)
+		return
+	}
+	p.mu.Lock()
+	inRoots := false
+	for _, root := range p.conns[b.DeviceID].Hello.Roots {
+		inRoots = inRoots || strings.HasPrefix(fp, root+"/")
+	}
+	data, ok := p.files[b.DeviceID][fp]
+	p.mu.Unlock()
+	switch {
+	case !inRoots:
+		pluginError(w, http.StatusUnprocessableEntity, "read_refused")
+	case !ok:
+		pluginError(w, http.StatusNotFound, "not_found")
+	case len(data) > 32<<20:
+		pluginError(w, http.StatusRequestEntityTooLarge, "too_large")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(data)
+	}
+}
+
 // postFile writes an upload as the plugin's upload rules say
 // (docs/protocol.md section 9), into memory.
 func (p *Plugin) postFile(w http.ResponseWriter, r *http.Request) {
@@ -728,25 +818,13 @@ func (p *Plugin) postFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.record(r, map[string]any{keyName: body.Name, "bytes": len(data)})
-	b, res := p.resolve(r.PathValue("session"))
-	switch {
-	case res[stateKey] == stateBound:
-	case res[stateKey] == stateNever && p.sandbox == "":
-		pluginError(w, http.StatusConflict, "runs_on_pod")
-		return
-	case res[stateKey] == stateNever && res["sandbox"] != nil:
-		sb, _ := res["sandbox"].(map[string]string)
-		b = Binding{DeviceID: sb[keyDeviceID], Dir: sb["dir"]}
-	default:
-		pluginError(w, http.StatusConflict, "fail_closed")
+	b, code := p.sessionDevice(r.PathValue("session"))
+	if code != "" {
+		pluginError(w, http.StatusConflict, code)
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.conns[b.DeviceID] == nil {
-		pluginError(w, http.StatusConflict, "device_offline")
-		return
-	}
 	target := path.Join(b.Dir, ".hermes", "attachments", body.Name)
 	p.uploads[target] = data
 	answer(w, map[string]any{keyPath: target, keyName: body.Name, keyDeviceID: b.DeviceID, "bytes": len(data)})

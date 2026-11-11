@@ -949,8 +949,8 @@
 
   const render = (node, raw) => window.hubMarkdown.render(node, raw);
 
-  // MEDIA:<path> directives in a reply name files on the Hermes server for
-  // the user. This follows hub.MediaDirectives in the hub, which decides
+  // MEDIA:<path> directives in a reply name files on the Hermes server or
+  // the chat's computer for the user. This follows hub.MediaDirectives in the hub, which decides
   // what the media route serves; the page only shows what it finds.
   const mediaExts = new Set(("png jpg jpeg gif webp bmp tiff svg mp4 mov avi mkv webm 3gp mp3 m2a wav ogg opus m4a " +
     "flac pdf docx doc odt rtf txt md epub xlsx xls ods csv tsv json xml yaml yml kmz kml geojson gpx pptx ppt odp key " +
@@ -1082,7 +1082,7 @@
     });
   }
 
-  // mediaImage is a thumbnail of an image on the Hermes server that opens
+  // mediaImage is a thumbnail of an image the agent named that opens
   // full size. It turns into the file's name when the hub cannot show it.
   function mediaImage(base, p, cls) {
     const a = el("a", cls || "media-img");
@@ -1100,10 +1100,11 @@
     return a;
   }
 
-  // mediaFile is a chip that downloads a file from the Hermes server.
+  // mediaFile is a chip that downloads a file the agent named, from the
+  // Hermes server or the computer that runs the chat.
   function mediaFile(base, p, gone) {
     const chip = el(gone ? "span" : "a", "att media-file" + (gone ? " gone" : ""));
-    chip.title = gone ? "This file is no longer on the Hermes server." : p;
+    chip.title = gone ? "This file is gone, or the computer that has it is offline." : p;
     if (!gone) {
       chip.href = mediaURL(base, p) + "&download=1";
       chip.download = baseName(p);
@@ -1228,7 +1229,7 @@
       }, () => {
         card.classList.add("gone");
         kind.textContent = "Gone";
-        card.title = "This file is no longer on the Hermes server.";
+        card.title = "This file is gone, or the computer that has it is offline.";
         open.disabled = true;
       });
     } else if (window.crypto && crypto.subtle) {

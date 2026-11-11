@@ -1,15 +1,20 @@
 package web_test
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
+	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 	"github.com/USA-RedDragon/hermes-hub/internal/store"
 	"github.com/USA-RedDragon/hermes-hub/internal/web"
 )
@@ -23,6 +28,7 @@ const (
 	roleAssistant = "assistant"
 	titleMedia    = "Media"
 	octetStream   = "application/octet-stream"
+	nosniff       = "nosniff"
 )
 
 func mediaURL(e *hubEnv, backend, p string) string {
@@ -55,7 +61,7 @@ func TestMedia(t *testing.T) {
 	h := resp.Header
 	if resp.StatusCode != http.StatusOK || body != shotJPEG || h.Get("Content-Type") != "image/jpeg" ||
 		!strings.HasPrefix(h.Get("Content-Disposition"), "inline") || !strings.Contains(h.Get("Content-Security-Policy"), "sandbox") ||
-		h.Get("X-Content-Type-Options") != "nosniff" {
+		h.Get("X-Content-Type-Options") != nosniff {
 		t.Fatalf("named = %d %q %v", resp.StatusCode, body, h)
 	}
 	if resp, body = get(t, c, mediaURL(e, "pc", tool)); resp.StatusCode != http.StatusOK || body != shotJPEG {
@@ -155,5 +161,102 @@ func TestMediaRootsServeFiles(t *testing.T) {
 	}
 	if resp, _ = get(t, c, mediaURL(e, "pc", shot)); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("outside the roots = %d", resp.StatusCode)
+	}
+}
+
+// deviceFiles is a device that runs every chat, with files in memory.
+type deviceFiles struct {
+	mu      sync.Mutex
+	files   map[string]string
+	offline bool
+	reads   []string
+}
+
+func (d *deviceFiles) PutFile(context.Context, string, string, string, string, []byte) (string, bool, error) {
+	return "", false, nil
+}
+
+func (d *deviceFiles) DeviceMedia(_ context.Context, user, backendID, sessionID, p string) (*hub.MediaFile, bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.reads = append(d.reads, user+"|"+backendID+"|"+sessionID+"|"+p)
+	if d.offline {
+		return nil, true, hub.ErrMediaOffline
+	}
+	data, ok := d.files[p]
+	if !ok {
+		return nil, true, hub.ErrNoMedia
+	}
+	return &hub.MediaFile{Name: path.Base(p), Size: int64(len(data)), NoStore: true, Body: io.NopCloser(strings.NewReader(data))}, true, nil
+}
+
+func (d *deviceFiles) read() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.reads)
+}
+
+func TestMediaFromTheDevice(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	chart, notes, fake, unnamed := "/home/alice/src/chart.png", "/home/alice/src/notes.txt", "/home/alice/src/fake.png", "/home/alice/src/secret.txt"
+	shot, onDevice, report := shotDir+"server.jpg", shotDir+"device.jpg", "/home/alice/src/report.html"
+	dev := &deviceFiles{files: map[string]string{chart: shotPNG, notes: "hello", fake: "<svg onload=alert(1)>", unnamed: "no",
+		shot: "device copy", onDevice: shotJPEG, report: "<!doctype html><title>Report</title>"}}
+	e.svc.SetFiles(dev)
+	e.gw.SetFile(shot, []byte(shotJPEG))
+	e.gw.AddSession(&gatewaytest.Session{ID: "m1", Title: titleMedia, Live: true, StartedAt: 200, Messages: []map[string]any{
+		{kRole: roleAssistant, kText: "MEDIA:" + chart + "\nMEDIA:" + notes + "\nMEDIA:" + fake + "\nMEDIA:" + shot + "\nMEDIA:" + onDevice + "\nMEDIA:" + report},
+	}})
+	c := client(t)
+	login(t, e, c)
+	resp, body := get(t, c, mediaURL(e, "pc", chart))
+	if resp.StatusCode != http.StatusOK || body != shotPNG || resp.Header.Get("Content-Type") != hub.MIMEPNG ||
+		!strings.HasPrefix(resp.Header.Get("Content-Disposition"), "inline") ||
+		resp.Header.Get("Content-Security-Policy") != "default-src 'none'; sandbox" || resp.Header.Get("X-Content-Type-Options") != nosniff ||
+		resp.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("chart = %d %q %v", resp.StatusCode, body, resp.Header)
+	}
+	for _, p := range []string{notes, fake} {
+		resp, body = get(t, c, mediaURL(e, "pc", p))
+		if resp.StatusCode != http.StatusOK || body != dev.files[p] || resp.Header.Get("Content-Type") != octetStream ||
+			!strings.HasPrefix(resp.Header.Get("Content-Disposition"), "attachment") {
+			t.Fatalf("%s = %d %q %v", p, resp.StatusCode, body, resp.Header)
+		}
+	}
+	if resp, body = get(t, c, mediaURL(e, "pc", shot)); resp.StatusCode != http.StatusOK || body != shotJPEG ||
+		resp.Header.Get("Cache-Control") != "private, max-age=300" {
+		t.Fatalf("a server file = %d %q", resp.StatusCode, body)
+	}
+	if resp, body = get(t, c, mediaURL(e, "pc", onDevice)); resp.StatusCode != http.StatusOK || body != shotJPEG {
+		t.Fatalf("a media root path only on the device = %d %q", resp.StatusCode, body)
+	}
+	pageInfo := e.url + "/api/sessions/pc/m1/page-info?path=" + url.QueryEscape(report)
+	if resp, body = get(t, c, pageInfo); resp.StatusCode != http.StatusOK || !strings.Contains(body, `"Report"`) {
+		t.Fatalf("a device page = %d %s", resp.StatusCode, body)
+	}
+	before := len(dev.read())
+	if resp, _ = get(t, c, mediaURL(e, "pc", unnamed)); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unnamed = %d", resp.StatusCode)
+	}
+	if resp, _ = get(t, c, mediaURL(e, backendHome, chart)); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("other backend = %d", resp.StatusCode)
+	}
+	if reads := dev.read(); len(reads) != before {
+		t.Fatalf("refused paths were read: %v", reads[before:])
+	}
+	for _, r := range dev.read() {
+		if !strings.HasPrefix(r, userAlice+"|pc|m1|") {
+			t.Fatalf("read = %q", r)
+		}
+	}
+	dev.mu.Lock()
+	dev.offline = true
+	dev.mu.Unlock()
+	if resp, body = get(t, c, mediaURL(e, "pc", chart)); resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "offline") {
+		t.Fatalf("offline = %d %s", resp.StatusCode, body)
+	}
+	if resp, _ = get(t, c, pageInfo); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("an offline page = %d", resp.StatusCode)
 	}
 }

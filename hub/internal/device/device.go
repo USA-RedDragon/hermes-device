@@ -88,6 +88,10 @@ type backend struct {
 	mu          sync.Mutex
 	placeholder string
 	phAt        time.Time
+
+	// reads holds a slot for each file read from a device that waits for
+	// the plugin's answer.
+	reads chan struct{}
 }
 
 // Server serves the device side of the hub.
@@ -161,7 +165,7 @@ func New(opts Options) (*Server, error) {
 		if d == nil {
 			continue
 		}
-		s.backends[b.ID] = &backend{cfg: b, dialer: d, plugin: NewPlugin(d)}
+		s.backends[b.ID] = &backend{cfg: b, dialer: d, plugin: NewPlugin(d), reads: make(chan struct{}, maxReads)}
 		for _, sd := range b.ServiceDevices {
 			s.service[sha256.Sum256([]byte(sd.Token))] = hub.Device{ID: sd.ID, User: hub.ServiceUser, BackendID: b.ID,
 				Name: sd.Name, Paired: true, Service: true}
