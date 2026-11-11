@@ -1,0 +1,9 @@
+tests/tools/test_process_checkpoint_readopt.py
+tests/tools/test_process_checkpoint_worker_handoff.py
+tests/tools/test_process_registry_completion_races.py
+tests/tools/test_process_registry_env_spawn_cwd.py
+tests/tools/test_process_registry_lazy_restore.py
+tests/tools/test_process_registry_owner_chain.py
+tests/gateway/test_gateway_shutdown.py
+tests/gateway/test_clean_shutdown_marker.py
+tests/tools/test_process_registry.py

@@ -1,0 +1,1003 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 12:00:03 -0600
+Subject: [PATCH] feat(process): hand background processes to the next gateway
+
+terminal.process_handoff_backends ([] = off): a graceful restart hands
+background processes of the listed backends to the next gateway, which
+reattaches them from processes.json with the same session id, output
+and completion routing. Plugins register reattach providers for their
+own processes. An env poll that gets no exit status (a backend that is
+reconnecting) is retried instead of read as an exit.
+---
+ cli-config.yaml.example                   |   5 +
+ gateway/run_shutdown.py                   |  16 ++
+ hermes_cli/config_defaults.py             |   3 +
+ tests/tools/test_process_handoff.py       | 300 ++++++++++++++++++++++
+ tools/process_registry.py                 | 122 ++++++---
+ tools/process_registry_checkpoint.py      |  47 ++--
+ tools/process_registry_handoff.py         | 221 ++++++++++++++++
+ tools/terminal_tool_background.py         |   2 +-
+ website/docs/user-guide/features/tools.md |  23 ++
+ 9 files changed, 686 insertions(+), 53 deletions(-)
+ create mode 100644 tests/tools/test_process_handoff.py
+ create mode 100644 tools/process_registry_handoff.py
+
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index a91dad0509..b478e59df7 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -456,6 +456,11 @@ terminal:
+   # tracked process with notify_on_complete (it is not killed); the agent gets its session_id and is
+   # told not to re-run it. Local backend only. 0 = off: the command runs until it exits or times out.
+   auto_background_seconds: 0
++  # Backends whose background processes run outside the gateway process (ssh, a plugin backend
++  # such as a paired device) and keep running when the gateway restarts gracefully: the gateway
++  # hands them to the next gateway, which reattaches them and still sends their completion notice.
++  # Processes on the local backend always stop with the gateway. [] = stop them all, as before.
++  process_handoff_backends: []
+   # A `hermes` / `hermes --tui` session's local tools (terminal, background processes, execute_code)
+   # start with the launching shell's toolchain: PATH, an activated venv and CONDA_* / NODE_* / NVM_* /
+   # PYENV_* (plus GOPATH, GOROOT, CARGO_HOME, RUSTUP_HOME, JAVA_HOME), for that session only, when
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+index 7a9ee828b6..083421a890 100644
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -1819,6 +1819,21 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+             GatewayShutdownMixin._stop_kill_tool_subprocesses, phase
+         )
+ 
++    async def _stop_hand_off_processes(self) -> None:
++        """Restart only: hand the background processes of ``terminal.process_handoff_backends`` to
++        the next gateway before any kill sweep, so they keep running and it reattaches them."""
++        if not getattr(self, "_restart_requested", False):
++            return
++        from tools.process_registry_handoff import configured_handoff_backends
++        backends = configured_handoff_backends()
++        if not backends:
++            return
++        from tools.process_registry import process_registry
++        try:
++            await asyncio.to_thread(process_registry.hand_off_for_restart, backends)
++        except Exception:
++            logger.warning("Background process handoff failed; they are stopped as usual", exc_info=True)
++
+     async def _stop_begin_teardown(self, ctx: GatewayShutdownMixin._StopContext) -> None:
+         """Flag teardown, stop room worker/watchdog, notify sessions."""
+         logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
+@@ -2210,6 +2225,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+                     timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
+                 )
+             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
++            await GatewayRunner._stop_hand_off_processes(self)
+             if ctx.timed_out:
+                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
+             from gateway.run_runtime import settle_gateway_runtime  # within what the leash has left
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 5d3fb74310..419d6deaef 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -309,6 +309,9 @@ DEFAULT_CONFIG = {
+         "oneshot_completion_wait_seconds": 600.0,
+         "process_wait_auto_notify": True,  # 2 unchanged wait/poll -> notify_on_complete + stop; False = old polling
+         "auto_background_seconds": 0,  # foreground still running after N s -> notify_on_complete background process; 0 = off
++        # Backends whose background processes run outside the gateway (a remote shell, a device) and are
++        # handed to the next gateway on a graceful restart instead of killed; [] = kill them all
++        "process_handoff_backends": [],
+         # Env vars passed into sandboxed terminal/execute_code (plus skill-declared required_environment_variables).
+         "env_passthrough": [],
+         "client_env_passthrough": [],  # Extra non-secret toolchain names a CLI/TUI client sends for its tools
+diff --git a/tests/tools/test_process_handoff.py b/tests/tools/test_process_handoff.py
+new file mode 100644
+index 0000000000..1e34ec8643
+--- /dev/null
++++ b/tests/tools/test_process_handoff.py
+@@ -0,0 +1,300 @@
++"""terminal.process_handoff_backends: background processes survive a graceful gateway restart."""
++import json
++import os
++import subprocess
++import tempfile
++import time
++from types import SimpleNamespace
++
++import pytest
++
++import tools.process_registry as pr
++import tools.process_registry_handoff as handoff
++from gateway.session_context import _SESSION_ID, _UNSET
++from tools.process_registry import ProcessRegistry
++
++
++class ShellEnv:
++    """A non-local backend whose shell runs on this host; ``reachable=False`` answers like a
++    device that is reconnecting."""
++
++    def __init__(self, temp_dir):
++        self.temp_dir = str(temp_dir)
++        self.reachable = True
++        self.session_ids = set()
++
++    def get_temp_dir(self):
++        return self.temp_dir
++
++    def execute(self, command, cwd="", timeout=10, **_kwargs):
++        value = _SESSION_ID.get()
++        if value is not _UNSET:
++            self.session_ids.add(value)
++        if not self.reachable:
++            return {"output": "[device alice-pc is not connected, so the command did not run]", "returncode": 255}
++        with tempfile.TemporaryFile(dir=self.temp_dir) as out:
++            result = subprocess.run(["bash", "-c", command], stdout=out, stderr=subprocess.STDOUT,
++                                    timeout=timeout, cwd=cwd or None, stdin=subprocess.DEVNULL)
++            out.seek(0)
++            return {"output": out.read().decode(errors="replace"), "returncode": result.returncode}
++
++
++@pytest.fixture
++def checkpoint(tmp_path, monkeypatch):
++    path = tmp_path / "processes.json"
++    monkeypatch.setattr(pr, "CHECKPOINT_PATH", path)
++    monkeypatch.setattr(pr, "ENV_POLL_INTERVAL_SECONDS", 0.05)
++    monkeypatch.setattr(handoff, "configured_handoff_backends", lambda: ["device"])
++    return path
++
++
++def _wait(predicate, timeout=10.0):
++    deadline = time.monotonic() + timeout
++    while time.monotonic() < deadline:
++        if predicate():
++            return True
++        time.sleep(0.02)
++    return False
++
++
++def _completions(registry):
++    events = []
++    while not registry.completion_queue.empty():
++        event = registry.completion_queue.get_nowait()
++        if event.get("type") == "completion":
++            events.append(event)
++    return events
++
++
++def _spawn(registry, env, command):
++    session = registry.spawn_via_env(env, command, task_id="t1", session_key="agent:main:webapp:dm:1",
++                                     backend="device")
++    session.notify_on_complete = True
++    session.parent_session_id = "sess-1"
++    session.watcher_platform = "webapp"
++    session.watcher_chat_id = "chat-1"
++    session.watcher_interval = 5
++    registry._write_checkpoint()
++    return session
++
++
++def _pid_alive(pid):
++    try:
++        os.kill(pid, 0)
++    except OSError:
++        return False
++    return True
++
++
++def test_backends_default_to_none(monkeypatch):
++    monkeypatch.setattr("tools.process_registry_wait_policy._effective_config", lambda: {})
++    assert handoff.configured_handoff_backends() == []
++    monkeypatch.setattr("tools.process_registry_wait_policy._effective_config",
++                        lambda: {"terminal": {"process_handoff_backends": ["device", "local", " "]}})
++    assert handoff.configured_handoff_backends() == ["device"]
++
++
++@pytest.mark.platforms("linux")
++def test_env_process_runs_on_and_reports_through_the_next_gateway(tmp_path, checkpoint, monkeypatch):
++    env = ShellEnv(tmp_path)
++    old = ProcessRegistry()
++    session = _spawn(old, env, "printf 'first\\n'; sleep 1.5; printf 'second\\n'; exit 3")
++    assert _wait(lambda: "first" in session.output_buffer)
++
++    assert old.hand_off_for_restart(["device"]) == 1
++    assert session.handed_off and not session.exited
++    assert old.kill_all(source="gateway_shutdown") == 0
++    assert old.kill_process(session.id)["status"] == "handed_off"
++    host_pid = int(open(session.env_files[1]).read())
++    assert _pid_alive(host_pid)
++    entry = json.loads(checkpoint.read_text())[0]
++    assert entry["session_id"] == session.id
++    assert entry["reattach"]["kind"] == "env"
++    assert entry["reattach"]["offset"] == len("first\n")
++    assert entry["reattach"]["output_tail"] == "first\n"
++
++    new = ProcessRegistry()
++    monkeypatch.setattr(handoff, "_environment_for", lambda backend, s: env)
++    assert new.recover_from_checkpoint() == 1
++    resumed = new.get(session.id)
++    assert resumed is not None and resumed.started_at == session.started_at
++    assert [w["session_id"] for w in new.pending_watchers] == [session.id]
++    assert resumed._completion_event.wait(10)
++    (event,) = _completions(new)
++    assert event["session_id"] == session.id
++    assert event["started_at"] == session.started_at
++    assert event["exit_code"] == 3
++    assert event["output"].count("first") == 1 and event["output"].count("second") == 1
++    assert env.session_ids == {"sess-1"}
++    time.sleep(0.3)
++    assert _completions(old) == []
++    assert not session.exited
++
++
++@pytest.mark.platforms("linux")
++def test_without_backends_nothing_is_handed_off(tmp_path, checkpoint):
++    env = ShellEnv(tmp_path)
++    registry = ProcessRegistry()
++    session = _spawn(registry, env, "sleep 30")
++    assert registry.hand_off_for_restart([]) == 0
++    assert registry.hand_off_for_restart(["docker"]) == 0
++    assert not session.handed_off
++    assert registry.kill_all(source="gateway_shutdown") == 1
++    assert session.exited
++
++
++@pytest.mark.platforms("linux")
++def test_unreachable_backend_is_not_an_exit(tmp_path, checkpoint, monkeypatch):
++    env = ShellEnv(tmp_path)
++    registry = ProcessRegistry()
++    session = _spawn(registry, env, "sleep 0.5; exit 7")
++    env.reachable = False
++    time.sleep(1.0)
++    assert not session.exited
++    env.reachable = True
++    assert _wait(lambda: session.exited)
++    assert session.exit_code == 7
++
++
++@pytest.mark.platforms("linux")
++def test_backend_unreachable_past_the_cap_is_lost(tmp_path, checkpoint, monkeypatch):
++    monkeypatch.setattr(pr, "ENV_UNREACHABLE_LOST_SECONDS", 0.3)
++    env = ShellEnv(tmp_path)
++    registry = ProcessRegistry()
++    session = _spawn(registry, env, "sleep 30")
++    env.reachable = False
++    assert _wait(lambda: session.exited)
++    assert session.completion_reason == "lost"
++
++
++class PipeProvider:
++    def __init__(self, command):
++        self.command = command
++        self.calls = []
++
++    def prepare(self):
++        self.calls.append("prepare")
++
++    def detach(self, session):
++        self.calls.append("detach")
++        return {"token": "abc"} if session.backend == "fake" else None
++
++    def commit(self):
++        self.calls.append("commit")
++
++    def reattach(self, state):
++        self.calls.append(("reattach", state["token"]))
++        return subprocess.Popen(["bash", "-c", self.command], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
++                                stdin=subprocess.DEVNULL, text=True)
++
++
++@pytest.mark.platforms("linux")
++def test_provider_process_is_reattached_by_the_next_gateway(checkpoint):
++    old = ProcessRegistry()
++    provider = PipeProvider("printf 'later\\n'; exit 4")
++    old.register_reattach_provider("fake", provider)
++    proc = subprocess.Popen(["bash", "-c", "printf 'early\\n'; sleep 0.5"], stdout=subprocess.PIPE,
++                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True)
++    session = old.adopt_local(proc, command="build", cwd=None, task_id="t1", notify_on_complete=True)
++    session.backend = "fake"
++    assert _wait(lambda: "early" in session.output_buffer)
++
++    assert old.hand_off_for_restart(["fake"]) == 1
++    assert provider.calls == ["prepare", "detach", "commit"]
++    proc.wait(5)
++    time.sleep(0.3)
++    assert _completions(old) == [] and not session.exited
++
++    new = ProcessRegistry()
++    new.register_reattach_provider("fake", provider)
++    assert new.recover_from_checkpoint() == 1
++    resumed = new.get(session.id)
++    assert resumed._completion_event.wait(10)
++    (event,) = _completions(new)
++    assert event["exit_code"] == 4
++    assert event["output"].index("early") < event["output"].index("later")
++
++
++@pytest.mark.platforms("linux")
++def test_handed_off_process_without_a_provider_is_reported_lost(checkpoint):
++    started = time.time() - 60
++    checkpoint.write_text(json.dumps([{
++        "session_id": "proc_handed000001", "command": "build", "pid": None, "pid_scope": "sandbox",
++        "started_at": started, "task_id": "t1", "notify_on_complete": True, "watcher_interval": 5,
++        "watcher_platform": "webapp", "watcher_chat_id": "chat-1",
++        "reattach": {"kind": "gone", "output_tail": "partial\n", "total_output_chars": 8},
++    }]))
++    registry = ProcessRegistry()
++    assert registry.recover_from_checkpoint() == 0
++    (event,) = _completions(registry)
++    assert event["session_id"] == "proc_handed000001"
++    assert event["completion_reason"] == "lost"
++    assert event["started_at"] == started
++    assert "partial" in event["output"]
++    assert [w["session_id"] for w in registry.pending_watchers] == ["proc_handed000001"]
++    assert json.loads(checkpoint.read_text()) == []
++
++
++@pytest.mark.asyncio
++async def test_gateway_hands_off_only_on_a_restart(monkeypatch):
++    from gateway.run_shutdown import GatewayShutdownMixin
++    calls = []
++    monkeypatch.setattr(handoff, "configured_handoff_backends", lambda: ["device"])
++    monkeypatch.setattr(pr.process_registry, "hand_off_for_restart", lambda backends: calls.append(backends))
++
++    await GatewayShutdownMixin._stop_hand_off_processes(SimpleNamespace(_restart_requested=False))
++    assert calls == []
++    await GatewayShutdownMixin._stop_hand_off_processes(SimpleNamespace(_restart_requested=True))
++    assert calls == [["device"]]
++    monkeypatch.setattr(handoff, "configured_handoff_backends", lambda: [])
++    await GatewayShutdownMixin._stop_hand_off_processes(SimpleNamespace(_restart_requested=True))
++    assert calls == [["device"]]
++
++
++@pytest.mark.platforms("linux")
++def test_other_backends_still_read_error_text_as_an_exit(tmp_path, checkpoint, monkeypatch):
++    monkeypatch.setattr(handoff, "configured_handoff_backends", lambda: [])
++    env = ShellEnv(tmp_path)
++    registry = ProcessRegistry()
++    session = _spawn(registry, env, "sleep 30")
++    env.reachable = False
++    assert _wait(lambda: session.exited)
++    assert session.exit_code == -1
++    registry.kill_all(source="gateway_shutdown")
++
++
++@pytest.mark.platforms("linux")
++def test_reattached_session_does_not_exit_while_its_device_is_away(tmp_path, checkpoint, monkeypatch):
++    env = ShellEnv(tmp_path)
++    old = ProcessRegistry()
++    session = _spawn(old, env, "printf 'first\\n'; sleep 1.5; exit 5")
++    assert _wait(lambda: "first" in session.output_buffer)
++    old.hand_off_for_restart(["device"])
++    files = list(session.env_files)
++
++    class Elsewhere(ShellEnv):
++        """Commands land where the handed-over files are missing (the device has not reconnected)."""
++        def execute(self, command, **kwargs):
++            if self.reachable:
++                for path in files:
++                    command = command.replace(path, path + ".absent")
++            return super().execute(command, **kwargs)
++
++    away = Elsewhere(tmp_path)
++    monkeypatch.setattr(handoff, "_environment_for", lambda backend, s: away)
++    new = ProcessRegistry()
++    assert new.recover_from_checkpoint() == 1
++    resumed = new.get(session.id)
++    time.sleep(0.5)
++    assert not resumed.exited and resumed.output_buffer == "first\n"
++    assert resumed._heartbeat_total_at_last == resumed.total_output_chars
++    files.clear()
++    assert resumed._completion_event.wait(10)
++    assert resumed.exit_code == 5
++
++
++def test_another_writer_keeps_handed_off_entries(checkpoint):
++    checkpoint.write_text(json.dumps([{"session_id": "proc_handed000002", "command": "x", "pid": None,
++                                       "started_at": 1.0, "reattach": {"kind": "env"}}]))
++    ProcessRegistry()._write_checkpoint()
++    assert [e["session_id"] for e in json.loads(checkpoint.read_text())] == ["proc_handed000002"]
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+index 1e14aa0e1f..26065d0f18 100644
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -35,6 +35,7 @@ from hermes_cli.config import get_hermes_home
+ from tools.process_registry_notifications import (
+     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
+ from tools.process_registry_checkpoint import ProcessCheckpointMixin
++from tools.process_registry_handoff import ProcessHandoffMixin
+ from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
+ from tools.process_registry_ownership import ProcessOwnershipMixin
+ from tools.process_registry_termination import ProcessTerminationMixin
+@@ -57,6 +58,10 @@ def _checkpoint_path() -> Path:
+     return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
+ 
+ MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
++# An env-backed process whose backend stops answering its probes (a device reconnecting) is
++# reported lost only after this long; until then a probe that is not an exit status is retried.
++ENV_UNREACHABLE_LOST_SECONDS = 1800
++ENV_POLL_INTERVAL_SECONDS = 2
+ # Tail of the output a completion notification carries. Right for a build log; a spawner whose
+ # output IS the payload (a bot DM's reply) asks for more per process (completion_output_chars).
+ COMPLETION_OUTPUT_CHARS = 2000
+@@ -588,6 +593,13 @@ class ProcessSession:
+     watch_patterns: list[str] = field(default_factory=list)
+     heartbeat_seconds: int = 0                  # 0 = off; else a "heartbeat" event every N s while running
+     total_output_chars: int = 0                 # Chars ever ingested (the buffer is a rolling tail)
++    # Restart handoff (terminal.process_handoff_backends): the backend that runs the process, the
++    # env log/pid/exit files and the log bytes read, and the state the next gateway reattaches from.
++    backend: str = ""
++    env_files: list[str] = field(default_factory=list)
++    env_offset: int = 0
++    reattach: dict = field(default_factory=dict)
++    handed_off: bool = False                    # handed to the next gateway: never finished here
+     _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
+     _heartbeat_total_at_last: int = field(default=0, repr=False)     # total_output_chars at that moment
+     _heartbeat_seq: int = field(default=0, repr=False)
+@@ -611,6 +623,7 @@ class ProcessSession:
+     _reader_selectable: bool = field(default=False, repr=False)
+     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
+     _owned_pgid: Optional[int] = field(default=None, repr=False)  # see ProcessOwnershipMixin
++    _reattached: bool = field(default=False, repr=False)  # rebuilt from a handoff by this gateway
+ 
+     def __post_init__(self):
+         # A session built without an explicit owner is owned by its own task, so ownership checks compare
+@@ -659,9 +672,9 @@ _CHECKPOINT_FIELDS = (
+     "started_at", "task_id", "owner_task_id", "session_key",
+     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
+     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
+-    "heartbeat_seconds", "persist_on_release", "output_log")
++    "heartbeat_seconds", "persist_on_release", "output_log", "backend", "reattach")
+ _CHECKPOINT_DEFAULTS = {
+-    f.name: ([] if f.name == "watch_patterns" else f.default)
++    f.name: ([] if f.name == "watch_patterns" else {} if f.name == "reattach" else f.default)
+     for f in ProcessSession.__dataclass_fields__.values()
+     if f.name in _CHECKPOINT_FIELDS
+ }
+@@ -674,7 +687,17 @@ _WSL_CHAIN_NOTE = (
+ )
+ 
+ 
+-class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin, ProcessOwnershipMixin):
++def _last_line_int(output: str) -> Optional[int]:
++    """The integer on the last non-empty line of *output*, or None (a backend's error text)."""
++    lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
++    try:
++        return int(lines[-1]) if lines else None
++    except ValueError:
++        return None
++
++
++class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin, ProcessOwnershipMixin,
++                      ProcessHandoffMixin):
+     """In-memory registry of running and finished background processes.
+     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
+     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
+@@ -752,7 +775,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+             now = time.time()
+             with self._lock:
+                 due = [s for s in self._running.values()
+-                       if s.heartbeat_seconds > 0 and not s.exited
++                       if s.heartbeat_seconds > 0 and not s.exited and not s.handed_off
+                        and now - s._heartbeat_last >= s.heartbeat_seconds]
+             for session in due:
+                 self._emit_heartbeat(session, now)
+@@ -1270,16 +1293,18 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+ 
+     def spawn_via_env(
+         self, env: Any, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
+-        timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False) -> ProcessSession:
++        timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False,
++        backend: str = "") -> ProcessSession:
+         """Spawn a background process inside a non-local backend's sandbox.
+         The command is wrapped to capture its in-sandbox PID and redirect output to a
+         log file that later execute() calls poll. No live pipe or stdin, but it runs in
+         the correct sandbox context. ``persist_on_release`` keeps the process out of
+         agent-lifecycle kill sweeps (#41225)."""
+         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
+-                                    persist_on_release=persist_on_release)
++                                    persist_on_release=persist_on_release, backend=backend)
+         temp_dir = self._env_temp_dir(env)
+         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
++        session.env_files = [log_path, pid_path, exit_path]
+         q = shlex.quote
+         bg_command = (
+             f"mkdir -p {q(temp_dir)} && "
+@@ -1416,15 +1441,17 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+     _log_delta_command = staticmethod(log_delta_command)
+ 
+     def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
+-        """Background thread: poll a sandbox log file for non-local backends."""
++        """Background thread: poll a sandbox log file for non-local backends. Reads from
++        ``session.env_offset``, so a reattached session resumes where the last gateway stopped."""
+         q = shlex.quote
+-        # Byte offset already read from the log (bytes, not chars: the shell counts bytes).
+-        prev_output_bytes = 0
+-        while not session.exited:
+-            time.sleep(2)
++        unreachable_since = None
++        while not session.exited and not session.handed_off:
++            time.sleep(ENV_POLL_INTERVAL_SECONDS)
++            if session.handed_off:
++                return
+             try:
+                 # Read only the bytes written since the last poll.
+-                raw = env.execute(self._log_delta_command(q(log_path), prev_output_bytes),
++                raw = env.execute(self._log_delta_command(q(log_path), session.env_offset),
+                                   timeout=10).get("output", "")
+                 header, _, delta = raw.partition("\n")
+                 try:
+@@ -1437,37 +1464,53 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+                     new_size = None
+                     used_offset = None
+                     delta = ""
+-                if new_size is not None:
+-                    if used_offset < prev_output_bytes:
+-                        # Log rotated/truncated: what we hold no longer lines up. Restart.
+-                        with session._lock:
+-                            if session.exited:
+-                                return
++                # A reattached session whose log reads shorter than what was handed over is looking in
++                # the wrong place (its device has not reconnected yet), not at a rotated log.
++                misrouted = new_size is not None and used_offset < session.env_offset and session._reattached
++                if misrouted:
++                    unreachable_since = unreachable_since or time.monotonic()
++                    if time.monotonic() - unreachable_since < ENV_UNREACHABLE_LOST_SECONDS:
++                        continue
++                    self._finish_exited(session, -1, reason="lost", source="backend_lost")
++                    return
++                # A kill that landed after this fetch already published its output snapshot:
++                # leave the output as the kill reported it (as the PTY reader does). A handoff
++                # took the offset: the next gateway reads from there.
++                with session._lock:
++                    if session.exited or session.handed_off:
++                        return
++                    if new_size is not None:
++                        if used_offset < session.env_offset:
++                            # Log rotated/truncated: what we hold no longer lines up. Restart.
+                             session.output_buffer = ""
+-                    prev_output_bytes = new_size
++                        session.env_offset = new_size
++                    if delta:
++                        session._append_locked(delta)
+                 if delta:
+-                    # A kill that landed after this fetch already published its output
+-                    # snapshot: leave the output as the kill reported it (as the PTY reader does).
+-                    with session._lock:
+-                        if session.exited:
+-                            return
+-                        session.output_buffer += delta
+-                        if len(session.output_buffer) > session.max_output_chars:
+-                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                     self._check_watch_patterns(session, delta)
+                     self._emit_output(session, delta)
+ 
+                 check = env.execute(
+                     f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
+-                check_output = check.get("output", "").strip()
+-                if check_output and check_output.splitlines()[-1].strip() != "0":
++                check_output = check.get("output", "")
++                status = _last_line_int(check_output)
++                if status is None and not self._retries_unreachable(session):
++                    if not check_output.strip():
++                        continue
++                    status = 1
++                if status is None:
++                    # A handoff backend that did not answer (a device that is reconnecting): not an exit.
++                    unreachable_since = unreachable_since or time.monotonic()
++                    if time.monotonic() - unreachable_since < ENV_UNREACHABLE_LOST_SECONDS:
++                        continue
++                    self._finish_exited(session, -1, reason="lost", source="backend_lost")
++                    return
++                unreachable_since = None
++                if status != 0:
+                     # Exited -- read the exit code captured by the wrapper shell.
+-                    exit_str = env.execute(f"cat {q(exit_path)} 2>/dev/null", timeout=5).get("output", "").strip()
+-                    try:
+-                        exit_code = int(exit_str.splitlines()[-1].strip())
+-                    except (ValueError, IndexError):
+-                        exit_code = -1
+-                    self._finish_exited(session, exit_code)
++                    exit_str = env.execute(f"cat {q(exit_path)} 2>/dev/null", timeout=5).get("output", "")
++                    exit_code = _last_line_int(exit_str)
++                    self._finish_exited(session, -1 if exit_code is None else exit_code)
+                     return
+             except Exception:
+                 # Environment might be gone (sandbox reaped, etc.). A kill that already
+@@ -1544,6 +1587,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+         Under the session lock, like kill_process's commit: otherwise the kill can land between
+         mark_exited's ``killed`` check and its writes, and the reader overwrites the kill."""
+         with session._lock:
++            if session.handed_off:
++                return
+             session.mark_exited(exit_code, reason, source)
+         self._move_to_finished(session)
+ 
+@@ -1553,6 +1598,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+         the FIRST move enqueues the completion notification, so no duplicates.
+         Returns True when this call is the one that persisted the session."""
+         with self._lock:
++            if session.handed_off:
++                return False
+             was_running = session.id in self._running
+             if was_running:
+                 session._finish_claimed = True
+@@ -2133,6 +2180,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+         session = self.get(session_id)
+         if session is None:
+             return _not_found(session_id)
++        if session.handed_off:
++            return {"status": "handed_off", "session_id": session.id,
++                    "error": "The process was handed to the next gateway; stop it there."}
+         if session.exited:
+             # A double-forked descendant may still be alive in the systemd scope even
+             # though the main process exited — stop the scope to reap survivors.
+@@ -2522,7 +2572,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+             targets = [
+                 s for s in (*self._running.values(), *self._finished.values())
+                 if (task_id is None or s.owner_task_id == task_id)
+-                and s.id not in exclude_ids and (not s.exited or s._scope_stop_pending)
++                and s.id not in exclude_ids and (not s.exited or s._scope_stop_pending) and not s.handed_off
+                 and not (lifecycle and s.persist_on_release)
+             ]
+         results = [self.kill_process(s.id, source=source, consume_output=consume_output) for s in targets]
+diff --git a/tools/process_registry_checkpoint.py b/tools/process_registry_checkpoint.py
+index 176f0c3dab..51b6e454d1 100644
+--- a/tools/process_registry_checkpoint.py
++++ b/tools/process_registry_checkpoint.py
+@@ -57,7 +57,8 @@ class ProcessCheckpointMixin:
+ 
+     def _foreign_handoffs(self, path, known) -> list[dict[str, Any]]:
+         """On-disk worker handoffs this registry never tracked whose log still decides an outcome:
+-        the process is alive (same start time) or its recorded exit is waiting to be read."""
++        the process is alive (same start time) or its recorded exit is waiting to be read; and
++        processes a restarting gateway handed to the next one, which only that one may drop."""
+         from pathlib import Path
+         from tools.process_registry_output_log import _exit_path, adoptable_log
+         try:
+@@ -65,16 +66,17 @@ class ProcessCheckpointMixin:
+         except (OSError, ValueError):
+             return []
+         return [entry for entry in on_disk if isinstance(entry, dict) and entry.get("session_id") not in known
+-                and (log := adoptable_log(entry.get("output_log"))) and Path(log).exists()
+-                and (_exit_path(log).exists() or self._detached_host_fate(
+-                    entry.get("pid"), entry.get("host_start_time")) == "running")]
++                and (entry.get("reattach")
++                     or ((log := adoptable_log(entry.get("output_log"))) and Path(log).exists()
++                         and (_exit_path(log).exists() or self._detached_host_fate(
++                             entry.get("pid"), entry.get("host_start_time")) == "running")))]
+ 
+     def recover_from_checkpoint(self) -> int:
+         """On gateway startup, probe PIDs from the checkpoint file; returns how many
+         were recovered as detached sessions."""
+         from tools.process_registry import (
+             ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
+-            _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
++            _CHECKPOINT_DEFAULTS, _stop_systemd_unit,
+         )
+         from tools.process_registry_output_log import adoptable_log
+ 
+@@ -92,14 +94,20 @@ class ProcessCheckpointMixin:
+         unresolved_scope_entries: list[dict[str, Any]] = []
+         for entry in entries:
+             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
+-            if not pid:
+-                continue
+             # The registry is process-global, so every profile's checkpoint carries every live
+             # process; a multiplexer recovering several homes must adopt each session once.
+             with self._lock:
+                 already_tracked = entry.get("session_id") in self._running
+             if already_tracked:
+                 continue
++            if entry.get("reattach"):
++                # Handed off by the last gateway's graceful restart (terminal.process_handoff_backends).
++                if self.reattach_from_checkpoint(entry):
++                    recovered += 1
++                self._requeue_watcher(entry["session_id"])
++                continue
++            if not pid:
++                continue
+             if pid_scope != "host":  # in-sandbox PIDs mean nothing once the env handle is gone
+                 logger.info(
+                     "Skipping recovery for non-host process: %s (pid=%s, scope=%s)",
+@@ -149,14 +157,21 @@ class ProcessCheckpointMixin:
+             recovered += 1
+             logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
+             # Re-enqueue watcher so gateway can resume notifications
+-            if session.watcher_interval > 0:
+-                self.pending_watchers.append({
+-                    "session_id": session.id,
+-                    "check_interval": session.watcher_interval,
+-                    "session_key": session.session_key,
+-                    **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
+-                    "notify_on_complete": session.notify_on_complete,
+-                    "parent_session_id": session.parent_session_id,
+-                })
++            self._requeue_watcher(session.id)
+         self._write_checkpoint(extra_entries=unresolved_scope_entries)
+         return recovered
++
++    def _requeue_watcher(self, session_id: str) -> None:
++        """Queue the recovered session's watcher for the gateway's startup drain."""
++        from tools.process_registry import _WATCHER_ROUTE_KEYS
++        session = self.get(session_id)
++        if session is None or session.watcher_interval <= 0:
++            return
++        self.pending_watchers.append({
++            "session_id": session.id,
++            "check_interval": session.watcher_interval,
++            "session_key": session.session_key,
++            **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
++            "notify_on_complete": session.notify_on_complete,
++            "parent_session_id": session.parent_session_id,
++        })
+diff --git a/tools/process_registry_handoff.py b/tools/process_registry_handoff.py
+new file mode 100644
+index 0000000000..3274271226
+--- /dev/null
++++ b/tools/process_registry_handoff.py
+@@ -0,0 +1,221 @@
++"""Hand running background processes to the next gateway across a graceful restart.
++
++``terminal.process_handoff_backends`` names the backends whose processes run outside this
++process (a remote shell, a paired device) and so can outlive it. On a restart stop the gateway
++hands those processes off instead of killing them: their state goes into the checkpoint
++(``processes.json``), and the next gateway reattaches them at startup, keeping the process
++session id, its output so far, and its notify_on_complete routing.
++
++Env-backed processes (``terminal(background=true)`` on a non-local backend) are handled here:
++the wrapper writes a log, pid and exit file, so the next gateway only needs the env and the log
++offset. Other processes are handled by providers that plugins register under a backend name
++(:meth:`ProcessHandoffMixin.register_reattach_provider`).
++"""
++
++import contextvars
++import logging
++import time
++from typing import Any, Iterable, Optional
++
++logger = logging.getLogger("tools.process_registry")
++
++# Output already read that the next gateway shows in the completion notice.
++HANDOFF_OUTPUT_TAIL_CHARS = 20_000
++# How long a handoff waits for an env poller that is inside a probe to notice it must stop.
++HANDOFF_POLLER_JOIN_SECONDS = 20.0
++ENV_KIND = "env"
++
++
++def configured_handoff_backends() -> list[str]:
++    """``terminal.process_handoff_backends``: backends whose processes survive a restart."""
++    from hermes_cli.config import cfg_get
++    from tools.process_registry_wait_policy import _effective_config
++    try:
++        value = cfg_get(_effective_config(), "terminal", "process_handoff_backends", default=[]) or []
++    except Exception:
++        logger.debug("terminal.process_handoff_backends unreadable; no process handoff", exc_info=True)
++        return []
++    if isinstance(value, str):
++        value = [value]
++    return [str(name).strip() for name in value if str(name).strip() and str(name).strip() != "local"]
++
++
++class ProcessHandoffMixin:
++    _reattach_providers: Optional[dict] = None
++
++    def register_reattach_provider(self, name: str, provider: Any) -> None:
++        """Register *provider* for processes of backend *name*. It is consulted only when *name*
++        is in ``terminal.process_handoff_backends``. From a worker thread, a graceful restart calls
++        ``prepare()`` (optional) once, ``detach(session)`` per running session (a JSON-safe state
++        dict when the provider owns the process and it keeps running, else None) and ``commit()``
++        (optional). The next gateway's startup calls ``reattach(state)``, which returns a Popen-like
++        handle the registry reads like an adopted process, or None when the process is gone."""
++        if self._reattach_providers is None:
++            self._reattach_providers = {}
++        self._reattach_providers[name] = provider
++
++    def hand_off_for_restart(self, backends: Iterable[str]) -> int:
++        """Hand every running process of *backends* to the next gateway; returns how many.
++        A handed-off session stays in the running table (so the checkpoint keeps it) but this
++        process never finishes, kills or reports it again."""
++        backends = {name for name in backends if name}
++        if not backends:
++            return 0
++        providers = {name: p for name, p in (self._reattach_providers or {}).items() if name in backends}
++        for name, provider in providers.items():
++            self._call_provider(name, provider, "prepare")
++        with self._lock:
++            candidates = [s for s in self._running.values() if not s.exited and not s.handed_off]
++        self._stop_env_pollers([s for s in candidates if self._env_handoff(s, backends)])
++        handed = 0
++        for session in candidates:
++            state = self._detach_session(session, backends, providers)
++            if state is None:
++                continue
++            with session._lock:
++                if session.exited:
++                    continue
++                state["output_tail"] = session.output_buffer[-HANDOFF_OUTPUT_TAIL_CHARS:]
++                state["total_output_chars"] = session.total_output_chars
++                session.reattach = state
++                session.handed_off = True
++            handed += 1
++        for name, provider in providers.items():
++            self._call_provider(name, provider, "commit")
++        self._write_checkpoint()
++        if handed:
++            logger.info("Handed %d background process(es) to the next gateway", handed)
++        return handed
++
++    @staticmethod
++    def _call_provider(name: str, provider: Any, method: str, *args) -> Any:
++        fn = getattr(provider, method, None)
++        if not callable(fn):
++            return None
++        try:
++            return fn(*args)
++        except Exception:
++            logger.warning("Process handoff provider %s.%s failed", name, method, exc_info=True)
++            return None
++
++    @staticmethod
++    def _retries_unreachable(session) -> bool:
++        """An env probe that is not an exit status means "not reachable now" only for a backend
++        that hands processes off (a device reconnects); elsewhere it reads as an exit, as before."""
++        return bool(session.backend) and session.backend in configured_handoff_backends()
++
++    @staticmethod
++    def _env_handoff(session, backends) -> bool:
++        return session.env_ref is not None and session.backend in backends and len(session.env_files) == 3
++
++    @staticmethod
++    def _stop_env_pollers(sessions) -> None:
++        """Stop every env poller at once, then wait for them together under one deadline. An exit a
++        poller sees from now on stays in the exit file for the next gateway to read."""
++        stopping = []
++        for session in sessions:
++            with session._lock:
++                if session.exited:
++                    continue
++                session.handed_off = True
++            stopping.append(session)
++        deadline = time.monotonic() + HANDOFF_POLLER_JOIN_SECONDS
++        for session in stopping:
++            reader = session._reader_thread
++            if reader is not None and reader.is_alive():
++                reader.join(max(0.0, deadline - time.monotonic()))
++
++    def _detach_session(self, session, backends, providers) -> Optional[dict]:
++        if self._env_handoff(session, backends):
++            with session._lock:
++                if session.exited or not session.handed_off:
++                    return None
++                return {"kind": ENV_KIND, "backend": session.backend, "files": list(session.env_files),
++                        "offset": session.env_offset}
++        for name, provider in providers.items():
++            state = self._call_provider(name, provider, "detach", session)
++            if isinstance(state, dict):
++                return {**state, "kind": name}
++        return None
++
++    def reattach_from_checkpoint(self, entry: dict) -> bool:
++        """Rebuild a session the last gateway handed off. True when it runs on here; a process
++        that cannot be reattached is reported once as lost, so its owner still hears about it."""
++        from tools.process_registry import ProcessSession, _CHECKPOINT_DEFAULTS, _CHECKPOINT_FIELDS
++        state = dict(entry.get("reattach") or {})
++        fields = {f: entry.get(f, _CHECKPOINT_DEFAULTS[f]) for f in _CHECKPOINT_FIELDS}
++        fields.update(
++            command=entry.get("command", "unknown"),
++            owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
++            started_at=entry.get("started_at", time.time()), reattach={})
++        session = ProcessSession(id=entry["session_id"], **fields)
++        session.output_buffer = str(state.get("output_tail") or "")[-session.max_output_chars:]
++        session.total_output_chars = int(state.get("total_output_chars") or len(session.output_buffer))
++        session._heartbeat_total_at_last = session.total_output_chars
++        session._reattached = True
++        kind = state.get("kind")
++        try:
++            if kind == ENV_KIND:
++                started = self._reattach_env_session(session, state)
++            else:
++                started = self._reattach_provider_session(session, kind, state)
++        except Exception:
++            logger.warning("Could not reattach process %s (%s)", session.id, kind, exc_info=True)
++            started = False
++        if not started:
++            with self._lock:
++                self._running[session.id] = session
++            self._finish_exited(session, -1, reason="lost", source="handoff_lost")
++            logger.info("Handed-off process %s could not be reattached; reported lost", session.id)
++        else:
++            logger.info("Reattached handed-off process %s (%s)", session.id, kind)
++        if session.heartbeat_seconds > 0 and started:
++            self.arm_heartbeat(session, session.heartbeat_seconds)
++        return started
++
++    def _reattach_env_session(self, session, state: dict) -> bool:
++        files = state.get("files") or []
++        backend = state.get("backend") or ""
++        if len(files) != 3 or not backend:
++            return False
++        env = _environment_for(backend, session)
++        session.env_ref = env
++        session.pid_scope = "sandbox"
++        session.backend = backend
++        session.env_files = list(files)
++        session.env_offset = int(state.get("offset") or 0)
++        context = contextvars.Context()
++        context.run(_bind_session_context, session.parent_session_id)
++        context.run(self._track_started, session, self._env_poller_loop, f"proc-poller-{session.id}", (env, *files))
++        return True
++
++    def _reattach_provider_session(self, session, kind, state: dict) -> bool:
++        provider = (self._reattach_providers or {}).get(kind)
++        if provider is None:
++            return False
++        handle = provider.reattach(state)
++        if handle is None:
++            return False
++        session.process = handle
++        session.pid = getattr(handle, "pid", None)
++        session.backend = kind
++        self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
++        return True
++
++
++def _bind_session_context(session_id: str) -> None:
++    """Env backends that route by the spawning conversation (a device binding) read it here."""
++    if not session_id:
++        return
++    from gateway.session_context import _SESSION_ID
++    _SESSION_ID.set(session_id)
++
++
++def _environment_for(backend: str, session) -> Any:
++    """A fresh environment of *backend* for polling a handed-off process's files."""
++    from tools.terminal_tool import _get_env_config, _select_image
++    from tools.terminal_tool_lifecycle import _create_configured_env
++    config = _get_env_config()
++    return _create_configured_env(
++        config, backend, image=_select_image(backend, {}, config), cwd=session.cwd or config["cwd"],
++        timeout=config["timeout"], task_id=session.task_id or "default", host_cwd=None)
+diff --git a/tools/terminal_tool_background.py b/tools/terminal_tool_background.py
+index 368d71d48e..54debb2f05 100644
+--- a/tools/terminal_tool_background.py
++++ b/tools/terminal_tool_background.py
+@@ -101,7 +101,7 @@ def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id,
+         return process_registry.spawn_local(
+             env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty,
+             restore_login_path=True, **common)
+-    return process_registry.spawn_via_env(env=env, **common)
++    return process_registry.spawn_via_env(env=env, backend=env_type, **common)
+ 
+ 
+ def _apply_async_support(proc_session, result_data, notify_on_complete, watch_patterns):
+diff --git a/website/docs/user-guide/features/tools.md b/website/docs/user-guide/features/tools.md
+index 1eafeebdd5..5d732b2c5a 100644
+--- a/website/docs/user-guide/features/tools.md
++++ b/website/docs/user-guide/features/tools.md
+@@ -284,6 +284,29 @@ backends that cannot hand a running command over, the command keeps today's
+ behavior and runs in the foreground until it exits or times out. A value at or
+ above the command's timeout has no effect.
+ 
++### Background processes across a gateway restart
++
++A gateway that stops kills its background processes. On a graceful restart
++(`hermes gateway restart`, `SIGUSR1`, or `SIGTERM` with
++`gateway.sigterm_restart_wait`) it can instead hand the processes of chosen
++backends to the next gateway:
++
++```yaml
++terminal:
++  process_handoff_backends: [ssh]   # [] (default) = stop them all
++```
++
++The processes keep running. The next gateway that starts on the same
++`HERMES_HOME` reattaches them: it keeps reading their output from where the
++old one stopped, keeps the same `session_id`, and still delivers the
++`notify_on_complete` notice to the chat that started them. Background
++processes started with `background=true` on a non-local backend are handed off
++by Hermes itself; a plugin backend can hand off its own processes by
++registering a reattach provider. Processes on the local backend run inside the
++gateway's host or container and always stop with it, so run long jobs on a
++listed backend when the gateway may restart. A process that the next gateway
++cannot reattach is reported once as `lost`.
++
+ ### Repeated waits on a quiet process
+ 
+ When the agent calls `process(action="wait")` or `process(action="poll")` twice in a row on a
