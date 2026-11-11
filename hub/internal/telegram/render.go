@@ -129,6 +129,9 @@ type renderer struct {
 	// pageURL is the hub URL that opens a page of the session: a PageID or
 	// the path of an HTML file.
 	pageURL func(ref string) string
+	// stepsSnap keeps the steps so far of the running turn for the Steps
+	// button of its status line, and forgets them with "". Nil: no button.
+	stepsSnap func(msgID int64, html string)
 
 	turn   *turnStatus
 	answer strings.Builder
@@ -269,9 +272,46 @@ func (r *renderer) refresh(ctx context.Context) {
 	}
 	if !t.msg.lastEdit.IsZero() && r.now().Sub(t.msg.lastEdit) < r.interval {
 		t.msg.dirty, t.msg.pending = true, ""
+		r.snapSteps()
 		return
 	}
-	r.update(ctx, &t.msg, r.statusHTML(false))
+	r.running(ctx)
+}
+
+// running shows the status line of the running turn: one line with the
+// Steps button. Telegram folds an expandable quote again on every edit of
+// its message, so the steps go to a message of their own on request.
+func (r *renderer) running(ctx context.Context) {
+	r.update(ctx, &r.turn.msg, r.statusHTML(false), r.stepsButton())
+	r.snapSteps()
+}
+
+func (r *renderer) stepsButton() *InlineKeyboard {
+	if r.stepsSnap == nil || r.steps == StepsOff {
+		return nil
+	}
+	return &InlineKeyboard{InlineKeyboard: [][]InlineButton{{{Text: "Steps", CallbackData: cbSteps}}}}
+}
+
+// snapSteps hands the steps so far to the Steps button.
+func (r *renderer) snapSteps() {
+	t := r.turn
+	if r.stepsSnap == nil || r.steps == StepsOff || t == nil || t.msg.id == 0 {
+		return
+	}
+	details := r.details()
+	if details == "" {
+		details = "No steps yet."
+	}
+	r.stepsSnap(t.msg.id, "<i>Steps so far ("+duration(r.now().Sub(t.start))+")</i>\n"+r.quote(details))
+}
+
+// quote is details in a quote that telegram.steps opens or folds.
+func (r *renderer) quote(details string) string {
+	if r.steps == StepsExpanded {
+		return "<blockquote>" + details + "</blockquote>"
+	}
+	return "<blockquote expandable>" + details + "</blockquote>"
 }
 
 // endTurn shows the status line of the turn as done and forgets the turn.
@@ -279,7 +319,10 @@ func (r *renderer) endTurn(ctx context.Context) {
 	if r.turn == nil {
 		return
 	}
-	r.update(ctx, &r.turn.msg, r.statusHTML(true))
+	if r.stepsSnap != nil && r.turn.msg.id != 0 {
+		r.stepsSnap(r.turn.msg.id, "")
+	}
+	r.update(ctx, &r.turn.msg, r.statusHTML(true), nil)
 	r.turn = nil
 }
 
@@ -370,46 +413,38 @@ func duration(d time.Duration) string {
 	return fmt.Sprintf("%dh %dm", s/3600, s%3600/60)
 }
 
-// statusHTML is the status line: what runs now and how far the turn got,
-// or, when final, what the turn did. The steps and the thinking follow
-// in a quote that telegram.steps opens, folds or leaves out.
+// statusHTML is the status line. While the turn runs it is one line: what
+// runs now, the steps so far, the time and the tokens, such as "Running
+// terminal go test ./... · 5 steps · 1m 12s · 14k in, 1k out", with no
+// quote, since every edit folds an opened quote again. When final it says
+// what the turn did, with the steps and the thinking in a quote that
+// telegram.steps opens, folds or leaves out.
 func (r *renderer) statusHTML(final bool) string {
 	t := r.turn
 	elapsed := duration(r.now().Sub(t.start))
-	sum := t.summary()
 	used := t.tokenText()
-	var b strings.Builder
-	switch {
-	case final && sum == "":
-		b.WriteString("<i>Thought for " + elapsed + used + "</i>")
-	case final:
-		b.WriteString("<i>Worked for " + elapsed + ": " + escapeHTML(sum) + used + "</i>")
-	default:
+	if !final {
+		var b strings.Builder
 		if len(t.running) > 0 {
-			id := t.running[len(t.running)-1]
-			b.WriteString("<b>Running</b> " + t.tools[id])
-			if line := t.progress[id]; line != "" {
-				b.WriteString("\n<i>" + escapeHTML(line) + "</i>")
-			}
+			b.WriteString("<b>Running</b> " + t.tools[t.running[len(t.running)-1]])
 		} else {
 			b.WriteString("<b>Thinking…</b>")
-			if t.thinking != "" {
-				b.WriteString("\n<i>" + escapeHTML(t.thinking) + "</i>")
-			}
 		}
-		meta := elapsed
-		if sum != "" {
-			meta = sum + " (" + elapsed + ")"
+		if n := len(t.steps); n > 0 {
+			b.WriteString(" · " + plural(n, "step", "steps"))
 		}
-		meta += used
-		b.WriteString("\n<i>" + escapeHTML(meta) + "</i>")
+		b.WriteString(" · " + elapsed + used)
+		return b.String()
+	}
+	sum := t.summary()
+	var b strings.Builder
+	if sum == "" {
+		b.WriteString("<i>Thought for " + elapsed + used + "</i>")
+	} else {
+		b.WriteString("<i>Worked for " + elapsed + ": " + escapeHTML(sum) + used + "</i>")
 	}
 	if details := r.details(); details != "" {
-		tag := "<blockquote expandable>"
-		if r.steps == StepsExpanded {
-			tag = "<blockquote>"
-		}
-		b.WriteString("\n" + tag + details + "</blockquote>")
+		b.WriteString("\n" + r.quote(details))
 	}
 	return b.String()
 }
@@ -459,21 +494,23 @@ func fitTail(s string, room int) string {
 // update shows html in m: a new message when m has none yet, an edit when
 // the interval allows or force is set, and otherwise a pending edit for
 // flushDue.
-func (r *renderer) update(ctx context.Context, m *liveMsg, html string) {
+// update sends or edits a live message with the buttons of kb; an edit
+// without kb takes the buttons away.
+func (r *renderer) update(ctx context.Context, m *liveMsg, html string, kb *InlineKeyboard) {
 	if m.id == 0 {
-		m.id = r.send(ctx, html, nil)
+		m.id = r.send(ctx, html, kb)
 		m.lastEdit = r.now()
 		m.dirty = m.id == 0
 		return
 	}
-	r.edit(ctx, m, html)
+	r.edit(ctx, m, html, kb)
 }
 
-func (r *renderer) edit(ctx context.Context, m *liveMsg, html string) {
+func (r *renderer) edit(ctx context.Context, m *liveMsg, html string, kb *InlineKeyboard) {
 	m.dirty = false
 	m.pending = ""
 	m.lastEdit = r.now()
-	if err := r.api.EditHTML(ctx, r.to.chat, m.id, html, nil); err != nil {
+	if err := r.api.EditHTML(ctx, r.to.chat, m.id, html, kb); err != nil {
 		r.logger.Warn("Failed to edit message", "message", m.id, "error", err)
 	}
 }
@@ -522,13 +559,13 @@ func (r *renderer) nextFlush() (time.Duration, bool) {
 
 func (r *renderer) flushDue(ctx context.Context) {
 	if t := r.turn; t != nil && t.msg.dirty && r.now().Sub(t.msg.lastEdit) >= r.interval {
-		r.update(ctx, &t.msg, r.statusHTML(false))
+		r.running(ctx)
 	}
 }
 
 func (r *renderer) flushAll(ctx context.Context) {
 	if t := r.turn; t != nil && t.msg.dirty {
-		r.update(ctx, &t.msg, r.statusHTML(false))
+		r.running(ctx)
 	}
 }
 

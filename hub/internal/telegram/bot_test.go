@@ -492,3 +492,80 @@ func TestStatusLineCountsTokens(t *testing.T) {
 		t.Fatalf("final status without input = %q", final.text())
 	}
 }
+
+// TestRunningStatusHasNoQuote checks that the status line edited while a
+// turn runs never holds an expandable quote, which Telegram folds again on
+// every edit, and that its Steps button sends the steps as a new message.
+func TestRunningStatusHasNoQuote(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindReasoningDelta, map[string]any{kText: "plan the fix"})
+	status := h.tg.wait(mSend, "Thinking…")
+	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t1", kName: toolTerminal, kContext: "go test ./..."})
+	h.tg.wait(mEdit, "<b>Running</b> <b>terminal</b> <code>go test ./...</code>")
+	h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{kToolID: "t1", kName: toolTerminal, "summary": "ok"})
+	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t2", kName: toolPatch, kContext: "main.go"})
+	running := h.tg.wait(mEdit, "1 step · ")
+	btns := running.buttons()
+	if len(btns) != 1 || btns[0][kText] != "Steps" {
+		t.Fatalf("running status buttons = %v", btns)
+	}
+	h.tg.press(dm(aliceTG), aliceTG, status.ResultID, data(btns[0]))
+	snap := h.tg.wait(mSend, "Steps so far")
+	if snap.ResultID == status.ResultID || !strings.Contains(snap.text(), "<blockquote expandable>") ||
+		!strings.Contains(snap.text(), "✓ <b>terminal</b> <code>go test ./...</code> ok") || !strings.Contains(snap.text(), "plan the fix") {
+		t.Fatalf("steps message = %q", snap.text())
+	}
+	h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{kToolID: "t2", kName: toolPatch})
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "Fixed.", kStatus: statusComplete})
+	final := h.tg.wait(mEdit, "Worked for")
+	if !strings.Contains(final.text(), "<blockquote expandable>") || len(final.buttons()) != 0 {
+		t.Fatalf("final status = %q, buttons %v", final.text(), final.buttons())
+	}
+	for _, c := range h.tg.snapshot() {
+		if c.ResultID == status.ResultID || (c.Method == mEdit && c.messageID() == status.ResultID && c.text() != final.text()) {
+			if strings.Contains(c.text(), "blockquote") {
+				t.Fatalf("running status holds a quote: %q", c.text())
+			}
+		}
+	}
+	h.tg.press(dm(aliceTG), aliceTG, status.ResultID, cbStepsData)
+	h.tg.wait(mAnswer, "This turn is done")
+	for _, c := range h.tg.snapshot() {
+		if c.Method == mEdit && c.messageID() == status.ResultID && c.At.After(final.At) {
+			t.Fatalf("status edited after the final summary: %q", c.text())
+		}
+	}
+}
+
+// cbStepsData is the callback data of the Steps button, toolPatch a
+// tool that edits a file.
+const (
+	cbStepsData = "ss"
+	toolPatch   = "patch"
+)
+
+func TestFinalStepsExpanded(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, func(c *telegram.Config) { c.Steps = telegram.StepsExpanded })
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t1", kName: "read_file", kContext: "a.go"})
+	h.tg.wait(mSend, "Running")
+	h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{kToolID: "t1", kName: "read_file"})
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "Read.", kStatus: statusComplete})
+	final := h.tg.wait(mEdit, "Worked for")
+	if !strings.Contains(final.text(), "<blockquote>✓") || strings.Contains(final.text(), "expandable") {
+		t.Fatalf("final status = %q", final.text())
+	}
+}
+
+func TestNoStepsButtonWhenStepsOff(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, func(c *telegram.Config) { c.Steps = telegram.StepsOff })
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t1", kName: toolTerminal, kContext: "ls"})
+	if s := h.tg.wait(mSend, "Running"); len(s.buttons()) != 0 {
+		t.Fatalf("buttons with steps off = %v", s.buttons())
+	}
+}

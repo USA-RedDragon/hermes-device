@@ -37,8 +37,10 @@ const (
 	linkPath    = "/link/telegram"
 	// cbApproval prefixes the prompt buttons of an attached chat. It is not
 	// the "ap" of older hubs, whose buttons meant allow and deny.
-	cbApproval   = "pa"
-	cbAttach     = "at"
+	cbApproval = "pa"
+	cbAttach   = "at"
+	// cbSteps is the Steps button of a running turn's status line.
+	cbSteps      = "ss"
 	untitledName = "(untitled)"
 	cmdLink      = "link"
 	cmdSkip      = "skip"
@@ -141,6 +143,9 @@ type Bot struct {
 	gone map[dest]bool
 	// claudes are the Claude sign-in messages whose reply is the code.
 	claudes map[msgKey]claudePrompt
+	// steps are the steps so far of each running turn, by its status
+	// message, for that message's Steps button.
+	steps map[msgKey]string
 }
 
 type chatState struct {
@@ -232,12 +237,12 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		now:       time.Now,
 		chats:     make(map[dest]*chatState),
 		forums:    make(map[int64]*forum),
-		approvals: make(map[string]*pendingApproval),
-		picks:     make(map[string][]bool),
-		replies:   make(map[msgKey]replyTarget),
-		shown:     make(map[msgKey]shownNotice),
-		gone:      make(map[dest]bool),
-		claudes:   make(map[msgKey]claudePrompt),
+		approvals: make(map[string]*pendingApproval), steps: make(map[msgKey]string),
+		picks:   make(map[string][]bool),
+		replies: make(map[msgKey]replyTarget),
+		shown:   make(map[msgKey]shownNotice),
+		gone:    make(map[dest]bool),
+		claudes: make(map[msgKey]claudePrompt),
 	}
 	for _, id := range cfg.AllowedGroups {
 		b.groups[id] = true
@@ -942,6 +947,7 @@ func (b *Bot) pump(a *attachment) {
 	r.expire = b.expireApproval
 	r.shown = func(n int) { a.prompts.Store(int64(n)) }
 	r.gone = func() { b.topicGone(a.to) }
+	r.stepsSnap = func(msgID int64, html string) { b.setSteps(msgKey{a.to.chat, msgID}, html) }
 	if pr, ok := b.svc.(hub.Prompter); ok {
 		r.pending = func(ctx context.Context, id string) bool {
 			cctx, cancel := context.WithTimeout(ctx, callTimeout)
@@ -1041,6 +1047,8 @@ func (b *Bot) handleCallback(ctx context.Context, q *CallbackQuery) {
 			return
 		}
 		b.pressPrompt(ctx, q, user, t, parts[2])
+	case len(parts) == 1 && parts[0] == cbSteps:
+		b.sendSteps(ctx, q, to)
 	case len(parts) == 2 && parts[0] == cbRelease && b.computers != nil:
 		b.confirmRelease(ctx, q, to, user, parts[1])
 	case len(parts) == 3 && parts[0] == cbAttach:
@@ -1182,4 +1190,32 @@ func (b *Bot) unreachable(ctx context.Context, user string) []string {
 		}
 	}
 	return names
+}
+
+// setSteps keeps the steps so far of the turn whose status line is k; ""
+// forgets them when the turn ends.
+func (b *Bot) setSteps(k msgKey, html string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if html == "" {
+		delete(b.steps, k)
+		return
+	}
+	b.steps[k] = html
+}
+
+// sendSteps answers a Steps button with a new message of the steps so far.
+// That message is never edited, so a quote opened in it stays open.
+func (b *Bot) sendSteps(ctx context.Context, q *CallbackQuery, to dest) {
+	b.mu.Lock()
+	html, ok := b.steps[msgKey{to.chat, q.Message.MessageID}]
+	b.mu.Unlock()
+	if !ok {
+		b.answer(ctx, q.ID, "This turn is done. Its steps are in the summary.")
+		return
+	}
+	b.answer(ctx, q.ID, "")
+	if _, err := sendHTMLErr(ctx, b.api, b.logger, to, html, nil); err != nil {
+		b.logger.Warn("Failed to send the steps", "chat", to.chat, "error", err)
+	}
 }
