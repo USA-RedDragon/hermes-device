@@ -143,6 +143,7 @@ window.HubUsage = (ctx) => {
   let shown = false;
   let gen = 0;
   let ccPanel = null;
+  let ccDays = null;
   // ranges are the page's time ranges; every panel follows the one picked.
   const ranges = [[1, "Today"], [7, "Last 7 days"], [30, "Last 30 days"], ["mtd", "This month"], [90, "Last 90 days"]];
   const ccRange = { 1: "today", 7: "7d", 30: "30d", mtd: "mtd", 90: "90d" };
@@ -202,7 +203,7 @@ window.HubUsage = (ctx) => {
       o.selected = d === days;
       range.append(o);
     }
-    range.onchange = () => { days = range.value === "mtd" ? "mtd" : Number(range.value); ccPanel = null; setHash(); load(backends); };
+    range.onchange = () => { days = range.value === "mtd" ? "mtd" : Number(range.value); setHash(); load(backends); };
     const again = el("button", "", "Refresh");
     again.type = "button";
     again.onclick = () => { ccPanel = null; load(backends); };
@@ -216,7 +217,11 @@ window.HubUsage = (ctx) => {
     root.replaceChildren(head(backends), body);
     // The Claude Code panel is the user's, not the backend's: it stays
     // when the Hermes changes.
-    if (!ccPanel && ctx.claudeCodePanel) ccPanel = ctx.claudeCodePanel(ccRange[days]);
+    if (ccPanel && ccDays !== days) ccPanel = null;
+    if (!ccPanel && ctx.claudeCodePanel) {
+      ccPanel = ctx.claudeCodePanel(ccRange[days]);
+      ccDays = days;
+    }
     const code = ccPanel ? [ccPanel] : [];
     if (!backend) {
       body.append(...code, el("p", "none", "No assistant is set up for you yet."));
