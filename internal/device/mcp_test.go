@@ -3,10 +3,13 @@ package device_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/USA-RedDragon/hermes-device/internal/device"
 	"github.com/USA-RedDragon/hermes-device/internal/mcp"
 	"github.com/USA-RedDragon/hermes-device/internal/mcp/mcptest"
 	"github.com/USA-RedDragon/hermes-device/protocol"
@@ -138,4 +141,109 @@ func TestMCPWithoutCapability(t *testing.T) {
 	if m.List()[0].Running {
 		t.Error("server started on a leg without the capability")
 	}
+}
+
+// Busy covers commands until the plugin confirms their exit, and MCP calls
+// in flight. Drain refuses only while the device is idle, and then refuses
+// new work.
+func TestBusyAndDrain(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	step := make(chan string)
+	next := make(chan struct{})
+	f := &fakeHub{capabilities: []string{protocol.CapabilityMCP}, handler: func(ctx context.Context, conn *websocket.Conn, _ protocol.Hello) {
+		msgs := make(chan []byte, 64)
+		go func() {
+			defer close(msgs)
+			for {
+				typ, data, err := readMsg(ctx, conn)
+				if err != nil {
+					return
+				}
+				if typ == protocol.TypePing {
+					var p protocol.Ping
+					_ = json.Unmarshal(data, &p)
+					writeJSON(ctx, conn, protocol.Ping{Type: protocol.TypePong, Seq: p.Seq})
+					continue
+				}
+				msgs <- data
+			}
+		}()
+		await := func(typ, id string) map[string]any {
+			for data := range msgs {
+				var m map[string]any
+				_ = json.Unmarshal(data, &m)
+				if m["type"] == typ && m["id"] == id {
+					return m
+				}
+			}
+			return nil
+		}
+		writeJSON(ctx, conn, protocol.Exec{Type: protocol.TypeExec, ID: "1", Cmd: "sleep 0.5", Cwd: root, Timeout: 10})
+		step <- "exec"
+		<-next
+		await(protocol.TypeExit, "1")
+		step <- "exited"
+		<-next
+		writeJSON(ctx, conn, protocol.MCP{Type: protocol.TypeMCP, ID: "in-flight", Op: protocol.MCPOpCall, Server: serverFake, Tool: mcptest.ToolSlow, Timeout: 0.5})
+		step <- "mcp"
+		<-next
+		await(protocol.TypeMCPResult, "in-flight")
+		step <- "mcp done"
+		<-next
+		writeJSON(ctx, conn, protocol.Exec{Type: protocol.TypeExec, ID: "2", Cmd: "true", Cwd: root, Timeout: 10})
+		writeJSON(ctx, conn, protocol.MCP{Type: protocol.TypeMCP, ID: "after-drain", Op: protocol.MCPOpList})
+		if e := await(protocol.TypeExit, "2"); e["code"] != float64(protocol.ExitRefused) || !strings.Contains(fmt.Sprint(e["error"]), "restarting for an update") {
+			t.Errorf("exec after drain = %v", e)
+		}
+		if r := await(protocol.TypeMCPResult, "after-drain"); r["ok"] == true || !strings.Contains(fmt.Sprint(r["error"]), "restarting for an update") {
+			t.Errorf("MCP after drain = %v", r)
+		}
+		step <- "refused"
+		<-ctx.Done()
+	}}
+	opts := options(t, serve(t, f).URL, root)
+	opts.MCP = fakeMCP(t)
+	opts.PingInterval = 50 * time.Millisecond
+	c, err := device.New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	expect := func(want string) {
+		t.Helper()
+		select {
+		case got := <-step:
+			if got != want {
+				t.Fatalf("step %q, want %q", got, want)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatalf("timed out waiting for %s", want)
+		}
+	}
+	expect("exec")
+	waitFor(t, "the command to register", c.Busy)
+	if c.Drain() {
+		t.Fatal("Drain with a running command")
+	}
+	next <- struct{}{}
+	expect("exited")
+	waitFor(t, "the plugin to confirm the exit", func() bool { return !c.Busy() })
+	next <- struct{}{}
+	expect("mcp")
+	waitFor(t, "the MCP call to start", c.Busy)
+	if c.Drain() {
+		t.Fatal("Drain with an MCP call in flight")
+	}
+	next <- struct{}{}
+	expect("mcp done")
+	waitFor(t, "the MCP call to end", func() bool { return !c.Busy() })
+	if !c.Drain() {
+		t.Fatal("Drain refused an idle device")
+	}
+	next <- struct{}{}
+	expect("refused")
 }

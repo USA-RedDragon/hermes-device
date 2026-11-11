@@ -142,7 +142,54 @@ type Client struct {
 	cmds      map[string]*command
 	parkGen   uint64
 	parkTimer *time.Timer
+
+	// calls counts browser operations and MCP calls in flight. draining
+	// refuses new work once Drain found the device idle.
+	calls    atomic.Int64
+	draining atomic.Bool
 }
+
+// drainingMessage ends the refusal of work that arrives after Drain.
+const drainingMessage = "is restarting for an update; try again in a few seconds"
+
+// Busy reports whether the device holds a command (running, or with
+// output or an exit the plugin has not confirmed), or runs a browser
+// operation or an MCP call.
+func (c *Client) Busy() bool {
+	c.mu.Lock()
+	n := len(c.cmds)
+	c.mu.Unlock()
+	return n > 0 || c.calls.Load() > 0
+}
+
+// Drain reports whether the device is idle and, when it is, refuses all
+// new commands, browser operations and MCP calls from then on, so that the
+// daemon can stop without cutting off work. When it returns false nothing
+// changes.
+func (c *Client) Drain() bool {
+	if c.Busy() {
+		return false
+	}
+	c.draining.Store(true)
+	if c.Busy() {
+		c.draining.Store(false)
+		return false
+	}
+	return true
+}
+
+// beginCall counts a browser operation or MCP call in flight. It returns
+// false, counting nothing, once the device drains.
+func (c *Client) beginCall() bool {
+	c.calls.Add(1)
+	if c.draining.Load() {
+		c.calls.Add(-1)
+		return false
+	}
+	return true
+}
+
+func (c *Client) endCall() { c.calls.Add(-1) }
 
 // New returns a client. It refuses to run on Windows.
 func New(opts Options) (*Client, error) {
@@ -1003,11 +1050,19 @@ func (c *Client) finished(cmd *command, exit protocol.Exit) {
 func (c *Client) exec(ctx context.Context, s *session, req protocol.Exec) {
 	cmd := &command{id: req.ID, link: s, max: c.opts.ResumeBuffer}
 	c.mu.Lock()
+	draining := c.draining.Load()
 	_, dup := c.cmds[req.ID]
-	if !dup {
+	if !dup && !draining {
 		c.cmds[req.ID] = cmd
 	}
 	c.mu.Unlock()
+	if draining {
+		s.sendCmd(ctx, protocol.Exit{
+			Type: protocol.TypeExit, ID: req.ID, Code: protocol.ExitRefused,
+			Error: fmt.Sprintf("device %s refused: it %s", s.name, drainingMessage),
+		})
+		return
+	}
 	if dup {
 		s.sendCmd(ctx, protocol.Exit{
 			Type: protocol.TypeExit, ID: req.ID, Code: protocol.ExitRefused,
@@ -1111,6 +1166,10 @@ func (s *session) browserCall(ctx context.Context, req protocol.Browser) {
 		timeout = protocol.BrowserDefaultTimeout
 	}
 	timeout = min(timeout, protocol.BrowserMaxTimeout)
+	if !s.c.beginCall() {
+		fail(protocol.BrowserRefused, fmt.Sprintf("device %s refused: it %s", s.name, drainingMessage))
+		return
+	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	s.bmu.Lock()
 	_, dup := s.calls[req.ID]
@@ -1120,6 +1179,7 @@ func (s *session) browserCall(ctx context.Context, req protocol.Browser) {
 	s.bmu.Unlock()
 	if dup {
 		cancel()
+		s.c.endCall()
 		fail(protocol.BrowserRefused, fmt.Sprintf("device %s refused: request id %q is already running", s.name, req.ID))
 		return
 	}
@@ -1128,6 +1188,7 @@ func (s *session) browserCall(ctx context.Context, req protocol.Browser) {
 		args = json.RawMessage("{}")
 	}
 	s.wg.Go(func() {
+		defer s.c.endCall()
 		defer cancel()
 		res, err := s.c.opts.Browser.Call(cctx, req.Op, args)
 		s.bmu.Lock()
@@ -1184,6 +1245,10 @@ func (s *session) browserStart(ctx context.Context, req protocol.BrowserStart) {
 		timeout = protocol.BrowserDefaultTimeout
 	}
 	timeout = min(timeout, protocol.BrowserMaxTimeout)
+	if !s.c.beginCall() {
+		fail(protocol.BrowserRefused, fmt.Sprintf("device %s refused: it %s", s.name, drainingMessage))
+		return
+	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	s.bmu.Lock()
 	if s.starts == nil {
@@ -1196,10 +1261,12 @@ func (s *session) browserStart(ctx context.Context, req protocol.BrowserStart) {
 	s.bmu.Unlock()
 	if dup {
 		cancel()
+		s.c.endCall()
 		fail(protocol.BrowserRefused, fmt.Sprintf("device %s refused: request id %q is already running", s.name, req.ID))
 		return
 	}
 	s.wg.Go(func() {
+		defer s.c.endCall()
 		defer cancel()
 		defer func() {
 			s.bmu.Lock()

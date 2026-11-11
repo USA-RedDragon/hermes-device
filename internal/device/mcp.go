@@ -60,6 +60,10 @@ func (s *session) mcpRequest(ctx context.Context, data []byte) {
 		timeout = protocol.MCPDefaultTimeout
 	}
 	timeout = min(timeout, protocol.MCPMaxTimeout)
+	if !s.c.beginCall() {
+		refuse("it " + drainingMessage)
+		return
+	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	s.bmu.Lock()
 	_, dup := s.mcpCalls[req.ID]
@@ -69,10 +73,12 @@ func (s *session) mcpRequest(ctx context.Context, data []byte) {
 	s.bmu.Unlock()
 	if dup {
 		cancel()
+		s.c.endCall()
 		refuse(fmt.Sprintf("request id %q is already running", cut(req.ID, 64)))
 		return
 	}
 	s.wg.Go(func() {
+		defer s.c.endCall()
 		defer cancel()
 		res, err := s.runMCP(cctx, req)
 		s.bmu.Lock()
