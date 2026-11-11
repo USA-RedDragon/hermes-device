@@ -100,6 +100,8 @@ type fakeTelegram struct {
 	// topicErr is the error description Telegram gives each topic method,
 	// such as deleteForumTopic.
 	topicErr map[string]string
+	// dmTopics is what getMe says of topics in private chats.
+	dmTopics bool
 }
 
 func newFakeTelegram(t *testing.T) *fakeTelegram {
@@ -194,7 +196,11 @@ func (f *fakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	member := f.member
 	f.mu.Unlock()
+	dmTopics := f.dmTopics
 	switch method {
+	case "getMe":
+		f.reply(w, map[string]any{"ok": true, kResult: map[string]any{"id": 123, "is_bot": true, "first_name": "Talaria",
+			"username": botName, "has_topics_enabled": dmTopics}})
 	case mTopic:
 		f.reply(w, map[string]any{"ok": true, kResult: map[string]any{"message_thread_id": id, kName: params[kName]}})
 	case "getChatMember":
@@ -238,11 +244,16 @@ func (f *fakeTelegram) form(r *http.Request) map[string]any {
 		}
 		data, _ := io.ReadAll(io.LimitReader(part, 64<<20))
 		if part.FileName() == "" {
-			if id, err := strconv.ParseFloat(string(data), 64); part.FormName() == "chat_id" && err == nil {
-				params["chat_id"] = id
+			if id, err := strconv.ParseFloat(string(data), 64); (part.FormName() == "chat_id" || part.FormName() == kThread) && err == nil {
+				params[part.FormName()] = id
+			}
+			if part.FormName() == "media" {
+				params["media"] = string(data)
 			}
 			continue
 		}
+		names, _ := params["names"].([]string)
+		params["names"] = append(names, part.FileName())
 		params["field"], params["name"], params["data"] = part.FormName(), part.FileName(), string(data)
 	}
 }
@@ -375,6 +386,14 @@ type fakeHub struct {
 	checkErr error
 	// pending are the prompts PendingPrompt finds.
 	pending map[string]bool
+	// models is what Models answers, and modelSets the SetModel calls as
+	// provider/model/confirm. modelConfirm makes SetModel ask for that
+	// confirmation.
+	models       hub.Models
+	modelSets    []string
+	modelConfirm string
+	// bgs are the /bg prompts as "session text".
+	bgs []string
 }
 
 type fakeFile struct {
@@ -611,6 +630,7 @@ func (f *fakeTokens) ConsumeLinkToken(context.Context, string) (int64, bool, err
 const (
 	aliceTG = 1
 	bobTG   = 2
+	botName = "talaria_test_bot"
 )
 
 type harness struct {
@@ -782,8 +802,20 @@ func startBotWith(t *testing.T, mutate func(*telegram.Config), state *fakeState,
 func startBotNotices(t *testing.T, mutate func(*telegram.Config), state *fakeState, mk func(*fakeHub) hub.Computers,
 	notices telegram.NoticeStore, opts ...func(*telegram.Options)) *harness {
 	t.Helper()
+	return startBotFake(t, nil, mutate, state, mk, notices, opts...)
+}
+
+// startBotFake is startBotNotices that first lets prep set up the fake
+// Bot API.
+func startBotFake(t *testing.T, prep func(*fakeTelegram), mutate func(*telegram.Config), state *fakeState, mk func(*fakeHub) hub.Computers,
+	notices telegram.NoticeStore, opts ...func(*telegram.Options)) *harness {
+	t.Helper()
+	tg := newFakeTelegram(t)
+	if prep != nil {
+		prep(tg)
+	}
 	h := &harness{
-		tg:     newFakeTelegram(t),
+		tg:     tg,
 		hub:    newFakeHub(),
 		links:  &fakeLinks{users: map[int64]string{aliceTG: userAlice, bobTG: userBob}},
 		tokens: &fakeTokens{},
@@ -901,11 +933,54 @@ func (h *fakeHub) remove(sessionID string) {
 }
 
 func (h *fakeHub) Models(context.Context, string, string, string) (hub.Models, error) {
-	return hub.Models{}, nil
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.models, nil
 }
 
-func (h *fakeHub) SetModel(context.Context, string, string, string, string, string, string) (hub.ModelChange, error) {
+func (h *fakeHub) SetModel(_ context.Context, _, _, _, provider, model, confirm string) (hub.ModelChange, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.modelSets = append(h.modelSets, provider+"/"+model+"/"+confirm)
+	if h.modelConfirm != "" && confirm != h.modelConfirm {
+		return hub.ModelChange{Status: hub.ModelConfirm, Confirm: h.modelConfirm, Message: "This model costs more."}, nil
+	}
 	return hub.ModelChange{Status: hub.ModelChanged}, nil
+}
+
+func (h *fakeHub) Activity(context.Context, string, string, string) (hub.ActivityState, error) {
+	return hub.ActivityState{}, nil
+}
+
+func (h *fakeHub) SubagentTail(context.Context, string, string, string, string) (hub.SubagentTail, error) {
+	return hub.SubagentTail{}, hub.ErrUnknownSubagent
+}
+
+func (h *fakeHub) SteerSubagent(context.Context, string, string, string, string, string) error {
+	return hub.ErrUnknownSubagent
+}
+
+func (h *fakeHub) StopSubagent(context.Context, string, string, string, string) error {
+	return hub.ErrUnknownSubagent
+}
+
+func (h *fakeHub) StopProcess(context.Context, string, string, string, string) error {
+	return hub.ErrUnknownProcess
+}
+
+func (h *fakeHub) PauseSubagents(context.Context, string, string, string, bool) (bool, error) {
+	return false, nil
+}
+
+// Background records a /bg prompt.
+func (h *fakeHub) Background(_ context.Context, user, backendID, sessionID, text string) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.allowed(user, backendID); err != nil {
+		return "", err
+	}
+	h.bgs = append(h.bgs, sessionID+" "+text)
+	return "bg_1", nil
 }
 
 func (h *fakeHub) SetReasoning(context.Context, string, string, string, string) error { return nil }

@@ -30,7 +30,7 @@ func TestReplyMediaIsSent(t *testing.T) {
 		t.Fatalf("text = %q", text.text())
 	}
 	photo := h.tg.wait(mPhoto, "")
-	if photo.Params["field"] != "photo" || photo.Params["name"] != "shot.jpg" || photo.Params["data"] != jpegData {
+	if photo.Params["field"] != "photo" || photo.Params["name"] != shotName || photo.Params["data"] != jpegData {
 		t.Fatalf("photo = %+v", photo.Params)
 	}
 	doc := h.tg.wait(mDocument, "")
@@ -59,7 +59,7 @@ func TestRefusedPhotoIsSentAsDocument(t *testing.T) {
 	sid := h.startTurn(t)
 	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "MEDIA:" + shotPath, kStatus: statusComplete})
 	doc := h.tg.wait(mDocument, "")
-	if doc.Params["name"] != "shot.jpg" || doc.Params["data"] != jpegData {
+	if doc.Params["name"] != shotName || doc.Params["data"] != jpegData {
 		t.Fatalf("document = %+v", doc.Params)
 	}
 	if n := h.tg.find(mSend, "Could not"); len(n) != 0 {
