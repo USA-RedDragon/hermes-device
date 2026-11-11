@@ -13,18 +13,18 @@ reconnecting) is retried instead of read as an exit.
  cli-config.yaml.example                   |   5 +
  gateway/run_shutdown.py                   |  16 ++
  hermes_cli/config_defaults.py             |   3 +
- tests/tools/test_process_handoff.py       | 300 ++++++++++++++++++++++
- tools/process_registry.py                 | 122 ++++++---
+ tests/tools/test_process_handoff.py       | 323 ++++++++++++++++++++++
+ tools/process_registry.py                 | 123 +++++---
  tools/process_registry_checkpoint.py      |  47 ++--
- tools/process_registry_handoff.py         | 221 ++++++++++++++++
+ tools/process_registry_handoff.py         | 224 +++++++++++++++
  tools/terminal_tool_background.py         |   2 +-
  website/docs/user-guide/features/tools.md |  23 ++
- 9 files changed, 686 insertions(+), 53 deletions(-)
+ 9 files changed, 713 insertions(+), 53 deletions(-)
  create mode 100644 tests/tools/test_process_handoff.py
  create mode 100644 tools/process_registry_handoff.py
 
 diff --git a/cli-config.yaml.example b/cli-config.yaml.example
-index a91dad0509..b478e59df7 100644
+index ad5bffa764..ec623e3275 100644
 --- a/cli-config.yaml.example
 +++ b/cli-config.yaml.example
 @@ -456,6 +456,11 @@ terminal:
@@ -89,10 +89,10 @@ index 5d3fb74310..419d6deaef 100644
          "client_env_passthrough": [],  # Extra non-secret toolchain names a CLI/TUI client sends for its tools
 diff --git a/tests/tools/test_process_handoff.py b/tests/tools/test_process_handoff.py
 new file mode 100644
-index 0000000000..1e34ec8643
+index 0000000000..3f1ee0af31
 --- /dev/null
 +++ b/tests/tools/test_process_handoff.py
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,323 @@
 +"""terminal.process_handoff_backends: background processes survive a graceful gateway restart."""
 +import json
 +import os
@@ -393,8 +393,31 @@ index 0000000000..1e34ec8643
 +                                       "started_at": 1.0, "reattach": {"kind": "env"}}]))
 +    ProcessRegistry()._write_checkpoint()
 +    assert [e["session_id"] for e in json.loads(checkpoint.read_text())] == ["proc_handed000002"]
++
++
++@pytest.mark.platforms("linux")
++def test_handoff_stops_env_pollers_before_providers_prepare(tmp_path, checkpoint, monkeypatch):
++    monkeypatch.setattr(pr, "ENV_POLL_INTERVAL_SECONDS", 2)
++    env = ShellEnv(tmp_path)
++    registry = ProcessRegistry()
++    session = _spawn(registry, env, "sleep 30")
++    order = []
++
++    class Recorder:
++        def prepare(self):
++            order.append(("prepare", session._reader_thread.is_alive()))
++
++        def detach(self, _session):
++            return None
++
++    registry.register_reattach_provider("device", Recorder())
++    time.sleep(0.2)
++    started = time.monotonic()
++    assert registry.hand_off_for_restart(["device"]) == 1
++    assert time.monotonic() - started < 1.5
++    assert order == [("prepare", False)]
 diff --git a/tools/process_registry.py b/tools/process_registry.py
-index 1e14aa0e1f..26065d0f18 100644
+index 1e14aa0e1f..270bc89e6a 100644
 --- a/tools/process_registry.py
 +++ b/tools/process_registry.py
 @@ -35,6 +35,7 @@ from hermes_cli.config import get_hermes_home
@@ -430,15 +453,16 @@ index 1e14aa0e1f..26065d0f18 100644
      _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
      _heartbeat_total_at_last: int = field(default=0, repr=False)     # total_output_chars at that moment
      _heartbeat_seq: int = field(default=0, repr=False)
-@@ -611,6 +623,7 @@ class ProcessSession:
+@@ -611,6 +623,8 @@ class ProcessSession:
      _reader_selectable: bool = field(default=False, repr=False)
      _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
      _owned_pgid: Optional[int] = field(default=None, repr=False)  # see ProcessOwnershipMixin
 +    _reattached: bool = field(default=False, repr=False)  # rebuilt from a handoff by this gateway
++    _poll_wake: threading.Event = field(default_factory=threading.Event, repr=False)  # cuts an env poll's sleep
  
      def __post_init__(self):
          # A session built without an explicit owner is owned by its own task, so ownership checks compare
-@@ -659,9 +672,9 @@ _CHECKPOINT_FIELDS = (
+@@ -659,9 +673,9 @@ _CHECKPOINT_FIELDS = (
      "started_at", "task_id", "owner_task_id", "session_key",
      *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
      "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
@@ -450,7 +474,7 @@ index 1e14aa0e1f..26065d0f18 100644
      for f in ProcessSession.__dataclass_fields__.values()
      if f.name in _CHECKPOINT_FIELDS
  }
-@@ -674,7 +687,17 @@ _WSL_CHAIN_NOTE = (
+@@ -674,7 +688,17 @@ _WSL_CHAIN_NOTE = (
  )
  
  
@@ -469,7 +493,7 @@ index 1e14aa0e1f..26065d0f18 100644
      """In-memory registry of running and finished background processes.
      Thread-safe: accessed from executor threads (terminal_tool, process handlers),
      the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
-@@ -752,7 +775,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+@@ -752,7 +776,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
              now = time.time()
              with self._lock:
                  due = [s for s in self._running.values()
@@ -478,7 +502,7 @@ index 1e14aa0e1f..26065d0f18 100644
                         and now - s._heartbeat_last >= s.heartbeat_seconds]
              for session in due:
                  self._emit_heartbeat(session, now)
-@@ -1270,16 +1293,18 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+@@ -1270,16 +1294,18 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
  
      def spawn_via_env(
          self, env: Any, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
@@ -499,7 +523,7 @@ index 1e14aa0e1f..26065d0f18 100644
          q = shlex.quote
          bg_command = (
              f"mkdir -p {q(temp_dir)} && "
-@@ -1416,15 +1441,17 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+@@ -1416,15 +1442,17 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
      _log_delta_command = staticmethod(log_delta_command)
  
      def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
@@ -513,7 +537,7 @@ index 1e14aa0e1f..26065d0f18 100644
 -            time.sleep(2)
 +        unreachable_since = None
 +        while not session.exited and not session.handed_off:
-+            time.sleep(ENV_POLL_INTERVAL_SECONDS)
++            session._poll_wake.wait(ENV_POLL_INTERVAL_SECONDS)
 +            if session.handed_off:
 +                return
              try:
@@ -523,7 +547,7 @@ index 1e14aa0e1f..26065d0f18 100644
                                    timeout=10).get("output", "")
                  header, _, delta = raw.partition("\n")
                  try:
-@@ -1437,37 +1464,53 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+@@ -1437,37 +1465,53 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                      new_size = None
                      used_offset = None
                      delta = ""
@@ -600,7 +624,7 @@ index 1e14aa0e1f..26065d0f18 100644
                      return
              except Exception:
                  # Environment might be gone (sandbox reaped, etc.). A kill that already
-@@ -1544,6 +1587,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+@@ -1544,6 +1588,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
          Under the session lock, like kill_process's commit: otherwise the kill can land between
          mark_exited's ``killed`` check and its writes, and the reader overwrites the kill."""
          with session._lock:
@@ -609,7 +633,7 @@ index 1e14aa0e1f..26065d0f18 100644
              session.mark_exited(exit_code, reason, source)
          self._move_to_finished(session)
  
-@@ -1553,6 +1598,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+@@ -1553,6 +1599,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
          the FIRST move enqueues the completion notification, so no duplicates.
          Returns True when this call is the one that persisted the session."""
          with self._lock:
@@ -618,7 +642,7 @@ index 1e14aa0e1f..26065d0f18 100644
              was_running = session.id in self._running
              if was_running:
                  session._finish_claimed = True
-@@ -2133,6 +2180,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+@@ -2133,6 +2181,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
          session = self.get(session_id)
          if session is None:
              return _not_found(session_id)
@@ -628,7 +652,7 @@ index 1e14aa0e1f..26065d0f18 100644
          if session.exited:
              # A double-forked descendant may still be alive in the systemd scope even
              # though the main process exited — stop the scope to reap survivors.
-@@ -2522,7 +2572,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+@@ -2522,7 +2573,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
              targets = [
                  s for s in (*self._running.values(), *self._finished.values())
                  if (task_id is None or s.owner_task_id == task_id)
@@ -729,10 +753,10 @@ index 176f0c3dab..51b6e454d1 100644
 +        })
 diff --git a/tools/process_registry_handoff.py b/tools/process_registry_handoff.py
 new file mode 100644
-index 0000000000..3274271226
+index 0000000000..a245636347
 --- /dev/null
 +++ b/tools/process_registry_handoff.py
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,224 @@
 +"""Hand running background processes to the next gateway across a graceful restart.
 +
 +``terminal.process_handoff_backends`` names the backends whose processes run outside this
@@ -797,11 +821,13 @@ index 0000000000..3274271226
 +        if not backends:
 +            return 0
 +        providers = {name: p for name, p in (self._reattach_providers or {}).items() if name in backends}
-+        for name, provider in providers.items():
-+            self._call_provider(name, provider, "prepare")
 +        with self._lock:
 +            candidates = [s for s in self._running.values() if not s.exited and not s.handed_off]
++        # Before any provider prepares: a poller inside a probe finishes it while the backend's
++        # connection is still up, instead of waiting out the probe's timeout.
 +        self._stop_env_pollers([s for s in candidates if self._env_handoff(s, backends)])
++        for name, provider in providers.items():
++            self._call_provider(name, provider, "prepare")
 +        handed = 0
 +        for session in candidates:
 +            state = self._detach_session(session, backends, providers)
@@ -853,6 +879,7 @@ index 0000000000..3274271226
 +                if session.exited:
 +                    continue
 +                session.handed_off = True
++            session._poll_wake.set()
 +            stopping.append(session)
 +        deadline = time.monotonic() + HANDOFF_POLLER_JOIN_SECONDS
 +        for session in stopping:
