@@ -1443,7 +1443,7 @@ def _eval(args: dict, conn: Any, sid: str) -> Any:
     return _ok(_untrusted({k: res[k] for k in keep if k in res}))
 
 
-LOGIN_TIMEOUT_S = 150
+LOGIN_TIMEOUT_S = 200
 
 
 def _login(args: dict, conn: Any, sid: str) -> str:
