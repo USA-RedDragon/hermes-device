@@ -202,6 +202,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/sessions/{backend}/{session}/delete", s.api(s.handleDelete))
 	mux.Handle("GET /api/sessions/{backend}/{session}/models", s.api(s.handleModels))
 	mux.Handle("GET /api/sessions/{backend}/{session}/media", s.api(s.handleMedia))
+	mux.Handle("GET /api/sessions/{backend}/{session}/page", s.api(s.handlePage))
+	mux.Handle("GET /api/sessions/{backend}/{session}/page-info", s.api(s.handlePageInfo))
 	mux.Handle("POST /api/sessions/{backend}/{session}/model", s.api(s.handleSetModel))
 	mux.Handle("POST /api/sessions/{backend}/{session}/reasoning", s.api(s.handleSetReasoning))
 	mux.Handle("GET /api/sessions/{backend}/{session}/place", s.api(s.handlePlace))
