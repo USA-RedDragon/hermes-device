@@ -202,9 +202,11 @@ func TestLearned(t *testing.T) {
 	if err != nil || len(p.Items) != 1 || p.Items[0].View != hub.ViewSelf {
 		t.Fatalf("self = %+v, %v", p, err)
 	}
-	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: "restic"})
-	if err != nil || len(p.Items) != 1 {
-		t.Fatalf("search = %+v, %v", p, err)
+	for _, q := range []string{"restic", "b2"} {
+		p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: q})
+		if err != nil || len(p.Items) != 1 {
+			t.Fatalf("search %q = %+v, %v", q, p, err)
+		}
 	}
 	if _, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{View: "everyone"}); status(err) != http.StatusBadRequest {
 		t.Fatalf("bad view: %v", err)

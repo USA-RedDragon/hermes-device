@@ -24,8 +24,8 @@ const (
 	pageSize = 100
 	// maxExportPages bounds an export at 100,000 conclusions.
 	maxExportPages = 1000
-	// searchSize is how many results a search returns, the most Honcho
-	// allows.
+	// searchSize is how many results a search returns for each observer,
+	// the most Honcho allows.
 	searchSize = 100
 	// maxFact bounds the text of a fact a user adds.
 	maxFact = 4000
@@ -170,11 +170,24 @@ func (h *honcho) list(ctx context.Context, view string, page, size int, oldest b
 	return out, err
 }
 
-func (h *honcho) query(ctx context.Context, view, text string) ([]conclusionJSON, error) {
+// query searches by meaning the conclusions one observer drew about the
+// user. Honcho's search takes one observer only.
+func (h *honcho) query(ctx context.Context, observer, text string) ([]conclusionJSON, error) {
 	var out []conclusionJSON
 	err := h.do(ctx, http.MethodPost, h.path("conclusions", "query"), msgNoWorkspace, nil,
-		map[string]any{"query": text, "top_k": searchSize, "filters": h.filters(view)}, &out)
+		map[string]any{"query": text, "top_k": searchSize, "filters": map[string]any{"observed_id": h.user, "observer_id": observer}}, &out)
 	return out, err
+}
+
+// observers are the observers of a view.
+func (h *honcho) observers(view string) []string {
+	switch view {
+	case hub.ViewHermes:
+		return []string{h.ai}
+	case hub.ViewSelf:
+		return []string{h.user}
+	}
+	return []string{h.ai, h.user}
 }
 
 func (h *honcho) get(ctx context.Context, id string) (conclusionJSON, error) {

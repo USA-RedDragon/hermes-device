@@ -295,6 +295,14 @@ func (h *Honcho) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"items": nonNil(items[lo:hi]), "total": len(items), "page": page, "size": size,
 			"pages": (len(items) + size - 1) / size})
 	case r.Method == http.MethodPost && rest == "/conclusions/query":
+		// Honcho v3.6.0 takes one observer and one observed for a search
+		// and fails with 500 on anything else.
+		_, one := filters["observer_id"].(string)
+		_, oneObserved := filters["observed_id"].(string)
+		if !one || !oneObserved {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{keyDetail: "An unexpected error occurred"})
+			return
+		}
 		q, _ := body["query"].(string)
 		var items []Conclusion
 		for _, c := range h.Items {

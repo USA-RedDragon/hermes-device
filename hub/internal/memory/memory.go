@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/USA-RedDragon/hermes-hub/internal/device"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
@@ -229,14 +231,12 @@ func (s *Service) Learned(ctx context.Context, user, backendID string, q hub.Lea
 		if r := []rune(text); len(r) > 500 {
 			text = string(r[:500])
 		}
-		cs, err := h.query(ctx, v, text)
+		cs, err := s.search(ctx, h, v, text)
 		if err != nil {
 			return hub.LearnedPage{}, err
 		}
 		for _, c := range cs {
-			if h.about(c) {
-				out.Items = append(out.Items, h.conclusion(c))
-			}
+			out.Items = append(out.Items, h.conclusion(c))
 		}
 		out.Total, out.Page = len(out.Items), 1
 		return out, nil
@@ -253,6 +253,39 @@ func (s *Service) Learned(ctx context.Context, user, backendID string, q hub.Lea
 	}
 	out.Total, out.Page, out.Pages = p.Total, page, p.Pages
 	return out, nil
+}
+
+// search runs one search for each observer of the view, since Honcho's
+// search takes one observer, and takes their results in turn.
+func (s *Service) search(ctx context.Context, h *honcho, v, text string) ([]conclusionJSON, error) {
+	obs := h.observers(v)
+	res := make([][]conclusionJSON, len(obs))
+	g, gctx := errgroup.WithContext(ctx)
+	for i, o := range obs {
+		g.Go(func() error {
+			r, err := h.query(gctx, o, text)
+			res[i] = r
+			return err
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	var out []conclusionJSON
+	for i := 0; ; i++ {
+		more := false
+		for _, r := range res {
+			if i < len(r) {
+				more = true
+				if h.about(r[i]) {
+					out = append(out, r[i])
+				}
+			}
+		}
+		if !more {
+			return out, nil
+		}
+	}
 }
 
 // LearnedInfo counts the conclusions in each view and reads the profile
