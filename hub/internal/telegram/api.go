@@ -573,3 +573,165 @@ func (c *Client) upload(ctx context.Context, method, field string, chatID, threa
 	}
 	return c.callBody(ctx, method, buf.Bytes(), w.FormDataContentType(), nil)
 }
+
+// Me is what getMe says of the bot.
+type Me struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+	// HasTopicsEnabled is true when the bot has forum topic mode on in
+	// private chats (Bot API 9.3, set in @BotFather).
+	HasTopicsEnabled bool `json:"has_topics_enabled"`
+}
+
+// GetMe reads the bot's own user.
+func (c *Client) GetMe(ctx context.Context) (Me, error) {
+	var me Me
+	err := c.call(ctx, "getMe", struct{}{}, &me)
+	return me, err
+}
+
+type draftParams struct {
+	ChatID          int64  `json:"chat_id"`
+	MessageThreadID int64  `json:"message_thread_id,omitempty"`
+	DraftID         int64  `json:"draft_id"`
+	Text            string `json:"text"`
+	ParseMode       string `json:"parse_mode,omitempty"`
+}
+
+// SendDraft streams a partial message to a private chat (sendMessageDraft,
+// Bot API 9.3). The draft lasts about 30 seconds unless sent again, and
+// goes when the bot sends a message. A 429 is not retried: the caller
+// skips the frame.
+func (c *Client) SendDraft(ctx context.Context, chatID, thread, draftID int64, html string) error {
+	body, err := json.Marshal(draftParams{ChatID: chatID, MessageThreadID: thread, DraftID: draftID, Text: html, ParseMode: parseHTML})
+	if err != nil {
+		return fmt.Errorf("failed to encode sendMessageDraft: %w", err)
+	}
+	return c.do(ctx, "sendMessageDraft", body, "application/json", nil)
+}
+
+type reactionType struct {
+	Type  string `json:"type"`
+	Emoji string `json:"emoji"`
+}
+
+type reactionParams struct {
+	ChatID    int64          `json:"chat_id"`
+	MessageID int64          `json:"message_id"`
+	Reaction  []reactionType `json:"reaction"`
+}
+
+// SetReaction sets the bot's one reaction on a message, replacing the one
+// it set before; "" takes it off. A 429 is not retried.
+func (c *Client) SetReaction(ctx context.Context, chatID, messageID int64, emoji string) error {
+	p := reactionParams{ChatID: chatID, MessageID: messageID, Reaction: []reactionType{}}
+	if emoji != "" {
+		p.Reaction = append(p.Reaction, reactionType{Type: "emoji", Emoji: emoji})
+	}
+	body, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("failed to encode setMessageReaction: %w", err)
+	}
+	return c.do(ctx, "setMessageReaction", body, "application/json", nil)
+}
+
+type chatActionParams struct {
+	ChatID          int64  `json:"chat_id"`
+	MessageThreadID int64  `json:"message_thread_id,omitempty"`
+	Action          string `json:"action"`
+}
+
+// SendTyping shows "typing" in a chat or topic for about 5 seconds. A 429
+// is not retried.
+func (c *Client) SendTyping(ctx context.Context, chatID, thread int64) error {
+	body, err := json.Marshal(chatActionParams{ChatID: chatID, MessageThreadID: thread, Action: "typing"})
+	if err != nil {
+		return fmt.Errorf("failed to encode sendChatAction: %w", err)
+	}
+	return c.do(ctx, "sendChatAction", body, "application/json", nil)
+}
+
+// BotCommand is one entry of the bot's command menu.
+type BotCommand struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
+// CommandScope is a BotCommandScope: "all_private_chats",
+// "all_group_chats", or "chat" with ChatID.
+type CommandScope struct {
+	Type   string `json:"type"`
+	ChatID int64  `json:"chat_id,omitempty"`
+}
+
+type commandsParams struct {
+	Commands []BotCommand `json:"commands"`
+	Scope    CommandScope `json:"scope"`
+}
+
+// SetCommands sets the command menu of a scope.
+func (c *Client) SetCommands(ctx context.Context, scope CommandScope, cmds []BotCommand) error {
+	return c.call(ctx, "setMyCommands", commandsParams{Commands: cmds, Scope: scope}, nil)
+}
+
+// DeleteCommands removes the command menu of a scope, so the wider scope's
+// shows.
+func (c *Client) DeleteCommands(ctx context.Context, scope CommandScope) error {
+	return c.call(ctx, "deleteMyCommands", struct {
+		Scope CommandScope `json:"scope"`
+	}{scope}, nil)
+}
+
+// Photo is one image of an album.
+type Photo struct {
+	Name string
+	Data []byte
+}
+
+// maxAlbum is the most items Telegram takes in one sendMediaGroup.
+const maxAlbum = 10
+
+// SendAlbum sends 2 to 10 images as one album (sendMediaGroup).
+func (c *Client) SendAlbum(ctx context.Context, chatID, thread int64, photos []Photo) error {
+	if len(photos) < 2 || len(photos) > maxAlbum {
+		return fmt.Errorf("telegram sendMediaGroup: %d photos, want 2 to %d", len(photos), maxAlbum)
+	}
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return err
+	}
+	if thread != 0 {
+		if err := w.WriteField("message_thread_id", strconv.FormatInt(thread, 10)); err != nil {
+			return err
+		}
+	}
+	type inputMedia struct {
+		Type  string `json:"type"`
+		Media string `json:"media"`
+	}
+	items := make([]inputMedia, len(photos))
+	for i := range photos {
+		items[i] = inputMedia{Type: "photo", Media: fmt.Sprintf("attach://p%d", i)}
+	}
+	media, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	if err := w.WriteField("media", string(media)); err != nil {
+		return err
+	}
+	for i, p := range photos {
+		fw, err := w.CreateFormFile(fmt.Sprintf("p%d", i), p.Name)
+		if err != nil {
+			return err
+		}
+		if _, err := fw.Write(p.Data); err != nil {
+			return err
+		}
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return c.callBody(ctx, "sendMediaGroup", buf.Bytes(), w.FormDataContentType(), nil)
+}
