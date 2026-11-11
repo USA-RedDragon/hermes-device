@@ -15,6 +15,8 @@ const MAX_EVAL_RESULT = 1000000;
 const MAX_WAIT_MS = 30000;
 const MAX_SHOT_HEIGHT = 16384;
 const MAX_SHOT_PIXELS = 16 * 1024 * 1024;
+const LOGIN_FILL_MS = 15000;
+const MAX_LOGIN_FILL_MS = 60000;
 
 // Salesforce hosts are "protected sites" (docs/browser.md section 7.1):
 // every click and every key press that can activate a control needs the
@@ -50,6 +52,14 @@ const agentTabs = new Set();
 let allowHosts = new Set();
 // Sites from the device config where, as on Salesforce, every click asks.
 let confirmHosts = [];
+// Exact hosts from the device config where browser_login may submit the
+// login form that Firefox filled from its saved logins (docs/browser.md
+// section 7.4). The plugin cannot change this list.
+let autologinHosts = new Set();
+// loginGuards holds, per tab, the hosts a login submit may post to while
+// browser_login waits for the result (docs/browser.md section 7.4).
+const loginGuards = new Map();
+let loginBusy = false;
 
 // The daemon's config: its hub.url (a hint) and which device it is.
 let daemon = {};
@@ -325,6 +335,7 @@ async function onMessage(msg) {
   if (msg && msg.type === "config") {
     allowHosts = new Set((msg.allow_hosts || []).map((h) => h.toLowerCase()));
     confirmHosts = (msg.confirm_hosts || []).map((h) => String(h).toLowerCase().replace(/\.$/, "")).filter(Boolean);
+    autologinHosts = new Set((msg.autologin_hosts || []).map((h) => String(h).toLowerCase().replace(/\.$/, "")).filter(Boolean));
     daemon = { hub_url: msg.hub_url || "", device_id: msg.device_id || "", device_name: msg.device_name || "" };
     return;
   }
@@ -399,6 +410,7 @@ browser.tabs.onRemoved.addListener((tabId) => {
   scripted.delete(tabId);
   everScripted.delete(tabId);
   frameNums.delete(tabId);
+  loginGuards.delete(tabId);
 });
 
 // A tab that a scripted tab opens inherits its limits.
@@ -437,6 +449,12 @@ function taintBlocks(t, d) {
 function protectedHost(host) {
   const h = String(host || "").toLowerCase().replace(/\.$/, "");
   return PROTECTED_SUFFIXES.concat(confirmHosts).some((s) => h === s || h.endsWith("." + s));
+}
+
+// autologinHost reports whether host is one of the device's
+// browser.autologin-hosts. Exact host names, no subdomains.
+function autologinHost(host) {
+  return autologinHosts.has(String(host || "").toLowerCase().replace(/\.$/, ""));
 }
 
 function hostOf(url) {
@@ -670,6 +688,11 @@ browser.webRequest.onBeforeRequest.addListener(
       // agent code cannot reach other sites around the tab's limits.
       return taints.size && !details.originUrl && !details.documentUrl ? { cancel: true } : {};
     }
+    const lg = loginGuards.get(details.tabId);
+    if (lg && lg.submitting && details.method !== "GET" && details.method !== "HEAD" &&
+      !lg.hosts.has(hostOf(details.url))) {
+      return { cancel: true };
+    }
     const own = taints.get(details.tabId);
     if (own && taintBlocks(own, details)) {
       return { cancel: true };
@@ -714,6 +737,39 @@ browser.webRequest.onBeforeRequest.addListener(
   },
   { urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"] },
   ["blocking"],
+);
+
+// While browser_login waits for its submit, a POST that a 307 or 308
+// redirect would send again to a host outside browser.autologin-hosts is
+// cancelled, so the login form's body never goes to another host. The
+// first other answer from an autologin host ends the submitting phase, so
+// later posts (a SAML response to the application) go through.
+browser.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    const lg = loginGuards.get(details.tabId);
+    if (!lg || details.method === "GET" || details.method === "HEAD") {
+      return {};
+    }
+    if (details.statusCode === 307 || details.statusCode === 308) {
+      const loc = (details.responseHeaders || []).find((h) => h.name.toLowerCase() === "location");
+      let to = "";
+      try {
+        to = new URL(loc ? loc.value : "", details.url).hostname.toLowerCase();
+      } catch (e) {
+        to = "";
+      }
+      if (!lg.hosts.has(to)) {
+        return { cancel: true };
+      }
+      return {};
+    }
+    if (lg.hosts.has(hostOf(details.url))) {
+      lg.submitting = false;
+    }
+    return {};
+  },
+  { urls: ["https://*/*"] },
+  ["blocking", "responseHeaders"],
 );
 
 // waitComplete resolves when the tab finishes loading an http(s) page.
@@ -847,17 +903,173 @@ async function prepare(tabId, ref, kind, guard) {
       "press needs the user's OK each time");
   }
   const sensitive = await tabSensitive(tabId);
+  if (sensitive.includes("password") && (autologinHost(hostOf(tab.url)) || autologinHost(frameHost))) {
+    throw new Refused("this is a login page on a host in browser.autologin-hosts; clicks, typing and key presses are " +
+      "refused here, so the saved password cannot be shown or changed. Use browser_login");
+  }
   if (sensitive.length && !g.sensitive) {
     throw new Refused("this page has " + sensitive.join(", ") + " fields; the user must confirm each action here");
   }
   return { frameId, local };
 }
 
+// onLoginPage reports whether the tab shows a host in
+// browser.autologin-hosts, at the top or in a frame, and has a password
+// field. Screenshots and selector waits are refused there.
+async function onLoginPage(tab) {
+  if (!autologinHosts.size) {
+    return false;
+  }
+  const hosts = await inAllFrames(tab.id, () => (/^https?:$/.test(location.protocol) ? location.hostname.toLowerCase() : null));
+  if (!autologinHost(hostOf(tab.url)) && !hosts.some((r) => autologinHost(r.result))) {
+    return false;
+  }
+  return (await tabSensitive(tab.id)).includes("password");
+}
+
+// activate shows tab in its window, and the window when it is minimized,
+// and returns what restore needs to put things back.
+async function activate(tab) {
+  const before = { tabId: tab.id, windowId: tab.windowId, prev: null, minimized: false };
+  if (!tab.active) {
+    const [prev] = await browser.tabs.query({ active: true, windowId: tab.windowId });
+    before.prev = prev ? prev.id : null;
+    await browser.tabs.update(tab.id, { active: true });
+  }
+  const win = await browser.windows.get(tab.windowId);
+  if (win.state === "minimized") {
+    before.minimized = true;
+    await browser.windows.update(tab.windowId, { state: "normal" });
+  }
+  return before;
+}
+
+// restore makes the previously active tab active again, and minimizes the
+// window again, unless the user changed the active tab meanwhile.
+async function restore(before) {
+  let restored = false;
+  try {
+    const [now] = await browser.tabs.query({ active: true, windowId: before.windowId });
+    if (before.prev !== null && now && now.id === before.tabId) {
+      await browser.tabs.update(before.prev, { active: true });
+      restored = true;
+    }
+    if (before.minimized) {
+      await browser.windows.update(before.windowId, { state: "minimized" });
+    }
+  } catch (e) {
+    // A tab or window the user closed meanwhile needs nothing restored.
+  }
+  return restored;
+}
+
+// pageVisibility reads what Firefox's login autofill waits for.
+function pageVisibility() {
+  return { visibility: document.visibilityState, ready: document.readyState, focus: document.hasFocus() };
+}
+
+// pageLogin finds the one visible password field of the top frame and its
+// username field, the way Firefox's login autofill does for a simple form,
+// and reports only whether each is filled. With submit it also submits
+// that form, after checking that the page and the form's target are on an
+// autologin host, that it posts, and that it stays in this tab. It never
+// returns a field value. It is self-contained, so nothing a page or an
+// earlier script left in this world is used.
+function pageLogin(hosts, tabHost, submit) {
+  const allowed = new Set(hosts);
+  if (location.protocol !== "https:") {
+    return { error: "the page is not https" };
+  }
+  const here = location.hostname.toLowerCase();
+  if (here !== tabHost || !allowed.has(here)) {
+    return { error: "the page's host " + here + " is not the tab's autologin host" };
+  }
+  const shown = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) {
+      return false;
+    }
+    const s = getComputedStyle(el);
+    return s.visibility !== "hidden" && s.display !== "none";
+  };
+  const passwords = [...document.querySelectorAll("input[type=password]")].filter(shown);
+  const out = { visibility: document.visibilityState, ready: document.readyState, passwords: passwords.length };
+  if (passwords.length !== 1) {
+    return out;
+  }
+  const pw = passwords[0];
+  const form = pw.form;
+  const fields = form ? [...form.elements] : [...document.querySelectorAll("input")];
+  const texty = (f) => f.tagName === "INPUT" && ["text", "email", "tel", "search", ""].includes(f.type) && shown(f);
+  let user = fields.find((f) => texty(f) && /\b(username|email)\b/.test((f.getAttribute("autocomplete") || "").toLowerCase()));
+  if (!user) {
+    for (let i = fields.indexOf(pw) - 1; i >= 0; i--) {
+      if (texty(fields[i])) {
+        user = fields[i];
+        break;
+      }
+    }
+  }
+  let autofilled = false;
+  try {
+    autofilled = pw.matches(":autofill");
+  } catch (e) {
+    autofilled = false;
+  }
+  Object.assign(out, {
+    form: Boolean(form), password_filled: pw.value !== "", username_present: Boolean(user),
+    username_filled: Boolean(user) && user.value !== "", autofilled,
+    new_password: /new-password/.test((pw.getAttribute("autocomplete") || "").toLowerCase()),
+  });
+  if (!submit) {
+    return out;
+  }
+  if (!form) {
+    return Object.assign(out, { error: "the password field is not in a form" });
+  }
+  if (!out.password_filled || (user && !out.username_filled)) {
+    return Object.assign(out, { error: "the login form is no longer filled" });
+  }
+  const submitter = [...form.elements].find((e) => !e.disabled && ((e.tagName === "BUTTON" && e.type === "submit") ||
+    (e.tagName === "INPUT" && (e.type === "submit" || e.type === "image"))));
+  const has = (a) => submitter && submitter.hasAttribute(a);
+  const method = (has("formmethod") ? submitter.formMethod : form.method).toLowerCase();
+  const action = has("formaction") ? submitter.formAction : form.action;
+  const tgt = (has("formtarget") ? submitter.formTarget : form.target).toLowerCase();
+  let to;
+  try {
+    to = new URL(action || location.href, location.href);
+  } catch (e) {
+    return Object.assign(out, { error: "the login form has no usable action" });
+  }
+  if (to.protocol !== "https:" || !allowed.has(to.hostname.toLowerCase())) {
+    return Object.assign(out, { error: "the login form submits to " + to.hostname + ", which is not in browser.autologin-hosts" });
+  }
+  if (method !== "post") {
+    return Object.assign(out, { error: "the login form does not use POST, so the password would go into the address" });
+  }
+  if (tgt && tgt !== "_self") {
+    return Object.assign(out, { error: "the login form submits into another tab or frame" });
+  }
+  if (submitter) {
+    form.requestSubmit(submitter);
+  } else {
+    form.requestSubmit();
+  }
+  return Object.assign(out, { submitted: true });
+}
+
+const NOT_FILLED = "Firefox did not fill the login form. Likely causes: no login is saved for this host in this " +
+  "Firefox profile; more than one login is saved for it (Firefox then fills nothing until the user picks one); the " +
+  "primary password is locked; or autofill is off (signon.autofillForms). The user must sign in once by hand.";
+
 // composeSnapshot joins the snapshots of the tab's frames: each frame's
 // outline goes under its iframe line, and its refs carry the frame's
 // number (f2e5).
 async function composeSnapshot(tabId, interactiveOnly) {
-  const res = await inAllFrames(tabId, pageSnapshot, [Boolean(interactiveOnly)], true);
+  const tab = await browser.tabs.get(tabId);
+  const res = await inAllFrames(tabId, pageSnapshot, [Boolean(interactiveOnly), autologinHost(hostOf(tab.url)),
+    [...autologinHosts]], true);
   const byFrame = new Map(res.map((r) => [r.frameId, r.result]));
   const top = byFrame.get(0);
   if (!top) {
@@ -958,10 +1170,13 @@ function pageText() {
   return { title: document.title, url: location.href, text: globalThis.__hermesHelpers.textOf(), frames };
 }
 
-function pageSnapshot(interactiveOnly) {
+function pageSnapshot(interactiveOnly, hideValues, hideHosts) {
   if (!/^https?:$/.test(location.protocol)) {
     return null;
   }
+  // On an autologin host no field value is shown at all, so a field whose
+  // type a page changed cannot show a filled password.
+  const noValues = Boolean(hideValues) || (hideHosts || []).includes(location.hostname.toLowerCase());
   const state = (globalThis.__hermes = { refs: new Map(), next: 1 });
   const implicit = {
     A: "link", BUTTON: "button", SELECT: "combobox", TEXTAREA: "textbox", H1: "heading", H2: "heading",
@@ -1066,7 +1281,7 @@ function pageSnapshot(interactiveOnly) {
           /\bcc-|one-time-code|password/.test((el.getAttribute("autocomplete") || "").toLowerCase()) ||
           /(card.?num|cc.?num|cvc|cvv|csc|card.?code|security.?code|otp|one.?time|totp|2fa|mfa|verification.?code|auth.?code)/
             .test(((el.name || "") + " " + (el.id || "")).toLowerCase());
-        if ((el.tagName === "INPUT" || el.tagName === "TEXTAREA") && !secret && el.value) {
+        if ((el.tagName === "INPUT" || el.tagName === "TEXTAREA") && !secret && !noValues && el.value) {
           line += " value=" + JSON.stringify(clean(el.value));
         }
         if (el.type === "checkbox" || el.type === "radio") {
@@ -1215,7 +1430,7 @@ function installHelpers() {
       target = { kind: "link", host: host(link.href), url: link.href };
     } else if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) {
       target = { kind: "field", host: host(form ? form.action || location.href : location.href), form: Boolean(form) };
-      if (el.type === "password") {
+      if (el.type === "password" || /current-password|new-password/.test((el.getAttribute("autocomplete") || "").toLowerCase())) {
         target.field = "password";
       }
     }
@@ -1608,7 +1823,9 @@ const OPS = {
   async inspect({ tab_id, ref, url, frame, focus }) {
     const out = {};
     if (url) {
-      out.url_host = new URL(checkURL(url)).hostname.toLowerCase();
+      const u = new URL(checkURL(url));
+      out.url_host = u.hostname.toLowerCase();
+      out.url_autologin = u.protocol === "https:" && autologinHost(out.url_host);
     }
     if (tab_id === undefined || tab_id === null) {
       return out;
@@ -1623,6 +1840,8 @@ const OPS = {
     return Object.assign(info, out, {
       sensitive: await tabSensitive(tab_id), top_host: topHost, scripted: scripted.has(tab_id),
       protected: protectedHost(topHost) || protectedHost(info.host),
+      autologin: autologinHost(topHost) || autologinHost(info.host),
+      top_autologin: /^https:/.test(tab.url || "") && autologinHost(topHost),
     });
   },
   async click({ tab_id, ref, guard }) {
@@ -1683,9 +1902,12 @@ const OPS = {
     return Object.assign(res, { tab_id, url: tab.url, title: tab.title });
   },
   async wait({ tab_id, text, selector, timeout_ms }) {
-    await agentTab(tab_id);
+    const tab = await agentTab(tab_id);
     if (!text && !selector) {
       throw new Refused("give the text or the CSS selector to wait for");
+    }
+    if (selector && await onLoginPage(tab)) {
+      throw new Refused("CSS selector waits are refused on a login page of a host in browser.autologin-hosts; wait for a text");
     }
     const limit = Math.max(0, Math.min(Number(timeout_ms) || 10000, MAX_WAIT_MS));
     const start = Date.now();
@@ -1733,6 +1955,10 @@ const OPS = {
     const topHost = hostOf(tab.url);
     const host = hostOf(where);
     const site = siteOf(host);
+    if (autologinHost(topHost) || autologinHost(host)) {
+      throw new Refused("scripts are never allowed on a host in browser.autologin-hosts (" + (autologinHost(topHost) ? topHost : host) +
+        "), where Firefox fills a saved password");
+    }
     if (allow_writes && (protectedHost(topHost) || protectedHost(host))) {
       throw new Refused("scripts that change data are never allowed on Salesforce (or the sites in browser.confirm-hosts); " +
         "run it without allow_writes");
@@ -1789,8 +2015,139 @@ const OPS = {
     }
     return out;
   },
+  async login({ tab_id, url, guard, timeout_ms }) {
+    const approved = new Set(((guard && guard.login_hosts) || []).map((h) => String(h).toLowerCase()));
+    if (loginBusy) {
+      throw new Refused("another browser_login is running");
+    }
+    loginBusy = true;
+    let before = null;
+    let tabId = tab_id;
+    try {
+      if (url) {
+        const target = new URL(checkURL(url));
+        if (target.protocol !== "https:" || !autologinHost(target.hostname) || !approved.has(target.hostname.toLowerCase())) {
+          throw new Refused("browser_login opens only https pages on an approved host in browser.autologin-hosts; " +
+            target.hostname + " is not one");
+        }
+        tabId = (await OPS.tab_open({ url: target.href, guard: { visit_hosts: [target.hostname] } })).tab_id;
+      }
+      let tab = await agentTab(tabId);
+      if (tab.status === "loading") {
+        tab = await waitComplete(tabId);
+      }
+      const host = hostOf(tab.url);
+      if (!/^https:/.test(tab.url || "") || !autologinHost(host)) {
+        throw new Refused("browser_login works only on an https page whose host is in this device's " +
+          "browser.autologin-hosts; tab " + tabId + " shows " + (host || "no page"));
+      }
+      if (!approved.has(host)) {
+        throw new Refused("browser_login on " + host + " needs the user's approval");
+      }
+      if (taints.has(tabId) || scripted.has(tabId)) {
+        throw new Refused("this tab ran a script; open the login page in a new tab with browser_navigate");
+      }
+      const hosts = [...autologinHosts];
+      const state = await inPage(tabId, pageLogin, [hosts, host, false]);
+      if (state.error) {
+        throw new Refused(state.error);
+      }
+      if (state.passwords !== 1 || state.new_password) {
+        const why = state.passwords ? "more than one password field, or a new password field" : "no password field";
+        return { tab_id: tabId, filled: false, submitted: false, landed_host: host,
+          reason: "the page has " + why + ", so it is not a simple login form" };
+      }
+      before = await activate(tab);
+      const limit = Math.max(1000, Math.min(Number(timeout_ms) || LOGIN_FILL_MS, MAX_LOGIN_FILL_MS));
+      const start = Date.now();
+      let now = state;
+      for (;;) {
+        now = await inPage(tabId, pageLogin, [hosts, host, false]);
+        if (now.error) {
+          throw new Refused(now.error);
+        }
+        if (now.passwords === 1 && now.password_filled && (!now.username_present || now.username_filled)) {
+          break;
+        }
+        if (now.passwords !== 1 || Date.now() - start >= limit) {
+          const out = { tab_id: tabId, filled: false, submitted: false, landed_host: hostOf((await browser.tabs.get(tabId)).url) };
+          out.reason = now.passwords !== 1 ? "the login form changed while waiting for Firefox to fill it"
+            : now.visibility !== "visible" ? "the tab did not become visible (document.visibilityState is " +
+              now.visibility + "), and Firefox fills saved logins only in a visible tab. Is the window hidden or the " +
+              "screen off?" : NOT_FILLED;
+          if (now.password_filled && now.username_present && !now.username_filled) {
+            out.reason = "Firefox filled the password but not the username field. " + NOT_FILLED;
+          }
+          return out;
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      // The page's host is checked again in the page right before the
+      // submit; the guard keeps the posted form on the autologin hosts.
+      loginGuards.set(tabId, { hosts: new Set(hosts), submitting: true });
+      const loaded = waitComplete(tabId, true).catch(() => null);
+      const sent = await inPage(tabId, pageLogin, [hosts, host, true]);
+      if (sent.error || !sent.submitted) {
+        loginGuards.delete(tabId);
+        loaded.catch(() => {});
+        return { tab_id: tabId, filled: true, submitted: false, landed_host: host, reason: sent.error || "not submitted" };
+      }
+      await Promise.race([loaded, new Promise((r) => setTimeout(r, LOAD_TIMEOUT_MS))]);
+      const after = await settle(tabId).catch(() => browser.tabs.get(tabId));
+      return { tab_id: tabId, filled: true, submitted: true, landed_host: hostOf(after.url) };
+    } finally {
+      loginGuards.delete(tabId);
+      if (before) {
+        await restore(before);
+      }
+      loginBusy = false;
+    }
+  },
+  async check({ tab_id }) {
+    let tab = null;
+    if (tab_id !== undefined && tab_id !== null) {
+      tab = await agentTab(tab_id);
+    } else {
+      tab = (await browser.tabs.query({})).find((t) => inGroup(t) && /^https?:/.test(t.url || "")) || null;
+    }
+    const win = await browser.windows.getLastFocused();
+    const out = { window_state: win.state, window_focused: win.focused, autologin_hosts: [...autologinHosts].sort() };
+    if (!tab) {
+      out.note = "no agent tab with a web page to check; open one with browser_navigate";
+      return out;
+    }
+    out.tab_id = tab.id;
+    out.tab_active_before = tab.active;
+    out.before = await inPage(tab.id, pageVisibility);
+    if (loginBusy) {
+      out.note = "browser_login is running, so the tab was not activated";
+      return out;
+    }
+    const before = await activate(tab);
+    try {
+      const start = Date.now();
+      let seen = await inPage(tab.id, pageVisibility);
+      while (seen.visibility !== "visible" && Date.now() - start < 3000) {
+        await new Promise((r) => setTimeout(r, 200));
+        seen = await inPage(tab.id, pageVisibility);
+      }
+      out.after_activate = seen;
+      out.waited_ms = Date.now() - start;
+      const w = await browser.windows.get(tab.windowId);
+      out.tab_window_state = w.state;
+      out.tab_window_focused = w.focused;
+    } finally {
+      out.restored = await restore(before);
+    }
+    out.would_fill = out.after_activate.visibility === "visible";
+    return out;
+  },
   async screenshot({ tab_id, format, quality, full_page }) {
     const tab = await agentTab(tab_id);
+    if (await onLoginPage(tab)) {
+      throw new Refused("screenshots are refused on a login page of a host in browser.autologin-hosts, since they " +
+        "would show how long a filled password is");
+    }
     const opts = format === "jpeg" ? { format: "jpeg", quality: Math.max(10, Math.min(Number(quality) || 80, 100)) } : { format: "png" };
     const out = { tab_id, url: tab.url, title: tab.title };
     if (full_page) {

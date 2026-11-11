@@ -34,6 +34,8 @@ const userJS = `user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("datareporting.policy.dataSubmissionEnabled", false);
 user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
 user_pref("browser.aboutwelcome.enabled", false);
+user_pref("signon.autofillForms", true);
+user_pref("signon.rememberSignons", true);
 `
 
 const (
@@ -144,6 +146,7 @@ func TestFirefoxEndToEnd(t *testing.T) { //nolint:paralleltest // one Firefox at
 	formFlow(ctx, t, b, tab.TabID, srv.URL)
 	refusals(ctx, t, b, tab.TabID)
 	pages, rec := frameFlow(ctx, t, b, tab.TabID)
+	loginFlow(ctx, t, b, bc, tab.TabID)
 	if _, err := b.Call(ctx, "navigate", map[string]any{keyTab: tab.TabID, keyURL: hubSrv.URL + "/browser/authorize",
 		keyGuard: map[string]any{keyVisit: []string{loopback}}}); err == nil || !strings.Contains(err.Error(), "Hermes hub") {
 		t.Errorf("navigate an agent tab to the hub: err = %v", err)
@@ -187,7 +190,9 @@ func startFirefox(ctx context.Context, t *testing.T, hubURL string) (*broker.Bro
 
 	sock := filepath.Join(root, "state", broker.SocketName)
 	b, err := broker.Listen(broker.Options{Path: sock, ExtensionID: host.ExtensionID,
-		AllowHosts: []string{loopback, crossHost, confirmHost}, ConfirmHosts: []string{confirmHost}})
+		AllowHosts:     []string{loopback, crossHost, confirmHost, loginHost, otherLoginHost, twoLoginHost},
+		ConfirmHosts:   []string{confirmHost},
+		AutologinHosts: []string{loginHost, twoLoginHost}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +245,7 @@ func runFirefox(ctx context.Context, t *testing.T, profile string, env []string)
 		bin = "/usr/bin/firefox"
 	}
 	ff := exec.CommandContext(ctx, bin, "--headless", "--no-remote", "--profile", profile, //nolint:gosec // test-controlled binary
-		"--remote-debugging-port=0", "about:blank")
+		"--remote-debugging-port=0", "--remote-allow-system-access", "about:blank")
 	ff.Env = env
 	var log bytes.Buffer
 	ff.Stdout, ff.Stderr = &log, &log
