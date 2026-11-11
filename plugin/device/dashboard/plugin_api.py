@@ -324,6 +324,46 @@ async def memory_change(target: str, op: str, request: Request):
 
 
 
+# --- session store views (section 9.2) ---------------------------------------------------------
+
+def _insights():
+    return _core()._load_sibling("hermes_device_insights", "insights.py")
+
+
+async def _insights_call(fn, *args):
+    mod = _insights()
+    if not mod.READS.acquire(blocking=False):
+        return _error(429, "busy", f"{mod.MAX_READS} searches are running; try again in a moment")
+    slot = mod.READS
+    fut = asyncio.get_running_loop().run_in_executor(None, fn, *args)
+    try:
+        out = await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        fut.add_done_callback(lambda _f: slot.release())
+        raise
+    except BaseException as exc:
+        slot.release()
+        if isinstance(exc, mod.Refused):
+            return _error(exc.status, exc.code, exc.message)
+        raise
+    slot.release()
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/search")
+async def search(q: str = "", limit: int = 20):
+    return await _insights_call(_insights().search, q, limit)
+
+
+@router.get("/usage")
+async def usage(days: int = 30):
+    return await _insights_call(_insights().usage, days)
+
+
+@router.get("/sessions/{session_id}/changes")
+async def changes(session_id: str):
+    return await _insights_call(_insights().changes, session_id)
+
 # --- exec leg (section 4) ---------------------------------------------------------------------
 
 def _header(ws: WebSocket, name: str) -> Optional[bytes]:
