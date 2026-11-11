@@ -44,6 +44,13 @@ type Request struct {
 type Result struct {
 	Code   int
 	Killed bool
+	// Signal ended the shell; 0 when it exited.
+	Signal syscall.Signal
+	// OOM is true when the command's scope used more than its memory cap
+	// and the kernel's OOM killer killed a process in it. MemoryMax is
+	// that cap in bytes.
+	OOM       bool
+	MemoryMax int64
 }
 
 // Process is a running command.
@@ -135,13 +142,17 @@ func start(shell string, req Request, out func([]byte), grace time.Duration) (*P
 		}
 		_ = pr.Close()
 		p.mu.Lock()
-		code := exitCode(err)
+		res := Result{Code: exitCode(err), Signal: signalOf(err)}
 		// A kill that lost the race to a natural exit keeps the real exit code.
-		killed := p.killed && signaled(err)
-		if killed {
-			code = ExitKilled
+		res.Killed = p.killed && signaled(err)
+		p.mu.Unlock()
+		if res.Killed {
+			res.Code = ExitKilled
+		} else if p.scope != nil && res.Signal != 0 && p.scope.oomKilled(p.unit) {
+			res.OOM, res.MemoryMax = true, p.scope.MemoryMax
 		}
-		p.result = Result{Code: code, Killed: killed}
+		p.mu.Lock()
+		p.result = res
 		p.mu.Unlock()
 		close(p.done)
 	}()
@@ -160,6 +171,16 @@ func exitCode(err error) int {
 		return ee.ExitCode()
 	}
 	return 1
+}
+
+func signalOf(err error) syscall.Signal {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			return ws.Signal()
+		}
+	}
+	return 0
 }
 
 func signaled(err error) bool {

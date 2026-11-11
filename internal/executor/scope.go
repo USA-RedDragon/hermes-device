@@ -160,3 +160,50 @@ func readLimit(path string) int64 {
 	}
 	return n
 }
+
+// oomWait is how long oomKilled waits for systemd to finish a scope whose
+// command it may not have stopped yet; oomSettle is how long it waits for
+// one that still runs, so that systemd sees an OOM kill that ended the
+// main process.
+const (
+	oomWait   = 3 * KillGrace
+	oomSettle = 500 * time.Millisecond
+)
+
+// oomKilled reports whether systemd ended the scope unit because the
+// kernel's OOM killer killed a process in it (OOMPolicy=kill gives the
+// unit result oom-kill), and clears the failed unit. systemd keeps a
+// failed scope until reset-failed, so the result does not race the
+// unit's removal.
+func (s *Scope) oomKilled(unit string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), oomWait+5*time.Second)
+	defer cancel()
+	start := time.Now()
+	for {
+		out, err := exec.CommandContext(ctx, s.Systemctl, "--user", "show", "--property=ActiveState,Result", unit).Output() //nolint:gosec // systemctl with a unit name we made
+		if err != nil {
+			return false
+		}
+		var state, result string
+		for line := range strings.SplitSeq(string(out), "\n") {
+			if v, ok := strings.CutPrefix(line, "ActiveState="); ok {
+				state = v
+			} else if v, ok := strings.CutPrefix(line, "Result="); ok {
+				result = v
+			}
+		}
+		waited := time.Since(start)
+		running := state == "active" || state == "activating" || state == "deactivating"
+		if !running || state == "active" && result == "success" && waited >= oomSettle || waited >= oomWait {
+			if state == "failed" {
+				_ = exec.CommandContext(ctx, s.Systemctl, "--user", "reset-failed", unit).Run() //nolint:gosec // as above
+			}
+			return result == "oom-kill"
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}

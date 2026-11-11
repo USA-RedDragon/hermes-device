@@ -24,6 +24,7 @@ import (
 	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
 	"github.com/USA-RedDragon/hermes-device/protocol"
 	"github.com/coder/websocket"
+	"golang.org/x/sys/unix"
 )
 
 // Errors that stop Run. hubapi.ErrUnauthorized also stops it.
@@ -1125,7 +1126,7 @@ func (c *Client) exec(ctx context.Context, s *session, req protocol.Exec) {
 		return
 	}
 	timeout := time.Duration(req.Timeout * float64(time.Second))
-	p, err := executor.Start(c.opts.Shell, executor.Request{
+	p, err := executor.Start(c.opts.Shell, executor.Request{ //nolint:contextcheck // a command outlives the request; its scope check has its own timeout
 		Cmd: req.Cmd, Cwd: cwd, Login: req.Login, Timeout: timeout, Stdin: req.Stdin, Env: c.opts.Env, Scope: c.opts.Scope,
 	}, cmd.onOutput)
 	if err != nil {
@@ -1138,9 +1139,24 @@ func (c *Client) exec(ctx context.Context, s *session, req protocol.Exec) {
 	cmd.mu.Unlock()
 	c.wg.Go(func() {
 		res, _ := p.Wait(context.WithoutCancel(ctx))
-		c.finished(cmd, protocol.Exit{Type: protocol.TypeExit, ID: req.ID, Code: res.Code, Killed: res.Killed})
-		slog.Debug("Command ended", "id", req.ID, "code", res.Code, "killed", res.Killed)
+		c.finished(cmd, exitMessage(req.ID, res))
+		if res.OOM {
+			slog.Warn("Command killed: out of memory", "id", req.ID, "memory_max", res.MemoryMax)
+		}
+		slog.Debug("Command ended", "id", req.ID, "code", res.Code, "killed", res.Killed, "signal", res.Signal)
 	})
+}
+
+// exitMessage is the exit message of command id that ended with res.
+func exitMessage(id string, res executor.Result) protocol.Exit {
+	e := protocol.Exit{Type: protocol.TypeExit, ID: id, Code: res.Code, Killed: res.Killed}
+	if res.Signal != 0 {
+		e.Signal = unix.SignalName(res.Signal)
+	}
+	if res.OOM {
+		e.Reason, e.MemoryMax = protocol.ExitReasonOOM, res.MemoryMax
+	}
+	return e
 }
 
 // completeUTF8 returns the length of the longest prefix of b that does not

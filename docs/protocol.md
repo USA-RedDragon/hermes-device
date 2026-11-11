@@ -224,7 +224,10 @@ Merged stdout and stderr, in order. Each `data` is valid UTF-8: the device never
 {"type": "exit", "id": "4b1e...", "code": 0}
 {"type": "exit", "id": "4b1e...", "code": 130, "killed": true}
 {"type": "exit", "id": "4b1e...", "code": 126, "error": "device desktop refused: working directory \"/etc\": outside the allowed roots"}
+{"type": "exit", "id": "4b1e...", "code": 137, "signal": "SIGKILL", "reason": "oom", "memory_max": 1610612736}
 ```
+
+`signal`, when present, names the signal that ended the command's shell, such as `SIGKILL`. `reason` is `oom` (<!-- docgen:const pkg=protocol name=ExitReasonOOM code=false -->oom<!-- /docgen:const -->) when the command used more memory than its cap and the kernel's OOM killer ended it; `memory_max` is then the cap in bytes. The device sends `oom` only when the command ran in a systemd scope of its own (`device.command-memory-max`, Linux with a systemd user manager) and systemd reports the scope's result as `oom-kill`; it does not infer it from `SIGKILL`. The plugin adds a note to the command's output, for example `[killed: out of memory (limit 1.5 GiB). ...]`. All three fields are optional: a plugin that does not know them ignores them and sees the exit code (137 for `SIGKILL`), and a plugin ignores a `reason` it does not know.
 
 | Code | Meaning |
 |---|---|

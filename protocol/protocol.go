@@ -290,14 +290,23 @@ type Output struct {
 }
 
 // Exit reports how a command ended. Error is set when the device refused
-// or could not start the command.
+// or could not start the command. Signal names the signal that ended the
+// command's shell, such as SIGKILL. Reason is ExitReasonOOM when the
+// command used more memory than its cap, MemoryMax bytes.
 type Exit struct {
-	Type   string `json:"type"`
-	ID     string `json:"id"`
-	Code   int    `json:"code"`
-	Killed bool   `json:"killed,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Type      string `json:"type"`
+	ID        string `json:"id"`
+	Code      int    `json:"code"`
+	Killed    bool   `json:"killed,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Signal    string `json:"signal,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	MemoryMax int64  `json:"memory_max,omitempty"`
 }
+
+// ExitReasonOOM is the exit reason of a command that the kernel's OOM
+// killer ended because it used more memory than its cap.
+const ExitReasonOOM = "oom"
 
 // Ping and Pong are the application-level liveness check that crosses the
 // hub. Pong echoes Ping's Seq.

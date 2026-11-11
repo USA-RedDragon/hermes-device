@@ -152,3 +152,73 @@ func TestStartInScope(t *testing.T) {
 		t.Errorf("args %q", got)
 	}
 }
+
+func scopeIn(bin string) *executor.Scope {
+	return &executor.Scope{SystemdRun: filepath.Join(bin, "systemd-run"), Systemctl: filepath.Join(bin, "systemctl"), MemoryMax: 64 << 20}
+}
+
+func TestScopeReportsOOM(t *testing.T) {
+	t.Parallel()
+	bin, args := fakeSystemd(t, "", `ActiveState=failed\nResult=oom-kill\n`)
+	res, _ := run(t, executor.Request{Cmd: "kill -KILL $$", Cwd: t.TempDir(), Env: os.Environ(), Scope: scopeIn(bin)})
+	if !res.OOM || res.MemoryMax != 64<<20 || res.Signal != syscall.SIGKILL || res.Code != 137 || res.Killed {
+		t.Errorf("result %+v", res)
+	}
+	var unit string
+	for _, a := range readArgs(t, args) {
+		if u, ok := strings.CutPrefix(a, "--unit="); ok {
+			unit = u
+		}
+	}
+	ctl, _ := os.ReadFile(filepath.Join(bin, "ctl"))
+	if unit == "" || string(ctl) != "--user show --property=ActiveState,Result "+unit+"\n--user reset-failed "+unit+"\n" {
+		t.Errorf("systemctl calls %q for unit %q", ctl, unit)
+	}
+}
+
+func TestScopeSignalWithoutOOM(t *testing.T) {
+	t.Parallel()
+	bin, _ := fakeSystemd(t, "", `ActiveState=inactive\nResult=success\n`)
+	res, _ := run(t, executor.Request{Cmd: "kill -KILL $$", Cwd: t.TempDir(), Env: os.Environ(), Scope: scopeIn(bin)})
+	if res.OOM || res.Signal != syscall.SIGKILL || res.Code != 137 {
+		t.Errorf("result %+v", res)
+	}
+	if ctl, _ := os.ReadFile(filepath.Join(bin, "ctl")); strings.Contains(string(ctl), "reset-failed") {
+		t.Errorf("reset a unit that did not fail: %q", ctl)
+	}
+}
+
+func TestScopeExitSkipsSystemctl(t *testing.T) {
+	t.Parallel()
+	bin, _ := fakeSystemd(t, "", `ActiveState=failed\nResult=oom-kill\n`)
+	res, _ := run(t, executor.Request{Cmd: "exit 137", Cwd: t.TempDir(), Env: os.Environ(), Scope: scopeIn(bin)})
+	if res.OOM || res.Signal != 0 || res.Code != 137 {
+		t.Errorf("result %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(bin, "ctl")); err == nil {
+		t.Error("asked systemctl about a command that exited")
+	}
+}
+
+// TestScopeOOMSystemd runs a command that allocates 256 MiB in a real
+// systemd user scope capped at 64 MiB. It needs a systemd user manager,
+// python3, and TALARIA_SYSTEMD_TESTS=1.
+func TestScopeOOMSystemd(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("TALARIA_SYSTEMD_TESTS") != "1" {
+		t.Skip("set TALARIA_SYSTEMD_TESTS=1 to run commands in real systemd scopes")
+	}
+	s, err := executor.NewScope(t.Context(), executor.SystemProbe(os.Environ()), 64<<20, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := `python3 -c 'b = bytearray(256 << 20); print("survived")'; echo after`
+	res, out := run(t, executor.Request{Cmd: cmd, Cwd: t.TempDir(), Env: os.Environ(), Scope: s})
+	if !res.OOM || res.MemoryMax != 64<<20 || res.Signal == 0 || strings.Contains(out, "survived") || strings.Contains(out, "after") {
+		t.Errorf("result %+v, output %q", res, out)
+	}
+	res, out = run(t, executor.Request{Cmd: "echo small; exit 4", Cwd: t.TempDir(), Env: os.Environ(), Scope: s})
+	if res.OOM || res.Code != 4 || out != "small\n" {
+		t.Errorf("small command: %+v, %q", res, out)
+	}
+}

@@ -101,6 +101,7 @@ CLOSE_BACKEND_UNAVAILABLE = 4502
 EXIT_REFUSED = 126
 EXIT_KILLED = 130
 EXIT_LOST = 255
+EXIT_REASON_OOM = "oom"
 
 PING_INTERVAL_S = 25
 PING_TIMEOUT_S = 15
@@ -493,6 +494,24 @@ class DeviceProcess:
         """Ask the device to lift its own timeout of the command (section 4.10). False when the
         device does not offer ``detach``, the command is not running there, or the send failed."""
         return self.poll() is None and self._detach_fn is not None and self._detach_fn()
+
+
+def format_bytes(n: int) -> str:
+    """Bytes as GiB or MiB with at most one decimal, for example 1.5 GiB."""
+    for unit, size in (("GiB", 1 << 30), ("MiB", 1 << 20), ("KiB", 1 << 10)):
+        if n >= size:
+            return f"{n / size:.1f}".removesuffix(".0") + " " + unit
+    return f"{n} bytes"
+
+
+def oom_note(memory_max: Any) -> str:
+    """The note the model sees for a command the device's kernel killed for memory (exit reason
+    ``oom``, docs/protocol.md section 4.4)."""
+    limit = ""
+    if isinstance(memory_max, int) and not isinstance(memory_max, bool) and memory_max > 0:
+        limit = f" (limit {format_bytes(memory_max)})"
+    return (f"[killed: out of memory{limit}. The command used more memory than the device allows one "
+            f"command, so the device stopped it; use less memory, for example by narrowing a search]")
 
 
 def finished_process(code: int, note: str) -> DeviceProcess:
@@ -922,7 +941,10 @@ class Hub:
         proc.error = error
         if proc.refused and proc.cwd:
             self._forget_sandbox_dir(conn, proc.cwd)
-        proc.finish(code, f"[{error}]" if error else "")
+        note = f"[{error}]" if error else ""
+        if msg.get("reason") == EXIT_REASON_OOM:
+            note = oom_note(msg.get("memory_max"))
+        proc.finish(code, note)
 
     def _on_browser(self, conn: DeviceConn, msg: dict) -> None:
         if msg.get("type") == TYPE_BROWSER_STATUS:

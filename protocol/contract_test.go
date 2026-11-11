@@ -51,6 +51,7 @@ func protocolConstants() []shared {
 		{"ExitRefused", protocol.ExitRefused, []string{"EXIT_REFUSED"}},
 		{"ExitKilled", protocol.ExitKilled, []string{"EXIT_KILLED"}},
 		{"ExitLost", protocol.ExitLost, []string{"EXIT_LOST"}},
+		{"ExitReasonOOM", protocol.ExitReasonOOM, []string{"EXIT_REASON_OOM"}},
 		{"PingInterval", protocol.PingInterval, []string{"PING_INTERVAL_S", "PING_INTERVAL"}},
 		{"PingTimeout", protocol.PingTimeout, []string{"PING_TIMEOUT_S", "PING_TIMEOUT"}},
 		{"HelloTimeout", protocol.HelloTimeout, []string{"HELLO_TIMEOUT_S", "HELLO_TIMEOUT"}},
