@@ -13,5 +13,13 @@
   },
   "permissions": ["nativeMessaging", "tabs", "tabGroups", "scripting", "webRequest", "webRequestBlocking", "dns", "<all_urls>"],
   "background": {"scripts": ["background.js"], "persistent": true},
-  "browser_action": {"default_title": "Hermes: not connected"}
+  "icons": {"48": "icon.svg", "96": "icon.svg"},
+  "browser_action": {
+    "default_title": "Hermes: not connected",
+    "default_icon": "toolbar-dark.svg",
+    "theme_icons": [
+      {"light": "toolbar-light.svg", "dark": "toolbar-dark.svg", "size": 16},
+      {"light": "toolbar-light.svg", "dark": "toolbar-dark.svg", "size": 32}
+    ]
+  }
 }
