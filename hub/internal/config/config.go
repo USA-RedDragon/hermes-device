@@ -34,7 +34,7 @@ type HTTP struct {
 
 // OIDC configures login through the OpenID Connect provider (Authentik).
 type OIDC struct {
-	IssuerURL    string   `name:"issuer_url" required:"true" description:"OIDC issuer URL, such as https://auth.example.com/application/o/hermes-hub/"`
+	IssuerURL    string   `name:"issuer_url" required:"true" description:"OIDC issuer URL, such as https://auth.example.com/application/o/talaria-hub/"`
 	ClientID     string   `name:"client_id" required:"true" description:"OIDC client ID"`
 	ClientSecret string   `name:"client_secret" required:"true" secret:"true" description:"OIDC client secret"`
 	Scopes       []string `name:"scopes" default:"openid,profile,email" description:"Scopes to request. Authentik's profile scope carries preferred_username and groups"`
@@ -118,12 +118,12 @@ type Backend struct {
 	Groups         []string        `name:"groups" description:"Hub groups whose members may use this backend"`
 	CWD            string          `name:"cwd" description:"Working directory for new sessions. Default: the gateway's own"`
 	ShowReasoning  *bool           `name:"show_reasoning" description:"Turn on reasoning streaming for each session the hub attaches to. Default true"`
-	Devices        bool            `name:"devices" description:"Let users pair hermes-device devices with this backend. Its Hermes needs the hermes-device plugin, with plugin setting backend_id equal to this backend's id and the hub's public key. Default false"`
-	ACPURL         string          `name:"acp_url" description:"Base URL of this backend's acp-host, such as http://desktop:9130, for editors that connect with hermes-device acp. Only the hub may reach it. Empty: editors cannot connect"`
-	MediaRoots     []string        `name:"media_roots" description:"Absolute folders on this backend's server whose files the hub shows: files a reply names with MEDIA:<path>, browser_screenshot results and images users attached. The hub shows a file only when that chat names it. Empty: only images, in the folders of hermes-device's browser_screenshot (<dir>/cache/screenshots/hermes-device/<session>/<file>) and of attached images (<dir>/cache/images/<file>), under any <dir>. Set it to anchor them to the backend's HERMES_HOME. Other paths, and those the server does not have, are read from the computer or sandbox that runs the chat"`
-	ServiceDevices []ServiceDevice `name:"service_devices" description:"Devices the hub knows from this list instead of pairing, such as each user's sandbox pod that runs hermes-device run. They may use only the exec leg"`
+	Devices        bool            `name:"devices" description:"Let users pair talaria computers with this backend. Its Hermes needs the talaria device plugin, with plugin setting backend_id equal to this backend's id and the hub's public key. Default false"`
+	ACPURL         string          `name:"acp_url" description:"Base URL of this backend's acp-host, such as http://desktop:9130, for editors that connect with talaria acp. Only the hub may reach it. Empty: editors cannot connect"`
+	MediaRoots     []string        `name:"media_roots" description:"Absolute folders on this backend's server whose files the hub shows: files a reply names with MEDIA:<path>, browser_screenshot results and images users attached. The hub shows a file only when that chat names it. Empty: only images, in the folders of the talaria device plugin's browser_screenshot (<dir>/cache/screenshots/hermes-device/<session>/<file>) and of attached images (<dir>/cache/images/<file>), under any <dir>. Set it to anchor them to the backend's HERMES_HOME. Other paths, and those the server does not have, are read from the computer or sandbox that runs the chat"`
+	ServiceDevices []ServiceDevice `name:"service_devices" description:"Devices the hub knows from this list instead of pairing, such as each user's sandbox pod that runs talaria run. They may use only the exec leg"`
 	Honcho         Honcho          `name:"honcho"`
-	AgentMessages  *bool           `name:"agent_messages" description:"Let the agents of this backend message each other through the hub with the hermes-device plugin's device-agents tools (needs devices). Default: on when users names exactly one user and groups is empty; a backend shared by several people needs true, and then all its chats count as one person's"`
+	AgentMessages  *bool           `name:"agent_messages" description:"Let the agents of this backend message each other through the hub with the talaria device plugin's device-agents tools (needs devices). Default: on when users names exactly one user and groups is empty; a backend shared by several people needs true, and then all its chats count as one person's"`
 }
 
 // Honcho is where a backend's Hermes keeps what it learned about its user,
@@ -202,10 +202,10 @@ const defaultClaudeTimeZone = "America/Chicago"
 // Device configures hermes-device: computers that users pair with one of
 // their backends, so Hermes runs commands and editors on them.
 type Device struct {
-	Enabled         bool          `name:"enabled" default:"false" description:"Serve the hermes-device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices"`
+	Enabled         bool          `name:"enabled" default:"false" description:"Serve the talaria device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices"`
 	SigningKey      string        `name:"signing_key" secret:"true" description:"Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set"`
 	SigningKeyFile  string        `name:"signing_key_file" description:"File that holds device.signing_key. Wins over signing_key"`
-	PairingTTL      time.Duration `name:"pairing_ttl" default:"10m" description:"How long a pairing code from hermes-device login stays valid"`
+	PairingTTL      time.Duration `name:"pairing_ttl" default:"10m" description:"How long a pairing code from talaria setup or talaria login stays valid"`
 	PollInterval    time.Duration `name:"poll_interval" default:"5s" description:"How often a device may poll while it waits for the user to confirm pairing"`
 	RecheckInterval time.Duration `name:"recheck_interval" default:"10s" description:"How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time"`
 	TrustedProxies  []string      `name:"trusted_proxies" description:"CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer"`
@@ -215,7 +215,7 @@ type Device struct {
 type ServiceDevice struct {
 	ID    string `name:"id" description:"Device id the backend sees: letters, digits, _ and -, at most 64, not starting with d_ (paired devices use that)"`
 	Name  string `name:"name" description:"Name shown for the device. Default: the id"`
-	Token string `name:"token" secret:"true" description:"The device's token, as hermes-device stores it: hdt_ and at least 32 more characters. The hub keeps only its SHA-256"`
+	Token string `name:"token" secret:"true" description:"The device's token, as talaria stores it: hdt_ and at least 32 more characters. The hub keeps only its SHA-256"`
 }
 
 // Telegram is telegram.Config under its own name: configulator names its

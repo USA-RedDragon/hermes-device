@@ -20,7 +20,7 @@ http:
     # Metrics server port
     port: 8081
 oidc:
-  # OIDC issuer URL, such as https://auth.example.com/application/o/hermes-hub/
+  # OIDC issuer URL, such as https://auth.example.com/application/o/talaria-hub/
   # issuer_url: ""
   # OIDC client ID
   # client_id: ""
@@ -116,13 +116,13 @@ telegram:
   # How the status line of a turn shows its steps and thinking: collapsed (a quote that opens on a tap), expanded, or off
   steps: "collapsed"
 device:
-  # Serve the hermes-device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices
+  # Serve the talaria device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices
   enabled: false
   # Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set
   # signing_key: "(secret)"
   # File that holds device.signing_key. Wins over signing_key
   # signing_key_file: ""
-  # How long a pairing code from hermes-device login stays valid
+  # How long a pairing code from talaria setup or talaria login stays valid
   pairing_ttl: "10m"
   # How often a device may poll while it waits for the user to confirm pairing
   poll_interval: "5s"
