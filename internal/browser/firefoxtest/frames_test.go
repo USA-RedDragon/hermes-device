@@ -345,7 +345,7 @@ func confirmFlow(ctx context.Context, t *testing.T, b *broker.Broker, tabID int,
 func scopedFlow(ctx context.Context, t *testing.T, b *broker.Broker, tabID int, shadow, inner, crossBtn string) {
 	t.Helper()
 	var snap snapResult
-	call(ctx, t, b, "snapshot", map[string]any{keyTab: tabID, "selector": "#host"}, &snap)
+	call(ctx, t, b, "snapshot", map[string]any{keyTab: tabID, keySelector: "#host"}, &snap)
 	t.Logf("selector #host:\n%s", snap.Snapshot)
 	if refByName(snap.Snapshot, `"Shadow button"`) != shadow || strings.Contains(snap.Snapshot, "Inner button") ||
 		strings.Contains(snap.Snapshot, "hover me") {
@@ -356,13 +356,13 @@ func scopedFlow(ctx context.Context, t *testing.T, b *broker.Broker, tabID int, 
 	if got := refsByName(snap.Snapshot, `"Inner button"`); len(got) != 1 || got[0] != crossBtn {
 		t.Errorf("ref %s should outline that button only, got %q", crossBtn, got)
 	}
-	call(ctx, t, b, "snapshot", map[string]any{keyTab: tabID, "selector": "button"}, &snap)
+	call(ctx, t, b, "snapshot", map[string]any{keyTab: tabID, keySelector: "button"}, &snap)
 	t.Logf("selector button:\n%s", snap.Snapshot)
 	if got := refsByName(snap.Snapshot, `"Inner button"`); len(got) != 2 || got[0] != inner || got[1] != crossBtn ||
 		refByName(snap.Snapshot, `"Shadow button"`) != shadow || strings.Contains(snap.Snapshot, "Frames") {
 		t.Errorf("selector button should list the buttons of the page and both frames with their refs, got %q", got)
 	}
-	mustFail(ctx, t, b, "bad selector", "not a valid CSS selector", "snapshot", map[string]any{keyTab: tabID, "selector": "[["})
+	mustFail(ctx, t, b, "bad selector", "not a valid CSS selector", "snapshot", map[string]any{keyTab: tabID, keySelector: "[["})
 	mustFail(ctx, t, b, "stale ref", "unknown or stale ref", "snapshot", map[string]any{keyTab: tabID, keyRef: "e999"})
 }
 
@@ -451,9 +451,9 @@ func interactFlow(ctx context.Context, t *testing.T, b *broker.Broker, tabID int
 	if !waited.Found {
 		t.Error("wait did not see the late text")
 	}
-	call(ctx, t, b, "wait", map[string]any{keyTab: tabID, "selector": "#nothing", keyTimeout: 500}, &waited)
+	call(ctx, t, b, "wait", map[string]any{keyTab: tabID, keySelector: "#nothing", keyTimeout: 500}, &waited)
 	if waited.Found {
 		t.Error("wait found a selector that matches nothing")
 	}
-	mustFail(ctx, t, b, "bad selector", "bad CSS selector", "wait", map[string]any{keyTab: tabID, "selector": "[[", keyTimeout: 100})
+	mustFail(ctx, t, b, "bad selector", "bad CSS selector", "wait", map[string]any{keyTab: tabID, keySelector: "[[", keyTimeout: 100})
 }
