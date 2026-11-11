@@ -39,6 +39,8 @@ class FakeBrowser:
         self.fail: dict[str, tuple[str, str]] = {}
         self.hold: set[str] = set()
         self.autologin: set[str] = set()
+        self.outline = '- link "Learn more" [ref=e1]'
+        self.scopes = True
         self.login_result = {"filled": True, "submitted": True, "landed_host": "app.example.com", "password": "hunter2"}
 
     def answer(self, msg: dict) -> dict | None:
@@ -63,8 +65,11 @@ class FakeBrowser:
                 out["url_autologin"] = args["url"].startswith("https:") and out["url_host"] in self.autologin
             return {"ok": True, "result": out}
         if op == "snapshot":
-            return {"ok": True, "result": {"title": "Example Domain", "url": "https://example.com/",
-                                           "snapshot": '- link "Learn more" [ref=e1]', "element_count": 1}}
+            res = {"title": "Example Domain", "url": "https://example.com/", "snapshot": self.outline,
+                   "element_count": self.outline.count("[ref=")}
+            if self.scopes and (args.get("selector") or args.get("ref")):
+                res.update(scope="ref" if args.get("ref") else "selector", matched=1)
+            return {"ok": True, "result": res}
         if op == "read_text":
             if args.get("offset"):
                 return {"ok": True, "result": {"title": "Example Domain", "text": "part two", "truncated": False,
@@ -128,6 +133,10 @@ class BrowserBase(Base):
         c = mock.patch.object(browser, "_CHOICES", browser.Choices(self.choices_path))
         c.start()
         self.addCleanup(c.stop)
+        for name in ("_LAST_TAB", "_SNAPS"):
+            p = mock.patch.object(browser, name, {})
+            p.start()
+            self.addCleanup(p.stop)
         self.registry = self.registered()
         self.confirm = mock.patch.object(browser, "_confirm", return_value=True)
         self.confirmed = self.confirm.start()
@@ -377,7 +386,7 @@ class ToolTests(BrowserBase):
         self.assertEqual(out["waited"]["frame"], "f1")
         self.assertEqual(out["text_next_offset"], 16)
         out = self.run_tool("browser_snapshot", tab_id=7, text_only=True, text_offset=16)
-        self.assertEqual(self.last("read_text")["args"], {"tab_id": 7, "offset": 16})
+        self.assertEqual(self.last("read_text")["args"], {"tab_id": 7, "offset": 16, "max_chars": 6000})
         self.assertEqual(out["text"], "part two")
         self.assertNotIn("snapshot", out)
         self.assertIn("untrusted", out["note"])
@@ -729,6 +738,115 @@ class ToolTests(BrowserBase):
 
     def test_back(self):
         self.assertEqual(self.run_tool("browser_back", tab_id=7)["tab_id"], 7)
+
+    def test_tabs_action_defaults_to_list(self):
+        self.assertNotIn("action", browser.SCHEMAS["browser_tabs"]["parameters"]["required"])
+        self.assertEqual([t["tab_id"] for t in self.run_tool("browser_tabs")["tabs"]], [7])
+        out = self.run_tool("browser_tabs", action="close")
+        self.assertEqual(out["code"], "bad_arguments")
+        self.assertIn("action list", out["error"])
+
+    def test_tab_defaults_to_the_last_one_used(self):
+        out = self.run_tool("browser_snapshot")
+        self.assertEqual(out["code"], "bad_arguments")
+        self.assertIn("browser_navigate", out["error"])
+        self.assertEqual(self.run_tool("browser_navigate", url="https://example.com/x")["tab_id"], 8)
+        self.assertEqual(self.run_tool("browser_snapshot")["tab_id"], 8)
+        self.assertEqual(self.last("snapshot")["args"]["tab_id"], 8)
+        self.run_tool("browser_snapshot", tab_id=7)
+        self.run_tool("browser_back")
+        self.assertEqual(self.last("back")["args"], {"tab_id": 7})
+        self.run_tool("browser_tabs", action="close", tab_id=7)
+        self.assertEqual(self.run_tool("browser_back")["code"], "bad_arguments")
+        for name in browser.DEFAULT_TAB_TOOLS:
+            self.assertNotIn("tab_id", browser.SCHEMAS[name]["parameters"]["required"], name)
+
+    def test_default_tab_gets_the_approval_of_its_page(self):
+        """pre_tool_call and the handler fill in the same tab, so the grant reaches the click."""
+        self.run_tool("browser_snapshot", tab_id=7)
+        self.fake.inspect = dict(self.fake.inspect, target={"kind": "submit", "host": "bank.example"})
+        self.run_tool("browser_click", ref="e3")
+        self.assertEqual(self.decision["action"], "approve")
+        self.assertEqual(self.last("inspect")["args"]["tab_id"], 7)
+        self.assertEqual(self.last("click")["args"]["tab_id"], 7)
+        self.assertEqual(self.last("click")["args"]["guard"]["submit_hosts"], ["bank.example"])
+
+    def test_snapshot_is_cut_and_continues_from_the_same_outline(self):
+        self.fake.outline = "\n".join(f'- button "Filter {i}" value="x" [ref=e{i}]' for i in range(1, 801))
+        out = self.run_tool("browser_snapshot", tab_id=7)
+        self.assertTrue(out["truncated"])
+        self.assertLessEqual(len(out["snapshot"]), browser.SNAPSHOT_MAX_CHARS)
+        self.assertTrue(out["snapshot"].endswith("]"))
+        self.assertLess(len(json.dumps(out, ensure_ascii=False)), 8192)
+        self.assertIn(f"offset={out['next_offset']}", out["hint"])
+        self.assertEqual(out["total_chars"], len(self.fake.outline))
+        parts, offset = [out["snapshot"]], out["next_offset"]
+        while offset is not None:
+            nxt = self.run_tool("browser_snapshot", tab_id=7, offset=offset)
+            parts.append(nxt["snapshot"])
+            offset = nxt.get("next_offset")
+        self.assertEqual("\n".join(parts), self.fake.outline)
+        self.assertEqual(len([r for r in self.fake.requests if r["op"] == "snapshot"]), 1,
+                         "read on from the outline already taken, so its refs stay valid")
+        self.run_tool("browser_scroll", tab_id=7, direction="down")
+        out = self.run_tool("browser_snapshot", tab_id=7, offset=100)
+        self.assertEqual(len([r for r in self.fake.requests if r["op"] == "snapshot"]), 2)
+        self.assertIn("read again", out["hint"])
+        small = self.run_tool("browser_snapshot", tab_id=7, max_chars=1000)
+        self.assertLessEqual(len(small["snapshot"]), 1000)
+
+    def test_snapshot_scope(self):
+        out = self.run_tool("browser_snapshot", tab_id=7, selector="form#filters")
+        self.assertEqual(self.last("snapshot")["args"], {"tab_id": 7, "interactive_only": False,
+                                                         "selector": "form#filters"})
+        self.assertEqual(out["matched"], 1)
+        self.run_tool("browser_snapshot", tab_id=7, ref="f1e3", mode="interactive")
+        self.assertEqual(self.last("snapshot")["args"], {"tab_id": 7, "interactive_only": True, "ref": "f1e3"})
+        self.assertEqual(self.run_tool("browser_snapshot", tab_id=7, ref="div")["code"], "bad_arguments")
+        self.assertEqual(self.run_tool("browser_snapshot", tab_id=7, ref="e1", selector="p")["code"], "bad_arguments")
+        self.fake.scopes = False
+        out = self.run_tool("browser_snapshot", tab_id=7, selector="form")
+        self.assertEqual(out["code"], "bad_arguments")
+        self.assertIn("Check for Updates", out["error"])
+
+    def test_snapshot_modes(self):
+        out = self.run_tool("browser_snapshot", tab_id=7, mode="text", offset=16)
+        self.assertEqual(self.last("read_text")["args"], {"tab_id": 7, "offset": 16, "max_chars": 6000})
+        self.assertNotIn("snapshot", out)
+        out = self.run_tool("browser_snapshot", tab_id=7, mode="text")
+        self.assertIn("offset=16", out["hint"])
+        self.assertEqual(self.run_tool("browser_snapshot", tab_id=7, mode="all")["code"], "bad_arguments")
+        self.fake.outline = "- paragraph [ref=e1]\n" * 400
+        out = self.run_tool("browser_snapshot", tab_id=7, mode="both")
+        self.assertEqual(out["text"], "")
+        self.assertIn("mode text", out["hint"])
+        self.assertLess(len(json.dumps(out)), 8192)
+
+    def test_eval_waits_first(self):
+        out = self.run_tool("browser_eval", tab_id=7, script="return 1", wait_selector="table", wait_seconds=4)
+        ops = [r["op"] for r in self.fake.requests]
+        self.assertLess(ops.index("wait"), ops.index("eval"))
+        self.assertEqual(self.last("wait")["args"], {"tab_id": 7, "text": "", "selector": "table", "timeout_ms": 4000})
+        self.assertEqual(out["waited"]["found"], True)
+
+    def test_errors_say_what_to_do_next(self):
+        self.fake.fail["click"] = (core.BROWSER_FAILED, "unknown or stale ref e9; take a new snapshot")
+        out = self.run_tool("browser_click", tab_id=7, ref="e9")
+        self.assertIn("browser_snapshot with tab_id=7", out["next"])
+        self.fake.fail["snapshot"] = (core.BROWSER_REFUSED, "tab 3 is not in the Hermes tab group")
+        self.assertIn("browser_tabs", self.run_tool("browser_snapshot", tab_id=3)["next"])
+        self.fake.fail["eval"] = (core.BROWSER_FAILED, "script error: x is not defined")
+        self.assertIn("return", self.run_tool("browser_eval", tab_id=7, script="return x")["next"])
+
+    def test_schemas_are_short_and_show_an_example(self):
+        total = 0
+        for name, schema in browser.SCHEMAS.items():
+            self.assertIn("Example: {", schema["description"], name)
+            example = json.loads(schema["description"].split("Example: ", 1)[1])
+            self.assertLessEqual(set(example), set(schema["parameters"]["properties"]), name)
+            self.assertLessEqual(set(schema["parameters"]["required"]), set(example) | {"device"}, name)
+            total += len(json.dumps({"type": "function", "function": schema}, ensure_ascii=False))
+        self.assertLess(total, 9500, "the eager toolset's schemas cost about chars/4 tokens on every turn")
 
     def test_vision_multimodal(self):
         with mock.patch.object(browser, "_native_vision", lambda: True), \

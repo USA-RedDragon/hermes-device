@@ -875,12 +875,14 @@ def _pre_tool_call(tool_name: str, args: Optional[dict], session_id: str) -> Opt
     if tool_name not in GATED:
         return None
     args = args if isinstance(args, dict) else {}
-    key = _grant_key(_session(session_id), tool_name, args)
-    _take_grant(key)
+    _take_grant(_grant_key(_session(session_id), tool_name, args))
     try:
         _, conn = target(session_id, start=False)
     except Unavailable:
         return None
+    args = with_default_tab(tool_name, args, session_id, conn)
+    key = _grant_key(_session(session_id), tool_name, args)
+    _take_grant(key)
     core = _core()
     try:
         grant, approval = decide(tool_name, args, conn)
@@ -1130,20 +1132,118 @@ def _resize(path: Path, mime: str) -> str:
 
 # --- handlers ----------------------------------------------------------------------------------
 
-def _tool(fn: Callable[[dict, Any, str], Any]) -> Callable[..., Any]:
+# Tools whose tab_id defaults to the agent tab this session used last.
+DEFAULT_TAB_TOOLS = frozenset({"browser_back", "browser_snapshot", "browser_click", "browser_type", "browser_press",
+                               "browser_hover", "browser_scroll", "browser_eval", "browser_vision",
+                               "browser_screenshot"})
+_LAST_TAB: dict[str, tuple[str, int]] = {}
+_LAST_TAB_LOCK = threading.Lock()
+_MAX_LAST_TABS = 1000
+
+
+def last_tab(session_id: str, device_id: str) -> Optional[int]:
+    """The agent tab this session used last on that device, if any."""
+    with _LAST_TAB_LOCK:
+        entry = _LAST_TAB.get(_session(session_id))
+    return entry[1] if entry and entry[0] == device_id else None
+
+
+def _remember_tab(session_id: str, device_id: str, tab: Optional[int]) -> None:
+    sid = _session(session_id)
+    if not sid:
+        return
+    with _LAST_TAB_LOCK:
+        _LAST_TAB.pop(sid, None)
+        if tab is not None:
+            _LAST_TAB[sid] = (device_id, tab)
+            while len(_LAST_TAB) > _MAX_LAST_TABS:
+                del _LAST_TAB[next(iter(_LAST_TAB))]
+
+
+def with_default_tab(tool_name: str, args: dict, session_id: str, conn: Any) -> dict:
+    """``args`` with tab_id set to the session's last agent tab when the tool takes a tab and the
+    call names none. pre_tool_call and the handler both apply it, so approvals see the same tab."""
+    if tool_name not in DEFAULT_TAB_TOOLS or _tab_id(args) is not None:
+        return args
+    tab = last_tab(session_id, conn.device_id)
+    return args if tab is None else dict(args, tab_id=tab)
+
+
+def _result_tab(result: Any) -> Optional[int]:
+    if isinstance(result, str) and len(result) < 1_000_000:
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return None
+    if isinstance(result, dict) and "error" not in result:
+        return _tab_id(result)
+    return None
+
+
+def next_step(tool: str, code: str, message: str, tab: Optional[int]) -> str:
+    """What the model should do after a failed browser call, or "" when the error says it."""
+    at = f"tab_id={tab}" if tab is not None else "tab_id"
+    m = message.lower()
+    if "stale ref" in m or "bad ref" in m or "unknown frame" in m or "the frame is gone" in m:
+        return f"Call browser_snapshot with {at}, then use a ref from that result."
+    if "not in the hermes tab group" in m or "no tab with id" in m or "invalid tab id" in m:
+        return "Call browser_tabs to list the agent's tabs, or browser_navigate with url to open a new tab."
+    if "page load timed out" in m:
+        return f"The page is slow. Call browser_snapshot with {at} and wait_for set to text you expect on the page."
+    if "script error" in m:
+        return "Fix the script and call browser_eval again. It is the body of an async function: use await and " \
+               "end with return <value>."
+    if "did not finish" in m:
+        return "Return sooner from the script. To wait for the page, use wait_for or wait_selector, not a sleep."
+    if code == "declined":
+        return "The user said no. Do not retry; ask the user how to go on."
+    if code == _core().BROWSER_NOT_CONNECTED:
+        return "Call browser_status to see which computers have Firefox connected."
+    if code == _core().BROWSER_TIMEOUT:
+        return "Retry once. If it fails again, call browser_status."
+    return ""
+
+
+def _fail(tool: str, message: str, code: str, tab: Optional[int]) -> str:
+    out = {"error": message, "code": code}
+    hint = next_step(tool, code, message, tab)
+    if hint:
+        out["next"] = hint
+    return json.dumps(out, ensure_ascii=False)
+
+
+# Tools after which a cached outline of their tab is no longer the page.
+_CHANGES_PAGE = frozenset({"browser_tabs", "browser_navigate", "browser_back", "browser_click", "browser_type",
+                           "browser_press", "browser_hover", "browser_scroll", "browser_eval", "browser_login"})
+
+
+def _tool(fn: Callable[[dict, Any, str], Any], name: str) -> Callable[..., Any]:
     def handler(args: dict, task_id: str = "", session_id: str = "", **_kwargs) -> Any:
         args = args if isinstance(args, dict) else {}
+        tab = _tab_id(args)
         try:
             _, conn = target(session_id)
-            return fn(args, conn, session_id)
+            args = with_default_tab(name, args, session_id, conn)
+            tab = _tab_id(args)
+            result = fn(args, conn, session_id)
+            if name == "browser_tabs" and args.get("action") == "close":
+                if last_tab(session_id, conn.device_id) == tab:
+                    _remember_tab(session_id, conn.device_id, None)
+            else:
+                used = _result_tab(result)
+                if used is not None:
+                    _remember_tab(session_id, conn.device_id, used)
+            if name in _CHANGES_PAGE and tab is not None:
+                forget_snapshot(conn.device_id, tab)
+            return result
         except Started as exc:
             return _err(str(exc), "started")
         except Unavailable as exc:
             return _err(str(exc), "unavailable")
         except _core().BrowserError as exc:
-            return _err(f"browser: {exc}", exc.code)
+            return _fail(name, f"browser: {exc}", exc.code, tab)
         except ValueError as exc:
-            return _err(str(exc), "bad_arguments")
+            return _fail(name, str(exc), "bad_arguments", tab)
     handler.__name__ = fn.__name__
     return handler
 
@@ -1151,7 +1251,8 @@ def _tool(fn: Callable[[dict, Any, str], Any]) -> Callable[..., Any]:
 def _need_tab(args: dict) -> int:
     tab = _tab_id(args)
     if tab is None:
-        raise ValueError("tab_id is required; browser_tabs lists the agent's tabs")
+        raise ValueError("tab_id is required: this session has no agent tab yet. Open one with browser_navigate "
+                         "(url only), or call browser_tabs to list the agent's tabs.")
     return tab
 
 
@@ -1361,8 +1462,10 @@ def _tabs(args: dict, conn: Any, sid: str) -> str:
             raise ValueError("url is required to open a tab")
         return _ok(_page(call(conn, "tab_open", {"url": url, "guard": _visit_guard("browser_tabs", args, sid)})))
     if action == "close":
+        if _tab_id(args) is None:
+            raise ValueError("tab_id is required to close a tab; browser_tabs with action list shows the tab ids")
         return _ok(call(conn, "tab_close", {"tab_id": _need_tab(args)}))
-    raise ValueError("action must be list, open or close")
+    raise ValueError("action must be list, open or close, such as {\"action\": \"list\"}")
 
 
 def _navigate(args: dict, conn: Any, sid: str) -> str:
@@ -1393,34 +1496,144 @@ def _int(args: dict, name: str, default: float, low: float, high: float) -> floa
 MAX_WAIT_S = 30
 
 
+def _wait(args: dict, conn: Any, tab: int) -> Optional[dict]:
+    """Wait for wait_for (text) or wait_selector (CSS) when the call gives one."""
+    wait_text, wait_sel = str(args.get("wait_for") or ""), str(args.get("wait_selector") or "")
+    if not (wait_text or wait_sel):
+        return None
+    seconds = _int(args, "wait_seconds", 10, 0, MAX_WAIT_S)
+    waited = call(conn, "wait", {"tab_id": tab, "text": wait_text, "selector": wait_sel,
+                                 "timeout_ms": int(seconds * 1000)}, seconds + 30)
+    return waited if isinstance(waited, dict) else {}
+
+
+# One call's result stays under about 8 KB: the outline and the text share this many characters.
+SNAPSHOT_MAX_CHARS = 6000
+SNAPSHOT_MAX_CHARS_LIMIT = 40000
+SNAPSHOT_MIN_TEXT_CHARS = 500
+SNAPSHOT_MODES = ("outline", "interactive", "text", "both")
+# The outlines that a call with offset continues, per (device, tab), until another tool uses the tab.
+_SNAPS: dict[tuple[str, int], dict] = {}
+_SNAPS_LOCK = threading.Lock()
+_MAX_SNAPS = 64
+
+
+def forget_snapshot(device_id: str, tab: int) -> None:
+    with _SNAPS_LOCK:
+        _SNAPS.pop((device_id, tab), None)
+
+
+def _snapshot_mode(args: dict) -> str:
+    mode = str(args.get("mode") or "").strip().lower()
+    if mode:
+        if mode not in SNAPSHOT_MODES:
+            raise ValueError("mode must be outline, interactive, text or both, such as {\"mode\": \"text\"}")
+        return mode
+    if args.get("text_only"):
+        return "text"
+    return ("both" if args.get("full_text") else "") or ("interactive" if args.get("interactive_only") else "outline")
+
+
+def _cut(text: str, offset: int, budget: int) -> tuple[str, Optional[int]]:
+    """``text`` from offset, at most budget characters, ending at a line break when one is near.
+    Returns the part and the offset of the rest (None at the end)."""
+    end = offset + budget
+    if end >= len(text):
+        return text[offset:], None
+    nl = text.rfind("\n", offset, end)
+    if nl > offset + budget // 2:
+        end = nl + 1
+    return text[offset:end].rstrip("\n"), end
+
+
+def _outline(args: dict, conn: Any, tab: int, mode: str, offset: int) -> tuple[dict, bool]:
+    """The outline the call reads (``fresh`` False when it continues the cached one)."""
+    selector = str(args.get("selector") or "").strip()
+    ref = _need_ref(args) if str(args.get("ref") or "").strip() else ""
+    if selector and ref:
+        raise ValueError("give selector or ref, not both")
+    shape = (mode, bool(args.get("interactive_only")), selector, ref)
+    with _SNAPS_LOCK:
+        cached = _SNAPS.get((conn.device_id, tab))
+    if offset and cached and cached["shape"] == shape:
+        return cached, False
+    req: dict = {"tab_id": tab, "interactive_only": mode == "interactive" or bool(args.get("interactive_only"))}
+    if selector:
+        req["selector"] = selector
+    if ref:
+        req["ref"] = ref
+    snap = call(conn, "snapshot", req)
+    snap = snap if isinstance(snap, dict) else {}
+    if (selector or ref) and not snap.get("scope"):
+        raise ValueError(f"the Firefox extension on device {conn.name} (version "
+                         f"{conn.browser.get('extension_version') or 'unknown'}) cannot limit a snapshot to a selector "
+                         f"or ref. Call browser_snapshot without selector and ref, or ask the user to update the "
+                         f"extension (about:addons, Check for Updates).")
+    entry = {"shape": shape, "title": snap.get("title", ""), "url": snap.get("url", ""),
+             "snapshot": str(snap.get("snapshot") or ""), "element_count": snap.get("element_count", 0)}
+    if snap.get("scope"):
+        entry["matched"] = snap.get("matched", 0)
+    with _SNAPS_LOCK:
+        _SNAPS.pop((conn.device_id, tab), None)
+        _SNAPS[(conn.device_id, tab)] = entry
+        while len(_SNAPS) > _MAX_SNAPS:
+            del _SNAPS[next(iter(_SNAPS))]
+    return entry, True
+
+
 def _snapshot(args: dict, conn: Any, _sid: str) -> str:
     tab = _need_tab(args)
+    mode = _snapshot_mode(args)
+    budget = int(_int(args, "max_chars", SNAPSHOT_MAX_CHARS, SNAPSHOT_MIN_TEXT_CHARS, SNAPSHOT_MAX_CHARS_LIMIT))
+    offset = int(_int(args, "offset", 0, 0, 1 << 40))
     out: dict = {"tab_id": tab}
-    wait_text, wait_sel = str(args.get("wait_for") or ""), str(args.get("wait_selector") or "")
-    if wait_text or wait_sel:
-        seconds = _int(args, "wait_seconds", 10, 0, MAX_WAIT_S)
-        waited = call(conn, "wait", {"tab_id": tab, "text": wait_text, "selector": wait_sel,
-                                     "timeout_ms": int(seconds * 1000)}, seconds + 30)
-        out["waited"] = waited if isinstance(waited, dict) else {}
-    if not args.get("text_only"):
-        snap = call(conn, "snapshot", {"tab_id": tab, "interactive_only": bool(args.get("interactive_only"))})
-        snap = snap if isinstance(snap, dict) else {}
-        out.update({"title": snap.get("title", ""), "url": snap.get("url", ""),
-                    "snapshot": snap.get("snapshot", ""), "element_count": snap.get("element_count", 0)})
-    if args.get("full_text") or args.get("text_only"):
-        req: dict = {"tab_id": tab}
-        offset = int(_int(args, "text_offset", 0, 0, 1 << 40))
-        if offset:
-            req["offset"] = offset
-        text = call(conn, "read_text", req)
-        if isinstance(text, dict):
-            out.setdefault("title", text.get("title", ""))
-            out.setdefault("url", text.get("url", ""))
-            out["text"] = text.get("text", "")
-            out["text_truncated"] = bool(text.get("truncated"))
-            if text.get("next_offset") is not None:
-                out["text_next_offset"] = text["next_offset"]
-                out["text_total_chars"] = text.get("total_chars")
+    waited = _wait(args, conn, tab)
+    if waited is not None:
+        out["waited"] = waited
+        forget_snapshot(conn.device_id, tab)
+    hints = []
+    if mode != "text":
+        snap, fresh = _outline(args, conn, tab, mode, offset)
+        if offset and fresh:
+            hints.append("The page was read again for this part, so refs from earlier parts may have changed.")
+        text = snap["snapshot"]
+        part, rest = _cut(text, min(offset, len(text)), budget)
+        out.update({"title": snap["title"], "url": snap["url"], "snapshot": part,
+                    "element_count": snap["element_count"]})
+        if "matched" in snap:
+            out["matched"] = snap["matched"]
+        if rest is not None:
+            out.update({"truncated": True, "next_offset": rest, "total_chars": len(text)})
+            hints.append(f"Truncated: {len(text) - rest} more chars. Call browser_snapshot again with tab_id={tab} "
+                         f"and offset={rest} to read on, or limit it with selector or ref.")
+        budget -= len(part)
+    if mode in ("text", "both"):
+        text_offset = int(_int(args, "text_offset", 0, 0, 1 << 40))
+        if mode == "text" and offset:
+            text_offset = offset
+        if mode == "both" and budget < SNAPSHOT_MIN_TEXT_CHARS:
+            out.update({"text": "", "text_truncated": True, "text_next_offset": text_offset})
+            hints.append(f"The outline used this call's size, so no text came back. Read the text with mode text "
+                         f"and offset={text_offset}.")
+        else:
+            req: dict = {"tab_id": tab, "max_chars": max(budget, SNAPSHOT_MIN_TEXT_CHARS)}
+            if text_offset:
+                req["offset"] = text_offset
+            page = call(conn, "read_text", req)
+            if isinstance(page, dict):
+                out.setdefault("title", page.get("title", ""))
+                out.setdefault("url", page.get("url", ""))
+                out["text"] = page.get("text", "")
+                out["text_truncated"] = bool(page.get("truncated"))
+                if page.get("next_offset") is not None:
+                    nxt, total = page["next_offset"], page.get("total_chars")
+                    out.update({"text_next_offset": nxt, "text_total_chars": total})
+                    more = f"{total - nxt} more chars" if isinstance(total, int) else "more text"
+                    key = "offset" if mode == "text" else "text_offset"
+                    hints.append(f"Text truncated: {more}. Call browser_snapshot again with tab_id={tab}, mode "
+                                 f"{mode} and {key}={nxt} to read on.")
+    if hints:
+        out["hint"] = " ".join(hints)
     return _ok(_untrusted(out))
 
 
@@ -1497,6 +1710,7 @@ def _eval(args: dict, conn: Any, sid: str) -> Any:
     grant = _take_grant(_grant_key(_session(sid), "browser_eval", args))
     if grant.get("confirm") and not _confirm(grant.get("confirm_text") or "Allow this script?"):
         return _err("the user did not allow this script", "declined")
+    waited = _wait(args, conn, tab)
     req: dict = {"tab_id": tab, "script": script, "allow_writes": bool(args.get("allow_writes")),
                  "max_chars": int(_int(args, "max_chars", 100000, 1, 1000000)),
                  "guard": {"script_hosts": grant.get("script_hosts") or [], "write_hosts": grant.get("write_hosts") or [],
@@ -1509,7 +1723,10 @@ def _eval(args: dict, conn: Any, sid: str) -> Any:
     res = call(conn, "eval", req, EVAL_TIMEOUT_S)
     res = res if isinstance(res, dict) else {}
     keep = ("tab_id", "url", "title", "frame", "read_only", "result", "result_text", "truncated", "result_chars", "hint")
-    return _ok(_untrusted({k: res[k] for k in keep if k in res}))
+    out = {k: res[k] for k in keep if k in res}
+    if waited is not None:
+        out["waited"] = waited
+    return _ok(_untrusted(out))
 
 
 LOGIN_TIMEOUT_S = 200
@@ -1573,11 +1790,14 @@ def _screenshot(args: dict, conn: Any, sid: str) -> str:
 
 # --- schemas -----------------------------------------------------------------------------------
 
-_TAB = {"type": "integer", "description": "Tab id from browser_tabs or an earlier browser call"}
-_REF = {"type": "string", "description": "Element ref from the last browser_snapshot of this tab, such as e12, or "
-                                        "f1e3 for an element inside a frame"}
-_FULL = {"type": "boolean", "description": "Capture the whole page, not only the visible part (long pages are "
-                                          "scaled down; to read text, scroll and look again instead)"}
+_TAB = {"type": "integer", "description": "Default: the last tab used"}
+_REF = {"type": "string", "description": "Ref from the last snapshot"}
+_FULL = {"type": "boolean", "description": "Whole page, not only the visible part"}
+_WAIT = {
+    "wait_for": {"type": "string", "description": "First wait until this text shows"},
+    "wait_selector": {"type": "string", "description": "First wait until this CSS selector matches"},
+    "wait_seconds": {"type": "number", "description": "Longest wait (default 10, max 30)"},
+}
 
 
 def _schema(name: str, description: str, props: dict, required: list[str]) -> dict:
@@ -1587,134 +1807,118 @@ def _schema(name: str, description: str, props: dict, required: list[str]) -> di
 
 SCHEMAS = {
     "browser_status": _schema(
-        "browser_status", "Report whether this session can use the user's own Firefox, on which computer, and list "
-        "the agent's tabs and the user's computers with browser control. Call it before other browser tools when "
-        "unsure.", {}, []),
+        "browser_status", "Show whether this chat can use the user's Firefox, on which computer, and the agent's "
+        "tabs. Example: {}", {}, []),
     "browser_use_device": _schema(
-        "browser_use_device", "Choose which of the user's computers' Firefox the browser tools use in this session "
-        "(browser_status lists them). With job_id, set it for a scheduled job's runs instead. A job created in a "
-        "session gets that session's browser device.",
-        {"device": {"type": "string", "description": "Device name or id from browser_status, or \"default\" to "
-                                                     "go back to the default"},
-         "job_id": {"type": "string", "description": "A scheduled job's id, to set its browser device"}},
+        "browser_use_device", "Choose which computer's Firefox the browser tools use (browser_status lists them). "
+        "With job_id, set it for a scheduled job. Example: {\"device\": \"desktop\"}",
+        {"device": {"type": "string", "description": "Device name or id, or \"default\""},
+         "job_id": {"type": "string", "description": "Scheduled job id"}},
         ["device"]),
     "browser_tabs": _schema(
-        "browser_tabs", "List, open or close tabs in the agent's \"Hermes\" tab group in the user's own Firefox. "
-        "The agent can use only tabs in that group.",
-        {"action": {"type": "string", "enum": ["list", "open", "close"], "description": "What to do"},
-         "url": {"type": "string", "description": "http or https URL to open (action open)"},
-         "tab_id": dict(_TAB, description="Tab to close (action close)")}, ["action"]),
+        "browser_tabs", "List, open or close the agent's tabs (the \"Hermes\" tab group) in the user's Firefox. "
+        "Example: {\"action\": \"close\", \"tab_id\": 12}",
+        {"action": {"type": "string", "enum": ["list", "open", "close"], "description": "Default list"},
+         "url": {"type": "string", "description": "URL to open (open)"},
+         "tab_id": {"type": "integer", "description": "Tab to close (close)"}}, []),
     "browser_navigate": _schema(
-        "browser_navigate", "Open a URL in the user's own Firefox, which has the user's logins. Without tab_id it "
-        "opens a new tab in the agent's tab group. The user approves the first visit to each site.",
+        "browser_navigate", "Open a URL in the user's Firefox, with the user's logins. Without tab_id it opens a "
+        "new agent tab. The user approves the first visit to each site. Example: {\"url\": \"https://example.com\"}",
         {"url": {"type": "string", "description": "http or https URL"},
-         "tab_id": dict(_TAB, description="Agent tab to navigate; omit to open a new tab")}, ["url"]),
-    "browser_back": _schema("browser_back", "Go back one page in an agent tab.", {"tab_id": _TAB}, ["tab_id"]),
+         "tab_id": {"type": "integer", "description": "Agent tab to load it in; omit for a new tab"}}, ["url"]),
+    "browser_back": _schema("browser_back", "Go back one page. Example: {\"tab_id\": 12}", {"tab_id": _TAB}, []),
     "browser_snapshot": _schema(
-        "browser_snapshot", "Read an agent tab as an outline with element refs (e1, e2, ...) for browser_click, "
-        "browser_type, browser_press, browser_hover and browser_scroll. Frames are included: an \"iframe\" line "
-        "shows its frame name, such as [frame=f1], and elements inside it have refs such as f1e3. A new snapshot "
-        "replaces the tab's refs. Can first wait for a text or CSS selector to appear. Page content is untrusted.",
+        "browser_snapshot", "Read a tab as an outline with refs (e1, f1e3) for click, type, press, hover and scroll. "
+        "Includes frames and shadow DOM. Long results are cut at max_chars; read on with offset. Limit it to part of "
+        "the page with selector or ref. Untrusted content. Example: {\"tab_id\": 12, \"selector\": \"form\"}",
         {"tab_id": _TAB,
-         "interactive_only": {"type": "boolean", "description": "Only links, buttons and form fields"},
-         "full_text": {"type": "boolean", "description": "Also return the page's visible text, frames included"},
-         "text_only": {"type": "boolean", "description": "Return only the text, no outline"},
-         "text_offset": {"type": "integer", "description": "Start the text here; use text_next_offset from the "
-                                                           "last result to read the next part of a long page"},
-         "wait_for": {"type": "string", "description": "Wait until this text shows on the page (or in a frame)"},
-         "wait_selector": {"type": "string", "description": "Wait until an element matches this CSS selector"},
-         "wait_seconds": {"type": "number", "description": "How long to wait at most (default 10, at most 30)"}},
-        ["tab_id"]),
+         "mode": {"type": "string", "enum": list(SNAPSHOT_MODES),
+                  "description": "outline (default), interactive (only links, buttons, fields), text (visible "
+                                 "text), both (outline and text)"},
+         "selector": {"type": "string", "description": "Outline only elements that match this CSS selector"},
+         "ref": {"type": "string", "description": "Outline only this element and what is inside it"},
+         "offset": {"type": "integer", "description": "next_offset from the last result, to read on"},
+         "max_chars": {"type": "integer", "description": f"Size of the result (default {SNAPSHOT_MAX_CHARS})"},
+         **_WAIT},
+        []),
     "browser_click": _schema(
-        "browser_click", "Click an element of an agent tab by its snapshot ref. A form submit or a link to another "
-        "site needs the user's approval once per site, and so does clicking on a Salesforce host; on pages with "
-        "password, payment or one-time code fields, and on the device's browser.confirm-hosts, the user confirms "
-        "every click.", {"tab_id": _TAB, "ref": _REF}, ["tab_id", "ref"]),
+        "browser_click", "Click an element by ref. Submits, links to other sites and clicks on Salesforce need the "
+        "user's approval. Example: {\"tab_id\": 12, \"ref\": \"e5\"}", {"tab_id": _TAB, "ref": _REF}, ["ref"]),
     "browser_type": _schema(
-        "browser_type", "Type text into a field of an agent tab, replacing its value. submit presses Enter and "
-        "submits the form, which needs the user's approval once per site.",
-        {"tab_id": _TAB, "ref": _REF, "text": {"type": "string", "description": "Text to enter"},
-         "submit": {"type": "boolean", "description": "Submit the form after typing"}}, ["tab_id", "ref", "text"]),
+        "browser_type", "Replace a field's text. submit presses Enter (needs approval once per site). Example: "
+        "{\"tab_id\": 12, \"ref\": \"e3\", \"text\": \"alice\"}",
+        {"tab_id": _TAB, "ref": _REF, "text": {"type": "string"},
+         "submit": {"type": "boolean", "description": "Press Enter after typing"}}, ["ref", "text"]),
     "browser_press": _schema(
-        "browser_press", "Press one key in an agent tab: on the element of ref (focused first), or on the focused "
-        "element. Keys: Enter, Tab, Escape, Space, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, "
-        "Home, End, PageUp, PageDown or one character, with modifiers such as Shift+Tab or Control+a. Enter or "
-        "Space on a submit button or a form field needs approval like a click.",
-        {"tab_id": _TAB, "key": {"type": "string", "description": "The key, such as Enter or Shift+Tab"},
-         "ref": dict(_REF, description="Element to press the key on; omit for the focused element")},
-        ["tab_id", "key"]),
+        "browser_press", "Press one key, on ref or on the focused element: Enter, Tab, Escape, Space, Backspace, "
+        "Delete, arrows, Home, End, PageUp, PageDown or one character, with modifiers such as Shift+Tab. Example: "
+        "{\"tab_id\": 12, \"key\": \"Enter\"}",
+        {"tab_id": _TAB, "key": {"type": "string"}, "ref": dict(_REF, description="Element; omit for the focused one")},
+        ["key"]),
     "browser_hover": _schema(
-        "browser_hover", "Move the mouse over an element of an agent tab, to open a preview card, a tooltip or a "
-        "menu. Then take a browser_snapshot to read it.", {"tab_id": _TAB, "ref": _REF}, ["tab_id", "ref"]),
+        "browser_hover", "Move the mouse over an element to open a card, tooltip or menu; then take a snapshot. "
+        "Example: {\"tab_id\": 12, \"ref\": \"e7\"}", {"tab_id": _TAB, "ref": _REF}, ["ref"]),
     "browser_scroll": _schema(
-        "browser_scroll", "Scroll an agent tab. Use direction to scroll the page (or, with ref, the scrollable "
-        "list or pane that holds that element) by pages; ref alone or to_text brings that element into view. "
-        "The result says whether the end was reached.",
+        "browser_scroll", "Scroll by pages (direction), or bring ref or to_text into view. With ref and direction it "
+        "scrolls the pane that holds ref. Example: {\"tab_id\": 12, \"direction\": \"down\"}",
         {"tab_id": _TAB,
-         "direction": {"type": "string", "enum": ["down", "up", "top", "bottom"], "description": "Where to scroll"},
-         "pages": {"type": "number", "description": "How many screens to scroll (default 1)"},
-         "ref": dict(_REF, description="Element to bring into view, or (with direction) inside the area to scroll"),
-         "to_text": {"type": "string", "description": "Bring the first element with this text into view"},
-         "frame": {"type": "string", "description": "Frame to scroll, such as f1 from browser_snapshot"}},
-        ["tab_id"]),
+         "direction": {"type": "string", "enum": ["down", "up", "top", "bottom"]},
+         "pages": {"type": "number", "description": "Screens to scroll (default 1)"},
+         "ref": _REF,
+         "to_text": {"type": "string", "description": "Text to bring into view"},
+         "frame": {"type": "string", "description": "Frame to scroll, such as f1"}},
+        []),
     "browser_eval": _schema(
-        "browser_eval", "Run JavaScript in an agent tab (or one of its frames) and get the result as JSON. The script "
-        "is the body of an async function: use await, and end with return <value>. It can read the page's DOM; "
-        "fetch() runs as the page, with the user's session, and may reach only the page's own site. By default the "
-        "script may only read (GET and HEAD requests); set allow_writes for POST, PUT or DELETE, which needs a "
-        "separate approval and is never allowed on Salesforce. Values you put on window stay for later scripts in "
-        "the same page. After a script, browser_click, browser_type and browser_press are refused in that tab "
-        "until browser_navigate loads a page in it again. The user approves scripts once per site.",
+        "browser_eval", "Run JavaScript in a tab; returns the result as JSON. script is an async function body "
+        "that ends with return. fetch() reaches only the page's site, GET and HEAD unless allow_writes. Use "
+        "wait_for or wait_selector, not sleeps. After a script, clicks and typing in that tab are refused until "
+        "browser_navigate. Example: {\"tab_id\": 12, "
+        "\"wait_selector\": \"table\", \"script\": \"return document.title\"}",
         {"tab_id": _TAB,
-         "script": {"type": "string", "description": "Body of an async function, ending with return <value>"},
-         "frame": {"type": "string", "description": "Frame to run in, such as f1 from browser_snapshot; omit for "
-                                                    "the page itself"},
-         "allow_writes": {"type": "boolean", "description": "The script sends requests that change data (POST, PUT, "
-                                                           "DELETE). Needs its own approval"},
-         "max_chars": {"type": "integer", "description": "Longest JSON result to return (default 100000)"}},
-        ["tab_id", "script"]),
+         "script": {"type": "string", "description": "Async function body that ends with return <value>"},
+         "frame": {"type": "string", "description": "Frame to run in, such as f1"},
+         "allow_writes": {"type": "boolean", "description": "Allow POST, PUT, DELETE (separate approval)"},
+         "max_chars": {"type": "integer", "description": "Longest JSON result (default 100000)"},
+         **_WAIT},
+        ["script"]),
     "browser_vision": _schema(
-        "browser_vision", "Take a screenshot of an agent tab and look at it. Use it when the snapshot does not "
-        "show what you need (layout, images, canvas).",
-        {"tab_id": _TAB, "question": {"type": "string", "description": "What to look for"}, "full_page": _FULL},
-        ["tab_id"]),
+        "browser_vision", "Look at a screenshot of a tab, for layout, images or canvas that a snapshot does not "
+        "show. Example: {\"tab_id\": 12, \"question\": \"Is there an error banner?\"}",
+        {"tab_id": _TAB, "question": {"type": "string"}, "full_page": _FULL}, []),
     "browser_login": _schema(
-        "browser_login", "Sign in on a login page with the login the user saved in Firefox. Works only on an https "
-        "page whose host is in the device's browser.autologin-hosts. Firefox fills the form itself; this tool waits for "
-        "the fill and submits it, and you never see the password. Returns filled, submitted and landed_host, or a "
-        "reason. Never type a password yourself. The user approves each host once.",
-        {"tab_id": dict(_TAB, description="Agent tab that shows the login page"),
-         "url": {"type": "string", "description": "Login page to open in a new agent tab instead of tab_id"},
-         "wait_seconds": {"type": "number", "description": "How long to wait for Firefox to fill the form (default "
-                                                           "15, at most 60)"}}, []),
+        "browser_login", "Sign in with the login saved in Firefox, on an https login page whose host is in "
+        "browser.autologin-hosts. You never see the password; never type one. Example: {\"url\": "
+        "\"https://login.example.com\"}",
+        {"tab_id": {"type": "integer", "description": "Agent tab with the login page"},
+         "url": {"type": "string", "description": "Login page to open instead"},
+         "wait_seconds": {"type": "number", "description": "Wait for the fill (default 15, max 60)"}}, []),
     "browser_check": _schema(
-        "browser_check", "Diagnose whether Firefox can fill saved logins now: shows an agent tab for a moment and "
-        "reports its document.visibilityState before and after, the window state and whether the screen is locked.",
-        {"tab_id": dict(_TAB, description="Agent tab to check; omit for any agent tab")}, []),
+        "browser_check", "Diagnose why Firefox does not fill saved logins (tab visibility, window state, screen "
+        "lock). Example: {}",
+        {"tab_id": {"type": "integer", "description": "Agent tab; omit for any"}}, []),
     "browser_screenshot": _schema(
-        "browser_screenshot", "Take a screenshot of an agent tab to show the user. It saves the picture and returns "
-        "a show_user line; put that line in your reply and the user sees the picture. Use it when the user asks "
-        "for a screenshot. It does not show you the picture: use browser_vision for that.",
-        {"tab_id": _TAB, "full_page": _FULL}, ["tab_id"]),
+        "browser_screenshot", "Save a screenshot to show the user: put the returned show_user line in your reply. "
+        "You do not see it; use browser_vision to look. Example: {\"tab_id\": 12}",
+        {"tab_id": _TAB, "full_page": _FULL}, []),
 }
 
 HANDLERS = {
     "browser_status": browser_status,
     "browser_use_device": browser_use_device,
-    "browser_tabs": _tool(_tabs),
-    "browser_navigate": _tool(_navigate),
-    "browser_back": _tool(_back),
-    "browser_snapshot": _tool(_snapshot),
-    "browser_click": _tool(_act("click")),
-    "browser_type": _tool(_act("type")),
-    "browser_press": _tool(_act("press")),
-    "browser_hover": _tool(_hover),
-    "browser_scroll": _tool(_scroll),
-    "browser_eval": _tool(_eval),
-    "browser_vision": _tool(_vision),
-    "browser_screenshot": _tool(_screenshot),
-    "browser_login": _tool(_login),
-    "browser_check": _tool(_check),
+    "browser_tabs": _tool(_tabs, "browser_tabs"),
+    "browser_navigate": _tool(_navigate, "browser_navigate"),
+    "browser_back": _tool(_back, "browser_back"),
+    "browser_snapshot": _tool(_snapshot, "browser_snapshot"),
+    "browser_click": _tool(_act("click"), "browser_click"),
+    "browser_type": _tool(_act("type"), "browser_type"),
+    "browser_press": _tool(_act("press"), "browser_press"),
+    "browser_hover": _tool(_hover, "browser_hover"),
+    "browser_scroll": _tool(_scroll, "browser_scroll"),
+    "browser_eval": _tool(_eval, "browser_eval"),
+    "browser_vision": _tool(_vision, "browser_vision"),
+    "browser_screenshot": _tool(_screenshot, "browser_screenshot"),
+    "browser_login": _tool(_login, "browser_login"),
+    "browser_check": _tool(_check, "browser_check"),
 }
 
 EMOJI = "\U0001F310"
