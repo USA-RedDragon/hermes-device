@@ -141,7 +141,7 @@ type rawJob struct {
 func (j rawJob) enabled() bool { return j.Enabled == nil || *j.Enabled }
 
 // podFields are the stored fields of j that run or fetch on the Hermes
-// server itself; hermes-device's CRON_JOB_POD_FIELDS, plus interpreter.
+// server itself; talaria's CRON_JOB_POD_FIELDS, plus interpreter.
 func (j rawJob) podFields() []string {
 	var out []string
 	for _, f := range []struct {
@@ -351,8 +351,8 @@ func (c client) timezone(ctx context.Context) (string, error) {
 	return string(out.Timezone), err
 }
 
-// choices are hermes-device's browser device choices and job owners
-// ($HERMES_HOME/device/browser.json, hermes-device docs/browser.md
+// choices are talaria's browser device choices and job owners
+// ($HERMES_HOME/device/browser.json, talaria docs/browser.md
 // section 6).
 type choices struct {
 	Version int `json:"version"`

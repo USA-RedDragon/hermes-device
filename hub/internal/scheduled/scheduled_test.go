@@ -241,7 +241,7 @@ func TestSharedBackendShowsOnlyOwnJobs(t *testing.T) {
 	e.dash.Add(map[string]any{"id": "ja", kName: "Alice's"})
 	e.dash.Add(map[string]any{"id": "jb", kName: "Bob's", kOwner: bob})
 	e.dash.Add(map[string]any{"id": "jx", kName: "Nobody's"})
-	// hermes-device's job_owners wins over what the hub recorded.
+	// talaria's job_owners wins over what the hub recorded.
 	e.dash.Add(map[string]any{"id": "jc", kName: claimed, kOwner: alice})
 	e.choices(t, map[string]string{"ja": devBob}, map[string]string{"ja": alice, "jc": bob})
 

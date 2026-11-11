@@ -167,7 +167,7 @@ func hermesErr(err error) error {
 	return err
 }
 
-// owner is who made a job: hermes-device's job_owners, else the hub user
+// owner is who made a job: talaria's job_owners, else the hub user
 // the hub recorded when it made the job. "" when unknown.
 func owner(j rawJob, ch choices) string {
 	if o, ok := ch.Owners[string(j.ID)]; ok && o.User != "" {
@@ -191,7 +191,7 @@ func (b *backend) visible(user string, j rawJob, ch choices) bool {
 
 func isDraft(j rawJob) bool { return string(j.PausedReason) == draftReason }
 
-// readChoices reads hermes-device's browser.json under the jobs' Hermes
+// readChoices reads talaria's browser.json under the jobs' Hermes
 // home. A backend without one has no choices and no recorded owners.
 func (s *Service) readChoices(ctx context.Context, b *backend, home string) choices {
 	if !b.cfg.Devices {
@@ -353,7 +353,7 @@ func (s *Service) hermesZone(ctx context.Context, b *backend) *time.Location {
 }
 
 // runsIn says where a job's runs work: the sandbox or the Hermes server,
-// and the Firefox of the computer hermes-device gave the job.
+// and the Firefox of the computer talaria gave the job.
 func (s *Service) runsIn(ctx context.Context, user string, b *backend, id string, ch choices) string {
 	where := "Hermes server"
 	if b.sandbox {
