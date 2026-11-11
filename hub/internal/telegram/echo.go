@@ -217,8 +217,13 @@ func (r *renderer) startBusy(ctx context.Context) {
 
 // ownMessage is the Telegram message of a prompt this chat sent, by the
 // prompt's submission ID.
+// Only a prompt sent in this chat and topic counts: the same session may
+// show in another chat too, whose message IDs mean nothing here.
 func (r *renderer) ownMessage(id string) (int64, bool) {
 	if r.userMsg == nil || id == "" {
+		return 0, false
+	}
+	if to, ok := promptDest(id); !ok || to.chat != r.to.chat {
 		return 0, false
 	}
 	return r.userMsg(id)

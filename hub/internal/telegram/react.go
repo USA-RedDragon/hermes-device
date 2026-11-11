@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -41,12 +42,20 @@ func (r *renderer) setReaction(ctx context.Context, emoji string) {
 	switch {
 	case err == nil:
 		r.reacted = emoji
-	case errors.As(err, &apiErr) && apiErr.Code == http.StatusBadRequest || errors.As(err, &apiErr) && apiErr.Code == http.StatusForbidden:
+	case errors.As(err, &apiErr) && refusesReactions(apiErr):
 		r.logger.Info("Telegram refused a reaction, setting none in this chat", "error", err)
 		r.noReact = true
 	default:
 		r.logger.Debug("Failed to set a reaction", "error", err)
 	}
+}
+
+// refusesReactions reports whether Telegram refused a reaction because the
+// chat takes none of the bot's, not because of the one message.
+func refusesReactions(e *APIError) bool {
+	d := strings.ToUpper(e.Description)
+	return e.Code == http.StatusForbidden || strings.Contains(d, "REACTION_INVALID") || strings.Contains(d, "REACTIONS_TOO_MANY") ||
+		strings.Contains(d, "REACTION_EMPTY")
 }
 
 // reactNeeds shows on the turn's message whether a prompt waits for the
@@ -71,7 +80,7 @@ func (r *renderer) endReaction(ctx context.Context, emoji string) {
 // typingDue is how long until "typing" is due again, false when no turn
 // runs.
 func (r *renderer) typingDue() (time.Duration, bool) {
-	if !r.busy || r.noTyping {
+	if !r.busy || r.noTyping || len(r.prompts) > 0 {
 		return 0, false
 	}
 	return r.typedAt.Add(typingGap).Sub(r.now()), true
