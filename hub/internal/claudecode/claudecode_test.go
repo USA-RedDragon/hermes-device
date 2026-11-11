@@ -126,8 +126,9 @@ func (e *env) seed(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.hermes[backendMain] = body(t, hub.ClaudeCodeReport{Since: h(1, 0) - 30*86400,
-		Rows:     []hub.ClaudeCodeRow{row(h(2, 12), acctB, opus, "empty-cwd", 5)},
-		Accounts: []hub.ClaudeCodeAccount{{UUID: acctB, Label: "Claude (work)", Slot: "work"}, {Label: "Claude (spare)", Slot: "spare"}},
+		Rows: []hub.ClaudeCodeRow{row(h(2, 12), acctB, opus, "empty-cwd", 5)},
+		Accounts: []hub.ClaudeCodeAccount{{UUID: acctB, Label: "Claude (work)", Slot: "work"}, {Label: "Claude (spare)", Slot: "spare"},
+			{Label: "old", Slot: "old"}},
 	})
 	e.hermes[other] = body(t, hub.ClaudeCodeReport{Rows: []hub.ClaudeCodeRow{row(h(2, 12), acctB, opus, "x", 1000)}})
 }
@@ -139,6 +140,22 @@ func find(u hub.ClaudeCodeUsage, label string) *hub.ClaudeCodeGroup {
 		}
 	}
 	return nil
+}
+
+func TestUsageLeavesOldSlotFolders(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.seed(t)
+	u, err := e.svc.ClaudeCodeUsage(context.Background(), alice, "7d", "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := find(u, "old"); g != nil {
+		t.Fatalf("a folder that no slot names: %+v", g)
+	}
+	if find(u, "Claude (spare)") == nil {
+		t.Fatalf("a slot without login is gone: %+v", u.Groups)
+	}
 }
 
 func TestUsageByAccount(t *testing.T) {

@@ -490,6 +490,9 @@ func (s *Service) ClaudeCodeUsage(ctx context.Context, user, rng, group string) 
 			case !strings.HasPrefix(a.Source, "hermes:"):
 			case a.UUID != "":
 				t.get(a.UUID, labels[a.UUID], a.UUID)
+			case a.Slot != "" && a.Label == a.Slot:
+				// A folder that no slot of the plugin names (acp-host labels it
+				// with its folder name) and that never signed in: an old slot.
 			case a.Slot != "":
 				t.get("slot:"+a.Source+":"+a.Slot, a.Label, "")
 			}
