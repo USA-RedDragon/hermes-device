@@ -89,6 +89,11 @@ type mCPShadow struct {
 	IdleTimeout *impl.Duration              `json:"idle-timeout" toml:"idle-timeout" yaml:"idle-timeout"`
 }
 
+type updateShadow struct {
+	Auto     *bool          `json:"auto"     toml:"auto"     yaml:"auto"`
+	Interval *impl.Duration `json:"interval" toml:"interval" yaml:"interval"`
+}
+
 type configShadow struct {
 	LogLevel     *string          `json:"log-level"     toml:"log-level"     yaml:"log-level"`
 	PingInterval *impl.Duration   `json:"ping-interval" toml:"ping-interval" yaml:"ping-interval"`
@@ -101,6 +106,7 @@ type configShadow struct {
 	Reconnect    *reconnectShadow `json:"reconnect"     toml:"reconnect"     yaml:"reconnect"`
 	Browser      *browserShadow   `json:"browser"       toml:"browser"       yaml:"browser"`
 	MCP          *mCPShadow       `json:"mcp"           toml:"mcp"           yaml:"mcp"`
+	Update       *updateShadow    `json:"update"        toml:"update"        yaml:"update"`
 }
 
 // ConfigSchema returns the generated schema for Config.
@@ -151,6 +157,10 @@ func configApplyDefaults(cfg *Config, _ string, set configulator.SetOrigin) erro
 	set("browser.firefox-command", configulator.LayerDefault, "default tag")
 	cfg.MCP.IdleTimeout = time.Duration(int64(3600000000000))
 	set("mcp.idle-timeout", configulator.LayerDefault, "default tag")
+	cfg.Update.Auto = true
+	set("update.auto", configulator.LayerDefault, "default tag")
+	cfg.Update.Interval = time.Duration(int64(21600000000000))
+	set("update.interval", configulator.LayerDefault, "default tag")
 	return nil
 }
 
@@ -391,6 +401,23 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			}
 			cfg.MCP.IdleTimeout = v
 			set("mcp.idle-timeout", configulator.LayerFile, file)
+		}
+	}
+	if s.Update != nil {
+		if s.Update.Auto != nil {
+			cfg.Update.Auto = *s.Update.Auto
+			set("update.auto", configulator.LayerFile, file)
+		}
+		if s.Update.Interval != nil {
+			v, ok := s.Update.Interval.Value()
+			if !ok {
+				return &configulator.OpaqueSpellingError{
+					Hint: "\"30s\"",
+					Path: "update.interval",
+				}
+			}
+			cfg.Update.Interval = v
+			set("update.interval", configulator.LayerFile, file)
 		}
 	}
 	return nil
@@ -636,6 +663,32 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.MCP.IdleTimeout = d
 		set("mcp.idle-timeout", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "update", "auto"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "update.auto",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Update.Auto = p
+		set("update.auto", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "update", "interval"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "update.interval",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Update.Interval = d
+		set("update.interval", configulator.LayerEnv, n)
+	}
 	return nil
 }
 
@@ -683,6 +736,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"browser" + o.Separator + "start-firefox",
 		"browser" + o.Separator + "firefox-command",
 		"mcp" + o.Separator + "idle-timeout",
+		"update" + o.Separator + "auto",
+		"update" + o.Separator + "interval",
 	}
 	for i, name := range names {
 		if f := fs.Lookup(name); f != nil {
@@ -732,6 +787,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Bool(names[31], true, "Let the agent start Firefox, with the user's default profile, in the user's graphical session when the extension is not connected, so a scheduled job works after Firefox was closed. The sandbox image turns it off")
 	fs.String(names[32], "firefox", "Command that starts Firefox for start-firefox: a name on PATH or an absolute path")
 	fs.Duration(names[33], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
+	fs.Bool(names[34], true, "Let run install new releases by itself: it checks GitHub, verifies the release like hermes-device update, waits until no command, browser operation, MCP call or chat runs, and exits so the service restarts it. Only when the hermes-device service runs it and the device token comes from login, so never on a service device that uses hub.token or hub.token-file. The sandbox and device images turn it off")
+	fs.Duration(names[35], time.Duration(int64(21600000000000)), "Time between release checks of run, with up to 10% jitter. At least 1h")
 	return nil
 }
 
@@ -1144,6 +1201,30 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.MCP.IdleTimeout = v
 		set("mcp.idle-timeout", configulator.LayerCLI, "--"+n)
 	}
+	if n := "update" + o.Separator + "auto"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "update.auto",
+				Source: "--" + n,
+			}
+		}
+		cfg.Update.Auto = v
+		set("update.auto", configulator.LayerCLI, "--"+n)
+	}
+	if n := "update" + o.Separator + "interval"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "update.interval",
+				Source: "--" + n,
+			}
+		}
+		cfg.Update.Interval = v
+		set("update.interval", configulator.LayerCLI, "--"+n)
+	}
 	return nil
 }
 
@@ -1363,6 +1444,25 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.MCP = &sub
+			}
+		case "update":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("update", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub updateShadow
+				if err := sub.decodeJSON(dec, "update"); err != nil {
+					return err
+				}
+				s.Update = &sub
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -2281,6 +2381,58 @@ func (s *mCPServerShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	}
 }
 
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *updateShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "auto":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Auto = &b
+			default:
+				return configJSONError(path+".auto", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "interval":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".interval", v, err)
+				}
+				s.Interval = &slot
+			default:
+				return configJSONError(path+".interval", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // configJSONError returns a ParseError for the JSON token v at path.
 func configJSONError(path string, v jsontext.Token, err error) error {
 	return &configulator.ParseError{
@@ -2330,6 +2482,8 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "browser.firefox-command = %v\n", c.Browser.FirefoxCommand)
 	b.WriteString("mcp.servers = (redacted)\n")
 	fmt.Fprintf(&b, "mcp.idle-timeout = %v\n", c.MCP.IdleTimeout)
+	fmt.Fprintf(&b, "update.auto = %v\n", c.Update.Auto)
+	fmt.Fprintf(&b, "update.interval = %v\n", c.Update.Interval)
 	return b.String()
 }
 

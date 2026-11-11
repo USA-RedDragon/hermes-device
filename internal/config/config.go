@@ -96,6 +96,12 @@ type Reconnect struct {
 	MaxBackoff time.Duration `name:"max-backoff" default:"30s" description:"Longest delay between attempts"`
 }
 
+// Update is how run keeps hermes-device up to date (README, Updates).
+type Update struct {
+	Auto     bool          `name:"auto" default:"true" description:"Let run install new releases by itself: it checks GitHub, verifies the release like hermes-device update, waits until no command, browser operation, MCP call or chat runs, and exits so the service restarts it. Only when the hermes-device service runs it and the device token comes from login, so never on a service device that uses hub.token or hub.token-file. The sandbox and device images turn it off"`
+	Interval time.Duration `name:"interval" default:"6h" description:"Time between release checks of run, with up to 10% jitter. At least 1h"`
+}
+
 // Config is the configuration of every subcommand.
 type Config struct {
 	LogLevel     string        `name:"log-level" default:"info" description:"Log level: debug, info, warn or error"`
@@ -109,6 +115,7 @@ type Config struct {
 	Reconnect    Reconnect     `name:"reconnect"`
 	Browser      Browser       `name:"browser"`
 	MCP          MCP           `name:"mcp"`
+	Update       Update        `name:"update"`
 }
 
 // Validation errors.
@@ -123,6 +130,7 @@ var (
 	ErrMaxProcesses    = errors.New("acp-host.max-processes must be at least 1")
 	ErrResume          = errors.New("device.resume-buffer must be at least 4096 and device.max-grace must not be negative")
 	ErrMCPServer       = errors.New("invalid mcp.servers entry")
+	ErrUpdateInterval  = errors.New("update.interval must be at least 1h")
 )
 
 // Validate checks what the tags can't. Settings only some subcommands need
@@ -163,6 +171,9 @@ func (c Config) Validate() error {
 	}
 	if c.Device.ResumeBuffer < 4096 || c.Device.MaxGrace < 0 {
 		return ErrResume
+	}
+	if c.Update.Interval < time.Hour {
+		return ErrUpdateInterval
 	}
 	if err := c.MCP.validate(); err != nil {
 		return err
