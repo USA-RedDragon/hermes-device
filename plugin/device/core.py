@@ -53,6 +53,8 @@ TYPE_BROWSER_START = "browser_start"
 # Capabilities the plugin accepts from a device's hello (section 4.1).
 CAPABILITY_BROWSER = "browser"
 CAPABILITY_MCP = "mcp"
+CAPABILITY_DETACH = "detach"
+TYPE_DETACH = "detach"
 CAPABILITIES = frozenset({CAPABILITY_BROWSER, CAPABILITY_MCP})
 
 BROWSER_NOT_CONNECTED = "not_connected"

@@ -54,6 +54,10 @@ const (
 	// that negotiated CapabilityMCP.
 	TypeMCP       = "mcp"
 	TypeMCPResult = "mcp_result"
+	// TypeDetach tells the device that the plugin moved a running command
+	// to the background: the device stops its own timeout for it (section
+	// 4.10). Only on a leg that negotiated CapabilityDetach.
+	TypeDetach = "detach"
 )
 
 // Capabilities a device offers in Hello.Capabilities. The plugin answers
@@ -65,6 +69,8 @@ const (
 	// CapabilityMCP: the device serves TypeMCP requests for the servers
 	// it names in Hello.MCPServers.
 	CapabilityMCP = "mcp"
+	// CapabilityDetach: the device serves TypeDetach.
+	CapabilityDetach = "detach"
 )
 
 // Operations of an MCP request.
@@ -262,6 +268,12 @@ type Exec struct {
 
 // Kill asks the device to stop the command started by the Exec with ID.
 type Kill struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+// Detach lifts the device's own timeout of the running command ID.
+type Detach struct {
 	Type string `json:"type"`
 	ID   string `json:"id"`
 }

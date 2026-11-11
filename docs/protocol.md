@@ -149,7 +149,7 @@ Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-
 2. The device sends `hello` within <!-- docgen:const pkg=protocol name=HelloTimeout print=config -->`10s`<!-- /docgen:const --> of the upgrade. Otherwise the plugin closes with `1002`.
 3. Version negotiation. `hello.version` is the oldest version the device speaks and `hello.max_version` the newest (absent means equal to `version`). The plugin picks the newest version that both sides speak. A version 2 plugin reads only `version`, so a device that speaks 2 to 3 sends `"version": 2, "max_version": 3` and a version 2 plugin serves it as version 2. When no version is common, the plugin closes with `4426` and a reason that names both ranges and both releases, for example `talaria v0.4.0 speaks protocol 4 to 5; plugin 0.3.0 speaks 2 to 3; upgrade them together`. The hub relays the code and the reason (it cuts reasons to 120 bytes; the plugin keeps them shorter), and the client stops and shows the reason. A device that gets a `welcome.version` outside its own range closes with `4426` and a reason of the same form, and stops.
 4. The plugin answers `welcome` with the chosen version. On version 3 it sends `resume` (section 4.7) right after `welcome`, before any other message. From then on either side may send.
-5. Capabilities. `hello.capabilities` lists the optional features the device serves: `browser` (<!-- docgen:const pkg=protocol name=CapabilityBrowser code=false -->browser<!-- /docgen:const -->, section 4.8) and `mcp` (<!-- docgen:const pkg=protocol name=CapabilityMCP code=false -->mcp<!-- /docgen:const -->, section 4.9). The plugin puts the ones it accepts in `welcome.capabilities` and leaves the field out when it accepts none. Each side uses a feature only when `welcome.capabilities` names it, and ignores unknown names. A plugin that does not know capabilities ignores the field and sends none back, so the device does not use them.
+5. Capabilities. `hello.capabilities` lists the optional features the device serves: `browser` (<!-- docgen:const pkg=protocol name=CapabilityBrowser code=false -->browser<!-- /docgen:const -->, section 4.8), `mcp` (<!-- docgen:const pkg=protocol name=CapabilityMCP code=false -->mcp<!-- /docgen:const -->, section 4.9) and `detach` (<!-- docgen:const pkg=protocol name=CapabilityDetach code=false -->detach<!-- /docgen:const -->, section 4.10). The plugin puts the ones it accepts in `welcome.capabilities` and leaves the field out when it accepts none. Each side uses a feature only when `welcome.capabilities` names it, and ignores unknown names. A plugin that does not know capabilities ignores the field and sends none back, so the device does not use them.
 6. If a connection for the same `device_id` exists, the plugin closes it with `4409`. Newest wins. On version 3 its pending commands move to the new connection and are listed in the `resume`; on version 2 they fail with exit 255.
 
 `hello` (device to plugin):
@@ -205,7 +205,7 @@ Dev mode only (section 8.9): with no hub in between, `hello` also carries `"name
 | `id` | Request id, unique per connection (32 hex characters) |
 | `cmd` | Command text, run as `<shell> -c <cmd>` (`<shell> -l -c <cmd>` when `login` is true), in its own process group |
 | `cwd` | Absolute directory on the device. Resolved through symlinks and checked against `roots` before anything runs |
-| `timeout` | Seconds. The plugin enforces it and sends `kill`. The device also kills the command at `timeout + 10s` in case the plugin went away |
+| `timeout` | Seconds. The plugin enforces it and sends `kill`. The device also kills the command at `timeout + 10s` in case the plugin went away, unless the plugin detached it (section 4.10) |
 | `stdin` | Optional text written to the command's stdin, then closed. Without it stdin is empty |
 
 The device answers each `exec` with zero or more `output` and exactly one `exit`.
@@ -357,6 +357,16 @@ Server lifecycle on the device:
 MCP requests are never resumed: a dropped leg cancels the requests in flight on the device (it sends `notifications/cancelled`), and the plugin fails them with `not_connected` at once. The servers keep running across a drop and a reconnect. A device without the capability never gets `mcp`; it answers one with `refused` and starts no server. A plugin that did not accept the capability ignores `mcp_result`.
 
 The hub copies `mcp` and `mcp_result` unchanged, as every exec leg message. Their sizes are within its 64 MiB message limit. The plugin decides which session may use which device's servers (section 8.11), and the device decides which servers can run.
+
+### 4.10 Detach (capability `detach`)
+
+On a leg where `welcome.capabilities` names `detach`, the plugin may send:
+
+```json
+{"type": "detach", "id": "4b1e..."}
+```
+
+The plugin sends it when it moves a running command to the background (section 8.4): the command no longer has a timeout. The device stops its own timeout kill for that command, so the command runs until it exits or gets a `kill`. Nothing else changes: output, `exit`, `kill` and resume work as before, and the device still kills the command when the leg ends for good (section 4.7). A `detach` for an unknown or finished id is ignored. The device sends no answer.
 
 ## 5. Gateway leg and the chat splice
 
@@ -1001,6 +1011,8 @@ The device client, the plugin and acp-host come from one talaria release. Releas
 | device 0.2.0, plugin 0.3.0 | version 2 (`hello` has no `max_version`) |
 
 MCP servers (4.9) need a device and a plugin that both know the `mcp` capability; the hub needs no change. With an older peer the capability is not negotiated and the plugin's MCP tools report that the device offers no MCP servers.
+
+Moving a device command to the background (8.4) needs a device and a plugin that both know the `detach` capability; the hub needs no change. With an older device, the command stays in the foreground until it exits or times out, as before.
 
 Browser control needs a device and a plugin that both know the `browser` capability. With an older peer on either side the capability is not negotiated: the leg works as before, and the plugin's browser tools report that the device does not offer browser control.
 

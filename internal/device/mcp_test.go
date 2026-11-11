@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestMCPHelloOffersServers(t *testing.T) {
 	opts := options(t, serve(t, f).URL, t.TempDir())
 	opts.MCP = mcp.New(mcp.Options{})
 	start(t, opts)
-	if h := recv(t, hellos); len(h.Capabilities) != 0 || len(h.MCPServers) != 0 {
+	if h := recv(t, hellos); !slices.Equal(h.Capabilities, []string{protocol.CapabilityDetach}) || len(h.MCPServers) != 0 {
 		t.Errorf("hello without servers = %+v", h)
 	}
 	opts = options(t, serve(t, f).URL, t.TempDir())
@@ -54,7 +55,7 @@ func TestMCPHelloOffersServers(t *testing.T) {
 	opts.Browser = newFakeBrowser(false)
 	start(t, opts)
 	h := recv(t, hellos)
-	if strings.Join(h.Capabilities, ",") != "browser,mcp" || strings.Join(h.MCPServers, ",") != serverFake {
+	if strings.Join(h.Capabilities, ",") != "detach,browser,mcp" || strings.Join(h.MCPServers, ",") != serverFake {
 		t.Errorf("hello = %+v", h)
 	}
 }

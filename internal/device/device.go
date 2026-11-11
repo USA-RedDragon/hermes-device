@@ -247,6 +247,7 @@ func (c *Client) Hello() protocol.Hello {
 		Type: protocol.TypeHello, Version: protocol.MinVersion, MaxVersion: c.opts.MaxVersion, Roots: c.opts.Allow.Roots(),
 		TempDir: c.opts.TempDir, Home: c.opts.Home, Hostname: c.opts.Hostname, OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Shell: c.opts.Shell, ClientVersion: c.opts.ClientVersion,
+		Capabilities: []string{protocol.CapabilityDetach},
 	}
 	if c.opts.Browser != nil {
 		h.Capabilities = append(h.Capabilities, protocol.CapabilityBrowser)
@@ -626,6 +627,11 @@ func (s *session) readLoop(ctx context.Context) error {
 				s.c.kill(req.ID)
 				s.cancelBrowser(req.ID)
 				s.cancelMCP(req.ID)
+			}
+		case protocol.TypeDetach:
+			var req protocol.Detach
+			if err := json.Unmarshal(data, &req); err == nil {
+				s.c.detach(req.ID)
 			}
 		case protocol.TypeBrowser:
 			if !s.browser {
@@ -1056,6 +1062,24 @@ func (c *Client) kill(id string) {
 	c.mu.Unlock()
 	if cmd != nil {
 		cmd.kill()
+	}
+}
+
+// detach lifts the device's own timeout of a running command, which the
+// plugin moved to the background (section 4.10).
+func (c *Client) detach(id string) {
+	c.mu.Lock()
+	cmd := c.cmds[id]
+	c.mu.Unlock()
+	if cmd == nil {
+		return
+	}
+	cmd.mu.Lock()
+	p := cmd.proc
+	cmd.mu.Unlock()
+	if p != nil {
+		slog.Debug("Detaching command", "id", id, "pid", p.Pid())
+		p.Detach()
 	}
 }
 

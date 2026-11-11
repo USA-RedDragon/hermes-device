@@ -52,11 +52,18 @@ type Process struct {
 	mu       sync.Mutex
 	killed   bool
 	result   Result
+	// timer kills the command at its timeout plus TimeoutGrace; nil
+	// without a timeout or after Detach.
+	timer *time.Timer
 }
 
 // Start runs req with shell. Output chunks go to out from one goroutine, in
 // order, until Wait returns.
 func Start(shell string, req Request, out func([]byte)) (*Process, error) {
+	return start(shell, req, out, TimeoutGrace)
+}
+
+func start(shell string, req Request, out func([]byte), grace time.Duration) (*Process, error) {
 	args := []string{}
 	if req.Login {
 		args = append(args, "-l")
@@ -99,16 +106,15 @@ func Start(shell string, req Request, out func([]byte)) (*Process, error) {
 		}
 	}()
 
-	var timer *time.Timer
 	if req.Timeout > 0 {
-		timer = time.AfterFunc(req.Timeout+TimeoutGrace, p.Kill)
+		p.mu.Lock()
+		p.timer = time.AfterFunc(req.Timeout+grace, p.Kill)
+		p.mu.Unlock()
 	}
 
 	go func() {
 		err := cmd.Wait()
-		if timer != nil {
-			timer.Stop()
-		}
+		p.Detach()
 		// Background children may keep the pipe open; do not wait for them
 		// longer than a moment once bash itself has exited.
 		select {
@@ -173,6 +179,17 @@ func (p *Process) Kill() {
 			}
 		}()
 	})
+}
+
+// Detach stops the device's own timeout: the command then runs until it
+// exits or is killed.
+func (p *Process) Detach() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.timer != nil {
+		p.timer.Stop()
+		p.timer = nil
+	}
 }
 
 // Pid returns the process id, which is also the process group id.

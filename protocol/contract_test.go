@@ -70,6 +70,8 @@ func protocolConstants() []shared {
 		{"TypeMCP", protocol.TypeMCP, []string{"TYPE_MCP"}},
 		{"TypeMCPResult", protocol.TypeMCPResult, []string{"TYPE_MCP_RESULT"}},
 		{"CapabilityMCP", protocol.CapabilityMCP, []string{"CAPABILITY_MCP"}},
+		{"TypeDetach", protocol.TypeDetach, []string{"TYPE_DETACH"}},
+		{"CapabilityDetach", protocol.CapabilityDetach, []string{"CAPABILITY_DETACH"}},
 		{"MCPOpList", protocol.MCPOpList, []string{"MCP_OP_LIST"}},
 		{"MCPOpTools", protocol.MCPOpTools, []string{"MCP_OP_TOOLS"}},
 		{"MCPOpCall", protocol.MCPOpCall, []string{"MCP_OP_CALL"}},

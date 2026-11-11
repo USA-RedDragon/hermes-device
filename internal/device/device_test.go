@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/USA-RedDragon/hermes-device/internal/allowlist"
 	"github.com/USA-RedDragon/hermes-device/internal/device"
+	"github.com/USA-RedDragon/hermes-device/internal/executor"
 	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
 	"github.com/USA-RedDragon/hermes-device/protocol"
 	"github.com/coder/websocket"
@@ -225,6 +227,7 @@ func TestHelloFields(t *testing.T) {
 	want := protocol.Hello{
 		Type: protocol.TypeHello, Version: 2, MaxVersion: 3, Roots: []string{resolved}, TempDir: "/home/alice/.cache/talaria/tmp",
 		Home: "/home/alice", Hostname: testName, OS: runtime.GOOS, Arch: runtime.GOARCH, Shell: "bash", ClientVersion: "v0.2.0",
+		Capabilities: []string{protocol.CapabilityDetach},
 	}
 	if !reflect.DeepEqual(hello, want) {
 		t.Errorf("hello = %+v, want %+v", hello, want)
@@ -301,6 +304,47 @@ func TestExecRefuseAndKill(t *testing.T) {
 		r = readUntilExit(ctx, t, conn, "3")
 		if !r.exit.Killed || r.exit.Code != protocol.ExitKilled || time.Since(begin) > 5*time.Second {
 			t.Errorf("exec 3 = %+v after %s", r, time.Since(begin))
+		}
+	}}
+	srv := serve(t, f)
+	start(t, options(t, srv.URL, root))
+	wait(t, finished)
+}
+
+// TestDetachLiftsTheTimeout checks that a detached command outlives its
+// timeout plus executor.TimeoutGrace, and that a command that is not
+// detached does not.
+func TestDetachLiftsTheTimeout(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	finished := make(chan struct{})
+	f := &fakeHub{handler: func(ctx context.Context, conn *websocket.Conn, _ protocol.Hello) {
+		defer close(finished)
+		writeJSON(ctx, conn, protocol.Envelope{Type: protocol.TypeResume})
+		cmd := fmt.Sprintf("sleep %g; echo done", (executor.TimeoutGrace + 1500*time.Millisecond).Seconds())
+		for _, id := range []string{"kept", "timed"} {
+			writeJSON(ctx, conn, protocol.Exec{Type: protocol.TypeExec, ID: id, Cmd: cmd, Cwd: root, Timeout: 0.5})
+		}
+		writeJSON(ctx, conn, protocol.Detach{Type: protocol.TypeDetach, ID: "unknown"})
+		writeJSON(ctx, conn, protocol.Detach{Type: protocol.TypeDetach, ID: "kept"})
+		got := map[string]result{}
+		for len(got) < 2 {
+			typ, data, err := readMsg(ctx, conn)
+			if err != nil {
+				t.Errorf("read: %v", err)
+				return
+			}
+			if typ == protocol.TypeExit {
+				var e protocol.Exit
+				_ = json.Unmarshal(data, &e)
+				got[e.ID] = result{exit: e}
+			}
+		}
+		if e := got["kept"].exit; e.Code != 0 || e.Killed {
+			t.Errorf("detached command: %+v", e)
+		}
+		if e := got["timed"].exit; e.Code != protocol.ExitKilled || !e.Killed {
+			t.Errorf("command that was not detached: %+v", e)
 		}
 	}}
 	srv := serve(t, f)
