@@ -2083,6 +2083,7 @@
     pagesView.destroy();
     memory.hide();
     usage.hide();
+    scheduled.hide();
     files.close();
     $("filesbtn").hidden = true;
     closeStream();
@@ -2110,6 +2111,7 @@
     pagesView.destroy();
     memory.hide();
     usage.hide();
+    scheduled.hide();
     files.close();
     $("filesbtn").hidden = true;
     closeStream();
@@ -2160,6 +2162,7 @@
   function showMemory(rest) {
     pagesView.destroy();
     usage.hide();
+    scheduled.hide();
     files.close();
     $("filesbtn").hidden = true;
     closeStream();
@@ -2180,6 +2183,7 @@
   function showUsage(rest) {
     pagesView.destroy();
     memory.hide();
+    scheduled.hide();
     files.close();
     closeStream();
     attachments.clear();
@@ -2195,6 +2199,26 @@
     usage.show(rest);
   }
 
+  // showScheduled opens the Scheduled page in place of the chat.
+  function showScheduled() {
+    pagesView.destroy();
+    memory.hide();
+    usage.hide();
+    files.close();
+    closeStream();
+    attachments.clear();
+    view = null;
+    activity.show(null);
+    current = null;
+    for (const id of ["welcome", "log", "composer", "stop", "info", "place", "placenote", "claudenote", "filesbtn"]) $(id).hidden = true;
+    settings.reset();
+    $("title").textContent = "Scheduled";
+    $("subtitle").textContent = "";
+    document.title = "Scheduled - Talaria";
+    banner("");
+    scheduled.show();
+  }
+
   // route shows what the hash names. A page opens over its chat, and going
   // between a chat and its page keeps the chat as it is.
   let lastHash = "";
@@ -2206,6 +2230,7 @@
     const pg = location.hash.match(/^#\/page\/([^/]+)\/([^/]+)\/(.+)$/);
     const fl = location.hash.match(/^#\/files\/([^/]+)\/([^/]+)$/);
     const us = location.hash.match(/^#\/usage(?:\/(.*))?$/);
+    const sc = /^#\/scheduled\/?$/.test(location.hash);
     const dec = (x) => { try { return decodeURIComponent(x); } catch (_) { return null; } };
     const same = (b, s) => view && view.backend === b && view.session === s;
     if (fl && me.files && dec(fl[1]) !== null && dec(fl[2]) !== null) {
@@ -2226,6 +2251,7 @@
       if (m && !under) showChat(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
       else if (!m && mem && me.memory) showMemory(mem[1] || "");
       else if (!m && us && me.usage) showUsage(us[1] || "");
+      else if (!m && sc && me.scheduled) showScheduled();
       else if (!m) showWelcome();
     }
     menuOpen = false;
@@ -2533,6 +2559,7 @@
     else history.back();
   } });
 
+  const scheduled = window.HubScheduled({ api, el, chatHash, defaultBackend: () => me.default_backend || "" });
   const memory = window.HubMemory({ api, el, sessions: () => lastList, chatHash, closeSide: () => openSide(false),
     defaultBackend: () => me.default_backend || "" });
   const notices = window.HubNotify({ api, el, csrf: () => csrf,
@@ -2618,6 +2645,10 @@
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshList(); });
     setInterval(() => { if (!document.hidden) refreshList(); }, 20000);
     window.onhashchange = route;
+    if (me.scheduled) {
+      scheduled.refresh();
+      setInterval(() => { if (!document.hidden) scheduled.refresh(); }, 60000);
+    }
     if (me.memory) {
       memory.refresh();
       setInterval(() => { if (!document.hidden) memory.refresh(); }, 60000);

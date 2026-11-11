@@ -19,6 +19,7 @@
 <script src="/static/claude.js" defer></script>
 <script src="/static/activity.js" defer></script>
 <script src="/static/settings.js" defer></script>
+<script src="/static/scheduled.js" defer></script>
 <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -32,6 +33,7 @@
     <div id="newon-row" class="newon-row" hidden><button id="newon" class="link" type="button">New chat on a computer</button></div>
     <div id="searchbox" class="search" hidden><input id="search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off"></div>
     <nav id="sessions" class="sessions"></nav>
+    <a id="schednav" class="memnav schednav" href="#/scheduled" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Scheduled<span id="schedcount" class="schedcount"></span></a>
     <a id="memnav" class="memnav" href="#/memory" hidden><span class="memdot" aria-hidden="true"></span>Memory<span id="memcount" class="memcount" title="Changes waiting for approval" hidden></span></a>
     <div class="side-foot">
       <span id="who" class="who"></span>
@@ -65,6 +67,7 @@
     </div>
     <div id="memory" class="memory" hidden></div>
     <div id="usage" class="memory" hidden></div>
+    <div id="scheduled" class="sched" hidden></div>
     <div id="log" class="log" aria-live="polite" hidden></div>
     <form id="composer" class="composer" hidden>
       <div id="chips" class="chips" aria-label="Attachments" hidden></div>

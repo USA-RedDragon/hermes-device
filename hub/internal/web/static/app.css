@@ -392,6 +392,88 @@ button.danger-text { color: var(--bad); }
 .hljs-addition { color: var(--hl-add); background: var(--hl-add-bg); }
 .hljs-deletion { color: var(--hl-del); background: var(--hl-del-bg); }
 
+/* Scheduled page: the Hermes cron jobs of the user's backends. */
+.schednav svg { width: 1rem; height: 1rem; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.schedcount { margin-left: auto; color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+.sched { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sched-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.sched-wrap { max-width: 58rem; margin: 0 auto; padding-block: 1rem 2rem; padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px)); display: flex; flex-direction: column; gap: .9rem; font-size: 15px; }
+.sched button, .sched select, .sched input, .sched textarea { font: inherit; }
+.sched button { padding: .35rem .7rem; }
+.sched button:focus-visible, .sched input:focus-visible, .sched textarea:focus-visible, .sched select:focus-visible,
+  .sched .job-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sched button.del { color: var(--bad); background: var(--card); border-color: var(--line); }
+.sched button.del.solid { background: var(--bad); border-color: var(--bad); color: #fff; }
+.sched-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.sched-head h1 { margin: 0; font-size: 1.25rem; flex: 1; text-wrap: balance; }
+.sched .tz { color: var(--muted); font-size: .8rem; }
+.sched-err { margin: 0; color: var(--bad); font-size: .88rem; }
+.sched .filters { display: flex; gap: .35rem; flex-wrap: wrap; }
+.sched .chip { border-radius: 999px; padding: .2rem .7rem; font-size: .84rem; }
+.sched .chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.sched .upnext { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: .7rem .9rem; display: flex; flex-direction: column; gap: .35rem; }
+.sched .upnext h2 { margin: 0; font-size: .74rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.sched .timeline { display: flex; flex-direction: column; gap: .2rem; }
+.sched .tl { display: grid; grid-template-columns: 9.5rem 1fr; gap: .6rem; font-size: .9rem; font-variant-numeric: tabular-nums; }
+.sched .tl .when { color: var(--muted); }
+.sched-list { display: flex; flex-direction: column; gap: .5rem; }
+.sched .job { background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.sched .job.open { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.sched .job-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: .15rem .7rem; align-items: center; padding: .65rem .8rem; cursor: pointer; }
+.sched .st { width: .65rem; height: .65rem; border-radius: 50%; }
+.sched .st.ok { background: var(--ok); }
+.sched .st.bad { background: var(--bad); }
+.sched .st.warn { background: var(--warn); }
+.sched .st.paused { background: var(--muted); }
+.sched .st.run { background: var(--accent); animation: sched-pulse 1.4s infinite; }
+@keyframes sched-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .sched .st.run { animation: none; } }
+.sched .job-head .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sched .job-head .next { font-size: .85rem; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sched .job-head .next b { color: var(--fg); font-weight: 600; }
+.sched .job-head .meta { grid-column: 2 / 4; display: flex; gap: .35rem .9rem; flex-wrap: wrap; color: var(--muted); font-size: .8rem; }
+.sched .pill { font-size: .72rem; font-weight: 600; border-radius: 999px; padding: 0 .45rem; border: 1px solid currentColor; white-space: nowrap; }
+.sched .pill.bad { color: var(--bad); }
+.sched .pill.warn { color: var(--warn); }
+.sched .pill.paused { color: var(--muted); }
+.sched .pill.run { color: var(--accent); }
+.sched .job-body { border-top: 1px solid var(--line); padding: .7rem .8rem .8rem; display: flex; flex-direction: column; gap: .7rem; }
+.sched .kv { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: .35rem .8rem; font-size: .88rem; margin: 0; }
+.sched .kv dt { color: var(--muted); }
+.sched .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.sched .prompt { background: var(--code); border-radius: 8px; padding: .5rem .6rem; font-size: .85rem; white-space: pre-wrap; max-height: 9rem; overflow-y: auto; }
+.sched .hint { margin: 0; color: var(--muted); font-size: .84rem; }
+.sched .runs h3 { margin: 0 0 .3rem; font-size: .74rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.sched .runs table { width: 100%; border-collapse: collapse; font-size: .85rem; font-variant-numeric: tabular-nums; }
+.sched .runs td { padding: .3rem .4rem; border-top: 1px solid var(--line); vertical-align: top; }
+.sched .runs td:first-child { padding-left: 0; white-space: nowrap; }
+.sched .runs .res { color: var(--muted); }
+.sched .runs .res.bad { color: var(--bad); }
+.sched .runs a { color: var(--accent); text-decoration: none; white-space: nowrap; }
+.sched .tablewrap { overflow-x: auto; }
+.sched .actions { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
+.sched .actions .grow { flex: 1; }
+.sched .confirm { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; font-size: .88rem; }
+.sched .form { display: flex; flex-direction: column; gap: .55rem; margin: 0; }
+.sched .form label { display: flex; flex-direction: column; gap: .2rem; font-size: .84rem; color: var(--muted); }
+.sched .form input, .sched .form textarea, .sched .form select { border: 1px solid var(--line); border-radius: 8px; padding: .4rem .55rem;
+  background: var(--bg); color: var(--fg); font-size: .92rem; }
+.sched .form textarea { min-height: 5rem; resize: vertical; }
+.sched .form .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; }
+.sched .form .preview { font-size: .82rem; color: var(--ok); min-height: 1.1em; }
+.sched .form .preview.bad { color: var(--bad); }
+.sched .empty { color: var(--muted); text-align: center; padding: 1.2rem; }
+.sched .upnext .empty { padding: .4rem; }
+@media (max-width: 760px) {
+  .sched .job-head .next { grid-column: 2 / 4; text-align: left; }
+  .sched .kv { grid-template-columns: 1fr; gap: .1rem; }
+  .sched .kv dd { margin-bottom: .35rem; }
+  .sched .form .row2 { grid-template-columns: 1fr; }
+  .sched .tl { grid-template-columns: auto 1fr; }
+  .sched .tl .when { white-space: nowrap; }
+}
+
 /* Memory page: Hermes's notes, its profile of the user and what Honcho learned. */
 .memnav { display: flex; align-items: center; gap: .5rem; margin: 0 .4rem .2rem; padding: .45rem .5rem; border-radius: 8px;
   color: inherit; text-decoration: none; font-size: .9rem; border-top: 0; }
