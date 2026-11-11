@@ -20,7 +20,7 @@ window.HubMemory = (ctx) => {
     learned: "Facts Hermes picked up from your chats over time. It looks these up when they seem relevant. Delete anything wrong or out of date.",
     help: "Hermes keeps two short files that it reads at the start of every chat: its own notes and what it knows about you. It also learns facts from your chats over time and looks them up when they seem relevant. Here you can read, fix and delete all of it. Chats that are already open keep what they started with; changes apply to new chats.",
     full: "Almost full. Shorten or remove a line before Hermes needs room for a new one.",
-    off: "This file is turned off in Hermes's memory settings, so Hermes does not read it.",
+    off: "This file is turned off in Hermes's memory settings (memory.memory_enabled or memory.user_profile_enabled), so Hermes does not read it and it cannot be changed here.",
   };
 
   let backends = [];
@@ -242,7 +242,9 @@ window.HubMemory = (ctx) => {
     status(body);
     const list = el("div", "mem-entries");
     for (const p of notes.pending.filter((x) => x.target === t.target)) list.append(pendingRow(p));
-    if (ui.raw) {
+    if (!store.enabled) {
+      store.entries.forEach((text) => { const row = el("div", "mem-entry"); row.append(el("div", "mem-text", text)); list.append(row); });
+    } else if (ui.raw) {
       list.append(rawEditor(t, store));
     } else {
       store.entries.forEach((text) => list.append(entryRow(t, store, text)));
@@ -252,13 +254,13 @@ window.HubMemory = (ctx) => {
       }
     }
     body.append(list);
-    if (!ui.raw && !ui.adding) {
+    if (store.enabled && !ui.raw && !ui.adding) {
       const acts = el("div", "mem-acts");
       acts.append(btn("", t.id === "you" ? "Add a line" : "Add a note", () => { ui.adding = true; ui.edit = null; ui.note = ""; draw(); focusEditor(); }));
       body.append(acts);
     }
-    if (pct >= 90) body.append(el("p", "mem-hint", copy.full));
-    body.append(advancedNotes(t, store));
+    if (store.enabled && pct >= 90) body.append(el("p", "mem-hint", copy.full));
+    if (store.enabled) body.append(advancedNotes(t, store));
   }
 
   function changeWord(c) {
