@@ -49,7 +49,8 @@ func newSetupCommand(b *base) *cobra.Command {
 		Long: "setup installs talaria for this user in one step: it copies this binary to ~/.talaria/bin, " +
 			"pairs the computer with the hub (as login does), writes the config file when there is none, registers " +
 			"Firefox's native messaging host and opens the extension's install page, starts a systemd user service " +
-			"(launchd agent on macOS) and offers to fix bash's PATH for zsh and fish users. Run it again at any time; " +
+			"(launchd agent on macOS), offers to put ~/.talaria/bin on PATH for your login shell and bash -l, and offers to fix " +
+			"bash's PATH for zsh and fish users. Run it again at any time; " +
 			"it only changes what is missing. setup --uninstall reverses what setup did.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -80,7 +81,7 @@ func newSetupCommand(b *base) *cobra.Command {
 	fl.BoolVar(&f.overwrite, "overwrite-config", false, "Replace an existing config file (after a backup)")
 	fl.BoolVar(&f.noService, "no-service", false, "Do not install or start the background service")
 	fl.BoolVar(&f.noBrowser, "no-browser", false, "Leave Firefox alone and write browser.enabled false into a new config")
-	fl.BoolVar(&f.noShell, "no-shell-check", false, "Do not compare the login shell's PATH with bash's")
+	fl.BoolVar(&f.noShell, "no-shell-check", false, "Do not check or change the PATH of the login shell and bash -l")
 	fl.BoolVar(&f.uninstall, "uninstall", false, "Undo what setup did, as its state file records")
 	fl.DurationVar(&f.wait, "wait", 10*time.Minute, "How long to wait for the Firefox extension to connect; 0 skips")
 	return c

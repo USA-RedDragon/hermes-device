@@ -26,14 +26,29 @@ const basePath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 const shellTimeout = 15 * time.Second
 
+// Login shells that setup checks.
+const (
+	shellBash = "bash"
+	shellZsh  = "zsh"
+	shellFish = "fish"
+)
+
 // ShellReport compares the login shell's PATH with what agent commands get.
 type ShellReport struct {
 	// Shell is the login shell's base name: zsh or fish. Empty when the
 	// login shell is bash or another shell that setup does not check.
 	Shell string
 	// Missing are directories on the login shell's PATH that bash -l does
-	// not have, in the login shell's order.
+	// not have, in the login shell's order. It never holds BinDir.
 	Missing []string
+	// Login is the login shell's base name, also when it is bash or a
+	// shell setup does not check.
+	Login string
+	// BinDir is the install directory CheckShell looked for.
+	// LoginLacksBin is true when the login shell is bash, zsh or fish and
+	// its PATH lacks BinDir; BashLacksBin when bash -l's PATH lacks it.
+	BinDir                      string
+	LoginLacksBin, BashLacksBin bool
 }
 
 // shellEnv is a small environment both shells start from, as under the
@@ -57,35 +72,62 @@ func parsePath(out []byte) []string {
 	return nil
 }
 
-// CheckShell runs the login shell (interactive, as in a terminal) and bash
-// -l (as agent commands run) and lists the directories bash lacks.
-func (s *System) CheckShell(ctx context.Context) (*ShellReport, error) {
-	r := &ShellReport{}
-	name := filepath.Base(s.Shell)
-	var args []string
-	switch name {
-	case "zsh":
-		args = []string{"-l", "-i", "-c", `printf '\n` + pathMarker + `%s\n' "$PATH"`}
-	case "fish":
-		args = []string{"-l", "-i", "-c", `printf '\n` + pathMarker + `%s\n' (string join : $PATH)`}
-	default:
-		return r, nil
+func printPath(name string) string {
+	if name == shellFish {
+		return `printf '\n` + pathMarker + `%s\n' (string join : $PATH)`
 	}
-	r.Shell = name
+	return `printf '\n` + pathMarker + `%s\n' "$PATH"`
+}
+
+func onPath(path []string, dir string) bool {
+	dir = filepath.Clean(dir)
+	return slices.ContainsFunc(path, func(d string) bool { return d != "" && filepath.Clean(d) == dir })
+}
+
+// CheckShell runs the login shell (interactive, as in a terminal) and bash
+// -l (as agent commands run), lists the directories bash lacks, and checks
+// that both have binDir on PATH. An empty binDir skips that check.
+func (s *System) CheckShell(ctx context.Context, binDir string) (*ShellReport, error) {
+	name := filepath.Base(s.Shell)
+	r := &ShellReport{BinDir: binDir}
+	if s.Shell != "" {
+		r.Login = name
+	}
+	switch name {
+	case shellZsh, shellFish, shellBash:
+	default:
+		if binDir == "" {
+			return r, nil
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, shellTimeout)
 	defer cancel()
-	out, err := s.Run.Output(ctx, s.shellEnv(), s.Shell, args...)
-	login := parsePath(out)
-	if login == nil {
-		return nil, fmt.Errorf("read PATH from %s: %w", s.Shell, err)
+	var login []string
+	if r.Login == shellZsh || r.Login == shellFish || r.Login == shellBash && binDir != "" {
+		out, err := s.Run.Output(ctx, s.shellEnv(), s.Shell, "-l", "-i", "-c", printPath(name))
+		if login = parsePath(out); login == nil {
+			return nil, fmt.Errorf("read PATH from %s: %w", s.Shell, err)
+		}
 	}
-	out, err = s.Run.Output(ctx, s.shellEnv(), "bash", "-l", "-c", `printf '\n`+pathMarker+`%s\n' "$PATH"`)
+	if login == nil && binDir == "" {
+		return r, nil
+	}
+	out, err := s.Run.Output(ctx, s.shellEnv(), shellBash, "-l", "-c", printPath(shellBash))
 	bash := parsePath(out)
 	if bash == nil {
 		return nil, fmt.Errorf("read PATH from bash -l: %w", err)
 	}
+	if binDir != "" {
+		r.BashLacksBin = !onPath(bash, binDir)
+		r.LoginLacksBin = login != nil && !onPath(login, binDir)
+	}
+	if name != shellZsh && name != shellFish {
+		return r, nil
+	}
+	r.Shell = name
 	for _, d := range login {
-		if d == "" || !filepath.IsAbs(d) || slices.Contains(bash, d) || slices.Contains(r.Missing, d) {
+		if d == "" || !filepath.IsAbs(d) || slices.Contains(bash, d) || slices.Contains(r.Missing, d) ||
+			binDir != "" && filepath.Clean(d) == filepath.Clean(binDir) {
 			continue
 		}
 		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
@@ -93,6 +135,11 @@ func (s *System) CheckShell(ctx context.Context) (*ShellReport, error) {
 		}
 	}
 	return r, nil
+}
+
+// OnPath reports whether dir is on this process's PATH.
+func (s *System) OnPath(dir string) bool {
+	return onPath(strings.Split(s.Getenv("PATH"), ":"), dir)
 }
 
 // EnvFile is the shared environment file, as ~/.config/shell/env.sh.
@@ -110,6 +157,19 @@ func (s *System) BashStartup() string {
 		}
 	}
 	return filepath.Join(s.Home, ".bash_profile")
+}
+
+// BashRC is ~/.bashrc, which interactive bash shells that are not login
+// shells read, as most terminals on Linux start.
+func (s *System) BashRC() string { return filepath.Join(s.Home, ".bashrc") }
+
+// FishConf is the file fish reads at start that setup writes to.
+func (s *System) FishConf() string {
+	base := s.Getenv("XDG_CONFIG_HOME")
+	if base == "" || !filepath.IsAbs(base) {
+		base = filepath.Join(s.Home, ".config")
+	}
+	return filepath.Join(base, "fish", "conf.d", "talaria.fish")
 }
 
 // ZshStartup is ~/.zshrc, under ZDOTDIR when that is set.
@@ -131,12 +191,29 @@ func (s *System) shQuote(p string) string {
 	return `"` + home + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`").Replace(p) + `"`
 }
 
+// fishQuote quotes p for a double-quoted fish word, writing the home
+// directory as $HOME.
+func (s *System) fishQuote(p string) string {
+	home := ""
+	if rest, ok := strings.CutPrefix(p, s.Home+"/"); ok {
+		home, p = "$HOME/", rest
+	}
+	return `"` + home + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`).Replace(p) + `"`
+}
+
+// binComment explains the block that puts the install directory on PATH.
+const binComment = "talaria's install directory, for the talaria and tal commands in a terminal and in agent commands."
+
 // envBlock adds dirs to PATH, in this order, when they exist and are not
 // on PATH yet.
 func (s *System) envBlock(shell string, dirs []string) string {
+	return s.pathBlock(fmt.Sprintf("PATH directories that %s has and bash -l lacked. hermes-device runs agent commands with bash -l.", shell), dirs)
+}
+
+func (s *System) pathBlock(comment string, dirs []string) string {
 	var b strings.Builder
 	b.WriteString(blockBegin + "\n")
-	fmt.Fprintf(&b, "# PATH directories that %s has and bash -l lacked. hermes-device runs agent commands with bash -l.\n", shell)
+	b.WriteString("# " + comment + "\n")
 	b.WriteString("for hermes_device_dir in")
 	for _, d := range slices.Backward(dirs) {
 		b.WriteString(" " + s.shQuote(d))
@@ -165,20 +242,78 @@ func (s *System) sourceBlock(env string, profile bool) string {
 	return b + "[ -f " + q + " ] && . " + q + "\n" + blockEnd + "\n"
 }
 
-// ShellPlan is the change FixShell makes.
+// fishBlock puts dir first on fish's PATH when it exists and is not on it.
+func (s *System) fishBlock(dir string) string {
+	q := s.fishQuote(dir)
+	return blockBegin + "\n# " + binComment + "\n" +
+		"if test -d " + q + "; and not contains -- " + q + " $PATH\n" +
+		"    set -gx PATH " + q + " $PATH\n" +
+		"end\n" + blockEnd + "\n"
+}
+
+// ShellPlan is the change FixShell or FixBinDir makes.
 type ShellPlan struct {
+	// EnvFile gets the PATH block. Empty when only Fish changes.
 	EnvFile string
 	// Sources are the startup files that get a line that sources EnvFile.
 	Sources []string
+	// Fish is fish's file that gets the install directory, when fish
+	// lacks it.
+	Fish string
+}
+
+// Files lists every file the plan changes.
+func (p ShellPlan) Files() []string {
+	var f []string
+	if p.EnvFile != "" {
+		f = append(f, p.EnvFile)
+	}
+	f = append(f, p.Sources...)
+	if p.Fish != "" {
+		f = append(f, p.Fish)
+	}
+	return f
 }
 
 // PlanShell returns the files FixShell changes for r.
 func (s *System) PlanShell(r *ShellReport) ShellPlan {
-	p := ShellPlan{EnvFile: s.EnvFile()}
 	files := []string{s.BashStartup()}
-	if r.Shell == "zsh" {
+	if r.Shell == shellZsh {
 		files = append(files, s.ZshStartup())
 	}
+	return s.planSources(files)
+}
+
+// PlanBinDir returns the files FixBinDir changes for r: the shared
+// environment file and the startup files of each shell that lacks the
+// install directory, or fish's own file. It is empty when no shell lacks
+// it.
+func (s *System) PlanBinDir(r *ShellReport) ShellPlan {
+	var files []string
+	if r.BashLacksBin {
+		files = append(files, s.BashStartup())
+	}
+	var fish string
+	if r.LoginLacksBin {
+		switch r.Login {
+		case shellZsh:
+			files = append(files, s.ZshStartup())
+		case shellBash:
+			files = append(files, s.BashStartup(), s.BashRC())
+		case shellFish:
+			fish = s.FishConf()
+		}
+	}
+	var p ShellPlan
+	if len(files) > 0 {
+		p = s.planSources(slices.Compact(files))
+	}
+	p.Fish = fish
+	return p
+}
+
+func (s *System) planSources(files []string) ShellPlan {
+	p := ShellPlan{EnvFile: s.EnvFile()}
 	ref := strings.TrimPrefix(p.EnvFile, s.Home+"/")
 	for _, f := range files {
 		if data, err := os.ReadFile(f); err == nil && strings.Contains(string(data), ref) {
@@ -193,7 +328,24 @@ func (s *System) PlanShell(r *ShellReport) ShellPlan {
 // startup files of plan. Each existing file is backed up first, and every
 // change is recorded in st.
 func (s *System) FixShell(r *ShellReport, plan ShellPlan, st *State) error {
-	if err := s.appendBlock(plan.EnvFile, s.envBlock(r.Shell, r.Missing), st); err != nil {
+	return s.fixPlan(plan, s.envBlock(r.Shell, r.Missing), st)
+}
+
+// FixBinDir puts r.BinDir on PATH in the files of plan, as FixShell does.
+func (s *System) FixBinDir(r *ShellReport, plan ShellPlan, st *State) error {
+	if plan.Fish != "" {
+		if err := s.appendBlock(plan.Fish, s.fishBlock(r.BinDir), st); err != nil {
+			return err
+		}
+	}
+	if plan.EnvFile == "" {
+		return nil
+	}
+	return s.fixPlan(plan, s.pathBlock(binComment, []string{r.BinDir}), st)
+}
+
+func (s *System) fixPlan(plan ShellPlan, block string, st *State) error {
+	if err := s.appendBlock(plan.EnvFile, block, st); err != nil {
 		return err
 	}
 	for _, f := range plan.Sources {

@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -129,7 +128,7 @@ func (s *System) Setup(ctx context.Context, o *Options) (*Report, error) {
 		}
 	}
 	if !o.NoShell {
-		err := s.shellStep(ctx, st, r)
+		err := s.shellStep(ctx, st, r, filepath.Dir(bin))
 		if serr := save(); err == nil {
 			err = serr
 		}
@@ -238,7 +237,8 @@ func (s *System) hostStep(o *Options, st *State, r *Report, ff *Firefox, bin str
 	return st.Save(o.StateDir)
 }
 
-// readLine reads one answer, or returns when ctx ends (Ctrl-C).
+// readLine reads one answer, or returns when ctx ends (Ctrl-C). It reads
+// a byte at a time, so that the next prompt gets the next line.
 func (s *System) readLine(ctx context.Context) (string, error) {
 	type answer struct {
 		line string
@@ -246,8 +246,22 @@ func (s *System) readLine(ctx context.Context) (string, error) {
 	}
 	ch := make(chan answer, 1)
 	go func() {
-		line, err := bufio.NewReader(s.In).ReadString('\n')
-		ch <- answer{line, err}
+		var b strings.Builder
+		buf := make([]byte, 1)
+		for {
+			n, err := s.In.Read(buf)
+			if n == 1 {
+				b.WriteByte(buf[0])
+				if buf[0] == '\n' {
+					break
+				}
+			}
+			if err != nil {
+				ch <- answer{b.String(), err}
+				return
+			}
+		}
+		ch <- answer{b.String(), nil}
 	}()
 	select {
 	case a := <-ch:
@@ -260,14 +274,28 @@ func (s *System) readLine(ctx context.Context) (string, error) {
 	}
 }
 
-func (s *System) shellStep(ctx context.Context, st *State, r *Report) error {
-	rep, err := s.CheckShell(ctx)
+// confirm asks a yes or no question and reports a yes.
+func (s *System) confirm(ctx context.Context) (bool, error) {
+	s.printf("Make this change? [y/N] ")
+	line, err := s.readLine(ctx)
+	if err != nil {
+		return false, err
+	}
+	a := strings.ToLower(strings.TrimSpace(line))
+	return a == "y" || a == "yes", nil
+}
+
+func (s *System) shellStep(ctx context.Context, st *State, r *Report, binDir string) error {
+	rep, err := s.CheckShell(ctx, binDir)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if err != nil {
 		r.todo("Could not compare your login shell's PATH with bash's: %v", err)
 		return nil
+	}
+	if err := s.binDirStep(ctx, rep, st, r); err != nil {
+		return err
 	}
 	if rep.Shell == "" || len(rep.Missing) == 0 {
 		if rep.Shell != "" {
@@ -285,24 +313,16 @@ func (s *System) shellStep(ctx context.Context, st *State, r *Report) error {
 	if len(plan.Sources) == 0 {
 		s.printf(" (it is already sourced by your startup files)")
 	}
-	for i, f := range plan.Sources {
-		sep := ","
-		if i == 0 {
-			sep = ""
-		}
-		s.printf("%s %s", sep, f)
-	}
-	s.printf(".\nIt backs up every file it changes first, and setup --uninstall takes the lines out again.\n")
+	s.printf("%s.\nIt backs up every file it changes first, and setup --uninstall takes the lines out again.\n", listFiles(plan.Sources))
 	if !s.Interactive {
 		r.todo("Add %s to bash's PATH (run setup in a terminal to have it do so)", strings.Join(rep.Missing, ", "))
 		return nil
 	}
-	s.printf("Make this change? [y/N] ")
-	line, err := s.readLine(ctx)
+	yes, err := s.confirm(ctx)
 	if err != nil {
 		return err
 	}
-	if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+	if !yes {
 		r.todo("Add %s to bash's PATH, or agent commands will not find what is in them", strings.Join(rep.Missing, ", "))
 		return nil
 	}
@@ -311,6 +331,75 @@ func (s *System) shellStep(ctx context.Context, st *State, r *Report) error {
 		return nil
 	}
 	r.done("Added %d PATH directories to %s for bash -l", len(rep.Missing), plan.EnvFile)
+	return nil
+}
+
+func listFiles(files []string) string {
+	var b strings.Builder
+	for i, f := range files {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(" " + f)
+	}
+	return b.String()
+}
+
+// binDirStep puts the install directory on PATH for the login shell and
+// bash -l, with the same rules as the PATH fix of shellStep.
+func (s *System) binDirStep(ctx context.Context, rep *ShellReport, st *State, r *Report) error {
+	dir := rep.BinDir
+	plan := s.PlanBinDir(rep)
+	other := rep.Login != shellBash && rep.Login != shellZsh && rep.Login != shellFish
+	var lack []string
+	if rep.LoginLacksBin {
+		lack = append(lack, rep.Login)
+	}
+	if rep.BashLacksBin {
+		lack = append(lack, "bash -l")
+	}
+	if len(lack) == 0 {
+		if other && !s.OnPath(dir) {
+			r.todo("Add %s to PATH in your login shell's startup file, so that the talaria and tal commands are found", dir)
+		} else {
+			r.done("%s is on PATH", dir)
+		}
+		return nil
+	}
+	s.printf("\ntalaria is installed in %s, which is not on PATH for %s, so the talaria and tal commands are \"not found\" there.\n", dir, strings.Join(lack, " and "))
+	if plan.EnvFile != "" {
+		s.printf("Setup can add it to the shared environment file %s and source it from", plan.EnvFile)
+		if len(plan.Sources) == 0 {
+			s.printf(" (it is already sourced by your startup files)")
+		}
+		s.printf("%s", listFiles(plan.Sources))
+		if plan.Fish != "" {
+			s.printf(", and add it to fish's %s", plan.Fish)
+		}
+	} else {
+		s.printf("Setup can add it to fish's %s", plan.Fish)
+	}
+	s.printf(".\nIt backs up every file it changes first, and setup --uninstall takes the lines out again.\n")
+	if other && !s.OnPath(dir) {
+		r.todo("Add %s to PATH in your login shell's startup file, so that the talaria and tal commands are found", dir)
+	}
+	if !s.Interactive {
+		r.todo("Add %s to PATH (run setup in a terminal to have it do so)", dir)
+		return nil
+	}
+	yes, err := s.confirm(ctx)
+	if err != nil {
+		return err
+	}
+	if !yes {
+		r.todo("Add %s to PATH, or the talaria and tal commands are not found in a terminal", dir)
+		return nil
+	}
+	if err := s.FixBinDir(rep, plan, st); err != nil {
+		r.todo("Setup could not change the shell files: %v. Add %s to PATH yourself", err, dir)
+		return nil
+	}
+	r.done("Added %s to PATH in%s", dir, listFiles(plan.Files()))
 	return nil
 }
 

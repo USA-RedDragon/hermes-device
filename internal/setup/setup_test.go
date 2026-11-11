@@ -64,17 +64,30 @@ func (d *systemd) respond(home string) func(string, []string) ([]byte, error) {
 			d.active = true
 		case name == systemctl && len(args) > 2 && args[1] == "disable":
 			d.active = false
-		case name == "zsh":
-			return []byte("noise from .zshrc\n__HERMES_DEVICE_PATH__=" + home + "/.local/bin:/usr/local/bin:/usr/bin:" + home + "/gone\n"), nil
-		case name == "bash":
-			path := "/usr/local/bin:/usr/bin"
-			if data, err := os.ReadFile(filepath.Join(home, ".bash_profile")); err == nil && strings.Contains(string(data), "env.sh") {
-				path = home + "/.local/bin:" + path
-			}
-			return []byte("\n__HERMES_DEVICE_PATH__=" + path + "\n"), nil
+		case name == zsh:
+			path := fakeShellPath(home, ".zshrc", home+"/.local/bin:/usr/local/bin:/usr/bin:"+home+"/gone")
+			return []byte("noise from .zshrc\n__HERMES_DEVICE_PATH__=" + path + "\n"), nil
+		case name == bash:
+			return []byte("\n__HERMES_DEVICE_PATH__=" + fakeShellPath(home, bashProfile, "/usr/local/bin:/usr/bin") + "\n"), nil
 		}
 		return nil, nil
 	}
+}
+
+// fakeShellPath is base with the directories of env.sh in front, when the
+// startup file sources env.sh.
+func fakeShellPath(home, startup, base string) string {
+	data, err := os.ReadFile(filepath.Join(home, startup))
+	if err != nil || !strings.Contains(string(data), "env.sh") {
+		return base
+	}
+	env, _ := os.ReadFile(filepath.Join(home, ".config", "shell", "env.sh"))
+	for _, d := range []string{".local/bin", ".talaria/bin"} {
+		if strings.Contains(string(env), `"$HOME/`+d+`"`) && !strings.Contains(":"+base+":", ":"+home+"/"+d+":") {
+			base = home + "/" + d + ":" + base
+		}
+	}
+	return base
 }
 
 type fixture struct {
@@ -141,7 +154,7 @@ func TestSetupInstallsEverythingAndUninstallUndoesIt(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	home := f.sys.Home
-	f.sys.Interactive, f.sys.In = true, strings.NewReader("y\n")
+	f.sys.Interactive, f.sys.In = true, strings.NewReader("y\n"+"y\n")
 	f.statuses = []setup.BrowserStatus{
 		{Enabled: true}, {Enabled: true},
 	}
@@ -174,7 +187,7 @@ func TestSetupInstallsEverythingAndUninstallUndoesIt(t *testing.T) {
 	}
 	for _, p := range []string{
 		bin, filepath.Join(home, ".talaria"), f.opts.ConfigFile, filepath.Join(home, ".config", "systemd", "user", setup.UnitName),
-		filepath.Join(home, ".config", "shell", "env.sh"), filepath.Join(home, ".bash_profile"),
+		filepath.Join(home, ".config", "shell", "env.sh"), filepath.Join(home, bashProfile),
 		filepath.Join(home, ".mozilla", "native-messaging-hosts", "hermes_device.json"), filepath.Join(f.opts.StateDir, setup.StateFileName),
 	} {
 		if exists(p) {
@@ -325,10 +338,11 @@ func TestShellCheckNonInteractiveChangesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if readFile(t, filepath.Join(f.sys.Home, ".zshrc")) != zshrcText || exists(filepath.Join(f.sys.Home, ".bash_profile")) {
+	if readFile(t, filepath.Join(f.sys.Home, ".zshrc")) != zshrcText || exists(filepath.Join(f.sys.Home, bashProfile)) {
 		t.Error("changed dotfiles without a yes")
 	}
-	if len(rep.Todo) != 1 || !strings.Contains(rep.Todo[0], filepath.Join(f.sys.Home, ".local", "bin")) {
+	if len(rep.Todo) != 2 || !strings.Contains(rep.Todo[0], filepath.Join(f.sys.Home, ".talaria", "bin")+" to PATH (run setup in a terminal") ||
+		!strings.Contains(rep.Todo[1], filepath.Join(f.sys.Home, ".local", "bin")) {
 		t.Errorf("todo %q", rep.Todo)
 	}
 }
@@ -361,7 +375,8 @@ func checkSecondRun(t *testing.T, f *fixture) {
 			t.Errorf("second run called %q", c)
 		}
 	}
-	if strings.Count(readFile(t, filepath.Join(home, ".zshrc")), "hermes-device setup >>>") != 1 {
+	if strings.Count(readFile(t, filepath.Join(home, ".zshrc")), "hermes-device setup >>>") != 1 ||
+		strings.Count(readFile(t, filepath.Join(home, ".config", "shell", "env.sh")), "hermes-device setup >>>") != 2 {
 		t.Error("second run added another block")
 	}
 	if len(rep.Todo) != 0 {
@@ -401,7 +416,8 @@ func checkInstalled(t *testing.T, f *fixture, rep *setup.Report) {
 		t.Errorf("started %q", f.run.started)
 	}
 	env := readFile(t, filepath.Join(home, ".config", "shell", "env.sh"))
-	if !strings.Contains(env, `for hermes_device_dir in "$HOME/.local/bin"; do`) || strings.Contains(env, "gone") {
+	if !strings.Contains(env, `for hermes_device_dir in "$HOME/.local/bin"; do`) || strings.Contains(env, "gone") ||
+		!strings.Contains(env, `for hermes_device_dir in "$HOME/.talaria/bin"; do`) || strings.Count(env, "# >>> hermes-device setup >>>") != 2 {
 		t.Errorf("env.sh:\n%s", env)
 	}
 	zshrc := readFile(t, filepath.Join(home, ".zshrc"))
@@ -411,7 +427,7 @@ func checkInstalled(t *testing.T, f *fixture, rep *setup.Report) {
 	if got := readFile(t, filepath.Join(home, ".zshrc.talaria-20261110-120000.bak")); got != zshrcText {
 		t.Errorf("backup = %q", got)
 	}
-	if !strings.Contains(readFile(t, filepath.Join(home, ".bash_profile")), "env.sh") {
+	if !strings.Contains(readFile(t, filepath.Join(home, bashProfile)), "env.sh") {
 		t.Error(".bash_profile does not source env.sh")
 	}
 	out, _ := f.sys.Out.(*bytes.Buffer)

@@ -26,6 +26,10 @@ const (
 	vOld         = "0.8.1"
 	binName      = "talaria"
 	zshrcText    = "export EDITOR=vi\n"
+	zsh          = "zsh"
+	fish         = "fish"
+	bash         = "bash"
+	bashProfile  = ".bash_profile"
 )
 
 // fakeRunner answers commands with respond and records them.

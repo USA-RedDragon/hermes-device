@@ -107,7 +107,7 @@ func TestShellFixKeepsSymlinkedDotfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(home, ".profile"), "umask 022\n")
-	rep := &setup.ShellReport{Shell: "zsh", Missing: []string{filepath.Join(home, ".local", "bin"), "/opt/a b/bin"}}
+	rep := &setup.ShellReport{Shell: zsh, Missing: []string{filepath.Join(home, ".local", "bin"), "/opt/a b/bin"}}
 	plan := f.sys.PlanShell(rep)
 	if len(plan.Sources) != 2 || plan.Sources[0] != filepath.Join(home, ".profile") {
 		t.Fatalf("plan %+v", plan)
@@ -138,24 +138,24 @@ func TestCheckShellFish(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	r := &fakeRunner{respond: func(name string, _ []string) ([]byte, error) {
-		if name == "fish" {
+		if name == fish {
 			return []byte("__HERMES_DEVICE_PATH__=" + dir + ":/usr/bin\n"), nil
 		}
 		return []byte("__HERMES_DEVICE_PATH__=/usr/bin\n"), nil
 	}}
 	sys := newSystem(t, linux, r, nil, nil)
 	sys.Shell = "/usr/bin/fish"
-	rep, err := sys.CheckShell(t.Context())
-	if err != nil || rep.Shell != "fish" || len(rep.Missing) != 1 || rep.Missing[0] != dir {
+	rep, err := sys.CheckShell(t.Context(), "")
+	if err != nil || rep.Shell != fish || len(rep.Missing) != 1 || rep.Missing[0] != dir {
 		t.Errorf("CheckShell = %+v, %v", rep, err)
 	}
 	sys.Shell = "/bin/bash"
-	if rep, err := sys.CheckShell(t.Context()); err != nil || rep.Shell != "" {
+	if rep, err := sys.CheckShell(t.Context(), ""); err != nil || rep.Shell != "" {
 		t.Errorf("bash login shell: %+v, %v", rep, err)
 	}
 	r.respond = func(string, []string) ([]byte, error) { return []byte("no marker"), errNotFound }
 	sys.Shell = "/usr/bin/zsh"
-	if _, err := sys.CheckShell(t.Context()); err == nil {
+	if _, err := sys.CheckShell(t.Context(), ""); err == nil {
 		t.Error("no error without a PATH line")
 	}
 }
