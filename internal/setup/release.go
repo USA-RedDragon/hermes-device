@@ -18,7 +18,7 @@ import (
 )
 
 // DefaultReleasesURL is the repository's releases page.
-const DefaultReleasesURL = "https://github.com/USA-RedDragon/hermes-device/releases"
+const DefaultReleasesURL = "https://github.com/USA-RedDragon/talaria/releases"
 
 // Download limits.
 const (
@@ -52,28 +52,36 @@ func (r *Releases) get(ctx context.Context, u string, client *http.Client) (*htt
 }
 
 // LatestTag returns the tag of the latest release, from the redirect of
-// <BaseURL>/latest. It uses no API, so no rate limit applies.
+// <BaseURL>/latest. It uses no API, so no rate limit applies. A redirect to
+// the latest release of a renamed repository is followed, up to a few.
 func (r *Releases) LatestTag(ctx context.Context) (string, error) {
 	c := *r.Client
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := r.get(ctx, r.BaseURL+"/latest", &c)
-	if err != nil {
-		return "", err
+	u := r.BaseURL + "/latest"
+	for range 4 {
+		resp, err := r.get(ctx, u, &c)
+		if err != nil {
+			return "", err
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+		_ = resp.Body.Close()
+		if resp.StatusCode < 300 || resp.StatusCode > 399 {
+			return "", fmt.Errorf("%s answered %s, not a redirect to the latest release", u, resp.Status)
+		}
+		loc, err := resp.Location()
+		if err != nil {
+			return "", err
+		}
+		dir, tag := path.Split(loc.Path)
+		if strings.HasSuffix(dir, "/releases/tag/") && Canonical(tag) != "" {
+			return tag, nil
+		}
+		if !strings.HasSuffix(loc.Path, "/releases/latest") {
+			break
+		}
+		u = loc.String()
 	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-	if resp.StatusCode < 300 || resp.StatusCode > 399 {
-		return "", fmt.Errorf("%s/latest answered %s, not a redirect to the latest release", r.BaseURL, resp.Status)
-	}
-	loc, err := resp.Location()
-	if err != nil {
-		return "", err
-	}
-	dir, tag := path.Split(loc.Path)
-	if !strings.HasSuffix(dir, "/releases/tag/") || Canonical(tag) == "" {
-		return "", fmt.Errorf("the latest release redirects to %s, which names no release tag", loc)
-	}
-	return tag, nil
+	return "", fmt.Errorf("the latest release of %s redirects to no release tag", r.BaseURL)
 }
 
 // AssetURL is the download URL of file name of the release tag.

@@ -37,7 +37,7 @@ A session is bound to a device and a directory. Every command of a bound session
 
 ### Setup
 
-Download the archive `talaria_<version>_<os>_<arch>.tar.gz` for your OS and architecture from the [latest release](https://github.com/USA-RedDragon/hermes-device/releases/latest), check it against `hermes-device_<version>_checksums.txt` (`sha256sum --ignore-missing -c hermes-device_<version>_checksums.txt`, or `shasum -a 256 --ignore-missing -c ...` on macOS), unpack it and run:
+Download the archive `talaria_<version>_<os>_<arch>.tar.gz` for your OS and architecture from the [latest release](https://github.com/USA-RedDragon/talaria/releases/latest), check it against `hermes-device_<version>_checksums.txt` (`sha256sum --ignore-missing -c hermes-device_<version>_checksums.txt`, or `shasum -a 256 --ignore-missing -c ...` on macOS), unpack it and run:
 
 ```sh
 ./talaria setup https://hub.example.com
@@ -66,7 +66,7 @@ Release builds know the default hub, so `./talaria setup` without the URL also w
 talaria update
 ```
 
-`update` downloads the latest release's archive for this OS and architecture, checks its SHA-256 against the release's checksum file, verifies the archive's GitHub artifact attestation (build provenance signed with Sigstore by this repository's release workflow at the release tag), checks that the new binary runs here and reports the release's version, replaces `~/.talaria/bin/talaria` (or this binary when that does not exist) and restarts the service. It refuses a downgrade and replacing a development build without `--force`. `talaria update 0.9.0` installs that release. It refuses a release whose attestation does not verify, and every release before v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false -->0.13.0<!-- /docgen:const -->, which has none. `--insecure-skip-attestation` installs without the attestation check; that is unsafe and meant for emergencies only. `update --check` runs every check and installs nothing. [docs/releases.md](docs/releases.md) says what is attested, what `update` checks and trusts, and how to verify a file by hand with `gh attestation verify <file> --repo USA-RedDragon/hermes-device`. Firefox updates the extension by itself.
+`update` downloads the latest release's archive for this OS and architecture, checks its SHA-256 against the release's checksum file, verifies the archive's GitHub artifact attestation (build provenance signed with Sigstore by this repository's release workflow at the release tag), checks that the new binary runs here and reports the release's version, replaces `~/.talaria/bin/talaria` (or this binary when that does not exist) and restarts the service. It refuses a downgrade and replacing a development build without `--force`. `talaria update 0.9.0` installs that release. It refuses a release whose attestation does not verify, and every release before v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false -->0.13.0<!-- /docgen:const -->, which has none. `--insecure-skip-attestation` installs without the attestation check; that is unsafe and meant for emergencies only. `update --check` runs every check and installs nothing. [docs/releases.md](docs/releases.md) says what is attested, what `update` checks and trusts, and how to verify a file by hand with `gh attestation verify <file> --repo USA-RedDragon/talaria`. Firefox updates the extension by itself.
 
 The daemon also updates itself. When the talaria service runs `run` (the service that `setup` installs) and `update.auto` is on (the default), `run` looks for a new release shortly after it starts and then every `update.interval` (default 6h, moved by up to 10% each time so that computers do not check at the same moment). It installs a newer stable release with the same steps as `update`, all checks included; there is no way to skip them. It never installs a pre-release, an older release or the same release. Then it waits until no command, browser operation, MCP call or `chat` runs on this computer, for up to 30 minutes, and exits so that the service manager starts the new binary. When work is still running after 30 minutes, it tries again at the next check. A failed check or install is logged as a warning and waits for the next check. It does not update itself when you run `run` by hand, when it does not run `~/.talaria/bin/talaria`, for a development build, or on a service device (`hub.token` or `hub.token-file`); the sandbox and device images also set `update.auto` to false, because their images are updated by redeploying them.
 
@@ -127,7 +127,7 @@ The agent can also use your own Firefox, with your logins, in its own "Hermes" t
 1. Set `browser.enabled: true` in the config.
 2. Run `talaria browser install`. It registers this binary as Firefox's native messaging host for the Hermes extension, for your user only.
 3. Restart `talaria run`.
-4. Install the extension: download `talaria-firefox-<version>.xpi` from the [latest release](https://github.com/USA-RedDragon/hermes-device/releases/latest), then in Firefox open `about:addons`, choose the gear menu, "Install Add-on From File..." and pick the file. Mozilla signs it, so it stays installed, and Firefox updates it from later releases. For development, `talaria browser extension --out DIR` writes the files to load as a temporary add-on (docs/browser.md section 6.1).
+4. Install the extension: download `talaria-firefox-<version>.xpi` from the [latest release](https://github.com/USA-RedDragon/talaria/releases/latest), then in Firefox open `about:addons`, choose the gear menu, "Install Add-on From File..." and pick the file. Mozilla signs it, so it stays installed, and Firefox updates it from later releases. For development, `talaria browser extension --out DIR` writes the files to load as a temporary add-on (docs/browser.md section 6.1).
    The Hermes button in Firefox's toolbar then shows "Hermes: connected to talaria".
 
 The browser needs no sign-in of its own. It is authorized by this computer: the extension talks only to the local daemon, the daemon's socket is private to your OS user, and the daemon is paired to your hub account, so only your own sessions reach it. Any program you run as the same OS user can also reach it (docs/browser.md section 13).
@@ -159,7 +159,9 @@ The plugin's `device-agents` tools let the user's agents message each other thro
 
 ## Renamed from hermes-device
 
-Release 0.19.0 renamed the program from `hermes-device` to `talaria`. The repository, the Go module, the container images (`ghcr.io/usa-reddragon/hermes-device` and `-sandbox`, which still hold the binary as `hermes-device`), the Firefox extension's id and the plugin keep their names.
+Release 0.19.0 renamed the program from `hermes-device` to `talaria`, and the repository was renamed to `USA-RedDragon/talaria` after 0.19.1. The Go module, the container images (`ghcr.io/usa-reddragon/hermes-device` and `-sandbox`, which still hold the binary as `hermes-device`), the Firefox extension's id and the plugin keep their names.
+
+Releases before 0.19.3 accept only release attestations signed in a repository named `hermes-device`, so they cannot install releases built after the repository rename by themselves: install 0.19.3 or later by hand once (verify the archive with `gh attestation verify <archive> --repo USA-RedDragon/talaria` and its checksum first). From 0.19.3 on, `update` and auto-update accept both names for the same repository ID.
 
 | What | Before 0.19.0 | From 0.19.0 |
 |---|---|---|
@@ -212,7 +214,7 @@ A file that is already at the new place wins; the old one is left where it is an
 
 3. Run `talaria acp-host` in its own container of the Hermes pod, with the same `HERMES_HOME`, on a port that only the hub can reach.
 
-4. Set `HERMES_IMAGE_REPOSITORY` and `HERMES_IMAGE_TAG` in the Hermes gateway container to the repository and the tag of its own image, with the digest in the tag, for example `registry.example.com/docker.io/nousresearch/hermes-agent` and `v0.23.1@sha256:<digest>`. Take both from the same values as the container's `image`, so that they cannot drift apart. The plugin reports the image to devices, and `chat` runs that exact build (Chat). Without them `chat` runs the device's own Hermes.
+4. Set `HERMES_IMAGE_REPOSITORY` and `HERMES_IMAGE_TAG` in the Hermes gateway container to the repository and the tag of its own image, with the digest in the tag, for example `registry.example.com/docker.io/nousresearch/hermes-agent` and `v0.23.1@sha256:<digest>`. Take both from the same values as the container's `image`, so that they cannot drift apart. The plugin reports the image to devices, and `chat` runs that exact build (Chat). Without them `chat` runs the device's own Hermes. When the image is a patched build of an upstream image that devices cannot pull (for example a private one), also set `HERMES_BASE_IMAGE` to the upstream image, pinned by digest, best in the patched image itself (`ENV HERMES_BASE_IMAGE=...` next to its `FROM`). The plugin reports it, and a device that cannot fetch the patched image runs the upstream build's TUI instead: patches that change only the server do not change the TUI.
 
 docs/protocol.md section 8 lists every plugin setting.
 

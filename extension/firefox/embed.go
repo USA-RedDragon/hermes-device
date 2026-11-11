@@ -19,7 +19,7 @@ import (
 var Files embed.FS //nolint:gochecknoglobals // go:embed needs a variable
 
 // ReleasesURL is where each release publishes the signed extension.
-const ReleasesURL = "https://github.com/USA-RedDragon/hermes-device/releases"
+const ReleasesURL = "https://github.com/USA-RedDragon/talaria/releases"
 
 // UpdateURL is the extension's update_url: the update manifest of the latest
 // release.

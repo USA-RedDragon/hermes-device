@@ -226,6 +226,23 @@ func TestLatestTagNeedsRedirect(t *testing.T) {
 	}
 }
 
+func TestLatestTagFollowsARename(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/alice/old/releases/latest":
+			http.Redirect(w, r, "/alice/new/releases/latest", http.StatusMovedPermanently)
+		case "/alice/new/releases/latest":
+			http.Redirect(w, r, "/alice/new/releases/tag/v0.19.3", http.StatusFound)
+		}
+	}))
+	defer srv.Close()
+	rel := &setup.Releases{BaseURL: srv.URL + "/alice/old/releases", Client: srv.Client()}
+	if tag, err := rel.LatestTag(t.Context()); err != nil || tag != "v0.19.3" {
+		t.Errorf("LatestTag = %q, %v", tag, err)
+	}
+}
+
 func TestUpdateVerifiesTheArchiveAttestation(t *testing.T) {
 	t.Parallel()
 	archive := tarball(t, map[string]string{binName: newBody})

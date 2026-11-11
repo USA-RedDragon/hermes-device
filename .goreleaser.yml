@@ -6,7 +6,7 @@ project_name: hermes-device
 release:
   github:
     owner: USA-RedDragon
-    name: "{{ .ProjectName }}"
+    name: talaria
 
 dockers_v2:
   - ids: [hermes-device]
@@ -26,8 +26,8 @@ dockers_v2:
       "org.opencontainers.image.title": "{{.ProjectName}}"
       "org.opencontainers.image.revision": "{{.FullCommit}}"
       "org.opencontainers.image.version": "{{.Version}}"
-      "org.opencontainers.image.url": "https://github.com/USA-RedDragon/{{ .ProjectName }}"
-      "org.opencontainers.image.source": "https://github.com/USA-RedDragon/{{ .ProjectName }}"
+      "org.opencontainers.image.url": "https://github.com/USA-RedDragon/talaria"
+      "org.opencontainers.image.source": "https://github.com/USA-RedDragon/talaria"
     flags:
       - "--pull"
   - id: sandbox
@@ -50,8 +50,8 @@ dockers_v2:
       "org.opencontainers.image.description": "Agent sandbox that runs hermes-device run as a service device"
       "org.opencontainers.image.revision": "{{.FullCommit}}"
       "org.opencontainers.image.version": "{{.Version}}"
-      "org.opencontainers.image.url": "https://github.com/USA-RedDragon/{{ .ProjectName }}"
-      "org.opencontainers.image.source": "https://github.com/USA-RedDragon/{{ .ProjectName }}"
+      "org.opencontainers.image.url": "https://github.com/USA-RedDragon/talaria"
+      "org.opencontainers.image.source": "https://github.com/USA-RedDragon/talaria"
     flags:
       - "--pull"
 
