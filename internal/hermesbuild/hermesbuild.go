@@ -363,12 +363,29 @@ func (s *Store) tryLock(hex string) (unlock func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := flock(f, syscall.LOCK_EX); err != nil {
-		_ = f.Close()
-		return nil, err
+	// A child process that this program forks holds a copy of the lock
+	// file's descriptor until it execs, which looks like a holder for a
+	// moment; only a lock held past tryLockGrace counts as busy.
+	deadline := time.Now().Add(tryLockGrace)
+	for {
+		err := flock(f, syscall.LOCK_EX)
+		if err == nil {
+			return func() { _ = f.Close() }, nil
+		}
+		if !errors.Is(err, errBusy) || time.Now().After(deadline) {
+			_ = f.Close()
+			return nil, err
+		}
+		time.Sleep(tryLockPoll)
 	}
-	return func() { _ = f.Close() }, nil
 }
+
+// tryLockGrace and tryLockPoll bound tryLock's wait for a lock that a
+// forked child holds for a moment.
+const (
+	tryLockGrace = time.Second
+	tryLockPoll  = 20 * time.Millisecond
+)
 
 // Use marks b as in use until the returned file is closed: Prune and
 // Refresh leave it alone. Pass the file to the TUI process
