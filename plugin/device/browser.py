@@ -52,6 +52,9 @@ def _ok(result: Any) -> str:
 
 # --- target device -----------------------------------------------------------------------------
 
+NOT_SIGNED_IN = "Firefox is not signed in to Hermes"
+
+
 class Unavailable(Exception):
     """The session has no device browser to use; the message says why."""
 
@@ -79,6 +82,12 @@ def target(session_id: str = "") -> tuple[Any, Any]:
                           f"that computer: set browser.enabled to true in the hermes-device config, run "
                           f"hermes-device browser install, load the Hermes Firefox extension, and restart "
                           f"hermes-device run.")
+    reason = conn.browser.get("reason") or ""
+    if reason or (conn.browser.get("connected") and not conn.browser.get("signed_in")):
+        if not reason or reason == NOT_SIGNED_IN:
+            raise Unavailable(f"hermes-device: {NOT_SIGNED_IN} on device {conn.name} [{device_id}]. The user must "
+                              f"choose \"Sign in to Hermes\" in the Hermes menu of Firefox's toolbar.")
+        raise Unavailable(f"hermes-device: Firefox on device {conn.name} [{device_id}] cannot be used: {reason}")
     if not conn.browser.get("connected"):
         raise Unavailable(f"hermes-device: the Hermes Firefox extension on device {conn.name} [{device_id}] is "
                           f"not connected. Firefox must be running with the extension loaded.")
@@ -440,7 +449,7 @@ def browser_status(args: dict, session_id: str = "", **_kwargs) -> str:
     except Unavailable as exc:
         return _ok({"available": False, "reason": str(exc)})
     out = {"available": True, "device": conn.name, "device_id": conn.device_id}
-    out.update({k: v for k, v in conn.browser.items() if k != "connected"})
+    out.update({k: v for k, v in conn.browser.items() if k not in ("connected", "reason")})
     try:
         tabs = call(conn, "tabs_list", {}, INSPECT_TIMEOUT_S)
         out["tabs"] = tabs.get("tabs", []) if isinstance(tabs, dict) else []
@@ -618,10 +627,11 @@ def offered() -> bool:
 
 
 def available() -> bool:
-    """check_fn of the other tools: as offered, and that device's extension is connected."""
+    """check_fn of the other tools: as offered, and that device's extension is connected and signed in to
+    the hub."""
     core = _core()
     return enabled() and any(core.CAPABILITY_BROWSER in c.capabilities and c.browser.get("connected")
-                             for c in core.hub().devices())
+                             and c.browser.get("signed_in") for c in core.hub().devices())
 
 
 def register(ctx: Any, core: Any) -> None:
