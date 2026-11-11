@@ -1,4 +1,4 @@
 name: device
-version: 0.4.1
+version: 0.5.0
 description: "Run a session's shell and file operations on the user's own device, which dials in through hermes-hub (/device <device> <dir>)."
 author: "Jacob McSwain"

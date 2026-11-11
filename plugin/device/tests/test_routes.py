@@ -172,7 +172,7 @@ class RouteTests(unittest.TestCase):
     def test_welcome_exec_and_devices(self):
         welcome, device = self.online()
         self.assertEqual(welcome, {"type": "welcome", "version": 2, "device_id": "d_8f2c", "name": "desktop",
-                                   "ping_interval": 25, "plugin_version": "0.4.1", "hermes_version": "v0.22.7"})
+                                   "ping_interval": 25, "plugin_version": core.PLUGIN_VERSION, "hermes_version": "v0.22.7"})
         code, out, _ = self.hub.run("d_8f2c", "echo hi; exit 4", str(self.root))
         self.assertEqual((code, out), (4, "hi\n"))
         devices = self.client.get("/api/plugins/device/devices").json()["devices"]
@@ -232,7 +232,7 @@ class RouteTests(unittest.TestCase):
     # HTTP routes
     def test_info(self):
         r = self.client.get("/api/plugins/device/info").json()
-        self.assertEqual(r, {"plugin_version": "0.4.1", "hermes_version": "v0.22.7", "protocol_version": 3,
+        self.assertEqual(r, {"plugin_version": core.PLUGIN_VERSION, "hermes_version": "v0.22.7", "protocol_version": 3,
                              "backend_id": "alice", "placeholder": self.cfg["placeholder"]})
 
     def test_binding_routes(self):
@@ -410,6 +410,13 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(core.upload_name("x" * 200 + ".pdf"), "x" * 116 + ".pdf")
         self.assertEqual(core.upload_name("\u00e9" * 100), "\u00e9" * 60)
         self.assertEqual(core.upload_name(" . "), "attachment")
+
+
+class VersionTest(unittest.TestCase):
+    def test_manifest_matches_core(self):
+        manifest = (Path(core.__file__).parent / "plugin.yaml").read_text()
+        self.assertIn(f"\nversion: {core.PLUGIN_VERSION}\n", "\n" + manifest)
+
 
 if __name__ == "__main__":
     unittest.main()
