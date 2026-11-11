@@ -38,6 +38,8 @@ class FakeBrowser:
         self.inspect: dict = {"url": "https://example.com/", "host": "example.com", "sensitive": []}
         self.fail: dict[str, tuple[str, str]] = {}
         self.hold: set[str] = set()
+        self.autologin: set[str] = set()
+        self.login_result = {"filled": True, "submitted": True, "landed_host": "app.example.com", "password": "hunter2"}
 
     def answer(self, msg: dict) -> dict | None:
         self.requests.append(msg)
@@ -58,6 +60,7 @@ class FakeBrowser:
             if "url" in args:
                 from urllib.parse import urlsplit
                 out["url_host"] = (urlsplit(args["url"]).hostname or "").lower()
+                out["url_autologin"] = args["url"].startswith("https:") and out["url_host"] in self.autologin
             return {"ok": True, "result": out}
         if op == "snapshot":
             return {"ok": True, "result": {"title": "Example Domain", "url": "https://example.com/",
@@ -73,6 +76,11 @@ class FakeBrowser:
         if op == "eval":
             return {"ok": True, "result": {"tab_id": args["tab_id"], "url": "https://example.com/", "title": "Example Domain",
                                            "read_only": not args.get("allow_writes"), "result": {"n": 2}, "secret": "x"}}
+        if op == "login":
+            return {"ok": True, "result": dict(self.login_result, tab_id=args.get("tab_id", 8))}
+        if op == "check":
+            return {"ok": True, "result": {"tab_id": 7, "after_activate": {"visibility": "visible"},
+                                           "screen_lock": {"known": True, "locked": True}}}
         if op == "screenshot":
             return {"ok": True, "result": {"tab_id": args["tab_id"], "url": "https://example.com/",
                                            "title": "Example Domain", "data_url": "data:image/png;base64," + PNG}}
@@ -169,7 +177,8 @@ class ToolTests(BrowserBase):
     def test_registers_toolset(self):
         names = {"browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_vision",
                  "browser_tabs", "browser_back", "browser_status", "browser_screenshot", "browser_press",
-                 "browser_hover", "browser_scroll", "browser_eval", "browser_use_device"}
+                 "browser_hover", "browser_scroll", "browser_eval", "browser_use_device", "browser_login",
+                 "browser_check"}
         self.assertEqual(set(browser.SCHEMAS), names)
         self.assertEqual(self.registry.get_toolset_for_tool("browser_click"), "device-browser")
         defs = {d["function"]["name"] if "function" in d else d["name"]
@@ -558,6 +567,91 @@ class ToolTests(BrowserBase):
         self.assertIn("asks the user every time", out["error"])
         self.assertEqual(self.confirmed.call_count, 0)
         self.assertFalse([r for r in self.fake.requests if r["op"] == "click"])
+
+    def login_page(self, listed: bool = True):
+        self.fake.inspect = {"url": "https://login.example.com/authsvc", "host": "login.example.com",
+                             "top_host": "login.example.com", "sensitive": ["password"], "autologin": listed,
+                             "top_autologin": listed, "target": {"kind": "field", "field": "password"}}
+
+    def test_login_asks_its_own_rule(self):
+        self.login_page()
+        out = self.run_tool("browser_login", tab_id=7)
+        self.assertEqual(self.decision["action"], "approve")
+        self.assertEqual(self.decision["rule_key"], "browser:login:login.example.com")
+        self.assertIn("never sees the password", self.decision["message"])
+        req = self.last("login")["args"]
+        self.assertEqual(req["guard"], {"login_hosts": ["login.example.com"]})
+        self.assertEqual(req["tab_id"], 7)
+        self.assertEqual(out, {"tab_id": 7, "filled": True, "submitted": True, "landed_host": "app.example.com"},
+                         "only the known result fields reach the model")
+
+    def test_login_refused_off_the_list(self):
+        self.login_page(listed=False)
+        out = self.run_tool("browser_login", tab_id=7)
+        self.assertEqual(self.decision["action"], "block")
+        self.assertIn("browser.autologin-hosts", out["error"])
+        self.assertFalse([r for r in self.fake.requests if r["op"] == "login"])
+
+    def test_login_from_url(self):
+        self.fake.autologin = {"login.example.com"}
+        self.run_tool("browser_login", url="https://login.example.com/")
+        self.assertEqual(self.decision["rule_key"], "browser:login:login.example.com")
+        self.assertEqual(self.last("login")["args"]["url"], "https://login.example.com/")
+        self.run_tool("browser_login", url="http://login.example.com/")
+        self.assertEqual(self.decision["action"], "block")
+
+    def test_login_unattended_needs_always(self):
+        self.login_page()
+        with mock.patch.object(browser, "no_user", lambda: True), mock.patch.object(browser, "approved", lambda k: False):
+            out = self.run_tool("browser_login", tab_id=7)
+        self.assertEqual(self.decision["action"], "block")
+        self.assertIn("plugin_rule:browser:login:login.example.com", out["error"])
+        self.assertFalse([r for r in self.fake.requests if r["op"] == "login"])
+        with mock.patch.object(browser, "no_user", lambda: True), \
+                mock.patch.object(browser, "approved", lambda k: k == "browser:login:login.example.com"):
+            out = self.run_tool("browser_login", tab_id=7)
+        self.assertTrue(out["submitted"])
+        self.assertEqual(self.confirmed.call_count, 0)
+
+    def test_login_without_hook_sends_empty_guard(self):
+        self.registry.dispatch("browser_login", {"tab_id": 7}, task_id="t", session_id=self.session)
+        self.assertEqual(self.last("login")["args"]["guard"], {"login_hosts": []})
+
+    def test_login_bad_arguments(self):
+        self.assertEqual(self.run_tool("browser_login")["code"], "bad_arguments")
+        out = self.registry.dispatch("browser_login", {"tab_id": 7, "url": "https://x.example/"}, task_id="t",
+                                     session_id=self.session)
+        self.assertEqual(json.loads(out)["code"], "bad_arguments")
+
+    def test_login_not_submitted_says_so(self):
+        self.login_page()
+        self.fake.login_result = {"filled": False, "submitted": False, "landed_host": "login.example.com",
+                                  "reason": "Firefox did not fill the login form"}
+        out = self.run_tool("browser_login", tab_id=7)
+        self.assertFalse(out["filled"])
+        self.assertIn("needs the user", out["note"])
+
+    def test_eval_refused_on_autologin_host(self):
+        self.login_page()
+        out = self.run_tool("browser_eval", tab_id=7, script="return 1")
+        self.assertEqual(self.decision["action"], "block")
+        self.assertIn("browser.autologin-hosts", out["error"])
+        self.assertFalse([r for r in self.fake.requests if r["op"] == "eval"])
+
+    def test_actions_refused_on_autologin_login_page(self):
+        self.login_page()
+        for tool, args in (("browser_type", {"ref": "e2", "text": "x"}), ("browser_click", {"ref": "e3"}),
+                           ("browser_press", {"key": "a", "ref": "e2"})):
+            out = self.run_tool(tool, tab_id=7, **args)
+            self.assertEqual(self.decision["action"], "block", tool)
+            self.assertIn("use browser_login", out["error"])
+        self.assertEqual(self.confirmed.call_count, 0)
+        self.assertFalse([r for r in self.fake.requests if r["op"] in ("type", "click", "press")])
+
+    def test_check_passes_through(self):
+        out = self.run_tool("browser_check", tab_id=7)
+        self.assertEqual(self.last("check")["args"], {"tab_id": 7})
+        self.assertTrue(out["screen_lock"]["locked"])
 
     def test_full_page_screenshot(self):
         with mock.patch.object(browser, "_native_vision", lambda: False):

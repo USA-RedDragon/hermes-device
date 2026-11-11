@@ -5,7 +5,7 @@ Every call goes to the session's browser device (:func:`pick`): the device a sch
 session chose, else the computer the session is bound to, else the user's one computer with
 browser control. It never goes to the sandbox, which has no browser.
 ``pre_tool_call`` asks the user, through Hermes's approval gate, the first time per site and
-session before a form submit, a visit to a new site or a script. On a page with password,
+session before a form submit, a visit to a new site, a script or a saved-login sign-in. On a page with password,
 payment or one-time code fields, and for clicks on Salesforce, the handler asks every time.
 With no user present (a scheduled job), only approvals the user gave before count and anything
 else fails at once. The extension checks the same rules again right before it acts, so a page
@@ -572,6 +572,29 @@ def _tab_id(args: dict) -> Optional[int]:
         return None
 
 
+def _decide_login(args: dict, conn: Any, where: str) -> tuple[dict, Optional[dict]]:
+    """browser_login (docs/browser.md section 7.4): only on an https page whose top-level host,
+    as the browser reports it, is in the device's browser.autologin-hosts. The approval names
+    the exact host and covers nothing else there."""
+    tab = _tab_id(args)
+    url = str(args.get("url") or "").strip()
+    if tab is None and not url:
+        return {}, None
+    info = call(conn, "inspect", {"tab_id": tab} if tab is not None else {"url": url}, INSPECT_TIMEOUT_S)
+    info = info if isinstance(info, dict) else {}
+    host = str((info.get("top_host") if tab is not None else info.get("url_host")) or "").lower()
+    listed = bool(info.get("top_autologin") if tab is not None else info.get("url_autologin"))
+    if not host or not listed:
+        return {}, {"action": "block", "message": (
+            f"browser_login: {host or 'this page'} is not an https host in the browser.autologin-hosts of device "
+            f"{conn.name}, so Firefox's saved login is not used there. Report that this sign-in needs the user.")}
+    return {"login_hosts": [host]}, {
+        "action": "approve", "rule_key": _rule("login", host),
+        "message": (f"Sign in on {host} in {where} with the login Firefox has saved for it. Firefox fills the form "
+                    f"and the agent submits it; the agent never sees the password. Approving always lets scheduled "
+                    f"jobs sign in on {host} without you. It allows nothing else on {host}.")}
+
+
 def _decide_eval(args: dict, conn: Any, where: str) -> tuple[dict, Optional[dict]]:
     tab = _tab_id(args)
     script = str(args.get("script") or "")
@@ -588,6 +611,10 @@ def _decide_eval(args: dict, conn: Any, where: str) -> tuple[dict, Optional[dict
     site = site_of(host)
     if not site:
         return {}, None
+    if info.get("autologin"):
+        return {}, {"action": "block", "message": f"browser_eval: scripts are never allowed on a host in the device's "
+                                                  f"browser.autologin-hosts ({host}), where Firefox fills a saved "
+                                                  f"password."}
     writes = bool(args.get("allow_writes"))
     if writes and (info.get("protected") or protected(host) or protected(str(info.get("top_host") or ""))):
         return {}, {"action": "block", "message": f"browser_eval: scripts that change data are never allowed on "
@@ -627,6 +654,8 @@ def decide(tool_name: str, args: dict, conn: Any) -> tuple[dict, Optional[dict]]
     where = f"the Firefox on device {conn.name}"
     if tool_name == "browser_eval":
         return _decide_eval(args, conn, where)
+    if tool_name == "browser_login":
+        return _decide_login(args, conn, where)
     if tool_name in ("browser_navigate", "browser_tabs"):
         if tool_name == "browser_tabs" and args.get("action") != "open":
             return {}, None
@@ -684,6 +713,11 @@ def decide(tool_name: str, args: dict, conn: Any) -> tuple[dict, Optional[dict]]
         link_away = tool_name == "browser_click" and kind == "link" and bool(host) and site_of(host) != page
     grant: dict = {"submit_hosts": [host] if submits else [], "visit_hosts": [host] if link_away else []}
     sensitive = [s for s in (info.get("sensitive") or []) if isinstance(s, str)]
+    if info.get("autologin") and "password" in sensitive:
+        return {}, {"action": "block", "message": (
+            f"{tool_name}: this is a login page on a host in the device's browser.autologin-hosts "
+            f"({info.get('top_host') or page}). Clicks, typing and key presses are refused there; use browser_login, "
+            f"which submits the login Firefox filled.")}
     on_salesforce = bool(info.get("protected")) or protected(str(info.get("host") or "")) or protected(
         str(info.get("top_host") or ""))
     clicks = tool_name == "browser_click" or (tool_name == "browser_type" and bool(args.get("submit"))) or activates
@@ -717,7 +751,7 @@ def decide(tool_name: str, args: dict, conn: Any) -> tuple[dict, Optional[dict]]
 
 
 GATED = frozenset({"browser_navigate", "browser_tabs", "browser_click", "browser_type", "browser_press",
-                   "browser_eval"})
+                   "browser_eval", "browser_login"})
 
 
 SCHEDULE_TOOLS = frozenset({"cronjob_manage", "browser_use_device"})
@@ -1409,6 +1443,38 @@ def _eval(args: dict, conn: Any, sid: str) -> Any:
     return _ok(_untrusted({k: res[k] for k in keep if k in res}))
 
 
+LOGIN_TIMEOUT_S = 150
+
+
+def _login(args: dict, conn: Any, sid: str) -> str:
+    tab = _tab_id(args)
+    url = str(args.get("url") or "").strip()
+    if (tab is None) == (not url):
+        raise ValueError("give tab_id (a tab that shows the login page) or url (the login page to open), not both")
+    grant = _take_grant(_grant_key(_session(sid), "browser_login", args))
+    req: dict = {"guard": {"login_hosts": grant.get("login_hosts") or []},
+                 "timeout_ms": int(_int(args, "wait_seconds", 15, 1, 60) * 1000)}
+    if tab is not None:
+        req["tab_id"] = tab
+    else:
+        req["url"] = url
+    res = call(conn, "login", req, LOGIN_TIMEOUT_S)
+    res = res if isinstance(res, dict) else {}
+    out = {k: res[k] for k in ("tab_id", "filled", "submitted", "landed_host", "reason") if k in res}
+    if not out.get("submitted"):
+        out["note"] = "The sign-in did not happen. Do not try to type the password; report that it needs the user."
+    return _ok(out)
+
+
+def _check(args: dict, conn: Any, _sid: str) -> str:
+    req: dict = {}
+    tab = _tab_id(args)
+    if tab is not None:
+        req["tab_id"] = tab
+    res = call(conn, "check", req)
+    return _ok(res if isinstance(res, dict) else {})
+
+
 def _shot(conn: Any, args: dict, tab: int) -> dict:
     req: dict = {"tab_id": tab, "format": "jpeg", "quality": 85}
     if args.get("full_page"):
@@ -1542,6 +1608,19 @@ SCHEMAS = {
         "show what you need (layout, images, canvas).",
         {"tab_id": _TAB, "question": {"type": "string", "description": "What to look for"}, "full_page": _FULL},
         ["tab_id"]),
+    "browser_login": _schema(
+        "browser_login", "Sign in on a login page with the login the user saved in Firefox. Works only on an https "
+        "page whose host is in the device's browser.autologin-hosts. Firefox fills the form itself; this tool waits for "
+        "the fill and submits it, and you never see the password. Returns filled, submitted and landed_host, or a "
+        "reason. Never type a password yourself. The user approves each host once.",
+        {"tab_id": dict(_TAB, description="Agent tab that shows the login page"),
+         "url": {"type": "string", "description": "Login page to open in a new agent tab instead of tab_id"},
+         "wait_seconds": {"type": "number", "description": "How long to wait for Firefox to fill the form (default "
+                                                           "15, at most 60)"}}, []),
+    "browser_check": _schema(
+        "browser_check", "Diagnose whether Firefox can fill saved logins now: shows an agent tab for a moment and "
+        "reports its document.visibilityState before and after, the window state and whether the screen is locked.",
+        {"tab_id": dict(_TAB, description="Agent tab to check; omit for any agent tab")}, []),
     "browser_screenshot": _schema(
         "browser_screenshot", "Take a screenshot of an agent tab to show the user. It saves the picture and returns "
         "a show_user line; put that line in your reply and the user sees the picture. Use it when the user asks "
@@ -1564,6 +1643,8 @@ HANDLERS = {
     "browser_eval": _tool(_eval),
     "browser_vision": _tool(_vision),
     "browser_screenshot": _tool(_screenshot),
+    "browser_login": _tool(_login),
+    "browser_check": _tool(_check),
 }
 
 EMOJI = "\U0001F310"
