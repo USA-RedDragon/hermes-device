@@ -1060,6 +1060,7 @@
         case "input.not_sent": this.notSentEvent(p); break;
         case "approval.request": case "clarify.request": this.approval(p); break;
         case "approval.settled": case "clarify.settled": this.settle(p.prompt_id, "Answered"); break;
+        case "approval.outcome": this.settle(p.prompt_id, outcomeText(p)); break;
         case "approval.cancelled":
           for (const id of p.request_ids || []) this.settle(id, "Cancelled");
           break;
@@ -1068,6 +1069,17 @@
         default: break;
       }
     }
+  }
+
+  // outcomeText says what became of an approval and where it got its answer,
+  // as the hub's approval.outcome event tells it. An outcome the hub worked out
+  // from the tool call has no choice, so it names no scope.
+  function outcomeText(p) {
+    const verbs = { once: "Allowed once", session: "Allowed for this chat", always: "Allowed always" };
+    const head = !p.allowed ? "Denied" : verbs[p.choice] || "Allowed";
+    const where = { hub: "in the hub", telegram: "in Telegram" }[p.via] ||
+      (p.via === "device" ? "on " + (p.device || "a paired device") : "in another app");
+    return head + " (" + where + ")";
   }
 
   const render = (node, raw) => window.hubMarkdown.render(node, raw);
