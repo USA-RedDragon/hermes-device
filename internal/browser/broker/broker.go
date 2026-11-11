@@ -79,7 +79,7 @@ type Message struct {
 	State string `json:"state,omitempty"`
 }
 
-// legacyAuth lets an extension from releases 0.7.0 to 0.14.0, which ran
+// legacyAuth lets an extension from releases 0.7.0 to 0.15.0, which ran
 // requests only after the daemon reported a hub sign-in, keep working
 // until Firefox updates it. Later extensions ignore it.
 var legacyAuth = Message{Type: "auth_status", State: "signed_in"} //nolint:gochecknoglobals // fixed message
