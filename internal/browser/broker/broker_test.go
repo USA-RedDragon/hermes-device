@@ -191,8 +191,8 @@ func TestCallFailsWhenExtensionGoes(t *testing.T) {
 	}
 }
 
-// The config carries the daemon's hub.url, and an old extension's auth
-// message changes nothing.
+// The config carries the daemon's hub.url, the legacy auth_status follows
+// it, and an old extension's auth message changes nothing.
 func TestConfigHasHubURL(t *testing.T) {
 	t.Parallel()
 	b, sock := start(t)
@@ -213,6 +213,9 @@ func TestConfigHasHubURL(t *testing.T) {
 	if err := json.Unmarshal(data, &m); err != nil || m.Type != broker.TypeConfig || m.HubURL != "https://hub.example.com" ||
 		len(m.AllowHosts) != 1 {
 		t.Fatalf("config = %s, %v", data, err)
+	}
+	if data, err = nativemsg.Read(conn, nativemsg.MaxToBrowser); err != nil || string(data) != `{"type":"auth_status","state":"signed_in"}` {
+		t.Fatalf("legacy auth_status = %s, %v", data, err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()

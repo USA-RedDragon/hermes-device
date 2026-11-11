@@ -75,7 +75,14 @@ type Message struct {
 	// HubURL is the daemon's hub.url. The extension keeps agent tabs off
 	// the hub.
 	HubURL string `json:"hub_url,omitempty"`
+	// State is only in the legacyAuth message.
+	State string `json:"state,omitempty"`
 }
+
+// legacyAuth lets an extension from releases 0.7.0 to 0.14.0, which ran
+// requests only after the daemon reported a hub sign-in, keep working
+// until Firefox updates it. Later extensions ignore it.
+var legacyAuth = Message{Type: "auth_status", State: "signed_in"} //nolint:gochecknoglobals // fixed message
 
 // Hello describes the connected extension.
 type Hello struct {
@@ -233,6 +240,7 @@ func (b *Broker) handshake(c net.Conn) {
 		_ = c.Close()
 		return
 	}
+	_ = cn.write(legacyAuth)
 	old := b.cur
 	b.cur = cn
 	b.notifyLocked()
