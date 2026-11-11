@@ -621,6 +621,8 @@ class BackgroundHandoffTests(Base):
         done = self.registry.wait(sid, timeout=15)
         self.assertEqual(done.get("exit_code"), 0, done)
         self.assertIn("done", done.get("output", ""))
+        if hasattr(self.registry.get(sid), "output_markers"):
+            self.assertNotIn("__HERMES_", done.get("output", ""))
         self.assertEqual(sum(1 for e in self.device.execs if command in e["cmd"]), 1)
         self.device.conn.capabilities = frozenset()
         result = env.execute(command, timeout=30, bounded_capture=True, yield_handler=self.handler(command),
