@@ -294,6 +294,10 @@ func TestRewindEditAndRetry(t *testing.T) {
 	if err != nil || res.Removed != 2 || res.Prompt.ID == "" {
 		t.Fatalf("edit = %+v %v", res, err)
 	}
+	evs := until(t, ch, hub.KindSnapshot)
+	if snap := string(evs[len(evs)-1].Data); strings.Contains(snap, `"two"`) {
+		t.Fatalf("the snapshot after a rewind still has the rows Hermes took back: %s", snap)
+	}
 	until(t, ch, hub.KindMessageComplete)
 	if got := userRows(t, e, sessionNew); !slices.Equal(got, []string{"user:first", "assistant:one", "user:" + textEdit, "assistant:echo: " + textEdit}) {
 		t.Fatalf("rows after edit = %q", got)

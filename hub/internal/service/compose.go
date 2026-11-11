@@ -215,6 +215,9 @@ func (s *Service) Rewind(ctx context.Context, user, backendID, sessionID string,
 	var res gateway.RewindResult
 	_ = json.Unmarshal(raw, &res)
 	out.Removed = res.RewoundCount
+	ls.mu.Lock()
+	ls.resnapshotLocked()
+	ls.mu.Unlock()
 	if strings.TrimSpace(text) == "" {
 		text = m.Text
 		if t, _ := hub.MessageText(res.TargetMessage.Content); strings.TrimSpace(t) != "" {
