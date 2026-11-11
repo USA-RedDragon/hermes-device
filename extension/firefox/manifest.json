@@ -11,7 +11,8 @@
       "data_collection_permissions": {"required": ["none"]}
     }
   },
-  "permissions": ["nativeMessaging", "tabs", "tabGroups", "scripting", "webRequest", "webRequestBlocking", "dns", "<all_urls>"],
-  "background": {"scripts": ["background.js"], "persistent": true},
-  "browser_action": {"default_title": "Hermes: not connected"}
+  "permissions": ["nativeMessaging", "tabs", "tabGroups", "scripting", "webRequest", "webRequestBlocking", "dns", "identity", "storage", "<all_urls>"],
+  "background": {"scripts": ["defaults.js", "hub.js", "background.js"], "persistent": true},
+  "browser_action": {"default_title": "Hermes: not connected", "default_popup": "popup.html"},
+  "options_ui": {"page": "options.html"}
 }

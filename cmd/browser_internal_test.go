@@ -11,13 +11,18 @@ import (
 	firefox "github.com/USA-RedDragon/hermes-device/extension/firefox"
 )
 
+// extArgs is "browser extension --out" followed by rest.
+func extArgs(rest ...string) []string {
+	return append([]string{"browser", "extension", "--out"}, rest...)
+}
+
 func extensionVersion(t *testing.T, binVersion string, args ...string) (string, string) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "ext")
 	root := NewCommand(binVersion, "test")
 	var out bytes.Buffer
 	root.SetOut(&out)
-	root.SetArgs(append([]string{"browser", "extension", "--out", dir}, args...))
+	root.SetArgs(extArgs(append([]string{dir}, args...)...))
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -75,8 +80,37 @@ func TestBrowserExtensionBadVersion(t *testing.T) {
 	t.Parallel()
 	root := NewCommand("dev", "test")
 	root.SetOut(&bytes.Buffer{})
-	root.SetArgs([]string{"browser", "extension", "--out", t.TempDir(), "--ext-version", "v1.0"})
+	root.SetArgs(extArgs(t.TempDir(), "--ext-version", "v1.0"))
 	if err := root.Execute(); err == nil {
 		t.Fatal("want an error for an invalid version")
+	}
+}
+
+func TestBrowserExtensionHubDefault(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "ext")
+	root := NewCommand("dev", "test")
+	root.SetOut(&bytes.Buffer{})
+	root.SetArgs(extArgs(dir, "--hub-url-default", "https://hub.example.com/"))
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "defaults.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `const DEFAULT_HUB_URL = "https://hub.example.com";`) {
+		t.Fatalf("defaults.js = %s", data)
+	}
+	for _, f := range []string{"popup.html", "popup.js", "options.html", "options.js", "hub.js"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Error(err)
+		}
+	}
+	root = NewCommand("dev", "test")
+	root.SetOut(&bytes.Buffer{})
+	root.SetArgs(extArgs(t.TempDir(), "--hub-url-default", "http://hub.example.com"))
+	if err := root.Execute(); err == nil {
+		t.Fatal("want an error for a plain http hub address")
 	}
 }

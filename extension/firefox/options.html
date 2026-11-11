@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hermes settings</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<h1>Hermes hub</h1>
+<p class="muted">The address of the Hermes hub this browser signs in to. Changing it signs Firefox out.</p>
+<form id="form">
+<input id="url" type="url" placeholder="https://hermes.example.com" autocomplete="off" spellcheck="false">
+<button type="submit">Save</button>
+<button id="use-daemon" type="button" hidden></button>
+</form>
+<p id="saved" class="muted" hidden>Saved.</p>
+<p id="error" class="err" hidden></p>
+<p id="who" class="muted"></p>
+<button id="sign-out" hidden>Sign out</button>
+<script src="hub.js"></script>
+<script src="options.js"></script>
+</body>
+</html>

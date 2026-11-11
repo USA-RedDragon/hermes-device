@@ -66,7 +66,7 @@ func newBrowserCommand(b *base) *cobra.Command {
 			return err
 		},
 	})
-	var out, extVersion string
+	var out, extVersion, hubDefault string
 	ext := &cobra.Command{
 		Use:   "extension",
 		Short: "Write the Hermes Firefox extension's files to a directory, to load as a temporary add-on",
@@ -79,7 +79,7 @@ func newBrowserCommand(b *base) *cobra.Command {
 			if !cmd.Flags().Changed("ext-version") && firefox.ValidVersion(b.version) {
 				v = b.version
 			}
-			if err := writeExtension(out, v); err != nil {
+			if err := firefox.Write(out, v, hubDefault); err != nil {
 				return err
 			}
 			_, err := fmt.Fprintf(cmd.OutOrStdout(),
@@ -94,6 +94,8 @@ func newBrowserCommand(b *base) *cobra.Command {
 	ext.Flags().StringVarP(&out, "out", "o", "hermes-browser-extension", "Directory to write the extension to")
 	ext.Flags().StringVar(&extVersion, "ext-version", "",
 		"Version to put in manifest.json (default: this binary's release version, else the embedded one)")
+	ext.Flags().StringVar(&hubDefault, "hub-url-default", "",
+		"Hub address the extension signs in to until the user sets another (https, or http for localhost). Empty: the user enters it")
 	c.AddCommand(ext)
 	return c
 }
@@ -136,30 +138,6 @@ func installHostManifest(sock string) (string, error) {
 	}
 	path := filepath.Join(dir, host.Name+".json")
 	return path, os.WriteFile(path, append(data, '\n'), 0o644) //nolint:gosec // as above
-}
-
-// writeExtension writes the extension's files to dir, with its manifest
-// version set to version when that is not empty.
-func writeExtension(dir, version string) error {
-	manifest, err := firefox.Manifest(version)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // extension source, no secret
-		return err
-	}
-	return fs.WalkDir(firefox.Files, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		data := manifest
-		if p != "manifest.json" {
-			if data, err = firefox.Files.ReadFile(p); err != nil {
-				return err
-			}
-		}
-		return os.WriteFile(filepath.Join(dir, p), data, 0o644) //nolint:gosec // as above
-	})
 }
 
 // nativeHostSocket finds the run daemon's browser socket for the native
