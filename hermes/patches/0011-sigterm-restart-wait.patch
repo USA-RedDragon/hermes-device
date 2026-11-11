@@ -1,0 +1,261 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 11:45:21 -0600
+Subject: [PATCH] feat(gateway): opt-in graceful restart on SIGTERM
+
+gateway.sigterm_restart_wait (false = off): a supervisor's SIGTERM takes
+the request_restart path like SIGUSR1, so approvals and clarify stay
+answerable and new input is kept for the next owner. A second SIGTERM
+stops at once.
+---
+ cli-config.yaml.example                    |   6 +
+ gateway/config.py                          |   7 +-
+ gateway/config_loader.py                   |   1 +
+ gateway/run_bootstrap.py                   |  11 ++
+ tests/gateway/test_sigterm_restart_wait.py | 125 +++++++++++++++++++++
+ website/docs/user-guide/messaging/index.md |  17 +++
+ 6 files changed, 166 insertions(+), 1 deletion(-)
+ create mode 100644 tests/gateway/test_sigterm_restart_wait.py
+
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index 0ceec63234..a91dad0509 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -1466,6 +1466,12 @@ gateway:
+   # 0 keeps the immediate exit.
+   # runtime_lock_wait_seconds: 0
+ 
++  # Treat a supervisor's SIGTERM (Kubernetes, docker stop) like SIGUSR1: a
++  # graceful restart that lets active turns finish (agent.restart_after_turn_timeout)
++  # while clients can still answer approvals and clarify questions, and new
++  # input is kept for the next gateway. A second SIGTERM stops at once.
++  # sigterm_restart_wait: false
++
+ # =============================================================================
+ # Toolsets
+ # =============================================================================
+diff --git a/gateway/config.py b/gateway/config.py
+index 5401d6bd91..3983209873 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -630,6 +630,9 @@ class GatewayConfig:
+     # A gateway that finds its profile owned by another gateway waits up to this long for it to exit,
+     # after warming up, instead of exiting 1: a standby for rolling updates on a shared volume. 0 = off.
+     runtime_lock_wait_seconds: float = 0.0
++    # SIGTERM from a supervisor takes the graceful restart path (as SIGUSR1 does) instead of the
++    # stop drain: approvals and clarify stay answerable and new input is kept for the next owner.
++    sigterm_restart_wait: bool = False
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -664,7 +667,8 @@ class GatewayConfig:
+         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
+         "max_concurrent_sessions", "multiplex_profiles",
+         "on_all_adapters_down",
+-        "room_link_url", "systemd_watchdog_seconds", "runtime_lock_wait_seconds", "loop_watchdog",
++        "room_link_url", "systemd_watchdog_seconds", "runtime_lock_wait_seconds", "sigterm_restart_wait",
++        "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+     )
+@@ -798,6 +802,7 @@ class GatewayConfig:
+             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
+             systemd_watchdog_seconds=systemd_watchdog_seconds,
+             runtime_lock_wait_seconds=bounded_float("runtime_lock_wait_seconds", 0.0, 0.0, 86400.0),
++            sigterm_restart_wait=_coerce_bool(pick("sigterm_restart_wait"), False),
+             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),
+             loop_watchdog_probe_interval_s=bounded_float("loop_watchdog_probe_interval_s", DEFAULT_LOOP_WATCHDOG_INTERVAL_S, 1.0, 3600.0),
+             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index 2e25a09dd0..67495012f3 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -94,6 +94,7 @@ _TOPLEVEL_BRIDGE: tuple = (
+     *_presence("max_concurrent_sessions"),
+     ("systemd_watchdog_seconds", "systemd_watchdog_seconds", "nested", None, None),
+     ("runtime_lock_wait_seconds", "runtime_lock_wait_seconds", "nested", None, None),
++    ("sigterm_restart_wait", "sigterm_restart_wait", "nested", None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
+index de65a6d6a0..a1f2e1b4df 100644
+--- a/gateway/run_bootstrap.py
++++ b/gateway/run_bootstrap.py
+@@ -201,6 +201,17 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
+             planned_stop_seen[0] = True
+         elif planned_stop_seen[0] and not planned_takeover:
+             planned_stop = True
++        # gateway.sigterm_restart_wait: a supervisor's SIGTERM restarts like SIGUSR1, so turns finish,
++        # parked approvals stay answerable and new input is committed for the next owner. A second
++        # SIGTERM while that restart is pending, or one during a stop already under way, stops as
++        # without the setting.
++        if (received_signal == signal.SIGTERM and not planned_takeover and not planned_stop
++                and getattr(getattr(runner, "config", None), "sigterm_restart_wait", False)
++                and getattr(runner, "_stop_task", None) is None and getattr(runner, "_running", False)
++                and runner.request_restart(detached=False, via_service=True)):
++            logger.info("Received SIGTERM with gateway.sigterm_restart_wait: restarting gracefully "
++                        "(active turns finish first; a second SIGTERM stops now)")
++            return
+         _shutdown_ctx = _best_effort(_snapshot, "snapshot_shutdown_context failed: %s")
+         sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
+ 
+diff --git a/tests/gateway/test_sigterm_restart_wait.py b/tests/gateway/test_sigterm_restart_wait.py
+new file mode 100644
+index 0000000000..9549327a51
+--- /dev/null
++++ b/tests/gateway/test_sigterm_restart_wait.py
+@@ -0,0 +1,125 @@
++"""gateway.sigterm_restart_wait: a supervisor's SIGTERM restarts gracefully like SIGUSR1."""
++import asyncio
++import signal
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, MagicMock
++
++import pytest
++
++import gateway.run as run_mod
++import gateway.shutdown_forensics as forensics
++from gateway import status
++from gateway.config import GatewayConfig, load_gateway_config
++from gateway.drain_control import RESTART_WAIT_REASON, restart_wait_open, ws_method_refused_while_draining
++from tests.gateway.restart_test_helpers import make_restart_runner
++
++
++@pytest.fixture(autouse=True)
++def _no_markers(monkeypatch):
++    monkeypatch.setattr(status, "consume_takeover_marker_for_self", lambda: False)
++    monkeypatch.setattr(status, "consume_planned_stop_marker_for_self", lambda: False)
++    monkeypatch.setattr(forensics, "snapshot_shutdown_context", lambda *a, **k: None)
++
++
++def _double(enabled, restart_result=True):
++    runner = SimpleNamespace(config=GatewayConfig(sigterm_restart_wait=enabled), _stop_task=None, _running=True)
++    runner.request_restart = MagicMock(return_value=restart_result)
++    runner.stop = MagicMock(side_effect=lambda: asyncio.sleep(0))
++    return runner
++
++
++def _handle(runner, sig, monkeypatch):
++    stops = []
++    monkeypatch.setattr(run_mod.asyncio, "create_task", lambda coro: (stops.append(coro), coro.close()))
++    flag = [False]
++    run_mod._start_gateway_make_shutdown_signal_handler(runner, flag)(sig)
++    return stops, flag[0]
++
++
++def test_off_by_default():
++    assert GatewayConfig().sigterm_restart_wait is False
++    assert GatewayConfig.from_dict({}).sigterm_restart_wait is False
++    assert GatewayConfig.from_dict({"gateway": {"sigterm_restart_wait": True}}).sigterm_restart_wait is True
++
++
++def test_config_yaml_key_reaches_the_runner_config(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    (tmp_path / "config.yaml").write_text("gateway:\n  sigterm_restart_wait: true\n", encoding="utf-8")
++    assert load_gateway_config().sigterm_restart_wait is True
++
++
++def test_sigterm_takes_the_restart_path_when_enabled(monkeypatch):
++    runner = _double(True)
++    stops, unexpected = _handle(runner, signal.SIGTERM, monkeypatch)
++    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
++    assert stops == []
++    assert unexpected is False
++    assert not getattr(runner, "_stop_requested_by_signal", False)
++
++
++def test_sigterm_stops_as_upstream_when_disabled(monkeypatch):
++    runner = _double(False)
++    stops, unexpected = _handle(runner, signal.SIGTERM, monkeypatch)
++    runner.request_restart.assert_not_called()
++    assert len(stops) == 1
++    assert unexpected is True
++    assert runner._stop_requested_by_signal is True
++
++
++def test_second_sigterm_during_the_restart_stops_now(monkeypatch):
++    runner = _double(True, restart_result=False)
++    stops, _ = _handle(runner, signal.SIGTERM, monkeypatch)
++    runner.request_restart.assert_called_once()
++    assert len(stops) == 1
++
++
++def test_sigint_still_stops(monkeypatch):
++    runner = _double(True)
++    stops, _ = _handle(runner, signal.SIGINT, monkeypatch)
++    runner.request_restart.assert_not_called()
++    assert len(stops) == 1
++
++
++def test_planned_stop_still_stops(monkeypatch):
++    monkeypatch.setattr(status, "consume_planned_stop_marker_for_self", lambda: True)
++    runner = _double(True)
++    stops, unexpected = _handle(runner, signal.SIGTERM, monkeypatch)
++    runner.request_restart.assert_not_called()
++    assert len(stops) == 1
++    assert unexpected is False
++
++
++@pytest.mark.asyncio
++async def test_sigterm_opens_the_restart_wait_while_a_turn_runs(monkeypatch):
++    runner, _adapter = make_restart_runner()
++    runner.config.sigterm_restart_wait = True
++    runner.session_runtime_descriptor = {}
++    runner._restart_task_started = False
++    runner._mark_api_runs_shutdown_requested = MagicMock()
++    runner._running_agents["agent:main:telegram:dm:1"] = MagicMock()
++    async def _turn_still_running():
++        await asyncio.sleep(3600)
++
++    runner._await_active_work_before_restart = _turn_still_running
++    runner.stop = AsyncMock()
++
++    run_mod._start_gateway_make_shutdown_signal_handler(runner, [False])(signal.SIGTERM)
++    await asyncio.sleep(0.05)
++    try:
++        assert runner._draining and runner._running
++        assert runner.session_runtime_descriptor["drain_reason"] == RESTART_WAIT_REASON
++        assert restart_wait_open(runner)
++        for method in ("approval.respond", "clarify.respond", "prompt.submit"):
++            assert not ws_method_refused_while_draining(runner, method)
++        runner.stop.assert_not_called()
++    finally:
++        runner._restart_task.cancel()
++        await asyncio.gather(runner._restart_task, return_exceptions=True)
++
++
++def test_sigterm_during_a_stop_under_way_is_not_turned_into_a_restart(monkeypatch):
++    runner = _double(True)
++    runner._stop_task = object()
++    stops, _ = _handle(runner, signal.SIGTERM, monkeypatch)
++    runner.request_restart.assert_not_called()
++    assert len(stops) == 1
+diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
+index 04f1f0a8fb..69db2f72c7 100644
+--- a/website/docs/user-guide/messaging/index.md
++++ b/website/docs/user-guide/messaging/index.md
+@@ -727,6 +727,23 @@ profile. When the wait runs out it exits as before. Set the wait above the old
+ gateway's drain (`agent.restart_drain_timeout`) plus its shutdown. The default
+ `0` keeps the immediate exit.
+ 
++A supervisor stops the old gateway with `SIGTERM`, which drains: new work is
++refused and a pending approval can no longer be answered. To have `SIGTERM`
++restart gracefully instead, as `SIGUSR1` does, set:
++
++```yaml title="~/.hermes/config.yaml"
++gateway:
++  sigterm_restart_wait: true
++agent:
++  restart_after_turn_timeout: 540
++```
++
++Active turns then finish within `agent.restart_after_turn_timeout`, clients can
++still answer approvals and clarify questions, and new input is committed for
++the next gateway. A second `SIGTERM` stops at once. Keep the restart wait plus
++`agent.restart_drain_timeout` and a minute of shutdown below the supervisor's
++stop budget.
++
+ ### macOS (launchd)
+ 
+ ```bash

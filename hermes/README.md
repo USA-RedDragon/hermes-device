@@ -42,6 +42,7 @@ The Test workflow runs on pull requests and before each release:
 | `0008-acp-session-list` | `sessions.acp_list_sources` (default `[acp]`): ACP `session/list` can also offer chats the TUI, Desktop or CLI started, filtered by folder as before. | Not fixed upstream; no PR. |
 | `0009-acp-load-running` | ACP `session/load` of a running session from another folder attaches as a viewer instead of failing with `session_busy`; the workspace moves at the next idle prompt. Bug fix, no key. | Not fixed upstream; no PR. |
 | `0010-gateway-wait-for-runtime-lock` | `gateway.runtime_lock_wait_seconds` (0 = off): a gateway that finds its profile owned warms up, then waits for the owner to exit and takes over within a poll (0.2 s) instead of exiting 1. Gateway lock records carry the PID namespace, so a holder in a sibling container is not read as stale. For rolling updates of pods that share one volume. | Not fixed upstream; no PR. |
+| `0011-sigterm-restart-wait` | `gateway.sigterm_restart_wait` (false = off): a supervisor's SIGTERM restarts like SIGUSR1, so running turns finish while approvals and clarify stay answerable and new input is kept for the next gateway. A second SIGTERM stops at once. | Not fixed upstream. Open PR #83329 sends every unmarked SIGTERM of a supervised gateway down the after-turn restart path, with no key. |
 
 ## Adding or changing a patch
 
