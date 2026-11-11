@@ -220,6 +220,37 @@ var migrations = []migration{
 		postgres: []string{`CREATE TABLE prompt_answers (backend_id TEXT NOT NULL, prompt_id TEXT NOT NULL, choice TEXT NOT NULL,
 			via TEXT NOT NULL, device TEXT NOT NULL, created_at BIGINT NOT NULL, PRIMARY KEY (backend_id, prompt_id))`},
 	},
+	{
+		version: 15,
+		sqlite: []string{
+			`CREATE TABLE claude_code_sources (id TEXT PRIMARY KEY, kind TEXT NOT NULL, "user" TEXT NOT NULL,
+				backend_id TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
+			`CREATE TABLE claude_code_usage (source TEXT NOT NULL, hour INTEGER NOT NULL, account_uuid TEXT NOT NULL,
+				org_uuid TEXT NOT NULL, model TEXT NOT NULL, project TEXT NOT NULL, sidechain INTEGER NOT NULL,
+				input INTEGER NOT NULL, output INTEGER NOT NULL, cache_write INTEGER NOT NULL, cache_write_1h INTEGER NOT NULL,
+				cache_read INTEGER NOT NULL, requests INTEGER NOT NULL,
+				PRIMARY KEY (source, hour, account_uuid, org_uuid, model, project, sidechain))`,
+			`CREATE INDEX claude_code_usage_hour ON claude_code_usage (hour)`,
+			`CREATE TABLE claude_code_accounts (source TEXT NOT NULL, account_uuid TEXT NOT NULL, slot TEXT NOT NULL,
+				org_uuid TEXT NOT NULL, label TEXT NOT NULL, PRIMARY KEY (source, account_uuid, slot))`,
+			`CREATE TABLE claude_account_names ("user" TEXT NOT NULL, account_uuid TEXT NOT NULL, name TEXT NOT NULL,
+				updated_at INTEGER NOT NULL, PRIMARY KEY ("user", account_uuid))`,
+		},
+		postgres: []string{
+			`CREATE TABLE claude_code_sources (id TEXT PRIMARY KEY, kind TEXT NOT NULL, "user" TEXT NOT NULL,
+				backend_id TEXT NOT NULL, updated_at BIGINT NOT NULL)`,
+			`CREATE TABLE claude_code_usage (source TEXT NOT NULL, hour BIGINT NOT NULL, account_uuid TEXT NOT NULL,
+				org_uuid TEXT NOT NULL, model TEXT NOT NULL, project TEXT NOT NULL, sidechain INTEGER NOT NULL,
+				input BIGINT NOT NULL, output BIGINT NOT NULL, cache_write BIGINT NOT NULL, cache_write_1h BIGINT NOT NULL,
+				cache_read BIGINT NOT NULL, requests BIGINT NOT NULL,
+				PRIMARY KEY (source, hour, account_uuid, org_uuid, model, project, sidechain))`,
+			`CREATE INDEX claude_code_usage_hour ON claude_code_usage (hour)`,
+			`CREATE TABLE claude_code_accounts (source TEXT NOT NULL, account_uuid TEXT NOT NULL, slot TEXT NOT NULL,
+				org_uuid TEXT NOT NULL, label TEXT NOT NULL, PRIMARY KEY (source, account_uuid, slot))`,
+			`CREATE TABLE claude_account_names ("user" TEXT NOT NULL, account_uuid TEXT NOT NULL, name TEXT NOT NULL,
+				updated_at BIGINT NOT NULL, PRIMARY KEY ("user", account_uuid))`,
+		},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas
