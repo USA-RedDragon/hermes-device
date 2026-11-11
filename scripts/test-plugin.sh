@@ -7,18 +7,27 @@
 # (HERMES_DEVICE_RUNTIME_HOME overrides it); HERMES_HOME is switched to the throwaway
 # directory before any test imports Hermes.
 #
+# With both HERMES_PYTHON and HERMES_AGENT_SRC set, as in the Hermes image, those are
+# used instead of the launcher.
+#
 # Usage: scripts/test-plugin.sh [unittest discover args...]
-# Env: HERMES (launcher, default: hermes on PATH), HERMES_DEVICE_RUNTIME_HOME, TMPDIR.
+# Env: HERMES (launcher, default: hermes on PATH), HERMES_PYTHON, HERMES_AGENT_SRC,
+# HERMES_DEVICE_RUNTIME_HOME, TMPDIR.
 set -eu
 
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
-hermes=${HERMES:-hermes}
-argv=$("$hermes" --print-runtime-command)
-python=$(printf '%s' "$argv" | sed -n 's/^\["\([^"]*\)".*/\1/p')
-agent=$(printf '%s' "$argv" | sed -n "s/.*sys\.path\.insert(0, '\([^']*\)').*/\1/p")
-if [ -z "$python" ] || [ -z "$agent" ]; then
-  echo "test-plugin: cannot read the interpreter and source dir from: $argv" >&2
-  exit 2
+if [ -n "${HERMES_PYTHON:-}" ] && [ -n "${HERMES_AGENT_SRC:-}" ]; then
+  python=$HERMES_PYTHON
+  agent=$HERMES_AGENT_SRC
+else
+  hermes=${HERMES:-hermes}
+  argv=$("$hermes" --print-runtime-command)
+  python=$(printf '%s' "$argv" | sed -n 's/^\["\([^"]*\)".*/\1/p')
+  agent=$(printf '%s' "$argv" | sed -n "s/.*sys\.path\.insert(0, '\([^']*\)').*/\1/p")
+  if [ -z "$python" ] || [ -z "$agent" ]; then
+    echo "test-plugin: cannot read the interpreter and source dir from: $argv" >&2
+    exit 2
+  fi
 fi
 
 home=$(mktemp -d "${TMPDIR:-/tmp}/hermes-device-test.XXXXXX")
