@@ -1232,6 +1232,11 @@ class HubBrowserTests(unittest.TestCase):
         self.assertEqual(self.dev.conn.browser, {"connected": True, "browser": "Firefox 157.0.1",
                                                  "extension_version": "0.2.0"})
         self.assertEqual(self.dev.conn.info()["browser"]["browser"], "Firefox 157.0.1")
+        self.hub.on_message(self.dev.conn, {"type": "browser_status", "connected": False, "can_start": True})
+        self.assertEqual(self.dev.conn.browser, {"connected": False, "can_start": True})
+        self.hub.on_message(self.dev.conn, {"type": "browser_status", "connected": False, "can_start": "yes"})
+        self.assertEqual(self.dev.conn.browser, {"connected": False})
+        self.hub.on_message(self.dev.conn, {"type": "browser_status", "connected": True})
         self.dev.conn.capabilities = frozenset()
         self.hub.on_message(self.dev.conn, {"type": "browser_status", "connected": False})
         self.assertTrue(self.dev.conn.browser["connected"])

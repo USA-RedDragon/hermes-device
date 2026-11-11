@@ -867,6 +867,8 @@ class Hub:
     def _on_browser(self, conn: DeviceConn, msg: dict) -> None:
         if msg.get("type") == TYPE_BROWSER_STATUS:
             status = {"connected": msg.get("connected") is True}
+            if msg.get("can_start") is True:
+                status["can_start"] = True
             for key in ("browser", "extension_version"):
                 if isinstance(msg.get(key), str) and msg[key]:
                     status[key] = msg[key][:64]
