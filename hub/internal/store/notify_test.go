@@ -36,6 +36,30 @@ func TestNotifySettings(t *testing.T) {
 	})
 }
 
+func TestNoticeForMessage(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		id, _, err := s.ClaimNotice(ctx, hub.NoticeRecord{User: userAlice, Key: "k", Kind: hub.NoticeClaudeSignIn, BackendID: "b",
+			SessionID: "s", Account: "acc1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r, ok, err := s.Notice(ctx, id); !ok || err != nil || r.Account != "acc1" {
+			t.Fatalf("notice = %+v %v %v", r, ok, err)
+		}
+		if err := s.AddNoticeMessage(ctx, id, hub.NoticeMessage{ChatID: 5, MessageID: 9}); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok, err := s.NoticeForMessage(ctx, 5, 9); got != id || !ok || err != nil {
+			t.Fatalf("notice for message = %q %v %v", got, ok, err)
+		}
+		if _, ok, _ := s.NoticeForMessage(ctx, 5, 10); ok {
+			t.Fatal("found a notice for another message")
+		}
+	})
+}
+
 func TestNoticeClaimSettleRemind(t *testing.T) {
 	t.Parallel()
 	backends(t, func(t *testing.T, s *store.Store) {
@@ -68,12 +92,6 @@ func TestNoticeClaimSettleRemind(t *testing.T) {
 		}
 		if ms, _ := s.NoticeMessages(ctx, id); len(ms) != 1 || ms[0].MessageID != 9 {
 			t.Fatalf("messages = %+v", ms)
-		}
-		if got, ok, err := s.NoticeForMessage(ctx, 5, 9); got != id || !ok || err != nil {
-			t.Fatalf("notice for message = %q %v %v", got, ok, err)
-		}
-		if _, ok, _ := s.NoticeForMessage(ctx, 5, 10); ok {
-			t.Fatal("found a notice for another message")
 		}
 		due, err := s.DueReminders(ctx, now, now)
 		if err != nil || len(due) != 2 {

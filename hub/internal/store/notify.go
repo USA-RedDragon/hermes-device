@@ -51,7 +51,7 @@ func newID() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-const noticeColumns = `id, "user", dedupe_key, kind, backend_id, session_id, prompt_id, prompt, created_at, settled_at`
+const noticeColumns = `id, "user", dedupe_key, kind, backend_id, session_id, prompt_id, prompt, created_at, settled_at, account_id`
 
 func scanNotice(sc scanner) (hub.NoticeRecord, error) {
 	var (
@@ -59,7 +59,7 @@ func scanNotice(sc scanner) (hub.NoticeRecord, error) {
 		prompt           string
 		created, settled int64
 	)
-	if err := sc.Scan(&r.ID, &r.User, &r.Key, &r.Kind, &r.BackendID, &r.SessionID, &r.PromptID, &prompt, &created, &settled); err != nil {
+	if err := sc.Scan(&r.ID, &r.User, &r.Key, &r.Kind, &r.BackendID, &r.SessionID, &r.PromptID, &prompt, &created, &settled, &r.Account); err != nil {
 		return r, err
 	}
 	if prompt != "" {
@@ -89,9 +89,9 @@ func (s *Store) ClaimNotice(ctx context.Context, r hub.NoticeRecord) (string, bo
 		}
 		prompt = string(b)
 	}
-	res, err := s.db.ExecContext(ctx, s.q(`INSERT INTO notices (id, "user", dedupe_key, kind, backend_id, session_id, prompt_id, prompt, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT("user", dedupe_key) DO NOTHING`),
-		id, r.User, r.Key, r.Kind, r.BackendID, r.SessionID, r.PromptID, prompt, s.now().Unix())
+	res, err := s.db.ExecContext(ctx, s.q(`INSERT INTO notices (id, "user", dedupe_key, kind, backend_id, session_id, prompt_id, prompt,
+		created_at, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT("user", dedupe_key) DO NOTHING`),
+		id, r.User, r.Key, r.Kind, r.BackendID, r.SessionID, r.PromptID, prompt, s.now().Unix(), r.Account)
 	if err != nil {
 		return "", false, err
 	}

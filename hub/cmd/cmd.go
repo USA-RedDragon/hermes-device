@@ -131,7 +131,8 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 		webOpts.Files = devices
 	}
 	webOpts.Insights = newInsights(cfg, svc, webOpts.Memory, dialers)
-	if cs := newClaude(cfg, svc, notifier, dialers); cs != nil {
+	cs := newClaude(cfg, svc, notifier, dialers)
+	if cs != nil {
 		svc.SetTurnErrors(cs.TurnFailed)
 		webOpts.Claude = cs
 	}
@@ -153,6 +154,9 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 			Logger: slog.Default()}
 		if devices != nil {
 			topts.Computers = devices
+		}
+		if cs != nil {
+			topts.Claude = cs
 		}
 		bot, err := telegram.New(telegram.Config(cfg.Telegram), topts)
 		if err != nil {

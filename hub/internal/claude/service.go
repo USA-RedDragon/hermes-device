@@ -543,9 +543,10 @@ func (s *Service) TurnFailed(e service.TurnError) {
 	}
 	if s.o.Notify != nil && len(s.admins[e.BackendID]) > 0 {
 		s.o.Notify(hub.Notice{Kind: hub.NoticeClaudeSignIn, BackendID: e.BackendID, SessionID: e.SessionID,
-			Key:    "claude:" + e.BackendID + ":" + acc.ID + ":" + strconv.FormatInt(now.Unix()/int64(noticeWindow/time.Second), 10),
-			Title:  e.Title,
-			Detail: Describe(label, hint, reason) + " Open the hub to sign in.",
-			Users:  slices.Clone(s.admins[e.BackendID])})
+			Key:     "claude:" + e.BackendID + ":" + acc.ID + ":" + strconv.FormatInt(now.Unix()/int64(noticeWindow/time.Second), 10),
+			Title:   e.Title,
+			Detail:  Describe(label, hint, reason) + " Open the hub to sign in.",
+			Users:   slices.Clone(s.admins[e.BackendID]),
+			Account: acc.ID})
 	}
 }

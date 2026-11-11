@@ -203,6 +203,11 @@ var migrations = []migration{
 				PRIMARY KEY (chat_id, backend_id, session_id))`,
 		},
 	},
+	{
+		version:  12,
+		sqlite:   []string{`ALTER TABLE notices ADD COLUMN account_id TEXT NOT NULL DEFAULT ''`},
+		postgres: []string{`ALTER TABLE notices ADD COLUMN account_id TEXT NOT NULL DEFAULT ''`},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas

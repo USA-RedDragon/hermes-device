@@ -247,7 +247,8 @@ func (n *Notifier) deliverNew(ctx context.Context, user string, nt hub.Notice) {
 	if !set.Wants(nt.Kind) {
 		return
 	}
-	rec := hub.NoticeRecord{User: user, Key: nt.Key, Kind: nt.Kind, BackendID: nt.BackendID, SessionID: nt.SessionID, Prompt: nt.Prompt}
+	rec := hub.NoticeRecord{User: user, Key: nt.Key, Kind: nt.Kind, BackendID: nt.BackendID, SessionID: nt.SessionID, Prompt: nt.Prompt,
+		Account: nt.Account}
 	if nt.Prompt != nil {
 		rec.PromptID = nt.Prompt.ID
 	}

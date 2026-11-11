@@ -379,6 +379,17 @@ func (c *Client) EditForumTopic(ctx context.Context, chatID, thread int64, name 
 	return err
 }
 
+type deleteParams struct {
+	ChatID    int64 `json:"chat_id"`
+	MessageID int64 `json:"message_id"`
+}
+
+// DeleteMessage deletes a message; the bot needs the right to delete the
+// messages of others in a group.
+func (c *Client) DeleteMessage(ctx context.Context, chatID, messageID int64) error {
+	return c.call(ctx, "deleteMessage", deleteParams{ChatID: chatID, MessageID: messageID}, nil)
+}
+
 // ChatMember is what getChatMember says of a member of a chat.
 type ChatMember struct {
 	Status          string `json:"status"`

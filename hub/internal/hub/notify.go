@@ -60,7 +60,9 @@ type NoticeRecord struct {
 	SessionID string
 	PromptID  string
 	// Prompt is the pending prompt, for approvals and questions.
-	Prompt    *PromptInfo
+	Prompt *PromptInfo
+	// Account is the Claude account of a NoticeClaudeSignIn.
+	Account   string
 	CreatedAt time.Time
 	SettledAt time.Time
 }

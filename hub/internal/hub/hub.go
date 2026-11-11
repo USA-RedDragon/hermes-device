@@ -408,4 +408,6 @@ type Notice struct {
 	// Cancelled marks a NoticeSettled of prompts that were cancelled, not
 	// answered.
 	Cancelled bool
+	// Account is the Claude account of a NoticeClaudeSignIn.
+	Account string
 }

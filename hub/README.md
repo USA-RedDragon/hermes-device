@@ -163,14 +163,15 @@ The hub calls the plugin's routes on the Hermes web server with its dashboard lo
 **Lost login.** When a turn on a Claude account ends with the plugin's error "Claude Code is installed but has no usable login", or with an upstream 401 (`status 401` or `authentication_failed`), the hub asks the plugin for the account's status. When the account is signed out:
 
 - The chat gets a note that names the account, the email it was last signed in as and why, with Sign in for Claude admins.
-- Each Claude admin of the backend gets a "Claude sign-ins" notice on Telegram and Web Push (see [Notifications](#notifications)), at most one per account in 30 minutes. The notice names the account in the same words and says to open the hub to sign in, with the chat's link. It never carries the sign-in link. Telegram cannot take the code; sign in on the page.
+- Each Claude admin of the backend gets a "Claude sign-ins" notice on Telegram and Web Push (see [Notifications](#notifications)), at most one per account in 30 minutes. The Web Push notice names the account in the same words and says to open the hub to sign in, with the chat's link; it never carries the sign-in link.
+- On Telegram the hub starts the sign-in as that admin (as Sign in on the page does) and sends the admin the sign-in link, in the General topic of their linked group or else in their private chat, such as "Claude (account1), last signed in as alice@example.com". The message asks for a reply (Telegram opens the reply box): sign in on the linked page, then reply to the message with the code. Only the admin the message went to may answer; the bot passes the code to the same sign-in as the page's dialog, deletes the message with the code when it may (in a group the bot needs the right to delete messages), and edits the sign-in message to show the result: "Signed in as" the email, "Sign-in failed" and why, or "Expired" when the sign-in ended first. A code that Claude refuses can be sent again. When the hub cannot start the sign-in, Telegram gets the plain notice instead.
 
 **Security.**
 
 - `claude.admins` lists who may sign the accounts of each backend in, as `user=backend` pairs (environment variable `HUB_CLAUDE_ADMINS`, such as `alice=main`). Empty, the default, is nobody. Only these users see the sign-in controls, and the hub refuses (403) every other user who tries to start, read, answer or cancel a sign-in. The other users of the backend see usage only.
 - The sign-in routes need the session's CSRF token and a same-origin request, like the rest of the API.
-- The sign-in link goes only in the answer to the admin who asked for it. The account list leaves it out, and chat notes and notices never carry it.
-- The hub passes the code straight to the plugin. It never logs, stores or sends back the code, and it does not log the link. The page clears the code box when it sends the code.
+- The sign-in link goes only in the answer to the admin who asked for it, and on Telegram only to that admin's own chat or group. The account list leaves it out, and chat notes and Web Push notices never carry it.
+- The hub passes the code straight to the plugin. It never logs, stores or sends back the code, and it does not log the link. The page clears the code box when it sends the code, and the Telegram bot deletes the code's message.
 
 ## Chat files
 
