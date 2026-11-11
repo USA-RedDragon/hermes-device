@@ -10,6 +10,7 @@ One web front end, behind OpenID Connect login, for many [Hermes Agent](https://
 - New sessions, interrupt, and approval prompts.
 - Images and files attached to a message, on the page and in Telegram (see [Attachments](#attachments)).
 - Images and files the agent shows the user, such as browser screenshots, on the page and in Telegram (see [Files from the agent](#files-from-the-agent)).
+- Pages: interactive HTML that the agent writes, opened full screen in a sandboxed frame, with a way to send an answer back to the chat (see [Pages](#pages)).
 - Replies in Markdown, with colored code blocks and a Copy button. Model output never becomes HTML, and links open only `http`, `https` and `mailto` targets.
 - A line under the chat title with the model, how full its context is (such as `41k / 131k context`, with a small meter), reply speed and the working folder. It opens to pick the model and the thinking level.
 - Rename, archive and delete chats, and search their titles.
@@ -64,7 +65,7 @@ The paperclip by the message box attaches files; pasting or dropping files onto 
 
 ## Files from the agent
 
-The agent shows a file to the user with a `MEDIA:<path>` line in its reply, as for Hermes' own messaging platforms (`gateway/platforms/base.py` `extract_media`). hermes-device's `browser_screenshot` tool saves a screenshot of a browser tab and tells the model to put such a line in its reply. The page hides the line and shows the file in its place: an image inline, which opens full size, or a chip that downloads any other file. A `browser_screenshot` tool card shows the screenshot too. Telegram gets the reply text without the line, then each image as a photo (a file when Telegram refuses the photo, or when it is over 10 MB) and each other file as a document, up to 50 MB. The bot sends at most 10 files of one reply. Lines in code blocks, inline code examples and quotes stay as text.
+The agent shows a file to the user with a `MEDIA:<path>` line in its reply, as for Hermes' own messaging platforms (`gateway/platforms/base.py` `extract_media`). hermes-device's `browser_screenshot` tool saves a screenshot of a browser tab and tells the model to put such a line in its reply. The page hides the line and shows the file in its place: an image inline, which opens full size, a card that opens an HTML file as a [page](#pages), or a chip that downloads any other file. A `browser_screenshot` tool card shows the screenshot too. Telegram gets the reply text without the line, then each image as a photo (a file when Telegram refuses the photo, or when it is over 10 MB) and each other file as a document, up to 50 MB, except an HTML file, which gets a link to its page. The bot sends at most 10 files of one reply. Lines in code blocks, inline code examples and quotes stay as text.
 
 The hub reads the files from the Hermes server through its web server, the way the Hermes Webapp page downloads a file: `POST /api/files/ticket` mints a ticket bound to the path, and `GET /api/fs/download` with that ticket streams the file. The page asks `GET /api/sessions/<backend>/<session>/media?path=<path>`, and the hub serves the file only when all of these hold:
 
@@ -74,6 +75,41 @@ The hub reads the files from the Hermes server through its web server, the way t
 - the path is under one of the backend's `media_roots`, or, when it has none, is an image in a `browser_screenshot` folder (`<dir>/cache/screenshots/hermes-device/<session>/<file>`) or among attached images (`<dir>/cache/images/<file>`). `<dir>` can be any folder, so on a host with more than one Hermes home, set `media_roots` to this backend's folders, such as `<HERMES_HOME>/cache`.
 
 An image (PNG, JPEG, GIF or WebP by both its extension and its first bytes) comes back inline as that type; anything else comes back as `application/octet-stream` with `Content-Disposition: attachment`. Every answer has `Content-Security-Policy: default-src 'none'; sandbox`. A file is at most 64 MB. Files on a computer that runs the chat are not shown: the hub reads files of the Hermes server only.
+
+## Pages
+
+A page is an interactive HTML document that the agent makes for the user, such as a list of entries with checkboxes, a mockup or a report. The agent writes the page in its reply as a fenced block whose info string is `page`:
+
+````
+Here are the candidates.
+
+```page
+<!doctype html>
+<title>Pick entries</title>
+...
+```
+````
+
+The block also opens with `html page` or `hermes-page`, and closes with a fence of the same character that is at least as long. A block inside another fenced block, in a quote, or not closed stays as text. A reply can have more than one page. The page block works wherever the chat runs (the Hermes server, a sandbox or a computer), because the page travels in the reply. An HTML file (`.html` or `.htm`) that a reply names with `MEDIA:<path>` is also a page, under the rules of [Files from the agent](#files-from-the-agent); that works only for files on the Hermes server.
+
+The page shows a card with the page's `<title>` and an Open button in place of the block. Open shows the page over the chat with Back, Reload and Download. Its address is `#/page/<backend>/<session>/<ref>`, where `<ref>` is the page's id (the first 32 hex digits of the SHA-256 of the block's text) or the file's path. The browser computes the id with Web Crypto, so the hub must be served over HTTPS or from localhost. Back returns to the chat and keeps the page's state until another page or chat opens. Telegram gets a link to that address for each page, since Telegram cannot run one.
+
+The frame loads `GET /api/sessions/<backend>/<session>/page?id=<id>` (or `?path=<path>`). The hub serves the page only to a user who may use the backend, only when a reply of that chat has the block (or names the file), and only to a frame: a request whose `Sec-Fetch-Dest` is not `iframe` is redirected to the page's address. `GET .../page-info?path=<path>` answers the title of a file page.
+
+Pages are isolated from the hub and from each other:
+
+- The frame has `sandbox="allow-scripts allow-forms allow-modals allow-popups"` without `allow-same-origin`, and the answer has the same flags in a `sandbox` CSP directive, so the page runs in a new opaque origin even if it is loaded some other way. An opaque origin has no storage: `localStorage`, `sessionStorage`, IndexedDB and `document.cookie` throw, so nothing is kept between loads, nothing is shared between pages, and the page cannot reach the hub's storage or cookies. It cannot read the hub's document (`parent.document` throws) or navigate the hub's window.
+- The CSP allows inline script and style, scripts from `https://cdnjs.cloudflare.com/ajax/libs/`, `https://cdn.jsdelivr.net/npm/` and `https://unpkg.com/`, styles from `https://fonts.googleapis.com` and fonts from `https://fonts.gstatic.com`, and images and media from `data:` and `blob:` URLs. It blocks everything else: `fetch`, XHR, WebSocket and EventSource (`connect-src 'none'`), images and frames from any host, form submission, workers and `<base>`. Only the hub's origin may frame the page. The answer also has `Referrer-Policy: no-referrer`, `X-DNS-Prefetch-Control: off` and `Cache-Control: no-store`.
+- A request from the page itself to the hub carries no session cookie (the cookie is `SameSite=Lax` and the page's origin is another site), and the API refuses it as cross-site.
+
+The CSP cannot stop a page from navigating its own frame or opening a window to another site, and the browser does not apply it to WebRTC. So a page can send what it shows, and what the user types into it, to a site in a URL. The agent writes the page and can already reach the internet from its tools, so this gives the agent no new access to data, but do not type secrets into a page.
+
+The hub puts a small script at the start of every page that defines `window.hermes`:
+
+- `hermes.send(text)` puts text in the chat's message box, after any text already there, closes the page and shows the chat. The user reviews the text and sends it. A click on an element with a `data-hermes-send="<text>"` attribute does the same.
+- `hermes.copy(text)` copies text. It tries the frame's own copy command, then the hub's clipboard access, and else shows the text selected in a dialog for the user to copy.
+
+The script talks to the hub only over a `MessagePort` that the hub's frame sends to the page on its first load. The hub ignores `postMessage` to its window, so another frame or window cannot speak for the page. When the frame loads a second document (the page followed a link, for example), the hub closes the port and says that the page left; Reload starts it again. A page that leaves before its first load ends is not noticed, and the document it went to gets the port; that document came from the page, so it can do nothing the page could not. While the page is hidden behind the chat, the hub ignores what it sends, and it drops a message of more than 200000 characters.
 
 ## Memory
 
