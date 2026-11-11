@@ -1571,6 +1571,7 @@
   };
 
   function showWelcome() {
+    memory.hide();
     closeStream();
     attachments.clear();
     view = null;
@@ -1591,6 +1592,7 @@
   }
 
   function showChat(backend, session) {
+    memory.hide();
     closeStream();
     attachments.clear();
     current = { b: backend, s: session };
@@ -1633,9 +1635,26 @@
     $("input").focus({ preventScroll: true });
   }
 
+  // showMemory opens the Memory page in place of the chat.
+  function showMemory(rest) {
+    closeStream();
+    attachments.clear();
+    view = null;
+    current = null;
+    for (const id of ["welcome", "log", "composer", "stop", "info", "place", "placenote"]) $(id).hidden = true;
+    settings.reset();
+    $("title").textContent = "Memory";
+    $("subtitle").textContent = "";
+    document.title = "Memory - Hermes Hub";
+    banner("");
+    memory.show(rest);
+  }
+
   function route() {
     const m = location.hash.match(/^#\/s\/([^/]+)\/(.+)$/);
+    const mem = location.hash.match(/^#\/memory(?:\/(.*))?$/);
     if (m) showChat(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+    else if (mem && me.memory) showMemory(mem[1] || "");
     else showWelcome();
     menuOpen = false;
     drawList();
@@ -2021,6 +2040,9 @@
     },
   };
 
+  const memory = window.HubMemory({ api, el, sessions: () => lastList, chatHash, closeSide: () => openSide(false),
+    defaultBackend: () => me.default_backend || "" });
+
   async function init() {
     try {
       me = await api("GET", "/api/me");
@@ -2065,6 +2087,10 @@
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshList(); });
     setInterval(() => { if (!document.hidden) refreshList(); }, 20000);
     window.onhashchange = route;
+    if (me.memory) {
+      memory.refresh();
+      setInterval(() => { if (!document.hidden) memory.refresh(); }, 60000);
+    }
     if (me.computers) {
       await loadComputers();
       setInterval(() => { if (!document.hidden) { loadComputers(); loadPlace(); } }, 20000);

@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/vendor/highlight.min.js" defer></script>
 <script src="/static/markdown.js" defer></script>
+<script src="/static/memory.js" defer></script>
 <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -20,6 +21,7 @@
     <div id="newon-row" class="newon-row" hidden><button id="newon" class="link" type="button">New chat on a computer</button></div>
     <div class="search"><input id="search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off"></div>
     <nav id="sessions" class="sessions"></nav>
+    <a id="memnav" class="memnav" href="#/memory" hidden><span class="memdot" aria-hidden="true"></span>Memory<span id="memcount" class="memcount" title="Changes waiting for approval" hidden></span></a>
     <details id="prefs" class="prefs" hidden>
       <summary>Settings</summary>
       <div class="prefs-body">
@@ -53,6 +55,7 @@
     <div id="welcome" class="welcome">
       <p>Pick a chat, or start a new one.</p>
     </div>
+    <div id="memory" class="memory" hidden></div>
     <div id="log" class="log" aria-live="polite" hidden></div>
     <form id="composer" class="composer" hidden>
       <div id="chips" class="chips" aria-label="Attachments" hidden></div>
