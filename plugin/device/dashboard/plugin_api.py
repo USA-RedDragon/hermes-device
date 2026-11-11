@@ -236,6 +236,36 @@ async def get_file(session_id: str, path: str = ""):
     })
 
 
+
+async def _browse(fn, *args):
+    core = _core()
+    if not core.BROWSES.acquire(blocking=False):
+        return _error(429, "busy", f"{core.MAX_BROWSES} folder reads are running; try again in a moment")
+    slot = core.BROWSES
+    fut = asyncio.get_running_loop().run_in_executor(None, fn, *args)
+    try:
+        out = await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        fut.add_done_callback(lambda _f: slot.release())
+        raise
+    except BaseException as exc:
+        slot.release()
+        if isinstance(exc, core.BindError):
+            return _error(exc.status, exc.code, exc.message)
+        raise
+    slot.release()
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/sessions/{session_id}/tree")
+async def get_tree(session_id: str, path: str = ""):
+    return await _browse(_core().list_session_dir, session_id, path)
+
+
+@router.get("/sessions/{session_id}/diff")
+async def get_diff(session_id: str):
+    return await _browse(_core().session_diff, session_id)
+
 # --- built-in memory (section 9.1) -------------------------------------------------------------
 
 def _memory():
@@ -291,6 +321,7 @@ async def memory_change(target: str, op: str, request: Request):
     except mem.MemoryRefused as exc:
         return _error(exc.status, exc.code, exc.message)
     return await _memory_call(*args)
+
 
 
 # --- exec leg (section 4) ---------------------------------------------------------------------

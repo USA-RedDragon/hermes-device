@@ -517,6 +517,145 @@ class RouteTests(unittest.TestCase):
         self.assertEqual((r.status_code, r.json()["error"]), (409, "device_offline"))
 
 
+    # folder listings and diffs
+    def tree(self, path=None, sid="s1"):
+        params = {"path": str(path)} if path is not None else {}
+        return self.client.get(f"/api/plugins/device/sessions/{sid}/tree", params=params)
+
+    def test_tree_lists_the_chat_folder(self):
+        self.online(home=str(self.root))
+        self.hub.bind("s1", "d_8f2c", str(self.root))
+        (self.root / "sub" / "b.txt").write_text("hello")
+        (self.root / ".ssh").mkdir()
+        (self.root / "app.env").write_text("x")
+        (self.root / ".env").write_text("TOPSECRET")
+        (self.root / "tls.key").write_text("TOPSECRET")
+        (self.root / "away").symlink_to(self.outside)
+        (self.root / "we ird\nname").write_text("y")
+        r = self.tree()
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual((body["path"], body["dir"], body["truncated"]), (str(self.root), str(self.root), False))
+        names = {e["name"]: e for e in body["entries"]}
+        self.assertNotIn(".ssh", names)
+        self.assertNotIn(".env", names)
+        self.assertNotIn("tls.key", names)
+        self.assertNotIn("we ird\nname", names)
+        self.assertEqual(names["f.txt"], {"name": "f.txt", "kind": "file", "link": False, "size": 1})
+        self.assertEqual(names["sub"]["kind"], "dir")
+        self.assertTrue(names["away"]["link"])
+        self.assertEqual([e["kind"] for e in body["entries"]][:3], ["dir", "dir", "dir"])
+        r = self.tree(self.root / "sub")
+        self.assertEqual([e["name"] for e in r.json()["entries"]], ["b.txt"])
+        for path, code in ((self.root / "away", "read_refused"), (self.outside, "read_refused"),
+                           (self.root / ".ssh", "read_refused"), (self.root / "nope", "not_found"),
+                           (f"{self.root}/sub/..", "bad_path"), ("rel", "bad_path")):
+            with self.subTest(path=path):
+                r = self.tree(path)
+                self.assertEqual(r.json()["error"], code, r.text)
+        self.assertNotIn(str(self.outside), self.tree(self.root / "away").text)
+        with mock.patch.object(core, "MAX_LIST_ENTRIES", 2):
+            self.assertTrue(self.tree().json()["truncated"])
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", str(self.root), "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+                       check=True, capture_output=True)
+
+    def test_diff_shows_changes_in_the_chat_folder(self):
+        self.online(home=str(self.root.parent))
+        self.hub.bind("s1", "d_8f2c", str(self.root / "sub"))
+        r = self.client.get("/api/plugins/device/sessions/s1/diff")
+        self.assertEqual((r.status_code, r.json()["git"]), (200, False), r.text)
+        self.git("init", "-q")
+        r = self.client.get("/api/plugins/device/sessions/s1/diff")
+        self.assertEqual((r.json()["git"], r.json()["files"], r.json()["diff"]), (True, [], ""))
+        (self.root / "sub" / "a.txt").write_text("one\n")
+        (self.root / "sub" / ".env").write_text("TOPSECRET=1\n")
+        (self.root / "top.txt").write_text("outside the folder\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "init")
+        (self.root / "sub" / "a.txt").write_text("two\n")
+        (self.root / "sub" / ".env").write_text("TOPSECRET=2\n")
+        (self.root / "top.txt").write_text("changed outside\n")
+        (self.root / "sub" / "new.txt").write_text("new\n")
+        r = self.client.get("/api/plugins/device/sessions/s1/diff")
+        body = r.json()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(body["files"], [{"path": "a.txt", "status": "modified"}])
+        self.assertEqual(body["untracked"], ["new.txt"])
+        self.assertEqual(body["hidden"], 1)
+        self.assertIn("-one", body["diff"])
+        self.assertIn("+two", body["diff"])
+        self.assertNotIn("TOPSECRET", r.text)
+        self.assertNotIn("outside", body["diff"])
+        self.assertFalse((self.root / ".git" / "index.lock").exists())
+        with mock.patch.object(core, "MAX_DIFF_BYTES", 10):
+            body = self.client.get("/api/plugins/device/sessions/s1/diff").json()
+            self.assertTrue(body["truncated"])
+            self.assertLessEqual(len(body["diff"]), 10)
+        busy = threading.BoundedSemaphore(1)
+        busy.acquire()
+        with mock.patch.object(core, "BROWSES", busy):
+            r = self.client.get("/api/plugins/device/sessions/s1/diff")
+            self.assertEqual((r.status_code, r.json()["error"]), (429, "busy"))
+
+    def test_diff_refuses_git_dirs_and_work_trees_elsewhere(self):
+        self.online(home=str(self.root.parent))
+        self.hub.bind("s1", "d_8f2c", str(self.root / "sub"))
+        outside = self.outside / "repo"
+        outside.mkdir()
+        run = lambda *a, cwd: subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@example.com", *a],
+                                             check=True, capture_output=True)
+        run("init", "-q", cwd=outside)
+        (outside / "notes.txt").write_text("TOPSECRET\n")
+        run("add", "-A", cwd=outside)
+        run("commit", "-q", "-m", "x", cwd=outside)
+        (self.root / "sub" / ".git").write_text(f"gitdir: {outside / '.git'}\n")
+        r = self.client.get("/api/plugins/device/sessions/s1/diff")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(r.json()["git"])
+        self.assertTrue(r.json()["refused"])
+        self.assertNotIn("TOPSECRET", r.text)
+        (self.root / "sub" / ".git").unlink()
+        # core.worktree pointing at a credential folder
+        self.git("init", "-q")
+        creds = self.root.parent / ".aws"
+        creds.mkdir()
+        (creds / "credentials").write_text("aws_secret=TOPSECRET\n")
+        self.git("config", "core.worktree", str(creds))
+        r = self.client.get("/api/plugins/device/sessions/s1/diff")
+        self.assertNotIn("TOPSECRET", r.text)
+        self.assertFalse(r.json()["git"])
+
+    def test_diff_hides_submodule_contents_and_hard_links(self):
+        self.online(home=str(self.root.parent))
+        self.hub.bind("s1", "d_8f2c", str(self.root))
+        sub = self.root / "vend"
+        sub.mkdir()
+        run = lambda *a, cwd: subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@example.com",
+                                              "-c", "protocol.file.allow=always", *a], check=True, capture_output=True)
+        run("init", "-q", cwd=sub)
+        (sub / ".env").write_text("SECRETKEY=TOPSECRET1\n")
+        run("add", "-A", cwd=sub)
+        run("commit", "-q", "-m", "x", cwd=sub)
+        self.git("init", "-q")
+        (self.root / "linked.txt").write_text("plain\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "init")
+        self.git("config", "diff.submodule", "diff")
+        (sub / ".env").write_text("SECRETKEY=TOPSECRET2\n")
+        run("commit", "-q", "-am", "y", cwd=sub)
+        secret = self.root.parent / "token.txt"
+        secret.write_text("TOPSECRET3\n")
+        (self.root / "linked.txt").unlink()
+        os.link(secret, self.root / "linked.txt")
+        r = self.client.get("/api/plugins/device/sessions/s1/diff")
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertTrue(body["git"], r.text)
+        self.assertNotIn("TOPSECRET", r.text)
+        self.assertGreaterEqual(body["hidden"], 1)
+
 class VersionTest(unittest.TestCase):
     def test_manifest_matches_core(self):
         manifest = (Path(core.__file__).parent / "plugin.yaml").read_text()

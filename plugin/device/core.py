@@ -2005,6 +2005,309 @@ def get_session_file(session_id: str, path: Any) -> tuple[str, bytes]:
     return name, raw
 
 
+# --- folder listing and diff for the hub (section 9) -------------------------------------------
+
+MAX_LIST_ENTRIES = 1000
+MAX_DIFF_BYTES = 1024 * 1024
+MAX_DIFF_FILES = 500
+MAX_DIFF_PATH_BYTES = 256 * 1024
+MAX_UNTRACKED_BYTES = 256 * 1024
+BROWSE_TIMEOUT_S = 60
+# Listings and diffs are small, but each runs commands on the device, so only a few run at once.
+MAX_BROWSES = 4
+BROWSES = threading.BoundedSemaphore(MAX_BROWSES)
+
+# Prints the real folder (pwd -P) and a NUL, one status line, then one NUL-ended record per entry:
+# "<kind> <size> <name>". kind is d, f or o, with a leading l for a symbolic link (its target's
+# kind). After MAX entries it prints a record "T" and stops.
+_LIST_SCRIPT = r"""
+d=$1; max=$2
+cd -P -- "$d" 2>/dev/null || { printf '\0N\n'; exit 0; }
+printf '%s\0' "$(pwd -P)"
+if [ ! -r . ] || [ ! -x . ]; then echo U; exit 0; fi
+echo D
+n=0
+for f in * .*; do
+  set -f
+  case $f in .|..) continue ;; esac
+  [ -e "$f" ] || [ -L "$f" ] || continue
+  if [ "$n" -ge "$max" ]; then printf 'T\0'; exit 0; fi
+  n=$((n+1))
+  l=; [ -L "$f" ] && l=l
+  s=0
+  if [ -d "$f" ]; then k=d
+  elif [ -f "$f" ]; then
+    k=f
+    if [ -z "$l" ]; then set -- $(ls -lnd -- "$f" 2>/dev/null); s=${5:-0}; fi
+  else k=o; fi
+  case $s in ''|*[!0-9]*) s=0 ;; esac
+  printf '%s %s %s\0' "$l$k" "$s" "$f"
+done
+exit 0
+"""
+
+
+def browse_resolution(session_id: str) -> tuple[Resolution, DeviceConn]:
+    res = upload_resolution(session_id)
+    conn = hub().device(res.binding.device_id)
+    if conn is None:
+        raise BindError(409, "device_offline", f"device {res.binding.device_id} is not connected")
+    return res, conn
+
+
+def _clean_device_dir(path: Any) -> Optional[str]:
+    if path == "/":
+        return path
+    if not isinstance(path, str) or not path.startswith("/") or path.startswith("//") \
+            or len(path.encode("utf-8", "replace")) > MAX_FILE_PATH:
+        return None
+    if posixpath.normpath(path) != path or any(ord(c) < 0x20 or ord(c) == 0x7f for c in path):
+        return None
+    return path
+
+
+def _real_dir_refused(conn: DeviceConn, real: str) -> bool:
+    return not real.startswith("/") or posixpath.normpath(real) != real or "\ufffd" in real \
+        or device_read_denial(conn, real) is not None
+
+
+def list_session_dir(session_id: str, path: Any) -> dict:
+    """List a folder of the device that serves a session, for the hub's file viewer, and return
+    ``{"path", "dir", "entries": [{"name", "kind", "link", "size"}], "truncated"}``. ``path``
+    defaults to the session's folder (``dir``). The folder and its real path must pass
+    :func:`device_read_denial`, and entries that do not pass it are left out. Raises
+    :class:`BindError`."""
+    res, conn = browse_resolution(session_id)
+    b = res.binding
+    clean = _clean_device_dir(path) if path else b.dir
+    if clean is None:
+        raise BindError(400, "bad_path", "path must be an absolute, clean device path of a folder")
+    why = device_read_denial(conn, clean)
+    if why:
+        raise BindError(422, "read_refused", why)
+    code, body, err = run_script(b.device_id, _LIST_SCRIPT, [clean, str(MAX_LIST_ENTRIES)], cwd=b.dir,
+                                 timeout=BROWSE_TIMEOUT_S, output_in_error=False)
+    if code == EXIT_LOST:
+        raise BindError(409, "device_offline", err or f"device {b.device_id} is not connected")
+    nul = body.find("\0")
+    eol = body.find("\n", nul + 1) if nul >= 0 else -1
+    if code != 0 or nul < 0 or eol < 0:
+        raise BindError(422, "read_failed", err or f"device {conn.name} could not list {clean} (exit {code})")
+    real, status = body[:nul], body[nul + 1:eol]
+    if status == "N" and not real:
+        raise BindError(404, "not_found", f"{clean} is not a folder on device {conn.name}")
+    if _real_dir_refused(conn, real):
+        raise BindError(422, "read_refused", f"{clean} resolves to a path outside the device roots or to a "
+                                             f"protected credential path")
+    if status == "U":
+        raise BindError(422, "read_refused", f"{clean} cannot be opened")
+    if status != "D":
+        raise BindError(422, "read_failed", f"device {conn.name} sent an unreadable answer for {clean}")
+    entries, truncated = [], False
+    for rec in body[eol + 1:].split("\0"):
+        if rec == "T":
+            truncated = True
+            continue
+        kind, _, rest = rec.partition(" ")
+        size, _, name = rest.partition(" ")
+        if kind not in ("d", "f", "o", "ld", "lf", "lo") or not size.isdigit() or not name \
+                or "/" in name or name in (".", "..") or "\ufffd" in name \
+                or any(ord(c) < 0x20 or ord(c) == 0x7f for c in name):
+            continue
+        if device_read_denial(conn, posixpath.join(real, name)):
+            continue
+        entries.append({"name": name, "kind": {"d": "dir", "f": "file"}.get(kind[-1], "other"),
+                        "link": kind.startswith("l"), "size": int(size)})
+    entries.sort(key=lambda e: (e["kind"] != "dir", e["name"].lower(), e["name"]))
+    return {"path": real, "dir": b.dir, "device_id": b.device_id, "entries": entries, "truncated": truncated}
+
+
+# The git of the diff scripts: no pager, no fsmonitor hook, no hooks, no external diff or text
+# conversion, submodules as one line, no implicit bare repositories, no optional locks (so it never
+# writes the index), and no system config.
+_DIFF_GIT = r"""
+export GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 GIT_PAGER=cat PAGER=cat LC_ALL=C GIT_CONFIG_NOSYSTEM=1
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+g() { git -c core.fsmonitor=false -c core.untrackedCache=false -c core.hooksPath=/dev/null -c diff.external= \
+  -c core.pager=cat -c color.ui=false -c diff.submodule=short -c safe.bareRepository=explicit --no-pager "$@"; }
+"""
+
+# Prints the real folder and a NUL, then a status line: G (no git), R (not inside a work tree) or
+# "B <base>", where base is HEAD or the empty tree. After B come the work tree's top, the git dir
+# and the common git dir, each a real path ended by a NUL, then the --name-status -z list of
+# changes in the folder against base (at most $2 bytes), a record "UNTRACKED", and the untracked
+# files in it (at most $2 bytes), NUL-ended.
+_DIFF_LIST_SCRIPT = _DIFF_GIT + r"""
+d=$1; max=$2
+cd -P -- "$d" 2>/dev/null || { printf '\0N\n'; exit 0; }
+printf '%s\0' "$(pwd -P)"
+command -v git >/dev/null 2>&1 || { echo G; exit 0; }
+[ "$(g rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || { echo R; exit 0; }
+top=$(g rev-parse --show-toplevel 2>/dev/null) && [ -n "$top" ] || { echo R; exit 0; }
+gd=$(g rev-parse --absolute-git-dir 2>/dev/null) && [ -n "$gd" ] || { echo R; exit 0; }
+cd_=$(g rev-parse --git-common-dir 2>/dev/null) && [ -n "$cd_" ] || { echo R; exit 0; }
+top=$(cd -P -- "$top" 2>/dev/null && pwd -P) || { echo R; exit 0; }
+gd=$(cd -P -- "$gd" 2>/dev/null && pwd -P) || { echo R; exit 0; }
+cd_=$(cd -P -- "$cd_" 2>/dev/null && pwd -P) || { echo R; exit 0; }
+if g rev-parse -q --verify HEAD >/dev/null 2>&1; then base=HEAD
+else base=$(g hash-object -t tree /dev/null) || exit 3; fi
+echo "B $base"
+printf '%s\0%s\0%s\0' "$top" "$gd" "$cd_"
+g diff "$base" --name-status -z --no-renames --relative --no-ext-diff --ignore-submodules=dirty -- . | head -c "$max"
+printf '\0UNTRACKED\0'
+g ls-files -z --others --exclude-standard -- . 2>/dev/null | head -c "$max"
+exit 0
+"""
+
+# Prints a line "K <n>" with how many of the given paths it skipped because they are regular files
+# with more than one hard link, then the diff of the others against base, at most $5 bytes. git
+# runs with the git dir and work tree that the list script reported and the plugin checked.
+_DIFF_SCRIPT = _DIFF_GIT + r"""
+want=$1; base=$2; GIT_DIR=$3; GIT_WORK_TREE=$4; max=$5; shift 5
+export GIT_DIR GIT_WORK_TREE
+cd -P -- "$want" 2>/dev/null || exit 4
+[ "$(pwd -P)" = "$want" ] || { echo "the folder moved" >&2; exit 4; }
+n=$#; i=0; skip=0
+while [ "$i" -lt "$n" ]; do
+  p=$1; shift; i=$((i+1))
+  if [ -f "$p" ] && [ ! -L "$p" ]; then
+    l=$(ls -lnd -- "$p" 2>/dev/null | awk '{print $2}')
+    if [ "$l" != 1 ]; then skip=$((skip+1)); continue; fi
+  fi
+  set -- "$@" ":(literal)$p"
+done
+echo "K $skip"
+[ "$#" -gt 0 ] || exit 0
+g diff "$base" --no-renames --relative --no-ext-diff --no-textconv --no-color --submodule=short \
+  --ignore-submodules=dirty -- "$@" | head -c "$max"
+exit 0
+"""
+
+_DIFF_STATUS = {"A": "added", "M": "modified", "D": "deleted", "T": "modified", "U": "unmerged"}
+_UNTRACKED = "UNTRACKED"
+MAX_CHANGE_LIST_BYTES = MAX_UNTRACKED_BYTES
+
+
+def _git_paths_ok(conn: DeviceConn, real: str, top: str, git_dir: str, common_dir: str) -> bool:
+    """Whether git may run for the folder ``real``: its work tree's top holds the folder, and both
+    git dirs are inside the device roots and pass :func:`device_read_denial`. So a ``.git`` file,
+    ``core.worktree`` or ``GIT_DIR`` cannot point git at a repository or files elsewhere."""
+    for p in (top, git_dir, common_dir):
+        if not p.startswith("/") or posixpath.normpath(p) != p or "\ufffd" in p:
+            return False
+    return is_under(real, top) and not device_read_denial(conn, git_dir) and not device_read_denial(conn, common_dir)
+_BASE_RE = re.compile(r"HEAD|[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def _rel_ok(rel: str) -> bool:
+    return bool(rel) and not rel.startswith("/") and posixpath.normpath(rel) == rel and rel != "." \
+        and not rel.startswith("../") and "\ufffd" not in rel and not any(ord(c) < 0x20 or ord(c) == 0x7f for c in rel)
+
+
+def session_diff(session_id: str) -> dict:
+    """What changed in the session's folder by git: ``{"dir", "git", "files": [{"path", "status"}],
+    "untracked": [<path>], "diff", "truncated", "hidden"}``. ``git`` is false when the folder is
+    not in a git work tree or the device has no git. The diff is the work tree against HEAD (the
+    empty tree before the first commit), limited to the folder, at most MAX_DIFF_BYTES. Paths that
+    do not pass :func:`device_read_denial` are left out of the diff and the lists, and counted in
+    ``hidden``. git runs read-only on the device. Raises :class:`BindError`."""
+    res, conn = browse_resolution(session_id)
+    b = res.binding
+    why = device_read_denial(conn, b.dir)
+    if why:
+        raise BindError(422, "read_refused", why)
+    code, body, err = run_script(b.device_id, _DIFF_LIST_SCRIPT, [b.dir, str(MAX_CHANGE_LIST_BYTES)], cwd=b.dir,
+                                 timeout=BROWSE_TIMEOUT_S, output_in_error=False)
+    if code == EXIT_LOST:
+        raise BindError(409, "device_offline", err or f"device {b.device_id} is not connected")
+    nul = body.find("\0")
+    eol = body.find("\n", nul + 1) if nul >= 0 else -1
+    if code != 0 or nul < 0 or eol < 0:
+        raise BindError(422, "read_failed", err or f"device {conn.name} could not run git in {b.dir} (exit {code})")
+    real, status = body[:nul], body[nul + 1:eol]
+    if status == "N" and not real:
+        raise BindError(404, "not_found", f"{b.dir} is not a folder on device {conn.name}")
+    if _real_dir_refused(conn, real):
+        raise BindError(422, "read_refused", f"{b.dir} resolves to a path outside the device roots or to a "
+                                             f"protected credential path")
+    out = {"dir": real, "device_id": b.device_id, "git": False, "files": [], "untracked": [], "diff": "",
+           "truncated": False, "hidden": 0, "refused": False}
+    if status in ("G", "R"):
+        return out
+    base = status[2:] if status.startswith("B ") else ""
+    if not _BASE_RE.fullmatch(base):
+        raise BindError(422, "read_failed", f"device {conn.name} sent an unreadable answer for {b.dir}")
+    tokens = body[eol + 1:].split("\0")
+    if len(tokens) < 4:
+        raise BindError(422, "read_failed", f"device {conn.name} sent an unreadable answer for {b.dir}")
+    top, git_dir, common_dir = tokens[:3]
+    if not _git_paths_ok(conn, real, top, git_dir, common_dir):
+        out["refused"] = True
+        return out
+    out["git"] = True
+    tokens = tokens[3:]
+    i, pairs = 0, []
+    while i < len(tokens) and tokens[i] != _UNTRACKED:
+        if not tokens[i]:
+            i += 1
+            continue
+        pairs.append((tokens[i], tokens[i + 1] if i + 1 < len(tokens) and tokens[i + 1] != _UNTRACKED else ""))
+        i += 2 if pairs[-1][1] else 1
+    if i >= len(tokens):
+        raise BindError(422, "read_failed", f"device {conn.name} sent an unreadable answer for {b.dir}")
+    listed = "\0".join(tokens[:i])
+    if len(listed.encode("utf-8", "replace")) >= MAX_CHANGE_LIST_BYTES and pairs:
+        pairs.pop()
+        out["truncated"] = True
+    untracked = "\0".join(tokens[i + 1:])
+    hidden, files = 0, []
+    for st, rel in pairs:
+        if not _rel_ok(rel) or st[:1] not in _DIFF_STATUS:
+            continue
+        if device_read_denial(conn, posixpath.join(real, rel)):
+            hidden += 1
+            continue
+        files.append({"path": rel, "status": _DIFF_STATUS[st[:1]]})
+    names = [r for r in untracked.split("\0") if r]
+    if len(untracked.encode("utf-8", "replace")) >= MAX_UNTRACKED_BYTES and names:
+        names.pop()
+        out["truncated"] = True
+    for rel in names:
+        if not _rel_ok(rel):
+            continue
+        if device_read_denial(conn, posixpath.join(real, rel)):
+            hidden += 1
+            continue
+        out["untracked"].append(rel)
+    if len(files) > MAX_DIFF_FILES:
+        files, out["truncated"] = files[:MAX_DIFF_FILES], True
+    total, keep = 0, []
+    for f in files:
+        total += len(f["path"].encode("utf-8")) + 16
+        if total > MAX_DIFF_PATH_BYTES:
+            out["truncated"] = True
+            break
+        keep.append(f)
+    out["files"], out["hidden"] = keep, hidden
+    if not keep:
+        return out
+    code, diff, err = run_script(b.device_id, _DIFF_SCRIPT,
+                                 [real, base, git_dir, top, str(MAX_DIFF_BYTES + 1), *(f["path"] for f in keep)],
+                                 cwd=b.dir, timeout=BROWSE_TIMEOUT_S, output_in_error=False)
+    if code == EXIT_LOST:
+        raise BindError(409, "device_offline", err or f"device {b.device_id} is not connected")
+    head, nl, diff = diff.partition("\n")
+    if code != 0 or not nl or not head.startswith("K ") or not head[2:].isdigit():
+        raise BindError(422, "read_failed", f"device {conn.name} could not run git diff in {b.dir} (exit {code})")
+    out["hidden"] += int(head[2:])
+    if len(diff.encode("utf-8", "replace")) > MAX_DIFF_BYTES:
+        diff = diff.encode("utf-8", "replace")[:MAX_DIFF_BYTES].decode("utf-8", "ignore")
+        diff = diff[:diff.rfind("\n") + 1]
+        out["truncated"] = True
+    out["diff"] = diff
+    return out
+
+
 # --- terminal backend (section 8.4) -----------------------------------------------------------
 
 _EXEC_STATE: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("hermes_device_exec", default=None)
