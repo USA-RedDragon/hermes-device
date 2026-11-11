@@ -160,6 +160,44 @@ type Bot struct {
 	// sources are the surfaces that started the chats the bot listed, to
 	// say where a prompt from elsewhere came from.
 	sources map[hub.SessionRef]string
+	// sent are the Telegram messages of the prompts the bot sent, by
+	// submission ID, for the reactions of their turns.
+	sent map[string]sentPrompt
+	// budget spaces the edits of each chat across its topics.
+	budget *budget
+	// me is what getMe last said of the bot; meAt is when.
+	me   atomic.Pointer[Me]
+	meAt atomic.Int64
+}
+
+// sentPrompt is the message of a prompt the bot sent.
+type sentPrompt struct {
+	msg int64
+	at  time.Time
+}
+
+// notePrompt keeps the message of a prompt the bot sends under id.
+func (b *Bot) notePrompt(id string, msg int64) {
+	if msg == 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.now()
+	for k, p := range b.sent {
+		if now.Sub(p.at) > keepShown {
+			delete(b.sent, k)
+		}
+	}
+	b.sent[id] = sentPrompt{msg: msg, at: now}
+}
+
+// sentMessage is the message of the prompt the bot sent under id.
+func (b *Bot) sentMessage(id string) (int64, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	p, ok := b.sent[id]
+	return p.msg, ok
 }
 
 type chatState struct {
@@ -910,7 +948,9 @@ func (b *Bot) attach(ctx context.Context, to dest, user, backendID, sessionID st
 	return nil
 }
 
-func (b *Bot) prompt(ctx context.Context, to dest, user, text string, files ...hub.Attachment) {
+// prompt sends text as the chat's next input. msg is the Telegram message
+// it came from, which gets the turn's reactions.
+func (b *Bot) prompt(ctx context.Context, to dest, user string, msg int64, text string, files ...hub.Attachment) {
 	st := b.chat(to)
 	a := st.att
 	switch {
@@ -938,7 +978,9 @@ func (b *Bot) prompt(ctx context.Context, to dest, user, text string, files ...h
 		}
 	}
 	a = st.att
-	cctx, cancel := context.WithTimeout(hub.WithSubmissionID(ctx, promptID(to, hub.SubmissionID(ctx))), callTimeout)
+	id := promptID(to, hub.SubmissionID(ctx))
+	b.notePrompt(id, msg)
+	cctx, cancel := context.WithTimeout(hub.WithSubmissionID(ctx, id), callTimeout)
 	defer cancel()
 	res, err := b.svc.Prompt(cctx, user, a.backendID, a.sessionID, text, files...)
 	switch {

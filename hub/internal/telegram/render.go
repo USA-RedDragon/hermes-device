@@ -266,6 +266,7 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 		var p errorPayload
 		r.decode(ev, &p)
 		r.endTurn(ctx)
+		r.endReaction(ctx, reactFailed)
 		r.send(ctx, "<b>Error:</b> "+escapeHTML(truncate(p.Message, 3000)), nil)
 	case hub.KindSessionDeleted, gateway.UpdatedEvent:
 		r.sessionGone(ctx, ev)
@@ -781,6 +782,7 @@ func (r *renderer) expireDue(ctx context.Context) {
 		}
 	}
 	r.reportShown()
+	r.reactNeeds(ctx)
 }
 
 func (r *renderer) reportShown() {
@@ -921,6 +923,7 @@ func (r *renderer) showPrompt(ctx context.Context, kind string, p approvalPayloa
 	bind(id)
 	r.prompts[info.ID] = shownPrompt{key: key, msgID: id, at: r.now(), prompt: info}
 	r.reportShown()
+	r.reactNeeds(ctx)
 }
 
 // settled shows the outcome of shown prompts that got their answer, or
@@ -948,6 +951,7 @@ func (r *renderer) settled(ctx context.Context, cancelled bool, ids ...string) {
 		}
 	}
 	r.reportShown()
+	r.reactNeeds(ctx)
 }
 
 // waitOutcome keeps an approval answered elsewhere until its outcome
@@ -978,6 +982,14 @@ func (r *renderer) complete(ctx context.Context, ev hub.Event) {
 		r.turn.tokens = p.HubTurn
 	}
 	r.endTurn(ctx)
+	switch p.Status {
+	case "interrupted":
+		r.endReaction(ctx, reactStopped)
+	case "error":
+		r.endReaction(ctx, reactFailed)
+	default:
+		r.endReaction(ctx, reactDone)
+	}
 	text := r.answer.String()
 	var s string
 	if err := json.Unmarshal(p.Text, &s); err == nil && strings.TrimSpace(s) != "" {

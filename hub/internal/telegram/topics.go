@@ -304,7 +304,7 @@ func (b *Bot) handleForum(ctx context.Context, f *forum, ms []*Message, media bo
 			b.promptMedia(ctx, to, user, ms)
 			return
 		}
-		b.prompt(ctx, to, user, m.Text)
+		b.prompt(ctx, to, user, m.MessageID, m.Text)
 	default:
 		if to.thread == 0 {
 			b.sendText(ctx, to, "Send this in the topic of a chat.")
@@ -414,7 +414,7 @@ func (b *Bot) forumNew(ctx context.Context, f *forum, general dest, user, arg st
 		b.promptMedia(ctx, to, user, ms)
 		return
 	}
-	b.prompt(ctx, to, user, text)
+	b.prompt(ctx, to, user, ms[0].MessageID, text)
 }
 
 // openTopic creates the topic of a chat and records it.

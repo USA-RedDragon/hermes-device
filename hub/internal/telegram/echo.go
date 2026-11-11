@@ -190,24 +190,58 @@ func (r *renderer) turnStart(ctx context.Context, ev hub.Event) {
 			id = open.SubmissionID
 		}
 	}
-	r.echo(ctx, text, id, images)
+	r.startBusy(ctx)
+	r.reactTo, r.reacted = 0, ""
+	if msg, ok := r.ownMessage(id); ok {
+		r.reactTo = msg
+	}
+	if shown := r.echo(ctx, text, id, images); shown != 0 && r.reactTo == 0 {
+		r.reactTo = shown
+	}
+	r.setReaction(ctx, reactWorking)
+	r.flushDraft(ctx)
 }
 
-// echo shows the prompt of a turn that started elsewhere, once per turn.
-func (r *renderer) echo(ctx context.Context, text, id string, images int) {
-	if r.echoed {
+// startBusy marks the start of a turn: the chat shows "typing" and, in a
+// private chat, a draft.
+func (r *renderer) startBusy(ctx context.Context) {
+	if r.busy {
 		return
+	}
+	r.busy = true
+	if r.drafts {
+		r.newDraft()
+	}
+	r.typingTick(ctx)
+}
+
+// ownMessage is the Telegram message of a prompt this chat sent, by the
+// prompt's submission ID.
+func (r *renderer) ownMessage(id string) (int64, bool) {
+	if r.userMsg == nil || id == "" {
+		return 0, false
+	}
+	return r.userMsg(id)
+}
+
+// echo shows the prompt of a turn that started elsewhere, once per turn,
+// and returns the message that shows it, or 0.
+func (r *renderer) echo(ctx context.Context, text, id string, images int) int64 {
+	if r.echoed {
+		return 0
 	}
 	r.echoed = true
 	where, show := r.origin(id)
 	if !show {
-		return
+		return 0
 	}
 	if html := echoHTML(where, text, images); html != "" {
 		if id := r.send(ctx, html, nil); id != 0 {
 			r.logger.Info("Showed a prompt sent elsewhere", "from", where, "message", id)
+			return id
 		}
 	}
+	return 0
 }
 
 // echoOpen shows the prompt of the turn a snapshot found running, when no
@@ -215,6 +249,13 @@ func (r *renderer) echo(ctx context.Context, text, id string, images int) {
 func (r *renderer) echoOpen(ctx context.Context) {
 	if open := r.open; open != nil {
 		r.open = nil
-		r.echo(ctx, open.Text, open.SubmissionID, open.Images)
+		shown := r.echo(ctx, open.Text, open.SubmissionID, open.Images)
+		if msg, ok := r.ownMessage(open.SubmissionID); ok {
+			shown = msg
+		}
+		if shown != 0 && r.reactTo == 0 {
+			r.reactTo, r.reacted = shown, ""
+			r.setReaction(ctx, reactWorking)
+		}
 	}
 }

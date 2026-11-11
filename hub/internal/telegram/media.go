@@ -85,5 +85,5 @@ func (b *Bot) promptMedia(ctx context.Context, to dest, user string, ms []*Messa
 		}
 		files = append(files, hub.Attachment{Name: f.name, Data: data})
 	}
-	b.prompt(ctx, to, user, text, files...)
+	b.prompt(ctx, to, user, ms[0].MessageID, text, files...)
 }
