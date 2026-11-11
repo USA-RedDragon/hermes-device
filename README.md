@@ -251,6 +251,6 @@ The client and `acp-host` read `hermes-device/config.yaml` under the user config
 ## Tests
 
 - Go: `go test -race ./...`. `protocol/contract_test.go` checks that the Go and Python wire constants agree.
-- Plugin: `scripts/test-plugin.sh`, which runs the plugin tests in the local Hermes install's Python runtime, including contract tests against `HERMES_AGENT_SRC`.
+- Plugin: `scripts/test-plugin.sh`, which runs the plugin tests in the local Hermes install's Python runtime, including contract tests against `HERMES_AGENT_SRC`. The workflow "Hermes compatibility" runs it inside the Hermes image of the release in its `HERMES_VERSION`; Renovate opens a PR for each new release. The upgrade steps are in hermes-hub's [docs/hermes-upgrade.md](https://github.com/USA-RedDragon/hermes-hub/blob/main/docs/hermes-upgrade.md).
 - MCP: `HERMES_MCP_E2E=1 go test -count=1 -v ./internal/mcp/mcpe2e/` runs the device client and a fake MCP server against the plugin's exec route on uvicorn in the local Hermes runtime, and drives the server through the plugin's `device-mcp` tools.
 - Firefox: `HERMES_BROWSER_E2E=1 go test -count=1 -v -run TestFirefoxEndToEnd ./internal/browser/firefoxtest/` drives a throwaway headless Firefox on a fresh profile and `HOME`, through the extension and, when `hermes` is on `PATH`, through the plugin's browser tools (docs/browser.md section 10).

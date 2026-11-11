@@ -1,0 +1,47 @@
+name: Hermes compatibility
+
+# Runs the device plugin tests, contract tests included, inside the Hermes image of
+# the release in HERMES_VERSION. Renovate opens a PR here for each new Hermes
+# release, so the check on that PR says whether the plugin still works with it.
+# See docs/hermes-upgrade.md in hermes-hub.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/hermes-compat.yaml
+      - scripts/test-plugin.sh
+      - plugin/device/tests/test_contract.py
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Hermes release tag to check, such as v0.23.1. Empty means HERMES_VERSION.
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }} @ ${{ github.ref }}"
+  cancel-in-progress: true
+
+env:
+  # renovate: datasource=github-releases depName=NousResearch/hermes-agent
+  HERMES_VERSION: v0.22.7
+
+jobs:
+  plugin:
+    name: Hermes plugin
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Plugin tests in the Hermes image
+        env:
+          VERSION: ${{ inputs.version || env.HERMES_VERSION }}
+        run: |
+          case "$VERSION" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "bad version: $VERSION" >&2; exit 1 ;; esac
+          echo "Hermes $VERSION" >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm --entrypoint /bin/sh -v "$PWD:/src:ro" -e HERMES_AGENT_SRC=/opt/hermes \
+            "docker.io/nousresearch/hermes-agent:$VERSION" /src/scripts/test-plugin.sh
