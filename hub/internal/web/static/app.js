@@ -487,12 +487,20 @@
       });
     }
 
-    // showText renders a reply without its MEDIA directives. Once the reply
-    // is final it shows the files they name; while it streams it also hides
-    // a directive that is still being typed.
+    // showText renders a reply without its page blocks and MEDIA
+    // directives. Once the reply is final it shows the pages and the files
+    // they name; while it streams it also hides a directive or page that is
+    // still being typed.
     showText(node, final) {
-      const m = mediaDirectives(node.raw || "");
+      const pg = pageBlocks(node.raw || "", !final);
+      const m = mediaDirectives(pg.text);
       render(node, final ? m.text : hidePending(m.text));
+      if (!final && (pg.writing || pg.pages.length)) node.append(el("div", "note page-wait", "Writing a page"));
+      if (final && pg.pages.length) {
+        const row = el("div", "media");
+        for (const html of pg.pages) row.append(pageCard(this.base, { html }));
+        node.append(row);
+      }
       if (final && m.paths.length) node.append(mediaRow(this.base, m.paths));
     }
 
@@ -1109,8 +1117,286 @@
   // mediaRow shows the files a reply names: images inline, others as chips.
   function mediaRow(base, paths, cls) {
     const row = el("div", "media" + (cls ? " " + cls : ""));
-    for (const p of paths) row.append(imagePath(p) ? mediaImage(base, p) : mediaFile(base, p));
+    for (const p of paths) row.append(imagePath(p) ? mediaImage(base, p) : pagePath(p) ? pageCard(base, { path: p }) : mediaFile(base, p));
     return row;
+  }
+
+  // Pages are interactive HTML the agent writes in a reply as a fenced
+  // block with the info string "page", or as an HTML file it names with
+  // MEDIA. This follows hub.PageBlocks in the hub, which decides what the
+  // page route serves; a page block's id is the start of its SHA-256.
+  const pageOpen = /^ {0,3}(`{3,}|~{3,})[ \t]*(?:page|html[ \t]+page|hermes-page)[ \t]*$/i;
+  const fenceStart = /^ {0,3}(`{3,}|~{3,})/;
+  const pagePath = (p) => mediaPath(p) && (extOf(p) === "html" || extOf(p) === "htm");
+
+  function fenceEnd(lines, from, marker) {
+    for (let j = from; j < lines.length; j++) {
+      const l = lines[j].replace(/\r$/, "").replace(/[ \t]+$/, "");
+      const t = l.replace(/^ +/, "");
+      if (l.length - t.length > 3 || t.length < marker.length) continue;
+      if ([...t].every((c) => c === marker[0])) return j;
+    }
+    return -1;
+  }
+
+  // pageBlocks returns the page blocks of a reply and its text without
+  // them. While a reply streams, a page block that is not closed yet is cut
+  // too, and writing says so.
+  function pageBlocks(text, streaming) {
+    if (!text.includes("```") && !text.includes("~~~")) return { pages: [], text, writing: false };
+    const lines = text.split("\n");
+    const keep = [];
+    const pages = [];
+    let found = false;
+    let writing = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].replace(/\r$/, "");
+      const m = line.match(fenceStart);
+      if (!m) { keep.push(lines[i]); continue; }
+      let end = fenceEnd(lines, i + 1, m[1]);
+      const page = pageOpen.test(line);
+      if (page && end < 0 && streaming) { found = writing = true; break; }
+      if (!page || end < 0) {
+        if (end < 0) end = lines.length - 1;
+        keep.push(...lines.slice(i, end + 1));
+        i = end;
+        continue;
+      }
+      const body = lines.slice(i + 1, end).join("\n");
+      if (!body.trim()) {
+        keep.push(...lines.slice(i, end + 1));
+        i = end;
+        continue;
+      }
+      i = end;
+      found = true;
+      if (!pages.includes(body)) pages.push(body);
+    }
+    if (!found) return { pages: [], text, writing: false };
+    return { pages, text: keep.join("\n").replace(/\n{3,}/g, "\n\n").trim(), writing };
+  }
+
+  async function pageId(html) {
+    const d = await crypto.subtle.digest("SHA-256", utf8.encode(html));
+    return Array.from(new Uint8Array(d).slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  const entities = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " };
+  function pageTitle(html) {
+    const m = html.slice(0, 65536).match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    if (!m) return "";
+    const t = m[1].replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (all, e) => {
+      if (e[0] === "#") {
+        const n = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+        return n > 0 && n <= 0x10ffff && (n < 0xd800 || n > 0xdfff) ? String.fromCodePoint(n) : all;
+      }
+      return entities[e.toLowerCase()] ?? all;
+    }).replace(/\s+/g, " ").trim();
+    return t.length > 120 ? t.slice(0, 119) + "…" : t;
+  }
+
+  const pageHash = (b, s, ref) => "#/page/" + encodeURIComponent(b) + "/" + encodeURIComponent(s) + "/" + encodeURIComponent(ref);
+  // Titles and HTML of the pages the chat's cards show, by ref (a page id
+  // or the path of an HTML file).
+  const pageInfo = new Map();
+
+  // pageCard shows a page of a reply with its title and an Open button.
+  // page is { html } for a page block or { path } for an HTML file.
+  function pageCard(base, page) {
+    const card = el("div", "page-card");
+    const name = el("span", "name", page.html !== undefined ? pageTitle(page.html) || "Page" : baseName(page.path));
+    const kind = el("span", "kind", "Page");
+    const open = el("button", "primary", "Open");
+    open.type = "button";
+    open.disabled = true;
+    const text = el("span", "text");
+    text.append(name, kind);
+    card.append(el("span", "file", "html"), text, open);
+    const ready = (ref) => {
+      pageInfo.set(ref, { title: name.textContent, html: page.html, path: page.path });
+      open.disabled = false;
+      open.onclick = () => {
+        if (!view) return;
+        pagesView.openedHere = true;
+        location.hash = pageHash(view.backend, view.session, ref);
+      };
+    };
+    if (page.path) {
+      ready(page.path);
+      api("GET", base + "/page-info?path=" + encodeURIComponent(page.path)).then((r) => {
+        if (r && r.title) { name.textContent = r.title; pageInfo.get(page.path).title = r.title; }
+      }, () => {
+        card.classList.add("gone");
+        kind.textContent = "Gone";
+        card.title = "This file is no longer on the Hermes server.";
+        open.disabled = true;
+      });
+    } else if (window.crypto && crypto.subtle) {
+      pageId(page.html).then(ready, () => { kind.textContent = "Cannot open"; });
+    } else {
+      kind.textContent = "Open the hub over HTTPS to see pages";
+    }
+    return card;
+  }
+
+  // pagesView shows one page of the open chat over the chat, in a frame
+  // sandboxed into an opaque origin of its own (allow-same-origin is not
+  // set), so it cannot reach the hub or other pages. The page talks back
+  // only over the MessagePort sent on its first load; a later load means the
+  // frame left the page, so the port closes. Closing hides the frame and
+  // keeps its state until another page or chat opens.
+  const pageSandbox = "allow-scripts allow-forms allow-modals allow-popups";
+  const maxPageText = 200000;
+  const pagesView = {
+    cur: null,
+    openedHere: false,
+
+    open(chat, ref) {
+      const c = this.cur;
+      if (c && c.chat === chat && c.ref === ref) {
+        c.box.hidden = false;
+        return;
+      }
+      this.destroy();
+      const info = pageInfo.get(ref) || {};
+      const file = ref.startsWith("/");
+      const box = el("div", "pageview");
+      box.setAttribute("role", "dialog");
+      box.setAttribute("aria-modal", "true");
+      const bar = el("div", "pageview-bar");
+      const back = el("button", "", "Back");
+      back.type = "button";
+      const title = el("span", "name", info.title || (file ? baseName(ref) : "Page"));
+      box.setAttribute("aria-label", title.textContent);
+      const status = el("span", "status");
+      status.setAttribute("aria-live", "polite");
+      const save = el("a", "", "Download");
+      save.rel = "noopener";
+      save.download = (file ? baseName(ref) : (info.title || "page").replace(/[^\w .-]+/g, "").trim().slice(0, 60) || "page") + (file ? "" : ".html");
+      if (file) save.href = mediaURL(chat.base, ref) + "&download=1";
+      else if (info.html !== undefined) save.href = URL.createObjectURL(new Blob([info.html], { type: "application/octet-stream" }));
+      else save.hidden = true;
+      const reload = el("button", "", "Reload");
+      reload.type = "button";
+      bar.append(back, title, status, reload, save);
+      const frame = el("iframe");
+      frame.setAttribute("sandbox", pageSandbox);
+      frame.referrerPolicy = "no-referrer";
+      frame.title = title.textContent;
+      const src = chat.base + "/page?" + (file ? "path=" : "id=") + encodeURIComponent(ref);
+      box.append(bar, frame);
+      const cur = { chat, ref, box, frame, port: null, blob: save.href.startsWith("blob:") ? save.href : "", status, timer: 0 };
+      this.cur = cur;
+      let loads = 0;
+      frame.addEventListener("load", () => {
+        loads++;
+        if (cur.port) { cur.port.close(); cur.port = null; }
+        if (loads > 1) {
+          this.say(cur, "The page left; its buttons no longer reach the chat. Reload to start it again.", 0);
+          return;
+        }
+        const ch = new MessageChannel();
+        ch.port1.onmessage = (e) => this.message(cur, e.data);
+        cur.port = ch.port1;
+        frame.contentWindow.postMessage({ type: "hermes-page:init" }, "*", [ch.port2]);
+      });
+      back.onclick = () => this.back();
+      reload.onclick = () => { loads = 0; this.say(cur, ""); frame.src = src; };
+      box.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); this.back(); } });
+      frame.src = src;
+      document.body.append(box);
+      back.focus();
+    },
+
+    // message handles what the page sends over its port.
+    // A hidden page is ignored, so it cannot add text to the message box or
+    // the clipboard while the user works in the chat.
+    message(cur, d) {
+      if (cur !== this.cur || !cur.port || cur.box.hidden || !d || typeof d !== "object") return;
+      const text = typeof d.text === "string" && d.text.length <= maxPageText ? d.text : null;
+      if (d.type === "send" && text !== null) this.toComposer(cur, text);
+      else if (d.type === "copy" && text !== null) this.copy(cur, text);
+      else if (d.type === "copied") this.say(cur, "Copied", 2000);
+      else if (d.type === "send" || d.type === "copy") this.say(cur, "The page sent too much text.", 4000);
+    },
+
+    toComposer(cur, text) {
+      if (!text.trim() || view !== cur.chat) return;
+      const input = $("input");
+      const had = input.value.replace(/\s+$/, "");
+      input.value = had ? had + "\n\n" + text : text;
+      this.back();
+      grow();
+      input.focus();
+      banner("The page put its answer in the message box. Check it, then send it.");
+    },
+
+    async copy(cur, text) {
+      try {
+        await navigator.clipboard.writeText(text);
+        this.say(cur, "Copied", 2000);
+      } catch (_) {
+        copyBox(text);
+      }
+    },
+
+    say(cur, text, ms) {
+      clearTimeout(cur.timer);
+      cur.status.textContent = text;
+      if (ms) cur.timer = setTimeout(() => { cur.status.textContent = ""; }, ms);
+    },
+
+    back() {
+      const c = this.cur;
+      if (!c) return;
+      if (this.openedHere && /^#\/page\//.test(location.hash)) {
+        this.openedHere = false;
+        history.back();
+      } else {
+        location.replace(chatHash(c.chat.backend, c.chat.session));
+      }
+    },
+
+    hide() {
+      if (this.cur) this.cur.box.hidden = true;
+    },
+
+    destroy() {
+      const c = this.cur;
+      this.cur = null;
+      if (!c) return;
+      clearTimeout(c.timer);
+      if (c.port) c.port.close();
+      if (c.blob) URL.revokeObjectURL(c.blob);
+      c.box.remove();
+    },
+  };
+
+  // copyBox shows text selected for the user to copy, when the browser
+  // does not let the hub write the clipboard.
+  function copyBox(text) {
+    if (document.querySelector("dialog.copybox")) return;
+    const d = el("dialog", "picker copybox");
+    d.append(el("h2", "", "Copy this text"), el("p", "intro", "The browser did not let the page copy it. Select it and copy it yourself."));
+    const ta = el("textarea");
+    ta.readOnly = true;
+    ta.value = text;
+    const body = el("div", "pbody");
+    body.append(ta);
+    const foot = el("div", "pfoot");
+    const sel = el("button", "", "Select all");
+    sel.type = "button";
+    sel.onclick = () => { ta.focus(); ta.select(); };
+    const shut = el("button", "primary", "Close");
+    shut.type = "button";
+    shut.onclick = () => d.close();
+    foot.append(sel, shut);
+    d.append(body, foot);
+    d.addEventListener("close", () => d.remove());
+    document.body.append(d);
+    d.showModal();
+    ta.focus();
+    ta.select();
   }
 
   // Lines Hermes and the hub keep in a user message for its attachments:
@@ -1626,6 +1912,7 @@
   };
 
   function showWelcome() {
+    pagesView.destroy();
     memory.hide();
     closeStream();
     attachments.clear();
@@ -1647,6 +1934,7 @@
   }
 
   function showChat(backend, session) {
+    pagesView.destroy();
     memory.hide();
     closeStream();
     attachments.clear();
@@ -1692,6 +1980,7 @@
 
   // showMemory opens the Memory page in place of the chat.
   function showMemory(rest) {
+    pagesView.destroy();
     closeStream();
     attachments.clear();
     view = null;
@@ -1705,12 +1994,29 @@
     memory.show(rest);
   }
 
+  // route shows what the hash names. A page opens over its chat, and going
+  // between a chat and its page keeps the chat as it is.
+  let lastHash = "";
   function route() {
+    const prev = lastHash;
+    lastHash = location.hash;
     const m = location.hash.match(/^#\/s\/([^/]+)\/(.+)$/);
     const mem = location.hash.match(/^#\/memory(?:\/(.*))?$/);
-    if (m) showChat(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
-    else if (mem && me.memory) showMemory(mem[1] || "");
-    else showWelcome();
+    const pg = location.hash.match(/^#\/page\/([^/]+)\/([^/]+)\/(.+)$/);
+    const dec = (x) => { try { return decodeURIComponent(x); } catch (_) { return null; } };
+    const same = (b, s) => view && view.backend === b && view.session === s;
+    if (pg && dec(pg[1]) !== null && dec(pg[2]) !== null && dec(pg[3]) !== null) {
+      const b = dec(pg[1]), s = dec(pg[2]);
+      if (!same(b, s)) showChat(b, s);
+      pagesView.open(view, dec(pg[3]));
+    } else {
+      pagesView.openedHere = false;
+      pagesView.hide();
+      const under = m && /^#\/page\//.test(prev) && same(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+      if (m && !under) showChat(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+      else if (!m && mem && me.memory) showMemory(mem[1] || "");
+      else if (!m) showWelcome();
+    }
     menuOpen = false;
     drawList();
     refreshList();
