@@ -44,7 +44,8 @@ func imageExt(mime string) string {
 // stage hands a prompt's attachments to the backend. Images are staged
 // with image.attach_bytes for the model. Other files go to the device
 // that runs the session, else to Hermes with file.attach, and the text
-// gets a line that says where each one is. It returns the text, the
+// gets a line that says where each one is. For a PDF the hub also stages
+// its first pages as images and adds its text. It returns the text, the
 // staged images and a notice for the user.
 func (b *backend) stage(ctx context.Context, user, sessionID, text string, files []hub.Attachment) (string, []gateway.Attachment, string, error) {
 	select {
@@ -58,21 +59,20 @@ func (b *backend) stage(ctx context.Context, user, sessionID, text string, files
 		return "", nil, "", stageError("the attachments", err)
 	}
 	defer ls.unpin()
+	pdfs, err := b.readPDFs(ctx, files)
+	if err != nil {
+		return "", nil, "", err
+	}
 	var atts []gateway.Attachment
-	var notes []string
-	for _, f := range files {
+	var notes, notices []string
+	for i, f := range files {
 		name := hub.CleanName(f.Name)
 		if mime := hub.ImageMIME(f.Data); mime != "" {
-			var out gateway.AttachBytesResult
-			err := b.call(ctx, ls, gateway.MethodAttachBytes, gateway.AttachBytesParams{SessionID: ls.id,
-				ContentBase64: base64.StdEncoding.EncodeToString(f.Data), Filename: "upload" + imageExt(mime)}, &out)
+			a, err := b.stageImage(ctx, ls, name, f.Data, mime)
 			if err != nil {
-				return "", nil, "", stageError(name, err)
+				return "", nil, "", err
 			}
-			if out.Path == "" {
-				return "", nil, "", fmt.Errorf("%w: Hermes did not take %s", hub.ErrAttachment, name)
-			}
-			atts = append(atts, gateway.Attachment{Path: out.Path, MIME: mime})
+			atts = append(atts, a)
 			if p := b.deviceCopy(ctx, user, sessionID, name, f.Data); p != "" {
 				notes = append(notes, hub.FileNote(path.Base(p), p))
 			}
@@ -83,6 +83,21 @@ func (b *backend) stage(ctx context.Context, user, sessionID, text string, files
 			return "", nil, "", err
 		}
 		notes = append(notes, hub.FileNote(path.Base(p), p))
+		switch r := pdfs[i]; {
+		case r == nil:
+		case r.doc != nil:
+			for _, img := range r.doc.Images {
+				a, err := b.stageImage(ctx, ls, name, img, hub.MIMEPNG)
+				if err != nil {
+					return "", nil, "", err
+				}
+				atts = append(atts, a)
+			}
+			notes = append(notes, pdfNotes(path.Base(p), r.doc))
+		default:
+			notes = append(notes, r.note)
+			notices = append(notices, r.notice)
+		}
 	}
 	if len(notes) > 0 {
 		if text != "" {
@@ -90,11 +105,24 @@ func (b *backend) stage(ctx context.Context, user, sessionID, text string, files
 		}
 		text += strings.Join(notes, "\n")
 	}
-	notice := ""
 	if v := ls.canSee(); len(atts) > 0 && v != nil && !*v {
-		notice = noticeNoVision
+		notices = append(notices, noticeNoVision)
 	}
-	return text, atts, notice, nil
+	return text, atts, strings.Join(notices, " "), nil
+}
+
+// stageImage stages an image for the model with image.attach_bytes.
+func (b *backend) stageImage(ctx context.Context, ls *live, name string, data []byte, mime string) (gateway.Attachment, error) {
+	var out gateway.AttachBytesResult
+	err := b.call(ctx, ls, gateway.MethodAttachBytes, gateway.AttachBytesParams{SessionID: ls.id,
+		ContentBase64: base64.StdEncoding.EncodeToString(data), Filename: "upload" + imageExt(mime)}, &out)
+	if err != nil {
+		return gateway.Attachment{}, stageError(name, err)
+	}
+	if out.Path == "" {
+		return gateway.Attachment{}, fmt.Errorf("%w: Hermes did not take %s", hub.ErrAttachment, name)
+	}
+	return gateway.Attachment{Path: out.Path, MIME: mime}, nil
 }
 
 // deviceCopy also writes an image to the device that runs the session, so

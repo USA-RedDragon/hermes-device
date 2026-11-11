@@ -55,6 +55,9 @@ type Options struct {
 	// Relay carries held-prompt events to the other replicas. Nil for a
 	// single replica.
 	Relay Relay
+	// PDF reads attached PDFs, so the agent gets their text and first
+	// pages. Nil: a PDF is a plain file.
+	PDF PDFReader
 }
 
 // Service is the hub core.

@@ -18,6 +18,7 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/device"
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
 	"github.com/USA-RedDragon/hermes-hub/internal/leader"
+	"github.com/USA-RedDragon/hermes-hub/internal/pdf"
 	"github.com/USA-RedDragon/hermes-hub/internal/server"
 	"github.com/USA-RedDragon/hermes-hub/internal/service"
 	"github.com/USA-RedDragon/hermes-hub/internal/store"
@@ -82,6 +83,11 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	opts := service.Options{HoldTimeout: cfg.Hold.Timeout, Dialer: func(b config.Backend) service.Dialer { return dialers[b.ID] }}
 	if st.Postgres() {
 		opts.Relay = st
+	}
+	if r := pdf.New("", 0); r.Available() {
+		opts.PDF = r
+	} else {
+		slog.Warn("poppler-utils is not installed, so attached PDFs go to the agent as plain files")
 	}
 	svc := service.New(cfg.Backends, st, opts)
 	defer svc.Close()

@@ -14,6 +14,9 @@ import (
 type Attachment struct {
 	Name string
 	Data []byte
+	// From and To are the pages of a PDF to show the agent, 1-based and
+	// inclusive. 0 means the first and the last page.
+	From, To int
 }
 
 // Attachment limits. MaxImageBytes and MaxImages are the gateway's
