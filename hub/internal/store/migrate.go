@@ -121,6 +121,31 @@ var migrations = []migration{
 				expires_at BIGINT NOT NULL)`,
 		},
 	},
+	{
+		version: 8,
+		sqlite: []string{
+			`CREATE TABLE agent_messages (id TEXT PRIMARY KEY, backend_id TEXT NOT NULL, from_session TEXT NOT NULL,
+				from_root TEXT NOT NULL, from_subagent TEXT NOT NULL, from_name TEXT NOT NULL, to_session TEXT NOT NULL,
+				to_subagent TEXT NOT NULL, to_name TEXT NOT NULL, reply_to TEXT NOT NULL, hop INTEGER NOT NULL,
+				text TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+			`CREATE INDEX agent_messages_from ON agent_messages (backend_id, from_root, created_at)`,
+			`CREATE INDEX agent_messages_to ON agent_messages (backend_id, to_session, created_at)`,
+			`CREATE TABLE agent_names (backend_id TEXT NOT NULL, session_id TEXT NOT NULL, name TEXT NOT NULL,
+				name_key TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (backend_id, session_id))`,
+			`CREATE UNIQUE INDEX agent_names_key ON agent_names (backend_id, name_key)`,
+		},
+		postgres: []string{
+			`CREATE TABLE agent_messages (id TEXT PRIMARY KEY, backend_id TEXT NOT NULL, from_session TEXT NOT NULL,
+				from_root TEXT NOT NULL, from_subagent TEXT NOT NULL, from_name TEXT NOT NULL, to_session TEXT NOT NULL,
+				to_subagent TEXT NOT NULL, to_name TEXT NOT NULL, reply_to TEXT NOT NULL, hop BIGINT NOT NULL,
+				text TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, created_at BIGINT NOT NULL)`,
+			`CREATE INDEX agent_messages_from ON agent_messages (backend_id, from_root, created_at)`,
+			`CREATE INDEX agent_messages_to ON agent_messages (backend_id, to_session, created_at)`,
+			`CREATE TABLE agent_names (backend_id TEXT NOT NULL, session_id TEXT NOT NULL, name TEXT NOT NULL,
+				name_key TEXT NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY (backend_id, session_id))`,
+			`CREATE UNIQUE INDEX agent_names_key ON agent_names (backend_id, name_key)`,
+		},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas

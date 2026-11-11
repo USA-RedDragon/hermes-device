@@ -1,0 +1,87 @@
+package hub
+
+import (
+	"context"
+	"errors"
+	"regexp"
+	"time"
+)
+
+// AgentHeaderPrefix starts every agent message the hub delivers. The page
+// and the Telegram bot know an agent message by its first line:
+// "[Agent message am_<hex> from <sender>]".
+const AgentHeaderPrefix = "[Agent message "
+
+// AgentHeaderRE matches an agent message's first line; its groups are the
+// message id and the sender.
+var AgentHeaderRE = regexp.MustCompile(`^\[Agent message (am_[0-9a-f]{16}) from ([^\]\n]{1,400})\]\n`)
+
+// AgentMessage is one message an agent sent another agent of the same
+// backend through the hub.
+type AgentMessage struct {
+	ID        string
+	BackendID string
+	// FromSession is the sending agent's session: a chat, or a subagent's
+	// own session. FromRoot is the chat at the root of its delegation
+	// tree (FromSession for a chat). FromSubagent is the subagent id, or
+	// "" for a chat.
+	FromSession, FromRoot, FromSubagent, FromName string
+	// ToSession is the target's session; ToSubagent its subagent id, or ""
+	// for a chat.
+	ToSession, ToSubagent, ToName string
+	ReplyTo                       string
+	// Hop counts the messages of one back-and-forth chain: 1 for a message
+	// that answers none.
+	Hop  int
+	Text string
+	// Mode is how the hub delivered it: AgentModeInput, AgentModeInbox or
+	// AgentModeSteer.
+	Mode      string
+	Status    string
+	CreatedAt time.Time
+}
+
+// Agent message delivery modes.
+const (
+	// AgentModeInput is a new input of the target chat (prompt.submit): it
+	// starts a turn, or waits behind the running one.
+	AgentModeInput = "input"
+	// AgentModeInbox rides on the target agent's next tool result.
+	AgentModeInbox = "inbox"
+	// AgentModeSteer is Hermes's steer of a running subagent, from its
+	// parent.
+	AgentModeSteer = "steer"
+)
+
+// Agent message statuses.
+const (
+	AgentStatusSending      = "sending"
+	AgentStatusDelivered    = "delivered"
+	AgentStatusNotDelivered = "not_delivered"
+)
+
+// AgentCounts are the recent messages that limit an agent's sends.
+type AgentCounts struct {
+	// FromRoot is the messages of the sender's whole tree since the
+	// short window began, Pair those from the sender's tree to the target,
+	// Backend all the backend's messages since the long window began.
+	FromRoot, Pair, Backend int
+}
+
+// ErrAgentNameTaken is a short name another chat of the backend has.
+var ErrAgentNameTaken = errors.New("another chat has this name")
+
+// AgentStore keeps agent messages and the short names of chats.
+type AgentStore interface {
+	AddAgentMessage(ctx context.Context, m AgentMessage) error
+	SetAgentMessageStatus(ctx context.Context, id, mode, status string) error
+	AgentMessage(ctx context.Context, backendID, id string) (AgentMessage, bool, error)
+	// MaxAgentHop is the highest hop of the messages any of sessions got
+	// since since, or 0.
+	MaxAgentHop(ctx context.Context, backendID string, sessions []string, since time.Time) (int, error)
+	AgentCounts(ctx context.Context, backendID, fromRoot, toSession string, short, long time.Time) (AgentCounts, error)
+	// AgentNames maps each named session of the backend to its name.
+	AgentNames(ctx context.Context, backendID string) (map[string]string, error)
+	// SetAgentName names a session; "" removes the name.
+	SetAgentName(ctx context.Context, backendID, session, name string) error
+}
