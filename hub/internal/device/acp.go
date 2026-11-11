@@ -164,7 +164,7 @@ func hasIDMember(f *frame) bool {
 }
 
 func acpDenied(id json.RawMessage, method string) []byte {
-	return answerError(id, codeDenied, method+" is not available through hermes-hub", map[string]any{keyReason: reasonDenied})
+	return answerError(id, codeDenied, method+" is not available through talaria", map[string]any{keyReason: reasonDenied})
 }
 
 // fromDevice applies the rules to one device message.
@@ -179,7 +179,7 @@ func (g *acpGuard) fromDevice(typ websocket.MessageType, data []byte) {
 		if !json.Valid(data) {
 			code = codeParse
 		}
-		g.toDevice(answerError(nil, code, "hermes-hub takes one JSON-RPC object per message", nil))
+		g.toDevice(answerError(nil, code, "the Talaria hub takes one JSON-RPC object per message", nil))
 		return
 	}
 	notification := !hasIDMember(&f)
@@ -255,7 +255,7 @@ func invalidParams(message string) *acpError {
 // params as acp-host does.
 func (g *acpGuard) check(method string, rule acpRule, params map[string]json.RawMessage, isObject bool) error {
 	if !isObject {
-		return invalidParams("hermes-hub takes only object params")
+		return invalidParams("the Talaria hub takes only object params")
 	}
 	for k := range params {
 		if !slices.Contains(rule.params, k) && (!rule.session || (k != keyACPSession && k != keyACPAlias)) {
@@ -282,7 +282,7 @@ func (g *acpGuard) check(method string, rule acpRule, params map[string]json.Raw
 		delete(params, acpMCPField)
 	case acpPrompt:
 		if !promptTextAllowed(params) {
-			return &acpError{code: codeInvalidParams, message: "the prompt is a slash command that is not available through hermes-hub",
+			return &acpError{code: codeInvalidParams, message: "the prompt is a slash command that is not available through talaria",
 				reason: reasonDenied}
 		}
 		return rewritePromptLinks(params)
@@ -387,7 +387,7 @@ func (g *acpGuard) checkSession(params map[string]json.RawMessage) error {
 		case errors.Is(err, errOtherDevice):
 			return &acpError{code: codeInvalidParams, message: "session is bound to another device", reason: reasonOtherDev, err: err}
 		case errors.Is(err, errNotBound):
-			return &acpError{code: codeInvalidParams, message: "session " + sid + " is not bound to this device: open it from the editor through hermes-device acp",
+			return &acpError{code: codeInvalidParams, message: "session " + sid + " is not bound to this device: open it from the editor through talaria acp",
 				reason: reasonNotBound, err: err}
 		case err != nil:
 			return &acpError{code: codeRPCInternal, message: "the hub could not check the session's binding: " + err.Error(), reason: reasonBind, err: err}
@@ -451,7 +451,7 @@ func rewritePromptLinks(params map[string]json.RawMessage) error {
 		}
 		blocks[i] = mustRaw(map[string]string{
 			"type": "text",
-			"text": fmt.Sprintf("[hermes-device: link %s removed; the bridge inlines device files]", rawString(blk["uri"])),
+			"text": fmt.Sprintf("[talaria: link %s removed; the bridge inlines device files]", rawString(blk["uri"])),
 		})
 	}
 	params["prompt"] = mustRaw(blocks)

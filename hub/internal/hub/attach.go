@@ -89,7 +89,7 @@ func CheckAttachments(files []Attachment) error {
 		case ImageMIME(f.Data) != "":
 			images++
 			if len(f.Data) > MaxImageBytes {
-				return fmt.Errorf("%w: The image %s is larger than %d MB, the most Hermes takes for an image", ErrAttachment, name, MaxImageBytes>>20)
+				return fmt.Errorf("%w: The image %s is larger than %d MB, the most Talaria takes for an image", ErrAttachment, name, MaxImageBytes>>20)
 			}
 		case len(f.Data) > MaxFileBytes:
 			return fmt.Errorf("%w: The file %s is larger than %d MB, the most the hub takes for a file", ErrAttachment, name, MaxFileBytes>>20)

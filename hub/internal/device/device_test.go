@@ -728,7 +728,7 @@ func TestGatewayLegDenyList(t *testing.T) {
 			methodTitle: "refuses it on the hub's connection"} {
 			m := g.request("why-"+method, method, map[string]any{})
 			rpcErr, _ := m["error"].(map[string]any)
-			if msg, _ := rpcErr["message"].(string); !strings.HasPrefix(msg, method+" is not available through hermes-device: ") || !strings.Contains(msg, why) {
+			if msg, _ := rpcErr["message"].(string); !strings.HasPrefix(msg, method+" is not available through talaria: ") || !strings.Contains(msg, why) {
 				t.Fatalf("%s message = %v", method, m)
 			}
 		}

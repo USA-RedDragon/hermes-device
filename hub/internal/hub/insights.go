@@ -235,5 +235,5 @@ var (
 	ErrFileRefused  = errors.New("refused")
 	ErrFileNotFound = errors.New("not found")
 	ErrFilesBusy    = errors.New("the computer is busy with other file reads; try again in a moment")
-	ErrFilesTooOld  = errors.New("the Hermes device plugin is too old for this; update hermes-device on the Hermes server")
+	ErrFilesTooOld  = errors.New("the Talaria device plugin is too old for this; update talaria on the Hermes server")
 )

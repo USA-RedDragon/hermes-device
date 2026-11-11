@@ -79,7 +79,7 @@ func uploadError(name string, err error) error {
 	case pe.Code == "write_refused":
 		return fmt.Errorf("%w: The computer refused to save %s: %s", hub.ErrAttachment, name, pe.Message)
 	case pe.Status == http.StatusNotFound || pe.Status == http.StatusMethodNotAllowed:
-		return fmt.Errorf("%w: The Hermes device plugin is too old to take files. Update hermes-device on the Hermes server", hub.ErrAttachment)
+		return fmt.Errorf("%w: The Talaria device plugin is too old to take files. Update talaria on the Hermes server", hub.ErrAttachment)
 	}
 	return fmt.Errorf("%w: Could not save %s on the computer: %w", hub.ErrAttachment, name, err)
 }

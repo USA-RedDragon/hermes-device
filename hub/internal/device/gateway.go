@@ -235,7 +235,7 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 	}
 	f, err := parseFrame(data)
 	if err != nil {
-		g.toDevice(answerError(nil, codeInvalid, "hermes-hub takes one JSON-RPC object per message", nil))
+		g.toDevice(answerError(nil, codeInvalid, "the Talaria hub takes one JSON-RPC object per message", nil))
 		return
 	}
 	if _, own := ownID(f.ID); own {
@@ -251,7 +251,7 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 	params, isObject := decodeParams(f.Params)
 	if !isObject {
 		if f.hasID() {
-			g.toDevice(answerError(f.ID, codeInvalidParams, "hermes-hub takes only object params", nil))
+			g.toDevice(answerError(f.ID, codeInvalidParams, "the Talaria hub takes only object params", nil))
 		}
 		return
 	}
@@ -281,7 +281,7 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 		g.toDevice(deniedAnswer(f.ID, f.Method, params))
 		return
 	case otherProfile(params):
-		g.toDevice(answerError(f.ID, codeDenied, "hermes-device serves only the device's own Hermes profile",
+		g.toDevice(answerError(f.ID, codeDenied, "talaria serves only the device's own Hermes profile",
 			map[string]any{keyReason: reasonDenied}))
 		return
 	case ownRequestID(params):
@@ -321,7 +321,7 @@ func (g *guard) sendChecked(f *frame, params map[string]json.RawMessage) {
 	case f.Method == methodImageRender:
 		g.work.Go(func() {
 			if !g.hasCapability(capImageRenderConfined) {
-				g.toDevice(answerError(f.ID, codeDenied, methodImageRender+" is not available through hermes-device: "+whyImageRender,
+				g.toDevice(answerError(f.ID, codeDenied, methodImageRender+" is not available through talaria: "+whyImageRender,
 					map[string]any{keyReason: reasonDenied}))
 				return
 			}
@@ -345,7 +345,7 @@ func (g *guard) sendList(f *frame, params map[string]json.RawMessage) {
 	if g.audienceHonored() {
 		params[keyAudience] = mustRaw(g.audience())
 	} else if why := scopedRefusal(params); why != "" {
-		g.toDevice(answerError(f.ID, codeDenied, methodList+" is not available through hermes-device: "+why,
+		g.toDevice(answerError(f.ID, codeDenied, methodList+" is not available through talaria: "+why,
 			map[string]any{keyReason: reasonDenied}))
 		return
 	}
@@ -492,7 +492,7 @@ func (g *guard) rewriteCreate(f *frame, params map[string]json.RawMessage) {
 		dir = row
 	}
 	if !absDir(dir) || dir == ph {
-		g.toDevice(cwdAnswer(f.ID, "session.create needs an absolute device directory as its cwd: run hermes-device chat in it"))
+		g.toDevice(cwdAnswer(f.ID, "session.create needs an absolute device directory as its cwd: run talaria chat in it"))
 		return
 	}
 	params[keyCWD] = mustRaw(ph)

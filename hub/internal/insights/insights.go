@@ -105,7 +105,7 @@ func pluginReason(err error) string {
 	case errors.As(err, &pe) && pe.Code == "store_unavailable":
 		return "Hermes could not open its chat history"
 	case errors.As(err, &pe) && (pe.Status == http.StatusNotFound || pe.Status == http.StatusMethodNotAllowed):
-		return "The Hermes device plugin is too old for this. Update hermes-device on the Hermes server"
+		return "The Talaria device plugin is too old for this. Update talaria on the Hermes server"
 	case errors.As(err, &pe) && pe.Message != "":
 		return pe.Message
 	case errors.Is(err, context.DeadlineExceeded):
