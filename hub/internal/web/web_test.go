@@ -40,7 +40,6 @@ const (
 	fieldName        = "name"
 	laptopName       = "work laptop"
 	responseTypeCode = "code"
-	methodS256       = "S256"
 )
 
 type hubEnv struct {
@@ -199,7 +198,7 @@ func TestLoginRejectsForgedCallbacks(t *testing.T) {
 	resp, _ := get(t, noFollow, e.url+"/auth/login")
 	loc, _ := url.Parse(resp.Header.Get("Location"))
 	q := loc.Query()
-	if q.Get("code_challenge_method") != methodS256 || q.Get("nonce") == "" || q.Get("state") == "" {
+	if q.Get("code_challenge_method") != "S256" || q.Get("nonce") == "" || q.Get("state") == "" {
 		t.Fatalf("authorize URL = %s", loc)
 	}
 	if resp, _ := get(t, noFollow, e.url+"/auth/callback?code=x&state=wrong"); resp.StatusCode != http.StatusUnauthorized {

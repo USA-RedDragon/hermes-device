@@ -2179,7 +2179,7 @@
 
   // devices is the list of the user's computers in Settings: when each was
   // last used and from where, a note when one connected from a new
-  // address, its signed-in browsers, and a way to remove each.
+  // address, and a way to remove one.
   const devices = {
     async load() {
       const box = $("devices");
@@ -2249,32 +2249,8 @@
         };
         acts.append(rm);
         row.append(acts);
-        for (const b of d.browsers || []) row.append(this.browser(d, b));
         box.append(row);
       }
-    },
-    // browser is one browser signed in to Hermes for computer d, with a
-    // way to sign it out.
-    browser(d, b) {
-      const item = el("div", "dbrowser");
-      item.append(el("div", "dmeta", b.browser + ", signed in " + this.when(b.created_at) +
-        ", last used " + this.when(b.last_used_at)));
-      const acts = el("div", "dacts");
-      const rm = el("button", "", "Remove");
-      rm.type = "button";
-      rm.onclick = () => {
-        acts.replaceChildren(el("span", "dmeta", "Sign " + b.browser + " out? Hermes can no longer use it until you sign it in again."));
-        const yes = el("button", "danger", "Remove");
-        yes.type = "button";
-        yes.onclick = () => this.act(d, "browsers/" + encodeURIComponent(b.id) + "/revoke");
-        const no = el("button", "", "Cancel");
-        no.type = "button";
-        no.onclick = () => this.load();
-        acts.append(yes, no);
-      };
-      acts.append(rm);
-      item.append(acts);
-      return item;
     },
     async act(d, what) {
       try {

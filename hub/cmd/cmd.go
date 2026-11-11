@@ -103,7 +103,6 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	if devices != nil {
 		svc.SetFiles(devices)
 		webOpts.Devices, webOpts.DeviceAPI, webOpts.OnRevoke = st, devices.Handler(), devices.CloseDevice
-		webOpts.BrowserAPI, webOpts.OnBrowserRevoke = devices.BrowserHandler(), devices.DropBrowser
 		webOpts.Sandboxes, webOpts.Computers = devices.Sandboxes, devices
 	}
 	if devices != nil {
