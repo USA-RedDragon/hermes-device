@@ -5,6 +5,8 @@ package telegram
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"html"
@@ -24,16 +26,18 @@ import (
 )
 
 const (
-	callTimeout  = 30 * time.Second
-	maxBackoff   = 30 * time.Second
-	maxListed    = 10
-	pollSlack    = 15 * time.Second
-	chatPrivate  = "private"
-	chatGroup    = "group"
-	chatSuper    = "supergroup"
-	errGeneric   = "Something went wrong. Try again later."
-	linkPath     = "/link/telegram"
-	cbApproval   = "ap"
+	callTimeout = 30 * time.Second
+	maxBackoff  = 30 * time.Second
+	maxListed   = 10
+	pollSlack   = 15 * time.Second
+	chatPrivate = "private"
+	chatGroup   = "group"
+	chatSuper   = "supergroup"
+	errGeneric  = "Something went wrong. Try again later."
+	linkPath    = "/link/telegram"
+	// cbApproval prefixes the prompt buttons of an attached chat. It is not
+	// the "ap" of older hubs, whose buttons meant allow and deny.
+	cbApproval   = "pa"
 	cbAttach     = "at"
 	untitledName = "(untitled)"
 	msgHeld      = "Hermes is restarting. Your message will send when it is back."
@@ -57,9 +61,17 @@ type Options struct {
 	State hub.TelegramState
 	// Computers lets users start and move chats on their computers.
 	// Optional.
-	Computers  hub.Computers
+	Computers hub.Computers
+	// Notices finds the notices whose buttons people press. Optional.
+	Notices    NoticeStore
 	Logger     *slog.Logger
 	HTTPClient *http.Client
+}
+
+// NoticeStore is the part of hub.NotifyStore the bot reads.
+type NoticeStore interface {
+	Notice(ctx context.Context, id string) (hub.NoticeRecord, bool, error)
+	NoticeMessages(ctx context.Context, id string) ([]hub.NoticeMessage, error)
 }
 
 // BotID is the numeric bot ID at the start of a bot token, or 0.
@@ -83,6 +95,7 @@ type Bot struct {
 	tokens    hub.TokenStore
 	state     hub.TelegramState
 	computers hub.Computers
+	notices   NoticeStore
 	botID     int64
 	logger    *slog.Logger
 	defaults  map[string]string
@@ -93,7 +106,9 @@ type Bot struct {
 
 	mu        sync.Mutex
 	approvals map[string]*pendingApproval
-	nextKey   uint64
+	// picks are the toggled choices of multi-select questions, by
+	// promptTarget.id.
+	picks map[string][]bool
 }
 
 type chatState struct {
@@ -102,6 +117,12 @@ type chatState struct {
 	listGen int
 	list    []hub.Session
 	release *pendingRelease
+	// awaiting is the question whose answer the chat's next message from
+	// awaitingUser is; awaitingMsg is the message that asked it.
+	awaiting     *promptTarget
+	awaitingUser string
+	awaitingMsg  int64
+	awaitingAt   time.Time
 }
 
 type attachment struct {
@@ -137,12 +158,12 @@ func (a *attachment) closed() bool {
 }
 
 type pendingApproval struct {
-	chatID     int64
-	messageID  int64
-	backendID  string
-	sessionID  string
-	approvalID string
-	text       string
+	chatID    int64
+	messageID int64
+	backendID string
+	sessionID string
+	prompt    hub.PromptInfo
+	text      string
 }
 
 // New validates cfg and returns a Bot.
@@ -171,12 +192,14 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		tokens:    opts.Tokens,
 		state:     opts.State,
 		computers: opts.Computers,
+		notices:   opts.Notices,
 		botID:     BotID(cfg.Token),
 		logger:    logger,
 		defaults:  defaults,
 		groups:    make(map[int64]bool, len(cfg.AllowedGroups)),
 		chats:     make(map[int64]*chatState),
 		approvals: make(map[string]*pendingApproval),
+		picks:     make(map[string][]bool),
 	}
 	for _, id := range cfg.AllowedGroups {
 		b.groups[id] = true
@@ -431,6 +454,9 @@ func (b *Bot) handleAlbum(ctx context.Context, ms []*Message) {
 		b.promptMedia(ctx, m.Chat.ID, user, ms)
 		return
 	}
+	if b.typedAnswer(ctx, m.Chat.ID, user, m.Text) {
+		return
+	}
 	cmd, arg := parseCommand(m.Text)
 	b.logger.Debug("Telegram message", "user", user, "chat", m.Chat.ID, "command", cmd)
 	switch cmd {
@@ -456,6 +482,8 @@ func (b *Bot) handleAlbum(ctx context.Context, ms []*Message) {
 		b.where(ctx, m.Chat.ID, user)
 	case "move":
 		b.move(ctx, m.Chat.ID, user, arg)
+	case "cancel":
+		b.sendText(ctx, m.Chat.ID, "Nothing to cancel.")
 	default:
 		b.sendText(ctx, m.Chat.ID, "Unknown command. Send /help for the list.")
 	}
@@ -810,9 +838,10 @@ func (b *Bot) pump(a *attachment) {
 	defer close(a.done)
 	ctx := a.ctx
 	r := newRenderer(b.api, a.chatID, b.cfg.EditInterval, b.logger.With("chat", a.chatID, "session", a.sessionID),
-		func(approvalID, text string) (string, func(int64)) {
-			return b.addApproval(a, approvalID, text)
+		func(p hub.PromptInfo, text string) (string, func(int64)) {
+			return b.addApproval(a, p, text)
 		})
+	r.settle = b.settleApproval
 	if m, ok := b.svc.(hub.Media); ok {
 		r.media = func(ctx context.Context, p string) (*hub.MediaFile, error) {
 			return m.Media(ctx, a.user, a.backendID, a.sessionID, p)
@@ -848,12 +877,13 @@ func (b *Bot) pump(a *attachment) {
 	}
 }
 
-func (b *Bot) addApproval(a *attachment, approvalID, text string) (string, func(int64)) {
+func (b *Bot) addApproval(a *attachment, prompt hub.PromptInfo, text string) (string, func(int64)) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.nextKey++
-	key := strconv.FormatUint(b.nextKey, 36)
-	p := &pendingApproval{chatID: a.chatID, backendID: a.backendID, sessionID: a.sessionID, approvalID: approvalID, text: text}
+	raw := make([]byte, 9)
+	_, _ = rand.Read(raw)
+	key := base64.RawURLEncoding.EncodeToString(raw)
+	p := &pendingApproval{chatID: a.chatID, backendID: a.backendID, sessionID: a.sessionID, prompt: prompt, text: text}
 	b.approvals[key] = p
 	return key, func(id int64) {
 		b.mu.Lock()
@@ -879,8 +909,16 @@ func (b *Bot) handleCallback(ctx context.Context, q *CallbackQuery) {
 	}
 	parts := strings.Split(q.Data, ":")
 	switch {
-	case len(parts) == 3 && parts[0] == cbApproval:
-		b.answerApproval(ctx, q, user, parts[1], parts[2] == "1")
+	case len(parts) == 3 && (parts[0] == cbApproval || parts[0] == cbNotice):
+		t, refusal := b.attachedTarget(q, parts[1])
+		if parts[0] == cbNotice {
+			t, refusal = b.noticeTarget(ctx, q, user, parts[1])
+		}
+		if refusal != "" {
+			b.answer(ctx, q.ID, refusal)
+			return
+		}
+		b.pressPrompt(ctx, q, user, t, parts[2])
 	case len(parts) == 2 && parts[0] == cbRelease && b.computers != nil:
 		b.confirmRelease(ctx, q, user, parts[1])
 	case len(parts) == 3 && parts[0] == cbAttach:
@@ -898,49 +936,19 @@ func (b *Bot) handleCallback(ctx context.Context, q *CallbackQuery) {
 	}
 }
 
-func (b *Bot) answerApproval(ctx context.Context, q *CallbackQuery, user, key string, allow bool) {
-	b.mu.Lock()
-	p, ok := b.approvals[key]
-	var pc pendingApproval
-	if ok {
-		pc = *p
-	}
-	b.mu.Unlock()
-	if !ok || pc.chatID != q.Message.Chat.ID {
-		b.answer(ctx, q.ID, "This request is no longer pending.")
-		return
-	}
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
-	defer cancel()
-	err := b.svc.RespondApproval(cctx, user, pc.backendID, pc.sessionID, pc.approvalID, allow)
-	switch {
-	case errors.Is(err, hub.ErrForbidden):
-		b.logger.Warn("Approval answer forbidden", "user", user, "backend", pc.backendID)
-		b.answer(ctx, q.ID, "You are not allowed to answer this request.")
-		return
-	case errors.Is(err, hub.ErrUnknownApproval):
-		b.dropApproval(key)
-		b.answer(ctx, q.ID, "This request is no longer pending.")
-		b.editHTML(ctx, pc.chatID, q.Message.MessageID, pc.text+"\n\n<i>No longer pending.</i>")
-		return
-	case err != nil:
-		b.logger.Error("Failed to answer approval", "user", user, "error", err)
-		b.answer(ctx, q.ID, errGeneric)
-		return
-	}
-	b.dropApproval(key)
-	verdict := "Denied"
-	if allow {
-		verdict = "Allowed"
-	}
-	b.answer(ctx, q.ID, verdict)
-	b.editHTML(ctx, pc.chatID, q.Message.MessageID, pc.text+"\n\n<i>"+verdict+" by "+escapeHTML(user)+".</i>")
-}
-
-func (b *Bot) dropApproval(key string) {
+// settleApproval forgets the prompt of an attached chat that got its
+// answer, and returns its message's text, or false when it was answered
+// here.
+func (b *Bot) settleApproval(key string) (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	p, ok := b.approvals[key]
+	if !ok {
+		return "", false
+	}
 	delete(b.approvals, key)
+	delete(b.picks, cbApproval+":"+key)
+	return p.text, true
 }
 
 func (b *Bot) reportErr(ctx context.Context, chatID int64, user, action string, err error) {

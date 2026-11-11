@@ -43,12 +43,10 @@ type completePayload struct {
 }
 
 type approvalPayload struct {
-	PromptID    string `json:"prompt_id"`
-	RequestID   string `json:"request_id"`
-	ID          string `json:"id"`
-	Command     string `json:"command"`
-	Description string `json:"description"`
-	ToolName    string `json:"tool_name"`
+	hub.PromptInfo
+	RequestID string `json:"request_id"`
+	ID        string `json:"id"`
+	ToolName  string `json:"tool_name"`
 }
 
 type errorPayload struct {
@@ -61,6 +59,11 @@ type liveMsg struct {
 	lastEdit time.Time
 	pending  string
 	dirty    bool
+}
+
+type shownPrompt struct {
+	key   string
+	msgID int64
 }
 
 type toolMsg struct {
@@ -76,7 +79,12 @@ type renderer struct {
 	interval time.Duration
 	logger   *slog.Logger
 	now      func() time.Time
-	approve  func(approvalID, text string) (string, func(messageID int64))
+	approve  func(p hub.PromptInfo, text string) (string, func(messageID int64))
+	// settle forgets a prompt key that got its answer elsewhere and
+	// returns its message's text; false when it is gone already.
+	settle func(key string) (string, bool)
+	// prompts are the shown prompts by ID: their key and message.
+	prompts map[string]shownPrompt
 	// media opens a file a reply names; nil when the service cannot.
 	media func(ctx context.Context, path string) (*hub.MediaFile, error)
 	// pageURL is the hub URL that opens a page of the session: a PageID or
@@ -93,10 +101,10 @@ type renderer struct {
 }
 
 func newRenderer(api *Client, chatID int64, interval time.Duration, logger *slog.Logger,
-	approve func(approvalID, text string) (string, func(messageID int64))) *renderer {
+	approve func(p hub.PromptInfo, text string) (string, func(messageID int64))) *renderer {
 	return &renderer{
 		api: api, chatID: chatID, interval: interval, logger: logger, now: time.Now,
-		approve: approve, tools: make(map[string]*toolMsg),
+		approve: approve, tools: make(map[string]*toolMsg), prompts: map[string]shownPrompt{},
 	}
 }
 
@@ -131,8 +139,22 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 		r.note(ctx, ev)
 	case hub.KindMessageComplete:
 		r.complete(ctx, ev)
-	case hub.KindApprovalRequest:
+	case hub.KindApprovalRequest, hub.KindClarifyRequest:
 		r.approval(ctx, ev)
+	case "approval.settled", "clarify.settled":
+		var p struct {
+			PromptID string `json:"prompt_id"`
+		}
+		if r.decode(ev, &p) {
+			r.settled(ctx, "Answered.", p.PromptID)
+		}
+	case "approval.cancelled":
+		var p struct {
+			RequestIDs []string `json:"request_ids"`
+		}
+		if r.decode(ev, &p) {
+			r.settled(ctx, "Cancelled.", p.RequestIDs...)
+		}
 	case hub.KindError:
 		var p errorPayload
 		r.decode(ev, &p)
@@ -365,32 +387,52 @@ func (r *renderer) approval(ctx context.Context, ev hub.Event) {
 	if !r.decode(ev, &p) {
 		return
 	}
-	id := p.PromptID
-	if id == "" {
-		id = p.RequestID
+	info := p.PromptInfo
+	for _, id := range []string{p.RequestID, p.ID} {
+		if info.ID == "" {
+			info.ID = id
+		}
 	}
-	if id == "" {
-		id = p.ID
+	if ev.Kind == hub.KindClarifyRequest {
+		info.Kind = hub.PromptClarify
+	} else {
+		info.Kind = hub.PromptApproval
+	}
+	if _, ok := r.prompts[info.ID]; ok || info.ID == "" {
+		return
 	}
 	r.sealThinking(ctx)
-	var b strings.Builder
-	b.WriteString("<b>Approval needed</b>")
-	if p.ToolName != "" {
-		b.WriteString(" for <b>" + escapeHTML(p.ToolName) + "</b>")
+	head := "<b>Question</b>"
+	if info.Kind == hub.PromptApproval {
+		head = "<b>Approval needed</b>"
+		if p.ToolName != "" {
+			head += " for <b>" + escapeHTML(p.ToolName) + "</b>"
+		}
 	}
-	if p.Command != "" {
-		b.WriteString("\n<pre>" + escapeHTML(truncate(p.Command, 2500)) + "</pre>")
+	text := promptHTML(head, &info)
+	key, bind := r.approve(info, text)
+	id := r.send(ctx, text, promptKeyboard(cbApproval, key, info, nil))
+	bind(id)
+	r.prompts[info.ID] = shownPrompt{key: key, msgID: id}
+}
+
+// settled marks shown prompts that got their answer elsewhere.
+func (r *renderer) settled(ctx context.Context, note string, ids ...string) {
+	for _, id := range ids {
+		sp, ok := r.prompts[id]
+		if !ok {
+			continue
+		}
+		delete(r.prompts, id)
+		if r.settle == nil || sp.msgID == 0 {
+			continue
+		}
+		if text, ok := r.settle(sp.key); ok {
+			if err := r.api.EditHTML(ctx, r.chatID, sp.msgID, text+"\n\n<i>"+note+"</i>", nil); err != nil {
+				r.logger.Warn("Failed to mark a prompt answered", "error", err)
+			}
+		}
 	}
-	if p.Description != "" {
-		b.WriteString("\n" + escapeHTML(truncate(p.Description, 1000)))
-	}
-	text := b.String()
-	key, bind := r.approve(id, text)
-	kb := &InlineKeyboard{InlineKeyboard: [][]InlineButton{{
-		{Text: "Allow", CallbackData: "ap:" + key + ":1"},
-		{Text: "Deny", CallbackData: "ap:" + key + ":0"},
-	}}}
-	bind(r.send(ctx, text, kb))
 }
 
 func (r *renderer) complete(ctx context.Context, ev hub.Event) {

@@ -309,6 +309,23 @@ func (c *Client) EditHTML(ctx context.Context, chatID, messageID int64, html str
 	return err
 }
 
+type editMarkupParams struct {
+	ChatID      int64           `json:"chat_id"`
+	MessageID   int64           `json:"message_id"`
+	ReplyMarkup *InlineKeyboard `json:"reply_markup,omitempty"`
+}
+
+// EditMarkup replaces the buttons of a message; nil removes them. An edit
+// that changes nothing is not an error.
+func (c *Client) EditMarkup(ctx context.Context, chatID, messageID int64, kb *InlineKeyboard) error {
+	err := c.call(ctx, "editMessageReplyMarkup", editMarkupParams{ChatID: chatID, MessageID: messageID, ReplyMarkup: kb}, nil)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.NotModified() {
+		return nil
+	}
+	return err
+}
+
 // AnswerCallback acknowledges a button press, with an optional toast.
 func (c *Client) AnswerCallback(ctx context.Context, id, text string) error {
 	return c.call(ctx, "answerCallbackQuery", answerCallbackParams{CallbackQueryID: id, Text: text}, nil)

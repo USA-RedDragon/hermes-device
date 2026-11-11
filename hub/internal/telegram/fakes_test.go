@@ -324,6 +324,7 @@ type fakeHub struct {
 	prompts     []promptCall
 	interrupts  []string
 	approvals   []approvalCall
+	answers     []answerCall
 	approvalErr error
 	seq         int64
 	// down maps backend ids to their last connection error.
@@ -457,6 +458,39 @@ func (h *fakeHub) RespondApproval(_ context.Context, user, backendID, sessionID,
 	return nil
 }
 
+type answerCall struct {
+	User, BackendID, SessionID, PromptID string
+	Answer                               hub.Answer
+}
+
+// AnswerPrompt records answers; an approval choice also counts as an
+// approval, allowed when it is once.
+func (h *fakeHub) AnswerPrompt(_ context.Context, user, backendID, sessionID, promptID string, a hub.Answer) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.allowed(user, backendID); err != nil {
+		return err
+	}
+	if h.approvalErr != nil {
+		return h.approvalErr
+	}
+	h.answers = append(h.answers, answerCall{user, backendID, sessionID, promptID, a})
+	if a.Choice != "" {
+		h.approvals = append(h.approvals, approvalCall{user, backendID, sessionID, promptID, a.Choice == hub.ChoiceOnce})
+	}
+	return nil
+}
+
+func (h *fakeHub) PendingPrompt(context.Context, string, string, string, string) (hub.PromptInfo, error) {
+	return hub.PromptInfo{}, hub.ErrUnknownApproval
+}
+
+func (h *fakeHub) answersCopy() []answerCall {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.answers)
+}
+
 func (h *fakeHub) emit(t *testing.T, sessionID, kind string, data any) {
 	t.Helper()
 	raw, err := json.Marshal(data)
@@ -534,6 +568,7 @@ const (
 )
 
 type harness struct {
+	bot    *telegram.Bot
 	tg     *fakeTelegram
 	hub    *fakeHub
 	links  *fakeLinks
@@ -613,6 +648,13 @@ func startBotState(t *testing.T, mutate func(*telegram.Config), state *fakeState
 // harness's hub; mk may be nil.
 func startBotWith(t *testing.T, mutate func(*telegram.Config), state *fakeState, mk func(*fakeHub) hub.Computers) *harness {
 	t.Helper()
+	return startBotNotices(t, mutate, state, mk, nil)
+}
+
+// startBotNotices is startBotWith with a notice store.
+func startBotNotices(t *testing.T, mutate func(*telegram.Config), state *fakeState, mk func(*fakeHub) hub.Computers,
+	notices telegram.NoticeStore) *harness {
+	t.Helper()
 	h := &harness{
 		tg:     newFakeTelegram(t),
 		hub:    newFakeHub(),
@@ -630,12 +672,13 @@ func startBotWith(t *testing.T, mutate func(*telegram.Config), state *fakeState,
 	}
 	bot, err := telegram.New(cfg, telegram.Options{
 		PublicURL: "https://hub.example/",
-		Service:   h.hub, Links: h.links, Tokens: h.tokens, State: h.state, Computers: computers,
+		Service:   h.hub, Links: h.links, Tokens: h.tokens, State: h.state, Computers: computers, Notices: notices,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.bot = bot
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- bot.Run(ctx) }()
