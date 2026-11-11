@@ -296,6 +296,7 @@ window.hubMarkdown = (() => {
         const td = el("td");
         if (align[k]) td.style.textAlign = align[k];
         inline(cs[k] || "", td);
+        if (td.textContent.length > 40) td.className = "wide";
         row.append(td);
       }
       body.append(row);

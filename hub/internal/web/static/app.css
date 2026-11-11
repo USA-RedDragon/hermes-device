@@ -806,3 +806,11 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
   .tok { order: 3; flex-basis: 100%; flex-direction: row; justify-content: flex-start; gap: .6rem; font-size: .72rem; }
   .tok .long { display: none; }
 }
+
+/* Markdown tables keep their columns readable and scroll inside the message. */
+.md .table-wrap { display: block; max-width: 100%; overflow-x: auto; }
+.md table { overflow-wrap: normal; word-break: normal; }
+.md th, .md td { overflow-wrap: normal; word-break: normal; }
+.md th { white-space: nowrap; }
+.md td.wide { min-width: min(18rem, 70vw); }
+.md td a, .md td code { overflow-wrap: anywhere; }
