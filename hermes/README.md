@@ -6,7 +6,7 @@ Each patch fixes one limit, sits behind a config option whose default keeps upst
 
 ## How it works
 
-- `Dockerfile` starts from `docker.io/nousresearch/hermes-agent:<release>@<digest>`. A build stage on the build platform applies `patches/*.patch` in name order to the source in `/opt/hermes` with `scripts/apply-patches.sh --image`, and the final stage copies only the changed files on top of the upstream image. Nothing runs on the target platform, so the arm64 image needs no emulation. Hunks for files that are not in the image (tests, docs) are skipped there.
+- `Dockerfile` starts from `docker.io/nousresearch/hermes-agent:<release>@<digest>` (`ARG HERMES_BASE`), and sets `HERMES_BASE_IMAGE` to that reference in the image. A build stage on the build platform applies `patches/*.patch` in name order to the source in `/opt/hermes` with `scripts/apply-patches.sh --image`, and the final stage copies only the changed files on top of the upstream image. Nothing runs on the target platform, so the arm64 image needs no emulation. Hunks for files that are not in the image (tests, docs) are skipped there.
 - New layers are zstd. The upstream layers keep their compression and digests, so nodes reuse the layers they already have from the upstream image and a release adds only the patched files.
 - The Hermes version that the image reports is upstream's, so tools that check the Hermes version see the base release.
 
@@ -18,7 +18,7 @@ The Release workflow runs on every push to `main` that changes the Dockerfile, t
 
 Verify a release with `cosign verify ghcr.io/usa-reddragon/hermes-patches:<tag> --certificate-identity-regexp '^https://github.com/USA-RedDragon/hermes-patches/' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
 
-Renovate bumps the `FROM` lines (both, one PR) as soon as upstream releases. A green PR merges on its own, which publishes `v<new release>-p1`. Rolling it out is a separate Renovate PR in the Flux repo that is never merged on its own.
+Renovate bumps `HERMES_BASE` in the Dockerfile as soon as upstream releases. A green PR merges on its own, which publishes `v<new release>-p1`. Rolling it out is a separate Renovate PR in the Flux repo that is never merged on its own.
 
 ## CI
 
