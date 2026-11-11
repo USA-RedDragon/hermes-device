@@ -112,6 +112,8 @@ type Plugin struct {
 	files map[string]map[string][]byte
 	// busyReads is how many reads still get the busy answer.
 	busyReads int
+	// browsers are the browser devices the hub set, by session.
+	browsers map[string]string
 	// diffs and changes are the answers of the diff and changes routes,
 	// by session.
 	diffs, changes map[string]map[string]any
@@ -126,7 +128,7 @@ func NewPlugin(gw *gatewaytest.Gateway, backendID string, key ed25519.PublicKey)
 		verifier: assertion.NewVerifier([]ed25519.PublicKey{key}), bindings: map[string]Binding{}, ever: map[string]bool{},
 		parents: map[string]string{}, conns: map[string]*Conn{}, refuse: map[string]string{}, Connected: make(chan *Conn, 16),
 		trees: map[string]map[string][]string{}, refuseDev: map[string]string{}, uploads: map[string][]byte{},
-		files: map[string]map[string][]byte{}, diffs: map[string]map[string]any{}, changes: map[string]map[string]any{}, gw: gw}
+		files: map[string]map[string][]byte{}, browsers: map[string]string{}, diffs: map[string]map[string]any{}, changes: map[string]map[string]any{}, gw: gw}
 	base := "/api/plugins/device"
 	gw.Handle("GET "+base+"/info", http.HandlerFunc(p.info), true)
 	gw.Handle("GET "+base+"/devices", http.HandlerFunc(p.devices), true)
@@ -135,6 +137,7 @@ func NewPlugin(gw *gatewaytest.Gateway, backendID string, key ed25519.PublicKey)
 	gw.Handle("GET "+base+"/sessions/{session}/binding", http.HandlerFunc(p.getBinding), true)
 	gw.Handle("PUT "+base+"/sessions/{session}/binding", http.HandlerFunc(p.putBinding), true)
 	gw.Handle("DELETE "+base+"/sessions/{session}/binding", http.HandlerFunc(p.deleteBinding), true)
+	gw.Handle("PUT "+base+"/sessions/{session}/browser", http.HandlerFunc(p.putBrowser), true)
 	gw.Handle("POST "+base+"/sessions/{session}/files", http.HandlerFunc(p.postFile), true)
 	gw.Handle("GET "+base+"/sessions/{session}/files", http.HandlerFunc(p.getFile), true)
 	gw.Handle("GET "+base+"/sessions/{session}/tree", http.HandlerFunc(p.tree), true)
@@ -389,6 +392,35 @@ func (p *Plugin) getBinding(w http.ResponseWriter, r *http.Request) {
 	}
 	answer(w, map[string]any{"session_id": b.SessionID, keyDeviceID: b.DeviceID, keyDir: b.Dir, "generation": b.Generation,
 		"bound_at": b.BoundAt, "resolved": res})
+}
+
+// Browsers returns the browser device the hub set for each session.
+func (p *Plugin) Browsers() map[string]string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return maps.Clone(p.browsers)
+}
+
+func (p *Plugin) putBrowser(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	if json.NewDecoder(r.Body).Decode(&body) != nil {
+		pluginError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	p.record(r, body)
+	deviceID, _ := body[keyDeviceID].(string)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if deviceID == "" {
+		pluginError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if p.conns[deviceID] == nil {
+		pluginError(w, http.StatusNotFound, "unknown_device")
+		return
+	}
+	p.browsers[r.PathValue("session")] = deviceID
+	answer(w, map[string]string{keyDeviceID: deviceID, "name": p.conns[deviceID].Claims.DeviceName})
 }
 
 func (p *Plugin) putBinding(w http.ResponseWriter, r *http.Request) {

@@ -239,6 +239,9 @@ type Computers interface {
 	// Release unbinds a session from user's computer. The session then
 	// runs no commands, also not on the sandbox, until it is moved again.
 	Release(ctx context.Context, user, backendID, sessionID string) error
+	// UseBrowser makes one of user's computers the browser device of a
+	// session: the computer whose Firefox the session's browser tools use.
+	UseBrowser(ctx context.Context, user, backendID, sessionID, deviceID string) error
 }
 
 // Computer errors. ErrFolderRefused and ErrCannotMove wrap a message for

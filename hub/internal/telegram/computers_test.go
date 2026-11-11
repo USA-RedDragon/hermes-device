@@ -140,6 +140,8 @@ func (f *fakeComputers) MoveTo(_ context.Context, user, backendID, sessionID, de
 	return p, nil
 }
 
+func (f *fakeComputers) UseBrowser(context.Context, string, string, string, string) error { return nil }
+
 func (f *fakeComputers) Release(_ context.Context, _, backendID, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

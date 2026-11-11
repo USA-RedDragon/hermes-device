@@ -195,6 +195,36 @@ func TestPlaces(t *testing.T) {
 	})
 }
 
+func TestUseBrowser(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		ctx := context.Background()
+		id := e.computer(deviceName)
+		if err := e.a.dev.UseBrowser(ctx, userAlice, backendID, "s1", id); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.plugin.Browsers()["s1"]; got != id {
+			t.Fatalf("browser device = %q, want %q", got, id)
+		}
+		if err := e.a.dev.UseBrowser(ctx, userBob, backendID, "s2", id); err == nil {
+			t.Error("bob set alice's computer as a browser device")
+		}
+		for _, device := range []string{sandboxID, "d_none"} {
+			if err := e.a.dev.UseBrowser(ctx, userAlice, backendID, "s2", device); !errors.Is(err, hub.ErrUnknownDevice) {
+				t.Errorf("UseBrowser %s = %v", device, err)
+			}
+		}
+		e.plugin.Disconnect(id)
+		if err := e.a.dev.UseBrowser(ctx, userAlice, backendID, "s2", id); !errors.Is(err, hub.ErrComputerOffline) {
+			t.Errorf("UseBrowser offline = %v", err)
+		}
+		if _, ok := e.plugin.Browsers()["s2"]; ok {
+			t.Error("a refused UseBrowser set a browser device")
+		}
+	})
+}
+
 func TestMoveAndRelease(t *testing.T) {
 	t.Parallel()
 	stores(t, func(t *testing.T, st *store.Store) {

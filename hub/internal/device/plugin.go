@@ -264,6 +264,11 @@ func (p *Plugin) Unbind(ctx context.Context, sessionID string) error {
 	return p.call(ctx, http.MethodDelete, sessionPath(sessionID), nil, nil)
 }
 
+// SetBrowser makes a device the browser device of a session.
+func (p *Plugin) SetBrowser(ctx context.Context, sessionID, deviceID string) error {
+	return p.call(ctx, http.MethodPut, "/sessions/"+url.PathEscape(sessionID)+"/browser", map[string]string{keyDeviceID: deviceID}, nil)
+}
+
 func sessionPath(sessionID string) string {
 	return "/sessions/" + url.PathEscape(sessionID) + "/binding"
 }

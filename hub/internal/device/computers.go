@@ -604,6 +604,30 @@ func userReason(err error) string {
 	return msg
 }
 
+// UseBrowser makes one of user's computers the browser device of a
+// session. See hub.Computers.
+func (s *Server) UseBrowser(ctx context.Context, user, backendID, sessionID, deviceID string) error {
+	b, err := s.deviceBackend(ctx, user, backendID)
+	if err != nil {
+		return err
+	}
+	d, db, err := s.computer(ctx, user, deviceID)
+	if err != nil {
+		return err
+	}
+	if db != b {
+		return hub.ErrOtherBackend
+	}
+	_, err = withTimeout(ctx, func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, b.plugin.SetBrowser(ctx, sessionID, d.ID)
+	})
+	if err != nil {
+		return computerError(err)
+	}
+	s.log.Info("session uses a computer's browser", "user", user, "device", d.ID, "session_id", sessionID)
+	return nil
+}
+
 // Release unbinds a session from one of user's computers. See
 // hub.Computers.
 func (s *Server) Release(ctx context.Context, user, backendID, sessionID string) error {
