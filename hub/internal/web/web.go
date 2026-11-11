@@ -73,6 +73,9 @@ type Options struct {
 	Notices hub.NotifyStore
 	// Notifier sends test notices and has the Web Push key.
 	Notifier Notifier
+	// Claude serves the Claude accounts of backends with the
+	// claude-accounts plugin. Nil: none.
+	Claude hub.Claude
 }
 
 // Server is the web front end.
@@ -105,6 +108,7 @@ type Server struct {
 	files        hub.ChatFiles
 	notices      hub.NotifyStore
 	notifier     Notifier
+	claude       hub.Claude
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
 	backendNames     map[string]string
@@ -148,7 +152,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	return &Server{
 		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory,
 		insights: opts.Insights, files: opts.Files,
-		notices: opts.Notices, notifier: opts.Notifier,
+		notices: opts.Notices, notifier: opts.Notifier, claude: opts.Claude,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,
@@ -230,6 +234,7 @@ func (s *Server) Handler() http.Handler {
 	s.memoryRoutes(mux)
 	s.insightRoutes(mux)
 	s.notifyRoutes(mux)
+	s.claudeRoutes(mux)
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
 	mux.HandleFunc("GET /device/pair", s.handlePairPage)

@@ -43,10 +43,12 @@ type notifyJSON struct {
 	PushKey       string                 `json:"push_key"`
 	Subscriptions []hub.PushSubscription `json:"subscriptions"`
 	Telegram      bool                   `json:"telegram"`
+	// ClaudeAdmin says the person signs Claude accounts in somewhere.
+	ClaudeAdmin bool `json:"claude_admin"`
 }
 
 func (s *Server) notifyState(ctx context.Context, user string) (notifyJSON, error) {
-	out := notifyJSON{Subscriptions: []hub.PushSubscription{}}
+	out := notifyJSON{Subscriptions: []hub.PushSubscription{}, ClaudeAdmin: s.isClaudeAdmin(user)}
 	var err error
 	if out.Settings, err = s.notices.NotifySettings(ctx, user); err != nil {
 		return out, err
