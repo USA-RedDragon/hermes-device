@@ -17,7 +17,9 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/USA-RedDragon/hermes-hub/internal/device"
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
+	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 	"github.com/USA-RedDragon/hermes-hub/internal/leader"
+	"github.com/USA-RedDragon/hermes-hub/internal/memory"
 	"github.com/USA-RedDragon/hermes-hub/internal/pdf"
 	"github.com/USA-RedDragon/hermes-hub/internal/server"
 	"github.com/USA-RedDragon/hermes-hub/internal/service"
@@ -103,6 +105,9 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 		webOpts.BrowserAPI, webOpts.OnBrowserRevoke = devices.BrowserHandler(), devices.DropBrowser
 		webOpts.Sandboxes, webOpts.Computers = devices.Sandboxes, devices
 	}
+	if webOpts.Memory, err = newMemory(cfg, svc, dialers); err != nil {
+		return err
+	}
 	ui, err := web.New(cfg, webOpts)
 	if err != nil {
 		return err
@@ -165,6 +170,20 @@ func newDevices(cfg *config.Config, st *store.Store, svc *service.Service, diale
 	pub, _ := key.Public().(ed25519.PublicKey)
 	slog.Info("Devices enabled", "backends", len(backends), "public_key", base64.StdEncoding.EncodeToString(pub))
 	return srv, nil
+}
+
+// newMemory returns the Memory page's core, or nil when no backend has
+// memory: every backend's Hermes may have the hermes-device plugin's
+// memory routes, so each one counts.
+func newMemory(cfg *config.Config, svc *service.Service, dialers map[string]*gateway.Dialer) (hub.Memory, error) {
+	if len(cfg.Backends) == 0 {
+		return nil, nil //nolint:nilnil // nil means no Memory page
+	}
+	rs := make(map[string]device.Requester, len(dialers))
+	for id, d := range dialers {
+		rs[id] = d
+	}
+	return memory.New(memory.Options{Access: svc, Backends: cfg.Backends, Requesters: rs})
 }
 
 func openStore(ctx context.Context, cfg *config.Store) (*store.Store, error) {
