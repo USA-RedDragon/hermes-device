@@ -690,7 +690,7 @@ browser.webRequest.onBeforeRequest.addListener(
     }
     const lg = loginGuards.get(details.tabId);
     if (lg && lg.submitting && details.method !== "GET" && details.method !== "HEAD" &&
-      !lg.hosts.has(hostOf(details.url))) {
+      (!/^https:/.test(details.url) || !lg.hosts.has(hostOf(details.url)))) {
       return { cancel: true };
     }
     const own = taints.get(details.tabId);
@@ -754,7 +754,8 @@ browser.webRequest.onHeadersReceived.addListener(
       const loc = (details.responseHeaders || []).find((h) => h.name.toLowerCase() === "location");
       let to = "";
       try {
-        to = new URL(loc ? loc.value : "", details.url).hostname.toLowerCase();
+        const u = new URL(loc ? loc.value : "", details.url);
+        to = u.protocol === "https:" ? u.hostname.toLowerCase() : "";
       } catch (e) {
         to = "";
       }
@@ -763,7 +764,7 @@ browser.webRequest.onHeadersReceived.addListener(
       }
       return {};
     }
-    if (lg.hosts.has(hostOf(details.url))) {
+    if (details.type === "main_frame" && lg.hosts.has(hostOf(details.url))) {
       lg.submitting = false;
     }
     return {};
@@ -913,6 +914,12 @@ async function prepare(tabId, ref, kind, guard) {
   return { frameId, local };
 }
 
+// pageGuard is the guard the page functions check right before they act,
+// with the device's autologin hosts, which the plugin cannot set.
+function pageGuard(guard) {
+  return Object.assign({}, guard || {}, { autologin_hosts: [...autologinHosts] });
+}
+
 // onLoginPage reports whether the tab shows a host in
 // browser.autologin-hosts, at the top or in a frame, and has a password
 // field. Screenshots and selector waits are refused there.
@@ -1027,15 +1034,21 @@ function pageLogin(hosts, tabHost, submit) {
   if (!form) {
     return Object.assign(out, { error: "the password field is not in a form" });
   }
-  if (!out.password_filled || (user && !out.username_filled)) {
+  if (!out.password_filled || !out.username_filled) {
     return Object.assign(out, { error: "the login form is no longer filled" });
   }
-  const submitter = [...form.elements].find((e) => !e.disabled && ((e.tagName === "BUTTON" && e.type === "submit") ||
-    (e.tagName === "INPUT" && (e.type === "submit" || e.type === "image"))));
+  // Read the form through its prototype, so fields named "action" or
+  // "method" cannot stand in for the form's own values.
+  const get = (name) => Reflect.apply(Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, name).get, form, []);
+  const isSubmit = (e) => !e.disabled && ((e.tagName === "BUTTON" && e.type === "submit") ||
+    (e.tagName === "INPUT" && (e.type === "submit" || e.type === "image")));
+  const controls = [...get("elements")];
+  const after = controls.slice(controls.indexOf(pw) + 1);
+  const submitter = after.find(isSubmit) || controls.find(isSubmit);
   const has = (a) => submitter && submitter.hasAttribute(a);
-  const method = (has("formmethod") ? submitter.formMethod : form.method).toLowerCase();
-  const action = has("formaction") ? submitter.formAction : form.action;
-  const tgt = (has("formtarget") ? submitter.formTarget : form.target).toLowerCase();
+  const method = String(has("formmethod") ? submitter.formMethod : get("method")).toLowerCase();
+  const action = String(has("formaction") ? submitter.formAction : get("action"));
+  const tgt = String(has("formtarget") ? submitter.formTarget : get("target")).toLowerCase();
   let to;
   try {
     to = new URL(action || location.href, location.href);
@@ -1127,11 +1140,24 @@ async function composeText(tabId) {
 // evalCode wraps the agent's script, the body of an async function, so
 // its result comes back as JSON. fetch and XMLHttpRequest are the page's
 // own, so requests go out as the page's, with its cookies and origin.
-function evalCode(script) {
+function evalCode(script, site, blocked) {
   // The extension API (storage with the hub credential, messaging) is
   // taken out of this world before agent code runs; the helpers keep only
-  // getFrameId, saved by installHelpers.
+  // getFrameId, saved by installHelpers. The script runs only in a document
+  // on the approved site that is not an autologin host and has no filled
+  // password field: the frame can load another document between the checks
+  // and the injection, and a password Firefox filled must never be read.
   return "(async () => {\n" +
+    "{\n" +
+    "  const h = location.hostname.toLowerCase().replace(/\\.$/, '');\n" +
+    "  const s = h.startsWith('www.') ? h.slice(4) : h;\n" +
+    "  if (!/^https?:$/.test(location.protocol) || s !== " + JSON.stringify(site) + " || " + JSON.stringify(blocked) + ".includes(h)) {\n" +
+    "    return { ok: false, refused: true, error: 'the frame shows another page than the one approved; take a new snapshot' };\n" +
+    "  }\n" +
+    "  if ([...document.querySelectorAll('input[type=password]')].some((f) => f.value !== '')) {\n" +
+    "    return { ok: false, refused: true, error: 'scripts are refused on a page with a filled password field' };\n" +
+    "  }\n" +
+    "}\n" +
     "for (const k of ['browser', 'chrome', 'messenger']) {\n" +
     "  try { delete globalThis[k]; } catch (e) {}\n" +
     "  try { if (globalThis[k] !== undefined) { Object.defineProperty(globalThis, k, {value: undefined}); } } catch (e) {}\n" +
@@ -1450,6 +1476,10 @@ function installHelpers() {
   // the plugin asked cannot slip an action past the user.
   function guardCheck(info, action, submit, guard) {
     const g = guard || {};
+    if ((g.autologin_hosts || []).includes(info.host) && info.sensitive.includes("password")) {
+      return "this is a login page on a host in browser.autologin-hosts; clicks, typing and key presses are refused " +
+        "here. Use browser_login";
+    }
     if (info.sensitive.length && !g.sensitive) {
       return "this page has " + info.sensitive.join(", ") + " fields; the user must confirm each action here";
     }
@@ -1742,9 +1772,12 @@ function pageScroll(ref, direction, pages, toText) {
   return out;
 }
 
-function pageHas(text, selector) {
+function pageHas(text, selector, blocked) {
   if (!/^https?:$/.test(location.protocol)) {
     return null;
+  }
+  if (selector && (blocked || []).includes(location.hostname.toLowerCase()) && document.querySelector("input[type=password]")) {
+    return { error: "CSS selector waits are refused on a login page of a host in browser.autologin-hosts; wait for a text" };
   }
   if (selector) {
     try {
@@ -1846,7 +1879,7 @@ const OPS = {
   },
   async click({ tab_id, ref, guard }) {
     const { frameId, local } = await prepare(tab_id, String(ref), "click", guard);
-    const res = await inFrame(tab_id, frameId, pageAct, ["click", local, "", false, guard || {}], true);
+    const res = await inFrame(tab_id, frameId, pageAct, ["click", local, "", false, pageGuard(guard)], true);
     if (res.refused) {
       throw new Refused(res.refused);
     }
@@ -1854,7 +1887,7 @@ const OPS = {
   },
   async type({ tab_id, ref, text, submit, guard }) {
     const { frameId, local } = await prepare(tab_id, String(ref), submit ? "submit" : "type", guard);
-    const res = await inFrame(tab_id, frameId, pageAct, ["type", local, String(text), Boolean(submit), guard || {}], true);
+    const res = await inFrame(tab_id, frameId, pageAct, ["type", local, String(text), Boolean(submit), pageGuard(guard)], true);
     if (res.refused) {
       throw new Refused(res.refused);
     }
@@ -1863,7 +1896,7 @@ const OPS = {
   async press({ tab_id, ref, key, guard }) {
     const k = parseKey(key);
     const { frameId, local } = await prepare(tab_id, ref ? String(ref) : "", k.activates ? "activate" : "key", guard);
-    const res = await inFrame(tab_id, frameId, pageKey, [local, k, guard || {}], true);
+    const res = await inFrame(tab_id, frameId, pageKey, [local, k, pageGuard(guard)], true);
     if (res.refused) {
       throw new Refused(res.refused);
     }
@@ -1912,7 +1945,8 @@ const OPS = {
     const limit = Math.max(0, Math.min(Number(timeout_ms) || 10000, MAX_WAIT_MS));
     const start = Date.now();
     for (;;) {
-      const res = await inAllFrames(tab_id, pageHas, [text ? String(text) : "", selector ? String(selector) : ""], true);
+      const res = await inAllFrames(tab_id, pageHas, [text ? String(text) : "", selector ? String(selector) : "",
+        [...autologinHosts]], true);
       const bad = res.find((r) => r.result.error);
       if (bad) {
         throw new Refused(bad.result.error);
@@ -1990,9 +2024,12 @@ const OPS = {
     taints.set(tab_id, { sites });
     scripted.add(tab_id);
     everScripted.add(tab_id);
-    const [res] = await browser.tabs.executeScript(tab_id, { code: evalCode(script), frameId });
+    const [res] = await browser.tabs.executeScript(tab_id, { code: evalCode(script, site, [...autologinHosts]), frameId });
     if (!res || typeof res !== "object") {
       throw new Error("the script did not finish");
+    }
+    if (res.refused) {
+      throw new Refused(String(res.error));
     }
     if (!res.ok) {
       throw new Error("script error: " + String(res.error).slice(0, 2000));
@@ -2052,8 +2089,9 @@ const OPS = {
       if (state.error) {
         throw new Refused(state.error);
       }
-      if (state.passwords !== 1 || state.new_password) {
-        const why = state.passwords ? "more than one password field, or a new password field" : "no password field";
+      if (state.passwords !== 1 || state.new_password || !state.username_present) {
+        const why = !state.passwords ? "no password field" : state.passwords > 1 || state.new_password ?
+          "more than one password field, or a new password field" : "no username field next to its password field";
         return { tab_id: tabId, filled: false, submitted: false, landed_host: host,
           reason: "the page has " + why + ", so it is not a simple login form" };
       }
@@ -2066,7 +2104,7 @@ const OPS = {
         if (now.error) {
           throw new Refused(now.error);
         }
-        if (now.passwords === 1 && now.password_filled && (!now.username_present || now.username_filled)) {
+        if (now.passwords === 1 && now.password_filled && now.username_filled) {
           break;
         }
         if (now.passwords !== 1 || Date.now() - start >= limit) {
@@ -2089,14 +2127,21 @@ const OPS = {
       const sent = await inPage(tabId, pageLogin, [hosts, host, true]);
       if (sent.error || !sent.submitted) {
         loginGuards.delete(tabId);
-        loaded.catch(() => {});
         return { tab_id: tabId, filled: true, submitted: false, landed_host: host, reason: sent.error || "not submitted" };
       }
       await Promise.race([loaded, new Promise((r) => setTimeout(r, LOAD_TIMEOUT_MS))]);
       const after = await settle(tabId).catch(() => browser.tabs.get(tabId));
       return { tab_id: tabId, filled: true, submitted: true, landed_host: hostOf(after.url) };
     } finally {
-      loginGuards.delete(tabId);
+      // The redirect rule stays a while for a post that is still pending.
+      const g = loginGuards.get(tabId);
+      if (g) {
+        setTimeout(() => {
+          if (loginGuards.get(tabId) === g) {
+            loginGuards.delete(tabId);
+          }
+        }, 2 * LOAD_TIMEOUT_MS);
+      }
       if (before) {
         await restore(before);
       }
@@ -2123,6 +2168,12 @@ const OPS = {
       out.note = "browser_login is running, so the tab was not activated";
       return out;
     }
+    if (!autologinHost(hostOf(tab.url)) && (await tabSensitive(tab.id)).includes("password")) {
+      out.note = "the tab has a password field and is not on a host in browser.autologin-hosts, so it was not " +
+        "activated (Firefox would fill a saved login there)";
+      return out;
+    }
+    loginBusy = true;
     const before = await activate(tab);
     try {
       const start = Date.now();
@@ -2138,6 +2189,7 @@ const OPS = {
       out.tab_window_focused = w.focused;
     } finally {
       out.restored = await restore(before);
+      loginBusy = false;
     }
     out.would_fill = out.after_activate.visibility === "visible";
     return out;
@@ -2162,6 +2214,10 @@ const OPS = {
       Object.assign(out, { page_height: d.h, clipped: d.h > h, scale: Math.round(opts.scale * 1000) / 1000 });
     }
     out.data_url = await browser.tabs.captureTab(tab_id, opts);
+    if (await onLoginPage(await browser.tabs.get(tab_id))) {
+      throw new Refused("the tab loaded a login page of a host in browser.autologin-hosts during the screenshot, so it " +
+        "was dropped");
+    }
     return out;
   },
 };

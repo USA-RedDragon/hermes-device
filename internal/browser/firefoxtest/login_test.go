@@ -82,6 +82,13 @@ func (l *loginServer) handler(other string) http.HandlerFunc {
 			_, _ = io.WriteString(w, form("/bounce", "post"))
 		case "/get-form":
 			_, _ = io.WriteString(w, form("/login", "get"))
+		case "/confirm":
+			_, _ = io.WriteString(w, `<!doctype html><title>Confirm</title><form method="post" action="/login">`+
+				`<input type="password" name="pass" autocomplete="current-password"><button>Confirm</button></form>`)
+		case "/prefilled":
+			_, _ = io.WriteString(w, `<!doctype html><title>Prefilled</title><form method="post" action="/login">`+
+				`<input name="user"><input type="password" name="pass"></form>`+
+				`<script>document.querySelector("[name=pass]").value = "typed-by-page"</script>`)
 		case "/bounce":
 			http.Redirect(w, r, other+"/login", http.StatusTemporaryRedirect)
 		case "/login":
@@ -270,7 +277,8 @@ func loginFlow(ctx context.Context, t *testing.T, b *broker.Broker, bc *bidi.Cli
 		{twoSrv.URL, "bob", password + "-b"},
 	})
 	r := &recorded{b: b}
-	rig := &loginRig{r: r, main: main, other: other, two: two, mainURL: mainSrv.URL, twoURL: twoSrv.URL}
+	rig := &loginRig{r: r, main: main, other: other, two: two, mainURL: mainSrv.URL, twoURL: twoSrv.URL,
+		otherURL: otherSrv.URL}
 	open := func(u string) tabResult { return rig.open(ctx, t, u) }
 
 	// Not in browser.autologin-hosts: refused, even with an approval.
@@ -352,6 +360,7 @@ type loginRig struct {
 	r                *recorded
 	main, other, two *loginServer
 	mainURL, twoURL  string
+	otherURL         string
 }
 
 func (g *loginRig) open(ctx context.Context, t *testing.T, u string) tabResult {
@@ -410,6 +419,24 @@ func loginEdges(ctx context.Context, t *testing.T, rig *loginRig, tabID int) {
 	}
 	if got := rig.other.got(); len(got) != 0 {
 		t.Errorf("the 307 target got the login post: %q", got)
+	}
+
+	// A form with only a password field (a confirmation) is not submitted.
+	rig.r.must(ctx, t, "navigate", map[string]any{keyTab: tabID, keyURL: rig.mainURL + "/confirm"}, nil)
+	res = rig.login(ctx, t, map[string]any{keyTab: tabID, keyGuard: approve(loginHost)})
+	if res.Filled || res.Submitted || !strings.Contains(res.Reason, "no username field") {
+		t.Errorf("login on a password-only form = %+v", res)
+	}
+
+	// Off the list: no script reads a filled password, and check does not
+	// show a tab with a password field.
+	other := rig.open(ctx, t, rig.otherURL+"/prefilled")
+	rig.r.refused(ctx, t, "eval on a page with a filled password", "filled password", "eval", map[string]any{keyTab: other.TabID,
+		"script": "return 1", keyGuard: map[string]any{keyScripts: []string{otherLoginHost}, keySensitive: true}})
+	var check map[string]any
+	rig.r.must(ctx, t, "check", map[string]any{keyTab: other.TabID}, &check)
+	if _, shown := check["after_activate"]; shown || !strings.Contains(fmt.Sprint(check["note"]), "not activated") {
+		t.Errorf("check on an unlisted password page = %v", check)
 	}
 }
 
