@@ -460,6 +460,8 @@ class DeviceConn:
     roots: list[str]
     tmp_dir: str
     home: str = ""
+    # The device's pwd -P of home, once device_homes has asked for it; "" when it could not tell.
+    real_home: Optional[str] = None
     hostname: str = ""
     os: str = ""
     arch: str = ""
@@ -1663,6 +1665,69 @@ def device_denylist(home: str) -> tuple[set[str], list[str], set[str]]:
     return denied, prefixes, approval
 
 
+_REAL_HOME = r"""cd -P -- "$1" 2>/dev/null && pwd -P"""
+
+
+def device_homes(conn: DeviceConn) -> list[str]:
+    """The device's home as it reported it and, when it differs, its real path (``pwd -P`` on the
+    device, asked once per connection). Roots are real paths, so a home behind a symbolic link
+    would otherwise never match a path inside them."""
+    home = posixpath.normpath(conn.home)
+    if conn.real_home is None and conn.roots:
+        code, body, _err = run_script(conn.device_id, _REAL_HOME, [home], cwd=conn.roots[0], timeout=10)
+        lines = [ln for ln in body.splitlines() if ln.startswith("/")]
+        if code != EXIT_LOST:
+            real = lines[-1] if code == 0 and lines else ""
+            conn.real_home = real if real and posixpath.normpath(real) == real else ""
+    return list(dict.fromkeys([home, *([conn.real_home] if conn.real_home else [])]))
+
+
+# Credential folders and file types under a device home that the read route also refuses, beyond
+# Hermes's own lists: other agents' and tools' sign-ins, the hermes-device daemon state (its
+# control secret), and key files.
+EXTRA_READ_DENIED_DIRS = (".config/hermes-device", ".claude", ".codex", ".terraform.d", ".config/hermes")
+READ_DENIED_EXTS = (".key", ".pem", ".p12", ".pfx")
+
+
+def _home_denial(home: str, path: str, read: bool) -> Optional[str]:
+    """Why a home rule refuses ``path``: ``"approval"``, ``"credential"`` or None. Paths compare
+    case-folded, since macOS file systems ignore case."""
+    from agent import file_safety
+    from agent.context_references import _SENSITIVE_HOME_FILES
+
+    p, h = path.lower(), home.lower()
+    denied, prefixes, approval = device_denylist(home)
+    if p in {a.lower() for a in approval}:
+        return "approval"
+    if p in {d.lower() for d in denied} or any(p.startswith(x.lower()) or p + "/" == x.lower() for x in prefixes):
+        return "credential"
+    if not read:
+        return None
+    exact = {posixpath.join(h, str(x).lower()) for x in _SENSITIVE_HOME_FILES}
+    dirs = [posixpath.join(h, d.lower()) for d in (*file_safety.HOME_CREDENTIAL_DIRS, *EXTRA_READ_DENIED_DIRS)]
+    if p in exact or any(is_under(p, d) for d in dirs):
+        return "credential"
+    hermes = posixpath.join(h, ".hermes")
+    hermes_homes = [hermes]
+    profiles = posixpath.join(hermes, "profiles") + "/"
+    if p.startswith(profiles) and "/" in p[len(profiles):]:
+        hermes_homes.append(profiles + p[len(profiles):].split("/", 1)[0])
+    names = [str(n).replace(os.sep, "/").lower() for n in file_safety._CREDENTIAL_FILE_NAMES]
+    read_dirs = [d.lower() for d, _dir_msg, _file_msg in file_safety._READ_DENIED_DIRS] + ["skills/.hub"]
+    for hh in hermes_homes:
+        if p in {posixpath.join(hh, n) for n in names} or any(is_under(p, posixpath.join(hh, d)) for d in read_dirs):
+            return "credential"
+    return None
+
+
+def _credential_denial(conn: DeviceConn, path: str, read: bool) -> Optional[str]:
+    for home in device_homes(conn):
+        why = _home_denial(home, path, read)
+        if why:
+            return why
+    return None
+
+
 def device_write_denial(conn: DeviceConn, path: str) -> Optional[str]:
     """Why a write to the absolute device ``path`` is refused, or None."""
     path = posixpath.normpath(path)
@@ -1670,10 +1735,10 @@ def device_write_denial(conn: DeviceConn, path: str) -> Optional[str]:
         return f"{path} is outside the device roots ({', '.join(conn.roots) or 'none'})"
     if not posixpath.isabs(conn.home or ""):
         return "the device did not report its home directory, so its credential paths cannot be checked"
-    denied, prefixes, approval = device_denylist(conn.home)
-    if path in approval:
+    why = _credential_denial(conn, path, read=False)
+    if why == "approval":
         return f"{path} needs approval on the device and file tools cannot ask for it here"
-    if path in denied or any(path.startswith(p) or path + "/" == p for p in prefixes):
+    if why:
         return f"{path} is a protected credential or system path"
     return None
 
@@ -2083,14 +2148,7 @@ def read_text_for_edit(res: Resolution, path: str) -> Optional[str]:
 
 
 def _sensitive_device_path(conn: DeviceConn, path: str) -> bool:
-    from agent.context_references import _SENSITIVE_HOME_FILES
-    from agent.file_safety import HOME_CREDENTIAL_DIRS
-    home = posixpath.normpath(conn.home or "/")
-    exact = {posixpath.join(home, str(p)) for p in _SENSITIVE_HOME_FILES}
-    dirs = [posixpath.join(home, d) for d in HOME_CREDENTIAL_DIRS]
-    denied, prefixes, _approval = device_denylist(home)
-    return path in exact or path in denied or any(is_under(path, d) for d in dirs) \
-        or any(path.startswith(p) for p in prefixes)
+    return _credential_denial(conn, path, read=True) is not None
 
 
 _FENCE = {".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "tsx", ".jsx": "jsx",
