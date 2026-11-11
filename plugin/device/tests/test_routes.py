@@ -289,6 +289,23 @@ class RouteTests(unittest.TestCase):
         r = self.client.get("/api/plugins/device/sessions/ghost/binding")
         self.assertEqual(r.json()["resolved"]["state"], "fail_closed")
 
+    def test_browser_route(self):
+        browser = core._load_sibling("hermes_device_browser", "browser.py")
+        p = mock.patch.object(browser, "_CHOICES", browser.Choices(Path(self.tmp.name) / "browser.json"))
+        p.start()
+        self.addCleanup(p.stop)
+        url = "/api/plugins/device/sessions/s1/browser"
+        for body in ([], {}, {"device_id": ""}, {"device_id": 3}):
+            with self.subTest(body=body):
+                r = self.client.put(url, json=body)
+                self.assertEqual((r.status_code, r.json()["error"]), (400, "bad_request"))
+        r = self.client.put(url, json={"device_id": "d_8f2c"})
+        self.assertEqual((r.status_code, r.json()["error"]), (404, "unknown_device"))
+        self.online(capabilities=["browser"])
+        r = self.client.put(url, json={"device_id": "d_8f2c"})
+        self.assertEqual((r.status_code, r.json()), (200, {"device_id": "d_8f2c", "name": "desktop"}))
+        self.assertEqual(browser.choices().session("s1")["device_id"], "d_8f2c")
+
     def test_binding_route_names_the_sandbox(self):
         url = "/api/plugins/device/sessions/c1/binding"
         self.assertEqual(self.client.get(url).json()["resolved"], {"state": "never_bound", "via": None})

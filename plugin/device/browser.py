@@ -1341,6 +1341,38 @@ def _device_list(user: Optional[str], selected: str = "") -> list[dict]:
     return out
 
 
+def set_session_device(session_id: str, device_id: str) -> dict:
+    """Make a connected computer the browser device of a session, as browser_use_device does. The
+    hub calls it for a page chat, the chat that the Firefox extension opens on that computer
+    (docs/browser.md section 3.3). The choice records the computer's user, so :func:`pick` still
+    refuses it in a session of another user. Raises ValueError for a device that is not a
+    connected computer with browser control."""
+    core = _core()
+    conn = core.hub().device(device_id)
+    if conn is None or core.CAPABILITY_BROWSER not in conn.capabilities or conn.user == core.SERVICE_USER:
+        raise ValueError(f"device {device_id[:64]!r} is not a connected computer with browser control")
+    choice = {"device_id": conn.device_id, "name": conn.name, "user": conn.user, "at": round(time.time(), 3)}
+    choices().set_session(session_id, choice)
+    return {"device_id": conn.device_id, "name": conn.name}
+
+
+def page_sessions(session_id: str) -> list[str]:
+    """The session and its ancestors, nearest first: the sessions whose page chat grant a read of
+    this session may use. Compression gives a running chat a new session id, so a grant made for
+    the chat covers its compression children, as a browser device choice does."""
+    core = _core()
+    out, cur = [], session_id
+    for _ in range(core.MAX_LINEAGE_HOPS + 1):
+        if not cur or cur in out:
+            break
+        out.append(cur)
+        try:
+            cur = core.hub()._parent(cur)
+        except core.LineageError:
+            break
+    return out
+
+
 def _known_user(session_id: str) -> Optional[str]:
     try:
         _, res = resolve(session_id)
@@ -1605,8 +1637,9 @@ def _cut(text: str, offset: int, budget: int) -> tuple[str, Optional[int]]:
     return text[offset:end].rstrip("\n"), end
 
 
-def _outline(args: dict, conn: Any, tab: int, mode: str, offset: int) -> tuple[dict, bool]:
-    """The outline the call reads (``fresh`` False when it continues the cached one)."""
+def _outline(args: dict, conn: Any, tab: int, mode: str, offset: int, sid: str) -> tuple[dict, bool]:
+    """The outline the call reads (``fresh`` False when it continues the cached one, which only
+    the session that took it may do)."""
     selector = str(args.get("selector") or "").strip()
     ref = _need_ref(args) if str(args.get("ref") or "").strip() else ""
     if selector and ref:
@@ -1614,9 +1647,10 @@ def _outline(args: dict, conn: Any, tab: int, mode: str, offset: int) -> tuple[d
     shape = (mode, bool(args.get("interactive_only")), selector, ref)
     with _SNAPS_LOCK:
         cached = _SNAPS.get((conn.device_id, tab))
-    if offset and cached and cached["shape"] == shape:
+    if offset and cached and cached["shape"] == shape and cached["sid"] == sid:
         return cached, False
-    req: dict = {"tab_id": tab, "interactive_only": mode == "interactive" or bool(args.get("interactive_only"))}
+    req: dict = {"tab_id": tab, "interactive_only": mode == "interactive" or bool(args.get("interactive_only")),
+                 "sessions": page_sessions(sid)}
     if selector:
         req["selector"] = selector
     if ref:
@@ -1628,7 +1662,7 @@ def _outline(args: dict, conn: Any, tab: int, mode: str, offset: int) -> tuple[d
                          f"{conn.browser.get('extension_version') or 'unknown'}) cannot limit a snapshot to a selector "
                          f"or ref. Call browser_snapshot without selector and ref, or ask the user to update the "
                          f"extension (about:addons, Check for Updates).")
-    entry = {"shape": shape, "title": snap.get("title", ""), "url": snap.get("url", ""),
+    entry = {"shape": shape, "sid": sid, "title": snap.get("title", ""), "url": snap.get("url", ""),
              "snapshot": str(snap.get("snapshot") or ""), "element_count": snap.get("element_count", 0)}
     if snap.get("scope"):
         entry["matched"] = snap.get("matched", 0)
@@ -1640,7 +1674,7 @@ def _outline(args: dict, conn: Any, tab: int, mode: str, offset: int) -> tuple[d
     return entry, True
 
 
-def _snapshot(args: dict, conn: Any, _sid: str) -> str:
+def _snapshot(args: dict, conn: Any, sid: str) -> str:
     tab = _need_tab(args)
     mode = _snapshot_mode(args)
     budget = int(_int(args, "max_chars", SNAPSHOT_MAX_CHARS, SNAPSHOT_MIN_TEXT_CHARS, SNAPSHOT_MAX_CHARS_LIMIT))
@@ -1652,7 +1686,7 @@ def _snapshot(args: dict, conn: Any, _sid: str) -> str:
         forget_snapshot(conn.device_id, tab)
     hints = []
     if mode != "text":
-        snap, fresh = _outline(args, conn, tab, mode, offset)
+        snap, fresh = _outline(args, conn, tab, mode, offset, sid)
         if offset and fresh:
             hints.append("The page was read again for this part, so refs from earlier parts may have changed.")
         text = snap["snapshot"]
@@ -1675,7 +1709,7 @@ def _snapshot(args: dict, conn: Any, _sid: str) -> str:
             hints.append(f"The outline used this call's size, so no text came back. Read the text with mode text "
                          f"and offset={text_offset}.")
         else:
-            req: dict = {"tab_id": tab, "max_chars": max(budget, SNAPSHOT_MIN_TEXT_CHARS)}
+            req: dict = {"tab_id": tab, "max_chars": max(budget, SNAPSHOT_MIN_TEXT_CHARS), "sessions": page_sessions(sid)}
             if text_offset:
                 req["offset"] = text_offset
             page = call(conn, "read_text", req)

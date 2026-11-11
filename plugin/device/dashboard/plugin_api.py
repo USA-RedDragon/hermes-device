@@ -104,6 +104,26 @@ async def put_binding(session_id: str, request: Request):
     return binding.to_json()
 
 
+@router.put("/sessions/{session_id}/browser")
+async def put_browser(session_id: str, request: Request):
+    """Set the browser device of a session: the hub's page chats use the computer whose Firefox
+    opened them (docs/browser.md section 3.3)."""
+    core = _core()
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict) or not isinstance(body.get("device_id"), str) or not body.get("device_id"):
+        return _error(400, "bad_request", 'the body must be {"device_id": <string>}')
+    browser = core._load_sibling("hermes_device_browser", "browser.py")
+    try:
+        return await asyncio.to_thread(browser.set_session_device, session_id, body["device_id"])
+    except ValueError as exc:
+        return _error(404, "unknown_device", str(exc))
+    except OSError as exc:
+        return _error(503, "state_unavailable", f"could not save the choice: {exc}")
+
+
 @router.delete("/sessions/{session_id}/binding")
 def delete_binding(session_id: str):
     core = _core()
