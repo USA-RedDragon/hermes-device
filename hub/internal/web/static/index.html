@@ -17,10 +17,11 @@
 <script src="/static/insights.js" defer></script>
 <script src="/static/notify.js" defer></script>
 <script src="/static/claude.js" defer></script>
+<script src="/static/activity.js" defer></script>
 <script src="/static/app.js" defer></script>
 </head>
 <body>
-<div class="app">
+<div id="app" class="app act-closed act-none">
   <aside id="side" class="side" aria-label="Chats">
     <div class="side-head">
       <span class="brand">Hermes</span>
@@ -52,8 +53,10 @@
     <header class="bar">
       <button id="menu" class="icon menu" type="button" aria-label="Show chats">&#9776;</button>
       <div class="title"><span id="title">Hermes</span><span id="subtitle" class="sub"></span><button id="place" class="place" type="button" hidden></button></div>
+      <div id="tok" class="tok" title="Tokens of this chat's own turns. Subagents and background prompts count apart, in Activity." hidden><span id="tokturn"></span><span id="toksub" class="tsub"></span></div>
       <button id="filesbtn" type="button" hidden title="See this chat's folder and what Hermes changed">Files</button>
       <button id="stop" class="danger" type="button" hidden>Stop</button>
+      <button id="actbtn" class="actbtn" type="button" aria-expanded="false" aria-controls="act" aria-label="Activity" hidden><span class="lbl">Activity</span><svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg><span id="actcount" class="count" hidden>0</span></button>
     </header>
     <details id="info" class="info" hidden>
       <summary id="infoline" title="Show model and thinking settings"></summary>
@@ -82,7 +85,19 @@
       </div>
     </form>
   </section>
+  <aside id="act" class="act" aria-label="Activity">
+    <div class="act-head">
+      <div class="tabs" role="tablist">
+        <button id="tab-sub" type="button" role="tab" aria-selected="true">Subagents<span id="c-sub" class="c"></span></button>
+        <button id="tab-bg" type="button" role="tab" aria-selected="false">Background<span id="c-bg" class="c"></span></button>
+      </div>
+      <button id="actclose" class="ghost" type="button" aria-label="Close activity">&#x2715;</button>
+    </div>
+    <div id="actsum" class="act-sum"></div>
+    <div id="actbody" class="act-body"></div>
+  </aside>
 </div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 <dialog id="picker" class="picker" aria-labelledby="picker-title"></dialog>
 </body>
 </html>

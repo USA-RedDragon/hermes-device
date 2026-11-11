@@ -209,15 +209,19 @@
     const a = el("a", "go");
     a.href = chatHash(s.backend_id, s.id);
     if (s.running) { const d = el("span", "dot"); d.title = "Working"; a.append(d); }
+    const badge = s.activity > 0 ? el("span", "badge", String(s.activity)) : null;
+    if (badge) badge.title = s.activity + " running beside this chat: subagents and background commands";
     const p = placeOf(s);
     const where = computers.length || (p && p.kind === "computer") ? placeText(p, false) : "";
     if (where) {
       const col = el("span", "col");
       col.append(el("span", "name", s.title || t("newchat")), el("span", "where" + (p.online ? "" : " off"), where));
-      a.append(col, el("span", "when", ago(s.updated_at)));
+      a.append(col);
     } else {
-      a.append(el("span", "name", s.title || t("newchat")), el("span", "when", ago(s.updated_at)));
+      a.append(el("span", "name", s.title || t("newchat")));
     }
+    if (badge) a.append(badge);
+    a.append(el("span", "when", ago(s.updated_at)));
     a.onclick = () => openSide(false);
     const more = el("button", "more", "\u22EF");
     more.type = "button";
@@ -687,6 +691,11 @@
       card.started = Date.now();
       const head = el("div", "head");
       head.append(el("span", "name", name || "tool"));
+      if (activity.opens(name, args)) {
+        card.classList.add("opens");
+        head.title = "Show in Activity";
+        head.onclick = () => activity.fromTool(name, args, card.result);
+      }
       const preview = name === "terminal" && args && typeof args.command === "string" ? "" : context;
       if (preview) head.append(el("span", "context", preview));
       head.append(el("span", "state", t("running")));
@@ -712,6 +721,7 @@
     toolDone(card, p) {
       if (!card.classList.contains("running") && card.finished) return;
       card.finished = true;
+      if (p.result !== undefined) card.result = p.result;
       card.classList.remove("running");
       const res = parseResult(p.result);
       const exit = res && typeof res.exit_code === "number" ? res.exit_code : null;
@@ -896,6 +906,7 @@
       this.reset();
       setTitle(s.title);
       this.setRunning(s.running);
+      activity.running(s.running);
       this.showInfo(s.info || {});
       // Stored tool rows carry no arguments; the assistant message that made the call has them.
       this.calls = new Map();
@@ -976,6 +987,11 @@
 
     event(kind, p) {
       p = p || {};
+      this.dispatch(kind, p);
+      activity.event(kind, p);
+    }
+
+    dispatch(kind, p) {
       switch (kind) {
         case "snapshot": this.snapshot(p); break;
         case "backend.status":
@@ -1480,6 +1496,30 @@
     },
   };
 
+  // showText shows a long text, such as a background command's output, in
+  // a dialog.
+  function showText(title, text) {
+    if (document.querySelector("dialog.copybox")) return;
+    const d = el("dialog", "picker copybox");
+    d.append(el("h2", "", title || "Output"));
+    const ta = el("textarea");
+    ta.readOnly = true;
+    ta.value = text;
+    ta.setAttribute("aria-label", "Output");
+    const body = el("div", "pbody");
+    body.append(ta);
+    const foot = el("div", "pfoot");
+    const shut = el("button", "primary", "Close");
+    shut.type = "button";
+    shut.onclick = () => d.close();
+    foot.append(shut);
+    d.append(body, foot);
+    d.addEventListener("close", () => d.remove());
+    document.body.append(d);
+    d.showModal();
+    ta.scrollTop = ta.scrollHeight;
+  }
+
   // copyBox shows text selected for the user to copy, when the browser
   // does not let the hub write the clipboard.
   function copyBox(text) {
@@ -1858,7 +1898,6 @@
     if (view) parts.push(...claude.parts(view.backend, info));
     const ctx = contextPart(info);
     if (ctx) parts.push(ctx);
-    if (typeof u.avg_tps === "number" && u.avg_tps > 0) parts.push(["speed", Math.round(u.avg_tps) + " tokens/s", "Reply speed"]);
     const p = view ? view.place : null;
     let cwd = info.cwd;
     if (p) cwd = p.kind === "computer" ? p.dir : p.kind === "server" ? info.cwd : "";
@@ -2030,6 +2069,7 @@
     closeStream();
     attachments.clear();
     view = null;
+    activity.show(null);
     current = null;
     $("welcome").hidden = false;
     $("log").hidden = true;
@@ -2064,6 +2104,7 @@
     banner("");
     settings.reset();
     view = new Chat(backend, session);
+    activity.show(view);
     $("place").hidden = true;
     $("placenote").hidden = true;
     $("claudenote").hidden = true;
@@ -2105,6 +2146,7 @@
     closeStream();
     attachments.clear();
     view = null;
+    activity.show(null);
     current = null;
     for (const id of ["welcome", "log", "composer", "stop", "info", "place", "placenote", "claudenote"]) $(id).hidden = true;
     settings.reset();
@@ -2123,6 +2165,7 @@
     closeStream();
     attachments.clear();
     view = null;
+    activity.show(null);
     current = null;
     for (const id of ["welcome", "log", "composer", "stop", "info", "place", "placenote", "claudenote", "filesbtn"]) $(id).hidden = true;
     settings.reset();
@@ -2177,6 +2220,20 @@
     const text = input.value.trim();
     if ((!text && !attachments.list.length) || !view) return;
     const chat = view;
+    const bgCmd = text.match(/^\/(?:bg|background)(?:\s+([\s\S]*))?$/i);
+    if (bgCmd && !attachments.list.length) {
+      const prompt = (bgCmd[1] || "").trim();
+      if (!prompt) { banner("Type the prompt after /bg, such as /bg summarize today's Renovate PRs.", false); return; }
+      input.value = "";
+      grow();
+      try {
+        await activity.background(prompt);
+      } catch (e) {
+        if (chat === view) { input.value = text; grow(); }
+        banner("Could not start the background prompt: " + e.message, true);
+      }
+      return;
+    }
     const files = attachments.take();
     const shown = files.map((a) => ({ name: a.file.name || "attachment", image: a.image,
       url: a.url ? URL.createObjectURL(a.file) : "", pdf: a.pdf, pages: a.pages }));
@@ -2533,6 +2590,7 @@
     if (view && view.backend === j.b && view.session === j.s) view.jumpTo();
   },
     closeSide: () => openSide(false) });
+  const activity = window.HubActivity({ api, el, showText });
   const claude = window.HubClaude({ api, el, me: () => me, redraw: () => { if (view) drawInfo(view.info); } });
   const usage = window.HubUsage({ api, el, chatHash, defaultBackend: () => me.default_backend || "",
     claudePanel: (b) => (me.claude ? claude.panel(b) : Promise.resolve(null)) });
