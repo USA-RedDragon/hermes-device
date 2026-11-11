@@ -56,13 +56,13 @@ func newUpdateCommand(b *base) *cobra.Command {
 				return err
 			}
 			if errors.Is(err, setup.ErrUpToDate) {
-				_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s is %s, the latest release.\n", target, tag)
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s is %s, the latest release.\n%s", target, tag, pathHint(sys, target))
 				return err
 			}
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Installed %s at %s.\n", tag, target)
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Installed %s at %s.\n%s", tag, target, pathHint(sys, target))
 			return err
 		},
 	}
@@ -96,6 +96,27 @@ func (b *base) updateTarget(cmd *cobra.Command, sys *setup.System) (string, stri
 		return "", "", fmt.Errorf("read the version of %s: %w", installed, err)
 	}
 	return installed, v, nil
+}
+
+// pathHint is a line that says how to put the install directory on PATH,
+// when update runs in a terminal, target is the binary setup installed and
+// PATH lacks its directory. Else it is "".
+func pathHint(sys *setup.System, target string) string {
+	if !sys.Interactive {
+		return ""
+	}
+	dir := filepath.Join(sys.Home, setup.BinDir)
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		resolved = dir
+	}
+	if d := filepath.Dir(target); d != dir && d != resolved {
+		return ""
+	}
+	if hint := sys.PathHint(filepath.Join(dir, setup.BinaryName)); hint != "" {
+		return hint + "\n"
+	}
+	return ""
 }
 
 // goarm is the ARM version this binary was built for, as the release

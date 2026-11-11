@@ -209,6 +209,11 @@ func (s *System) migrateBinary(p migratePaths, m *Migration) error {
 				return err
 			}
 			m.moved(p.legacyBin, p.bin)
+			// Migrate runs without a terminal to ask in, and setup changes
+			// shell files only with a yes, so it only says what to run.
+			if hint := s.PathHint(p.bin); hint != "" {
+				m.note("%s", hint)
+			}
 		}
 		if err := replaceWithLink(p.legacyBin, p.bin); err != nil {
 			return err

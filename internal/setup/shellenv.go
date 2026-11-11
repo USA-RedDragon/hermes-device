@@ -137,6 +137,22 @@ func (s *System) CheckShell(ctx context.Context, binDir string) (*ShellReport, e
 	return r, nil
 }
 
+// PathHint is one line that tells the user to run bin's setup to put
+// bin's directory on PATH, or "" when this process's PATH has it.
+func (s *System) PathHint(bin string) string {
+	dir := filepath.Dir(bin)
+	if s.OnPath(dir) {
+		return ""
+	}
+	tilde := func(p string) string {
+		if rest, ok := strings.CutPrefix(p, s.Home+"/"); ok {
+			return "~/" + rest
+		}
+		return p
+	}
+	return fmt.Sprintf("%s is not on PATH, so the talaria and tal commands are \"not found\" in a terminal. Run %s setup to add it.", tilde(dir), tilde(bin))
+}
+
 // OnPath reports whether dir is on this process's PATH.
 func (s *System) OnPath(dir string) bool {
 	return onPath(strings.Split(s.Getenv("PATH"), ":"), dir)

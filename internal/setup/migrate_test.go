@@ -102,6 +102,9 @@ func TestMigrateMovesEverything(t *testing.T) {
 	if readFile(t, l.bin) != "binary" {
 		t.Error("binary not moved")
 	}
+	if !slices.Contains(m.Notes, `~/.talaria/bin is not on PATH, so the talaria and tal commands are "not found" in a terminal. Run ~/.talaria/bin/talaria setup to add it.`) {
+		t.Errorf("no PATH note in %q", m.Notes)
+	}
 	for link, want := range map[string]string{l.legacyBin: l.bin, l.alias: "talaria"} {
 		if got, err := os.Readlink(link); err != nil || got != want {
 			t.Errorf("%s links to %q (%v), want %q", link, got, err, want)
@@ -286,5 +289,25 @@ func TestMigrateHostNeedsTheBinary(t *testing.T) {
 	}
 	if readFile(t, mf) != body || exists(filepath.Join(filepath.Dir(mf), "talaria.json")) {
 		t.Error("rewrote the host manifest without a talaria binary")
+	}
+}
+
+func TestMigrateNoPathNoteWhenOnPath(t *testing.T) {
+	t.Parallel()
+	l := newLegacyLayout(t)
+	l.sys.Getenv = func(k string) string {
+		if k == "PATH" {
+			return "/usr/bin:" + filepath.Dir(l.bin)
+		}
+		return ""
+	}
+	m, err := l.sys.Migrate(t.Context(), setup.MigrateOptions{KeepService: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range m.Notes {
+		if strings.Contains(n, "PATH") {
+			t.Errorf("note %q", n)
+		}
 	}
 }
