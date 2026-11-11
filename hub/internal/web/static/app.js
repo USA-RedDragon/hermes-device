@@ -514,7 +514,10 @@
     // from somewhere else while Hermes is away.
     heldEvent(d) {
       let p = this.pending.find((x) => x.id === d.id);
-      if (!p) p = this.pending.find((x) => !x.id && !x.admitted && sameText(x.text, d.text || ""));
+      if (!p) {
+        const typed = splitAttachments(d.text || "").text;
+        p = this.pending.find((x) => !x.id && !x.admitted && sameText(x.text, typed));
+      }
       if (!p) {
         this.userText(d.text || "", true);
         p = this.pending[this.pending.length - 1];
@@ -544,7 +547,7 @@
       const box = el("div", "lost");
       box.append(el("div", "", t("notsent") + (d.message ? " " + d.message : "")));
       if (!p && text) box.append(el("div", "lost-text", text));
-      if (text) {
+      if (text || (p && p.files && p.files.length)) {
         const b = el("button", "", t("again"));
         b.type = "button";
         b.onclick = () => resend(this, text, p, box);
@@ -881,7 +884,8 @@
   // the gateway's image hints and placeholders (agent/image_routing.py,
   // agent/image_replay.py), @image refs, inline image data, and the hub's
   // note for a file (hub.FileNote).
-  const imageHint = /^\[Image attached at: (.+)\]$/;
+  const imageHint = /^\[Image attached(?: at)?: (.+)\]$/;
+  const defaultCaption = "What do you see in this image?";
   const imageRef = /^@image:(?:`([^`]+)`|"([^"]+)"|'([^']+)'|(\S+))$/;
   const imageData = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/;
   const placeholder = /^\[screenshot(?: detail=\w+)?\]$/;
@@ -902,7 +906,9 @@
       else if (!placeholder.test(line)) keep.push(line);
     }
     if (!atts.length) return { text, atts };
-    return { text: keep.join("\n").trim(), atts };
+    let rest = keep.join("\n").trim();
+    if (rest === defaultCaption && atts.some((a) => a.image)) rest = "";
+    return { text: rest, atts };
   }
 
   // attachmentRow shows a message's attachments: a thumbnail when the page
@@ -1325,6 +1331,8 @@
     const shown = files.map((a) => ({ name: a.file.name || "attachment", image: a.image,
       url: a.url ? URL.createObjectURL(a.file) : "" }));
     const bubble = chat.userText(text, true, files.length ? shown : undefined);
+    const mine = chat.pending.find((x) => x.bubble === bubble);
+    if (mine) mine.files = files.map((a) => a.file);
     chat.bottom();
     input.value = "";
     grow();
@@ -1333,6 +1341,7 @@
       body = new FormData();
       body.append("text", text);
       for (const a of files) body.append("file", a.file, a.file.name || "attachment");
+      sending++;
       $("send").disabled = true;
     }
     try {
@@ -1349,13 +1358,20 @@
     } catch (e) {
       bubble.remove();
       chat.pending = chat.pending.filter((p) => p.bubble !== bubble);
-      input.value = text;
-      if (chat === view) attachments.restore(files);
+      for (const a of shown) if (a.url) URL.revokeObjectURL(a.url);
+      if (chat === view) {
+        input.value = text;
+        attachments.restore(files);
+      } else {
+        for (const a of files) if (a.url) URL.revokeObjectURL(a.url);
+      }
       banner("Could not send: " + e.message, true);
     } finally {
-      $("send").disabled = false;
+      if (files.length) sending--;
+      $("send").disabled = sending > 0;
     }
   }
+  let sending = 0;
 
   function dropZone() {
     const form = $("composer");
@@ -1384,7 +1400,11 @@
     $("input").addEventListener("paste", (e) => {
       const files = Array.from((e.clipboardData && e.clipboardData.files) || []);
       if (!files.length) return;
-      if (!e.clipboardData.types.includes("text/plain")) e.preventDefault();
+      if (e.clipboardData.types.includes("text/plain")) {
+        if (files.every((f) => imageTypes.includes(f.type))) return;
+      } else {
+        e.preventDefault();
+      }
       attachments.add(files);
     });
   }
@@ -1403,6 +1423,7 @@
     if (p) {
       p.bubble.remove();
       chat.failed = chat.failed.filter((x) => x !== p);
+      if (p.files && p.files.length) attachments.add(p.files);
     }
     $("input").value = text;
     send({ preventDefault() {} });
