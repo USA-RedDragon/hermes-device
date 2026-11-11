@@ -222,8 +222,75 @@ func TestLearned(t *testing.T) {
 	}
 	e.honcho.Cards["hermes>"+bob] = []string{"Name: Bob", "Uses Flux"}
 	info, err := e.svc.LearnedInfo(ctx, bob, homeID)
-	if err != nil || info.Workspace != "bobs" || info.Total != 2 || info.Hermes != 1 || info.Self != 1 || len(info.Card) != 2 {
+	if err != nil || info.Workspace != "bobs" || info.Total != 2 || info.Copies != 2 || info.Hermes != 1 || info.Self != 1 ||
+		info.Both != 0 || len(info.Card) != 2 {
 		t.Fatalf("info = %+v, %v", info, err)
+	}
+}
+
+func TestLearnedPairs(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	ctx := context.Background()
+	a := e.honcho.Add("hermes", bob, "Bob uses zstd.", "s1")
+	b := e.honcho.Add(bob, bob, "  bob USES   zstd. ", "")
+	e.honcho.Add(bob, bob, "Bob uses zstd!", "")
+	e.honcho.Add("hermes", bob, "Bob has a cat.", "")
+	e.honcho.Add("carol", bob, "Bob uses zstd.", "")
+	p, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Oldest: true})
+	if err != nil || p.Total != 3 || p.Copies != 4 || len(p.Items) != 3 {
+		t.Fatalf("all = %+v, %v", p, err)
+	}
+	pair := p.Items[0]
+	if pair.ID != a || !slices.Equal(pair.IDs, []string{a, b}) || pair.View != hub.ViewBoth || pair.SessionID != "s1" || pair.Content != "Bob uses zstd." {
+		t.Fatalf("pair = %+v", pair)
+	}
+	if p.Items[1].View != hub.ViewSelf || len(p.Items[1].IDs) != 1 {
+		t.Fatalf("punctuation must not pair: %+v", p.Items[1])
+	}
+	for _, v := range []string{hub.ViewHermes, hub.ViewSelf} {
+		p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{View: v, Oldest: true})
+		if err != nil || p.Total != 2 || p.Items[0].ID != a || len(p.Items[0].IDs) != 2 {
+			t.Fatalf("%s = %+v, %v", v, p, err)
+		}
+	}
+	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: "zstd."})
+	if err != nil || p.Total != 1 || p.Copies != 2 || p.Items[0].View != hub.ViewBoth {
+		t.Fatalf("search = %+v, %v", p, err)
+	}
+	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Query: "zstd.", View: hub.ViewSelf})
+	if err != nil || p.Total != 1 || len(p.Items[0].IDs) != 2 {
+		t.Fatalf("self search = %+v, %v", p, err)
+	}
+	info, err := e.svc.LearnedInfo(ctx, bob, homeID)
+	if err != nil || info.Total != 3 || info.Copies != 4 || info.Both != 1 || info.Hermes != 2 || info.Self != 2 {
+		t.Fatalf("info = %+v, %v", info, err)
+	}
+	n, err := e.svc.DeleteLearned(ctx, bob, homeID, pair.IDs)
+	if err != nil || n != 2 {
+		t.Fatalf("delete pair = %d, %v", n, err)
+	}
+	if p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{}); err != nil || p.Total != 2 || p.Copies != 2 {
+		t.Fatalf("after delete = %+v, %v", p, err)
+	}
+}
+
+func TestLearnedPages(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	ctx := context.Background()
+	for i := range 130 {
+		text := fmt.Sprintf("fact %d", i)
+		e.honcho.Add("hermes", bob, text, "")
+		e.honcho.Add(bob, bob, text, "")
+	}
+	p, err := e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{})
+	if err != nil || p.Total != 130 || p.Copies != 260 || p.Pages != 2 || len(p.Items) != 100 || p.Items[0].Content != "fact 129" {
+		t.Fatalf("page 1 = %d items, %+v, %v", len(p.Items), p.Total, err)
+	}
+	p, err = e.svc.Learned(ctx, bob, homeID, hub.LearnedQuery{Page: 2})
+	if err != nil || len(p.Items) != 30 || p.Items[29].Content != "fact 0" || len(p.Items[29].IDs) != 2 {
+		t.Fatalf("page 2 = %+v, %v", p, err)
 	}
 }
 

@@ -23,11 +23,13 @@ const (
 )
 
 // Learned views: every conclusion about the user, Hermes's view of the
-// user, or the user's own words.
+// user, or the user's own words. ViewBoth marks a fact stored once in each
+// of the two views.
 const (
 	ViewAll    = "all"
 	ViewHermes = "hermes"
 	ViewSelf   = "self"
+	ViewBoth   = "both"
 )
 
 // MaxLearnedDelete bounds the conclusions one delete may remove.
@@ -80,9 +82,13 @@ type NoteChange struct {
 	Entry   string `json:"entry"`
 }
 
-// Conclusion is one fact Honcho drew from the user's chats.
+// Conclusion is one fact Honcho drew from the user's chats. On the
+// Learned tab it is one distinct fact: IDs holds every stored copy of it,
+// ID the oldest, and View is ViewBoth when both views hold a copy. An exported conclusion is one
+// stored copy and has no IDs.
 type Conclusion struct {
 	ID        string    `json:"id"`
+	IDs       []string  `json:"ids,omitempty"`
 	Content   string    `json:"content"`
 	View      string    `json:"view"`
 	SessionID string    `json:"session_id,omitempty"`
@@ -99,20 +105,30 @@ type LearnedQuery struct {
 	Oldest bool
 }
 
-// LearnedPage is one page of conclusions. Pages is 0 for a search.
+// LearnedPage is one page of distinct facts. Pages is 0 for a search.
+// Total counts the distinct facts that match and Copies their stored
+// copies. Partial is true when the user has more stored copies
+// than the hub reads, so the oldest are left out.
 type LearnedPage struct {
-	Items []Conclusion `json:"items"`
-	Total int          `json:"total"`
-	Page  int          `json:"page"`
-	Pages int          `json:"pages"`
+	Items   []Conclusion `json:"items"`
+	Total   int          `json:"total"`
+	Copies  int          `json:"copies"`
+	Page    int          `json:"page"`
+	Pages   int          `json:"pages"`
+	Partial bool         `json:"partial,omitempty"`
 }
 
-// LearnedInfo is the Advanced part of the Learned tab.
+// LearnedInfo is the Advanced part of the Learned tab. Total, Hermes, Self
+// and Both count distinct facts; Copies counts stored
+// copies.
 type LearnedInfo struct {
 	Workspace string   `json:"workspace"`
 	Total     int      `json:"total"`
+	Copies    int      `json:"copies"`
 	Hermes    int      `json:"hermes"`
 	Self      int      `json:"self"`
+	Both      int      `json:"both"`
+	Partial   bool     `json:"partial,omitempty"`
 	Card      []string `json:"card"`
 }
 

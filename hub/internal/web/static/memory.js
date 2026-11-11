@@ -33,7 +33,7 @@ window.HubMemory = (ctx) => {
   let learned = null;
 
   function freshLearned() {
-    return { q: "", view: "all", oldest: false, items: [], page: 0, pages: 0, total: 0, loading: false, err: "",
+    return { q: "", view: "all", oldest: false, items: [], page: 0, pages: 0, total: 0, partial: false, loading: false, err: "",
       sel: new Set(), confirm: false, info: null, infoErr: "", card: false, adding: false, gen: 0, armed: "" };
   }
 
@@ -382,6 +382,7 @@ window.HubMemory = (ctx) => {
   }
 
   // Learned facts.
+
   function day(iso) {
     const d = new Date(iso);
     if (isNaN(d)) return "";
@@ -417,6 +418,7 @@ window.HubMemory = (ctx) => {
       L.page = p.page;
       L.pages = p.pages;
       L.total = p.total;
+      L.partial = !!p.partial;
     } catch (e) {
       if (gen !== L.gen || L !== learned) return;
       L.err = e.message;
@@ -471,6 +473,7 @@ window.HubMemory = (ctx) => {
       chip("Hermes's view", L.view === "hermes", () => { L.view = L.view === "hermes" ? "all" : "hermes"; loadFacts(true); }),
       chip("Your own words", L.view === "self", () => { L.view = L.view === "self" ? "all" : "self"; loadFacts(true); }));
     body.append(f);
+    if (L.partial) body.append(el("p", "mem-hint", "You have more than 10,000 stored facts. Only the newest 10,000 show here."));
     status(body);
     if (L.sel.size) body.append(selBar(L));
     if (L.err) body.append(el("p", "mem-note bad", "Could not load what Hermes learned: " + L.err));
@@ -490,12 +493,19 @@ window.HubMemory = (ctx) => {
     body.append(advancedLearned(L));
   }
 
+  // copies lists the stored copies of the facts with these ids.
+  function copies(L, ids) {
+    const want = new Set(ids);
+    return L.items.filter((c) => want.has(c.id)).flatMap((c) => c.ids && c.ids.length ? c.ids : [c.id]);
+  }
+
   function selBar(L) {
     const bar = el("div", "mem-selbar");
     const n = L.sel.size;
     const word = n === 1 ? "fact" : "facts";
     if (L.confirm) {
-      bar.append(el("span", "", "Delete " + fmt(n) + " " + word + " for good? This cannot be undone."),
+      const m = copies(L, [...L.sel]).length;
+      bar.append(el("span", "", "Delete " + fmt(n) + " " + word + (m > n ? " (" + fmt(m) + " stored copies)" : "") + " for good? This cannot be undone."),
         btn("", "Cancel", () => { L.confirm = false; draw(); }),
         btn("danger", "Delete " + fmt(n) + " " + word, () => deleteFacts(L, [...L.sel])));
     } else {
@@ -505,7 +515,10 @@ window.HubMemory = (ctx) => {
     return bar;
   }
 
-  async function deleteFacts(L, ids) {
+  // deleteFacts deletes every stored copy of the facts with these ids, at
+  // most 100 copies a request.
+  async function deleteFacts(L, factIDs) {
+    const ids = copies(L, factIDs);
     if (ui.busy || !ids.length) return;
     ui.busy = true;
     ui.note = "";
@@ -516,7 +529,8 @@ window.HubMemory = (ctx) => {
         const r = await api("POST", path("/learned/delete"), { ids: ids.slice(i, i + 100) });
         deleted += r.deleted;
       }
-      ui.note = "Deleted " + fmt(deleted) + " " + (deleted === 1 ? "fact." : "facts.");
+      const n = factIDs.length;
+      ui.note = "Deleted " + fmt(n) + " " + (n === 1 ? "fact" : "facts") + (deleted > n ? " (" + fmt(deleted) + " stored copies)." : ".");
       ui.bad = false;
     } catch (e) {
       ui.note = "Could not delete every fact: " + e.message;
@@ -544,6 +558,11 @@ window.HubMemory = (ctx) => {
     const meta = el("div", "meta");
     meta.append(el("span", "", day(c.created_at)));
     meta.append(el("span", "", c.view === "self" ? "Your own words" : c.view === "hermes" ? "Hermes's view" : ""));
+    if (c.view === "both") {
+      const t = el("span", "mem-tag", "Both views");
+      t.title = "Stored twice: once as Hermes's view and once in your own words. Delete removes both.";
+      meta.append(t);
+    }
     const title = c.session_id ? chatTitle(c.session_id) : "";
     if (title) {
       const a = el("a", "", "from “" + title + "”");
@@ -568,7 +587,9 @@ window.HubMemory = (ctx) => {
       const dl = el("dl");
       const add = (k, v) => dl.append(el("dt", "", k), el("dd", "", v));
       add("Stored in", "Honcho, workspace “" + L.info.workspace + "”");
-      add("Total facts", fmt(L.info.total) + " (Hermes's view " + fmt(L.info.hermes) + ", your own words " + fmt(L.info.self) + ")");
+      add("Facts", fmt(L.info.total) + " (" + fmt(L.info.copies) + " stored " + (L.info.copies === 1 ? "copy" : "copies") + ")");
+      add("Views", "Hermes's view " + fmt(L.info.hermes) + ", your own words " + fmt(L.info.self) + ", both " + fmt(L.info.both));
+      if (L.info.partial) add("Counted", "The newest 10,000 stored copies");
       add("Profile card", fmt(L.info.card.length) + (L.info.card.length === 1 ? " line" : " lines"));
       d.append(dl);
     }

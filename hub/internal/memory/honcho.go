@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 )
@@ -27,6 +29,11 @@ const (
 	// searchSize is how many results a search returns for each observer,
 	// the most Honcho allows.
 	searchSize = 100
+	// maxReadPages bounds the pages read to pair copies and count facts,
+	// at 10,000 stored conclusions.
+	maxReadPages = 100
+	// readWorkers is how many pages are read at once.
+	readWorkers = 8
 	// maxFact bounds the text of a fact a user adds.
 	maxFact = 4000
 )
@@ -83,19 +90,10 @@ func (h *honcho) conclusion(c conclusionJSON) hub.Conclusion {
 	return out
 }
 
-// filters selects conclusions Hermes or the user drew about the user, in
-// one view. Conclusions of other peers in the workspace never show.
-func (h *honcho) filters(view string) map[string]any {
-	f := map[string]any{"observed_id": h.user}
-	switch view {
-	case hub.ViewHermes:
-		f["observer_id"] = h.ai
-	case hub.ViewSelf:
-		f["observer_id"] = h.user
-	default:
-		f["observer_id"] = map[string][]string{"in": {h.ai, h.user}}
-	}
-	return f
+// filters selects the conclusions Hermes or the user drew about the user.
+// Conclusions of other peers in the workspace never show.
+func (h *honcho) filters() map[string]any {
+	return map[string]any{"observed_id": h.user, "observer_id": map[string][]string{"in": {h.ai, h.user}}}
 }
 
 // about is true for a conclusion Hermes or the user drew about the user.
@@ -160,22 +158,24 @@ func (h *honcho) do(ctx context.Context, method, path, notFound string, q url.Va
 	return nil
 }
 
-func (h *honcho) list(ctx context.Context, view string, page, size int, oldest bool) (pageJSON, error) {
-	q := url.Values{"page": {strconv.Itoa(page)}, "size": {strconv.Itoa(size)}}
+// list reads one page of the conclusions about the user.
+func (h *honcho) list(ctx context.Context, page int, oldest bool) (pageJSON, error) {
+	q := url.Values{"page": {strconv.Itoa(page)}, "size": {strconv.Itoa(pageSize)}}
 	if oldest {
 		q.Set("reverse", "true")
 	}
 	var out pageJSON
-	err := h.do(ctx, http.MethodPost, h.path("conclusions", "list"), msgNoWorkspace, q, map[string]any{"filters": h.filters(view)}, &out)
+	err := h.do(ctx, http.MethodPost, h.path("conclusions", "list"), msgNoWorkspace, q, map[string]any{"filters": h.filters()}, &out)
 	return out, err
 }
 
 // query searches by meaning the conclusions one observer drew about the
 // user. Honcho's search takes one observer only.
 func (h *honcho) query(ctx context.Context, observer, text string) ([]conclusionJSON, error) {
+	f := map[string]any{"observed_id": h.user, "observer_id": observer}
 	var out []conclusionJSON
 	err := h.do(ctx, http.MethodPost, h.path("conclusions", "query"), msgNoWorkspace, nil,
-		map[string]any{"query": text, "top_k": searchSize, "filters": map[string]any{"observed_id": h.user, "observer_id": observer}}, &out)
+		map[string]any{"query": text, "top_k": searchSize, "filters": f}, &out)
 	return out, err
 }
 
@@ -188,6 +188,38 @@ func (h *honcho) observers(view string) []string {
 		return []string{h.user}
 	}
 	return []string{h.ai, h.user}
+}
+
+// readAll reads the stored conclusions about the user, oldest first. With
+// more than maxReadPages pages it reads only the newest pages and reports
+// partial.
+func (h *honcho) readAll(ctx context.Context) ([]conclusionJSON, bool, error) {
+	first, err := h.list(ctx, 1, true)
+	if err != nil || first.Pages <= 1 {
+		return first.Items, false, err
+	}
+	start := max(first.Pages-maxReadPages+1, 1)
+	pages := make([][]conclusionJSON, first.Pages-start+1)
+	if start == 1 {
+		pages[0] = first.Items
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(readWorkers)
+	for p := max(start, 2); p <= first.Pages; p++ {
+		g.Go(func() error {
+			r, err := h.list(gctx, p, true)
+			pages[p-start] = r.Items
+			return err
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, false, err
+	}
+	var out []conclusionJSON
+	for _, p := range pages {
+		out = append(out, p...)
+	}
+	return out, start > 1, nil
 }
 
 func (h *honcho) get(ctx context.Context, id string) (conclusionJSON, error) {

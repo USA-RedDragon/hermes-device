@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -216,7 +217,9 @@ func view(v string) (string, error) {
 	return "", &hub.MemoryError{Status: http.StatusBadRequest, Message: "view must be all, hermes or self"}
 }
 
-// Learned pages through or searches the conclusions about the user.
+// Learned pages through or searches the distinct facts about the user.
+// It reads every stored copy to pair them, so counts and pages are of
+// distinct facts.
 func (s *Service) Learned(ctx context.Context, user, backendID string, q hub.LearnedQuery) (hub.LearnedPage, error) {
 	h, err := s.honcho(ctx, user, backendID)
 	if err != nil {
@@ -226,32 +229,52 @@ func (s *Service) Learned(ctx context.Context, user, backendID string, q hub.Lea
 	if err != nil {
 		return hub.LearnedPage{}, err
 	}
-	out := hub.LearnedPage{Items: []hub.Conclusion{}}
+	cs, partial, err := h.readAll(ctx)
+	if err != nil {
+		return hub.LearnedPage{}, err
+	}
+	all, byKey := h.facts(cs)
+	out := hub.LearnedPage{Items: []hub.Conclusion{}, Partial: partial}
 	if text := strings.TrimSpace(q.Query); text != "" {
 		if r := []rune(text); len(r) > 500 {
 			text = string(r[:500])
 		}
-		cs, err := s.search(ctx, h, v, text)
+		hits, err := s.search(ctx, h, v, text)
 		if err != nil {
 			return hub.LearnedPage{}, err
 		}
-		for _, c := range cs {
-			out.Items = append(out.Items, h.conclusion(c))
+		seen := map[*fact]bool{}
+		for _, c := range hits {
+			f := byKey[factKey(c.Content)]
+			if f == nil {
+				f = h.newFact(c)
+			}
+			if seen[f] || !f.in(v) {
+				continue
+			}
+			seen[f] = true
+			out.Items = append(out.Items, f.Conclusion)
+			out.Copies += len(f.IDs)
 		}
 		out.Total, out.Page = len(out.Items), 1
 		return out, nil
 	}
-	page := max(q.Page, 1)
-	p, err := h.list(ctx, v, page, pageSize, q.Oldest)
-	if err != nil {
-		return hub.LearnedPage{}, err
-	}
-	for _, c := range p.Items {
-		if h.about(c) {
-			out.Items = append(out.Items, h.conclusion(c))
+	var pick []*fact
+	for _, f := range all {
+		if f.in(v) {
+			pick = append(pick, f)
+			out.Copies += len(f.IDs)
 		}
 	}
-	out.Total, out.Page, out.Pages = p.Total, page, p.Pages
+	if !q.Oldest {
+		slices.Reverse(pick)
+	}
+	out.Total, out.Page = len(pick), max(q.Page, 1)
+	out.Pages = (len(pick) + pageSize - 1) / pageSize
+	lo := min((out.Page-1)*pageSize, len(pick))
+	for _, f := range pick[lo:min(lo+pageSize, len(pick))] {
+		out.Items = append(out.Items, f.Conclusion)
+	}
 	return out, nil
 }
 
@@ -288,23 +311,31 @@ func (s *Service) search(ctx context.Context, h *honcho, v, text string) ([]conc
 	}
 }
 
-// LearnedInfo counts the conclusions in each view and reads the profile
-// card.
+// LearnedInfo counts the distinct facts and their stored copies and reads
+// the profile card.
 func (s *Service) LearnedInfo(ctx context.Context, user, backendID string) (hub.LearnedInfo, error) {
 	h, err := s.honcho(ctx, user, backendID)
 	if err != nil {
 		return hub.LearnedInfo{}, err
 	}
-	out := hub.LearnedInfo{Workspace: h.ws}
-	for _, c := range []struct {
-		view string
-		n    *int
-	}{{hub.ViewAll, &out.Total}, {hub.ViewHermes, &out.Hermes}, {hub.ViewSelf, &out.Self}} {
-		p, err := h.list(ctx, c.view, 1, 1, false)
-		if err != nil {
-			return hub.LearnedInfo{}, err
+	cs, partial, err := h.readAll(ctx)
+	if err != nil {
+		return hub.LearnedInfo{}, err
+	}
+	out := hub.LearnedInfo{Workspace: h.ws, Partial: partial}
+	facts, _ := h.facts(cs)
+	for _, f := range facts {
+		out.Total++
+		out.Copies += len(f.IDs)
+		if f.hermes {
+			out.Hermes++
 		}
-		*c.n = p.Total
+		if f.self {
+			out.Self++
+		}
+		if f.hermes && f.self {
+			out.Both++
+		}
 	}
 	card, err := h.card(ctx)
 	if err != nil {
@@ -331,12 +362,14 @@ func (s *Service) AddLearned(ctx context.Context, user, backendID, content strin
 	if err != nil {
 		return hub.Conclusion{}, err
 	}
-	return h.conclusion(c), nil
+	return h.newFact(c).Conclusion, nil
 }
 
-// DeleteLearned deletes conclusions by id. It reads each one first and
-// deletes only those Hermes or the user drew about the user, so an id of
-// any other conclusion is refused. It stops at the first failure.
+// DeleteLearned deletes stored conclusions by id. The page sends every
+// copy of a fact, and each copy counts toward hub.MaxLearnedDelete. It
+// reads each one first and deletes only those Hermes or the user drew
+// about the user, so an id of any other conclusion is refused. It stops at
+// the first failure.
 func (s *Service) DeleteLearned(ctx context.Context, user, backendID string, ids []string) (int, error) {
 	h, err := s.honcho(ctx, user, backendID)
 	if err != nil {
@@ -377,7 +410,7 @@ func (s *Service) ExportLearned(ctx context.Context, user, backendID string, w i
 	if err != nil {
 		return err
 	}
-	p, err := h.list(ctx, hub.ViewAll, 1, pageSize, true)
+	p, err := h.list(ctx, 1, true)
 	if err != nil {
 		return err
 	}
@@ -406,7 +439,7 @@ func (s *Service) ExportLearned(ctx context.Context, user, backendID string, w i
 		if page >= p.Pages || page >= maxExportPages || len(p.Items) == 0 {
 			break
 		}
-		if p, err = h.list(ctx, hub.ViewAll, page+1, pageSize, true); err != nil {
+		if p, err = h.list(ctx, page+1, true); err != nil {
 			return err
 		}
 	}
