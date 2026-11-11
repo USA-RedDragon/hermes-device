@@ -52,6 +52,11 @@ func TestDocumentsAndAlbums(t *testing.T) {
 	if p.Text != "both" || len(p.Files) != 2 || p.Files[1].Name != "b.pdf" {
 		t.Fatalf("album prompt = %+v", p)
 	}
+	h.tg.addFile("a3", []byte("%PDF"))
+	h.tg.sendMedia(telegram.Message{Document: &telegram.File{FileID: "a3", MIMEType: "application/pdf"}})
+	if p = h.hub.waitPrompt(t, 3)[2]; len(p.Files) != 1 || p.Files[0].Name != "document.pdf" {
+		t.Fatalf("unnamed PDF prompt = %+v", p)
+	}
 }
 
 func TestTooLargeFileIsRefused(t *testing.T) {

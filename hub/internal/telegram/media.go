@@ -41,7 +41,11 @@ func mediaOf(m *Message) media {
 	}{{m.Document, "file"}, {m.Video, "video.mp4"}, {m.Audio, "audio"}, {m.Voice, "voice.ogg"}} {
 		if f.f != nil && f.f.FileID != "" {
 			name := f.f.FileName
-			if name == "" {
+			switch {
+			case name != "":
+			case f.f.MIMEType == "application/pdf":
+				name = "document.pdf"
+			default:
 				name = f.name
 			}
 			return media{id: f.f.FileID, name: hub.CleanName(name), size: f.f.FileSize}
