@@ -1047,3 +1047,12 @@ button.pchip { cursor: pointer; }
   -webkit-mask: radial-gradient(farthest-side, transparent 58%, #000 60%); mask: radial-gradient(farthest-side, transparent 58%, #000 60%); }
 .pmeters .metric.hi .meter { background: conic-gradient(var(--warn) calc(var(--p) * 1%), var(--line) 0); }
 .pmeters .metric .meter > span { display: none; }
+
+.group.pinned { position: relative; }
+.group.pinned .item { cursor: grab; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.group.pinned .item .go { -webkit-user-drag: none; }
+.group.pinned .item.lifting { z-index: 5; cursor: grabbing; background: var(--card); opacity: .96;
+  box-shadow: 0 6px 18px rgb(0 0 0 / .28), 0 0 0 1px var(--accent); }
+.pin-drop { position: absolute; left: .3rem; right: .3rem; height: 3px; border-radius: 2px; background: var(--accent);
+  box-shadow: 0 0 0 1px var(--bg); pointer-events: none; z-index: 6; }
+body.pin-dragging, body.pin-dragging * { cursor: grabbing !important; -webkit-user-select: none; user-select: none; }

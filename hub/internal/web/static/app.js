@@ -171,11 +171,23 @@
 
   const isCurrent = (s) => current && current.b === s.backend_id && current.s === s.id;
 
+  // pinnedChats are the pinned chats in the order the user set; chats
+  // pinned before pins had an order, and ties, go by recent activity.
+  function pinnedChats() {
+    if (!lastList) return [];
+    return lastList.sessions.filter((s) => s.pinned && !s.archived).sort((x, y) =>
+      ((x.pin_pos || 0) - (y.pin_pos || 0)) || (Date.parse(y.updated_at) - Date.parse(x.updated_at)));
+  }
+
   function drawList() {
-    if (!lastList) return;
+    if (!lastList || pinOrder.defer()) return;
     const { backends, sessions } = lastList;
     menuOpen = false;
     const nav = $("sessions");
+    const held = document.activeElement;
+    const heldRow = held && held.closest && nav.contains(held) ? held.closest(".item") : null;
+    const heldKey = heldRow && heldRow.dataset.key;
+    const heldMore = !!held && held.classList.contains("more");
     nav.replaceChildren();
     if (!backends.length) {
       nav.append(el("p", "none", "No assistant is set up for you yet."));
@@ -189,13 +201,15 @@
     const order = (x, y) => (y.running - x.running) || (Date.parse(y.updated_at) - Date.parse(x.updated_at));
     const many = backends.length > 1;
     let found = 0;
-    const pinned = sessions.filter((s) => s.pinned && !s.archived && match(s)).sort(order);
+    const pinned = pinnedChats().filter(match);
     if (pinned.length) {
       const group = el("div", "group pinned");
       const h = el("div", "group-head");
       h.append(el("span", "grow", "Pinned"));
+      h.title = q ? "Clear the search to reorder pins" : "Drag to reorder. On a touch screen, press and hold a chat first.";
       group.append(h);
       for (const s of pinned) group.append(chatItem(s, many));
+      if (!q) pinOrder.enable(group);
       found += pinned.length;
       nav.append(group);
     }
@@ -225,6 +239,7 @@
     if (open) chats.seen(open);
     if (sideTop !== null) { nav.scrollTop = sideTop; sideTop = null; }
     search.draw(nav);
+    if (heldKey) refocus(heldKey, heldMore);
     const archived = sessions.filter((s) => s.archived).sort(order);
     if (archived.length) {
       const tg = el("button", "link archived-toggle", (showArchived ? "Hide" : "Show") + " archived chats (" + archived.length + ")");
@@ -239,11 +254,24 @@
     }
   }
 
+  // refocus puts keyboard focus back on a row after the list was redrawn:
+  // on its Options button when it was there, else on the chat.
+  function refocus(key, onMore) {
+    const row = Array.from(document.querySelectorAll("#sessions .item")).find((r) => r.dataset.key === key);
+    const go = row && row.querySelector(".go");
+    const more = row && row.querySelector(".more");
+    if (!go) return;
+    go.focus();
+    if (onMore && more) more.focus();
+  }
+
   function chatItem(s, many) {
     const row = el("div", "item" + (s.unread && !s.running ? " unread" : ""));
+    row.dataset.key = s.backend_id + "\n" + s.id;
     if (isCurrent(s)) row.classList.add("active");
     const a = el("a", "go");
     a.href = chatHash(s.backend_id, s.id);
+    if (s.pinned && !s.archived) a.draggable = false;
     a.append(chats.mark(s));
     const badge = s.activity > 0 ? el("span", "badge", String(s.activity)) : null;
     if (badge) badge.title = s.activity + " running beside this chat: subagents and background commands";
@@ -346,7 +374,7 @@
     });
     rename.setAttribute("role", "menuitem");
     archive.setAttribute("role", "menuitem");
-    menu.append(...extra.top, rename, extra.export, archive);
+    menu.append(...extra.top, ...(s.archived ? [] : pinOrder.items(s, close)), rename, extra.export, archive);
     const p = placeOf(s);
     if (computers.some((c) => c.backend_id === s.backend_id)) {
       menu.append(button("", "Move to computer...", () => { close(); picker.open({ move: s, place: p }); }));
@@ -3150,6 +3178,10 @@
   const chats = window.HubChatList({ api, el, toast, banner, refresh: () => refreshList(),
     exportChat: (b, s, title) => msgActs.exportChat(b, s, title), computers: () => computers,
     newChat: () => newChat(), pickFolder: (c) => { openSide(false); picker.open({ computer: c }); }, me: () => me });
+
+  const pinOrder = window.HubPinOrder({ api, el, toast, banner, pinned: pinnedChats, redraw: () => drawList(), refresh: () => refreshList(),
+    nav: () => $("sessions"),
+    onMoved: (s, byKeyboard) => { if (byKeyboard) refocus(s.backend_id + "\n" + s.id, true); } });
 
   const page = pageMode ? window.HubPageChat({ api, el, toast, banner, view: () => view,
     sessions: () => (lastList ? lastList.sessions : []), open: (b, s) => { location.hash = chatHash(b, s); },
