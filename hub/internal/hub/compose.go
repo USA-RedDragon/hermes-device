@@ -1,9 +1,11 @@
 package hub
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -107,6 +109,9 @@ type Redirector interface {
 // has no read time for it.
 type ChatMark struct {
 	Pinned bool
+	// PinPos orders pinned chats, lowest first. Chats pinned before pins
+	// had an order all hold 0.
+	PinPos int64
 	SeenAt time.Time
 	// Unread is a chat the user marked unread by hand.
 	Unread bool
@@ -120,7 +125,13 @@ type ChatStore interface {
 	Draft(ctx context.Context, user, backendID, sessionID string) (text string, updated time.Time, err error)
 	// SetDraft saves a draft; "" deletes it.
 	SetDraft(ctx context.Context, user, backendID, sessionID, text string) error
+	// SetPinned pins or unpins a chat. A chat pinned now goes first among
+	// the user's pins; unpinning drops it from the order.
 	SetPinned(ctx context.Context, user, backendID, sessionID string, pinned bool) error
+	// SetPinOrder puts the user's pinned chats named in order first, in
+	// that order. Names of chats that are not pinned are ignored, and
+	// pinned chats not named follow in their old order.
+	SetPinOrder(ctx context.Context, user string, order []SessionRef) error
 	// MarkRead moves the chat's read time to at, never back and never past
 	// now, and clears a hand-set unread mark.
 	MarkRead(ctx context.Context, user, backendID, sessionID string, at time.Time) error
@@ -169,4 +180,23 @@ func SlashCommand(text string) (name, arg string, ok bool) {
 		return "", "", false
 	}
 	return name, arg, true
+}
+
+// PinnedFirst sorts list for a chat list: the user's pinned chats first, in
+// their pin order, then the rest. Within a group, and among pins that have
+// no order yet, the most recently updated chat comes first.
+func PinnedFirst(list []Session, marks map[SessionRef]ChatMark) {
+	slices.SortStableFunc(list, func(x, y Session) int {
+		mx, my := marks[SessionRef{BackendID: x.BackendID, SessionID: x.ID}], marks[SessionRef{BackendID: y.BackendID, SessionID: y.ID}]
+		switch {
+		case mx.Pinned != my.Pinned:
+			if mx.Pinned {
+				return -1
+			}
+			return 1
+		case mx.Pinned && mx.PinPos != my.PinPos:
+			return cmp.Compare(mx.PinPos, my.PinPos)
+		}
+		return y.UpdatedAt.Compare(x.UpdatedAt)
+	})
 }

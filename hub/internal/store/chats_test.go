@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -170,5 +171,148 @@ func TestUnreadRule(t *testing.T) {
 		if got := c.mark.IsUnread(c.s, base); got != c.want {
 			t.Errorf("%s: unread = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+func pinOrder(t *testing.T, s *store.Store, user string) []string {
+	t.Helper()
+	marks, _, err := s.ChatMarks(context.Background(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []hub.Session
+	for ref, m := range marks {
+		if m.Pinned {
+			list = append(list, hub.Session{ID: ref.SessionID, BackendID: ref.BackendID})
+		}
+	}
+	hub.PinnedFirst(list, marks)
+	out := make([]string, 0, len(list))
+	for _, x := range list {
+		out = append(out, x.ID)
+	}
+	return out
+}
+
+func refs(ids ...string) []hub.SessionRef {
+	out := make([]hub.SessionRef, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, hub.SessionRef{BackendID: backendB, SessionID: id})
+	}
+	return out
+}
+
+func TestPinOrder(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		for _, id := range []string{"a", "b", "c"} {
+			if err := s.SetPinned(ctx, userCarol, backendB, id, true); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := strings.Join(pinOrder(t, s, userCarol), ","); got != "c,b,a" {
+			t.Fatalf("new pins go first: %s, want c,b,a", got)
+		}
+		if err := s.SetPinOrder(ctx, userCarol, refs("b", "a", "c")); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(pinOrder(t, s, userCarol), ","); got != "b,a,c" {
+			t.Fatalf("after reorder: %s", got)
+		}
+		if err := s.SetPinned(ctx, userCarol, backendB, "a", true); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(pinOrder(t, s, userCarol), ","); got != "b,a,c" {
+			t.Fatalf("pinning a pinned chat moved it: %s", got)
+		}
+		if err := s.SetPinned(ctx, userCarol, backendB, "a", false); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(pinOrder(t, s, userCarol), ","); got != "b,c" {
+			t.Fatalf("after unpin: %s", got)
+		}
+		if err := s.SetPinned(ctx, userCarol, backendB, "a", true); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(pinOrder(t, s, userCarol), ","); got != "a,b,c" {
+			t.Fatalf("pinned again goes first: %s", got)
+		}
+		marks, _, _ := s.ChatMarks(ctx, userCarol)
+		if err := s.SetPinned(ctx, userCarol, backendB, "c", false); err != nil {
+			t.Fatal(err)
+		}
+		if m := mustMark(t, s, "c"); m.PinPos != 0 || m.Pinned {
+			t.Fatalf("unpinned mark = %+v (was %+v)", m, marks[refs("c")[0]])
+		}
+		if err := s.SetPinOrder(ctx, userCarol, refs("c", "b", "nope", "b")); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(pinOrder(t, s, userCarol), ","); got != "b,a" {
+			t.Fatalf("unpinned and unknown names are ignored, unnamed pins follow: %s", got)
+		}
+	})
+}
+
+func mustMark(t *testing.T, s *store.Store, id string) hub.ChatMark {
+	t.Helper()
+	marks, _, err := s.ChatMarks(context.Background(), userCarol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return marks[hub.SessionRef{BackendID: backendB, SessionID: id}]
+}
+
+func TestPinOrderIsPerUser(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		for _, u := range []string{userCarol, "dave"} {
+			for _, id := range []string{"a", "b"} {
+				if err := s.SetPinned(ctx, u, backendB, id, true); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := s.SetPinOrder(ctx, "dave", refs("a", "b")); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(pinOrder(t, s, userCarol), ","); got != "b,a" {
+			t.Fatalf("carol's order changed: %s", got)
+		}
+		if err := s.SetPinOrder(ctx, "erin", refs("a", "b")); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(pinOrder(t, s, "dave"), ","); got != "a,b" {
+			t.Fatalf("dave's order = %s", got)
+		}
+	})
+}
+
+func TestPinnedFirstKeepsActivityOrder(t *testing.T) {
+	t.Parallel()
+	at := func(n int64) time.Time { return time.Unix(n, 0) }
+	list := []hub.Session{
+		{ID: "r-new", BackendID: backendB, UpdatedAt: at(50)},
+		{ID: "p-old", BackendID: backendB, UpdatedAt: at(10)},
+		{ID: "r-old", BackendID: backendB, UpdatedAt: at(5)},
+		{ID: "p-new", BackendID: backendB, UpdatedAt: at(40)},
+		{ID: "p-first", BackendID: backendB, UpdatedAt: at(1)},
+	}
+	marks := map[hub.SessionRef]hub.ChatMark{
+		{BackendID: backendB, SessionID: "p-old"}:   {Pinned: true},
+		{BackendID: backendB, SessionID: "p-new"}:   {Pinned: true},
+		{BackendID: backendB, SessionID: "p-first"}: {Pinned: true, PinPos: -1},
+	}
+	hub.PinnedFirst(list, marks)
+	ids := make([]string, 0, len(list))
+	for _, x := range list {
+		ids = append(ids, x.ID)
+	}
+	if got := strings.Join(ids, ","); got != "p-first,p-new,p-old,r-new,r-old" {
+		t.Fatalf("order = %s", got)
+	}
+	if !list[3].UpdatedAt.Equal(at(50)) {
+		t.Fatalf("activity time changed")
 	}
 }

@@ -39,11 +39,75 @@ func (s *Store) SetDraft(ctx context.Context, user, backendID, sessionID, text s
 		user, backendID, sessionID, text, s.now().UnixMilli())
 }
 
-// SetPinned pins or unpins a chat for user.
+// SetPinned pins or unpins a chat for user. A chat pinned now goes before
+// every other pin; a chat that is pinned already keeps its place; unpinning
+// resets the place.
 func (s *Store) SetPinned(ctx context.Context, user, backendID, sessionID string, pinned bool) error {
-	return s.exec(ctx, `INSERT INTO chat_marks ("user", backend_id, session_id, pinned) VALUES (?, ?, ?, ?)
-		ON CONFLICT ("user", backend_id, session_id) DO UPDATE SET pinned = excluded.pinned`,
-		user, backendID, sessionID, boolInt(pinned))
+	return s.exec(ctx, `INSERT INTO chat_marks ("user", backend_id, session_id, pinned, pin_pos)
+		VALUES (?, ?, ?, ?, (SELECT COALESCE(MIN(pin_pos), 0) - 1 FROM chat_marks WHERE "user" = ? AND pinned = 1))
+		ON CONFLICT ("user", backend_id, session_id) DO UPDATE SET pinned = excluded.pinned,
+		pin_pos = CASE WHEN excluded.pinned = 0 THEN 0 WHEN chat_marks.pinned = 1 THEN chat_marks.pin_pos ELSE excluded.pin_pos END`,
+		user, backendID, sessionID, boolInt(pinned), user)
+}
+
+// SetPinOrder puts the pinned chats of user named in order first, in that
+// order, as positions 0, 1 and so on. Chats that are not pinned are ignored
+// and pinned chats not named follow in their old order. Pins of other
+// users are never touched.
+func (s *Store) SetPinOrder(ctx context.Context, user string, order []hub.SessionRef) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, s.q(`SELECT backend_id, session_id, pin_pos FROM chat_marks
+		WHERE "user" = ? AND pinned = 1 ORDER BY pin_pos, backend_id, session_id`), user)
+	if err != nil {
+		return err
+	}
+	var (
+		pinned []hub.SessionRef
+		pos    = map[hub.SessionRef]int64{}
+	)
+	for rows.Next() {
+		var ref hub.SessionRef
+		var p int64
+		if err := rows.Scan(&ref.BackendID, &ref.SessionID, &p); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		pinned = append(pinned, ref)
+		pos[ref] = p
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	final := make([]hub.SessionRef, 0, len(pinned))
+	seen := map[hub.SessionRef]bool{}
+	for _, ref := range order {
+		if _, ok := pos[ref]; ok && !seen[ref] {
+			seen[ref] = true
+			final = append(final, ref)
+		}
+	}
+	for _, ref := range pinned {
+		if !seen[ref] {
+			final = append(final, ref)
+		}
+	}
+	for i, ref := range final {
+		if pos[ref] == int64(i) {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, s.q(`UPDATE chat_marks SET pin_pos = ? WHERE "user" = ? AND backend_id = ? AND session_id = ?`),
+			i, user, ref.BackendID, ref.SessionID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // readSkew is how far past the hub's clock a read time may be, since the
@@ -83,7 +147,7 @@ func (s *Store) ChatMarks(ctx context.Context, user string) (map[hub.SessionRef]
 	if err := s.row(ctx, `SELECT at FROM read_baselines WHERE "user" = ?`, user).Scan(&base); err != nil {
 		return nil, time.Time{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, s.q(`SELECT backend_id, session_id, pinned, seen_at, unread, page FROM chat_marks WHERE "user" = ?`), user)
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT backend_id, session_id, pinned, pin_pos, seen_at, unread, page FROM chat_marks WHERE "user" = ?`), user)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -93,12 +157,12 @@ func (s *Store) ChatMarks(ctx context.Context, user string) (map[hub.SessionRef]
 		var (
 			ref                  hub.SessionRef
 			pinned, unread, page int
-			seen                 int64
+			seen, pos            int64
 		)
-		if err := rows.Scan(&ref.BackendID, &ref.SessionID, &pinned, &seen, &unread, &page); err != nil {
+		if err := rows.Scan(&ref.BackendID, &ref.SessionID, &pinned, &pos, &seen, &unread, &page); err != nil {
 			return nil, time.Time{}, err
 		}
-		m := hub.ChatMark{Pinned: pinned != 0, Unread: unread != 0, Page: page != 0}
+		m := hub.ChatMark{Pinned: pinned != 0, PinPos: pos, Unread: unread != 0, Page: page != 0}
 		if seen > 0 {
 			m.SeenAt = time.UnixMilli(seen)
 		}
