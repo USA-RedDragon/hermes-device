@@ -2322,9 +2322,10 @@
 
   // limitParts are the meters of the usage windows that the chat's Claude
   // account or ChatGPT plan reports.
-  function limitParts(info) {
-    if (!view || !info.provider) return { name: null, parts: [] };
-    const a = claude.account(view.backend, info.provider, view.session, info.model || (info.usage || {}).model || "");
+  function limitParts(info, at) {
+    const c = at || view;
+    if (!c || !info.provider) return { name: null, parts: [] };
+    const a = claude.account(c.backend, info.provider, c.session, info.model || (info.usage || {}).model || "");
     if (!a) return { name: null, parts: [] };
     const out = [];
     if (a.signed_in) {
@@ -2389,7 +2390,22 @@
     cl.title = cwd ? "Working folder: " + cwd : "";
     if (view && !$("info").hidden) claude.note($("claudenote"), view.backend, info);
     settings.sync(info);
-    if (page) page.meters(view ? pageMeters(info) : []);
+    if (page) {
+      page.meters(view ? pageMeters(info) : []);
+      if (view) page.rememberInfo(view.backend, info);
+    }
+  }
+
+  // pageIdle fills the page chat's meters and model chip before the chat
+  // starts, from what the last page chat showed: the model, its context
+  // window and the account's limits. A chat has no tokens yet.
+  function pageIdle() {
+    if (view) return;
+    const last = page.lastInfo();
+    if (!last) { page.meters([]); return; }
+    const info = { provider: last.provider, model: last.model, context_length: last.context_length,
+      usage: { model: last.model, context_max: last.context_length, context_used: 0 } };
+    page.meters(pageMeters(info, { backend: last.backend, session: "" }), info);
   }
 
   // drawSubs shows the chat's running subagents in the line under the
@@ -2419,7 +2435,7 @@
 
   // pageMeters are the page chat's meter row: the context window, the
   // Claude account's windows, and the tokens of the chat.
-  function pageMeters(info) {
+  function pageMeters(info, at) {
     const out = [];
     const u = info.usage || {};
     const max = u.context_max || info.context_length;
@@ -2431,7 +2447,7 @@
     } else if (max) {
       out.push(contextPart(info));
     }
-    out.push(...limitParts(info).parts);
+    out.push(...limitParts(info, at).parts);
     const tin = u.prompt || u.input || 0;
     const tout = u.output || 0;
     if (tin || tout) {
@@ -2736,8 +2752,8 @@
     if (page) {
       $("welcome").hidden = true;
       $("composer").hidden = false;
-      page.meters([]);
       page.shown();
+      pageIdle();
     }
   }
 
@@ -3277,7 +3293,7 @@
   },
     closeSide: () => openSide(false) });
   const activity = window.HubActivity({ api, el, showText, drawn: () => drawSubs() });
-  const claude = window.HubClaude({ api, el, me: () => me, redraw: () => { if (view) drawInfo(view.info); } });
+  const claude = window.HubClaude({ api, el, me: () => me, redraw: () => { if (view) drawInfo(view.info); else if (page) pageIdle(); } });
   const claudeCode = window.HubClaudeCode({ api, el });
   const usage = window.HubUsage({ api, el, chatHash, defaultBackend: () => me.default_backend || "",
     claudePanel: (b) => (me.claude ? claude.panel(b) : Promise.resolve(null)),

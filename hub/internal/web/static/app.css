@@ -993,7 +993,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7
 html.pagechat, .pagechat body { font-size: 14px; }
 .pagechat body { background: var(--side); }
 .pagechat .app { display: flex; flex-direction: column; height: 100dvh; }
-.pagechat .side, .pagechat .scrim, .pagechat .bar, .pagechat .info, .pagechat .act, .pagechat .welcome, .pagechat .placenote,
+.pagechat .side, .pagechat .scrim, .pagechat .bar, .pagechat .info summary, .pagechat .info:not([open]), .pagechat .act, .pagechat .welcome, .pagechat .placenote,
 .pagechat .composer .attach, .pagechat .composer .hint, .pagechat .composer .chips { display: none !important; }
 .pagechat .main { flex: 1; min-height: 0; position: relative; }
 .pagechat .banner { font-size: .8rem; padding: .3rem .65rem; }
@@ -1033,7 +1033,19 @@ html.pagechat, .pagechat body { font-size: 14px; }
 .pagechat .composer { padding: .45rem .55rem .55rem; gap: .35rem; background: var(--card); }
 .pagechat .composer-row { max-width: none; }
 .pagechat .composer textarea { font-size: inherit; border-radius: 10px; padding: .45rem .55rem; background: var(--bg); }
-.prow { display: flex; gap: .4rem; align-items: center; min-width: 0; }
+.prow { display: flex; gap: .4rem; align-items: center; min-width: 0; flex-wrap: nowrap; }
+.prow .pchip { flex: 0 1 auto; }
+.prow .pchip.pmodel { flex-shrink: 2; }
+button.pchip:disabled { cursor: default; opacity: 1; color: var(--muted); }
+.pagechat .composer { position: relative; }
+.pagechat .composer > .info { position: absolute; left: .55rem; right: .55rem; bottom: calc(100% + .3rem); z-index: 6; background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, .2); padding: .1rem .7rem; max-height: 60vh; overflow-y: auto; }
+.pagechat .info-body { flex-direction: column; align-items: stretch; gap: .45rem; padding: .6rem 0; }
+.pagechat .info-body label { justify-content: space-between; }
+.pagechat .info-body select { flex: 1; min-width: 0; max-width: 14rem; }
+.pc-sidebar .composer { padding: .65rem .7rem .8rem; gap: .5rem; }
+.pc-sidebar .pmeters { padding-top: .2rem; gap: .35rem .75rem; }
+.pc-sidebar .log { padding-bottom: .6rem; }
 .prow .grow { flex: 1; }
 .pchip { display: inline-flex; gap: .3rem; align-items: center; min-width: 0; max-width: 100%; font-size: .74rem; border: 1px solid var(--line);
   border-radius: 999px; padding: .05rem .5rem; color: var(--muted); background: var(--card); white-space: nowrap; overflow: hidden;

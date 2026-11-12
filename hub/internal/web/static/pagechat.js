@@ -201,7 +201,24 @@ window.HubPageChat = (ctx) => {
     chips();
   };
   const selChip = el("span", "pchip", "+ selection");
-  const modelChip = el("span", "pchip");
+  // The model chip opens the hub's own model and thinking panel (the
+  // #info details of app.js), moved here above the message box.
+  const modelChip = el("button", "pchip pmodel");
+  modelChip.type = "button";
+  modelChip.setAttribute("aria-haspopup", "true");
+  modelChip.setAttribute("aria-expanded", "false");
+  modelChip.onclick = () => modelPanel(!$("info").open);
+  let idle = null;
+
+  function modelPanel(open) {
+    const info = $("info");
+    if (open && (info.hidden || !ctx.view())) return;
+    info.open = open;
+    modelChip.setAttribute("aria-expanded", String(info.open));
+  }
+  document.addEventListener("click", (e) => {
+    if ($("info").open && !$("info").contains(e.target) && !modelChip.contains(e.target)) modelPanel(false);
+  });
 
   function chips() {
     scopeText.textContent = scope === "tab" ? "This tab only" : "This window · " + tabs.count + (tabs.count === 1 ? " tab" : " tabs");
@@ -209,16 +226,19 @@ window.HubPageChat = (ctx) => {
     selChip.hidden = !port || !tabs.selection;
     selChip.title = tabs.text || "The selected text goes with your message";
     const v = ctx.view();
-    const model = v && v.info ? v.info.model || (v.info.usage && v.info.usage.model) : "";
+    const model = v && v.info ? v.info.model || (v.info.usage && v.info.usage.model) : (idle && idle.model) || "";
     modelChip.textContent = model || "";
-    modelChip.title = model ? "Model: " + model : "";
+    modelChip.title = model ? (v ? "Model and thinking: " + model : "Model: " + model + ". Send a message to change it.") : "";
     modelChip.hidden = !model;
+    modelChip.disabled = !v;
+    if (!v) modelPanel(false);
   }
 
   const meterRow = el("div", "pmeters");
   meterRow.id = "pmeters";
 
-  function meters(parts) {
+  function meters(parts, idleInfo) {
+    idle = idleInfo || null;
     meterRow.replaceChildren(...parts);
     chips();
   }
@@ -236,6 +256,7 @@ window.HubPageChat = (ctx) => {
     row.append(scopeBtn, selChip, modelChip, el("span", "grow"), $("send"));
     form.querySelector(".composer-row").after(row);
     form.append(meterRow);
+    form.prepend($("info"));
     $("input").addEventListener("focus", () => { if (port) port.postMessage({ type: "watch" }); });
     running(false);
     head();
@@ -260,5 +281,11 @@ window.HubPageChat = (ctx) => {
     device: () => deviceID,
     remember(b, s) { store.set("last", { b, s }); },
     last: () => store.get("last"),
+    rememberInfo(backend, info) {
+      const model = info.model || (info.usage && info.usage.model);
+      if (!model) return;
+      store.set("info", { backend, provider: info.provider || "", model, context_length: info.context_length || (info.usage && info.usage.context_max) || 0 });
+    },
+    lastInfo: () => store.get("info"),
   };
 };
