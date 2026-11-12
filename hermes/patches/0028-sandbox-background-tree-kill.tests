@@ -1,0 +1,4 @@
+tests/tools/test_process_registry.py
+tests/tools/test_process_handoff.py
+tests/tools/test_process_registry_env_spawn_cwd.py
+tests/tools/test_terminal_task_cwd.py

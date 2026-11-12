@@ -59,6 +59,7 @@ The Test workflow runs on pull requests and before each release:
 | `0025-delegation-route-report` | A backend-routed subagent's result carries `ran_on` (`route <label>: <model> via <provider>`, with a fallback provider named), the background dispatch handle lists `runs_on` per task, and every async completion block prints `Ran on ...` for its task instead of one unit-wide model. Reporting only; the default backend's result shape is unchanged. | Not fixed upstream; no PR. |
 | `0026-mid-turn-subagent-results` | `sessions.mid_turn_subagent_results` (false = off): a background subagent's result admitted while its local session's turn runs is transferred to that turn (the `prompt.steer_queued` transfer) and rides its next tool result, outside the user steer marker; no running tool is interrupted. A result no tool result took goes back to its queue place at settlement and runs or is noted as before. Only results dispatched from the same conversation. | Not fixed upstream; no PR. |
 | `0027-delegation-keep-child-processes` | `delegation.keep_child_processes` (false = off): background processes a subagent leaves running when it ends move to its parent instead of being killed, and a child stopped for a restart handoff keeps them; the parent can poll, wait on and kill them and gets their completion. | Not fixed upstream; no PR. |
+| `0028-sandbox-background-tree-kill` | A sandbox (plugin backend) background process kill stops the whole process tree, not only the wrapper shell. Bug fix, no key. | Not fixed upstream; no PR. |
 
 ## Adding or changing a patch
 

@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 01:13:33 -0600
+Subject: [PATCH] fix(process): a sandbox background kill stops the command too
+
+spawn_via_env records the PID of the wrapper subshell, and the command
+runs in a child of it under nohup. Killing that PID alone left the
+command running while the registry reported it killed. The kill now
+signals the process tree, children first (pgrep -P, in procps and
+busybox); without pgrep only the PID is signalled, as before.
+---
+ tests/tools/test_process_env_tree_kill.py | 65 +++++++++++++++++++++++
+ tools/process_registry.py                 | 11 +++-
+ 2 files changed, 75 insertions(+), 1 deletion(-)
+ create mode 100644 tests/tools/test_process_env_tree_kill.py
+
+diff --git a/tests/tools/test_process_env_tree_kill.py b/tests/tools/test_process_env_tree_kill.py
+new file mode 100644
+index 0000000000..dd6b8bdb7a
+--- /dev/null
++++ b/tests/tools/test_process_env_tree_kill.py
+@@ -0,0 +1,65 @@
++"""A sandbox background process (spawn_via_env) is stopped with its descendants. The recorded PID is the
++wrapper subshell and the command runs in a child of it under nohup, so killing the PID alone left the command
++running while the registry reported it killed."""
++
++import os
++import subprocess
++import tempfile
++import time
++
++import pytest
++
++from tools.process_registry import ProcessRegistry
++
++
++class _ShellEnv:
++    """A non-local backend stand-in that runs each command in a fresh bash, as a sandbox does."""
++
++    def __init__(self, tmp):
++        self.tmp = str(tmp)
++
++    def get_temp_dir(self):
++        return self.tmp
++
++    def execute(self, command, cwd="", timeout=10, **_kwargs):
++        with tempfile.TemporaryFile(mode="w+") as out:
++            code = subprocess.run(["bash", "-c", command], cwd=cwd or self.tmp, stdout=out, stderr=subprocess.STDOUT,
++                                  stdin=subprocess.DEVNULL, timeout=timeout, start_new_session=True).returncode
++            out.seek(0)
++            return {"output": out.read(), "returncode": code}
++
++
++def _alive(pid):
++    try:
++        os.kill(pid, 0)
++    except ProcessLookupError:
++        return False
++    try:
++        with open(f"/proc/{pid}/stat") as f:
++            return f.read().split()[2] != "Z"
++    except OSError:
++        return True
++
++
++@pytest.mark.skipif(not os.path.exists("/proc"), reason="needs /proc")
++def test_kill_stops_the_command_not_only_the_wrapper(tmp_path):
++    registry = ProcessRegistry()
++    env = _ShellEnv(tmp_path)
++    marker = tmp_path / "cmd.pid"
++    session = registry.spawn_via_env(env, f"echo $$ > {marker}; exec sleep 60", cwd=str(tmp_path))
++    deadline = time.time() + 10
++    while not marker.exists() and time.time() < deadline:
++        time.sleep(0.05)
++    command_pid = int(marker.read_text())
++    try:
++        assert _alive(command_pid)
++        registry.kill_process(session.id)
++        deadline = time.time() + 10
++        while _alive(command_pid) and time.time() < deadline:
++            time.sleep(0.05)
++        assert not _alive(command_pid)
++    finally:
++        try:
++            os.kill(command_pid, 9)
++        except ProcessLookupError:
++            pass
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+index aaa6e6b68f..ce372544a8 100644
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -702,6 +702,15 @@ _WSL_CHAIN_NOTE = (
+ )
+ 
+ 
++def _env_tree_kill(pid: int) -> str:
++    """Shell that stops a sandbox background process with its descendants, children first. The PID that
++    ``spawn_via_env`` records is the wrapper subshell, and the command runs in a child of it under ``nohup``,
++    so a kill of the PID alone left the command running. ``pgrep -P`` is in procps and busybox; without it
++    only the PID is signalled, as before."""
++    return ("_hermes_kill_tree() { for _c in $(pgrep -P \"$1\" 2>/dev/null); do _hermes_kill_tree \"$_c\"; done; "
++            f"kill \"$1\" 2>/dev/null; }}; _hermes_kill_tree {int(pid)}")
++
++
+ def _last_line_int(output: str) -> Optional[int]:
+     """The integer on the last non-empty line of *output*, or None (a backend's error text)."""
+     lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
+@@ -2327,7 +2336,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+             # leaves Git Bash descendants behind.
+             self._terminate_host_pid(session.process.pid, session.host_start_time)
+         elif session.env_ref and session.pid:
+-            session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
++            session.env_ref.execute(_env_tree_kill(session.pid), timeout=5)
+         elif session.detached and session.pid_scope == "host" and session.pid:
+             # Same fate as poll/list: a gone or reused PID means our process is
+             # gone — never tree-kill the stranger — but a live PID with an
