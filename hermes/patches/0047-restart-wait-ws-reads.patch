@@ -1,0 +1,146 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jacob McSwain <jacob@mcswain.dev>
+Date: Thu, 12 Nov 2026 23:41:32 +0000
+Subject: [PATCH] feat(gateway): a restart wait answers a front end's read-only
+ socket verbs
+
+gateway.restart_wait_ws_reads (false = off): during a restart's after-turn wait an interactive WebSocket may also call the read-only verbs a front end polls while it shows a chat (subagent.list, subagent.tail, subagent.roster, process.list, session.control.read, delegation.status, session.transcript, session.context_breakdown, session.active_list, commands.catalog, config.get, model.options) instead of getting runtime_draining. The hub's Activity panel showed 'Could not load activity: runtime_draining' for the whole wait, on a socket the wait keeps open. Writes are still refused.
+---
+ gateway/config.py                           |  8 +++-
+ gateway/config_loader.py                    |  1 +
+ gateway/drain_control.py                    | 15 +++++-
+ tests/gateway/test_restart_wait_ws_reads.py | 52 +++++++++++++++++++++
+ 4 files changed, 74 insertions(+), 2 deletions(-)
+ create mode 100644 tests/gateway/test_restart_wait_ws_reads.py
+
+diff --git a/gateway/config.py b/gateway/config.py
+index dfa1fa3f40..629fb4435c 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -682,6 +682,10 @@ class GatewayConfig:
+     # the profile, before it exits. A read-ahead for a next turn that never comes no longer holds the stop, nor
+     # the executor quiesce (which then skipped the SessionDB close). 0 = they shut down inside the stop.
+     restart_memory_shutdown_after_release_seconds: float = 0.0
++    # During a restart's after-turn wait, an interactive WebSocket may also call the read-only verbs a front end
++    # polls (subagent and process lists, delegation status, transcripts, config and model reads, the command
++    # catalog) instead of getting runtime_draining for them. False = only the wait's own verbs.
++    restart_wait_ws_reads: bool = False
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -721,7 +725,8 @@ class GatewayConfig:
+         "restart_wait_delegations", "restart_listener_handover", "listener_start_hold_seconds",
+         "restart_listener_relay_seconds", "restart_listener_hold_seconds", "stop_trace",
+         "restart_ticket_handover", "restart_listener_relay_close_sockets", "restart_reads_grace_seconds",
+-        "restart_socket_close_delay_seconds", "restart_memory_shutdown_after_release_seconds", "loop_watchdog",
++        "restart_socket_close_delay_seconds", "restart_memory_shutdown_after_release_seconds",
++        "restart_wait_ws_reads", "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+     )
+@@ -869,6 +874,7 @@ class GatewayConfig:
+             restart_socket_close_delay_seconds=bounded_float("restart_socket_close_delay_seconds", 0.0, 0.0, 60.0),
+             restart_memory_shutdown_after_release_seconds=bounded_float(
+                 "restart_memory_shutdown_after_release_seconds", 0.0, 0.0, 600.0),
++            restart_wait_ws_reads=_coerce_bool(pick("restart_wait_ws_reads"), False),
+             restart_wait_plugin_sockets=[
+                 str(name).strip("/ ") for name in (pick("restart_wait_plugin_sockets") or [])
+                 if isinstance(pick("restart_wait_plugin_sockets"), list) and str(name).strip("/ ")],
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index 9211b9250c..9011be6719 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -109,6 +109,7 @@ _TOPLEVEL_BRIDGE: tuple = (
+     ("restart_socket_close_delay_seconds", "restart_socket_close_delay_seconds", "nested", None, None),
+     ("restart_memory_shutdown_after_release_seconds", "restart_memory_shutdown_after_release_seconds", "nested",
+      None, None),
++    ("restart_wait_ws_reads", "restart_wait_ws_reads", "nested", None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/drain_control.py b/gateway/drain_control.py
+index dca1307232..971e84a275 100644
+--- a/gateway/drain_control.py
++++ b/gateway/drain_control.py
+@@ -134,9 +134,22 @@ RESTART_WAIT_WS_METHODS = frozenset({
+ })
+ 
+ 
++# ``gateway.restart_wait_ws_reads``: read-only verbs a front end polls while it shows a chat (the hub's
++# Activity panel, transcript, settings and command menus). They change no state, so the wait may answer them
++# like the GET reads it serves over HTTP.
++RESTART_WAIT_WS_READS = frozenset({
++    "subagent.list", "subagent.tail", "subagent.roster", "process.list", "session.control.read",
++    "delegation.status", "session.transcript", "session.context_breakdown", "session.active_list",
++    "commands.catalog", "config.get", "model.options",
++})
++
++
+ def ws_method_refused_while_draining(runner, method) -> bool:
+     """True when an interactive WebSocket verb must be refused because *runner* is draining."""
+-    return bool(getattr(runner, "_draining", False)) and method not in RESTART_WAIT_WS_METHODS
++    if not getattr(runner, "_draining", False) or method in RESTART_WAIT_WS_METHODS:
++        return False
++    reads = bool(getattr(getattr(runner, "config", None), "restart_wait_ws_reads", False))
++    return not (reads and method in RESTART_WAIT_WS_READS)
+ 
+ _DRAIN_REQUEST_FILENAME = ".drain_request.json"
+ # Drain-gated lifecycle actions complete in minutes; an hour bounds the wedge a leaked
+diff --git a/tests/gateway/test_restart_wait_ws_reads.py b/tests/gateway/test_restart_wait_ws_reads.py
+new file mode 100644
+index 0000000000..3fd77da3cc
+--- /dev/null
++++ b/tests/gateway/test_restart_wait_ws_reads.py
+@@ -0,0 +1,52 @@
++"""gateway.restart_wait_ws_reads: a front end's read-only WebSocket verbs are answered during a restart's
++after-turn wait instead of runtime_draining."""
++from types import SimpleNamespace
++
++import pytest
++
++from gateway.config import GatewayConfig, load_gateway_config
++from gateway.drain_control import RESTART_WAIT_WS_METHODS, RESTART_WAIT_WS_READS, ws_method_refused_while_draining
++
++
++def test_off_by_default():
++    assert GatewayConfig().restart_wait_ws_reads is False
++    assert GatewayConfig.from_dict({"gateway": {"restart_wait_ws_reads": True}}).restart_wait_ws_reads is True
++
++
++def test_config_yaml_key_reaches_the_runner_config(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    (tmp_path / "config.yaml").write_text("gateway:\n  restart_wait_ws_reads: true\n", encoding="utf-8")
++    assert load_gateway_config().restart_wait_ws_reads is True
++
++
++def _runner(reads, draining=True):
++    return SimpleNamespace(_draining=draining, config=GatewayConfig(restart_wait_ws_reads=reads))
++
++
++@pytest.mark.parametrize("method", sorted(RESTART_WAIT_WS_READS))
++def test_reads_are_answered_only_with_the_key(method):
++    assert ws_method_refused_while_draining(_runner(False), method)
++    assert not ws_method_refused_while_draining(_runner(True), method)
++
++
++@pytest.mark.parametrize("method", ["subagent.steer", "subagent.interrupt", "process.kill", "process.stop",
++                                    "config.set", "delegation.pause", "session.mutate", "slash.exec",
++                                    "prompt.background", "reload.mcp"])
++def test_writes_are_still_refused(method):
++    assert ws_method_refused_while_draining(_runner(True), method)
++
++
++def test_the_wait_verbs_and_a_running_owner_are_unchanged():
++    for method in RESTART_WAIT_WS_METHODS:
++        assert not ws_method_refused_while_draining(_runner(False), method)
++    assert not ws_method_refused_while_draining(_runner(True, draining=False), "config.set")
++    assert not ws_method_refused_while_draining(SimpleNamespace(_draining=False), "subagent.list")
++    assert ws_method_refused_while_draining(SimpleNamespace(_draining=True), "subagent.list")
++
++
++def test_every_listed_read_is_a_registered_verb():
++    from tui_gateway.contracts.registry import METHODS
++    from gateway.session_stored_reads import handlers as stored_reads
++    owner_only = set(stored_reads(None))  # served by the owner's stored reads, not a contract method
++    missing = [m for m in RESTART_WAIT_WS_READS if m not in METHODS and m not in owner_only]
++    assert not missing, missing
