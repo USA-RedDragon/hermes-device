@@ -52,6 +52,23 @@ window.HubTimes = (() => {
     return p.weekday + " " + p.month + " " + p.day + year + ", " + hm(ms, zone);
   }
 
+  // range is the time span of a run of work: "2:14 to 2:15 PM", the day
+  // once for a span that stays in one day, and each end whole for a span that
+  // does not. A span of one minute reads as that minute.
+  function range(a, b, now, zone) {
+    const x = clock(a, now, zone);
+    const y = clock(b, now, zone);
+    if (!x || !y || x === y) return x || y;
+    const split = (s) => {
+      const k = s.split(" ");
+      return { day: k.slice(0, -2).join(" "), min: k[k.length - 2], per: k[k.length - 1] };
+    };
+    const p = split(x);
+    const q = split(y);
+    if (p.day !== q.day) return x + " to " + y;
+    return (p.day ? p.day + " " : "") + p.min + (p.per === q.per ? "" : " " + p.per) + " to " + q.min + " " + q.per;
+  }
+
   // full is the time to the second, with the date and the zone.
   function full(ms, zone) {
     if (!valid(ms)) return "";
@@ -169,5 +186,5 @@ window.HubTimes = (() => {
     for (const ev of ["touchend", "touchmove", "touchcancel", "scroll"]) root.addEventListener(ev, stop, { passive: true, capture: true });
   }
 
-  return { clock, full, span, counter, stamp, running, finished, press, valid };
+  return { clock, range, full, span, counter, stamp, ticking, running, finished, press, valid };
 })();

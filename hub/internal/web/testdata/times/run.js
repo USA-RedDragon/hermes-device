@@ -51,6 +51,14 @@ assert.strictEqual(T.clock(at("2026-11-12T22:00:00Z"), now, "Asia/Tokyo"), "7:00
 assert.strictEqual(T.clock(at("2026-11-11T20:00:00Z"), now, "Asia/Tokyo"), "Thu Nov 12, 5:00 AM", "the day is the day in the zone, not in UTC");
 assert.strictEqual(T.clock(at("2026-11-11T14:00:00Z"), now, "Asia/Tokyo"), "Wed Nov 11, 11:00 PM");
 
+assert.strictEqual(T.range(at("2026-11-12T20:14:07Z"), at("2026-11-12T20:15:40Z"), now, chicago), "2:14 to 2:15 PM");
+assert.strictEqual(T.range(at("2026-11-12T20:14:07Z"), at("2026-11-12T20:14:50Z"), now, chicago), "2:14 PM");
+assert.strictEqual(T.range(at("2026-11-12T17:50:00Z"), at("2026-11-12T20:15:40Z"), now, chicago), "11:50 AM to 2:15 PM");
+assert.strictEqual(T.range(at("2026-11-12T05:52:00Z"), at("2026-11-12T05:55:00Z"), now, chicago), "Wed Nov 11, 11:52 to 11:55 PM");
+assert.strictEqual(T.range(at("2026-11-12T05:52:00Z"), at("2026-11-12T20:15:00Z"), now, chicago), "Wed Nov 11, 11:52 PM to 2:15 PM");
+assert.strictEqual(T.range(0, at("2026-11-12T20:15:00Z"), now, chicago), "2:15 PM");
+assert.strictEqual(T.range(0, 0, now, chicago), "");
+
 assert.strictEqual(T.full(at("2026-11-12T20:14:07Z"), chicago), "Thu Nov 12 2026, 2:14:07 PM CST");
 assert.strictEqual(T.full(at("2026-07-04T20:14:07Z"), chicago), "Sat Jul 4 2026, 3:14:07 PM CDT");
 assert.strictEqual(T.full(at("2026-11-12T20:14:07Z"), "UTC"), "Thu Nov 12 2026, 8:14:07 PM UTC");
