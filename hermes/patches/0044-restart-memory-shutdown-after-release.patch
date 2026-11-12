@@ -1,0 +1,354 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jacob McSwain <jacob@mcswain.dev>
+Date: Thu, 12 Nov 2026 21:57:27 +0000
+Subject: [PATCH] feat(gateway): a restart stop leaves memory-provider
+ shutdowns until after the release
+
+gateway.restart_memory_shutdown_after_release_seconds (0 = off; with restart_agent_cleanup_seconds): on a restart stop, each idle cached agent whose queued memory writes and session end were flushed (as before, inside the stop) shuts its memory providers down on a thread of its own instead of inside the capped cleanup, and the process waits up to this long for those threads after it released the profile, alongside the listener relay. A Honcho read-ahead for a next turn that never comes held the cleanup to its 5 s cap, and the abandoned worker then held the executor quiesce 2 s more and made the stop skip the SessionDB close.
+---
+ agent/memory_manager.py                       |  12 ++
+ gateway/config.py                             |  10 +-
+ gateway/config_loader.py                      |   2 +
+ gateway/run_bootstrap.py                      |   8 +
+ gateway/run_shutdown.py                       |  56 ++++++
+ ...t_restart_memory_shutdown_after_release.py | 166 ++++++++++++++++++
+ 6 files changed, 253 insertions(+), 1 deletion(-)
+ create mode 100644 tests/gateway/test_restart_memory_shutdown_after_release.py
+
+diff --git a/agent/memory_manager.py b/agent/memory_manager.py
+index c32ceca9bd..2c797e682f 100644
+--- a/agent/memory_manager.py
++++ b/agent/memory_manager.py
+@@ -885,8 +885,20 @@ class MemoryManager:
+             self.flush_pending(timeout=10)
+             self.shutdown_all()
+ 
++    def detach_shutdown(self) -> Callable[[], None]:
++        """Take ``shutdown_all()`` out of this manager's teardown and return it: later ``shutdown_all()`` calls
++        (``shutdown_memory_provider``, ``close()``) do nothing, and the caller runs the returned one once, on its
++        own thread (a restart stop with ``gateway.restart_memory_shutdown_after_release_seconds``)."""
++        self._shutdown_detached = True
++        return self._shutdown_all_now
++
+     def shutdown_all(self) -> None:
+         """Drain the background executor (bounded), then shut providers down in reverse order."""
++        if getattr(self, "_shutdown_detached", False):
++            return
++        self._shutdown_all_now()
++
++    def _shutdown_all_now(self) -> None:
+         self._drain_sync_executor()
+         self._each_provider("shutdown failed", lambda p: p.shutdown(), level=logging.WARNING,
+                             providers=self._providers[::-1])
+diff --git a/gateway/config.py b/gateway/config.py
+index da23fc76b6..dfa1fa3f40 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -676,6 +676,12 @@ class GatewayConfig:
+     # took over answered ready, so its client's one reconnect reaches that gateway directly instead of a socket the
+     # old listener relays and closes again when the relay window ends. 0 = close when the stop ends the session.
+     restart_socket_close_delay_seconds: float = 0.0
++    # With restart_agent_cleanup_seconds: on a restart stop the memory providers of idle cached agents shut down
++    # (joining their writer and read-ahead threads) in their own threads, outside the stop, after their queued
++    # writes and session-end flush ran as before; the process waits up to this long for them after it released
++    # the profile, before it exits. A read-ahead for a next turn that never comes no longer holds the stop, nor
++    # the executor quiesce (which then skipped the SessionDB close). 0 = they shut down inside the stop.
++    restart_memory_shutdown_after_release_seconds: float = 0.0
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -715,7 +721,7 @@ class GatewayConfig:
+         "restart_wait_delegations", "restart_listener_handover", "listener_start_hold_seconds",
+         "restart_listener_relay_seconds", "restart_listener_hold_seconds", "stop_trace",
+         "restart_ticket_handover", "restart_listener_relay_close_sockets", "restart_reads_grace_seconds",
+-        "restart_socket_close_delay_seconds", "loop_watchdog",
++        "restart_socket_close_delay_seconds", "restart_memory_shutdown_after_release_seconds", "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+     )
+@@ -861,6 +867,8 @@ class GatewayConfig:
+             restart_listener_relay_close_sockets=_coerce_bool(pick("restart_listener_relay_close_sockets"), False),
+             restart_reads_grace_seconds=bounded_float("restart_reads_grace_seconds", 0.0, 0.0, 60.0),
+             restart_socket_close_delay_seconds=bounded_float("restart_socket_close_delay_seconds", 0.0, 0.0, 60.0),
++            restart_memory_shutdown_after_release_seconds=bounded_float(
++                "restart_memory_shutdown_after_release_seconds", 0.0, 0.0, 600.0),
+             restart_wait_plugin_sockets=[
+                 str(name).strip("/ ") for name in (pick("restart_wait_plugin_sockets") or [])
+                 if isinstance(pick("restart_wait_plugin_sockets"), list) and str(name).strip("/ ")],
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index 54e8a401b6..9211b9250c 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -107,6 +107,8 @@ _TOPLEVEL_BRIDGE: tuple = (
+     ("restart_listener_relay_close_sockets", "restart_listener_relay_close_sockets", "nested", None, None),
+     ("restart_reads_grace_seconds", "restart_reads_grace_seconds", "nested", None, None),
+     ("restart_socket_close_delay_seconds", "restart_socket_close_delay_seconds", "nested", None, None),
++    ("restart_memory_shutdown_after_release_seconds", "restart_memory_shutdown_after_release_seconds", "nested",
++     None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
+index 493d361a0f..c8b6c75224 100644
+--- a/gateway/run_bootstrap.py
++++ b/gateway/run_bootstrap.py
+@@ -1240,5 +1240,13 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+             _export_tickets_for_successor(runner)
+             release_gateway_runtime_lock()
+             stop_trace.finish("bootstrap: lock released")
++            # gateway.restart_memory_shutdown_after_release_seconds: alongside the listener's relay.
++            deferred_memory = None
++            if runner is not None and getattr(runner, "_deferred_memory_shutdowns", None):
++                from gateway.run_shutdown import GatewayShutdownMixin
++                deferred_memory = asyncio.ensure_future(
++                    GatewayShutdownMixin.finish_deferred_memory_shutdowns(runner))
+             if runner is not None and getattr(runner, "_listener_handover", None):
+                 await _release_profile_then_close_listener(runner, relay_to)
++            if deferred_memory is not None:
++                await deferred_memory
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+index b886f76e48..0c6e522aae 100644
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -1868,6 +1868,61 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+         mm.on_session_end(messages if isinstance(messages, list) else [])
+         agent._memory_session_ended = True
+ 
++    @staticmethod
++    def _memory_shutdown_after_release(runner) -> float:
++        """``gateway.restart_memory_shutdown_after_release_seconds``, 0 = off."""
++        return float(getattr(getattr(runner, "config", None), "restart_memory_shutdown_after_release_seconds", 0) or 0)
++
++    @staticmethod
++    def _defer_memory_shutdowns(runner, idle_agents) -> None:
++        """``gateway.restart_memory_shutdown_after_release_seconds``: each idle agent whose queued writes and
++        session end were flushed shuts its memory providers down on a thread of its own, started now; the cleanup
++        that follows skips that step, so neither it nor the executor quiesce waits for a provider's threads (a
++        Honcho read-ahead for a next turn that never comes). The process joins them after the release."""
++        if GatewayShutdownMixin._memory_shutdown_after_release(runner) <= 0:
++            return
++        deferred = getattr(runner, "_deferred_memory_shutdowns", None)
++        if deferred is None:
++            deferred = []
++            runner._deferred_memory_shutdowns = deferred
++        for key, entry in idle_agents:
++            agent = entry[0] if isinstance(entry, tuple) else entry
++            manager = getattr(agent, "_memory_manager", None)
++            # Only after a finished flush: otherwise the cleanup still runs the session end, which must not race
++            # the providers' shutdown.
++            if (manager is None or not callable(getattr(manager, "detach_shutdown", None))
++                    or not getattr(agent, "_memory_session_ended", False)
++                    or getattr(agent, "_memory_provider_shutdown", False)):
++                continue
++            shutdown = manager.detach_shutdown()
++            from contextvars import copy_context
++            thread = threading.Thread(
++                target=copy_context().run, args=(runner._run_release_in_profile_scope, shutdown, (), key),
++                name=f"memory-shutdown-{len(deferred)}", daemon=True)
++            thread.start()
++            deferred.append(thread)
++
++    @staticmethod
++    async def finish_deferred_memory_shutdowns(runner) -> None:
++        """After the profile is released: wait for the memory-provider shutdowns the stop left running, up to
++        ``gateway.restart_memory_shutdown_after_release_seconds``, so the process does not exit under them."""
++        threads = list(getattr(runner, "_deferred_memory_shutdowns", None) or ())
++        if not threads:
++            return
++        deadline = time.monotonic() + GatewayShutdownMixin._memory_shutdown_after_release(runner)
++
++        def join() -> list:
++            for thread in threads:
++                thread.join(max(0.0, deadline - time.monotonic()))
++            return [thread.name for thread in threads if thread.is_alive()]
++
++        left = await asyncio.to_thread(join)
++        if left:
++            logger.warning("Memory provider shutdown of %d idle agent(s) still running at exit: %s",
++                           len(left), ", ".join(left))
++        else:
++            logger.info("Memory providers of %d idle agent(s) shut down after the release", len(threads))
++
+     @staticmethod
+     def _restart_agent_cleanup_cap(runner) -> Optional[float]:
+         """``gateway.restart_agent_cleanup_seconds`` on a restart stop, else None (upstream bounds)."""
+@@ -2122,6 +2177,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+                     GatewayShutdownMixin._flush_agent_memory_off_loop(
+                         self, _entry[0] if isinstance(_entry, tuple) else _entry, _key)
+                     for _key, _entry in _idle_agents))
++                GatewayShutdownMixin._defer_memory_shutdowns(self, _idle_agents)
+                 await asyncio.gather(*(
+                     self._cleanup_agent_resources_off_loop(
+                         _entry[0] if isinstance(_entry, tuple) else _entry, context="shutdown idle-cache",
+diff --git a/tests/gateway/test_restart_memory_shutdown_after_release.py b/tests/gateway/test_restart_memory_shutdown_after_release.py
+new file mode 100644
+index 0000000000..1a9a3850c0
+--- /dev/null
++++ b/tests/gateway/test_restart_memory_shutdown_after_release.py
+@@ -0,0 +1,166 @@
++"""gateway.restart_memory_shutdown_after_release_seconds: idle agents' memory providers shut down outside a
++restart stop, after their writes were flushed, and the process waits for them after the release."""
++import asyncio
++import threading
++import time
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pytest
++
++from agent.memory_manager import MemoryManager
++from gateway.config import GatewayConfig, load_gateway_config
++from gateway.run_shutdown import GatewayShutdownMixin
++
++
++def test_off_by_default():
++    assert GatewayConfig().restart_memory_shutdown_after_release_seconds == 0.0
++    assert GatewayConfig.from_dict({"gateway": {"restart_memory_shutdown_after_release_seconds": 30}}) \
++        .restart_memory_shutdown_after_release_seconds == 30.0
++
++
++def test_config_yaml_key_reaches_the_runner_config(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    (tmp_path / "config.yaml").write_text("gateway:\n  restart_memory_shutdown_after_release_seconds: 30\n",
++                                          encoding="utf-8")
++    assert load_gateway_config().restart_memory_shutdown_after_release_seconds == 30.0
++
++
++class _Provider:
++    name = "fake"
++
++    def __init__(self, log, seconds=0.0):
++        self.log, self.seconds = log, seconds
++
++    def shutdown(self):
++        time.sleep(self.seconds)
++        self.log.append("provider shutdown")
++
++
++def _manager(log, seconds=0.0):
++    manager = MemoryManager()
++    manager._providers = [_Provider(log, seconds)]
++    return manager
++
++
++def test_a_detached_shutdown_runs_once_and_only_where_the_caller_runs_it():
++    log = []
++    manager = _manager(log)
++    shutdown = manager.detach_shutdown()
++    manager.shutdown_all()
++    assert log == []
++    shutdown()
++    assert log == ["provider shutdown"]
++
++
++def test_shutdown_all_is_unchanged_without_a_detach():
++    log = []
++    _manager(log).shutdown_all()
++    assert log == ["provider shutdown"]
++
++
++def test_the_agent_teardown_skips_a_detached_shutdown():
++    from run_agent import AIAgent
++    log = []
++    agent = object.__new__(AIAgent)
++    agent._memory_manager = _manager(log)
++    agent._memory_session_ended = True
++    agent._memory_provider_shutdown = False
++    agent._memory_manager.claim_teardown(session_end=True)
++    shutdown = agent._memory_manager.detach_shutdown()
++    agent.shutdown_memory_provider([])
++    assert log == []
++    shutdown()
++    assert log == ["provider shutdown"]
++
++
++def _runner(seconds, cap=5.0):
++    calls = []
++
++    async def cleanup(agent, *, context="", session_key=None, timeout=None):
++        calls.append(session_key)
++        # What the cleanup runs: the provider shutdown, unless it was detached.
++        agent._memory_manager.shutdown_all()
++
++    runner = SimpleNamespace(
++        _restart_requested=True, _restart_detached=False,
++        config=GatewayConfig(restart_agent_cleanup_seconds=cap, restart_memory_shutdown_after_release_seconds=seconds),
++        _agent_cache_lock=threading.Lock(), _agent_cache={},
++        _finalize_shutdown_agents=AsyncMock(), _cleanup_agent_resources_off_loop=cleanup,
++        adapters={}, _profile_adapters={})
++
++    async def housekeeping(fn, *args):
++        return await asyncio.to_thread(fn, *args)
++
++    runner._run_housekeeping_in_executor = housekeeping
++    runner._run_release_in_profile_scope = lambda target, args, session_key: target(*args)
++    return runner, calls
++
++
++def _agent(log, seconds):
++    manager = _manager(log, seconds)
++    manager.flush_pending = lambda timeout=None: log.append("flush") or True
++    manager.on_session_end = lambda messages: log.append("session end")
++    return SimpleNamespace(_memory_manager=manager, _session_messages=[])
++
++
++@pytest.mark.asyncio
++async def test_the_stop_does_not_wait_for_the_provider_shutdown_and_the_release_does():
++    log = []
++    runner, calls = _runner(seconds=5)
++    runner._agent_cache = {"s1": (_agent(log, 0.6), 1)}
++    ctx = SimpleNamespace(active_agents={}, elapsed=lambda: 0.0)
++    started = time.monotonic()
++    await GatewayShutdownMixin._stop_finalize_agents_and_adapters(runner, ctx)
++    assert time.monotonic() - started < 0.4
++    assert log == ["flush", "session end"]  # the writes and the session end ran inside the stop
++    assert calls == ["s1"]
++    await GatewayShutdownMixin.finish_deferred_memory_shutdowns(runner)
++    assert log == ["flush", "session end", "provider shutdown"]
++
++
++@pytest.mark.asyncio
++async def test_without_the_key_the_stop_shuts_the_providers_down_itself():
++    log = []
++    runner, _calls = _runner(seconds=0)
++    runner._agent_cache = {"s1": (_agent(log, 0.3), 1)}
++    ctx = SimpleNamespace(active_agents={}, elapsed=lambda: 0.0)
++    started = time.monotonic()
++    await GatewayShutdownMixin._stop_finalize_agents_and_adapters(runner, ctx)
++    assert time.monotonic() - started >= 0.3
++    assert log == ["flush", "session end", "provider shutdown"]
++    assert not getattr(runner, "_deferred_memory_shutdowns", None)
++
++
++@pytest.mark.asyncio
++async def test_an_agent_whose_flush_did_not_finish_is_left_to_the_cleanup():
++    log = []
++    runner, _calls = _runner(seconds=5)
++    agent = _agent(log, 0.0)
++    agent._memory_manager.claim_teardown = lambda session_end: False  # another owner tears it down
++    runner._agent_cache = {"s1": (agent, 1)}
++    ctx = SimpleNamespace(active_agents={}, elapsed=lambda: 0.0)
++    await GatewayShutdownMixin._stop_finalize_agents_and_adapters(runner, ctx)
++    assert not getattr(runner, "_deferred_memory_shutdowns", None)
++    assert log == ["provider shutdown"]
++
++
++@pytest.mark.asyncio
++async def test_the_wait_after_the_release_is_bounded():
++    log = []
++    runner, _calls = _runner(seconds=0.2)
++    runner._agent_cache = {"s1": (_agent(log, 1.0), 1)}
++    ctx = SimpleNamespace(active_agents={}, elapsed=lambda: 0.0)
++    await GatewayShutdownMixin._stop_finalize_agents_and_adapters(runner, ctx)
++    started = time.monotonic()
++    await GatewayShutdownMixin.finish_deferred_memory_shutdowns(runner)
++    assert 0.15 <= time.monotonic() - started < 0.6
++    for thread in runner._deferred_memory_shutdowns:
++        thread.join(2)
++    assert log[-1] == "provider shutdown"
++
++
++@pytest.mark.asyncio
++async def test_nothing_deferred_finishes_at_once():
++    runner, _calls = _runner(seconds=5)
++    await asyncio.wait_for(GatewayShutdownMixin.finish_deferred_memory_shutdowns(runner), 0.5)
