@@ -1,0 +1,967 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jacob McSwain <jacob@mcswain.dev>
+Date: Thu, 12 Nov 2026 16:17:29 +0000
+Subject: [PATCH] feat(gateway): a restart holds what it would refuse for the
+ next gateway
+
+gateway.restart_listener_hold_seconds (0 = off; needs restart_listener_handover and restart_listener_relay_seconds): from the stop signal to the profile release, a request or WebSocket upgrade the gateway would refuse with 503 gateway_not_ready (close 1013) waits up to that bound instead. Once the profile is released it is forwarded, as HTTP or as a WebSocket, to the gateway that took over, and so is every later request on a connection the old listener already had, until the relay window ends. With the key every GET is served while the stores are open, and a Webapp WebSocket opened before the restart wait stays open through it.
+---
+ gateway/config.py                            |   8 +-
+ gateway/config_loader.py                     |   1 +
+ gateway/drain_control.py                     |  26 +-
+ gateway/listener_forward.py                  | 167 ++++++++
+ gateway/run_api.py                           | 115 ++++--
+ gateway/run_shutdown.py                      |   8 +-
+ tests/gateway/test_restart_listener_hold.py  | 413 +++++++++++++++++++
+ tests/gateway/test_restart_listener_relay.py |   2 +-
+ website/docs/user-guide/messaging/index.md   |   9 +
+ 9 files changed, 717 insertions(+), 32 deletions(-)
+ create mode 100644 gateway/listener_forward.py
+ create mode 100644 tests/gateway/test_restart_listener_hold.py
+
+diff --git a/gateway/config.py b/gateway/config.py
+index b994ee23de..2f4f8945c0 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -652,6 +652,11 @@ class GatewayConfig:
+     # seconds and relays each connection to the standby that takes over (gateway.standby names its
+     # address), retrying until it listens, instead of closing. 0 = it closes at the release.
+     restart_listener_relay_seconds: float = 0.0
++    # With restart_listener_relay_seconds: a request or WebSocket upgrade the stopping gateway would
++    # refuse (503 / close 1013) waits up to this many seconds for the profile release instead, and is
++    # then forwarded to the gateway that took over. Its GET reads are served while the stores are open,
++    # and sockets opened before the restart wait stay open through it. 0 = refuse as before.
++    restart_listener_hold_seconds: float = 0.0
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -689,7 +694,7 @@ class GatewayConfig:
+         "room_link_url", "systemd_watchdog_seconds", "runtime_lock_wait_seconds", "sigterm_restart_wait",
+         "restart_wait_plugin_sockets", "restart_agent_cleanup_seconds",
+         "restart_wait_delegations", "restart_listener_handover", "listener_start_hold_seconds",
+-        "restart_listener_relay_seconds",
++        "restart_listener_relay_seconds", "restart_listener_hold_seconds",
+         "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+@@ -830,6 +835,7 @@ class GatewayConfig:
+             restart_listener_handover=_coerce_bool(pick("restart_listener_handover"), False),
+             listener_start_hold_seconds=bounded_float("listener_start_hold_seconds", 0.0, 0.0, 600.0),
+             restart_listener_relay_seconds=bounded_float("restart_listener_relay_seconds", 0.0, 0.0, 600.0),
++            restart_listener_hold_seconds=bounded_float("restart_listener_hold_seconds", 0.0, 0.0, 600.0),
+             restart_wait_plugin_sockets=[
+                 str(name).strip("/ ") for name in (pick("restart_wait_plugin_sockets") or [])
+                 if isinstance(pick("restart_wait_plugin_sockets"), list) and str(name).strip("/ ")],
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index f8876441fe..ac00f36b1c 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -101,6 +101,7 @@ _TOPLEVEL_BRIDGE: tuple = (
+     ("restart_listener_handover", "restart_listener_handover", "nested", None, None),
+     ("listener_start_hold_seconds", "listener_start_hold_seconds", "nested", None, None),
+     ("restart_listener_relay_seconds", "restart_listener_relay_seconds", "nested", None, None),
++    ("restart_listener_hold_seconds", "restart_listener_hold_seconds", "nested", None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/drain_control.py b/gateway/drain_control.py
+index a8f9b164dd..9cc5c9067e 100644
+--- a/gateway/drain_control.py
++++ b/gateway/drain_control.py
+@@ -58,10 +58,26 @@ _RESTART_WAIT_READS = re.compile(
+     r"|sessions/[^/]+(?:/messages(?:/around)?|/timeline)?)")
+ 
+ 
++def restart_hold_configured(runner) -> bool:
++    """``gateway.restart_listener_hold_seconds`` with the handover and relay it builds on: a restart
++    stop holds what it would refuse and forwards it to the gateway that takes over."""
++    cfg = getattr(runner, "config", None)
++    return (float(getattr(cfg, "restart_listener_hold_seconds", 0) or 0) > 0
++            and bool(getattr(cfg, "restart_listener_handover", False))
++            and float(getattr(cfg, "restart_listener_relay_seconds", 0) or 0) > 0)
++
++
++def _held_read(runner, method, path) -> bool:
++    """With the hold, every GET (and HEAD) is a read the stopping gateway serves while its stores are
++    open; without it, only the allowlist below."""
++    if method in ("GET", "HEAD") and restart_hold_configured(runner):
++        return True
++    return method == "GET" and bool(_RESTART_WAIT_READS.fullmatch(path or ""))
++
++
+ def restart_wait_read(runner, method, path) -> bool:
+     """True for an allowlisted read request while *runner* is in a restart's after-turn wait."""
+-    return (method == "GET" and bool(_RESTART_WAIT_READS.fullmatch(path or ""))
+-            and restart_wait_open(runner))
++    return _held_read(runner, method, path) and restart_wait_open(runner)
+ 
+ 
+ # ``gateway.restart_listener_handover``: what a restart stop's listener still serves. READS while the
+@@ -73,9 +89,9 @@ HANDOVER_HEALTH = "health"
+ def handover_read(runner, method, path) -> bool:
+     """True for a GET the listener of *runner*'s restart stop still serves (``_listener_handover``)."""
+     stage = getattr(runner, "_listener_handover", None)
+-    if method != "GET" or stage not in (HANDOVER_READS, HANDOVER_HEALTH):
+-        return False
+-    return path == "/api/health" if stage == HANDOVER_HEALTH else bool(_RESTART_WAIT_READS.fullmatch(path or ""))
++    if stage == HANDOVER_READS:
++        return _held_read(runner, method, path)
++    return stage == HANDOVER_HEALTH and method == "GET" and path == "/api/health"
+ 
+ 
+ def restart_wait_socket_ticket(runner, method, path, query) -> bool:
+diff --git a/gateway/listener_forward.py b/gateway/listener_forward.py
+new file mode 100644
+index 0000000000..a734a1ffa4
+--- /dev/null
++++ b/gateway/listener_forward.py
+@@ -0,0 +1,167 @@
++"""``gateway.restart_listener_hold_seconds``: forward a held request to the gateway that took over.
++
++A restart stop with ``gateway.restart_listener_handover`` and ``restart_listener_relay_seconds``
++holds what it would refuse (a write, a sign-in after the restart wait, a WebSocket upgrade) until it
++released the profile. Then this forwards each one, as HTTP or as a WebSocket, to the address the
++standby published, retrying the connect until the successor listens. Requests that reach the old
++listener on a connection it already had are forwarded the same way until the relay window ends.
++"""
++from __future__ import annotations
++
++import asyncio
++import logging
++
++logger = logging.getLogger(__name__)
++
++CONNECT_RETRY_S = 0.05
++CONNECT_ATTEMPT_TIMEOUT_S = 1.0
++
++# Hop-by-hop headers, and the ones the client library sets for the new hop.
++_HOP = frozenset({
++    "connection", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "te",
++    "trailer", "transfer-encoding", "upgrade", "content-length",
++})
++_WS_OWN = frozenset({"sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions",
++                     "sec-websocket-protocol", "sec-websocket-accept"})
++_RESPONSE_DROP = frozenset({"connection", "keep-alive", "transfer-encoding", "proxy-connection"})
++
++
++def _headers(scope, drop) -> list[tuple[str, str]]:
++    return [(k.decode("latin-1"), v.decode("latin-1")) for k, v in scope.get("headers") or ()
++            if k.decode("latin-1").lower() not in drop]
++
++
++def _url(scope, target, scheme):
++    from yarl import URL
++    host, port = target
++    path = scope.get("raw_path") or scope.get("path", "/").encode("utf-8")
++    if isinstance(path, bytes):
++        path = path.decode("latin-1")
++    query = (scope.get("query_string") or b"").decode("latin-1")
++    netloc = f"[{host}]" if ":" in host else host
++    return URL(f"{scheme}://{netloc}:{port}{path}" + (f"?{query}" if query else ""), encoded=True)
++
++
++async def _with_retry(connect, deadline):
++    """Call *connect* until the successor accepts the connection or *deadline* passes."""
++    import aiohttp
++    loop = asyncio.get_running_loop()
++    while True:
++        try:
++            return await connect()
++        except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError, asyncio.TimeoutError):
++            if loop.time() + CONNECT_RETRY_S >= deadline:
++                raise
++            await asyncio.sleep(CONNECT_RETRY_S)
++
++
++def _session():
++    import aiohttp
++    return aiohttp.ClientSession(
++        timeout=aiohttp.ClientTimeout(total=None, sock_connect=CONNECT_ATTEMPT_TIMEOUT_S),
++        auto_decompress=False, cookie_jar=aiohttp.DummyCookieJar(),
++        skip_auto_headers=("User-Agent", "Accept", "Accept-Encoding", "Content-Type"))
++
++
++async def _not_ready(scope, receive, send) -> None:
++    if scope["type"] == "websocket":
++        await send({"type": "websocket.close", "code": 1013})
++        return
++    from starlette.responses import JSONResponse
++    await JSONResponse({"error": "gateway_not_ready", "state": "draining"}, status_code=503)(scope, receive, send)
++
++
++async def forward_http(scope, receive, send, target, deadline) -> None:
++    """Send the request to *target* and stream its answer back as it is."""
++    body = bytearray()
++    while True:
++        message = await receive()
++        if message["type"] == "http.disconnect":
++            return
++        body += message.get("body", b"")
++        if not message.get("more_body"):
++            break
++    async with _session() as session:
++        try:
++            response = await _with_retry(lambda: session.request(
++                scope["method"], _url(scope, target, "http"), data=bytes(body) if body else None,
++                headers=_headers(scope, _HOP), allow_redirects=False), deadline)
++        except Exception as exc:
++            logger.warning("Held request %s %s not forwarded to %s:%d: %s", scope.get("method"),
++                           scope.get("path"), target[0], target[1], exc)
++            return await _not_ready(scope, receive, send)
++        async with response:
++            await send({"type": "http.response.start", "status": response.status,
++                        "headers": [(k.lower(), v) for k, v in response.raw_headers
++                                    if k.decode("latin-1").lower() not in _RESPONSE_DROP]})
++            async for chunk in response.content.iter_any():
++                await send({"type": "http.response.body", "body": chunk, "more_body": True})
++            await send({"type": "http.response.body", "body": b"", "more_body": False})
++
++
++def _close_code(code) -> int:
++    """A close code a server may send: the successor's own, else 1012 (service restart)."""
++    return code if isinstance(code, int) and (1000 <= code <= 1003 or 1007 <= code <= 1014
++                                              or 3000 <= code <= 4999) else 1012
++
++
++async def forward_websocket(scope, receive, send, target, deadline) -> None:
++    """Open the same WebSocket on *target* (same subprotocols, cookies and Origin), accept the client
++    with the subprotocol the successor chose, and pass frames both ways until either side closes."""
++    import aiohttp
++    message = await receive()
++    if message["type"] != "websocket.connect":
++        return
++    async with _session() as session:
++        try:
++            upstream = await _with_retry(lambda: session.ws_connect(
++                _url(scope, target, "http"), protocols=tuple(scope.get("subprotocols") or ()),
++                headers=_headers(scope, _HOP | _WS_OWN), autoping=True, max_msg_size=0, compress=0), deadline)
++        except aiohttp.WSServerHandshakeError as exc:
++            # The successor's own refusal: a ticket it does not know (403) or not ready (503).
++            await send({"type": "websocket.close", "code": 1013 if exc.status == 503 else 1008})
++            return
++        except Exception as exc:
++            logger.warning("Held WebSocket %s not forwarded to %s:%d: %s", scope.get("path"), target[0],
++                           target[1], exc)
++            return await _not_ready(scope, receive, send)
++        async with upstream:
++            await send({"type": "websocket.accept", "subprotocol": upstream.protocol})
++
++            async def client_to_upstream():
++                while True:
++                    message = await receive()
++                    if message["type"] == "websocket.disconnect":
++                        await upstream.close(code=_close_code(message.get("code", 1000)))
++                        return
++                    if message.get("text") is not None:
++                        await upstream.send_str(message["text"])
++                    elif message.get("bytes") is not None:
++                        await upstream.send_bytes(message["bytes"])
++
++            async def upstream_to_client():
++                async for frame in upstream:
++                    if frame.type == aiohttp.WSMsgType.TEXT:
++                        await send({"type": "websocket.send", "text": frame.data})
++                    elif frame.type == aiohttp.WSMsgType.BINARY:
++                        await send({"type": "websocket.send", "bytes": frame.data})
++                    else:
++                        break
++                await send({"type": "websocket.close", "code": _close_code(upstream.close_code)})
++
++            tasks = {asyncio.ensure_future(client_to_upstream()), asyncio.ensure_future(upstream_to_client())}
++            try:
++                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
++            finally:
++                for task in tasks:
++                    task.cancel()
++                await asyncio.gather(*tasks, return_exceptions=True)
++            for task in done:
++                if not task.cancelled() and task.exception() is not None:
++                    logger.debug("Forwarded WebSocket ended", exc_info=task.exception())
++
++
++async def forward(scope, receive, send, target, deadline) -> None:
++    if scope["type"] == "websocket":
++        return await forward_websocket(scope, receive, send, target, deadline)
++    return await forward_http(scope, receive, send, target, deadline)
+diff --git a/gateway/run_api.py b/gateway/run_api.py
+index 70e8f8c7c1..e5a5f9236b 100644
+--- a/gateway/run_api.py
++++ b/gateway/run_api.py
+@@ -380,12 +380,28 @@ async def stop_gateway_api(handle: GatewayAPIHandle) -> None:
+     await asyncio.shield(asyncio.gather(handle.task, return_exceptions=True))
+ 
+ 
+-async def relay_gateway_api(handle: GatewayAPIHandle, target: tuple[str, int], seconds: float) -> tuple[int, int]:
++async def relay_gateway_api(handle: GatewayAPIHandle, target: tuple[str, int], seconds: float, *,
++                            keep_connections: bool = False) -> tuple[int, int]:
+     """``gateway.restart_listener_relay_seconds``: stop serving on the listener but keep its socket
+     open, so connections that arrive meanwhile wait in its backlog, then relay what it accepts to the
+-    successor at *target* for *seconds* (``gateway.listener_relay.relay_listener``)."""
++    successor at *target* for *seconds* (``gateway.listener_relay.relay_listener``).
++
++    With *keep_connections* (``gateway.restart_listener_hold_seconds``) the listener only stops
++    accepting: the connections it has keep running, forwarding their held and later requests to the
++    successor, and the server stops once the relay window is over."""
+     from gateway.listener_relay import relay_listener
+     sock = handle.socket.dup()
++    if keep_connections:
++        try:
++            for server in list(getattr(handle.server, "servers", None) or ()):
++                server.close()
++        except BaseException:
++            sock.close()
++            raise
++        try:
++            return await relay_listener(sock, target, seconds)
++        finally:
++            await stop_gateway_api(handle)
+     try:
+         await stop_gateway_api(handle)
+     except BaseException:
+@@ -404,6 +420,8 @@ def seal_gateway_api(handle: GatewayAPIHandle) -> None:
+     handle.api.sealed = True
+     state = getattr(handle.server, "server_state", None)
+     for connection in list(getattr(state, "connections", ())):
++        if (getattr(connection, "scope", None) or {}).get(HELD_SCOPE_KEY):
++            continue  # a held request goes to the successor (gateway.restart_listener_hold_seconds)
+         try:
+             connection.shutdown()
+         except Exception:
+@@ -418,7 +436,8 @@ async def end_gateway_api_reads(runner, handle: GatewayAPIHandle, timeout: float
+     from gateway.drain_control import HANDOVER_HEALTH
+     seal_gateway_api(handle)
+     runner._listener_handover = HANDOVER_HEALTH
+-    tasks = set(getattr(handle.api, "inflight", ()) or ())
++    # Held requests do not use the stores; they wait for the successor.
++    tasks = set(getattr(handle.api, "inflight", ()) or ()) - set(getattr(handle.api, "held", ()) or ())
+     if tasks:
+         _done, pending = await asyncio.wait(tasks, timeout=max(0.0, timeout))
+         for task in pending:
+@@ -447,6 +466,8 @@ def _handover_read(runner, scope) -> bool:
+ 
+ 
+ _START_HOLD_POLL_S = 0.02
++#: Marks the scope of a request a restart stop holds for the successor (restart_listener_hold_seconds).
++HELD_SCOPE_KEY = 'hermes.listener_held'
+ 
+ 
+ async def _hold_while_starting(runner, descriptor) -> None:
+@@ -493,6 +514,13 @@ class GatewayRuntimeAPI:
+         self.inflight: set = set()
+         #: Set by :func:`seal_gateway_api`: only a restart stop's handover reads are served.
+         self.sealed = False
++        #: ``gateway.restart_listener_hold_seconds``: tasks of the requests held for the successor,
++        #: the successor's address once the profile is released (False: there is none), and until
++        #: when a forward may retry its connect.
++        self.held: set = set()
++        self.successor = None
++        self.forward_deadline = 0.0
++        self._released: asyncio.Event | None = None
+ 
+     async def __call__(self, scope, receive, send):
+         task = asyncio.current_task()
+@@ -502,6 +530,48 @@ class GatewayRuntimeAPI:
+         finally:
+             self.inflight.discard(task)
+ 
++    def forward_to(self, target, seconds: float = 0.0) -> None:
++        """The profile is released: held requests, and every later one, go to the successor at
++        *target* for *seconds*; with no *target* the held ones get the refusal they were spared."""
++        self.forward_deadline = asyncio.get_running_loop().time() + max(0.0, seconds)
++        self.successor = tuple(target) if target is not None else False
++        if self._released is not None:
++            self._released.set()
++
++    async def _hold_or_refuse(self, scope, receive, send, state='draining'):
++        """``gateway.restart_listener_hold_seconds``: a restart stop holds a request it would refuse
++        until the profile is released and forwards it to the successor; else (no key, no successor,
++        or the bound passed) the not-ready answer (WebSocket: close 1013)."""
++        from gateway.drain_control import restart_hold_configured
++        target = None
++        if (scope['type'] in {'http', 'websocket'} and restart_hold_configured(self.runner)
++                and getattr(self.runner, '_restart_requested', False)):
++            target = await self._await_successor(
++                scope, float(getattr(self.runner.config, 'restart_listener_hold_seconds', 0) or 0))
++        if target is not None:
++            from gateway.listener_forward import forward
++            return await forward(scope, receive, send, target, self.forward_deadline)
++        if scope['type'] == 'websocket':
++            await send({'type': 'websocket.close', 'code': 1013})
++        elif scope['type'] == 'http':
++            from starlette.responses import JSONResponse
++            await JSONResponse({'error': 'gateway_not_ready', 'state': state}, status_code=503)(
++                scope, receive, send)
++
++    async def _await_successor(self, scope, seconds):
++        scope[HELD_SCOPE_KEY] = True  # seal_gateway_api leaves its connection open
++        task = asyncio.current_task()
++        self.held.add(task)
++        if self.successor is None:
++            if self._released is None:
++                self._released = asyncio.Event()
++            try:
++                await asyncio.wait_for(self._released.wait(), max(0.0, seconds))
++            except TimeoutError:
++                self.held.discard(task)
++                return None
++        return self.successor or None
++
+     async def _serve_sealed(self, scope, receive, send):
+         """A sealed listener serves the handover's reads (the dashboard's while the stores are open,
+         health itself once they close) and refuses everything else."""
+@@ -516,13 +586,13 @@ class GatewayRuntimeAPI:
+                 'ok': True, 'version': info.base_version, 'displayVersion': info.display_version,
+                 'commit': info.commit, 'auth_required': bool(getattr(self.web_app.state, 'auth_required', False)),
+             })(scope, receive, send)
+-        if scope['type'] == 'websocket':
+-            await send({'type': 'websocket.close', 'code': 1013})
+-        elif scope['type'] == 'http':
+-            await JSONResponse({'error': 'gateway_not_ready', 'state': 'draining'}, status_code=503)(
+-                scope, receive, send)
++        return await self._hold_or_refuse(scope, receive, send)
+ 
+     async def _call(self, scope, receive, send):
++        if self.successor and scope['type'] in {'http', 'websocket'}:
++            # Released: everything this listener still gets (on a connection it already had) goes on.
++            from gateway.listener_forward import forward
++            return await forward(scope, receive, send, self.successor, self.forward_deadline)
+         if self.sealed:
+             return await self._serve_sealed(scope, receive, send)
+         if scope['type'] != 'websocket' or scope.get('path') != '/api/ws':
+@@ -564,13 +634,7 @@ class GatewayRuntimeAPI:
+                 and not _restart_wait_socket_ticket(self.runner, scope)
+                 and not _restart_wait_plugin_socket(self.runner, scope)
+                 and not _restart_wait_sign_in(self.runner, scope)):
+-            if scope['type'] == 'websocket':
+-                await send({'type': 'websocket.close', 'code': 1013})
+-            else:
+-                from starlette.responses import JSONResponse
+-                await JSONResponse({'error': 'gateway_not_ready', 'state': descriptor['state']},
+-                                   status_code=503)(scope, receive, send)
+-            return
++            return await self._hold_or_refuse(scope, receive, send, descriptor['state'])
+         # Capture before Uvicorn's proxy middleware rewrites scope.client (native grants, both kinds).
+         scope['hermes.gateway_socket_peer'] = scope.get('client')
+         from gateway.run_idle_exit import attached_client, note_client_activity
+@@ -579,7 +643,7 @@ class GatewayRuntimeAPI:
+             return await self.app(scope, receive, send)
+         original_receive = receive
+         allow_draining = False
+-        admitted_in_wait = False
++        admitted_in_wait = kept_in_wait = False
+         from gateway.drain_control import restart_wait_open
+ 
+         async def receive_admitted():
+@@ -587,8 +651,10 @@ class GatewayRuntimeAPI:
+             # Only a socket admitted INTO the restart wait (to answer a parked prompt) outlives it. One
+             # opened before the wait is cut as before: its client reconnects to the next owner, and a
+             # held one (a kanban worker polling its card) would otherwise pin the drain to its cap.
++            # With gateway.restart_listener_hold_seconds a Webapp socket opened before the wait is kept
++            # too: it already passed the same gate a dial-back in the wait would.
+             if ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining
+-                    and not (admitted_in_wait and restart_wait_open(self.runner))):
++                    and not ((admitted_in_wait or kept_in_wait) and restart_wait_open(self.runner))):
+                 return {'type': 'websocket.disconnect', 'code': 1013}
+             return message
+ 
+@@ -605,17 +671,18 @@ class GatewayRuntimeAPI:
+         # Origin, #147361). Origin is client-controlled, so this reaches no gate an Origin could not.
+         native_peer = bool(ws.client) and ws.client.host in {'127.0.0.1', '::1'}
+         if reason == 'none' or ws.headers.get('origin') or (reason == 'ok' and not native_peer):
+-            if draining_socket:
++            from gateway.drain_control import restart_hold_configured
++            if draining_socket or restart_hold_configured(self.runner):
+                 # Let a Webapp tab's ticket reach its normal upgrade gate during restart wait: only a
+                 # surface that mints browser tickets redeems one there (elsewhere the loopback gate
+                 # takes ``?token=``).
+                 from hermes_cli.web_server_surface import policy
+-                admitted_in_wait = (reason == 'ok' and 'internal' not in ws.query_params
+-                                    and policy(state).gateway_ticket
+-                                    and restart_wait_open(self.runner))
+-                if not admitted_in_wait:
+-                    await ws.close(code=1013)
+-                    return
++                webapp_socket = (reason == 'ok' and 'internal' not in ws.query_params
++                                 and policy(state).gateway_ticket)
++                kept_in_wait = webapp_socket and not draining_socket
++                admitted_in_wait = webapp_socket and restart_wait_open(self.runner)
++                if draining_socket and not admitted_in_wait:
++                    return await self._hold_or_refuse(scope, original_receive, send)
+             return await self.app(scope, receive, send)
+         if (reason != 'ok' or not _embedded_chat_enabled()
+                 or ws_host_origin_reason(ws, state) is not None or ws_client_reason(ws, state) is not None
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+index 1e6605c85f..a7403e934f 100644
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -1946,11 +1946,17 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+                 or getattr(self, "_handover_listener_closing", False)):
+             return
+         self._handover_listener_closing = True
++        from gateway.drain_control import restart_hold_configured
+         from gateway.run_api import relay_gateway_api, stop_gateway_api
+         seconds = float(getattr(getattr(self, "config", None), "restart_listener_relay_seconds", 0) or 0)
++        hold = restart_hold_configured(self)
++        api = getattr(handle, "api", None)
++        if hold and api is not None and hasattr(api, "forward_to"):
++            # gateway.restart_listener_hold_seconds: what the stop held goes to the successor now.
++            api.forward_to(relay_to if seconds > 0 else None, seconds)
+         if relay_to is not None and seconds > 0:
+             started = time.monotonic()
+-            relayed, unrelayed = await relay_gateway_api(handle, relay_to, seconds)
++            relayed, unrelayed = await relay_gateway_api(handle, relay_to, seconds, keep_connections=hold)
+             logger.info("Listener relayed %d connection(s) to the next gateway at %s:%d in %.1fs (%d not reached)",
+                         relayed, relay_to[0], relay_to[1], time.monotonic() - started, unrelayed)
+         else:
+diff --git a/tests/gateway/test_restart_listener_hold.py b/tests/gateway/test_restart_listener_hold.py
+new file mode 100644
+index 0000000000..d97ea56c11
+--- /dev/null
++++ b/tests/gateway/test_restart_listener_hold.py
+@@ -0,0 +1,413 @@
++"""gateway.restart_listener_hold_seconds: a restart stop holds what it would refuse and forwards it
++to the gateway that takes over, instead of 503 / close 1013."""
++import asyncio
++import json
++import socket
++from types import SimpleNamespace
++
++import pytest
++from aiohttp import WSMsgType, web
++
++from gateway.config import GatewayConfig, load_gateway_config
++from gateway.drain_control import (
++    HANDOVER_HEALTH, HANDOVER_READS, RESTART_WAIT_REASON, handover_read, restart_hold_configured, restart_wait_read,
++)
++from gateway.run_api import HELD_SCOPE_KEY, GatewayRuntimeAPI, end_gateway_api_reads, relay_gateway_api, seal_gateway_api
++
++
++def test_off_by_default():
++    assert GatewayConfig().restart_listener_hold_seconds == 0.0
++    assert GatewayConfig.from_dict({}).restart_listener_hold_seconds == 0.0
++    assert GatewayConfig.from_dict({"gateway": {"restart_listener_hold_seconds": 60}}).restart_listener_hold_seconds == 60.0
++    assert GatewayConfig.from_dict({"gateway": {"restart_listener_hold_seconds": 9999}}).restart_listener_hold_seconds == 0.0
++
++
++def test_config_yaml_key_reaches_the_runner_config(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    (tmp_path / "config.yaml").write_text("gateway:\n  restart_listener_hold_seconds: 60\n", encoding="utf-8")
++    assert load_gateway_config().restart_listener_hold_seconds == 60.0
++
++
++def _config(hold=60, relay=30, handover=True):
++    return GatewayConfig(restart_listener_handover=handover, restart_listener_relay_seconds=relay,
++                         restart_listener_hold_seconds=hold)
++
++
++@pytest.mark.parametrize("hold, relay, handover, expected", [
++    (60, 30, True, True), (0, 30, True, False), (60, 0, True, False), (60, 30, False, False)])
++def test_the_hold_needs_the_handover_and_the_relay(hold, relay, handover, expected):
++    assert restart_hold_configured(SimpleNamespace(config=_config(hold, relay, handover))) is expected
++
++
++def _waiting_runner(config):
++    return SimpleNamespace(config=config, _draining=True, _running=True, _listener_handover=None,
++                           _restart_requested=True,
++                           session_runtime_descriptor={"state": "ready", "drain_reason": RESTART_WAIT_REASON})
++
++
++@pytest.mark.parametrize("hold, expected", [(60, True), (0, False)])
++def test_with_the_hold_every_get_is_a_read_while_the_stores_are_open(hold, expected):
++    runner = _waiting_runner(_config(hold))
++    assert restart_wait_read(runner, "GET", "/api/cron/jobs") is expected
++    assert restart_wait_read(runner, "GET", "/api/sessions/s1/messages")
++    assert not restart_wait_read(runner, "PUT", "/api/config")
++    runner._running, runner._listener_handover = False, HANDOVER_READS
++    assert handover_read(runner, "GET", "/api/cron/jobs") is expected
++    assert not handover_read(runner, "POST", "/api/cron/jobs")
++    runner._listener_handover = HANDOVER_HEALTH
++    assert not handover_read(runner, "GET", "/api/cron/jobs")
++    assert handover_read(runner, "GET", "/api/health")
++
++
++def _stopping_runner(config, stage=HANDOVER_HEALTH):
++    return SimpleNamespace(config=config, _draining=True, _running=False, _listener_handover=stage,
++                           _restart_requested=True, session_runtime_descriptor={"state": "draining"})
++
++
++def _api(runner):
++    reached = []
++
++    async def dashboard(scope, receive, send):
++        reached.append(scope["path"])
++        await send({"type": "http.response.start", "status": 200, "headers": []})
++        await send({"type": "http.response.body", "body": b"old"})
++
++    api = GatewayRuntimeAPI(dashboard, runner, SimpleNamespace(state=SimpleNamespace(auth_required=True)))
++    seal_gateway_api(SimpleNamespace(api=api, server=SimpleNamespace(server_state=SimpleNamespace(connections=set()))))
++    return api, reached
++
++
++def _http_scope(path, method="GET", query=b"", headers=()):
++    return {"type": "http", "method": method, "path": path, "raw_path": path.encode(), "query_string": query,
++            "headers": [(b"host", b"hermes:9120"), *headers], "client": ("10.0.0.9", 1),
++            "server": ("10.0.0.1", 9120), "scheme": "http", "http_version": "1.1", "root_path": ""}
++
++
++async def _call(api, scope, body=b""):
++    sent = []
++
++    async def receive():
++        return {"type": "http.request", "body": body, "more_body": False}
++
++    async def send(message):
++        sent.append(message)
++
++    await api(scope, receive, send)
++    start = next(m for m in sent if m["type"] == "http.response.start")
++    return start["status"], dict(start["headers"]), b"".join(m.get("body", b"") for m in sent
++                                                             if m["type"] == "http.response.body")
++
++
++async def _successor():
++    """The gateway that takes over: echoes what it got, and a WebSocket that echoes frames."""
++    seen = []
++
++    async def echo(request):
++        seen.append((request.method, request.path_qs, request.headers.get("Host"), request.headers.get("Cookie"),
++                     await request.read()))
++        response = web.Response(status=201, body=b"new:" + (await request.read()))
++        response.headers.add("Set-Cookie", "a=1")
++        response.headers.add("Set-Cookie", "b=2")
++        return response
++
++    async def ws(request):
++        socket_ = web.WebSocketResponse(protocols=("hermes.v1",))
++        await socket_.prepare(request)
++        seen.append(("ws", request.headers.get("Origin"), socket_.ws_protocol))
++        async for frame in socket_:
++            if frame.type == WSMsgType.TEXT:
++                if frame.data == "bye":
++                    await socket_.close(code=4001)
++                    break
++                await socket_.send_str("new:" + frame.data)
++        return socket_
++
++    app = web.Application()
++    app.router.add_route("GET", "/api/ws", ws)
++    app.router.add_route("*", "/{tail:.*}", echo)
++    runner = web.AppRunner(app)
++    await runner.setup()
++    sock = socket.socket()
++    sock.bind(("127.0.0.1", 0))
++    site = web.SockSite(runner, sock)
++    await site.start()
++    return runner, ("127.0.0.1", sock.getsockname()[1]), seen
++
++
++@pytest.mark.asyncio
++async def test_without_the_hold_a_stopping_listener_refuses_at_once():
++    api, _ = _api(_stopping_runner(_config(hold=0)))
++    status, _, body = await asyncio.wait_for(_call(api, _http_scope("/api/config", "PUT")), 2)
++    assert status == 503 and json.loads(body)["error"] == "gateway_not_ready"
++
++
++@pytest.mark.asyncio
++async def test_a_held_request_is_forwarded_to_the_successor_once_released():
++    successor, target, seen = await _successor()
++    try:
++        api, reached = _api(_stopping_runner(_config()))
++        call = asyncio.ensure_future(_call(api, _http_scope(
++            "/api/config", "PUT", b"x=1", headers=[(b"cookie", b"s=abc"), (b"content-length", b"5")]), b"hello"))
++        await asyncio.sleep(0.2)
++        assert not call.done()  # held, not refused
++        assert len(api.held) == 1
++        api.forward_to(target, 5)
++        status, headers, body = await asyncio.wait_for(call, 5)
++        assert (status, body) == (201, b"new:hello")
++        assert seen == [("PUT", "/api/config?x=1", "hermes:9120", "s=abc", b"hello")]
++        assert reached == []
++    finally:
++        await successor.cleanup()
++
++
++@pytest.mark.asyncio
++async def test_every_set_cookie_comes_back():
++    successor, target, _seen = await _successor()
++    try:
++        api, _ = _api(_stopping_runner(_config()))
++        api.forward_to(target, 5)
++        sent = []
++
++        async def receive():
++            return {"type": "http.request", "body": b"", "more_body": False}
++
++        async def send(message):
++            sent.append(message)
++
++        await api(_http_scope("/auth/password-login", "POST"), receive, send)
++        start = next(m for m in sent if m["type"] == "http.response.start")
++        assert [v for k, v in start["headers"] if k == b"set-cookie"] == [b"a=1", b"b=2"]
++    finally:
++        await successor.cleanup()
++
++
++@pytest.mark.asyncio
++async def test_a_held_request_waits_for_a_successor_that_is_not_listening_yet():
++    with socket.socket() as probe:
++        probe.bind(("127.0.0.1", 0))
++        port = probe.getsockname()[1]
++    api, _ = _api(_stopping_runner(_config()))
++    call = asyncio.ensure_future(_call(api, _http_scope("/api/x", "POST")))
++    await asyncio.sleep(0.05)
++    api.forward_to(("127.0.0.1", port), 5)
++    await asyncio.sleep(0.3)  # refused by the successor's port all this time
++    assert not call.done()
++    async def late(request):
++        return web.Response(status=200, body=b"late")
++
++    app = web.Application()
++    app.router.add_route("*", "/{tail:.*}", late)
++    runner = web.AppRunner(app)
++    await runner.setup()
++    await web.TCPSite(runner, "127.0.0.1", port).start()
++    try:
++        assert (await asyncio.wait_for(call, 5))[2] == b"late"
++    finally:
++        await runner.cleanup()
++
++
++@pytest.mark.asyncio
++async def test_without_a_successor_the_held_request_gets_the_refusal():
++    api, _ = _api(_stopping_runner(_config()))
++    call = asyncio.ensure_future(_call(api, _http_scope("/api/config", "PUT")))
++    await asyncio.sleep(0.05)
++    api.forward_to(None)
++    status, _, _ = await asyncio.wait_for(call, 2)
++    assert status == 503
++
++
++@pytest.mark.asyncio
++async def test_the_hold_ends_with_the_refusal_after_its_bound():
++    api, _ = _api(_stopping_runner(_config(hold=0.2)))
++    status, _, _ = await asyncio.wait_for(_call(api, _http_scope("/api/config", "PUT")), 3)
++    assert status == 503
++    assert api.held == set()
++
++
++@pytest.mark.asyncio
++async def test_a_plain_stop_never_holds():
++    runner = _stopping_runner(_config())
++    runner._restart_requested = False
++    api, _ = _api(runner)
++    assert (await asyncio.wait_for(_call(api, _http_scope("/api/config", "PUT")), 2))[0] == 503
++
++
++@pytest.mark.asyncio
++async def test_health_is_still_answered_by_the_stopping_gateway():
++    api, _ = _api(_stopping_runner(_config()))
++    status, _, body = await asyncio.wait_for(_call(api, _http_scope("/api/health")), 2)
++    assert status == 200 and json.loads(body)["ok"] is True
++
++
++async def _websocket(api, scope_extra=None):
++    to_app: asyncio.Queue = asyncio.Queue()
++    from_app: asyncio.Queue = asyncio.Queue()
++    scope = {"type": "websocket", "path": "/api/ws", "raw_path": b"/api/ws", "query_string": b"native_dial=browser",
++             "headers": [(b"host", b"hermes:9120"), (b"origin", b"http://hermes:9120"),
++                         (b"sec-websocket-protocol", b"hermes.v1, ticket.abc"), (b"sec-websocket-key", b"x")],
++             "subprotocols": ["hermes.v1", "ticket.abc"], "client": ("10.0.0.9", 1),
++             "server": ("10.0.0.1", 9120), "scheme": "ws", **(scope_extra or {})}
++    await to_app.put({"type": "websocket.connect"})
++    task = asyncio.ensure_future(api(scope, to_app.get, from_app.put))
++    return task, to_app, from_app
++
++
++@pytest.mark.asyncio
++async def test_a_held_websocket_is_opened_on_the_successor_and_relayed():
++    successor, target, seen = await _successor()
++    try:
++        api, _ = _api(_stopping_runner(_config()))
++        task, to_app, from_app = await _websocket(api)
++        await asyncio.sleep(0.2)
++        assert from_app.empty()  # held: no close 1013
++        api.forward_to(target, 5)
++        assert await asyncio.wait_for(from_app.get(), 5) == {"type": "websocket.accept", "subprotocol": "hermes.v1"}
++        await to_app.put({"type": "websocket.receive", "text": "ping"})
++        assert await asyncio.wait_for(from_app.get(), 5) == {"type": "websocket.send", "text": "new:ping"}
++        await to_app.put({"type": "websocket.receive", "text": "bye"})
++        assert await asyncio.wait_for(from_app.get(), 5) == {"type": "websocket.close", "code": 4001}
++        await asyncio.wait_for(task, 5)
++        assert seen == [("ws", "http://hermes:9120", "hermes.v1")]
++    finally:
++        await successor.cleanup()
++
++
++@pytest.mark.asyncio
++async def test_a_client_that_leaves_closes_the_forwarded_socket():
++    successor, target, _seen = await _successor()
++    try:
++        api, _ = _api(_stopping_runner(_config()))
++        api.forward_to(target, 5)
++        task, to_app, from_app = await _websocket(api)
++        assert (await asyncio.wait_for(from_app.get(), 5))["type"] == "websocket.accept"
++        await to_app.put({"type": "websocket.disconnect", "code": 1001})
++        await asyncio.wait_for(task, 5)
++    finally:
++        await successor.cleanup()
++
++
++@pytest.mark.asyncio
++async def test_without_the_hold_a_sealed_listener_closes_a_socket_with_1013():
++    api, _ = _api(_stopping_runner(_config(hold=0)))
++    task, _to_app, from_app = await _websocket(api)
++    await asyncio.wait_for(task, 2)
++    assert from_app.get_nowait() == {"type": "websocket.close", "code": 1013}
++
++
++def test_seal_leaves_a_held_connection_open():
++    calls = []
++    held = SimpleNamespace(scope={HELD_SCOPE_KEY: True}, shutdown=lambda: calls.append("held"))
++    idle = SimpleNamespace(scope={"type": "http"}, shutdown=lambda: calls.append("idle"))
++    fresh = SimpleNamespace(shutdown=lambda: calls.append("fresh"))  # no request yet
++    api = SimpleNamespace(sealed=False)
++    seal_gateway_api(SimpleNamespace(api=api, server=SimpleNamespace(
++        server_state=SimpleNamespace(connections=[held, idle, fresh]))))
++    assert calls == ["idle", "fresh"] and api.sealed
++
++
++@pytest.mark.asyncio
++async def test_end_reads_does_not_wait_for_or_cancel_a_held_request():
++    from unittest.mock import AsyncMock
++    runner = _stopping_runner(_config(), HANDOVER_READS)
++    held = asyncio.ensure_future(asyncio.sleep(30))
++    handle = SimpleNamespace(api=SimpleNamespace(inflight={held}, held={held}, sealed=True),
++                             app=SimpleNamespace(close=AsyncMock()))
++    await asyncio.wait_for(end_gateway_api_reads(runner, handle, 5.0), 1)
++    assert not held.done()
++    held.cancel()
++
++
++@pytest.mark.asyncio
++async def test_relay_keeping_connections_stops_accepting_then_stops_the_server_after_the_window(monkeypatch):
++    order = []
++    server = SimpleNamespace(close=lambda: order.append("stopped accepting"))
++    sock = socket.socket()
++    sock.bind(("127.0.0.1", 0))
++    sock.listen(4)
++    handle = SimpleNamespace(socket=sock, server=SimpleNamespace(servers=[server], should_exit=False))
++
++    async def relay(dup, target, seconds):
++        order.append("relayed")
++        dup.close()
++        return 2, 0
++
++    async def stop(h):
++        order.append("server stopped")
++
++    monkeypatch.setattr("gateway.listener_relay.relay_listener", relay)
++    monkeypatch.setattr("gateway.run_api.stop_gateway_api", stop)
++    try:
++        assert await relay_gateway_api(handle, ("10.1.2.3", 9120), 1.0, keep_connections=True) == (2, 0)
++    finally:
++        sock.close()
++    assert order == ["stopped accepting", "relayed", "server stopped"]
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("hold, relay_to, forwarded", [(60, ("10.1.2.3", 9120), ("10.1.2.3", 9120)),
++                                                      (60, None, False), (0, ("10.1.2.3", 9120), None)])
++async def test_stop_handover_listener_hands_the_held_requests_on(monkeypatch, hold, relay_to, forwarded):
++    from gateway.run import GatewayRunner
++    calls = []
++
++    async def fake_relay(handle, target, window, keep_connections=False):
++        calls.append(("relay", keep_connections))
++        return 0, 0
++
++    async def fake_stop(handle):
++        calls.append(("stop",))
++
++    monkeypatch.setattr("gateway.run_api.relay_gateway_api", fake_relay)
++    monkeypatch.setattr("gateway.run_api.stop_gateway_api", fake_stop)
++    runner = object.__new__(GatewayRunner)
++    runner.config = _config(hold=hold)
++    runner._listener_handover = HANDOVER_HEALTH
++    api = GatewayRuntimeAPI(None, runner, None)
++    runner.session_api = SimpleNamespace(api=api)
++    await GatewayRunner.stop_handover_listener(runner, relay_to)
++    assert api.successor == forwarded
++    assert calls == ([("relay", bool(hold))] if relay_to else [("stop",)])
++
++
++def _kept_runner(config):
++    return SimpleNamespace(config=config, _draining=False, _running=True, _listener_handover=None,
++                           _restart_requested=False, session_runtime_descriptor={"state": "ready"})
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("hold, kept", [(60, True), (0, False)])
++async def test_a_webapp_socket_opened_before_the_restart_wait_stays_open_through_it(monkeypatch, hold, kept):
++    import gateway.run_api as run_api
++    monkeypatch.setattr("hermes_cli.web_server_boundary._gateway_ws_ticket_from_subprotocol",
++                        lambda ws: ("abc", "ok"))
++    monkeypatch.setattr("hermes_cli.web_server_surface.policy", lambda state: SimpleNamespace(gateway_ticket=True))
++    runner = _kept_runner(_config(hold=hold))
++    got = []
++    opened = asyncio.Event()
++
++    async def dashboard(scope, receive, send):
++        opened.set()
++        while True:
++            message = await receive()
++            got.append(message)
++            if message["type"] == "websocket.disconnect":
++                return
++
++    api = GatewayRuntimeAPI(dashboard, runner, SimpleNamespace(state=SimpleNamespace()))
++    task, to_app, _from_app = await _websocket(api)
++    await asyncio.wait_for(opened.wait(), 2)
++    # The restart wait opens after the socket was admitted.
++    runner._draining, runner._restart_requested = True, True
++    runner.session_runtime_descriptor["drain_reason"] = RESTART_WAIT_REASON
++    await to_app.put({"type": "websocket.receive", "text": "steer"})
++    await asyncio.sleep(0.05)
++    if kept:
++        assert got[-1] == {"type": "websocket.receive", "text": "steer"}
++        runner._running = False  # the stop begins: the wait is over
++        await to_app.put({"type": "websocket.receive", "text": "late"})
++        await asyncio.wait_for(task, 2)
++        assert got[-1] == {"type": "websocket.disconnect", "code": 1013}
++    else:
++        await asyncio.wait_for(task, 2)
++        assert got[-1] == {"type": "websocket.disconnect", "code": 1013}
++    assert run_api  # imported for the monkeypatch targets
+diff --git a/tests/gateway/test_restart_listener_relay.py b/tests/gateway/test_restart_listener_relay.py
+index ef7a71fcdc..313846f914 100644
+--- a/tests/gateway/test_restart_listener_relay.py
++++ b/tests/gateway/test_restart_listener_relay.py
+@@ -185,7 +185,7 @@ async def test_stop_handover_listener_relays_only_with_a_target_and_the_key(monk
+     from gateway.run import GatewayRunner
+     calls = []
+ 
+-    async def fake_relay(handle, target, window):
++    async def fake_relay(handle, target, window, keep_connections=False):
+         calls.append(("relay", target, window))
+         return 1, 0
+ 
+diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
+index cc7645a902..0f34c3cef7 100644
+--- a/website/docs/user-guide/messaging/index.md
++++ b/website/docs/user-guide/messaging/index.md
+@@ -776,6 +776,15 @@ wildcard `webapp.host`), retrying until the next gateway listens, so clients
+ wait instead of being refused. Allow connections between the two instances on
+ the listener's port.
+ 
++Between the stop signal and the release, the old gateway still answers
++everything else it would not serve with `503` (a WebSocket with close `1013`).
++Set `gateway.restart_listener_hold_seconds` (for example `60`) together with
++the relay to hold such a request instead, up to that many seconds: once the
++profile is released it is forwarded to the next gateway, and its answer comes
++back on the same connection. With the key the old gateway also serves every
++`GET` while its stores are open, and a Webapp WebSocket opened before the
++restart wait stays open through it.
++
+ ### macOS (launchd)
+ 
+ ```bash
