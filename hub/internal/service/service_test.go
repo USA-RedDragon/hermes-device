@@ -289,25 +289,6 @@ func TestViewerReconnectSinceSeq(t *testing.T) {
 	}
 }
 
-func TestRestartCloseReconnectsWithoutGoingOffline(t *testing.T) {
-	t.Parallel()
-	e := setup(t, service.Options{})
-	ctx := context.Background()
-	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, sLive, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stop()
-	next(t, ch)
-	e.gw.PublishOffline(sLive, "message.delta", map[string]any{kText: "b"})
-	e.gw.RestartConnections()
-	evs := until(t, ch, hub.KindBackendStatus)
-	if !slices.Equal(kinds(evs), []string{hub.KindMessageDelta, hub.KindBackendStatus}) ||
-		text(t, evs[0]) != "b" || string(evs[1].Data) != `{"connected":true}` {
-		t.Fatalf("after a restart close = %v, want the missed delta and no offline status", kinds(evs))
-	}
-}
-
 func TestGatewayReconnectReplaysWithEventsSince(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})

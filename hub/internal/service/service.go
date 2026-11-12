@@ -827,26 +827,13 @@ func (b *backend) watch(c *gateway.Client) {
 		return
 	}
 	b.log.Warn("gateway connection lost", "error", fmt.Sprint(c.Err()))
-	offline := func() {
-		for _, ls := range sessions {
-			if ls.on(c) {
-				ls.status(false)
-			}
+	for _, ls := range sessions {
+		if ls.on(c) {
+			ls.status(false)
 		}
-	}
-	if gateway.RestartClose(c.Err()) {
-		// A gateway that closed for a restart is replaced within seconds: re-subscribe first and
-		// tell viewers only when that takes longer than restartReconnectGrace.
-		time.AfterFunc(restartReconnectGrace, offline)
-	} else {
-		offline()
 	}
 	b.retry()
 }
-
-// restartReconnectGrace is how long sessions of a gateway that closed for a
-// restart stay shown as connected while the hub re-subscribes them.
-const restartReconnectGrace = 10 * time.Second
 
 // retry reconnects and re-subscribes every session that has a viewer,
 // with backoff, until that works or no viewer is left. It outlives any
