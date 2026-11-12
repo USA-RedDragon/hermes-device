@@ -7,6 +7,7 @@ import asyncio
 import base64
 import inspect
 import json
+import re
 import os
 import sys
 import tempfile
@@ -929,7 +930,8 @@ class ToolTests(BrowserBase):
     def test_screenshot_saves_a_file_to_show(self):
         out = self.run_tool("browser_screenshot", tab_id=7)
         path = Path(out["path"])
-        self.assertEqual(out["show_user"], "MEDIA:" + out["path"])
+        self.assertRegex(out["show_user"], r"^!\[Screenshot of [^\]]*\]\(" + re.escape(out["path"]) + r"\)$")
+        self.assertNotIn("MEDIA:", out["show_user"] + out["note"])
         self.assertEqual(path.parent.parent, browser.shots_root())
         self.assertEqual(path.parent.name, self.session)
         self.assertEqual(path.suffix, ".png")

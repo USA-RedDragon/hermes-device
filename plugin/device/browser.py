@@ -1170,10 +1170,13 @@ def screenshot_result(page: dict, path: Path) -> str:
     """The browser_screenshot result: the saved file and how to show it to the user."""
     out = dict(page)
     out["path"] = str(path)
-    out["show_user"] = f"MEDIA:{path}"
+    title = re.sub(r"[\[\]\r\n]+", " ", str(page.get("title") or "")).strip()[:80]
+    target = f"<{path}>" if re.search(r"[\s()]", str(path)) else str(path)
+    out["show_user"] = f"![Screenshot of {title or 'the page'}]({target})"
     out["note"] = ("The screenshot is saved. To show it to the user, put the show_user line, exactly as written, "
-                   "on its own line in your reply. The user sees the picture there, not the path. To look at the "
-                   "page yourself, use browser_vision.")
+                   "on its own line in your reply: it is a Markdown image of the file's absolute path, and you may "
+                   "change the description in the brackets. The user sees the picture there, not the path. To look "
+                   "at the page yourself, use browser_vision.")
     return _ok(out)
 
 
@@ -1996,7 +1999,8 @@ SCHEMAS = {
         "lock). Example: {}",
         {"tab_id": {"type": "integer", "description": "Agent tab; omit for any"}}, []),
     "browser_screenshot": _schema(
-        "browser_screenshot", "Save a screenshot to show the user: put the returned show_user line in your reply. "
+        "browser_screenshot", "Save a screenshot to show the user: put the returned show_user line in your reply; it is a Markdown image, "
+        "![description](/absolute/path.png). "
         "You do not see it; use browser_vision to look. Example: {\"tab_id\": 12}",
         {"tab_id": _TAB, "full_page": _FULL}, []),
 }
