@@ -52,14 +52,44 @@ type ProviderUsage struct {
 // ProviderRow is one provider row of the model options. Usage is nil when
 // Hermes has no fresh read.
 type ProviderRow struct {
-	Slug          string         `json:"slug"`
-	Authenticated *bool          `json:"authenticated"`
-	Usage         *ProviderUsage `json:"usage"`
+	Slug              string                       `json:"slug"`
+	Name              string                       `json:"name"`
+	Authenticated     *bool                        `json:"authenticated"`
+	Usage             *ProviderUsage               `json:"usage"`
+	Models            []string                     `json:"models"`
+	UnavailableModels []string                     `json:"unavailable_models"`
+	Capabilities      map[string]ModelCapabilities `json:"capabilities"`
+}
+
+// ModelCapabilities is one model's capabilities in a provider row.
+type ModelCapabilities struct {
+	Reasoning           bool  `json:"reasoning"`
+	CanDisableReasoning *bool `json:"can_disable_reasoning"`
 }
 
 // ModelOptions is the dashboard's GET /api/model/options answer.
+// Model and Provider are the backend's default for a new chat.
 type ModelOptions struct {
 	Providers []ProviderRow `json:"providers"`
+	Model     string        `json:"model"`
+	Provider  string        `json:"provider"`
+}
+
+// ModelInfoPath is the dashboard's resolved facts about its default model.
+const ModelInfoPath = "/api/model/info"
+
+// ModelInfo is the dashboard's GET /api/model/info answer. The context
+// length is 0 when Hermes could not resolve it.
+type ModelInfo struct {
+	Model                  string `json:"model"`
+	Provider               string `json:"provider"`
+	EffectiveContextLength int64  `json:"effective_context_length"`
+}
+
+// ModelInfo reads the dashboard's default model and its context window.
+func (c *Client) ModelInfo(ctx context.Context) (ModelInfo, error) {
+	var out ModelInfo
+	return out, c.do(ctx, false, http.MethodGet, ModelInfoPath, maxOptions, nil, &out)
 }
 
 // ModelOptions reads the model options of the dashboard.

@@ -139,3 +139,33 @@ func TestClaudePoolAPI(t *testing.T) {
 		t.Fatalf("plugin calls = %v", plugin.Calls)
 	}
 }
+
+func TestNewChatModelsAPI(t *testing.T) {
+	t.Parallel()
+	var e *hubEnv
+	e = setupWith(t, func(cfg *config.Config, opts *web.Options, _ *store.Store) {
+		cfg.Backends[0].Users = []string{userAlice}
+		d := gateway.NewDialer(gateway.Credentials{BaseURL: cfg.Backends[0].URL, Provider: providerBasic, Username: clientID, Password: "pw"})
+		opts.Claude = claude.New(claude.Options{Access: lateAccess{&e}, Requesters: map[string]device.Requester{"pc": d}})
+	})
+	opts := claudetest.NewChatGPT(e.gw)
+	yes := true
+	opts.Lock()
+	opts.Model, opts.Provider, opts.ContextLength = "claude-sonnet-5-5[1m]", "claude-pool", 1000000
+	opts.Rows = []claude.ProviderRow{{Slug: "claude-pool", Authenticated: &yes, Models: []string{"claude-sonnet-5-5[1m]"}}}
+	opts.Unlock()
+	alice := client(t)
+	login(t, e, alice)
+	resp, body := get(t, alice, e.url+"/api/backends/pc/models")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"model":"claude-sonnet-5-5[1m]"`) ||
+		!strings.Contains(body, `"provider":"claude-pool"`) || !strings.Contains(body, `"context_length":1000000`) ||
+		!strings.Contains(body, `"efforts":[`) {
+		t.Fatalf("models = %d %s", resp.StatusCode, body)
+	}
+	if resp, _ := get(t, alice, e.url+"/api/backends/home/models"); resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("models of a backend alice cannot use = %d", resp.StatusCode)
+	}
+	if resp, _ := get(t, client(t), e.url+"/api/backends/pc/models"); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous models = %d", resp.StatusCode)
+	}
+}

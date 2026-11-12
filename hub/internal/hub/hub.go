@@ -106,6 +106,14 @@ type Models struct {
 	Providers []ModelProvider `json:"providers"`
 }
 
+// NewChatModels is the model choice of a chat that does not exist yet: the
+// backend's default model and provider, every model it offers, and the
+// default model's context window in tokens (0 when unknown).
+type NewChatModels struct {
+	Models
+	ContextLength int64 `json:"context_length,omitempty"`
+}
+
 // ModelProvider is one provider and the models it offers. Group is the
 // heading the pickers show it under; providers with the same group share
 // one heading.

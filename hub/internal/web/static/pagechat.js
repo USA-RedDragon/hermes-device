@@ -8,7 +8,8 @@
 // It returns null outside page chat mode.
 // ctx: api, el, toast(text), banner(text, bad), view() (the open chat or
 // null), sessions() (the last chat list), open(b, s), fresh() (a new page
-// chat), hash(b, s) (a chat's hub route), ago(iso), submit().
+// chat), hash(b, s) (a chat's hub route), ago(iso), submit(), idle() (fill
+// the meters and model chip before the first message).
 window.HubPageChat = (ctx) => {
   if (!document.documentElement.classList.contains("pagechat")) return null;
   const { el } = ctx;
@@ -40,6 +41,7 @@ window.HubPageChat = (ctx) => {
     document.documentElement.classList.add("pc-" + mode);
     head();
     chips();
+    ctx.idle();
     port.postMessage({ type: "watch" });
   });
 
@@ -212,7 +214,7 @@ window.HubPageChat = (ctx) => {
 
   function modelPanel(open) {
     const info = $("info");
-    if (open && (info.hidden || !ctx.view())) return;
+    if (open && info.hidden) return;
     info.open = open;
     modelChip.setAttribute("aria-expanded", String(info.open));
   }
@@ -228,10 +230,10 @@ window.HubPageChat = (ctx) => {
     const v = ctx.view();
     const model = v && v.info ? v.info.model || (v.info.usage && v.info.usage.model) : (idle && idle.model) || "";
     modelChip.textContent = model || "";
-    modelChip.title = model ? (v ? "Model and thinking: " + model : "Model: " + model + ". Send a message to change it.") : "";
+    modelChip.title = model ? "Model and thinking: " + model : "";
     modelChip.hidden = !model;
-    modelChip.disabled = !v;
-    if (!v) modelPanel(false);
+    modelChip.disabled = !v && $("info").hidden;
+    if (modelChip.disabled) modelPanel(false);
   }
 
   const meterRow = el("div", "pmeters");

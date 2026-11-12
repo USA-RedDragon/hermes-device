@@ -269,12 +269,19 @@ type ChatGPT struct {
 	Cold int
 	// Calls counts the answers.
 	Calls int
+	// Rows are more provider rows, as a model picker lists them.
+	Rows []claude.ProviderRow
+	// Model and Provider are the default for a new chat, and ContextLength
+	// is the default model's context window (0: unresolved).
+	Model, Provider string
+	ContextLength   int64
 }
 
 // NewChatGPT mounts the fake model options on gw.
 func NewChatGPT(gw *gatewaytest.Gateway) *ChatGPT {
 	c := &ChatGPT{}
 	gw.Handle("GET "+claude.ModelOptionsPath, http.HandlerFunc(c.options), true)
+	gw.Handle("GET "+claude.ModelInfoPath, http.HandlerFunc(c.info), true)
 	return c
 }
 
@@ -283,7 +290,8 @@ func (c *ChatGPT) options(w http.ResponseWriter, _ *http.Request) {
 	defer c.Unlock()
 	c.Calls++
 	yes := true
-	out := claude.ModelOptions{Providers: []claude.ProviderRow{{Slug: "deepinfra", Authenticated: &yes}}}
+	out := claude.ModelOptions{Providers: []claude.ProviderRow{{Slug: "deepinfra", Authenticated: &yes}}, Model: c.Model, Provider: c.Provider}
+	out.Providers = append(out.Providers, c.Rows...)
 	if c.Row != nil {
 		row := *c.Row
 		if c.Cold > 0 {
@@ -293,6 +301,12 @@ func (c *ChatGPT) options(w http.ResponseWriter, _ *http.Request) {
 		out.Providers = append(out.Providers, row)
 	}
 	answer(w, http.StatusOK, out)
+}
+
+func (c *ChatGPT) info(w http.ResponseWriter, _ *http.Request) {
+	c.Lock()
+	defer c.Unlock()
+	answer(w, http.StatusOK, claude.ModelInfo{Model: c.Model, Provider: c.Provider, EffectiveContextLength: c.ContextLength})
 }
 
 // CallCount returns how many answers the fake gave.

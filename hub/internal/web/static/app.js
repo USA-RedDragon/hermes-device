@@ -2396,16 +2396,101 @@
     }
   }
 
+  // The page chat before its first message has no chat to ask, so its
+  // model list, default model and context window come from the backend
+  // (GET /api/backends/<id>/models). idle holds them, the model and thinking
+  // level the user picked for the chat that the first message creates, and
+  // the state of the load.
+  const idle = { backend: "", data: null, at: 0, loading: false, failed: false, pick: null, effort: "" };
+  const idleFresh = 5 * 60000;
+
+  // idleBackend is the backend a new page chat runs on: that of the
+  // computer that runs the extension, else the user's default.
+  function idleBackend() {
+    const c = computers.find((x) => x.id === page.device());
+    return (c && c.backend_id) || me.default_backend || "";
+  }
+
+  async function idleLoad() {
+    if (idle.loading) return;
+    let backend = idleBackend();
+    if (idle.data && idle.backend === backend && Date.now() - idle.at < idleFresh) return;
+    idle.loading = true;
+    try {
+      if (!backend) backend = ((await api("GET", "/api/backends"))[0] || {}).id || "";
+      if (!backend) return;
+      const data = await api("GET", "/api/backends/" + encodeURIComponent(backend) + "/models");
+      if (idle.backend !== backend) { idle.pick = null; idle.effort = ""; }
+      Object.assign(idle, { backend, data, at: Date.now(), failed: false });
+    } catch (_) {
+      idle.failed = true;
+      idle.at = Date.now() - idleFresh + 30000;
+    } finally {
+      idle.loading = false;
+    }
+    if (!view && page) pageIdle();
+  }
+
+  // idleOffers says whether the backend offers a model.
+  function idleOffers(provider, model) {
+    const ps = (idle.data && idle.data.providers) || [];
+    return ps.some((p) => (!provider || p.id === provider) && p.models.some((m) => m.id === model));
+  }
+
+  // idleModel is the model the next page chat runs on: the user's pick,
+  // else the model of the last page chat if the backend still offers it,
+  // else the backend's default.
+  function idleModel() {
+    const d = idle.data;
+    if (!d) return null;
+    if (idle.pick && idleOffers(idle.pick.provider, idle.pick.model)) return idle.pick;
+    const last = page.lastInfo();
+    if (last && last.backend === idle.backend && idleOffers(last.provider, last.model)) return { provider: last.provider, model: last.model };
+    return { provider: d.provider, model: d.model };
+  }
+
+  // idleContext is the context window of a model before a chat reports it:
+  // the one the backend resolved for its default model, 1M for a model
+  // whose ID says [1m], 200k for another Claude model, else what the last
+  // page chat on that model showed.
+  function idleContext(m) {
+    const d = idle.data;
+    if (m.model === d.model && m.provider === d.provider && d.context_length) return d.context_length;
+    if (/\[1m\]$/.test(m.model)) return 1000000;
+    if (/^claude-/.test(m.model)) return 200000;
+    const last = page.lastInfo();
+    return last && last.model === m.model ? last.context_length || 0 : 0;
+  }
+
+  // idleInfo is what a chat's info would be: the model, its window, no
+  // tokens used.
+  function idleInfo() {
+    const m = idleModel();
+    if (!m) return null;
+    const max = idleContext(m);
+    return { provider: m.provider, model: m.model, context_length: max, reasoning_effort: idle.effort,
+      usage: { model: m.model, context_max: max, context_used: 0 } };
+  }
+
   // pageIdle fills the page chat's meters and model chip before the chat
-  // starts, from what the last page chat showed: the model, its context
-  // window and the account's limits. A chat has no tokens yet.
+  // starts: the model, its context window, the account's limits and no
+  // tokens. A chat has none yet.
   function pageIdle() {
     if (view) return;
-    const last = page.lastInfo();
-    if (!last) { page.meters([]); return; }
-    const info = { provider: last.provider, model: last.model, context_length: last.context_length,
-      usage: { model: last.model, context_max: last.context_length, context_used: 0 } };
-    page.meters(pageMeters(info, { backend: last.backend, session: "" }), info);
+    idleLoad();
+    let info = idleInfo();
+    if (!info) {
+      const last = idle.failed ? page.lastInfo() : null;
+      if (!last) { $("info").hidden = true; page.meters([]); return; }
+      info = { provider: last.provider, model: last.model, context_length: last.context_length,
+        usage: { model: last.model, context_max: last.context_length, context_used: 0 } };
+      $("info").hidden = true;
+      page.meters(pageMeters(info, { backend: last.backend, session: "" }), info);
+      return;
+    }
+    $("info").hidden = false;
+    settings.syncIdle(info);
+    page.meters(pageMeters(info, { backend: idle.backend, session: "" }), info);
   }
 
   // drawSubs shows the chat's running subagents in the line under the
@@ -2450,11 +2535,9 @@
     out.push(...limitParts(info, at).parts);
     const tin = u.prompt || u.input || 0;
     const tout = u.output || 0;
-    if (tin || tout) {
-      const io = el("span", "metric io", "In " + tokens(tin) + " \u00B7 Out " + tokens(tout));
-      io.title = "Tokens this chat has sent to the model (in) and received (out)";
-      out.push(io);
-    }
+    const io = el("span", "metric io", "In " + tokens(tin) + " \u00B7 Out " + tokens(tout));
+    io.title = "Tokens this chat has sent to the model (in) and received (out)";
+    out.push(io);
     return out;
   }
 
@@ -2501,9 +2584,21 @@
       this.info = info;
       if ($("info").open) this.fill();
     },
+    // syncIdle is sync for a page chat that has not started: the backend's
+    // models stand in for the chat's own list.
+    syncIdle(info) {
+      this.models = idle.data;
+      $("subagents-row").hidden = true;
+      $("subagents-line").hidden = true;
+      this.sync(info);
+    },
     async load() {
       const chat = view;
-      if (!chat) return;
+      if (!chat) {
+        if (idle.data) this.syncIdle(idleInfo());
+        else this.note(idle.failed ? "Could not load the model list." : "Loading models...", idle.failed);
+        return;
+      }
       this.fill();
       if (!this.subagents) this.loadSubagents();
       if (this.models) return;
@@ -2671,6 +2766,12 @@
     async pickModel(confirm, picked) {
       const chat = view;
       const [provider, model] = picked || $("model").value.split("\n");
+      if (!chat && page && model && idle.data) {
+        idle.pick = { provider, model };
+        this.note("The next chat uses this model.");
+        pageIdle();
+        return;
+      }
       if (!chat || !model || this.busy) return;
       this.busy = true;
       $("model").disabled = true;
@@ -2708,6 +2809,12 @@
     async pickEffort() {
       const chat = view;
       const effort = $("effort").value;
+      if (!chat && page && idle.data) {
+        idle.effort = effort;
+        this.note("The next chat uses this thinking level.");
+        pageIdle();
+        return;
+      }
       if (!chat) return;
       try {
         await api("POST", chat.base + "/reasoning", { effort });
@@ -3038,6 +3145,34 @@
   // pageSend sends from the page chat: it starts the page chat on the
   // first message, then sends with the tabs the extension lets it read.
   let pageStarting = false;
+
+  // applyIdlePicks sets the model and thinking level that the user picked
+  // before the first message on the chat that message created. It is false
+  // when it could not, and the chat then waits for the user.
+  async function applyIdlePicks(chat) {
+    const m = idleModel();
+    const d = idle.data;
+    try {
+      if (m && d && idle.pick && (m.model !== d.model || m.provider !== d.provider)) {
+        const r = await api("POST", chat.base + "/model", { provider: m.provider, model: m.model, confirm: "" });
+        if (r.status === "confirm") {
+          banner((r.message || "This model needs a confirmation.") + " Open the model settings to confirm it, then send again.", true);
+          return false;
+        }
+        chat.showInfo({ model: m.model, provider: m.provider });
+      }
+      if (idle.effort) {
+        await api("POST", chat.base + "/reasoning", { effort: idle.effort });
+        chat.info.reasoning_effort = idle.effort;
+      }
+    } catch (e) {
+      banner("Could not set the model for this chat: " + e.message, true);
+      return false;
+    }
+    idle.pick = null;
+    idle.effort = "";
+    return true;
+  }
   async function pageSend(ev) {
     ev.preventDefault();
     const input = $("input");
@@ -3046,7 +3181,7 @@
     if (!view) {
       pageStarting = true;
       try {
-        const pc = await api("POST", "/api/pagechats", { backend_id: me.default_backend || "", device_id: page.device() });
+        const pc = await api("POST", "/api/pagechats", { backend_id: idleBackend(), device_id: page.device() });
         history.replaceState(null, "", chatHash(pc.backend_id, pc.id));
         showChat(pc.backend_id, pc.id);
         const chat = view;
@@ -3055,6 +3190,7 @@
         input.value = text;
         if (pc.browser_error) banner(pc.browser_error, false);
         refreshList();
+        if (!(await applyIdlePicks(chat))) return;
       } catch (e) {
         banner("Could not start a page chat: " + e.message, true);
         return;
@@ -3330,7 +3466,7 @@
   const page = pageMode ? window.HubPageChat({ api, el, toast, banner, view: () => view,
     sessions: () => (lastList ? lastList.sessions : []), open: (b, s) => { location.hash = chatHash(b, s); },
     fresh: () => { history.replaceState(null, "", location.pathname); route(); }, hash: chatHash, ago,
-    submit: () => pageSend({ preventDefault() {} }) }) : null;
+    submit: () => pageSend({ preventDefault() {} }), idle: () => { if (!view) pageIdle(); } }) : null;
 
   const updates = window.HubUpdate({ api, version: () => me.version, flush: () => composer.flush(), save: saveView,
     busy: () => !!($("input").value.trim() || attachments.list.length || sending > 0 ||

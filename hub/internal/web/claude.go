@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -25,6 +26,32 @@ func (s *Server) claudeRoutes(mux *http.ServeMux) {
 	mux.Handle("DELETE "+base+"/{account}/signin", s.api(s.handleClaudeSignIn))
 	mux.Handle("POST "+base+"/{account}/signin/code", s.api(s.handleClaudeCode))
 	mux.Handle("GET /api/claude/{backend}/pool", s.api(s.handleClaudePool))
+	mux.Handle("GET /api/backends/{backend}/models", s.api(s.handleNewChatModels))
+}
+
+// newChatModels is the optional part of a hub.Claude that lists the models
+// of a chat that does not exist yet.
+type newChatModels interface {
+	NewChatModels(ctx context.Context, user, backendID string) (hub.NewChatModels, error)
+}
+
+// handleNewChatModels lists the models a new chat can use, for the page
+// chat's model chip before its first message.
+func (s *Server) handleNewChatModels(w http.ResponseWriter, r *http.Request) {
+	n, ok := s.claude.(newChatModels)
+	if !ok {
+		errorJSON(w, http.StatusNotFound, "This hub cannot list models before a chat starts")
+		return
+	}
+	m, err := n.NewChatModels(r.Context(), userFrom(r), r.PathValue("backend"))
+	if err != nil {
+		s.claudeFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		hub.NewChatModels
+		Efforts []string `json:"efforts"`
+	}{m, hub.ReasoningEfforts()})
 }
 
 func (s *Server) isClaudeAdmin(user string) bool {

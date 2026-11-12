@@ -494,3 +494,44 @@ func TestAccountsCredits(t *testing.T) {
 		t.Errorf("an account without a key has credits: %+v", got.Accounts[1].Credits)
 	}
 }
+
+func TestNewChatModels(t *testing.T) {
+	const sonnet = "claude-sonnet-5-5[1m]"
+	t.Parallel()
+	e := newEnv(t)
+	yes, no := true, false
+	e.chatgpt.Lock()
+	e.chatgpt.Model, e.chatgpt.Provider, e.chatgpt.ContextLength = sonnet, hub.ClaudePoolProvider, 1000000
+	e.chatgpt.Rows = []claude.ProviderRow{
+		{Slug: hub.ClaudePoolProvider, Name: "Claude pool", Authenticated: &yes, Models: []string{sonnet, "claude-opus-5-5", "gone"},
+			UnavailableModels: []string{"gone"}, Capabilities: map[string]claude.ModelCapabilities{"claude-opus-5-5": {Reasoning: true}}},
+		{Slug: "cloud", Authenticated: &no, Models: []string{"remote"}},
+	}
+	e.chatgpt.Unlock()
+
+	got, err := e.svc.NewChatModels(context.Background(), alice, backendMain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != sonnet || got.Provider != hub.ClaudePoolProvider || got.ContextLength != 1000000 {
+		t.Fatalf("default = %+v", got)
+	}
+	var pool *hub.ModelProvider
+	for i, p := range got.Providers {
+		if p.ID == "cloud" {
+			t.Errorf("an unauthenticated provider is offered: %+v", p)
+		}
+		if p.ID == hub.ClaudePoolProvider {
+			pool = &got.Providers[i]
+		}
+	}
+	if pool == nil || len(pool.Models) != 2 {
+		t.Fatalf("pool = %+v", pool)
+	}
+	if _, err := e.svc.NewChatModels(context.Background(), bob, other); !errors.Is(err, hub.ErrNoClaude) {
+		t.Errorf("a backend without the dashboard route = %v", err)
+	}
+	if _, err := e.svc.NewChatModels(context.Background(), alice, solo); !errors.Is(err, hub.ErrForbidden) {
+		t.Errorf("a backend alice cannot use = %v", err)
+	}
+}
