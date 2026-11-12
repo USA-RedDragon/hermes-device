@@ -14,19 +14,19 @@ the unit then completes and is delivered once, as usual. A tool call cut
 by the restart reads as interrupted in the child's transcript.
 ---
  cli-config.yaml.example                       |   6 +
- gateway/run_shutdown.py                       |  23 +
+ gateway/run_shutdown.py                       |  24 +
  gateway/run_startup.py                        |   6 +
  hermes_cli/config_defaults.py                 |   5 +
- .../tools/test_delegation_restart_handoff.py  | 500 ++++++++++++++++++
- tools/async_delegation.py                     | 267 ++++++++--
+ .../tools/test_delegation_restart_handoff.py  | 540 ++++++++++++++++++
+ tools/async_delegation.py                     | 267 +++++++--
  tools/delegate_tool.py                        |   8 +-
  tools/delegate_tool_child_run.py              |  28 +-
  tools/delegate_tool_config.py                 |  14 +
  tools/delegate_tool_dispatch.py               |   4 +-
- tools/delegate_tool_handoff.py                | 500 ++++++++++++++++++
+ tools/delegate_tool_handoff.py                | 528 +++++++++++++++++
  tools/delegation_live_log.py                  |  12 +
  .../docs/user-guide/features/delegation.md    |  45 +-
- 13 files changed, 1379 insertions(+), 39 deletions(-)
+ 13 files changed, 1448 insertions(+), 39 deletions(-)
  create mode 100644 tests/tools/test_delegation_restart_handoff.py
  create mode 100644 tools/delegate_tool_handoff.py
 
@@ -48,10 +48,10 @@ index 09b47d3861..a61629df1a 100644
                                                # Raise to 2 to allow workers to spawn their own subagents.
                                                # Requires role="orchestrator" on intermediate agents.
 diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
-index c52b898bcd..3975e55a7a 100644
+index c52b898bcd..2c796547c6 100644
 --- a/gateway/run_shutdown.py
 +++ b/gateway/run_shutdown.py
-@@ -1874,6 +1874,28 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -1874,6 +1874,29 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
          cap = getattr(getattr(runner, "config", None), "restart_agent_cleanup_seconds", 0) or 0
          return float(cap) if cap > 0 else None
  
@@ -73,14 +73,15 @@ index c52b898bcd..3975e55a7a 100644
 +        budget = max(1.0, _effective_watchdog_leash(self) - ctx.elapsed() - settle)
 +        grace = min(_get_restart_handoff_grace_seconds(), budget)
 +        try:
-+            await asyncio.to_thread(hand_off_for_restart, grace, min(budget, grace + settle))
++            from tools.delegate_tool_handoff import YIELD_SETTLE_SECONDS
++            await asyncio.to_thread(hand_off_for_restart, grace, min(budget, grace + YIELD_SETTLE_SECONDS + settle))
 +        except Exception:
 +            logger.warning("Background delegation handoff failed; they are interrupted as usual", exc_info=True)
 +
      async def _stop_hand_off_processes(self) -> None:
          """Restart only: hand the background processes of ``terminal.process_handoff_backends`` to
          the next gateway before any kill sweep, so they keep running and it reattaches them."""
-@@ -2296,6 +2318,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -2296,6 +2319,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                      timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
                  )
              await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
@@ -123,10 +124,10 @@ index a68e6a4288..75e57088cd 100644
          "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
 diff --git a/tests/tools/test_delegation_restart_handoff.py b/tests/tools/test_delegation_restart_handoff.py
 new file mode 100644
-index 0000000000..275c8cbecb
+index 0000000000..5ea1607842
 --- /dev/null
 +++ b/tests/tools/test_delegation_restart_handoff.py
-@@ -0,0 +1,500 @@
+@@ -0,0 +1,540 @@
 +"""delegation.restart_handoff: background subagents survive a graceful gateway restart.
 +
 +The old gateway stops each child at a clean point and leaves the unit ``handed_off`` in the ledger (children that
@@ -375,7 +376,7 @@ index 0000000000..275c8cbecb
 +        self.stops.append(tool_reason)
 +
 +
-+def test_children_stop_after_their_tool_call_or_at_the_deadline():
++def test_children_stop_after_their_tool_call_or_at_the_deadline(monkeypatch):
 +    busy, idle, stuck = _Child("terminal"), _Child(), _Child("terminal")
 +    state = {}
 +    worker = threading.Thread(target=handoff._handoff_fn({0: busy, 1: idle}), args=(time.monotonic() + 10, state))
@@ -387,6 +388,7 @@ index 0000000000..275c8cbecb
 +    assert busy.stops == [handoff.RESTART_TOOL_REASON] and idle.stops == [handoff.RESTART_TOOL_REASON]
 +    assert busy._delegate_restart_handoff is True and set(state) == {"0", "1"}
 +
++    monkeypatch.setattr(handoff, "YIELD_SETTLE_SECONDS", 0.2)
 +    handoff._handoff_fn({0: stuck})(time.monotonic() + 0.2, {})
 +    assert stuck.stops == [handoff.RESTART_TOOL_REASON]  # cut at the bound: its call reads "gateway restart"
 +
@@ -627,6 +629,45 @@ index 0000000000..275c8cbecb
 +    assert ad.adopt_handed_off_delegations(make_runner) == 1
 +    assert set(seen["kept"]) == {0}
 +    wait_until(lambda: _completions(delegation_id), what="the resumed completion")
++
++
++class _BusyChild:
++    """A child inside a tool call until its tool thread is asked to yield (``yields``) or forever."""
++
++    def __init__(self, tid, yields):
++        import threading
++        self._tool_worker_threads = {tid}
++        self._tool_worker_threads_lock = threading.Lock()
++        self.in_tool, self.yields, self.session_id = True, yields, f"child-{tid}"
++
++    def get_activity_summary(self):
++        return {"current_tool": "terminal" if self.in_tool else None}
++
++
++def test_child_in_a_command_at_the_deadline_yields_it_instead_of_being_cut(monkeypatch):
++    import time
++    from tools import delegate_tool_handoff as dh
++    stopped, yielded = [], []
++    children = {0: _BusyChild(101, yields=True), 1: _BusyChild(102, yields=False)}
++
++    def request_yield(tid):
++        yielded.append(tid)
++        for child in children.values():
++            if tid in child._tool_worker_threads and child.yields:
++                child.in_tool = False
++
++    monkeypatch.setattr("tools.interrupt.request_yield", request_yield)
++    monkeypatch.setattr(dh, "_signal_child_stop", lambda child, **kw: stopped.append((child.session_id, child.in_tool)))
++    monkeypatch.setattr(dh, "_child_state", lambda child: {"session_id": child.session_id})
++    monkeypatch.setattr(dh, "YIELD_SETTLE_SECONDS", 0.6)
++    state = {}
++    started = time.monotonic()
++    dh._handoff_fn(children)(started + 0.2, state)
++    assert sorted(yielded) == [101, 102]
++    assert stopped[0] == ("child-101", False)
++    assert stopped[1] == ("child-102", True)
++    assert time.monotonic() - started >= 0.8
++    assert set(state) == {"0", "1"}
 diff --git a/tools/async_delegation.py b/tools/async_delegation.py
 index bd11453bd0..2deef9f4a2 100644
 --- a/tools/async_delegation.py
@@ -1193,10 +1234,10 @@ index 1e79da1218..cf463458b9 100644
  def _restore_parent_cancellation(unit: _Batch) -> None:
 diff --git a/tools/delegate_tool_handoff.py b/tools/delegate_tool_handoff.py
 new file mode 100644
-index 0000000000..6461c3c27a
+index 0000000000..b270c4d39e
 --- /dev/null
 +++ b/tools/delegate_tool_handoff.py
-@@ -0,0 +1,500 @@
+@@ -0,0 +1,528 @@
 +"""Background subagents that survive a graceful gateway restart (``delegation.restart_handoff``).
 +
 +At dispatch, ``unit_handoff`` records what a later gateway needs to rebuild each child of a background unit:
@@ -1233,7 +1274,9 @@ index 0000000000..6461c3c27a
 +RESTART_TOOL_REASON = "gateway restart"
 +RESUME_MESSAGE = (
 +    "[The gateway restarted while you were working on this task. Your conversation so far is above. A tool call "
-+    "that was running when it stopped is marked as interrupted: check its effects before you run it again. "
++    "that was running when it stopped is marked as interrupted: check its effects before you run it again. A "
++    "terminal command that was still running was moved to the background instead, and its result names the "
++    "process: read its real exit code and output with the process tool (poll or wait) before you go on. "
 +    "Check background processes you started with the process tool before you rely on them: some may have stopped "
 +    "with the gateway. Continue the task.]"
 +)
@@ -1407,14 +1450,40 @@ index 0000000000..6461c3c27a
 +    return state
 +
 +
++# After ``deadline`` a child still inside a tool call is asked to yield it (a foreground terminal command moves to
++# the background, where the process handoff takes it to the next gateway); one that has not left it this much later
++# (a tool or backend that cannot yield) is stopped and its call cancelled.
++YIELD_SETTLE_SECONDS = 25.0
++
++
++def _request_tool_yield(child: Any) -> None:
++    from tools.interrupt import request_yield
++    tracker = getattr(child, "_tool_worker_threads", None)
++    lock = getattr(child, "_tool_worker_threads_lock", None)
++    if tracker is None or lock is None:
++        return
++    with lock:
++        tids = list(tracker)
++    for tid in tids:
++        request_yield(tid)
++
++
 +def _handoff_fn(children: dict[int, Any]) -> Callable[[float, dict], None]:
-+    """Stop each child as soon as it is not inside a tool call, and every child by ``deadline``. A stopped child
-+    keeps its tool state (``_release_handed_off_child``); a call cut at the deadline is cancelled with the reason
-+    ``gateway restart``, which the child's transcript shows."""
++    """Stop each child as soon as it is not inside a tool call. At ``deadline`` a child still in one is asked to
++    yield it, so a running terminal command keeps running as a background process the next gateway reattaches;
++    ``YIELD_SETTLE_SECONDS`` later every child is stopped, and a call cut then is cancelled with the reason
++    ``gateway restart``, which the child's transcript shows. A stopped child keeps its tool state
++    (``_release_handed_off_child``)."""
 +    def hand_off(deadline: float, state: dict) -> None:
 +        pending = dict(children)
++        yielded = False
 +        while pending:
-+            last = time.monotonic() >= deadline
++            now = time.monotonic()
++            if now >= deadline and not yielded:
++                for child in pending.values():
++                    _request_tool_yield(child)
++                yielded = True
++            last = now >= deadline + YIELD_SETTLE_SECONDS
 +            for index, child in list(pending.items()):
 +                if last or not _in_tool(child):
 +                    state[str(index)] = _child_state(child)
