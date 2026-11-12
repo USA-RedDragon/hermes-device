@@ -1,0 +1,5 @@
+tests/agent/test_skill_utils.py
+tests/hermes_cli/test_skills_config.py
+tests/tools/test_skills_tool.py
+tests/hermes_cli/test_managed_scope_overlay.py
+tests/agent/test_runtime_environment_markers.py

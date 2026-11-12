@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 22:38:57 -0600
+Subject: [PATCH] fix(skills): skill config reads take the managed overlay
+
+A managed skills.disabled or agent.product_help_guidance held only while
+config.yaml carried a copy of it. Hermes writes config.yaml without the
+managed values, so a deployment that mirrors them there loses them at
+the next config write, and one that does not never had them.
+---
+ agent/skill_utils.py                    | 29 +++++++++++--
+ tests/agent/test_skill_utils_managed.py | 57 +++++++++++++++++++++++++
+ 2 files changed, 83 insertions(+), 3 deletions(-)
+ create mode 100644 tests/agent/test_skill_utils_managed.py
+
+diff --git a/agent/skill_utils.py b/agent/skill_utils.py
+index fd037b54e3..0b1eaf1521 100644
+--- a/agent/skill_utils.py
++++ b/agent/skill_utils.py
+@@ -2,6 +2,7 @@
+ Import-light by design: no tool registry, CLI config, or provider resolution."""
+ 
+ import ast
++import copy
+ import hashlib
+ import logging
+ import os
+@@ -219,18 +220,38 @@ def _config_cache_key(config_path: Path) -> Optional[tuple[Any, ...]]:
+     return None if version is None else (str(config_path), *version)
+ 
+ 
++def _managed_config_version() -> Optional[tuple[Any, ...]]:
++    """Cache signature of the managed config.yaml, or None when there is no managed scope or file."""
++    from hermes_cli.managed_scope import get_managed_dir
++    from utils import file_cache_version
++
++    managed_dir = get_managed_dir()
++    if managed_dir is None:
++        return None
++    try:
++        return file_cache_version(managed_dir / "config.yaml")
++    except OSError:
++        return None
++
++
+ def _load_raw_config() -> dict[str, Any]:
+-    """Read config.yaml with a version-keyed cache (no hermes_cli.config import)."""
++    """config.yaml with the managed overlay on top, with a version-keyed cache (no hermes_cli.config
++    import). The overlay matters where config.yaml lacks the managed values: Hermes writes config.yaml
++    without them."""
+     from agent.safe_worker_policy import worker_config_snapshot
+     from hermes_cli.config_backend import config_exists, read_config_doc
++    from hermes_cli.managed_scope import apply_managed_overlay
+ 
+     snapshot = worker_config_snapshot()
+     if snapshot is not None:
+         return snapshot
+     config_path = get_config_path()
++    managed_version = _managed_config_version()
+     if not config_exists(config_path):
+-        return {}
++        return apply_managed_overlay({}) if managed_version is not None else {}
+     cache_key = _config_cache_key(config_path)
++    if cache_key is not None:
++        cache_key = (*cache_key, managed_version)
+     with _RAW_CONFIG_CACHE_LOCK:
+         cached = _RAW_CONFIG_CACHE.get(cache_key) if cache_key is not None else None
+     if cached is not None:
+@@ -241,7 +262,9 @@ def _load_raw_config() -> dict[str, Any]:
+         logger.debug("Could not read skill config %s: %s", config_path, e)
+         return {}
+     if not isinstance(parsed, dict):
+-        return {}
++        parsed = {}
++    if managed_version is not None:
++        parsed = apply_managed_overlay(copy.deepcopy(parsed))
+     if cache_key is not None:
+         with _RAW_CONFIG_CACHE_LOCK:
+             _RAW_CONFIG_CACHE[cache_key] = parsed
+diff --git a/tests/agent/test_skill_utils_managed.py b/tests/agent/test_skill_utils_managed.py
+new file mode 100644
+index 0000000000..38ad302280
+--- /dev/null
++++ b/tests/agent/test_skill_utils_managed.py
+@@ -0,0 +1,57 @@
++"""Skill config reads take the managed overlay, so a managed ``skills.disabled`` holds even when
++config.yaml lacks it (Hermes writes config.yaml without the managed values)."""
++
++from pathlib import Path
++
++import pytest
++
++from agent import skill_utils
++from hermes_cli import managed_scope
++
++
++@pytest.fixture
++def home(tmp_path, monkeypatch):
++    h = tmp_path / "home"
++    h.mkdir()
++    md = tmp_path / "managed"
++    md.mkdir()
++    monkeypatch.setenv("HERMES_HOME", str(h))
++    monkeypatch.setenv("HERMES_MANAGED_DIR", str(md))
++    monkeypatch.delenv("HERMES_PLATFORM", raising=False)
++    managed_scope.invalidate_managed_cache()
++    skill_utils._RAW_CONFIG_CACHE.clear()
++    yield h, md
++    managed_scope.invalidate_managed_cache()
++    skill_utils._RAW_CONFIG_CACHE.clear()
++
++
++def _write(path: Path, body: str) -> None:
++    path.write_text(body, encoding="utf-8")
++    managed_scope.invalidate_managed_cache()
++
++
++def test_managed_disabled_skill_applies_without_config_yaml_copy(home):
++    h, md = home
++    _write(h / "config.yaml", "skills:\n  disabled: [mine]\n")
++    _write(md / "config.yaml", "skills:\n  disabled: [pinned]\n")
++    assert skill_utils.get_disabled_skill_names() == {"pinned"}
++
++
++def test_managed_disabled_skill_applies_without_config_yaml(home):
++    _, md = home
++    _write(md / "config.yaml", "skills:\n  disabled: [pinned]\n")
++    assert skill_utils.get_disabled_skill_names() == {"pinned"}
++
++
++def test_managed_product_help_off_lets_hermes_agent_be_disabled(home):
++    h, md = home
++    _write(h / "config.yaml", "model: {}\n")
++    _write(md / "config.yaml", "agent:\n  product_help_guidance: false\nskills:\n  disabled: [hermes-agent]\n")
++    assert skill_utils.essential_skills() == frozenset()
++    assert "hermes-agent" in skill_utils.get_disabled_skill_names()
++
++
++def test_user_config_alone_still_reads(home):
++    h, _ = home
++    _write(h / "config.yaml", "skills:\n  disabled: [mine]\n")
++    assert skill_utils.get_disabled_skill_names() == {"mine"}
