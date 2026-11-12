@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -188,5 +190,16 @@ func TestManifestNameAndIcons(t *testing.T) {
 		if _, err := firefox.Files.ReadFile(p); err != nil {
 			t.Errorf("icon %s is not embedded: %v", p, err)
 		}
+	}
+}
+
+func TestWriteIncludesIcons(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := firefox.Write(dir, "1.2.3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "icons", "icon-96.png")); err != nil {
+		t.Error(err)
 	}
 }

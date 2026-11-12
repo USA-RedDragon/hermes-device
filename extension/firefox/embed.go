@@ -50,7 +50,11 @@ func Write(dir, version string) error {
 				return err
 			}
 		}
-		return os.WriteFile(filepath.Join(dir, p), data, 0o644) //nolint:gosec // as above
+		dst := filepath.Join(dir, p)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { //nolint:gosec // as above
+			return err
+		}
+		return os.WriteFile(dst, data, 0o644) //nolint:gosec // as above
 	})
 }
 

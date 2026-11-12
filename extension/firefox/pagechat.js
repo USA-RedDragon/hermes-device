@@ -115,8 +115,7 @@ const keyActions = {
     browser.sidebarAction.open().finally(() => window.close());
   },
   popup() {
-    browser.browserAction.openPopup();
-    browser.sidebarAction.close();
+    browser.browserAction.openPopup().then(() => browser.sidebarAction.close(), () => browser.sidebarAction.close());
   },
   close() {
     browser.sidebarAction.close();
