@@ -381,7 +381,7 @@ window.HubClaude = (ctx) => {
         b.onclick = () => signIn(backend, a.id);
         box.append(b);
       }
-      cards.append(box);
+      (data.pool && !a.no_signin && a.provider !== chatgptProvider ? cards : s).append(box);
     }
     return s;
   }
