@@ -2020,7 +2020,8 @@
     const apiKey = view && info.provider === claude.apiProvider;
     const who = el("b", "who1");
     if (lim.name) {
-      who.append(el("span", "long", "Claude "), lim.name.label);
+      if (!/^Claude\b/.test(lim.name.label)) who.append(el("span", "long", "Claude "));
+      who.append(lim.name.label);
       who.title = (lim.name.email ? lim.name.label + ": " + lim.name.email : lim.name.label) + (model ? ", " + model : "");
     } else if (apiKey) {
       who.append(claude.apiName);
