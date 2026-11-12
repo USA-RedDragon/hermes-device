@@ -1,0 +1,440 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jacob McSwain <jacob@mcswain.dev>
+Date: Thu, 12 Nov 2026 21:55:42 +0000
+Subject: [PATCH] feat(gateway): a socket kept through a restart closes once,
+ at the next gateway
+
+gateway.restart_socket_close_delay_seconds (0 = off; with restart_listener_hold_seconds): a Webapp WebSocket kept through the restart wait no longer closes when the stop ends its session. The session ends there as before (the app gets a disconnect and runs its teardown before the stores close), but the close frame waits until the gateway that took over answers health, plus this many seconds, then goes out as 1012. Its client's one reconnect then reaches the new gateway directly, instead of a socket the old listener relays and closes again when the relay window ends: two closes per rollout became one. Frames the client sends meanwhile are never read, so a retried call runs once.
+---
+ gateway/config.py                             |   8 +-
+ gateway/config_loader.py                      |   1 +
+ gateway/run_api.py                            | 122 ++++++++++
+ .../test_restart_socket_close_delay.py        | 213 ++++++++++++++++++
+ 4 files changed, 343 insertions(+), 1 deletion(-)
+ create mode 100644 tests/gateway/test_restart_socket_close_delay.py
+
+diff --git a/gateway/config.py b/gateway/config.py
+index a29426a39c..da23fc76b6 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -671,6 +671,11 @@ class GatewayConfig:
+     # get this many seconds, and so do the ones cancelled after it to unwind; a long poll that runs in a worker
+     # thread is left to end on its own instead of holding the stop. 0 = 5 s, then until they ended.
+     restart_reads_grace_seconds: float = 0.0
++    # With restart_listener_hold_seconds: a Webapp WebSocket kept through the restart wait stays open through the
++    # stop (its session still ends there) and gets its close frame (1012) this many seconds after the gateway that
++    # took over answered ready, so its client's one reconnect reaches that gateway directly instead of a socket the
++    # old listener relays and closes again when the relay window ends. 0 = close when the stop ends the session.
++    restart_socket_close_delay_seconds: float = 0.0
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -710,7 +715,7 @@ class GatewayConfig:
+         "restart_wait_delegations", "restart_listener_handover", "listener_start_hold_seconds",
+         "restart_listener_relay_seconds", "restart_listener_hold_seconds", "stop_trace",
+         "restart_ticket_handover", "restart_listener_relay_close_sockets", "restart_reads_grace_seconds",
+-        "loop_watchdog",
++        "restart_socket_close_delay_seconds", "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+     )
+@@ -855,6 +860,7 @@ class GatewayConfig:
+             restart_ticket_handover=_coerce_bool(pick("restart_ticket_handover"), False),
+             restart_listener_relay_close_sockets=_coerce_bool(pick("restart_listener_relay_close_sockets"), False),
+             restart_reads_grace_seconds=bounded_float("restart_reads_grace_seconds", 0.0, 0.0, 60.0),
++            restart_socket_close_delay_seconds=bounded_float("restart_socket_close_delay_seconds", 0.0, 0.0, 60.0),
+             restart_wait_plugin_sockets=[
+                 str(name).strip("/ ") for name in (pick("restart_wait_plugin_sockets") or [])
+                 if isinstance(pick("restart_wait_plugin_sockets"), list) and str(name).strip("/ ")],
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index 594d1c8b65..54e8a401b6 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -106,6 +106,7 @@ _TOPLEVEL_BRIDGE: tuple = (
+     ("restart_ticket_handover", "restart_ticket_handover", "nested", None, None),
+     ("restart_listener_relay_close_sockets", "restart_listener_relay_close_sockets", "nested", None, None),
+     ("restart_reads_grace_seconds", "restart_reads_grace_seconds", "nested", None, None),
++    ("restart_socket_close_delay_seconds", "restart_socket_close_delay_seconds", "nested", None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/run_api.py b/gateway/run_api.py
+index b7e177d271..3e0f32f949 100644
+--- a/gateway/run_api.py
++++ b/gateway/run_api.py
+@@ -424,6 +424,12 @@ def seal_gateway_api(handle: GatewayAPIHandle) -> None:
+     state = getattr(handle.server, "server_state", None)
+     for connection in list(getattr(state, "connections", ())):
+         scope = getattr(connection, "scope", None) or {}
++        parked = scope.get(PARKED_SCOPE_KEY)
++        if parked is not None:
++            # gateway.restart_socket_close_delay_seconds: the socket's session ends now, as it would
++            # here, but its connection stays open until the successor is ready.
++            parked.set()
++            continue
+         # gateway.restart_listener_hold_seconds: a held request goes to the successor, and an HTTP
+         # connection stays open (its next request is held too) instead of closing under a client
+         # that is about to reuse it. Sockets end, as their sessions do.
+@@ -487,6 +493,44 @@ def _handover_read(runner, scope) -> bool:
+ _START_HOLD_POLL_S = 0.02
+ #: Marks the scope of a request a restart stop holds for the successor (restart_listener_hold_seconds).
+ HELD_SCOPE_KEY = 'hermes.listener_held'
++#: ``gateway.restart_socket_close_delay_seconds``: the scope of a Webapp socket kept through the restart
++#: wait carries the event that ends its session where the stop would close its connection.
++PARKED_SCOPE_KEY = 'hermes.socket_parked'
++#: Close codes of a socket that ends because its gateway goes away; a parked socket sends 1012 for them.
++_RESTART_CLOSE_CODES = frozenset({1000, 1001, 1012, 1013})
++_READY_POLL_S = 0.05
++
++
++def socket_close_delay(runner) -> float:
++    """``gateway.restart_socket_close_delay_seconds`` with the hold it builds on, else 0 (off)."""
++    from gateway.drain_control import restart_hold_configured
++    if not restart_hold_configured(runner):
++        return 0.0
++    return float(getattr(getattr(runner, 'config', None), 'restart_socket_close_delay_seconds', 0) or 0)
++
++
++async def await_successor_ready(target, deadline: float) -> bool:
++    """Until *deadline* (loop time): ask the successor at *target* for ``/api/health`` until it answers
++    200. A starting gateway holds the request until it is ready (``listener_start_hold_seconds``)."""
++    loop = asyncio.get_running_loop()
++    host, port = target
++    while loop.time() < deadline:
++        writer = None
++        try:
++            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port),
++                                                    max(0.01, min(1.0, deadline - loop.time())))
++            writer.write(b'GET /api/health HTTP/1.1\r\nHost: successor\r\nConnection: close\r\n\r\n')
++            await writer.drain()
++            status = await asyncio.wait_for(reader.readline(), max(0.01, deadline - loop.time()))
++            if status.split(b' ')[1:2] == [b'200']:
++                return True
++        except (OSError, asyncio.TimeoutError):
++            pass
++        finally:
++            if writer is not None:
++                writer.close()
++        await asyncio.sleep(min(_READY_POLL_S, max(0.0, deadline - loop.time())))
++    return False
+ 
+ 
+ async def _hold_while_starting(runner, descriptor) -> None:
+@@ -540,6 +584,9 @@ class GatewayRuntimeAPI:
+         self.successor = None
+         self.forward_deadline = 0.0
+         self._released: asyncio.Event | None = None
++        #: ``gateway.restart_socket_close_delay_seconds``: set once parked sockets may close.
++        self._sockets_may_close: asyncio.Event | None = None
++        self._settle_task: asyncio.Task | None = None
+ 
+     async def __call__(self, scope, receive, send):
+         task = asyncio.current_task()
+@@ -556,6 +603,79 @@ class GatewayRuntimeAPI:
+         self.successor = tuple(target) if target is not None else False
+         if self._released is not None:
+             self._released.set()
++        delay = socket_close_delay(self.runner)
++        if delay > 0 and self._settle_task is None:
++            self._settle_task = asyncio.create_task(self._settle_successor(self.successor or None, delay))
++
++    def _close_gate(self) -> asyncio.Event:
++        if self._sockets_may_close is None:
++            self._sockets_may_close = asyncio.Event()
++        return self._sockets_may_close
++
++    async def _settle_successor(self, target, delay: float) -> None:
++        """Parked sockets close *delay* seconds after the successor answered ready, so the new dials
++        of their clients reach the successor's own listener, not this one's relay."""
++        try:
++            if target is not None and await await_successor_ready(target, self.forward_deadline):
++                await asyncio.sleep(delay)
++        except Exception:
++            logger.debug('Waiting for the next gateway to be ready failed', exc_info=True)
++        finally:
++            self._close_gate().set()
++
++    def _parked(self, scope, receive, send):
++        """``gateway.restart_socket_close_delay_seconds``: a Webapp socket kept through the restart wait.
++        Where the stop would close it, its session ends (the app gets a disconnect and runs its usual
++        teardown, before the stores close), but the close frame waits until the successor is ready, then
++        goes out as 1012. Frames the client sends meanwhile are never read."""
++        ending = asyncio.Event()
++        scope[PARKED_SCOPE_KEY] = ending
++        client_left = False
++        runner = self.runner
++
++        def stopping() -> bool:
++            return bool(getattr(runner, '_restart_requested', False)) and not getattr(runner, '_running', True)
++
++        async def receive_parked():
++            nonlocal client_left
++            if not ending.is_set():
++                step = asyncio.ensure_future(receive())
++                end = asyncio.ensure_future(ending.wait())
++                try:
++                    await asyncio.wait({step, end}, return_when=asyncio.FIRST_COMPLETED)
++                finally:
++                    end.cancel()
++                if step.done():
++                    message = step.result()
++                    if message.get('type') == 'websocket.disconnect' and not stopping():
++                        client_left = True
++                    return message
++                step.cancel()
++                await asyncio.wait({step})
++            return {'type': 'websocket.disconnect', 'code': 1012}
++
++        async def send_parked(message):
++            if message.get('type') == 'websocket.close' and stopping() and not client_left:
++                code = message.get('code') or 1000
++                await self._await_close_gate(scope)
++                message = {**message, 'code': 1012 if code in _RESTART_CLOSE_CODES else code}
++            await send(message)
++
++        return receive_parked, send_parked
++
++    async def _await_close_gate(self, scope) -> None:
++        """Hold a parked socket's close like a held request (the stop's read cut and the seal skip it),
++        until the successor is ready or the hold's bound passes."""
++        scope[HELD_SCOPE_KEY] = True
++        task = asyncio.current_task()
++        self.held.add(task)
++        try:
++            bound = float(getattr(self.runner.config, 'restart_listener_hold_seconds', 0) or 0)
++            await asyncio.wait_for(self._close_gate().wait(), max(0.0, bound))
++        except TimeoutError:
++            pass
++        finally:
++            self.held.discard(task)
+ 
+     async def _forward_held(self, scope, receive, send) -> bool:
+         """``gateway.restart_listener_hold_seconds``: a restart stop holds a request it would refuse
+@@ -717,6 +837,8 @@ class GatewayRuntimeAPI:
+                 admitted_in_wait = webapp_socket and restart_wait_open(self.runner)
+                 if draining_socket and not admitted_in_wait:
+                     return await self._hold_or_refuse(scope, original_receive, send)
++                if webapp_socket and socket_close_delay(self.runner) > 0:
++                    receive, send = self._parked(scope, receive, send)
+             return await self.app(scope, receive, send)
+         if (reason != 'ok' or not _embedded_chat_enabled()
+                 or ws_host_origin_reason(ws, state) is not None or ws_client_reason(ws, state) is not None
+diff --git a/tests/gateway/test_restart_socket_close_delay.py b/tests/gateway/test_restart_socket_close_delay.py
+new file mode 100644
+index 0000000000..89cb642c3a
+--- /dev/null
++++ b/tests/gateway/test_restart_socket_close_delay.py
+@@ -0,0 +1,213 @@
++"""gateway.restart_socket_close_delay_seconds: a Webapp socket kept through the restart wait gets one close
++frame, once the gateway that took over is ready, instead of one at the stop and one at the relay's end."""
++import asyncio
++import socket
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pytest
++from aiohttp import web
++
++from gateway.config import GatewayConfig, load_gateway_config
++from gateway.drain_control import HANDOVER_READS, RESTART_WAIT_REASON
++from gateway.run_api import (
++    PARKED_SCOPE_KEY, GatewayRuntimeAPI, await_successor_ready, end_gateway_api_reads, seal_gateway_api,
++    socket_close_delay,
++)
++
++
++def test_off_by_default():
++    assert GatewayConfig().restart_socket_close_delay_seconds == 0.0
++    assert GatewayConfig.from_dict({}).restart_socket_close_delay_seconds == 0.0
++    assert GatewayConfig.from_dict(
++        {"gateway": {"restart_socket_close_delay_seconds": 1.5}}).restart_socket_close_delay_seconds == 1.5
++    assert GatewayConfig.from_dict(
++        {"gateway": {"restart_socket_close_delay_seconds": 999}}).restart_socket_close_delay_seconds == 0.0
++
++
++def test_config_yaml_key_reaches_the_runner_config(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    (tmp_path / "config.yaml").write_text("gateway:\n  restart_socket_close_delay_seconds: 1\n", encoding="utf-8")
++    assert load_gateway_config().restart_socket_close_delay_seconds == 1.0
++
++
++def _config(delay=0.2, hold=60):
++    return GatewayConfig(restart_listener_handover=True, restart_listener_relay_seconds=30,
++                         restart_listener_hold_seconds=hold, restart_socket_close_delay_seconds=delay)
++
++
++@pytest.mark.parametrize("delay, hold, expected", [(0.2, 60, 0.2), (0, 60, 0.0), (0.2, 0, 0.0)])
++def test_the_delay_needs_the_hold(delay, hold, expected):
++    assert socket_close_delay(SimpleNamespace(config=_config(delay, hold))) == expected
++
++
++def _runner(config):
++    return SimpleNamespace(config=config, _draining=False, _running=True, _listener_handover=None,
++                           _restart_requested=False, session_runtime_descriptor={"state": "ready"})
++
++
++def _wait(runner):
++    runner._draining, runner._restart_requested = True, True
++    runner.session_runtime_descriptor["drain_reason"] = RESTART_WAIT_REASON
++
++
++async def _open(monkeypatch, runner):
++    """A Webapp socket open on the listener; the app ends its session on a disconnect and then closes
++    the socket with 1000, as the session socket handler does."""
++    monkeypatch.setattr("hermes_cli.web_server_boundary._gateway_ws_ticket_from_subprotocol",
++                        lambda ws: ("abc", "ok"))
++    monkeypatch.setattr("hermes_cli.web_server_surface.policy", lambda state: SimpleNamespace(gateway_ticket=True))
++    got, opened, ended = [], asyncio.Event(), asyncio.Event()
++
++    async def dashboard(scope, receive, send):
++        await send({"type": "websocket.accept"})
++        opened.set()
++        while True:
++            message = await receive()
++            got.append(message)
++            if message["type"] == "websocket.disconnect":
++                ended.set()
++                await send({"type": "websocket.close", "code": 1000})
++                return
++
++    api = GatewayRuntimeAPI(dashboard, runner, SimpleNamespace(state=SimpleNamespace()))
++    to_app: asyncio.Queue = asyncio.Queue()
++    from_app: asyncio.Queue = asyncio.Queue()
++    scope = {"type": "websocket", "path": "/api/ws", "raw_path": b"/api/ws", "query_string": b"native_dial=browser",
++             "headers": [(b"host", b"hermes:9120"), (b"origin", b"http://hermes:9120"),
++                         (b"sec-websocket-protocol", b"hermes.v1, ticket.abc"), (b"sec-websocket-key", b"x")],
++             "subprotocols": ["hermes.v1", "ticket.abc"], "client": ("10.0.0.9", 1),
++             "server": ("10.0.0.1", 9120), "scheme": "ws"}
++    await to_app.put({"type": "websocket.connect"})
++    task = asyncio.ensure_future(api(scope, to_app.get, from_app.put))
++    await asyncio.wait_for(opened.wait(), 2)
++    assert from_app.get_nowait() == {"type": "websocket.accept"}
++    return SimpleNamespace(api=api, task=task, scope=scope, to_app=to_app, from_app=from_app, got=got, ended=ended)
++
++
++def _seal(api, scope):
++    """The stop's seal: what would shut the socket's connection down."""
++    calls = []
++    conn = SimpleNamespace(scope=scope, shutdown=lambda: calls.append("shutdown"))
++    seal_gateway_api(SimpleNamespace(api=api, server=SimpleNamespace(server_state=SimpleNamespace(connections=[conn]))))
++    return calls
++
++
++async def _successor(ready_after=0.0):
++    """The gateway that took over: 503 on health until *ready_after* seconds passed, then 200."""
++    loop = asyncio.get_running_loop()
++    ready_at = loop.time() + ready_after
++    asked = []
++
++    async def health(request):
++        asked.append(loop.time())
++        return web.Response(status=200 if loop.time() >= ready_at else 503, text="{}")
++
++    app = web.Application()
++    app.router.add_route("GET", "/api/health", health)
++    runner = web.AppRunner(app)
++    await runner.setup()
++    sock = socket.socket()
++    sock.bind(("127.0.0.1", 0))
++    await web.SockSite(runner, sock).start()
++    return runner, ("127.0.0.1", sock.getsockname()[1]), asked
++
++
++@pytest.mark.asyncio
++async def test_the_stop_ends_the_session_and_the_close_waits_for_the_successor(monkeypatch):
++    runner = _runner(_config(delay=0.2))
++    s = await _open(monkeypatch, runner)
++    _wait(runner)
++    await s.to_app.put({"type": "websocket.receive", "text": "steer"})
++    await asyncio.sleep(0.05)
++    assert s.got[-1] == {"type": "websocket.receive", "text": "steer"}  # served through the restart wait
++    runner._running = False  # the stop begins
++    assert _seal(s.api, s.scope) == []  # its connection is not shut down
++    await asyncio.wait_for(s.ended.wait(), 2)
++    assert s.got[-1] == {"type": "websocket.disconnect", "code": 1012}  # the session ends at the stop
++    # The stop's read cut neither waits for nor cancels the parked socket.
++    handle = SimpleNamespace(api=s.api, app=SimpleNamespace(close=AsyncMock()))
++    runner._listener_handover = HANDOVER_READS
++    await asyncio.wait_for(end_gateway_api_reads(runner, handle, 5.0), 1)
++    await asyncio.sleep(0.2)
++    assert s.from_app.empty() and not s.task.done()
++    successor, target, asked = await _successor(ready_after=0.3)
++    try:
++        loop = asyncio.get_running_loop()
++        released = loop.time()
++        s.api.forward_to(target, 10)
++        assert await asyncio.wait_for(s.from_app.get(), 5) == {"type": "websocket.close", "code": 1012}
++        closed = loop.time()
++        await asyncio.wait_for(s.task, 2)
++        assert len(asked) >= 2  # asked again until the successor was ready
++        assert closed - released >= 0.3 + 0.2 - 0.05  # ready, then the delay
++    finally:
++        await successor.cleanup()
++
++
++@pytest.mark.asyncio
++async def test_a_frame_after_the_stop_began_ends_the_session_and_with_no_successor_it_closes_at_once(monkeypatch):
++    runner = _runner(_config(delay=5))
++    s = await _open(monkeypatch, runner)
++    _wait(runner)
++    runner._running = False
++    await s.to_app.put({"type": "websocket.receive", "text": "late"})
++    await asyncio.wait_for(s.ended.wait(), 2)
++    assert s.got[-1] == {"type": "websocket.disconnect", "code": 1013}  # never read
++    await asyncio.sleep(0.1)
++    assert s.from_app.empty()
++    s.api.forward_to(None, 10)  # released, nobody took over
++    assert await asyncio.wait_for(s.from_app.get(), 2) == {"type": "websocket.close", "code": 1012}
++    await asyncio.wait_for(s.task, 2)
++
++
++@pytest.mark.asyncio
++async def test_a_client_that_leaves_is_not_held(monkeypatch):
++    runner = _runner(_config(delay=5))
++    s = await _open(monkeypatch, runner)
++    _wait(runner)
++    await s.to_app.put({"type": "websocket.disconnect", "code": 1001})
++    await asyncio.wait_for(s.task, 2)
++    assert s.from_app.get_nowait() == {"type": "websocket.close", "code": 1000}
++
++
++@pytest.mark.asyncio
++async def test_the_close_is_held_no_longer_than_the_hold(monkeypatch):
++    runner = _runner(_config(delay=5, hold=0.3))
++    s = await _open(monkeypatch, runner)
++    _wait(runner)
++    runner._running = False
++    _seal(s.api, s.scope)
++    assert await asyncio.wait_for(s.from_app.get(), 2) == {"type": "websocket.close", "code": 1012}
++
++
++@pytest.mark.asyncio
++async def test_without_the_key_the_stop_closes_the_socket_as_before(monkeypatch):
++    runner = _runner(_config(delay=0))
++    s = await _open(monkeypatch, runner)
++    assert PARKED_SCOPE_KEY not in s.scope
++    _wait(runner)
++    runner._running = False
++    assert _seal(s.api, s.scope) == ["shutdown"]
++    await s.to_app.put({"type": "websocket.receive", "text": "late"})
++    await asyncio.wait_for(s.task, 2)
++    assert s.got[-1] == {"type": "websocket.disconnect", "code": 1013}
++    assert s.from_app.get_nowait() == {"type": "websocket.close", "code": 1000}
++
++
++@pytest.mark.asyncio
++async def test_successor_ready_waits_for_200_and_gives_up_at_the_deadline():
++    successor, target, asked = await _successor(ready_after=0.2)
++    loop = asyncio.get_running_loop()
++    try:
++        assert await await_successor_ready(target, loop.time() + 5)
++        assert len(asked) >= 2
++    finally:
++        await successor.cleanup()
++    closed = socket.socket()
++    closed.bind(("127.0.0.1", 0))
++    port = closed.getsockname()[1]
++    closed.close()
++    started = loop.time()
++    assert not await await_successor_ready(("127.0.0.1", port), loop.time() + 0.3)
++    assert loop.time() - started < 1.0
