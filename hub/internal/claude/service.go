@@ -60,8 +60,11 @@ type Options struct {
 	Announce func(backendID, sessionID, kind string, data any) bool
 	// Timeout bounds each plugin call; a sign-in call gets more. Default 20s.
 	Timeout time.Duration
-	Logger  *slog.Logger
-	Now     func() time.Time
+	// UsageRetry is how long the hub waits before it asks Hermes again
+	// for ChatGPT usage that Hermes had not read yet. Default 3s.
+	UsageRetry time.Duration
+	Logger     *slog.Logger
+	Now        func() time.Time
 }
 
 type accountsEntry struct {
@@ -86,6 +89,7 @@ type Service struct {
 	mu       sync.Mutex
 	accounts map[string]accountsEntry
 	usage    map[string]usageEntry
+	chatgpt  map[string]chatGPTEntry
 	handled  map[string]time.Time
 }
 
@@ -95,6 +99,9 @@ var _ hub.Claude = (*Service)(nil)
 func New(o Options) *Service {
 	if o.Timeout == 0 {
 		o.Timeout = 20 * time.Second
+	}
+	if o.UsageRetry == 0 {
+		o.UsageRetry = 3 * time.Second
 	}
 	if o.Logger == nil {
 		o.Logger = slog.Default()
@@ -107,7 +114,7 @@ func New(o Options) *Service {
 	}
 	s := &Service{o: o, log: o.Logger.With("component", "claude"), clients: map[string]*Client{}, admins: map[string][]string{},
 		accounts: map[string]accountsEntry{}, usage: map[string]usageEntry{},
-		handled: map[string]time.Time{}}
+		chatgpt: map[string]chatGPTEntry{}, handled: map[string]time.Time{}}
 	for id, r := range o.Requesters {
 		if r != nil {
 			s.clients[id] = NewClient(r)
@@ -222,14 +229,25 @@ func (s *Service) forget(backendID, accountID string) {
 	delete(s.usage, backendID+"/"+accountID)
 }
 
-// ClaudeAccounts lists a backend's Claude accounts. See hub.Claude.
+// ClaudeAccounts lists a backend's Claude accounts, and its ChatGPT plan
+// when Hermes is signed in to one. See hub.Claude.
 func (s *Service) ClaudeAccounts(ctx context.Context, user, backendID string, usage bool) (hub.ClaudeAccounts, error) {
 	c, err := s.client(ctx, user, backendID)
 	if err != nil {
 		return hub.ClaudeAccounts{}, err
 	}
+	var cg chatGPTEntry
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var cerr error
+		if cg, cerr = s.chatGPT(ctx, backendID, c, false); cerr != nil {
+			s.log.Info("ChatGPT usage: model options", "backend", backendID, "error", cerr.Error())
+		}
+	}()
 	a, err := s.list(ctx, backendID, c, usage)
-	if err != nil {
+	<-done
+	if err != nil && (!cg.present || !errors.Is(err, hub.ErrNoClaude)) {
 		return hub.ClaudeAccounts{}, err
 	}
 	admin := s.IsAdmin(user, backendID)
@@ -254,6 +272,9 @@ func (s *Service) ClaudeAccounts(ctx context.Context, user, backendID string, us
 		}
 		out.Accounts = append(out.Accounts, h)
 	}
+	if cg.present {
+		out.Accounts = append(out.Accounts, s.chatGPTAccount(cg, usage))
+	}
 	return out, nil
 }
 
@@ -262,6 +283,16 @@ func (s *Service) ClaudeUsage(ctx context.Context, user, backendID, accountID st
 	c, err := s.client(ctx, user, backendID)
 	if err != nil {
 		return hub.ClaudeUsage{}, err
+	}
+	if accountID == ChatGPTAccount {
+		e, err := s.chatGPT(ctx, backendID, c, fresh)
+		if err != nil && !e.present {
+			return hub.ClaudeUsage{}, err
+		}
+		if !e.present {
+			return hub.ClaudeUsage{}, hub.ErrUnknownAccount
+		}
+		return s.convertUsage(e.usage), nil
 	}
 	key := backendID + "/" + accountID
 	now := s.o.Now()

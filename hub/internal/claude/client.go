@@ -142,9 +142,16 @@ type Client struct {
 // NewClient returns a client that sends its requests through r.
 func NewClient(r device.Requester) *Client { return &Client{r: r} }
 
-// call sends one request. slow requests (a sign-in waits up to a minute)
-// go without the dashboard client's own timeout, bounded by ctx alone.
+// call sends one request to the plugin. slow requests (a sign-in waits
+// up to a minute) go without the dashboard client's own timeout, bounded
+// by ctx alone.
 func (c *Client) call(ctx context.Context, slow bool, method, path string, body, out any) error {
+	return c.do(ctx, slow, method, PluginBase+path, maxBody, body, out)
+}
+
+// do sends one request to the dashboard and reads at most limit bytes of
+// the answer.
+func (c *Client) do(ctx context.Context, slow bool, method, path string, limit int64, body, out any) error {
 	var b []byte
 	if body != nil {
 		var err error
@@ -156,12 +163,12 @@ func (c *Client) call(ctx context.Context, slow bool, method, path string, body,
 	if s, ok := c.r.(slowRequester); ok && slow {
 		send = s.RequestSlow
 	}
-	resp, err := send(ctx, method, PluginBase+path, b)
+	resp, err := send(ctx, method, path, b)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}

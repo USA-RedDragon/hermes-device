@@ -24,6 +24,7 @@ const (
 	bob         = "bob"
 	backendMain = "main"
 	other       = "other"
+	solo        = "solo"
 	account     = "account1"
 	aliceEmail  = "alice@example.com"
 	provider1   = "claude-account1"
@@ -33,7 +34,7 @@ const (
 type access struct{}
 
 func (access) Allowed(_ context.Context, user, id string) error {
-	if id == backendMain && (user == alice || user == bob) || id == other && user == bob {
+	if id == backendMain && (user == alice || user == bob) || (id == other || id == solo) && user == bob {
 		return nil
 	}
 	return hub.ErrForbidden
@@ -65,10 +66,13 @@ func (r *recorder) announce(_, sessionID, kind string, data any) bool {
 
 type env struct {
 	plugin *claudetest.Plugin
-	svc    *claude.Service
-	rec    *recorder
-	logs   *bytes.Buffer
-	now    time.Time
+	// chatgpt is backendMain's model options; soloGPT is those of solo,
+	// a Hermes with a ChatGPT plan and no plugin.
+	chatgpt, soloGPT *claudetest.ChatGPT
+	svc              *claude.Service
+	rec              *recorder
+	logs             *bytes.Buffer
+	now              time.Time
 }
 
 // newEnv runs a fake plugin on backendMain; other has a Hermes without it.
@@ -78,7 +82,9 @@ func newEnv(t *testing.T) *env {
 	t.Cleanup(gw.Close)
 	bare := gatewaytest.New("hub", "pw")
 	t.Cleanup(bare.Close)
-	e := &env{plugin: claudetest.New(gw), rec: &recorder{}, logs: &bytes.Buffer{},
+	sgw := gatewaytest.New("hub", "pw")
+	t.Cleanup(sgw.Close)
+	e := &env{plugin: claudetest.New(gw), chatgpt: claudetest.NewChatGPT(gw), soloGPT: claudetest.NewChatGPT(sgw), rec: &recorder{}, logs: &bytes.Buffer{},
 		now: time.Date(2026, 11, 11, 15, 0, 0, 0, time.UTC)}
 	loc, err := time.LoadLocation("America/Chicago")
 	if err != nil {
@@ -88,7 +94,8 @@ func newEnv(t *testing.T) *env {
 		return gateway.NewDialer(gateway.Credentials{BaseURL: u, Provider: "basic", Username: "hub", Password: "pw"})
 	}
 	e.svc = claude.New(claude.Options{Access: access{}, Admins: map[string][]string{backendMain: {alice}}, Location: loc,
-		Requesters: map[string]device.Requester{backendMain: creds(gw.URL()), other: creds(bare.URL())},
+		Requesters: map[string]device.Requester{backendMain: creds(gw.URL()), other: creds(bare.URL()), solo: creds(sgw.URL())},
+		UsageRetry: 10 * time.Millisecond,
 		Notify:     e.rec.notify, Announce: e.rec.announce, Now: func() time.Time { return e.now },
 		Logger: slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))})
 	return e
@@ -158,6 +165,82 @@ func TestAccountsAndUsage(t *testing.T) {
 	}
 	if _, err := e.svc.ClaudeAccounts(ctx, bob, other, false); !errors.Is(err, hub.ErrNoClaude) {
 		t.Errorf("backend without plugin: %v", err)
+	}
+}
+
+func codexRow(session, week float64) *claude.ProviderRow {
+	yes := true
+	return &claude.ProviderRow{Slug: claude.ChatGPTProvider, Authenticated: &yes, Usage: &claude.ProviderUsage{Windows: []claude.ProviderWindow{
+		{Label: "Session", UsedPercent: pct(session), ResetsAt: time.Date(2026, 11, 11, 21, 40, 0, 0, time.UTC)},
+		{Label: "Weekly", UsedPercent: pct(week), ResetsAt: time.Date(2026, 11, 13, 15, 0, 0, 0, time.UTC)}}}}
+}
+
+func TestChatGPTUsage(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := context.Background()
+	e.chatgpt.Lock()
+	e.chatgpt.Row, e.chatgpt.Cold = codexRow(12, 2), 1
+	e.chatgpt.Unlock()
+
+	got, err := e.svc.ClaudeAccounts(ctx, alice, backendMain, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Accounts) != 3 {
+		t.Fatalf("accounts = %+v, want the two Claude accounts and ChatGPT", got.Accounts)
+	}
+	a := got.Accounts[2]
+	if a.ID != claude.ChatGPTAccount || a.Label != "ChatGPT" || a.Provider != "openai-codex" || !a.SignedIn || !a.NoSignIn || a.SignIn != nil ||
+		a.Usage == nil || a.Usage.Unavailable != "" || len(a.Usage.Windows) != 2 {
+		t.Fatalf("ChatGPT account = %+v", a)
+	}
+	if w := a.Usage.Windows[0]; w.Kind != hub.ClaudeWindowSession || w.Label != "Current session" || *w.UsedPercent != 12 || w.ResetsText != "3:40 PM CST" {
+		t.Errorf("session window = %+v", w)
+	}
+	if w := a.Usage.Windows[1]; w.Kind != hub.ClaudeWindowWeekly || w.Label != "Current week" || *w.UsedPercent != 2 || w.ResetsText != "Fri 9:00 AM CST" {
+		t.Errorf("weekly window = %+v", w)
+	}
+	if n := e.chatgpt.CallCount(); n != 2 {
+		t.Errorf("model options read %d times, want 2 (once more after the cold answer)", n)
+	}
+
+	e.chatgpt.Lock()
+	e.chatgpt.Row = codexRow(30, 5)
+	e.chatgpt.Unlock()
+	u, err := e.svc.ClaudeUsage(ctx, bob, backendMain, claude.ChatGPTAccount, false)
+	if err != nil || *u.Windows[0].UsedPercent != 12 {
+		t.Fatalf("cached usage = %+v %v", u, err)
+	}
+	e.now = e.now.Add(20 * time.Second)
+	u, err = e.svc.ClaudeUsage(ctx, bob, backendMain, claude.ChatGPTAccount, true)
+	if err != nil || *u.Windows[0].UsedPercent != 30 || e.chatgpt.CallCount() != 3 {
+		t.Fatalf("fresh usage = %+v %v after %d reads", u, err, e.chatgpt.CallCount())
+	}
+	if _, err := e.svc.StartSignIn(ctx, alice, backendMain, claude.ChatGPTAccount); !errors.Is(err, hub.ErrUnknownAccount) {
+		t.Errorf("ChatGPT sign-in: %v", err)
+	}
+}
+
+func TestChatGPTWithoutPlugin(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := context.Background()
+	e.soloGPT.Lock()
+	e.soloGPT.Row, e.soloGPT.Cold = codexRow(50, 60), 5
+	e.soloGPT.Unlock()
+	got, err := e.svc.ClaudeAccounts(ctx, bob, solo, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Accounts) != 1 || got.Accounts[0].Usage == nil || got.Accounts[0].Usage.Unavailable == "" || len(got.Accounts[0].Usage.Windows) != 0 {
+		t.Fatalf("Hermes without the plugin and a ChatGPT plan not read yet = %+v", got.Accounts)
+	}
+	if _, err := e.svc.ClaudeUsage(ctx, bob, other, claude.ChatGPTAccount, false); !errors.Is(err, hub.ErrUnknownAccount) {
+		t.Errorf("ChatGPT usage on a Hermes without model options: %v", err)
+	}
+	if _, err := e.svc.ClaudeAccounts(ctx, bob, other, true); !errors.Is(err, hub.ErrNoClaude) {
+		t.Errorf("Hermes without the plugin or ChatGPT: %v", err)
 	}
 }
 

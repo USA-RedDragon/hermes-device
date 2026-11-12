@@ -215,10 +215,13 @@ type ClaudeAccount struct {
 	SignedIn bool   `json:"signed_in"`
 	Email    string `json:"email,omitempty"`
 	// LastEmail is the email the account was last signed in to.
-	LastEmail   string       `json:"last_email,omitempty"`
-	Plan        string       `json:"plan,omitempty"`
-	StatusError string       `json:"status_error,omitempty"`
-	Usage       *ClaudeUsage `json:"usage,omitempty"`
+	LastEmail   string `json:"last_email,omitempty"`
+	Plan        string `json:"plan,omitempty"`
+	StatusError string `json:"status_error,omitempty"`
+	// NoSignIn is an account that Hermes signs in to by itself, such as
+	// its ChatGPT plan; the hub cannot sign it in.
+	NoSignIn bool         `json:"no_signin,omitempty"`
+	Usage    *ClaudeUsage `json:"usage,omitempty"`
 	// Credits is the API credit estimate of the account's API key, with the
 	// usage, when Hermes has a key for the account.
 	Credits *ClaudeCredits `json:"credits,omitempty"`

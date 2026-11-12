@@ -257,3 +257,47 @@ func (p *Plugin) code(w http.ResponseWriter, r *http.Request) {
 	}
 	answer(w, http.StatusOK, s)
 }
+
+// ChatGPT is a fake of the dashboard's model options with Hermes's
+// openai-codex row. Its fields may be changed under Lock.
+type ChatGPT struct {
+	sync.Mutex
+	// Row is the openai-codex row. Nil: Hermes is not signed in to ChatGPT.
+	Row *claude.ProviderRow
+	// Cold is how many more answers leave the row's usage out, as Hermes
+	// does before it has read ChatGPT.
+	Cold int
+	// Calls counts the answers.
+	Calls int
+}
+
+// NewChatGPT mounts the fake model options on gw.
+func NewChatGPT(gw *gatewaytest.Gateway) *ChatGPT {
+	c := &ChatGPT{}
+	gw.Handle("GET "+claude.ModelOptionsPath, http.HandlerFunc(c.options), true)
+	return c
+}
+
+func (c *ChatGPT) options(w http.ResponseWriter, _ *http.Request) {
+	c.Lock()
+	defer c.Unlock()
+	c.Calls++
+	yes := true
+	out := claude.ModelOptions{Providers: []claude.ProviderRow{{Slug: "deepinfra", Authenticated: &yes}}}
+	if c.Row != nil {
+		row := *c.Row
+		if c.Cold > 0 {
+			c.Cold--
+			row.Usage = nil
+		}
+		out.Providers = append(out.Providers, row)
+	}
+	answer(w, http.StatusOK, out)
+}
+
+// CallCount returns how many answers the fake gave.
+func (c *ChatGPT) CallCount() int {
+	c.Lock()
+	defer c.Unlock()
+	return c.Calls
+}
