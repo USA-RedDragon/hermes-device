@@ -24,7 +24,7 @@ reconnecting) is retried instead of read as an exit.
  create mode 100644 tools/process_registry_handoff.py
 
 diff --git a/cli-config.yaml.example b/cli-config.yaml.example
-index ad5bffa764..ec623e3275 100644
+index 7272358907..5211259aa4 100644
 --- a/cli-config.yaml.example
 +++ b/cli-config.yaml.example
 @@ -456,6 +456,11 @@ terminal:
@@ -40,12 +40,12 @@ index ad5bffa764..ec623e3275 100644
    # start with the launching shell's toolchain: PATH, an activated venv and CONDA_* / NODE_* / NVM_* /
    # PYENV_* (plus GOPATH, GOROOT, CARGO_HOME, RUSTUP_HOME, JAVA_HOME), for that session only, when
 diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
-index 7a9ee828b6..083421a890 100644
+index 6f487177fd..f060908ee5 100644
 --- a/gateway/run_shutdown.py
 +++ b/gateway/run_shutdown.py
-@@ -1819,6 +1819,21 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
-             GatewayShutdownMixin._stop_kill_tool_subprocesses, phase
-         )
+@@ -1828,6 +1828,21 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+         cap = getattr(getattr(runner, "config", None), "restart_agent_cleanup_seconds", 0) or 0
+         return float(cap) if cap > 0 else None
  
 +    async def _stop_hand_off_processes(self) -> None:
 +        """Restart only: hand the background processes of ``terminal.process_handoff_backends`` to
@@ -65,7 +65,7 @@ index 7a9ee828b6..083421a890 100644
      async def _stop_begin_teardown(self, ctx: GatewayShutdownMixin._StopContext) -> None:
          """Flag teardown, stop room worker/watchdog, notify sessions."""
          logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
-@@ -2210,6 +2225,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -2230,6 +2245,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                      timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
                  )
              await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
