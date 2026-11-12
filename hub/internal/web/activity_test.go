@@ -114,8 +114,10 @@ func TestBackgroundToolAPI(t *testing.T) {
 	if resp, body := post(t, c, e.url+path, m.CSRF, "", nil); resp.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("old Hermes = %d %s", resp.StatusCode, body)
 	}
+	e = activityEnv(t)
 	e.gw.SetCapabilities(gateway.CapToolBackground)
-	e.gw.DropConnections()
+	c = client(t)
+	m = login(t, e, c)
 	if resp, body := post(t, c, e.url+path, m.CSRF, "", nil); resp.StatusCode != http.StatusConflict {
 		t.Fatalf("idle chat = %d %s", resp.StatusCode, body)
 	}
