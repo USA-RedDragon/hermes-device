@@ -172,7 +172,7 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	notifyOn := false
 	if cfg.Telegram.Enabled {
 		topts := telegram.Options{PublicURL: cfg.HTTP.PublicURL, Service: svc, Links: st, Tokens: st, State: st, Notices: st,
-			Prompts: st, Logger: slog.Default()}
+			Prompts: st, Pins: st, Logger: slog.Default()}
 		if devices != nil {
 			topts.Computers = devices
 		}

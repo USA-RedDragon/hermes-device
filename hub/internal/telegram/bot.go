@@ -86,7 +86,9 @@ type Options struct {
 	// Subagents sets a chat's Subagents choice from /model. Optional.
 	Subagents hub.SubagentRoutes
 	// Prompts lists the saved prompts for /prompts. Optional.
-	Prompts    PromptStore
+	Prompts PromptStore
+	// Pins puts each user's pinned chats first in /sessions. Optional.
+	Pins       PinStore
 	Logger     *slog.Logger
 	HTTPClient *http.Client
 	// statusTick replaces the package's statusTick in tests.
@@ -94,6 +96,11 @@ type Options struct {
 	// editGaps replaces the edit gaps of private chats and groups in
 	// tests.
 	editGaps [2]time.Duration
+}
+
+// PinStore is the part of hub.ChatStore the bot reads.
+type PinStore interface {
+	ChatMarks(ctx context.Context, user string) (map[hub.SessionRef]hub.ChatMark, time.Time, error)
 }
 
 // NoticeStore is the part of hub.NotifyStore the bot reads.
@@ -127,6 +134,7 @@ type Bot struct {
 	claude    hub.Claude
 	subagents hub.SubagentRoutes
 	prompts   PromptStore
+	pins      PinStore
 	botID     int64
 	logger    *slog.Logger
 	defaults  map[string]string
@@ -295,6 +303,7 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		claude:    opts.Claude,
 		subagents: opts.Subagents,
 		prompts:   opts.Prompts,
+		pins:      opts.Pins,
 		botID:     BotID(cfg.Token),
 		logger:    logger,
 		defaults:  defaults,
@@ -769,7 +778,8 @@ func (b *Bot) listSessions(ctx context.Context, to dest, user string) {
 		b.sendText(ctx, to, "No sessions yet. Send a message or /new to start one.")
 		return
 	}
-	slices.SortStableFunc(list, func(x, y hub.Session) int { return y.UpdatedAt.Compare(x.UpdatedAt) })
+	marks := b.pinMarks(cctx, user)
+	hub.PinnedFirst(list, marks)
 	list = list[:min(len(list), maxListed)]
 	st := b.chat(to)
 	st.listGen++
@@ -784,6 +794,9 @@ func (b *Bot) listSessions(ctx context.Context, to dest, user string) {
 			title = untitledName
 		}
 		fmt.Fprintf(&sb, "\n%d. %s <i>(%s)</i>", i+1, escapeHTML(truncate(title, 60)), escapeHTML(s.BackendID))
+		if marks[hub.SessionRef{BackendID: s.BackendID, SessionID: s.ID}].Pinned {
+			sb.WriteString(" pinned")
+		}
 		if s.Live {
 			sb.WriteString(" live")
 		}
@@ -804,6 +817,20 @@ func (b *Bot) listSessions(ctx context.Context, to dest, user string) {
 		fmt.Fprintf(&sb, "\n\n<i>Can't reach %s right now, so its sessions are missing.</i>", escapeHTML(strings.Join(down, ", ")))
 	}
 	b.sendHTML(ctx, to, sb.String(), &InlineKeyboard{InlineKeyboard: rows})
+}
+
+// pinMarks reads the user's pins; without a pin store, or when it fails,
+// no chat is pinned.
+func (b *Bot) pinMarks(ctx context.Context, user string) map[hub.SessionRef]hub.ChatMark {
+	if b.pins == nil {
+		return nil
+	}
+	marks, _, err := b.pins.ChatMarks(ctx, user)
+	if err != nil {
+		b.logger.Warn("Failed to read pins", "user", user, "error", err)
+		return nil
+	}
+	return marks
 }
 
 // places looks up where the listed sessions run, when computers are on.

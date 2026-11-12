@@ -1,7 +1,9 @@
 package telegram_test
 
 import (
+	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -568,5 +570,42 @@ func TestNoStepsButtonWhenStepsOff(t *testing.T) {
 	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t1", kName: toolTerminal, kContext: "ls"})
 	if s := h.tg.wait(mSend, "Running"); len(s.buttons()) != 0 {
 		t.Fatalf("buttons with steps off = %v", s.buttons())
+	}
+}
+
+type fakePins map[string]map[hub.SessionRef]hub.ChatMark
+
+func (f fakePins) ChatMarks(_ context.Context, user string) (map[hub.SessionRef]hub.ChatMark, time.Time, error) {
+	return f[user], time.Time{}, nil
+}
+
+func TestSessionsListPinsFirstInPinOrder(t *testing.T) {
+	t.Parallel()
+	pins := fakePins{userAlice: {
+		{BackendID: beLaptop, SessionID: "p1"}:  {Pinned: true, PinPos: 0},
+		{BackendID: beCluster, SessionID: "p2"}: {Pinned: true, PinPos: -1},
+		{BackendID: beLaptop, SessionID: "p3"}:  {Pinned: true, PinPos: 1},
+	}}
+	h := startBotNotices(t, nil, newFakeState(), nil, nil, func(o *telegram.Options) { o.Pins = pins })
+	h.hub.mu.Lock()
+	h.hub.sessions = []hub.Session{
+		{ID: "r-new", BackendID: beLaptop, Title: "Recent new", UpdatedAt: time.Unix(900, 0)},
+		{ID: "p1", BackendID: beLaptop, Title: "Pin one", UpdatedAt: time.Unix(10, 0)},
+		{ID: "p2", BackendID: beCluster, Title: "Pin two", UpdatedAt: time.Unix(20, 0)},
+		{ID: "r-old", BackendID: beLaptop, Title: "Recent old", UpdatedAt: time.Unix(800, 0)},
+		{ID: "p3", BackendID: beLaptop, Title: "Pin three", UpdatedAt: time.Unix(990, 0)},
+	}
+	h.hub.mu.Unlock()
+	h.tg.say(dm(aliceTG), aliceTG, "/sessions")
+	text := h.tg.wait(mSend, "<b>Sessions</b>").text()
+	at := make([]int, 0, 5)
+	for _, name := range []string{"Pin two", "Pin one", "Pin three", "Recent new", "Recent old"} {
+		at = append(at, strings.Index(text, name))
+	}
+	if !slices.IsSorted(at) || slices.Contains(at, -1) {
+		t.Fatalf("session list is not in pin order, then recent: %q", text)
+	}
+	if strings.Count(text, " pinned") != 3 {
+		t.Fatalf("pinned tags = %d in %q", strings.Count(text, " pinned"), text)
 	}
 }
