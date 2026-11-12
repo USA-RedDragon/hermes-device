@@ -510,6 +510,7 @@
   // own scrolling moves between the two; a reply that grows, a composer
   // that grows, a panel, a banner or the window's size do not.
   let unseen = 0;
+  const ui = window.HubUIState($("log"));
   // stickProbe finds the first message in view, through the boxes that
   // hold older messages, and how far below the top of the log it starts.
   function stickProbe(l) {
@@ -562,6 +563,7 @@
     for (const n of log.children) ro.observe(n);
     new MutationObserver((list) => {
       for (const m of list) {
+        for (const n of m.addedNodes) if (n.nodeType === 1) ui.apply(n);
         if (m.target === log) {
           for (const n of m.removedNodes) if (n.nodeType === 1) ro.unobserve(n);
           for (const n of m.addedNodes) if (n.nodeType === 1) ro.observe(n);
@@ -571,9 +573,9 @@
     }).observe(log, { childList: true, subtree: true, characterData: true });
     log.addEventListener("scroll", () => s.scrolled(), { passive: true });
     let swiped = false;
-    log.addEventListener("wheel", () => s.heard(400), { passive: true });
+    log.addEventListener("wheel", (e) => { s.heard(400); if (e.deltaY < 0) s.release(); }, { passive: true });
     log.addEventListener("touchstart", () => { swiped = false; }, { passive: true });
-    log.addEventListener("touchmove", () => { swiped = true; s.heard(8000); }, { passive: true });
+    log.addEventListener("touchmove", () => { swiped = true; s.heard(8000); if (s.pinned()) s.release(); }, { passive: true });
     const lifted = () => s.heard(swiped ? 3000 : 1);
     log.addEventListener("touchend", lifted, { passive: true });
     log.addEventListener("touchcancel", lifted, { passive: true });
@@ -585,10 +587,18 @@
     document.addEventListener("keydown", (e) => {
       const tag = e.target && e.target.tagName;
       if (tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT") return;
-      if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(e.key)) s.heard(800);
+      if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(e.key)) {
+        s.heard(800);
+        if (["PageUp", "Home", "ArrowUp"].includes(e.key)) s.release();
+      }
     }, { capture: true, passive: true });
+    log.addEventListener("click", (e) => ui.record(e), true);
     log.addEventListener("load", soon, true);
-    log.addEventListener("click", (e) => { if (e.target.closest && e.target.closest("summary")) s.release(); }, true);
+    log.addEventListener("click", (e) => {
+      if (!ui.busy() && e.target.closest && e.target.closest("summary, [aria-expanded], .notice-more")) s.release();
+      soon();
+    }, true);
+    log.addEventListener("toggle", soon, true);
     window.addEventListener("resize", soon);
     if (window.visualViewport) window.visualViewport.addEventListener("resize", soon);
     jump.addEventListener("click", () => { s.pin(); });
@@ -735,7 +745,7 @@
       if (!tn.text) {
         tn.text = this.add(el("div", "msg assistant md"));
         tn.raw = "";
-        if (tn.reasoning) tn.reasoning.open = false;
+        if (tn.reasoning) ui.closeUnlessKept(tn.reasoning);
       }
       tn.raw += text;
       const node = tn.text;
@@ -804,6 +814,7 @@
         return true;
       }
       const box = window.HubNotice.card(n, text, { el, toast, at: waiting ? 0 : this.at });
+      box.dataset.ukey = "n:" + ui.hash(text);
       if (n.id) box.title = n.id;
       this.add(box);
       if (waiting) {
@@ -1050,6 +1061,7 @@
       card.view = view;
       card.call = call;
       card.toolName = call.name;
+      card.dataset.ukey = "t:" + id;
       card.classList.add("running");
       if (activity.opens(name, args)) {
         const open = el("button", "link tool-open", "Show in Activity");
@@ -1135,6 +1147,7 @@
       const fold = () => {
         if (!run.length) return;
         const g = toolGroup(run);
+        if (run.some((c) => ui.expanded(c))) g.open = true;
         parent.insertBefore(g, run[0]);
         g.lastChild.append(...run);
         run = [];
@@ -1481,7 +1494,7 @@
           if (c.call_id) this.calls.set(c.call_id, call);
         }
         const r = m.reasoning || m.reasoning_content;
-        if (r) { this.reasoning(r); this.turn.reasoning.open = false; }
+        if (r) { this.reasoning(r); ui.closeUnlessKept(this.turn.reasoning); }
         if (text) {
           this.assistantText(text);
           if (Number.isInteger(rid)) this.turn.text.dataset.row = rid;
@@ -1527,7 +1540,7 @@
           break;
         case "reasoning.delta": this.reasoning(p.text || ""); break;
         case "reasoning.available":
-          if (!this.ensureTurn().reasoning) { this.reasoning(p.text || ""); this.turn.reasoning.open = false; }
+          if (!this.ensureTurn().reasoning) { this.reasoning(p.text || ""); ui.closeUnlessKept(this.turn.reasoning); }
           break;
         case "thinking.delta": this.setStatus(p.text || ""); break;
         case "status.update":
@@ -1560,7 +1573,7 @@
           const tn = this.ensureTurn();
           if (!tn.text && !tn.raw && typeof p.text === "string" && p.text) this.assistantText(p.text);
           else this.endText();
-          if (tn.reasoning) tn.reasoning.open = false;
+          if (tn.reasoning) ui.closeUnlessKept(tn.reasoning);
           if (p.status && p.status !== "complete" && p.status !== "completed") {
             this.add(el("div", "note" + (p.status === "error" || p.status === "failed" ? " bad" : ""), "Turn " + p.status + (p.error ? ": " + p.error : "")));
           }
@@ -2431,6 +2444,7 @@
     const span = window.HubTimes.range(from, to || from);
     if (span) text += " \u00B7 " + span;
     const d = el("details", "toolgroup" + (failed ? " failed" : ""));
+    d.dataset.ukey = "g:" + cards[0].dataset.ukey;
     const sum = el("summary", "", text);
     if (failed) sum.append(el("span", "bad", failed === 1 ? " 1 step failed" : " " + failed + " steps failed"));
     d.append(sum, el("div", "group-body"));

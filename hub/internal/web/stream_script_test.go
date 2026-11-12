@@ -53,6 +53,13 @@ func TestStickScript(t *testing.T) {
 	runStreamScript(t, "stick.js", "stick.js")
 }
 
+// What the reader opened or closed in the chat stays so when the page
+// draws the nodes again.
+func TestUIStateScript(t *testing.T) {
+	t.Parallel()
+	runStreamScript(t, "uistate.js", "uistate.js")
+}
+
 // A model pick that waited for the end of a turn can come back as a
 // question or a refusal; the page reads both.
 func TestModelPickScript(t *testing.T) {

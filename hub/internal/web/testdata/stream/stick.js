@@ -170,14 +170,16 @@ const wheelTo = (x, top) => {
   assert.strictEqual(x.log.scrollTop, x.log.scrollHeight - x.log.client);
 }
 
-// Scrolling short of the end by less than the threshold stays at the end, more does not.
+// Any scroll up unpins at once; scrolling down to within the threshold pins again.
 {
   const x = make([500, 500, 500, 500], 600);
   x.s.pin();
   wheelTo(x, 1400 - 20);
-  assert.strictEqual(x.s.pinned(), true);
+  assert.strictEqual(x.s.pinned(), false);
   wheelTo(x, 1400 - 80);
   assert.strictEqual(x.s.pinned(), false);
+  wheelTo(x, 1400 - 20);
+  assert.strictEqual(x.s.pinned(), true);
 }
 
 // pin and release are the page's own clicks and jumps.
@@ -229,5 +231,25 @@ const wheelTo = (x, top) => {
   assert.deepStrictEqual(x.calls, [false]);
   x.s.pin();
   assert.deepStrictEqual(x.calls, [false, true]);
+}
+// Content arrives every 50 ms while the reader wheels up: the view never moves down.
+{
+  const x = make([500, 500, 500, 500], 600);
+  x.s.pin();
+  let last = x.log.scrollTop;
+  for (let i = 0; i < 40; i++) {
+    if (i % 2 === 0) {
+      x.s.heard(400);
+      x.s.release();
+      x.log.scrollTop = x.log.scrollTop - 20;
+      x.s.scrolled();
+    }
+    x.log.heights[3] += 30;
+    x.s.sync();
+    x.tick(50);
+    assert.ok(x.log.scrollTop <= last, "moved down at " + i);
+    last = x.log.scrollTop;
+  }
+  assert.strictEqual(x.s.pinned(), false);
 }
 console.log("ok");
