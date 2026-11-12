@@ -506,7 +506,11 @@
       this.urls = [];
     }
 
-    stick() { return pinned; }
+    // stick tells whether a change should scroll the log to its end. Not
+    // while a snapshot fills the log: scrolling reads the log's height,
+    // which lays it out again, so a scroll per row made a long chat's
+    // load quadratic. The snapshot scrolls once at the end.
+    stick() { return pinned && !this.filling; }
 
     bottom() {
       pinned = true;
@@ -1016,7 +1020,12 @@
       this.showInfo(s.info || {});
       // Stored tool rows carry no arguments; the assistant message that made the call has them.
       this.calls = new Map();
-      for (const m of s.messages || []) this.row(m);
+      this.filling = true;
+      try {
+        for (const m of s.messages || []) this.row(m);
+      } finally {
+        this.filling = false;
+      }
       this.turn = null;
       const users = this.log.querySelectorAll(".msg.user");
       this.groupTools(s.running && users.length ? users[users.length - 1] : null);
