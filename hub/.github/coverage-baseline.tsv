@@ -31,7 +31,7 @@ internal/device/rpc.go	214	199
 internal/device/sessioncheck.go	23	22
 internal/device/usage.go	50	40
 internal/device/views.go	17	17
-internal/gateway/client.go	222	175
+internal/gateway/client.go	222	176
 internal/gateway/gatewaytest/activity.go	106	86
 internal/gateway/gatewaytest/compose.go	180	156
 internal/gateway/gatewaytest/fake.go	619	563
@@ -82,7 +82,7 @@ internal/service/live.go	304	260
 internal/service/manage.go	147	138
 internal/service/media.go	128	106
 internal/service/observe.go	61	50
-internal/service/outcome.go	89	85
+internal/service/outcome.go	92	88
 internal/service/page.go	51	47
 internal/service/pdf.go	71	55
 internal/service/rows.go	22	21
@@ -123,9 +123,9 @@ internal/telegram/render.go	478	433
 internal/telegram/replymedia.go	102	87
 internal/telegram/status.go	59	53
 internal/telegram/todo.go	58	51
-internal/telegram/topics.go	521	380
+internal/telegram/topics.go	521	383
 internal/web/activity.go	119	79
-internal/web/api.go	252	185
+internal/web/api.go	252	184
 internal/web/auth.go	112	84
 internal/web/claude.go	79	54
 internal/web/claudecode.go	30	19
