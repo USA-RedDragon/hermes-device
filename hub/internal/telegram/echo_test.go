@@ -268,3 +268,37 @@ func TestNoticeWithNotesShowsAsOneLine(t *testing.T) {
 		}
 	}
 }
+
+// A turn Hermes started itself shows as a line, by its display kind, even
+// when its text reads like a message the user typed.
+func TestMarkedTurnShowsAsOneLine(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.finishFirst(t, sid)
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: "check the backups now", "display_kind": "internal_notification"})
+	got := h.tg.wait(mSend, "check the backups").text()
+	if want := "<i>check the backups now</i>"; got != want {
+		t.Fatalf("line = %q, want %q", got, want)
+	}
+	for _, c := range h.tg.snapshot() {
+		if c.Method == mSend && strings.Contains(c.text(), "in another app") {
+			t.Fatalf("shown as the user's message: %q", c.text())
+		}
+	}
+}
+
+// A message the user typed elsewhere stays theirs even when it reads like a
+// notice: its submission ID says a client sent it.
+func TestTypedNoticeLookalikeIsEchoed(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.finishFirst(t, sid)
+	text := "[Agent message am_0123456789abcdef from chat A]\n\nwhy does this look odd?"
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: text, "submission_id": "web-1"})
+	got := h.tg.wait(mSend, "in another app").text()
+	if !strings.Contains(got, "why does this look odd?") {
+		t.Fatalf("echo = %q", got)
+	}
+}

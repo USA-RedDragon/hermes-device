@@ -11,6 +11,7 @@ import (
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 	"github.com/USA-RedDragon/hermes-hub/internal/notice"
+	"github.com/USA-RedDragon/hermes-hub/internal/origin"
 	"github.com/google/uuid"
 )
 
@@ -159,6 +160,8 @@ type startPayload struct {
 	Text         string `json:"text"`
 	Note         string `json:"note"`
 	SubmissionID string `json:"submission_id"`
+	DisplayKind  string `json:"display_kind"`
+	DisplayText  string `json:"display_text"`
 	StartedAt    int64  `json:"started_at"`
 }
 
@@ -180,24 +183,27 @@ func (r *renderer) turnStart(ctx context.Context, ev hub.Event) {
 		return
 	case p.Note != "":
 		return
-	case hub.AgentHeaderRE.MatchString(p.Text):
-		r.agentMessage(ctx, p.Text)
+	}
+	row := origin.Row{Text: p.Text, DisplayKind: p.DisplayKind, DisplayText: p.DisplayText, SubmissionID: p.SubmissionID}
+	if v := origin.Classify(row); v.Show == origin.ShowCard && v.Notice.Kind == notice.KindAgent {
+		r.agentMessage(ctx, v.Notice)
 		r.echoed = true
 		return
 	}
-	text, id, images := p.Text, p.SubmissionID, 0
-	if strings.TrimSpace(text) == "" && open != nil {
-		text, images = open.Text, open.Images
-		if id == "" {
-			id = open.SubmissionID
+	images := 0
+	if strings.TrimSpace(row.Text) == "" && open != nil {
+		row.Text, images = open.Text, open.Images
+		if row.SubmissionID == "" {
+			row.SubmissionID = open.SubmissionID
 		}
 	}
+	id := row.SubmissionID
 	r.startBusy(ctx)
 	r.reactTo, r.reacted = 0, ""
 	if msg, ok := r.ownMessage(id); ok {
 		r.reactTo = msg
 	}
-	if shown := r.echo(ctx, text, id, images); shown != 0 && r.reactTo == 0 {
+	if shown := r.echo(ctx, row, images); shown != 0 && r.reactTo == 0 {
 		r.reactTo = shown
 	}
 	r.setReaction(ctx, reactWorking)
@@ -233,20 +239,25 @@ func (r *renderer) ownMessage(id string) (int64, bool) {
 
 // echo shows the prompt of a turn that started elsewhere, once per turn,
 // and returns the message that shows it, or 0.
-func (r *renderer) echo(ctx context.Context, text, id string, images int) int64 {
+func (r *renderer) echo(ctx context.Context, row origin.Row, images int) int64 {
 	if r.echoed {
 		return 0
 	}
 	r.echoed = true
-	text = hub.CutInjectedNotes(text)
-	if n := notice.Parse(text); n != nil {
-		if n.Kind == notice.KindAgent {
-			r.agentMessage(ctx, text)
-		} else {
-			r.send(ctx, "<i>"+escapeHTML(n.Line())+"</i>", nil)
-		}
+	v := origin.Classify(row)
+	switch {
+	case v.Show == origin.ShowHidden:
+		return 0
+	case v.Show == origin.ShowCard && v.Notice.Kind == notice.KindAgent:
+		r.agentMessage(ctx, v.Notice)
+		return 0
+	case v.Notice != nil:
+		r.send(ctx, "<i>"+escapeHTML(v.Notice.Line())+"</i>", nil)
+	}
+	if v.Show != origin.ShowUser {
 		return 0
 	}
+	text, id := hub.CutInjectedNotes(v.Text), row.SubmissionID
 	where, show := r.origin(id)
 	if !show {
 		return 0
@@ -265,7 +276,7 @@ func (r *renderer) echo(ctx context.Context, text, id string, images int) int64 
 func (r *renderer) echoOpen(ctx context.Context) {
 	if open := r.open; open != nil {
 		r.open = nil
-		shown := r.echo(ctx, open.Text, open.SubmissionID, open.Images)
+		shown := r.echo(ctx, origin.Row{Text: open.Text, SubmissionID: open.SubmissionID}, open.Images)
 		if msg, ok := r.ownMessage(open.SubmissionID); ok {
 			shown = msg
 		}

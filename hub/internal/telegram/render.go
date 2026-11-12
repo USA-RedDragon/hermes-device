@@ -13,6 +13,7 @@ import (
 
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/hermes-hub/internal/notice"
 )
 
 const (
@@ -1060,17 +1061,9 @@ func (r *renderer) cronResult(ctx context.Context, text string) {
 
 // agentMessage shows a message that another agent sent this chat through
 // the hub, which starts its turn.
-func (r *renderer) agentMessage(ctx context.Context, text string) {
-	text = hub.CutInjectedNotes(text)
-	m := hub.AgentHeaderRE.FindStringSubmatch(text)
-	if m == nil {
-		return
-	}
-	body := text[len(m[0]):]
-	if _, rest, ok := strings.Cut(body, "\n\n"); ok {
-		body = rest
-	}
-	head := "<b>Agent message from " + escapeHTML(m[2]) + "</b>\n"
+func (r *renderer) agentMessage(ctx context.Context, n *notice.Notice) {
+	body := n.Result
+	head := "<b>Agent " + escapeHTML(strings.ToLower(n.Title[:1])+n.Title[1:]) + "</b>\n"
 	for i, chunk := range RenderMarkdown(body, MaxMessageLen-len(head)) {
 		if i == 0 {
 			chunk = head + chunk
