@@ -1,0 +1,596 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jacob McSwain <jacob@mcswain.dev>
+Date: Thu, 12 Nov 2026 04:53:51 -0600
+Subject: [PATCH] feat(gateway): a restart's listener relays to the standby
+ that takes over
+
+gateway.restart_listener_relay_seconds (0 = off): with restart_listener_handover, the listener stays open that many seconds after the profile is released and relays each connection to the address the standby published in gateway.standby, retrying until the successor listens. A successor in another network namespace (the next pod of a rolling update) then gets the clients instead of them being refused while it boots.
+---
+ gateway/config.py                             |   6 +
+ gateway/config_loader.py                      |   1 +
+ gateway/listener_relay.py                     | 138 +++++++++++
+ gateway/run_api.py                            |  14 ++
+ gateway/run_bootstrap.py                      |  36 ++-
+ gateway/run_shutdown.py                       |  16 +-
+ .../gateway/test_restart_listener_handover.py |   2 +-
+ tests/gateway/test_restart_listener_relay.py  | 221 ++++++++++++++++++
+ website/docs/user-guide/messaging/index.md    |  11 +
+ 9 files changed, 435 insertions(+), 10 deletions(-)
+ create mode 100644 gateway/listener_relay.py
+ create mode 100644 tests/gateway/test_restart_listener_relay.py
+
+diff --git a/gateway/config.py b/gateway/config.py
+index 647911b2b3..b994ee23de 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -648,6 +648,10 @@ class GatewayConfig:
+     # While the gateway starts, a request to its listener waits up to this many seconds for READY instead
+     # of the 503 ``gateway_not_ready`` answer (a WebSocket instead of close 1013). 0 = answer at once.
+     listener_start_hold_seconds: float = 0.0
++    # With restart_listener_handover: after the profile is released the listener stays open this many
++    # seconds and relays each connection to the standby that takes over (gateway.standby names its
++    # address), retrying until it listens, instead of closing. 0 = it closes at the release.
++    restart_listener_relay_seconds: float = 0.0
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -685,6 +689,7 @@ class GatewayConfig:
+         "room_link_url", "systemd_watchdog_seconds", "runtime_lock_wait_seconds", "sigterm_restart_wait",
+         "restart_wait_plugin_sockets", "restart_agent_cleanup_seconds",
+         "restart_wait_delegations", "restart_listener_handover", "listener_start_hold_seconds",
++        "restart_listener_relay_seconds",
+         "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+@@ -824,6 +829,7 @@ class GatewayConfig:
+             restart_wait_delegations=_coerce_bool(pick("restart_wait_delegations"), False),
+             restart_listener_handover=_coerce_bool(pick("restart_listener_handover"), False),
+             listener_start_hold_seconds=bounded_float("listener_start_hold_seconds", 0.0, 0.0, 600.0),
++            restart_listener_relay_seconds=bounded_float("restart_listener_relay_seconds", 0.0, 0.0, 600.0),
+             restart_wait_plugin_sockets=[
+                 str(name).strip("/ ") for name in (pick("restart_wait_plugin_sockets") or [])
+                 if isinstance(pick("restart_wait_plugin_sockets"), list) and str(name).strip("/ ")],
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index 8847d02e88..f8876441fe 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -100,6 +100,7 @@ _TOPLEVEL_BRIDGE: tuple = (
+     ("restart_wait_delegations", "restart_wait_delegations", "nested", None, None),
+     ("restart_listener_handover", "restart_listener_handover", "nested", None, None),
+     ("listener_start_hold_seconds", "listener_start_hold_seconds", "nested", None, None),
++    ("restart_listener_relay_seconds", "restart_listener_relay_seconds", "nested", None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/listener_relay.py b/gateway/listener_relay.py
+new file mode 100644
+index 0000000000..c99515d100
+--- /dev/null
++++ b/gateway/listener_relay.py
+@@ -0,0 +1,138 @@
++"""``gateway.restart_listener_relay_seconds``: a restart's listener relays to its successor.
++
++With ``gateway.restart_listener_handover`` a stopping gateway keeps its listener bound until it
++releases the profile, then closes it. A standby in another network namespace (the next pod of a
++rolling update that shares the home's volume) opens its own listener only after it took the profile
++over and built its runtime, and a load balancer sends it traffic only once its readiness probe passed
++after that. Clients in between were refused.
++
++With this key the stopping gateway keeps the listening socket open for that many seconds after the
++release and relays every connection, byte for byte, to the address the standby published in its
++``gateway.standby`` marker, retrying the connect until the successor listens. A client waits for the
++successor instead of being refused. Only a successor in another network namespace qualifies: one in
++this namespace could not bind the port while this gateway holds it.
++"""
++from __future__ import annotations
++
++import asyncio
++import ipaddress
++import json
++import logging
++import os
++import socket
++from pathlib import Path
++
++logger = logging.getLogger(__name__)
++
++CONNECT_RETRY_S = 0.05
++CONNECT_ATTEMPT_TIMEOUT_S = 1.0
++# Relayed connections still open when the window ends get this long to finish.
++DRAIN_S = 5.0
++_WILDCARD_HOSTS = {"", "0.0.0.0", "::"}
++
++
++def net_namespace_id() -> str | None:
++    """This process's network namespace (``net:[<inode>]``), None where there is none to read."""
++    try:
++        return os.readlink("/proc/self/ns/net")
++    except OSError:
++        return None
++
++
++def standby_listener_record(home) -> dict | None:
++    """What a standby publishes about the listener it opens once it takes over: an address another
++    network namespace can dial (its own host name's address for a wildcard bind) and its network
++    namespace. None for an ephemeral port or when either is unknown."""
++    from gateway.webapp_listener import listener_plan
++    host, port, _webapp, _reason = listener_plan(home)
++    netns = net_namespace_id()
++    if not port or netns is None:
++        return None
++    if host in _WILDCARD_HOSTS:
++        try:
++            host = socket.gethostbyname(socket.gethostname())
++        except OSError:
++            return None
++    return {"host": host, "port": int(port), "netns": netns}
++
++
++def successor_target(marker: Path) -> tuple[str, int] | None:
++    """The address to relay to, from the standby marker at *marker*: None without a standby, for one
++    in this network namespace, or for a loopback address (this namespace's own)."""
++    try:
++        record = json.loads(Path(marker).read_text(encoding="utf-8")).get("listener")
++        host, port, netns = str(record["host"]), int(record["port"]), record["netns"]
++        loopback = ipaddress.ip_address(host).is_loopback
++    except (OSError, ValueError, TypeError, KeyError, AttributeError):
++        return None
++    own = net_namespace_id()
++    if own is None or netns == own or loopback or not 0 < port < 65536:
++        return None
++    return host, port
++
++
++async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
++    try:
++        while data := await reader.read(65536):
++            writer.write(data)
++            await writer.drain()
++        if writer.can_write_eof():
++            writer.write_eof()
++    except (OSError, RuntimeError):
++        pass
++
++
++async def _relay_connection(reader, writer, target, connect_deadline: float) -> bool:
++    """Relay one accepted connection to *target*; False when the successor never listened in time."""
++    loop = asyncio.get_running_loop()
++    try:
++        while True:
++            try:
++                upstream_reader, upstream_writer = await asyncio.wait_for(
++                    asyncio.open_connection(*target), CONNECT_ATTEMPT_TIMEOUT_S)
++                break
++            except (OSError, TimeoutError):
++                if loop.time() + CONNECT_RETRY_S >= connect_deadline:
++                    return False
++                await asyncio.sleep(CONNECT_RETRY_S)
++        try:
++            await asyncio.gather(_pipe(reader, upstream_writer), _pipe(upstream_reader, writer))
++        finally:
++            upstream_writer.close()
++        return True
++    finally:
++        writer.close()
++
++
++async def relay_listener(sock: socket.socket, target: tuple[str, int], seconds: float) -> tuple[int, int]:
++    """Accept on the listening *sock* for *seconds* and relay each connection to *target*; then close
++    it, give the open relays :data:`DRAIN_S` and cut the rest. Returns ``(relayed, unrelayed)``:
++    connections that reached the successor and those that did not."""
++    loop = asyncio.get_running_loop()
++    deadline = loop.time() + seconds
++    tasks: set[asyncio.Task] = set()
++    counts = [0, 0]
++
++    async def handle(reader, writer):
++        task = asyncio.current_task()
++        tasks.add(task)
++        try:
++            counts[0 if await _relay_connection(reader, writer, target, deadline + DRAIN_S) else 1] += 1
++        except Exception:
++            counts[1] += 1
++            logger.debug("Listener relay connection failed", exc_info=True)
++        finally:
++            tasks.discard(task)
++
++    server = await asyncio.start_server(handle, sock=sock)
++    try:
++        await asyncio.sleep(max(0.0, deadline - loop.time()))
++    finally:
++        server.close()
++        if tasks:
++            _done, pending = await asyncio.wait(set(tasks), timeout=DRAIN_S)
++            for task in pending:
++                task.cancel()
++            if pending:
++                await asyncio.gather(*pending, return_exceptions=True)
++    return counts[0], counts[1]
+diff --git a/gateway/run_api.py b/gateway/run_api.py
+index cffee4431e..70e8f8c7c1 100644
+--- a/gateway/run_api.py
++++ b/gateway/run_api.py
+@@ -380,6 +380,20 @@ async def stop_gateway_api(handle: GatewayAPIHandle) -> None:
+     await asyncio.shield(asyncio.gather(handle.task, return_exceptions=True))
+ 
+ 
++async def relay_gateway_api(handle: GatewayAPIHandle, target: tuple[str, int], seconds: float) -> tuple[int, int]:
++    """``gateway.restart_listener_relay_seconds``: stop serving on the listener but keep its socket
++    open, so connections that arrive meanwhile wait in its backlog, then relay what it accepts to the
++    successor at *target* for *seconds* (``gateway.listener_relay.relay_listener``)."""
++    from gateway.listener_relay import relay_listener
++    sock = handle.socket.dup()
++    try:
++        await stop_gateway_api(handle)
++    except BaseException:
++        sock.close()
++        raise
++    return await relay_listener(sock, target, seconds)
++
++
+ def seal_gateway_api(handle: GatewayAPIHandle) -> None:
+     """``gateway.restart_listener_handover``, where the stop would close the listener: from here it
+     serves only the handover's reads and refuses every other request and socket, and every open
+diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
+index d5bea94bce..1b8609603d 100644
+--- a/gateway/run_bootstrap.py
++++ b/gateway/run_bootstrap.py
+@@ -741,8 +741,17 @@ def _host_lock_held_by_predecessor(home) -> bool:
+ def _write_standby_marker(path) -> None:
+     from gateway.status import _build_pid_record
+     from utils import atomic_json_write
++    record = {**_build_pid_record(), "since": time.time()}
+     try:
+-        atomic_json_write(path, {**_build_pid_record(), "since": time.time()}, indent=None)
++        # Where the gateway being replaced relays to (gateway.restart_listener_relay_seconds).
++        from gateway.listener_relay import standby_listener_record
++        listener = standby_listener_record(path.parent)
++        if listener is not None:
++            record["listener"] = listener
++    except Exception:
++        logger.debug("Standby listener address unknown", exc_info=True)
++    try:
++        atomic_json_write(path, record, indent=None)
+     except OSError:
+         logger.debug("Could not write %s", path, exc_info=True)
+ 
+@@ -833,16 +842,32 @@ def _start_gateway_reserve_profiles(profile_homes) -> bool:
+     return True
+ 
+ 
+-async def _release_profile_then_close_listener(runner) -> None:
++def _listener_relay_target(runner) -> Optional[tuple]:
++    """``gateway.restart_listener_relay_seconds``: the waiting standby's listener address, read while
++    this gateway still owns the profile (the standby removes its marker once it took over)."""
++    if (runner is None or not getattr(runner, "_listener_handover", None)
++            or not float(getattr(getattr(runner, "config", None), "restart_listener_relay_seconds", 0) or 0) > 0):
++        return None
++    try:
++        from gateway.listener_relay import successor_target
++        from gateway.run import get_hermes_home
++        return successor_target(get_hermes_home() / STANDBY_MARKER)
++    except Exception:
++        logger.debug("No listener relay target", exc_info=True)
++        return None
++
++
++async def _release_profile_then_close_listener(runner, relay_to=None) -> None:
+     """``gateway.restart_listener_handover``: the profile lock is released; give up the host gateway
+-    role too (a standby waits for both), then close the listener that answered health until now."""
++    role too (a standby waits for both), then close the listener that answered health until now,
++    after relaying to the successor at *relay_to* when there is one."""
+     from gateway import host_rendezvous as hr
+     try:
+         hr.release_role(hr.ROLE_GATEWAY)
+     except Exception:
+         logger.debug("Host gateway role release failed; it ends with the process", exc_info=True)
+     try:
+-        await runner.stop_handover_listener()
++        await runner.stop_handover_listener(relay_to)
+     except Exception:
+         logger.warning("Handover listener did not close cleanly", exc_info=True)
+ 
+@@ -1166,6 +1191,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+             if _control_server is not None:
+                 await _control_server.stop()
+             remove_pid_file()
++            relay_to = _listener_relay_target(runner)
+             release_gateway_runtime_lock()
+             if runner is not None and getattr(runner, "_listener_handover", None):
+-                await _release_profile_then_close_listener(runner)
++                await _release_profile_then_close_listener(runner, relay_to)
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+index d78d9abbb6..1e6605c85f 100644
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -1937,16 +1937,24 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+             logger.warning("Gateway API reads did not end cleanly before the stores close", exc_info=True)
+         logger.info("Shutdown phase: listener reads ended at +%.2fs", elapsed())
+ 
+-    async def stop_handover_listener(self) -> None:
++    async def stop_handover_listener(self, relay_to: tuple[str, int] | None = None) -> None:
+         """Close a handover listener; the process bootstrap calls this once the profile is released.
+-        Health keeps answering until the listener stops accepting."""
++        Health keeps answering until the listener stops accepting. With *relay_to* (the successor's
++        address, ``gateway.restart_listener_relay_seconds``) the listener relays to it first."""
+         handle = getattr(self, "session_api", None)
+         if (not getattr(self, "_listener_handover", None) or handle is None
+                 or getattr(self, "_handover_listener_closing", False)):
+             return
+         self._handover_listener_closing = True
+-        from gateway.run_api import stop_gateway_api
+-        await stop_gateway_api(handle)
++        from gateway.run_api import relay_gateway_api, stop_gateway_api
++        seconds = float(getattr(getattr(self, "config", None), "restart_listener_relay_seconds", 0) or 0)
++        if relay_to is not None and seconds > 0:
++            started = time.monotonic()
++            relayed, unrelayed = await relay_gateway_api(handle, relay_to, seconds)
++            logger.info("Listener relayed %d connection(s) to the next gateway at %s:%d in %.1fs (%d not reached)",
++                        relayed, relay_to[0], relay_to[1], time.monotonic() - started, unrelayed)
++        else:
++            await stop_gateway_api(handle)
+         self._listener_handover = None
+ 
+     async def _stop_begin_teardown(self, ctx: GatewayShutdownMixin._StopContext) -> None:
+diff --git a/tests/gateway/test_restart_listener_handover.py b/tests/gateway/test_restart_listener_handover.py
+index ef42220efd..e59216939d 100644
+--- a/tests/gateway/test_restart_listener_handover.py
++++ b/tests/gateway/test_restart_listener_handover.py
+@@ -257,7 +257,7 @@ async def test_bootstrap_gives_up_the_host_role_before_closing_the_listener(monk
+     monkeypatch.setattr(hr, "_cleanup_roles", [hr.ROLE_GATEWAY])
+     monkeypatch.setattr(hr, "clear_record", lambda role: order.append(("record", role)))
+     monkeypatch.setattr(hr, "release_host_lock", lambda role: order.append(("lock", role)))
+-    runner = SimpleNamespace(stop_handover_listener=AsyncMock(side_effect=lambda: order.append("listener")))
++    runner = SimpleNamespace(stop_handover_listener=AsyncMock(side_effect=lambda relay_to=None: order.append("listener")))
+     await _release_profile_then_close_listener(runner)
+     assert order == [("record", hr.ROLE_GATEWAY), ("lock", hr.ROLE_GATEWAY), "listener"]
+     # The exit cleanup is disarmed: a successor's record (often under the same PID number, in its
+diff --git a/tests/gateway/test_restart_listener_relay.py b/tests/gateway/test_restart_listener_relay.py
+new file mode 100644
+index 0000000000..ef7a71fcdc
+--- /dev/null
++++ b/tests/gateway/test_restart_listener_relay.py
+@@ -0,0 +1,221 @@
++"""gateway.restart_listener_relay_seconds: after a restart stop released the profile, the listener
++relays each connection to the standby that takes over instead of closing."""
++import asyncio
++import json
++import socket
++from types import SimpleNamespace
++
++import pytest
++
++from gateway import listener_relay
++from gateway.config import GatewayConfig, load_gateway_config
++from gateway.drain_control import HANDOVER_HEALTH
++from gateway.listener_relay import relay_listener, standby_listener_record, successor_target
++from gateway.run_api import relay_gateway_api
++
++
++def test_off_by_default():
++    assert GatewayConfig().restart_listener_relay_seconds == 0.0
++    assert GatewayConfig.from_dict({}).restart_listener_relay_seconds == 0.0
++    cfg = GatewayConfig.from_dict({"gateway": {"restart_listener_relay_seconds": 15}})
++    assert cfg.restart_listener_relay_seconds == 15.0
++    assert GatewayConfig.from_dict({"gateway": {"restart_listener_relay_seconds": 9999}}).restart_listener_relay_seconds == 0.0
++
++
++def test_config_yaml_key_reaches_the_runner_config(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    (tmp_path / "config.yaml").write_text("gateway:\n  restart_listener_relay_seconds: 15\n", encoding="utf-8")
++    assert load_gateway_config().restart_listener_relay_seconds == 15.0
++
++
++def _plan(monkeypatch, host, port, netns="net:[1]"):
++    monkeypatch.setattr("gateway.webapp_listener.listener_plan", lambda home: (host, port, None, None))
++    monkeypatch.setattr(listener_relay, "net_namespace_id", lambda: netns)
++
++
++def test_a_standby_publishes_its_host_address_for_a_wildcard_bind(monkeypatch, tmp_path):
++    _plan(monkeypatch, "0.0.0.0", 9120)
++    monkeypatch.setattr(socket, "gethostname", lambda: "pod-b")
++    monkeypatch.setattr(socket, "gethostbyname", lambda name: {"pod-b": "10.1.2.3"}[name])
++    assert standby_listener_record(tmp_path) == {"host": "10.1.2.3", "port": 9120, "netns": "net:[1]"}
++
++
++def test_a_standby_publishes_a_specific_bind_as_it_is(monkeypatch, tmp_path):
++    _plan(monkeypatch, "10.9.8.7", 9120)
++    assert standby_listener_record(tmp_path) == {"host": "10.9.8.7", "port": 9120, "netns": "net:[1]"}
++
++
++@pytest.mark.parametrize("port, netns", [(0, "net:[1]"), (9120, None)])
++def test_a_standby_publishes_nothing_for_an_ephemeral_port_or_an_unknown_namespace(monkeypatch, tmp_path, port, netns):
++    _plan(monkeypatch, "127.0.0.1", port, netns)
++    assert standby_listener_record(tmp_path) is None
++
++
++def _marker(tmp_path, listener):
++    path = tmp_path / "gateway.standby"
++    path.write_text(json.dumps({"pid": 7, **({"listener": listener} if listener is not None else {})}), encoding="utf-8")
++    return path
++
++
++def test_successor_target_is_a_standby_in_another_network_namespace(monkeypatch, tmp_path):
++    monkeypatch.setattr(listener_relay, "net_namespace_id", lambda: "net:[1]")
++    assert successor_target(_marker(tmp_path, {"host": "10.1.2.3", "port": 9120, "netns": "net:[2]"})) == ("10.1.2.3", 9120)
++    # One in this namespace could not bind the port this listener holds; loopback is this namespace's own.
++    assert successor_target(_marker(tmp_path, {"host": "10.1.2.3", "port": 9120, "netns": "net:[1]"})) is None
++    assert successor_target(_marker(tmp_path, {"host": "127.0.0.1", "port": 9120, "netns": "net:[2]"})) is None
++    assert successor_target(_marker(tmp_path, {"host": "pod-b", "port": 9120, "netns": "net:[2]"})) is None
++    assert successor_target(_marker(tmp_path, None)) is None
++    assert successor_target(tmp_path / "missing") is None
++
++
++def _listening_socket():
++    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++    sock.bind(("127.0.0.1", 0))
++    sock.listen(16)
++    sock.setblocking(False)
++    return sock
++
++
++def _free_port():
++    with socket.socket() as probe:
++        probe.bind(("127.0.0.1", 0))
++        return probe.getsockname()[1]
++
++
++async def _exchange(port, payload=b"GET /api/health HTTP/1.0\r\n\r\n"):
++    reader, writer = await asyncio.open_connection("127.0.0.1", port)
++    writer.write(payload)
++    await writer.drain()
++    try:
++        return await reader.read()
++    finally:
++        writer.close()
++
++
++async def _successor(port, reply=b"HTTP/1.0 200 OK\r\n\r\nok"):
++    async def answer(reader, writer):
++        await reader.readuntil(b"\r\n\r\n")
++        writer.write(reply)
++        await writer.drain()
++        writer.close()
++    return await asyncio.start_server(answer, "127.0.0.1", port)
++
++
++@pytest.mark.asyncio
++async def test_the_relay_holds_a_client_until_the_successor_listens():
++    old = _listening_socket()
++    port = old.getsockname()[1]
++    target_port = _free_port()
++    relay = asyncio.ensure_future(relay_listener(old, ("127.0.0.1", target_port), 1.0))
++    client = asyncio.ensure_future(_exchange(port))
++    await asyncio.sleep(0.3)  # refused by the successor's port all this time
++    assert not client.done()
++    successor = await _successor(target_port)
++    try:
++        assert await asyncio.wait_for(client, 3) == b"HTTP/1.0 200 OK\r\n\r\nok"
++        assert await asyncio.wait_for(relay, 8) == (1, 0)
++    finally:
++        successor.close()
++    with pytest.raises(OSError):
++        await _exchange(port)  # the window is over: the listener is closed
++
++
++@pytest.mark.asyncio
++async def test_a_connection_waiting_in_the_backlog_is_relayed(monkeypatch):
++    old = _listening_socket()
++    port = old.getsockname()[1]
++    target_port = _free_port()
++    successor = await _successor(target_port)
++    try:
++        client = asyncio.ensure_future(_exchange(port))
++        await asyncio.sleep(0.1)  # connected into the backlog before anything accepts
++        relay = asyncio.ensure_future(relay_listener(old, ("127.0.0.1", target_port), 0.3))
++        assert await asyncio.wait_for(client, 3) == b"HTTP/1.0 200 OK\r\n\r\nok"
++        assert await asyncio.wait_for(relay, 8) == (1, 0)
++    finally:
++        successor.close()
++
++
++@pytest.mark.asyncio
++async def test_a_successor_that_never_listens_ends_the_client_after_the_window(monkeypatch):
++    monkeypatch.setattr(listener_relay, "DRAIN_S", 0.2)
++    old = _listening_socket()
++    port = old.getsockname()[1]
++    relay = asyncio.ensure_future(relay_listener(old, ("127.0.0.1", _free_port()), 0.2))
++    assert await asyncio.wait_for(_exchange(port), 3) == b""
++    assert await asyncio.wait_for(relay, 3) == (0, 1)
++
++
++@pytest.mark.asyncio
++async def test_relay_gateway_api_stops_the_server_and_keeps_the_socket_accepting():
++    sock = _listening_socket()
++    port = sock.getsockname()[1]
++    target_port = _free_port()
++    successor = await _successor(target_port)
++
++    async def serve():  # what the listener task does on should_exit: it closes its own socket
++        while not handle.server.should_exit:
++            await asyncio.sleep(0.01)
++        sock.close()
++
++    handle = SimpleNamespace(server=SimpleNamespace(should_exit=False), socket=sock)
++    handle.task = asyncio.ensure_future(serve())
++    try:
++        relay = asyncio.ensure_future(relay_gateway_api(handle, ("127.0.0.1", target_port), 0.5))
++        assert await asyncio.wait_for(_exchange(port), 3) == b"HTTP/1.0 200 OK\r\n\r\nok"
++        assert handle.server.should_exit and sock.fileno() == -1
++        assert await asyncio.wait_for(relay, 8) == (1, 0)
++    finally:
++        successor.close()
++
++
++def _handover_runner(seconds):
++    from gateway.run import GatewayRunner
++    runner = object.__new__(GatewayRunner)
++    runner.config = GatewayConfig(restart_listener_handover=True, restart_listener_relay_seconds=seconds)
++    runner._listener_handover = HANDOVER_HEALTH
++    runner.session_api = SimpleNamespace()
++    return runner
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("seconds, relay_to, relayed", [(15, ("10.1.2.3", 9120), True), (15, None, False),
++                                                         (0, ("10.1.2.3", 9120), False)])
++async def test_stop_handover_listener_relays_only_with_a_target_and_the_key(monkeypatch, seconds, relay_to, relayed):
++    from gateway.run import GatewayRunner
++    calls = []
++
++    async def fake_relay(handle, target, window):
++        calls.append(("relay", target, window))
++        return 1, 0
++
++    async def fake_stop(handle):
++        calls.append(("stop",))
++
++    monkeypatch.setattr("gateway.run_api.relay_gateway_api", fake_relay)
++    monkeypatch.setattr("gateway.run_api.stop_gateway_api", fake_stop)
++    runner = _handover_runner(seconds)
++    await GatewayRunner.stop_handover_listener(runner, relay_to)
++    assert calls == ([("relay", relay_to, float(seconds))] if relayed else [("stop",)])
++    assert runner._listener_handover is None
++
++
++@pytest.mark.parametrize("seconds, stage, expected", [(15, HANDOVER_HEALTH, ("10.1.2.3", 9120)),
++                                                      (0, HANDOVER_HEALTH, None), (15, None, None)])
++def test_the_relay_target_is_read_only_with_the_key_on_a_handover(monkeypatch, tmp_path, seconds, stage, expected):
++    from gateway.run_bootstrap import STANDBY_MARKER, _listener_relay_target
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.setattr(listener_relay, "net_namespace_id", lambda: "net:[1]")
++    _marker(tmp_path, {"host": "10.1.2.3", "port": 9120, "netns": "net:[2]"}).rename(tmp_path / STANDBY_MARKER)
++    runner = _handover_runner(seconds)
++    runner._listener_handover = stage
++    assert _listener_relay_target(runner) == expected
++
++
++def test_the_standby_marker_names_the_listener(monkeypatch, tmp_path):
++    from gateway.run_bootstrap import _write_standby_marker
++    monkeypatch.setattr(listener_relay, "standby_listener_record",
++                        lambda home: {"host": "10.1.2.3", "port": 9120, "netns": "net:[2]"} if home == tmp_path else None)
++    _write_standby_marker(tmp_path / "gateway.standby")
++    record = json.loads((tmp_path / "gateway.standby").read_text(encoding="utf-8"))
++    assert record["listener"] == {"host": "10.1.2.3", "port": 9120, "netns": "net:[2]"} and record["since"] > 0
+diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
+index 6050582645..cc7645a902 100644
+--- a/website/docs/user-guide/messaging/index.md
++++ b/website/docs/user-guide/messaging/index.md
+@@ -765,6 +765,17 @@ before. A gateway that is still starting answers `503` (`gateway_not_ready`)
+ until it is ready; set `gateway.listener_start_hold_seconds` (for example `30`)
+ to have such requests wait for it instead, up to that many seconds.
+ 
++When the next gateway runs in another network namespace on the same home (the
++next pod of a rolling update on a shared volume), it opens its listener only
++after it took over, and a load balancer moves to it only once its readiness
++probe passed. Set `gateway.restart_listener_relay_seconds` (for example `15`)
++together with `gateway.restart_listener_handover` to keep the old listener open
++that long after the release instead: it relays every connection to the address
++the standby published in `gateway.standby` (its host name's address for a
++wildcard `webapp.host`), retrying until the next gateway listens, so clients
++wait instead of being refused. Allow connections between the two instances on
++the listener's port.
++
+ ### macOS (launchd)
+ 
+ ```bash
