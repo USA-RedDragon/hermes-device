@@ -28,29 +28,50 @@ type pluginError struct {
 	Message string `json:"message"`
 }
 
-func (n *notes) do(ctx context.Context, method, path string, body any) (hub.Notes, error) {
+// send makes one request of the plugin and decodes its answer into out.
+func (n *notes) send(ctx context.Context, method, path string, body, out any) error {
 	var b []byte
 	if body != nil {
 		var err error
 		if b, err = json.Marshal(body); err != nil {
-			return hub.Notes{}, err
+			return err
 		}
 	}
 	resp, err := n.r.Request(ctx, method, path, b)
 	if err != nil {
-		return hub.Notes{}, &hub.MemoryError{Status: http.StatusBadGateway, Message: "Could not reach Hermes"}
+		return &hub.MemoryError{Status: http.StatusBadGateway, Message: "Could not reach Hermes"}
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxNotesBody))
 	if err != nil {
-		return hub.Notes{}, &hub.MemoryError{Status: http.StatusBadGateway, Message: "Hermes's answer was cut off"}
+		return &hub.MemoryError{Status: http.StatusBadGateway, Message: "Hermes's answer was cut off"}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return hub.Notes{}, pluginFailure(resp.StatusCode, data)
+		return pluginFailure(resp.StatusCode, data)
 	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return errNotUnderstood()
+	}
+	return nil
+}
+
+func errNotUnderstood() error {
+	return &hub.MemoryError{Status: http.StatusBadGateway, Message: "Hermes's answer was not understood"}
+}
+
+func (n *notes) do(ctx context.Context, method, path string, body any) (hub.Notes, error) {
 	var out hub.Notes
-	if err := json.Unmarshal(data, &out); err != nil || out.Targets == nil {
-		return hub.Notes{}, &hub.MemoryError{Status: http.StatusBadGateway, Message: "Hermes's answer was not understood"}
+	if err := n.send(ctx, method, path, body, &out); err != nil {
+		return hub.Notes{}, err
+	}
+	return out, fill(&out)
+}
+
+// fill checks that an answer has its stores and gives empty lists for
+// missing ones.
+func fill(out *hub.Notes) error {
+	if out.Targets == nil {
+		return errNotUnderstood()
 	}
 	for _, t := range []string{hub.TargetMemory, hub.TargetUser} {
 		st := out.Targets[t]
@@ -62,7 +83,7 @@ func (n *notes) do(ctx context.Context, method, path string, body any) (hub.Note
 	if out.Pending == nil {
 		out.Pending = []hub.PendingNote{}
 	}
-	return out, nil
+	return nil
 }
 
 // pluginFailure maps a refusal of the plugin. A 404 without the plugin's
@@ -89,22 +110,28 @@ func (n *notes) get(ctx context.Context) (hub.Notes, error) {
 	return n.do(ctx, http.MethodGet, device.PluginBase+"/memory", nil)
 }
 
-func (n *notes) change(ctx context.Context, target, op, entry, content string, base []string) (hub.Notes, error) {
-	var body map[string]any
+// changeBody is the plugin's request body of a change.
+func changeBody(op, entry, content string, base []string) (map[string]any, error) {
 	switch op {
 	case hub.NoteAdd:
-		body = map[string]any{fieldContent: content}
+		return map[string]any{fieldContent: content}, nil
 	case hub.NoteEdit:
-		body = map[string]any{"entry": entry, fieldContent: content}
+		return map[string]any{"entry": entry, fieldContent: content}, nil
 	case hub.NoteRemove:
-		body = map[string]any{"entry": entry}
+		return map[string]any{"entry": entry}, nil
 	case hub.NoteReplace:
 		if base == nil {
 			base = []string{}
 		}
-		body = map[string]any{"text": content, "base": base}
-	default:
-		return hub.Notes{}, &hub.MemoryError{Status: http.StatusNotFound, Message: "unknown change"}
+		return map[string]any{"text": content, "base": base}, nil
+	}
+	return nil, &hub.MemoryError{Status: http.StatusNotFound, Message: "unknown change"}
+}
+
+func (n *notes) change(ctx context.Context, target, op, entry, content string, base []string) (hub.Notes, error) {
+	body, err := changeBody(op, entry, content, base)
+	if err != nil {
+		return hub.Notes{}, err
 	}
 	return n.do(ctx, http.MethodPost, device.PluginBase+"/memory/"+url.PathEscape(target)+"/"+op, body)
 }
@@ -134,4 +161,57 @@ func (n *notes) setApproval(ctx context.Context, on bool) error {
 		return &hub.MemoryError{Status: http.StatusBadGateway, Message: fmt.Sprintf("Hermes did not save the setting (status %d)", resp.StatusCode)}
 	}
 	return nil
+}
+
+// projectBase is where the Hermes dashboard mounts the project-memory
+// plugin's routes.
+const projectBase = "/api/plugins/project-memory"
+
+func fillProject(p *hub.Project) {
+	if p.Aliases == nil {
+		p.Aliases = []string{}
+	}
+	if p.Folders == nil {
+		p.Folders = []hub.SeenFolder{}
+	}
+}
+
+func (n *notes) projects(ctx context.Context) ([]hub.Project, error) {
+	var out struct {
+		Projects []hub.Project `json:"projects"`
+	}
+	if err := n.send(ctx, http.MethodGet, projectBase+"/projects", nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Projects == nil {
+		return nil, errNotUnderstood()
+	}
+	for i := range out.Projects {
+		fillProject(&out.Projects[i])
+	}
+	return out.Projects, nil
+}
+
+func (n *notes) project(ctx context.Context, method, path string, body any) (hub.ProjectNotes, error) {
+	var out hub.ProjectNotes
+	if err := n.send(ctx, method, path, body, &out); err != nil {
+		return hub.ProjectNotes{}, err
+	}
+	if err := fill(&out.Notes); err != nil {
+		return hub.ProjectNotes{}, err
+	}
+	fillProject(&out.Project)
+	return out, nil
+}
+
+func (n *notes) projectNotes(ctx context.Context, id string) (hub.ProjectNotes, error) {
+	return n.project(ctx, http.MethodGet, projectBase+"/projects/"+url.PathEscape(id), nil)
+}
+
+func (n *notes) changeProject(ctx context.Context, id, op, entry, content string, base []string) (hub.ProjectNotes, error) {
+	body, err := changeBody(op, entry, content, base)
+	if err != nil {
+		return hub.ProjectNotes{}, err
+	}
+	return n.project(ctx, http.MethodPost, projectBase+"/projects/"+url.PathEscape(id)+"/memory/"+op, body)
 }

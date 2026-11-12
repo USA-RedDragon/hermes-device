@@ -55,7 +55,10 @@ type Service struct {
 
 var _ hub.Memory = (*Service)(nil)
 
-var pendingIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var (
+	pendingIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	projectIDPattern = regexp.MustCompile(`^[A-Za-z0-9_~-][A-Za-z0-9._~-]{0,254}$`)
+)
 
 // New returns a Service. It reads each backend's Honcho API key.
 func New(opts Options) (*Service, error) {
@@ -204,6 +207,44 @@ func (s *Service) SetApproval(ctx context.Context, user, backendID string, on bo
 		return hub.Notes{}, err
 	}
 	return n.get(ctx)
+}
+
+// Projects lists the projects of the backend's project-memory plugin.
+func (s *Service) Projects(ctx context.Context, user, backendID string) ([]hub.Project, error) {
+	n, err := s.notes(ctx, user, backendID)
+	if err != nil {
+		return nil, err
+	}
+	return n.projects(ctx)
+}
+
+func (s *Service) project(ctx context.Context, user, backendID, projectID string) (*notes, error) {
+	n, err := s.notes(ctx, user, backendID)
+	if err != nil {
+		return nil, err
+	}
+	if !projectIDPattern.MatchString(projectID) {
+		return nil, &hub.MemoryError{Status: http.StatusNotFound, Message: "Hermes has no such project"}
+	}
+	return n, nil
+}
+
+// ProjectNotes reads a project's MEMORY.md.
+func (s *Service) ProjectNotes(ctx context.Context, user, backendID, projectID string) (hub.ProjectNotes, error) {
+	n, err := s.project(ctx, user, backendID, projectID)
+	if err != nil {
+		return hub.ProjectNotes{}, err
+	}
+	return n.projectNotes(ctx, projectID)
+}
+
+// ChangeProjectNote applies one change to a project's MEMORY.md.
+func (s *Service) ChangeProjectNote(ctx context.Context, user, backendID, projectID, op, entry, content string, base []string) (hub.ProjectNotes, error) {
+	n, err := s.project(ctx, user, backendID, projectID)
+	if err != nil {
+		return hub.ProjectNotes{}, err
+	}
+	return n.changeProject(ctx, projectID, op, entry, content, base)
 }
 
 func view(v string) (string, error) {

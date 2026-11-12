@@ -72,10 +72,27 @@ type Plugin struct {
 	// Missing makes every memory route answer 404 as a dashboard without
 	// them does.
 	Missing bool
+	// NoProjects makes every project-memory route answer 404 as a
+	// dashboard without that plugin does.
+	NoProjects bool
 	// Refuse makes changes answer 409 with this message.
-	Refuse string
-	mu     sync.Mutex
-	notes  hub.Notes
+	Refuse   string
+	mu       sync.Mutex
+	notes    hub.Notes
+	projects []hub.ProjectNotes
+}
+
+// AddProject adds a project whose MEMORY.md holds entries.
+func (p *Plugin) AddProject(pr hub.Project, entries ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if entries == nil {
+		entries = []string{}
+	}
+	p.projects = append(p.projects, hub.ProjectNotes{Project: pr, Notes: hub.Notes{Targets: map[string]hub.NoteStore{
+		hub.TargetMemory: {File: "/data/projects/" + pr.ID + "/MEMORY.md", Limit: 3500, Enabled: true, Entries: entries},
+		hub.TargetUser:   {Entries: []string{}},
+	}, Pending: []hub.PendingNote{}}})
 }
 
 // NewPlugin starts a fake with notes.
@@ -120,6 +137,10 @@ func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 		return
 	}
+	if rest, ok := strings.CutPrefix(r.URL.Path, "/api/plugins/project-memory/projects"); ok {
+		p.serveProject(w, r.Method, rest, body)
+		return
+	}
 	rest, ok := strings.CutPrefix(r.URL.Path, "/api/plugins/device/memory")
 	if !ok || p.Missing {
 		writeJSON(w, http.StatusNotFound, map[string]string{keyDetail: notFound})
@@ -161,8 +182,18 @@ func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{keyError: "unknown_target", keyMsg: "target must be memory or user"})
 		return
 	}
+	if !apply(w, &st, parts[1], body) {
+		return
+	}
+	p.notes.Targets[parts[0]] = st
+	writeJSON(w, http.StatusOK, p.notes)
+}
+
+// apply makes one change to a store. It answers the refusal itself and
+// returns false when it refuses.
+func apply(w http.ResponseWriter, st *hub.NoteStore, op string, body map[string]any) bool {
 	str := func(k string) string { s, _ := body[k].(string); return s }
-	switch parts[1] {
+	switch op {
 	case "add":
 		st.Entries = append(st.Entries, str("content"))
 	case "edit":
@@ -174,12 +205,51 @@ func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
 	case "replace":
 		if _, ok := body["base"].([]any); !ok {
 			writeJSON(w, http.StatusBadRequest, map[string]string{keyError: "bad_request", keyMsg: "base is required"})
-			return
+			return false
 		}
 		st.Entries = strings.Split(str("text"), "\n§\n")
 	}
-	p.notes.Targets[parts[0]] = st
-	writeJSON(w, http.StatusOK, p.notes)
+	return true
+}
+
+func (p *Plugin) serveProject(w http.ResponseWriter, method, rest string, body map[string]any) {
+	if p.NoProjects {
+		writeJSON(w, http.StatusNotFound, map[string]string{keyDetail: notFound})
+		return
+	}
+	if method == http.MethodGet && rest == "" {
+		list := make([]hub.Project, 0, len(p.projects))
+		for _, pn := range p.projects {
+			list = append(list, pn.Project)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"projects": list})
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(rest, "/"), "/")
+	i := slices.IndexFunc(p.projects, func(x hub.ProjectNotes) bool { return x.Project.ID == parts[0] })
+	if i < 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{keyError: "unknown_project", keyMsg: "no such project"})
+		return
+	}
+	pn := &p.projects[i]
+	switch {
+	case method == http.MethodGet && len(parts) == 1:
+	case method == http.MethodPost && len(parts) == 3 && parts[1] == "memory":
+		if p.Refuse != "" {
+			writeJSON(w, http.StatusConflict, map[string]string{keyError: "over_limit", keyMsg: p.Refuse})
+			return
+		}
+		st := pn.Targets[hub.TargetMemory]
+		if !apply(w, &st, parts[2], body) {
+			return
+		}
+		pn.Targets[hub.TargetMemory] = st
+		pn.Project.Count = len(st.Entries)
+	default:
+		writeJSON(w, http.StatusNotFound, map[string]string{keyDetail: notFound})
+		return
+	}
+	writeJSON(w, http.StatusOK, pn)
 }
 
 // Conclusion is a fake Honcho conclusion.

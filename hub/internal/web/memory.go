@@ -21,6 +21,9 @@ func (s *Server) memoryRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/memory/{backend}/notes/{target}/{op}", s.api(s.handleChangeNote))
 	mux.Handle("POST /api/memory/{backend}/pending/{pending}/{verb}", s.api(s.handlePendingNote))
 	mux.Handle("POST /api/memory/{backend}/approval", s.api(s.handleNoteApproval))
+	mux.Handle("GET /api/memory/{backend}/projects", s.api(s.handleProjects))
+	mux.Handle("GET /api/memory/{backend}/projects/{project}/notes", s.api(s.handleProjectNotes))
+	mux.Handle("POST /api/memory/{backend}/projects/{project}/notes/{target}/{op}", s.api(s.handleChangeProjectNote))
 	mux.Handle("GET /api/memory/{backend}/learned", s.api(s.handleLearned))
 	mux.Handle("POST /api/memory/{backend}/learned", s.api(s.handleAddLearned))
 	mux.Handle("GET /api/memory/{backend}/learned/info", s.api(s.handleLearnedInfo))
@@ -85,6 +88,59 @@ func (s *Server) handleChangeNote(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := s.memory.ChangeNote(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("target"), r.PathValue("op"), body.Entry, body.Content, body.Base)
 	s.notesAnswer(w, n, err)
+}
+
+func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
+	if s.memory == nil {
+		s.memoryFail(w, hub.ErrNoMemory)
+		return
+	}
+	ps, err := s.memory.Projects(r.Context(), userFrom(r), r.PathValue("backend"))
+	if err != nil {
+		s.memoryFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ps)
+}
+
+func (s *Server) projectAnswer(w http.ResponseWriter, n hub.ProjectNotes, err error) {
+	if err != nil {
+		s.memoryFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
+}
+
+func (s *Server) handleProjectNotes(w http.ResponseWriter, r *http.Request) {
+	if s.memory == nil {
+		s.memoryFail(w, hub.ErrNoMemory)
+		return
+	}
+	n, err := s.memory.ProjectNotes(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("project"))
+	s.projectAnswer(w, n, err)
+}
+
+// handleChangeProjectNote takes the path of handleChangeNote, so the page
+// sends both alike. A project has only TargetMemory.
+func (s *Server) handleChangeProjectNote(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Entry   string   `json:"entry"`
+		Content string   `json:"content"`
+		Base    []string `json:"base"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if r.PathValue("target") != hub.TargetMemory {
+		errorJSON(w, http.StatusNotFound, "unknown memory file")
+		return
+	}
+	if s.memory == nil {
+		s.memoryFail(w, hub.ErrNoMemory)
+		return
+	}
+	n, err := s.memory.ChangeProjectNote(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("project"), r.PathValue("op"), body.Entry, body.Content, body.Base)
+	s.projectAnswer(w, n, err)
 }
 
 func (s *Server) handlePendingNote(w http.ResponseWriter, r *http.Request) {

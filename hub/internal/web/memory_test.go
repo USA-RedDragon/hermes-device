@@ -107,6 +107,50 @@ func TestMemoryAPI(t *testing.T) {
 	}
 }
 
+func TestProjectMemoryAPI(t *testing.T) {
+	t.Parallel()
+	e := setupMemory(t)
+	const demo = "github.com-alice-demo"
+	e.pc.AddProject(hub.Project{ID: demo, Identity: "github.com/alice/demo", Kind: hub.ProjectRemote, Name: "demo",
+		Aliases: []string{"git.example.com/alice/demo"}, Folders: []hub.SeenFolder{{DeviceID: "d1", Device: "laptop", Dir: "/home/alice/src/demo"}}}, "Run make check.")
+	c := client(t)
+	m := login(t, e.hubEnv, c)
+	var ps []hub.Project
+	if code := apiJSON(t, c, http.MethodGet, e.url+"/api/memory/pc/projects", "", nil, &ps); code != http.StatusOK || len(ps) != 1 ||
+		ps[0].ID != demo || ps[0].Aliases[0] != "git.example.com/alice/demo" || ps[0].Folders[0].Dir != "/home/alice/src/demo" {
+		t.Fatalf("projects = %d %+v", code, ps)
+	}
+	var pn hub.ProjectNotes
+	if code := apiJSON(t, c, http.MethodGet, e.url+"/api/memory/pc/projects/"+demo+"/notes", "", nil, &pn); code != http.StatusOK ||
+		pn.Project.Identity != "github.com/alice/demo" || pn.Targets[hub.TargetMemory].Entries[0] != "Run make check." {
+		t.Fatalf("project notes = %d %+v", code, pn)
+	}
+	if code := apiJSON(t, c, http.MethodPost, e.url+"/api/memory/pc/projects/"+demo+"/notes/memory/add", m.CSRF, map[string]string{fieldContent: "Use Go 1.26."}, &pn); code != http.StatusOK ||
+		len(pn.Targets[hub.TargetMemory].Entries) != 2 || pn.Project.Count != 2 {
+		t.Fatalf("add = %d %+v", code, pn)
+	}
+	if code := apiJSON(t, c, http.MethodPost, e.url+"/api/memory/pc/projects/"+demo+"/notes/memory/replace", m.CSRF,
+		map[string]any{fieldContent: "One.", "base": pn.Targets[hub.TargetMemory].Entries}, &pn); code != http.StatusOK ||
+		len(pn.Targets[hub.TargetMemory].Entries) != 1 {
+		t.Fatalf("replace = %d %+v", code, pn)
+	}
+	var errm map[string]any
+	before := len(e.pc.Requests())
+	if code := apiJSON(t, c, http.MethodPost, e.url+"/api/memory/pc/projects/"+demo+"/notes/user/add", m.CSRF, map[string]string{fieldContent: "x"}, &errm); code != http.StatusNotFound {
+		t.Fatalf("add to a project's USER.md = %d", code)
+	}
+	if after := len(e.pc.Requests()); after != before {
+		t.Fatalf("a USER.md change reached Hermes: %d requests", after-before)
+	}
+	if code := apiJSON(t, c, http.MethodGet, e.url+"/api/memory/pc/projects/github.com-bob-other/notes", "", nil, &errm); code != http.StatusNotFound || errm["error"] != "no such project" {
+		t.Fatalf("unknown project = %d %v", code, errm)
+	}
+	e.pc.NoProjects = true
+	if code := apiJSON(t, c, http.MethodGet, e.url+"/api/memory/pc/projects", "", nil, &errm); code != http.StatusNotFound || errm["error"] != "This backend has no such memory" {
+		t.Fatalf("projects without the plugin = %d %v", code, errm)
+	}
+}
+
 func TestMemoryAccess(t *testing.T) {
 	t.Parallel()
 	e := setupMemory(t)
@@ -125,6 +169,9 @@ func TestMemoryAccess(t *testing.T) {
 		{http.MethodPost, "/api/memory/pc/notes/user/replace"},
 		{http.MethodPost, "/api/memory/pc/pending/p1/approve"},
 		{http.MethodPost, "/api/memory/pc/approval"},
+		{http.MethodGet, "/api/memory/pc/projects"},
+		{http.MethodGet, "/api/memory/pc/projects/github.com-alice-demo/notes"},
+		{http.MethodPost, "/api/memory/pc/projects/github.com-alice-demo/notes/memory/add"},
 	} {
 		body := map[string]any{fieldContent: "x", "enabled": true}
 		if code := apiJSON(t, c, r.method, e.url+r.path, m.CSRF, body, &errm); code != http.StatusForbidden {

@@ -178,6 +178,93 @@ func TestNotes(t *testing.T) {
 	}
 }
 
+const demoID = "github.com-alice-demo"
+
+func demoProject() hub.Project {
+	return hub.Project{ID: demoID, Identity: "github.com/alice/demo", Kind: hub.ProjectRemote, Name: "demo",
+		Aliases: []string{"git.example.com/alice/demo"}, Folders: []hub.SeenFolder{{DeviceID: "d1", Device: "laptop", Dir: "/home/alice/src/demo", SeenAt: 1731300000.5}}}
+}
+
+func TestProjects(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	ctx := context.Background()
+	e.pc.AddProject(demoProject(), "Run make check.")
+	e.pc.AddProject(hub.Project{ID: "root-abc", Identity: "root:abc", Kind: hub.ProjectRoot, Name: "scratch"})
+	ps, err := e.svc.Projects(ctx, alice, pcID)
+	if err != nil || len(ps) != 2 || ps[0].Identity != "github.com/alice/demo" || ps[0].Aliases[0] != "git.example.com/alice/demo" ||
+		ps[0].Folders[0].Device != "laptop" || ps[1].Aliases == nil || ps[1].Folders == nil {
+		t.Fatalf("projects = %+v, %v", ps, err)
+	}
+	if last := e.pc.Requests()[len(e.pc.Requests())-1]; last.Method != http.MethodGet || last.Path != "/api/plugins/project-memory/projects" {
+		t.Fatalf("list request = %+v", last)
+	}
+	pn, err := e.svc.ProjectNotes(ctx, alice, pcID, demoID)
+	if err != nil || pn.Project.Name != "demo" || !slices.Equal(pn.Targets[hub.TargetMemory].Entries, []string{"Run make check."}) ||
+		pn.Targets[hub.TargetUser].Entries == nil || pn.Pending == nil {
+		t.Fatalf("project notes = %+v, %v", pn, err)
+	}
+	before := len(e.pc.Requests())
+	for _, id := range []string{"..", "a/b", "", "%2e%2e"} {
+		if _, err := e.svc.ProjectNotes(ctx, alice, pcID, id); status(err) != http.StatusNotFound {
+			t.Fatalf("bad id %q: %v", id, err)
+		}
+	}
+	if after := len(e.pc.Requests()); after != before {
+		t.Fatalf("bad ids reached Hermes: %d requests", after-before)
+	}
+	_, err = e.svc.ProjectNotes(ctx, alice, pcID, "github.com-bob-other")
+	if status(err) != http.StatusNotFound || err.Error() != "no such project" {
+		t.Fatalf("unknown project = %v", err)
+	}
+	if _, err := e.svc.Projects(ctx, bob, pcID); !errors.Is(err, hub.ErrForbidden) {
+		t.Fatalf("bob projects on pc: %v", err)
+	}
+	if _, err := e.svc.ChangeProjectNote(ctx, bob, pcID, demoID, hub.NoteAdd, "", "x", nil); !errors.Is(err, hub.ErrForbidden) {
+		t.Fatalf("bob change on pc: %v", err)
+	}
+	e.pc.NoProjects = true
+	if _, err := e.svc.Projects(ctx, alice, pcID); !errors.Is(err, hub.ErrNoMemory) {
+		t.Fatalf("projects without the plugin: %v", err)
+	}
+	if _, err := e.svc.ProjectNotes(ctx, alice, pcID, demoID); !errors.Is(err, hub.ErrNoMemory) {
+		t.Fatalf("project notes without the plugin: %v", err)
+	}
+}
+
+func TestProjectChanges(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	ctx := context.Background()
+	e.pc.AddProject(demoProject(), "Run make check.")
+	pn, err := e.svc.ChangeProjectNote(ctx, alice, pcID, demoID, hub.NoteEdit, "Run make check.", "Run make test.", nil)
+	if err != nil || !slices.Equal(pn.Targets[hub.TargetMemory].Entries, []string{"Run make test."}) {
+		t.Fatalf("edit = %+v, %v", pn, err)
+	}
+	last := e.pc.Requests()[len(e.pc.Requests())-1]
+	if last.Method != http.MethodPost || last.Path != "/api/plugins/project-memory/projects/"+demoID+"/memory/edit" ||
+		last.Body["entry"] != "Run make check." || last.Body["content"] != "Run make test." {
+		t.Fatalf("edit request = %+v", last)
+	}
+	if _, err := e.svc.ChangeProjectNote(ctx, alice, pcID, demoID, hub.NoteReplace, "", "a\n§\nb", nil); err != nil {
+		t.Fatal(err)
+	}
+	if last := e.pc.Requests()[len(e.pc.Requests())-1]; last.Body["text"] != "a\n§\nb" || fmt.Sprint(last.Body["base"]) != "[]" {
+		t.Fatalf("replace request = %+v", last)
+	}
+	pn, err = e.svc.ChangeProjectNote(ctx, alice, pcID, demoID, hub.NoteRemove, "a", "", nil)
+	if err != nil || !slices.Equal(pn.Targets[hub.TargetMemory].Entries, []string{"b"}) {
+		t.Fatalf("remove = %+v, %v", pn, err)
+	}
+	if _, err := e.svc.ChangeProjectNote(ctx, alice, pcID, demoID, "wipe", "", "x", nil); status(err) != http.StatusNotFound {
+		t.Fatalf("bad op: %v", err)
+	}
+	e.pc.Refuse = "That would put MEMORY.md over its limit of 3,500 characters."
+	if _, err := e.svc.ChangeProjectNote(ctx, alice, pcID, demoID, hub.NoteAdd, "", "x", nil); status(err) != http.StatusConflict || !strings.Contains(err.Error(), "3,500") {
+		t.Fatalf("refusal = %v", err)
+	}
+}
+
 func TestLearned(t *testing.T) {
 	t.Parallel()
 	e := setup(t)

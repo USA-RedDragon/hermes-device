@@ -73,6 +73,46 @@ type NoteStore struct {
 	Entries []string `json:"entries"`
 }
 
+// Project kinds: a git repository with a remote, one without a remote
+// (keyed by its root commit), or a folder outside git.
+const (
+	ProjectRemote = "remote"
+	ProjectRoot   = "root"
+	ProjectFolder = "folder"
+)
+
+// Project is one project of the project-memory plugin: a git repository,
+// keyed by its normalized remote URL, or a folder. Aliases are the other
+// identities attached to it, such as a mirror on another host.
+type Project struct {
+	ID         string       `json:"id"`
+	Identity   string       `json:"identity"`
+	Kind       string       `json:"kind"`
+	Name       string       `json:"name"`
+	Aliases    []string     `json:"aliases"`
+	RootCommit string       `json:"root_commit"`
+	Folders    []SeenFolder `json:"folders"`
+	Count      int          `json:"count"`
+	Used       int          `json:"used"`
+	Limit      int          `json:"limit"`
+}
+
+// SeenFolder is a folder on a device where Hermes saw a project. Device is
+// the device's display name, or its id.
+type SeenFolder struct {
+	DeviceID string  `json:"device_id"`
+	Device   string  `json:"device"`
+	Dir      string  `json:"dir"`
+	SeenAt   float64 `json:"seen_at"`
+}
+
+// ProjectNotes is a project's MEMORY.md, as TargetMemory of Notes, with
+// the project. It has no USER.md, approval or pending writes.
+type ProjectNotes struct {
+	Notes
+	Project Project `json:"project"`
+}
+
 // PendingNote is a memory write Hermes staged for approval.
 type PendingNote struct {
 	ID        string       `json:"id"`
@@ -160,6 +200,13 @@ type Memory interface {
 	ChangeNote(ctx context.Context, user, backendID, target, op, entry, content string, base []string) (Notes, error)
 	ResolvePending(ctx context.Context, user, backendID, pendingID string, approve bool) (Notes, error)
 	SetApproval(ctx context.Context, user, backendID string, on bool) (Notes, error)
+	// Projects lists the backend's projects by name. It fails with
+	// ErrNoMemory when the backend's Hermes has no project-memory plugin.
+	Projects(ctx context.Context, user, backendID string) ([]Project, error)
+	ProjectNotes(ctx context.Context, user, backendID, projectID string) (ProjectNotes, error)
+	// ChangeProjectNote applies a change, as ChangeNote does, to a
+	// project's MEMORY.md.
+	ChangeProjectNote(ctx context.Context, user, backendID, projectID, op, entry, content string, base []string) (ProjectNotes, error)
 	Learned(ctx context.Context, user, backendID string, q LearnedQuery) (LearnedPage, error)
 	LearnedInfo(ctx context.Context, user, backendID string) (LearnedInfo, error)
 	AddLearned(ctx context.Context, user, backendID, content string) (Conclusion, error)
