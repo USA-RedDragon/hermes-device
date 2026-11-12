@@ -476,10 +476,15 @@ window.HubActivity = (ctx) => {
     head.setAttribute("role", "button");
     head.setAttribute("aria-expanded", String(S.open.has(r.id)));
     const end = r.endedAt || Date.now();
+    const running = !r.endedAt;
     head.append(el("span", "state " + r.state), el("span", "goal", r.goal || (r.kind === "sub" ? "Subagent" : "Command")),
-      el("span", "time", fmt((end - r.startedAt) / 1000)));
+      el("span", "time", running ? window.HubTimes.counter(end - r.startedAt) : fmt((end - r.startedAt) / 1000)));
     const meta = el("div", "meta");
     meta.append(el("span", "", stateWord[r.state] || "Done"));
+    const when = el("span");
+    if (running) when.append("started ", window.HubTimes.stamp(el("span"), r.startedAt));
+    else window.HubTimes.stamp(when, r.endedAt);
+    meta.append(when);
     if (r.kind === "sub") {
       if (r.model) meta.append(el("span", "", r.model));
       meta.append(el("span", "", r.tools + (r.tools === 1 ? " tool" : " tools")));

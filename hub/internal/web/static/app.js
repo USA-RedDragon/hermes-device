@@ -577,6 +577,7 @@
       this.approvals = new Map();
       this.pending = [];
       this.failed = [];
+      this.at = 0;
       this.status = null;
       this.info = {};
       this.compactions = undefined;
@@ -608,6 +609,21 @@
       const stick = this.stick();
       fn();
       if (stick) this.bottom();
+    }
+
+    // when puts the time ms under a message, after the buttons that sit
+    // there; a message shows its time once, and a time that is not known
+    // shows nothing.
+    when(node, ms) {
+      if (!window.HubTimes.valid(ms)) return;
+      if (node.whenLine && node.whenLine.dataset.at) return;
+      if (!node.whenLine) {
+        node.whenLine = el("div", "when" + (node.classList.contains("user") ? " mine" : ""));
+        let ref = node;
+        while (ref.nextElementSibling && ["queued", "lost", "acts"].some((c) => ref.nextElementSibling.classList.contains(c))) ref = ref.nextElementSibling;
+        ref.after(node.whenLine);
+      }
+      window.HubTimes.stamp(node.whenLine, ms);
     }
 
     setRunning(on) {
@@ -680,6 +696,7 @@
         node.append(row);
       }
       if (final && m.paths.length) node.append(mediaRow(this.base, m.paths));
+      if (final) this.when(node, this.at);
     }
 
     // endText shows the files of the reply segment that ends here.
@@ -703,9 +720,10 @@
         this.agentWaiting.delete(key);
         shown.classList.remove("pending");
         if (shown.waitLabel) shown.waitLabel.remove();
+        window.HubNotice.stamp(shown, this.at, { el });
         return true;
       }
-      const box = window.HubNotice.card(n, text, { el, toast });
+      const box = window.HubNotice.card(n, text, { el, toast, at: waiting ? 0 : this.at });
       if (n.id) box.title = n.id;
       this.add(box);
       if (waiting) {
@@ -728,6 +746,7 @@
       if (atts) for (const a of atts) if (a.url) this.urls.push(a.url);
       this.add(m);
       if (pending) this.pending.push({ bubble: m, label: null, text, id: null });
+      else this.when(m, this.at);
       return m;
     }
 
@@ -926,6 +945,7 @@
       if (p) {
         p.bubble.classList.remove("pending");
         if (p.label) p.label.remove();
+        this.when(p.bubble, this.at);
       } else if (text) {
         this.userText(text);
       }
@@ -936,7 +956,7 @@
       if (card) return card;
       card = el("div", "tool running");
       card.toolName = name || "tool";
-      card.started = Date.now();
+      card.startedAt = this.at;
       const head = el("div", "head");
       head.append(el("span", "name", name || "tool"));
       if (activity.opens(name, args)) {
@@ -946,7 +966,9 @@
       }
       const preview = name === "terminal" && args && typeof args.command === "string" ? "" : context;
       if (preview) head.append(el("span", "context", preview));
-      head.append(el("span", "state", t("running")));
+      const state = el("span", "state", t("running"));
+      if (window.HubTimes.valid(card.startedAt)) window.HubTimes.running(state, card.startedAt);
+      head.append(state);
       card.append(head);
       if (name === "terminal" && args && typeof args.command === "string") {
         const pre = el("pre", "command");
@@ -1001,7 +1023,9 @@
       return acts;
     }
 
-    toolDone(card, p) {
+    // toolDone shows a finished tool card. at is when it finished: the time
+    // of the event or row that says so, 0 for a card that no event closed.
+    toolDone(card, p, at = this.at) {
       if (!card.classList.contains("running") && card.finished) return;
       card.finished = true;
       for (const n of card.querySelectorAll(":scope > .acts")) n.remove();
@@ -1013,11 +1037,10 @@
       card.failed = failed;
       if (failed) card.classList.add("failed");
       const state = card.querySelector(".state");
-      state.textContent = failed ? t("failed") : t("done");
-      if (typeof p.duration_s === "number") {
-        card.duration = p.duration_s;
-        state.textContent += " in " + duration(p.duration_s);
-      }
+      const ran = typeof p.duration_s === "number" ? p.duration_s : undefined;
+      if (ran !== undefined) card.duration = ran;
+      if (window.HubTimes.valid(at) || ran !== undefined) window.HubTimes.finished(state, at, ran, failed ? t("failed") : "");
+      else state.textContent = failed ? t("failed") : t("done");
       for (const n of card.querySelectorAll("progress, .progress")) n.remove();
       if (card.toolName === "browser_screenshot" && !failed && res && typeof res.path === "string" && mediaPath(res.path)) {
         card.append(mediaRow(this.base, [res.path], "shot"));
@@ -1206,6 +1229,7 @@
         for (let i = cut; i < msgs.length; i++) this.row(msgs[i]);
       } finally {
         this.filling = false;
+        this.at = 0;
       }
       mark("rows-end");
       this.turn = null;
@@ -1263,6 +1287,7 @@
         this.sink = null;
         this.filling = false;
         this.turn = turn;
+        this.at = 0;
       }
       const log = this.log;
       if (!this.olderBox || this.olderBox.parentNode !== log) {
@@ -1311,6 +1336,7 @@
       if (m.display_kind === "hidden") return;
       const text = m.text != null ? m.text : (typeof m.content === "string" ? m.content : "");
       const rid = Number.isInteger(m.row_id) ? m.row_id : m._row_id;
+      this.at = window.HubTimes.valid(m.timestamp * 1000) ? Math.round(m.timestamp * 1000) : 0;
       if (m.role === "user") {
         this.turn = null;
         if (this.noticeText(text) || (typeof m.content === "string" && this.noticeText(m.content))) return;
@@ -1345,16 +1371,21 @@
       }
       if (m.role === "tool") {
         const call = (this.calls && this.calls.get(m.tool_call_id)) || {};
+        const at = this.at;
+        this.at = 0;
         const card = this.toolCard(m.tool_call_id || ("row" + m.row_id), m.name || m.tool_name || call.name, m.args || call.args);
+        this.at = at;
         this.toolDone(card, { result: m.content != null ? m.content : text });
         return;
       }
       if (text) this.add(el("div", "note", text));
     }
 
-    event(kind, p) {
+    event(kind, p, at) {
       p = p || {};
+      this.at = window.HubTimes.valid(at) ? at : 0;
       this.dispatch(kind, p);
+      this.at = 0;
       activity.event(kind, p);
     }
 
@@ -1407,7 +1438,7 @@
           if (p.status && p.status !== "complete" && p.status !== "completed") {
             this.add(el("div", "note" + (p.status === "error" || p.status === "failed" ? " bad" : ""), "Turn " + p.status + (p.error ? ": " + p.error : "")));
           }
-          for (const card of this.tools.values()) if (card.classList.contains("running")) this.toolDone(card, {});
+          for (const card of this.tools.values()) if (card.classList.contains("running")) this.toolDone(card, {}, 0);
           this.groupTools(null);
           if (p.usage) this.showInfo({ usage: p.usage });
           claude.afterReply(this.backend, this.info.provider, this.session, this.info.model || (this.info.usage || {}).model || "");
@@ -2156,12 +2187,7 @@
     try { return JSON.parse(r); } catch (_) { return null; }
   }
 
-  function duration(sec) {
-    if (sec < 1) return Math.max(1, Math.round(sec * 1000)) + "ms";
-    if (sec < 10) return sec.toFixed(1) + "s";
-    if (sec < 60) return Math.round(sec) + "s";
-    return Math.floor(sec / 60) + "m " + Math.round(sec % 60) + "s";
-  }
+  const duration = (sec) => window.HubTimes.span(sec);
 
   // diffView shows Hermes' inline edit diff. Hermes renders it for a
   // terminal, with ANSI colors and a header line; the colors are dropped
@@ -2865,7 +2891,7 @@
       try { e = JSON.parse(m.data); } catch (_) { return; }
       if (e.kind === "hub.reconnect") { moving = true; return; }
       if (first) mark("parsed");
-      chat.event(e.kind, e.data);
+      chat.event(e.kind, e.data, e.at);
       if (first) {
         first = false;
         mark("handled");
@@ -3399,6 +3425,7 @@
       const pl = chat && chat.place;
       return !!me.files && !!pl && ((pl.kind === "computer" && pl.mine) || pl.kind === "sandbox");
     } });
+  window.HubTimes.press(document.body, toast);
   const msgActs = window.HubMsgActions({ api, el, chat: () => view, running: () => !!(view && view.running), stop: () => stopTurn(),
     reopen: (chat) => { if (chat === view) showChat(chat.backend, chat.session); }, toast, banner, noteKinds,
     open: (b, s) => { openSide(false); location.hash = chatHash(b, s); } });
