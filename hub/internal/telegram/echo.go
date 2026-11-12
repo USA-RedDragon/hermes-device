@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/hermes-hub/internal/notice"
 	"github.com/google/uuid"
 )
 
@@ -237,6 +238,14 @@ func (r *renderer) echo(ctx context.Context, text, id string, images int) int64 
 		return 0
 	}
 	r.echoed = true
+	if n := notice.Parse(text); n != nil {
+		if n.Kind == notice.KindAgent {
+			r.agentMessage(ctx, text)
+		} else {
+			r.send(ctx, "<i>"+escapeHTML(n.Line())+"</i>", nil)
+		}
+		return 0
+	}
 	where, show := r.origin(id)
 	if !show {
 		return 0
