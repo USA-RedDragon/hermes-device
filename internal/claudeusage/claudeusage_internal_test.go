@@ -15,15 +15,17 @@ import (
 )
 
 const (
-	secret    = "SECRET-MESSAGE-TEXT"
-	opus      = "claude-opus-5-5"
-	app       = "app"
-	acctA     = "acct-a"
-	orgA      = "org-a"
-	typeKey   = "type"
-	acctW     = "acct-w"
-	slotSpare = "spare"
-	slotExtra = "extra"
+	secret     = "SECRET-MESSAGE-TEXT"
+	opus       = "claude-opus-5-5"
+	app        = "app"
+	acctA      = "acct-a"
+	orgA       = "org-a"
+	typeKey    = "type"
+	acctW      = "acct-w"
+	slotSpare  = "spare"
+	slotExtra  = "extra"
+	accountKey = "accountUuid"
+	orgKey     = "organizationUuid"
 )
 
 // nowUnix is the tests' clock: 2026-11-10 18:30 UTC.
@@ -76,7 +78,7 @@ func (u usageLine) json() string {
 
 func ownerLine(session, acct string) string {
 	org := orgA
-	return marshal(map[string]any{typeKey: "session-owner", "sessionId": session, "accountUuid": acct, "organizationUuid": org})
+	return marshal(map[string]any{typeKey: "session-owner", "sessionId": session, accountKey: acct, orgKey: org})
 }
 
 func userLine(session string) string {

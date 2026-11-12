@@ -27,6 +27,7 @@ type Sender func(ctx context.Context, r Report) error
 // and after a start.
 func (c *Collector) Run(ctx context.Context, send Sender) {
 	c.Load()
+	go c.watchAccounts(ctx)
 	var sent map[int64][]Row
 	var sentAccounts []Account
 	var lastSave, lastFull, nextTry time.Time

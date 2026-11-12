@@ -292,6 +292,8 @@ func TestRunWithoutToken(t *testing.T) {
 func TestRunNoSpliceWithTokenFile(t *testing.T) {
 	t.Parallel()
 	s := setupRun(t, &runHub{whoami: http.StatusUnauthorized}, nil)
+	off := false
+	s.cfg.Usage.Enabled = &off
 	s.cfg.Store.StateDir = filepath.Join(t.TempDir(), "unused")
 	s.cfg.Gateway.Splice = false
 	s.cfg.Device.TempDir = filepath.Join(t.TempDir(), "tmp", "nested")

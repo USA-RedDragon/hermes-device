@@ -63,6 +63,10 @@ type Options struct {
 	// StateFile keeps offsets and counted responses across restarts.
 	// Empty: nothing is kept, and a restart reads every file again.
 	StateFile string
+	// TimelineFile keeps the account timeline: which account each source
+	// was signed in as, and since when. Empty: claude-accounts.jsonl next
+	// to StateFile, or nothing when StateFile is empty.
+	TimelineFile string
 	// ReadRate bounds the bytes per second read from transcripts, so the
 	// first scan does not hog the disk. 0: 128 MiB/s.
 	ReadRate int64
@@ -111,6 +115,7 @@ type Collector struct {
 	loaded   bool
 	scanned  bool
 	labels   map[string]cachedConfig
+	tl       *timeline
 }
 
 // New returns a collector. Load restores its state.
@@ -124,7 +129,11 @@ func New(o Options) *Collector {
 	if o.ReadRate <= 0 {
 		o.ReadRate = 128 << 20
 	}
-	c := &Collector{o: o, log: o.Logger.With("component", "claude-usage"), labels: map[string]cachedConfig{}}
+	if o.TimelineFile == "" && o.StateFile != "" {
+		o.TimelineFile = filepath.Join(filepath.Dir(o.StateFile), timelineName)
+	}
+	log := o.Logger.With("component", "claude-usage")
+	c := &Collector{o: o, log: log, labels: map[string]cachedConfig{}, tl: newTimeline(o.TimelineFile, log)}
 	c.reset()
 	return c
 }
@@ -153,6 +162,7 @@ func (c *Collector) dim(k dimKey) uint32 {
 // Scan reads what was appended to every transcript since the last scan.
 // It reports whether anything was counted.
 func (c *Collector) Scan(ctx context.Context) (bool, error) {
+	c.Observe()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	changed := false
@@ -392,6 +402,7 @@ func (c *Collector) Report() Report {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	accounts, own := c.accounts()
+	switches := c.tl.snapshot()
 	since := c.since()
 	cutMS := since.UnixMilli()
 	rows := map[RowKey]*Row{}
@@ -404,6 +415,11 @@ func (c *Collector) Report() Report {
 		o, ok := c.owners[d.Session]
 		if !ok && d.Source < len(own) {
 			o = own[d.Source]
+		}
+		if src := c.o.Sources[d.Source]; !src.OwnAccount {
+			if sw, found := at(switches[src.Dir], e.AtMS); found {
+				o = sessionOwner{Account: sw.Account, Org: sw.Org}
+			}
 		}
 		k := RowKey{Hour: d.Hour, Account: o.Account, Org: o.Org, Model: d.Model, Project: d.Project, Sidechain: d.Sidechain}
 		r := rows[k]
