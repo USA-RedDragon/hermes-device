@@ -50,8 +50,13 @@
     return r.status === 200 || r.status === 201 || (r.status === 202 && json) ? r.json() : null;
   }
 
-  function banner(text, bad) {
+  // banner shows one line above the chat. A banner has an owner (key) that
+  // alone may clear it again by itself with clearBanner, so a connection
+  // that came back does not wipe a message about something else.
+  let bannerKey = "";
+  function banner(text, bad, key) {
     const b = $("banner");
+    bannerKey = text ? key || "" : "";
     b.hidden = !text;
     b.replaceChildren();
     b.classList.toggle("bad", !!bad);
@@ -62,6 +67,10 @@
     close.setAttribute("aria-label", "Dismiss");
     close.onclick = () => banner("");
     b.append(el("span", "", text), close);
+  }
+
+  function clearBanner(key) {
+    if (bannerKey === key) banner("");
   }
 
   function toast(text) {
@@ -101,12 +110,18 @@
   let lastList = null;
   let menuOpen = false;
   let showArchived = false;
+  const listBackoff = window.HubBackoff();
+  let listRetry = 0;
   async function refreshList() {
     if (listing) return;
     listing = true;
+    clearTimeout(listRetry);
+    listRetry = 0;
     try {
       const [backends, sessions] = await Promise.all([api("GET", "/api/backends"), api("GET", "/api/sessions")]);
       lastList = { backends, sessions };
+      listBackoff.reset();
+      clearBanner("list");
       if (unhid) {
         if (sessions.some((s) => s.id === unhid && s.archived)) banner("Talaria keeps this chat hidden, so it stays with the archived chats.");
         unhid = "";
@@ -114,7 +129,10 @@
       if (!menuOpen || !document.querySelector("#sessions .menu")) drawList();
       if (me.computers) loadPlaces(sessions);
     } catch (e) {
-      if (e.message !== "login required") banner("Could not load chats: " + e.message, true);
+      if (e.message !== "login required") {
+        banner("Could not load chats: " + e.message, true, "list");
+        listRetry = setTimeout(refreshList, listBackoff.next());
+      }
     } finally {
       listing = false;
     }
@@ -581,7 +599,7 @@
       this.status = null;
       this.info = {};
       this.compactions = undefined;
-      for (const u of this.urls || []) URL.revokeObjectURL(u);
+      for (const u of this.urls || []) if (!this.keep || !this.keep.has(u)) URL.revokeObjectURL(u);
       this.urls = [];
     }
 
@@ -880,7 +898,7 @@
     // transferEnded handles the end of a message Hermes handed to the
     // running turn: read, or dropped when the turn stopped first.
     transferEnded(d) {
-      const i = this.pending.findIndex((x) => x.id && (x.id === d.submission_id || x.id === d.admission_id));
+      const i = this.pending.findIndex((x) => (x.id && (x.id === d.submission_id || x.id === d.admission_id)) || (x.adm && x.adm === d.admission_id));
       if (i < 0) return;
       const p = this.pending[i];
       if (d.outcome === "steered") {
@@ -938,7 +956,7 @@
         if (text) this.add(el("div", "msg result", text));
         return;
       }
-      let i = id || admission ? this.pending.findIndex((x) => x.id && (x.id === id || x.id === admission)) : 0;
+      let i = id || admission ? this.pending.findIndex((x) => (x.id && (x.id === id || x.id === admission)) || (x.adm && x.adm === admission)) : 0;
       if (i < 0 && text) {
         const typed = splitAttachments(text).text;
         // A stopped steer sent again starts under a new ID, maybe before the page learns it.
@@ -1198,8 +1216,22 @@
       this.status.textContent = text;
     }
 
+    // adopt gives x, the pending message that the snapshot shows, what the
+    // page still holds of the one it is sending: its key, files and state.
+    adopt(x, c) {
+      if (!c || !x) return;
+      x.cid = c.cid;
+      x.files = c.files;
+      x.atts = c.atts;
+      x.inflight = c.inflight;
+    }
+
     snapshot(s) {
+      const kept = window.HubReconcile.anchor(this.log, pinned);
+      const carried = window.HubReconcile.carry(this.pending, s);
+      this.keep = new Set(carried.filter((c) => c.act === "again").flatMap((c) => (c.p.atts || []).map((a) => a.url)));
       this.reset();
+      this.keep = null;
       this.canBackground = !!s.tool_background;
       setTitle(s.title);
       this.setRunning(s.running);
@@ -1224,18 +1256,38 @@
       this.groupTools(s.running && users.length ? users[users.length - 1] : null);
       mark("grouped");
       this.agentWaiting = new Map();
-      for (const p of s.pending || []) {
+      const mine = new Map();
+      for (const c of carried) if (c.act === "adopt") mine.set(c.at, c.p);
+      (s.pending || []).forEach((p, i) => {
         if (p.status === "lost") this.lost(p.id, p.text);
         else if (p.status === "steering") {
           this.userText(p.text, true);
           const x = this.pending[this.pending.length - 1];
-          x.id = p.id;
+          x.id = window.HubReconcile.idOf(p);
+          x.adm = p.id;
+          this.adopt(x, mine.get(i));
           this.steered(x);
-        } else if (!this.noticeText(p.text, true)) this.queued(this.userText(p.text, true), p.id);
+        } else if (!this.noticeText(p.text, true)) {
+          const bubble = this.userText(p.text, true);
+          this.queued(bubble, p.id);
+          const x = this.pending.find((y) => y.bubble === bubble);
+          if (x) {
+            x.id = window.HubReconcile.idOf(p);
+            x.adm = p.id;
+            this.adopt(x, mine.get(i));
+          }
+        }
+      });
+      for (const c of carried) {
+        if (c.act !== "again") continue;
+        const bubble = this.userText(c.p.text, true, c.p.atts);
+        const x = this.pending.find((y) => y.bubble === bubble);
+        this.adopt(x, c.p);
+        x.id = c.p.id;
       }
       for (const p of s.prompts || []) this.approval(p);
       if (window.HubRestore.state()) this.showOlder(() => true);
-      this.bottom();
+      if (!window.HubReconcile.restore(this.log, kept)) this.bottom();
       this.jumpTo();
       this.fillOlder();
       if (view === this) restoreView(this);
@@ -2940,40 +2992,31 @@
     const known = places.get(placeKey(backend, session));
     if (known) showPlace(known);
     loadPlace();
-    const es = new EventSource(view.base + "/events");
-    stream = es;
     const chat = view;
-    let moving = false;
     let first = true;
-    es.onmessage = (m) => {
-      if (first) mark("event");
-      let e;
-      try { e = JSON.parse(m.data); } catch (_) { return; }
-      if (e.kind === "hub.reconnect") { moving = true; return; }
-      if (first) mark("parsed");
-      chat.event(e.kind, e.data, e.at);
-      if (first) {
-        first = false;
-        mark("handled");
-        requestAnimationFrame(() => setTimeout(() => mark("painted"), 0));
-      }
-    };
-    let opened = false;
-    es.onopen = () => {
-      moving = false;
-      banner("");
-      if (opened) updates.check();
-      opened = true;
-    };
-    es.onerror = async () => {
-      if (moving && es.readyState === EventSource.CONNECTING) return;
-      if (es.readyState === EventSource.CLOSED) {
+    const follow = window.HubStream(view.base + "/events", {
+      message: (m) => {
+        if (first) mark("event");
+        let e;
+        try { e = JSON.parse(m.data); } catch (_) { return; }
+        if (e.kind === "hub.reconnect") { follow.moving(); return; }
+        if (first) mark("parsed");
+        chat.event(e.kind, e.data, e.at);
+        if (first) {
+          first = false;
+          mark("handled");
+          requestAnimationFrame(() => setTimeout(() => mark("painted"), 0));
+        }
+      },
+      lost: () => banner("Connection lost. Reconnecting.", false, "stream"),
+      back: () => clearBanner("stream"),
+      healthy: () => updates.check(),
+      failed: async () => {
         try { await api("GET", "/api/me"); } catch (_) { return; }
-        banner("Could not open this chat. Pick it again to retry.", true);
-      } else {
-        banner("Connection lost. Reconnecting.", false);
-      }
-    };
+        banner("Could not open this chat. Reconnecting.", true, "stream");
+      },
+    });
+    stream = follow;
     $("input").focus({ preventScroll: true });
     if (page) {
       page.remember(backend, session);
@@ -3121,20 +3164,29 @@
   async function deliver(chat, text, files, extra, page) {
     const input = $("input");
     const steer = !!chat.running;
+    const cid = window.HubSend.newID();
     const shown = files.map((a) => ({ name: a.file.name || "attachment", image: a.image,
       url: a.url ? URL.createObjectURL(a.file) : "", pdf: a.pdf, pages: a.pages }));
     const bubble = chat.userText(text, true, files.length ? shown : undefined);
     const mine = chat.pending.find((x) => x.bubble === bubble);
-    if (mine) mine.files = files.map((a) => a.file);
+    if (mine) {
+      mine.files = files.map((a) => a.file);
+      mine.atts = files.length ? shown : undefined;
+      mine.cid = cid;
+      mine.id = cid;
+      mine.inflight = true;
+    }
+    const item = () => chat.pending.find((x) => x.cid === cid);
     chat.bottom();
     if (!page) {
       input.value = "";
       grow();
     }
-    let body = steer ? { text, steer: true } : { text };
+    let body = steer ? { text, steer: true, id: cid } : { text, id: cid };
     if (extra) Object.assign(body, extra);
     if (files.length) {
       body = new FormData();
+      body.append("id", cid);
       body.append("text", text);
       for (const a of files) {
         body.append("file", a.file, a.file.name || "attachment");
@@ -3144,22 +3196,37 @@
       composer.update();
     }
     try {
-      const r = await api("POST", chat.base + "/prompt", body);
-      const p = chat.pending.find((x) => x.bubble === bubble);
+      const r = await window.HubSend.post(() => api("POST", chat.base + "/prompt", body), {
+        retry: () => {
+          const p = item();
+          if (!p || p.label) return;
+          chat.label(p, el("div", "queued", "Not sent yet. Trying again."));
+          p.retrying = true;
+        },
+      });
+      const p = item();
+      if (p) {
+        p.inflight = false;
+        if (p.retrying && p.label) {
+          p.label.remove();
+          p.label = null;
+        }
+        p.retrying = false;
+      }
       if (r && r.status === "held" && p) {
         if (!p.sent) chat.held(p, r.id);
       } else {
         if (p && r) p.id = r.id;
         if (r && r.status === "command" && p) {
           chat.pending = chat.pending.filter((x) => x !== p);
-          bubble.classList.remove("pending");
+          p.bubble.classList.remove("pending");
           if (p.label) p.label.remove();
           if (r.output) chat.add(el("div", "msg result", r.output));
         } else if (r && r.steered && p) {
           chat.steered(p);
           toast("Sent; Talaria reads it after its current step");
-        } else {
-          chat.queued(bubble);
+        } else if (p) {
+          chat.queued(p.bubble);
           if (steer && !files.length) toast("Queued: Talaria reads it when the current turn ends");
         }
       }
@@ -3167,8 +3234,12 @@
       if (r && r.notice && chat === view) chat.add(el("div", "note", r.notice));
       for (const a of files) if (a.url) URL.revokeObjectURL(a.url);
     } catch (e) {
-      bubble.remove();
-      chat.pending = chat.pending.filter((p) => p.bubble !== bubble);
+      const p = item();
+      if (p) {
+        p.bubble.remove();
+        if (p.label) p.label.remove();
+        chat.pending = chat.pending.filter((x) => x !== p);
+      }
       for (const a of shown) if (a.url) URL.revokeObjectURL(a.url);
       if (page) throw e;
       if (chat === view) {
@@ -3177,7 +3248,7 @@
       } else {
         for (const a of files) if (a.url) URL.revokeObjectURL(a.url);
       }
-      banner("Could not send: " + e.message, true);
+      banner("Could not send: " + e.message + (e.mayBeSent ? ". It may have reached Talaria: look at the chat before you send it again." : ""), true);
     } finally {
       if (files.length) sending--;
       composer.update();
