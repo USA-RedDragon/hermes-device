@@ -1,0 +1,8 @@
+tests/agent/test_system_prompt.py
+tests/agent/test_system_prompt_restore.py
+tests/agent/test_system_prompt_switch_invalidation.py
+tests/agent/test_profile_home_override_precedence.py
+tests/agent/test_bot_profile_prompt_isolation.py
+tests/agent/test_bot_chat_toolset_refresh.py
+tests/agent/test_compression_persistence.py
+tests/agent/test_meta_agent_init.py

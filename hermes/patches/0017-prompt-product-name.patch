@@ -1,0 +1,270 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 20:15:44 -0600
+Subject: [PATCH] feat(prompt): runtime markers without the product name;
+ optional product help
+
+The runtime block is "# Runtime environment" and the profile line "Active
+profile:"; readers still accept the old markers stored prompts carry.
+agent.product_help_guidance (true) leaves the Hermes help paragraph out
+when false.
+---
+ agent/agent_init.py                           |  2 +-
+ agent/prompt_builder.py                       |  6 ++-
+ agent/surface_switch.py                       | 10 +++--
+ agent/system_prompt.py                        | 15 ++++---
+ hermes_cli/config_defaults.py                 |  3 ++
+ .../test_bot_profile_prompt_isolation.py      |  2 +-
+ .../test_profile_home_override_precedence.py  |  4 +-
+ .../agent/test_runtime_environment_markers.py | 44 +++++++++++++++++++
+ tests/agent/test_system_prompt.py             |  6 +--
+ .../docs/developer-guide/prompt-assembly.md   |  2 +-
+ 10 files changed, 76 insertions(+), 18 deletions(-)
+ create mode 100644 tests/agent/test_runtime_environment_markers.py
+
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index ccea847ad9..aeba25fe5e 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1272,7 +1272,7 @@ def _apply_agent_section(agent, _agent_cfg):
+     # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.
+     for _key in (
+         "stall_guards", "task_completion_guidance", "parallel_tool_call_guidance",
+-        "environment_probe", "bot_mode_protocol",
++        "environment_probe", "bot_mode_protocol", "product_help_guidance",
+     ):
+         setattr(agent, f"_{_key}", bool(_agent_section.get(_key, True)))
+     # Warm the probe (~0.5s of subprocesses) off-thread so the first prompt build finds it cached.
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index eb8de4439c..a6d1e6ec10 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -1027,8 +1027,10 @@ def build_environment_hints() -> str:
+ 
+ 
+ # Marks the runtime block after project prose for persisted-prompt cwd validation.
+-RUNTIME_ENVIRONMENT_HEADING = "# Hermes runtime environment"
+-RUNTIME_ENVIRONMENT_END = "<!-- End Hermes runtime environment -->"
++RUNTIME_ENVIRONMENT_HEADING = "# Runtime environment"
++RUNTIME_ENVIRONMENT_END = "<!-- End runtime environment -->"
++# The markers stored prompts carry from before the rename; readers accept both.
++LEGACY_RUNTIME_ENVIRONMENT_MARKERS = (("# Hermes runtime environment", "<!-- End Hermes runtime environment -->"),)
+ 
+ CONTEXT_FILE_MAX_CHARS = 20_000
+ CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
+diff --git a/agent/surface_switch.py b/agent/surface_switch.py
+index 6c0a9e1a1d..f097ad0b6e 100644
+--- a/agent/surface_switch.py
++++ b/agent/surface_switch.py
+@@ -15,7 +15,9 @@ import logging
+ from typing import Any, List
+ 
+ from agent.message_content import flatten_message_text
+-from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
++from agent.prompt_builder import (
++    LEGACY_RUNTIME_ENVIRONMENT_MARKERS, RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING,
++)
+ 
+ logger = logging.getLogger("run_agent")
+ 
+@@ -32,8 +34,10 @@ def split_runtime_boundary(prompt: str) -> tuple:
+     """``(identity, runtime_marker, runtime)`` of a persisted prompt.  Legacy prose may quote
+     the runtime heading, but only the new renderer ENDS in the boundary; when the marker is
+     empty the whole prompt is identity."""
+-    identity, runtime_marker, runtime = prompt.rpartition(f"\n\n{RUNTIME_ENVIRONMENT_HEADING}\n\n")
+-    return (identity, runtime_marker, runtime) if prompt.endswith(RUNTIME_ENVIRONMENT_END) else (prompt, "", "")
++    for heading, end in ((RUNTIME_ENVIRONMENT_HEADING, RUNTIME_ENVIRONMENT_END), *LEGACY_RUNTIME_ENVIRONMENT_MARKERS):
++        if prompt.endswith(end):
++            return prompt.rpartition(f"\n\n{heading}\n\n")
++    return (prompt, "", "")
+ 
+ 
+ def runtime_host_value(prompt: str, label: str) -> str:
+diff --git a/agent/system_prompt.py b/agent/system_prompt.py
+index 3b946fad6e..3d2054e8de 100644
+--- a/agent/system_prompt.py
++++ b/agent/system_prompt.py
+@@ -389,7 +389,7 @@ def _active_profile_line(agent: Any) -> str:
+         # Without one, keep the ambient (patchable) resolution byte-identical.
+         _root_str = str(get_default_hermes_root() if _agent_home_path is not None else get_hermes_home())
+         return (
+-            "Active Hermes profile: default. Other profiles (if any) live "
++            "Active profile: default. Other profiles (if any) live "
+             "under " + _root_str + "/profiles/<name>/. Each profile has its own "
+             "skills/, plugins/, cron/, and memories/ that affect a different "
+             "session than this one. Do not modify another profile's "
+@@ -406,7 +406,7 @@ def _active_profile_line(agent: Any) -> str:
+     # NOT get_hermes_home().
+     default_root = get_default_hermes_root()
+     return (
+-        f"Active Hermes profile: {active_profile}. This session reads "
++        f"Active profile: {active_profile}. This session reads "
+         f"and writes {profile_home}/. The default "
+         f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
+         f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
+@@ -764,13 +764,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
+     # The skill_view() pointer dangles without skill tools OR without the
+     # hermes-agent skill installed, so the variant is chosen after the skills
+     # index is built; this slot holds its position.
++    # agent.product_help_guidance: false leaves the paragraph out (a per-agent constant, so the stable
++    # prefix does not change between turns).
++    _help_guidance = getattr(agent, "_product_help_guidance", True)
+     _help_guidance_slot = len(stable_parts)
+-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
++    if _help_guidance:
++        stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
+     stable_parts.extend(_guidance_parts(agent))
+     skills_prompt = _skills_prompt(agent)
+     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
+     # in the rendered index (pure string check — inherits the index's stability).
+-    if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
++    if _help_guidance and "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
+         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
+     stable_parts.extend(_alibaba_identity_part(agent))
+     # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
+@@ -809,7 +813,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
+     # host examples cannot shadow it during persisted-prompt validation.
+     if environment_hints:
+         # Embedder hints are prose too; reserve the delimiter for the renderer.
+-        environment_hints = environment_hints.replace(_pb.RUNTIME_ENVIRONMENT_HEADING, "> " + _pb.RUNTIME_ENVIRONMENT_HEADING)
++        for _heading in (_pb.RUNTIME_ENVIRONMENT_HEADING, *(h for h, _ in _pb.LEGACY_RUNTIME_ENVIRONMENT_MARKERS)):
++            environment_hints = environment_hints.replace(_heading, "> " + _heading)
+         volatile_parts.append(f"{_pb.RUNTIME_ENVIRONMENT_HEADING}\n\n{environment_hints}\n\n{_pb.RUNTIME_ENVIRONMENT_END}")
+     return {"stable": _join_tier(stable_parts), "context": _join_tier(context_parts), "volatile": _join_tier(volatile_parts)}
+ 
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index a68e6a4288..d5a1abc9f0 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -174,6 +174,9 @@ DEFAULT_CONFIG = {
+         # read-only commands) into one batched turn; the runtime already runs them concurrently. ~70
+         # cached tokens. False disables.
+         "parallel_tool_call_guidance": True,
++        # Prompt paragraph that points the model at the Hermes docs (or the hermes-agent skill) for questions
++        # about Hermes itself. False drops it, both variants.
++        "product_help_guidance": True,
+         # Toolchain probe: surfaces Python/pip/uv/PEP-668 state in the system prompt only when
+         # something non-default is detected (no pip module, pip/python mismatch, PEP 668 without
+         # uv); zero tokens when clean. Skipped for docker/modal/ssh backends (own probe).
+diff --git a/tests/agent/test_bot_profile_prompt_isolation.py b/tests/agent/test_bot_profile_prompt_isolation.py
+index ffcbb315c8..bf6166a59a 100644
+--- a/tests/agent/test_bot_profile_prompt_isolation.py
++++ b/tests/agent/test_bot_profile_prompt_isolation.py
+@@ -6,7 +6,7 @@ Root cause this guards (confirmed empirically): ContextVars do not propagate
+ into ``threading.Thread``. ``build_skills_system_prompt`` and the
+ active-profile line resolved the home via the ambient ``get_hermes_home()``,
+ so an unbound build thread fell back to ``~/.hermes`` (default) and leaked
+-default's full skills index + "Active Hermes profile: default" into a bot's
++default's full skills index + "Active profile: default" into a bot's
+ prompt, while the live ``skills_list()`` (re-bound per turn) correctly
+ showed the bot's real, empty set. The agent now resolves its own home from
+ its ``_session_db.db_path`` and passes it explicitly.
+diff --git a/tests/agent/test_profile_home_override_precedence.py b/tests/agent/test_profile_home_override_precedence.py
+index 5e0536508a..f2faef0709 100644
+--- a/tests/agent/test_profile_home_override_precedence.py
++++ b/tests/agent/test_profile_home_override_precedence.py
+@@ -148,8 +148,8 @@ def test_full_prompt_scoped_to_bot_on_bare_thread(tmp_path, monkeypatch):
+     skills_block = m.group(1) if m else ""
+     assert "bot-skill" in skills_block
+     assert "leaky-skill" not in skills_block
+-    assert "Active Hermes profile: mybot" in prompt
+-    assert "Active Hermes profile: default" not in prompt
++    assert "Active profile: mybot" in prompt
++    assert "Active profile: default" not in prompt
+ 
+ 
+ def test_plugin_session_info_profile_from_agent_home(tmp_path, monkeypatch):
+diff --git a/tests/agent/test_runtime_environment_markers.py b/tests/agent/test_runtime_environment_markers.py
+new file mode 100644
+index 0000000000..75ea3615d3
+--- /dev/null
++++ b/tests/agent/test_runtime_environment_markers.py
+@@ -0,0 +1,44 @@
++"""Runtime-environment markers without the product name, and agent.product_help_guidance."""
++from agent import prompt_builder as pb
++from agent import system_prompt
++from agent.surface_switch import runtime_host_value, split_runtime_boundary
++from agent.system_prompt import build_system_prompt_parts
++from tests.agent.test_system_prompt import _make_agent
++
++
++def _prompt(heading, end, cwd):
++    return (f"IDENTITY\n\nProject prose quoting {heading} in passing.\n\n{heading}\n\n"
++            f"Host: Example\nUser home directory: /home/alice\nCurrent working directory: {cwd}\n\n{end}")
++
++
++def test_markers_do_not_name_the_product():
++    assert pb.RUNTIME_ENVIRONMENT_HEADING == "# Runtime environment"
++    assert pb.RUNTIME_ENVIRONMENT_END == "<!-- End runtime environment -->"
++    assert ("# Hermes runtime environment", "<!-- End Hermes runtime environment -->") in \
++        pb.LEGACY_RUNTIME_ENVIRONMENT_MARKERS
++
++
++def test_new_and_stored_legacy_prompts_both_split():
++    new = _prompt(pb.RUNTIME_ENVIRONMENT_HEADING, pb.RUNTIME_ENVIRONMENT_END, "/work/new")
++    old = _prompt(*pb.LEGACY_RUNTIME_ENVIRONMENT_MARKERS[0], "/work/old")
++    for prompt, cwd in ((new, "/work/new"), (old, "/work/old")):
++        identity, marker, runtime = split_runtime_boundary(prompt)
++        assert identity.startswith("IDENTITY") and marker and runtime.startswith("Host: Example")
++        assert runtime_host_value(prompt, "Current working directory") == cwd
++    assert split_runtime_boundary("IDENTITY only") == ("IDENTITY only", "", "")
++
++
++def test_rendered_prompt_uses_the_new_markers(monkeypatch):
++    monkeypatch.setattr(pb, "build_environment_hints", lambda: "Host: Example")
++    prompt = "\n\n".join(build_system_prompt_parts(_make_agent()).values())
++    assert pb.RUNTIME_ENVIRONMENT_HEADING in prompt and prompt.rstrip().endswith(pb.RUNTIME_ENVIRONMENT_END)
++    assert "Hermes runtime environment" not in prompt
++
++
++def test_product_help_guidance_on_by_default_and_off_when_disabled(monkeypatch):
++    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP-SKILL")
++    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP-DOCS")
++    on = "\n\n".join(build_system_prompt_parts(_make_agent()).values())
++    off = "\n\n".join(build_system_prompt_parts(_make_agent(_product_help_guidance=False)).values())
++    assert "HELP-DOCS" in on
++    assert "HELP-DOCS" not in off and "HELP-SKILL" not in off
+diff --git a/tests/agent/test_system_prompt.py b/tests/agent/test_system_prompt.py
+index 38f3d739bb..cc6fcbf0df 100644
+--- a/tests/agent/test_system_prompt.py
++++ b/tests/agent/test_system_prompt.py
+@@ -429,7 +429,7 @@ class TestNamedProfileHintIntegration:
+         with patch("agent.coding_context._coding_mode", return_value="off"):
+             prompt = "\n\n".join(_prompt_parts(agent).values())
+ 
+-        assert "Active Hermes profile: coder." in prompt
++        assert "Active profile: coder." in prompt
+         assert f"reads and writes {profile_home}/." in prompt
+         # The doubled form must not appear anywhere.
+         assert f"{profile_home}/profiles/coder" not in prompt
+@@ -454,7 +454,7 @@ class TestNamedProfileHintIntegration:
+         with patch("agent.coding_context._coding_mode", return_value="off"):
+             prompt = "\n\n".join(_prompt_parts(agent).values())
+ 
+-        assert "Active Hermes profile: default." in prompt
++        assert "Active profile: default." in prompt
+         assert f"under {root}/profiles/<name>/." in prompt
+ 
+ 
+@@ -507,7 +507,7 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
+     # build the expectation the same way instead of hardcoding "/hermes".
+     _home_str = str(Path("/hermes"))
+     expected_profile = (
+-        "Active Hermes profile: default. Other profiles (if any) live "
++        "Active profile: default. Other profiles (if any) live "
+         f"under {_home_str}/profiles/<name>/. Each profile has its own skills/, "
+         "plugins/, cron/, and memories/ that affect a different session than "
+         "this one. Do not modify another profile's skills/plugins/cron/memories "
+diff --git a/website/docs/developer-guide/prompt-assembly.md b/website/docs/developer-guide/prompt-assembly.md
+index f51608d4bb..844cfc6263 100644
+--- a/website/docs/developer-guide/prompt-assembly.md
++++ b/website/docs/developer-guide/prompt-assembly.md
+@@ -46,7 +46,7 @@ provider cache reuses. A session with no workspace snapshot keeps its trailing g
+ tier; the runtime environment block always ends the volatile tier.
+ 
+ Consequence for stored prompts: `_stored_prompt_matches_runtime()` (`agent/conversation_loop.py`) reads
+-the first host-info paragraph after the rendered `# Hermes runtime environment` boundary, with a
++the first host-info paragraph after the rendered `# Runtime environment` boundary (or the `# Hermes runtime environment` one older stored prompts carry), with a
+ closing marker at the absolute end distinguishing this layout from legacy prose quoting the heading.
+ The runtime boundary follows all project, operator, memory and plugin text, so examples in those
+ blocks do not masquerade as the runtime cwd. Model/provider are read before the runtime boundary,
