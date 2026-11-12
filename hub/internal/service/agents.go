@@ -49,7 +49,7 @@ func (s *Service) SubmitAgent(ctx context.Context, backendID, sessionID, id, tex
 	var yolo struct {
 		Value string `json:"value"`
 	}
-	if err := b.call(ctx, ls, gateway.MethodConfigGet, gateway.ConfigGetParams{SessionID: ls.id, Key: gateway.KeyYolo}, &yolo); err != nil {
+	if err := b.read(ctx, ls, gateway.MethodConfigGet, gateway.ConfigGetParams{SessionID: ls.id, Key: gateway.KeyYolo}, &yolo); err != nil {
 		return refusal(err)
 	}
 	if yolo.Value != "0" {

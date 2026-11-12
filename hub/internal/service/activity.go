@@ -40,14 +40,14 @@ func (s *Service) Activity(ctx context.Context, user, backendID, sessionID strin
 			out.Subagents = append(out.Subagents, subagent(r))
 		}
 		var procs gateway.ProcessList
-		if err := b.call(ctx, ls, gateway.MethodProcessList, gateway.SessionParams{SessionID: ls.id}, &procs); err != nil {
+		if err := b.read(ctx, ls, gateway.MethodProcessList, gateway.SessionParams{SessionID: ls.id}, &procs); err != nil {
 			return refusal(err)
 		}
 		for _, p := range procs.Processes {
 			out.Processes = append(out.Processes, process(p))
 		}
 		var st gateway.DelegationStatus
-		if err := b.call(ctx, ls, gateway.MethodDelegationStatus, map[string]any{}, &st); err != nil {
+		if err := b.read(ctx, ls, gateway.MethodDelegationStatus, map[string]any{}, &st); err != nil {
 			b.log.Debug("delegation.status", "error", err.Error())
 		}
 		out.Paused = st.Paused
@@ -58,7 +58,7 @@ func (s *Service) Activity(ctx context.Context, user, backendID, sessionID strin
 
 func (b *backend) subagents(ctx context.Context, ls *live) ([]gateway.SubagentRow, error) {
 	var res gateway.SubagentList
-	if err := b.call(ctx, ls, gateway.MethodSubagentList, gateway.SessionParams{SessionID: ls.id}, &res); err != nil {
+	if err := b.read(ctx, ls, gateway.MethodSubagentList, gateway.SessionParams{SessionID: ls.id}, &res); err != nil {
 		return nil, refusal(err)
 	}
 	return res.Subagents, nil
@@ -107,7 +107,7 @@ func (s *Service) SubagentTail(ctx context.Context, user, backendID, sessionID, 
 	var out hub.SubagentTail
 	err := s.ownSubagent(ctx, user, backendID, sessionID, subagentID, func(b *backend, ls *live) error {
 		var res gateway.SubagentTail
-		if err := b.call(ctx, ls, gateway.MethodSubagentTail, gateway.SubagentParams{SessionID: ls.id, SubagentID: subagentID}, &res); err != nil {
+		if err := b.read(ctx, ls, gateway.MethodSubagentTail, gateway.SubagentParams{SessionID: ls.id, SubagentID: subagentID}, &res); err != nil {
 			return refusal(err)
 		}
 		out = hub.SubagentTail{Available: res.Available, Text: res.Text, Truncated: res.Truncated}
@@ -162,7 +162,7 @@ func (s *Service) StopProcess(ctx context.Context, user, backendID, sessionID, p
 	}
 	return s.withSession(ctx, user, backendID, sessionID, func(b *backend, ls *live) error {
 		var procs gateway.ProcessList
-		if err := b.call(ctx, ls, gateway.MethodProcessList, gateway.SessionParams{SessionID: ls.id}, &procs); err != nil {
+		if err := b.read(ctx, ls, gateway.MethodProcessList, gateway.SessionParams{SessionID: ls.id}, &procs); err != nil {
 			return refusal(err)
 		}
 		if !slices.ContainsFunc(procs.Processes, func(p gateway.ProcessRow) bool { return p.SessionID == processID }) {

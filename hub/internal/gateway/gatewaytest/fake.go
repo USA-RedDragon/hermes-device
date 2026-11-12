@@ -163,7 +163,10 @@ type Gateway struct {
 	loseAnswer bool
 	crash      bool
 	refuse     map[string]string
-	down       *gatedListener
+	// drainingCalls answers that many more calls of a method with
+	// runtime_draining (RefuseWhileDraining).
+	drainingCalls map[string]int
+	down          *gatedListener
 	// submissions are the admissions by session and submission_id, which
 	// outlive a restart as Hermes' session_admissions rows do.
 	submissions map[string]submission
@@ -326,6 +329,18 @@ func (g *Gateway) RefuseSubmits(sessionID, reason string) {
 		g.refuse = map[string]string{}
 	}
 	g.refuse[sessionID] = reason
+}
+
+// RefuseWhileDraining makes the next n calls of method fail with
+// runtime_draining, as a Hermes gateway in its restart wait refuses a verb
+// it does not serve there.
+func (g *Gateway) RefuseWhileDraining(method string, n int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.drainingCalls == nil {
+		g.drainingCalls = map[string]int{}
+	}
+	g.drainingCalls[method] = n
 }
 
 // Stop makes the gateway's process exit: every connection closes and new
@@ -694,7 +709,7 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 			g.mu.Unlock()
 			continue
 		}
-		result, rerr, after := g.dispatch(c, req.Method, req.Params)
+		result, rerr, after := g.dispatchOrRefuse(c, req.Method, req.Params)
 		var errFrame map[string]any
 		if rerr != "" {
 			errFrame = g.refusalLocked(req.Method, req.Params, rerr)
@@ -822,6 +837,15 @@ func (g *Gateway) infoLocked(s *Session, full bool) map[string]any {
 			"completion": 0, kTotal: 0, "calls": 0}
 	}
 	return info
+}
+
+// dispatchOrRefuse is dispatch after the refusals RefuseWhileDraining set.
+func (g *Gateway) dispatchOrRefuse(c *conn, method string, p map[string]any) (any, string, func()) {
+	if g.drainingCalls[method] > 0 {
+		g.drainingCalls[method]--
+		return nil, gateway.ReasonRuntimeDraining, nil
+	}
+	return g.dispatch(c, method, p)
 }
 
 func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, string, func()) {

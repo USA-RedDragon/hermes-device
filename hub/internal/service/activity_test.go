@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
@@ -313,5 +314,45 @@ func TestSnapshotSaysWhetherToolsCanMove(t *testing.T) {
 		if snap.ToolBackground != capable {
 			t.Fatalf("capable %v: snapshot tool_background = %v", capable, snap.ToolBackground)
 		}
+	}
+}
+
+func TestActivityWaitsOutARestartWaitRefusal(t *testing.T) {
+	t.Parallel()
+	e := activitySetup(t)
+	e.gw.RefuseWhileDraining(gateway.MethodSubagentList, 2)
+	e.gw.RefuseWhileDraining(gateway.MethodProcessList, 1)
+	st, err := e.svc.Activity(context.Background(), userAlice, backendPC, sLive)
+	if err != nil {
+		t.Fatalf("activity during a restart wait: %v", err)
+	}
+	if len(st.Subagents) != 2 || len(st.Processes) != 1 {
+		t.Fatalf("activity = %+v", st)
+	}
+}
+
+func TestActivityWaitsOutARestartClose(t *testing.T) {
+	t.Parallel()
+	e := activitySetup(t)
+	if _, err := e.svc.Activity(context.Background(), userAlice, backendPC, sLive); err != nil {
+		t.Fatal(err)
+	}
+	e.gw.RestartConnections()
+	st, err := e.svc.Activity(context.Background(), userAlice, backendPC, sLive)
+	if err != nil {
+		t.Fatalf("activity after a restart close: %v", err)
+	}
+	if len(st.Subagents) != 2 {
+		t.Fatalf("subagents = %+v", st.Subagents)
+	}
+}
+
+func TestActivityStillFailsOnARealRefusal(t *testing.T) {
+	t.Parallel()
+	e := activitySetup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := e.svc.Activity(ctx, userAlice, backendPC, "s-missing"); err == nil {
+		t.Fatal("an unknown session must still fail")
 	}
 }

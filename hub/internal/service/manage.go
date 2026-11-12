@@ -147,7 +147,7 @@ func (s *Service) Models(ctx context.Context, user, backendID, sessionID string)
 	var out hub.Models
 	err := s.withSession(ctx, user, backendID, sessionID, func(b *backend, ls *live) error {
 		var res gateway.ModelOptionsResult
-		if err := b.call(ctx, ls, gateway.MethodModelOptions, gateway.ModelOptionsParams{SessionID: ls.id}, &res); err != nil {
+		if err := b.read(ctx, ls, gateway.MethodModelOptions, gateway.ModelOptionsParams{SessionID: ls.id}, &res); err != nil {
 			return refusal(err)
 		}
 		out = hub.Models{Provider: res.Provider, Model: res.Model, Providers: []hub.ModelProvider{}}

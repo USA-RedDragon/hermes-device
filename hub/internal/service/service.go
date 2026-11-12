@@ -1333,6 +1333,33 @@ func (b *backend) call(ctx context.Context, ls *live, method string, params, out
 	return c.Call(cctx, method, params, out)
 }
 
+// readRestartWait bounds how long a read-only call is tried again while
+// its backend restarts. A Hermes gateway that stops for a rollout closes the
+// hub's socket once and is replaced within seconds.
+const readRestartWait = 30 * time.Second
+
+// read is call for a method that changes nothing: while the backend is
+// restarting (gateway.Retryable: a closed socket, a refusal while it drains)
+// it is sent again on the next connection, with backoff, within ctx and
+// readRestartWait, so a page that polls it sees a slower answer instead of
+// an error.
+func (b *backend) read(ctx context.Context, ls *live, method string, params, out any) error {
+	deadline := time.Now().Add(readRestartWait)
+	delay := 250 * time.Millisecond
+	for {
+		err := b.call(ctx, ls, method, params, out)
+		if err == nil || !gateway.Retryable(err) || ctx.Err() != nil || !time.Now().Add(delay).Before(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, 2*time.Second)
+	}
+}
+
 // detachIdle runs from a timer, with no request behind it.
 //
 //nolint:contextcheck // see above
