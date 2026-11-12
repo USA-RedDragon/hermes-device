@@ -44,6 +44,9 @@ const SilenceTimeout = 60 * time.Second
 // StableAfter is how long a connection must stay up to reset the backoff.
 const StableAfter = 30 * time.Second
 
+// DefaultFastRetry is the default of Options.FastRetry.
+const DefaultFastRetry = 60 * time.Second
+
 // Resume defaults.
 const (
 	DefaultResumeBuffer = 1 << 20
@@ -106,6 +109,10 @@ type Options struct {
 	Env        []string
 	MinBackoff time.Duration
 	MaxBackoff time.Duration
+	// FastRetry is how long after a stable leg drops the device retries
+	// every MinBackoff instead of backing off, so it is back within about
+	// MinBackoff of a gateway handoff or hub restart ending.
+	FastRetry time.Duration
 	// PingInterval is the interval of both the WebSocket control pings and
 	// the application pings.
 	PingInterval   time.Duration
@@ -223,6 +230,7 @@ func New(opts Options) (*Client, error) {
 	}
 	setDefault(&opts.MinBackoff, time.Second)
 	setDefault(&opts.MaxBackoff, 30*time.Second)
+	setDefault(&opts.FastRetry, DefaultFastRetry)
 	setDefault(&opts.PingInterval, protocol.PingInterval)
 	setDefault(&opts.PingTimeout, protocol.PingTimeout)
 	setDefault(&opts.HelloTimeout, protocol.HelloTimeout)
@@ -276,6 +284,7 @@ func (c *Client) Run(ctx context.Context) error {
 		c.wg.Wait()
 	}()
 	backoff := c.opts.MinBackoff
+	var fastUntil time.Time
 	for {
 		up, err := c.serveOnce(ctx)
 		if ctx.Err() != nil {
@@ -286,12 +295,18 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		if up >= c.opts.StableAfter {
 			backoff = c.opts.MinBackoff
+			fastUntil = time.Now().Add(c.opts.FastRetry)
 		}
-		slog.Warn("Exec leg lost; reconnecting", "error", err, "in", backoff)
-		if !sleep(ctx, backoff) {
+		wait := backoff
+		if time.Now().Before(fastUntil) {
+			wait = c.opts.MinBackoff
+		} else {
+			backoff = min(backoff*2, c.opts.MaxBackoff)
+		}
+		slog.Warn("Exec leg lost; reconnecting", "error", err, "in", wait)
+		if !sleep(ctx, wait) {
 			return nil
 		}
-		backoff = min(backoff*2, c.opts.MaxBackoff)
 	}
 }
 

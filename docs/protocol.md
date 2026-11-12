@@ -71,7 +71,7 @@ The hub relays the backend's close code and reason to the device unchanged. Code
 
 The hub accepts the device's upgrade only after its own upgrade to the backend succeeded. When the backend refuses or cannot be reached (an HTTP error, a refused connection, a timeout), the hub answers the device's upgrade with HTTP `502` and `{"error": "backend_unavailable"}`, and the client reconnects with backoff. Any HTTP answer other than `401` to an upgrade means reconnect with backoff.
 
-Backoff: start at `reconnect.min-backoff` (default 1s), double after each failed attempt up to `reconnect.max-backoff` (default 30s), reset after a connection that stayed up 30s.
+Backoff: start at `reconnect.min-backoff` (default 1s), double after each failed attempt up to `reconnect.max-backoff` (default 30s), reset after a connection that stayed up 30s. For 60s after such a stable exec leg drops, the device retries every `reconnect.min-backoff` without doubling, so it is back within about a second of a gateway handoff or a hub restart ending (section 4.7).
 
 ### 2.4 JSON
 

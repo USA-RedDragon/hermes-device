@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -1042,4 +1044,63 @@ func TestResumeBufferBound(t *testing.T) {
 	opts.MaxBackoff = 2 * time.Second
 	start(t, opts)
 	wait(t, finished)
+}
+
+// legDrops serves one stable exec leg, closes it as a gateway handoff
+// does, and then answers 502 like a hub whose backend is away.
+type legDrops struct {
+	stable   time.Duration
+	mu       sync.Mutex
+	attempts []time.Time
+}
+
+func (l *legDrops) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	l.mu.Lock()
+	l.attempts = append(l.attempts, time.Now())
+	first := len(l.attempts) == 1
+	l.mu.Unlock()
+	if !first {
+		http.Error(w, "backend unavailable", http.StatusBadGateway)
+		return
+	}
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.CloseNow() }()
+	ctx := r.Context()
+	if _, _, err := conn.Read(ctx); err != nil {
+		return
+	}
+	writeJSON(ctx, conn, protocol.Welcome{Type: protocol.TypeWelcome, Version: protocol.Version, DeviceID: "d_2",
+		Name: testName, PingInterval: 25, GraceSeconds: 60})
+	writeJSON(ctx, conn, protocol.Resume{Type: protocol.TypeResume, Commands: []protocol.ResumeCommand{}})
+	time.Sleep(l.stable)
+	_ = conn.Close(websocket.StatusGoingAway, "gateway handoff")
+}
+
+func (l *legDrops) times() []time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.attempts)
+}
+
+func TestStableLegDropRetriesFast(t *testing.T) {
+	t.Parallel()
+	l := &legDrops{stable: 100 * time.Millisecond}
+	srv := httptest.NewServer(l)
+	t.Cleanup(srv.Close)
+	opts := options(t, srv.URL, t.TempDir())
+	opts.MinBackoff = 20 * time.Millisecond
+	opts.MaxBackoff = 5 * time.Second
+	opts.StableAfter = 50 * time.Millisecond
+	opts.FastRetry = 10 * time.Second
+	start(t, opts)
+	waitFor(t, "8 attempts", func() bool { return len(l.times()) >= 8 })
+	at := l.times()
+	for i := 2; i < 8; i++ {
+		if gap := at[i].Sub(at[i-1]); gap > 300*time.Millisecond {
+			t.Errorf("retry %d came %v after the one before; want about MinBackoff after a stable leg dropped", i, gap)
+		}
+	}
 }
