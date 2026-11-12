@@ -212,7 +212,7 @@ window.HubComposer = (ctx) => {
       const [list, got] = await Promise.all([chat && !only ? loadCommands(chat) : [], loadPrompts()]);
       if (my !== seq) return;
       const ps = got || [];
-      const items = list.filter((c) => c.name.slice(1).toLowerCase().startsWith(q)).map((c) => ({ kind: "cmd", c }));
+      const items = window.HubSlash.match(list, q).map((m) => ({ kind: "cmd", c: m.c, alias: m.alias }));
       const prompts = ps.filter((p) => (promptTag + p.name.toLowerCase()).startsWith(q)).map((p) => ({ kind: "prompt", p }));
       if (only) {
         const none = !got ? "Could not load your prompts" : ps.length ? "No prompt starts with " + slash[1].slice(promptTag.length)
@@ -280,6 +280,7 @@ window.HubComposer = (ctx) => {
         c.append(mark(it.c.name, sug.q ? "/" + sug.q : ""));
         d = it.c.description || "";
         if (it.c.args) c.append(el("span", "dir", " " + it.c.args));
+        if (it.alias) c.append(el("span", "dir", " (alias "), mark(it.alias, sug.q ? "/" + sug.q : ""), el("span", "dir", ")"));
       } else if (it.kind === "prompt") {
         o.classList.add("saved");
         c.append(mark("/" + promptTag + it.p.name, sug.q ? "/" + sug.q : ""));
