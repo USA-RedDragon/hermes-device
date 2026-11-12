@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 23:13:06 -0600
+Subject: [PATCH] fix(agent): a stale kill that opens the breaker ends the call
+
+The consecutive-stale breaker was read only when a call started, so a
+call kept reconnecting up to HERMES_STREAM_RETRIES times after the streak
+reached the threshold. Against a provider that holds the stream open with
+keepalive comments and never sends a chunk, every reconnect cost a full
+stale window: six windows (18 minutes at 180s) before a 5-attempt breaker
+refused the next call. The stream retry now stops once the breaker is
+open, and the kill counts the attempt before the abort wakes the worker.
+---
+ agent/chat_completion_helpers.py              | 24 +++++++----
+ .../test_stream_stale_circuit_breaker.py      | 41 +++++++++++++++++++
+ 2 files changed, 57 insertions(+), 8 deletions(-)
+
+diff --git a/agent/chat_completion_helpers.py b/agent/chat_completion_helpers.py
+index 5f2cf34698..55906dcf36 100644
+--- a/agent/chat_completion_helpers.py
++++ b/agent/chat_completion_helpers.py
+@@ -605,12 +605,17 @@ def _touch_stale_kill_activity(agent, elapsed: float) -> None:
+         logger.debug("stale activity touch failed", exc_info=True)
+ 
+ 
++def _stale_breaker_open(agent) -> bool:
++    """The consecutive-stale streak reached the give-up threshold."""
++    giveup = stale_giveup()
++    return giveup > 0 and _stale_streak(agent) >= giveup
++
++
+ def _check_stale_giveup(agent) -> None:
+     """Raise immediately when the consecutive-stale streak is past the
+     give-up threshold — no network attempt, no stale-timeout wait."""
+-    _giveup = stale_giveup()
+     _streak = _stale_streak(agent)
+-    if _giveup > 0 and _streak >= _giveup:
++    if _stale_breaker_open(agent):
+         raise RuntimeError(
+             "Provider has been unresponsive (no response received) for "
+             f"{_streak} consecutive stale attempts — aborting this call to "
+@@ -3597,22 +3602,24 @@ class _StreamingCall(StreamingWaitMonitor):
+             return True
+ 
+         if _is_transient or _is_empty_stream:
+-            # Transient network / timeout error: retry with a fresh connection first.
+-            if attempt < max_retries:
++            # Transient network / timeout error: retry with a fresh connection first. A stale kill
++            # that opened the breaker ends the call: the next call would be refused anyway, and each
++            # reconnect to an unresponsive provider costs another full stale window.
++            if attempt < max_retries and not _stale_breaker_open(self.agent):
+                 self._retry_after_drop(e, attempt, max_retries, mid_tool_call=False, reason="stream_retry_cleanup")
+                 return True
+             # Exhausted: log full diagnostics (chain, headers, bytes/elapsed).
+-            self.agent._log_stream_retry(kind="exhausted", error=e, attempt=max_retries + 1,
++            self.agent._log_stream_retry(kind="exhausted", error=e, attempt=attempt + 1,
+                 max_attempts=max_retries + 1, mid_tool_call=False, diag=self.clients.diag)
+             # Empty stream: "connection failed" would send users chasing network issues.
+             if _is_stream_parse_err or _is_empty_stream:
+                 _what = ("Provider returned malformed streaming data after" if _is_stream_parse_err
+                          else "Provider returned an empty response stream after")
+                 self.agent._buffer_diagnostic_status(
+-                    f"❌ {_what} {max_retries + 1} attempts. The provider may be experiencing issues — try again in a moment.")
++                    f"❌ {_what} {attempt + 1} attempts. The provider may be experiencing issues — try again in a moment.")
+             else:
+                 from agent.stream_diag import buffer_connect_exhausted_notice
+-                buffer_connect_exhausted_notice(self.agent, e, attempts=max_retries + 1, base_url=self.agent.base_url)
++                buffer_connect_exhausted_notice(self.agent, e, attempts=attempt + 1, base_url=self.agent.base_url)
+         else:
+             self._maybe_disable_streaming(e)
+             logger.exception("Streaming failed before delivery: %s", e)
+@@ -3805,11 +3812,12 @@ class _StreamingCall(StreamingWaitMonitor):
+         # connection, so shut down the killed attempt's own socket too — still
+         # shutdown-only, never close (see the helper).
+         _killed_response = self._attempt_stream_response
++        # Counted before the abort wakes the worker, which reads the breaker to decide on a reconnect.
++        self._count_stale_attempt()
+         with contextlib.suppress(Exception):
+             self._cancel_current_stream_attempt("stale_stream_kill")
+             self.clients.close_once("stale_stream_kill")
+         self._shutdown_stale_attempt_socket(_killed_response)
+-        self._count_stale_attempt()
+         self._rearm_or_abandon_after_kill(elapsed)
+ 
+     def _abort_for_interrupt(self, stale_elapsed: float) -> None:
+diff --git a/tests/agent/test_stream_stale_circuit_breaker.py b/tests/agent/test_stream_stale_circuit_breaker.py
+index e8561a1809..51a372a335 100644
+--- a/tests/agent/test_stream_stale_circuit_breaker.py
++++ b/tests/agent/test_stream_stale_circuit_breaker.py
+@@ -200,3 +200,44 @@ class TestStreamStaleCircuitBreaker:
+         kills = sum("Stream stale for" in r.getMessage() for r in caplog.records)
+         assert kills >= 2, f"scenario needs the timer to re-fire; saw {kills} kill(s)"
+         assert agent._consecutive_stale_streams == 1
++
++
++@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
++def test_stale_kill_that_opens_the_breaker_ends_the_call(monkeypatch):
++    """A provider that holds the stream open with keepalives and never sends a chunk was
++    reconnected HERMES_STREAM_RETRIES times inside one call even after the breaker opened, so
++    the streak overshot the threshold and each extra reconnect cost a full stale window
++    (3 per call by default; 6 windows, 18 minutes, before a 5-attempt breaker refused a call)."""
++    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.1")
++    monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "2")
++    monkeypatch.setenv("HERMES_STREAM_RETRIES", "5")
++    agent = _make_anthropic_agent()
++    agent._consecutive_stale_streams = 0
++    opened = []
++
++    def _stream_side_effect(*args, **kwargs):
++        unblock = threading.Event()
++        agent._abort_request_anthropic_client = lambda *a, **k: unblock.set()
++
++        def _blocking_gen():
++            unblock.wait(timeout=5.0)
++            raise httpx.ReadError("stream aborted by the stale detector")
++            yield
++
++        opened.append(unblock)
++        cm = MagicMock()
++        stream = MagicMock()
++        stream.__iter__ = MagicMock(return_value=_blocking_gen())
++        cm.__enter__ = MagicMock(return_value=stream)
++        cm.__exit__ = MagicMock(return_value=False)
++        return cm
++
++    agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
++    with pytest.raises(httpx.ReadError):
++        agent._interruptible_streaming_api_call({})
++
++    assert len(opened) == 2
++    assert agent._consecutive_stale_streams == 2
++    with pytest.raises(RuntimeError, match="2 consecutive stale attempts"):
++        agent._interruptible_streaming_api_call({})
++    assert len(opened) == 2

@@ -53,6 +53,7 @@ The Test workflow runs on pull requests and before each release:
 | `0019-steer-current-turn` | A steer sent before the turn's first tool call waits, with its ticket, for a tool result of this turn instead of landing after a tool result of an earlier turn, where the model read it as history. Bug fix, no key. | Not fixed upstream; no PR. |
 | `0020-skill-config-managed-overlay` | Skill settings (`skills.disabled`, `skills.platform_disabled`, `agent.product_help_guidance` for 0017) in the managed scope apply even when config.yaml lacks them; before, they held only while config.yaml had a copy, and Hermes writes config.yaml without the managed values. Bug fix, no key. | Not fixed upstream; no PR. |
 | `0021-subagent-controls-listed-children` | Stop, Steer and tail reach every background subagent `subagent.list` shows, also after the parent's cached agent was rebuilt or evicted; before, Stop on such a row answered `found: false` (the hub's "no longer running"). Bug fix, no key. | Not fixed upstream; no PR. |
+| `0022-stale-breaker-ends-call` | A stale-stream kill that opens the consecutive-stale breaker (`HERMES_STREAM_STALE_GIVEUP`) ends the call instead of reconnecting up to `HERMES_STREAM_RETRIES` more times; a provider that holds the stream open with keepalive comments cost 6 stale windows (18 min at 180 s) before, 5 now. Bug fix, no key. | Not fixed upstream; no PR. |
 
 ## Adding or changing a patch
 
