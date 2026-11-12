@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
+	"github.com/coder/websocket"
 )
 
 // heldOnce answers its first call only after hold, the way a stopping Hermes
@@ -106,5 +107,41 @@ func TestRetryStopsWithTheCaller(t *testing.T) {
 	}
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("returned after %v; want about the caller's 600ms", d)
+	}
+}
+
+func TestDialMintsAgainWhenTheTicketIsRefused(t *testing.T) {
+	t.Parallel()
+	var tickets, dials atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/webapp/socket-ticket", func(w http.ResponseWriter, _ *http.Request) {
+		tickets.Add(1)
+		okJSON(map[string]string{"ticket": "t"})(w, nil)
+	})
+	mux.HandleFunc("GET /api/ws", func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{gateway.Subprotocol}})
+		if err != nil {
+			return
+		}
+		if dials.Add(1) == 1 {
+			// What a stopping gateway sends when the gateway it forwarded the dial to refused the ticket.
+			_ = c.Close(websocket.StatusPolicyViolation, "")
+			return
+		}
+		ready := `{"jsonrpc":"2.0","method":"event","params":{"type":"` + gateway.ReadyEvent +
+			`","payload":{"session_authority":true}}}`
+		_ = c.Write(r.Context(), websocket.MessageText, []byte(ready))
+		_, _, _ = c.Read(r.Context())
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	d := gateway.NewDialerWithAttempt(gateway.Credentials{BaseURL: srv.URL}, time.Second)
+	c, err := d.Dial(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("dial = %v", err)
+	}
+	c.Close()
+	if tickets.Load() != 2 || dials.Load() != 2 {
+		t.Fatalf("tickets %d, dials %d; want 2 each", tickets.Load(), dials.Load())
 	}
 }
