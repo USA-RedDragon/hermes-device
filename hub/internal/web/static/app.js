@@ -16,7 +16,7 @@
   let current = null;
   const words = { approval: "Talaria asks to run this", allow: "Allow", deny: "Deny",
     args: "Input", result: "Output", running: "Running", done: "Done", failed: "Failed",
-    working: "Working", queued: "Waiting for Talaria to start", waiting: "Waiting to run", newchat: "New chat",
+    working: "Working", queued: "Queued: Talaria reads this when the current turn ends", waiting: "Waiting to run", newchat: "New chat",
     lost: "Hermes restarted before it finished replying to this message. Messages sent after it wait until you dismiss it.",
     held: "Hermes is restarting. Your message will send when it is back.", notsent: "Not sent.", again: "Send again",
     steered: "Sent to the running turn", now: "Stop and send now",
@@ -2793,7 +2793,7 @@
           toast("Sent; Talaria reads it after its current step");
         } else {
           chat.queued(bubble);
-          if (steer && !files.length) toast("Talaria takes it as the next message");
+          if (steer && !files.length) toast("Queued: Talaria reads it when the current turn ends");
         }
       }
       composer.sent(chat);
