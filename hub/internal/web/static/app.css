@@ -889,10 +889,10 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7
 .pop .opt mark { background: none; color: var(--accent); }
 
 /* Message actions: shown on hover; on touch a tap on the message shows them. */
-.log > .acts { display: flex; gap: .15rem; height: 0; margin: -1.4rem .5rem 0; overflow: visible; position: relative; z-index: 2; opacity: 0; pointer-events: none; transition: opacity .12s; align-self: flex-end; }
+.log > .acts { display: flex; gap: .15rem; height: 0; margin: -.6rem .5rem 0; top: -.8rem; overflow: visible; position: relative; z-index: 2; opacity: 0; pointer-events: none; transition: opacity .12s; align-self: flex-end; }
 .log > .acts.mine { align-self: flex-start; }
 .log > .msg:hover + .acts, .log > .msg:hover + .queued + .acts, .log > .acts:hover, .log > .acts:focus-within, .log > .acts.show { opacity: 1; pointer-events: auto; }
-@media (pointer: coarse) { .log > .acts { display: none; } .log > .acts.show { display: flex; opacity: 1; height: auto; margin-top: -.5rem; } }
+@media (pointer: coarse) { .log > .acts { display: none; } .log > .acts.show { display: flex; opacity: 1; height: auto; margin-top: -.5rem; top: 0; } }
 .log > .acts button { border: 1px solid var(--line); background: var(--card); color: var(--muted); padding: 0; border-radius: 6px; display: inline-grid; place-items: center; }
 .log > .acts button.ib { width: 1.6rem; height: 1.6rem; }
 .log > .acts button:hover { background: var(--hover); color: var(--fg); }
