@@ -795,7 +795,19 @@
       head.append(el("span", "state", t("running")));
       card.append(head);
       if (name === "terminal" && args && typeof args.command === "string") {
-        card.append(el("pre", "command", args.command));
+        const pre = el("pre", "command");
+        const hl = window.hljs;
+        if (hl && hl.getLanguage("bash") && args.command.length <= 100000) {
+          try {
+            pre.innerHTML = hl.highlight(args.command, { language: "bash", ignoreIllegals: true }).value;
+            pre.classList.add("hljs");
+          } catch (_) {
+            pre.textContent = args.command;
+          }
+        } else {
+          pre.textContent = args.command;
+        }
+        card.append(pre);
       } else if (name === "agent_send" && args && typeof args.text === "string") {
         const sent = el("div", "msg agent sent");
         sent.append(el("div", "agent-tag", "Agent message to " + String(args.to || "")), args.text);
