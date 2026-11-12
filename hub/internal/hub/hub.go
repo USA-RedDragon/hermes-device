@@ -354,6 +354,9 @@ type Pending struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
 	Text   string `json:"text"`
+	// SubmissionID is the ID the sender gave the input, "" when it has
+	// none. A page that sent it knows it by this ID.
+	SubmissionID string `json:"submission_id,omitempty"`
 }
 
 // KindClarifyRequest is a question the agent asks the user. Its Data has

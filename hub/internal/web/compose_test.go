@@ -431,3 +431,41 @@ func TestPinOrderIsPerUserAPI(t *testing.T) {
 		t.Fatalf("alice's order: %s", got)
 	}
 }
+
+// A page sends a message under its own ID: the same ID again answers the
+// same message and runs it once, in a JSON or a form body, and a bad ID is
+// refused.
+func TestPromptIDRunsOnce(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	c := client(t)
+	m := login(t, e, c)
+	const id = "hub:7f1c2d3e-0000-4000-8000-0123456789ab"
+	for range 2 {
+		var out map[string]any
+		if s := apiJSON(t, c, http.MethodPost, e.url+pathS1+"/prompt", m.CSRF, map[string]any{keyText: "once", "id": id}, &out); s != http.StatusAccepted ||
+			out["id"] != id {
+			t.Fatalf("prompt = %d %v", s, out)
+		}
+	}
+	if n := e.gw.Submits(); n != 1 {
+		t.Fatalf("gateway admitted %d inputs, want 1", n)
+	}
+	const formID = "hub:0a1b2c3d-0000-4000-8000-0123456789ab"
+	for range 2 {
+		resp, body := postForm(t, c, e.url+pathS1+"/prompt", m.CSRF, e.url, part{field: "id", data: []byte(formID)},
+			part{field: kText, data: []byte("with a form")})
+		if resp.StatusCode != http.StatusAccepted || !strings.Contains(body, formID) {
+			t.Fatalf("form prompt = %d %s", resp.StatusCode, body)
+		}
+	}
+	if n := e.gw.Submits(); n != 2 {
+		t.Fatalf("gateway admitted %d inputs, want 2", n)
+	}
+	for _, bad := range []string{"x", "hub:short", "other:7f1c2d3e-0000", "hub:7f1c2d3e 0000 4000", strings.Repeat("hub:a", 20)} {
+		var out map[string]any
+		if s := apiJSON(t, c, http.MethodPost, e.url+pathS1+"/prompt", m.CSRF, map[string]any{keyText: "no", "id": bad}, &out); s != http.StatusBadRequest {
+			t.Fatalf("id %q = %d %v", bad, s, out)
+		}
+	}
+}

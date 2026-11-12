@@ -200,3 +200,12 @@ func (ls *live) waitSettled(ctx context.Context, admissionID string, limit time.
 		}
 	}
 }
+
+// sub is the submission ID a page sent an input under, "" for an input of
+// Hermes's own.
+func sub(p gateway.PendingAdmission) string {
+	if p.InputID == "" || gateway.Producer(p.InputID) != "" {
+		return ""
+	}
+	return p.InputID
+}

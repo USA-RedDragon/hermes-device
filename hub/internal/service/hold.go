@@ -128,6 +128,11 @@ func (b *backend) hold(user, sessionID, id, text string, atts []gateway.Attachme
 	if b.draining {
 		return hub.PromptResult{}, hub.ErrShuttingDown
 	}
+	for _, p := range b.held[sessionID] {
+		if p.id == id {
+			return hub.PromptResult{ID: id, Held: true, HeldUntil: p.until}, nil
+		}
+	}
 	if len(b.held[sessionID]) >= maxHeld {
 		return hub.PromptResult{}, hub.ErrHoldFull
 	}

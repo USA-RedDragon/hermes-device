@@ -357,10 +357,10 @@ func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text s
 	release := b.gate(sessionID)
 	res, receipt, err := s.promptLocked(ctx, b, user, sessionID, id, text, files)
 	release()
-	if err != nil || !hub.Steer(ctx) || len(files) > 0 || res.Held || receipt.Status != gateway.AdmissionQueued {
+	if err != nil || !hub.Steer(ctx) || len(files) > 0 || res.Held || (receipt.Status != gateway.AdmissionQueued && receipt.Status != gateway.AdmissionStarted) {
 		return res, err
 	}
-	res.Steered = b.steer(ctx, sessionID, receipt.AdmissionID)
+	res.Steered = b.steerOrFind(context.WithoutCancel(ctx), sessionID, receipt)
 	return res, nil
 }
 
@@ -1231,11 +1231,11 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	for _, p := range snap.Pending {
 		switch {
 		case steering(p, turn):
-			pending = append(pending, hub.Pending{ID: p.AdmissionID, Status: hub.PendingSteering, Text: p.Text})
+			pending = append(pending, hub.Pending{ID: p.AdmissionID, Status: hub.PendingSteering, Text: p.Text, SubmissionID: sub(p)})
 		case p.Status == gateway.AdmissionQueued:
-			pending = append(pending, hub.Pending{ID: p.AdmissionID, Status: hub.PendingQueued, Text: p.Text})
+			pending = append(pending, hub.Pending{ID: p.AdmissionID, Status: hub.PendingQueued, Text: p.Text, SubmissionID: sub(p)})
 		case p.Status == gateway.AdmissionUnknown:
-			pending = append(pending, hub.Pending{ID: p.AdmissionID, Status: hub.PendingLost, Text: p.Text})
+			pending = append(pending, hub.Pending{ID: p.AdmissionID, Status: hub.PendingLost, Text: p.Text, SubmissionID: sub(p)})
 		}
 	}
 	data, err := json.Marshal(hub.Snapshot{SessionID: snap.SessionID, BackendID: b.cfg.ID, Title: title,

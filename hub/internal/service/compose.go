@@ -103,6 +103,23 @@ func (b *backend) steer(ctx context.Context, sessionID, admissionID string) bool
 	}
 }
 
+// steerOrFind hands a queued admission to the running turn. An admission
+// that already started answers a prompt sent again under the same ID: it
+// is a steer when it is not the running turn's own.
+func (b *backend) steerOrFind(ctx context.Context, sessionID string, r gateway.Receipt) bool {
+	if r.Status == gateway.AdmissionQueued {
+		return b.steer(ctx, sessionID, r.AdmissionID)
+	}
+	ls, err := b.session(ctx, sessionID)
+	if err != nil {
+		return false
+	}
+	defer ls.unpin()
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	return ls.turnAdmission != "" && ls.turnAdmission != r.AdmissionID
+}
+
 // busy reports whether the session runs a turn or has inputs waiting, as
 // far as the hub saw.
 func (ls *live) busy() bool {

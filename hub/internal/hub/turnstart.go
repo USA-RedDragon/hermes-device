@@ -33,6 +33,25 @@ func SubmissionIDFor(seed string) string {
 	return submissionPrefix + uuid.NewSHA1(uuid.NameSpaceOID, []byte(seed)).String()
 }
 
+// MaxClientID bounds the length of a page's message id.
+const MaxClientID = 64
+
+// ValidClientID reports whether id is a message id a page may send: the
+// hub prefix and a tail of at least 8 letters, digits and dashes. The page
+// makes it up, and sending the same id again is a retry of one message.
+func ValidClientID(id string) bool {
+	tail, ok := strings.CutPrefix(id, submissionPrefix)
+	if !ok || len(id) > MaxClientID || len(tail) < 8 {
+		return false
+	}
+	for _, c := range tail {
+		if c != '-' && (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
 // FromHub reports whether a submission ID is one of NewSubmissionID's.
 func FromHub(id string) bool {
 	return strings.HasPrefix(id, submissionPrefix)

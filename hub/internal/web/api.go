@@ -107,8 +107,12 @@ func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
-	text, files, steer, page, ok := promptBody(w, r)
+	text, files, steer, page, id, ok := promptBody(w, r)
 	if !ok {
+		return
+	}
+	if id != "" && !hub.ValidClientID(id) {
+		errorJSON(w, http.StatusBadRequest, "bad message id")
 		return
 	}
 	if page != nil {
@@ -123,6 +127,9 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	if id != "" {
+		ctx = hub.WithSubmissionID(ctx, id)
+	}
 	if steer && len(files) == 0 {
 		ctx = hub.WithSteer(ctx)
 	}
@@ -140,72 +147,77 @@ const (
 	maxFileName   = 4096
 )
 
-// promptBody reads a prompt: JSON {"text", "steer", "page"}, or
-// multipart/form-data with a "text" field and one "file" part per
+// promptBody reads a prompt: JSON {"text", "steer", "page", "id"}, or
+// multipart/form-data with an "id" and a "text" field and one "file" part per
 // attachment. A "pages" field after a file part picks the pages of that PDF
 // to show the agent: "N", "N-M" or "N-". Only a JSON prompt can steer or
-// carry the page chat's context.
-func promptBody(w http.ResponseWriter, r *http.Request) (string, []hub.Attachment, bool, *hub.PageContext, bool) {
+// carry the page chat's context. The id is the page's key for the message:
+// the same id sent again never runs the prompt twice.
+func promptBody(w http.ResponseWriter, r *http.Request) (string, []hub.Attachment, bool, *hub.PageContext, string, bool) {
 	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if mt != "multipart/form-data" {
 		var body struct {
 			Text  string           `json:"text"`
 			Steer bool             `json:"steer"`
 			Page  *hub.PageContext `json:"page"`
+			ID    string           `json:"id"`
 		}
 		ok := decode(w, r, &body)
-		return body.Text, nil, body.Steer, body.Page, ok
+		return body.Text, nil, body.Steer, body.Page, body.ID, ok
 	}
-	text, files, ok := formPrompt(w, r)
-	return text, files, false, nil, ok
+	text, files, id, ok := formPrompt(w, r)
+	return text, files, false, nil, id, ok
 }
 
 // formPrompt reads a multipart/form-data prompt.
-func formPrompt(w http.ResponseWriter, r *http.Request) (string, []hub.Attachment, bool) {
+func formPrompt(w http.ResponseWriter, r *http.Request) (string, []hub.Attachment, string, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, hub.MaxAttachmentBytes+maxPromptText+1<<20)
 	mr, err := r.MultipartReader()
 	if err != nil {
 		errorJSON(w, http.StatusBadRequest, "bad form body")
-		return "", nil, false
+		return "", nil, "", false
 	}
-	var text string
+	var text, id string
 	var files []hub.Attachment
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
-			return text, files, true
+			return text, files, id, true
 		}
 		if err != nil {
 			bodyError(w, err)
-			return "", nil, false
+			return "", nil, "", false
 		}
 		switch part.FormName() {
+		case "id":
+			b, _ := io.ReadAll(io.LimitReader(part, hub.MaxClientID+1))
+			id = string(b)
 		case "text":
 			b, err := io.ReadAll(io.LimitReader(part, maxPromptText+1))
 			if err != nil || len(b) > maxPromptText {
 				bodyError(w, err)
-				return "", nil, false
+				return "", nil, "", false
 			}
 			text = string(b)
 		case "file":
 			if len(files) >= hub.MaxAttachments {
 				errorJSON(w, http.StatusBadRequest, fmt.Sprintf("Attach at most %d files to one message", hub.MaxAttachments))
-				return "", nil, false
+				return "", nil, "", false
 			}
 			raw := part.FileName()
 			if len(raw) > maxFileName {
 				errorJSON(w, http.StatusBadRequest, "A file name is too long")
-				return "", nil, false
+				return "", nil, "", false
 			}
 			name := hub.CleanName(raw)
 			b, err := io.ReadAll(io.LimitReader(part, hub.MaxFileBytes+1))
 			if err != nil {
 				bodyError(w, err)
-				return "", nil, false
+				return "", nil, "", false
 			}
 			if len(b) > hub.MaxFileBytes {
 				errorJSON(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("%s is larger than %d MB, the most the hub takes for a file", name, hub.MaxFileBytes>>20))
-				return "", nil, false
+				return "", nil, "", false
 			}
 			files = append(files, hub.Attachment{Name: name, Data: b})
 		case "pages":
@@ -213,12 +225,12 @@ func formPrompt(w http.ResponseWriter, r *http.Request) (string, []hub.Attachmen
 			from, to, ok := pageRange(string(b))
 			if err != nil || !ok || len(b) > 32 || len(files) == 0 {
 				errorJSON(w, http.StatusBadRequest, "Pick pages as a number or a range such as 3-10")
-				return "", nil, false
+				return "", nil, "", false
 			}
 			files[len(files)-1].From, files[len(files)-1].To = from, to
 		default:
 			errorJSON(w, http.StatusBadRequest, "unknown form field")
-			return "", nil, false
+			return "", nil, "", false
 		}
 		_ = part.Close()
 	}
