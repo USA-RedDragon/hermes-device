@@ -453,9 +453,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Accel-Buffering", "no")
+	h.Add("Vary", "Accept-Encoding")
+	out := newStreamWriter(w, flusher, r.Header.Get("Accept-Encoding"))
+	defer out.Close()
 	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprint(w, "retry: 2000\n\n")
-	flusher.Flush()
+	_, _ = fmt.Fprint(out, "retry: 2000\n\n")
+	out.Flush()
 	tick := time.NewTicker(s.keepAlive)
 	defer tick.Stop()
 	for {
@@ -463,29 +466,29 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-s.draining:
-			s.flushEvents(w, ch)
-			_, _ = fmt.Fprintf(w, "retry: %d\ndata: {\"kind\":%q}\n\n", reconnectRetry.Milliseconds(), kindReconnect)
-			flusher.Flush()
+			s.flushEvents(out, ch)
+			_, _ = fmt.Fprintf(out, "retry: %d\ndata: {\"kind\":%q}\n\n", reconnectRetry.Milliseconds(), kindReconnect)
+			out.Flush()
 			return
 		case <-tick.C:
-			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+			if _, err := fmt.Fprint(out, ": keepalive\n\n"); err != nil {
 				return
 			}
-			flusher.Flush()
+			out.Flush()
 		case e, ok := <-ch:
 			if !ok {
 				return
 			}
-			if !s.writeEvent(w, e) {
+			if !s.writeEvent(out, e) {
 				return
 			}
-			flusher.Flush()
+			out.Flush()
 		}
 	}
 }
 
 // flushEvents writes the events already waiting on ch.
-func (s *Server) flushEvents(w http.ResponseWriter, ch <-chan hub.Event) {
+func (s *Server) flushEvents(w io.Writer, ch <-chan hub.Event) {
 	for {
 		select {
 		case e, ok := <-ch:
@@ -510,7 +513,7 @@ func (s *Server) sinceSeq(id string) int64 {
 	return n
 }
 
-func (s *Server) writeEvent(w http.ResponseWriter, e hub.Event) bool {
+func (s *Server) writeEvent(w io.Writer, e hub.Event) bool {
 	data, err := json.Marshal(sseEvent{Kind: e.Kind, Data: e.Data})
 	if err != nil {
 		return true
