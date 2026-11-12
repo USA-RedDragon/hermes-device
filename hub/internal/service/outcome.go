@@ -157,6 +157,12 @@ func (ls *live) settleOutcome(id string, cancelled bool) {
 		delete(ls.gates, id)
 		return
 	}
+	if ls.b.svc.opts.Answers == nil {
+		// Nothing is recorded without a store: settle in event order, so
+		// the outcome cannot trail the turn end that follows.
+		ls.unanswered(id)
+		return
+	}
 	if g, ok := ls.gates[id]; ok {
 		g.looking = true
 	}
