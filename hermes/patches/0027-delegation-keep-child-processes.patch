@@ -1,0 +1,352 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 00:53:49 -0600
+Subject: [PATCH] feat(delegation): keep a subagent's background processes for
+ its parent
+
+delegation.keep_child_processes (false = off): background processes a
+subagent leaves running when it ends move to its parent, as
+process_manage handoff does, instead of being killed with the child.
+They leave agent-lifecycle cleanup like persist_on_release processes,
+so the parent can poll, wait on and kill them and gets their
+completion. An explicit kill or deleting the parent's session stops
+them. A child stopped for a restart handoff keeps its processes.
+---
+ cli-config.yaml.example                       |  4 +
+ gateway/session_mutations.py                  | 11 ++-
+ hermes_cli/config_defaults.py                 |  4 +
+ .../test_delegation_keep_child_processes.py   | 90 +++++++++++++++++++
+ tools/AGENTS.md                               |  3 +-
+ tools/delegate_tool_child_run.py              | 33 ++++++-
+ tools/delegate_tool_config.py                 |  6 ++
+ tools/process_registry.py                     | 28 +++++-
+ .../docs/user-guide/features/delegation.md    | 18 ++++
+ 9 files changed, 193 insertions(+), 4 deletions(-)
+ create mode 100644 tests/tools/test_delegation_keep_child_processes.py
+
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index 9de461f739..55149c03da 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -2004,6 +2004,10 @@ delegation:
+                                               # false = they are interrupted and the parent gets interrupted results.
+   # restart_handoff_grace_seconds: 30         # How long a running tool call may finish before the subagent stops
+                                               # anyway; that call then reads as interrupted (gateway restart).
++  # keep_child_processes: false               # A subagent's background processes still running when it ends move to
++                                              # its parent instead of being killed: the parent can poll, wait on and
++                                              # kill them, and gets their completion. Only an explicit kill or
++                                              # deleting the parent's session stops them.
+   # max_spawn_depth: 1                        # Delegation tree depth cap (range: 1-3, default: 1 = flat).
+                                               # Raise to 2 to allow workers to spawn their own subagents.
+                                               # Requires role="orchestrator" on intermediate agents.
+diff --git a/gateway/session_mutations.py b/gateway/session_mutations.py
+index 6e6dbffbe8..b4344b0c51 100644
+--- a/gateway/session_mutations.py
++++ b/gateway/session_mutations.py
+@@ -6,7 +6,7 @@ branch/compress/model still require their own prepared runtime publication.
+ """
+ import asyncio
+ import logging
+-from contextlib import nullcontext
++from contextlib import nullcontext, suppress
+ from functools import partial
+ 
+ from gateway.session_messaging_picks import CHAT_PICKS, is_chat_pick
+@@ -289,9 +289,18 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
+         # retired-media owner check is a messages-table pass (exact retries repeat it too).
+         from hermes_state_media import collect_retired_media
+         await asyncio.to_thread(collect_retired_media, authority.db)
++        await asyncio.to_thread(_reap_kept_processes, ref.session_id, result)
+     return result
+ 
+ 
++def _reap_kept_processes(session_id, receipt):
++    """Deleting a chat stops the processes its subagents left running for it (delegation.keep_child_processes)."""
++    from tools.process_registry import process_registry
++    ids = {session_id, *((receipt or {}).get('deleted_ids') or ())}
++    with suppress(Exception):
++        process_registry.reap_kept(ids)
++
++
+ async def _project_result(authority, ref, live, params, result, editor_servers, *, applied):
+     """A committed receipt's projections, under the writer's commit lock. They are idempotent reads
+     of the committed receipt, so exact retries repeat them (like delete's retirement); only the
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 46342c1a36..99913d46cf 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1381,6 +1381,10 @@ DEFAULT_CONFIG = {
+         # may finish before the subagent stops anyway (that call then reads as interrupted).
+         "restart_handoff": False,
+         "restart_handoff_grace_seconds": 30,
++        # A subagent's background processes still running when it ends move to its parent (as
++        # process_manage handoff does) instead of being killed: tracked, readable and stoppable there, and
++        # out of agent-lifecycle cleanup. Only an explicit kill or deleting the parent's session stops them.
++        "keep_child_processes": False,
+         "gateway_mode": "auto",  # gateway: inline (join in the turn) | background | auto = inline where interim msgs are off
+         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
+         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
+diff --git a/tests/tools/test_delegation_keep_child_processes.py b/tests/tools/test_delegation_keep_child_processes.py
+new file mode 100644
+index 0000000000..7558dc6e27
+--- /dev/null
++++ b/tests/tools/test_delegation_keep_child_processes.py
+@@ -0,0 +1,90 @@
++"""delegation.keep_child_processes: background processes a subagent leaves running when it ends move to its parent
++instead of dying with the child. They stay tracked, leave agent-lifecycle cleanup, and stop on an explicit kill or when
++the parent's session is deleted."""
++
++import time
++import types
++
++import pytest
++
++import tools.delegate_tool_config as delegate_config
++from gateway.session_mutations import _reap_kept_processes
++from tools.delegate_tool_child_run import _ChildRun
++from tools.process_registry import _CHECKPOINT_FIELDS, process_registry
++
++
++@pytest.fixture(autouse=True)
++def _plain_spawn(monkeypatch):
++    import tools.process_registry as _pr
++    monkeypatch.setattr(_pr, "_SYSTEMD_SCOPE_AVAILABLE", False)
++
++
++def _run(sid, *, handoff=False):
++    parent = types.SimpleNamespace(session_id="sess-keep", _current_task_id="parent-turn-1")
++    child = types.SimpleNamespace(_process_owner_task_ids={sid}, _delegate_restart_handoff=handoff)
++    return types.SimpleNamespace(child=child, parent_agent=parent, child_task_id=sid, subagent_id=sid)
++
++
++def _keep(monkeypatch, on):
++    monkeypatch.setattr(delegate_config, "_get_keep_child_processes", lambda: on)
++
++
++def test_kept_process_outlives_child_and_parent_cleanup_until_session_delete(monkeypatch):
++    _keep(monkeypatch, True)
++    sid = "sa-0-keep01"
++    proc = process_registry.spawn_local("sleep 30", task_id=sid, owner_task_id=sid)
++    try:
++        kept = _ChildRun.keep_background_processes(_run(sid))
++        assert [k["session_id"] for k in kept] == [proc.id]
++        assert proc.owner_task_id == "parent-turn-1" and proc.session_key == "sess-keep"
++        assert proc.persist_on_release and proc.kept_from_child
++
++        process_registry.kill_all(sid, source="agent_close")
++        process_registry.kill_all("parent-turn-1", source="agent_close")
++        assert process_registry.poll(proc.id)["status"] == "running"
++
++        _reap_kept_processes("sess-other", {"deleted_ids": ["sess-other-2"]})
++        assert process_registry.poll(proc.id)["status"] == "running"
++        _reap_kept_processes("local-chat", {"deleted_ids": ["sess-keep"]})
++        deadline = time.time() + 10
++        while not proc.exited and time.time() < deadline:
++            time.sleep(0.05)
++        assert proc.exited
++    finally:
++        process_registry.kill_process(proc.id, source="test")
++
++
++def test_off_by_default_leaves_the_child_owner(monkeypatch):
++    _keep(monkeypatch, False)
++    sid = "sa-0-keep02"
++    proc = process_registry.spawn_local("sleep 30", task_id=sid, owner_task_id=sid)
++    try:
++        assert _ChildRun.keep_background_processes(_run(sid)) == []
++        assert proc.owner_task_id == sid and not proc.persist_on_release
++        process_registry.kill_all(sid, source="agent_close")
++        deadline = time.time() + 10
++        while not proc.exited and time.time() < deadline:
++            time.sleep(0.05)
++        assert proc.exited
++    finally:
++        process_registry.kill_process(proc.id, source="test")
++
++
++def test_restart_handoff_child_keeps_its_processes(monkeypatch):
++    _keep(monkeypatch, True)
++    sid = "sa-0-keep03"
++    proc = process_registry.spawn_local("sleep 30", task_id=sid, owner_task_id=sid)
++    try:
++        assert _ChildRun.keep_background_processes(_run(sid, handoff=True)) == []
++        assert proc.owner_task_id == sid
++    finally:
++        process_registry.kill_process(proc.id, source="test")
++
++
++def test_kept_state_is_checkpointed():
++    assert {"kept_from_child", "handoff_note", "persist_on_release"} <= set(_CHECKPOINT_FIELDS)
++
++
++def test_default_config_is_off():
++    from hermes_cli.config_defaults import DEFAULT_CONFIG
++    assert DEFAULT_CONFIG["delegation"]["keep_child_processes"] is False
+diff --git a/tools/AGENTS.md b/tools/AGENTS.md
+index 7be2115c1e..7296fc3942 100644
+--- a/tools/AGENTS.md
++++ b/tools/AGENTS.md
+@@ -166,7 +166,8 @@ the child is built, leases and converses inside that profile's scope) and may ad
+ never owns lifecycle. The `default` strategy is the bundled `plugins/delegation/default` plugin (no core special case
+ beyond selecting it). Fails closed: an unusable backend is a tool error naming it (never a silent `default`), an
+ unroutable task is refused alone (`TaskRoute.error`), as is a task sending a parameter its backend lacks. A session routes on the backend its `delegate_task` was built from (`agent._delegation_backend`, pinned with its tools), so a save applies at `/new` or `--now` (`agent/delegation_backends.py`). Internal `credentials_cfg` callers (/review) and the lifecycle API bypass it. **Child processes:** a child's background
+-processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`
++processes are killed at its teardown (with `delegation.keep_child_processes` they move to the parent instead,
++`ProcessRegistry.keep_for_parent`, out of lifecycle cleanup until a kill or the parent session's delete) and their notices are suppressed in the parent; `process_manage(action="handoff")`
+ (children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
+ (`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on
+ the result as `orphaned_processes`, exited-but-never-read notify processes as `unread_completions` (`_ChildRun.account_background_processes`, before `cleanup` kills them). **Child kernels:** a child's `execute_code` kernels are keyed `<parent-owner>::child::<child-session-id>`, pinned against the `max_session_kernels` LRU cap while the child runs and disposed by `cleanup` (`code_kernel.shutdown_kernels_for_delegated_child`) — never let a finished child's kernel squat the cap. **output_schema:** a miss after the one retry keeps `status: completed` with the raw text in `summary` plus `schema_valid: false` / `schema_errors` / `schema_note` — never discard a child's result. **Durability:** background
+diff --git a/tools/delegate_tool_child_run.py b/tools/delegate_tool_child_run.py
+index bbead09cbc..92241593d7 100644
+--- a/tools/delegate_tool_child_run.py
++++ b/tools/delegate_tool_child_run.py
+@@ -1110,11 +1110,40 @@ class _ChildRun:
+             else:
+                 entry["stale_paths"] = mod_paths
+ 
++    def keep_background_processes(self) -> list[dict[str, Any]]:
++        """``delegation.keep_child_processes``: move the background processes the child leaves running to the parent
++        (``ProcessRegistry.keep_for_parent``) so its teardown does not kill them. Not for a child stopped for a restart
++        handoff, whose processes go to the next gateway with it. Returns the moved ones as handoff records."""
++        from tools.delegate_tool_config import _get_keep_child_processes
++        child = self.child
++        if not _get_keep_child_processes() or getattr(child, "_delegate_restart_handoff", False) is True:
++            return []
++        parent = self.parent_agent
++        parent_owner = str(getattr(parent, "_current_task_id", "") or getattr(parent, "session_id", "") or "")
++        if not parent_owner:
++            return []
++        from tools.process_registry import process_registry
++        from tools.terminal_tool import _resolve_container_task_id
++        owners = {self.child_task_id, *(getattr(child, "_process_owner_task_ids", None) or ())} - {"", None}
++        note = (f"left running by subagent {self.subagent_id or self.child_task_id} when it ended; kept for you "
++                "(delegation.keep_child_processes)")
++        kept = []
++        for owner in sorted(owners):
++            for session in process_registry.running_owned_by(owner):
++                moved = process_registry.keep_for_parent(
++                    session.id, from_owner=owner, to_owner=parent_owner,
++                    to_task_id=_resolve_container_task_id(parent_owner),
++                    to_session_key=str(getattr(parent, "session_id", "") or ""), note=note)
++                if moved is not None:
++                    kept.append({"session_id": moved.id, "command": redact_child_text(moved.command, force=False)[:200],
++                                 "note": note})
++        return kept
++
+     def account_background_processes(self, entry: dict[str, Any]) -> None:
+         """Name the child's background processes on the result BEFORE ``cleanup`` kills them: handed-off ones now
+         belong to the parent (their completion lands in the parent's chat); anything else still running is about to be
+         terminated, and the parent must hear that from the runtime rather than trust a child's "watcher running"."""
+-        handed = list(getattr(self.child, "_handed_off_processes", None) or [])
++        handed = list(getattr(self.child, "_handed_off_processes", None) or []) + self.keep_background_processes()
+         if handed:
+             entry["handed_off_processes"] = handed
+         with _quiet(None):
+@@ -1197,6 +1226,8 @@ class _ChildRun:
+         if not close_deferred and getattr(child, "_delegate_restart_handoff", False) is True:
+             _release_handed_off_child(child)
+         elif not close_deferred:
++            with _quiet("Failed to keep a subagent's background processes: %s"):
++                self.keep_background_processes()
+             _close_child(child, "Failed to close child agent after delegation")
+         # The child's execute_code kernels live exactly as long as the child (pinned against the LRU
+         # cap while it runs); dispose them here so they never squat the cap after the child is gone.
+diff --git a/tools/delegate_tool_config.py b/tools/delegate_tool_config.py
+index f04f4b6390..8aaadf996f 100644
+--- a/tools/delegate_tool_config.py
++++ b/tools/delegate_tool_config.py
+@@ -177,6 +177,12 @@ def _get_restart_handoff() -> bool:
+     Off = they are interrupted and their parent gets the interrupted results."""
+     return is_truthy_value(_cfg().get("restart_handoff", False))
+ 
++def _get_keep_child_processes() -> bool:
++    """delegation.keep_child_processes (bool, default False): background processes a subagent leaves running when it
++    ends move to its parent (``ProcessRegistry.keep_for_parent``) instead of being killed with the child. Off = the
++    child's teardown kills them and the parent's result lists them as ``orphaned_processes``."""
++    return is_truthy_value(_cfg().get("keep_child_processes", False))
++
+ def _get_restart_handoff_grace_seconds() -> float:
+     """delegation.restart_handoff_grace_seconds (default 30): how long a restart handoff waits for each child to
+     finish its running tool call before it stops the child anyway (the call then reads as interrupted)."""
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+index c759bbc9e9..aaa6e6b68f 100644
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -574,6 +574,7 @@ class ProcessSession:
+     wsl_chain: bool = False                     # spawned via wsl[.exe]: the host PID is the short-lived
+                                                 # launcher; Linux-side workers outlive it (#120546)
+     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
++    kept_from_child: bool = False               # moved to the parent when its subagent ended (keep_child_processes)
+     persist_on_release: bool = False           # opt out of agent-lifecycle cleanup (release()/turn-abandon kill
+                                                 # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
+     output_log: str = ""                        # file the process writes to (worker spawns; no pipe to lose)
+@@ -686,7 +687,7 @@ _CHECKPOINT_FIELDS = (
+     "started_at", "task_id", "owner_task_id", "session_key",
+     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
+     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
+-    "heartbeat_seconds", "persist_on_release", "output_log", "backend", "reattach")
++    "heartbeat_seconds", "persist_on_release", "output_log", "backend", "reattach", "kept_from_child", "handoff_note")
+ _CHECKPOINT_DEFAULTS = {
+     f.name: ([] if f.name == "watch_patterns" else {} if f.name == "reattach" else f.default)
+     for f in ProcessSession.__dataclass_fields__.values()
+@@ -2552,6 +2553,31 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
+             session.handoff_note = note
+             return session
+ 
++    def keep_for_parent(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,
++                        to_session_key: str, note: str) -> Optional[ProcessSession]:
++        """``transfer_ownership`` for a process its subagent left running at the end (``delegation.keep_child_processes``):
++        it also leaves agent-lifecycle cleanup, as ``persist_on_release`` does, so the parent's own teardown keeps it
++        too. An explicit kill or ``reap_kept`` (deleting the parent's session) stops it."""
++        session = self.transfer_ownership(session_id, from_owner=from_owner, to_owner=to_owner, to_task_id=to_task_id,
++                                          to_session_key=to_session_key, note=note)
++        if session is None:
++            return None
++        with self._lock:
++            session.persist_on_release = True
++            session.kept_from_child = True
++        self._write_checkpoint()
++        return session
++
++    def reap_kept(self, session_keys) -> int:
++        """Kill the running processes kept from subagents for any of ``session_keys`` (a deleted session's ids).
++        Returns how many it stopped."""
++        keys = {str(k) for k in session_keys if k}
++        with self._lock:
++            targets = [s.id for s in self._running.values()
++                       if s.kept_from_child and not s.exited and not s.handed_off and s.session_key in keys]
++        results = [self.kill_process(sid, source="session.delete", consume_output=True) for sid in targets]
++        return sum(r.get("status") in {"killed", "already_exited"} for r in results)
++
+     def has_active_for_session(self, session_key: str, max_active_age: Optional[float] = None) -> bool:
+         """Active processes for a gateway session key. Processes older than
+         ``max_active_age`` seconds are ignored as stale so a forgotten ``http.server``
+diff --git a/website/docs/user-guide/features/delegation.md b/website/docs/user-guide/features/delegation.md
+index c89b7f272c..ea7f87f4be 100644
+--- a/website/docs/user-guide/features/delegation.md
++++ b/website/docs/user-guide/features/delegation.md
+@@ -272,6 +272,24 @@ not handed off. A resumed child starts a new iteration budget, and the next
+ gateway shows its progress in `/agents` but does not stream it into the
+ parent's chat.
+ 
++### Keep a subagent's background processes (opt-in)
++
++By default a subagent's teardown kills the background processes it still
++runs, and the parent's result lists them as terminated. Set
++`delegation.keep_child_processes: true` to move them to the parent instead,
++as `process_manage(action="handoff")` does for one process:
++
++- The parent owns them: it can poll, wait on, read and kill them with the
++  `process` tool, and their completion notices reach the parent's chat. The
++  parent's result names each one as handed off.
++- They leave agent-lifecycle cleanup, like `persist_on_release` processes, so
++  the parent's own teardown does not kill them either.
++- An explicit kill (the `process` tool, `/stop`) stops them, and so does
++  deleting the parent's session.
++
++A child stopped for a restart handoff keeps its processes; they go to the
++next gateway with it.
++
+ ### Child background-process notifications
+ 
+ Background processes a subagent starts (e.g. `npm ci` with

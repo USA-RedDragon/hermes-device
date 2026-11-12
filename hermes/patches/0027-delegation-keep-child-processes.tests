@@ -1,0 +1,5 @@
+tests/tools/test_subagent_process_handoff.py
+tests/tools/test_process_handoff.py
+tests/tools/test_delegation_restart_handoff.py
+tests/tools/test_process_checkpoint_worker_handoff.py
+tests/gateway/test_adversarial_mutation_lifecycle.py
