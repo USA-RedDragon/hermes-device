@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 22:39:54 -0600
+Subject: [PATCH] fix(agent): a steer lands only in the current turn
+
+The pre-call drain put a steer after the newest tool result anywhere in
+the chat, so a steer sent before the turn's first tool call landed in an
+earlier turn and read as history. It now goes only after a tool result
+of this turn; otherwise it stays pending, with its ticket, for the
+post-tool drain.
+---
+ agent/turn_iteration_prep.py | 20 +++++++++++++-----
+ tests/agent/test_steer.py    | 40 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 55 insertions(+), 5 deletions(-)
+
+diff --git a/agent/turn_iteration_prep.py b/agent/turn_iteration_prep.py
+index e4a9df850c..fe670cd7f7 100644
+--- a/agent/turn_iteration_prep.py
++++ b/agent/turn_iteration_prep.py
+@@ -178,7 +178,13 @@ def prepare_iteration(
+     # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
+     _pre_api_steer = agent._drain_pending_steer()
+     if _pre_api_steer:
+-        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
++        _turn_idx = None
++        if user_message is not None:
++            _turn_idx = current_turn_user_idx
++            if not _anchors_current_turn(messages, _turn_idx, user_message):
++                from agent.turn_context import reanchor_current_turn_user_idx
++                _turn_idx = reanchor_current_turn_user_idx(messages, user_message)
++        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer, turn_user_idx=_turn_idx)
+ 
+     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
+     # newest tool result; off with no budget.
+@@ -281,10 +287,14 @@ def _previous_tool_round(messages: Any) -> list:
+     return []
+ 
+ 
+-def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
+-    """Append the steer marker as a standalone user row after the newest tool message; with no
+-    tool message, put the text back so the post-tool-execution drain delivers it later."""
+-    for _si in range(len(messages) - 1, -1, -1):
++def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str,
++                                           turn_user_idx: Any = None) -> None:
++    """Append the steer marker as a standalone user row after the newest tool message of this turn
++    (after ``turn_user_idx``, this turn's user row); with none yet, put the text back so the
++    post-tool-execution drain delivers it later. A tool message before the turn's user row belongs
++    to an earlier turn: a steer placed there reads as replayed history, not as a new message."""
++    _stop = turn_user_idx if isinstance(turn_user_idx, int) and turn_user_idx >= 0 else -1
++    for _si in range(len(messages) - 1, _stop, -1):
+         _sm = messages[_si]
+         if isinstance(_sm, dict) and _sm.get("role") == "tool":
+             from agent.prompt_builder import steer_user_row
+diff --git a/tests/agent/test_steer.py b/tests/agent/test_steer.py
+index 2cd5b99880..4a0d86e124 100644
+--- a/tests/agent/test_steer.py
++++ b/tests/agent/test_steer.py
+@@ -756,7 +756,47 @@ class TestPreApiCallSteerDrain:
+         assert "focus on error handling" in messages[-1]["content"]
+         assert agent._pending_steer is None
+ 
++    def test_pre_api_drain_never_lands_in_an_earlier_turn(self):
++        """A steer drained before the turn's first tool result waits for the post-tool drain,
++        with its ticket: a tool row before the turn's prompt belongs to an earlier turn, and a
++        steer placed there reads as replayed history."""
++        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+ 
++        agent = _bare_agent()
++        messages = [
++            {"role": "user", "content": "earlier turn"},
++            {"role": "assistant", "content": "", "tool_calls": [
++                {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}
++            ]},
++            {"role": "tool", "content": "ok", "tool_call_id": "tc1"},
++            {"role": "assistant", "content": "earlier reply"},
++            {"role": "user", "content": "this turn"},
++        ]
++        before = [dict(m) for m in messages]
++        agent.steer("also do this", ticket="adm-1")
++        _inject_steer_after_newest_tool_result(agent, messages, agent._drain_pending_steer(), turn_user_idx=4)
++        assert messages == before
++        assert agent._pending_steer == "also do this"
++        assert agent.withdraw_steer("adm-1") is True
++
++    def test_pre_api_drain_lands_after_a_tool_result_behind_an_earlier_steer(self):
++        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
++        from agent.prompt_builder import steer_user_row
++
++        agent = _bare_agent()
++        messages = [
++            {"role": "user", "content": "this turn"},
++            {"role": "assistant", "content": "", "tool_calls": [
++                {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}
++            ]},
++            {"role": "tool", "content": "ok", "tool_call_id": "tc1"},
++            steer_user_row("first"),
++        ]
++        agent.steer("second")
++        _inject_steer_after_newest_tool_result(agent, messages, agent._drain_pending_steer(), turn_user_idx=0)
++        assert messages[3]["role"] == "user" and "second" in messages[3]["content"]
++        assert "first" in messages[4]["content"]
++        assert agent._pending_steer is None
+ 
+ 
+ class TestSteerMarkerContract:
