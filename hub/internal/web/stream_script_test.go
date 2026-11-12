@@ -12,7 +12,8 @@ func runStreamScript(t *testing.T, script string, files ...string) {
 	if err != nil {
 		t.Skip("node is not installed")
 	}
-	args := []string{filepath.Join("testdata", "stream", script)}
+	args := make([]string, 0, 1+len(files))
+	args = append(args, filepath.Join("testdata", "stream", script))
 	for _, f := range files {
 		args = append(args, filepath.Join("static", f))
 	}

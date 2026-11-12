@@ -103,7 +103,7 @@ func TestSnapshotPendingCarriesTheSubmissionID(t *testing.T) {
 	e.gw.AddSession(&gatewaytest.Session{ID: "s-wait", Title: "Waiting", Live: true, StartedAt: 500,
 		Pending: []gateway.PendingAdmission{
 			{AdmissionID: "a-1", Sequence: 3, Status: gateway.AdmissionQueued, Text: "page", InputID: pageID},
-			{AdmissionID: "a-2", Sequence: 4, Status: gateway.AdmissionQueued, Text: "cron", InputID: `["cron","job"]`},
+			{AdmissionID: "a-2", Sequence: 4, Status: gateway.AdmissionQueued, Text: "woken", InputID: `["wake","job"]`},
 		}})
 	ch, stop, err := e.svc.Attach(context.Background(), userAlice, backendPC, "s-wait", 0)
 	if err != nil {
@@ -114,7 +114,7 @@ func TestSnapshotPendingCarriesTheSubmissionID(t *testing.T) {
 	if ev := next(t, ch); ev.Kind != hub.KindSnapshot || json.Unmarshal(ev.Data, &snap) != nil {
 		t.Fatalf("first event %s", ev.Kind)
 	}
-	want := []hub.Pending{{ID: "a-1", Status: hub.PendingQueued, Text: "page", SubmissionID: pageID}, {ID: "a-2", Status: hub.PendingQueued, Text: "cron"}}
+	want := []hub.Pending{{ID: "a-1", Status: hub.PendingQueued, Text: "page", SubmissionID: pageID}, {ID: "a-2", Status: hub.PendingQueued, Text: "woken"}}
 	if !slices.Equal(snap.Pending, want) {
 		t.Fatalf("pending = %+v", snap.Pending)
 	}

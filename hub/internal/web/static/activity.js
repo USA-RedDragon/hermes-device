@@ -325,11 +325,15 @@ window.HubActivity = (ctx) => {
     schedule();
   }
 
+  const pollBackoff = window.HubBackoff({ base: 3000, max: 30000 });
+
   function schedule() {
     if (!S.chat) return;
     clearTimeout(S.timer);
     const busy = count() > 0 || S.running;
-    const ms = busy || isOpen() ? 3000 : 20000;
+    let ms = busy || isOpen() ? 3000 : 20000;
+    if (S.error) ms = Math.max(ms, pollBackoff.next());
+    else pollBackoff.reset();
     S.timer = setTimeout(poll, ms);
   }
 

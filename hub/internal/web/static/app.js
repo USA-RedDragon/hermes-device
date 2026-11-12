@@ -1227,6 +1227,7 @@
     }
 
     snapshot(s) {
+      clearBanner("backend");
       const kept = window.HubReconcile.anchor(this.log, pinned);
       const carried = window.HubReconcile.carry(this.pending, s);
       this.keep = new Set(carried.filter((c) => c.act === "again").flatMap((c) => (c.p.atts || []).map((a) => a.url)));
@@ -1286,7 +1287,7 @@
         x.id = c.p.id;
       }
       for (const p of s.prompts || []) this.approval(p);
-      if (window.HubRestore.state()) this.showOlder(() => true);
+      if (kept !== null || window.HubRestore.state()) this.showOlder(() => true);
       if (!window.HubReconcile.restore(this.log, kept)) this.bottom();
       this.jumpTo();
       this.fillOlder();
@@ -1438,7 +1439,8 @@
       switch (kind) {
         case "snapshot": this.snapshot(p); break;
         case "backend.status":
-          banner(p.connected ? "" : "Lost the connection to Hermes. Reconnecting.", false);
+          if (p.connected) clearBanner("backend");
+          else banner("Lost the connection to Hermes. Reconnecting.", false, "backend");
           break;
         case "message.start":
           this.turn = null;
