@@ -304,13 +304,9 @@ func (s *Service) Attach(ctx context.Context, user, backendID, sessionID string,
 	if err != nil {
 		return nil, nil, err
 	}
-	ls, err := b.session(ctx, sessionID)
-	offline := false
+	ls, offline, err := b.attachable(ctx, sessionID)
 	if err != nil {
-		if ls = b.known(sessionID); ls == nil || !gateway.Retryable(err) {
-			return nil, nil, refusal(err)
-		}
-		offline = true
+		return nil, nil, refusal(err)
 	}
 	ch, cancel := ls.attach(sinceSeq)
 	if offline {
@@ -666,6 +662,7 @@ type backend struct {
 	cmdMu  sync.Mutex
 	cmds   []hub.Command
 	cmdsAt time.Time
+
 }
 
 type sessionGate struct {
@@ -1000,6 +997,40 @@ func (b *backend) known(id string) *live {
 	}
 	ls.pins++
 	return ls
+}
+
+// attachRestartWait is how long opening a session the hub has not seen yet
+// keeps retrying while its backend restarts, so a chat picked during a
+// gateway handoff opens instead of failing.
+const attachRestartWait = 90 * time.Second
+
+// attachable is the session to attach a viewer to: subscribed, or, while the
+// backend is away, the copy the hub already has (offline is true then). A
+// session the hub has not seen is retried for up to attachRestartWait.
+func (b *backend) attachable(ctx context.Context, id string) (*live, bool, error) {
+	delay := 250 * time.Millisecond
+	deadline := time.Now().Add(attachRestartWait)
+	for {
+		ls, err := b.session(ctx, id)
+		if err == nil {
+			return ls, false, nil
+		}
+		if !gateway.Retryable(err) {
+			return nil, false, err
+		}
+		if known := b.known(id); known != nil {
+			return known, true, nil
+		}
+		if !time.Now().Before(deadline) {
+			return nil, false, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, false, err
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, 2*time.Second)
+	}
 }
 
 // session returns the hub's subscription to a session, subscribing first.
