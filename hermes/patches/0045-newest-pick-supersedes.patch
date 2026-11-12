@@ -1,0 +1,436 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jacob McSwain <jacob@mcswain.dev>
+Date: Thu, 12 Nov 2026 22:08:56 +0000
+Subject: [PATCH] feat(gateway): a newer model pick supersedes the stored pick
+
+sessions.newest_pick_supersedes (false = off): a model pick settles the pick still stored for its session. A pick that is asked replaces it, so a viewer that attaches is asked about the newest; one that is refused as unresolvable or resets to the default clears it; the confirm token of a replaced or cleared pick is refused with pick_superseded. Before, an older guarded pick stayed stored and was asked again on attach, and its token still committed it.
+---
+ cli-config.yaml.example                      |   8 +
+ gateway/session_mutations.py                 |  18 +-
+ gateway/session_pick_supersede.py            | 109 +++++++++++
+ hermes_cli/config_defaults.py                |   4 +
+ tests/gateway/test_session_pick_supersede.py | 182 +++++++++++++++++++
+ website/docs/user-guide/sessions.md          |  19 ++
+ 6 files changed, 339 insertions(+), 1 deletion(-)
+ create mode 100644 gateway/session_pick_supersede.py
+ create mode 100644 tests/gateway/test_session_pick_supersede.py
+
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index f2d13a8fe1..153c5c4e45 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -1158,6 +1158,13 @@ hosted_rooms:
+ # tool is cut short). When the turn makes no further tool call, the result
+ # runs or is noted after the turn as before.
+ #
++# A model pick made while a turn runs waits for the turn boundary, where a
++# guarded one (cost, data policy, large context) is asked and stays stored.
++# newest_pick_supersedes: true lets a later pick settle it: a later pick that
++# is asked replaces it (a viewer that attaches is asked about the newest), one
++# that is refused or resets to the default clears it, and the confirmation of
++# a replaced or cleared pick is refused. false (default) leaves it stored.
++#
+ # An ACP editor's session list (session/list) offers only sessions an editor
+ # started (acp_list_sources: [acp]). Add tui, gui (Desktop) or cli to also offer
+ # the chats those surfaces started, so the editor can open them too.
+@@ -1173,6 +1180,7 @@ hosted_rooms:
+ #   orphan_end_grace_s: 300
+ #   unviewed_completion_turns: 0
+ #   mid_turn_subagent_results: false
++#   newest_pick_supersedes: false
+ #   acp_list_sources: [acp]
+ 
+ # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
+diff --git a/gateway/session_mutations.py b/gateway/session_mutations.py
+index b4344b0c51..42c77a7271 100644
+--- a/gateway/session_mutations.py
++++ b/gateway/session_mutations.py
+@@ -10,6 +10,9 @@ from contextlib import nullcontext, suppress
+ from functools import partial
+ 
+ from gateway.session_messaging_picks import CHAT_PICKS, is_chat_pick
++from gateway.session_pick_supersede import (
++    refuse_superseded_confirm, settle_newer_pick, stored_pick, supersede_enabled,
++)
+ from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+ from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
+ 
+@@ -130,16 +133,29 @@ async def _owned_mutation(authority, actor, ref, params):
+             result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock, owner=owner)
+     else:
+         async with live.mutation_lock:
++            supersede = params.get('operation') == 'model' and await asyncio.to_thread(supersede_enabled, authority)
++            before = None
++            if supersede:
++                await asyncio.to_thread(refuse_superseded_confirm, authority, ref.session_id, params.get('payload'))
++                before = await asyncio.to_thread(stored_pick, authority, ref.session_id)
+             try:
+                 result = await _mutate_session(authority, actor, ref, params, owner=owner)
+             except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
+                 # A pick on a running session is for the next turn (the running turn keeps its route).
+                 if (params.get('operation') not in {'model', 'reasoning'}
+                         or getattr(exc, 'reason', 'session_busy') != 'session_busy'):
++                    if before is not None and isinstance(exc, RuntimeStoreError):
++                        await asyncio.to_thread(settle_newer_pick, authority, actor, ref, params, before, exc)
+                     raise
+                 from gateway.session_deferred_pick import defer_pick
+                 # Its own BEGIN IMMEDIATE: off the loop, like the receipt commit.
+-                return await asyncio.to_thread(defer_pick, authority, actor, ref, params)
++                result = await asyncio.to_thread(defer_pick, authority, actor, ref, params)
++                if before is not None:
++                    await asyncio.to_thread(settle_newer_pick, authority, actor, ref, params, before, result)
++                return result
++            if supersede and isinstance(result, dict) and (
++                    before is not None or result.get('status') == 'confirmation_required'):
++                await asyncio.to_thread(settle_newer_pick, authority, actor, ref, params, before, result)
+     if params.get('operation') in {*_POLICY, 'compress', 'reset'} and not is_chat_pick(live, params['operation']):
+         authority._schedule(ref)
+     return result
+diff --git a/gateway/session_pick_supersede.py b/gateway/session_pick_supersede.py
+new file mode 100644
+index 0000000000..ba7be84338
+--- /dev/null
++++ b/gateway/session_pick_supersede.py
+@@ -0,0 +1,109 @@
++"""A newer model pick supersedes the one still stored for the session (``sessions.newest_pick_supersedes``).
++
++A pick made while a turn runs is kept in ``state_meta`` until the turn boundary, where a guarded one
++is asked and stays stored with its confirm token. Without this, a later pick that is itself asked or
++refused leaves the stored one in place, so the next viewer to attach is asked about the older pick, and
++the older pick's token still commits it. With it, each newer pick settles the stored one: an asked pick
++replaces it (the attach re-ask then names the newest), a refused or reset pick clears it, a deferred or
++applied pick already replaced or cleared it. The token of a pick that was replaced or cleared is
++refused with ``pick_superseded``.
++"""
++import json
++from pathlib import Path
++
++from hermes_state_mutation_prepared import DEFERRED_PICK_PREFIX
++from hermes_state_runtime import RuntimeStoreError
++
++SUPERSEDED_PREFIX = 'gateway.superseded_pick.v1.'
++_KEPT_TOKENS = 8
++# Refusals that judge the picked target itself. Fences (revision, generation), authorization and
++# malformed requests say nothing about what the user now wants, so they leave the stored pick alone.
++_TARGET_REFUSALS = {'model_resolution_failed'}
++
++
++def supersede_enabled(authority):
++    """Blocking: ``sessions.newest_pick_supersedes`` of the profile that owns *authority*'s store."""
++    from hermes_cli.config_defaults import DEFAULT_CONFIG
++    from hermes_cli.config_effective import load_user_config_effective
++    from gateway.session_local import profile_env_scope
++    default = DEFAULT_CONFIG['sessions']['newest_pick_supersedes']
++    home = Path(authority.db.db_path).resolve().parent
++    with profile_env_scope(home):
++        sessions = load_user_config_effective(home / 'config.yaml').get('sessions')
++    raw = sessions.get('newest_pick_supersedes', default) if isinstance(sessions, dict) else default
++    return raw if isinstance(raw, bool) else default
++
++
++def _read(authority, key):
++    with authority.db._read_ctx() as conn:
++        row = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
++    return row[0] if row else None
++
++
++def stored_pick(authority, session_id):
++    """The raw stored pick of *session_id*, or None."""
++    return _read(authority, DEFERRED_PICK_PREFIX + session_id)
++
++
++def refuse_superseded_confirm(authority, session_id, payload):
++    """Refuse a confirmed pick whose token belongs to a pick a newer one replaced."""
++    token = payload.get('confirm') if isinstance(payload, dict) else None
++    if not token:
++        return
++    raw = _read(authority, SUPERSEDED_PREFIX + session_id)
++    if raw is not None and token in json.loads(raw):
++        raise RuntimeStoreError('pick_superseded', field='confirm',
++                                detail='a newer model pick replaced the one this confirmation was for')
++
++
++def _token(raw):
++    return json.loads(raw).get('awaiting_confirm') if raw else None
++
++
++def settle_newer_pick(authority, actor, ref, params, before, outcome):
++    """Blocking, off the loop, under the session's mutation lock. *before* is the stored pick read
++    before the newer pick ran; *outcome* is its result dict, or the refusing ``RuntimeStoreError``.
++    Applied and deferred picks already cleared or replaced the stored one; this settles the rest and
++    records the token of the pick that is gone."""
++    from hermes_state_runtime import _epoch, _json
++    key = DEFERRED_PICK_PREFIX + ref.session_id
++    status = outcome.get('status') if isinstance(outcome, dict) else None
++    refused = isinstance(outcome, RuntimeStoreError)
++    asked = status == 'confirmation_required'
++
++    def write(conn):
++        _epoch(conn, authority.epoch)
++        row = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
++        now = row[0] if row else None
++        payload = params['payload'] if isinstance(params.get('payload'), dict) else {}
++        if before is not None and now == before and (asked or status == 'noop'
++                                                     or (refused and outcome.reason in _TARGET_REFUSALS)):
++            old = json.loads(before)
++            level = old.get('reasoning') if 'reasoning' not in payload else None
++            if asked:
++                pick = {'principal_id': actor.subject, 'request_id': params['request_id'],
++                        'payload': {k: v for k, v in payload.items() if k != 'confirm'},
++                        'application_id': 'deferred-pick:' + params['request_id'],
++                        'awaiting_confirm': outcome['confirm'], **({'reasoning': level} if level else {})}
++                conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(pick), key))
++            elif level:
++                conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json({'reasoning': level}), key))
++            else:
++                conn.execute('DELETE FROM state_meta WHERE key=?', (key,))
++            now = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
++            now = now[0] if now else None
++        gone = _token(before)
++        tokens_key = SUPERSEDED_PREFIX + ref.session_id
++        row = conn.execute('SELECT value FROM state_meta WHERE key=?', (tokens_key,)).fetchone()
++        tokens = json.loads(row[0]) if row else []
++        if gone and gone != _token(now) and gone not in tokens:
++            tokens.append(gone)
++        if asked and outcome['confirm'] in tokens:
++            tokens.remove(outcome['confirm'])
++        tokens = tokens[-_KEPT_TOKENS:]
++        if tokens:
++            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
++                         (tokens_key, json.dumps(tokens)))
++        else:
++            conn.execute('DELETE FROM state_meta WHERE key=?', (tokens_key,))
++    authority.db._execute_write(write)
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 06744f5835..23f8afcc73 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -2346,6 +2346,10 @@ DEFAULT_CONFIG = {
+         # A background subagent's result that arrives while its local session's turn runs rides that turn's next
+         # tool result instead of waiting behind the turn; it goes back to the queue when no tool result takes it.
+         "mid_turn_subagent_results": False,
++        # A model pick settles the pick still stored for its session (made while a turn ran, or asked at the
++        # turn boundary): one that is asked replaces it, one that is refused or resets to the default clears
++        # it, and the confirm token of a replaced or cleared pick is refused. false = the stored pick stays.
++        "newest_pick_supersedes": False,
+     },
+     # First-touch onboarding hints (agent/onboarding.py), each latched under `seen` once shown.
+     "onboarding": {
+diff --git a/tests/gateway/test_session_pick_supersede.py b/tests/gateway/test_session_pick_supersede.py
+new file mode 100644
+index 0000000000..267e5cda73
+--- /dev/null
++++ b/tests/gateway/test_session_pick_supersede.py
+@@ -0,0 +1,182 @@
++"""A newer model pick supersedes the pick still stored for the session (``sessions.newest_pick_supersedes``)."""
++import asyncio
++import json
++from pathlib import Path
++import threading
++
++import pytest
++
++from tests.gateway.test_session_mutation_model_busy import _owner, _run_turn
++from tests.waiting import async_wait_until
++
++
++async def _guarded_setup(tmp_path, monkeypatch, enabled):
++    """A session whose context trips the large-context guard, with a guarded pick stored and asked."""
++    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
++    from gateway.session_contract import Submission
++    from hermes_cli import model_selection_guards, model_switch
++    monkeypatch.setattr(model_selection_guards, '_context_cache_threshold', lambda: 1000)
++    started, release = threading.Event(), asyncio.Event()
++    events = []
++
++    async def handle(event):
++        if event.text.startswith('RUNNING'):
++            started.set()
++            await release.wait()
++        return 'ok'
++    store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
++    if enabled:
++        (Path(db.db_path).parent / 'config.yaml').write_text('sessions:\n  newest_pick_supersedes: true\n')
++    switch = model_switch.switch_model
++    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
++        success=False, new_model='', target_provider='') if k['raw_input'] == 'gone' else switch(**k))
++    authority.runner._cached_agent_for = lambda route: None
++    stream = authority.sessions[ref.session_id].event_stream
++    publish = stream.publish
++    monkeypatch.setattr(stream, 'publish', lambda sid, payload, **k: (
++        events.append((k.get('event_type'), payload)), publish(sid, payload, **k))[1])
++    db.append_message(ref.session_id, role='user', content='hello')
++    db.append_message(ref.session_id, role='assistant', content='hi')
++    db.patch_session_model_config(ref.session_id, {USAGE_ANCHOR_MODEL_CONFIG_KEY: capture_usage_anchor(
++        250_000, 10, db.get_messages_as_conversation(ref.session_id))})
++    await authority.submit(owner.actor, Submission('running', ref, {'text': 'RUNNING'}, 'queue'))
++    await async_wait_until(started.is_set, timeout=10, what='the first turn is running')
++    assert (await _mutate(owner, db, ref, 'pick-a', 'model-a'))['result']['status'] == 'deferred'
++    release.set()
++    await async_wait_until(lambda: _asks(events), timeout=10, what='the stored pick asked')
++    return store, db, authority, owner, ref, events, (started, release)
++
++
++def _asks(events):
++    return [p for t, p in events if t == 'session.updated' and p.get('status') == 'confirmation_required']
++
++
++def _stored(db, ref):
++    with db._read_ctx() as conn:
++        row = conn.execute('SELECT value FROM state_meta WHERE key=?',
++                           ('gateway.deferred_pick.v1.' + ref.session_id,)).fetchone()
++    return json.loads(row[0]) if row else None
++
++
++async def _mutate(owner, db, ref, rid, model, confirm=None, call=1):
++    snap = db.get_session(ref.session_id)
++    payload = {'model': model, **({'confirm': confirm} if confirm else {})}
++    return await owner.dispatch({'id': call, 'method': 'session.mutate', 'params': {
++        'session_id': ref.session_id, 'request_id': rid, 'expected_revision': snap['runtime_revision'],
++        'expected_generation': snap['runtime_generation'], 'operation': 'model', 'payload': payload}})
++
++
++async def _attach_ask(authority, ref, events):
++    from gateway.session_deferred_pick import reask_on_attach
++    before = len(_asks(events))
++    await reask_on_attach(authority, ref, authority.sessions[ref.session_id])
++    await async_wait_until(lambda: len(_asks(events)) > before, timeout=10, what='the stored pick asked again')
++    return _asks(events)[-1]
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('enabled', [True, False])
++async def test_a_newer_asked_pick_replaces_the_stored_one(tmp_path, monkeypatch, enabled):
++    store, db, authority, owner, ref, events, _ = await _guarded_setup(tmp_path, monkeypatch, enabled)
++    try:
++        old = _asks(events)[0]
++        assert old['target_model'] == 'model-a'
++        newer = await _mutate(owner, db, ref, 'pick-b', 'model-b', call=2)
++        assert newer.get('result', {}).get('status') == 'confirmation_required', newer
++        stored = _stored(db, ref)
++        assert stored['payload'] == {'model': 'model-a' if not enabled else 'model-b'}
++        ask = await _attach_ask(authority, ref, events)
++        assert ask['target_model'] == ('model-b' if enabled else 'model-a'), ask
++        confirmed = await _mutate(owner, db, ref, 'confirm-a', 'model-a', confirm=old['confirm'], call=3)
++        if enabled:
++            assert confirmed['error']['data']['reason'] == 'pick_superseded', confirmed
++            assert db.get_session(ref.session_id)['model'] == 'frozen'
++            assert _stored(db, ref)['awaiting_confirm'] == newer['result']['confirm']
++            done = await _mutate(owner, db, ref, 'confirm-b', 'model-b', confirm=newer['result']['confirm'], call=4)
++            assert done['result']['model'] == 'model-b', done
++            assert _stored(db, ref) is None
++        else:
++            assert confirmed['result']['model'] == 'model-a', confirmed
++    finally:
++        await owner.close()
++        store.close_all_db_handles()
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('enabled', [True, False])
++async def test_a_newer_refused_pick_clears_the_stored_one(tmp_path, monkeypatch, enabled):
++    store, db, authority, owner, ref, events, _ = await _guarded_setup(tmp_path, monkeypatch, enabled)
++    try:
++        old = _asks(events)[0]
++        refused = await _mutate(owner, db, ref, 'pick-gone', 'gone', call=2)
++        assert refused['error']['data']['reason'] == 'model_resolution_failed', refused
++        assert (_stored(db, ref) is None) is enabled
++        confirmed = await _mutate(owner, db, ref, 'confirm-a', 'model-a', confirm=old['confirm'], call=3)
++        if enabled:
++            assert confirmed['error']['data']['reason'] == 'pick_superseded', confirmed
++            assert db.get_session(ref.session_id)['model'] == 'frozen'
++        else:
++            assert confirmed['result']['model'] == 'model-a', confirmed
++    finally:
++        await owner.close()
++        store.close_all_db_handles()
++
++
++@pytest.mark.asyncio
++async def test_a_fence_refusal_leaves_the_stored_pick(tmp_path, monkeypatch):
++    store, db, authority, owner, ref, events, _ = await _guarded_setup(tmp_path, monkeypatch, True)
++    try:
++        snap = db.get_session(ref.session_id)
++        stale = await owner.dispatch({'id': 2, 'method': 'session.mutate', 'params': {
++            'session_id': ref.session_id, 'request_id': 'stale', 'expected_revision': snap['runtime_revision'] + 7,
++            'expected_generation': snap['runtime_generation'], 'operation': 'model', 'payload': {'model': 'model-b'}}})
++        assert stale['error']['data']['reason'] == 'revision_conflict', stale
++        assert _stored(db, ref)['payload'] == {'model': 'model-a'}
++    finally:
++        await owner.close()
++        store.close_all_db_handles()
++
++
++@pytest.mark.asyncio
++async def test_a_newer_deferred_pick_supersedes_the_asked_one(tmp_path, monkeypatch):
++    from gateway.session_contract import Submission
++    store, db, authority, owner, ref, events, (started, release) = await _guarded_setup(tmp_path, monkeypatch, True)
++    try:
++        old = _asks(events)[0]
++        started.clear()
++        release.clear()
++        await authority.submit(owner.actor, Submission('running2', ref, {'text': 'RUNNING2'}, 'queue'))
++        await async_wait_until(started.is_set, timeout=10, what='a second turn is running')
++        deferred = await _mutate(owner, db, ref, 'pick-b', 'model-b', call=2)
++        assert deferred['result']['status'] == 'deferred', deferred
++        stored = _stored(db, ref)
++        assert stored['payload'] == {'model': 'model-b'} and 'awaiting_confirm' not in stored
++        confirmed = await _mutate(owner, db, ref, 'confirm-a', 'model-a', confirm=old['confirm'], call=3)
++        assert confirmed['error']['data']['reason'] == 'pick_superseded', confirmed
++        assert db.get_session(ref.session_id)['model'] == 'frozen'
++        release.set()
++    finally:
++        release.set()
++        await owner.close()
++        store.close_all_db_handles()
++
++
++@pytest.mark.asyncio
++async def test_a_reasoning_level_stored_beside_the_pick_survives_a_newer_ask(tmp_path, monkeypatch):
++    store, db, authority, owner, ref, events, _ = await _guarded_setup(tmp_path, monkeypatch, True)
++    try:
++        def add_level(conn):
++            key = 'gateway.deferred_pick.v1.' + ref.session_id
++            row = json.loads(conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()[0])
++            row['reasoning'] = {'principal_id': 'human', 'request_id': 'lvl', 'payload': {'effort': 'high'},
++                                'application_id': 'deferred-pick:lvl'}
++            conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(row), key))
++        db._execute_write(add_level)
++        newer = await _mutate(owner, db, ref, 'pick-b', 'model-b', call=2)
++        assert newer.get('result', {}).get('status') == 'confirmation_required', newer
++        stored = _stored(db, ref)
++        assert stored['payload'] == {'model': 'model-b'} and stored['reasoning']['payload'] == {'effort': 'high'}
++    finally:
++        await owner.close()
++        store.close_all_db_handles()
++
+diff --git a/website/docs/user-guide/sessions.md b/website/docs/user-guide/sessions.md
+index 0636b6ccd8..ad521b247b 100644
+--- a/website/docs/user-guide/sessions.md
++++ b/website/docs/user-guide/sessions.md
+@@ -1298,6 +1298,25 @@ or is stopped first, the result goes back to its place in the queue and runs
+ or is noted after the turn as before. Only a result dispatched from the same
+ conversation is handed over; an idle session is unchanged.
+ 
++**Stale model picks.** A model pick made while a turn runs is kept until the
++turn ends. If its target is guarded (cost, data policy or a large context), it
++is then asked and stays stored, and a viewer that attaches later is asked
++again. By default a later pick that is itself asked or refused leaves that
++stored pick in place, so the next viewer is asked about the older model, whose
++confirmation still applies it. Set `sessions.newest_pick_supersedes: true` so
++each newer pick settles it:
++
++```yaml
++sessions:
++  newest_pick_supersedes: true
++```
++
++A later pick that is asked replaces the stored one, so a viewer is asked about
++the newest. A later pick that is refused (the model does not resolve) or resets
++to the default clears it. The confirmation of a replaced or cleared pick is
++refused with `pick_superseded`. A pick that applies or is deferred already
++replaced it. A level set with `/reasoning` is not part of this.
++
+ ### Oversized-Transcript Guards
+ 
+ Two limits stop a runaway transcript from being loaded into memory all at once
