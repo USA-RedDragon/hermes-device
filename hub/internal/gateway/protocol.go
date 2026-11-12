@@ -213,8 +213,11 @@ func (i *SnapshotInfo) UnmarshalJSON(b []byte) error {
 }
 
 // Admission statuses in a snapshot's pending list.
+// A started row is the running turn's own input, or one Hermes hands to
+// that turn as a steer (gateway/session_queued_controls.py pending_rows).
 const (
 	AdmissionQueued  = "queued"
+	AdmissionStarted = "started"
 	AdmissionUnknown = "unknown"
 )
 

@@ -105,6 +105,7 @@ func withMember(payload json.RawMessage, key string, v any) json.RawMessage {
 func (ls *live) trackTurn(ev gateway.Event) json.RawMessage {
 	switch ev.Type {
 	case hub.KindMessageStart:
+		ls.turnAdmission = ev.AdmissionID
 		ls.turnBase, ls.turn = nil, nil
 		if ls.usage != nil {
 			base := *ls.usage
@@ -125,6 +126,9 @@ func (ls *live) trackTurn(ev gateway.Event) json.RawMessage {
 		ls.turn = &t
 		return withMember(ev.Payload, hub.TurnKey, t)
 	case hub.KindMessageComplete:
+		if ev.AdmissionID == "" || ev.AdmissionID == ls.turnAdmission {
+			ls.turnAdmission = ""
+		}
 		var u usageCounters
 		if json.Unmarshal(ev.Payload, &u) == nil {
 			if c, ok := u.cumulative(); ok {

@@ -309,6 +309,22 @@ func (s *Server) handleDismissLost(w http.ResponseWriter, r *http.Request) {
 	s.inputAction(w, r, s.svc.DismissLost)
 }
 
+// handleStopAndSend stops the running turn and runs a waiting input as the
+// next turn (see hub.Redirector).
+func (s *Server) handleStopAndSend(w http.ResponseWriter, r *http.Request) {
+	rd, ok := s.svc.(hub.Redirector)
+	if !ok {
+		errorJSON(w, http.StatusNotFound, "not available")
+		return
+	}
+	res, err := rd.StopAndSend(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), r.PathValue("input"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toPromptJSON(res))
+}
+
 func (s *Server) inputAction(w http.ResponseWriter, r *http.Request,
 	fn func(ctx context.Context, user, backendID, sessionID, inputID string) error) {
 	if err := fn(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), r.PathValue("input")); err != nil {

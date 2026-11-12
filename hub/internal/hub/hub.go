@@ -326,12 +326,14 @@ type Info struct {
 }
 
 // Pending is an input that has not run yet: "queued" behind the running
-// turn, or "lost" when its turn was cut off by a backend restart. A lost
-// input holds back everything queued after it until it is dismissed.
+// turn, "steering" while Hermes hands it to the running turn, or "lost"
+// when its turn was cut off by a backend restart. A lost input holds back
+// everything queued after it until it is dismissed.
 // Pending statuses.
 const (
-	PendingQueued = "queued"
-	PendingLost   = "lost"
+	PendingQueued   = "queued"
+	PendingSteering = "steering"
+	PendingLost     = "lost"
 )
 
 type Pending struct {

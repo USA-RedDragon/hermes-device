@@ -42,13 +42,21 @@ type live struct {
 	inputs   map[string]gateway.PendingAdmission
 	// texts remembers each pending input's text until its turn starts, so
 	// message.start can carry it and a replay shows who said what.
-	texts     map[string]string
-	seq       int64
-	snapshot  hub.Event
-	ring      []hub.Event
-	truncated bool
-	viewers   map[*viewer]struct{}
-	idleTimer *time.Timer
+	texts map[string]string
+	// subs remembers each pending input's submission ID the same way, so
+	// the end of a steer can name it after the pending list dropped it.
+	subs map[string]string
+	// turnAdmission is the admission of the running turn, "" when not
+	// known; outcomes is what became of the admissions StopAndSend waits
+	// for: "started", or the outcome their message.complete reported.
+	turnAdmission string
+	outcomes      map[string]string
+	seq           int64
+	snapshot      hub.Event
+	ring          []hub.Event
+	truncated     bool
+	viewers       map[*viewer]struct{}
+	idleTimer     *time.Timer
 	// vision says whether the session's tools can read images, from the
 	// latest info that listed them; nil when none did.
 	vision *bool
@@ -175,9 +183,15 @@ func (ls *live) setInputs(ps []gateway.PendingAdmission) {
 	if ls.texts == nil {
 		ls.texts = map[string]string{}
 	}
+	if ls.subs == nil {
+		ls.subs = map[string]string{}
+	}
 	for _, p := range ps {
 		ls.inputs[p.AdmissionID] = p
 		ls.texts[p.AdmissionID] = p.Text
+		if p.InputID != "" && gateway.Producer(p.InputID) == "" {
+			ls.subs[p.AdmissionID] = p.InputID
+		}
 	}
 }
 
@@ -480,6 +494,7 @@ func (ls *live) apply(ev gateway.Event) {
 			ls.settle(true, p.RequestIDs...)
 		}
 	}
+	ev.Payload = ls.trackSettled(ev)
 	ev.Payload = ls.trackTurn(ev)
 	ls.trackProvider(ev)
 	ls.turnNotices(ev)

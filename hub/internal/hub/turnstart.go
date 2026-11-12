@@ -27,6 +27,12 @@ func NewSubmissionID() string {
 	return submissionPrefix + uuid.NewString()
 }
 
+// SubmissionIDFor is the submission ID of a prompt the hub sends for seed:
+// the same for the same seed, so a retry never runs it twice.
+func SubmissionIDFor(seed string) string {
+	return submissionPrefix + uuid.NewSHA1(uuid.NameSpaceOID, []byte(seed)).String()
+}
+
 // FromHub reports whether a submission ID is one of NewSubmissionID's.
 func FromHub(id string) bool {
 	return strings.HasPrefix(id, submissionPrefix)

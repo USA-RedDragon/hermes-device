@@ -167,6 +167,30 @@ func TestPromptSteerAndCommands(t *testing.T) {
 	}
 }
 
+func TestStopAndSendAPI(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	c := client(t)
+	m := login(t, e, c)
+	e.gw.QueueWhileRunning = true
+	e.gw.StartElsewhere("s1", "tui-1", "work", false, true)
+	var out map[string]any
+	if s := apiJSON(t, c, http.MethodPost, e.url+pathS1+"/prompt", m.CSRF, map[string]any{keyText: "stop and look", "steer": true}, &out); s != http.StatusAccepted ||
+		out["steered"] != true {
+		t.Fatalf("steer = %d %v", s, out)
+	}
+	sent, _ := out["id"].(string)
+	now := e.url + pathS1 + "/inputs/" + sent + "/now"
+	out = nil
+	if s := apiJSON(t, c, http.MethodPost, now, m.CSRF, nil, &out); s != http.StatusAccepted || out[keyStatus] != statusSent ||
+		out["id"] != hub.SubmissionIDFor("stop-and-send:"+e.gw.Steered()[0]) {
+		t.Fatalf("stop and send = %d %v", s, out)
+	}
+	if s := apiJSON(t, c, http.MethodPost, now, m.CSRF, nil, &out); s != http.StatusNotFound {
+		t.Fatalf("stop and send again = %d %v", s, out)
+	}
+}
+
 func TestRewindBranchAndTranscriptAPI(t *testing.T) {
 	t.Parallel()
 	e := setup(t)

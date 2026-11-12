@@ -90,6 +90,18 @@ type ChatActions interface {
 	Commands(ctx context.Context, user, backendID, sessionID string) ([]Command, error)
 }
 
+// Redirector is the optional part of a Service that turns a waiting input
+// into the next turn.
+type Redirector interface {
+	// StopAndSend stops the session's running turn and runs inputID, a
+	// queued input or one handed to the running turn as a steer, as the
+	// next turn, after any inputs queued before it. inputID is an
+	// admission ID or the submission ID the input was sent under. It fails
+	// with ErrUnknownInput when the input is not waiting, and with ErrBusy
+	// when it is the turn that runs.
+	StopAndSend(ctx context.Context, user, backendID, sessionID, inputID string) (PromptResult, error)
+}
+
 // ChatMark is what a user marked on one chat. SeenAt is zero when the user
 // has no read time for it.
 type ChatMark struct {

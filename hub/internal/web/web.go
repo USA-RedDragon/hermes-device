@@ -250,6 +250,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/sessions/{backend}/{session}/approvals/{approval}", s.api(s.handleApproval))
 	mux.Handle("POST /api/sessions/{backend}/{session}/inputs/{input}/cancel", s.api(s.handleCancelInput))
 	mux.Handle("POST /api/sessions/{backend}/{session}/inputs/{input}/dismiss", s.api(s.handleDismissLost))
+	mux.Handle("POST /api/sessions/{backend}/{session}/inputs/{input}/now", s.api(s.handleStopAndSend))
 	mux.Handle("POST /api/sessions/{backend}/{session}/rename", s.api(s.handleRename))
 	mux.Handle("POST /api/sessions/{backend}/{session}/archive", s.api(s.handleArchive))
 	mux.Handle("POST /api/sessions/{backend}/{session}/delete", s.api(s.handleDelete))

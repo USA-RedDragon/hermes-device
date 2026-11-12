@@ -66,6 +66,9 @@ type Options struct {
 	// running turn has no agent to take it, and SteerWindow how long it
 	// keeps trying. Defaults 250ms and 3s.
 	SteerRetry, SteerWindow time.Duration
+	// SteerSettle is how long StopAndSend waits for a stopped turn to give
+	// back the steer it held.
+	SteerSettle time.Duration
 	// CommandsTTL is how long the hub keeps a backend's command catalog.
 	// Default 5m.
 	CommandsTTL time.Duration
@@ -138,6 +141,9 @@ func New(cfgs []config.Backend, dir Directory, opts Options) *Service {
 	}
 	if opts.SteerRetry == 0 {
 		opts.SteerRetry = 250 * time.Millisecond
+	}
+	if opts.SteerSettle == 0 {
+		opts.SteerSettle = 15 * time.Second
 	}
 	if opts.SteerWindow == 0 {
 		opts.SteerWindow = 3 * time.Second
@@ -1219,11 +1225,14 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 		msgs = []json.RawMessage{}
 	}
 	pending := make([]hub.Pending, 0, len(snap.Pending))
+	turn := runningAdmission(snap.Pending, "")
 	for _, p := range snap.Pending {
-		switch p.Status {
-		case gateway.AdmissionQueued:
+		switch {
+		case steering(p, turn):
+			pending = append(pending, hub.Pending{ID: p.AdmissionID, Status: hub.PendingSteering, Text: p.Text})
+		case p.Status == gateway.AdmissionQueued:
 			pending = append(pending, hub.Pending{ID: p.AdmissionID, Status: hub.PendingQueued, Text: p.Text})
-		case gateway.AdmissionUnknown:
+		case p.Status == gateway.AdmissionUnknown:
 			pending = append(pending, hub.Pending{ID: p.AdmissionID, Status: hub.PendingLost, Text: p.Text})
 		}
 	}
