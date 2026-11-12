@@ -318,6 +318,10 @@ func (s *Server) handleStopAndSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := rd.StopAndSend(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), r.PathValue("input"))
+	if errors.Is(err, hub.ErrBusy) {
+		errorJSON(w, http.StatusConflict, "That message is the turn that runs now. Use Stop instead")
+		return
+	}
 	if err != nil {
 		s.fail(w, err)
 		return

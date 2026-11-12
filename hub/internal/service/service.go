@@ -1260,6 +1260,10 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	}
 	ls.setPrompts(snap.Prompts)
 	ls.setInputs(snap.Pending)
+	ls.turnAdmission = ""
+	if snap.Running {
+		ls.turnAdmission = runningAdmission(snap.Pending, "")
+	}
 	ls.subscribedUsage(snap.Running, snap.Info.Usage, before)
 	ls.ring, ls.truncated = nil, false
 	ls.seq++

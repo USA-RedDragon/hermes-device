@@ -35,8 +35,14 @@ func (ls *live) trackSettled(ev gateway.Event) json.RawMessage {
 	if ev.AdmissionID == "" || (ev.Type != hub.KindMessageStart && ev.Type != hub.KindMessageComplete) {
 		return ev.Payload
 	}
-	if ls.outcomes == nil || len(ls.outcomes) >= maxSettled {
+	if ls.outcomes == nil {
 		ls.outcomes = map[string]string{}
+	}
+	for id := range ls.outcomes {
+		if len(ls.outcomes) < maxSettled {
+			break
+		}
+		delete(ls.outcomes, id)
 	}
 	sub := ls.subs[ev.AdmissionID]
 	delete(ls.subs, ev.AdmissionID)
@@ -54,6 +60,7 @@ func (ls *live) trackSettled(ev gateway.Event) json.RawMessage {
 		return ev.Payload
 	}
 	p[hub.StartSubmissionID] = sub
+	p[hub.StartAdmissionID] = ev.AdmissionID
 	out, err := json.Marshal(p)
 	if err != nil {
 		return ev.Payload
@@ -101,8 +108,10 @@ func (ls *live) findInput(id string) (gateway.PendingAdmission, bool) {
 // turn. A queued input runs once the turn stops, as Hermes runs its queue.
 // A steer Hermes holds for the running turn ends with the turn (Hermes
 // drops a steer on a stop), so the hub waits for that end and sends its
-// text again as a new prompt; a steer that went back to the queue, or that
-// the turn read and finished with, needs nothing more.
+// text again as a new prompt, at the end of the queue; a steer that went
+// back to the queue, or that the turn read and finished with, needs
+// nothing more. The wait and the new prompt do not end with ctx: the stop
+// already dropped the steer.
 func (s *Service) StopAndSend(ctx context.Context, user, backendID, sessionID, inputID string) (hub.PromptResult, error) {
 	b, err := s.backend(ctx, user, backendID)
 	if err != nil {
@@ -140,6 +149,7 @@ func (s *Service) StopAndSend(ctx context.Context, user, backendID, sessionID, i
 	if !steering(p, turn) {
 		return hub.PromptResult{ID: id}, nil
 	}
+	ctx = context.WithoutCancel(ctx)
 	outcome, err := ls.waitSettled(ctx, p.AdmissionID, s.opts.SteerSettle)
 	if err != nil {
 		return hub.PromptResult{}, err

@@ -94,8 +94,9 @@ type ChatActions interface {
 // into the next turn.
 type Redirector interface {
 	// StopAndSend stops the session's running turn and runs inputID, a
-	// queued input or one handed to the running turn as a steer, as the
-	// next turn, after any inputs queued before it. inputID is an
+	// queued input or one handed to the running turn as a steer, as soon
+	// as the queue lets it: a queued input after the inputs queued before
+	// it, a steer, sent again, after every queued input. inputID is an
 	// admission ID or the submission ID the input was sent under. It fails
 	// with ErrUnknownInput when the input is not waiting, and with ErrBusy
 	// when it is the turn that runs.
