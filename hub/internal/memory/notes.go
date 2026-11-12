@@ -67,6 +67,41 @@ func (n *notes) do(ctx context.Context, method, path string, body any) (hub.Note
 	return out, fill(&out)
 }
 
+// tagProjects names the project of each staged project memory write. The
+// project-memory plugin stages them in Hermes's memory approval queue, so
+// they come with the global pending writes. Without the plugin, or when it
+// does not answer, the writes stay untagged.
+func (n *notes) tagProjects(ctx context.Context, out hub.Notes, err error) (hub.Notes, error) {
+	if err == nil {
+		n.tag(ctx, &out)
+	}
+	return out, err
+}
+
+func (n *notes) tag(ctx context.Context, out *hub.Notes) {
+	if len(out.Pending) == 0 {
+		return
+	}
+	var staged struct {
+		Pending []struct {
+			ID       string `json:"id"`
+			Identity string `json:"identity"`
+		} `json:"pending"`
+	}
+	if err := n.send(ctx, http.MethodGet, projectBase+"/pending", nil, &staged); err != nil {
+		return
+	}
+	byID := make(map[string]string, len(staged.Pending))
+	for _, p := range staged.Pending {
+		byID[p.ID] = p.Identity
+	}
+	for i := range out.Pending {
+		if id, ok := byID[out.Pending[i].ID]; ok {
+			out.Pending[i].Project = id
+		}
+	}
+}
+
 // fill checks that an answer has its stores and gives empty lists for
 // missing ones.
 func fill(out *hub.Notes) error {

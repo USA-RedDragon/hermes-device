@@ -135,8 +135,7 @@ func TestNotes(t *testing.T) {
 	if err != nil || !slices.Equal(n.Targets[hub.TargetMemory].Entries, []string{zstdAlways}) {
 		t.Fatalf("edit = %+v, %v", n, err)
 	}
-	reqs := e.pc.Requests()
-	last := reqs[len(reqs)-1]
+	last := lastPluginRequest(e.pc)
 	if last.Method != http.MethodPost || last.Path != "/api/plugins/device/memory/memory/edit" ||
 		last.Body["entry"] != "Use zstd." || last.Body["content"] != zstdAlways {
 		t.Fatalf("edit request = %+v", last)
@@ -144,7 +143,7 @@ func TestNotes(t *testing.T) {
 	if _, err := e.svc.ChangeNote(ctx, alice, pcID, hub.TargetUser, hub.NoteReplace, "", "a\n§\nb", []string{zstdAlways}); err != nil {
 		t.Fatal(err)
 	}
-	if last := e.pc.Requests()[len(e.pc.Requests())-1]; last.Body["text"] != "a\n§\nb" || fmt.Sprint(last.Body["base"]) != "["+zstdAlways+"]" {
+	if last := lastPluginRequest(e.pc); last.Body["text"] != "a\n§\nb" || fmt.Sprint(last.Body["base"]) != "["+zstdAlways+"]" {
 		t.Fatalf("replace request = %+v", last)
 	}
 	if _, err := e.svc.ChangeNote(ctx, alice, pcID, "../config", hub.NoteAdd, "", "x", nil); status(err) != http.StatusNotFound {
@@ -178,10 +177,13 @@ func TestNotes(t *testing.T) {
 	}
 }
 
-const demoID = "github.com-alice-demo"
+const (
+	demoID       = "github.com-alice-demo"
+	demoIdentity = "github.com/alice/demo"
+)
 
 func demoProject() hub.Project {
-	return hub.Project{ID: demoID, Identity: "github.com/alice/demo", Kind: hub.ProjectRemote, Name: "demo",
+	return hub.Project{ID: demoID, Identity: demoIdentity, Kind: hub.ProjectRemote, Name: "demo",
 		Aliases: []string{"git.example.com/alice/demo"}, Folders: []hub.SeenFolder{{DeviceID: "d1", Device: "laptop", Dir: "/home/alice/src/demo", SeenAt: 1731300000.5}}}
 }
 
@@ -192,7 +194,7 @@ func TestProjects(t *testing.T) {
 	e.pc.AddProject(demoProject(), "Run make check.")
 	e.pc.AddProject(hub.Project{ID: "root-abc", Identity: "root:abc", Kind: hub.ProjectRoot, Name: "scratch"})
 	ps, err := e.svc.Projects(ctx, alice, pcID)
-	if err != nil || len(ps) != 2 || ps[0].Identity != "github.com/alice/demo" || ps[0].Aliases[0] != "git.example.com/alice/demo" ||
+	if err != nil || len(ps) != 2 || ps[0].Identity != demoIdentity || ps[0].Aliases[0] != "git.example.com/alice/demo" ||
 		ps[0].Folders[0].Device != "laptop" || ps[1].Aliases == nil || ps[1].Folders == nil {
 		t.Fatalf("projects = %+v, %v", ps, err)
 	}
@@ -229,6 +231,38 @@ func TestProjects(t *testing.T) {
 	}
 	if _, err := e.svc.ProjectNotes(ctx, alice, pcID, demoID); !errors.Is(err, hub.ErrNoMemory) {
 		t.Fatalf("project notes without the plugin: %v", err)
+	}
+}
+
+// lastPluginRequest is the last request that was not the project-memory
+// plugin's pending list, which the notes routes read after each answer.
+func lastPluginRequest(p *memorytest.Plugin) memorytest.Request {
+	reqs := p.Requests()
+	for i := len(reqs) - 1; i > 0; i-- {
+		if reqs[i].Path != "/api/plugins/project-memory/pending" {
+			return reqs[i]
+		}
+	}
+	return reqs[0]
+}
+
+func TestPendingProjectWrites(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	ctx := context.Background()
+	n, err := e.svc.Notes(ctx, alice, pcID)
+	if err != nil || len(n.Pending) != 1 || n.Pending[0].Project != "" {
+		t.Fatalf("untagged notes = %+v, %v", n.Pending, err)
+	}
+	e.pc.ProjectPending = map[string]string{"ab12": demoIdentity, "zz99": "github.com/alice/other"}
+	n, err = e.svc.Notes(ctx, alice, pcID)
+	if err != nil || len(n.Pending) != 1 || n.Pending[0].Project != demoIdentity {
+		t.Fatalf("tagged notes = %+v, %v", n.Pending, err)
+	}
+	e.pc.NoProjects = true
+	n, err = e.svc.Notes(ctx, alice, pcID)
+	if err != nil || len(n.Pending) != 1 || n.Pending[0].Project != "" {
+		t.Fatalf("notes without the plugin = %+v, %v", n.Pending, err)
 	}
 }
 

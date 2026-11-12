@@ -75,6 +75,9 @@ type Plugin struct {
 	// NoProjects makes every project-memory route answer 404 as a
 	// dashboard without that plugin does.
 	NoProjects bool
+	// ProjectPending maps the id of a pending write to the identity of the
+	// project it is for, as the project-memory plugin's /pending lists it.
+	ProjectPending map[string]string
 	// Refuse makes changes answer 409 with this message.
 	Refuse   string
 	mu       sync.Mutex
@@ -135,6 +138,18 @@ func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		p.notes.Approval = on
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	if r.URL.Path == "/api/plugins/project-memory/pending" {
+		if p.NoProjects {
+			writeJSON(w, http.StatusNotFound, map[string]string{keyDetail: notFound})
+			return
+		}
+		list := []map[string]string{}
+		for id, identity := range p.ProjectPending {
+			list = append(list, map[string]string{"id": id, "project": "slug", "identity": identity})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"pending": list})
 		return
 	}
 	if rest, ok := strings.CutPrefix(r.URL.Path, "/api/plugins/project-memory/projects"); ok {

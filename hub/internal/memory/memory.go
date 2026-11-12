@@ -169,7 +169,8 @@ func (s *Service) Notes(ctx context.Context, user, backendID string) (hub.Notes,
 	if err != nil {
 		return hub.Notes{}, err
 	}
-	return n.get(ctx)
+	out, err := n.get(ctx)
+	return n.tagProjects(ctx, out, err)
 }
 
 // ChangeNote applies one change to MEMORY.md or USER.md.
@@ -181,7 +182,8 @@ func (s *Service) ChangeNote(ctx context.Context, user, backendID, target, op, e
 	if err != nil {
 		return hub.Notes{}, err
 	}
-	return n.change(ctx, target, op, entry, content, base)
+	out, err := n.change(ctx, target, op, entry, content, base)
+	return n.tagProjects(ctx, out, err)
 }
 
 // ResolvePending approves or rejects a memory write Hermes staged.
@@ -193,7 +195,8 @@ func (s *Service) ResolvePending(ctx context.Context, user, backendID, pendingID
 	if !pendingIDPattern.MatchString(pendingID) {
 		return hub.Notes{}, &hub.MemoryError{Status: http.StatusNotFound, Message: "That change is no longer waiting"}
 	}
-	return n.resolve(ctx, pendingID, approve)
+	out, err := n.resolve(ctx, pendingID, approve)
+	return n.tagProjects(ctx, out, err)
 }
 
 // SetApproval turns on or off whether Hermes asks before it saves to
@@ -206,7 +209,8 @@ func (s *Service) SetApproval(ctx context.Context, user, backendID string, on bo
 	if err := n.setApproval(ctx, on); err != nil {
 		return hub.Notes{}, err
 	}
-	return n.get(ctx)
+	out, err := n.get(ctx)
+	return n.tagProjects(ctx, out, err)
 }
 
 // Projects lists the projects of the backend's project-memory plugin.

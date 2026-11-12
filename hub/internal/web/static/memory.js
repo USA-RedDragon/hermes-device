@@ -353,6 +353,7 @@ window.HubMemory = (ctx) => {
   function pendingRow(p) {
     const row = el("div", "mem-entry pending");
     const text = el("div", "mem-text");
+    if (p.project) text.append(el("div", "who", "In the notes of project " + p.project));
     for (const c of p.changes) {
       text.append(el("div", "who", "Talaria wants to " + changeWord(c)));
       if (c.action === "remove") {

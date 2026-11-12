@@ -121,6 +121,10 @@ type PendingNote struct {
 	Origin    string       `json:"origin"`
 	CreatedAt float64      `json:"created_at"`
 	Changes   []NoteChange `json:"changes"`
+	// Project is the identity of the project a staged project memory
+	// write is for, such as github.com/alice/demo; empty for MEMORY.md
+	// and USER.md.
+	Project string `json:"project,omitempty"`
 }
 
 // NoteChange is one operation of a staged write. Entry is the whole entry
