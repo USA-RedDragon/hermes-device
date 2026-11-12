@@ -42,7 +42,9 @@
     if (!r.ok) {
       let msg = r.statusText;
       try { msg = (await r.json()).error || msg; } catch (_) { /* not JSON */ }
-      throw new Error(msg);
+      const err = new Error(msg);
+      err.status = r.status;
+      throw err;
     }
     const json = (r.headers.get("Content-Type") || "").startsWith("application/json");
     return r.status === 200 || r.status === 201 || (r.status === 202 && json) ? r.json() : null;
@@ -51,8 +53,15 @@
   function banner(text, bad) {
     const b = $("banner");
     b.hidden = !text;
-    b.textContent = text || "";
+    b.replaceChildren();
     b.classList.toggle("bad", !!bad);
+    if (!text) return;
+    const close = el("button", "close", "\u00d7");
+    close.type = "button";
+    close.title = "Dismiss";
+    close.setAttribute("aria-label", "Dismiss");
+    close.onclick = () => banner("");
+    b.append(el("span", "", text), close);
   }
 
   function toast(text) {
@@ -938,6 +947,8 @@
           if (body.allow !== undefined) await api("POST", this.base + "/approvals/" + encodeURIComponent(id), body);
           else await api("POST", this.base + "/prompts/" + encodeURIComponent(id) + "/answer", body);
         } catch (e) {
+          // 404: the prompt was settled where this page could not see it (another tab, Telegram, a timeout)
+          if (e.status === 404) { this.settle(id, "No longer waiting"); return; }
           for (const b of buttons) b.disabled = false;
           banner("Could not answer: " + e.message, true);
         }

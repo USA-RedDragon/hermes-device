@@ -128,7 +128,10 @@ button.primary.ib:hover { filter: brightness(1.08); }
 .info-body .status:empty { display: none; }
 .info-body .status.bad { color: var(--bad); font-style: normal; }
 .info-body .confirm button { font-size: .8rem; padding: .15rem .55rem; }
-.banner { flex: none; background: var(--warn); color: #fff; padding: .4rem .75rem; font-size: .9rem; }
+.banner { flex: none; background: var(--warn); color: #fff; padding: .4rem .75rem; font-size: .9rem; display: flex; align-items: center; gap: .75rem; }
+.banner > span { flex: 1; min-width: 0; }
+.banner .close { flex: none; background: none; border: 0; color: inherit; font-size: 1.15rem; line-height: 1; padding: 0 .2rem; cursor: pointer; opacity: .85; }
+.banner .close:hover { opacity: 1; }
 .banner.bad { background: var(--bad); }
 .welcome { flex: 1; display: grid; place-items: center; color: var(--muted); padding: 1rem; }
 
