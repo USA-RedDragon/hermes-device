@@ -1,0 +1,206 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jacob McSwain <jacob@mcswain.dev>
+Date: Thu, 12 Nov 2026 13:12:43 -0600
+Subject: [PATCH] feat(gateway): a long poll no longer holds a restart stop
+
+gateway.restart_reads_grace_seconds (0 = off): with restart_listener_handover, dashboard requests still running when a restart stop seals the listener get that many seconds instead of 5, and the ones cancelled after it get that long to unwind instead of until their worker thread returns. A long poll in a worker thread (the device plugin's request bus waits up to 25 s) held every idle stop 15 to 23 s, and with it every request the stop holds for the next gateway.
+---
+ gateway/config.py                         |  7 +-
+ gateway/config_loader.py                  |  1 +
+ gateway/run_api.py                        | 18 ++++-
+ gateway/run_shutdown.py                   |  9 ++-
+ tests/gateway/test_restart_reads_grace.py | 81 +++++++++++++++++++++++
+ 5 files changed, 111 insertions(+), 5 deletions(-)
+ create mode 100644 tests/gateway/test_restart_reads_grace.py
+
+diff --git a/gateway/config.py b/gateway/config.py
+index 2b22a480ba..a29426a39c 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -667,6 +667,10 @@ class GatewayConfig:
+     # window ends gets a close frame with code 1012 (service restart) instead of a cut connection, so its
+     # client reconnects at once. False = cut.
+     restart_listener_relay_close_sockets: bool = False
++    # With restart_listener_handover: dashboard requests still running when a restart stop seals the listener
++    # get this many seconds, and so do the ones cancelled after it to unwind; a long poll that runs in a worker
++    # thread is left to end on its own instead of holding the stop. 0 = 5 s, then until they ended.
++    restart_reads_grace_seconds: float = 0.0
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -705,7 +709,7 @@ class GatewayConfig:
+         "restart_wait_plugin_sockets", "restart_agent_cleanup_seconds",
+         "restart_wait_delegations", "restart_listener_handover", "listener_start_hold_seconds",
+         "restart_listener_relay_seconds", "restart_listener_hold_seconds", "stop_trace",
+-        "restart_ticket_handover", "restart_listener_relay_close_sockets",
++        "restart_ticket_handover", "restart_listener_relay_close_sockets", "restart_reads_grace_seconds",
+         "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+@@ -850,6 +854,7 @@ class GatewayConfig:
+             stop_trace=_coerce_bool(pick("stop_trace"), False),
+             restart_ticket_handover=_coerce_bool(pick("restart_ticket_handover"), False),
+             restart_listener_relay_close_sockets=_coerce_bool(pick("restart_listener_relay_close_sockets"), False),
++            restart_reads_grace_seconds=bounded_float("restart_reads_grace_seconds", 0.0, 0.0, 60.0),
+             restart_wait_plugin_sockets=[
+                 str(name).strip("/ ") for name in (pick("restart_wait_plugin_sockets") or [])
+                 if isinstance(pick("restart_wait_plugin_sockets"), list) and str(name).strip("/ ")],
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index d847dc3c63..594d1c8b65 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -105,6 +105,7 @@ _TOPLEVEL_BRIDGE: tuple = (
+     ("stop_trace", "stop_trace", "nested", None, None),
+     ("restart_ticket_handover", "restart_ticket_handover", "nested", None, None),
+     ("restart_listener_relay_close_sockets", "restart_listener_relay_close_sockets", "nested", None, None),
++    ("restart_reads_grace_seconds", "restart_reads_grace_seconds", "nested", None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/run_api.py b/gateway/run_api.py
+index e7d23ed3e6..b7e177d271 100644
+--- a/gateway/run_api.py
++++ b/gateway/run_api.py
+@@ -435,11 +435,17 @@ def seal_gateway_api(handle: GatewayAPIHandle) -> None:
+             logger.debug("Gateway API connection shutdown failed", exc_info=True)
+ 
+ 
+-async def end_gateway_api_reads(runner, handle: GatewayAPIHandle, timeout: float) -> None:
++async def end_gateway_api_reads(runner, handle: GatewayAPIHandle, timeout: float, *,
++                                unwind_timeout: float | None = None) -> None:
+     """``gateway.restart_listener_handover``: before the stores close, the listener stops serving the
+     dashboard. Health alone answers from here; requests already in it get *timeout* seconds, then are
+     cancelled (a read a cancelled request runs in a worker thread finishes on its own, on its
+-    read-only connection), and the dashboard mount closes."""
++    read-only connection), and the dashboard mount closes.
++
++    A cancelled request whose handler runs in a worker thread ends only when that thread returns: a
++    long poll (the hub's device-plugin request bus waits up to 25 s) kept the stop waiting that long.
++    With *unwind_timeout* (``gateway.restart_reads_grace_seconds``) the stop waits at most that long
++    for the cancelled requests and leaves the rest to end on their own."""
+     from gateway.drain_control import HANDOVER_HEALTH
+     seal_gateway_api(handle)
+     runner._listener_handover = HANDOVER_HEALTH
+@@ -451,7 +457,13 @@ async def end_gateway_api_reads(runner, handle: GatewayAPIHandle, timeout: float
+             task.cancel()
+         if pending:
+             logger.warning("Cancelled %d gateway API request(s) still running before the stores close", len(pending))
+-            await asyncio.gather(*pending, return_exceptions=True)
++            if unwind_timeout is None:
++                await asyncio.gather(*pending, return_exceptions=True)
++            else:
++                _unwound, stuck = await asyncio.wait(pending, timeout=max(0.0, unwind_timeout))
++                if stuck:
++                    logger.info("Left %d cancelled gateway API request(s) in worker threads to end on their own",
++                                len(stuck))
+     await handle.app.close()
+ 
+ 
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+index 43fd80afc0..b886f76e48 100644
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -1933,8 +1933,15 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+         elapsed = ctx.elapsed if ctx.started_at is not None else (lambda: 0.0)  # a stop that failed at once
+         # Bounded like the listener's own graceful shutdown, within what the watchdog leash has left.
+         budget = max(0.0, min(5.0, _effective_watchdog_leash(self) - elapsed() - 5.0))
++        # gateway.restart_reads_grace_seconds: requests still running get that long, and so do the ones
++        # cancelled after it to unwind; a long poll in a worker thread no longer holds the stop.
++        grace = float(getattr(getattr(self, "config", None), "restart_reads_grace_seconds", 0) or 0)
++        unwind = {}
++        if grace > 0:
++            budget = min(budget, grace)
++            unwind = {"unwind_timeout": grace}
+         try:
+-            await end_gateway_api_reads(self, handle, budget)
++            await end_gateway_api_reads(self, handle, budget, **unwind)
+         except Exception:
+             logger.warning("Gateway API reads did not end cleanly before the stores close", exc_info=True)
+         logger.info("Shutdown phase: listener reads ended at +%.2fs", elapsed())
+diff --git a/tests/gateway/test_restart_reads_grace.py b/tests/gateway/test_restart_reads_grace.py
+new file mode 100644
+index 0000000000..750eb4ae4c
+--- /dev/null
++++ b/tests/gateway/test_restart_reads_grace.py
+@@ -0,0 +1,81 @@
++"""gateway.restart_reads_grace_seconds: a long poll in a worker thread no longer holds a restart stop."""
++import asyncio
++import threading
++import time
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import anyio
++import pytest
++
++from gateway.config import GatewayConfig
++from gateway.drain_control import HANDOVER_READS
++from gateway.run_api import end_gateway_api_reads
++from gateway.run_shutdown import GatewayShutdownMixin
++
++
++def test_off_by_default():
++    assert GatewayConfig().restart_reads_grace_seconds == 0.0
++    assert GatewayConfig.from_dict({"restart_reads_grace_seconds": 0.5}).restart_reads_grace_seconds == 0.5
++
++
++def _long_poll(release: threading.Event):
++    """A sync FastAPI endpoint under Starlette's middleware task group (the device bus's long poll): a
++    cancel waits for its worker thread to return."""
++    async def request():
++        async with anyio.create_task_group() as group:
++            group.start_soon(anyio.to_thread.run_sync, release.wait, 3.0)
++    return asyncio.ensure_future(request())
++
++
++def _handle(task):
++    return SimpleNamespace(api=SimpleNamespace(inflight={task}, sealed=True), app=SimpleNamespace(close=AsyncMock()))
++
++
++def _runner():
++    return SimpleNamespace(_listener_handover=HANDOVER_READS, config=SimpleNamespace())
++
++
++@pytest.mark.asyncio
++async def test_without_an_unwind_bound_the_stop_waits_for_the_thread():
++    release = threading.Event()
++    task = _long_poll(release)
++    await asyncio.sleep(0.05)
++    threading.Timer(0.6, release.set).start()
++    started = time.monotonic()
++    await end_gateway_api_reads(_runner(), _handle(task), 0.05)
++    assert time.monotonic() - started >= 0.5  # upstream: until the worker thread returned
++
++
++@pytest.mark.asyncio
++async def test_with_an_unwind_bound_the_stop_leaves_the_thread_behind():
++    release = threading.Event()
++    task = _long_poll(release)
++    await asyncio.sleep(0.05)
++    handle = _handle(task)
++    started = time.monotonic()
++    try:
++        await end_gateway_api_reads(_runner(), handle, 0.05, unwind_timeout=0.1)
++        assert time.monotonic() - started < 0.5
++        handle.app.close.assert_awaited_once()
++    finally:
++        release.set()
++        await asyncio.gather(task, return_exceptions=True)
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("grace, budget, unwind", [(0.0, 5.0, None), (0.5, 0.5, 0.5), (9.0, 5.0, 9.0)])
++async def test_the_stop_passes_the_key_on(monkeypatch, grace, budget, unwind):
++    seen = []
++
++    async def end_reads(runner, handle, timeout, **kwargs):
++        seen.append((timeout, kwargs.get("unwind_timeout")))
++
++    monkeypatch.setattr("gateway.run_api.end_gateway_api_reads", end_reads)
++    monkeypatch.setattr("gateway.run_shutdown._effective_watchdog_leash", lambda runner: 600.0)
++    runner = SimpleNamespace(_listener_handover=HANDOVER_READS, session_api=object(),
++                             config=SimpleNamespace(restart_reads_grace_seconds=grace))
++    ctx = GatewayShutdownMixin._StopContext(deferred_count=lambda: 0)
++    ctx.started_at = time.monotonic()
++    await GatewayShutdownMixin._stop_end_listener_reads(runner, ctx)
++    assert seen == [(budget, unwind)]
