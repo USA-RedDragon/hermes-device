@@ -24,7 +24,7 @@ reconnecting) is retried instead of read as an exit.
  create mode 100644 tools/process_registry_handoff.py
 
 diff --git a/cli-config.yaml.example b/cli-config.yaml.example
-index 7272358907..5211259aa4 100644
+index fbbafc72c4..3ab9d9f7df 100644
 --- a/cli-config.yaml.example
 +++ b/cli-config.yaml.example
 @@ -456,6 +456,11 @@ terminal:
@@ -40,10 +40,10 @@ index 7272358907..5211259aa4 100644
    # start with the launching shell's toolchain: PATH, an activated venv and CONDA_* / NODE_* / NVM_* /
    # PYENV_* (plus GOPATH, GOROOT, CARGO_HOME, RUSTUP_HOME, JAVA_HOME), for that session only, when
 diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
-index fbbb23d54b..6a8c4b5f6f 100644
+index 2a43220196..c52b898bcd 100644
 --- a/gateway/run_shutdown.py
 +++ b/gateway/run_shutdown.py
-@@ -1861,6 +1861,21 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -1874,6 +1874,21 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
          cap = getattr(getattr(runner, "config", None), "restart_agent_cleanup_seconds", 0) or 0
          return float(cap) if cap > 0 else None
  
@@ -65,7 +65,7 @@ index fbbb23d54b..6a8c4b5f6f 100644
      async def _stop_begin_teardown(self, ctx: GatewayShutdownMixin._StopContext) -> None:
          """Flag teardown, stop room worker/watchdog, notify sessions."""
          logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
-@@ -2268,6 +2283,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -2281,6 +2296,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                      timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
                  )
              await GatewayRunner._stop_drain_active_work(self, timeout, ctx)

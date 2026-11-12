@@ -8,24 +8,24 @@ the request_restart path like SIGUSR1, so approvals and clarify stay
 answerable and new input is kept for the next owner. A second SIGTERM
 stops at once.
 ---
- cli-config.yaml.example                    |  17 ++
- gateway/config.py                          |  18 +-
- gateway/config_loader.py                   |   3 +
+ cli-config.yaml.example                    |  22 ++
+ gateway/config.py                          |  22 +-
+ gateway/config_loader.py                   |   4 +
  gateway/drain_control.py                   |  10 +
  gateway/run_api.py                         |   8 +-
  gateway/run_bootstrap.py                   |  11 +
- gateway/run_shutdown.py                    |  62 +++++-
+ gateway/run_shutdown.py                    |  77 ++++++-
  run_agent.py                               |   3 +-
- tests/gateway/test_sigterm_restart_wait.py | 232 +++++++++++++++++++++
- website/docs/user-guide/messaging/index.md |  24 +++
- 10 files changed, 383 insertions(+), 5 deletions(-)
+ tests/gateway/test_sigterm_restart_wait.py | 256 +++++++++++++++++++++
+ website/docs/user-guide/messaging/index.md |  27 +++
+ 10 files changed, 434 insertions(+), 6 deletions(-)
  create mode 100644 tests/gateway/test_sigterm_restart_wait.py
 
 diff --git a/cli-config.yaml.example b/cli-config.yaml.example
-index 0ceec63234..7272358907 100644
+index 0ceec63234..fbbafc72c4 100644
 --- a/cli-config.yaml.example
 +++ b/cli-config.yaml.example
-@@ -1466,6 +1466,23 @@ gateway:
+@@ -1466,6 +1466,28 @@ gateway:
    # 0 keeps the immediate exit.
    # runtime_lock_wait_seconds: 0
  
@@ -46,14 +46,19 @@ index 0ceec63234..7272358907 100644
 +  # 0 keeps the upstream bound.
 +  # restart_agent_cleanup_seconds: 0
 +
++  # Let running background subagents (async delegate_task) hold that restart
++  # wait like turns, so they finish and report to their chat instead of being
++  # interrupted. They still get only agent.restart_after_turn_timeout.
++  # restart_wait_delegations: false
++
  # =============================================================================
  # Toolsets
  # =============================================================================
 diff --git a/gateway/config.py b/gateway/config.py
-index 5401d6bd91..fde9477719 100644
+index 5401d6bd91..0679b02a2e 100644
 --- a/gateway/config.py
 +++ b/gateway/config.py
-@@ -630,6 +630,15 @@ class GatewayConfig:
+@@ -630,6 +630,17 @@ class GatewayConfig:
      # A gateway that finds its profile owned by another gateway waits up to this long for it to exit,
      # after warming up, instead of exiting 1: a standby for rolling updates on a shared volume. 0 = off.
      runtime_lock_wait_seconds: float = 0.0
@@ -66,26 +71,30 @@ index 5401d6bd91..fde9477719 100644
 +    # On a restart stop, the idle cached agents release together within this many seconds instead of up
 +    # to 30 s each, so the next gateway is not kept waiting on memory-provider teardown. 0 = upstream.
 +    restart_agent_cleanup_seconds: float = 0.0
++    # Running background subagents (async delegate_task) hold a restart's after-turn wait like turns do.
++    restart_wait_delegations: bool = False
      # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
      # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
      # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
-@@ -664,7 +673,9 @@ class GatewayConfig:
+@@ -664,7 +675,10 @@ class GatewayConfig:
          "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
          "max_concurrent_sessions", "multiplex_profiles",
          "on_all_adapters_down",
 -        "room_link_url", "systemd_watchdog_seconds", "runtime_lock_wait_seconds", "loop_watchdog",
 +        "room_link_url", "systemd_watchdog_seconds", "runtime_lock_wait_seconds", "sigterm_restart_wait",
 +        "restart_wait_plugin_sockets", "restart_agent_cleanup_seconds",
++        "restart_wait_delegations",
 +        "loop_watchdog",
          "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
          "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
      )
-@@ -798,6 +809,11 @@ class GatewayConfig:
+@@ -798,6 +812,12 @@ class GatewayConfig:
              room_link_url=room_link_url if isinstance(room_link_url, str) else None,
              systemd_watchdog_seconds=systemd_watchdog_seconds,
              runtime_lock_wait_seconds=bounded_float("runtime_lock_wait_seconds", 0.0, 0.0, 86400.0),
 +            sigterm_restart_wait=_coerce_bool(pick("sigterm_restart_wait"), False),
 +            restart_agent_cleanup_seconds=bounded_float("restart_agent_cleanup_seconds", 0.0, 0.0, 3600.0),
++            restart_wait_delegations=_coerce_bool(pick("restart_wait_delegations"), False),
 +            restart_wait_plugin_sockets=[
 +                str(name).strip("/ ") for name in (pick("restart_wait_plugin_sockets") or [])
 +                if isinstance(pick("restart_wait_plugin_sockets"), list) and str(name).strip("/ ")],
@@ -93,16 +102,17 @@ index 5401d6bd91..fde9477719 100644
              loop_watchdog_probe_interval_s=bounded_float("loop_watchdog_probe_interval_s", DEFAULT_LOOP_WATCHDOG_INTERVAL_S, 1.0, 3600.0),
              loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
 diff --git a/gateway/config_loader.py b/gateway/config_loader.py
-index 2e25a09dd0..d089b7ff7f 100644
+index 2e25a09dd0..4b0e003dbc 100644
 --- a/gateway/config_loader.py
 +++ b/gateway/config_loader.py
-@@ -94,6 +94,9 @@ _TOPLEVEL_BRIDGE: tuple = (
+@@ -94,6 +94,10 @@ _TOPLEVEL_BRIDGE: tuple = (
      *_presence("max_concurrent_sessions"),
      ("systemd_watchdog_seconds", "systemd_watchdog_seconds", "nested", None, None),
      ("runtime_lock_wait_seconds", "runtime_lock_wait_seconds", "nested", None, None),
 +    ("sigterm_restart_wait", "sigterm_restart_wait", "nested", None, None),
 +    ("restart_wait_plugin_sockets", "restart_wait_plugin_sockets", "nested", None, None),
 +    ("restart_agent_cleanup_seconds", "restart_agent_cleanup_seconds", "nested", None, None),
++    ("restart_wait_delegations", "restart_wait_delegations", "nested", None, None),
      ("streaming", "streaming", "dict", None, None),
      *_presence(
          "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
@@ -176,7 +186,7 @@ index 8b41594075..744719769b 100644
          sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
  
 diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
-index 7a9ee828b6..fbbb23d54b 100644
+index 7a9ee828b6..2a43220196 100644
 --- a/gateway/run_shutdown.py
 +++ b/gateway/run_shutdown.py
 @@ -1233,6 +1233,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
@@ -202,7 +212,38 @@ index 7a9ee828b6..fbbb23d54b 100644
              )
          except Exception as cleanup_exc:
              logger.warning("Agent resource cleanup%s failed: %s (#53175)", ctx_label, cleanup_exc)
-@@ -1819,6 +1820,47 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -1564,8 +1565,21 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+         return (
+             max(0, non_cron - self._wedged_chat_agent_count())
+             + self._restart_wait_cron_counts()["awaitable"]
++            + GatewayShutdownMixin._restart_wait_delegation_count(self)
+         )
+ 
++    @staticmethod
++    def _restart_wait_delegation_count(runner) -> int:
++        """``gateway.restart_wait_delegations``: running background subagents (async delegate_task) hold
++        the restart wait like turns, so they finish and report to their chat instead of being interrupted."""
++        if not getattr(getattr(runner, "config", None), "restart_wait_delegations", False):
++            return 0
++        try:
++            from tools.async_delegation import active_count
++            return active_count()
++        except Exception:
++            return 0
++
+     def _describe_active_work(self) -> list:
+         """One dict per in-flight work unit the restart wait is holding for, so an observer
+         (``hermes update``, ``hermes gateway status``) can name it instead of printing a bare count.
+@@ -1611,7 +1625,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+         Wedged turns are excluded (restart is their remedy). True when drained to zero, False when the
+         cap elapsed or only wedged work remains (caller proceeds to ``stop()``).
+         """
+-        active = self._active_work_count()
++        active = self._active_work_count() + GatewayShutdownMixin._restart_wait_delegation_count(self)
+         if active <= 0:
+             return True
+         if self._awaitable_work_count() <= 0:
+@@ -1819,6 +1833,47 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
              GatewayShutdownMixin._stop_kill_tool_subprocesses, phase
          )
  
@@ -250,7 +291,7 @@ index 7a9ee828b6..fbbb23d54b 100644
      async def _stop_begin_teardown(self, ctx: GatewayShutdownMixin._StopContext) -> None:
          """Flag teardown, stop room worker/watchdog, notify sessions."""
          logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
-@@ -1954,6 +1996,22 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -1954,6 +2009,22 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
              with _cache_lock:
                  _idle_agents = list(_cache.items())
                  _cache.clear()
@@ -289,10 +330,10 @@ index 45acd081c1..16d959c8e6 100644
              _quietly(lambda: self._memory_manager.shutdown_all())
 diff --git a/tests/gateway/test_sigterm_restart_wait.py b/tests/gateway/test_sigterm_restart_wait.py
 new file mode 100644
-index 0000000000..4a07633ed9
+index 0000000000..37f54faa68
 --- /dev/null
 +++ b/tests/gateway/test_sigterm_restart_wait.py
-@@ -0,0 +1,232 @@
+@@ -0,0 +1,256 @@
 +"""gateway.sigterm_restart_wait: a supervisor's SIGTERM restarts gracefully like SIGUSR1."""
 +import asyncio
 +import signal
@@ -525,11 +566,35 @@ index 0000000000..4a07633ed9
 +    agent._memory_provider_shutdown = False
 +    AIAgent.shutdown_memory_provider(agent, [])
 +    assert log == ["shutdown_all"]
++
++
++def test_running_subagents_hold_the_restart_wait_only_when_enabled(monkeypatch):
++    from gateway.run_shutdown import GatewayShutdownMixin
++    monkeypatch.setattr("tools.async_delegation.active_count", lambda: 2)
++    on = SimpleNamespace(config=GatewayConfig.from_dict({"gateway": {"restart_wait_delegations": True}}))
++    off = SimpleNamespace(config=GatewayConfig())
++    assert GatewayShutdownMixin._restart_wait_delegation_count(on) == 2
++    assert GatewayShutdownMixin._restart_wait_delegation_count(off) == 0
++
++
++@pytest.mark.asyncio
++async def test_restart_waits_for_running_subagents(monkeypatch):
++    runner, _adapter = make_restart_runner()
++    runner.config.restart_wait_delegations = True
++    runner._restart_after_turn_timeout = 5
++    runner._scale_to_zero_status = MagicMock()
++    left = {"n": 1}
++    monkeypatch.setattr("tools.async_delegation.active_count", lambda: left["n"])
++    waiter = asyncio.create_task(runner._await_active_work_before_restart())
++    await asyncio.sleep(0.3)
++    assert not waiter.done()
++    left["n"] = 0
++    assert await asyncio.wait_for(waiter, 2) is True
 diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
-index 5c65a98320..df33b921e5 100644
+index 5c65a98320..46634c8b0c 100644
 --- a/website/docs/user-guide/messaging/index.md
 +++ b/website/docs/user-guide/messaging/index.md
-@@ -729,6 +729,30 @@ example a Kubernetes `preStop` hook that waits for the file). When the wait runs
+@@ -729,6 +729,33 @@ example a Kubernetes `preStop` hook that waits for the file). When the wait runs
  gateway's drain (`agent.restart_drain_timeout`) plus its shutdown. The default
  `0` keeps the immediate exit.
  
@@ -556,6 +621,9 @@ index 5c65a98320..df33b921e5 100644
 +provider's shutdown can take up to its HTTP timeout per agent (30 s for Honcho)
 +while it waits for a read-ahead. Set `gateway.restart_agent_cleanup_seconds`
 +(for example `5`) to release them together within that bound on a restart.
++Background subagents (`delegate_task` in the background) do not hold the
++restart wait and are interrupted when the gateway stops; set
++`gateway.restart_wait_delegations: true` to let them finish within the wait.
 +
  ### macOS (launchd)
  
