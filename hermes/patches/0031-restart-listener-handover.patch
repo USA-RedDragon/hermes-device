@@ -1,0 +1,687 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 01:19:21 -0600
+Subject: [PATCH] feat(gateway): keep the listener up through a restart stop
+ until the profile is released
+
+gateway.restart_listener_handover (false = off): on a restart stop the gateway listener stays bound. GET /api/health answers 200 and the restart wait's reads work until the stores close, then health alone until the profile lock and host role are released; only then does the listener close. Sockets and writes are refused from the start of the stop as before. A standby's readiness then takes over from this one's without the gap of the old gateway's whole teardown.
+---
+ gateway/config.py                             |   7 +-
+ gateway/config_loader.py                      |   1 +
+ gateway/drain_control.py                      |  14 +
+ gateway/host_rendezvous.py                    |  17 +-
+ gateway/run_api.py                            |  81 +++++-
+ gateway/run_bootstrap.py                      |  19 ++
+ gateway/run_runtime.py                        |   7 +-
+ gateway/run_shutdown.py                       |  49 +++-
+ .../gateway/test_restart_listener_handover.py | 266 ++++++++++++++++++
+ website/docs/user-guide/messaging/index.md    |   7 +
+ 10 files changed, 461 insertions(+), 7 deletions(-)
+ create mode 100644 tests/gateway/test_restart_listener_handover.py
+
+diff --git a/gateway/config.py b/gateway/config.py
+index 0679b02a2e..f848190d23 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -641,6 +641,10 @@ class GatewayConfig:
+     restart_agent_cleanup_seconds: float = 0.0
+     # Running background subagents (async delegate_task) hold a restart's after-turn wait like turns do.
+     restart_wait_delegations: bool = False
++    # On a restart stop the gateway listener stays bound until the profile is released: health answers
++    # 200 throughout and the restart wait's reads until the stores close, so a successor's readiness
++    # takes over from this one's without a gap. False = the listener closes as the stop begins.
++    restart_listener_handover: bool = False
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -677,7 +681,7 @@ class GatewayConfig:
+         "on_all_adapters_down",
+         "room_link_url", "systemd_watchdog_seconds", "runtime_lock_wait_seconds", "sigterm_restart_wait",
+         "restart_wait_plugin_sockets", "restart_agent_cleanup_seconds",
+-        "restart_wait_delegations",
++        "restart_wait_delegations", "restart_listener_handover",
+         "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+@@ -815,6 +819,7 @@ class GatewayConfig:
+             sigterm_restart_wait=_coerce_bool(pick("sigterm_restart_wait"), False),
+             restart_agent_cleanup_seconds=bounded_float("restart_agent_cleanup_seconds", 0.0, 0.0, 3600.0),
+             restart_wait_delegations=_coerce_bool(pick("restart_wait_delegations"), False),
++            restart_listener_handover=_coerce_bool(pick("restart_listener_handover"), False),
+             restart_wait_plugin_sockets=[
+                 str(name).strip("/ ") for name in (pick("restart_wait_plugin_sockets") or [])
+                 if isinstance(pick("restart_wait_plugin_sockets"), list) and str(name).strip("/ ")],
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index 4b0e003dbc..dc7842abe9 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -98,6 +98,7 @@ _TOPLEVEL_BRIDGE: tuple = (
+     ("restart_wait_plugin_sockets", "restart_wait_plugin_sockets", "nested", None, None),
+     ("restart_agent_cleanup_seconds", "restart_agent_cleanup_seconds", "nested", None, None),
+     ("restart_wait_delegations", "restart_wait_delegations", "nested", None, None),
++    ("restart_listener_handover", "restart_listener_handover", "nested", None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/drain_control.py b/gateway/drain_control.py
+index 7acccab005..a8f9b164dd 100644
+--- a/gateway/drain_control.py
++++ b/gateway/drain_control.py
+@@ -64,6 +64,20 @@ def restart_wait_read(runner, method, path) -> bool:
+             and restart_wait_open(runner))
+ 
+ 
++# ``gateway.restart_listener_handover``: what a restart stop's listener still serves. READS while the
++# stores are open (health and the reads above), HEALTH once they close, until the profile is released.
++HANDOVER_READS = "reads"
++HANDOVER_HEALTH = "health"
++
++
++def handover_read(runner, method, path) -> bool:
++    """True for a GET the listener of *runner*'s restart stop still serves (``_listener_handover``)."""
++    stage = getattr(runner, "_listener_handover", None)
++    if method != "GET" or stage not in (HANDOVER_READS, HANDOVER_HEALTH):
++        return False
++    return path == "/api/health" if stage == HANDOVER_HEALTH else bool(_RESTART_WAIT_READS.fullmatch(path or ""))
++
++
+ def restart_wait_socket_ticket(runner, method, path, query) -> bool:
+     """True for a gateway-socket ticket mint while *runner* is in a restart's after-turn wait.
+ 
+diff --git a/gateway/host_rendezvous.py b/gateway/host_rendezvous.py
+index 4a85516cc3..18354013c3 100644
+--- a/gateway/host_rendezvous.py
++++ b/gateway/host_rendezvous.py
+@@ -743,6 +743,21 @@ def _handle_terminating_signal(signum, frame) -> None:
+     raise SystemExit(128 + int(signum))
+ 
+ 
++def release_role(role: str) -> None:
++    """Clear ``role``'s record + token and release its lock now, before this process exits, and
++    disarm the exit cleanup: a successor may publish its own record from here on, and that cleanup
++    compares only PIDs, which are equal across PID namespaces."""
++    role = _validated_role(role)
++    with contextlib.suppress(ValueError):
++        _cleanup_roles.remove(role)
++    _cleanup_role(role)
++
++
++def _cleanup_role_on_exit(role: str) -> None:
++    if role in _cleanup_roles:
++        _cleanup_role(role)
++
++
+ def cleanup_on_exit(role: str) -> None:
+     """Clear ``role``'s record + token and release its lock on exit — SIGTERM included.
+ 
+@@ -763,7 +778,7 @@ def cleanup_on_exit(role: str) -> None:
+     role = _validated_role(role)
+     if role not in _cleanup_roles:
+         _cleanup_roles.append(role)
+-        atexit.register(_cleanup_role, role)
++        atexit.register(_cleanup_role_on_exit, role)
+     if threading.current_thread() is not threading.main_thread():
+         return
+     for name in ("SIGTERM", "SIGBREAK"):
+diff --git a/gateway/run_api.py b/gateway/run_api.py
+index 65813d73c4..35da60bc7d 100644
+--- a/gateway/run_api.py
++++ b/gateway/run_api.py
+@@ -42,6 +42,8 @@ class GatewayAPIHandle:
+     task: asyncio.Task
+     app: Any
+     socket: socket.socket
++    #: The :class:`GatewayRuntimeAPI` in front of ``app``.
++    api: Any = None
+ 
+ 
+ class GatewayDashboardMount:
+@@ -271,7 +273,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
+         # Loading the ASGI graph may fail too; it owns the same bound socket.
+         if not config.loaded:
+             config.load()
+-        config.loaded_app = GatewayRuntimeAPI(config.loaded_app, runner, mount)
++        api = config.loaded_app = GatewayRuntimeAPI(config.loaded_app, runner, mount)
+         # A gated listener needs the dashboard's auth providers (and refuses to start without one);
+         # an already-imported dashboard costs nothing to mount now; the Webapp serves its page and
+         # mints launch links from the start.
+@@ -306,7 +308,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
+         # The address the socket bound, never a name: native clients accept only a numeric loopback
+         # origin, and ``localhost`` may resolve to either family.
+         api_origin=dial_origin(listener.getsockname()[0], state.bound_port),
+-        server=server, task=task, app=mount, socket=listener,
++        server=server, task=task, app=mount, socket=listener, api=api,
+     )
+ 
+ 
+@@ -378,6 +380,41 @@ async def stop_gateway_api(handle: GatewayAPIHandle) -> None:
+     await asyncio.shield(asyncio.gather(handle.task, return_exceptions=True))
+ 
+ 
++def seal_gateway_api(handle: GatewayAPIHandle) -> None:
++    """``gateway.restart_listener_handover``, where the stop would close the listener: from here it
++    serves only the handover's reads and refuses every other request and socket, and every open
++    connection ends as in the listener's own shutdown (WebSockets close with 1012, idle HTTP
++    connections close, busy ones after their response), while the listener keeps accepting."""
++    if handle.api is None or handle.api.sealed:
++        return
++    handle.api.sealed = True
++    state = getattr(handle.server, "server_state", None)
++    for connection in list(getattr(state, "connections", ())):
++        try:
++            connection.shutdown()
++        except Exception:
++            logger.debug("Gateway API connection shutdown failed", exc_info=True)
++
++
++async def end_gateway_api_reads(runner, handle: GatewayAPIHandle, timeout: float) -> None:
++    """``gateway.restart_listener_handover``: before the stores close, the listener stops serving the
++    dashboard. Health alone answers from here; requests already in it get *timeout* seconds, then are
++    cancelled (a read a cancelled request runs in a worker thread finishes on its own, on its
++    read-only connection), and the dashboard mount closes."""
++    from gateway.drain_control import HANDOVER_HEALTH
++    seal_gateway_api(handle)
++    runner._listener_handover = HANDOVER_HEALTH
++    tasks = set(getattr(handle.api, "inflight", ()) or ())
++    if tasks:
++        _done, pending = await asyncio.wait(tasks, timeout=max(0.0, timeout))
++        for task in pending:
++            task.cancel()
++        if pending:
++            logger.warning("Cancelled %d gateway API request(s) still running before the stores close", len(pending))
++            await asyncio.gather(*pending, return_exceptions=True)
++    await handle.app.close()
++
++
+ def _embedded_chat_enabled() -> bool:
+     """``web_server._DASHBOARD_EMBEDDED_CHAT_ENABLED`` without importing the dashboard (always True
+     unless a loaded dashboard says otherwise)."""
+@@ -390,6 +427,11 @@ def _restart_wait_read(runner, scope) -> bool:
+     return scope['type'] == 'http' and restart_wait_read(runner, scope.get('method'), scope.get('path'))
+ 
+ 
++def _handover_read(runner, scope) -> bool:
++    from gateway.drain_control import handover_read
++    return scope['type'] == 'http' and handover_read(runner, scope.get('method'), scope.get('path'))
++
++
+ def _restart_wait_sign_in(runner, scope) -> bool:
+     from gateway.drain_control import restart_wait_sign_in
+     return scope['type'] == 'http' and restart_wait_sign_in(runner, scope.get('method'), scope.get('path'))
+@@ -416,8 +458,42 @@ class GatewayRuntimeAPI:
+     """
+     def __init__(self, app, runner, web_app):
+         self.app, self.runner, self.web_app = app, runner, web_app
++        #: Tasks of the requests in progress (``end_gateway_api_reads`` waits for them).
++        self.inflight: set = set()
++        #: Set by :func:`seal_gateway_api`: only a restart stop's handover reads are served.
++        self.sealed = False
+ 
+     async def __call__(self, scope, receive, send):
++        task = asyncio.current_task()
++        self.inflight.add(task)
++        try:
++            return await self._call(scope, receive, send)
++        finally:
++            self.inflight.discard(task)
++
++    async def _serve_sealed(self, scope, receive, send):
++        """A sealed listener serves the handover's reads (the dashboard's while the stores are open,
++        health itself once they close) and refuses everything else."""
++        from gateway.drain_control import HANDOVER_HEALTH
++        from starlette.responses import JSONResponse
++        if _handover_read(self.runner, scope):
++            if getattr(self.runner, '_listener_handover', None) != HANDOVER_HEALTH:
++                return await self.app(scope, receive, send)
++            from hermes_cli.version_info import get_version_info
++            info = get_version_info()
++            return await JSONResponse({
++                'ok': True, 'version': info.base_version, 'displayVersion': info.display_version,
++                'commit': info.commit, 'auth_required': bool(getattr(self.web_app.state, 'auth_required', False)),
++            })(scope, receive, send)
++        if scope['type'] == 'websocket':
++            await send({'type': 'websocket.close', 'code': 1013})
++        elif scope['type'] == 'http':
++            await JSONResponse({'error': 'gateway_not_ready', 'state': 'draining'}, status_code=503)(
++                scope, receive, send)
++
++    async def _call(self, scope, receive, send):
++        if self.sealed:
++            return await self._serve_sealed(scope, receive, send)
+         if scope['type'] != 'websocket' or scope.get('path') != '/api/ws':
+             return await self._serve(scope, receive, send)
+         started = accepted = False
+@@ -451,6 +527,7 @@ class GatewayRuntimeAPI:
+             and scope['type'] == 'websocket' and scope['path'] == '/api/ws')
+         if ((descriptor['state'] != 'ready' or self.runner._draining) and not draining_socket
+                 and not _restart_wait_read(self.runner, scope)
++                and not _handover_read(self.runner, scope)
+                 and not _restart_wait_socket_ticket(self.runner, scope)
+                 and not _restart_wait_plugin_socket(self.runner, scope)
+                 and not _restart_wait_sign_in(self.runner, scope)):
+diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
+index 9e432e6a63..8e8ab18529 100644
+--- a/gateway/run_bootstrap.py
++++ b/gateway/run_bootstrap.py
+@@ -774,6 +774,20 @@ def _start_gateway_reserve_profiles(profile_homes) -> bool:
+     return True
+ 
+ 
++async def _release_profile_then_close_listener(runner) -> None:
++    """``gateway.restart_listener_handover``: the profile lock is released; give up the host gateway
++    role too (a standby waits for both), then close the listener that answered health until now."""
++    from gateway import host_rendezvous as hr
++    try:
++        hr.release_role(hr.ROLE_GATEWAY)
++    except Exception:
++        logger.debug("Host gateway role release failed; it ends with the process", exc_info=True)
++    try:
++        await runner.stop_handover_listener()
++    except Exception:
++        logger.warning("Handover listener did not close cleanly", exc_info=True)
++
++
+ def _start_gateway_install_signal_handlers(loop, shutdown_signal_handler, restart_signal_handler) -> None:
+     """SIGINT/SIGTERM drain, SIGUSR1 restart; main thread only."""
+     import signal
+@@ -957,6 +971,9 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+         finally:
+             unpin_launch_store(_launch_store_pin)
+         await initialize_gateway_runtime(runner)
++        # A restart stop's handover listener (gateway.restart_listener_handover) closes in the finally
++        # below, once the profile is released.
++        runner._listener_outlives_stop = True
+         # Multiplex: swap the launch-home file handlers for per-profile routers so each profile's records
+         # land in its own logs/. Must run after the runner resolved (possibly None) config and setup_logging.
+         # See #82936.
+@@ -1085,3 +1102,5 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+                 await _control_server.stop()
+             remove_pid_file()
+             release_gateway_runtime_lock()
++            if runner is not None and getattr(runner, "_listener_handover", None):
++                await _release_profile_then_close_listener(runner)
+diff --git a/gateway/run_runtime.py b/gateway/run_runtime.py
+index 6a368ead80..f30868143d 100644
+--- a/gateway/run_runtime.py
++++ b/gateway/run_runtime.py
+@@ -780,10 +780,13 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
+             import logging
+             logging.getLogger(__name__).warning('ACP sessions of %s not ended at shutdown',
+                                                 getattr(authority, 'profile_id', '?'), exc_info=True)
+-    from gateway.run_api import stop_gateway_api
++    from gateway.run_api import seal_gateway_api, stop_gateway_api
+     store = getattr(runner, 'session_ticket_store', None)
+     if store is not None:
+         store.revoke()
+     handle = getattr(runner, 'session_api', None)
+     if handle is not None:
+-        await stop_gateway_api(handle)
++        if getattr(runner, '_listener_handover', None):
++            seal_gateway_api(handle)  # it serves only the handover's reads from here
++        else:
++            await stop_gateway_api(handle)
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+index 2c796547c6..d78d9abbb6 100644
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -1912,11 +1912,49 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+         except Exception:
+             logger.warning("Background process handoff failed; they are stopped as usual", exc_info=True)
+ 
++    def _begin_listener_handover(self) -> None:
++        """``gateway.restart_listener_handover``: a restart stop keeps the listener bound until the profile
++        is released, serving health and the restart wait's reads while the stores are open."""
++        handle = getattr(self, "session_api", None)
++        if (not getattr(self, "_restart_requested", False) or handle is None or handle.task.done()
++                or not getattr(getattr(self, "config", None), "restart_listener_handover", False)):
++            return
++        from gateway.drain_control import HANDOVER_READS
++        self._listener_handover = HANDOVER_READS
++
++    async def _stop_end_listener_reads(self, ctx: GatewayShutdownMixin._StopContext) -> None:
++        """Before the stores close, a handover listener stops serving reads; health still answers."""
++        handle = getattr(self, "session_api", None)
++        if not getattr(self, "_listener_handover", None) or handle is None:
++            return
++        from gateway.run_api import end_gateway_api_reads
++        elapsed = ctx.elapsed if ctx.started_at is not None else (lambda: 0.0)  # a stop that failed at once
++        # Bounded like the listener's own graceful shutdown, within what the watchdog leash has left.
++        budget = max(0.0, min(5.0, _effective_watchdog_leash(self) - elapsed() - 5.0))
++        try:
++            await end_gateway_api_reads(self, handle, budget)
++        except Exception:
++            logger.warning("Gateway API reads did not end cleanly before the stores close", exc_info=True)
++        logger.info("Shutdown phase: listener reads ended at +%.2fs", elapsed())
++
++    async def stop_handover_listener(self) -> None:
++        """Close a handover listener; the process bootstrap calls this once the profile is released.
++        Health keeps answering until the listener stops accepting."""
++        handle = getattr(self, "session_api", None)
++        if (not getattr(self, "_listener_handover", None) or handle is None
++                or getattr(self, "_handover_listener_closing", False)):
++            return
++        self._handover_listener_closing = True
++        from gateway.run_api import stop_gateway_api
++        await stop_gateway_api(handle)
++        self._listener_handover = None
++
+     async def _stop_begin_teardown(self, ctx: GatewayShutdownMixin._StopContext) -> None:
+         """Flag teardown, stop room worker/watchdog, notify sessions."""
+         logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
+         ctx.started_at = time.monotonic()
+         self._running = False
++        GatewayShutdownMixin._begin_listener_handover(self)
+         self._clear_plugin_message_injector()
+         self._draining = True
+         from gateway.run_runtime import drain_gateway_runtime
+@@ -2327,10 +2365,19 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+             await settle_gateway_runtime(self, _effective_watchdog_leash(self) - ctx.elapsed(), GatewayRunner._shutdown_interrupt_reason(self))
+             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
+             await GatewayRunner._stop_release_runtime_state(self, ctx)
++            await GatewayRunner._stop_end_listener_reads(self, ctx)
+             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)
+             await GatewayRunner._stop_persist_exit_state(self, ctx)
+         finally:
+-            _watchdog_done.set()
++            try:
++                from gateway.drain_control import HANDOVER_READS
++                if getattr(self, "_listener_handover", None) == HANDOVER_READS:  # a phase raised before it
++                    await GatewayRunner._stop_end_listener_reads(self, ctx)
++                # A process bootstrap closes the handover listener only after it released the profile.
++                if not getattr(self, "_listener_outlives_stop", False):
++                    await GatewayRunner.stop_handover_listener(self)
++            finally:
++                _watchdog_done.set()
+ 
+     async def stop(
+         self, *, restart: bool = False, detached_restart: bool = False, service_restart: bool = False
+diff --git a/tests/gateway/test_restart_listener_handover.py b/tests/gateway/test_restart_listener_handover.py
+new file mode 100644
+index 0000000000..ef42220efd
+--- /dev/null
++++ b/tests/gateway/test_restart_listener_handover.py
+@@ -0,0 +1,266 @@
++"""gateway.restart_listener_handover: a restart stop keeps the gateway listener bound until the
++profile is released, so a successor's readiness takes over from this one's without a gap."""
++import asyncio
++import json
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pytest
++
++from gateway.config import GatewayConfig, load_gateway_config
++from gateway.drain_control import HANDOVER_HEALTH, HANDOVER_READS, handover_read
++from gateway.run_api import GatewayRuntimeAPI, end_gateway_api_reads, seal_gateway_api
++
++
++def test_off_by_default():
++    assert GatewayConfig().restart_listener_handover is False
++    assert GatewayConfig.from_dict({}).restart_listener_handover is False
++    assert GatewayConfig.from_dict({"gateway": {"restart_listener_handover": True}}).restart_listener_handover
++
++
++def test_config_yaml_key_reaches_the_runner_config(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    (tmp_path / "config.yaml").write_text("gateway:\n  restart_listener_handover: true\n", encoding="utf-8")
++    assert load_gateway_config().restart_listener_handover is True
++
++
++def test_handover_stages_serve_reads_then_health_only():
++    runner = SimpleNamespace(_listener_handover=HANDOVER_READS)
++    assert handover_read(runner, "GET", "/api/health")
++    assert handover_read(runner, "GET", "/api/sessions/s1/messages")
++    assert not handover_read(runner, "POST", "/api/sessions/s1/messages")
++    assert not handover_read(runner, "GET", "/api/config")
++    runner._listener_handover = HANDOVER_HEALTH
++    assert handover_read(runner, "GET", "/api/health")
++    assert not handover_read(runner, "GET", "/api/status")
++    runner._listener_handover = None
++    assert not handover_read(runner, "GET", "/api/health")
++
++
++def _stopping_runner(stage=None):
++    return SimpleNamespace(_draining=True, _running=False, _listener_handover=stage,
++                           session_runtime_descriptor={"state": "draining", "capabilities": []})
++
++
++async def _get(api, path, method="GET"):
++    sent = []
++
++    async def receive():
++        return {"type": "http.request", "body": b"", "more_body": False}
++
++    async def send(message):
++        sent.append(message)
++
++    scope = {"type": "http", "method": method, "path": path, "query_string": b"", "headers": [],
++             "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 9120), "scheme": "http",
++             "http_version": "1.1", "root_path": ""}
++    await api(scope, receive, send)
++    start = next(m for m in sent if m["type"] == "http.response.start")
++    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
++    return start["status"], body
++
++
++async def _upgrade(api, path="/api/ws"):
++    sent = []
++
++    async def receive():
++        return {"type": "websocket.connect"}
++
++    async def send(message):
++        sent.append(message)
++
++    scope = {"type": "websocket", "path": path, "query_string": b"", "headers": [],
++             "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 9120), "scheme": "ws", "subprotocols": []}
++    await api(scope, receive, send)
++    return sent
++
++
++def _sealed(api):
++    seal_gateway_api(SimpleNamespace(api=api, server=SimpleNamespace(server_state=SimpleNamespace(connections=set()))))
++    return api
++
++
++def _api(runner):
++    reached = []
++
++    async def dashboard(scope, receive, send):
++        reached.append(scope["path"])
++        await send({"type": "http.response.start", "status": 200, "headers": []})
++        await send({"type": "http.response.body", "body": b"{}"})
++
++    web_app = SimpleNamespace(state=SimpleNamespace(auth_required=True))
++    return GatewayRuntimeAPI(dashboard, runner, web_app), reached
++
++
++@pytest.mark.asyncio
++async def test_a_stopping_listener_refuses_health_without_the_handover(monkeypatch):
++    monkeypatch.setattr("gateway.run_idle_exit.note_client_activity", lambda runner: None)
++    api, reached = _api(_stopping_runner())
++    assert (await _get(api, "/api/health"))[0] == 503
++    assert reached == []
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("sealed", [False, True])
++async def test_handover_serves_health_and_reads_while_the_stores_are_open(monkeypatch, sealed):
++    monkeypatch.setattr("gateway.run_idle_exit.note_client_activity", lambda runner: None)
++    api, reached = _api(_stopping_runner(HANDOVER_READS))
++    if sealed:
++        _sealed(api)
++    assert (await _get(api, "/api/health"))[0] == 200
++    assert (await _get(api, "/api/sessions/s1/messages"))[0] == 200
++    assert (await _get(api, "/api/sessions/s1/messages", method="POST"))[0] == 503
++    assert (await _get(api, "/api/config"))[0] == 503
++    assert reached == ["/api/health", "/api/sessions/s1/messages"]
++
++
++@pytest.mark.asyncio
++async def test_a_sealed_listener_refuses_every_socket(monkeypatch):
++    """Where the stop used to close the listener, no socket gets in any more: a worker's adoption
++    socket would otherwise write the store after it closed."""
++    api, reached = _api(_stopping_runner(HANDOVER_READS))
++    _sealed(api)
++    for path in ("/api/ws", "/api/plugins/device/ws"):
++        assert await _upgrade(api, path) == [{"type": "websocket.close", "code": 1013}]
++    assert reached == []
++
++
++@pytest.mark.asyncio
++async def test_handover_answers_health_itself_once_the_dashboard_closed(monkeypatch):
++    monkeypatch.setattr("gateway.run_idle_exit.note_client_activity", lambda runner: None)
++    api, reached = _api(_stopping_runner(HANDOVER_HEALTH))
++    _sealed(api)
++    status, body = await _get(api, "/api/health")
++    assert status == 200
++    assert json.loads(body)["ok"] is True and json.loads(body)["auth_required"] is True
++    assert (await _get(api, "/api/status"))[0] == 503
++    assert reached == []
++
++
++@pytest.mark.asyncio
++async def test_end_reads_waits_for_requests_in_progress_then_closes_the_dashboard():
++    runner = _stopping_runner(HANDOVER_READS)
++    order = []
++
++    async def request():
++        await asyncio.sleep(0.1)
++        order.append("request done")
++
++    task = asyncio.create_task(request())
++    mount = SimpleNamespace(close=AsyncMock(side_effect=lambda: order.append("dashboard closed")))
++    handle = SimpleNamespace(api=SimpleNamespace(inflight={task}, sealed=False), app=mount,
++                             server=SimpleNamespace(server_state=SimpleNamespace(connections=set())))
++    await end_gateway_api_reads(runner, handle, 5.0)
++    assert order == ["request done", "dashboard closed"]
++    assert runner._listener_handover == HANDOVER_HEALTH
++    assert handle.api.sealed
++
++
++@pytest.mark.asyncio
++async def test_end_reads_cancels_a_request_past_the_bound():
++    runner = _stopping_runner(HANDOVER_READS)
++    task = asyncio.create_task(asyncio.sleep(30))
++    handle = SimpleNamespace(api=SimpleNamespace(inflight={task}, sealed=True), app=SimpleNamespace(close=AsyncMock()))
++    await asyncio.wait_for(end_gateway_api_reads(runner, handle, 0.05), 2)
++    assert task.cancelled()
++    handle.app.close.assert_awaited_once()
++
++
++def _runner_with_listener(restart, enabled):
++    task = asyncio.get_running_loop().create_future()
++    return SimpleNamespace(_restart_requested=restart, config=GatewayConfig(restart_listener_handover=enabled),
++                           session_api=SimpleNamespace(task=task), _listener_handover=None)
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("restart, enabled, expected", [
++    (True, True, HANDOVER_READS), (True, False, None), (False, True, None)])
++async def test_handover_begins_only_on_a_restart_stop_with_the_key(restart, enabled, expected):
++    from gateway.run_shutdown import GatewayShutdownMixin
++    runner = _runner_with_listener(restart, enabled)
++    GatewayShutdownMixin._begin_listener_handover(runner)
++    assert runner._listener_handover == expected
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("stage", [None, HANDOVER_READS])
++async def test_settle_keeps_a_handover_listener_bound(monkeypatch, stage):
++    from gateway import run_runtime
++    calls = []
++    monkeypatch.setattr(run_runtime, "_authorities", lambda runner: [])
++    monkeypatch.setattr(run_runtime, "stop_managed_turns", lambda runner, reason=None: None)
++    monkeypatch.setattr("gateway.run_api.stop_gateway_api", AsyncMock(side_effect=lambda h: calls.append("stop")))
++    monkeypatch.setattr("gateway.run_api.seal_gateway_api", lambda h: calls.append("sealed"))
++    runner = SimpleNamespace(session_api=object(), session_ticket_store=None, _listener_handover=stage)
++    await run_runtime.settle_gateway_runtime(runner, budget=1.0)
++    assert calls == (["sealed"] if stage else ["stop"])
++
++
++@pytest.mark.asyncio
++async def test_stop_handover_listener_closes_it_once_answering_health_until_then(monkeypatch):
++    from gateway.run_shutdown import GatewayShutdownMixin
++    stages = []
++    runner = SimpleNamespace(session_api=object(), _listener_handover=HANDOVER_HEALTH)
++    stop = AsyncMock(side_effect=lambda handle: stages.append(runner._listener_handover))
++    monkeypatch.setattr("gateway.run_api.stop_gateway_api", stop)
++    await GatewayShutdownMixin.stop_handover_listener(runner)
++    await GatewayShutdownMixin.stop_handover_listener(runner)
++    stop.assert_awaited_once()
++    assert stages == [HANDOVER_HEALTH]
++    assert runner._listener_handover is None
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("outlives", [False, True])
++async def test_a_failed_stop_still_ends_the_reads_before_returning(monkeypatch, outlives):
++    from gateway.run import GatewayRunner
++    from gateway.run_shutdown import GatewayShutdownMixin
++    calls = []
++
++    async def ok(*_args, **_kwargs):
++        return None
++
++    async def fail(*_args, **_kwargs):
++        raise RuntimeError("finalize failed")
++
++    async def begin(runner, ctx):
++        import time
++        ctx.started_at = time.monotonic()
++
++    monkeypatch.setattr(GatewayRunner, "_stop_begin_teardown", begin)
++    for name in ("_stop_hand_off_delegations", "_stop_drain_active_work"):
++        monkeypatch.setattr(GatewayRunner, name, ok)
++    monkeypatch.setattr(GatewayRunner, "_shutdown_interrupt_reason", lambda runner: "restart")
++    monkeypatch.setattr(GatewayRunner, "_stop_hand_off_processes", ok)
++    monkeypatch.setattr("gateway.run_runtime.settle_gateway_runtime", ok)
++    monkeypatch.setattr(GatewayRunner, "_stop_finalize_agents_and_adapters", fail)
++    monkeypatch.setattr("gateway.run_shutdown.effective_stop_drain_timeout", lambda runner: 30.0)
++
++    async def end_reads(runner, handle, timeout):
++        calls.append("reads ended")
++        runner._listener_handover = HANDOVER_HEALTH
++
++    monkeypatch.setattr("gateway.run_api.end_gateway_api_reads", end_reads)
++    monkeypatch.setattr("gateway.run_api.stop_gateway_api", AsyncMock(side_effect=lambda h: calls.append("closed")))
++    runner = SimpleNamespace(_listener_handover=HANDOVER_READS, session_api=object(), _restart_drain_timeout=30.0,
++                             _listener_outlives_stop=outlives)
++    with pytest.raises(RuntimeError):
++        await GatewayShutdownMixin._stop_impl(runner)
++    assert calls == (["reads ended"] if outlives else ["reads ended", "closed"])
++
++
++@pytest.mark.asyncio
++async def test_bootstrap_gives_up_the_host_role_before_closing_the_listener(monkeypatch):
++    from gateway import host_rendezvous as hr
++    from gateway.run_bootstrap import _release_profile_then_close_listener
++    order = []
++    monkeypatch.setattr(hr, "_cleanup_roles", [hr.ROLE_GATEWAY])
++    monkeypatch.setattr(hr, "clear_record", lambda role: order.append(("record", role)))
++    monkeypatch.setattr(hr, "release_host_lock", lambda role: order.append(("lock", role)))
++    runner = SimpleNamespace(stop_handover_listener=AsyncMock(side_effect=lambda: order.append("listener")))
++    await _release_profile_then_close_listener(runner)
++    assert order == [("record", hr.ROLE_GATEWAY), ("lock", hr.ROLE_GATEWAY), "listener"]
++    # The exit cleanup is disarmed: a successor's record (often under the same PID number, in its
++    # own PID namespace) is never removed when this process exits.
++    hr._cleanup_role_on_exit(hr.ROLE_GATEWAY)
++    assert order == [("record", hr.ROLE_GATEWAY), ("lock", hr.ROLE_GATEWAY), "listener"]
+diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
+index 46634c8b0c..fd94d93ff4 100644
+--- a/website/docs/user-guide/messaging/index.md
++++ b/website/docs/user-guide/messaging/index.md
+@@ -755,6 +755,13 @@ while it waits for a read-ahead. Set `gateway.restart_agent_cleanup_seconds`
+ Background subagents (`delegate_task` in the background) do not hold the
+ restart wait and are interrupted when the gateway stops; set
+ `gateway.restart_wait_delegations: true` to let them finish within the wait.
++Once the wait ends the gateway closes its listener, so a readiness probe on it
++fails for the whole shutdown and the successor's boot. Set
++`gateway.restart_listener_handover: true` to keep the listener bound on a
++restart until the gateway releases the profile: `GET /api/health` answers 200
++throughout, and the reads a client needs to find its chats keep working until
++the stores close. Sockets and writes are refused from the start of the stop as
++before.
+ 
+ ### macOS (launchd)
+ 
