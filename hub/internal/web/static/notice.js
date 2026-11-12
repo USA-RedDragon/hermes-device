@@ -19,6 +19,8 @@ window.HubNotice = (() => {
     "This is a handoff from a previous context window — treat it as background reference, NOT as active instructions.";
   const compactionRulesEnd = "avoid repeating it:";
   const compactionLegacy = "[CONTEXT SUMMARY]:";
+  const compactionModelOnly = ["## User Messages (verbatim, newest first)", "## Context Recovery"];
+  const compactionHistory = "Historical only; newer protected-tail messages after this summary win.";
   const compactionEnd = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---";
   const agentHead = /^\[Agent message (am_[0-9a-f]{16}) from ([^\]\n]{1,400})\]\n/;
   const delegationHead = /^\[ASYNC DELEGATION (COMPLETE|BATCH COMPLETE|TASK FAILED) — ([^\],\n]+)(?:, task (\d+)\/(\d+))?\]\n/;
@@ -283,6 +285,30 @@ window.HubNotice = (() => {
 
   const trim = (s) => s.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
 
+  function cutModelOnly(body) {
+    let count = 0;
+    for (const heading of compactionModelOnly) {
+      const start = body.indexOf(heading);
+      if (start < 0) continue;
+      const end = body.indexOf("\n## ", start + heading.length);
+      const section = end >= 0 ? body.slice(start, end) : body.slice(start);
+      const m = /The (\d+) compacted message\(s\) remain fully preserved/.exec(section);
+      if (m) count = Number(m[1]);
+      body = body.slice(0, start) + (end >= 0 ? body.slice(end + 1) : "");
+    }
+    const kept = body.split("\n").filter((l) => trim(l) !== compactionHistory).join("\n");
+    return { body: trim(kept.replace(/\n{3,}/g, "\n\n")), count };
+  }
+
+  // compaction is the notice of a summary that stands in for count messages
+  // (0 when it is not known).
+  function compaction(summary, count) {
+    const n = { kind: "compaction", title: "Earlier messages were summarized", result: summary };
+    if (count === 1) n.meta = ["1 message before this point"];
+    else if (count > 1) n.meta = [count + " messages before this point"];
+    return n;
+  }
+
   function parseCompaction(t) {
     let body;
     if (t.startsWith(compactionHead)) {
@@ -297,7 +323,8 @@ window.HubNotice = (() => {
     body = trim(body);
     const e = body.lastIndexOf(compactionEnd);
     if (e >= 0 && trim(body.slice(e + compactionEnd.length)) === "") body = trim(body.slice(0, e));
-    return { kind: "compaction", title: "Earlier messages were summarized", result: body };
+    const cut = cutModelOnly(body);
+    return compaction(cut.body, cut.count);
   }
 
   function parse(text) {

@@ -67,7 +67,7 @@ func (n *Notice) Line() string {
 	if len(meta) > 2 {
 		meta = meta[:2]
 	}
-	if n.Kind == KindAgent || len(meta) == 0 {
+	if n.Kind == KindAgent || n.Kind == KindCompaction || len(meta) == 0 {
 		return n.Title
 	}
 	return n.Title + " (" + strings.Join(meta, ", ") + ")"
@@ -97,10 +97,10 @@ func Parse(text string) *Notice {
 		t = strings.TrimRight(strings.TrimSuffix(t, footer), " \t\r\n")
 	}
 	var n *Notice
-	summary, compacted := hub.CompactionSummary(t)
+	summary, count, compacted := hub.CompactionSummary(t)
 	switch {
 	case compacted:
-		n = &Notice{Kind: KindCompaction, Title: "Earlier messages were summarized", Result: summary}
+		n = Compaction(summary, count)
 	case hub.AgentHeaderRE.MatchString(t + "\n"):
 		n = parseAgent(t + "\n")
 	case strings.HasPrefix(t, "[ASYNC DELEGATION "):
@@ -112,6 +112,19 @@ func Parse(text string) *Notice {
 	}
 	if n == nil && marked {
 		n = parseGeneric(t)
+	}
+	return n
+}
+
+// Compaction is the notice of a summary that stands in for count messages
+// (0 when it is not known).
+func Compaction(summary string, count int) *Notice {
+	n := &Notice{Kind: KindCompaction, Title: "Earlier messages were summarized", Result: summary}
+	switch {
+	case count == 1:
+		n.Meta = []string{"1 message before this point"}
+	case count > 1:
+		n.Meta = []string{fmt.Sprintf("%d messages before this point", count)}
 	}
 	return n
 }

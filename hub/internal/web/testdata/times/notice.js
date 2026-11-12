@@ -41,6 +41,8 @@ const summary = HubNotice.parse("[CONTEXT SUMMARY]: ## Active Task\nx");
 assert.strictEqual(summary.kind, "compaction");
 assert.strictEqual(line(summary, when), clock, "a summary has no count, only the time");
 assert.strictEqual(line(summary, 0), "");
+const counted = HubNotice.parse("[CONTEXT SUMMARY]: x\n\n## Context Recovery\nThe 37 compacted message(s) remain fully preserved in session history.");
+assert.strictEqual(line(counted, when), clock + " · 37 messages before this point");
 
 const meta = HubNotice.metaLine(el, done.meta, done.state, done.kind, when);
 assert.strictEqual(meta.kids[0].cls, "notice-ok");

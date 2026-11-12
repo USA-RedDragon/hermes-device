@@ -120,7 +120,7 @@ func OpenTurnPrompt(rows []json.RawMessage) (OpenPrompt, bool) {
 			if r.Text == nil {
 				p.Text = text
 			}
-			if _, ok := CompactionSummary(p.Text); ok {
+			if _, _, ok := CompactionSummary(p.Text); ok {
 				return OpenPrompt{}, false
 			}
 			p.Images = images
@@ -184,7 +184,7 @@ func LastUserMessage(rows []json.RawMessage) (UserMessage, bool) {
 		if r.Text != nil {
 			m.Text = *r.Text
 		}
-		if _, ok := CompactionSummary(m.Text); ok {
+		if _, _, ok := CompactionSummary(m.Text); ok {
 			continue
 		}
 		return m, true
