@@ -84,7 +84,9 @@ type Options struct {
 	// Claude signs Claude accounts in from Telegram. Optional.
 	Claude hub.Claude
 	// Subagents sets a chat's Subagents choice from /model. Optional.
-	Subagents  hub.SubagentRoutes
+	Subagents hub.SubagentRoutes
+	// Prompts lists the saved prompts for /prompts. Optional.
+	Prompts    PromptStore
 	Logger     *slog.Logger
 	HTTPClient *http.Client
 	// statusTick replaces the package's statusTick in tests.
@@ -124,6 +126,7 @@ type Bot struct {
 	notices   NoticeStore
 	claude    hub.Claude
 	subagents hub.SubagentRoutes
+	prompts   PromptStore
 	botID     int64
 	logger    *slog.Logger
 	defaults  map[string]string
@@ -211,6 +214,7 @@ type chatState struct {
 	list    []hub.Session
 	release *pendingRelease
 	models  modelMenu
+	prompts promptMenu
 }
 
 type attachment struct {
@@ -290,6 +294,7 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		notices:   opts.Notices,
 		claude:    opts.Claude,
 		subagents: opts.Subagents,
+		prompts:   opts.Prompts,
 		botID:     BotID(cfg.Token),
 		logger:    logger,
 		defaults:  defaults,
@@ -637,6 +642,8 @@ func (b *Bot) sessionCommand(ctx context.Context, to dest, user, cmd, arg string
 		b.status(ctx, to, user)
 	case cmdDevices, "device", "computers":
 		b.listComputers(ctx, to, user)
+	case cmdPrompts:
+		b.listPrompts(ctx, to, user)
 	case cmdModel:
 		b.model(ctx, to, user, arg)
 	case cmdBg, "background":
@@ -698,6 +705,9 @@ func (b *Bot) help(ctx context.Context, to dest, user string) {
 		"/status show the model and how full its context is\n" +
 		"/model show or switch the model\n" +
 		"/bg TEXT run a prompt in the background")
+	if b.prompts != nil {
+		sb.WriteString("\n/prompts get the text of a saved prompt")
+	}
 	if b.computers != nil {
 		sb.WriteString("\n/devices list your computers\n" +
 			"/new NAME [folder] start a session on a computer\n" +
@@ -1180,6 +1190,8 @@ func (b *Bot) handleCallback(ctx context.Context, q *CallbackQuery) {
 		b.pressPrompt(ctx, q, user, t, parts[2])
 	case modelButton(parts):
 		b.pressModel(ctx, q, to, user, parts)
+	case len(parts) == 3 && parts[0] == cbSavedPrompt:
+		b.pressSavedPrompt(ctx, q, to, user, parts)
 	case len(parts) == 1 && parts[0] == cbSteps:
 		b.sendSteps(ctx, q, to)
 	case len(parts) == 2 && parts[0] == cbRelease && b.computers != nil:

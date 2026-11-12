@@ -13,3 +13,6 @@ func WithStatusTick(d time.Duration) func(*Options) {
 func WithEditGaps(private, group time.Duration) func(*Options) {
 	return func(o *Options) { o.editGaps = [2]time.Duration{private, group} }
 }
+
+// PromptChunks is how many messages a saved prompt's text takes.
+func PromptChunks(text string) int { return len(promptChunks(text)) }

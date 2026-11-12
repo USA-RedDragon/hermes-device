@@ -306,10 +306,8 @@ func (b *Bot) handleForum(ctx context.Context, f *forum, ms []*Message, media bo
 			where = "Here"
 		}
 		b.sendText(ctx, to, where+" each chat has its own topic. Send /new or a message in "+generalName(f.chatID)+" to start one.")
-	case cmdBackends:
-		b.listBackends(ctx, to, user)
-	case cmdDevices, "device", "computers":
-		b.listComputers(ctx, to, user)
+	case cmdBackends, cmdDevices, "device", "computers", cmdPrompts:
+		b.listCommand(ctx, to, user, cmd)
 	case "":
 		if to.thread == 0 {
 			b.forumNew(ctx, f, to, user, "", ms)
@@ -331,6 +329,19 @@ func (b *Bot) handleForum(ctx context.Context, f *forum, ms []*Message, media bo
 		if b.ensureTopic(ctx, f, to, user, m) {
 			b.sessionCommand(ctx, to, user, cmd, arg)
 		}
+	}
+}
+
+// listCommand handles the commands of a linked group that list what the
+// user has, which work in any topic.
+func (b *Bot) listCommand(ctx context.Context, to dest, user, cmd string) {
+	switch cmd {
+	case cmdBackends:
+		b.listBackends(ctx, to, user)
+	case cmdPrompts:
+		b.listPrompts(ctx, to, user)
+	default:
+		b.listComputers(ctx, to, user)
 	}
 }
 
@@ -362,6 +373,9 @@ func (b *Bot) forumHelp(ctx context.Context, to dest, user string, dm bool) {
 			"/where show where this topic's chat runs\n" +
 			"/move NAME [folder] run it on a computer\n" +
 			"/move off stop using its computer")
+	}
+	if b.prompts != nil {
+		sb.WriteString("\n/prompts get the text of a saved prompt")
 	}
 	b.sendHTML(ctx, to, sb.String(), nil)
 }

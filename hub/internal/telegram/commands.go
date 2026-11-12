@@ -382,6 +382,9 @@ func (b *Bot) commonCommands() []BotCommand {
 		out = append(out, BotCommand{cmdDevices, "List your computers"}, BotCommand{cmdWhere, "Show where this chat runs"},
 			BotCommand{cmdMove, "Run this chat on a computer"})
 	}
+	if b.prompts != nil {
+		out = append(out, BotCommand{cmdPrompts, "Get the text of a saved prompt"})
+	}
 	return out
 }
 
