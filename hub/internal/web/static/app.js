@@ -23,8 +23,6 @@
     unread: "The turn stopped before Talaria read this message." };
   const t = (k) => words[k];
   // User rows Hermes writes itself (a cron result, a finished background job); shown as notes.
-  // The first line of a message another agent sent through the hub.
-  const agentHead = /^\[Agent message (am_[0-9a-f]{16}) from ([^\]\n]{1,400})\]\n/;
   const noteKinds = new Set(["internal_notification", "process_complete", "async_delegation_complete"]);
 
   async function api(method, path, body) {
@@ -692,37 +690,35 @@
       this.follow(() => this.showText(tn.text, true));
     }
 
-    // userText adds a user message. atts are the files the page sent with
-    // it; without them they come from the lines Hermes keeps in the text.
-    // agentText shows a message another agent sent through the hub (its
-    // first line is "[Agent message am_<id> from <sender>]") with a tag
-    // that names the sender, and without the header the model reads.
-    // A queued one shows as waiting until it starts.
-    agentText(text, waiting) {
-      const m = agentHead.exec(text || "");
-      if (!m) return false;
+    // noticeText shows a message that Hermes or another agent put into the
+    // chat as a user message (see notice.js) as a card, and returns false
+    // for any other text. A queued one shows as waiting until it starts.
+    noticeText(text, waiting) {
+      const n = window.HubNotice.parse(text);
+      if (!n) return false;
       if (!this.agentWaiting) this.agentWaiting = new Map();
-      const shown = this.agentWaiting.get(m[1]);
+      const key = n.id || "text:" + text;
+      const shown = this.agentWaiting.get(key);
       if (shown) {
-        this.agentWaiting.delete(m[1]);
+        this.agentWaiting.delete(key);
         shown.classList.remove("pending");
         if (shown.waitLabel) shown.waitLabel.remove();
         return true;
       }
-      const body = text.slice(m[0].length).replace(/^[^\n]*\n\n/, "");
-      const box = el("div", "msg agent" + (waiting ? " pending" : ""));
-      box.title = m[1];
-      box.append(el("div", "agent-tag", "Agent message from " + m[2]));
-      box.append(body);
+      const box = window.HubNotice.card(n, text, { el, toast });
+      if (n.id) box.title = n.id;
       this.add(box);
       if (waiting) {
+        box.classList.add("pending");
         box.waitLabel = el("div", "queued", t("waiting"));
         box.after(box.waitLabel);
-        this.agentWaiting.set(m[1], box);
+        this.agentWaiting.set(key, box);
       }
       return true;
     }
 
+    // userText adds a user message. atts are the files the page sent with
+    // it; without them they come from the lines Hermes keeps in the text.
     userText(text, pending, atts) {
       const shown = atts ? { text, atts } : splitAttachments(text);
       const m = el("div", "msg user" + (pending ? " pending" : ""));
@@ -915,11 +911,11 @@
     // started shows the input a turn started with: this page's own message
     // when it sent it, else the message sent from another app.
     started(text, note, id, admission) {
+      if (this.noticeText(text)) return;
       if (note) {
         if (text) this.add(el("div", "msg result", text));
         return;
       }
-      if (this.agentText(text)) return;
       let i = id || admission ? this.pending.findIndex((x) => x.id && (x.id === id || x.id === admission)) : 0;
       if (i < 0 && text) {
         const typed = splitAttachments(text).text;
@@ -1224,7 +1220,7 @@
           const x = this.pending[this.pending.length - 1];
           x.id = p.id;
           this.steered(x);
-        } else if (!this.agentText(p.text, true)) this.queued(this.userText(p.text, true), p.id);
+        } else if (!this.noticeText(p.text, true)) this.queued(this.userText(p.text, true), p.id);
       }
       for (const p of s.prompts || []) this.approval(p);
       if (window.HubRestore.state()) this.showOlder(() => true);
@@ -1314,16 +1310,15 @@
     row(m) {
       if (m.display_kind === "hidden") return;
       const text = m.text != null ? m.text : (typeof m.content === "string" ? m.content : "");
-      if (m.role === "user" && noteKinds.has(m.display_kind)) {
-        this.turn = null;
-        const shown = (m.display_metadata && m.display_metadata.display_text) || text;
-        if (shown) this.add(el("div", "msg result", shown));
-        return;
-      }
       const rid = Number.isInteger(m.row_id) ? m.row_id : m._row_id;
       if (m.role === "user") {
         this.turn = null;
-        if (this.agentText(text)) return;
+        if (this.noticeText(text) || (typeof m.content === "string" && this.noticeText(m.content))) return;
+        if (noteKinds.has(m.display_kind)) {
+          const shown = (m.display_metadata && m.display_metadata.display_text) || text;
+          if (shown) this.add(el("div", "msg result", shown));
+          return;
+        }
         const b = this.userText(text);
         if (b && Number.isInteger(rid)) b.dataset.row = rid;
         return;

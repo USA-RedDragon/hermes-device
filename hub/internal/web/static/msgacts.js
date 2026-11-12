@@ -217,7 +217,7 @@ window.HubMsgActions = (ctx) => {
   const rowText = (m) => (m.text != null ? m.text : typeof m.content === "string" ? m.content : "");
   const userTurn = (m) => m.role === "user" && m.display_kind !== "hidden" && !ctx.noteKinds.has(m.display_kind);
   const visible = (m) => m.display_kind !== "hidden" &&
-    ((userTurn(m) && !agentHead.test(rowText(m))) || (m.role === "assistant" && rowText(m)));
+    ((userTurn(m) && !window.HubNotice.parse(rowText(m))) || (m.role === "assistant" && rowText(m)));
 
   async function transcript(chat) {
     return api("GET", chat.base + "/transcript");
@@ -322,6 +322,11 @@ window.HubMsgActions = (ctx) => {
         if (ctx.noteKinds.has(m.display_kind)) {
           const shown = (m.display_metadata && m.display_metadata.display_text) || text;
           if (shown) out.push("> " + shown.split("\n").join("\n> "), "");
+          continue;
+        }
+        const nt = window.HubNotice.parse(text);
+        if (nt && nt.kind !== "agent") {
+          out.push("> " + nt.title + (nt.meta && nt.meta.length ? " (" + nt.meta.join(", ") + ")" : ""), "");
           continue;
         }
         who = "";
