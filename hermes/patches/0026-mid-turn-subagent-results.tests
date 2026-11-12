@@ -1,0 +1,7 @@
+tests/gateway/test_prompt_queued_controls.py
+tests/gateway/test_unviewed_completion_turns.py
+tests/gateway/test_unviewed_completion_notes.py
+tests/gateway/test_session_end_delegations.py
+tests/gateway/test_session_steer_before_adopt.py
+tests/gateway/test_pending_steer_drain.py
+tests/agent/test_plugin_live_notes_delivery.py

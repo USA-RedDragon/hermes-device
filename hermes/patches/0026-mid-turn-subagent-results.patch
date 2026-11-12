@@ -1,0 +1,795 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 23:47:37 -0600
+Subject: [PATCH] feat(gateway): opt-in subagent results that reach a running
+ turn
+
+sessions.mid_turn_subagent_results (default false): a background
+delegate_task result admitted while its local session's turn runs is
+transferred to that turn, like prompt.steer_queued, and rides the
+turn's next tool result instead of waiting behind the turn. It is not
+wrapped as a user steer, and no running tool is interrupted. When no
+tool result takes it, the claim's settlement puts it back in its queue
+place, where it runs or is noted as before. Only a result dispatched
+from the same conversation is handed over.
+---
+ agent/background_notices.py                   | 113 ++++++++++
+ agent/tool_executor.py                        |   4 +-
+ cli-config.yaml.example                       |   7 +
+ gateway/session_authority.py                  |   6 +
+ gateway/session_automation.py                 |   8 +-
+ gateway/session_completion_steer.py           | 191 ++++++++++++++++
+ gateway/session_queued_controls.py            |  16 +-
+ hermes_cli/config_defaults.py                 |   3 +
+ .../agent/test_background_notices_delivery.py |  29 +++
+ .../gateway/test_mid_turn_subagent_results.py | 211 ++++++++++++++++++
+ tools/async_delegation.py                     |  11 +
+ website/docs/user-guide/sessions.md           |  18 ++
+ 12 files changed, 613 insertions(+), 4 deletions(-)
+ create mode 100644 agent/background_notices.py
+ create mode 100644 gateway/session_completion_steer.py
+ create mode 100644 tests/agent/test_background_notices_delivery.py
+ create mode 100644 tests/gateway/test_mid_turn_subagent_results.py
+
+diff --git a/agent/background_notices.py b/agent/background_notices.py
+new file mode 100644
+index 0000000000..54e49e02e2
+--- /dev/null
++++ b/agent/background_notices.py
+@@ -0,0 +1,113 @@
++"""Background results handed to a running turn (``sessions.mid_turn_subagent_results``).
++
++The gateway hands a background subagent's completion notice, admitted while the session's turn runs,
++to that turn's agent instead of leaving it queued behind it (``gateway/session_completion_steer.py``).
++The notice rides the next tool result of the turn, after its content, like a plugin's go-live notice
++(``agent/plugin_live_notes.py``): a new row not yet flushed, so no cached byte moves, and no running
++tool is cut short for it. It is never wrapped as the user's mid-turn steer: the result carries the
++subagent's own output, which keeps the trust it has as its own turn.
++
++Each notice carries a ticket (its admission id). The claim's settlement withdraws a notice no tool
++result took, and its admission goes back to its queue place, so it still runs or is noted as before.
++"""
++
++from __future__ import annotations
++
++import threading
++from typing import Any, Optional
++
++from agent.message_content import flatten_message_text
++
++_QUEUED = "_background_notices"
++_FATES = "_background_notice_fates"
++_IN_BATCH = "_background_notices_in_tool_batch"
++_LOCK = threading.Lock()
++
++NOTICE_LEAD = ("[A background result arrived while this turn was running. It is not output of the tool call "
++               "above; act on it as you would on its own message.]")
++
++
++def _queued(agent: Any) -> list[tuple[Any, str]]:
++    notices = vars(agent).get(_QUEUED) if hasattr(agent, "__dict__") else None
++    return notices if isinstance(notices, list) else []
++
++
++def _fates(agent: Any) -> dict:
++    return vars(agent).setdefault(_FATES, {})
++
++
++def queue_notice(agent: Any, ticket: Any, text: str) -> bool:
++    """Queue ``text`` for ``agent``'s next tool result. False for empty text or an agent without state."""
++    if not isinstance(text, str) or not text.strip() or not hasattr(agent, "__dict__"):
++        return False
++    with _LOCK:
++        setattr(agent, _QUEUED, [*_queued(agent), (ticket, text.strip())])
++        _fates(agent).pop(ticket, None)
++    return True
++
++
++def holds(agent: Any, ticket: Any) -> bool:
++    """Whether ``ticket`` was handed to ``agent`` as a notice and not withdrawn yet."""
++    if not hasattr(agent, "__dict__"):
++        return False
++    with _LOCK:
++        return any(t == ticket for t, _ in _queued(agent)) or ticket in vars(agent).get(_FATES, {})
++
++
++def withdraw(agent: Any, ticket: Any) -> Optional[bool]:
++    """Settle one notice by its ticket: True when no tool result took it (taken out of the queue now),
++    False once one did, None for a ticket this agent never held as a notice."""
++    if not hasattr(agent, "__dict__"):
++        return None
++    with _LOCK:
++        queued = _queued(agent)
++        kept = [(t, text) for t, text in queued if t != ticket]
++        if len(kept) != len(queued):
++            setattr(agent, _QUEUED, kept)
++            return True
++        consumed = vars(agent).get(_FATES, {}).pop(ticket, None)
++    return None if consumed is None else not consumed
++
++
++def _pop(agent: Any) -> str:
++    with _LOCK:
++        queued = _queued(agent)
++        if not queued:
++            return ""
++        setattr(agent, _QUEUED, [])
++        fates = _fates(agent)
++        for ticket, _ in queued:
++            fates[ticket] = True
++    return "\n\n".join([NOTICE_LEAD, *(text for _, text in queued)])
++
++
++def attach_to_tool_message(agent: Any, message: dict) -> None:
++    """Append every queued notice to ``message``, the tool result about to be appended and flushed."""
++    notes = _pop(agent)
++    if not notes:
++        return
++    _append(message, notes)
++    in_batch = vars(agent).get(_IN_BATCH)
++    in_batch = in_batch if isinstance(in_batch, dict) else {}
++    setattr(agent, _IN_BATCH, {**in_batch, message.get("tool_call_id"): notes})
++
++
++def keep_after_turn_budget(agent: Any, batch: list[dict]) -> None:
++    """Put a notice back on a batch row whose content the turn budget spilled to a file (the flushed row
++    already holds it)."""
++    in_batch = vars(agent).get(_IN_BATCH) if hasattr(agent, "__dict__") else None
++    if not isinstance(in_batch, dict) or not in_batch:
++        return
++    setattr(agent, _IN_BATCH, {})
++    for message in batch:
++        notes = in_batch.get(message.get("tool_call_id"))
++        if notes and notes not in flatten_message_text(message.get("content")):
++            _append(message, notes)
++
++
++def _append(message: dict, notes: str) -> None:
++    content = message.get("content")
++    if isinstance(content, list):
++        message["content"] = [*content, {"type": "text", "text": notes}]
++    else:
++        message["content"] = f"{content or ''}\n\n{notes}"
+diff --git a/agent/tool_executor.py b/agent/tool_executor.py
+index 019de243a1..e7183af358 100644
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -34,7 +34,7 @@ from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
+ from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wording
+ from agent.message_sanitization import coalesce_tool_call_id
+ from agent.onboarding import observe_tool_result as observe_onboarding_result
+-from agent import plugin_live_notes
++from agent import background_notices, plugin_live_notes
+ from agent.lsp import deferred as lsp_deferred
+ from agent.prompt_cache_scope import conversation_id
+ from agent.inline_tool_executors import (
+@@ -1149,6 +1149,7 @@ def _commit_tool_result(
+     # are told on this new row (outside any untrusted-data wrapper).
+     lsp_deferred.forward_to_agent(agent)
+     plugin_live_notes.attach_to_tool_message(agent, tool_message)
++    background_notices.attach_to_tool_message(agent, tool_message)
+     # Prepare presentation data before the append. The emitting completion callback
+     # stays below the durability fence; raw tool/model content remains unchanged.
+     prepare_metadata = getattr(agent, "tool_result_metadata_callback", None)
+@@ -1217,6 +1218,7 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
+     contents_before = [message.get("content") for message in batch]
+     enforce_turn_budget(batch, env=get_active_env(effective_task_id), config=budget)
+     plugin_live_notes.keep_after_turn_budget(agent, batch)
++    background_notices.keep_after_turn_budget(agent, batch)
+     sync_rewritten_tool_rows(agent, batch, contents_before)
+     record_tool_batch(agent, batch, contents_before)
+     agent._apply_pending_steer_to_tool_results(messages, num_tools)
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index a61629df1a..9de461f739 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -1152,6 +1152,12 @@ hosted_rooms:
+ # starts the count again. A chat you closed (exit or /new) keeps notes.
+ # 0 (default) = notes.
+ #
++# A background subagent's result that arrives while the session's turn is
++# running waits behind that turn. mid_turn_subagent_results: true hands it to
++# the running turn instead: it rides the turn's next tool result (no running
++# tool is cut short). When the turn makes no further tool call, the result
++# runs or is noted after the turn as before.
++#
+ # An ACP editor's session list (session/list) offers only sessions an editor
+ # started (acp_list_sources: [acp]). Add tui, gui (Desktop) or cli to also offer
+ # the chats those surfaces started, so the editor can open them too.
+@@ -1166,6 +1172,7 @@ hosted_rooms:
+ #   min_interval_hours: 24
+ #   orphan_end_grace_s: 300
+ #   unviewed_completion_turns: 0
++#   mid_turn_subagent_results: false
+ #   acp_list_sources: [acp]
+ 
+ # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
+diff --git a/gateway/session_authority.py b/gateway/session_authority.py
+index f28f918476..6db6dd316c 100644
+--- a/gateway/session_authority.py
++++ b/gateway/session_authority.py
+@@ -160,6 +160,9 @@ class SessionAuthority:
+         # session -> (generation, {admission_id: delivered}): queued admissions prompt.steer_queued handed
+         # to that running claim (gateway/session_queued_controls.py); its settlement decides each one.
+         self.steer_transfers = {}
++        # session -> admission ids of background subagent results waiting for a running turn's agent
++        # (``sessions.mid_turn_subagent_results``, gateway/session_completion_steer.py); adopt_agent offers them.
++        self.completion_offers = {}
+         self.launch_sources = {}  # session -> its frozen launch source (session_queued_controls)
+         # Closed local conversations ``session_retirement`` let go (a restored one may linger here until
+         # it is deleted or retired again): their source and frozen policy stay on the local adapter.
+@@ -1031,6 +1034,9 @@ class SessionAuthority:
+             latched, steers = self.pending_steers.pop(session_id, (None, ()))
+             for text in steers if latched == generation else ():
+                 agent.steer(text)
++        if self.completion_offers.get(session_id):
++            from gateway.session_completion_steer import offer_waiting
++            offer_waiting(self, session_id)
+ 
+     def check_approval_generation(self, session_id, generation):
+         handle = self._handle(SessionRef(self.profile_id, session_id))
+diff --git a/gateway/session_automation.py b/gateway/session_automation.py
+index 331e62b2db..04b7e06285 100644
+--- a/gateway/session_automation.py
++++ b/gateway/session_automation.py
+@@ -633,7 +633,13 @@ async def admit_automation(authority, adapter, event, identity, replaces=None, f
+         _authorize_write=authority._admission_gate(replaces and (
+             _replace_queued(replaces, ref.session_id, replaced) if fold is None
+             else _fold_queued(replaces, ref.session_id, replaced, fold)))),
+-        then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
++        then=admitted, ordered=True, after=partial(_schedule_automation, authority, ref))
++
++
++def _schedule_automation(authority, ref, receipt):
++    authority._schedule_admitted(ref, receipt)
++    from gateway.session_completion_steer import offer_admitted
++    offer_admitted(authority, ref, receipt)
+ 
+ 
+ _ROUTE_WAKE_PRODUCERS = frozenset({'kanban-wake', 'loop-tick'})
+diff --git a/gateway/session_completion_steer.py b/gateway/session_completion_steer.py
+new file mode 100644
+index 0000000000..af1520fc30
+--- /dev/null
++++ b/gateway/session_completion_steer.py
+@@ -0,0 +1,191 @@
++"""A background subagent's result reaches a running turn (``sessions.mid_turn_subagent_results``).
++
++By default a background ``delegate_task`` result admitted while its session's turn runs waits in the
++session's FIFO behind that turn, so an agent learns of it only after it ends its turn. With the option on,
++the queued result is handed to the running turn instead, through the same transfer a viewer's
++``prompt.steer_queued`` uses (gateway/session_queued_controls.py): the admission goes queued ->
++``steering`` bound to the running claim, its notice rides the turn's next tool result
++(agent/background_notices.py), and the claim's settlement decides it: ``steered`` once a tool result
++carried it, back to its queue place when none did (the turn ended with no further tool call, or was
++stopped first), where it runs or is noted exactly as it would have been. No running tool is interrupted.
++
++Only a result whose dispatching session is the running turn's conversation (its compression chain) is
++handed over, and never one whose dispatching session is closed to new dispatches. A result admitted
++before the turn adopted its agent is offered again when it does. An idle session is unchanged.
++"""
++import asyncio
++import contextlib
++import json
++import logging
++from functools import partial
++from pathlib import Path
++
++from hermes_state_runtime import (
++    RuntimeStoreError, get_session_admission, revert_steer_input, steer_session_input,
++)
++
++logger = logging.getLogger(__name__)
++
++
++def mid_turn_subagent_results(authority):
++    """Blocking: ``sessions.mid_turn_subagent_results`` of the profile that owns *authority*'s store."""
++    from hermes_cli.config_defaults import DEFAULT_CONFIG
++    from hermes_cli.config_effective import load_user_config_effective
++    from gateway.session_local import profile_env_scope
++    default = DEFAULT_CONFIG['sessions']['mid_turn_subagent_results']
++    home = Path(authority.db.db_path).resolve().parent
++    with profile_env_scope(home):
++        sessions = load_user_config_effective(home / 'config.yaml').get('sessions')
++    raw = sessions.get('mid_turn_subagent_results', default) if isinstance(sessions, dict) else default
++    return raw if isinstance(raw, bool) else default
++
++
++def _identities(descriptor):
++    return set(descriptor.get('identities') or ()) | {descriptor.get('identity')}
++
++
++def _delegation_ids(descriptor):
++    """The delegation ids of a row whose every identity is a background subagent's result, else None."""
++    ids = set()
++    for identity in _identities(descriptor):
++        try:
++            kind, delegation_id = json.loads(identity)[:2]
++        except (ValueError, TypeError):
++            return None
++        if kind != 'async_delegation':
++            return None
++        ids.add(str(delegation_id))
++    return ids or None
++
++
++def _subagent_result_ids(row):
++    payload = row.get('payload') or {}
++    descriptor = payload.get('local_automation_v1')
++    if not isinstance(descriptor, dict) or set(payload) != {'text', 'local_automation_v1'}:
++        return None
++    return _delegation_ids(descriptor)
++
++
++def offer_admitted(authority, ref, receipt):
++    """Loop side, after an automation admission committed: offer it to the running turn when it is a
++    background subagent's result still queued."""
++    if getattr(receipt, 'status', None) != 'queued' or not str(getattr(receipt, 'admission_id', '')):
++        return
++    _start(authority, ref, receipt.admission_id)
++
++
++def offer_waiting(authority, session_id):
++    """Any thread (``adopt_agent`` runs on the turn's executor thread): offer the results that waited for
++    this session's turn to adopt its agent."""
++    loop = getattr(authority, '_completion_offer_loop', None)
++    if loop is None or loop.is_closed():
++        return
++    from gateway.session_contract import SessionRef
++    ref = SessionRef(authority.profile_id, session_id)
++
++    def run():
++        for admission_id in sorted(authority.completion_offers.pop(session_id, ())):
++            _start(authority, ref, admission_id)
++    with contextlib.suppress(RuntimeError):  # the loop closed meanwhile: the rows stay queued
++        loop.call_soon_threadsafe(run)
++
++
++def _start(authority, ref, admission_id):
++    from gateway.session_runtime_workers import track_mutation
++    authority._completion_offer_loop = asyncio.get_running_loop()
++    track_mutation(authority, _offer(authority, ref, admission_id))
++
++
++def _wait_for_agent(authority, session_id, admission_id):
++    authority.completion_offers.setdefault(session_id, set()).add(admission_id)
++
++
++def _drop_offer(authority, session_id, admission_id):
++    waiting = authority.completion_offers.get(session_id)
++    if waiting is not None:
++        waiting.discard(admission_id)
++        if not waiting:
++            authority.completion_offers.pop(session_id, None)
++
++
++async def _offer(authority, ref, admission_id):
++    try:
++        await _hand_to_running_turn(authority, ref, admission_id)
++    except Exception:
++        # The row stays queued and runs in its FIFO place: nothing is lost.
++        logger.warning('Could not hand background result %s to the running turn of %s', admission_id,
++                       ref.session_id, exc_info=True)
++
++
++async def _hand_to_running_turn(authority, ref, admission_id):
++    session_id = ref.session_id
++    row = get_session_admission(authority.db, admission_id=admission_id)
++    ids = _subagent_result_ids(row) if row is not None and row['status'] == 'queued' else None
++    if ids is None:
++        _drop_offer(authority, session_id, admission_id)
++        return
++    if not await asyncio.to_thread(mid_turn_subagent_results, authority):
++        return
++    from tools.async_delegation import dispatching_sessions, refused_dispatch
++    parents = dispatching_sessions(ids)
++    if parents is None or refused_dispatch(ids):
++        return
++    chain = set(await asyncio.to_thread(authority.db.get_compression_chain, session_id))
++    if not parents <= chain:
++        return
++    live = authority.sessions.get(session_id)
++    try:
++        handle = authority._handle(ref)
++    except RuntimeStoreError:
++        return
++    if live is None or handle.execution_state != 'running':
++        _wait_for_agent(authority, session_id, admission_id)  # the next turn's adoption offers it again
++        return
++    from gateway.session_queued_controls import _receiving_agent, _register, _unregister
++    generation = handle.execution_generation
++    with live.event_stream.lock:
++        agent = _receiving_agent(authority, session_id, generation)
++        if agent is None:
++            _wait_for_agent(authority, session_id, admission_id)
++            return
++        if getattr(agent, 'session_id', None) not in chain:
++            return
++        _drop_offer(authority, session_id, admission_id)
++        _register(authority, session_id, generation, admission_id)
++    from gateway.session_runtime_workers import tracked_write
++    try:
++        _committed, fresh = await tracked_write(authority, partial(
++            steer_session_input, authority.db, epoch=authority.epoch, admission_id=admission_id,
++            generation=generation))
++    except RuntimeStoreError:
++        # Claimed first, or the turn ended: the row runs in its FIFO place as before.
++        with live.event_stream.lock:
++            _unregister(authority, session_id, generation, admission_id)
++        return
++    if not fresh:
++        return
++    with live.event_stream.lock:
++        delivered = _deliver_notice(authority, session_id, generation, agent, admission_id, row['payload']['text'])
++    if not delivered:
++        await tracked_write(authority, partial(revert_steer_input, authority.db, epoch=authority.epoch,
++                                               admission_id=admission_id, generation=generation))
++        with live.event_stream.lock:
++            _unregister(authority, session_id, generation, admission_id)
++        authority._publish_pending(ref)
++        authority._schedule(ref)
++        return
++    authority._publish_pending(ref)
++
++
++def _deliver_notice(authority, session_id, generation, agent, admission_id, text):
++    """``session_queued_controls._deliver`` for a background result: the claim's agent queues it for its
++    next tool result, ticketed by the admission id. The caller holds the stream lock."""
++    from agent.background_notices import queue_notice
++    from gateway.session_queued_controls import _receiving_agent
++    entry = authority.steer_transfers.get(session_id)
++    if (entry is None or entry[0] != generation or admission_id not in entry[1]
++            or _receiving_agent(authority, session_id, generation) is not agent):
++        return False
++    if not entry[1][admission_id]:
++        entry[1][admission_id] = queue_notice(agent, admission_id, text)
++    return entry[1][admission_id]
+diff --git a/gateway/session_queued_controls.py b/gateway/session_queued_controls.py
+index e36e3e282d..25b54df493 100644
+--- a/gateway/session_queued_controls.py
++++ b/gateway/session_queued_controls.py
+@@ -90,13 +90,25 @@ def steer_transfers(authority, session_id, generation):
+     if entry is None or entry[0] != generation:
+         return None
+     adopted_generation, agent = authority.adopted.get(session_id, (None, None))
+-    withdraw = getattr(agent, 'withdraw_steer', None) if adopted_generation == generation else None
++    if adopted_generation != generation:
++        agent = None
+     for admission_id, delivered in entry[1].items():
+-        if delivered and callable(withdraw) and withdraw(admission_id):
++        if delivered and agent is not None and _withdraw(agent, admission_id):
+             entry[1][admission_id] = False
+     return dict(entry[1])
+ 
+ 
++def _withdraw(agent, admission_id):
++    """True when no drain of the turn consumed the transfer: a steer (``withdraw_steer``), or a background
++    result handed over as a notice (``agent.background_notices``)."""
++    from agent.background_notices import withdraw
++    notice = withdraw(agent, admission_id)
++    if notice is not None:
++        return notice
++    withdraw_steer = getattr(agent, 'withdraw_steer', None)
++    return callable(withdraw_steer) and bool(withdraw_steer(admission_id))
++
++
+ def _register(authority, session_id, generation, admission_id):
+     """``{admission_id: delivered}`` for the claim ``generation``."""
+     entry = authority.steer_transfers.get(session_id)
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 6b0755517a..39dc6508a7 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -2330,6 +2330,9 @@ DEFAULT_CONFIG = {
+         # 0 = each is a note for the next turn to read.
+         # A viewer attaching or a user message counts afresh; a chat closed by exit or /new stays notes.
+         "unviewed_completion_turns": 0,
++        # A background subagent's result that arrives while its local session's turn runs rides that turn's next
++        # tool result instead of waiting behind the turn; it goes back to the queue when no tool result takes it.
++        "mid_turn_subagent_results": False,
+     },
+     # First-touch onboarding hints (agent/onboarding.py), each latched under `seen` once shown.
+     "onboarding": {
+diff --git a/tests/agent/test_background_notices_delivery.py b/tests/agent/test_background_notices_delivery.py
+new file mode 100644
+index 0000000000..410cfb9347
+--- /dev/null
++++ b/tests/agent/test_background_notices_delivery.py
+@@ -0,0 +1,29 @@
++"""A background result handed to a running turn (``sessions.mid_turn_subagent_results``) rides that turn's
++next tool result, after its content and outside the untrusted-data wrapper, once; never as a user steer."""
++
++from __future__ import annotations
++
++import json
++
++from agent import background_notices
++from tests.agent.test_plugin_live_notes_delivery import TOOL_OUTPUT, _agent, _response, _run, _script
++
++RESULT = "[ASYNC DELEGATION BATCH COMPLETE — deleg_1]\nRESULT_review: no blocking issues"
++
++
++def test_a_result_handed_over_during_a_tool_rides_its_result_once():
++    agent = _agent()
++    requests = _script(agent, _response(tool_call_id="c1"), _response(tool_call_id="c2"), _response("done"))
++    handed = []
++
++    def tool():
++        if not handed:
++            handed.append(background_notices.queue_notice(agent, "adm-1", RESULT))
++        return TOOL_OUTPUT
++
++    _run(agent, "work on it", tool_result=tool)
++    first_row = next(m for m in requests[1] if m.get("role") == "tool")
++    assert first_row["content"].endswith(f"</untrusted_tool_result>\n\n{background_notices.NOTICE_LEAD}\n\n{RESULT}")
++    assert "OUT-OF-BAND USER MESSAGE" not in json.dumps(requests[1])
++    assert json.dumps(requests[2]).count("RESULT_review") == 1
++    assert background_notices.withdraw(agent, "adm-1") is False
+diff --git a/tests/gateway/test_mid_turn_subagent_results.py b/tests/gateway/test_mid_turn_subagent_results.py
+new file mode 100644
+index 0000000000..6aedb57ba1
+--- /dev/null
++++ b/tests/gateway/test_mid_turn_subagent_results.py
+@@ -0,0 +1,211 @@
++"""``sessions.mid_turn_subagent_results``: a background subagent's result reaches a running turn.
++
++By default a background ``delegate_task`` result admitted while its session's turn runs waits in the FIFO
++behind that turn, so the agent reads it only after it ends the turn. With the option on, the queued result
++is transferred to the running claim (the ``prompt.steer_queued`` transfer) and rides the turn's next tool
++result. The claim's settlement decides it: ``steered`` once a tool result carried it, back to its queue
++place when none did, where it runs or is noted as before.
++"""
++import asyncio
++from pathlib import Path
++
++import pytest
++
++from agent import background_notices
++from tests.gateway.test_session_end_delegations import _DELEGATION, _admissions, _deliver, _local, _notes
++from tests.gateway.test_unviewed_completion_notes import _human, _target
++from tools import async_delegation as delegation
++
++
++@pytest.fixture(autouse=True)
++def _no_delegations():
++    delegation._reset_for_tests()
++    yield
++    delegation._reset_for_tests()
++
++
++class Agent:
++    def __init__(self, session_id):
++        self.session_id = session_id
++        self.steers = []
++
++    def steer(self, text, ticket=None):
++        self.steers.append(text)
++        return True
++
++    def clear_interrupt(self, *args, **kwargs):
++        pass
++
++
++def _configure(authority, on=True):
++    (Path(authority.db.db_path).parent / 'config.yaml').write_text(
++        f'sessions:\n  mid_turn_subagent_results: {str(on).lower()}\n')
++
++
++def _dispatched_from(session_id, delegation_id=_DELEGATION[1]):
++    delegation._records[delegation_id] = {'delegation_id': delegation_id, 'parent_session_id': session_id,
++                                          'status': 'completed'}
++
++
++class Turn:
++    """The drain's turns: the first adopts ``agent`` (``before_adopt`` runs first) and waits for ``release``."""
++
++    def __init__(self, runner, authority, ref, agent, before_adopt=None):
++        self.seen, self.claimed, self.release = [], asyncio.Event(), asyncio.Event()
++
++        async def handle(event):
++            self.seen.append(event.text)
++            if len(self.seen) == 1:
++                if before_adopt is not None:
++                    await before_adopt()
++                authority.adopt_agent(ref.session_id, authority._handle(ref).execution_generation, agent)
++                self.claimed.set()
++                await asyncio.wait_for(self.release.wait(), 30)
++            return 'ok'
++        runner._handle_message = handle
++
++
++async def _settled(authority):
++    for _ in range(200):
++        tasks = [t for t in getattr(authority, '_mutation_tasks', ()) if not t.done()]
++        if not tasks:
++            return
++        await asyncio.gather(*tasks, return_exceptions=True)
++    raise AssertionError('offer tasks never settled')
++
++
++def _queued(agent):
++    return [text for _ticket, text in background_notices._queued(agent)]
++
++
++def _statuses(authority, ref):
++    return [(r['status'], r['outcome']) for r in _admissions(authority, ref)]
++
++
++async def _running_turn(runner, authority, ref, agent, **kwargs):
++    turn = Turn(runner, authority, ref, agent, **kwargs)
++    _human(authority, ref, 'human', 'FIRST')
++    drain = asyncio.create_task(authority._drain(ref))
++    await asyncio.wait_for(turn.claimed.wait(), 30)
++    return turn, drain
++
++
++@pytest.mark.asyncio
++async def test_a_result_admitted_mid_turn_rides_the_next_tool_result_and_settles_steered(tmp_path, monkeypatch):
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority)
++        target = _target(runner, authority, ref)
++        _dispatched_from(target)
++        agent = Agent(target)
++        turn, drain = await _running_turn(runner, authority, ref, agent)
++        await _deliver(runner, authority, ref, _DELEGATION)
++        await _settled(authority)
++        assert _queued(agent) == [f'[finished] RESULT_{_DELEGATION[1]}']
++        assert agent.steers == [], 'a subagent result must never take the user steer channel'
++        assert _statuses(authority, ref) == [('terminal', 'steering')]  # handed to the running claim
++
++        message = {'role': 'tool', 'tool_call_id': 'c1', 'content': 'ls output'}
++        background_notices.attach_to_tool_message(agent, message)
++        assert message['content'].startswith('ls output\n\n' + background_notices.NOTICE_LEAD)
++        assert message['content'].endswith(f'RESULT_{_DELEGATION[1]}')
++
++        turn.release.set()
++        await asyncio.wait_for(drain, 30)
++        assert turn.seen == ['FIRST'], 'the transferred result also ran as its own turn'
++        assert _statuses(authority, ref) == [('terminal', 'steered')]
++        assert _notes(authority, target) == []
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_a_result_no_tool_result_took_goes_back_to_its_queue_place(tmp_path, monkeypatch):
++    """The turn answered without another tool call: the result is withdrawn from the agent and handled after
++    the turn as it is without the option (here, with no viewer, a note)."""
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority)
++        target = _target(runner, authority, ref)
++        _dispatched_from(target)
++        agent = Agent(target)
++        turn, drain = await _running_turn(runner, authority, ref, agent)
++        await _deliver(runner, authority, ref, _DELEGATION)
++        await _settled(authority)
++        assert len(_queued(agent)) == 1
++
++        turn.release.set()
++        await asyncio.wait_for(drain, 30)
++        assert _queued(agent) == []
++        assert turn.seen == ['FIRST']
++        assert _statuses(authority, ref) == [('terminal', 'completed')]
++        assert len(_notes(authority, target)) == 1
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_a_result_admitted_before_the_turn_adopts_its_agent_is_offered_at_adoption(tmp_path, monkeypatch):
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _configure(authority)
++        target = _target(runner, authority, ref)
++        _dispatched_from(target)
++        agent = Agent(target)
++
++        async def arrive():
++            await _deliver(runner, authority, ref, _DELEGATION)
++            await _settled(authority)
++            assert _statuses(authority, ref) == [('queued', None)]
++        turn, drain = await _running_turn(runner, authority, ref, agent, before_adopt=arrive)
++        await asyncio.sleep(0)
++        await _settled(authority)
++        assert _queued(agent) == [f'[finished] RESULT_{_DELEGATION[1]}']
++        background_notices.attach_to_tool_message(agent, {'role': 'tool', 'tool_call_id': 'c1', 'content': 'x'})
++        turn.release.set()
++        await asyncio.wait_for(drain, 30)
++        assert _statuses(authority, ref) == [('terminal', 'steered')] and turn.seen == ['FIRST']
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('case', ['off', 'other_session', 'unknown_dispatch'])
++async def test_the_result_waits_behind_the_turn_as_before(tmp_path, monkeypatch, case):
++    """Off by default; and never for a result dispatched from another conversation, or one whose dispatch
++    this process does not know (replayed after a restart)."""
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        if case != 'off':
++            _configure(authority)
++        target = _target(runner, authority, ref)
++        if case != 'unknown_dispatch':
++            _dispatched_from('some-other-session' if case == 'other_session' else target)
++        agent = Agent(target)
++        turn, drain = await _running_turn(runner, authority, ref, agent)
++        await _deliver(runner, authority, ref, _DELEGATION)
++        await _settled(authority)
++        assert _queued(agent) == [] and agent.steers == []
++        assert _statuses(authority, ref) == [('queued', None)]
++        turn.release.set()
++        await asyncio.wait_for(drain, 30)
++        assert _statuses(authority, ref) == [('terminal', 'completed')]
++        assert len(_notes(authority, target)) == 1
++    finally:
++        authority.db.close()
++
++
++def test_notices_settle_by_ticket():
++    class A:
++        pass
++    agent = A()
++    assert background_notices.queue_notice(agent, 'a1', 'one') and background_notices.queue_notice(agent, 'a2', 'two')
++    assert background_notices.withdraw(agent, 'a2') is True  # still queued: taken out
++    message = {'role': 'tool', 'tool_call_id': 't', 'content': [{'type': 'text', 'text': 'out'}]}
++    background_notices.attach_to_tool_message(agent, message)
++    assert message['content'][-1]['text'].endswith('one') and 'two' not in message['content'][-1]['text']
++    assert background_notices.withdraw(agent, 'a1') is False  # a tool result took it
++    assert background_notices.withdraw(agent, 'never') is None
++    spilled = {'role': 'tool', 'tool_call_id': 't', 'content': '[spilled to /x]'}
++    background_notices.keep_after_turn_budget(agent, [spilled])
++    assert spilled['content'].endswith('one')
+diff --git a/tools/async_delegation.py b/tools/async_delegation.py
+index 2859e05f63..9abafa8011 100644
+--- a/tools/async_delegation.py
++++ b/tools/async_delegation.py
+@@ -1644,6 +1644,17 @@ def refused_dispatch(delegation_ids) -> bool:
+         return any((field, record.get(field)) in _refused_by for record in records for field in _FENCED_FIELDS)
+ 
+ 
++def dispatching_sessions(delegation_ids) -> Optional[set]:
++    """The ``parent_session_id`` of each of *delegation_ids*' records, or None when any record is not in this
++    process (a completion replayed after a restart) or names no parent."""
++    with _records_lock:
++        records = [_records.get(i) for i in delegation_ids]
++    parents = {record.get("parent_session_id") for record in records if record is not None}
++    if not delegation_ids or None in records or not all(isinstance(p, str) and p for p in parents):
++        return None
++    return parents
++
++
+ def allow_for_session(token: Any) -> None:
+     """Lift ONE session's refusal: a viewer attached again, or the owner retired its live state."""
+     with _records_lock:
+diff --git a/website/docs/user-guide/sessions.md b/website/docs/user-guide/sessions.md
+index 92223f474f..0636b6ccd8 100644
+--- a/website/docs/user-guide/sessions.md
++++ b/website/docs/user-guide/sessions.md
+@@ -1280,6 +1280,24 @@ ended because its viewer vanished is reopened for the turn and ended again
+ that is later. Watch-pattern notices are not affected, and neither are
+ messaging chats, whose completions always start a turn.
+ 
++**Subagent results during a running turn.** A background subagent's result
++that arrives while its session's turn is still running waits behind that
++turn, so the agent learns of it only after it ends the turn. Set
++`sessions.mid_turn_subagent_results: true` to hand it to the running turn
++instead:
++
++```yaml
++sessions:
++  mid_turn_subagent_results: true
++```
++
++The result, in the same `[ASYNC DELEGATION ... COMPLETE ...]` form, rides the
++turn's next tool result, so the agent can act on it before it finishes. No
++running tool is interrupted for it. When the turn makes no further tool call,
++or is stopped first, the result goes back to its place in the queue and runs
++or is noted after the turn as before. Only a result dispatched from the same
++conversation is handed over; an idle session is unchanged.
++
+ ### Oversized-Transcript Guards
+ 
+ Two limits stop a runaway transcript from being loaded into memory all at once
