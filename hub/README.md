@@ -140,7 +140,7 @@ An image (PNG, JPEG, GIF or WebP by both its extension and its first bytes) come
 
 ## Pages
 
-A page is an interactive HTML document that the agent makes for the user, such as a list of entries with checkboxes, a mockup or a report. The agent writes the page in its reply as a fenced block whose info string is `page`:
+A page is an interactive HTML document that the agent makes for the user, for any purpose: a report, a dashboard, a list of entries with checkboxes, a form or a design sketch. A page needs buttons that answer only when its purpose needs them. The agent writes the page in its reply as a fenced block whose info string is `page`:
 
 ````
 Here are the candidates.
@@ -168,10 +168,12 @@ The CSP cannot stop a page from navigating its own frame or opening a window to 
 
 The hub puts a small script at the start of every page that defines `window.hermes`:
 
-- `hermes.send(text)` puts text in the chat's message box, after any text already there, closes the page and shows the chat. The user reviews the text and sends it. A click on an element with a `data-hermes-send="<text>"` attribute does the same.
+- `hermes.send(text)` sends text to the chat now, as the user's message, the same way the message box does: it steers a running turn or queues (with Stop and send now), and nothing is put in the message box. The page stays open and the hub shows `Sent to the chat at 2:31 PM` under the page's bar, so the page's buttons stay usable and the user closes the page when done. A second send while one is in flight is ignored. When the send fails, the hub shows the error with Retry and Copy. The call returns a promise of `{ok, error}`. A click on an element with a `data-hermes-send="<text>"` attribute does the same.
+- The message shows in the chat as the user's, with a small `From page: <title>` tag. The text that Hermes receives starts with the line `[Answer from the page "<title>"]` (title on one line, at most 80 characters), then the page's text, so the model knows where it came from.
+- `hermes.draft(text)` puts text in the chat's message box, after any text already there, closes the page and shows the chat, for a page that wants the user to edit the text first. A click on an element with a `data-hermes-draft="<text>"` attribute does the same.
 - `hermes.copy(text)` copies text. It tries the frame's own copy command, then the hub's clipboard access, and else shows the text selected in a dialog for the user to copy.
 
-The script talks to the hub only over a `MessagePort` that the hub's frame sends to the page on its first load. The hub ignores `postMessage` to its window, so another frame or window cannot speak for the page. When the frame loads a second document (the page followed a link, for example), the hub closes the port and says that the page left; Reload starts it again. A page that leaves before its first load ends is not noticed, and the document it went to gets the port; that document came from the page, so it can do nothing the page could not. While the page is hidden behind the chat, the hub ignores what it sends, and it drops a message of more than 200000 characters.
+The script talks to the hub only over a `MessagePort` that the hub's frame sends to the page on its first load. The hub ignores `postMessage` to its window, so another frame or window cannot speak for the page. When the frame loads a second document (the page followed a link, for example), the hub closes the port and says that the page left; Reload starts it again. A page that leaves before its first load ends is not noticed, and the document it went to gets the port; that document came from the page, so it can do nothing the page could not. A page that is not in the hub's frame (opened on its own, it has no port) cannot send: `hermes.send` and `hermes.draft` copy the text and answer `{ok: false, error}` that says so; opened from a link, the page's address is the hub's own, which asks you to sign in first. While the page is hidden behind the chat, the hub ignores what it sends, and it drops a message of more than 200000 characters.
 
 ## Page chat
 

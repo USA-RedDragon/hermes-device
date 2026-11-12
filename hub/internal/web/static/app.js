@@ -739,7 +739,10 @@
     // it; without them they come from the lines Hermes keeps in the text.
     userText(text, pending, atts) {
       const shown = atts ? { text, atts } : splitAttachments(text);
+      const from = window.HubPageSend.split(shown.text);
+      shown.text = from.text;
       const m = el("div", "msg user" + (pending ? " pending" : ""));
+      if (from.page) m.append(el("div", "frompage", "From page: " + from.page));
       if (shown.atts.length) m.append(attachmentRow(shown.atts, this.base));
       if (shown.text) m.append(shown.text);
       m.rawText = shown.text || "";
@@ -1851,8 +1854,20 @@
       frame.referrerPolicy = "no-referrer";
       frame.title = title.textContent;
       const src = chat.base + "/page?" + (file ? "path=" : "id=") + encodeURIComponent(ref);
-      box.append(bar, frame);
-      const cur = { chat, ref, box, frame, port: null, blob: save.href.startsWith("blob:") ? save.href : "", status, timer: 0 };
+      const note = el("div", "pageview-note");
+      note.hidden = true;
+      note.setAttribute("role", "status");
+      box.append(bar, note, frame);
+      const cur = { chat, ref, box, frame, port: null, blob: save.href.startsWith("blob:") ? save.href : "", status, note, timer: 0 };
+      cur.sender = window.HubPageSend.sender({
+        title: () => (pageInfo.get(ref) || {}).title || title.textContent,
+        deliver: (text) => {
+          if (view !== chat) throw new Error("The chat is not open");
+          return deliver(chat, text, [], undefined, true);
+        },
+        state: (st) => this.sendState(cur, st),
+        reply: (id, r) => { if (id && cur.port) cur.port.postMessage({ type: "result", id, ok: r.ok, error: r.error || "" }); },
+      });
       this.cur = cur;
       let loads = 0;
       frame.addEventListener("load", () => {
@@ -1881,10 +1896,11 @@
     message(cur, d) {
       if (cur !== this.cur || !cur.port || cur.box.hidden || !d || typeof d !== "object") return;
       const text = typeof d.text === "string" && d.text.length <= maxPageText ? d.text : null;
-      if (d.type === "send" && text !== null) this.toComposer(cur, text);
+      if (d.type === "send" && text !== null) cur.sender.send(typeof d.id === "number" ? d.id : 0, text);
+      else if (d.type === "draft" && text !== null) { this.toComposer(cur, text); if (d.id && cur.port) cur.port.postMessage({ type: "result", id: d.id, ok: true }); }
       else if (d.type === "copy" && text !== null) this.copy(cur, text);
       else if (d.type === "copied") this.say(cur, "Copied", 2000);
-      else if (d.type === "send" || d.type === "copy") this.say(cur, "The page sent too much text.", 4000);
+      else if (d.type === "send" || d.type === "draft" || d.type === "copy") this.say(cur, "The page sent too much text.", 4000);
     },
 
     toComposer(cur, text) {
@@ -1895,7 +1911,31 @@
       this.back();
       grow();
       input.focus();
-      banner("The page put its answer in the message box. Check it, then send it.");
+      banner("The page put text in the message box. Edit it, then send it.");
+    },
+
+    // sendState shows the result of a page's send in a line under the bar:
+    // the page stays open and usable. A failure offers Retry and Copy.
+    sendState(cur, st) {
+      const n = cur.note;
+      clearTimeout(cur.noteTimer);
+      n.replaceChildren();
+      n.classList.toggle("bad", !!st.failed);
+      n.hidden = false;
+      if (st.sending) {
+        n.append("Sending to the chat\u2026");
+      } else if (st.sent) {
+        n.append("Sent to the chat at " + st.sent.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+      } else {
+        n.append("Could not send: " + st.failed.message);
+        const retry = el("button", "", "Retry");
+        retry.type = "button";
+        retry.onclick = () => st.retry();
+        const copy = el("button", "", "Copy");
+        copy.type = "button";
+        copy.onclick = () => this.copy(cur, st.text);
+        n.append(retry, copy);
+      }
     },
 
     async copy(cur, text) {
@@ -3052,16 +3092,25 @@
       }
       return;
     }
+    await deliver(chat, text, attachments.take(), extra);
+  }
+
+  // deliver sends text to chat as the user's message, as the message box
+  // does, so it steers a running turn or queues. A page's text (page set)
+  // leaves the message box and its files alone and throws when it fails.
+  async function deliver(chat, text, files, extra, page) {
+    const input = $("input");
     const steer = !!chat.running;
-    const files = attachments.take();
     const shown = files.map((a) => ({ name: a.file.name || "attachment", image: a.image,
       url: a.url ? URL.createObjectURL(a.file) : "", pdf: a.pdf, pages: a.pages }));
     const bubble = chat.userText(text, true, files.length ? shown : undefined);
     const mine = chat.pending.find((x) => x.bubble === bubble);
     if (mine) mine.files = files.map((a) => a.file);
     chat.bottom();
-    input.value = "";
-    grow();
+    if (!page) {
+      input.value = "";
+      grow();
+    }
     let body = steer ? { text, steer: true } : { text };
     if (extra) Object.assign(body, extra);
     if (files.length) {
@@ -3101,6 +3150,7 @@
       bubble.remove();
       chat.pending = chat.pending.filter((p) => p.bubble !== bubble);
       for (const a of shown) if (a.url) URL.revokeObjectURL(a.url);
+      if (page) throw e;
       if (chat === view) {
         input.value = text;
         attachments.restore(files);

@@ -31,20 +31,27 @@ func pageCSP(origin string) string {
 }
 
 // pageBridge goes first in every page. It defines window.hermes: send(text)
-// puts text in the chat's message box for the user to review and send, and
-// copy(text) copies text, through the hub when the frame may not. It talks
-// to the hub only over the MessagePort that the hub's frame sends on the
-// page's first load, so other windows cannot speak for the page.
-const pageBridge = `<script>(function(){var port=null,queue=[];` +
+// sends text to the chat as the user's message, draft(text) puts it in the
+// chat's message box for the user to edit first, and copy(text) copies it,
+// through the hub when the frame may not. send and draft answer a promise
+// with {ok, error}. It talks to the hub only over the MessagePort that the
+// hub's frame sends on the page's first load, so other windows cannot speak
+// for the page. A page that is not in the hub's frame has no port, so send
+// and draft copy the text instead.
+const pageBridge = `<script>(function(){var port=null,queue=[],seq=0,waits={};` +
 	`function post(m){if(port)port.postMessage(m);else if(queue.length<100)queue.push(m);}` +
 	`addEventListener("message",function(e){if(port||e.source!==parent||!e.data||e.data.type!=="hermes-page:init"||!e.ports||!e.ports[0])return;` +
-	`e.stopImmediatePropagation();port=e.ports[0];for(var i=0;i<queue.length;i++)port.postMessage(queue[i]);queue=[];},true);` +
+	`e.stopImmediatePropagation();port=e.ports[0];` +
+	`port.onmessage=function(m){var d=m.data;if(d&&d.type==="result"&&waits[d.id]){var w=waits[d.id];delete waits[d.id];w({ok:!!d.ok,error:d.error?String(d.error):""});}};` +
+	`for(var i=0;i<queue.length;i++)port.postMessage(queue[i]);queue=[];},true);` +
 	`function copy(t){t=String(t);var ok=false;try{var a=document.createElement("textarea");a.value=t;a.setAttribute("readonly","");` +
 	`a.style.position="fixed";a.style.opacity="0";(document.body||document.documentElement).appendChild(a);a.select();ok=document.execCommand("copy");a.remove();}catch(_){ok=false;}` +
 	`post(ok?{type:"copied"}:{type:"copy",text:t});return ok;}` +
-	`window.hermes=Object.freeze({send:function(t){post({type:"send",text:String(t)});},copy:copy});` +
-	`addEventListener("click",function(e){var n=e.target&&e.target.closest&&e.target.closest("[data-hermes-send]");` +
-	`if(n){e.preventDefault();window.hermes.send(n.getAttribute("data-hermes-send"));}});})();</script>`
+	`function ask(type,t){t=String(t);if(parent===window){var ok=copy(t);return Promise.resolve({ok:false,error:"This page is not open in the Talaria hub, so "+(ok?"the text was copied instead.":"it could not send. Copy the text yourself.")});}` +
+	`var id=++seq;return new Promise(function(r){waits[id]=r;post({type:type,id:id,text:t});});}` +
+	`window.hermes=Object.freeze({send:function(t){return ask("send",t);},draft:function(t){return ask("draft",t);},copy:copy});` +
+	`addEventListener("click",function(e){var n=e.target&&e.target.closest&&e.target.closest("[data-hermes-send],[data-hermes-draft]");if(!n)return;e.preventDefault();` +
+	`if(n.hasAttribute("data-hermes-send"))window.hermes.send(n.getAttribute("data-hermes-send"));else window.hermes.draft(n.getAttribute("data-hermes-draft"));});})();</script>`
 
 // withBridge puts pageBridge into a page: after its doctype, so the page
 // keeps its rendering mode, else at the start.
