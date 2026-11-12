@@ -144,27 +144,11 @@ const maxFrame = 64 << 20
 // Webapp's ticket gate, never to its loopback-only native gate. onEvent gets every event notification in the order the gateway
 // sent them, on the connection's reader goroutine.
 func (d *Dialer) Dial(ctx context.Context, onEvent func(Event)) (*Client, error) {
-	for attempt := 1; ; attempt++ {
-		conn, err := d.DialRaw(ctx)
-		if err != nil {
-			return nil, err
-		}
-		c, err := newClient(ctx, conn, onEvent)
-		if err == nil || attempt >= maxTicketRedials || !ticketRefused(err) || ctx.Err() != nil {
-			return c, err
-		}
+	conn, err := d.DialRaw(ctx)
+	if err != nil {
+		return nil, err
 	}
-}
-
-// maxTicketRedials bounds the dials one Dial makes when the ticket is refused.
-const maxTicketRedials = 3
-
-// ticketRefused reports a socket that closed with 1008 before gateway.ready:
-// a stopping Hermes gateway that held the dial forwards it to the gateway
-// that took over, which does not know a ticket the old one minted and
-// refuses it. A fresh ticket from the new gateway opens the socket.
-func ticketRefused(err error) bool {
-	return websocket.CloseStatus(err) == websocket.StatusPolicyViolation
+	return newClient(ctx, conn, onEvent)
 }
 
 // DialRaw dials the gateway socket as Dial does and returns it before
