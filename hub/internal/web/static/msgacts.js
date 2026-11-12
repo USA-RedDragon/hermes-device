@@ -14,7 +14,8 @@ window.HubMsgActions = (ctx) => {
   const coarse = () => matchMedia("(pointer: coarse)").matches;
   const agentHead = /^\[Agent message am_[0-9a-f]{16} from [^\]\n]{1,400}\]\n/;
 
-  const bubbles = () => Array.from(log.querySelectorAll(":scope > .msg.user:not(.pending):not(.failed), :scope > .msg.assistant.md"));
+  const bubbles = () => Array.from(log.querySelectorAll(":scope > .msg.user:not(.pending):not(.failed), :scope > .msg.assistant.md, " +
+    ":scope > .older > .part > .msg.user, :scope > .older > .part > .msg.assistant.md"));
   const isUser = (b) => b.classList.contains("user");
   const textOf = (b) => (typeof b.raw === "string" ? b.raw : b.rawText != null ? b.rawText : b.textContent);
 
@@ -58,7 +59,8 @@ window.HubMsgActions = (ctx) => {
       if (state.includes("r")) add("retry", "Run the last message again", () => retry(b));
       add("branch", "Start a new chat from here", (x) => branch(b, x));
     }
-    for (const a of log.querySelectorAll(":scope > .acts")) if (!a.owner || !a.owner.isConnected || !all.includes(a.owner)) { if (a.owner !== editing) a.remove(); }
+    const shown = new Set(all);
+    for (const a of log.querySelectorAll(":scope > .acts, :scope > .older > .part > .acts")) if (!a.owner || !a.owner.isConnected || !shown.has(a.owner)) { if (a.owner !== editing) a.remove(); }
   }
 
   let queued = false;

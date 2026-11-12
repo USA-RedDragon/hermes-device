@@ -139,6 +139,10 @@ button.primary.ib:hover { filter: brightness(1.08); }
 .log { flex: 1 1 0px; min-height: 0; overflow-y: auto; padding: .75rem var(--gutter) 1rem;
   display: flex; flex-direction: column; gap: .6rem; }
 .log > * { max-width: min(100%, var(--read)); }
+.log > .older { max-width: none; gap: inherit; }
+.log > .older > .part { display: flex; flex-direction: column; gap: inherit; content-visibility: auto; contain-intrinsic-size: auto 3000px; }
+.log > .older > .part:not(:last-child) { margin-bottom: .6rem; }
+:where(.log > .older > .part) > * { max-width: min(100%, var(--read)); }
 .msg { padding: .55rem .75rem; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.user { align-self: flex-end; background: var(--accent); color: #fff; max-width: min(88%, var(--read)); }
 .msg.user.pending { opacity: .65; }
@@ -927,18 +931,18 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7
    negative margin cancels the log's gap. The row is as wide as the message's column, and ::before
    bridges the bubble's lower edge and the buttons, so a pointer that leaves the bubble along its
    bottom lands on the row, not on the log. On touch a tap on the message shows them. */
-.log > .acts { display: flex; gap: .15rem; width: 100%; height: 0; margin: -.6rem 0 0; padding: 0 .5rem; top: -.3rem; overflow: visible; position: relative;
+:is(.log, .older > .part) > .acts { display: flex; gap: .15rem; width: 100%; height: 0; margin: -.6rem 0 0; padding: 0 .5rem; top: -.3rem; overflow: visible; position: relative;
   z-index: 2; opacity: 0; pointer-events: none; transition: opacity .12s; }
-.log > .acts.mine { justify-content: flex-end; margin-left: auto; }
-.log > .acts::before { content: ""; position: absolute; left: 0; right: 0; top: -.25rem; height: calc(100% + 1.85rem); }
-.log > .msg:hover + .acts, .log > .msg:hover + .queued + .acts, .log > .queued:hover + .acts, .log > .msg:hover + .lost + .acts,
-.log > .acts:hover, .log > .acts:focus-within, .log > .acts.show { opacity: 1; pointer-events: auto; }
-.log > .acts button { position: relative; border: 1px solid var(--line); background: var(--card); color: var(--muted); padding: 0; border-radius: 6px; display: inline-grid; place-items: center; }
-.log > .acts button.ib { width: 1.6rem; height: 1.6rem; }
-.log > .acts button:hover { background: var(--hover); color: var(--fg); }
-.log > .acts svg { width: .85rem; height: .85rem; }
-@media (pointer: coarse) { .log > .acts { display: none; } .log > .acts.show { display: flex; } .log > .acts button.ib { width: 2rem; height: 2rem; }
-  .log > .acts::before { height: calc(100% + 2.25rem); } }
+:is(.log, .older > .part) > .acts.mine { justify-content: flex-end; margin-left: auto; }
+:is(.log, .older > .part) > .acts::before { content: ""; position: absolute; left: 0; right: 0; top: -.25rem; height: calc(100% + 1.85rem); }
+:is(.log, .older > .part) > .msg:hover + .acts, :is(.log, .older > .part) > .msg:hover + .queued + .acts, :is(.log, .older > .part) > .queued:hover + .acts, :is(.log, .older > .part) > .msg:hover + .lost + .acts,
+:is(.log, .older > .part) > .acts:hover, :is(.log, .older > .part) > .acts:focus-within, :is(.log, .older > .part) > .acts.show { opacity: 1; pointer-events: auto; }
+:is(.log, .older > .part) > .acts button { position: relative; border: 1px solid var(--line); background: var(--card); color: var(--muted); padding: 0; border-radius: 6px; display: inline-grid; place-items: center; }
+:is(.log, .older > .part) > .acts button.ib { width: 1.6rem; height: 1.6rem; }
+:is(.log, .older > .part) > .acts button:hover { background: var(--hover); color: var(--fg); }
+:is(.log, .older > .part) > .acts svg { width: .85rem; height: .85rem; }
+@media (pointer: coarse) { :is(.log, .older > .part) > .acts { display: none; } :is(.log, .older > .part) > .acts.show { display: flex; } :is(.log, .older > .part) > .acts button.ib { width: 2rem; height: 2rem; }
+  :is(.log, .older > .part) > .acts::before { height: calc(100% + 2.25rem); } }
 .editbox { display: flex; flex-direction: column; gap: .35rem; width: min(88%, 36rem); align-self: flex-end; }
 .editbox.retrybox { align-self: flex-start; }
 .editbox textarea { font: inherit; border: 1px solid var(--accent); border-radius: 10px; padding: .45rem .6rem; background: var(--card);

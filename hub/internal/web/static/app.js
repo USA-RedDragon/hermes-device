@@ -522,6 +522,43 @@
     log.addEventListener("click", (e) => { if (e.target.closest && e.target.closest("summary")) pinned = false; }, true);
   })();
 
+  // A snapshot renders its newest rows first: at least firstRows rows and
+  // firstChars characters, in whole turns. The older rows follow in the
+  // background, olderRows at a time.
+  const firstRows = 30;
+  const firstChars = 30000;
+  const olderRows = 60;
+  const olderChars = 60000;
+
+  // olderCut is where the rows to render next start: back from end until
+  // they have rows rows and chars characters, then back to the user
+  // message that starts the turn, so a turn and its tool cards render
+  // together.
+  function olderCut(msgs, end, rows, chars) {
+    let i = end;
+    let n = 0;
+    let size = 0;
+    while (i > 0 && (n < rows || size < chars)) {
+      i--;
+      n++;
+      const m = msgs[i] || {};
+      size += (typeof m.text === "string" ? m.text.length : 0) + (typeof m.content === "string" ? m.content.length : 0);
+    }
+    while (i > 0 && (msgs[i] || {}).role !== "user") i--;
+    return i;
+  }
+
+  // partHeight guesses the height of rows before they are laid out, for
+  // a part of older history the browser skips while it is out of view.
+  function partHeight(rows) {
+    let chars = 0;
+    for (const m of rows) chars += (typeof m.text === "string" ? m.text.length : 0) + (typeof m.content === "string" ? m.content.length : 0);
+    return Math.round(rows.length * 40 + chars * 0.3);
+  }
+
+  // later runs fn when the page is idle, soon in any case.
+  const later = (fn) => (window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 100 }) : setTimeout(fn, 16));
+
   class Chat {
     constructor(backend, session) {
       this.backend = backend;
@@ -533,6 +570,10 @@
 
     reset() {
       this.log.replaceChildren();
+      this.older = [];
+      this.olderBox = null;
+      this.olderGen = (this.olderGen || 0) + 1;
+      this.sink = null;
       this.turn = null;
       this.tools = new Map();
       this.approvals = new Map();
@@ -557,6 +598,7 @@
     }
 
     add(node) {
+      if (this.sink) return this.sink.appendChild(node);
       const stick = this.stick();
       if (this.status && this.status.parentNode === this.log) this.log.insertBefore(node, this.status);
       else this.log.append(node);
@@ -1002,17 +1044,17 @@
 
     // groupTools folds each run of finished tool cards into one line that
     // opens to show them. keep is a node after which cards stay as they are.
-    groupTools(keep) {
+    groupTools(keep, parent = this.log) {
       let run = [];
       const fold = () => {
         if (!run.length) return;
         const g = toolGroup(run);
-        this.log.insertBefore(g, run[0]);
+        parent.insertBefore(g, run[0]);
         g.lastChild.append(...run);
         run = [];
       };
       let live = false;
-      for (const n of Array.from(this.log.children)) {
+      for (const n of Array.from(parent.children)) {
         if (n === keep) live = true;
         if (!live && n.classList.contains("tool") && !n.classList.contains("running")) run.push(n);
         else fold();
@@ -1160,14 +1202,20 @@
       // Stored tool rows carry no arguments; the assistant message that made the call has them.
       this.calls = new Map();
       this.filling = true;
+      mark("rows");
+      const msgs = s.messages || [];
+      const cut = olderCut(msgs, msgs.length, firstRows, firstChars);
+      this.older = msgs.slice(0, cut);
       try {
-        for (const m of s.messages || []) this.row(m);
+        for (let i = cut; i < msgs.length; i++) this.row(msgs[i]);
       } finally {
         this.filling = false;
       }
+      mark("rows-end");
       this.turn = null;
       const users = this.log.querySelectorAll(".msg.user");
       this.groupTools(s.running && users.length ? users[users.length - 1] : null);
+      mark("grouped");
       this.agentWaiting = new Map();
       for (const p of s.pending || []) {
         if (p.status === "lost") this.lost(p.id, p.text);
@@ -1179,11 +1227,71 @@
         } else if (!this.agentText(p.text, true)) this.queued(this.userText(p.text, true), p.id);
       }
       for (const p of s.prompts || []) this.approval(p);
+      if (window.HubRestore.state()) this.showOlder(() => true);
       this.bottom();
       this.jumpTo();
+      this.fillOlder();
       if (view === this) restoreView(this);
       if (this.onLoad) this.onLoad();
       this.onLoad = null;
+    }
+
+    // showOlder renders older history that the snapshot left out above
+    // what the log shows, newest first, about olderRows rows in whole
+    // turns at a time, until more says stop or the history is done. The
+    // rows render apart from the live turn. The parts go in one box at the
+    // top of the log, each in a box of its own that the browser skips while
+    // it is out of view (content-visibility): the log is a flex column, and
+    // Firefox lays out every message in it again on any change, and Chrome
+    // all its children when one goes in at the top. A reader who is not at
+    // the end keeps the same messages in view.
+    showOlder(more) {
+      if (!this.older.length) return;
+      const frag = document.createDocumentFragment();
+      const turn = this.turn;
+      this.filling = true;
+      try {
+        do {
+          const cut = olderCut(this.older, this.older.length, olderRows, olderChars);
+          const part = this.older.slice(cut);
+          this.older.length = cut;
+          const chunk = el("div", "part");
+          chunk.style.containIntrinsicSize = "auto " + partHeight(part) + "px";
+          this.sink = chunk;
+          this.turn = null;
+          for (const m of part) this.row(m);
+          this.groupTools(null, chunk);
+          frag.prepend(chunk);
+        } while (this.older.length && more && more(frag));
+      } finally {
+        this.sink = null;
+        this.filling = false;
+        this.turn = turn;
+      }
+      const log = this.log;
+      if (!this.olderBox || this.olderBox.parentNode !== log) {
+        this.olderBox = el("div", "older");
+        log.insertBefore(this.olderBox, log.firstChild);
+      }
+      const keep = !pinned && !log.hidden;
+      const top = log.scrollTop;
+      const height = keep ? log.scrollHeight : 0;
+      this.olderBox.insertBefore(frag, this.olderBox.firstChild);
+      if (keep && log.scrollTop === top) log.scrollTop = top + log.scrollHeight - height;
+      if (view === this) msgActs.decorate();
+    }
+
+    // fillOlder renders the rest of the history in the background, a few
+    // turns at a time, so the newest messages show first.
+    fillOlder() {
+      const gen = this.olderGen;
+      const step = () => {
+        if (view !== this || gen !== this.olderGen || !this.older.length) return;
+        this.showOlder();
+        if (this.older.length) later(step);
+        else mark("filled");
+      };
+      later(step);
     }
 
     // jumpTo scrolls to the message a search result opened the chat at.
@@ -1191,7 +1299,9 @@
       const j = jump;
       if (!j || j.b !== this.backend || j.s !== this.session) return;
       jump = null;
-      const n = Number.isInteger(j.row) ? this.log.querySelector('[data-row="' + j.row + '"]') : null;
+      const sel = Number.isInteger(j.row) ? '[data-row="' + j.row + '"]' : "";
+      if (sel && !this.log.querySelector(sel)) this.showOlder((frag) => !frag.querySelector(sel));
+      const n = sel ? this.log.querySelector(sel) : null;
       if (!n) {
         this.add(el("div", "note", "The message you searched for is further back than this chat shows."));
         return;
@@ -2631,7 +2741,17 @@
     }
   }
 
+  // mark records a step of opening a chat as a performance mark
+  // ("talaria:open", "talaria:painted"), to time it in the browser's tools.
+  function mark(step) {
+    try {
+      if (step === "open") performance.clearMarks();
+      performance.mark("talaria:" + step);
+    } catch (_) { /* no User Timing */ }
+  }
+
   function showChat(backend, session) {
+    mark("open");
     pagesView.destroy();
     memory.hide();
     usage.hide();
@@ -2668,11 +2788,19 @@
     stream = es;
     const chat = view;
     let moving = false;
+    let first = true;
     es.onmessage = (m) => {
+      if (first) mark("event");
       let e;
       try { e = JSON.parse(m.data); } catch (_) { return; }
       if (e.kind === "hub.reconnect") { moving = true; return; }
+      if (first) mark("parsed");
       chat.event(e.kind, e.data);
+      if (first) {
+        first = false;
+        mark("handled");
+        requestAnimationFrame(() => setTimeout(() => mark("painted"), 0));
+      }
     };
     let opened = false;
     es.onopen = () => {
