@@ -116,7 +116,7 @@ func TestSteerQueuedPrompt(t *testing.T) {
 	if got := e.gw.Steered(); len(got) != 1 {
 		t.Fatalf("steered = %v", got)
 	}
-	if s, _ := e.gw.Session(sLive); len(s.Pending) != 0 {
+	if s, _ := e.gw.Session(sLive); len(s.Pending) != 1 || s.Pending[0].Status != gateway.AdmissionStarted {
 		t.Fatalf("pending after steer = %+v", s.Pending)
 	}
 }

@@ -37,6 +37,7 @@ const (
 	kToolID          = "tool_id"
 	kText            = "text"
 	kStatus          = "status"
+	kOutcome         = "outcome"
 	kName            = "name"
 	kPath            = "path"
 	kResult          = "result"
@@ -92,6 +93,10 @@ type Session struct {
 	Yolo bool
 	// Pending is the snapshot's pending list: queued inputs and lost (unknown) turns.
 	Pending []gateway.PendingAdmission
+	// turn is the admission of the running turn, transfers the queued
+	// inputs prompt.steer_queued handed to it.
+	turn, turnInput string
+	transfers       []string
 	// Revision is the runtime revision session.mutate is fenced on. Turns
 	// and settings changes move it, as in Hermes.
 	Revision int64
@@ -772,6 +777,9 @@ func (g *Gateway) snapshotLocked(c *conn, s *Session) map[string]any {
 	if pending == nil {
 		pending = []gateway.PendingAdmission{}
 	}
+	if s.Running && s.turn != "" {
+		pending = append([]gateway.PendingAdmission{{AdmissionID: s.turn, Status: statusStart, InputID: s.turnInput}}, pending...)
+	}
 	return map[string]any{
 		kSessionID: s.ID, "stored_session_id": s.ID, "messages": msgs, "message_count": len(msgs),
 		"running": s.Running, "authority_epoch": 1, kReplayEpoch: s.epoch, kLastSequence: s.seq,
@@ -1067,7 +1075,10 @@ func (g *Gateway) hInterrupt(_ *conn, p map[string]any) (any, string, func()) {
 	}
 	s.Running = false
 	g.publishLocked(s, "message.complete", map[string]any{kText: "", kStatus: kInterrupted})
-	return map[string]any{"execution_state": "idle", kExecGen: s.Generation}, "", nil
+	g.settleTransfersLocked(s, "cancelled")
+	queued := s.Pending
+	s.Pending = nil
+	return map[string]any{"execution_state": "idle", kExecGen: s.Generation}, "", func() { g.runQueued(s.ID, queued) }
 }
 
 func (g *Gateway) hApproval(_ *conn, p map[string]any) (any, string, func()) {
@@ -1198,6 +1209,7 @@ func (g *Gateway) turn(id, admission, submission, text string) {
 		"usage": map[string]any{kModel: s.Model, "input": 9000, "output": 120, kReasoning: 0, "prompt": 9000, "completion": 120,
 			kTotal: 9120, "calls": 1, "context_used": 9000, "context_max": 131072, "context_percent": 7,
 			"context_source": "provider_usage", "context_estimated": false, "avg_tps": 42.5}})
+	g.settleTransfersLocked(s, "steered")
 }
 
 // startLocked starts a turn as Hermes does: session.info lists the input
@@ -1205,6 +1217,7 @@ func (g *Gateway) turn(id, admission, submission, text string) {
 // the admission with an empty payload.
 func (g *Gateway) startLocked(s *Session, admission, submission, text string) {
 	s.Revision++
+	s.turn, s.turnInput = admission, submission
 	g.publishLocked(s, gateway.InfoEvent, map[string]any{kPending: []gateway.PendingAdmission{
 		{AdmissionID: admission, Status: "started", Text: text, InputID: submission}}, kRevision: s.Revision, kExecGen: s.Generation})
 	g.publishAdmissionLocked(s, "message.start", admission, map[string]any{})
@@ -1262,7 +1275,7 @@ func (g *Gateway) dropPending(sid, id, status string, gen *int64) (any, string, 
 			return nil, "stale_generation", nil
 		}
 		s.Pending = slices.Delete(s.Pending, i, i+1)
-		return map[string]any{"admission_id": id, kStatus: kTerminal, "outcome": kInterrupted}, "", nil
+		return map[string]any{"admission_id": id, kStatus: kTerminal, kOutcome: kInterrupted}, "", nil
 	}
 	return nil, gateway.ReasonNotFound, nil
 }

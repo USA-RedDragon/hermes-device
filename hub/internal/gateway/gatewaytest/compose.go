@@ -27,7 +27,7 @@ const (
 // AdmissionReceipt).
 func receipt(sessionID, admission string, sequence int64, status string, generation any) map[string]any {
 	return map[string]any{kAdmissionID: admission, "ref": map[string]any{kSessionID: sessionID}, "sequence": sequence,
-		kStatus: status, "outcome": nil, "authority_epoch": 1, kExecGen: generation}
+		kStatus: status, kOutcome: nil, "authority_epoch": 1, kExecGen: generation}
 }
 
 // SteerEnded, as a SteerScript step, ends the running turn before the
@@ -97,6 +97,7 @@ func (g *Gateway) FinishTurn(sessionID string) {
 func (g *Gateway) finishLocked(s *Session) []gateway.PendingAdmission {
 	s.Running = false
 	g.publishLocked(s, "message.complete", map[string]any{kText: "done", kStatus: kComplete})
+	g.settleTransfersLocked(s, "steered")
 	queued := s.Pending
 	s.Pending = nil
 	return queued
@@ -152,10 +153,29 @@ func (g *Gateway) hSteerQueued(_ *conn, p map[string]any) (any, string, func()) 
 		return nil, gateway.ReasonSteerUnavailable, func() { g.runQueued(s.ID, queued) }
 	}
 	a := s.Pending[i]
-	s.Pending = slices.Delete(s.Pending, i, i+1)
+	s.Pending[i].Status = statusStart
+	s.transfers = append(s.transfers, a.AdmissionID)
 	g.steered = append(g.steered, a.AdmissionID)
 	g.publishLocked(s, gateway.InfoEvent, map[string]any{kPending: s.Pending, kRevision: s.Revision, kExecGen: s.Generation})
 	return receipt(s.ID, a.AdmissionID, a.Sequence, statusStart, s.Generation), "", nil
+}
+
+// settleTransfersLocked ends the steers handed to the turn that ended,
+// with outcome: "steered" when the turn finished, "cancelled" when it was
+// stopped, as gateway/session_queued_controls.py publish_transfers does.
+// g.mu is held.
+func (g *Gateway) settleTransfersLocked(s *Session, outcome string) {
+	if len(s.transfers) == 0 {
+		return
+	}
+	for _, id := range s.transfers {
+		s.Pending = slices.DeleteFunc(s.Pending, func(a gateway.PendingAdmission) bool { return a.AdmissionID == id })
+	}
+	g.publishLocked(s, gateway.InfoEvent, map[string]any{kPending: s.Pending, kRevision: s.Revision, kExecGen: s.Generation})
+	for _, id := range s.transfers {
+		g.publishAdmissionLocked(s, "message.complete", id, map[string]any{kText: "", "content": "", kAdmissionID: id, kOutcome: outcome})
+	}
+	s.transfers = nil
 }
 
 func sourceOf(s *Session) string {
