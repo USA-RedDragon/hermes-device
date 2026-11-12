@@ -777,13 +777,15 @@
         const r = await api("POST", this.base + "/inputs/" + encodeURIComponent(p.id) + "/now");
         if (r && r.id) p.id = r.id;
         p.steered = false;
-        p.bubble.classList.add("pending");
-        if (this.pending.includes(p)) this.label(p, el("div", "queued", t("queued")));
+        if (this.pending.includes(p)) {
+          p.bubble.classList.add("pending");
+          this.label(p, el("div", "queued", t("queued")));
+        }
         toast("Stopping the turn; Talaria reads your message next");
       } catch (e) {
         p.now = false;
-        btn.disabled = false;
         banner("Could not stop and send: " + e.message, true);
+        if (this.pending.includes(p)) this.unread(p);
       }
     }
 
@@ -793,12 +795,21 @@
       const i = this.pending.findIndex((x) => x.id && (x.id === d.submission_id || x.id === d.admission_id));
       if (i < 0) return;
       const p = this.pending[i];
-      if (p.now) return;
-      this.pending.splice(i, 1);
       if (d.outcome === "steered") {
+        this.pending.splice(i, 1);
+        p.bubble.classList.remove("pending");
         if (p.label) p.label.remove();
         return;
       }
+      // Stop and send now sends it again; a cancelled queued message is not a steer.
+      if (p.now || !p.steered) return;
+      this.unread(p);
+    }
+
+    // unread marks a steer that no turn read, with Send again.
+    unread(p) {
+      const i = this.pending.indexOf(p);
+      if (i >= 0) this.pending.splice(i, 1);
       const box = el("div", "lost");
       box.append(el("div", "", t("unread")));
       const b = el("button", "", t("again"));
@@ -842,7 +853,8 @@
       let i = id || admission ? this.pending.findIndex((x) => x.id && (x.id === id || x.id === admission)) : 0;
       if (i < 0 && text) {
         const typed = splitAttachments(text).text;
-        i = this.pending.findIndex((x) => !x.id && sameText(x.text, typed));
+        // A stopped steer sent again starts under a new ID, maybe before the page learns it.
+        i = this.pending.findIndex((x) => (!x.id || x.now) && sameText(x.text, typed));
       }
       const p = i >= 0 ? this.pending.splice(i, 1)[0] : null;
       if (p) {
