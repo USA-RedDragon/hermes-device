@@ -383,14 +383,16 @@ func maskMedia(text string) string {
 var (
 	imageHint = regexp.MustCompile(`^\[Image attached at: (.+)\]$`)
 	imageRef  = regexp.MustCompile("^@image:(?:`([^`]+)`|\"([^\"]+)\"|'([^']+)'|(\\S+))$")
+	fileNote  = regexp.MustCompile(`^\[The user attached a file: .+\. It is saved at (/.*)\. Read it with your tools when the request needs its contents\.\]$`)
 )
 
 // AttachedImages are the paths of the images a user message carries, from
 // the lines Hermes keeps in its text for them: "[Image attached at: <path>]"
 // (agent/image_routing.py) and "@image:<path>" refs
-// (tui_gateway/session_history.py). Only MediaPath images count.
+// (tui_gateway/session_history.py), and the hub's FileNote for an image it
+// copied to the chat's computer. Only MediaPath images count.
 func AttachedImages(text string) []string {
-	if !strings.Contains(text, "[Image attached at: ") && !strings.Contains(text, "@image:") {
+	if !strings.Contains(text, "[Image attached at: ") && !strings.Contains(text, "@image:") && !strings.Contains(text, "[The user attached a file: ") {
 		return nil
 	}
 	var out []string
@@ -401,6 +403,8 @@ func AttachedImages(text string) []string {
 			p = m[1]
 		} else if m := imageRef.FindStringSubmatch(line); m != nil {
 			p = m[1] + m[2] + m[3] + m[4]
+		} else if m := fileNote.FindStringSubmatch(line); m != nil {
+			p = m[1]
 		}
 		if MediaPath(p) && ImagePath(p) && !slices.Contains(out, p) {
 			out = append(out, p)

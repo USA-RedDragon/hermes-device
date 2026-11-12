@@ -84,6 +84,12 @@ func TestAttachedImages(t *testing.T) {
 	if got := hub.AttachedImages(in); !slices.Equal(got, want) {
 		t.Fatalf("AttachedImages = %q, want %q", got, want)
 	}
+	note := hub.FileNote("image.png", "/home/alice/src/.hermes/attachments/image.png") + "\n" +
+		hub.FileNote("notes.txt", "/home/alice/src/.hermes/attachments/notes.txt") + "\n" +
+		hub.FileNote("up.png", "/home/alice/../x.png") + "\nsee " + hub.FileNote("a.png", "/home/alice/a.png")
+	if got, want := hub.AttachedImages("hi\n\n"+note), []string{"/home/alice/src/.hermes/attachments/image.png"}; !slices.Equal(got, want) {
+		t.Fatalf("file notes = %q, want %q", got, want)
+	}
 	if got := hub.AttachedImages("no images"); got != nil {
 		t.Fatalf("no images = %q", got)
 	}

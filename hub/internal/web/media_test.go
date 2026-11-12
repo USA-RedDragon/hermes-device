@@ -262,6 +262,30 @@ func TestMediaFromTheDevice(t *testing.T) {
 	}
 }
 
+func TestMediaFromDeviceNote(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	pasted, notes, other := "/home/alice/src/.hermes/attachments/image.png", "/home/alice/src/.hermes/attachments/notes.txt", "/home/alice/src/other.png"
+	dev := &deviceFiles{files: map[string]string{pasted: shotPNG, notes: "hello", other: shotPNG}}
+	e.svc.SetFiles(dev)
+	e.gw.AddSession(&gatewaytest.Session{ID: "n1", Title: titleMedia, Live: true, StartedAt: 200, Messages: []map[string]any{
+		{kRole: roleUser, kText: hub.FileNote("image.png", pasted) + "\n" + hub.FileNote("notes.txt", notes)},
+	}})
+	c := client(t)
+	login(t, e, c)
+	getNote := func(p string) (*http.Response, string) {
+		return get(t, c, e.url+"/api/sessions/pc/n1/media?path="+url.QueryEscape(p))
+	}
+	if resp, body := getNote(pasted); resp.StatusCode != http.StatusOK || body != shotPNG || resp.Header.Get("Content-Type") != hub.MIMEPNG {
+		t.Fatalf("an image the note names = %d %q %v", resp.StatusCode, body, resp.Header)
+	}
+	for _, p := range []string{notes, other} {
+		if resp, _ := getNote(p); resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s = %d, want not found", p, resp.StatusCode)
+		}
+	}
+}
+
 func TestMediaNamedByMarkdown(t *testing.T) {
 	t.Parallel()
 	e := setup(t)

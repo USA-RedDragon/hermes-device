@@ -1462,6 +1462,7 @@
   const mediaExts = new Set(("png jpg jpeg gif webp bmp tiff svg mp4 mov avi mkv webm 3gp mp3 m2a wav ogg opus m4a " +
     "flac pdf docx doc odt rtf txt md epub xlsx xls ods csv tsv json xml yaml yml kmz kml geojson gpx pptx ppt odp key " +
     "zip tar gz tgz bz2 xz 7z rar apk ipa html htm").split(" "));
+  const baseName = (p) => p.replace(/\/+$/, "").split("/").pop() || p;
   const imageExts = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
   const extOf = (p) => { const b = baseName(p); const i = b.lastIndexOf("."); return i >= 0 ? b.slice(i + 1).toLowerCase() : ""; };
   const imagePath = (p) => imageExts.has(extOf(p));
@@ -1606,13 +1607,13 @@
     node.addEventListener("click", (e) => {
       if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
       e.preventDefault();
-      openImage(src, name);
+      openImage(typeof src === "function" ? src() : src, name);
     });
   }
 
   // mediaImage is a thumbnail of an image the agent named that opens
   // full size. It turns into the file's name when the hub cannot show it.
-  function mediaImage(base, p, cls) {
+  function mediaImage(base, p, cls, fallback) {
     const a = el("a", cls || "media-img");
     a.href = mediaURL(base, p);
     a.target = "_blank";
@@ -1622,9 +1623,15 @@
     img.alt = baseName(p);
     img.loading = "lazy";
     img.src = a.href;
-    img.onerror = () => a.replaceWith(mediaFile(base, p, true));
+    img.onerror = () => {
+      if (fallback && imagePath(fallback) && mediaPath(fallback) && fallback !== p) {
+        const other = fallback;
+        fallback = "";
+        a.href = img.src = mediaURL(base, other);
+      } else a.replaceWith(mediaFile(base, p, true));
+    };
     a.append(img);
-    zoomable(a, a.href, baseName(p));
+    zoomable(a, () => a.href, baseName(p));
     return a;
   }
 
@@ -1952,62 +1959,7 @@
     ta.select();
   }
 
-  // Lines Hermes and the hub keep in a user message for its attachments:
-  // the gateway's image hints and placeholders (agent/image_routing.py,
-  // agent/image_replay.py), @image refs, inline image data, and the hub's
-  // note for a file (hub.FileNote).
-  const imageHint = /^\[Image attached(?: at)?: (.+)\]$/;
-  const defaultCaption = "What do you see in this image?";
-  const imageRef = /^@image:(?:`([^`]+)`|"([^"]+)"|'([^']+)'|(\S+))$/;
-  const imageData = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/;
-  const placeholder = /^\[screenshot(?: detail=\w+)?\]$/;
-  const fileNote = /^\[The user attached a file: (.+)\. It is saved at (\/.*)\. Read it with your tools when the request needs its contents\.\]$/;
-  // The hub's lines for a PDF it read (internal/service/pdf.go): a summary,
-  // then the PDF's text between markers with a random id.
-  const pdfNote = /^\[The PDF (.+) has (\d+) pages?\. .*\]$/;
-  const pdfFailed = /^\[The hub could not read the PDF .+\. Its pages are not shown\.\]$/;
-  const pdfStart = /^<untrusted-pdf-text id="([0-9a-f]{16})">$/;
-  const baseName = (p) => p.replace(/\/+$/, "").split("/").pop() || p;
-
-  // cutPage drops the block the hub adds to a page chat message (hub.PageContextHead).
-  const pageHead = "[Talaria page chat.";
-  function cutPage(text) {
-    const s = String(text || "");
-    const i = s.indexOf("\n" + pageHead);
-    if (i >= 0) return s.slice(0, i).replace(/\n+$/, "");
-    return s.startsWith(pageHead) ? "" : s;
-  }
-
-  function splitAttachments(text) {
-    text = cutPage(text);
-    const atts = [];
-    const keep = [];
-    let skipTo = "";
-    for (const line of String(text || "").split("\n")) {
-      let m;
-      if (skipTo) {
-        if (line === skipTo) skipTo = "";
-        continue;
-      }
-      const hubLines = atts.some((a) => a.file);
-      if (hubLines && (m = line.match(pdfStart))) skipTo = "</untrusted-pdf-text id=\"" + m[1] + "\">";
-      else if (hubLines && (m = line.match(pdfNote))) {
-        const f = atts.find((a) => a.file && !a.pdf && a.name === m[1]);
-        if (f) { f.pdf = true; f.pages = +m[2]; }
-      } else if (hubLines && pdfFailed.test(line)) continue;
-      else if ((m = line.match(imageHint))) atts.push({ name: baseName(m[1]), image: true, title: m[1], path: m[1] });
-      else if ((m = line.match(imageRef))) {
-        const p = m[1] || m[2] || m[3] || m[4];
-        atts.push({ name: baseName(p), image: true, title: p, path: p });
-      } else if (imageData.test(line)) atts.push({ name: "image", image: true, url: line });
-      else if ((m = line.match(fileNote))) atts.push({ name: m[1], image: false, title: m[2], file: true });
-      else if (!placeholder.test(line)) keep.push(line);
-    }
-    if (!atts.length) return { text, atts };
-    let rest = keep.join("\n").trim();
-    if (rest === defaultCaption && atts.some((a) => a.image)) rest = "";
-    return { text: rest, atts };
-  }
+  const splitAttachments = (text) => window.HubAttach.split(text);
 
   // attachmentRow shows a message's attachments: a thumbnail when the page
   // has the image or the hub can fetch it from Hermes, else the file's name.
@@ -2016,7 +1968,7 @@
     for (const a of atts) {
       const fetched = !a.url && base && a.path && imagePath(a.path) && mediaPath(a.path);
       if (fetched) {
-        row.append(mediaImage(base, a.path, "att image"));
+        row.append(mediaImage(base, a.path, "att image", a.fallback));
         continue;
       }
       const box = el("div", "att" + (a.url ? " image" : ""));

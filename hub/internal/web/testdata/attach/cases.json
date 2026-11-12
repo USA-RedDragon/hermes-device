@@ -1,0 +1,271 @@
+[
+ {
+  "name": "plain text",
+  "text": "hello",
+  "want": {
+   "text": "hello",
+   "atts": []
+  }
+ },
+ {
+  "name": "image note alone is an image",
+  "text": "[The user attached a file: image.png. It is saved at /home/u/Projects/.hermes/attachments/image.png. Read it with your tools when the request needs its contents.]",
+  "want": {
+   "text": "",
+   "atts": [
+    {
+     "name": "image.png",
+     "image": true,
+     "title": "/home/u/Projects/.hermes/attachments/image.png",
+     "path": "/home/u/Projects/.hermes/attachments/image.png",
+     "note": true
+    }
+   ]
+  }
+ },
+ {
+  "name": "typed text stays with a note",
+  "text": "what is this?\n\n[The user attached a file: shot.JPG. It is saved at /home/u/Projects/.hermes/attachments/shot.JPG. Read it with your tools when the request needs its contents.]",
+  "want": {
+   "text": "what is this?",
+   "atts": [
+    {
+     "name": "shot.JPG",
+     "image": true,
+     "title": "/home/u/Projects/.hermes/attachments/shot.JPG",
+     "path": "/home/u/Projects/.hermes/attachments/shot.JPG",
+     "note": true
+    }
+   ]
+  }
+ },
+ {
+  "name": "note and hint are one image",
+  "text": "[The user attached a file: image.png. It is saved at /home/u/Projects/.hermes/attachments/image.png. Read it with your tools when the request needs its contents.]\n\n[Image attached at: /opt/data/hermes/cache/documents/native-inputs/ab12/upload_x.png]\n[screenshot]",
+  "want": {
+   "text": "",
+   "atts": [
+    {
+     "name": "image.png",
+     "image": true,
+     "title": "/home/u/Projects/.hermes/attachments/image.png",
+     "path": "/opt/data/hermes/cache/documents/native-inputs/ab12/upload_x.png",
+     "hint": true,
+     "fallback": "/home/u/Projects/.hermes/attachments/image.png"
+    }
+   ]
+  }
+ },
+ {
+  "name": "typed text with note and hint",
+  "text": "look\n\n[The user attached a file: a.png. It is saved at /home/u/Projects/.hermes/attachments/a.png. Read it with your tools when the request needs its contents.]\n\n[Image attached at: /opt/data/hermes/cache/documents/native-inputs/ab12/upload_a.png]",
+  "want": {
+   "text": "look",
+   "atts": [
+    {
+     "name": "a.png",
+     "image": true,
+     "title": "/home/u/Projects/.hermes/attachments/a.png",
+     "path": "/opt/data/hermes/cache/documents/native-inputs/ab12/upload_a.png",
+     "hint": true,
+     "fallback": "/home/u/Projects/.hermes/attachments/a.png"
+    }
+   ]
+  }
+ },
+ {
+  "name": "two notes pair with two hints in order",
+  "text": "[The user attached a file: a.png. It is saved at /home/u/Projects/.hermes/attachments/a.png. Read it with your tools when the request needs its contents.]\n[The user attached a file: b.webp. It is saved at /home/u/Projects/.hermes/attachments/b.webp. Read it with your tools when the request needs its contents.]\n\n[Image attached at: /opt/data/hermes/cache/documents/native-inputs/ab12/upload_1.png]\n[Image attached at: /opt/data/hermes/cache/documents/native-inputs/ab12/upload_2.webp]",
+  "want": {
+   "text": "",
+   "atts": [
+    {
+     "name": "a.png",
+     "image": true,
+     "title": "/home/u/Projects/.hermes/attachments/a.png",
+     "path": "/opt/data/hermes/cache/documents/native-inputs/ab12/upload_1.png",
+     "hint": true,
+     "fallback": "/home/u/Projects/.hermes/attachments/a.png"
+    },
+    {
+     "name": "b.webp",
+     "image": true,
+     "title": "/home/u/Projects/.hermes/attachments/b.webp",
+     "path": "/opt/data/hermes/cache/documents/native-inputs/ab12/upload_2.webp",
+     "hint": true,
+     "fallback": "/home/u/Projects/.hermes/attachments/b.webp"
+    }
+   ]
+  }
+ },
+ {
+  "name": "a note without its hint stays",
+  "text": "[The user attached a file: a.png. It is saved at /home/u/Projects/.hermes/attachments/a.png. Read it with your tools when the request needs its contents.]\n[The user attached a file: b.png. It is saved at /home/u/Projects/.hermes/attachments/b.png. Read it with your tools when the request needs its contents.]\n\n[Image attached at: /opt/data/hermes/cache/documents/native-inputs/ab12/upload_1.png]",
+  "want": {
+   "text": "",
+   "atts": [
+    {
+     "name": "a.png",
+     "image": true,
+     "title": "/home/u/Projects/.hermes/attachments/a.png",
+     "path": "/opt/data/hermes/cache/documents/native-inputs/ab12/upload_1.png",
+     "hint": true,
+     "fallback": "/home/u/Projects/.hermes/attachments/a.png"
+    },
+    {
+     "name": "b.png",
+     "image": true,
+     "title": "/home/u/Projects/.hermes/attachments/b.png",
+     "path": "/home/u/Projects/.hermes/attachments/b.png",
+     "note": true
+    }
+   ]
+  }
+ },
+ {
+  "name": "a file keeps its chip",
+  "text": "see\n[The user attached a file: notes.txt. It is saved at /home/u/Projects/.hermes/attachments/notes.txt. Read it with your tools when the request needs its contents.]",
+  "want": {
+   "text": "see",
+   "atts": [
+    {
+     "name": "notes.txt",
+     "image": false,
+     "title": "/home/u/Projects/.hermes/attachments/notes.txt",
+     "file": true
+    }
+   ]
+  }
+ },
+ {
+  "name": "a file and an image",
+  "text": "[The user attached a file: notes.txt. It is saved at /home/u/Projects/.hermes/attachments/notes.txt. Read it with your tools when the request needs its contents.]\n[The user attached a file: a.png. It is saved at /home/u/Projects/.hermes/attachments/a.png. Read it with your tools when the request needs its contents.]",
+  "want": {
+   "text": "",
+   "atts": [
+    {
+     "name": "notes.txt",
+     "image": false,
+     "title": "/home/u/Projects/.hermes/attachments/notes.txt",
+     "file": true
+    },
+    {
+     "name": "a.png",
+     "image": true,
+     "title": "/home/u/Projects/.hermes/attachments/a.png",
+     "path": "/home/u/Projects/.hermes/attachments/a.png",
+     "note": true
+    }
+   ]
+  }
+ },
+ {
+  "name": "hint alone",
+  "text": "hi\n\n[Image attached at: /opt/data/hermes/cache/documents/native-inputs/ab12/upload_1.png]",
+  "want": {
+   "text": "hi",
+   "atts": [
+    {
+     "name": "upload_1.png",
+     "image": true,
+     "title": "/opt/data/hermes/cache/documents/native-inputs/ab12/upload_1.png",
+     "path": "/opt/data/hermes/cache/documents/native-inputs/ab12/upload_1.png",
+     "hint": true
+    }
+   ]
+  }
+ },
+ {
+  "name": "default caption is dropped for an image",
+  "text": "What do you see in this image?\n\n[Image attached at: /opt/data/hermes/cache/documents/native-inputs/ab12/upload_1.png]",
+  "want": {
+   "text": "",
+   "atts": [
+    {
+     "name": "upload_1.png",
+     "image": true,
+     "title": "/opt/data/hermes/cache/documents/native-inputs/ab12/upload_1.png",
+     "path": "/opt/data/hermes/cache/documents/native-inputs/ab12/upload_1.png",
+     "hint": true
+    }
+   ]
+  }
+ },
+ {
+  "name": "default caption stays for a file",
+  "text": "What do you see in this image?\n[The user attached a file: n.txt. It is saved at /home/u/Projects/.hermes/attachments/n.txt. Read it with your tools when the request needs its contents.]",
+  "want": {
+   "text": "What do you see in this image?",
+   "atts": [
+    {
+     "name": "n.txt",
+     "image": false,
+     "title": "/home/u/Projects/.hermes/attachments/n.txt",
+     "file": true
+    }
+   ]
+  }
+ },
+ {
+  "name": "image ref",
+  "text": "x\n\n@image:`/opt/data/cache/images/my c.jpg`",
+  "want": {
+   "text": "x",
+   "atts": [
+    {
+     "name": "my c.jpg",
+     "image": true,
+     "title": "/opt/data/cache/images/my c.jpg",
+     "path": "/opt/data/cache/images/my c.jpg",
+     "hint": true
+    }
+   ]
+  }
+ },
+ {
+  "name": "inline image data",
+  "text": "data:image/png;base64,iVBORw0KGgo=",
+  "want": {
+   "text": "",
+   "atts": [
+    {
+     "name": "image",
+     "image": true,
+     "url": "data:image/png;base64,iVBORw0KGgo="
+    }
+   ]
+  }
+ },
+ {
+  "name": "a pdf note does not join the image notes",
+  "text": "[The user attached a file: doc.pdf. It is saved at /home/u/Projects/.hermes/attachments/doc.pdf. Read it with your tools when the request needs its contents.]\n[The PDF doc.pdf has 2 pages. Its text follows.]\n<untrusted-pdf-text id=\"0123456789abcdef\">\nbody\n</untrusted-pdf-text id=\"0123456789abcdef\">\n\n[Image attached at: /opt/data/hermes/cache/documents/native-inputs/ab12/upload_p.png]",
+  "want": {
+   "text": "",
+   "atts": [
+    {
+     "name": "doc.pdf",
+     "image": false,
+     "title": "/home/u/Projects/.hermes/attachments/doc.pdf",
+     "file": true,
+     "pdf": true,
+     "pages": 2
+    },
+    {
+     "name": "upload_p.png",
+     "image": true,
+     "title": "/opt/data/hermes/cache/documents/native-inputs/ab12/upload_p.png",
+     "path": "/opt/data/hermes/cache/documents/native-inputs/ab12/upload_p.png",
+     "hint": true
+    }
+   ]
+  }
+ },
+ {
+  "name": "page chat block is cut",
+  "text": "ask\n[Talaria page chat. internal]\nmore",
+  "want": {
+   "text": "ask",
+   "atts": []
+  }
+ }
+]
