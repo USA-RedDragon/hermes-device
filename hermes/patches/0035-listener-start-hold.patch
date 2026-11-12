@@ -1,0 +1,252 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 04:34:48 -0600
+Subject: [PATCH] feat(gateway): hold requests to a starting gateway until it
+ is ready
+
+gateway.listener_start_hold_seconds (0 = off): while the gateway starts, a request to its listener waits up to that bound for READY instead of the 503 gateway_not_ready answer, and a WebSocket upgrade instead of close 1013. A stop that begins meanwhile answers at once. A takeover then looks like latency to clients instead of a failure.
+---
+ gateway/config.py                          |   6 +-
+ gateway/config_loader.py                   |   1 +
+ gateway/run_api.py                         |  19 +++
+ tests/gateway/test_listener_start_hold.py  | 135 +++++++++++++++++++++
+ website/docs/user-guide/messaging/index.md |   4 +-
+ 5 files changed, 163 insertions(+), 2 deletions(-)
+ create mode 100644 tests/gateway/test_listener_start_hold.py
+
+diff --git a/gateway/config.py b/gateway/config.py
+index f848190d23..647911b2b3 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -645,6 +645,9 @@ class GatewayConfig:
+     # 200 throughout and the restart wait's reads until the stores close, so a successor's readiness
+     # takes over from this one's without a gap. False = the listener closes as the stop begins.
+     restart_listener_handover: bool = False
++    # While the gateway starts, a request to its listener waits up to this many seconds for READY instead
++    # of the 503 ``gateway_not_ready`` answer (a WebSocket instead of close 1013). 0 = answer at once.
++    listener_start_hold_seconds: float = 0.0
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -681,7 +684,7 @@ class GatewayConfig:
+         "on_all_adapters_down",
+         "room_link_url", "systemd_watchdog_seconds", "runtime_lock_wait_seconds", "sigterm_restart_wait",
+         "restart_wait_plugin_sockets", "restart_agent_cleanup_seconds",
+-        "restart_wait_delegations", "restart_listener_handover",
++        "restart_wait_delegations", "restart_listener_handover", "listener_start_hold_seconds",
+         "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+@@ -820,6 +823,7 @@ class GatewayConfig:
+             restart_agent_cleanup_seconds=bounded_float("restart_agent_cleanup_seconds", 0.0, 0.0, 3600.0),
+             restart_wait_delegations=_coerce_bool(pick("restart_wait_delegations"), False),
+             restart_listener_handover=_coerce_bool(pick("restart_listener_handover"), False),
++            listener_start_hold_seconds=bounded_float("listener_start_hold_seconds", 0.0, 0.0, 600.0),
+             restart_wait_plugin_sockets=[
+                 str(name).strip("/ ") for name in (pick("restart_wait_plugin_sockets") or [])
+                 if isinstance(pick("restart_wait_plugin_sockets"), list) and str(name).strip("/ ")],
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index dc7842abe9..8847d02e88 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -99,6 +99,7 @@ _TOPLEVEL_BRIDGE: tuple = (
+     ("restart_agent_cleanup_seconds", "restart_agent_cleanup_seconds", "nested", None, None),
+     ("restart_wait_delegations", "restart_wait_delegations", "nested", None, None),
+     ("restart_listener_handover", "restart_listener_handover", "nested", None, None),
++    ("listener_start_hold_seconds", "listener_start_hold_seconds", "nested", None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/run_api.py b/gateway/run_api.py
+index 35da60bc7d..cffee4431e 100644
+--- a/gateway/run_api.py
++++ b/gateway/run_api.py
+@@ -432,6 +432,23 @@ def _handover_read(runner, scope) -> bool:
+     return scope['type'] == 'http' and handover_read(runner, scope.get('method'), scope.get('path'))
+ 
+ 
++_START_HOLD_POLL_S = 0.02
++
++
++async def _hold_while_starting(runner, descriptor) -> None:
++    """``gateway.listener_start_hold_seconds``: a request that reaches a starting gateway waits for
++    READY, up to that bound, instead of the not-ready answer. A stop that begins meanwhile ends the
++    wait at once."""
++    hold = float(getattr(getattr(runner, 'config', None), 'listener_start_hold_seconds', 0) or 0)
++    if hold <= 0:
++        return
++    loop = asyncio.get_running_loop()
++    deadline = loop.time() + hold
++    while (descriptor['state'] == 'starting' and not getattr(runner, '_draining', False)
++           and loop.time() < deadline):
++        await asyncio.sleep(min(_START_HOLD_POLL_S, max(0.0, deadline - loop.time())))
++
++
+ def _restart_wait_sign_in(runner, scope) -> bool:
+     from gateway.drain_control import restart_wait_sign_in
+     return scope['type'] == 'http' and restart_wait_sign_in(runner, scope.get('method'), scope.get('path'))
+@@ -522,6 +539,8 @@ class GatewayRuntimeAPI:
+         descriptor = getattr(self.runner, 'session_runtime_descriptor', None)
+         if scope['type'] not in {'http', 'websocket'} or descriptor is None:
+             return await self.app(scope, receive, send)
++        if descriptor['state'] == 'starting':
++            await _hold_while_starting(self.runner, descriptor)
+         draining_socket = (descriptor['state'] in {'ready', 'draining'}
+             and (self.runner._draining or descriptor['state'] == 'draining')
+             and scope['type'] == 'websocket' and scope['path'] == '/api/ws')
+diff --git a/tests/gateway/test_listener_start_hold.py b/tests/gateway/test_listener_start_hold.py
+new file mode 100644
+index 0000000000..e7051f0504
+--- /dev/null
++++ b/tests/gateway/test_listener_start_hold.py
+@@ -0,0 +1,135 @@
++"""gateway.listener_start_hold_seconds: a request that reaches a starting gateway waits for READY
++instead of the 503 ``gateway_not_ready`` answer."""
++import asyncio
++import time
++from types import SimpleNamespace
++
++import pytest
++
++from gateway.config import GatewayConfig, load_gateway_config
++from gateway.run_api import GatewayRuntimeAPI
++
++
++def test_off_by_default():
++    assert GatewayConfig().listener_start_hold_seconds == 0.0
++    assert GatewayConfig.from_dict({}).listener_start_hold_seconds == 0.0
++    assert GatewayConfig.from_dict({"gateway": {"listener_start_hold_seconds": 30}}).listener_start_hold_seconds == 30.0
++    assert GatewayConfig.from_dict({"gateway": {"listener_start_hold_seconds": -1}}).listener_start_hold_seconds == 0.0
++    assert GatewayConfig.from_dict({"gateway": {"listener_start_hold_seconds": "x"}}).listener_start_hold_seconds == 0.0
++
++
++def test_config_yaml_key_reaches_the_runner_config(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    (tmp_path / "config.yaml").write_text("gateway:\n  listener_start_hold_seconds: 20\n", encoding="utf-8")
++    assert load_gateway_config().listener_start_hold_seconds == 20.0
++
++
++def _starting_runner(hold):
++    return SimpleNamespace(_draining=False, _running=False,
++                           config=GatewayConfig(listener_start_hold_seconds=hold),
++                           session_runtime_descriptor={"state": "starting", "capabilities": []})
++
++
++def _api(runner):
++    reached = []
++
++    async def dashboard(scope, receive, send):
++        reached.append(scope["path"])
++        if scope["type"] == "websocket":
++            await send({"type": "websocket.accept"})
++            return
++        await send({"type": "http.response.start", "status": 200, "headers": []})
++        await send({"type": "http.response.body", "body": b"{}"})
++
++    web_app = SimpleNamespace(state=SimpleNamespace(auth_required=False))
++    return GatewayRuntimeAPI(dashboard, runner, web_app), reached
++
++
++async def _get(api, path="/api/health"):
++    sent = []
++
++    async def receive():
++        return {"type": "http.request", "body": b"", "more_body": False}
++
++    async def send(message):
++        sent.append(message)
++
++    scope = {"type": "http", "method": "GET", "path": path, "query_string": b"", "headers": [],
++             "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 9120), "scheme": "http",
++             "http_version": "1.1", "root_path": ""}
++    await api(scope, receive, send)
++    return next(m for m in sent if m["type"] == "http.response.start")["status"]
++
++
++async def _upgrade(api, path="/api/plugins/device/ws"):
++    sent = []
++
++    async def receive():
++        return {"type": "websocket.connect"}
++
++    async def send(message):
++        sent.append(message)
++
++    scope = {"type": "websocket", "path": path, "query_string": b"", "headers": [],
++             "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 9120), "scheme": "ws", "subprotocols": []}
++    await api(scope, receive, send)
++    return sent
++
++
++@pytest.fixture(autouse=True)
++def _no_activity_note(monkeypatch):
++    monkeypatch.setattr("gateway.run_idle_exit.note_client_activity", lambda runner: None)
++
++
++@pytest.mark.asyncio
++async def test_without_the_hold_a_starting_gateway_answers_503_at_once():
++    api, reached = _api(_starting_runner(0))
++    started = time.monotonic()
++    assert await _get(api) == 503
++    assert await _upgrade(api) == [{"type": "websocket.close", "code": 1013}]
++    assert time.monotonic() - started < 0.5
++    assert reached == []
++
++
++@pytest.mark.asyncio
++async def test_a_held_request_is_served_once_the_gateway_is_ready():
++    runner = _starting_runner(10)
++    api, reached = _api(runner)
++    request = asyncio.ensure_future(_get(api))
++    socket = asyncio.ensure_future(_upgrade(api))
++    await asyncio.sleep(0.1)
++    assert not request.done() and not socket.done()
++    runner.session_runtime_descriptor["state"] = "ready"
++    assert await asyncio.wait_for(request, 2) == 200
++    assert await asyncio.wait_for(socket, 2) == [{"type": "websocket.accept"}]
++    assert reached == ["/api/health", "/api/plugins/device/ws"]
++
++
++@pytest.mark.asyncio
++async def test_the_hold_ends_with_the_not_ready_answer_after_its_bound():
++    api, reached = _api(_starting_runner(0.2))
++    started = time.monotonic()
++    assert await _get(api) == 503
++    assert 0.15 <= time.monotonic() - started < 2
++    assert reached == []
++
++
++@pytest.mark.asyncio
++async def test_a_stop_during_the_hold_answers_at_once():
++    runner = _starting_runner(30)
++    api, reached = _api(runner)
++    request = asyncio.ensure_future(_get(api))
++    await asyncio.sleep(0.05)
++    runner._draining = True
++    runner.session_runtime_descriptor["state"] = "draining"
++    assert await asyncio.wait_for(request, 2) == 503
++    assert reached == []
++
++
++@pytest.mark.asyncio
++async def test_a_ready_gateway_never_holds():
++    runner = _starting_runner(30)
++    runner.session_runtime_descriptor["state"] = "ready"
++    api, reached = _api(runner)
++    assert await asyncio.wait_for(_get(api), 1) == 200
++    assert reached == ["/api/health"]
+diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
+index fd94d93ff4..6050582645 100644
+--- a/website/docs/user-guide/messaging/index.md
++++ b/website/docs/user-guide/messaging/index.md
+@@ -761,7 +761,9 @@ fails for the whole shutdown and the successor's boot. Set
+ restart until the gateway releases the profile: `GET /api/health` answers 200
+ throughout, and the reads a client needs to find its chats keep working until
+ the stores close. Sockets and writes are refused from the start of the stop as
+-before.
++before. A gateway that is still starting answers `503` (`gateway_not_ready`)
++until it is ready; set `gateway.listener_start_hold_seconds` (for example `30`)
++to have such requests wait for it instead, up to that many seconds.
+ 
+ ### macOS (launchd)
+ 
