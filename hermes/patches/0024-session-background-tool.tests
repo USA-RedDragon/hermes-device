@@ -1,3 +1,3 @@
 tests/gateway/test_session_busy_controls.py
 tests/gateway/test_session_steer_before_adopt.py
-tests/agent/test_tool_executor_checkpoint_paths.py
+tests/tools/test_terminal_yield_to_background.py
