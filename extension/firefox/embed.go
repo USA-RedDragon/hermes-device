@@ -1,4 +1,4 @@
-// Package firefox embeds the Hermes Firefox extension's source, so tests
+// Package firefox embeds the Talaria Firefox extension's source, so tests
 // and installers can write it out.
 package firefox
 
@@ -15,7 +15,7 @@ import (
 
 // Files holds the extension's files.
 //
-//go:embed manifest.json background.js pagechat.html pagechat.js pagechat.css icon.svg toolbar-light.svg toolbar-dark.svg
+//go:embed manifest.json background.js pagechat.html pagechat.js pagechat.css icons
 var Files embed.FS //nolint:gochecknoglobals // go:embed needs a variable
 
 // ReleasesURL is where each release publishes the signed extension.

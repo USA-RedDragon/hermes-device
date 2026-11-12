@@ -25,7 +25,7 @@ Reasons:
 
 - It works in the user's everyday profile with their logins, and needs no browser restart. The extension is installed once.
 - It opens no network port. Only Firefox can start the host, and only for the extension ids in the host manifest's `allowed_extensions`. Web pages cannot reach native messaging.
-- The agent works in its own tab group, named "Hermes". The user sees every tab it opens, and can hand it a tab by dragging the tab into the group. The toolbar badge shows when the extension is connected and when an operation runs.
+- The agent works in its own tab group, named "Talaria". The user sees every tab it opens, and can hand it a tab by dragging the tab into the group. The toolbar badge shows when the extension is connected and when an operation runs.
 - It works the same on X11 and Wayland, because it does not synthesize OS input.
 - The alternatives change the user's browser in ways that break everyday use (section 2).
 - The browser is authorized by the device: the extension talks only to the local daemon, and the daemon is paired to its owner's hub account (section 13).
@@ -296,7 +296,7 @@ Not tested end to end: the test suite does not start a Firefox on the user's dis
 
 - Manifest V2 with a persistent background page. Firefox keeps Manifest V2 supported, and a persistent page keeps the native port open. Manifest V3 in Firefox makes host permissions optional at install, which `tabs.captureTab` needs (inference; check before moving).
 - Permissions: `nativeMessaging`, `tabs`, `tabGroups`, `scripting`, `webRequest`, `webRequestBlocking`, `dns`, `<all_urls>`. Firefox shows these at install. The extension keeps nothing in `storage` and needs no `identity`.
-- The toolbar button's title and badge show whether the extension is connected to talaria ("Hermes: connected to talaria", badge "on") or not, and the operation while one runs. The button opens the page chat (section 6.2). After another Firefox took over, opening it makes this one take over again.
+- The toolbar button's title and badge show whether the extension is connected to talaria ("Talaria: connected", a green badge "on") or not, and the operation while one runs. The button opens the page chat (section 6.2). After another Firefox took over, opening it makes this one take over again.
 - Agent tabs may not open the daemon's hub (`hub_url` from `config`, matched by host and port), so the agent cannot use the user's hub session, for example to pair another computer or remove one.
 - No content scripts are registered, nothing listens for page messages, and there is no `externally_connectable` or web accessible resource. Page code runs only through `scripting.executeScript` during an operation, in the isolated world, in one frame or in all frames of the tab, and through `tabs.executeScript` when the open page chat reads the active tab's selected text. Agent scripts (`eval`) run through `tabs.executeScript` with `code` in the same isolated world (section 7.2). No new permission was needed for frames, keys or scripts, so updating the extension asks the user nothing.
 - It acts only on tabs that are in its tab group now (tabs it opened, and tabs the user moved in; a tab dragged out is no longer the agent's). Anything else gets `refused`. The one exception: `read_text` and `snapshot` for the session of a page chat that granted the tab (section 6.2). Firefox puts tabs opened from a grouped tab (a link with a target, `window.open`, the user's middle click) into the same group (source, `Tabbrowser.sys.mjs`), so those become agent tabs too. Planned: count only tabs the agent opened or the user granted with a context menu item, since another extension can also move tabs into the group.
@@ -468,7 +468,7 @@ To prepare a scheduled job: run it once in a chat and answer "always" for each s
 
 Section 7.4 is the one exception to the block on pages with password fields: `browser_login` on a host in `browser.autologin-hosts` runs unattended once the user granted `browser:login:<host>` with "always".
 
-The user can stop everything at any time: close the Hermes tab group, disable the extension, stop `talaria run`, or remove the computer under Settings, Computers on the hub.
+The user can stop everything at any time: close the Talaria tab group, disable the extension, stop `talaria run`, or remove the computer under Settings, Computers on the hub.
 
 ### 7.4 Saved logins (browser_login)
 
@@ -531,7 +531,7 @@ Who can drive the browser:
 - Other processes of the same user: yes, by connecting to the socket and pretending to be a host, or by editing the manifest. They can already read the Firefox profile and the device token, so this is not a new boundary. The broker accepts only `host_hello` for the expected extension id, which stops accidents, not attacks.
 - Other extensions: no. Firefox starts the host only for ids in `allowed_extensions`, and the host checks the id again.
 - Other extensions: they cannot talk to the host, but one with the `tabs` permission may be able to move a tab into the Hermes group and so hand it to the agent (suspected, not tested).
-- The Hermes pod: yes, within the rules above. A compromised pod can do what the agent can: act in the Hermes tab group with the user's cookies, and read the tabs a page chat granted (section 6.2) for 30 minutes after the message, by naming that chat's session in `sessions`. It cannot read other tabs outside the group, cannot read `file:` or `about:` pages, and cannot reach loopback or private network hosts the device did not allow. This matches the exec leg, where a compromised pod can run commands in the device's roots.
+- The Hermes pod: yes, within the rules above. A compromised pod can do what the agent can: act in the Talaria tab group with the user's cookies, and read the tabs a page chat granted (section 6.2) for 30 minutes after the message, by naming that chat's session in `sessions`. It cannot read other tabs outside the group, cannot read `file:` or `about:` pages, and cannot reach loopback or private network hosts the device did not allow. This matches the exec leg, where a compromised pod can run commands in the device's roots.
 - The hub: relays messages and cannot mint them except as the pod would (protocol.md section 10).
 - The approvals in section 7 are decided by the plugin in the pod. A compromised pod can send any `guard`; the extension's checks stop mistakes and changed pages, not a hostile pod.
 
@@ -579,7 +579,7 @@ On the computer, `talaria setup` does steps 1 to 5 (README, section Setup). By h
 2. Run `talaria browser install` as the user who runs Firefox.
 3. Restart `talaria run`.
 4. Install the signed extension from a release (section 6.1).
-   Its toolbar button shows "Hermes: connected to talaria" when it reaches the daemon.
+   Its toolbar button shows "Talaria: connected" when it reaches the daemon.
 5. Bind a session to this device with `/device <device> <dir>`. `browser_status` in that session shows whether the agent can use the browser.
 
 ## 12. Open risks
@@ -595,7 +595,7 @@ On the computer, `talaria setup` does steps 1 to 5 (README, section Setup). By h
 - The approval rules have the gaps listed in section 7.
 - Saved-login sign-in with the screen locked is not measured yet (section 7.4).
 - A Firefox container for agent tabs would limit the agent to sites the user chose to sign in to there, which shrinks what a compromised pod or an injected instruction can reach. It costs the user one sign-in per site. Worth trying before release.
-- The extension keeps its group and tab ids in memory: after a Firefox restart it creates a new Hermes group, and old Hermes tabs are no longer the agent's.
+- The extension keeps its group and tab ids in memory: after a Firefox restart it creates a new Talaria group, and tabs in the old group are no longer the agent's.
 - Any process of the user's OS account can drive the browser through the daemon's socket (section 13).
 
 ## 13. Trust model

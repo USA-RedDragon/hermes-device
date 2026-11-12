@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "name": "Talaria: Hermes browser control",
+  "name": "Talaria",
   "version": "0.2.0",
-  "description": "Lets your Hermes agent use tabs in its own tab group, through the local talaria daemon.",
+  "description": "Lets your Talaria agent use tabs in its own tab group, through the local talaria daemon, and chat about the pages you have open.",
   "browser_specific_settings": {
     "gecko": {
       "id": "browser@hermes-device",
@@ -13,20 +13,20 @@
   },
   "permissions": ["nativeMessaging", "tabs", "tabGroups", "scripting", "webRequest", "webRequestBlocking", "dns", "<all_urls>"],
   "background": {"scripts": ["background.js"], "persistent": true},
-  "icons": {"48": "icon.svg", "96": "icon.svg"},
+  "icons": {"16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png", "96": "icons/icon-96.png"},
   "browser_action": {
-    "default_title": "Hermes: not connected",
-    "default_icon": "toolbar-dark.svg",
+    "default_title": "Talaria: not connected",
+    "default_icon": {"16": "icons/toolbar-blue-16.png", "32": "icons/toolbar-blue-32.png", "48": "icons/toolbar-blue-48.png", "96": "icons/toolbar-blue-96.png"},
     "default_popup": "pagechat.html",
     "theme_icons": [
-      {"light": "toolbar-light.svg", "dark": "toolbar-dark.svg", "size": 16},
-      {"light": "toolbar-light.svg", "dark": "toolbar-dark.svg", "size": 32}
+      {"light": "icons/toolbar-light-16.png", "dark": "icons/toolbar-blue-16.png", "size": 16},
+      {"light": "icons/toolbar-light-32.png", "dark": "icons/toolbar-blue-32.png", "size": 32}
     ]
   },
   "sidebar_action": {
     "default_title": "Talaria",
     "default_panel": "pagechat.html",
-    "default_icon": "toolbar-dark.svg",
+    "default_icon": {"16": "icons/toolbar-blue-16.png", "32": "icons/toolbar-blue-32.png"},
     "open_at_install": false
   }
 }

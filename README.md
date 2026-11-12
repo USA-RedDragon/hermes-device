@@ -127,10 +127,10 @@ The agent can also use your own Firefox, with your logins, in its own "Hermes" t
 `talaria setup` turns it on when it finds Firefox (section [Setup](#setup), steps 3, 4 and 7). Add `browser.allow-hosts` to the config for LAN or loopback hosts the agent may open; all others are blocked in its tabs. To turn it on by hand instead:
 
 1. Set `browser.enabled: true` in the config.
-2. Run `talaria browser install`. It registers this binary as Firefox's native messaging host for the Hermes extension, for your user only.
+2. Run `talaria browser install`. It registers this binary as Firefox's native messaging host for the Talaria extension, for your user only.
 3. Restart `talaria run`.
 4. Install the extension: download `talaria-firefox-<version>.xpi` from the [latest release](https://github.com/USA-RedDragon/talaria/releases/latest), then in Firefox open `about:addons`, choose the gear menu, "Install Add-on From File..." and pick the file. Mozilla signs it, so it stays installed, and Firefox updates it from later releases. For development, `talaria browser extension --out DIR` writes the files to load as a temporary add-on (docs/browser.md section 6.1).
-   The Hermes button in Firefox's toolbar then shows "Hermes: connected to talaria".
+   The Talaria button in Firefox's toolbar then shows a green "on" badge, and its tooltip reads "Talaria: connected".
 
 The browser needs no sign-in of its own. It is authorized by this computer: the extension talks only to the local daemon, the daemon's socket is private to your OS user, and the daemon is paired to your hub account, so only your own sessions reach it. Any program you run as the same OS user can also reach it (docs/browser.md section 13).
 

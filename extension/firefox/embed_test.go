@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 
 	firefox "github.com/USA-RedDragon/hermes-device/extension/firefox"
@@ -135,6 +136,57 @@ func TestManifestFilesEmbedded(t *testing.T) {
 	for _, n := range names {
 		if _, err := firefox.Files.ReadFile(n); err != nil {
 			t.Errorf("%s is not embedded: %v", n, err)
+		}
+	}
+}
+
+// TestManifestNameAndIcons keeps the user-visible name plain and checks that
+// every icon the manifest names is embedded.
+func TestManifestNameAndIcons(t *testing.T) {
+	t.Parallel()
+	data, err := firefox.Files.ReadFile("manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Name          string            `json:"name"`
+		Description   string            `json:"description"`
+		Icons         map[string]string `json:"icons"`
+		BrowserAction struct {
+			Title string            `json:"default_title"`
+			Icon  map[string]string `json:"default_icon"`
+			Theme []struct {
+				Light string `json:"light"`
+				Dark  string `json:"dark"`
+			} `json:"theme_icons"`
+		} `json:"browser_action"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Name != "Talaria" {
+		t.Errorf("name = %q", m.Name)
+	}
+	for _, s := range []string{m.Name, m.Description, m.BrowserAction.Title} {
+		if strings.Contains(strings.ToLower(s), "hermes") {
+			t.Errorf("%q names Hermes", s)
+		}
+	}
+	paths := []string{}
+	for _, icons := range []map[string]string{m.Icons, m.BrowserAction.Icon} {
+		if len(icons) != 4 {
+			t.Errorf("icon sizes = %v, want 16, 32, 48 and 96", icons)
+		}
+		for _, p := range icons {
+			paths = append(paths, p)
+		}
+	}
+	for _, th := range m.BrowserAction.Theme {
+		paths = append(paths, th.Light, th.Dark)
+	}
+	for _, p := range paths {
+		if _, err := firefox.Files.ReadFile(p); err != nil {
+			t.Errorf("icon %s is not embedded: %v", p, err)
 		}
 	}
 }

@@ -424,7 +424,7 @@ func formPage(w http.ResponseWriter, r *http.Request) {
 func refusals(ctx context.Context, t *testing.T, b *broker.Broker, tabID int) {
 	t.Helper()
 	if _, err := b.Call(ctx, "read_text", map[string]any{keyTab: 1}); err == nil ||
-		!strings.Contains(err.Error(), "not in the Hermes tab group") {
+		!strings.Contains(err.Error(), "not in the Talaria tab group") {
 		t.Errorf("read_text on a user tab: err = %v", err)
 	} else {
 		t.Logf("read_text on tab 1 refused: %v", err)

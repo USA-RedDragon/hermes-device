@@ -1,6 +1,6 @@
 "use strict";
 
-// Hermes browser control. The ways in are the native messaging port to
+// Talaria browser control. The ways in are the native messaging port to
 // the talaria host and messages from this extension's own page chat
 // (pagechat.html): there are no content scripts that listen to the page,
 // no external messaging and no web accessible resources.
@@ -10,7 +10,7 @@
 // computer that has only the old host manifest.
 const HOSTS = ["talaria", "hermes_device"];
 let hostIndex = 0;
-const GROUP_TITLE = "Hermes";
+const GROUP_TITLE = "Talaria";
 const RETRY_MS = 5000;
 const LOAD_TIMEOUT_MS = 30000;
 const MAX_TEXT = 100000;
@@ -86,9 +86,17 @@ const SESSION_RE = /^[A-Za-z0-9_.:-]{1,200}$/;
 // code "refused" instead of "failed".
 class Refused extends Error {}
 
+// The badge says "on" while the extension is connected to the talaria
+// daemon, in a dark green that reads on light and dark toolbars. The title
+// carries the same state in words, so the color is not the only signal.
+const BADGE_ON = "#167a42";
+const BADGE_BUSY = "#2f6fde";
+
 function setStatus(text, badge) {
-  browser.browserAction.setTitle({ title: "Hermes: " + text });
+  browser.browserAction.setTitle({ title: "Talaria: " + text });
   browser.browserAction.setBadgeText({ text: badge });
+  browser.browserAction.setBadgeBackgroundColor({ color: badge === "on" ? BADGE_ON : BADGE_BUSY });
+  browser.browserAction.setBadgeTextColor({ color: "#ffffff" });
 }
 
 function showStatus() {
@@ -96,11 +104,11 @@ function showStatus() {
     return;
   }
   if (port) {
-    setStatus("connected to talaria", "on");
+    setStatus("connected", "on");
   } else if (replaced) {
     setStatus("another Firefox took over; open this button to use this one", "");
   } else {
-    setStatus("not connected to talaria", "");
+    setStatus("not connected", "");
   }
 }
 
@@ -347,7 +355,7 @@ async function addToGroup(tabId) {
 }
 
 // inGroup reports whether the agent may act on tab: it must be in the
-// Hermes tab group, so a tab the user drags out of the group is no longer
+// Talaria tab group, so a tab the user drags out of the group is no longer
 // the agent's. Without the tab groups API, the tabs the agent opened.
 function inGroup(tab) {
   return groupId !== null ? tab.groupId === groupId : agentTabs.has(tab.id);
@@ -361,7 +369,7 @@ function inGroup(tab) {
 async function agentTab(tabId, anyURL, sessions) {
   const tab = await browser.tabs.get(tabId);
   if (!inGroup(tab) && !(Array.isArray(sessions) && sessions.some((s) => typeof s === "string" && granted(s, tab)))) {
-    throw new Refused("tab " + tabId + " is not in the Hermes tab group");
+    throw new Refused("tab " + tabId + " is not in the Talaria tab group");
   }
   if (!anyURL && !/^https?:/.test(tab.url || "")) {
     throw new Refused("tab " + tabId + " shows " + String(tab.url).split(":")[0] + ": content, which the agent may not use");
@@ -474,7 +482,7 @@ function checkURL(url) {
     throw new Refused("only http and https URLs are allowed, got " + u.protocol);
   }
   if (hermesHost(u.host)) {
-    throw new Refused("the agent may not open the Hermes hub in its tabs");
+    throw new Refused("the agent may not open the Talaria hub in its tabs");
   }
   if (privateHost(u.hostname) && !allowHosts.has(u.hostname.toLowerCase())) {
     throw new Refused(u.hostname + " is on a loopback or private network; allow it in the device config");
