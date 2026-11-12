@@ -18,7 +18,9 @@
     args: "Input", result: "Output", running: "Running", done: "Done", failed: "Failed",
     working: "Working", queued: "Waiting for Talaria to start", waiting: "Waiting to run", newchat: "New chat",
     lost: "Hermes restarted before it finished replying to this message. Messages sent after it wait until you dismiss it.",
-    held: "Hermes is restarting. Your message will send when it is back.", notsent: "Not sent.", again: "Send again" };
+    held: "Hermes is restarting. Your message will send when it is back.", notsent: "Not sent.", again: "Send again",
+    steered: "Sent to the running turn", now: "Stop and send now",
+    unread: "The turn stopped before Talaria read this message." };
   const t = (k) => words[k];
   // User rows Hermes writes itself (a cron result, a finished background job); shown as notes.
   // The first line of a message another agent sent through the hub.
@@ -744,7 +746,68 @@
         c.onclick = () => this.inputAction(id, "cancel", c);
         label.append(" ", c);
       }
+      if (this.running) label.append(" ", this.nowButton(p));
       this.label(p, label);
+    }
+
+    // steered marks a message Hermes hands to the running turn: the agent
+    // reads it after its current step.
+    steered(p) {
+      p.steered = true;
+      p.bubble.classList.remove("pending");
+      const label = el("div", "queued", t("steered"));
+      label.append(" ", this.nowButton(p));
+      this.label(p, label);
+    }
+
+    // nowButton stops the running turn and runs p as the next turn.
+    nowButton(p) {
+      const b = el("button", "link", t("now"));
+      b.type = "button";
+      b.title = "Stop the running turn, then run this message next";
+      b.onclick = () => this.stopAndSend(p, b);
+      return b;
+    }
+
+    async stopAndSend(p, btn) {
+      if (!p.id) return;
+      btn.disabled = true;
+      p.now = true;
+      try {
+        const r = await api("POST", this.base + "/inputs/" + encodeURIComponent(p.id) + "/now");
+        if (r && r.id) p.id = r.id;
+        p.steered = false;
+        p.bubble.classList.add("pending");
+        if (this.pending.includes(p)) this.label(p, el("div", "queued", t("queued")));
+        toast("Stopping the turn; Talaria reads your message next");
+      } catch (e) {
+        p.now = false;
+        btn.disabled = false;
+        banner("Could not stop and send: " + e.message, true);
+      }
+    }
+
+    // transferEnded handles the end of a message Hermes handed to the
+    // running turn: read, or dropped when the turn stopped first.
+    transferEnded(d) {
+      const i = this.pending.findIndex((x) => x.id && (x.id === d.submission_id || x.id === d.admission_id));
+      if (i < 0) return;
+      const p = this.pending[i];
+      if (p.now) return;
+      this.pending.splice(i, 1);
+      if (d.outcome === "steered") {
+        if (p.label) p.label.remove();
+        return;
+      }
+      const box = el("div", "lost");
+      box.append(el("div", "", t("unread")));
+      const b = el("button", "", t("again"));
+      b.type = "button";
+      b.onclick = () => resend(this, p.text, p, box);
+      box.append(b);
+      p.bubble.classList.add("failed");
+      this.label(p, box);
+      this.failed.push(p);
     }
 
     lost(id, text) {
@@ -1043,7 +1106,12 @@
       this.agentWaiting = new Map();
       for (const p of s.pending || []) {
         if (p.status === "lost") this.lost(p.id, p.text);
-        else if (!this.agentText(p.text, true)) this.queued(this.userText(p.text, true), p.id);
+        else if (p.status === "steering") {
+          this.userText(p.text, true);
+          const x = this.pending[this.pending.length - 1];
+          x.id = p.id;
+          this.steered(x);
+        } else if (!this.agentText(p.text, true)) this.queued(this.userText(p.text, true), p.id);
       }
       for (const p of s.prompts || []) this.approval(p);
       this.bottom();
@@ -1159,6 +1227,8 @@
         case "message.delta": this.setStatus(""); if (typeof p.text === "string" && p.text) this.assistantText(p.text, true); break;
         case "message.interim": if (p.text && !p.already_streamed) { this.assistantText(p.text); this.turn.text = null; } break;
         case "message.complete": {
+          // The end of a message handed to the running turn, not of a turn.
+          if (p.outcome && !p.status && p.admission_id) { this.transferEnded(p); break; }
           this.setStatus("");
           const tn = this.ensureTurn();
           if (!tn.text && !tn.raw && typeof p.text === "string" && p.text) this.assistantText(p.text);
@@ -2707,9 +2777,7 @@
           if (p.label) p.label.remove();
           if (r.output) chat.add(el("div", "msg result", r.output));
         } else if (r && r.steered && p) {
-          p.steered = true;
-          bubble.classList.remove("pending");
-          chat.label(p, el("div", "queued", "Sent to the running turn"));
+          chat.steered(p);
           toast("Sent; Talaria reads it after its current step");
         } else {
           chat.queued(bubble);
