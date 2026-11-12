@@ -11,15 +11,16 @@ when false.
 ---
  agent/agent_init.py                           |  2 +-
  agent/prompt_builder.py                       |  6 ++-
- agent/surface_switch.py                       | 10 +++--
- agent/system_prompt.py                        | 15 ++++---
+ agent/skill_utils.py                          | 11 +++-
+ agent/surface_switch.py                       | 10 ++--
+ agent/system_prompt.py                        | 15 ++++--
  hermes_cli/config_defaults.py                 |  3 ++
  .../test_bot_profile_prompt_isolation.py      |  2 +-
  .../test_profile_home_override_precedence.py  |  4 +-
- .../agent/test_runtime_environment_markers.py | 44 +++++++++++++++++++
+ .../agent/test_runtime_environment_markers.py | 53 +++++++++++++++++++
  tests/agent/test_system_prompt.py             |  6 +--
  .../docs/developer-guide/prompt-assembly.md   |  2 +-
- 10 files changed, 76 insertions(+), 18 deletions(-)
+ 11 files changed, 95 insertions(+), 19 deletions(-)
  create mode 100644 tests/agent/test_runtime_environment_markers.py
 
 diff --git a/agent/agent_init.py b/agent/agent_init.py
@@ -52,6 +53,28 @@ index eb8de4439c..a6d1e6ec10 100644
  
  CONTEXT_FILE_MAX_CHARS = 20_000
  CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
+diff --git a/agent/skill_utils.py b/agent/skill_utils.py
+index 78752d09d2..fd037b54e3 100644
+--- a/agent/skill_utils.py
++++ b/agent/skill_utils.py
+@@ -290,7 +290,16 @@ def get_disabled_skill_names(platform: str | None = None) -> set[str]:
+     platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(resolved_platform) if resolved_platform else None
+     if platform_disabled is not None:
+         disabled |= _normalize_string_set(platform_disabled)
+-    return disabled - ESSENTIAL_SKILLS
++    return disabled - essential_skills()
++
++
++def essential_skills() -> frozenset:
++    """``ESSENTIAL_SKILLS``, or none when ``agent.product_help_guidance`` is false: the prompt paragraph that
++    points at the hermes-agent skill is then left out, so the skill may be disabled like any other."""
++    agent_cfg = _load_raw_config().get("agent")
++    if isinstance(agent_cfg, dict) and agent_cfg.get("product_help_guidance", True) is False:
++        return frozenset()
++    return ESSENTIAL_SKILLS
+ 
+ 
+ def parse_config_string_list(value) -> list[str]:
 diff --git a/agent/surface_switch.py b/agent/surface_switch.py
 index 6c0a9e1a1d..f097ad0b6e 100644
 --- a/agent/surface_switch.py
@@ -133,7 +156,7 @@ index 3b946fad6e..3d2054e8de 100644
      return {"stable": _join_tier(stable_parts), "context": _join_tier(context_parts), "volatile": _join_tier(volatile_parts)}
  
 diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
-index a68e6a4288..d5a1abc9f0 100644
+index a68e6a4288..5612e03680 100644
 --- a/hermes_cli/config_defaults.py
 +++ b/hermes_cli/config_defaults.py
 @@ -174,6 +174,9 @@ DEFAULT_CONFIG = {
@@ -141,7 +164,7 @@ index a68e6a4288..d5a1abc9f0 100644
          # cached tokens. False disables.
          "parallel_tool_call_guidance": True,
 +        # Prompt paragraph that points the model at the Hermes docs (or the hermes-agent skill) for questions
-+        # about Hermes itself. False drops it, both variants.
++        # about Hermes itself. False drops it, both variants, and lets skills.disabled list hermes-agent.
 +        "product_help_guidance": True,
          # Toolchain probe: surfaces Python/pip/uv/PEP-668 state in the system prompt only when
          # something non-default is detected (no pip module, pip/python mismatch, PEP 668 without
@@ -176,10 +199,10 @@ index 5e0536508a..f2faef0709 100644
  def test_plugin_session_info_profile_from_agent_home(tmp_path, monkeypatch):
 diff --git a/tests/agent/test_runtime_environment_markers.py b/tests/agent/test_runtime_environment_markers.py
 new file mode 100644
-index 0000000000..75ea3615d3
+index 0000000000..7a70cd9674
 --- /dev/null
 +++ b/tests/agent/test_runtime_environment_markers.py
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,53 @@
 +"""Runtime-environment markers without the product name, and agent.product_help_guidance."""
 +from agent import prompt_builder as pb
 +from agent import system_prompt
@@ -224,6 +247,15 @@ index 0000000000..75ea3615d3
 +    off = "\n\n".join(build_system_prompt_parts(_make_agent(_product_help_guidance=False)).values())
 +    assert "HELP-DOCS" in on
 +    assert "HELP-DOCS" not in off and "HELP-SKILL" not in off
++
++
++def test_hermes_agent_skill_is_disableable_only_without_product_help(monkeypatch):
++    from agent import skill_utils
++    cfg = {"skills": {"disabled": ["hermes-agent", "other"]}}
++    monkeypatch.setattr(skill_utils, "_load_raw_config", lambda: cfg)
++    assert skill_utils.get_disabled_skill_names(platform="cli") == {"other"}
++    cfg["agent"] = {"product_help_guidance": False}
++    assert skill_utils.get_disabled_skill_names(platform="cli") == {"hermes-agent", "other"}
 diff --git a/tests/agent/test_system_prompt.py b/tests/agent/test_system_prompt.py
 index 38f3d739bb..cc6fcbf0df 100644
 --- a/tests/agent/test_system_prompt.py

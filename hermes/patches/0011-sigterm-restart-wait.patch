@@ -11,14 +11,14 @@ stops at once.
  cli-config.yaml.example                    |  22 ++
  gateway/config.py                          |  22 +-
  gateway/config_loader.py                   |   4 +
- gateway/drain_control.py                   |  10 +
- gateway/run_api.py                         |   8 +-
+ gateway/drain_control.py                   |  17 ++
+ gateway/run_api.py                         |  14 +-
  gateway/run_bootstrap.py                   |  11 +
- gateway/run_shutdown.py                    |  77 ++++++-
+ gateway/run_shutdown.py                    |  77 +++++-
  run_agent.py                               |   3 +-
- tests/gateway/test_sigterm_restart_wait.py | 256 +++++++++++++++++++++
+ tests/gateway/test_sigterm_restart_wait.py | 267 +++++++++++++++++++++
  website/docs/user-guide/messaging/index.md |  27 +++
- 10 files changed, 434 insertions(+), 6 deletions(-)
+ 10 files changed, 458 insertions(+), 6 deletions(-)
  create mode 100644 tests/gateway/test_sigterm_restart_wait.py
 
 diff --git a/cli-config.yaml.example b/cli-config.yaml.example
@@ -117,13 +117,20 @@ index 2e25a09dd0..4b0e003dbc 100644
      *_presence(
          "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
 diff --git a/gateway/drain_control.py b/gateway/drain_control.py
-index e005b94867..0af4362f67 100644
+index e005b94867..7acccab005 100644
 --- a/gateway/drain_control.py
 +++ b/gateway/drain_control.py
-@@ -73,6 +73,16 @@ def restart_wait_socket_ticket(runner, method, path, query) -> bool:
+@@ -73,6 +73,23 @@ def restart_wait_socket_ticket(runner, method, path, query) -> bool:
      return (method == "POST" and path == "/api/webapp/socket-ticket"
              and parse_qs(query or "").get("socket") == [GATEWAY_SOCKET] and restart_wait_open(runner))
  
++def restart_wait_sign_in(runner, method, path) -> bool:
++    """True for a sign-in request (``/auth/...``) while *runner* is in a restart's after-turn wait: a client
++    that has no session cookie yet (a front end that just restarted) can sign in to open and answer a chat.
++    Exempts the request from the drain's refusal only: the auth routes still check credentials."""
++    return method in ("GET", "POST") and (path or "").startswith("/auth/") and restart_wait_open(runner)
++
++
 +def restart_wait_plugin_socket(runner, scope_type, path) -> bool:
 +    """True for a WebSocket upgrade to a plugin listed in ``gateway.restart_wait_plugin_sockets``
 +    while *runner* is in a restart's after-turn wait: a plugin's own connection (a device that
@@ -138,13 +145,18 @@ index e005b94867..0af4362f67 100644
  # parked session, answer its prompt (or interrupt the turn so the restart can finish) and commit
  # queued input for the next owner. Every other verb (config.set, session.save, rollback.restore,
 diff --git a/gateway/run_api.py b/gateway/run_api.py
-index 6695ea4409..3498faea65 100644
+index 6695ea4409..253b14b34e 100644
 --- a/gateway/run_api.py
 +++ b/gateway/run_api.py
-@@ -378,6 +378,11 @@ def _restart_wait_read(runner, scope) -> bool:
+@@ -378,6 +378,16 @@ def _restart_wait_read(runner, scope) -> bool:
      return scope['type'] == 'http' and restart_wait_read(runner, scope.get('method'), scope.get('path'))
  
  
++def _restart_wait_sign_in(runner, scope) -> bool:
++    from gateway.drain_control import restart_wait_sign_in
++    return scope['type'] == 'http' and restart_wait_sign_in(runner, scope.get('method'), scope.get('path'))
++
++
 +def _restart_wait_plugin_socket(runner, scope) -> bool:
 +    from gateway.drain_control import restart_wait_plugin_socket
 +    return restart_wait_plugin_socket(runner, scope['type'], scope.get('path'))
@@ -153,13 +165,14 @@ index 6695ea4409..3498faea65 100644
  def _restart_wait_socket_ticket(runner, scope) -> bool:
      from gateway.drain_control import restart_wait_socket_ticket
      return scope['type'] == 'http' and restart_wait_socket_ticket(
-@@ -429,7 +434,8 @@ class GatewayRuntimeAPI:
+@@ -429,7 +439,9 @@ class GatewayRuntimeAPI:
              and scope['type'] == 'websocket' and scope['path'] == '/api/ws')
          if ((descriptor['state'] != 'ready' or self.runner._draining) and not draining_socket
                  and not _restart_wait_read(self.runner, scope)
 -                and not _restart_wait_socket_ticket(self.runner, scope)):
 +                and not _restart_wait_socket_ticket(self.runner, scope)
-+                and not _restart_wait_plugin_socket(self.runner, scope)):
++                and not _restart_wait_plugin_socket(self.runner, scope)
++                and not _restart_wait_sign_in(self.runner, scope)):
              if scope['type'] == 'websocket':
                  await send({'type': 'websocket.close', 'code': 1013})
              else:
@@ -330,10 +343,10 @@ index 45acd081c1..16d959c8e6 100644
              _quietly(lambda: self._memory_manager.shutdown_all())
 diff --git a/tests/gateway/test_sigterm_restart_wait.py b/tests/gateway/test_sigterm_restart_wait.py
 new file mode 100644
-index 0000000000..37f54faa68
+index 0000000000..165f7abc4c
 --- /dev/null
 +++ b/tests/gateway/test_sigterm_restart_wait.py
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,267 @@
 +"""gateway.sigterm_restart_wait: a supervisor's SIGTERM restarts gracefully like SIGUSR1."""
 +import asyncio
 +import signal
@@ -590,6 +603,17 @@ index 0000000000..37f54faa68
 +    assert not waiter.done()
 +    left["n"] = 0
 +    assert await asyncio.wait_for(waiter, 2) is True
++
++
++def test_sign_in_works_during_the_restart_wait_only():
++    from gateway.drain_control import restart_wait_sign_in
++    runner = SimpleNamespace(_draining=True, _running=True, session_runtime_descriptor={"drain_reason": RESTART_WAIT_REASON})
++    assert restart_wait_sign_in(runner, "POST", "/auth/password-login")
++    assert restart_wait_sign_in(runner, "GET", "/auth/login")
++    assert not restart_wait_sign_in(runner, "POST", "/api/config")
++    assert not restart_wait_sign_in(runner, "DELETE", "/auth/session")
++    runner.session_runtime_descriptor = {}
++    assert not restart_wait_sign_in(runner, "POST", "/auth/password-login")
 diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
 index 5c65a98320..46634c8b0c 100644
 --- a/website/docs/user-guide/messaging/index.md
