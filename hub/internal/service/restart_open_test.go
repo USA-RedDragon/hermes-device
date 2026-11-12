@@ -31,3 +31,19 @@ func TestOpenDuringRestartWaitsForTheBackend(t *testing.T) {
 		t.Fatalf("first event %s", ev.Kind)
 	}
 }
+
+func TestListDuringRestartKeepsTheLastList(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ctx := context.Background()
+	before, err := e.svc.Sessions(ctx, userAlice)
+	if err != nil || len(before) == 0 {
+		t.Fatalf("sessions = %v, %v", before, err)
+	}
+	e.gw.BeginRestart()
+	e.gw.Stop()
+	during, err := e.svc.Sessions(ctx, userAlice)
+	if err != nil || len(during) != len(before) {
+		t.Fatalf("sessions during a restart = %v, %v (before %d)", during, err, len(before))
+	}
+}

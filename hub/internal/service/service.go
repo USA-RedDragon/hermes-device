@@ -265,7 +265,9 @@ func (s *Service) Sessions(ctx context.Context, user string) ([]hub.Session, err
 			list, err := b.list(ctx)
 			if err != nil {
 				b.log.Warn("list sessions", "error", err.Error())
-				return
+				if list = b.lastList(err); list == nil {
+					return
+				}
 			}
 			mu.Lock()
 			out = append(out, list...)
@@ -663,6 +665,29 @@ type backend struct {
 	cmds   []hub.Command
 	cmdsAt time.Time
 
+	// listMu guards the last session list that worked, served while the
+	// backend restarts.
+	listMu   sync.Mutex
+	listed   []hub.Session
+	listedAt time.Time
+}
+
+// listStaleAfter bounds how old a session list may be to stand in for a
+// backend that is restarting.
+const listStaleAfter = 15 * time.Minute
+
+// lastList is the last session list that worked, when err says the backend
+// is only restarting and that list is recent; else nil.
+func (b *backend) lastList(err error) []hub.Session {
+	if !gateway.Retryable(err) {
+		return nil
+	}
+	b.listMu.Lock()
+	defer b.listMu.Unlock()
+	if b.listed == nil || time.Since(b.listedAt) > listStaleAfter {
+		return nil
+	}
+	return slices.Clone(b.listed)
 }
 
 type sessionGate struct {
@@ -920,6 +945,9 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 		}
 		out = append(out, s)
 	}
+	b.listMu.Lock()
+	b.listed, b.listedAt = slices.Clone(out), time.Now()
+	b.listMu.Unlock()
 	return out, nil
 }
 
