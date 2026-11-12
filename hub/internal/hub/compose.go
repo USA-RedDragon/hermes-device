@@ -69,10 +69,14 @@ type Transcript struct {
 
 // Command is one slash command a session can run from the hub. Args is a
 // hint of its arguments, "" when it takes none or Hermes gave none.
+// Aliases are the other names that run it, each with its slash. Skill is
+// true for a skill's command.
 type Command struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Args        string `json:"args"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Args        string   `json:"args"`
+	Aliases     []string `json:"aliases"`
+	Skill       bool     `json:"skill"`
 }
 
 // ChatActions is the optional part of a Service that edits a session's

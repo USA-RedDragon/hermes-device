@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
@@ -66,6 +67,12 @@ func (b *backend) mutate(ctx context.Context, ls *live, op string, payload any, 
 
 // mutateRaw is mutate that returns the whole result.
 func (b *backend) mutateRaw(ctx context.Context, ls *live, op string, payload any, fenced bool) (json.RawMessage, error) {
+	return b.mutateRawWithin(ctx, ls, 0, op, payload, fenced)
+}
+
+// mutateRawWithin is mutateRaw with its own bound for the call: d, or
+// CallTimeout for 0.
+func (b *backend) mutateRawWithin(ctx context.Context, ls *live, d time.Duration, op string, payload any, fenced bool) (json.RawMessage, error) {
 	var raw json.RawMessage
 	for attempt := 0; ; attempt++ {
 		ls.mu.Lock()
@@ -77,7 +84,7 @@ func (b *backend) mutateRaw(ctx context.Context, ls *live, op string, payload an
 		}
 		ls.mu.Unlock()
 		raw = nil
-		err := b.call(ctx, ls, gateway.MethodMutate, p, &raw)
+		err := b.callWithin(ctx, ls, d, gateway.MethodMutate, p, &raw)
 		var r *gateway.RPCError
 		if attempt == 0 && errors.As(err, &r) &&
 			(r.Message == gateway.ReasonRevisionConflict || r.Message == gateway.ReasonStaleGeneration) {

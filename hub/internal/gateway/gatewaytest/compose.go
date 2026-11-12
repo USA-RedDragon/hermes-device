@@ -313,19 +313,23 @@ func (g *Gateway) hTranscript(_ *conn, p map[string]any) (any, string, func()) {
 	return map[string]any{kSessionID: s.ID, "rows": rows[start:end], "next_cursor": next, "reset": !set}, "", nil
 }
 
+// pathCompress is /compress as the catalog names it.
+const pathCompress = "/compress"
+
 // Catalog is what the fake's commands.catalog lists: registry commands by
 // category, a quick command and a skill.
 func Catalog() map[string]any {
 	return map[string]any{
 		"categories": []map[string]any{
 			{kName: "Session", kPairs: [][]string{{"/title", "Set the title (usage: /title [name])"},
-				{"/model", "Switch model (usage: /model [name])"}, {"/usage", "Show token usage"}, {"/diff", "Show the git diff"}}},
+				{"/model", "Switch model (usage: /model [name])"}, {"/usage", "Show token usage"}, {"/diff", "Show the git diff"},
+				{pathCompress, "Compress context (usage: /compress [focus topic | --preview])"}}},
 			{kName: "Tools", kPairs: [][]string{{"/plan", "Plan first (usage: /plan <task>)"}}},
 			{kName: "User commands", kPairs: [][]string{{"/deploy", "exec: make deploy"}}},
 		},
 		kPairs:   [][]string{{"/title", "Set the title"}, {"/my-skill", "A skill"}},
 		"skills": map[string]any{"/my-skill": map[string]any{"uses": 0, "origin": "local"}},
-		"canon":  map[string]string{}, "commands": map[string]any{}, "sub": map[string]any{}, "skill_count": 1, "warning": "",
+		"canon":  map[string]string{"/compact": pathCompress, pathCompress: pathCompress}, "commands": map[string]any{}, "sub": map[string]any{}, "skill_count": 1, "warning": "",
 	}
 }
 

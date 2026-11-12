@@ -182,6 +182,7 @@ type Gateway struct {
 	steered           []string
 	orphanBranches    bool
 	commands          []string
+	compressed        []string
 }
 
 type submission struct {

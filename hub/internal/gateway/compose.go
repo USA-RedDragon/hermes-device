@@ -18,6 +18,8 @@ const (
 const (
 	OpRewind = "rewind"
 	OpBranch = "branch"
+	// OpCompress summarizes older messages (hermes_state_mutation_compress.py).
+	OpCompress = "compress"
 )
 
 // Refusals of prompt.steer_queued. Each leaves the admission queued, or
@@ -119,6 +121,9 @@ type CatalogResult struct {
 	// Skills are the skill commands by "/name".
 	Skills map[string]json.RawMessage `json:"skills"`
 	Pairs  [][2]string                `json:"pairs"`
+	// Canon maps each "/name" and alias, in lower case, to the command's
+	// own "/name".
+	Canon map[string]string `json:"canon"`
 }
 
 // SlashExecParams is slash.exec's params: Command is the command line
@@ -142,4 +147,23 @@ type SlashExecResult struct {
 	Output  string `json:"output"`
 	Message string `json:"message"`
 	Notice  string `json:"notice"`
+}
+
+// CompressPayload is session.mutate's payload for the compress operation:
+// Focus is the raw /compress argument ("here 3", "--preview", a topic).
+type CompressPayload struct {
+	Focus string `json:"focus,omitempty"`
+}
+
+// CompressResult is the part of a compress's mutate result the hub reads.
+// A preview carries Lines; a compress that ran or removed nothing carries
+// Summary (agent/manual_compression_feedback.py).
+type CompressResult struct {
+	MutateResult
+	Lines   []string `json:"lines"`
+	Summary *struct {
+		Headline  string `json:"headline"`
+		TokenLine string `json:"token_line"`
+		Note      string `json:"note"`
+	} `json:"summary"`
 }

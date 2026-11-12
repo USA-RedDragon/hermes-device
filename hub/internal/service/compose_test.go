@@ -234,6 +234,33 @@ func TestSlashCommandsRunThroughSlashExec(t *testing.T) {
 	}
 }
 
+func TestCompressAndCompactRunAsMutations(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ctx := context.Background()
+	res, err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "/compact keep the API")
+	if err != nil || !res.Command || res.ID != "" || !strings.HasPrefix(res.Output, "Compressed: ") ||
+		!strings.Contains(res.Output, "Approx request size") {
+		t.Fatalf("compact = %+v %v", res, err)
+	}
+	res, err = e.svc.Prompt(ctx, userAlice, backendPC, sLive, " /COMPRESS --preview")
+	if err != nil || !res.Command || !strings.HasPrefix(res.Output, "Would compress ") {
+		t.Fatalf("preview = %+v %v", res, err)
+	}
+	if got := e.gw.Compressions(); !slices.Equal(got, []string{"keep the API", "--preview"}) {
+		t.Fatalf("compress mutations = %q", got)
+	}
+	if got := e.gw.Commands(); len(got) != 0 {
+		t.Fatalf("slash.exec got %q: /compress is a mutation", got)
+	}
+	texts, _ := submitted(e)
+	for _, x := range texts {
+		if strings.HasPrefix(x, "/") {
+			t.Fatalf("a slash command went to prompt.submit: %q", x)
+		}
+	}
+}
+
 func TestCommandsCatalog(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
@@ -245,12 +272,17 @@ func TestCommandsCatalog(t *testing.T) {
 	want := []hub.Command{
 		{Name: "/title", Description: "Set the title", Args: "[name]"},
 		{Name: cmdUsage, Description: "Show token usage"},
+		{Name: "/compress", Description: "Compress context", Args: "[focus topic | --preview]", Aliases: []string{"/compact"}},
 		{Name: "/plan", Description: "Plan first", Args: "<task>"},
 		{Name: "/deploy", Description: "exec: make deploy"},
-		{Name: "/my-skill", Description: "A skill"},
+		{Name: "/my-skill", Description: "A skill", Skill: true},
+		{Name: "/background", Description: "Run a prompt in the background, with this chat's settings", Args: "<prompt>",
+			Aliases: []string{"/bg"}},
 	}
-	if len(cmds) != len(want)+2 || !slices.Equal(cmds[:len(want)], want) || cmds[len(want)].Name != "/bg" ||
-		cmds[len(want)+1].Name != "/background" {
+	if !slices.EqualFunc(cmds, want, func(a, b hub.Command) bool {
+		return a.Name == b.Name && a.Description == b.Description && a.Args == b.Args && a.Skill == b.Skill &&
+			slices.Equal(a.Aliases, b.Aliases)
+	}) {
 		t.Fatalf("commands = %+v", cmds)
 	}
 	if _, err := e.svc.Commands(ctx, userAlice, backendPC, sLive); err != nil {

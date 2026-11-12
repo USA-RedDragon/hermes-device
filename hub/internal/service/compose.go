@@ -27,8 +27,12 @@ var errCommandAway = fmt.Errorf("%w: Hermes is restarting or cannot be reached. 
 // refuses the rest. A command that becomes a prompt ("send" or "skill")
 // is submitted as one, under id.
 func (s *Service) command(ctx context.Context, b *backend, user, sessionID, id, text string) (hub.PromptResult, error) {
-	if name, _, _ := hub.SlashCommand(text); strings.EqualFold(name, "diff") {
+	name, arg, _ := hub.SlashCommand(text)
+	if strings.EqualFold(name, "diff") {
 		return hub.PromptResult{}, fmt.Errorf("%w: /diff reads the Hermes server's folder, not the chat's folder", hub.ErrUnknownCommand)
+	}
+	if strings.EqualFold(name, compressCommand) || strings.EqualFold(name, compactAlias) {
+		return s.compress(ctx, b, sessionID, arg)
 	}
 	if b.heldCount(sessionID) > 0 {
 		return hub.PromptResult{}, errCommandAway
@@ -347,9 +351,10 @@ func (s *Service) Transcript(ctx context.Context, user, backendID, sessionID str
 // _HANDLER_CONTROLS, _PROMPT_COMMANDS, _SETTING_COMMANDS, _INFO_READS and
 // _OWNER_COMMANDS), without /diff, which runs git in the Hermes server's
 // folder and not where a chat on a computer works, and /approve and /deny,
-// which the page answers with its buttons.
+// which the page answers with its buttons. It adds /compress, which
+// slash.exec refuses and the hub runs as session.mutate compress.
 func hubCommands() []string {
-	return []string{
+	return []string{compressCommand,
 		"help", "commands", "status", "context", "version", "whoami", "usage", "insights", "profile", "memory", "kanban",
 		"topup", "suggestions", "bundles", "skills",
 		"title",
@@ -358,6 +363,60 @@ func hubCommands() []string {
 		"reasoning", "voice", "approvals", "codex-runtime", "footer", "busy", "verbose", "yolo", "fast", "personality",
 		"toolsets", "platforms", "cron",
 	}
+}
+
+// compressCommand and its alias run as session.mutate compress, with a
+// bound for the summarizing call, which takes a model's time.
+const (
+	compressCommand = "compress"
+	compactAlias    = "compact"
+	compressTimeout = 10 * time.Minute
+)
+
+// compress runs /compress as Hermes' own clients do: session.mutate
+// compress with the argument as the focus, which Hermes parses ("here N",
+// --preview or a topic). Hermes writes the summary into the chat, and the
+// answer is its report.
+func (s *Service) compress(ctx context.Context, b *backend, sessionID, arg string) (hub.PromptResult, error) {
+	if b.heldCount(sessionID) > 0 {
+		return hub.PromptResult{}, errCommandAway
+	}
+	ls, err := b.session(ctx, sessionID)
+	if err != nil {
+		if gateway.Retryable(err) {
+			return hub.PromptResult{}, errCommandAway
+		}
+		return hub.PromptResult{}, refusal(err)
+	}
+	defer ls.unpin()
+	if ls.busy() {
+		return hub.PromptResult{}, fmt.Errorf("%w: the chat runs", hub.ErrBusy)
+	}
+	raw, err := b.mutateRawWithin(ctx, ls, compressTimeout, gateway.OpCompress, gateway.CompressPayload{Focus: arg}, true)
+	if err != nil {
+		if gateway.Retryable(err) {
+			return hub.PromptResult{}, errCommandAway
+		}
+		return hub.PromptResult{}, refusal(err)
+	}
+	var res gateway.CompressResult
+	_ = json.Unmarshal(raw, &res)
+	ls.mu.Lock()
+	ls.resnapshotLocked()
+	ls.mu.Unlock()
+	return hub.PromptResult{Command: true, Output: compressReport(res)}, nil
+}
+
+// compressReport is the text Hermes' clients print after /compress.
+func compressReport(r gateway.CompressResult) string {
+	if len(r.Lines) > 0 {
+		return strings.Join(r.Lines, "\n")
+	}
+	if r.Summary == nil {
+		return "Compressed"
+	}
+	return strings.Join(slices.DeleteFunc([]string{r.Summary.Headline, r.Summary.TokenLine, r.Summary.Note},
+		func(l string) bool { return l == "" }), "\n")
 }
 
 // Catalog categories whose commands slash.exec runs as they are.
@@ -373,8 +432,8 @@ var usageHint = regexp.MustCompile(`^(.*) \(usage: /(\S+) (.+)\)$`)
 // backgroundCommands are the commands the hub runs itself (see Activity in
 // the README).
 func backgroundCommands() []hub.Command {
-	desc := "Run a prompt in the background, with this chat's settings"
-	return []hub.Command{{Name: "/bg", Description: desc, Args: "<prompt>"}, {Name: "/background", Description: desc, Args: "<prompt>"}}
+	return []hub.Command{{Name: "/background", Description: "Run a prompt in the background, with this chat's settings",
+		Args: "<prompt>", Aliases: []string{"/bg"}}}
 }
 
 // Commands lists the slash commands a session can run from the hub: those
@@ -408,12 +467,18 @@ func catalogCommands(res gateway.CatalogResult) []hub.Command {
 	allowed := hubCommands()
 	out := []hub.Command{}
 	seen := map[string]bool{}
-	add := func(key, desc string) {
+	aliases := map[string][]string{}
+	for alias, name := range res.Canon {
+		if alias != strings.ToLower(name) {
+			aliases[name] = append(aliases[name], alias)
+		}
+	}
+	add := func(key, desc string, skill bool) {
 		if seen[key] || !strings.HasPrefix(key, "/") {
 			return
 		}
 		seen[key] = true
-		cmd := hub.Command{Name: key, Description: desc}
+		cmd := hub.Command{Name: key, Description: desc, Aliases: slices.Sorted(slices.Values(aliases[key])), Skill: skill}
 		if m := usageHint.FindStringSubmatch(desc); m != nil && "/"+m[2] == key {
 			cmd.Description, cmd.Args = m[1], m[3]
 		}
@@ -422,13 +487,13 @@ func catalogCommands(res gateway.CatalogResult) []hub.Command {
 	for _, cat := range res.Categories {
 		for _, p := range cat.Pairs {
 			if cat.Name == categoryUser || cat.Name == categoryPlugin || slices.Contains(allowed, strings.TrimPrefix(p[0], "/")) {
-				add(p[0], p[1])
+				add(p[0], p[1], false)
 			}
 		}
 	}
 	for _, p := range res.Pairs {
 		if _, ok := res.Skills[p[0]]; ok {
-			add(p[0], p[1])
+			add(p[0], p[1], true)
 		}
 	}
 	for _, c := range backgroundCommands() {

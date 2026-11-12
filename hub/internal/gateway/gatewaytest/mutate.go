@@ -2,6 +2,7 @@ package gatewaytest
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -60,7 +61,7 @@ func (g *Gateway) mutateParams(p map[string]any) (*Session, string, map[string]a
 	// The keys besides expected_generation (gateway/session_mutations.py
 	// _FIELDS), and the operations that need it (hermes_state_runtime.py).
 	fields := []string{"expected_revision", kOperation, kPayload, "request_id", kSessionID}
-	fenced := []string{gateway.OpDelete, gateway.OpModel, kReasoning, gateway.OpRewind, gateway.OpBranch}
+	fenced := []string{gateway.OpDelete, gateway.OpModel, kReasoning, gateway.OpRewind, gateway.OpBranch, gateway.OpCompress}
 	got := slices.DeleteFunc(keys(p), func(k string) bool { return k == "expected_generation" })
 	s := g.sessions[str(p, kSessionID)]
 	if !slices.Equal(got, fields) {
@@ -128,6 +129,8 @@ func (g *Gateway) applyMutation(s *Session, op string, payload, result map[strin
 		return g.rewind(s, payload, result)
 	case gateway.OpBranch:
 		return g.branch(s, payload, result)
+	case gateway.OpCompress:
+		return g.compress(s, payload, result)
 	case "workspace":
 		cwd, ok := payload["cwd"].(string)
 		if len(payload) != 1 || !ok || !strings.HasPrefix(cwd, "/") {
@@ -219,4 +222,35 @@ func (g *Gateway) hModelOptions(_ *conn, p map[string]any) (any, string, func())
 			"unavailable_models": pr.UnavailableModels, "capabilities": caps})
 	}
 	return map[string]any{"providers": rows, kModel: model, kProvider: provider}, "", nil
+}
+
+// compress follows gateway/session_mutations.py for a compress: the
+// payload is the raw argument as "focus", a --preview only reports, and
+// otherwise the transcript's older messages become one summary.
+func (g *Gateway) compress(s *Session, payload, result map[string]any) string {
+	focus, _ := payload["focus"].(string)
+	for k := range payload {
+		if k != "focus" {
+			return errInvalidParams
+		}
+	}
+	if s.Running {
+		return gateway.ReasonSessionBusy
+	}
+	g.compressed = append(g.compressed, focus)
+	if strings.Contains(focus, "--preview") {
+		result["status"] = "preview"
+		result["lines"] = []string{"Would compress " + strconv.Itoa(len(s.Messages)) + " messages"}
+		return ""
+	}
+	headline := "Compressed: " + strconv.Itoa(len(s.Messages)) + " → 1 messages"
+	result["summary"] = map[string]any{"headline": headline, "token_line": "Approx request size: ~100 → ~10 tokens", "note": nil} //nolint:gosec // a report line, not a credential
+	return ""
+}
+
+// Compressions lists the focus arguments of the compress mutations.
+func (g *Gateway) Compressions() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.compressed)
 }

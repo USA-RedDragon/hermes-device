@@ -1324,11 +1324,19 @@ func currentTurn(evs []gateway.Event, last int64) (before, turn []gateway.Event)
 }
 
 func (b *backend) call(ctx context.Context, ls *live, method string, params, out any) error {
+	return b.callWithin(ctx, ls, 0, method, params, out)
+}
+
+// callWithin is call with its own bound: d, or CallTimeout for 0.
+func (b *backend) callWithin(ctx context.Context, ls *live, d time.Duration, method string, params, out any) error {
 	c, err := b.ensure(ctx, ls)
 	if err != nil {
 		return err
 	}
-	cctx, cancel := b.timeout(ctx)
+	if d == 0 {
+		d = b.svc.opts.CallTimeout
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d)
 	defer cancel()
 	return c.Call(cctx, method, params, out)
 }
