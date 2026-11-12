@@ -58,7 +58,7 @@ window.HubStick = (log, o) => {
   function scrolled() {
     if (log.hidden) return;
     if (Math.abs(log.scrollTop - rec.top) < 1) return;
-    if (now() >= until) return;
+    if (now() >= until) { sync(); return; }
     until = Math.max(until, now() + 300);
     note();
     pinned = gap() < gapMax;

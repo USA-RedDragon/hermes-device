@@ -91,6 +91,16 @@ const wheelTo = (x, top) => {
   assert.strictEqual(x.s.pinned(), true);
 }
 
+// A clamp that leaves the same size behind (the composer measured at no height and back) is undone by the scroll event alone.
+{
+  const x = make([500, 500, 500], 600);
+  x.s.pin();
+  x.log.top = 800;
+  x.s.scrolled();
+  assert.strictEqual(x.log.scrollTop, 900);
+  assert.strictEqual(x.s.pinned(), true);
+}
+
 // Our own scroll to the end fires an event that changes nothing.
 {
   const x = make([500, 500, 500], 600);
