@@ -136,7 +136,7 @@ button.primary.ib:hover { filter: brightness(1.08); }
 .welcome { flex: 1; display: grid; place-items: center; color: var(--muted); padding: 1rem; }
 
 .main { --gutter: clamp(.75rem, 2.5vw, 2.5rem); --read: 60rem; }
-.log { flex: 1; min-height: 0; overflow-y: auto; padding: .75rem var(--gutter) 1rem;
+.log { flex: 1 1 0px; min-height: 0; overflow-y: auto; padding: .75rem var(--gutter) 1rem;
   display: flex; flex-direction: column; gap: .6rem; }
 .log > * { max-width: min(100%, var(--read)); }
 .msg { padding: .55rem .75rem; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -357,7 +357,7 @@ button.danger-text { color: var(--bad); }
 .picker .crumbs button { border: 0; background: none; padding: .1rem .2rem; color: var(--accent); }
 .picker .crumbs .here { font-weight: 600; padding: .1rem .2rem; }
 .picker .folders { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; }
-.picker .folders li + li { border-top: 1px solid var(--line); }
+.picker .folders li:not(:first-child) { border-top: 1px solid var(--line); }
 .picker .folders button { width: 100%; border: 0; border-radius: 0; background: none; text-align: left; padding: .45rem .6rem; }
 .picker .folders button::after { content: "\203A"; float: right; color: var(--muted); }
 .picker .folders button:hover { background: var(--hover); }
@@ -576,7 +576,7 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .mem-fact.sel { background: color-mix(in srgb, var(--bad) 6%, var(--card)); }
 .mem-adv { font-size: .85rem; color: var(--muted); }
 .mem-adv summary { cursor: pointer; }
-.mem-adv > * + * { margin-top: .5rem; }
+.mem-adv > :not(:first-child) { margin-top: .5rem; }
 .mem-adv dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .25rem .9rem; margin: .5rem 0 0; }
 .mem-adv dd { margin: 0; color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; overflow-wrap: anywhere; }
 .mem-card { margin: .5rem 0 0; padding-left: 1.2rem; color: var(--fg); }
@@ -664,7 +664,7 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .cc-head { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; }
 .cc-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; vertical-align: middle; }
 .cc-seg button { border: 0; border-radius: 0; padding: .25rem .6rem; font-size: .85rem; background: var(--card); }
-.cc-seg button + button { border-left: 1px solid var(--line); }
+.cc-seg button:not(:first-child) { border-left: 1px solid var(--line); }
 .cc-seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
 .cc-controls { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; font-size: .85rem; color: var(--muted); }
 .cc-body { display: flex; flex-direction: column; gap: .8rem; }
