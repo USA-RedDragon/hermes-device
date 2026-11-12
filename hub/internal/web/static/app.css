@@ -732,6 +732,8 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .claude-account .claude-meta { margin: .2rem 0; color: var(--muted); overflow-wrap: anywhere; }
 .claude-account .claude-windows { margin: .3rem 0; padding-left: 1.2rem; }
 .claude-account button { margin-top: .3rem; }
+.claude-pool .claude-poolrow { display: flex; flex-wrap: wrap; gap: .3rem .8rem; align-items: center; font-variant-numeric: tabular-nums; }
+.claude-pool .claude-poolrow .usage-bar { width: min(12rem, 100%); }
 
 /* Activity: a chat's subagents and background work, right of the chat. */
 .app { grid-template-columns: 17rem minmax(0, 1fr) 22rem; }

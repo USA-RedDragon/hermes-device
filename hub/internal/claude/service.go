@@ -272,6 +272,9 @@ func (s *Service) ClaudeAccounts(ctx context.Context, user, backendID string, us
 		}
 		out.Accounts = append(out.Accounts, h)
 	}
+	if usage {
+		out.Pool = PoolUsage(out.Accounts)
+	}
 	if cg.present {
 		out.Accounts = append(out.Accounts, s.chatGPTAccount(cg, usage))
 	}

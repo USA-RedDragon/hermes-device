@@ -55,6 +55,17 @@ window.HubClaude = (ctx) => {
     return p;
   }
 
+  // poolAccount stands in for "the Claude pool" in a chat's status line: one
+  // account-like object whose week is the pool's average, so the line shows
+  // "Claude" and one week meter, not the account the chat runs on.
+  function poolAccount(backend) {
+    const c = cache.get(backend);
+    const p = c && c.data && c.data.pool;
+    if (!p || typeof p.used_percent !== "number") return null;
+    const w = { kind: "weekly_all", label: "Current week", used_percent: p.used_percent };
+    return { id: "", label: "Claude", provider: poolProvider, signed_in: true, pool: p, usage: { windows: [w] } };
+  }
+
   function accountFor(backend, provider, session) {
     const c = cache.get(backend);
     if (!c || !c.data || !provider) return null;
@@ -134,7 +145,7 @@ window.HubClaude = (ctx) => {
     if (!backend || !provider || !me().claude) return [];
     const c = cache.get(backend);
     if (!c || Date.now() - c.at >= minute) load(backend).then(() => ctx.redraw());
-    const a = accountFor(backend, provider);
+    const a = provider === poolProvider ? poolAccount(backend) : accountFor(backend, provider);
     if (!a) return [];
     const out = [];
     const name = el("span", "claude", a.label);
@@ -169,7 +180,12 @@ window.HubClaude = (ctx) => {
   // afterReply reads the usage of the chat's account again, and for a chat
   // on the pool which account it is on.
   async function afterReply(backend, provider, session, model) {
-    if (provider === poolProvider) await pool(backend, session, model, true);
+    if (provider === poolProvider) {
+      await pool(backend, session, model, true);
+      await load(backend, true);
+      ctx.redraw();
+      return;
+    }
     const a = accountFor(backend, provider, session);
     if (!a) return;
     try {
@@ -328,6 +344,10 @@ window.HubClaude = (ctx) => {
       "month, less what Hermes spent through the account's API key since the month started. Anthropic does not report the balance, " +
       "so use outside Hermes is not counted."));
     if (!(data.accounts || []).length) s.append(el("p", "none", "No accounts."));
+    const cards = el("div", "claude-cards");
+    const poolCard = data.pool ? poolSummary(data.pool, cards) : null;
+    if (poolCard) s.append(poolCard, cards);
+    else s.append(cards);
     for (const a of data.accounts || []) {
       const box = el("div", "claude-account");
       const top = el("div", "claude-top");
@@ -361,9 +381,57 @@ window.HubClaude = (ctx) => {
         b.onclick = () => signIn(backend, a.id);
         box.append(b);
       }
-      s.append(box);
+      cards.append(box);
     }
     return s;
+  }
+
+  const storeKey = "hub.claude.accounts";
+  const accountsShown = () => { try { return localStorage.getItem(storeKey) === "open"; } catch (_) { return false; } };
+
+  // shortName is an account's own name, "caam" for "Claude (caam)".
+  const shortName = (label) => (/^Claude \((.+)\)$/.exec(label || "") || [])[1] || label;
+
+  // poolSummary is the card at the top of the section: the pool's week as
+  // one number, with the per-account cards behind "Show accounts".
+  function poolSummary(p, cards) {
+    const box = el("div", "claude-account claude-pool");
+    const top = el("div", "claude-top");
+    top.append(el("strong", "", "Claude pool"), el("span", "claude-meta", "(" + p.accounts + (p.accounts === 1 ? " account)" : " accounts)")));
+    box.append(top);
+    if (typeof p.used_percent !== "number") {
+      box.append(el("p", "hint", "No account's usage could be read (0 of " + p.accounts + " accounts read)."));
+    } else {
+      const used = Math.round(p.used_percent);
+      const row = el("div", "claude-poolrow");
+      const bar = el("span", "usage-bar");
+      const fill = el("span", "fill");
+      fill.style.width = Math.min(100, used) + "%";
+      bar.append(fill);
+      row.append(el("span", "", "Week: " + used + "% used"), bar);
+      box.append(row);
+      const room = Math.round(p.room_accounts * 10) / 10;
+      box.append(el("p", "claude-meta", "About " + room.toFixed(1) + (room === 1 ? " account" : " accounts") + " of room left"));
+      if (p.next_account) {
+        box.append(el("p", "claude-meta", "Next room back: " + (p.next_text || "unknown") + " (" + shortName(p.next_account) + " resets)"));
+      }
+      if (p.read < p.accounts) box.append(el("p", "hint", "(" + p.read + " of " + p.accounts + " accounts read)"));
+    }
+    const toggle = el("button", "claude-toggle");
+    toggle.type = "button";
+    const show = (open) => {
+      cards.hidden = !open;
+      toggle.textContent = open ? "Hide accounts" : "Show accounts";
+      toggle.setAttribute("aria-expanded", String(open));
+    };
+    show(accountsShown());
+    toggle.onclick = () => {
+      const open = cards.hidden;
+      show(open);
+      try { localStorage.setItem(storeKey, open ? "open" : "closed"); } catch (_) { /* per-browser only */ }
+    };
+    box.append(toggle);
+    return box;
   }
 
   return { parts, note, afterReply, chatNotice, signIn, panel, apiName, apiProvider, chatgptProvider, route,
@@ -373,6 +441,6 @@ window.HubClaude = (ctx) => {
         const p = pools.get(backend + "\n" + session);
         if (!p || (!p.loading && (p.model !== model || Date.now() - p.at >= minute))) pool(backend, session, model).then(() => ctx.redraw());
       }
-      return accountFor(backend, provider, session);
+      return provider === poolProvider ? poolAccount(backend) : accountFor(backend, provider, session);
     } };
 };

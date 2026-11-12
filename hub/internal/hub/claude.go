@@ -264,6 +264,23 @@ type ClaudePool struct {
 	Message    string    `json:"message,omitempty"`
 }
 
+// ClaudePoolUsage is the Claude pool's weekly use as one number: the
+// average of the "Current week" share used over the signed-in pool
+// accounts, each capped at 100. Accounts is how many accounts the pool
+// has and Read how many of them gave a weekly share; the rest are left out.
+// UsedPercent is nil when Read is 0. RoomAccounts is the accounts' worth of
+// room left. The Next fields say which full account's week resets first;
+// they are empty when no account is full.
+type ClaudePoolUsage struct {
+	Accounts     int       `json:"accounts"`
+	Read         int       `json:"read"`
+	UsedPercent  *float64  `json:"used_percent"`
+	RoomAccounts float64   `json:"room_accounts"`
+	NextAccount  string    `json:"next_account,omitempty"`
+	NextAt       time.Time `json:"next_at,omitzero"`
+	NextText     string    `json:"next_text,omitempty"`
+}
+
 // ClaudeAccounts are a backend's Claude accounts. Admin says whether the
 // user may sign the accounts in.
 type ClaudeAccounts struct {
@@ -272,6 +289,9 @@ type ClaudeAccounts struct {
 	// TimeZone is the IANA zone of the windows' ResetsText.
 	TimeZone string          `json:"time_zone"`
 	Accounts []ClaudeAccount `json:"accounts"`
+	// Pool is the pool's weekly use, set when usage was asked for and the
+	// backend has pool accounts.
+	Pool *ClaudePoolUsage `json:"pool,omitempty"`
 }
 
 // Claude sign-in states.
