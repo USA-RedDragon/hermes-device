@@ -91,6 +91,7 @@ func TestLine(t *testing.T) {
 		{"batch three ok", "3 subagents finished (3 completed, 2 h 2 min in all)"},
 		{"process ok", "Background command finished: go test ./... (Exit 0)"},
 		{"agent message", "Message from talaria-platform"},
+		{"compaction handoff", "Earlier messages were summarized"},
 	} {
 		for _, k := range load(t) {
 			if k.Name == c.name {

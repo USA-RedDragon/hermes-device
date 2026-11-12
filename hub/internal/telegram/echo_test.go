@@ -217,6 +217,25 @@ func TestNoticeShowsAsOneLine(t *testing.T) {
 	}
 }
 
+func TestCompactionShowsAsOneLine(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.finishFirst(t, sid)
+	text := "[CONTEXT SUMMARY]: ## Active Task\nsecret plan\n\n" +
+		"--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: text})
+	got := h.tg.wait(mSend, "Earlier messages")
+	if want := "<i>Earlier messages were summarized</i>"; got.text() != want {
+		t.Fatalf("notice = %q, want %q", got.text(), want)
+	}
+	for _, c := range h.tg.snapshot() {
+		if c.Method == mSend && strings.Contains(c.text(), "secret plan") {
+			t.Fatalf("summary sent: %q", c.text())
+		}
+	}
+}
+
 const subagentNote = "[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: " +
 	"local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]"
 

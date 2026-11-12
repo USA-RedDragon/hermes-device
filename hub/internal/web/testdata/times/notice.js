@@ -37,6 +37,11 @@ const plain = HubNotice.parse("[IMPORTANT: Something happened]\nmore\n\n[INTERNA
 assert.strictEqual(line(plain, when), clock);
 assert.strictEqual(line(plain, 0), "");
 
+const summary = HubNotice.parse("[CONTEXT SUMMARY]: ## Active Task\nx");
+assert.strictEqual(summary.kind, "compaction");
+assert.strictEqual(line(summary, when), clock, "a summary has no count, only the time");
+assert.strictEqual(line(summary, 0), "");
+
 const meta = HubNotice.metaLine(el, done.meta, done.state, done.kind, when);
 assert.strictEqual(meta.kids[0].cls, "notice-ok");
 assert.strictEqual(meta.kids[2].dataset.at, String(when), "the time carries its full form for hover");

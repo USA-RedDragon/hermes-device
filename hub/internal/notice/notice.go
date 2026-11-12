@@ -1,7 +1,8 @@
 // Package notice reads the notices that Hermes injects into a chat as user
 // messages (a finished background subagent, a finished background command,
-// a message from another chat) so that the page and the Telegram bot can
-// show them as a card or a line. It only reads the text for display: the
+// a message from another chat, the summary that stands in for a compacted
+// chat) so that the page and the Telegram bot can show them as a card or a
+// line. It only reads the text for display: the
 // agent still gets the text whole. Text that does not match a known header
 // reads as nothing, so it stays an ordinary user message.
 //
@@ -25,6 +26,7 @@ const (
 	KindCommand    = "command"
 	KindAgent      = "agent"
 	KindNotice     = "notice"
+	KindCompaction = "compaction"
 )
 
 // States of a notice: a good outcome, a bad one, or neither.
@@ -95,7 +97,10 @@ func Parse(text string) *Notice {
 		t = strings.TrimRight(strings.TrimSuffix(t, footer), " \t\r\n")
 	}
 	var n *Notice
+	summary, compacted := hub.CompactionSummary(t)
 	switch {
+	case compacted:
+		n = &Notice{Kind: KindCompaction, Title: "Earlier messages were summarized", Result: summary}
 	case hub.AgentHeaderRE.MatchString(t + "\n"):
 		n = parseAgent(t + "\n")
 	case strings.HasPrefix(t, "[ASYNC DELEGATION "):

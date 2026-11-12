@@ -20,6 +20,7 @@ func TestOpenTurnPrompt(t *testing.T) {
 		"reply after it": {`[{"role":"user","text":"a"},{"role":"assistant","text":"b"}]`, hub.OpenPrompt{}, false},
 		"note row":       {`[{"role":"user","text":"done","display_kind":"process_complete"}]`, hub.OpenPrompt{}, false},
 		"image parts":    {`[{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"x"}}]}]`, hub.OpenPrompt{Text: "look", Images: 1}, true},
+		"compaction":     {`[{"role":"user","content":"[CONTEXT SUMMARY]: notes"}]`, hub.OpenPrompt{}, false},
 		"empty":          {`[]`, hub.OpenPrompt{}, false},
 	} {
 		var rows []json.RawMessage
@@ -38,5 +39,19 @@ func TestNewSubmissionID(t *testing.T) {
 	id := hub.NewSubmissionID()
 	if !hub.FromHub(id) || hub.FromHub(strings.TrimPrefix(id, "hub:")) || id == hub.NewSubmissionID() {
 		t.Fatalf("id %q", id)
+	}
+}
+
+func TestLastUserMessageSkipsCompaction(t *testing.T) {
+	t.Parallel()
+	var rows []json.RawMessage
+	in := `[{"role":"user","row_id":1,"text":"typed"},{"role":"assistant","row_id":2,"text":"ok"},` +
+		`{"role":"user","row_id":3,"content":"[CONTEXT SUMMARY]: notes"}]`
+	if err := json.Unmarshal([]byte(in), &rows); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := hub.LastUserMessage(rows)
+	if !ok || got.RowID != 1 || got.Text != "typed" {
+		t.Fatalf("got %+v %v", got, ok)
 	}
 }
