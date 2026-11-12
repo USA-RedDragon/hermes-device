@@ -1,0 +1,395 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jacob McSwain <jacob@mcswain.dev>
+Date: Thu, 12 Nov 2026 17:31:15 -0600
+Subject: [PATCH] feat(sessions): reclaim a turn lease its own process orphaned
+
+A turn releases its session lease in its own finally. When that write fails (state.db locked past the write patience), the row stays until its 300 s TTL runs out, and picks, resets and compress on the idle session are deferred or refused as busy meanwhile. sessions.reclaim_orphaned_turn_leases (false by default) treats a lease row that names this process, but no live turn of it, as stale like a dead process's row.
+---
+ agent/turn_facade_lease.py                    |  34 +++-
+ cli-config.yaml.example                       |   7 +
+ hermes_cli/config_defaults.py                 |   3 +
+ hermes_state_compression.py                   |   3 +-
+ hermes_state_messages.py                      |   3 +-
+ hermes_state_turn_holders.py                  |  43 +++++
+ .../hermes_state/test_orphaned_turn_lease.py  | 153 ++++++++++++++++++
+ website/docs/user-guide/sessions.md           |  16 ++
+ 8 files changed, 255 insertions(+), 7 deletions(-)
+ create mode 100644 hermes_state_turn_holders.py
+ create mode 100644 tests/hermes_state/test_orphaned_turn_lease.py
+
+diff --git a/agent/turn_facade_lease.py b/agent/turn_facade_lease.py
+index e60d4ca45b..3359e2e15f 100644
+--- a/agent/turn_facade_lease.py
++++ b/agent/turn_facade_lease.py
+@@ -15,6 +15,7 @@ from contextlib import nullcontext
+ from dataclasses import dataclass
+ from typing import Any, Dict, List, Optional
+ 
++import hermes_state_turn_holders as turn_holders
+ from hermes_state_pidns import holder_namespace_token
+ 
+ # Same logger name as the origin module so log records / caplog filters are unchanged.
+@@ -119,6 +120,9 @@ class DurableTurnLease:
+             self.db.release_session_turn_lease(self.session_id, self.holder)
+         except Exception:
+             logger.error("Failed to release session turn lease: %s", self.session_id, exc_info=True)
++        finally:
++            # The turn is over either way: a row the release could not delete is now an orphan.
++            turn_holders.released(self.holder)
+         if getattr(agent, "_active_session_turn_lease_holder", None) == self.holder:
+             agent._active_session_turn_lease_holder = None
+             agent._active_session_turn_lease_ttl_seconds = None
+@@ -267,6 +271,17 @@ class TurnLeaseAdmission:
+     conversation_history: Optional[list[dict[str, Any]]] = None
+ 
+ 
++def _reclaim_orphaned_leases() -> bool:
++    """``sessions.reclaim_orphaned_turn_leases``; False when the config cannot be read."""
++    try:
++        from hermes_cli.config import load_config_readonly
++
++        sessions = (load_config_readonly() or {}).get("sessions")
++    except Exception:
++        return False
++    return isinstance(sessions, dict) and sessions.get("reclaim_orphaned_turn_leases") is True
++
++
+ def _committed_lease_expiry(db, session_id: str, holder: str, floor: float) -> float:
+     """The admitted row's committed ``expires_at``; when unreadable, ``floor + TTL`` (taken before
+     acquisition, so never later than the real expiry). Overstating it lets a successor reclaim the
+@@ -343,12 +358,21 @@ def admit_durable_turn_lease(
+             f"⏳ Still waiting for the other Hermes process on this session ({int(elapsed)}s)..."
+         )
+ 
++    turn_holders.set_enabled(_reclaim_orphaned_leases())
++    # Registered before the row can exist, so no mutation ever reads a live turn's row as orphaned.
++    turn_holders.admitted(holder)
+     authority_floor = time.time()  # every acquisition attempt stamps its expiry after this instant
+-    if not db.acquire_session_turn_lease(
+-        session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
+-        on_wait=_on_wait, on_contended=_on_contended,
+-        should_abort=lambda: getattr(agent, "_interrupt_requested", False),
+-    ):
++    try:
++        acquired = db.acquire_session_turn_lease(
++            session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
++            on_wait=_on_wait, on_contended=_on_contended,
++            should_abort=lambda: getattr(agent, "_interrupt_requested", False),
++        )
++    except BaseException:
++        turn_holders.released(holder)
++        raise
++    if not acquired:
++        turn_holders.released(holder)
+         admission.early_result = _lease_not_acquired_result(agent, session_id, conversation_history,
+                                                             waited=announced)
+         return admission
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index 153c5c4e45..5df0bd8df3 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -1165,6 +1165,12 @@ hosted_rooms:
+ # that is refused or resets to the default clears it, and the confirmation of
+ # a replaced or cleared pick is refused. false (default) leaves it stored.
+ #
++# A turn releases its session lease when it ends. If that write fails (the
++# state.db write lock held too long), the lease stays until it expires, up to
++# 300 seconds, and model picks on the idle chat wait for the next turn.
++# reclaim_orphaned_turn_leases: true frees a lease the same gateway process
++# wrote once no turn of that process holds it. false (default) waits it out.
++#
+ # An ACP editor's session list (session/list) offers only sessions an editor
+ # started (acp_list_sources: [acp]). Add tui, gui (Desktop) or cli to also offer
+ # the chats those surfaces started, so the editor can open them too.
+@@ -1181,6 +1187,7 @@ hosted_rooms:
+ #   unviewed_completion_turns: 0
+ #   mid_turn_subagent_results: false
+ #   newest_pick_supersedes: false
++#   reclaim_orphaned_turn_leases: false
+ #   acp_list_sources: [acp]
+ 
+ # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 23f8afcc73..b5c795f7b5 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -2350,6 +2350,9 @@ DEFAULT_CONFIG = {
+         # turn boundary): one that is asked replaces it, one that is refused or resets to the default clears
+         # it, and the confirm token of a replaced or cleared pick is refused. false = the stored pick stays.
+         "newest_pick_supersedes": False,
++        # A turn lease row this process wrote whose turn already ended (its release write failed) is
++        # reclaimed at once instead of blocking picks, resets and compress until its 300 s TTL runs out.
++        "reclaim_orphaned_turn_leases": False,
+     },
+     # First-touch onboarding hints (agent/onboarding.py), each latched under `seen` once shown.
+     "onboarding": {
+diff --git a/hermes_state_compression.py b/hermes_state_compression.py
+index e3b5bc836f..a6a606ae47 100644
+--- a/hermes_state_compression.py
++++ b/hermes_state_compression.py
+@@ -723,6 +723,7 @@ class SessionCompressionMixin:
+         lineage root). The walk, the INSERT, and reclaim of expired or dead-local-PID leases
+         share one write transaction."""
+         from hermes_state import _compression_lock_holder_process_is_dead
++        from hermes_state_turn_holders import orphaned
+         if not session_id or not holder:
+             return False
+         now = time.time()
+@@ -737,7 +738,7 @@ class SessionCompressionMixin:
+             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+             return _claim_lease_row(
+                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
+-                lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
++                lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h) or orphaned(h),
+             )[0]
+         return bool(self._execute_write(_do, patience_s=patience_s))
+ 
+diff --git a/hermes_state_messages.py b/hermes_state_messages.py
+index f7ba486edd..6a94824217 100644
+--- a/hermes_state_messages.py
++++ b/hermes_state_messages.py
+@@ -259,7 +259,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin,
+                         "WHERE conversation_id = ? AND holder = ?",
+                         (now + max(0.1, float(turn_lease_ttl_seconds)), conversation_id, turn_lease_holder))
+             elif lease is not None:
+-                if not _stale_holder(lease, now):
++                from hermes_state_turn_holders import orphaned
++                if not _stale_holder(lease, now) and not orphaned(lease["holder"]):
+                     raise SessionTurnLeaseLostError(
+                         f"Session has an active turn lease; refusing transcript mutation for {session_id!r}")
+                 # Same reclaim rule as acquisition; deleting also fences a stale late flush after the mutation.
+diff --git a/hermes_state_turn_holders.py b/hermes_state_turn_holders.py
+new file mode 100644
+index 0000000000..452fb8b6b5
+--- /dev/null
++++ b/hermes_state_turn_holders.py
+@@ -0,0 +1,43 @@
++"""Turn lease holders this process admitted and has not released (``sessions.reclaim_orphaned_turn_leases``).
++
++A turn releases its lease row in its own ``finally``. When that one write fails (the state.db write lock
++held past the write patience, a closed store), the row stays until its TTL runs out, 300 s after its
++last renewal, and every model pick, reset or compress on the visibly idle session is refused or
++deferred meanwhile. With the setting on, a lease row whose holder names this very process, but no turn
++of this process still holds, is stale like a dead process's row: acquisition and the mutation guards
++reclaim it at once. A holder is registered before its row is written and dropped once its turn tried
++the release, so a running turn's row is never taken.
++"""
++import os
++import threading
++
++from hermes_state_pidns import holder_namespace_token
++
++_lock = threading.Lock()
++_live: set = set()
++_enabled = False
++
++
++def set_enabled(value) -> None:
++    global _enabled
++    _enabled = value is True
++
++
++def admitted(holder: str) -> None:
++    with _lock:
++        _live.add(holder)
++
++
++def released(holder: str) -> None:
++    with _lock:
++        _live.discard(holder)
++
++
++def orphaned(holder) -> bool:
++    """True when the setting is on and *holder* is a turn holder of this process no live turn holds."""
++    if not _enabled or not isinstance(holder, str):
++        return False
++    if not holder.startswith(f"pid={os.getpid()}{holder_namespace_token()}:turn="):
++        return False
++    with _lock:
++        return holder not in _live
+diff --git a/tests/hermes_state/test_orphaned_turn_lease.py b/tests/hermes_state/test_orphaned_turn_lease.py
+new file mode 100644
+index 0000000000..f63ccbbc66
+--- /dev/null
++++ b/tests/hermes_state/test_orphaned_turn_lease.py
+@@ -0,0 +1,153 @@
++"""sessions.reclaim_orphaned_turn_leases: a lease row this process wrote after its turn ended."""
++import os
++import threading
++from types import SimpleNamespace
++
++import pytest
++
++import hermes_state_turn_holders as turn_holders
++from agent.turn_facade_lease import admit_durable_turn_lease
++from hermes_state import SessionDB
++from hermes_state_errors import SessionTurnLeaseLostError
++from hermes_state_pidns import holder_namespace_token
++
++
++@pytest.fixture()
++def db(tmp_path):
++    store = SessionDB(db_path=tmp_path / "state.db")
++    store.create_session(session_id="s1", source="cli")
++    yield store
++    store.close()
++
++
++@pytest.fixture(autouse=True)
++def _reset_holders():
++    yield
++    turn_holders.set_enabled(False)
++    turn_holders._live.clear()
++
++
++def _own(turn="s1:t:abcd"):
++    return f"pid={os.getpid()}{holder_namespace_token()}:turn={turn}:platform=cli"
++
++
++def _guard(db):
++    with db._lock:
++        conn = db._conn
++        conn.execute("BEGIN IMMEDIATE")
++        try:
++            db._check_transcript_write_guards(conn, "s1", None, reject_active_turn_lease=True)
++        except BaseException:
++            conn.execute("ROLLBACK")
++            raise
++        conn.execute("COMMIT")
++
++
++def _lease_holder(db):
++    with db._read_ctx() as conn:
++        row = conn.execute("SELECT holder FROM session_turn_leases WHERE conversation_id='s1'").fetchone()
++    return row[0] if row else None
++
++
++def _orphan(db, holder):
++    assert db.try_acquire_session_turn_lease("s1", holder)
++    assert _lease_holder(db) == holder
++
++
++def test_default_keeps_an_orphaned_row_until_expiry(db):
++    _orphan(db, _own())
++    with pytest.raises(SessionTurnLeaseLostError):
++        _guard(db)
++    assert not db.try_acquire_session_turn_lease("s1", _own("s1:t:next"))
++
++
++def test_enabled_guard_reclaims_this_process_orphan(db):
++    turn_holders.set_enabled(True)
++    _orphan(db, _own())
++    _guard(db)
++    assert _lease_holder(db) is None
++
++
++def test_enabled_acquire_reclaims_this_process_orphan(db):
++    turn_holders.set_enabled(True)
++    _orphan(db, _own())
++    assert db.try_acquire_session_turn_lease("s1", _own("s1:t:next"))
++    assert _lease_holder(db) == _own("s1:t:next")
++
++
++def test_enabled_keeps_a_live_turn_of_this_process(db):
++    turn_holders.set_enabled(True)
++    turn_holders.admitted(_own())
++    _orphan(db, _own())
++    with pytest.raises(SessionTurnLeaseLostError):
++        _guard(db)
++    assert not db.try_acquire_session_turn_lease("s1", _own("s1:t:next"))
++
++
++def test_enabled_keeps_another_process_row(db):
++    turn_holders.set_enabled(True)
++    other = f"pid=1{holder_namespace_token()}:turn=s1:t:abcd:platform=cli"
++    _orphan(db, other)
++    turn_holders._live.clear()
++    with pytest.raises(SessionTurnLeaseLostError):
++        _guard(db)
++
++
++class _FailingReleaseDB(SessionDB):
++    """The release write fails, as when state.db stays locked past the write patience."""
++
++    def release_session_turn_lease(self, session_id, holder):
++        import sqlite3
++        raise sqlite3.OperationalError("database is locked")
++
++
++def _agent(db):
++    agent = SimpleNamespace(
++        _session_db=db, session_id="s1", _persist_disabled=False, _interrupt_requested=False,
++        _interrupt_message=None, _execution_thread_id=None, _session_turn_lease_refresh_interval=60.0,
++    )
++    agent._emit_status = agent._emit_warning = lambda *a, **k: None
++    agent._touch_activity = lambda *a, **k: None
++    agent._liveness_activity_lock = lambda: threading.Lock()
++    return agent
++
++
++def _admit(agent):
++    return admit_durable_turn_lease(
++        agent, session_id="s1", relay_turn_id="s1:t:abcd",
++        task_context={"session_id": "s1", "task_id": "t", "platform": "cli"}, conversation_history=None)
++
++
++@pytest.mark.parametrize("enabled", [False, True])
++def test_failed_release_leaves_a_row_only_the_setting_reclaims(tmp_path, monkeypatch, enabled):
++    import agent.turn_facade_lease as facade
++    monkeypatch.setattr(facade, "_reclaim_orphaned_leases", lambda: enabled)
++    db = _FailingReleaseDB(db_path=tmp_path / "state.db")
++    db.create_session(session_id="s1", source="cli")
++    admission = _admit(_agent(db))
++    lease = admission.lease
++    assert lease is not None
++    assert lease.holder in turn_holders._live
++    with pytest.raises(SessionTurnLeaseLostError):
++        _guard(db)
++    lease.release()
++    assert lease.holder not in turn_holders._live
++    assert _lease_holder(db) == lease.holder
++    if enabled:
++        _guard(db)
++        assert _lease_holder(db) is None
++    else:
++        with pytest.raises(SessionTurnLeaseLostError):
++            _guard(db)
++    db.close()
++
++
++def test_refused_acquisition_unregisters(db, monkeypatch):
++    import agent.turn_facade_lease as facade
++    monkeypatch.setattr(facade, "_reclaim_orphaned_leases", lambda: True)
++    db.try_acquire_session_turn_lease("s1", f"pid=1{holder_namespace_token()}:turn=x:platform=cli")
++    agent = _agent(db)
++    agent._interrupt_requested = True
++    admission = _admit(agent)
++    assert admission.lease is None
++    assert not turn_holders._live
+diff --git a/website/docs/user-guide/sessions.md b/website/docs/user-guide/sessions.md
+index ad521b247b..6da3bc8eca 100644
+--- a/website/docs/user-guide/sessions.md
++++ b/website/docs/user-guide/sessions.md
+@@ -1317,6 +1317,22 @@ to the default clears it. The confirmation of a replaced or cleared pick is
+ refused with `pick_superseded`. A pick that applies or is deferred already
+ replaced it. A level set with `/reasoning` is not part of this.
+ 
++**Orphaned turn leases.** A turn holds its session's lease while it runs and
++releases it when it ends. If that release cannot be written (the state.db write
++lock was held past the write patience), the lease stays until it expires, up to
++300 seconds after the turn, and a model pick on the now idle chat is deferred
++to the next turn, while a reset or compress is refused as busy. Set
++`sessions.reclaim_orphaned_turn_leases: true` so the gateway reclaims a lease it
++wrote itself as soon as no turn of the same process holds it:
++
++```yaml
++sessions:
++  reclaim_orphaned_turn_leases: true
++```
++
++A lease written by another process is still kept until it expires or that
++process is gone.
++
+ ### Oversized-Transcript Guards
+ 
+ Two limits stop a runaway transcript from being loaded into memory all at once
