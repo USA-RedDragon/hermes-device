@@ -1781,7 +1781,7 @@
     open.disabled = true;
     const text = el("span", "text");
     text.append(name, kind);
-    card.append(el("span", "file", "html"), text, open);
+    card.append(text, open);
     const ready = (ref) => {
       pageInfo.set(ref, { title: name.textContent, html: page.html, path: page.path });
       open.disabled = false;

@@ -643,7 +643,6 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .lightbox-bar button { background: transparent; color: #e7eaee; border-color: rgba(255, 255, 255, .3); }
 .page-card { display: flex; align-items: center; gap: .6rem; min-width: 0; max-width: 24rem; padding: .45rem .5rem .45rem .7rem;
   border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
-.page-card .file { flex: none; font-size: .7rem; font-weight: 600; text-transform: uppercase; color: var(--muted); }
 .page-card .text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .page-card .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .page-card .kind { color: var(--muted); font-size: .8rem; }
