@@ -40,10 +40,10 @@ index 7272358907..5211259aa4 100644
    # start with the launching shell's toolchain: PATH, an activated venv and CONDA_* / NODE_* / NVM_* /
    # PYENV_* (plus GOPATH, GOROOT, CARGO_HOME, RUSTUP_HOME, JAVA_HOME), for that session only, when
 diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
-index 6f487177fd..f060908ee5 100644
+index fbbb23d54b..6a8c4b5f6f 100644
 --- a/gateway/run_shutdown.py
 +++ b/gateway/run_shutdown.py
-@@ -1828,6 +1828,21 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -1861,6 +1861,21 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
          cap = getattr(getattr(runner, "config", None), "restart_agent_cleanup_seconds", 0) or 0
          return float(cap) if cap > 0 else None
  
@@ -65,7 +65,7 @@ index 6f487177fd..f060908ee5 100644
      async def _stop_begin_teardown(self, ctx: GatewayShutdownMixin._StopContext) -> None:
          """Flag teardown, stop room worker/watchdog, notify sessions."""
          logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
-@@ -2230,6 +2245,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -2268,6 +2283,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                      timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
                  )
              await GatewayRunner._stop_drain_active_work(self, timeout, ctx)

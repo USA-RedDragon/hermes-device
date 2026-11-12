@@ -9,15 +9,16 @@ answerable and new input is kept for the next owner. A second SIGTERM
 stops at once.
 ---
  cli-config.yaml.example                    |  17 ++
- gateway/config.py                          |  18 ++-
+ gateway/config.py                          |  18 +-
  gateway/config_loader.py                   |   3 +
- gateway/drain_control.py                   |  10 ++
+ gateway/drain_control.py                   |  10 +
  gateway/run_api.py                         |   8 +-
- gateway/run_bootstrap.py                   |  11 ++
- gateway/run_shutdown.py                    |  24 ++-
- tests/gateway/test_sigterm_restart_wait.py | 180 +++++++++++++++++++++
+ gateway/run_bootstrap.py                   |  11 +
+ gateway/run_shutdown.py                    |  62 +++++-
+ run_agent.py                               |   3 +-
+ tests/gateway/test_sigterm_restart_wait.py | 232 +++++++++++++++++++++
  website/docs/user-guide/messaging/index.md |  24 +++
- 9 files changed, 291 insertions(+), 4 deletions(-)
+ 10 files changed, 383 insertions(+), 5 deletions(-)
  create mode 100644 tests/gateway/test_sigterm_restart_wait.py
 
 diff --git a/cli-config.yaml.example b/cli-config.yaml.example
@@ -175,7 +176,7 @@ index 8b41594075..744719769b 100644
          sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
  
 diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
-index 7a9ee828b6..6f487177fd 100644
+index 7a9ee828b6..fbbb23d54b 100644
 --- a/gateway/run_shutdown.py
 +++ b/gateway/run_shutdown.py
 @@ -1233,6 +1233,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
@@ -201,10 +202,43 @@ index 7a9ee828b6..6f487177fd 100644
              )
          except Exception as cleanup_exc:
              logger.warning("Agent resource cleanup%s failed: %s (#53175)", ctx_label, cleanup_exc)
-@@ -1819,6 +1820,14 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -1819,6 +1820,47 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
              GatewayShutdownMixin._stop_kill_tool_subprocesses, phase
          )
  
++    # The write half of a restart's agent release: queued memory work, then the providers' session-end
++    # flush (Honcho joins its sync thread for up to 10 s, then flushes): the upstream per-step bounds.
++    _MEMORY_FLUSH_TIMEOUT_S = 25.0
++
++    async def _flush_agent_memory_off_loop(self, agent: Any, session_key: Optional[str]) -> None:
++        if agent is None:
++            return
++        try:
++            await asyncio.wait_for(
++                self._run_housekeeping_in_executor(
++                    self._run_release_in_profile_scope, GatewayShutdownMixin._flush_agent_memory, (agent,),
++                    session_key),
++                timeout=GatewayShutdownMixin._MEMORY_FLUSH_TIMEOUT_S)
++        except TimeoutError:
++            logger.warning("Memory flush before release exceeded %ss; releasing anyway",
++                           GatewayShutdownMixin._MEMORY_FLUSH_TIMEOUT_S)
++        except Exception as exc:
++            logger.warning("Memory flush before release failed: %s", exc)
++
++    @staticmethod
++    def _flush_agent_memory(agent: Any) -> None:
++        """Drain *agent*'s queued memory writes and run the providers' session end, without the provider
++        shutdown that joins read-ahead threads; ``shutdown_memory_provider`` then skips the session end."""
++        mm = getattr(agent, "_memory_manager", None)
++        if mm is None or getattr(agent, "_memory_provider_shutdown", False):
++            return
++        if not mm.claim_teardown(session_end=True):
++            return
++        mm.flush_pending(timeout=10)
++        messages = getattr(agent, "_session_messages", None)
++        mm.on_session_end(messages if isinstance(messages, list) else [])
++        agent._memory_session_ended = True
++
 +    @staticmethod
 +    def _restart_agent_cleanup_cap(runner) -> Optional[float]:
 +        """``gateway.restart_agent_cleanup_seconds`` on a restart stop, else None (upstream bounds)."""
@@ -216,7 +250,7 @@ index 7a9ee828b6..6f487177fd 100644
      async def _stop_begin_teardown(self, ctx: GatewayShutdownMixin._StopContext) -> None:
          """Flag teardown, stop room worker/watchdog, notify sessions."""
          logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
-@@ -1954,6 +1963,17 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -1954,6 +1996,22 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
              with _cache_lock:
                  _idle_agents = list(_cache.items())
                  _cache.clear()
@@ -224,7 +258,12 @@ index 7a9ee828b6..6f487177fd 100644
 +            if restart_cap:
 +                # gateway.restart_agent_cleanup_seconds: the successor waits on this process, so the idle
 +                # agents release together under one short bound (a memory provider's read-ahead for a
-+                # next turn that never comes is left behind) instead of up to 30s each.
++                # next turn that never comes is left behind) instead of up to 30s each. Their queued
++                # memory writes and session-end flush run first, under their own bound, so none is cut.
++                await asyncio.gather(*(
++                    GatewayShutdownMixin._flush_agent_memory_off_loop(
++                        self, _entry[0] if isinstance(_entry, tuple) else _entry, _key)
++                    for _key, _entry in _idle_agents))
 +                await asyncio.gather(*(
 +                    self._cleanup_agent_resources_off_loop(
 +                        _entry[0] if isinstance(_entry, tuple) else _entry, context="shutdown idle-cache",
@@ -234,12 +273,26 @@ index 7a9ee828b6..6f487177fd 100644
              for _key, _entry in _idle_agents:
                  # Bounded + off-loop: a wedged memory provider here once made SIGTERM hang forever.
                  await self._cleanup_agent_resources_off_loop(
+diff --git a/run_agent.py b/run_agent.py
+index 45acd081c1..16d959c8e6 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -879,7 +879,8 @@ class AIAgent(
+         self._memory_provider_shutdown = True
+         if self._memory_manager and self._memory_manager.claim_teardown(session_end=True):
+             try:
+-                self._memory_manager.on_session_end(messages or [])
++                if not getattr(self, "_memory_session_ended", False):
++                    self._memory_manager.on_session_end(messages or [])
+             except Exception as e:
+                 logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
+             _quietly(lambda: self._memory_manager.shutdown_all())
 diff --git a/tests/gateway/test_sigterm_restart_wait.py b/tests/gateway/test_sigterm_restart_wait.py
 new file mode 100644
-index 0000000000..c7a85fd835
+index 0000000000..4a07633ed9
 --- /dev/null
 +++ b/tests/gateway/test_sigterm_restart_wait.py
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,232 @@
 +"""gateway.sigterm_restart_wait: a supervisor's SIGTERM restarts gracefully like SIGUSR1."""
 +import asyncio
 +import signal
@@ -396,6 +449,12 @@ index 0000000000..c7a85fd835
 +        _agent_cache_lock=threading.Lock(), _agent_cache={"s1": (object(), 1), "s2": (object(), 2)},
 +        _finalize_shutdown_agents=AsyncMock(), _cleanup_agent_resources_off_loop=cleanup,
 +        adapters={}, _profile_adapters={})
++
++    async def housekeeping(fn, *args):
++        return await asyncio.to_thread(fn, *args)
++
++    runner._run_housekeeping_in_executor = housekeeping
++    runner._run_release_in_profile_scope = lambda target, args, session_key: target(*args)
 +    return runner, calls
 +
 +
@@ -420,6 +479,52 @@ index 0000000000..c7a85fd835
 +    assert calls == [("s1", None), ("s2", None)]
 +    assert GatewayConfig().restart_agent_cleanup_seconds == 0
 +    assert GatewayConfig.from_dict({"gateway": {"restart_agent_cleanup_seconds": 5}}).restart_agent_cleanup_seconds == 5
++
++
++class _Memory:
++    def __init__(self, log):
++        self.log = log
++        self.claimed = False
++
++    def claim_teardown(self, *, session_end):
++        self.claimed = True
++        return True
++
++    def flush_pending(self, timeout=None):
++        self.log.append("flush_pending")
++        return True
++
++    def on_session_end(self, messages):
++        import time
++        time.sleep(0.3)
++        self.log.append(("on_session_end", len(messages)))
++
++
++@pytest.mark.asyncio
++async def test_restart_flushes_memory_writes_before_the_capped_release():
++    from gateway.run_shutdown import GatewayShutdownMixin
++    log = []
++    agent = SimpleNamespace(_memory_manager=_Memory(log), _session_messages=[{"role": "user"}])
++    runner, calls = _finalizing_runner(True, 0.05)
++    runner._agent_cache = {"s1": (agent, 1)}
++    ctx = SimpleNamespace(active_agents={}, elapsed=lambda: 0.0)
++    await GatewayShutdownMixin._stop_finalize_agents_and_adapters(runner, ctx)
++    assert log == ["flush_pending", ("on_session_end", 1)]
++    assert agent._memory_session_ended is True
++    assert calls == [("s1", 0.05)]
++
++
++def test_session_end_is_not_run_twice_after_the_flush():
++    from run_agent import AIAgent
++    log = []
++    mm = _Memory(log)
++    mm.shutdown_all = lambda: log.append("shutdown_all")
++    agent = object.__new__(AIAgent)
++    agent._memory_manager = mm
++    agent._memory_session_ended = True
++    agent._memory_provider_shutdown = False
++    AIAgent.shutdown_memory_provider(agent, [])
++    assert log == ["shutdown_all"]
 diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
 index 5c65a98320..df33b921e5 100644
 --- a/website/docs/user-guide/messaging/index.md
