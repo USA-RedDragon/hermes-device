@@ -1,0 +1,236 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 23:18:46 -0600
+Subject: [PATCH] feat(delegation): optional subagent patience with an
+ unresponsive provider
+
+A background child waiting on a provider that queues the request behind
+keepalive comments, or answers 429 engine_overloaded, keeps its activity
+clock moving, so only the global stale breaker (5 windows) and the
+auto-recovery ladder (5 cycles) end it: 15 minutes or more with nobody
+watching. delegation.stream_stale_giveup and delegation.auto_recovery_cycles
+set the child's own values. Unset, the child inherits as before.
+---
+ agent/chat_completion_helpers.py              |  2 +-
+ agent/chat_completion_local.py                | 11 ++-
+ hermes_cli/config_defaults.py                 |  6 ++
+ .../test_delegate_child_provider_patience.py  | 75 +++++++++++++++++++
+ tools/delegate_tool.py                        | 33 ++++++++
+ .../docs/user-guide/features/delegation.md    | 12 +++
+ 6 files changed, 135 insertions(+), 4 deletions(-)
+ create mode 100644 tests/tools/test_delegate_child_provider_patience.py
+
+diff --git a/agent/chat_completion_helpers.py b/agent/chat_completion_helpers.py
+index 55906dcf36..3647bf5aa9 100644
+--- a/agent/chat_completion_helpers.py
++++ b/agent/chat_completion_helpers.py
+@@ -607,7 +607,7 @@ def _touch_stale_kill_activity(agent, elapsed: float) -> None:
+ 
+ def _stale_breaker_open(agent) -> bool:
+     """The consecutive-stale streak reached the give-up threshold."""
+-    giveup = stale_giveup()
++    giveup = stale_giveup(agent)
+     return giveup > 0 and _stale_streak(agent) >= giveup
+ 
+ 
+diff --git a/agent/chat_completion_local.py b/agent/chat_completion_local.py
+index c1de9628b2..fbd48c70b7 100644
+--- a/agent/chat_completion_local.py
++++ b/agent/chat_completion_local.py
+@@ -31,8 +31,13 @@ def _streams_llamacpp(agent) -> bool:
+     return is_managed_provider(str(getattr(agent, "provider", "") or ""), str(getattr(agent, "base_url", "") or ""))
+ 
+ 
+-def stale_giveup() -> int:
+-    """Consecutive stale attempts after which calls fail at once; 0 turns the breaker off."""
++def stale_giveup(agent=None) -> int:
++    """Consecutive stale attempts after which calls fail at once; 0 turns the breaker off. An
++    agent's own ``_stream_stale_giveup`` (a subagent's ``delegation.stream_stale_giveup``) wins
++    over HERMES_STREAM_STALE_GIVEUP."""
++    own = getattr(agent, "_stream_stale_giveup", None)
++    if isinstance(own, int) and not isinstance(own, bool) and own >= 0:
++        return own
+     return env_int("HERMES_STREAM_STALE_GIVEUP", 5)
+ 
+ 
+@@ -59,7 +64,7 @@ def retry_recovered_local_server(agent) -> bool:
+     ``/health`` even while its model is stuck, so one more stale attempt shuts the breaker again."""
+     from agent.chat_completion_helpers import _stale_streak
+ 
+-    giveup, streak = stale_giveup(), _stale_streak(agent)
++    giveup, streak = stale_giveup(agent), _stale_streak(agent)
+     if giveup <= 0 or streak < giveup or not _streams_llamacpp(agent) or not _local_server_answers(agent):
+         return False
+     logger.info("Local model server answers its health check after %d stale attempts; trying once more.", streak)
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 6b0755517a..9538d0f3b2 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1362,6 +1362,12 @@ DEFAULT_CONFIG = {
+         # children fail only from real errors (API, tools, iteration budget). A progressing child (including one
+         # waiting on a multi-minute completion) restarts the window; a frozen one is caught.
+         "child_timeout_seconds": 0,
++        # Subagent-only patience with an unresponsive provider (null = inherit). stream_stale_giveup: consecutive
++        # stale streams (no chunk within the stale timeout) before the child's calls fail, in place of
++        # HERMES_STREAM_STALE_GIVEUP (5). auto_recovery_cycles: the overload/outage wait ladder, in place of
++        # agent.auto_recovery_cycles (5). 1 and 0 make a background child fail fast on a queued or overloaded model.
++        "stream_stale_giveup": None,
++        "auto_recovery_cycles": None,
+         # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none" (empty = inherit)
+         "reasoning_effort": "",
+         # Max parallel children per batch AND concurrent background units (async beyond it runs sync). Floor 1.
+diff --git a/tests/tools/test_delegate_child_provider_patience.py b/tests/tools/test_delegate_child_provider_patience.py
+new file mode 100644
+index 0000000000..da67c0e994
+--- /dev/null
++++ b/tests/tools/test_delegate_child_provider_patience.py
+@@ -0,0 +1,75 @@
++"""``delegation.stream_stale_giveup`` and ``delegation.auto_recovery_cycles`` give a background subagent its
++own patience with an unresponsive provider. Unset, the child inherits the global values (upstream behavior)."""
++from types import SimpleNamespace
++
++from agent.chat_completion_helpers import _check_stale_giveup
++from agent.chat_completion_local import stale_giveup
++from agent.turn_recovery_autorecover import auto_recovery_cycles
++from tools.delegate_tool import _apply_child_provider_patience
++
++
++def _child():
++    return SimpleNamespace(_auto_recovery_cycles=5, _consecutive_stale_streams=0)
++
++
++def test_unset_keys_keep_the_inherited_values(monkeypatch):
++    monkeypatch.delenv("HERMES_STREAM_STALE_GIVEUP", raising=False)
++    child = _child()
++    _apply_child_provider_patience(child, {})
++    _apply_child_provider_patience(child, {"stream_stale_giveup": None, "auto_recovery_cycles": None})
++    assert stale_giveup(child) == 5
++    assert auto_recovery_cycles(child) == 5
++    assert not hasattr(child, "_stream_stale_giveup")
++
++
++def test_child_fails_after_one_stale_stream_and_skips_the_wait_ladder(monkeypatch):
++    monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "5")
++    child = _child()
++    _apply_child_provider_patience(child, {"stream_stale_giveup": 1, "auto_recovery_cycles": 0})
++    assert stale_giveup(child) == 1
++    assert stale_giveup() == 5  # the parent and every other agent keep the global threshold
++    assert auto_recovery_cycles(child) == 0
++    _check_stale_giveup(child)
++    child._consecutive_stale_streams = 1
++    try:
++        _check_stale_giveup(child)
++    except RuntimeError as exc:
++        assert "1 consecutive stale attempts" in str(exc)
++    else:
++        raise AssertionError("the breaker did not open after one stale stream")
++
++
++def test_invalid_values_are_ignored_not_coerced():
++    for bad in (True, -1, "soon", 1.5, [1]):
++        child = _child()
++        _apply_child_provider_patience(child, {"stream_stale_giveup": bad, "auto_recovery_cycles": bad})
++        assert not hasattr(child, "_stream_stale_giveup"), bad
++        assert child._auto_recovery_cycles == 5, bad
++    child = _child()
++    _apply_child_provider_patience(child, {"stream_stale_giveup": "2", "auto_recovery_cycles": "1"})
++    assert (child._stream_stale_giveup, child._auto_recovery_cycles) == (2, 1)
++
++
++def test_real_spawn_path_child_gets_its_own_patience(tmp_path, monkeypatch):
++    """Through ``_build_child_agent`` with real AIAgents: the child takes the delegation keys, the parent
++    keeps the global ones."""
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.delenv("HERMES_STREAM_STALE_GIVEUP", raising=False)
++    from run_agent import AIAgent
++    from tools import delegate_tool as dt
++    import tools.delegate_tool_config as dtc
++    cfg = {"stream_stale_giveup": 1, "auto_recovery_cycles": 0}
++    monkeypatch.setattr(dt, "_load_config", lambda: cfg)
++    monkeypatch.setattr(dtc, "_load_config", lambda: cfg)
++    kw = dict(api_key="k", base_url="https://api.example.com/v1", provider="custom",
++              api_mode="chat_completions", model="example/model", platform="cli", quiet_mode=True,
++              skip_context_files=True, skip_memory=True, save_trajectories=False, enabled_toolsets=["file"])
++    parent = AIAgent(session_id="p", **kw)
++    child = dt._build_child_agent(task_index=0, goal="g", context=None, toolsets=["file"], model=None,
++                                  max_iterations=4, task_count=1, parent_agent=parent)
++    try:
++        assert (stale_giveup(child), auto_recovery_cycles(child)) == (1, 0)
++        assert (stale_giveup(parent), auto_recovery_cycles(parent)) == (5, 5)
++    finally:
++        child.close()
++        parent.close()
+diff --git a/tools/delegate_tool.py b/tools/delegate_tool.py
+index 445b6f9d94..6cc9c62051 100644
+--- a/tools/delegate_tool.py
++++ b/tools/delegate_tool.py
+@@ -200,6 +200,38 @@ def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
+         cc._apply_threshold_tokens_cap()
+ 
+ 
++def _child_patience_value(delegation_cfg: dict, key: str) -> Optional[int]:
++    """``delegation.<key>`` as a count >= 0, or None (unset or invalid: the child inherits)."""
++    raw = (delegation_cfg or {}).get(key)
++    if raw is None or raw == "":
++        return None
++    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
++        logger.warning("delegation.%s=%r is not a whole number >= 0; children inherit the global value", key, raw)
++        return None
++    try:
++        value = int(raw)
++    except ValueError:
++        value = -1
++    if value < 0:
++        logger.warning("delegation.%s=%r is not a whole number >= 0; children inherit the global value", key, raw)
++        return None
++    return value
++
++
++def _apply_child_provider_patience(child, delegation_cfg: dict) -> None:
++    """Optional subagent-only patience with an unresponsive provider. A background child has no one
++    watching its countdown, so an operator may want it to fail fast where the parent keeps waiting:
++    ``delegation.stream_stale_giveup`` (consecutive stale streams before the child's calls fail,
++    in place of HERMES_STREAM_STALE_GIVEUP) and ``delegation.auto_recovery_cycles`` (in place of
++    ``agent.auto_recovery_cycles``, the overload/outage wait ladder). Unset: the child inherits."""
++    giveup = _child_patience_value(delegation_cfg, "stream_stale_giveup")
++    if giveup is not None:
++        child._stream_stale_giveup = giveup
++    cycles = _child_patience_value(delegation_cfg, "auto_recovery_cycles")
++    if cycles is not None:
++        child._auto_recovery_cycles = cycles
++
++
+ def _build_child_agent(
+     task_index: int,
+     goal: str,
+@@ -345,6 +377,7 @@ def _build_child_agent(
+     child._inherited_conversation_id = conversation_id(parent_agent)
+     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+     _apply_child_compression_cap(child, delegation_cfg)
++    _apply_child_provider_patience(child, delegation_cfg)
+     # Ownership chain for action=list/steer/stop; weakref so a finished parent
+     # can be collected while a detached child record lingers in the registry.
+     try:
+diff --git a/website/docs/user-guide/features/delegation.md b/website/docs/user-guide/features/delegation.md
+index 357bfb6770..c89b7f272c 100644
+--- a/website/docs/user-guide/features/delegation.md
++++ b/website/docs/user-guide/features/delegation.md
+@@ -467,6 +467,18 @@ provider from a runaway), and `timeout_phase`
+ (`before_first_llm_call` when the child never reached its first request,
+ `after_llm_calls` otherwise). All four are `null` on non-timeout errors.
+ 
++### Unresponsive or overloaded provider
++
++A child that waits on a provider which never answers is not frozen: its model wait keeps the activity clock moving, so neither the heartbeat nor `child_timeout_seconds` ends it. The per-call limits end it instead: a stream with no chunk for the stale timeout is reconnected until `HERMES_STREAM_STALE_GIVEUP` (5) consecutive stale streams open the breaker, and an overloaded provider (HTTP 529, or a 429 `engine_overloaded`) goes through the `agent.auto_recovery_cycles` wait ladder. A provider that queues the request and keeps the stream open with keepalive comments can hold a child that way for 15 minutes or more. Two optional keys give background children their own, shorter patience without changing the parent's:
++
++```yaml
++delegation:
++  stream_stale_giveup: 1      # default: null = inherit HERMES_STREAM_STALE_GIVEUP (5)
++  auto_recovery_cycles: 0     # default: null = inherit agent.auto_recovery_cycles (5)
++```
++
++With these values a child fails after one stale window (`providers.<id>.stale_timeout_seconds`, or `providers.<id>.models.<model>.stale_timeout_seconds`, sets its length) or after its ordinary API retries on an overload, and the parent gets the provider's error.
++
+ ## Failure Visibility
+ 
+ A subagent that fails — non-retryable provider error (404/400), timeout, crash, or no usable output — is never silent:

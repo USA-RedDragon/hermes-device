@@ -1,0 +1,2 @@
+tests/tools/test_delegate_child_compression_cap.py
+tests/tools/test_delegate.py
