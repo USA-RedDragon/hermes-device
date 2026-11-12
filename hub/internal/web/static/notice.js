@@ -347,7 +347,11 @@ window.HubNotice = (() => {
     const part = opts.long ? preview(text, opts.pre) : null;
     const draw = (full) => {
       const shown = full || part === null ? text : part;
-      if (opts.pre) body.textContent = shown;
+      if (opts.pre) {
+        body.textContent = "";
+        if (window.HubLinkify) window.HubLinkify.append(body, shown);
+        else body.textContent = shown;
+      }
       else window.hubMarkdown.render(body, shown);
     };
     draw(false);

@@ -424,6 +424,8 @@ button.danger-text { color: var(--bad); }
 .md li.task { list-style: none; margin-left: -1.2rem; }
 .md blockquote { border-left: 3px solid var(--line); padding: .1rem .7rem; color: var(--muted); }
 .md a { color: var(--accent); overflow-wrap: anywhere; }
+a.autolink { color: var(--accent); overflow-wrap: anywhere; }
+.msg.user a.autolink { color: #fff; text-decoration: underline; }
 .md hr { border: 0; border-top: 1px solid var(--line); margin: .8rem 0; }
 .md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em; }
 .table-wrap { overflow-x: auto; }

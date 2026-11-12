@@ -744,7 +744,7 @@
       const m = el("div", "msg user" + (pending ? " pending" : ""));
       if (from.page) m.append(el("div", "frompage", "From page: " + from.page));
       if (shown.atts.length) m.append(attachmentRow(shown.atts, this.base));
-      if (shown.text) m.append(shown.text);
+      if (shown.text) window.HubLinkify.append(m, shown.text);
       m.rawText = shown.text || "";
       if (atts) for (const a of atts) if (a.url) this.urls.push(a.url);
       this.add(m);

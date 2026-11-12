@@ -480,6 +480,8 @@ window.HubToolCard = (() => {
         if (html !== null && html !== undefined) {
           body.innerHTML = html;
           body.classList.add("hljs");
+        } else if (window.HubLinkify) {
+          window.HubLinkify.append(body, b.text);
         } else {
           body.textContent = b.text;
         }
