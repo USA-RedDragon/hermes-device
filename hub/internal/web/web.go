@@ -82,6 +82,8 @@ type Options struct {
 	Subagents hub.SubagentRoutes
 	// Chats keeps each user's drafts, pins and read state. Nil: none.
 	Chats hub.ChatStore
+	// Prompts keeps each user's saved prompts. Nil: none.
+	Prompts hub.PromptLibrary
 	// Version is the hub's release, shown in Settings.
 	Version string
 	// Scheduled serves the Scheduled page. Nil: no Scheduled page.
@@ -123,6 +125,7 @@ type Server struct {
 	claudeCode   hub.ClaudeCode
 	subagents    hub.SubagentRoutes
 	chats        hub.ChatStore
+	prompts      hub.PromptLibrary
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
 	backendNames     map[string]string
@@ -169,7 +172,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory,
 		insights: opts.Insights, files: opts.Files,
 		notices: opts.Notices, notifier: opts.Notifier, claude: opts.Claude, scheduled: opts.Scheduled,
-		claudeCode: opts.ClaudeCode, subagents: opts.Subagents, chats: opts.Chats,
+		claudeCode: opts.ClaudeCode, subagents: opts.Subagents, chats: opts.Chats, prompts: opts.Prompts,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,
@@ -279,6 +282,7 @@ func (s *Server) Handler() http.Handler {
 	s.claudeRoutes(mux)
 	s.scheduledRoutes(mux)
 	s.composeRoutes(mux)
+	s.promptRoutes(mux)
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
 	mux.HandleFunc("GET /device/pair", s.handlePairPage)
