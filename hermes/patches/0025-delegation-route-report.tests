@@ -1,0 +1,7 @@
+tests/tools/test_async_batch_task_failure_notice.py
+tests/tools/test_async_delegation.py
+tests/tools/test_delegated_output_redaction.py
+tests/tools/test_delegate_completion_model.py
+tests/tools/test_delegate_combined_delegation_id.py
+tests/tools/test_delegation_recovery_diagnostics.py
+tests/hermes_cli/test_subagent_notification_display.py

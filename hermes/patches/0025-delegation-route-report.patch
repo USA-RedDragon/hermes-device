@@ -1,0 +1,296 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 23:41:06 -0600
+Subject: [PATCH] fix(delegation): name each subagent's route in results and
+ notices
+
+A backend-routed child's result carried its route as JSON only on the
+synchronous path; the dispatch handle said nothing, and a background
+completion showed one unit-wide model, which misreports a batch on
+several routes. Each routed result now has ran_on (route <label>:
+<model> via <provider>), the dispatch handle lists runs_on per task,
+and every completion block prints the task's route. The default
+backend keeps its result shape.
+---
+ .../test_async_delegation_route_lines.py      | 60 +++++++++++++++++++
+ tests/tools/test_delegation_route_fields.py   | 15 ++++-
+ tools/async_delegation.py                     |  1 +
+ tools/delegate_tool_child_run.py              | 22 +++++++
+ tools/delegate_tool_dispatch.py               |  7 ++-
+ tools/delegation_redaction.py                 |  2 +-
+ tools/process_registry_notifications.py       | 22 +++++--
+ 7 files changed, 122 insertions(+), 7 deletions(-)
+ create mode 100644 tests/tools/test_async_delegation_route_lines.py
+
+diff --git a/tests/tools/test_async_delegation_route_lines.py b/tests/tools/test_async_delegation_route_lines.py
+new file mode 100644
+index 0000000000..0c24370483
+--- /dev/null
++++ b/tests/tools/test_async_delegation_route_lines.py
+@@ -0,0 +1,60 @@
++"""A background delegation names the route, model and provider each subagent runs on: in the dispatch handle and
++in each task's block of the completion notice, so a parent never has to guess which model did the work."""
++from types import SimpleNamespace
++
++from tools.process_registry_notifications import format_process_notification
++
++
++def _batch_event(results, model="qwen3.5:2b"):
++    return {"type": "async_delegation", "delegation_id": "deleg_r", "is_batch": True, "goals": ["read", "review"],
++            "results": results, "role": "leaf", "model": model, "dispatched_at": 1.0, "completed_at": 5.0,
++            "total_duration_seconds": 4.0}
++
++
++def _ok(index, ran_on=None):
++    return {"task_index": index, "status": "completed", "summary": f"done {index}", "duration_seconds": 2.0,
++            **({"ran_on": ran_on} if ran_on else {})}
++
++
++def test_each_task_block_names_its_route_and_the_unit_model_is_not_claimed_for_all():
++    text = format_process_notification(_batch_event([
++        _ok(0, "route quick: qwen3.5:2b via custom"), _ok(1, "route sonnet: claude-sonnet-5-5 via claude-pool")]))
++    first, second = text.split("--- ✓ TASK 1/2")[1].split("--- ✓ TASK 2/2")
++    assert "Ran on route quick: qwen3.5:2b via custom." in first
++    assert "Ran on route sonnet: claude-sonnet-5-5 via claude-pool." in second
++    assert "Model: qwen3.5:2b" not in text
++
++
++def test_results_without_a_route_keep_the_unit_model_line():
++    text = format_process_notification(_batch_event([_ok(0), _ok(1)]))
++    assert "Model: qwen3.5:2b" in text and "Ran on" not in text
++
++
++def test_an_early_failure_notice_names_the_failed_tasks_route():
++    evt = {**_batch_event([{"task_index": 1, "status": "error", "error": "429", "duration_seconds": 3,
++                            "ran_on": "route opus: claude-opus-5-5 via claude-pool"}]), "task_failure_notice": True,
++           "n_tasks": 2}
++    assert "Ran on route opus: claude-opus-5-5 via claude-pool." in format_process_notification(evt)
++
++
++def test_a_single_completion_names_its_route_in_place_of_the_model():
++    evt = {"type": "async_delegation", "delegation_id": "deleg_s", "goal": "review", "status": "completed",
++           "summary": "lgtm", "model": "claude-sonnet-5-5", "duration_seconds": 3.0,
++           "ran_on": "route sonnet: claude-sonnet-5-5 via claude-pool"}
++    text = format_process_notification(evt)
++    assert "Ran on route sonnet: claude-sonnet-5-5 via claude-pool." in text and "Model:" not in text
++
++
++def test_the_dispatch_handle_lists_what_each_routed_child_runs_on():
++    from tools.delegate_tool_dispatch import _dispatched_payload
++
++    def child(label, model, provider):
++        return SimpleNamespace(_delegate_route={"backend": "model_map", "label": label}, model=model,
++                               provider=provider, _subagent_id=None)
++
++    batch = SimpleNamespace(
++        task_list=[{"goal": "a"}, {"goal": "b"}, {"goal": "c"}], live_deleg_id="deleg_h", refused=[], live_paths=[],
++        children=[(0, {}, child("haiku", "claude-haiku-5-5", "claude-pool")),
++                  (2, {}, SimpleNamespace(_delegate_route=None, model="m", provider="p", _subagent_id=None))])
++    payload = _dispatched_payload(batch, [(batch, "deleg_h")])
++    assert payload["runs_on"] == [{"task_index": 0, "runs_on": "route haiku: claude-haiku-5-5 via claude-pool"}]
+diff --git a/tests/tools/test_delegation_route_fields.py b/tests/tools/test_delegation_route_fields.py
+index 2599aa0504..0296ad0a5a 100644
+--- a/tests/tools/test_delegation_route_fields.py
++++ b/tests/tools/test_delegation_route_fields.py
+@@ -167,6 +167,8 @@ def test_labelled_route_result_reports_what_the_child_ran_on():
+     assert _fabricated_entry(1, "error", "boom", local)["route"] == {
+         "backend": "route-fields", "label": "local", "provider": "custom", "model": "qwen3-local",
+         "reasoning_effort": "none", "service_tier": "normal"}
++    assert entry["ran_on"] == "route deep: gpt-6-astra via openai-codex"
++    assert _fabricated_entry(1, "error", "boom", local)["ran_on"] == "route local: qwen3-local via custom"
+ 
+ 
+ def test_every_backend_routed_result_names_its_backend_and_the_default_keeps_its_shape():
+@@ -182,8 +184,19 @@ def test_every_backend_routed_result_names_its_backend_and_the_default_keeps_its
+     _, _, (routed,) = _spawn([{**LOCAL, "reasoning_effort": "high"}])
+     assert entry_of(routed)["route"] == {"backend": "route-fields", "provider": "custom", "model": "qwen3-local",
+                                          "reasoning_effort": "high", "service_tier": "normal"}
++    assert entry_of(routed)["ran_on"] == "the default subagent route: qwen3-local via custom"
+     _, _, (plain,) = _spawn([None], cfg=LOCAL, provider=get_active_provider({}))
+-    assert "route" not in entry_of(plain)
++    assert "route" not in entry_of(plain) and "ran_on" not in entry_of(plain)
++
++
++def test_ran_on_names_a_fallback_provider_that_took_over():
++    from tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
++
++    _, _, (child,) = _spawn([{**LOCAL, "label": "local"}])
++    child.provider, child.model, child._fallback_activated = "openrouter", "qwen/qwen3-coder", True
++    entry = _build_result_entry(child, {"final_response": "ok", "completed": True}, 0, 1.0,
++                                _SchemaOutcome(None, None, [], 0))
++    assert entry["ran_on"] == "route local: qwen/qwen3-coder via openrouter (a fallback provider took over)"
+ 
+ 
+ def test_an_inherited_fast_tier_is_reported_as_what_ran():
+diff --git a/tools/async_delegation.py b/tools/async_delegation.py
+index 2deef9f4a2..2859e05f63 100644
+--- a/tools/async_delegation.py
++++ b/tools/async_delegation.py
+@@ -1162,6 +1162,7 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
+         payload = {
+             "summary": result.get("summary"), "error": result.get("error"),
+             **({"api_calls": result["api_calls"]} if result.get("api_calls") is not None else {}),
++            **({"ran_on": result["ran_on"]} if result.get("ran_on") else {}),
+             "duration_seconds": result.get("duration_seconds", round(completed_at - dispatched_at, 2))}
+     evt = {
+         "type": "async_delegation", "delegation_id": record.get("delegation_id"),
+diff --git a/tools/delegate_tool_child_run.py b/tools/delegate_tool_child_run.py
+index 76a2bf82d2..bbead09cbc 100644
+--- a/tools/delegate_tool_child_run.py
++++ b/tools/delegate_tool_child_run.py
+@@ -93,6 +93,24 @@ def _route_report(child: Any) -> Optional[dict[str, Any]]:
+             "service_tier": service_tier_word(_tier_in_effect(child)),
+             **({"fallback_activated": True} if getattr(child, "_fallback_activated", False) is True else {})}
+ 
++def route_text(child: Any) -> Optional[str]:
++    """What a backend-routed child runs on, in words the parent model reads: ``route <label>: <model> via
++    <provider>``, or ``the default subagent route: ...`` when its backend gave it no label. A fallback provider
++    that took over is named. None where ``_route_report`` is None (the default backend keeps its result shape) and
++    for a child without a model."""
++    route = getattr(child, "_delegate_route", None)
++    model = _str_or_none(getattr(child, "model", None))
++    if not isinstance(route, dict) or not model:
++        return None
++    label = route.get("label")
++    provider = _str_or_none(getattr(child, "provider", None))
++    text = (f"route {label}" if isinstance(label, str) and label else "the default subagent route") + f": {model}"
++    if provider:
++        text += f" via {provider}"
++    if getattr(child, "_fallback_activated", False) is True:
++        text += " (a fallback provider took over)"
++    return text
++
+ def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> dict[str, Any]:
+     """Result entry for a child that raised, never finished, or was abandoned."""
+     entry = {
+@@ -102,6 +120,8 @@ def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: f
+     route = _route_report(child)
+     if route is not None:
+         entry["route"] = route
++    if (ran_on := route_text(child)) is not None:
++        entry["ran_on"] = ran_on
+     return entry
+ 
+ def _append_missed_steer(entry: dict[str, Any], late_steer: Optional[str]) -> None:
+@@ -695,6 +715,8 @@ def _build_result_entry(
+     _route = _route_report(child)
+     if _route is not None:
+         entry["route"] = _route
++    if (_ran_on := route_text(child)) is not None:
++        entry["ran_on"] = _ran_on
+     if status == "failed":
+         entry["error"] = result.get("error", "Subagent did not produce a response.")
+         # Classified reason from the child loop (e.g. "rate_limit", "billing")
+diff --git a/tools/delegate_tool_dispatch.py b/tools/delegate_tool_dispatch.py
+index cf463458b9..5ec407adef 100644
+--- a/tools/delegate_tool_dispatch.py
++++ b/tools/delegate_tool_dispatch.py
+@@ -16,7 +16,9 @@ from typing import Any, Dict, List, Optional
+ 
+ from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
+ from tools.async_delegation import _new_delegation_id, record_unit_child
+-from tools.delegate_tool_child_run import _attach_child, _close_child, _detach_child, _fabricated_entry, _signal_child_stop
++from tools.delegate_tool_child_run import (
++    _attach_child, _close_child, _detach_child, _fabricated_entry, _signal_child_stop, route_text,
++)
+ from tools.delegate_tool_progress import (
+     SUBAGENT_FAILURE_STATUSES, _print_completion_line, _quiet, describe_subagent_failure, format_batch_tag,
+ )
+@@ -397,6 +399,9 @@ def _dispatched_payload(batch: _Batch, units: list[tuple[_Batch, str]]) -> dict:
+             {"delegation_id": uid, "group": unit.group, "task_indexes": [i for (i, _, _) in unit.children]}
+             for unit, uid in units
+         ]
++    runs_on = [{"task_index": i, "runs_on": text} for (i, _, c) in batch.children if (text := route_text(c))]
++    if runs_on:
++        payload["runs_on"] = runs_on
+     sids = [getattr(c, "_subagent_id", None) for (_, _, c) in batch.children]
+     if any(isinstance(s, str) and s for s in sids):
+         payload["subagent_ids"] = sids
+diff --git a/tools/delegation_redaction.py b/tools/delegation_redaction.py
+index 5a58977675..4d64930515 100644
+--- a/tools/delegation_redaction.py
++++ b/tools/delegation_redaction.py
+@@ -48,7 +48,7 @@ _PARENT_EVENT_FIELDS = frozenset(
+     }
+ )
+ _RESULT_METADATA = frozenset(
+-    {"task_index", "model", "group", "_child_role", "status", "exit_reason"}
++    {"task_index", "model", "ran_on", "group", "_child_role", "status", "exit_reason"}
+ )
+ 
+ 
+diff --git a/tools/process_registry_notifications.py b/tools/process_registry_notifications.py
+index cdc6b419bb..dfe7dfb84b 100644
+--- a/tools/process_registry_notifications.py
++++ b/tools/process_registry_notifications.py
+@@ -156,7 +156,14 @@ def _notice_lines(results) -> list[str]:
+     return ["", *notice] if notice else []
+ 
+ 
+-def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> list[str]:
++def _ran_on_line(entry: dict) -> str | None:
++    """``Ran on route <label>: <model> via <provider>.`` for a result that names what its child ran on."""
++    ran_on = entry.get("ran_on")
++    return f"Ran on {ran_on}." if isinstance(ran_on, str) and ran_on else None
++
++
++def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool,
++              with_model: bool = True) -> list[str]:
+     """Shared preamble: title, intro, blank, dispatch time, [goal], context/toolsets, role+model."""
+     lines = [title, intro, ""]
+     dispatched_at = evt.get("dispatched_at")
+@@ -169,7 +176,7 @@ def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_go
+         lines.append(f"Context you provided: {evt['context']}")
+     if evt.get("toolsets"):
+         lines.append(f"Toolsets: {', '.join(evt['toolsets'])}")
+-    lines.append(f"Role: {evt.get('role') or 'leaf'}" + (f"   Model: {evt['model']}" if evt.get("model") else ""))
++    lines.append(f"Role: {evt.get('role') or 'leaf'}" + (f"   Model: {evt['model']}" if with_model and evt.get("model") else ""))
+     return lines
+ 
+ 
+@@ -186,6 +193,7 @@ def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
+         "warning so you can re-dispatch or investigate now instead of then.",
+         f"Task: {goal}" if goal else "",
+         f"Status: {r.get('status', '?')}   Duration: {r.get('duration_seconds', '?')}s" + (f"\nError: {err}" if err else ""),
++        _ran_on_line(r) or "",
+     ]
+     if r.get("live_transcript"):
+         lines.append(f"Live transcript: {r['live_transcript']}")
+@@ -216,6 +224,8 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
+     n, n_unit = len(goals) or len(results), len(results) or len(goals)
+     group = evt.get("group")
+     unit = f"group '{group}' ({n_unit} subagent(s))" if group is not None else f"{n_unit} subagent(s)"
++    # Each task names its own route below; the unit's one model would misreport a batch on several routes.
++    per_task_routes = bool(results) and all(_ran_on_line(r) for r in results)
+     lines = _preamble(
+         evt,
+         f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
+@@ -223,7 +233,7 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
+         "below. Any other units from the same delegate_task call report separately as they finish. You may have "
+         "moved on since dispatching — act on these or re-dispatch if things have changed. If you are still waiting "
+         "on siblings, end your turn after acting on this one.",
+-        completed_at, with_goal=False)
++        completed_at, with_goal=False, with_model=not per_task_routes)
+     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
+     lines += _recovery_lines(evt)
+     if evt.get("error") and not results:
+@@ -242,6 +252,8 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
+                   + (f", {r['duration_seconds']}s" if r.get("duration_seconds") is not None else "")
+                   + (", TRUNCATED: hit max_iterations — work may be incomplete" if r_truncated else ""))
+         lines += ["", header + ") ---"]
++        if ran_on := _ran_on_line(r):
++            lines.append(ran_on)
+         if r_status in _DONE and r_summary:
+             if r_truncated:
+                 lines.append(_TRUNCATED_SUMMARY_NOTE)
+@@ -295,7 +307,9 @@ def _format_async_delegation(evt: dict) -> str:
+         "A background subagent you dispatched earlier has finished. You may "
+         "have moved on since dispatching it; the full task source is below so "
+         "you can act on the result or re-dispatch if things have changed.",
+-        completed_at, with_goal=True)
++        completed_at, with_goal=True, with_model=not _ran_on_line(evt))
++    if ran_on := _ran_on_line(evt):
++        lines.append(ran_on)
+     lines += _notice_lines([evt]) + [
+         f"Status: {status}" + (f"   API calls: {evt['api_calls']}" if evt.get("api_calls") is not None else "")
+         + f"   Duration: {evt.get('duration_seconds', '?')}s"
