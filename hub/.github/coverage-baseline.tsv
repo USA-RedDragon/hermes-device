@@ -60,7 +60,7 @@ internal/memory/memorytest/memorytest.go	214	186
 internal/memory/notes.go	61	49
 internal/notify/jobs.go	55	43
 internal/notify/notify.go	296	193
-internal/pdf/pdf.go	180	159
+internal/pdf/pdf.go	180	160
 internal/pdf/pdftest/pdftest.go	32	32
 internal/scheduled/client.go	110	88
 internal/scheduled/clock.go	75	66
@@ -77,7 +77,7 @@ internal/service/live.go	298	254
 internal/service/manage.go	147	138
 internal/service/media.go	131	108
 internal/service/observe.go	61	50
-internal/service/outcome.go	89	83
+internal/service/outcome.go	89	85
 internal/service/page.go	51	47
 internal/service/pdf.go	71	55
 internal/service/service.go	726	663
