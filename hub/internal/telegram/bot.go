@@ -657,6 +657,8 @@ func (b *Bot) sessionCommand(ctx context.Context, to dest, user, cmd, arg string
 		b.model(ctx, to, user, arg)
 	case cmdBg, "background":
 		b.background(ctx, to, user, arg)
+	case cmdCompress, "compact":
+		b.compress(ctx, to, user, arg)
 	case cmdWhere:
 		b.where(ctx, to, user)
 	case cmdMove:

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 )
@@ -324,6 +325,26 @@ func (b *Bot) background(ctx context.Context, to dest, user, arg string) {
 	b.sendText(ctx, to, "Started in the background. The answer comes here when it is done.")
 }
 
+// compressTimeout bounds /compress, which waits for Hermes to summarize.
+const compressTimeout = 10 * time.Minute
+
+// compress handles /compress and /compact: Hermes summarizes the chat's
+// older messages, and its report comes back as the answer.
+func (b *Bot) compress(ctx context.Context, to dest, user, arg string) {
+	a, ok := b.attached(ctx, to, user)
+	if !ok {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, compressTimeout)
+	defer cancel()
+	res, err := b.svc.Prompt(cctx, user, a.backendID, a.sessionID, strings.TrimSpace("/"+cmdCompress+" "+arg))
+	if err != nil {
+		b.reportErr(ctx, to, user, "compress", err)
+		return
+	}
+	b.sendText(ctx, to, cmpOr(res.Output, "Compressed."))
+}
+
 // backgroundResult shows the answer of a /bg prompt.
 func (r *renderer) backgroundResult(ctx context.Context, ev hub.Event) {
 	var p struct {
@@ -359,6 +380,7 @@ const (
 	cmdStatus   = "status"
 	cmdModel    = "model"
 	cmdBg       = "bg"
+	cmdCompress = "compress"
 	cmdSessions = "sessions"
 	cmdBackends = "backends"
 	cmdDevices  = "devices"
@@ -376,6 +398,7 @@ func (b *Bot) commonCommands() []BotCommand {
 		{cmdStop, "Interrupt the running turn"},
 		{cmdModel, "Show or switch the chat's model"},
 		{cmdBg, "Run a prompt in the background"},
+		{cmdCompress, "Summarize older messages to free context"},
 		{cmdStatus, "Show the model and how full its context is"},
 	}
 	if b.computers != nil {

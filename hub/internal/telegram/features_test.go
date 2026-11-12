@@ -102,7 +102,7 @@ func TestCommandMenusAreSet(t *testing.T) {
 	t.Parallel()
 	h := linkedWith(t, time.Now(), nil)
 	private := h.tg.waitCall(mCommands, func(c tgCall) bool { typ, _ := scopeOf(c); return typ == "all_private_chats" })
-	for _, want := range []string{"new", "stop", "model", "bg", "status", "link", "unlink", "help"} {
+	for _, want := range []string{"new", "stop", "model", "bg", "compress", "status", "link", "unlink", "help"} {
 		if !slices.Contains(commandNames(private), want) {
 			t.Fatalf("private menu %q lacks %s", commandNames(private), want)
 		}
@@ -216,6 +216,20 @@ func TestBackgroundCommand(t *testing.T) {
 	got := h.tg.wait(mSend, "Background answer")
 	if !strings.Contains(got.text(), "The build is <b>green</b>.") {
 		t.Fatalf("answer = %q", got.text())
+	}
+}
+
+func TestCompressCommand(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.tg.say(dm(aliceTG), aliceTG, "/compact@talaria_bot keep the API")
+	h.tg.wait(mSend, "Compressed.")
+	h.hub.mu.Lock()
+	defer h.hub.mu.Unlock()
+	last := h.hub.prompts[len(h.hub.prompts)-1]
+	if last.SessionID != sid || last.Text != "/compress keep the API" {
+		t.Fatalf("prompt = %+v, want /compress keep the API on %s", last, sid)
 	}
 }
 
