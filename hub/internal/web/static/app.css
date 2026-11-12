@@ -580,6 +580,11 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .mem-adv dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .25rem .9rem; margin: .5rem 0 0; }
 .mem-adv dd { margin: 0; color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; overflow-wrap: anywhere; }
 .mem-card { margin: .5rem 0 0; padding-left: 1.2rem; color: var(--fg); }
+.mem-proj { display: grid; gap: .5rem; min-width: 0; }
+.mem-proj select { font: inherit; font-size: .9rem; padding: .3rem .4rem; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--fg); max-width: 100%; justify-self: start; }
+.mem-proj dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .25rem .9rem; margin: 0; font-size: .82rem; color: var(--muted); }
+.mem-proj dd { margin: 0; color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; overflow-wrap: anywhere; }
 @media (max-width: 760px) {
   .mem-entry-acts .wide { display: none; }
   .mem-entry-acts .mem-more { display: inline-block; font-size: 1rem; }
@@ -590,6 +595,9 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
   .mem-fact { grid-template-columns: auto minmax(0, 1fr); }
   .mem-fact .x { grid-row: auto; grid-column: 2; justify-self: start; }
   .mem-filters input { max-width: none; }
+  .mem-proj select { justify-self: stretch; }
+  .mem-proj dl { grid-template-columns: minmax(0, 1fr); gap: .1rem; }
+  .mem-proj dd + dt { margin-top: .3rem; }
 }
 
 /* In-page image viewer */

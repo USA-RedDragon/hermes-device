@@ -16,6 +16,7 @@ window.HubMemory = (ctx) => {
   ];
   const copy = {
     notes: "Talaria reads these notes at the start of every chat. Keep them short. Changes apply to new chats.",
+    project: "Talaria's notes about one project. It reads them in chats that work in this project, on any device. Keep them short. Changes apply to new chats.",
     you: "What Talaria knows about you as a person. It reads this in every chat, on every device and in Telegram. Changes apply to new chats.",
     learned: "Facts Talaria picked up from your chats over time. It looks these up when they seem relevant. Delete anything wrong or out of date.",
     help: "Talaria keeps two short files that it reads at the start of every chat: its own notes and what it knows about you. It also learns facts from your chats over time and looks them up when they seem relevant. Here you can read, fix and delete all of it. Chats that are already open keep what they started with; changes apply to new chats.",
@@ -29,6 +30,9 @@ window.HubMemory = (ctx) => {
   let shown = false;
   let notes = null;
   let notesErr = "";
+  let projects = null;
+  let projectsErr = "";
+  let project = "";
   let ui = { edit: null, adding: false, raw: false, confirm: null, more: null, help: false, busy: false, note: "", bad: false };
   let learned = null;
 
@@ -55,7 +59,8 @@ window.HubMemory = (ctx) => {
   }
 
   function setHash() {
-    const h = "#/memory/" + encodeURIComponent(backend) + "/" + tab;
+    let h = "#/memory/" + encodeURIComponent(backend) + "/" + tab;
+    if (tab === "notes" && project) h += "/" + encodeURIComponent(project);
     if (location.hash !== h) history.replaceState(null, "", h);
   }
 
@@ -63,13 +68,15 @@ window.HubMemory = (ctx) => {
     shown = true;
     root.hidden = false;
     nav.classList.add("on");
-    const [b, t] = (rest || "").split("/").map((x) => decodeURIComponent(x || ""));
+    const [b, t, pr] = (rest || "").split("/").map((x) => decodeURIComponent(x || ""));
     await refresh();
     if (!shown) return;
     const pick = backends.find((x) => x.id === b) || backends.find((x) => x.id === backend) ||
       backends.find((x) => x.id === ctx.defaultBackend()) || backends[0];
-    if (pick && pick.id !== backend) { backend = pick.id; notes = null; learned = null; }
+    if (pick && pick.id !== backend) { backend = pick.id; notes = null; learned = null; project = ""; }
+    projects = null;
     tab = tabs.some((x) => x.id === t) ? t : tab;
+    if (t === "notes" && (pr || "") !== project) { project = pr || ""; notes = null; }
     if (!tabOK(tab)) tab = tabs.find((x) => tabOK(x.id)).id;
     resetUI();
     if (backend) setHash();
@@ -91,6 +98,10 @@ window.HubMemory = (ctx) => {
   }
   function resetUI() { ui = { edit: null, adding: false, raw: false, confirm: null, more: null, help: ui.help, busy: false, note: "", bad: false }; }
   function path(p) { return "/api/memory/" + encodeURIComponent(backend) + p; }
+  // scope is the path part of the notes in view: a project's, or the
+  // backend's own.
+  function scope() { return project ? "/projects/" + encodeURIComponent(project) : ""; }
+  function projectView() { return tab === "notes" && !!project; }
 
   async function load() {
     if (!backend) return;
@@ -98,27 +109,52 @@ window.HubMemory = (ctx) => {
       if (!learned) { learned = freshLearned(); loadFacts(true); loadInfo(); }
       return;
     }
+    if (tab === "notes" && !projects) loadProjects();
     await loadNotes();
   }
 
   async function loadNotes() {
     const b = backend;
+    const pr = tab === "notes" ? project : "";
     try {
-      const n = await api("GET", path("/notes"));
-      if (b !== backend) return;
+      const n = await api("GET", path((pr ? scope() : "") + "/notes"));
+      if (b !== backend || pr !== (tab === "notes" ? project : "")) return;
       notes = n;
       notesErr = "";
       countPending();
     } catch (e) {
-      if (b !== backend) return;
+      if (b !== backend || pr !== (tab === "notes" ? project : "")) return;
       notesErr = e.message;
+    }
+    if (shown) draw();
+  }
+
+  // loadProjects lists the backend's projects. A Hermes without the
+  // project-memory plugin answers 404, and the picker stays hidden.
+  async function loadProjects() {
+    const b = backend;
+    projects = [];
+    projectsErr = "";
+    try {
+      const l = await api("GET", path("/projects"));
+      if (b !== backend) return;
+      projects = l;
+    } catch (e) {
+      if (b !== backend) return;
+      if (e.status !== 404) projectsErr = e.message;
+    }
+    if (project && !projectsErr && !projects.some((x) => x.id === project)) {
+      project = "";
+      notes = null;
+      resetUI();
+      if (tab === "notes") { setHash(); loadNotes(); }
     }
     if (shown) draw();
   }
 
   function countPending() {
     const b = current();
-    if (b && notes) { b.pending = notes.pending.length; setBadge(); }
+    if (b && notes && !notes.project) { b.pending = notes.pending.length; setBadge(); }
   }
 
   // change runs one change and redraws with the answer, or shows why not.
@@ -127,9 +163,12 @@ window.HubMemory = (ctx) => {
     ui.busy = true;
     ui.note = "";
     draw();
+    const at = backend + "/" + project;
     try {
-      const n = await api(method, path(p), body);
+      const n = await api(method, path((notes && notes.project ? scope() : "") + p), body);
+      if (at !== backend + "/" + project) return;
       notes = n;
+      if (n.project && projects) projects = projects.map((x) => (x.id === n.project.id ? n.project : x));
       countPending();
       if (after) after();
     } catch (e) {
@@ -162,7 +201,7 @@ window.HubMemory = (ctx) => {
         o.selected = b.id === backend;
         sel.append(o);
       }
-      sel.onchange = () => { backend = sel.value; notes = null; learned = null; resetUI(); if (!tabOK(tab)) tab = tabs.find((x) => tabOK(x.id)).id; setHash(); draw(); load(); };
+      sel.onchange = () => { backend = sel.value; notes = null; learned = null; projects = null; project = ""; resetUI(); if (!tabOK(tab)) tab = tabs.find((x) => tabOK(x.id)).id; setHash(); draw(); load(); };
       head.append(sel);
     }
     head.append(el("span", "grow"));
@@ -176,7 +215,7 @@ window.HubMemory = (ctx) => {
       b.setAttribute("role", "tab");
       b.setAttribute("aria-selected", x.id === tab ? "true" : "false");
       if (x.id === "learned" && learned && learned.info) b.append(" ", el("span", "mem-n", "(" + fmt(learned.info.total) + ")"));
-      b.onclick = () => { if (tab === x.id) return; tab = x.id; resetUI(); setHash(); draw(); load(); };
+      b.onclick = () => { if (tab === x.id) return; if (project && (tab === "notes" || x.id === "notes")) notes = null; tab = x.id; resetUI(); setHash(); draw(); load(); };
       bar.append(b);
     }
     const body = el("div", "mem-body");
@@ -230,7 +269,9 @@ window.HubMemory = (ctx) => {
   }
 
   function drawNotes(body, t) {
-    body.append(el("p", "mem-hint", copy[t.id]));
+    if (t.id === "notes") projectPicker(body);
+    const inProject = projectView();
+    body.append(el("p", "mem-hint", copy[inProject ? "project" : t.id]));
     if (!notes) {
       body.append(el("p", notesErr ? "mem-note bad" : "mem-hint", notesErr ? "Could not load memory: " + notesErr : "Loading."));
       return;
@@ -250,7 +291,7 @@ window.HubMemory = (ctx) => {
       store.entries.forEach((text) => list.append(entryRow(t, store, text)));
       if (ui.adding) list.append(editor(t, store, "", null));
       if (!store.entries.length && !ui.adding && !notes.pending.some((x) => x.target === t.target)) {
-        list.append(el("p", "mem-hint", t.id === "you" ? "Talaria knows nothing about you yet." : "Talaria has no notes yet."));
+        list.append(el("p", "mem-hint", t.id === "you" ? "Talaria knows nothing about you yet." : inProject ? "Talaria has no notes for this project yet." : "Talaria has no notes yet."));
       }
     }
     body.append(list);
@@ -261,6 +302,48 @@ window.HubMemory = (ctx) => {
     }
     if (store.enabled && pct >= 90) body.append(el("p", "mem-hint", copy.full));
     if (store.enabled) body.append(advancedNotes(t, store));
+  }
+
+  // projectPicker shows the project select on the Notes tab, and what the
+  // chosen project is known as and where Talaria saw it.
+  function projectPicker(body) {
+    if (projectsErr) body.append(el("p", "mem-note bad", "Could not load the projects: " + projectsErr));
+    if (!projects || (!projects.length && !project)) return;
+    const box = el("div", "mem-proj");
+    const sel = el("select");
+    sel.setAttribute("aria-label", "Project");
+    sel.dataset.k = "project";
+    sel.disabled = ui.busy;
+    const g = el("option", "", "Global notes");
+    g.value = "";
+    sel.append(g);
+    for (const x of projects) {
+      const o = el("option", "", x.name && x.name !== x.identity ? x.name + " (" + x.identity + ")" : x.identity);
+      o.value = x.id;
+      sel.append(o);
+    }
+    sel.value = project;
+    sel.onchange = () => { project = sel.value; notes = null; notesErr = ""; resetUI(); setHash(); draw(); loadNotes(); };
+    box.append(sel);
+    const cur = projects.find((x) => x.id === project);
+    if (cur) {
+      const dl = el("dl");
+      const add = (k, v) => dl.append(el("dt", "", k), el("dd", "", v));
+      add("Project", cur.identity);
+      const many = (k, lines) => {
+        if (!lines.length) return;
+        const dd = el("dd");
+        for (const l of lines) dd.append(el("div", "", l));
+        dl.append(el("dt", "", k), dd);
+      };
+      many("Also known as", cur.aliases);
+      many("Seen in", cur.folders.map((f) => {
+        const when = f.seen_at ? day(f.seen_at * 1000) : "";
+        return (f.device || f.device_id) + ": " + f.dir + (when ? " (" + when + ")" : "");
+      }));
+      box.append(dl);
+    }
+    body.append(box);
   }
 
   function changeWord(c) {
@@ -368,16 +451,19 @@ window.HubMemory = (ctx) => {
     d.append(el("summary", "", "Advanced"));
     const dl = el("dl");
     const add = (k, v) => dl.append(el("dt", "", k), el("dd", "", v));
+    const inProject = !!notes.project;
     add("File", store.file);
-    add("Ask before Talaria saves", (notes.approval ? "On" : "Off") + " (memory.write_approval)");
+    if (!inProject) add("Ask before Talaria saves", (notes.approval ? "On" : "Off") + " (memory.write_approval)");
     add("Limit", fmt(store.limit) + " characters");
     d.append(dl);
     const acts = el("div", "mem-acts");
     if (!ui.raw) acts.append(btn("", "Edit as one text file", () => { ui.raw = true; ui.rawBase = store.entries.slice(); ui.edit = null; ui.adding = false; ui.note = ""; draw(); }));
-    acts.append(btn("", notes.approval ? "Turn off approval" : "Turn on approval",
-      () => change("POST", "/approval", { enabled: !notes.approval })));
+    if (!inProject) {
+      acts.append(btn("", notes.approval ? "Turn off approval" : "Turn on approval",
+        () => change("POST", "/approval", { enabled: !notes.approval })));
+    }
     d.append(acts);
-    if (notes.approval) d.append(el("p", "mem-hint", "Talaria asks before it saves a note. Its proposed notes wait here, and the sidebar shows a count."));
+    if (!inProject && notes.approval) d.append(el("p", "mem-hint", "Talaria asks before it saves a note. Its proposed notes wait here, and the sidebar shows a count."));
     return d;
   }
 
