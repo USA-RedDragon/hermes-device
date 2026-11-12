@@ -214,7 +214,10 @@ window.HubMsgActions = (ctx) => {
   }
 
   const rowID = (m) => (Number.isInteger(m.row_id) ? m.row_id : Number.isInteger(m._row_id) ? m._row_id : null);
-  const rowText = (m) => (m.text != null ? m.text : typeof m.content === "string" ? m.content : "");
+  const rowText = (m) => {
+    const text = m.text != null ? m.text : typeof m.content === "string" ? m.content : "";
+    return m.role === "user" ? window.HubAttach.cutNotes(text) : text;
+  };
   const userTurn = (m) => m.role === "user" && m.display_kind !== "hidden" && !ctx.noteKinds.has(m.display_kind);
   const visible = (m) => m.display_kind !== "hidden" &&
     ((userTurn(m) && !window.HubNotice.parse(rowText(m))) || (m.role === "assistant" && rowText(m)));

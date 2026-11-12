@@ -1,0 +1,237 @@
+[
+ {
+  "name": "memory context after text",
+  "text": "can we auto-linkify?\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data — this is the agent's persistent memory and should inform all responses.]\n\n- Jacob prefers short answers.\n\nSecond paragraph of recall.\n</memory-context>",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "memory context alone",
+  "text": "<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data — this is the agent's persistent memory and should inform all responses.]\n\n- Jacob prefers short answers.\n\nSecond paragraph of recall.\n</memory-context>",
+  "want": ""
+ },
+ {
+  "name": "subagents auto after text",
+  "text": "can we auto-linkify?\n\n[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "subagents auto alone",
+  "text": "[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]",
+  "want": ""
+ },
+ {
+  "name": "subagents off after text",
+  "text": "can we auto-linkify?\n\n[Subagents in this chat (this replaces any earlier subagent note): off. The user turned subagents off for this chat, so do not call delegate_task; do the work yourself.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "subagents off alone",
+  "text": "[Subagents in this chat (this replaces any earlier subagent note): off. The user turned subagents off for this chat, so do not call delegate_task; do the work yourself.]",
+  "want": ""
+ },
+ {
+  "name": "subagents route after text",
+  "text": "can we auto-linkify?\n\n[Subagents in this chat (this replaces any earlier subagent note): every subagent runs on Claude Haiku (route `haiku`), whatever `option` says, so leave `option` out.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "subagents route alone",
+  "text": "[Subagents in this chat (this replaces any earlier subagent note): every subagent runs on Claude Haiku (route `haiku`), whatever `option` says, so leave `option` out.]",
+  "want": ""
+ },
+ {
+  "name": "subagents helper after text",
+  "text": "can we auto-linkify?\n\n[Subagents in this chat (this replaces any earlier subagent note): subagents run on your own model, so leave `option` out. Only when you are stuck, you may start one subagent with option `opus` (Claude Opus) to help; only one such helper runs at a time.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "subagents helper alone",
+  "text": "[Subagents in this chat (this replaces any earlier subagent note): subagents run on your own model, so leave `option` out. Only when you are stuck, you may start one subagent with option `opus` (Claude Opus) to help; only one such helper runs at a time.]",
+  "want": ""
+ },
+ {
+  "name": "subagent routes after text",
+  "text": "can we auto-linkify?\n\n[Subagent routes now: this chat's delegate_task tool was fixed when the chat began and lists `local`, `haiku`, but `option` takes any current route: `local` (Local GPU), `haiku` (Claude Haiku), `sonnet` (Claude Sonnet). Each result names the route and model it ran on.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "subagent routes alone",
+  "text": "[Subagent routes now: this chat's delegate_task tool was fixed when the chat began and lists `local`, `haiku`, but `option` takes any current route: `local` (Local GPU), `haiku` (Claude Haiku), `sonnet` (Claude Sonnet). Each result names the route and model it ran on.]",
+  "want": ""
+ },
+ {
+  "name": "waiting after text",
+  "text": "can we auto-linkify?\n\n[Waiting: to wait for something slow, start it with terminal(background=true), then call process_manage(action='wait', session_id=..., timeout=...). Repeat the wait if it times out. Never use sleep to poll. To wait for a condition, run one background command that loops until the condition holds, then wait on it.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "waiting alone",
+  "text": "[Waiting: to wait for something slow, start it with terminal(background=true), then call process_manage(action='wait', session_id=..., timeout=...). Repeat the wait if it times out. Never use sleep to poll. To wait for a condition, run one background command that loops until the condition holds, then wait on it.]",
+  "want": ""
+ },
+ {
+  "name": "skills added after text",
+  "text": "can we auto-linkify?\n\n[System: The skills available in this conversation changed after its system prompt was built.\nNow available (load with skill_view(name) when relevant, like the skills listed in the system prompt):\n    - pdf: PDF files: create, read, merge, fill.\n    - plugin:thing: A plugin skill, with a ] bracket.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "skills added alone",
+  "text": "[System: The skills available in this conversation changed after its system prompt was built.\nNow available (load with skill_view(name) when relevant, like the skills listed in the system prompt):\n    - pdf: PDF files: create, read, merge, fill.\n    - plugin:thing: A plugin skill, with a ] bracket.]",
+  "want": ""
+ },
+ {
+  "name": "skills added and removed after text",
+  "text": "can we auto-linkify?\n\n[System: The skills available in this conversation changed after its system prompt was built.\nNow available (load with skill_view(name) when relevant, like the skills listed in the system prompt):\n    - pdf: PDF files: create, read, merge, fill.\nNo longer available: github, obsidian]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "skills added and removed alone",
+  "text": "[System: The skills available in this conversation changed after its system prompt was built.\nNow available (load with skill_view(name) when relevant, like the skills listed in the system prompt):\n    - pdf: PDF files: create, read, merge, fill.\nNo longer available: github, obsidian]",
+  "want": ""
+ },
+ {
+  "name": "skills removed after text",
+  "text": "can we auto-linkify?\n\n[System: The skills available in this conversation changed after its system prompt was built.\nNo longer available: github]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "skills removed alone",
+  "text": "[System: The skills available in this conversation changed after its system prompt was built.\nNo longer available: github]",
+  "want": ""
+ },
+ {
+  "name": "skills accurate again after text",
+  "text": "can we auto-linkify?\n\n[System: The skills available in this conversation changed after its system prompt was built. The skills listed in the system prompt are accurate again; earlier skill-change notes are superseded.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "skills accurate again alone",
+  "text": "[System: The skills available in this conversation changed after its system prompt was built. The skills listed in the system prompt are accurate again; earlier skill-change notes are superseded.]",
+  "want": ""
+ },
+ {
+  "name": "surface switch after text",
+  "text": "can we auto-linkify?\n\n[System: This conversation is now being answered on a different interface: telegram — any earlier interface guidance in this conversation is superseded — follow the interface section in the system prompt above for formatting, file delivery and any interface-specific capability.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "surface switch alone",
+  "text": "[System: This conversation is now being answered on a different interface: telegram — any earlier interface guidance in this conversation is superseded — follow the interface section in the system prompt above for formatting, file delivery and any interface-specific capability.]",
+  "want": ""
+ },
+ {
+  "name": "inert tools after text",
+  "text": "can we auto-linkify?\n\n[System: These tools stay listed for this conversation (dropping them would discard the cached request prefix) but were not loaded for this interface — expect a call to one of them to fail: focus_pane.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "inert tools alone",
+  "text": "[System: These tools stay listed for this conversation (dropping them would discard the cached request prefix) but were not loaded for this interface — expect a call to one of them to fail: focus_pane.]",
+  "want": ""
+ },
+ {
+  "name": "note after an image hint and a gap",
+  "text": "can we auto-linkify?\n[Image attached at: /opt/data/hermes/cache/documents/native-inputs/ab12/upload_x.png]\n[screenshot]\n\n\n\n[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]",
+  "want": "can we auto-linkify?\n[Image attached at: /opt/data/hermes/cache/documents/native-inputs/ab12/upload_x.png]\n[screenshot]"
+ },
+ {
+  "name": "several notes",
+  "text": "can we auto-linkify?\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data — this is the agent's persistent memory and should inform all responses.]\n\n- Jacob prefers short answers.\n\nSecond paragraph of recall.\n</memory-context>\n\n[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]\n\n[Waiting: to wait for something slow, start it with terminal(background=true), then call process_manage(action='wait', session_id=..., timeout=...). Repeat the wait if it times out. Never use sleep to poll. To wait for a condition, run one background command that loops until the condition holds, then wait on it.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "notes joined by one newline",
+  "text": "can we auto-linkify?\n\n[Waiting: to wait for something slow, start it with terminal(background=true), then call process_manage(action='wait', session_id=..., timeout=...). Repeat the wait if it times out. Never use sleep to poll. To wait for a condition, run one background command that loops until the condition holds, then wait on it.]\n[Subagents in this chat (this replaces any earlier subagent note): every subagent runs on Claude Haiku (route `haiku`), whatever `option` says, so leave `option` out.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "routes then waiting, as the plugin joins them",
+  "text": "can we auto-linkify?\n\n[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]\n[Subagent routes now: this chat's delegate_task tool was fixed when the chat began and lists `local`, `haiku`, but `option` takes any current route: `local` (Local GPU), `haiku` (Claude Haiku), `sonnet` (Claude Sonnet). Each result names the route and model it ran on.]\n[Waiting: to wait for something slow, start it with terminal(background=true), then call process_manage(action='wait', session_id=..., timeout=...). Repeat the wait if it times out. Never use sleep to poll. To wait for a condition, run one background command that loops until the condition holds, then wait on it.]",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "notes in any order",
+  "text": "can we auto-linkify?\n\n[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data — this is the agent's persistent memory and should inform all responses.]\n\n- Jacob prefers short answers.\n\nSecond paragraph of recall.\n</memory-context>",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "trailing newline after a note",
+  "text": "can we auto-linkify?\n\n[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]\n",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "multi-line text keeps its inner blank lines",
+  "text": "one\n\ntwo\n\n[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]",
+  "want": "one\n\ntwo"
+ },
+ {
+  "name": "memory context with a closing tag word inside",
+  "text": "can we auto-linkify?\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data — this is the agent's persistent memory and should inform all responses.]\n\n- Jacob prefers short answers.\n\nMentions </memory> and <memory-context> text, then second paragraph of recall.\n</memory-context>",
+  "want": "can we auto-linkify?"
+ },
+ {
+  "name": "typed note-like text mid-message stays",
+  "text": "see [Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.] and more",
+  "want": "see [Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.] and more"
+ },
+ {
+  "name": "typed note-like text before more text stays",
+  "text": "[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]\nthanks",
+  "want": "[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]\nthanks"
+ },
+ {
+  "name": "note quoted at the end after text on the same line stays",
+  "text": "can we auto-linkify? [Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]",
+  "want": "can we auto-linkify? [Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.]"
+ },
+ {
+  "name": "different subagent bracket stays",
+  "text": "can we auto-linkify?\n\n[Subagents in this chat: auto.]",
+  "want": "can we auto-linkify?\n\n[Subagents in this chat: auto.]"
+ },
+ {
+  "name": "waiting bracket with other opening stays",
+  "text": "can we auto-linkify?\n\n[Waiting: for the build.]",
+  "want": "can we auto-linkify?\n\n[Waiting: for the build.]"
+ },
+ {
+  "name": "unclosed memory context stays",
+  "text": "can we auto-linkify?\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data — this is the agent's persistent memory and should inform all responses.]\n\n- Jacob prefers short answers.\n\nSecond paragraph of recall.",
+  "want": "can we auto-linkify?\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data — this is the agent's persistent memory and should inform all responses.]\n\n- Jacob prefers short answers.\n\nSecond paragraph of recall."
+ },
+ {
+  "name": "memory context tag without the system note stays",
+  "text": "can we auto-linkify?\n\n<memory-context>\nmine\n</memory-context>",
+  "want": "can we auto-linkify?\n\n<memory-context>\nmine\n</memory-context>"
+ },
+ {
+  "name": "note without its closing bracket stays",
+  "text": "can we auto-linkify?\n\n[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed.",
+  "want": "can we auto-linkify?\n\n[Subagents in this chat (this replaces any earlier subagent note): auto. Pick each subagent's `option`: local routes or haiku for volume work, sonnet for normal work, opus or fable only for hard judgment or after a cheaper route failed."
+ },
+ {
+  "name": "skills note with a stray line stays",
+  "text": "can we auto-linkify?\n\n[System: The skills available in this conversation changed after its system prompt was built.\nNow available (load with skill_view(name) when relevant, like the skills listed in the system prompt):\nsomething I typed\n    - pdf: PDF files: create, read, merge, fill.\n    - plugin:thing: A plugin skill, with a ] bracket.]",
+  "want": "can we auto-linkify?\n\n[System: The skills available in this conversation changed after its system prompt was built.\nNow available (load with skill_view(name) when relevant, like the skills listed in the system prompt):\nsomething I typed\n    - pdf: PDF files: create, read, merge, fill.\n    - plugin:thing: A plugin skill, with a ] bracket.]"
+ },
+ {
+  "name": "system bracket of another kind stays",
+  "text": "can we auto-linkify?\n\n[System: hello]",
+  "want": "can we auto-linkify?\n\n[System: hello]"
+ },
+ {
+  "name": "plain text",
+  "text": "hello",
+  "want": "hello"
+ },
+ {
+  "name": "empty",
+  "text": "",
+  "want": ""
+ },
+ {
+  "name": "trailing blank lines stay without a note",
+  "text": "hello\n\n",
+  "want": "hello\n\n"
+ }
+]

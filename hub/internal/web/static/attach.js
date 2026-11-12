@@ -27,6 +27,38 @@ window.HubAttach = (() => {
     return i >= 0 && imageExts.has(b.slice(i + 1).toLowerCase());
   };
 
+  // The notes Hermes and its plugins append to the end of a user message for
+  // the model: recalled memory (agent/memory_context.py), the subagent route
+  // and waiting notes of the subagent-routes plugin, and the skills and
+  // interface notes (agent/skills_index_delta.py, agent/surface_switch.py).
+  // Each is matched by its exact opening text and its closing bracket or
+  // tag at the very end of the message. internal/hub/notes.go has the same
+  // list; both run against internal/hub/testdata/notes/cases.json.
+  const skillsHead = "\\[System: The skills available in this conversation changed after its system prompt was built\\.";
+  const injected = [
+    /(?:^|\n)<memory-context>\n\[System note: The following is recalled memory context, [\s\S]*?<\/memory-context>$/,
+    /(?:^|\n)\[Subagents in this chat \(this replaces any earlier subagent note\): [^\n]*\]$/,
+    /(?:^|\n)\[Subagent routes now: this chat's delegate_task tool was fixed when the chat began and lists [^\n]*\]$/,
+    /(?:^|\n)\[Waiting: to wait for something slow, [^\n]*\]$/,
+    new RegExp("(?:^|\\n)" + skillsHead + "(?: The skills listed in the system prompt are accurate again; earlier skill-change notes are superseded\\.|" +
+      "\\nNow available \\(load with skill_view\\(name\\) when relevant, like the skills listed in the system prompt\\):(?:\\n    - [^\\n]*)+(?:\\nNo longer available: [^\\n]*)?|" +
+      "\\nNo longer available: [^\\n]*)\\]$"),
+    /(?:^|\n)\[System: This conversation is now being answered on a different interface: [^\n]*\]$/,
+    /(?:^|\n)\[System: These tools stay listed for this conversation [^\n]*\]$/,
+  ];
+
+  // cutNotes drops those notes and the blank lines before them.
+  function cutNotes(text) {
+    let s = String(text || "");
+    for (;;) {
+      const t = s.replace(/\s+$/, "");
+      let m = null;
+      for (const re of injected) if ((m = re.exec(t))) break;
+      if (!m) return s;
+      s = t.slice(0, m.index).replace(/\s+$/, "");
+    }
+  }
+
   // cutPage drops the block the hub adds to a page chat message (hub.PageContextHead).
   const pageHead = "[Talaria page chat.";
   function cutPage(text) {
@@ -68,7 +100,7 @@ window.HubAttach = (() => {
   }
 
   function split(text) {
-    text = cutPage(text);
+    text = cutPage(cutNotes(text));
     let atts = [];
     const keep = [];
     let skipTo = "";
@@ -101,5 +133,5 @@ window.HubAttach = (() => {
     return { text: rest, atts };
   }
 
-  return { split };
+  return { split, cutNotes };
 })();

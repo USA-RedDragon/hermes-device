@@ -67,7 +67,7 @@ const imageCaption = "What do you see in this image?"
 // splitPrompt takes the attachment lines out of a prompt and returns the
 // rest and the names of the attachments.
 func splitPrompt(text string) (string, []string) {
-	text = hub.CutPageContext(text)
+	text = hub.CutPageContext(hub.CutInjectedNotes(text))
 	var keep, names []string
 	files, images := false, false
 	skipTo := ""
@@ -238,6 +238,7 @@ func (r *renderer) echo(ctx context.Context, text, id string, images int) int64 
 		return 0
 	}
 	r.echoed = true
+	text = hub.CutInjectedNotes(text)
 	if n := notice.Parse(text); n != nil {
 		if n.Kind == notice.KindAgent {
 			r.agentMessage(ctx, text)

@@ -1061,6 +1061,7 @@ func (r *renderer) cronResult(ctx context.Context, text string) {
 // agentMessage shows a message that another agent sent this chat through
 // the hub, which starts its turn.
 func (r *renderer) agentMessage(ctx context.Context, text string) {
+	text = hub.CutInjectedNotes(text)
 	m := hub.AgentHeaderRE.FindStringSubmatch(text)
 	if m == nil {
 		return

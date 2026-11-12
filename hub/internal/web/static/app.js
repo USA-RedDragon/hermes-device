@@ -729,7 +729,7 @@
     // chat as a user message (see notice.js) as a card, and returns false
     // for any other text. A queued one shows as waiting until it starts.
     noticeText(text, waiting) {
-      const n = window.HubNotice.parse(text);
+      const n = window.HubNotice.parse(window.HubAttach.cutNotes(text));
       if (!n) return false;
       if (!this.agentWaiting) this.agentWaiting = new Map();
       const key = n.id || "text:" + text;
@@ -756,7 +756,7 @@
     // userText adds a user message. atts are the files the page sent with
     // it; without them they come from the lines Hermes keeps in the text.
     userText(text, pending, atts) {
-      const shown = atts ? { text, atts } : splitAttachments(text);
+      const shown = atts ? { text: window.HubAttach.cutNotes(text), atts } : splitAttachments(text);
       const from = window.HubPageSend.split(shown.text);
       shown.text = from.text;
       const m = el("div", "msg user" + (pending ? " pending" : ""));
