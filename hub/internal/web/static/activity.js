@@ -21,7 +21,7 @@ window.HubActivity = (ctx) => {
   let S = fresh(null);
   function fresh(chat) {
     return { chat, subs: new Map(), bgs: new Map(), open: new Set(), tab: "sub", paused: false, turn: null,
-      usage: null, running: false, error: "", polled: 0, timer: 0, tick: 0, tails: new Map(), tailAt: 0,
+      usage: null, running: false, error: "", failingSince: 0, loaded: false, polled: 0, timer: 0, tick: 0, tails: new Map(), tailAt: 0,
       approvals: new Map(), asked: new Set() };
   }
 
@@ -312,10 +312,15 @@ window.HubActivity = (ctx) => {
         const st = await api("GET", chat.base + "/activity");
         if (chat !== S.chat) return;
         S.error = "";
+        S.failingSince = 0;
+        S.loaded = true;
         merge(st);
       } catch (e) {
         if (chat !== S.chat) return;
-        S.error = e.message;
+        // A backend that restarts answers again within seconds: keep showing the last good list
+        // through a short gap, and say it failed only when it lasts.
+        S.failingSince = S.failingSince || Date.now();
+        if (!S.loaded || Date.now() - S.failingSince >= ACTIVITY_GAP_MS) S.error = e.message;
       }
       S.polled = Date.now();
       await refreshTails();
@@ -326,6 +331,8 @@ window.HubActivity = (ctx) => {
   }
 
   const pollBackoff = window.HubBackoff({ base: 3000, max: 30000 });
+  // How long a failing poll keeps the last good activity on screen before it shows the error.
+  const ACTIVITY_GAP_MS = 60000;
 
   function schedule() {
     if (!S.chat) return;
