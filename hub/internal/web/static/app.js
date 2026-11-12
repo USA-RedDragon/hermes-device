@@ -2054,8 +2054,8 @@
       ". When it fills up, Talaria summarizes older messages to make room.");
   }
 
-  // limitParts are the meters of the Claude account's usage windows that
-  // the account reports.
+  // limitParts are the meters of the usage windows that the chat's Claude
+  // account or ChatGPT plan reports.
   function limitParts(info) {
     if (!view || !info.provider) return { name: null, parts: [] };
     const a = claude.account(view.backend, info.provider, view.session, info.model || (info.usage || {}).model || "");
@@ -2084,7 +2084,7 @@
     const apiKey = view && info.provider === claude.apiProvider;
     const who = el("b", "who1");
     if (lim.name) {
-      if (!/^Claude\b/.test(lim.name.label)) who.append(el("span", "long", "Claude "));
+      if (lim.name.provider !== claude.chatgptProvider && !/^Claude\b/.test(lim.name.label)) who.append(el("span", "long", "Claude "));
       who.append(lim.name.label);
       who.title = (lim.name.email ? lim.name.label + ": " + lim.name.email : lim.name.label) + (model ? ", " + model : "");
     } else if (apiKey) {

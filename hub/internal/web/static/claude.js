@@ -1,6 +1,7 @@
 "use strict";
 // HubClaude shows the Claude accounts of a backend with the claude-accounts
-// Hermes plugin: the account and its usage on the line under a chat's
+// Hermes plugin, and the ChatGPT plan that Hermes itself signs in to: the
+// account and its usage on the line under a chat's
 // title (for a chat on the Claude pool, the account the pool runs it on),
 // a panel on the Usage page with each account's API credit estimate, the
 // notice in a chat whose account lost its login, and the sign-in dialog. Only the backend's Claude admins see
@@ -14,6 +15,7 @@ window.HubClaude = (ctx) => {
   const apiProvider = "anthropic";
   const apiName = "Claude API";
   const poolProvider = "claude-pool";
+  const chatgptProvider = "openai-codex";
   const creditsPrefix = "claude-api-";
   // cache maps a backend ID to { at, data } (data null: no plugin) while
   // a load runs or after it ended.
@@ -306,21 +308,22 @@ window.HubClaude = (ctx) => {
     }
   }
 
-  // panel is the Usage page's "Claude accounts" section of a backend, or
-  // null when its Hermes has no claude-accounts plugin.
+  // panel is the Usage page's "Subscription accounts" section of a
+  // backend, or null when its Hermes has neither the claude-accounts plugin
+  // nor a ChatGPT plan.
   async function panel(backend) {
     const s = el("section", "usage-sec claude-panel");
-    s.append(el("h2", "", "Claude accounts"));
+    s.append(el("h2", "", "Subscription accounts"));
     let data;
     try {
       data = await api("GET", base(backend) + "?usage=1");
       cache.set(backend, { at: Date.now(), data });
     } catch (e) {
       if (/no Claude accounts plugin|not set up/.test(e.message)) return null;
-      s.append(el("p", "err", "Could not read the Claude accounts: " + e.message));
+      s.append(el("p", "err", "Could not read the subscription accounts: " + e.message));
       return s;
     }
-    s.append(el("p", "mem-hint", "The Claude subscription accounts this Hermes can use, with the share of each usage window used. " +
+    s.append(el("p", "mem-hint", "The Claude and ChatGPT subscription accounts this Hermes can use, with the share of each usage window used. " +
       "Reset times are in " + (data.time_zone || "UTC") + " time. API credits are an estimate: the credit the plan includes each " +
       "month, less what Hermes spent through the account's API key since the month started. Anthropic does not report the balance, " +
       "so use outside Hermes is not counted."));
@@ -351,7 +354,7 @@ window.HubClaude = (ctx) => {
           (a.credits.unpriced ? "; " + a.credits.unpriced + " calls had no known price and are not counted" : "");
         box.append(line);
       }
-      if (data.admin) {
+      if (data.admin && !a.no_signin) {
         const run = a.signin && (a.signin.state === "waiting_code" || a.signin.state === "starting" || a.signin.state === "verifying");
         const b = el("button", "", run ? "Continue sign-in" : a.signed_in ? "Sign in again" : "Sign in");
         b.type = "button";
@@ -363,7 +366,7 @@ window.HubClaude = (ctx) => {
     return s;
   }
 
-  return { parts, note, afterReply, chatNotice, signIn, panel, apiName, apiProvider, route,
+  return { parts, note, afterReply, chatNotice, signIn, panel, apiName, apiProvider, chatgptProvider, route,
     account: (backend, provider, session, model) => {
       parts(backend, { provider });
       if (provider === poolProvider && session && me().claude) {
