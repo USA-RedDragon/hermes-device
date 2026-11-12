@@ -8,11 +8,11 @@ gateway.restart_listener_relay_close_sockets (false = off): with restart_listene
 ---
  gateway/config.py                             |   7 +-
  gateway/config_loader.py                      |   1 +
- gateway/listener_relay.py                     | 155 ++++++++++++++++-
+ gateway/listener_relay.py                     | 167 +++++++++++++-
  gateway/run_api.py                            |   7 +-
  gateway/run_shutdown.py                       |   6 +-
- .../test_restart_listener_relay_close.py      | 164 ++++++++++++++++++
- 6 files changed, 328 insertions(+), 12 deletions(-)
+ .../test_restart_listener_relay_close.py      | 209 ++++++++++++++++++
+ 6 files changed, 385 insertions(+), 12 deletions(-)
  create mode 100644 tests/gateway/test_restart_listener_relay_close.py
 
 diff --git a/gateway/config.py b/gateway/config.py
@@ -60,10 +60,10 @@ index c687159696..d847dc3c63 100644
      *_presence(
          "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
 diff --git a/gateway/listener_relay.py b/gateway/listener_relay.py
-index c99515d100..877542b3d5 100644
+index c99515d100..028e694c7e 100644
 --- a/gateway/listener_relay.py
 +++ b/gateway/listener_relay.py
-@@ -28,6 +28,12 @@ CONNECT_RETRY_S = 0.05
+@@ -28,6 +28,15 @@ CONNECT_RETRY_S = 0.05
  CONNECT_ATTEMPT_TIMEOUT_S = 1.0
  # Relayed connections still open when the window ends get this long to finish.
  DRAIN_S = 5.0
@@ -72,11 +72,14 @@ index c99515d100..877542b3d5 100644
 +CLOSE_BOUNDARY_S = 2.0
 +# A server's close frame with code 1012 (service restart): the client reconnects, now to the successor.
 +SERVICE_RESTART_CLOSE = b"\x88\x02\x03\xf4"
++# The close frame goes out this long after the other relayed connections were cut, so a client that
++# reconnects at once does not reuse a pooled HTTP connection of the relay that is being cut.
++CLOSE_DELAY_S = 0.5
 +_HEAD_LIMIT = 65536
  _WILDCARD_HOSTS = {"", "0.0.0.0", "::"}
  
  
-@@ -82,8 +88,123 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
+@@ -82,8 +91,132 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
          pass
  
  
@@ -152,31 +155,40 @@ index c99515d100..877542b3d5 100644
 +
 +async def _pipe_to_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
 +                          closing: asyncio.Event) -> None:
-+    """The successor-to-client half of a relay that ends a WebSocket cleanly: once *closing* is set it
-+    sends the client a close frame (1012) between two frames and stops; other connections are cut."""
++    """The successor-to-client half of a relay that ends a WebSocket cleanly: once *closing* is set other
++    connections are cut, and a WebSocket gets a close frame (1012) :data:`CLOSE_DELAY_S` later, between
++    two frames."""
 +    frames = _ServerFrames()
 +    loop = asyncio.get_running_loop()
 +    boundary_deadline = None
++    close_at = None
 +    try:
 +        while True:
 +            if closing.is_set():
-+                if frames.between_frames:
-+                    writer.write(SERVICE_RESTART_CLOSE)
-+                    await writer.drain()
-+                    return
 +                if frames.websocket is not True:
 +                    return
-+                boundary_deadline = boundary_deadline or loop.time() + CLOSE_BOUNDARY_S
-+                if loop.time() >= boundary_deadline:
-+                    return
++                close_at = close_at or loop.time() + CLOSE_DELAY_S
++                if loop.time() >= close_at:  # until then it keeps relaying
++                    if frames.between_frames:
++                        writer.write(SERVICE_RESTART_CLOSE)
++                        await writer.drain()
++                        return
++                    boundary_deadline = boundary_deadline or loop.time() + CLOSE_BOUNDARY_S
++                    if loop.time() >= boundary_deadline:
++                        return
 +            read = asyncio.ensure_future(reader.read(65536))
 +            waits = {read}
 +            closed = None
 +            if not closing.is_set():
 +                closed = asyncio.ensure_future(closing.wait())
 +                waits.add(closed)
-+            done, _ = await asyncio.wait(waits, timeout=None if closed else CLOSE_BOUNDARY_S,
-+                                         return_when=asyncio.FIRST_COMPLETED)
++            if closed is not None:
++                timeout = None
++            elif loop.time() < close_at:
++                timeout = close_at - loop.time()
++            else:
++                timeout = CLOSE_BOUNDARY_S
++            done, _ = await asyncio.wait(waits, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
 +            if closed is not None and not closed.done():
 +                closed.cancel()
 +            if read not in done:
@@ -202,7 +214,7 @@ index c99515d100..877542b3d5 100644
      loop = asyncio.get_running_loop()
      try:
          while True:
-@@ -96,7 +217,16 @@ async def _relay_connection(reader, writer, target, connect_deadline: float) ->
+@@ -96,7 +229,16 @@ async def _relay_connection(reader, writer, target, connect_deadline: float) ->
                      return False
                  await asyncio.sleep(CONNECT_RETRY_S)
          try:
@@ -220,7 +232,7 @@ index c99515d100..877542b3d5 100644
          finally:
              upstream_writer.close()
          return True
-@@ -104,20 +234,27 @@ async def _relay_connection(reader, writer, target, connect_deadline: float) ->
+@@ -104,20 +246,27 @@ async def _relay_connection(reader, writer, target, connect_deadline: float) ->
          writer.close()
  
  
@@ -251,7 +263,7 @@ index c99515d100..877542b3d5 100644
          except Exception:
              counts[1] += 1
              logger.debug("Listener relay connection failed", exc_info=True)
-@@ -129,8 +266,12 @@ async def relay_listener(sock: socket.socket, target: tuple[str, int], seconds:
+@@ -129,8 +278,12 @@ async def relay_listener(sock: socket.socket, target: tuple[str, int], seconds:
          await asyncio.sleep(max(0.0, deadline - loop.time()))
      finally:
          server.close()
@@ -260,7 +272,7 @@ index c99515d100..877542b3d5 100644
          if tasks:
 -            _done, pending = await asyncio.wait(set(tasks), timeout=DRAIN_S)
 +            # A WebSocket finishing its frame before the close may take up to CLOSE_BOUNDARY_S.
-+            drain = DRAIN_S if closing is None else max(DRAIN_S, CLOSE_BOUNDARY_S + 0.5)
++            drain = DRAIN_S if closing is None else max(DRAIN_S, CLOSE_DELAY_S + CLOSE_BOUNDARY_S + 0.5)
 +            _done, pending = await asyncio.wait(set(tasks), timeout=drain)
              for task in pending:
                  task.cancel()
@@ -323,10 +335,10 @@ index 669dc8a059..43fd80afc0 100644
          else:
 diff --git a/tests/gateway/test_restart_listener_relay_close.py b/tests/gateway/test_restart_listener_relay_close.py
 new file mode 100644
-index 0000000000..083a1b26ba
+index 0000000000..d1b4e04496
 --- /dev/null
 +++ b/tests/gateway/test_restart_listener_relay_close.py
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,209 @@
 +"""gateway.restart_listener_relay_close_sockets: a relayed WebSocket still open when the relay window
 +ends gets a close frame (1012) between two of the successor's frames instead of a cut connection."""
 +import asyncio
@@ -491,3 +503,48 @@ index 0000000000..083a1b26ba
 +    finally:
 +        successor.close()
 +    assert received == b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
++
++
++@pytest.mark.asyncio
++async def test_plain_connections_are_cut_before_the_close_frame(monkeypatch):
++    """A client that reconnects on the close must not reuse a pooled HTTP connection of the relay."""
++    monkeypatch.setattr(listener_relay, "DRAIN_S", 0.2)
++    ws_port, http_port = await _free_port(), await _free_port()
++
++    async def script(writer):
++        pass
++
++    ws_successor = await _successor(ws_port, script)
++
++    async def serve(reader, writer):
++        await reader.readuntil(b"\r\n\r\n")
++        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
++        await writer.drain()
++        await reader.read()
++        writer.close()
++
++    http_successor = await asyncio.start_server(serve, "127.0.0.1", http_port)
++    loop = asyncio.get_running_loop()
++    ended = {}
++    old_ws, old_http = _listening_socket(), _listening_socket()
++    try:
++        relays = [asyncio.ensure_future(relay_listener(old_ws, ("127.0.0.1", ws_port), 0.3, close_sockets=True)),
++                  asyncio.ensure_future(relay_listener(old_http, ("127.0.0.1", http_port), 0.3, close_sockets=True))]
++
++        async def client(sock, payload, key):
++            reader, writer = await asyncio.open_connection(*sock.getsockname())
++            writer.write(payload)
++            await writer.drain()
++            data = await asyncio.wait_for(reader.read(), 5)
++            ended[key] = loop.time()
++            writer.close()
++            return data
++
++        ws_data, http_data = await asyncio.gather(client(old_ws, UPGRADE, "ws"),
++                                                  client(old_http, b"GET / HTTP/1.1\r\nHost: x\r\n\r\n", "http"))
++        await asyncio.wait_for(asyncio.gather(*relays), 5)
++    finally:
++        ws_successor.close()
++        http_successor.close()
++    assert ws_data.endswith(SERVICE_RESTART_CLOSE) and http_data.endswith(b"ok")
++    assert ended["ws"] - ended["http"] >= listener_relay.CLOSE_DELAY_S - 0.1
