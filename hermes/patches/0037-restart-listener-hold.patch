@@ -8,19 +8,19 @@ gateway.restart_listener_hold_seconds (0 = off; needs restart_listener_handover 
 ---
  gateway/config.py                            |   8 +-
  gateway/config_loader.py                     |   1 +
- gateway/drain_control.py                     |  26 +-
+ gateway/drain_control.py                     |  28 +-
  gateway/listener_forward.py                  | 167 ++++++++
- gateway/run_api.py                           | 116 +++++-
+ gateway/run_api.py                           | 122 +++++-
  gateway/run_shutdown.py                      |   8 +-
- tests/gateway/test_restart_listener_hold.py  | 413 +++++++++++++++++++
+ tests/gateway/test_restart_listener_hold.py  | 417 +++++++++++++++++++
  tests/gateway/test_restart_listener_relay.py |   2 +-
- website/docs/user-guide/messaging/index.md   |   9 +
- 9 files changed, 725 insertions(+), 25 deletions(-)
+ website/docs/user-guide/messaging/index.md   |  10 +
+ 9 files changed, 738 insertions(+), 25 deletions(-)
  create mode 100644 gateway/listener_forward.py
  create mode 100644 tests/gateway/test_restart_listener_hold.py
 
 diff --git a/gateway/config.py b/gateway/config.py
-index b994ee23de..2f4f8945c0 100644
+index b994ee23de..a4e13cbd0d 100644
 --- a/gateway/config.py
 +++ b/gateway/config.py
 @@ -652,6 +652,11 @@ class GatewayConfig:
@@ -29,8 +29,8 @@ index b994ee23de..2f4f8945c0 100644
      restart_listener_relay_seconds: float = 0.0
 +    # With restart_listener_relay_seconds: a request or WebSocket upgrade the stopping gateway would
 +    # refuse (503 / close 1013) waits up to this many seconds for the profile release instead, and is
-+    # then forwarded to the gateway that took over. Its GET reads are served while the stores are open,
-+    # and sockets opened before the restart wait stay open through it. 0 = refuse as before.
++    # then forwarded to the gateway that took over. Every GET is served in the restart wait, health alone
++    # once the stop begins, and sockets opened before the restart wait stay open through it. 0 = refuse.
 +    restart_listener_hold_seconds: float = 0.0
      # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
      # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
@@ -65,7 +65,7 @@ index f8876441fe..ac00f36b1c 100644
      *_presence(
          "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
 diff --git a/gateway/drain_control.py b/gateway/drain_control.py
-index a8f9b164dd..9cc5c9067e 100644
+index a8f9b164dd..dca1307232 100644
 --- a/gateway/drain_control.py
 +++ b/gateway/drain_control.py
 @@ -58,10 +58,26 @@ _RESTART_WAIT_READS = re.compile(
@@ -97,16 +97,18 @@ index a8f9b164dd..9cc5c9067e 100644
  
  
  # ``gateway.restart_listener_handover``: what a restart stop's listener still serves. READS while the
-@@ -73,9 +89,9 @@ HANDOVER_HEALTH = "health"
+@@ -73,9 +89,11 @@ HANDOVER_HEALTH = "health"
  def handover_read(runner, method, path) -> bool:
      """True for a GET the listener of *runner*'s restart stop still serves (``_listener_handover``)."""
      stage = getattr(runner, "_listener_handover", None)
 -    if method != "GET" or stage not in (HANDOVER_READS, HANDOVER_HEALTH):
 -        return False
 -    return path == "/api/health" if stage == HANDOVER_HEALTH else bool(_RESTART_WAIT_READS.fullmatch(path or ""))
-+    if stage == HANDOVER_READS:
-+        return _held_read(runner, method, path)
-+    return stage == HANDOVER_HEALTH and method == "GET" and path == "/api/health"
++    if stage == HANDOVER_READS and not restart_hold_configured(runner):
++        return method == "GET" and bool(_RESTART_WAIT_READS.fullmatch(path or ""))
++    # With gateway.restart_listener_hold_seconds the stop serves health alone: a read that needs the
++    # dashboard's sign-in waits behind the stop's own work there, so it is held for the successor.
++    return stage in (HANDOVER_READS, HANDOVER_HEALTH) and method == "GET" and path == "/api/health"
  
  
  def restart_wait_socket_ticket(runner, method, path, query) -> bool:
@@ -284,7 +286,7 @@ index 0000000000..a734a1ffa4
 +        return await forward_websocket(scope, receive, send, target, deadline)
 +    return await forward_http(scope, receive, send, target, deadline)
 diff --git a/gateway/run_api.py b/gateway/run_api.py
-index 70e8f8c7c1..96bc2c8f59 100644
+index 70e8f8c7c1..f0f55d7638 100644
 --- a/gateway/run_api.py
 +++ b/gateway/run_api.py
 @@ -380,12 +380,28 @@ async def stop_gateway_api(handle: GatewayAPIHandle) -> None:
@@ -318,16 +320,24 @@ index 70e8f8c7c1..96bc2c8f59 100644
      try:
          await stop_gateway_api(handle)
      except BaseException:
-@@ -404,6 +420,8 @@ def seal_gateway_api(handle: GatewayAPIHandle) -> None:
+@@ -402,8 +418,16 @@ def seal_gateway_api(handle: GatewayAPIHandle) -> None:
+     if handle.api is None or handle.api.sealed:
+         return
      handle.api.sealed = True
++    from gateway.drain_control import restart_hold_configured
++    hold = restart_hold_configured(getattr(handle.api, "runner", None))
      state = getattr(handle.server, "server_state", None)
      for connection in list(getattr(state, "connections", ())):
-+        if (getattr(connection, "scope", None) or {}).get(HELD_SCOPE_KEY):
-+            continue  # a held request goes to the successor (gateway.restart_listener_hold_seconds)
++        scope = getattr(connection, "scope", None) or {}
++        # gateway.restart_listener_hold_seconds: a held request goes to the successor, and an HTTP
++        # connection stays open (its next request is held too) instead of closing under a client
++        # that is about to reuse it. Sockets end, as their sessions do.
++        if scope.get(HELD_SCOPE_KEY) or (hold and scope.get("type") != "websocket"):
++            continue
          try:
              connection.shutdown()
          except Exception:
-@@ -418,7 +436,8 @@ async def end_gateway_api_reads(runner, handle: GatewayAPIHandle, timeout: float
+@@ -418,7 +442,8 @@ async def end_gateway_api_reads(runner, handle: GatewayAPIHandle, timeout: float
      from gateway.drain_control import HANDOVER_HEALTH
      seal_gateway_api(handle)
      runner._listener_handover = HANDOVER_HEALTH
@@ -337,7 +347,7 @@ index 70e8f8c7c1..96bc2c8f59 100644
      if tasks:
          _done, pending = await asyncio.wait(tasks, timeout=max(0.0, timeout))
          for task in pending:
-@@ -447,6 +466,8 @@ def _handover_read(runner, scope) -> bool:
+@@ -447,6 +472,8 @@ def _handover_read(runner, scope) -> bool:
  
  
  _START_HOLD_POLL_S = 0.02
@@ -346,7 +356,7 @@ index 70e8f8c7c1..96bc2c8f59 100644
  
  
  async def _hold_while_starting(runner, descriptor) -> None:
-@@ -493,6 +514,13 @@ class GatewayRuntimeAPI:
+@@ -493,6 +520,13 @@ class GatewayRuntimeAPI:
          self.inflight: set = set()
          #: Set by :func:`seal_gateway_api`: only a restart stop's handover reads are served.
          self.sealed = False
@@ -360,7 +370,7 @@ index 70e8f8c7c1..96bc2c8f59 100644
  
      async def __call__(self, scope, receive, send):
          task = asyncio.current_task()
-@@ -502,6 +530,55 @@ class GatewayRuntimeAPI:
+@@ -502,6 +536,55 @@ class GatewayRuntimeAPI:
          finally:
              self.inflight.discard(task)
  
@@ -416,7 +426,7 @@ index 70e8f8c7c1..96bc2c8f59 100644
      async def _serve_sealed(self, scope, receive, send):
          """A sealed listener serves the handover's reads (the dashboard's while the stores are open,
          health itself once they close) and refuses everything else."""
-@@ -516,13 +593,13 @@ class GatewayRuntimeAPI:
+@@ -516,13 +599,13 @@ class GatewayRuntimeAPI:
                  'ok': True, 'version': info.base_version, 'displayVersion': info.display_version,
                  'commit': info.commit, 'auth_required': bool(getattr(self.web_app.state, 'auth_required', False)),
              })(scope, receive, send)
@@ -435,7 +445,7 @@ index 70e8f8c7c1..96bc2c8f59 100644
          if self.sealed:
              return await self._serve_sealed(scope, receive, send)
          if scope['type'] != 'websocket' or scope.get('path') != '/api/ws':
-@@ -564,6 +641,8 @@ class GatewayRuntimeAPI:
+@@ -564,6 +647,8 @@ class GatewayRuntimeAPI:
                  and not _restart_wait_socket_ticket(self.runner, scope)
                  and not _restart_wait_plugin_socket(self.runner, scope)
                  and not _restart_wait_sign_in(self.runner, scope)):
@@ -444,7 +454,7 @@ index 70e8f8c7c1..96bc2c8f59 100644
              if scope['type'] == 'websocket':
                  await send({'type': 'websocket.close', 'code': 1013})
              else:
-@@ -579,7 +658,7 @@ class GatewayRuntimeAPI:
+@@ -579,7 +664,7 @@ class GatewayRuntimeAPI:
              return await self.app(scope, receive, send)
          original_receive = receive
          allow_draining = False
@@ -453,7 +463,7 @@ index 70e8f8c7c1..96bc2c8f59 100644
          from gateway.drain_control import restart_wait_open
  
          async def receive_admitted():
-@@ -587,8 +666,10 @@ class GatewayRuntimeAPI:
+@@ -587,8 +672,10 @@ class GatewayRuntimeAPI:
              # Only a socket admitted INTO the restart wait (to answer a parked prompt) outlives it. One
              # opened before the wait is cut as before: its client reconnects to the next owner, and a
              # held one (a kanban worker polling its card) would otherwise pin the drain to its cap.
@@ -465,7 +475,7 @@ index 70e8f8c7c1..96bc2c8f59 100644
                  return {'type': 'websocket.disconnect', 'code': 1013}
              return message
  
-@@ -605,17 +686,18 @@ class GatewayRuntimeAPI:
+@@ -605,17 +692,18 @@ class GatewayRuntimeAPI:
          # Origin, #147361). Origin is client-controlled, so this reaches no gate an Origin could not.
          native_peer = bool(ws.client) and ws.client.host in {'127.0.0.1', '::1'}
          if reason == 'none' or ws.headers.get('origin') or (reason == 'ok' and not native_peer):
@@ -516,10 +526,10 @@ index 1e6605c85f..a7403e934f 100644
          else:
 diff --git a/tests/gateway/test_restart_listener_hold.py b/tests/gateway/test_restart_listener_hold.py
 new file mode 100644
-index 0000000000..d97ea56c11
+index 0000000000..abc4e6612a
 --- /dev/null
 +++ b/tests/gateway/test_restart_listener_hold.py
-@@ -0,0 +1,413 @@
+@@ -0,0 +1,417 @@
 +"""gateway.restart_listener_hold_seconds: a restart stop holds what it would refuse and forwards it
 +to the gateway that takes over, instead of 503 / close 1013."""
 +import asyncio
@@ -567,17 +577,19 @@ index 0000000000..d97ea56c11
 +                           session_runtime_descriptor={"state": "ready", "drain_reason": RESTART_WAIT_REASON})
 +
 +
-+@pytest.mark.parametrize("hold, expected", [(60, True), (0, False)])
-+def test_with_the_hold_every_get_is_a_read_while_the_stores_are_open(hold, expected):
++@pytest.mark.parametrize("hold", [60, 0])
++def test_with_the_hold_every_get_is_served_in_the_restart_wait_and_only_health_in_the_stop(hold):
 +    runner = _waiting_runner(_config(hold))
-+    assert restart_wait_read(runner, "GET", "/api/cron/jobs") is expected
++    assert restart_wait_read(runner, "GET", "/api/cron/jobs") is bool(hold)
 +    assert restart_wait_read(runner, "GET", "/api/sessions/s1/messages")
 +    assert not restart_wait_read(runner, "PUT", "/api/config")
 +    runner._running, runner._listener_handover = False, HANDOVER_READS
-+    assert handover_read(runner, "GET", "/api/cron/jobs") is expected
-+    assert not handover_read(runner, "POST", "/api/cron/jobs")
-+    runner._listener_handover = HANDOVER_HEALTH
 +    assert not handover_read(runner, "GET", "/api/cron/jobs")
++    # The stop's reads wait behind its own work; with the hold they go to the successor instead.
++    assert handover_read(runner, "GET", "/api/sessions/s1/messages") is not bool(hold)
++    assert handover_read(runner, "GET", "/api/health")
++    runner._listener_handover = HANDOVER_HEALTH
++    assert not handover_read(runner, "GET", "/api/sessions/s1/messages")
 +    assert handover_read(runner, "GET", "/api/health")
 +
 +
@@ -816,15 +828,17 @@ index 0000000000..d97ea56c11
 +    assert from_app.get_nowait() == {"type": "websocket.close", "code": 1013}
 +
 +
-+def test_seal_leaves_a_held_connection_open():
++@pytest.mark.parametrize("hold, closed", [(0, ["idle", "fresh", "socket"]), (60, ["socket"])])
++def test_seal_leaves_held_and_with_the_hold_http_connections_open(hold, closed):
 +    calls = []
 +    held = SimpleNamespace(scope={HELD_SCOPE_KEY: True}, shutdown=lambda: calls.append("held"))
 +    idle = SimpleNamespace(scope={"type": "http"}, shutdown=lambda: calls.append("idle"))
 +    fresh = SimpleNamespace(shutdown=lambda: calls.append("fresh"))  # no request yet
-+    api = SimpleNamespace(sealed=False)
++    socket_ = SimpleNamespace(scope={"type": "websocket"}, shutdown=lambda: calls.append("socket"))
++    api = SimpleNamespace(sealed=False, runner=SimpleNamespace(config=_config(hold=hold)))
 +    seal_gateway_api(SimpleNamespace(api=api, server=SimpleNamespace(
-+        server_state=SimpleNamespace(connections=[held, idle, fresh]))))
-+    assert calls == ["idle", "fresh"] and api.sealed
++        server_state=SimpleNamespace(connections=[held, idle, fresh, socket_]))))
++    assert calls == closed and api.sealed
 +
 +
 +@pytest.mark.asyncio
@@ -947,10 +961,10 @@ index ef7a71fcdc..313846f914 100644
          return 1, 0
  
 diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
-index cc7645a902..0f34c3cef7 100644
+index cc7645a902..f3bd93a9f5 100644
 --- a/website/docs/user-guide/messaging/index.md
 +++ b/website/docs/user-guide/messaging/index.md
-@@ -776,6 +776,15 @@ wildcard `webapp.host`), retrying until the next gateway listens, so clients
+@@ -776,6 +776,16 @@ wildcard `webapp.host`), retrying until the next gateway listens, so clients
  wait instead of being refused. Allow connections between the two instances on
  the listener's port.
  
@@ -960,8 +974,9 @@ index cc7645a902..0f34c3cef7 100644
 +the relay to hold such a request instead, up to that many seconds: once the
 +profile is released it is forwarded to the next gateway, and its answer comes
 +back on the same connection. With the key the old gateway also serves every
-+`GET` while its stores are open, and a Webapp WebSocket opened before the
-+restart wait stays open through it.
++`GET` during the restart wait (health alone once the stop begins), keeps its
++HTTP connections open, and a Webapp WebSocket opened before the restart wait
++stays open through it.
 +
  ### macOS (launchd)
  
