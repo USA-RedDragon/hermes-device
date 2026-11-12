@@ -909,15 +909,22 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7
 .pop .pf button { border: 0; background: none; padding: .2rem 0; color: var(--accent); font-size: .75rem; margin-left: auto; }
 .pop .pf button:hover { text-decoration: underline; }
 
-/* Message actions: shown on hover; on touch a tap on the message shows them. */
-.log > .acts { display: flex; gap: .15rem; height: 0; margin: -.6rem .5rem 0; top: -.8rem; overflow: visible; position: relative; z-index: 2; opacity: 0; pointer-events: none; transition: opacity .12s; align-self: flex-end; }
-.log > .acts.mine { align-self: flex-start; }
-.log > .msg:hover + .acts, .log > .msg:hover + .queued + .acts, .log > .acts:hover, .log > .acts:focus-within, .log > .acts.show { opacity: 1; pointer-events: auto; }
-@media (pointer: coarse) { .log > .acts { display: none; } .log > .acts.show { display: flex; opacity: 1; height: auto; margin-top: -.5rem; top: 0; } }
-.log > .acts button { border: 1px solid var(--line); background: var(--card); color: var(--muted); padding: 0; border-radius: 6px; display: inline-grid; place-items: center; }
+/* Message actions: under the message, on its side. They take no space: the row has no height and its
+   negative margin cancels the log's gap. The row is as wide as the message's column, and ::before
+   bridges the bubble's lower edge and the buttons, so a pointer that leaves the bubble along its
+   bottom lands on the row, not on the log. On touch a tap on the message shows them. */
+.log > .acts { display: flex; gap: .15rem; width: 100%; height: 0; margin: -.6rem 0 0; padding: 0 .5rem; top: -.3rem; overflow: visible; position: relative;
+  z-index: 2; opacity: 0; pointer-events: none; transition: opacity .12s; }
+.log > .acts.mine { justify-content: flex-end; margin-left: auto; }
+.log > .acts::before { content: ""; position: absolute; left: 0; right: 0; top: -.25rem; height: calc(100% + 1.85rem); }
+.log > .msg:hover + .acts, .log > .msg:hover + .queued + .acts, .log > .queued:hover + .acts, .log > .msg:hover + .lost + .acts,
+.log > .acts:hover, .log > .acts:focus-within, .log > .acts.show { opacity: 1; pointer-events: auto; }
+.log > .acts button { position: relative; border: 1px solid var(--line); background: var(--card); color: var(--muted); padding: 0; border-radius: 6px; display: inline-grid; place-items: center; }
 .log > .acts button.ib { width: 1.6rem; height: 1.6rem; }
 .log > .acts button:hover { background: var(--hover); color: var(--fg); }
 .log > .acts svg { width: .85rem; height: .85rem; }
+@media (pointer: coarse) { .log > .acts { display: none; } .log > .acts.show { display: flex; } .log > .acts button.ib { width: 2rem; height: 2rem; }
+  .log > .acts::before { height: calc(100% + 2.25rem); } }
 .editbox { display: flex; flex-direction: column; gap: .35rem; width: min(88%, 36rem); align-self: flex-end; }
 .editbox.retrybox { align-self: flex-start; }
 .editbox textarea { font: inherit; border: 1px solid var(--accent); border-radius: 10px; padding: .45rem .6rem; background: var(--card);
