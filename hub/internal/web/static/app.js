@@ -451,6 +451,38 @@
   }
 
   // Chat view state for one session.
+  // The log stays pinned to its end while the reader is at the end. Only the
+  // reader's own scrolling releases the pin; growth after the scroll (a
+  // rendered reply, a tool's output, highlighting, images, an opened row)
+  // does not, and the observers below follow that growth.
+  let pinned = true;
+  const pinGap = 30;
+  (() => {
+    const log = $("log");
+    const gap = () => log.scrollHeight - log.scrollTop - log.clientHeight;
+    const follow = () => { if (pinned && !log.hidden) log.scrollTop = log.scrollHeight; };
+    let queued = false;
+    const soon = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => { queued = false; follow(); });
+    };
+    const ro = new ResizeObserver(follow);
+    ro.observe(log);
+    new MutationObserver((list) => {
+      for (const m of list) {
+        if (m.target === log) {
+          for (const n of m.removedNodes) if (n.nodeType === 1) ro.unobserve(n);
+          for (const n of m.addedNodes) if (n.nodeType === 1) ro.observe(n);
+        }
+      }
+      soon();
+    }).observe(log, { childList: true, subtree: true, characterData: true });
+    log.addEventListener("scroll", () => { if (!log.hidden) pinned = gap() < pinGap; }, { passive: true });
+    log.addEventListener("load", soon, true);
+    log.addEventListener("click", (e) => { if (e.target.closest && e.target.closest("summary")) pinned = false; }, true);
+  })();
+
   class Chat {
     constructor(backend, session) {
       this.backend = backend;
@@ -474,12 +506,12 @@
       this.urls = [];
     }
 
-    stick() {
-      const l = this.log;
-      return l.scrollHeight - l.scrollTop - l.clientHeight < 120;
-    }
+    stick() { return pinned; }
 
-    bottom() { this.log.scrollTop = this.log.scrollHeight; }
+    bottom() {
+      pinned = true;
+      this.log.scrollTop = this.log.scrollHeight;
+    }
 
     add(node) {
       const stick = this.stick();
@@ -2322,6 +2354,7 @@
     $("subtitle").textContent = "";
     banner("");
     settings.reset();
+    pinned = true;
     view = new Chat(backend, session);
     msgActs.reset();
     composer.open(view);
@@ -2881,7 +2914,7 @@
     const tab = document.querySelector("#settabs [aria-selected=\"true\"]");
     return {
       hash: location.hash,
-      log: { top: log.scrollTop, pinned: log.scrollHeight - log.scrollTop - log.clientHeight < 120, anchor: logAnchor(log) },
+      log: { top: log.scrollTop, pinned, anchor: logAnchor(log) },
       side: $("sessions").scrollTop,
       details: Array.from(log.querySelectorAll("details")).map((d) => d.open),
       act: view ? activity.view() : null,
@@ -2902,6 +2935,7 @@
       (st.details || []).forEach((open, i) => { if (ds[i]) ds[i].open = open; });
       const place = () => {
         if (!st.log || st.log.pinned) { chat.bottom(); return; }
+        pinned = false;
         const a = st.log.anchor;
         const n = a && logItems(chat.log)[a.i];
         if (!n) { chat.log.scrollTop = st.log.top; return; }
