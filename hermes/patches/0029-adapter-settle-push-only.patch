@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 00:59:32 -0600
+Subject: [PATCH] fix(gateway): settle before lifecycle sends only for adapters
+ that push
+
+A gateway whose only connected adapter is the API server slept 1 s before READY for lifecycle sends that never reach a request/response adapter.
+---
+ gateway/run_startup.py                       | 10 ++-
+ tests/gateway/test_startup_adapter_settle.py | 65 ++++++++++++++++++++
+ 2 files changed, 73 insertions(+), 2 deletions(-)
+ create mode 100644 tests/gateway/test_startup_adapter_settle.py
+
+diff --git a/gateway/run_startup.py b/gateway/run_startup.py
+index 906b982760..1c6b6f9e86 100644
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -1617,13 +1617,19 @@ class GatewayStartupMixin:
+         ):
+             self._schedule_update_notification_watch()
+ 
++    def _connected_adapters_push(self) -> bool:
++        """True when a connected adapter (a secondary profile's too) can push messages."""
++        maps = [getattr(self, "adapters", None) or {}, *(getattr(self, "_profile_adapters", None) or {}).values()]
++        return any(getattr(adapter, "supports_async_delivery", True) for adapters in maps for adapter in adapters.values())
++
+     async def _start_finish_wiring(self, connected_count: int) -> None:
+         """Post-connect wiring: services, boot notifications, startup restore, recovered watchers."""
+         from gateway.run import _planned_restart_notification_pending, _restart_notification_pending
+         from gateway.shutdown_flush import recover_gateway_pending
+         await self._start_post_connect_services(connected_count)
+-        # Let fresh adapters settle before lifecycle sends (helps Discord thread deliveries).
+-        if connected_count > 0:
++        # Let fresh adapters settle before lifecycle sends (helps Discord thread deliveries). Only an
++        # adapter that pushes messages gets those sends; a request/response one (the API server) does not.
++        if connected_count > 0 and self._connected_adapters_push():
+             await asyncio.sleep(1.0)
+         # Before _send_restart_notification() unlinks the marker: did we boot from a chat /restart?
+         # One-shot signal for _is_stale_restart_redelivery.
+diff --git a/tests/gateway/test_startup_adapter_settle.py b/tests/gateway/test_startup_adapter_settle.py
+new file mode 100644
+index 0000000000..eb6ebc02a5
+--- /dev/null
++++ b/tests/gateway/test_startup_adapter_settle.py
+@@ -0,0 +1,65 @@
++"""The post-connect settle before lifecycle sends waits only for adapters that push messages."""
++import asyncio
++from types import SimpleNamespace
++
++import pytest
++
++import gateway.run as gateway_run
++
++
++class _PushAdapter:
++    supports_async_delivery = True
++
++
++class _RequestResponseAdapter:
++    supports_async_delivery = False
++
++
++def _runner(adapters, profile_adapters=None):
++    async def noop(*_args, **_kwargs):
++        return None
++
++    runner = SimpleNamespace(
++        adapters=adapters, _profile_adapters=profile_adapters or {},
++        _start_post_connect_services=noop, _await_startup_boot_sends=noop,
++        _schedule_resume_pending_sessions=lambda: None, _finish_startup_restore=noop,
++        _send_session_db_warning_notifications=noop, _spawn_supervised=lambda *a, **k: None,
++    )
++    runner._connected_adapters_push = lambda: gateway_run.GatewayRunner._connected_adapters_push(runner)
++    return runner
++
++
++@pytest.fixture
++def settles(monkeypatch):
++    monkeypatch.setattr("gateway.shutdown_flush.recover_gateway_pending", lambda runner: 0)
++    monkeypatch.setattr(gateway_run, "_restart_notification_pending", lambda: False)
++    monkeypatch.setattr(gateway_run, "_planned_restart_notification_pending", lambda: False)
++    monkeypatch.setattr("gateway.run_runtime.recover_gateway_native_sessions", lambda runner: asyncio.sleep(0))
++    monkeypatch.setattr("gateway.cron_store_notices.install_cron_store_notices", lambda runner, loop: None)
++    slept = []
++    real_sleep = asyncio.sleep
++
++    async def fake_sleep(delay, *args, **kwargs):
++        slept.append(delay)
++        await real_sleep(0)
++
++    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
++    return slept
++
++
++def test_api_server_only_gateway_skips_the_settle(settles):
++    runner = _runner({"api_server": _RequestResponseAdapter()})
++    asyncio.run(gateway_run.GatewayRunner._start_finish_wiring(runner, 1))
++    assert 1.0 not in settles
++
++
++def test_a_pushing_adapter_still_gets_the_settle(settles):
++    runner = _runner({"api_server": _RequestResponseAdapter(), "telegram": _PushAdapter()})
++    asyncio.run(gateway_run.GatewayRunner._start_finish_wiring(runner, 2))
++    assert 1.0 in settles
++
++
++def test_a_secondary_profile_pushing_adapter_counts(settles):
++    runner = _runner({"api_server": _RequestResponseAdapter()}, {"work": {"discord": _PushAdapter()}})
++    asyncio.run(gateway_run.GatewayRunner._start_finish_wiring(runner, 2))
++    assert 1.0 in settles
