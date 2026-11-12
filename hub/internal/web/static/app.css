@@ -186,7 +186,7 @@ button.primary.ib:hover { filter: brightness(1.08); }
   gap: .4rem; align-items: flex-start; font-size: .9rem; color: var(--muted); }
 .lost-text { color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
 button.link { border: 0; background: none; padding: 0; color: var(--accent); font-size: inherit; text-decoration: underline; }
-.msg pre, .tool pre { background: var(--code); padding: .5rem; border-radius: 6px; overflow-x: auto;
+.msg pre { background: var(--code); padding: .5rem; border-radius: 6px; overflow-x: auto;
   white-space: pre; font-size: .85rem; margin: .4rem 0; }
 .msg.assistant pre { color: var(--fg); }
 .note { color: var(--muted); font-size: .85rem; text-align: center; }
@@ -194,20 +194,20 @@ button.link { border: 0; background: none; padding: 0; color: var(--accent); fon
 details.reasoning { border-left: 3px solid var(--line); padding: .1rem .6rem; color: var(--muted); font-size: .9rem; }
 details.reasoning summary { cursor: pointer; }
 details.reasoning .body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow-y: auto; }
-.tool { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: .5rem .7rem; font-size: .9rem; }
-.tool .head { display: flex; flex-wrap: wrap; gap: .1rem .5rem; align-items: center; }
-.tool .head .name { font-weight: 600; font-family: ui-monospace, monospace; }
-.tool .head .state { margin-left: auto; color: var(--muted); font-size: .8rem; }
-.tool.running .state::before { content: ""; display: inline-block; width: .55rem; height: .55rem; margin-right: .3rem;
-  border-radius: 50%; border: 2px solid var(--accent); border-right-color: transparent; animation: spin 1s linear infinite; }
-.tool.failed .state { color: var(--bad); }
-.tool summary { cursor: pointer; color: var(--muted); }
-.tool .head .context { flex: 1 1 6rem; min-width: 0; color: var(--muted); font-family: ui-monospace, monospace; font-size: .8rem;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tool .head .state { flex: none; font-variant-numeric: tabular-nums; }
-.tool pre.command { margin: .35rem 0; }
-.tool pre.command::before { content: "$ "; color: var(--muted); }
-.tool pre.diff { max-height: 24rem; overflow: auto; }
+.tool.notice { font-size: .9rem; }
+.tool-sec { position: relative; }
+.tool-sec > b { font-size: .8rem; color: var(--muted); font-weight: 600; margin-bottom: .15rem; }
+.tool-box { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem;
+  background: var(--code); padding: .5rem 2.2rem .5rem .5rem; border-radius: 6px; max-height: 18rem; overflow: auto; min-width: 0; }
+.tool-box.command::before { content: "$ "; color: var(--muted); }
+pre.diff.tool-box { white-space: pre; overflow-wrap: normal; }
+.tool-copy { position: absolute; right: .2rem; bottom: .2rem; width: 1.8rem; height: 1.8rem; opacity: .75; }
+.tool-copy:hover { opacity: 1; }
+.tool-live { padding: 0 .75rem; }
+.tool-live:empty { display: none; }
+.tool-live > * { margin-bottom: .5rem; }
+.tool-open { display: block; margin: 0 0 .5rem; font-size: .85rem; }
+.tool .media { margin-bottom: .5rem; }
 .diff span { display: block; }
 .diff .add { color: var(--hl-add); background: var(--hl-add-bg); }
 .diff .del { color: var(--hl-del); background: var(--hl-del-bg); }
@@ -218,8 +218,10 @@ details.toolgroup > summary { cursor: pointer; padding: .15rem .1rem; }
 details.toolgroup .bad { color: var(--bad); }
 details.toolgroup .group-body { display: flex; flex-direction: column; gap: .5rem; margin-top: .4rem; color: var(--fg); }
 .tool progress { width: 100%; }
-@keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .tool.running .state::before { animation: none; } }
+.notice-run::before { content: ""; display: inline-block; width: .5rem; height: .5rem; margin-right: .35rem; border-radius: 50%; background: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .notice-run::before { animation: none; } }
 .approval { border: 2px solid var(--warn); border-radius: 10px; padding: .6rem .75rem; background: var(--card); min-width: 0; }
 .approval pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow-y: auto; }
 .approval .actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
@@ -839,8 +841,8 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .act .tail .e { color: var(--bad); }
 .act .tail .think { color: var(--muted); font-style: italic; }
 .act .acts { display: flex; gap: .35rem; flex-wrap: wrap; }
-.act .acts button, .act .confirm button, .act .steer button, .tool > .acts button { font-size: .8rem; padding: .2rem .55rem; }
-.tool > .acts { display: flex; gap: .35rem; flex-wrap: wrap; }
+.act .acts button, .act .confirm button, .act .steer button, .tool-live .acts button { font-size: .8rem; padding: .2rem .55rem; }
+.tool-live .acts { display: flex; gap: .35rem; flex-wrap: wrap; }
 .act .danger-text { color: var(--bad); }
 .act .steer { display: flex; gap: .35rem; }
 .act .steer input { flex: 1; min-width: 0; font: inherit; font-size: 16px; padding: .25rem .45rem; border-radius: 7px;
@@ -850,8 +852,6 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .act .result.muted { color: var(--muted); }
 .act .confirm { font-size: .82rem; display: flex; gap: .35rem; align-items: center; flex-wrap: wrap; overflow-wrap: anywhere; }
 .act .empty { color: var(--muted); font-size: .85rem; padding: 1rem .5rem; text-align: center; }
-.tool.opens .head { cursor: pointer; }
-.tool.opens .head .name { text-decoration: underline dotted var(--muted); text-underline-offset: .2em; }
 .toast { position: fixed; bottom: calc(1rem + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); z-index: 110;
   max-width: min(30rem, calc(100vw - 2rem)); background: var(--fg); color: var(--bg); padding: .45rem .8rem; border-radius: 8px; font-size: .85rem; }
 @media (max-width: 900px) {
@@ -1059,9 +1059,8 @@ html.pagechat, .pagechat body { font-size: 14px; }
 .pagechat details.toolgroup { font-size: .78rem; }
 .pagechat details.toolgroup .group-body { gap: .15rem; margin-left: 1.2rem; padding: .35rem .5rem; background: var(--card);
   border: 1px solid var(--line); border-radius: 8px; color: var(--muted); }
-.pagechat .tool { border: 0; background: none; padding: .1rem 0; font-size: .78rem; color: var(--muted); }
-.pagechat .tool .head .name { font-weight: 400; }
-.pagechat .tool details, .pagechat .tool pre, .pagechat .tool .media, .pagechat .tool .msg { display: none; }
+.pagechat .tool.notice { font-size: .8rem; }
+.pagechat .tool .notice-head { padding: .45rem .6rem; }
 .pagechat .composer { padding: .45rem .55rem .55rem; gap: .35rem; background: var(--card); }
 .pagechat .composer-row { max-width: none; }
 .pagechat .composer textarea { font-size: inherit; border-radius: 10px; padding: .45rem .55rem; background: var(--bg); }

@@ -954,48 +954,31 @@
       }
     }
 
-    toolCard(id, name, args, context) {
+    computerName() {
+      const p = placeOf({ backend_id: this.backend, id: this.session });
+      return p && p.kind === "computer" && p.mine ? p.name || "" : "";
+    }
+
+    toolCard(id, name, args) {
       let card = this.tools.get(id);
       if (card) return card;
-      card = el("div", "tool running");
-      card.toolName = name || "tool";
-      card.startedAt = this.at;
-      const head = el("div", "head");
-      head.append(el("span", "name", name || "tool"));
+      if (!this.known) this.known = window.HubToolCard.memory();
+      const call = { name: name || "tool", args, res: null, out: "", done: false, failed: false, startedAt: this.at, endedAt: 0,
+        duration: undefined, computer: this.computerName(), mem: this.known };
+      const view = window.HubToolCard.create({ el, toast, highlight: highlightBash, diff: diffView }, call);
+      card = view.node;
+      card.view = view;
+      card.call = call;
+      card.toolName = call.name;
+      card.classList.add("running");
       if (activity.opens(name, args)) {
-        card.classList.add("opens");
-        head.title = "Show in Activity";
-        head.onclick = () => activity.fromTool(name, args, card.result);
+        const open = el("button", "link tool-open", "Show in Activity");
+        open.type = "button";
+        open.onclick = () => activity.fromTool(name, args, card.result);
+        view.body.append(open);
       }
-      const preview = name === "terminal" && args && typeof args.command === "string" ? "" : context;
-      if (preview) head.append(el("span", "context", preview));
-      const state = el("span", "state", t("running"));
-      if (window.HubTimes.valid(card.startedAt)) window.HubTimes.running(state, card.startedAt);
-      head.append(state);
-      card.append(head);
-      if (name === "terminal" && args && typeof args.command === "string") {
-        const pre = el("pre", "command");
-        const hl = window.hljs;
-        if (hl && hl.getLanguage("bash") && args.command.length <= 100000) {
-          try {
-            pre.innerHTML = hl.highlight(args.command, { language: "bash", ignoreIllegals: true }).value;
-            pre.classList.add("hljs");
-          } catch (_) {
-            pre.textContent = args.command;
-          }
-        } else {
-          pre.textContent = args.command;
-        }
-        card.append(pre);
-        if (this.canBackground && !args.background) card.append(this.backgroundActs(id));
-      } else if (name === "agent_send" && args && typeof args.text === "string") {
-        const sent = el("div", "msg agent sent");
-        sent.append(el("div", "agent-tag", "Agent message to " + String(args.to || "")), args.text);
-        card.append(sent);
-      } else if (args && Object.keys(args).length) {
-        const d = el("details");
-        d.append(el("summary", "", t("args")), el("pre", "", JSON.stringify(args, null, 2)));
-        card.append(d);
+      if (name === "terminal" && args && typeof args.command === "string" && this.canBackground && !args.background) {
+        view.live.append(this.backgroundActs(id));
       }
       this.tools.set(id, card);
       this.endText();
@@ -1031,24 +1014,15 @@
     toolDone(card, p, at = this.at) {
       if (!card.classList.contains("running") && card.finished) return;
       card.finished = true;
-      for (const n of card.querySelectorAll(":scope > .acts")) n.remove();
+      card.view.live.replaceChildren();
       if (p.result !== undefined) card.result = p.result;
       card.classList.remove("running");
+      const call = card.call;
       const res = parseResult(p.result);
       const exit = res && typeof res.exit_code === "number" ? res.exit_code : null;
       const failed = !!(p.is_error || p.error || (res && res.error) || (exit !== null && exit !== 0));
       card.failed = failed;
       if (failed) card.classList.add("failed");
-      const state = card.querySelector(".state");
-      const ran = typeof p.duration_s === "number" ? p.duration_s : undefined;
-      if (ran !== undefined) card.duration = ran;
-      if (window.HubTimes.valid(at) || ran !== undefined) window.HubTimes.finished(state, at, ran, failed ? t("failed") : "");
-      else state.textContent = failed ? t("failed") : t("done");
-      for (const n of card.querySelectorAll("progress, .progress")) n.remove();
-      if (card.toolName === "browser_screenshot" && !failed && res && typeof res.path === "string" && mediaPath(res.path)) {
-        card.append(mediaRow(this.base, [res.path], "shot"));
-      }
-      if (p.inline_diff) card.append(diffView(p.inline_diff));
       let out = p.result_text;
       if (!out && res && card.toolName === "terminal" && "output" in res) {
         out = String(res.output || "");
@@ -1056,11 +1030,21 @@
         if (exit !== null && exit !== 0) out += (out ? "\n" : "") + "(exit code " + exit + ")";
       }
       if (!out && p.result !== undefined && p.result !== null) out = typeof p.result === "string" ? p.result : JSON.stringify(p.result, null, 2);
-      if (out && !(p.inline_diff && !failed)) {
-        const d = el("details");
-        if (failed || card.toolName === "terminal") d.open = failed || out.length < 600;
-        d.append(el("summary", "", t("result")), el("pre", "", out.length > 20000 ? out.slice(0, 20000) + "\n..." : out));
-        card.append(d);
+      call.done = true;
+      call.res = res;
+      call.failed = failed;
+      call.error = typeof p.error === "string" ? p.error : "";
+      call.out = out || "";
+      call.diff = typeof p.inline_diff === "string" ? p.inline_diff : "";
+      call.endedAt = at || 0;
+      if (typeof p.duration_s === "number") {
+        card.duration = p.duration_s;
+        call.duration = p.duration_s;
+      }
+      this.known.learn(call.name, call.args, res);
+      card.view.update(call);
+      if (card.toolName === "browser_screenshot" && !failed && res && typeof res.path === "string" && mediaPath(res.path)) {
+        card.view.body.append(mediaRow(this.base, [res.path], "shot"));
       }
     }
 
@@ -1360,6 +1344,8 @@
             try { args = JSON.parse(args); } catch (_) { args = { arguments: args }; }
           }
           const call = { name: fn.name, args };
+          const inner = window.HubToolCard.wrapped(fn.name, args);
+          if (inner) call.inner = inner;
           if (c.id) this.calls.set(c.id, call);
           if (c.call_id) this.calls.set(c.call_id, call);
         }
@@ -1373,10 +1359,14 @@
         return;
       }
       if (m.role === "tool") {
-        const call = (this.calls && this.calls.get(m.tool_call_id)) || {};
+        let call = (this.calls && this.calls.get(m.tool_call_id)) || {};
+        if (call.inner) {
+          const one = window.HubToolCard.take(call.inner, m.name || m.tool_name);
+          if (one) call = Object.assign(one, { unwrapped: true });
+        }
         const at = this.at;
         this.at = 0;
-        const card = this.toolCard(m.tool_call_id || ("row" + m.row_id), m.name || m.tool_name || call.name, m.args || call.args);
+        const card = this.toolCard(m.tool_call_id && !call.unwrapped ? m.tool_call_id : "row" + m.row_id, m.name || m.tool_name || call.name, m.args || call.args);
         this.at = at;
         this.toolDone(card, { result: m.content != null ? m.content : text });
         return;
@@ -1414,15 +1404,16 @@
           else if (p.text) this.setStatus(p.text);
           break;
         case "tool.generating": this.setStatus("Preparing " + (p.name || "a tool") + "..."); break;
-        case "tool.start": this.setStatus(""); this.toolCard(p.tool_id, p.name, p.args, p.context); break;
+        case "tool.start": this.setStatus(""); this.toolCard(p.tool_id, p.name, p.args); break;
         case "tool.progress": {
           const card = this.toolCard(p.tool_id, p.name);
-          let bar = card.querySelector("progress");
-          if (!bar && p.total) { bar = el("progress"); card.append(bar); }
+          const live = card.view.live;
+          let bar = live.querySelector("progress");
+          if (!bar && p.total) { bar = el("progress"); live.append(bar); }
           if (bar && p.total) { bar.max = p.total; bar.value = p.progress; }
-          let msg = card.querySelector(".progress");
+          let msg = live.querySelector(".progress");
           if (p.message) {
-            if (!msg) { msg = el("div", "status progress"); card.append(msg); }
+            if (!msg) { msg = el("div", "status progress"); live.append(msg); }
             msg.textContent = p.message;
           }
           break;
@@ -2221,6 +2212,16 @@
     document.title = (title || t("newchat")) + " - Talaria";
   }
 
+  function highlightBash(code) {
+    const hl = window.hljs;
+    if (!hl || !hl.getLanguage("bash") || code.length > 100000) return null;
+    try {
+      return hl.highlight(code, { language: "bash", ignoreIllegals: true }).value;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function parseResult(r) {
     if (r && typeof r === "object") return r;
     if (typeof r !== "string" || r[0] !== "{") return null;
@@ -2241,6 +2242,7 @@
       if (i === 0 && !colored) return;
       let cls = "";
       if (line.startsWith("@@")) cls = "hunk";
+      else if (line.startsWith("+++") || line.startsWith("---")) cls = "file";
       else if (line.startsWith("+")) cls = "add";
       else if (line.startsWith("-")) cls = "del";
       else if (colored && i > 0 && !line.startsWith(" ")) cls = "file";
@@ -2259,24 +2261,42 @@
     web_extract: ["read a web page", "read %d web pages"],
     browser_snapshot: ["read a tab", "read %d tabs"],
     todo: ["updated the to-do list", "updated the to-do list %d times"],
+    process_manage: ["managed a background command", "managed background commands %d times"],
+    delegate_task: ["used a subagent", "used subagents %d times"],
+    agent_send: ["sent a message", "sent %d messages"],
+    memory: ["used memory", "used memory %d times"],
+    skill_view: ["used a skill", "used skills %d times"],
+    skill_manage: ["used a skill", "used skills %d times"],
+    skills_list: ["used a skill", "used skills %d times"],
   };
+
+  const toolWord = (name) => toolWords[name] || (name.startsWith("browser_") ? ["used the browser", "used the browser %d times"] : ["used " + name, "used " + name + " %d times"]);
 
   // toolGroup is the one line a run of finished tool cards folds into.
   function toolGroup(cards) {
     const counts = new Map();
     let total = 0;
     let failed = 0;
+    let from = 0;
+    let to = 0;
     for (const c of cards) {
-      const w = toolWords[c.toolName] || ["used " + c.toolName, "used " + c.toolName + " %d times"];
+      const w = toolWord(c.toolName);
       const key = w[0];
       counts.set(key, { w, n: (counts.get(key)?.n || 0) + 1 });
       if (typeof c.duration === "number") total += c.duration;
       if (c.failed) failed++;
+      const at = c.call || {};
+      const end = at.endedAt || at.startedAt || 0;
+      const begin = at.startedAt || (end && typeof at.duration === "number" ? end - at.duration * 1000 : end);
+      if (window.HubTimes.valid(begin)) from = from ? Math.min(from, begin) : begin;
+      if (window.HubTimes.valid(end)) to = Math.max(to, end);
     }
     const parts = Array.from(counts.values()).map(({ w, n }) => (n === 1 ? w[0] : w[1].replace("%d", n)));
     let text = parts.join(", ");
     text = text[0].toUpperCase() + text.slice(1);
     if (total) text += " (" + duration(total) + ")";
+    const span = window.HubTimes.range(from, to || from);
+    if (span) text += " \u00B7 " + span;
     const d = el("details", "toolgroup" + (failed ? " failed" : ""));
     const sum = el("summary", "", text);
     if (failed) sum.append(el("span", "bad", failed === 1 ? " 1 step failed" : " " + failed + " steps failed"));
