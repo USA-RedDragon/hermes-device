@@ -676,6 +676,11 @@ type backend struct {
 	listMu   sync.Mutex
 	listed   []hub.Session
 	listedAt time.Time
+
+	// capsMu guards caps, what runtime.describe listed on capsOf.
+	capsMu sync.Mutex
+	capsOf *gateway.Client
+	caps   []string
 }
 
 // listStaleAfter bounds how old a session list may be to stand in for a
@@ -1237,7 +1242,8 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 		}
 	}
 	data, err := json.Marshal(hub.Snapshot{SessionID: snap.SessionID, BackendID: b.cfg.ID, Title: title,
-		Running: snap.Running, Messages: msgs, Prompts: prompts, Pending: pending, Info: info(snap.Info)})
+		Running: snap.Running, Messages: msgs, Prompts: prompts, Pending: pending, Info: info(snap.Info),
+		ToolBackground: b.capable(ctx, c, gateway.CapToolBackground)})
 	if err != nil {
 		b.log.Warn("encode snapshot", "session", snap.SessionID, "error", err.Error())
 		data = json.RawMessage(`{}`)

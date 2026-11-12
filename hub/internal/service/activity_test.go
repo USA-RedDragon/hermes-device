@@ -250,3 +250,68 @@ func TestSessionExists(t *testing.T) {
 		}
 	}
 }
+
+func TestBackgroundToolOnlyWhereHermesCan(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	e.gw.AddSession(&gatewaytest.Session{ID: sLive, Title: liveTitle, Live: true, StartedAt: 2000, Running: true, Generation: 4})
+	ctx := context.Background()
+	if err := e.svc.BackgroundTool(ctx, userAlice, backendPC, sLive, "call_1"); !errors.Is(err, hub.ErrNoToolBackground) {
+		t.Fatalf("background tool on an old Hermes = %v", err)
+	}
+	for _, c := range e.gw.Calls() {
+		if c.Method == gateway.MethodBackgroundTool {
+			t.Fatalf("%s sent to a Hermes that does not list %s", c.Method, gateway.CapToolBackground)
+		}
+	}
+	if err := e.svc.BackgroundTool(ctx, userBob, backendPC, sLive, "call_1"); !errors.Is(err, hub.ErrForbidden) {
+		t.Fatalf("another user = %v", err)
+	}
+}
+
+func TestBackgroundToolAsksTheRunningTurn(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	e.gw.SetCapabilities(gateway.CapToolBackground)
+	e.gw.AddSession(&gatewaytest.Session{ID: sLive, Title: liveTitle, Live: true, StartedAt: 2000, Running: true, Generation: 4})
+	e.gw.AddSession(&gatewaytest.Session{ID: sOther, Live: true, StartedAt: 1000})
+	ctx := context.Background()
+	if err := e.svc.BackgroundTool(ctx, userAlice, backendPC, sLive, "call_1"); err != nil {
+		t.Fatal(err)
+	}
+	var sent []map[string]any
+	for _, c := range e.gw.Calls() {
+		if c.Method == gateway.MethodBackgroundTool {
+			sent = append(sent, c.Params)
+		}
+	}
+	if len(sent) != 1 || sent[0]["session_id"] != sLive || sent[0]["tool_call_id"] != "call_1" || sent[0]["execution_generation"] != float64(4) {
+		t.Fatalf("sent = %v", sent)
+	}
+	if err := e.svc.BackgroundTool(ctx, userAlice, backendPC, sOther, ""); !errors.Is(err, hub.ErrNoRunningTool) {
+		t.Fatalf("idle session = %v", err)
+	}
+}
+
+func TestSnapshotSaysWhetherToolsCanMove(t *testing.T) {
+	t.Parallel()
+	for _, capable := range []bool{false, true} {
+		e := setup(t, service.Options{})
+		if capable {
+			e.gw.SetCapabilities(gateway.CapToolBackground)
+		}
+		e.gw.AddSession(&gatewaytest.Session{ID: sLive, Title: liveTitle, Live: true, StartedAt: 2000})
+		ch, stop, err := e.svc.Attach(context.Background(), userAlice, backendPC, sLive, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var snap hub.Snapshot
+		if err := json.Unmarshal(next(t, ch).Data, &snap); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		if snap.ToolBackground != capable {
+			t.Fatalf("capable %v: snapshot tool_background = %v", capable, snap.ToolBackground)
+		}
+	}
+}

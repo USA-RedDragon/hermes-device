@@ -1,6 +1,10 @@
 package gatewaytest
 
-import "slices"
+import (
+	"slices"
+
+	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
+)
 
 const methodRuntimeDescribe = "runtime.describe"
 
@@ -24,4 +28,28 @@ func (g *Gateway) SetAudience(audience string, ids ...string) {
 		g.audiences = map[string][]string{}
 	}
 	g.audiences[audience] = slices.Clone(ids)
+}
+
+// hBackgroundTool serves session.background_tool as a Hermes that lists
+// gateway.CapToolBackground does; without it the method is unknown. A
+// running turn answers "requested" with one tool, an idle one "none".
+func (g *Gateway) hBackgroundTool(_ *conn, p map[string]any) (any, string, func()) {
+	if !slices.Contains(g.caps, gateway.CapToolBackground) {
+		return nil, "unknown method: " + gateway.MethodBackgroundTool, nil
+	}
+	for k := range p {
+		if k != kSessionID && k != kExecGen && k != "tool_call_id" {
+			return nil, errInvalidParams, nil
+		}
+	}
+	s := g.sessions[str(p, kSessionID)]
+	gen, ok := num(p, kExecGen)
+	if s == nil || !ok || gen != s.Generation {
+		return nil, gateway.ReasonStaleGeneration, nil
+	}
+	res := gateway.BackgroundToolResult{Status: gateway.BackgroundToolNone}
+	if s.Running {
+		res = gateway.BackgroundToolResult{Status: gateway.BackgroundToolRequested, Count: 1}
+	}
+	return res, "", nil
 }

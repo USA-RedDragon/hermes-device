@@ -867,6 +867,8 @@ func (g *Gateway) dispatch(c *conn, method string, p map[string]any) (any, strin
 		h = g.hDelegationStatus
 	case gateway.MethodDelegationPause:
 		h = g.hDelegationPause
+	case gateway.MethodBackgroundTool:
+		h = g.hBackgroundTool
 	default:
 		if h = g.composeHandler(method); h == nil {
 			return nil, "unknown method: " + method, nil

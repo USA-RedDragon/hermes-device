@@ -104,3 +104,26 @@ func TestActivityAPIRefusesOtherUsers(t *testing.T) {
 		t.Fatal("bob steered a subagent")
 	}
 }
+
+func TestBackgroundToolAPI(t *testing.T) {
+	t.Parallel()
+	e := activityEnv(t)
+	c := client(t)
+	m := login(t, e, c)
+	const path = activityBase + "/tools/call_1/background"
+	if resp, body := post(t, c, e.url+path, m.CSRF, "", nil); resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("old Hermes = %d %s", resp.StatusCode, body)
+	}
+	e.gw.SetCapabilities(gateway.CapToolBackground)
+	e.gw.DropConnections()
+	if resp, body := post(t, c, e.url+path, m.CSRF, "", nil); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("idle chat = %d %s", resp.StatusCode, body)
+	}
+	e.gw.AddSession(&gatewaytest.Session{ID: "s3", Title: "Third", Live: true, StartedAt: 30, Running: true})
+	if resp, body := post(t, c, e.url+"/api/sessions/pc/s3/tools/call_1/background", m.CSRF, "", nil); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("running chat = %d %s", resp.StatusCode, body)
+	}
+	if resp, _ := post(t, c, e.url+path, "", "", nil); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("without CSRF = %d", resp.StatusCode)
+	}
+}

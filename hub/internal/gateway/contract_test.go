@@ -498,6 +498,12 @@ func contract() map[string][]string {
 			"return {'type': '" + gateway.SlashOutput + "', 'output': '\\n'.join(filter(None, [*sink.notices, _text(output)]))}",
 			"return {'type': '" + gateway.SlashSend + "', 'message': prompt, 'display': sink.display or typed,",
 		},
+		// Capabilities: runtime.describe lists the verbs a newer Hermes adds, such as
+		// session.background_tool, which v0.23.1 does not serve.
+		"gateway/session_controls.py#describe": {
+			"'" + gateway.MethodRuntimeDescribe + "': self.describe",
+			"'capabilities': ['durable-admission-v1',",
+		},
 		"gateway/platforms/event.py": {`return self.allow_gateway_control and self._command_text().startswith("/")`},
 	}
 }

@@ -31,6 +31,10 @@ func (s *Server) activityFail(w http.ResponseWriter, err error) {
 		errorJSON(w, http.StatusNotFound, "That command is not one of this chat's")
 	case errors.Is(err, hub.ErrSteerRejected):
 		errorJSON(w, http.StatusConflict, "The subagent no longer takes messages: it is finishing or has ended")
+	case errors.Is(err, hub.ErrNoToolBackground):
+		errorJSON(w, http.StatusNotImplemented, "This Hermes cannot move a running command to the background yet")
+	case errors.Is(err, hub.ErrNoRunningTool):
+		errorJSON(w, http.StatusConflict, "The command is no longer running")
 	case errors.Is(err, hub.ErrUsageUnavailable):
 		errorJSON(w, http.StatusBadGateway, strings.TrimPrefix(err.Error(), hub.ErrUsageUnavailable.Error()+": "))
 	default:
@@ -101,6 +105,20 @@ func (s *Server) handleStopProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.StopProcess(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), r.PathValue("process")); err != nil {
+		s.activityFail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleBackgroundTool(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.svc.(hub.ToolMover)
+	if !ok {
+		errorJSON(w, http.StatusNotFound, "this hub cannot move commands to the background")
+		return
+	}
+	err := a.BackgroundTool(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), r.PathValue("tool"))
+	if err != nil {
 		s.activityFail(w, err)
 		return
 	}

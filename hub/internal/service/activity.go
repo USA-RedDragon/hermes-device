@@ -11,7 +11,10 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 )
 
-var _ hub.Activity = (*Service)(nil)
+var (
+	_ hub.Activity  = (*Service)(nil)
+	_ hub.ToolMover = (*Service)(nil)
+)
 
 // maxSteer bounds a message to a subagent, maxBackground a /bg prompt.
 const (
@@ -208,4 +211,50 @@ func (s *Service) Background(ctx context.Context, user, backendID, sessionID, te
 		return nil
 	})
 	return res.TaskID, err
+}
+
+// BackgroundTool asks Hermes to move the turn's running terminal command
+// to the background. Hermes only asks: the command hands its process over
+// when it next checks, and tools that are not commands go on as they are.
+func (s *Service) BackgroundTool(ctx context.Context, user, backendID, sessionID, toolCallID string) error {
+	return s.withSession(ctx, user, backendID, sessionID, func(b *backend, ls *live) error {
+		c, err := b.ensure(ctx, ls)
+		if err != nil {
+			return refusal(err)
+		}
+		cctx, cancel := b.timeout(ctx)
+		capable := b.capable(cctx, c, gateway.CapToolBackground)
+		cancel()
+		if !capable {
+			return hub.ErrNoToolBackground
+		}
+		ls.mu.Lock()
+		gen := ls.generation
+		ls.mu.Unlock()
+		var res gateway.BackgroundToolResult
+		if err := b.call(ctx, ls, gateway.MethodBackgroundTool,
+			gateway.BackgroundToolParams{SessionID: ls.id, ExecutionGeneration: gen, ToolCallID: toolCallID}, &res); err != nil {
+			return refusal(err)
+		}
+		if res.Status != gateway.BackgroundToolRequested {
+			return hub.ErrNoRunningTool
+		}
+		return nil
+	})
+}
+
+// capable reports whether runtime.describe on c lists capability. The
+// list is read once per connection; a failed read counts as no.
+func (b *backend) capable(ctx context.Context, c *gateway.Client, capability string) bool {
+	b.capsMu.Lock()
+	defer b.capsMu.Unlock()
+	if b.capsOf != c {
+		var d gateway.RuntimeDescription
+		if err := c.Call(ctx, gateway.MethodRuntimeDescribe, map[string]any{}, &d); err != nil {
+			b.log.Debug(gateway.MethodRuntimeDescribe, "error", err.Error())
+			return false
+		}
+		b.capsOf, b.caps = c, d.Capabilities
+	}
+	return slices.Contains(b.caps, capability)
 }

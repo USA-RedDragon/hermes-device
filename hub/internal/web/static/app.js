@@ -896,6 +896,7 @@
           pre.textContent = args.command;
         }
         card.append(pre);
+        if (this.canBackground && !args.background) card.append(this.backgroundActs(id));
       } else if (name === "agent_send" && args && typeof args.text === "string") {
         const sent = el("div", "msg agent sent");
         sent.append(el("div", "agent-tag", "Agent message to " + String(args.to || "")), args.text);
@@ -912,9 +913,32 @@
       return card;
     }
 
+    // backgroundActs is the Run in background button of a running terminal
+    // card: Hermes moves the command to its background commands and the
+    // turn goes on.
+    backgroundActs(id) {
+      const acts = el("div", "acts");
+      const b = el("button", "", "Run in background");
+      b.type = "button";
+      b.title = "Keep the command running in the background and let Talaria go on";
+      b.onclick = async () => {
+        b.disabled = true;
+        try {
+          await api("POST", this.base + "/tools/" + encodeURIComponent(id) + "/background");
+          b.textContent = "Moving to the background";
+        } catch (e) {
+          b.disabled = false;
+          banner("Could not move the command to the background: " + e.message, true);
+        }
+      };
+      acts.append(b);
+      return acts;
+    }
+
     toolDone(card, p) {
       if (!card.classList.contains("running") && card.finished) return;
       card.finished = true;
+      for (const n of card.querySelectorAll(":scope > .acts")) n.remove();
       if (p.result !== undefined) card.result = p.result;
       card.classList.remove("running");
       const res = parseResult(p.result);
@@ -1100,6 +1124,7 @@
 
     snapshot(s) {
       this.reset();
+      this.canBackground = !!s.tool_background;
       setTitle(s.title);
       this.setRunning(s.running);
       activity.running(s.running);

@@ -28,6 +28,11 @@ var (
 	// ErrSteerRejected is a message a subagent no longer takes: it is past
 	// its last step or has ended.
 	ErrSteerRejected = errors.New("the subagent no longer takes messages")
+	// ErrNoToolBackground is a backend that cannot move a running command
+	// to the background.
+	ErrNoToolBackground = errors.New("this Hermes cannot move a running command to the background; update Hermes")
+	// ErrNoRunningTool is a turn with no running tool to move.
+	ErrNoRunningTool = errors.New("no command of this chat is running")
 	// ErrUsageUnavailable is token use the backend's records could not
 	// give, wrapping why.
 	ErrUsageUnavailable = errors.New("token use unavailable")
@@ -56,6 +61,16 @@ type Activity interface {
 	// session's settings, and its answer comes as a background.complete
 	// event. It returns the task ID.
 	Background(ctx context.Context, user, backendID, sessionID, text string) (string, error)
+}
+
+// ToolMover moves a running command of a turn to the background.
+type ToolMover interface {
+	// BackgroundTool moves the running terminal command toolCallID of the
+	// session's turn to the background: the turn goes on and the command
+	// runs on as a background command. With toolCallID "" every running
+	// command moves. It fails with ErrNoToolBackground when the backend
+	// cannot do this and ErrNoRunningTool when nothing runs.
+	BackgroundTool(ctx context.Context, user, backendID, sessionID, toolCallID string) error
 }
 
 // ActivityState is what a session runs beside its turns now.

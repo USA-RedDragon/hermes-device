@@ -310,6 +310,9 @@ type Snapshot struct {
 	Prompts   []json.RawMessage `json:"prompts"`
 	Pending   []Pending         `json:"pending"`
 	Info      Info              `json:"info"`
+	// ToolBackground is true when the backend can move a running terminal
+	// command to the background (Activity.BackgroundTool).
+	ToolBackground bool `json:"tool_background,omitempty"`
 }
 
 // Info is a session's settings and its latest usage, for a status line.
