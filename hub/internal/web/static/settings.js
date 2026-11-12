@@ -1,8 +1,9 @@
 "use strict";
 // HubSettings builds the Settings dialog: a tab each for the person's
-// computers, notifications, Telegram, Claude accounts and account. ctx
-// gives it the app's api and el helpers, the /api/me answer, the computers
-// with their online state, the notification panel and a way to log out.
+// computers, notifications, Telegram, Claude accounts, saved prompts and
+// account. ctx gives it the app's api and el helpers, the /api/me answer,
+// the computers with their online state, the notification panel, a way to
+// log out and promptsChanged(), which it calls after a prompt changes.
 window.HubSettings = (ctx) => {
   const { api, el } = ctx;
   const dlg = document.getElementById("settings");
@@ -18,6 +19,7 @@ window.HubSettings = (ctx) => {
     ["notifications", "Notifications", (me) => me.notify],
     ["telegram", "Telegram", (me) => !!me.telegram_steps],
     ["claude", "Claude accounts", (me) => me.claude],
+    ["prompts", "Prompts", (me) => me.prompts],
     ["account", "Account", () => true],
   ];
   let tab = "";
@@ -113,6 +115,7 @@ window.HubSettings = (ctx) => {
     if (k === "notifications") ctx.notices.load();
     if (k === "telegram") drawTelegram();
     if (k === "claude") drawClaude();
+    if (k === "prompts") { drawPrompts(); loadPrompts(); }
     if (k === "account") drawAccount();
   }
 
@@ -307,6 +310,144 @@ window.HubSettings = (ctx) => {
     p.append(a);
   }
 
+  // Prompts: the person's saved prompts. pr.editing is the name of the
+  // prompt in the editor, "" for a new one, or null; pr.draft keeps what
+  // the editor holds across redraws.
+  const pr = { list: null, err: "", editing: null, draft: null, formErr: "", confirm: false };
+
+  async function loadPrompts() {
+    try {
+      pr.list = await api("GET", "/api/prompts");
+      pr.err = "";
+    } catch (e) {
+      pr.err = "Could not load your prompts: " + e.message;
+    }
+    if (pr.list && pr.editing && !pr.list.some((x) => x.name === pr.editing)) {
+      if (pr.formErr) pr.err = pr.formErr;
+      pr.editing = pr.draft = null;
+      pr.formErr = "";
+      pr.confirm = false;
+    }
+    if (tab === "prompts") drawPrompts();
+  }
+
+  function editPrompt(x) {
+    pr.editing = x ? x.name : "";
+    pr.draft = { name: x ? x.name : "", text: x ? x.text : "" };
+    pr.formErr = "";
+    pr.confirm = false;
+    drawPrompts();
+    document.getElementById("prompt-name")?.focus();
+  }
+
+  function stopEditing() {
+    pr.editing = pr.draft = null;
+    pr.formErr = "";
+    pr.confirm = false;
+    drawPrompts();
+  }
+
+  function drawPrompts() {
+    const tg = ctx.me().telegram_steps ? ", and get in Telegram with /prompts" : "";
+    const p = pane("prompts", "Prompts", "Prompts you can put into any chat with /prompt:<name>" + tg + ". " +
+      "Names use letters, digits and dashes.");
+    if (pr.err) p.append(el("p", "err", pr.err));
+    if (!pr.list) return;
+    const rows = el("div", "set-rows");
+    for (const x of pr.list) rows.append(pr.editing === x.name ? promptForm(x) : promptRow(x));
+    if (pr.editing === "") rows.append(promptForm(null));
+    if (rows.children.length) p.append(rows);
+    else p.append(el("p", "none", "You have no prompts yet."));
+    if (pr.editing !== "") {
+      const acts = el("div", "acts");
+      acts.append(button("", "New prompt", () => editPrompt(null)));
+      p.append(acts);
+    }
+  }
+
+  function promptRow(x) {
+    const row = el("div", "set-row prompt-row");
+    const line = (x.text.split("\n").find((l) => l.trim()) || "").trim();
+    const acts = el("div", "acts");
+    const edit = button("", "Edit", () => editPrompt(x));
+    edit.setAttribute("aria-label", "Edit " + x.name);
+    acts.append(edit);
+    row.append(el("span", "nm", x.name), el("span", "sub", line), acts);
+    return row;
+  }
+
+  function promptForm(x) {
+    const f = el("form", "set-row prompt-edit");
+    const name = el("input");
+    name.id = "prompt-name";
+    name.value = pr.draft.name;
+    name.maxLength = 64;
+    name.required = true;
+    name.autocomplete = "off";
+    name.spellcheck = false;
+    name.setAttribute("autocapitalize", "off");
+    name.oninput = () => { if (pr.draft) pr.draft.name = name.value; };
+    const text = el("textarea");
+    text.value = pr.draft.text;
+    text.required = true;
+    text.spellcheck = false;
+    text.oninput = () => { if (pr.draft) pr.draft.text = text.value; };
+    const ln = el("label", "", "Name");
+    ln.append(name);
+    const lt = el("label", "", "Text");
+    lt.append(text);
+    f.append(ln, lt);
+    const err = el("p", "err", pr.formErr);
+    err.setAttribute("aria-live", "polite");
+    err.hidden = !pr.formErr;
+    f.append(err);
+    const acts = el("div", "acts");
+    if (pr.confirm && x) {
+      acts.append(el("span", "hint grow", "Delete " + x.name + "? This cannot be undone."),
+        button("", "Cancel", () => { pr.confirm = false; drawPrompts(); }),
+        button("danger", "Delete", () => removePrompt(x)));
+    } else {
+      if (x) acts.append(button("danger-text", "Delete", () => { pr.confirm = true; drawPrompts(); }));
+      const save = button("primary", "Save", null);
+      save.type = "submit";
+      acts.append(el("span", "grow"), button("", "Cancel", stopEditing), save);
+    }
+    f.append(acts);
+    f.onsubmit = (e) => { e.preventDefault(); if (pr.draft) savePrompt(x); };
+    return f;
+  }
+
+  async function savePrompt(x) {
+    const body = { name: pr.draft.name.trim(), text: pr.draft.text };
+    busy = true;
+    try {
+      if (x) await api("PUT", "/api/prompts/" + encodeURIComponent(x.name), body);
+      else await api("POST", "/api/prompts", body);
+      pr.editing = pr.draft = null;
+      pr.formErr = "";
+    } catch (e) {
+      pr.formErr = e.message + ".";
+    }
+    busy = false;
+    ctx.promptsChanged();
+    await loadPrompts();
+  }
+
+  async function removePrompt(x) {
+    busy = true;
+    try {
+      await api("DELETE", "/api/prompts/" + encodeURIComponent(x.name));
+      pr.editing = pr.draft = null;
+      pr.formErr = "";
+    } catch (e) {
+      pr.formErr = "Could not delete " + x.name + ": " + e.message + ".";
+    }
+    pr.confirm = false;
+    busy = false;
+    ctx.promptsChanged();
+    await loadPrompts();
+  }
+
   async function drawAccount() {
     const me = ctx.me();
     const p = pane("account", "Account", "");
@@ -344,13 +485,18 @@ window.HubSettings = (ctx) => {
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   }
 
-  function openDialog(k) {
+  // openDialog opens Settings on section k; direct opens that section on
+  // a phone too, instead of the list of sections.
+  function openDialog(k, direct) {
     const keys = shownTabs().map(([x]) => x);
     tab = keys.includes(k) ? k : keys.includes(tab) ? tab : keys[0];
     open = {};
     editing = confirming = "";
+    pr.editing = pr.draft = null;
+    pr.formErr = "";
+    pr.confirm = false;
     if (review()) list.filter((d) => d.addr_changed_at).forEach((d) => { open[d.id] = true; });
-    inPane = false;
+    inPane = !!direct && tab === k;
     ctx.closeSide();
     dlg.showModal();
     show(tab);

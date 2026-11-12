@@ -3002,6 +3002,7 @@
   const composer = window.HubComposer({ api, el, chat: () => view,
     submit: () => (page ? pageSend({ preventDefault() {} }) : send({ preventDefault() {} })),
     stop: () => stopTurn(), editLast: () => msgActs.editLast(), busy: () => sending > 0, hasFiles: () => attachments.list.length > 0,
+    prompts: () => !!(me && me.prompts), managePrompts: () => prefs.open("prompts", true),
     canFiles: (chat) => {
       const pl = chat && chat.place;
       return !!me.files && !!pl && ((pl.kind === "computer" && pl.mine) || pl.kind === "sandbox");
@@ -3087,7 +3088,7 @@
   }
 
   const prefs = window.HubSettings({ api, el, me: () => me, computers: () => computers, notices, logout,
-    closeSide: () => openSide(false) });
+    closeSide: () => openSide(false), promptsChanged: () => composer.promptsChanged() });
 
   async function logout() {
     await notices.logout();

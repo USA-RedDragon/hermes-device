@@ -293,6 +293,16 @@ button.danger-text { color: var(--bad); }
 .set-row .meta { display: flex; flex-wrap: wrap; gap: .1rem .9rem; padding-left: 1.2rem; color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
 .set-detail { display: flex; flex-direction: column; gap: .6rem; padding: .2rem .8rem .8rem 2rem; font-size: .9rem; }
 .set-alert { display: flex; flex-direction: column; gap: .5rem; border: 1px solid var(--warn); border-radius: 8px; padding: .55rem .7rem; overflow-wrap: anywhere; }
+.prompt-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .1rem 1rem; align-items: center; padding: .55rem .8rem; }
+.prompt-row .nm { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9rem; font-weight: 600; overflow-wrap: anywhere; }
+.prompt-row .sub { grid-column: 1; color: var(--muted); font-size: .84rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.prompt-row .acts { grid-row: 1 / span 2; grid-column: 2; }
+.prompt-edit { display: flex; flex-direction: column; gap: .6rem; padding: .7rem .8rem; background: var(--hover); }
+.prompt-edit label { display: flex; flex-direction: column; gap: .25rem; color: var(--muted); font-size: .84rem; }
+.prompt-edit input, .prompt-edit textarea { color: var(--fg); }
+.prompt-edit textarea { font: .85rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; padding: .45rem .55rem; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--bg); min-height: 12rem; resize: vertical; }
+.prompt-edit .acts .grow { flex: 1; }
 .settings .kv { display: grid; grid-template-columns: 10rem minmax(0, 1fr); gap: .35rem .9rem; margin: 0; font-size: .92rem; }
 .settings .kv dt { color: var(--muted); }
 .settings .kv dd { margin: 0; overflow-wrap: anywhere; }
@@ -888,6 +898,12 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7
 .pop .opt .d { color: var(--muted); font-size: .82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .pop .opt .dir { color: var(--muted); font-weight: 400; }
 .pop .opt mark { background: none; color: var(--accent); }
+.pop .none { color: var(--muted); font-size: .85rem; padding: .35rem .5rem; }
+.pop .pf { position: sticky; bottom: -.3rem; display: flex; flex-wrap: wrap; align-items: center; gap: .3rem 1rem; margin: .3rem -.3rem -.3rem;
+  padding: .35rem .8rem; border-top: 1px solid var(--line); background: var(--card); color: var(--muted); font-size: .75rem; }
+.pop .pf kbd { margin: 0; }
+.pop .pf button { border: 0; background: none; padding: .2rem 0; color: var(--accent); font-size: .75rem; margin-left: auto; }
+.pop .pf button:hover { text-decoration: underline; }
 
 /* Message actions: shown on hover; on touch a tap on the message shows them. */
 .log > .acts { display: flex; gap: .15rem; height: 0; margin: -.6rem .5rem 0; top: -.8rem; overflow: visible; position: relative; z-index: 2; opacity: 0; pointer-events: none; transition: opacity .12s; align-self: flex-end; }
@@ -926,7 +942,9 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7
 @media (max-width: 760px) {
   .bar .menu.ib { display: inline-grid; }
   .bar .tok { display: none !important; }
-  .composer .hint .keyonly, .pop .ph .keyonly { display: none; }
+  .composer .hint .keyonly, .pop .ph .keyonly, .pop .pf .keyonly { display: none; }
+  .pop .opt.saved { grid-template-columns: minmax(0, 1fr); }
+  .pop .pf button { margin-left: 0; min-height: 2.25rem; }
   .info summary { column-gap: .55rem; font-size: .76rem; }
   .info summary .metric { gap: .2rem; }
   .info summary .mtok { min-width: 2.5rem; }

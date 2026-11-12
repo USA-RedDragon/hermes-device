@@ -1,10 +1,11 @@
 "use strict";
 // HubComposer runs the message box: the one send button (send, stop, or
 // send to the running turn), the box that grows with its text, the "/"
-// command and "@" file suggestions, and the draft that the hub keeps for
-// each chat so it follows the user to other devices.
+// command, "/prompt:" saved prompt and "@" file suggestions, and the draft
+// that the hub keeps for each chat so it follows the user to other devices.
 // ctx: api, el, chat() (the open chat or null), canFiles(chat), submit(),
-// stop(), editLast(), busy() (attachments still uploading), hasFiles().
+// stop(), editLast(), busy() (attachments still uploading), hasFiles(),
+// prompts() (the hub keeps saved prompts), managePrompts().
 window.HubComposer = (ctx) => {
   const { api, el } = ctx;
   const $ = (id) => document.getElementById(id);
@@ -130,10 +131,34 @@ window.HubComposer = (ctx) => {
     api("PUT", chat.base + "/draft", { text: "" }).catch(() => {});
   }
 
-  // Suggestions: commands after a leading "/", files after "@".
+  // Suggestions: commands and saved prompts after a leading "/", only
+  // prompts after "/prompt:", files after "@".
   const sug = { kind: null, items: [], sel: 0, q: "" };
   const commands = new Map();
   const folders = new Map();
+  const saved = { at: 0, p: null };
+  const promptTag = "prompt:";
+
+  function loadPrompts() {
+    if (!ctx.prompts()) return Promise.resolve([]);
+    if (saved.p && Date.now() - saved.at < 30000) return saved.p;
+    saved.at = Date.now();
+    const p = api("GET", "/api/prompts").then((l) => (Array.isArray(l) ? l : []), () => {
+      if (saved.p === p) saved.p = null;
+      return null;
+    });
+    saved.p = p;
+    return p;
+  }
+
+  // promptsChanged drops the saved prompts, after Settings changed them.
+  function promptsChanged() { saved.p = null; }
+
+  // preview is a prompt's first line of text.
+  function preview(t) {
+    const line = t.split("\n").find((l) => l.trim()) || "";
+    return line.trim();
+  }
 
   function loadCommands(chat) {
     const key = chat.backend;
@@ -180,16 +205,26 @@ window.HubComposer = (ctx) => {
     const slash = before.match(/^\/(\S*)$/);
     const at = before.match(/(?:^|\s)@([^\s@]*)$/);
     const my = ++seq;
-    if (!chat || (!slash && !at)) { closePop(); return; }
+    if (!slash && !at) { closePop(); return; }
     if (slash) {
-      const list = await loadCommands(chat);
-      if (my !== seq) return;
       const q = slash[1].toLowerCase();
+      const only = q.startsWith(promptTag) && ctx.prompts();
+      const [list, got] = await Promise.all([chat && !only ? loadCommands(chat) : [], loadPrompts()]);
+      if (my !== seq) return;
+      const ps = got || [];
       const items = list.filter((c) => c.name.slice(1).toLowerCase().startsWith(q)).map((c) => ({ kind: "cmd", c }));
-      show("cmd", items, slash[1], "Commands");
+      const prompts = ps.filter((p) => (promptTag + p.name.toLowerCase()).startsWith(q)).map((p) => ({ kind: "prompt", p }));
+      if (only) {
+        const none = !got ? "Could not load your prompts" : ps.length ? "No prompt starts with " + slash[1].slice(promptTag.length)
+          : "You have no prompts yet";
+        show("prompt", prompts, slash[1], "Prompts", none);
+        return;
+      }
+      const head = !prompts.length ? "Commands" : items.length ? "Commands and prompts" : "Prompts";
+      show("cmd", items.concat(prompts), slash[1], head);
       return;
     }
-    if (!ctx.canFiles(chat)) { closePop(); return; }
+    if (!chat || !ctx.canFiles(chat)) { closePop(); return; }
     const typed = at[1];
     const cut = typed.lastIndexOf("/");
     const dirPart = cut >= 0 ? typed.slice(0, cut + 1) : "";
@@ -211,13 +246,16 @@ window.HubComposer = (ctx) => {
     show("file", items, q, "Files on " + where);
   }
 
-  function show(kind, items, q, head) {
-    if (!items.length) { closePop(); return; }
+  // show draws the suggestions; with none it closes, unless empty says
+  // why there are none.
+  function show(kind, items, q, head, empty) {
+    if (!items.length && !empty) { closePop(); return; }
+    sug.empty = empty || "";
     if (sug.kind !== kind || sug.q !== q) sug.sel = 0;
     sug.kind = kind;
     sug.items = items;
     sug.q = q;
-    sug.sel = Math.min(sug.sel, items.length - 1);
+    sug.sel = Math.max(0, Math.min(sug.sel, items.length - 1));
     draw(head);
   }
 
@@ -225,9 +263,12 @@ window.HubComposer = (ctx) => {
   function draw(head) {
     if (head) lastHead = head;
     pop.replaceChildren();
+    const foot = sug.kind === "prompt" || sug.items.some((it) => it.kind === "prompt");
     const ph = el("div", "ph");
-    ph.append(el("span", "grow", lastHead), el("span", "keyonly", "↑↓ Tab"));
+    ph.append(el("span", "grow", lastHead));
+    if (!foot) ph.append(el("span", "keyonly", "↑↓ Tab"));
     pop.append(ph);
+    if (!sug.items.length) pop.append(el("div", "none", sug.empty));
     sug.items.forEach((it, i) => {
       const o = el("div", "opt" + (i === sug.sel ? " sel" : ""));
       o.id = "opt-" + i;
@@ -239,6 +280,10 @@ window.HubComposer = (ctx) => {
         c.append(mark(it.c.name, sug.q ? "/" + sug.q : ""));
         d = it.c.description || "";
         if (it.c.args) c.append(el("span", "dir", " " + it.c.args));
+      } else if (it.kind === "prompt") {
+        o.classList.add("saved");
+        c.append(mark("/" + promptTag + it.p.name, sug.q ? "/" + sug.q : ""));
+        d = preview(it.p.text);
       } else {
         if (it.dir) c.append(el("span", "dir", it.dir));
         c.append(mark(it.name + (it.folder ? "/" : ""), sug.q));
@@ -247,10 +292,29 @@ window.HubComposer = (ctx) => {
       o.onmousedown = (e) => { e.preventDefault(); sug.sel = i; pick(); };
       pop.append(o);
     });
+    if (foot) pop.append(promptFoot());
     pop.hidden = false;
-    input.setAttribute("aria-activedescendant", "opt-" + sug.sel);
+    if (sug.items.length) input.setAttribute("aria-activedescendant", "opt-" + sug.sel);
+    else input.removeAttribute("aria-activedescendant");
     const s = pop.querySelector(".opt.sel");
     if (s && s.scrollIntoView) s.scrollIntoView({ block: "nearest" });
+  }
+
+  function promptFoot() {
+    const f = el("div", "pf");
+    const keys = (k, what) => {
+      const s = el("span", "keyonly");
+      k.forEach((x) => s.append(el("kbd", "", x), " "));
+      s.append(what);
+      return s;
+    };
+    const manage = el("button", "", "Manage in Settings > Prompts");
+    manage.type = "button";
+    manage.tabIndex = -1;
+    manage.onmousedown = (e) => e.preventDefault();
+    manage.onclick = () => { closePop(); ctx.managePrompts(); };
+    f.append(keys(["↑", "↓"], "choose"), keys(["Enter"], "insert"), keys(["Esc"], "close"), manage);
+    return f;
   }
 
   function pick() {
@@ -259,6 +323,19 @@ window.HubComposer = (ctx) => {
     const pos = input.selectionStart;
     const v = input.value;
     let ins, start, keep = false;
+    if (it.kind === "prompt") {
+      // The prompt's text takes the place of "/prompt:<name>", to edit
+      // before sending.
+      const end = pos + v.slice(pos).match(/^\S*/)[0].length;
+      input.value = it.p.text + v.slice(end);
+      input.selectionStart = input.selectionEnd = it.p.text.length;
+      closePop();
+      input.focus();
+      grow();
+      update();
+      changed();
+      return;
+    }
     if (it.kind === "cmd") {
       start = 0;
       ins = it.c.name + " ";
@@ -289,6 +366,10 @@ window.HubComposer = (ctx) => {
       if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) { e.preventDefault(); pick(); return; }
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closePop(); return; }
     }
+    if (!pop.hidden && sug.kind === "prompt") {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); return; }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closePop(); return; }
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !coarse()) {
       e.preventDefault();
       if (mode() !== "stop" && !$("send").disabled) ctx.submit();
@@ -307,5 +388,5 @@ window.HubComposer = (ctx) => {
   window.addEventListener("pagehide", flush);
   document.addEventListener("visibilitychange", () => { if (document.hidden) flush(); });
 
-  return { open, sent, update, grow, setRunning, mode, changed, flush, popOpen: () => !pop.hidden, closePop };
+  return { open, sent, update, grow, setRunning, mode, changed, flush, popOpen: () => !pop.hidden, closePop, promptsChanged };
 };
