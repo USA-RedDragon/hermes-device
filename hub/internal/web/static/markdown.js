@@ -129,11 +129,16 @@ window.hubMarkdown = (() => {
         if (close > 0 && s[close + 1] === "(") {
           const end = paren(s, close + 1);
           if (end > 0) {
-            const target = s.slice(close + 2, end).trim().split(/\s+/)[0] || "";
+            const inner = s.slice(close + 2, end).trim();
+            const angle = /^<([^>\n]*)>/.exec(inner);
+            const target = angle ? angle[1] : inner.split(/\s+/)[0] || "";
             const href = safeURL(target);
             const label = s.slice(open + 1, close);
             flush();
-            if (href) {
+            const local = !href && localMedia && target[0] === "/" ? localMedia(target, label, isImage) : null;
+            if (local) {
+              parent.append(local);
+            } else if (href) {
               const span = document.createDocumentFragment();
               inline(isImage ? (label || "image") : label, span, true);
               parent.append(link(href, span));
@@ -437,10 +442,18 @@ window.hubMarkdown = (() => {
     }
   }
 
+  // localMedia, set while render runs with a hook, turns a link or image
+  // whose target is an absolute path into a node, or null to show its label.
+  let localMedia = null;
+
   // render replaces node's children with text rendered as Markdown.
-  // On any failure the text shows as it came, unformatted.
-  function render(node, text) {
+  // local(path, label, isImage), when given, makes a node for a link or
+  // image that names an absolute local path; without it such a target
+  // shows as its label. On any failure the text shows as it came,
+  // unformatted.
+  function render(node, text, local) {
     const raw = String(text);
+    localMedia = local || null;
     try {
       const frag = document.createDocumentFragment();
       blocks(raw.replace(/\r\n?/g, "\n").split("\n"), frag, false, 0);
@@ -449,6 +462,8 @@ window.hubMarkdown = (() => {
     } catch (_) {
       node.textContent = raw;
       node.classList.add("plain");
+    } finally {
+      localMedia = null;
     }
   }
 

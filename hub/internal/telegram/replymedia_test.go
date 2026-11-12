@@ -19,7 +19,7 @@ func TestReplyMediaIsSent(t *testing.T) {
 	t.Parallel()
 	h := startBot(t, nil)
 	h.hub.mu.Lock()
-	h.hub.media = map[string]fakeFile{shotPath: {mime: hub.MIMEJPEG, data: jpegData}, "/opt/data/out/report.pdf": {data: "%PDF-1.7"},
+	h.hub.media = map[string]fakeFile{shotPath: {mime: hub.MIMEJPEG, data: jpegData}, "/opt/data/out/report.pdf": {data: pdfData},
 		"/home/alice/src/plot.png": {err: hub.ErrMediaOffline}}
 	h.hub.mu.Unlock()
 	sid := h.startTurn(t)
@@ -34,7 +34,7 @@ func TestReplyMediaIsSent(t *testing.T) {
 		t.Fatalf("photo = %+v", photo.Params)
 	}
 	doc := h.tg.wait(mDocument, "")
-	if doc.Params["field"] != "document" || doc.Params["name"] != "report.pdf" || doc.Params["data"] != "%PDF-1.7" {
+	if doc.Params["field"] != "document" || doc.Params["name"] != "report.pdf" || doc.Params["data"] != pdfData {
 		t.Fatalf("document = %+v", doc.Params)
 	}
 	h.tg.wait(mSend, "gone.png: it is no longer there")
@@ -130,5 +130,29 @@ func TestReplyPagesAreLinks(t *testing.T) {
 	h.tg.wait(mSend, "gone.html: it is no longer there")
 	if len(h.tg.find(mDocument, "")) != 0 {
 		t.Fatal("a page went as a file")
+	}
+}
+
+func TestMarkdownReplyMediaIsSent(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	h.hub.mu.Lock()
+	h.hub.media = map[string]fakeFile{shotPath: {mime: hub.MIMEJPEG, data: jpegData}, "/opt/data/out/my report.pdf": {data: pdfData}}
+	h.hub.mu.Unlock()
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "A plot: ![the plot](" + shotPath +
+		")\nThe [report](</opt/data/out/my report.pdf>) and [docs](https://example.com/a.pdf) and ![rel](a.png)", kStatus: statusComplete})
+	text := h.tg.wait(mSend, "A plot")
+	if strings.Contains(text.text(), shotPath) || !strings.Contains(text.text(), "![rel](a.png)") || !strings.Contains(text.text(), "the plot") || !strings.Contains(text.text(), "report") ||
+		!strings.Contains(text.text(), "example.com/a.pdf") {
+		t.Fatalf("text = %q", text.text())
+	}
+	photo := h.tg.wait(mPhoto, "")
+	if photo.Params["name"] != "shot.jpg" || photo.Params["data"] != jpegData {
+		t.Fatalf("photo = %+v", photo.Params)
+	}
+	doc := h.tg.wait(mDocument, "")
+	if doc.Params["name"] != "my report.pdf" || doc.Params["data"] != pdfData {
+		t.Fatalf("document = %+v", doc.Params)
 	}
 }

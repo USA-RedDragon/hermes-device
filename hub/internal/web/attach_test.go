@@ -69,7 +69,7 @@ func TestPromptWithAttachments(t *testing.T) {
 		t.Fatalf("prompt = %d %s", resp.StatusCode, body)
 	}
 	s, _ := e.gw.Session("s1")
-	if len(s.Attachments) != 1 || len(s.Attachments[0]) != 1 || s.Attachments[0][0].MIME != "image/png" {
+	if len(s.Attachments) != 1 || len(s.Attachments[0]) != 1 || s.Attachments[0][0].MIME != mimePNG {
 		t.Fatalf("attachments = %+v", s.Attachments)
 	}
 	if text, _ := s.Messages[0]["text"].(string); text != "look\n\n"+hub.FileNote("notes.txt", gatewaytest.StagedFiles+"notes.txt") {

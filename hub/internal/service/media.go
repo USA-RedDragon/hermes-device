@@ -278,12 +278,7 @@ func replyNames(text, p string) bool {
 		return false
 	}
 	paths, _ := hub.MediaDirectives(text)
-	for _, x := range paths {
-		if x == p {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(paths, p) || slices.Contains(hub.MarkdownMedia(text), p)
 }
 
 func screenshotNames(result, p string) bool {

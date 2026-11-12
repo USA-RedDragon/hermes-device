@@ -160,6 +160,184 @@ func MediaDirectives(text string) (paths []string, cleaned string) {
 	return paths, strings.TrimSpace(manyBlank.ReplaceAllString(b.String(), "\n\n"))
 }
 
+// MarkdownMedia finds the local files a reply names with standard Markdown:
+// an image ![alt](/abs/path.png) or a link [label](/abs/path/file.pdf),
+// with the path bare or in angle brackets (<...>, for a path with spaces).
+// Only MediaPath paths count; remote URLs and relative paths are ordinary
+// Markdown. Fenced code and inline code are examples and stay. It returns
+// the paths in order without repeats.
+func MarkdownMedia(text string) []string {
+	var paths []string
+	for _, r := range markdownRefs(text) {
+		if !slices.Contains(paths, r.path) {
+			paths = append(paths, r.path)
+		}
+	}
+	return paths
+}
+
+// MarkdownMediaText is text with each local file that MarkdownMedia finds
+// replaced by its alt text or label, for a client that shows the files
+// apart from the text.
+func MarkdownMediaText(text string) string {
+	refs := markdownRefs(text)
+	if len(refs) == 0 {
+		return text
+	}
+	var b strings.Builder
+	last := 0
+	for _, r := range refs {
+		b.WriteString(text[last:r.start])
+		b.WriteString(r.label)
+		last = r.end
+	}
+	b.WriteString(text[last:])
+	return b.String()
+}
+
+type mdRef struct {
+	start, end int
+	label      string
+	path       string
+}
+
+// markdownRefs finds the images and links of text whose destination is a
+// MediaPath, outside code.
+func markdownRefs(text string) []mdRef {
+	if !strings.Contains(text, "](") {
+		return nil
+	}
+	scan := maskMarkdown(text)
+	var refs []mdRef
+	for pos := 0; ; {
+		i := strings.Index(scan[pos:], "](")
+		if i < 0 {
+			break
+		}
+		closer := pos + i
+		pos = closer + 2
+		p, end, ok := MarkdownDest(scan, pos)
+		if !ok || !MediaPath(p) {
+			continue
+		}
+		open, depth := -1, 0
+		for k := closer - 1; k >= 0 && scan[k] != '\n'; k-- {
+			if scan[k] == ']' {
+				depth++
+			} else if scan[k] == '[' {
+				if depth == 0 {
+					open = k
+					break
+				}
+				depth--
+			}
+		}
+		if open < 0 {
+			continue
+		}
+		start := open
+		if open > 0 && scan[open-1] == '!' {
+			start--
+		}
+		if len(refs) > 0 && start < refs[len(refs)-1].end {
+			continue
+		}
+		pos = end
+		refs = append(refs, mdRef{start, end, text[open+1 : closer], p})
+	}
+	return refs
+}
+
+// MarkdownDest reads the destination of the Markdown link or image whose
+// "(" ends just before s[i]: a bare destination (no spaces, balanced
+// parentheses) or one in angle brackets, then an optional quoted title and
+// ")". It returns the destination and the index after ")".
+func MarkdownDest(s string, i int) (dest string, end int, ok bool) {
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	if i >= len(s) {
+		return "", 0, false
+	}
+	if s[i] == '<' {
+		j := strings.IndexAny(s[i+1:], ">\n")
+		if j < 0 || s[i+1+j] != '>' {
+			return "", 0, false
+		}
+		dest = s[i+1 : i+1+j]
+		i += j + 2
+	} else {
+		depth, j := 0, i
+	scan:
+		for ; j < len(s); j++ {
+			switch s[j] {
+			case ' ', '\t', '\n':
+				break scan
+			case '(':
+				depth++
+			case ')':
+				if depth == 0 {
+					break scan
+				}
+				depth--
+			}
+		}
+		dest = s[i:j]
+		i = j
+	}
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	if i < len(s) && (s[i] == '"' || s[i] == '\'') {
+		j := strings.IndexByte(s[i+1:], s[i])
+		if j < 0 {
+			return "", 0, false
+		}
+		i += j + 2
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+			i++
+		}
+	}
+	if i >= len(s) || s[i] != ')' {
+		return "", 0, false
+	}
+	return dest, i + 1, true
+}
+
+// maskMarkdown blanks fenced code and inline code, keeping offsets.
+func maskMarkdown(text string) string {
+	b := []byte(text)
+	blank := func(i, j int) {
+		for k := i; k < j; k++ {
+			if b[k] != '\n' {
+				b[k] = ' '
+			}
+		}
+	}
+	inFence := false
+	var marker string
+	off := 0
+	for line := range strings.SplitAfterSeq(text, "\n") {
+		body := strings.TrimRight(line, "\n")
+		switch m := fence.FindStringSubmatch(body); {
+		case inFence:
+			blank(off, off+len(body))
+			if m != nil && m[1] == marker {
+				inFence = false
+			}
+		case m != nil:
+			inFence, marker = true, m[1]
+			blank(off, off+len(body))
+		}
+		off += len(line)
+	}
+	masked := string(b)
+	for _, m := range inlineCode.FindAllStringIndex(masked, -1) {
+		blank(m[0], m[1])
+	}
+	return string(b)
+}
+
 // maskMedia blanks fenced code, inline code and quote lines, keeping
 // offsets, so directives there are not found. Inline code that is a whole
 // directive (`MEDIA:/a.png`) or the quoted path of one stays.

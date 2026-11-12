@@ -241,6 +241,7 @@ details.toolgroup .group-body { display: flex; flex-direction: column; gap: .5re
 .media { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
 .media:first-child { margin-top: 0; }
 .media-img { display: block; max-width: 100%; }
+:not(.media) > .media-img { margin: .4rem 0; }
 .media-img img { display: block; max-width: 100%; max-height: 22rem; border-radius: 8px; border: 1px solid var(--line); }
 .media.shot { margin-top: .4rem; }
 .media.shot .media-img img { max-height: 10rem; }

@@ -604,7 +604,7 @@
     showText(node, final) {
       const pg = pageBlocks(node.raw || "", !final);
       const m = mediaDirectives(pg.text);
-      render(node, final ? m.text : hidePending(m.text));
+      render(node, final ? m.text : hidePending(m.text), final ? (p, label, image) => markdownMedia(this.base, p, label, image) : null);
       if (!final && (pg.writing || pg.pages.length)) node.append(el("div", "note page-wait", "Writing a page"));
       if (final && pg.pages.length) {
         const row = el("div", "media");
@@ -1321,7 +1321,7 @@
     return head + " (" + where + ")";
   }
 
-  const render = (node, raw) => window.hubMarkdown.render(node, raw);
+  const render = (node, raw, local) => window.hubMarkdown.render(node, raw, local);
 
   // MEDIA:<path> directives in a reply name files on the Hermes server or
   // the chat's computer for the user. This follows hub.MediaDirectives in the hub, which decides
@@ -1412,6 +1412,27 @@
   function hidePending(text) {
     const cut = text.search(/(?:[`"'*_]{0,3}MEDIA:[ \t]*(?:[`"'~/][^\n]*)?|(?<![A-Za-z0-9])[`"'*_]{0,3}M(?:E(?:D(?:I(?:A)?)?)?)?)$/i);
     return cut < 0 ? text : text.slice(0, cut);
+  }
+
+  // markdownMedia is the node for ![alt](/abs/path) or [label](/abs/path)
+  // in a reply, which follows hub.MarkdownMedia: an image inline, a link
+  // that downloads the file, a card for an HTML page. It is null for a
+  // path the hub would not serve, which shows as its label.
+  function markdownMedia(base, p, label, image) {
+    if (!mediaPath(p)) return null;
+    if (imagePath(p)) {
+      const a = mediaImage(base, p);
+      if (label) a.querySelector("img").alt = label;
+      return a;
+    }
+    if (pagePath(p)) return pageCard(base, { path: p });
+    if (image) return mediaFile(base, p);
+    const a = el("a", "media-link", label || baseName(p));
+    a.href = mediaURL(base, p) + "&download=1";
+    a.download = baseName(p);
+    a.rel = "noopener";
+    a.title = p;
+    return a;
   }
 
   const mediaURL = (base, p) => base + "/media?path=" + encodeURIComponent(p);

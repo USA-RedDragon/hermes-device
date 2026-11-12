@@ -29,6 +29,7 @@ const (
 	titleMedia    = "Media"
 	octetStream   = "application/octet-stream"
 	nosniff       = "nosniff"
+	mimePNG       = "image/png"
 )
 
 func mediaURL(e *hubEnv, backend, p string) string {
@@ -68,7 +69,7 @@ func TestMedia(t *testing.T) {
 		t.Fatalf("tool result = %d %q", resp.StatusCode, body)
 	}
 	for _, p := range []string{upload, ref} {
-		if resp, body = get(t, c, mediaURL(e, "pc", p)); resp.StatusCode != http.StatusOK || body != shotPNG || resp.Header.Get("Content-Type") != "image/png" {
+		if resp, body = get(t, c, mediaURL(e, "pc", p)); resp.StatusCode != http.StatusOK || body != shotPNG || resp.Header.Get("Content-Type") != mimePNG {
 			t.Fatalf("attached image %s = %d %q", p, resp.StatusCode, body)
 		}
 	}
@@ -258,5 +259,32 @@ func TestMediaFromTheDevice(t *testing.T) {
 	}
 	if resp, _ = get(t, c, pageInfo); resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("an offline page = %d", resp.StatusCode)
+	}
+}
+
+func TestMediaNamedByMarkdown(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	img, link, spaced := shotDir+"img.png", shotDir+"link.png", shotDir+"my pic.png"
+	unnamed, inCode, remote := shotDir+"unnamed.png", shotDir+"code.png", shotDir+"remote.png"
+	for _, p := range []string{img, link, spaced, unnamed, inCode, remote} {
+		e.gw.SetFile(p, []byte(shotPNG))
+	}
+	e.gw.AddSession(&gatewaytest.Session{ID: "m1", Title: titleMedia, Live: true, StartedAt: 200, Messages: []map[string]any{
+		{kRole: roleUser, kText: "![user](" + unnamed + ")"},
+		{kRole: roleAssistant, kText: "Here: ![a plot](" + img + ")\nAnd [the file](" + link + ") and ![two words](<" + spaced + ">)\n" +
+			"Not these: `![x](" + inCode + ")` ![rel](shot.png) [far](https://example.com" + remote + ")"},
+	}})
+	c := client(t)
+	login(t, e, c)
+	for _, p := range []string{img, link, spaced} {
+		if resp, body := get(t, c, mediaURL(e, "pc", p)); resp.StatusCode != http.StatusOK || body != shotPNG || resp.Header.Get("Content-Type") != mimePNG {
+			t.Fatalf("%s = %d %q", p, resp.StatusCode, body)
+		}
+	}
+	for _, p := range []string{unnamed, inCode, remote, "shot.png"} {
+		if resp, body := get(t, c, mediaURL(e, "pc", p)); resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%q = %d %s", p, resp.StatusCode, body)
+		}
 	}
 }

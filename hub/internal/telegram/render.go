@@ -1020,6 +1020,12 @@ func (r *renderer) complete(ctx context.Context, ev hub.Event) {
 	r.answer.Reset()
 	pages, text := hub.PageBlocks(text)
 	paths, text := hub.MediaDirectives(text)
+	for _, x := range hub.MarkdownMedia(text) {
+		if !slices.Contains(paths, x) {
+			paths = append(paths, x)
+		}
+	}
+	text = hub.MarkdownMediaText(text)
 	switch p.Status {
 	case "interrupted":
 		text += "\n\n**Interrupted.**"

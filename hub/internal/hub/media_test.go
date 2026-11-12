@@ -88,3 +88,31 @@ func TestAttachedImages(t *testing.T) {
 		t.Fatalf("no images = %q", got)
 	}
 }
+
+func TestMarkdownMedia(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name, in string
+		paths    []string
+		text     string
+	}{
+		{"image", "See ![a cat](/out/cat.png) here", []string{"/out/cat.png"}, "See a cat here"},
+		{"link", "Get [the report](/out/report.pdf).", []string{"/out/report.pdf"}, "Get the report."},
+		{"angle brackets", "![shot](</out/my shot.png> \"title\") and [f](</out/a b.pdf>)", []string{"/out/my shot.png", "/out/a b.pdf"}, "shot and f"},
+		{"repeat", "![a](/o/a.png) ![b](/o/a.png)", []string{"/o/a.png"}, "a b"},
+		{"relative stays", "![a](out/cat.png) [b](./x.pdf)", nil, "![a](out/cat.png) [b](./x.pdf)"},
+		{"remote stays", "![a](https://example.com/a.png) [b](//example.com/b.pdf)", nil, "![a](https://example.com/a.png) [b](//example.com/b.pdf)"},
+		{"unclean stays", "![a](/out/../etc/a.png)", nil, "![a](/out/../etc/a.png)"},
+		{"bad extension stays", "[a](/out/run.sh)", nil, "[a](/out/run.sh)"},
+		{"code stays", "`![a](/o/a.png)`\n```\n[b](/o/b.pdf)\n```", nil, "`![a](/o/a.png)`\n```\n[b](/o/b.pdf)\n```"},
+		{"nested", "[![a](/o/a.png)](/o/b.pdf)", []string{"/o/a.png"}, "[a](/o/b.pdf)"},
+		{"unclosed", "![a](/o/a.png", nil, "![a](/o/a.png"},
+	} {
+		if got := hub.MarkdownMedia(c.in); !slices.Equal(got, c.paths) {
+			t.Errorf("%s: MarkdownMedia(%q) = %q, want %q", c.name, c.in, got, c.paths)
+		}
+		if got := hub.MarkdownMediaText(c.in); got != c.text {
+			t.Errorf("%s: MarkdownMediaText(%q) = %q, want %q", c.name, c.in, got, c.text)
+		}
+	}
+}
