@@ -1,0 +1,2 @@
+tests/tools/test_delegate_control_actions.py
+tests/tools/test_delegate_toolset_scope.py
