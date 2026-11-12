@@ -23,8 +23,6 @@
     unread: "The turn stopped before Talaria read this message.",
     tobottom: "Jump to the latest message", tobottomn: "Jump to the latest message (%d new)" };
   const t = (k) => words[k];
-  // User rows Hermes writes itself (a cron result, a finished background job); shown as notes.
-  const noteKinds = new Set(["internal_notification", "process_complete", "async_delegation_complete"]);
 
   async function api(method, path, body) {
     const opts = { method, headers: { "X-CSRF-Token": csrf }, credentials: "same-origin" };
@@ -782,12 +780,19 @@
       this.follow(() => this.showText(tn.text, true));
     }
 
-    // noticeText shows a message that Hermes or another agent put into the
-    // chat as a user message (see notice.js) as a card, and returns false
-    // for any other text. A queued one shows as waiting until it starts.
-    noticeText(text, waiting) {
-      const n = window.HubNotice.parse(window.HubAttach.cutNotes(text));
+    // originCard shows what HubOrigin.classify said of a user message that
+    // the user did not type: nothing for a hidden one, else its card (see
+    // notice.js). It returns true when that is all the message shows, and
+    // false when the user's bubble with v.text follows. A queued card shows
+    // as waiting until its turn starts.
+    originCard(v, text, waiting) {
+      if (v.show === "hidden") return true;
+      const n = v.notice;
       if (!n) return false;
+      if (v.show === "user") {
+        this.add(window.HubNotice.card(n, text, { el, toast, at: waiting ? 0 : this.at }));
+        return false;
+      }
       if (!this.agentWaiting) this.agentWaiting = new Map();
       const key = n.id || "text:" + text;
       const shown = this.agentWaiting.get(key);
@@ -1007,12 +1012,12 @@
 
     // started shows the input a turn started with: this page's own message
     // when it sent it, else the message sent from another app.
-    started(text, note, id, admission) {
-      if (this.noticeText(text)) return;
-      if (note) {
-        if (text) this.add(el("div", "msg result", text));
-        return;
-      }
+    started(text, note, id, admission, start) {
+      start = start || {};
+      // A producer's input (note, such as cron) is named the way Hermes names it.
+      const v = window.HubOrigin.classify({ text, display_kind: start.display_kind, display_text: start.display_text,
+        submission_id: note ? JSON.stringify([note]) : id });
+      if (this.originCard(v, text)) return;
       let i = id || admission ? this.pending.findIndex((x) => (x.id && (x.id === id || x.id === admission)) || (x.adm && x.adm === admission)) : 0;
       if (i < 0 && text) {
         const typed = splitAttachments(text).text;
@@ -1024,8 +1029,8 @@
         p.bubble.classList.remove("pending");
         if (p.label) p.label.remove();
         this.when(p.bubble, this.at);
-      } else if (text) {
-        this.userText(text);
+      } else if (v.text) {
+        this.userText(v.text);
       }
     }
 
@@ -1341,7 +1346,7 @@
           x.adm = p.id;
           this.adopt(x, mine.get(i));
           this.steered(x);
-        } else if (!this.noticeText(p.text, true)) {
+        } else if (!this.originCard(window.HubOrigin.classify(p), p.text, true)) {
           const bubble = this.userText(p.text, true);
           this.queued(bubble, p.id);
           const x = this.pending.find((y) => y.bubble === bubble);
@@ -1451,13 +1456,9 @@
       this.at = window.HubTimes.valid(m.timestamp * 1000) ? Math.round(m.timestamp * 1000) : 0;
       if (m.role === "user") {
         this.turn = null;
-        if (this.noticeText(text) || (typeof m.content === "string" && this.noticeText(m.content))) return;
-        if (noteKinds.has(m.display_kind)) {
-          const shown = (m.display_metadata && m.display_metadata.display_text) || text;
-          if (shown) this.add(el("div", "msg result", shown));
-          return;
-        }
-        const b = this.userText(text);
+        const v = window.HubOrigin.classify(m);
+        if (this.originCard(v, text)) return;
+        const b = this.userText(v.text);
         if (b && Number.isInteger(rid)) b.dataset.row = rid;
         return;
       }
@@ -1517,7 +1518,7 @@
         case "message.start":
           this.turn = null;
           this.setRunning(true);
-          this.started(p.text, p.note, p.submission_id, p.admission_id);
+          this.started(p.text, p.note, p.submission_id, p.admission_id, p);
           break;
         case "reasoning.delta": this.reasoning(p.text || ""); break;
         case "reasoning.available":
@@ -3649,7 +3650,7 @@
     } });
   window.HubTimes.press(document.body, toast);
   const msgActs = window.HubMsgActions({ api, el, chat: () => view, running: () => !!(view && view.running), stop: () => stopTurn(),
-    reopen: (chat) => { if (chat === view) showChat(chat.backend, chat.session); }, toast, banner, noteKinds,
+    reopen: (chat) => { if (chat === view) showChat(chat.backend, chat.session); }, toast, banner,
     open: (b, s) => { openSide(false); location.hash = chatHash(b, s); } });
   const chats = window.HubChatList({ api, el, toast, banner, refresh: () => refreshList(),
     exportChat: (b, s, title) => msgActs.exportChat(b, s, title), computers: () => computers,

@@ -5,7 +5,7 @@
 // the user's last turn and sends it again; Branch starts a new chat from a
 // message. It also exports a chat as Markdown.
 // ctx: api, el, chat(), running(), stop(), reopen(chat), toast(text),
-// banner(text, bad), open(backend, session), noteKinds.
+// banner(text, bad), open(backend, session).
 window.HubMsgActions = (ctx) => {
   const { api, el } = ctx;
   const $ = (id) => document.getElementById(id);
@@ -218,9 +218,9 @@ window.HubMsgActions = (ctx) => {
     const text = m.text != null ? m.text : typeof m.content === "string" ? m.content : "";
     return m.role === "user" ? window.HubAttach.cutNotes(text) : text;
   };
-  const userTurn = (m) => m.role === "user" && m.display_kind !== "hidden" && !ctx.noteKinds.has(m.display_kind);
-  const visible = (m) => m.display_kind !== "hidden" &&
-    ((userTurn(m) && !window.HubNotice.parse(rowText(m))) || (m.role === "assistant" && rowText(m)));
+  // A user row is the user's turn when HubOrigin shows it as their bubble.
+  const userTurn = (m) => m.role === "user" && window.HubOrigin.classify(m).show === "user";
+  const visible = (m) => m.display_kind !== "hidden" && (userTurn(m) || (m.role === "assistant" && rowText(m)));
 
   async function transcript(chat) {
     return api("GET", chat.base + "/transcript");
@@ -322,19 +322,19 @@ window.HubMsgActions = (ctx) => {
       const text = rowText(m);
       if (m.role === "user") {
         flush();
-        if (ctx.noteKinds.has(m.display_kind)) {
-          const shown = (m.display_metadata && m.display_metadata.display_text) || text;
-          if (shown) out.push("> " + shown.split("\n").join("\n> "), "");
+        const v = window.HubOrigin.classify(m);
+        const n = v.notice;
+        if (n && n.kind === "agent") {
+          who = "";
+          head("Agent message");
+          out.push(n.result || text.replace(agentHead, ""), "");
           continue;
         }
-        const nt = window.HubNotice.parse(text);
-        if (nt && nt.kind !== "agent") {
-          out.push("> " + nt.title + (nt.meta && nt.meta.length ? " (" + nt.meta.join(", ") + ")" : ""), "");
-          continue;
-        }
+        if (n) out.push("> " + window.HubOrigin.line(n), "");
+        if (v.show !== "user") continue;
         who = "";
-        head(agentHead.test(text) ? "Agent message" : "You");
-        out.push(text.replace(agentHead, ""), "");
+        head("You");
+        out.push(window.HubAttach.cutNotes(v.text), "");
       } else if (m.role === "assistant") {
         for (const c of m.tool_calls || []) {
           const fn = c.function || {};
