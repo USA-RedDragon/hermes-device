@@ -1,0 +1,17 @@
+tests/tools/test_async_delegation.py
+tests/tools/test_async_delegation_orphan_sweep.py
+tests/tools/test_async_delegation_record_retention.py
+tests/tools/test_async_delegation_failed_surface.py
+tests/tools/test_async_delegation_worker_routing.py
+tests/tools/test_delegation_recovery_diagnostics.py
+tests/tools/test_restored_delegation_ownership.py
+tests/tools/test_delegate.py
+tests/tools/test_delegate_images.py
+tests/tools/test_delegate_child_transcript_release.py
+tests/tools/test_delegate_tool_sessions.py
+tests/tools/test_delegation_live_log.py
+tests/tools/test_delegation_backends.py
+tests/tools/test_finite_delegation_outcomes.py
+tests/gateway/test_gateway_shutdown.py
+tests/gateway/test_sigterm_restart_wait.py
+tests/gateway/test_stop_ends_background_delegations.py

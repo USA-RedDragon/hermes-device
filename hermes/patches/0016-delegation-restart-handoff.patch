@@ -1,0 +1,1792 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 20:15:44 -0600
+Subject: [PATCH] feat(delegation): resume background subagents after a gateway
+ restart
+
+delegation.restart_handoff (false = off): a graceful restart stops each
+background subagent at a clean point (out of its tool call, or after
+delegation.restart_handoff_grace_seconds) and leaves its unit in the
+async_delegations ledger as handed_off, keeping children that finished.
+The next gateway adopts the unit and continues each other child from its
+stored transcript on its recorded route, under the same delegation id;
+the unit then completes and is delivered once, as usual. A tool call cut
+by the restart reads as interrupted in the child's transcript.
+---
+ cli-config.yaml.example                       |   6 +
+ gateway/run_shutdown.py                       |  23 +
+ gateway/run_startup.py                        |   6 +
+ hermes_cli/config_defaults.py                 |   5 +
+ .../tools/test_delegation_restart_handoff.py  | 500 ++++++++++++++++++
+ tools/async_delegation.py                     | 267 ++++++++--
+ tools/delegate_tool.py                        |   8 +-
+ tools/delegate_tool_child_run.py              |  28 +-
+ tools/delegate_tool_config.py                 |  14 +
+ tools/delegate_tool_dispatch.py               |   4 +-
+ tools/delegate_tool_handoff.py                | 500 ++++++++++++++++++
+ tools/delegation_live_log.py                  |  12 +
+ .../docs/user-guide/features/delegation.md    |  45 +-
+ 13 files changed, 1379 insertions(+), 39 deletions(-)
+ create mode 100644 tests/tools/test_delegation_restart_handoff.py
+ create mode 100644 tools/delegate_tool_handoff.py
+
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index 09b47d3861..a61629df1a 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -1991,6 +1991,12 @@ delegation:
+   max_iterations: 250                         # Max tool-calling turns per child (default: 250)
+   # max_concurrent_children: 10               # Max parallel child agents per batch (default: 10, floor: 1, no ceiling).
+                                               # WARNING: values above 10 multiply API cost linearly.
++  # restart_handoff: false                    # A graceful gateway restart hands running background subagents to the
++                                              # next gateway, which resumes each one from its stored transcript under
++                                              # the same delegation id; children that finished keep their results.
++                                              # false = they are interrupted and the parent gets interrupted results.
++  # restart_handoff_grace_seconds: 30         # How long a running tool call may finish before the subagent stops
++                                              # anyway; that call then reads as interrupted (gateway restart).
+   # max_spawn_depth: 1                        # Delegation tree depth cap (range: 1-3, default: 1 = flat).
+                                               # Raise to 2 to allow workers to spawn their own subagents.
+                                               # Requires role="orchestrator" on intermediate agents.
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+index c52b898bcd..3975e55a7a 100644
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -1874,6 +1874,28 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+         cap = getattr(getattr(runner, "config", None), "restart_agent_cleanup_seconds", 0) or 0
+         return float(cap) if cap > 0 else None
+ 
++    # How long a restart handoff waits for stopped background subagents to record their state, past the grace.
++    _DELEGATION_HANDOFF_SETTLE_S = 30.0
++
++    async def _stop_hand_off_delegations(self, ctx: GatewayShutdownMixin._StopContext) -> None:
++        """Restart only (``delegation.restart_handoff``): stop each running background subagent at a clean point and
++        hand it to the next gateway, which resumes it. Runs before the process handoff, so the processes the
++        subagents started are handed off with the rest, and before any kill sweep. Bounded by what the shutdown
++        watchdog's leash has left."""
++        if not getattr(self, "_restart_requested", False):
++            return
++        from tools.delegate_tool_config import _get_restart_handoff, _get_restart_handoff_grace_seconds
++        if not _get_restart_handoff():
++            return
++        from tools.async_delegation import hand_off_for_restart
++        settle = GatewayShutdownMixin._DELEGATION_HANDOFF_SETTLE_S
++        budget = max(1.0, _effective_watchdog_leash(self) - ctx.elapsed() - settle)
++        grace = min(_get_restart_handoff_grace_seconds(), budget)
++        try:
++            await asyncio.to_thread(hand_off_for_restart, grace, min(budget, grace + settle))
++        except Exception:
++            logger.warning("Background delegation handoff failed; they are interrupted as usual", exc_info=True)
++
+     async def _stop_hand_off_processes(self) -> None:
+         """Restart only: hand the background processes of ``terminal.process_handoff_backends`` to
+         the next gateway before any kill sweep, so they keep running and it reattaches them."""
+@@ -2296,6 +2318,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+                     timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
+                 )
+             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
++            await GatewayRunner._stop_hand_off_delegations(self, ctx)
+             await GatewayRunner._stop_hand_off_processes(self)
+             if ctx.timed_out:
+                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
+diff --git a/gateway/run_startup.py b/gateway/run_startup.py
+index b9f60477b8..906b982760 100644
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -1244,6 +1244,12 @@ class GatewayStartupMixin:
+             recovered += self._recover_secondary_process_checkpoints(process_registry)
+             if recovered:
+                 logger.info("Recovered %s background process(es) from previous run", recovered)
++        # Background subagents the previous gateway handed off on a graceful restart resume here, after
++        # their background processes were reattached above (delegation.restart_handoff).
++        with _log_suppressed(logging.WARNING, "Could not resume handed-off background delegations: %s"):
++            from tools.delegate_tool_handoff import resume_handed_off_delegations
++            if resumed := resume_handed_off_delegations():
++                logger.info("Resumed %d background delegation(s) handed off by the previous gateway", resumed)
+         # The gateway owns delegation state: replay durable completions the previous
+         # process never delivered. Explicit here, never at tools import (clients).
+         with _log_suppressed(logging.WARNING, "Could not restore async delegation completions: %s"):
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index a68e6a4288..75e57088cd 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1367,6 +1367,11 @@ DEFAULT_CONFIG = {
+         # Background fan-outs return as ONE message when the whole call finishes. true = each task
+         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
+         "independent_completions": False,
++        # A graceful gateway restart hands running background subagents to the next gateway, which resumes each
++        # from its stored transcript; false = they are interrupted, as before. Grace: how long a running tool call
++        # may finish before the subagent stops anyway (that call then reads as interrupted).
++        "restart_handoff": False,
++        "restart_handoff_grace_seconds": 30,
+         "gateway_mode": "auto",  # gateway: inline (join in the turn) | background | auto = inline where interim msgs are off
+         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
+         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
+diff --git a/tests/tools/test_delegation_restart_handoff.py b/tests/tools/test_delegation_restart_handoff.py
+new file mode 100644
+index 0000000000..275c8cbecb
+--- /dev/null
++++ b/tests/tools/test_delegation_restart_handoff.py
+@@ -0,0 +1,500 @@
++"""delegation.restart_handoff: background subagents survive a graceful gateway restart.
++
++The old gateway stops each child at a clean point and leaves the unit ``handed_off`` in the ledger (children that
++finished keep their entries); the next gateway adopts it and resumes the rest from their stored transcripts under
++the same delegation id. Two registry lifetimes are simulated with ``_reset_for_tests`` over one real ``state.db``;
++the child runner and child agents are fakes.
++"""
++
++import json
++import queue
++import sqlite3
++import subprocess
++import sys
++import threading
++import time
++from types import SimpleNamespace
++
++import pytest
++
++from hermes_constants import get_hermes_home
++from tests.waiting import wait_until
++from tools import async_delegation as ad
++from tools import delegate_tool_handoff as handoff
++from tools.process_registry import process_registry
++
++PARENT = "parent-sid"
++ROUTE_KEY = "agent:main:telegram:dm:alice"
++
++
++@pytest.fixture(autouse=True)
++def _clean_state():
++    ad._reset_for_tests()
++    _drain(process_registry.completion_queue)
++    yield
++    ad._reset_for_tests()
++    _drain(process_registry.completion_queue)
++
++
++def _drain(q) -> list:
++    items = []
++    while True:
++        try:
++            items.append(q.get_nowait())
++        except queue.Empty:
++            return items
++
++
++def _completions(delegation_id: str) -> list:
++    return [e for e in _drain(process_registry.completion_queue)
++            if isinstance(e, dict) and e.get("type") == "async_delegation" and e.get("delegation_id") == delegation_id]
++
++
++def _row(delegation_id: str) -> dict:
++    conn = sqlite3.connect(get_hermes_home() / "state.db")
++    try:
++        conn.row_factory = sqlite3.Row
++        return dict(conn.execute("SELECT * FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone())
++    finally:
++        conn.close()
++
++
++def _set_row(delegation_id: str, **cols) -> None:
++    conn = sqlite3.connect(get_hermes_home() / "state.db")
++    try:
++        conn.execute(f"UPDATE async_delegations SET {', '.join(f'{k}=?' for k in cols)} WHERE delegation_id=?",
++                     (*cols.values(), delegation_id))
++        conn.commit()
++    finally:
++        conn.close()
++
++
++def _dead_pid() -> int:
++    proc = subprocess.Popen([sys.executable, "-c", "pass"])
++    proc.wait()
++    return proc.pid
++
++
++def _entry(i: int, status: str, summary=None) -> dict:
++    return {"task_index": i, "status": status, "summary": summary, "api_calls": 1, "duration_seconds": 1}
++
++
++def _spec(n: int) -> dict:
++    return {"version": 1, "parent": {"session_id": PARENT}, "task_count": n, "live_deleg_id": "deleg_call",
++            "children": {str(i): {"goal": f"task {i}", "subagent_id": f"sa-{i}-0000", "session_id": f"child-{i}",
++                                  "route": {"backend": "default", "route": {}}} for i in range(n)}}
++
++
++def _dispatch(runner, handoff_fn, n=3, delegation_id="deleg_call"):
++    handle = ad.dispatch_async_delegation_batch(
++        goals=[f"task {i}" for i in range(n)], context=None, toolsets=None, role="leaf", model="m",
++        session_key=ROUTE_KEY, parent_session_id=PARENT, runner=runner, delegation_id=delegation_id,
++        handoff=_spec(n), handoff_fn=handoff_fn)
++    assert handle["status"] == "dispatched"
++    return handle["delegation_id"]
++
++
++def _old_gateway_unit(*, finish_on_stop=False):
++    """A unit whose child 0 finished before the restart and whose children 1 and 2 run until stopped."""
++    started, stop = threading.Event(), threading.Event()
++    calls = []
++
++    def runner():
++        ad.record_unit_child("deleg_call", _entry(0, "completed", "early result"))
++        started.set()
++        stop.wait(10)
++        late = "completed" if finish_on_stop else "interrupted"
++        return {"results": [_entry(0, "completed", "early result"), _entry(1, late), _entry(2, late)]}
++
++    def handoff_fn(deadline, state):
++        calls.append(deadline)
++        state["1"] = {"cwd": "/work/one", "session_id": "child-1b"}
++        stop.set()
++
++    delegation_id = _dispatch(runner, handoff_fn)
++    assert started.wait(5)
++    return delegation_id, calls
++
++
++def _resume_with(results_for):
++    seen = {}
++
++    def make_runner(unit):
++        seen.update(unit)
++        return (lambda: {"results": [unit["kept"].get(i) or results_for(i) for i in range(3)]}), None, None, None
++    return make_runner, seen
++
++
++def test_off_by_default(monkeypatch):
++    from hermes_cli.config_defaults import DEFAULT_CONFIG
++    assert DEFAULT_CONFIG["delegation"]["restart_handoff"] is False
++    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {})
++    assert handoff.unit_handoff(SimpleNamespace(children=[]), None) == (None, None)
++    release = threading.Event()
++    handle = ad.dispatch_async_delegation_batch(
++        goals=["a"], context=None, toolsets=None, role="leaf", model="m", session_key=ROUTE_KEY,
++        parent_session_id=PARENT, runner=lambda: release.wait(5) and {"results": [_entry(0, "completed")]})
++    assert ad.hand_off_for_restart(0.1, 0.1) == 0  # no handoff record: interrupted as before
++    assert _row(handle["delegation_id"])["state"] == "running"
++    release.set()
++    wait_until(lambda: _completions(handle["delegation_id"]), what="the unit delivered as usual")
++
++
++def test_finished_children_are_kept_and_the_rest_resume_on_the_next_gateway():
++    delegation_id, calls = _old_gateway_unit()
++    assert ad.hand_off_for_restart(1.0, 5.0) == 1
++    assert calls and _completions(delegation_id) == []  # nothing delivered by the old gateway
++    row = _row(delegation_id)
++    assert row["state"] == "handed_off"
++    assert [r["task_index"] for r in json.loads(row["result_json"])["results"]] == [0]
++    spec = json.loads(row["task_json"])["handoff"]
++    assert spec["resume"] == [1, 2]
++    assert spec["children"]["1"]["cwd"] == "/work/one" and spec["children"]["1"]["session_id"] == "child-1b"
++
++    # Old gateway gone: no recovery path marks the row unknown or delivers it.
++    _set_row(delegation_id, owner_pid=_dead_pid())
++    ad._reset_for_tests()
++    assert ad.recover_abandoned_delegations() == 0
++    assert ad.restore_undelivered_completions(queue.Queue()) == 0
++    assert ad.sweep_orphaned_completions(queue.Queue(), now=time.time() + 3600) == 0
++    assert _row(delegation_id)["state"] == "handed_off"
++
++    make_runner, seen = _resume_with(lambda i: _entry(i, "completed", f"resumed {i}"))
++    assert ad.adopt_handed_off_delegations(make_runner) == 1
++    assert ad.adopt_handed_off_delegations(make_runner) == 0  # one adopter only
++    assert set(seen["kept"]) == {0} and seen["handoff"]["resume"] == [1, 2]
++    assert seen["session_key"] == ROUTE_KEY and seen["parent_session_id"] == PARENT
++
++    events = wait_until(lambda: _completions(delegation_id), what="the resumed unit's completion")
++    assert len(events) == 1
++    event = events[0]
++    assert event["status"] == "completed" and event["session_key"] == ROUTE_KEY
++    assert [(r["task_index"], r["summary"]) for r in event["results"]] == [
++        (0, "early result"), (1, "resumed 1"), (2, "resumed 2")]
++    wait_until(lambda: _row(delegation_id)["state"] == "completed", what="the durable completion")
++    assert _row(delegation_id)["delivery_state"] == "pending"
++    assert ad.claim_completion_delivery(delegation_id, "first") is True
++    assert ad.claim_completion_delivery(delegation_id, "second") is False
++    assert _completions(delegation_id) == []
++
++
++def test_next_gateway_with_the_option_off_delivers_interrupted(monkeypatch):
++    delegation_id, _ = _old_gateway_unit()
++    assert ad.hand_off_for_restart(1.0, 5.0) == 1
++    ad._reset_for_tests()
++    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {"restart_handoff": False})
++    assert handoff.resume_handed_off_delegations() == 1
++    event = wait_until(lambda: _completions(delegation_id), what="the interrupted completion")[0]
++    assert [(r["task_index"], r["status"]) for r in event["results"]] == [
++        (0, "completed"), (1, "interrupted"), (2, "interrupted")]
++    assert "restart_handoff is off" in event["results"][1]["error"]
++
++
++def test_unit_that_finished_during_the_handoff_is_delivered_as_usual():
++    delegation_id, _ = _old_gateway_unit(finish_on_stop=True)
++    assert ad.hand_off_for_restart(1.0, 5.0) == 0
++    event = wait_until(lambda: _completions(delegation_id), what="the normal completion")[0]
++    assert [r["status"] for r in event["results"]] == ["completed"] * 3
++    assert _row(delegation_id)["state"] == "completed"
++
++
++def test_process_killed_during_the_handoff_is_still_resumed():
++    wedged = threading.Event()
++
++    def runner():
++        ad.record_unit_child("deleg_call", _entry(0, "completed", "early result"))
++        wedged.wait(10)
++        return {"results": []}
++
++    delegation_id = _dispatch(runner, lambda deadline, state: None)
++    wait_until(lambda: json.loads(_row(delegation_id)["result_json"] or "{}").get("results"), what="child 0 recorded")
++    assert ad.hand_off_for_restart(0.05, 0.3) == 0  # the unit never settles before the process "dies"
++    assert _row(delegation_id)["state"] == "handed_off"
++    ad._reset_for_tests()
++    wedged.set()  # the dead process's worker finds no record: nothing is finalized twice
++
++    make_runner, seen = _resume_with(lambda i: _entry(i, "completed", f"resumed {i}"))
++    assert ad.adopt_handed_off_delegations(make_runner) == 1
++    assert set(seen["kept"]) == {0}
++    event = wait_until(lambda: _completions(delegation_id), what="the resumed completion")[0]
++    assert [r["summary"] for r in event["results"]] == ["early result", "resumed 1", "resumed 2"]
++
++
++def test_a_runner_that_cannot_be_built_reports_interrupted():
++    delegation_id, _ = _old_gateway_unit()
++    assert ad.hand_off_for_restart(1.0, 5.0) == 1
++    ad._reset_for_tests()
++
++    def broken(unit):
++        raise RuntimeError("record unreadable")
++
++    assert ad.adopt_handed_off_delegations(broken) == 1
++    event = wait_until(lambda: _completions(delegation_id), what="the fallback completion")[0]
++    assert [r["status"] for r in event["results"]] == ["completed", "interrupted", "interrupted"]
++    assert "record unreadable" in event["results"][2]["error"]
++
++
++# ── Stopping children at a clean point ───────────────────────────────────────
++class _Child:
++    def __init__(self, tool=None):
++        self.tool, self.stops, self._subagent_id, self.session_id = tool, [], "sa-0-test", "child-0"
++
++    def get_activity_summary(self):
++        return {"current_tool": self.tool}
++
++    def hard_interrupt(self, message=None, *, tool_reason=None):
++        self.stops.append(tool_reason)
++
++
++def test_children_stop_after_their_tool_call_or_at_the_deadline():
++    busy, idle, stuck = _Child("terminal"), _Child(), _Child("terminal")
++    state = {}
++    worker = threading.Thread(target=handoff._handoff_fn({0: busy, 1: idle}), args=(time.monotonic() + 10, state))
++    worker.start()
++    wait_until(lambda: idle.stops, what="the idle child stopped")
++    assert busy.stops == []  # still inside its tool call
++    busy.tool = None
++    worker.join(5)
++    assert busy.stops == [handoff.RESTART_TOOL_REASON] and idle.stops == [handoff.RESTART_TOOL_REASON]
++    assert busy._delegate_restart_handoff is True and set(state) == {"0", "1"}
++
++    handoff._handoff_fn({0: stuck})(time.monotonic() + 0.2, {})
++    assert stuck.stops == [handoff.RESTART_TOOL_REASON]  # cut at the bound: its call reads "gateway restart"
++
++
++def test_handed_off_child_keeps_its_tool_state():
++    from tools.delegate_tool_child_run import _ChildRun
++    calls = []
++    child = SimpleNamespace(
++        _delegate_restart_handoff=True, session_id="child-0", close=lambda: calls.append("close"),
++        release_clients=lambda: calls.append("release"),
++        _finalize_owned_session_row=lambda: calls.append(("finalize", child._end_session_on_close)))
++    run = _ChildRun(child, SimpleNamespace(), 0, "goal", None, None)
++    run.cleanup(heartbeat=SimpleNamespace(stop=lambda: None), child_pool=None, leased_cred_id=None,
++                close_deferred=False)
++    assert calls == ["release", ("finalize", False)]  # processes, terminal and the session row stay open
++
++
++# ── Resuming a child ─────────────────────────────────────────────────────────
++def _session_db():
++    from hermes_state_registry import acquire
++    return acquire()
++
++
++def _stored_child(db, *, cut: bool):
++    db.create_session(session_id=PARENT, source="telegram")
++    db.create_session(session_id="child-1", source="subagent", parent_session_id=PARENT,
++                      model_config={"_delegate_from": PARENT, "_subagent_id": "sa-1-abcd"})
++    db.append_message("child-1", "user", content="task 1")
++    calls = [{"id": "call_a", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
++             {"id": "call_b", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]
++    db.append_message("child-1", "assistant", content="", tool_calls=calls)
++    db.append_message("child-1", "tool", content="file text", tool_name="read_file", tool_call_id="call_a")
++    if not cut:
++        db.append_message("child-1", "tool", content="[Tool execution cancelled - terminal was abandoned: gateway "
++                          "restart]", tool_name="terminal", tool_call_id="call_b")
++        db.append_message("child-1", "assistant", content="Operation interrupted.")
++    db.end_session("child-1", "agent_close")
++
++
++def test_a_tool_call_cut_by_the_restart_reads_as_interrupted():
++    db = _session_db()
++    _stored_child(db, cut=True)
++    assert handoff._close_cut_tool_calls(db, "child-1") == 1
++    assert handoff._close_cut_tool_calls(db, "child-1") == 0
++    tail = db.get_messages_as_conversation("child-1")[-1]
++    assert tail["role"] == "tool" and tail["tool_call_id"] == "call_b"
++    assert json.loads(tail["content"]) == {"status": "interrupted", "error": handoff.CUT_TOOL_RESULT}
++
++
++def test_a_closed_interrupted_turn_is_left_as_written():
++    db = _session_db()
++    _stored_child(db, cut=False)
++    assert handoff._close_cut_tool_calls(db, "child-1") == 0
++
++
++def _resume_unit():
++    child = {"goal": "task 1", "context": "ctx", "role": None, "subagent_id": "sa-1-abcd", "session_id": "child-1",
++             "cwd": "/work/one", "route": {"backend": "model_map", "label": "quick",
++                                           "route": {"base_url": "http://ollama.example.com/v1", "model": "qwen"}}}
++    spec = {"version": 1, "parent": {"session_id": PARENT, "model": "main", "provider": "custom",
++                                     "base_url": "http://ollama.example.com/v1"},
++            "children": {"1": child}, "task_count": 2, "live_deleg_id": "deleg_call", "top_role": "leaf"}
++    return {"delegation_id": "deleg_call", "parent_session_id": PARENT, "goals": ["task 0", "task 1"],
++            "handoff": spec, "kept": {}}
++
++
++@pytest.fixture
++def resume_seams(monkeypatch):
++    built = {}
++
++    def build(**kwargs):
++        built.update(kwargs)
++        return SimpleNamespace(_progress_identity_ref={})
++
++    monkeypatch.setattr("tools.delegate_tool._build_child_preserving_parent_tools", build)
++    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {"restart_handoff": True})
++    monkeypatch.setattr("tools.delegate_tool._resolve_delegation_credentials", lambda route, parent: {
++        "model": route.get("model"), "provider": None, "base_url": route.get("base_url"), "api_key": None,
++        "api_mode": None})
++    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **kw: {
++        "base_url": "http://ollama.example.com/v1", "api_key": "local"})
++
++    def never(*args, **kwargs):
++        raise AssertionError("the recorded route must not be asked of the backend again")
++    monkeypatch.setattr("tools.delegate_tool_routes._route_one", never)
++    return built
++
++
++def test_child_resumes_its_stored_session_on_its_recorded_route(resume_seams):
++    db = _session_db()
++    _stored_child(db, cut=True)
++    unit = handoff._ResumedUnit(_resume_unit())
++    parent = handoff._ResumeParent(unit.spec["parent"], db)
++    child = unit._build(1, unit.spec["children"]["1"], parent, db)
++
++    assert resume_seams["resume_session_id"] == "child-1" and resume_seams["subagent_id"] == "sa-1-abcd"
++    assert resume_seams["model"] == "qwen" and resume_seams["override_base_url"] == "http://ollama.example.com/v1"
++    assert resume_seams["parent_agent"].session_id == PARENT and resume_seams["goal"] == "task 1"
++    assert db.get_session("child-1")["ended_at"] is None  # reopened for the continue turn
++    resume = child._delegate_resume
++    assert resume["message"] == handoff.RESUME_MESSAGE and resume["cwd"] == "/work/one"
++    assert [m.get("tool_call_id") for m in resume["history"] if m["role"] == "tool"] == ["call_a", "call_b"]
++    assert child._delegate_route == {"backend": "model_map", "label": "quick"}
++    assert child._delegation_id == "deleg_call" and child._progress_identity_ref == {"delegation_id": "deleg_call"}
++
++
++def test_child_without_a_stored_session_is_not_resumed(resume_seams):
++    db = _session_db()
++    unit = handoff._ResumedUnit(_resume_unit())
++    with pytest.raises(handoff._NotResumable):
++        unit._build(1, unit.spec["children"]["1"], handoff._ResumeParent(unit.spec["parent"], db), db)
++
++
++def test_resumed_unit_reports_a_missing_session_as_interrupted(resume_seams, monkeypatch):
++    unit = _resume_unit()
++    unit["kept"] = {0: _entry(0, "completed", "early result")}
++    result = handoff._ResumedUnit(unit).run()
++    assert [(r["task_index"], r["status"]) for r in result["results"]] == [(0, "completed"), (1, "interrupted")]
++    assert "could not be resumed" in result["results"][1]["error"]
++    assert result["delegation_id"] == "deleg_call"
++
++
++def test_route_with_a_credential_is_stored_without_it_and_asked_again(monkeypatch):
++    from tools.delegate_tool_routes import TaskRoute
++    route = TaskRoute({}, {"provider": "openrouter", "model": "m", "api_key": "sk-test", "label": "deep"},
++                      backend="model_map", label="deep")
++    spec = handoff._route_spec(route)
++    assert spec == {"backend": "model_map", "label": "deep", "route": {"provider": "openrouter", "model": "m"},
++                    "reask": True}
++    assert "sk-test" not in json.dumps(spec)
++
++    monkeypatch.setattr("tools.delegate_tool_routes._active_provider", lambda config: SimpleNamespace(name="model_map"))
++    monkeypatch.setattr("tools.delegate_tool_routes._declared_parameters", lambda provider, config: {})
++    answer = {"provider": "openrouter", "model": "m", "api_key": "sk-test", "label": "deep"}
++    monkeypatch.setattr("tools.delegate_tool_routes._route_one", lambda *args: dict(answer))
++    task = {"goal": "g", "task": {"goal": "g"}}
++    assert handoff._ask_again(1, task, spec["route"], "model_map", {}) == {
++        "provider": "openrouter", "model": "m", "api_key": "sk-test"}
++    answer["model"] = "other"
++    with pytest.raises(handoff._NotResumable):
++        handoff._ask_again(1, task, spec["route"], "model_map", {})
++
++
++def test_child_run_continues_the_stored_transcript(tmp_path):
++    from tools.delegate_tool_child_run import _ChildRun
++    from tools.terminal_tool import get_session_cwd
++    seen = {}
++    history = [{"role": "user", "content": "task 1"}, {"role": "assistant", "content": "working"}]
++
++    class Child:
++        _delegate_resume = {"history": history, "message": handoff.RESUME_MESSAGE, "cwd": str(tmp_path)}
++
++        def run_conversation(self, user_message, **kw):
++            seen.update(kw, user_message=user_message)
++            return {"final_response": "done", "completed": True}
++
++    def no_worktree(*args):
++        raise AssertionError("a resumed child keeps its workspace")
++
++    run = _ChildRun(Child(), SimpleNamespace(_current_task_id=None), 1, "task 1", "sa-1-abcd", None)
++    from unittest.mock import patch
++    with patch("tools.delegate_tool_child_run._create_isolated_worktree", no_worktree):
++        run.seed_workspace()
++        result, failure, _ = run.await_child()
++    assert failure is None and result["final_response"] == "done"
++    assert seen["user_message"] == handoff.RESUME_MESSAGE and seen["conversation_history"] == history
++    assert get_session_cwd("sa-1-abcd") == str(tmp_path)
++
++
++@pytest.mark.asyncio
++async def test_gateway_hands_off_only_on_a_restart_with_the_option_on(monkeypatch):
++    from gateway.run_shutdown import GatewayShutdownMixin
++    calls = []
++    monkeypatch.setattr(ad, "hand_off_for_restart", lambda grace, timeout: calls.append((grace, timeout)))
++    monkeypatch.setattr("gateway.run_shutdown._effective_watchdog_leash", lambda runner: 90.0)
++    ctx = SimpleNamespace(elapsed=lambda: 0.0)
++    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {"restart_handoff": True})
++    await GatewayShutdownMixin._stop_hand_off_delegations(SimpleNamespace(_restart_requested=False), ctx)
++    assert calls == []
++    await GatewayShutdownMixin._stop_hand_off_delegations(SimpleNamespace(_restart_requested=True), ctx)
++    assert calls == [(30.0, 60.0)]
++    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {})
++    await GatewayShutdownMixin._stop_hand_off_delegations(SimpleNamespace(_restart_requested=True), ctx)
++    assert calls == [(30.0, 60.0)]
++
++
++def test_resumed_unit_runs_the_child_through_the_usual_child_run(resume_seams, monkeypatch):
++    from unittest.mock import MagicMock
++    db = _session_db()
++    _stored_child(db, cut=True)
++    child = MagicMock()
++    child.run_conversation.return_value = {"final_response": "finished after the restart", "completed": True,
++                                           "interrupted": False, "api_calls": 2, "messages": []}
++    for name, value in (("_delegate_restart_handoff", False), ("_delegate_live_writer", None),
++                        ("_live_transcript_path", None), ("_delegate_output_schema", None), ("_delegate_images", []),
++                        ("_credential_pool", None), ("_subagent_id", "sa-1-abcd")):
++        setattr(child, name, value)
++    monkeypatch.setattr("tools.delegate_tool._build_child_preserving_parent_tools", lambda **kw: child)
++    unit = _resume_unit()
++    unit["kept"] = {0: _entry(0, "completed", "early result")}
++    result = handoff._ResumedUnit(unit).run()
++    assert [(r["task_index"], r["status"], r["summary"]) for r in result["results"]] == [
++        (0, "completed", "early result"), (1, "completed", "finished after the restart")]
++    kwargs = child.run_conversation.call_args.kwargs
++    assert kwargs["user_message"] == handoff.RESUME_MESSAGE
++    assert kwargs["conversation_history"][-1]["tool_call_id"] == "call_b"  # the cut call reads as interrupted
++    child.close.assert_called_once_with()  # finished normally: torn down as usual
++
++
++def test_secret_filter_keeps_settings_and_drops_credentials():
++    value = {"extra_body": {"thinking": {"budget_tokens": 2048}}, "max_tokens": 10,
++             "extra_headers": {"X-Api-Key": "k1", "Ocp-Apim-Subscription-Key": "k2", "Authorization": "Bearer k3"},
++             "access_token": "k4", "base_url": "https://llm.example.com/v1?key=k5"}
++    clean, dropped = handoff._strip_secrets(value)
++    assert dropped and clean == {"extra_body": {"thinking": {"budget_tokens": 2048}}, "max_tokens": 10,
++                                 "extra_headers": {}}
++
++
++def test_child_stopped_for_the_handoff_is_not_recorded_as_finished():
++    stop, recorded, wedged = threading.Event(), threading.Event(), threading.Event()
++
++    def runner():
++        stop.wait(10)
++        ad.record_unit_child("deleg_call", _entry(0, "completed", "finished in the grace window"))
++        ad.record_unit_child("deleg_call", _entry(1, "interrupted"))  # stopped child; its sibling never settles
++        recorded.set()
++        wedged.wait(10)
++        return {"results": []}
++
++    delegation_id = _dispatch(runner, lambda deadline, state: stop.set())
++    assert ad.hand_off_for_restart(0.1, 0.5) == 0
++    assert recorded.wait(5)
++    kept = json.loads(_row(delegation_id)["result_json"])["results"]
++    assert [(r["task_index"], r["status"]) for r in kept] == [(0, "completed")]
++    ad._reset_for_tests()
++    wedged.set()
++    make_runner, seen = _resume_with(lambda i: _entry(i, "completed", f"resumed {i}"))
++    assert ad.adopt_handed_off_delegations(make_runner) == 1
++    assert set(seen["kept"]) == {0}
++    wait_until(lambda: _completions(delegation_id), what="the resumed completion")
+diff --git a/tools/async_delegation.py b/tools/async_delegation.py
+index bd11453bd0..2deef9f4a2 100644
+--- a/tools/async_delegation.py
++++ b/tools/async_delegation.py
+@@ -183,7 +183,8 @@ def _persist_dispatch(record: dict[str, Any]) -> None:
+         owner_started_at = None
+     task_payload = {
+         key: record.get(key)
+-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", *_ROUTING_KEYS)
++        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts",
++                    "handoff", *_ROUTING_KEYS)
+         if key in record}
+     try:  # where the children's terminals started; lets recovery add a git-state hint
+         task_payload["owner_cwd"] = os.getcwd()
+@@ -210,20 +211,20 @@ def _prune_durable_records() -> None:
+         conn.execute(
+             "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?", (cutoff,))
+         terminal_count = conn.execute(
+-            "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')").fetchone()[0]
++            "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing','handed_off')").fetchone()[0]
+         if terminal_count > _MAX_RETAINED_COMPLETED:
+             conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
+                      SELECT delegation_id FROM async_delegations
+-                     WHERE state NOT IN ('running','finalizing')
++                     WHERE state NOT IN ('running','finalizing','handed_off')
+                      ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
+                               updated_at ASC LIMIT ?
+                    )""", (terminal_count - _MAX_RETAINED_COMPLETED,))
+         pending_count = conn.execute("""SELECT COUNT(*) FROM async_delegations
+-               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'""").fetchone()[0]
++               WHERE state NOT IN ('running','finalizing','handed_off') AND delivery_state='pending'""").fetchone()[0]
+         if pending_count > _MAX_DURABLE_PENDING:
+             conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
+                      SELECT delegation_id FROM async_delegations
+-                     WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
++                     WHERE state NOT IN ('running','finalizing','handed_off') AND delivery_state='pending'
+                      ORDER BY updated_at ASC LIMIT ?
+                    )""", (pending_count - _MAX_DURABLE_PENDING,))
+ 
+@@ -247,22 +248,27 @@ def record_unit_child(delegation_id: str, entry: dict[str, Any]) -> None:
+     result at finalize); ``recover_abandoned_delegations`` replays it. Best-effort: a failed write costs recovery
+     fidelity, never the live result."""
+     entry = redact_child_result(entry)
+-    if isinstance(entry.get("task_index"), int):  # a stall or runner crash keeps it (``_keep_finished_children``)
+-        with _records_lock:
+-            if (record := _records.get(delegation_id)) is not None and record.get("status") in _ACTIVE_STATES:
+-                record.setdefault("_finished_children", {})[entry["task_index"]] = entry
++    with _records_lock:
++        record = _records.get(delegation_id)
++        if record is not None and record.get("_handoff") and entry.get("status") in _RESUMABLE_STATUSES:
++            return  # stopped for a restart handoff: unfinished, the next gateway resumes it
++        if isinstance(entry.get("task_index"), int) and record is not None and record.get("status") in _ACTIVE_STATES:
++            # a stall or runner crash keeps it (``_keep_finished_children``)
++            record.setdefault("_finished_children", {})[entry["task_index"]] = entry
+     if remote := worker_ledger():
+         return remote.child(delegation_id, entry)
+     try:
+         with _DB_LOCK, _transaction() as conn:
+-            row = conn.execute("SELECT result_json FROM async_delegations WHERE delegation_id=? AND state='running'",
+-                               (delegation_id,)).fetchone()
++            row = conn.execute(
++                "SELECT result_json FROM async_delegations WHERE delegation_id=? AND state IN ('running','handed_off')",
++                (delegation_id,)).fetchone()
+             if row is None:
+                 return
+             partial = redact_child_result(json.loads(row[0] or "{}") or {})
+             results = [r for r in partial.get("results") or [] if r.get("task_index") != entry.get("task_index")]
+             results.append(entry)
+-            conn.execute("UPDATE async_delegations SET result_json=?, updated_at=? WHERE delegation_id=? AND state='running'",
++            conn.execute("UPDATE async_delegations SET result_json=?, updated_at=? WHERE delegation_id=? "
++                         "AND state IN ('running','handed_off')",
+                          (json.dumps({"results": results, "partial": True}), time.time(), delegation_id))
+     except Exception:
+         logger.warning("Async delegation %s: could not record finished child %s", delegation_id, entry.get("task_index"), exc_info=True)
+@@ -370,7 +376,7 @@ def restore_undelivered_completions(target_queue) -> int:
+     with _DB_LOCK, _transaction() as conn:
+         rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at
+                FROM async_delegations
+-               WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
++               WHERE state NOT IN ('running','handed_off') AND delivery_state='pending' AND event_json IS NOT NULL
+                ORDER BY completed_at, delegation_id""").fetchall()
+         return _replay_pending(conn, rows, target_queue, now, startup=True)
+ 
+@@ -524,7 +530,7 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) ->
+         rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at,
+                       owner_pid, owner_started_at, delivery_attempts, updated_at
+                FROM async_delegations
+-               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
++               WHERE state NOT IN ('running','finalizing','handed_off') AND delivery_state='pending'
+                  AND event_json IS NOT NULL AND updated_at < ?
+                  AND (delivery_claim IS NULL OR delivery_claimed_at < ?)
+                ORDER BY completed_at, delegation_id""", (now - _ORPHAN_STALE_S, now - _CLAIM_LEASE_S)).fetchall()
+@@ -786,7 +792,7 @@ def failed_delegations_for_session(
+     with _DB_LOCK, _transaction() as conn:
+         rows = conn.execute(
+             f"""SELECT delegation_id, state, dispatched_at, completed_at, task_json, result_json FROM async_delegations
+-                WHERE ({owner_sql}) AND state NOT IN ('running','finalizing') AND completed_at >= ?
++                WHERE ({owner_sql}) AND state NOT IN ('running','finalizing','handed_off') AND completed_at >= ?
+                 ORDER BY completed_at DESC LIMIT ?""",
+             (*(val for _, val in selectors), cutoff, limit)).fetchall()
+     failed: list[dict[str, Any]] = []
+@@ -923,6 +929,7 @@ def _dispatch_admitted(
+     progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
+     task_indexes: Optional[list[int]] = None,
+     task_transcripts: Optional[dict[str, str]] = None,
++    handoff: Optional[dict[str, Any]] = None, handoff_fn: Optional[Callable[[float, dict], None]] = None,
+ ) -> dict[str, Any]:
+     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
+     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
+@@ -948,6 +955,8 @@ def _dispatch_admitted(
+         **({"task_transcripts": dict(task_transcripts)} if task_transcripts else {}),
+         # Which of the call's ``goals`` this unit runs (None = all of them).
+         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
++        # What the next gateway needs to resume the unit's children (``hand_off_for_restart``).
++        **({"handoff": handoff, "handoff_fn": handoff_fn} if handoff and handoff_fn else {}),
+         # The one stale-monitor thread serves every profile and starts with an empty Context;
+         # a forced finalization runs under the dispatcher's so it settles the same state.db.
+         "_context": contextvars.copy_context(),
+@@ -965,7 +974,25 @@ def _dispatch_admitted(
+     # Units of one call share a slot, so live units can exceed slots: size the pool by units or a
+     # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
+     executor = _get_executor(max(max_async_children, live_units))
++    try:
++        _submit_worker(executor, delegation_id, runner, classify, crash_result, label, dispatched_at)
++    except Exception as exc:  # pragma: no cover — pool submit failure is rare
++        with _records_lock:
++            _records.pop(delegation_id, None)
++        if remote := worker_ledger():
++            remote.unscheduled(delegation_id)
++        else:
++            with _DB_LOCK, _transaction() as conn:
++                conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
++        return {"status": "rejected", "error": f"Failed to schedule async delegation{label}: {exc}"}
++    if progress_fn is not None:
++        _ensure_stale_monitor()
++    return {"status": "dispatched", "delegation_id": delegation_id}
++
+ 
++def _submit_worker(executor, delegation_id: str, runner: Callable[[], dict[str, Any]], classify, crash_result,
++                   label: str, dispatched_at: float) -> None:
++    """Run ``runner`` for the registered record on ``executor`` and finalize it with the outcome."""
+     def _worker() -> None:
+         result: dict[str, Any] = {}
+         status = "error"
+@@ -991,19 +1018,9 @@ def _dispatch_admitted(
+     try:
+         future = executor.submit(propagate_context_to_thread(_worker))
+         future.add_done_callback(lambda _: retirement.release())
+-    except Exception as exc:  # pragma: no cover — pool submit failure is rare
++    except Exception:
+         retirement.release()
+-        with _records_lock:
+-            _records.pop(delegation_id, None)
+-        if remote := worker_ledger():
+-            remote.unscheduled(delegation_id)
+-        else:
+-            with _DB_LOCK, _transaction() as conn:
+-                conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
+-        return {"status": "rejected", "error": f"Failed to schedule async delegation{label}: {exc}"}
+-    if progress_fn is not None:
+-        _ensure_stale_monitor()
+-    return {"status": "dispatched", "delegation_id": delegation_id}
++        raise
+ 
+ 
+ def dispatch_async_delegation(
+@@ -1042,12 +1059,14 @@ def dispatch_async_delegation_batch(
+     progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
+     task_indexes: Optional[list[int]] = None,
+     task_transcripts: Optional[dict[str, str]] = None,
++    handoff: Optional[dict[str, Any]] = None, handoff_fn: Optional[Callable[[float, dict], None]] = None,
+ ) -> dict[str, Any]:
+     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
+     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
+     "total_duration_seconds": N}`` dict. The unit occupies ONE async slot — or joins the slot named
+     by ``slot_key`` (in-unit parallelism is bounded separately) — and produces a SINGLE completion
+-    event carrying per-task ``results``."""
++    event carrying per-task ``results``. ``handoff`` (JSON) and ``handoff_fn(deadline, state)`` let a graceful
++    restart hand the unit to the next gateway (``hand_off_for_restart``); without them it is interrupted."""
+     delegation_id = delegation_id or _new_delegation_id()
+     # ``goals`` is the whole call (result task_index indexes it); the unit's own goals label the record.
+     unit_goals = [goals[i] for i in task_indexes] if task_indexes is not None else list(goals)
+@@ -1059,7 +1078,7 @@ def dispatch_async_delegation_batch(
+         parent_session_id=parent_session_id, runner=runner,
+         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
+         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
+-        task_indexes=task_indexes, task_transcripts=task_transcripts,
++        task_indexes=task_indexes, task_transcripts=task_transcripts, handoff=handoff, handoff_fn=handoff_fn,
+         capacity_error=(
+             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
+             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
+@@ -1096,9 +1115,13 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
+         record["completed_at"] = time.time()
+         record["interrupt_fn"] = None  # drop the closure; child is done
+         record["progress_fn"] = None  # stop stale-monitor sampling
++        record.pop("handoff_fn", None)
+         snapshot = dict(record)
+-    final = result(snapshot) if callable(result) else result
+-    _push_completion_event(snapshot, _keep_finished_children(snapshot, final, status), status)
++    final = _keep_finished_children(snapshot, result(snapshot) if callable(result) else result, status)
++    if snapshot.get("_handoff") and _hand_off_unit(snapshot, final):
++        status = "handed_off"
++    else:
++        _push_completion_event(snapshot, final, status)
+     with _records_lock:
+         if delegation_id in _records:
+             _records[delegation_id]["status"] = status
+@@ -1203,6 +1226,185 @@ def push_task_failure_notice(delegation_id: str, entry: dict[str, Any], *, n_tas
+         logger.error("Async delegation batch %s: failed to enqueue task failure notice: %s", delegation_id, exc)
+ 
+ 
++# ── Restart handoff (delegation.restart_handoff) ────────────────────────────
++# A child that stopped for the handoff with one of these is resumed by the next gateway; any other
++# entry (completed, or a failure of its own) is the child's result and is kept.
++_RESUMABLE_STATUSES = frozenset({"interrupted", "stalled"})
++
++
++def hand_off_for_restart(grace_seconds: float, timeout_seconds: float) -> int:
++    """Restart only: hand every running unit dispatched with a ``handoff`` to the next gateway; returns how many.
++
++    Each unit's row turns ``handed_off`` first, so a process killed from here on is still resumed. Its
++    ``handoff_fn(deadline, state)`` then stops each child at a clean point: out of its tool call, or at
++    ``grace_seconds`` at the latest. When the unit finalizes, children that finished keep their entries and the
++    others are left for the next gateway (``adopt_handed_off_delegations``). Waits up to ``timeout_seconds``."""
++    require_ledger_owner()
++    with _records_lock:
++        targets = [r for r in _records.values() if r.get("status") in _ACTIVE_STATES and callable(r.get("handoff_fn"))]
++        for record in targets:
++            record.update(_handoff=True, _handoff_state={},
++                          _handoff_finished=frozenset(record.get("_finished_children") or ()))
++    if not targets:
++        return 0
++    ids = [r["delegation_id"] for r in targets]
++    now = time.time()
++    with _DB_LOCK, _transaction() as conn:
++        for delegation_id in ids:
++            conn.execute("UPDATE async_delegations SET state='handed_off', updated_at=? "
++                         "WHERE delegation_id=? AND state='running'", (now, delegation_id))
++    deadline = time.monotonic() + max(0.0, grace_seconds)
++    for record in targets:
++        threading.Thread(target=_call_handoff, args=(record, deadline), daemon=True,
++                         name=f"async-delegate-handoff-{record['delegation_id']}").start()
++    end = time.monotonic() + max(grace_seconds, timeout_seconds)
++    while time.monotonic() < end:
++        with _records_lock:
++            if not any((_records.get(i) or {}).get("status") in _LIVE_STATES for i in ids):
++                break
++        time.sleep(0.2)
++    with _records_lock:
++        handed = sum(1 for i in ids if (_records.get(i) or {}).get("status") == "handed_off")
++        unsettled = sum(1 for i in ids if (_records.get(i) or {}).get("status") in _LIVE_STATES)
++    if unsettled:
++        logger.warning("Restart handoff: %d background delegation(s) did not stop in time; the next gateway "
++                       "resumes them from their stored transcripts", unsettled)
++    if handed:
++        logger.info("Handed %d background delegation(s) to the next gateway", handed)
++    return handed
++
++
++def _call_handoff(record: dict[str, Any], deadline: float) -> None:
++    fn, state = record.get("handoff_fn"), record.get("_handoff_state")
++    if not callable(fn):
++        return
++    try:
++        fn(deadline, state)
++    except Exception:
++        logger.warning("Async delegation %s: restart handoff failed to stop its children", record.get("delegation_id"),
++                       exc_info=True)
++
++
++def _hand_off_unit(record: dict[str, Any], result: dict[str, Any]) -> bool:
++    """Persist a unit stopped by ``hand_off_for_restart`` as ``handed_off``. False when nothing is left to resume
++    (every child finished) or the write fails: the unit is then delivered as usual."""
++    indexes = list(record.get("task_indexes") or range(len(record.get("goals") or [])))
++    entries = {r["task_index"]: r for r in result.get("results") or []
++               if isinstance(r, dict) and isinstance(r.get("task_index"), int)}
++    finished = record.get("_handoff_finished") or frozenset()
++    resume = [i for i in indexes
++              if i not in finished and (entries.get(i) or {}).get("status", "interrupted") in _RESUMABLE_STATUSES]
++    if not resume:
++        return False
++    kept = [redact_child_result(entries[i]) for i in indexes if i in entries and i not in resume]
++    try:
++        if not _persist_handoff(record["delegation_id"], kept, resume, record.get("_handoff_state") or {}):
++            logger.warning("Async delegation %s: another gateway owns it now; not delivered here",
++                           record.get("delegation_id"))
++            return True
++    except Exception:
++        logger.error("Async delegation %s: could not record the restart handoff; delivering it as interrupted",
++                     record.get("delegation_id"), exc_info=True)
++        return False
++    logger.info("Async delegation %s: %d child(ren) handed to the next gateway, %d finished",
++                record.get("delegation_id"), len(resume), len(kept))
++    return True
++
++
++def _persist_handoff(delegation_id: str, kept: list, resume: list, state: dict) -> bool:
++    """Record the handoff on the unit's row; False when this process no longer owns the row."""
++    now = time.time()
++    with _DB_LOCK, _transaction() as conn:
++        row = conn.execute("SELECT task_json FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()
++        if row is None:
++            raise LookupError(delegation_id)
++        task = _json_object(row[0])
++        spec = task.get("handoff") if isinstance(task.get("handoff"), dict) else {}
++        children = spec.get("children") if isinstance(spec.get("children"), dict) else {}
++        for key, extra in state.items():
++            if isinstance(children.get(key), dict) and isinstance(extra, dict):
++                children[key].update(extra)
++        task["handoff"] = {**spec, "children": children, "resume": list(resume), "handed_off_at": now}
++        return bool(conn.execute("""UPDATE async_delegations SET state='handed_off', updated_at=?, task_json=?,
++                      result_json=?
++               WHERE delegation_id=? AND state IN ('running','finalizing','handed_off') AND owner_pid=?""",
++                     (now, json.dumps(task), json.dumps({"results": kept, "partial": True}), delegation_id,
++                      os.getpid())).rowcount)
++
++
++def _handoff_fallback_result(record: dict[str, Any], kept: dict, error: str) -> dict[str, Any]:
++    """Combined result for an adopted unit that cannot run: the kept entries, every other child interrupted."""
++    indexes = record.get("task_indexes") or range(len(record.get("goals") or []))
++    return {"results": [kept.get(i) or {"task_index": i, "status": "interrupted", "summary": None, "error": error,
++                                        "api_calls": 0, "duration_seconds": 0} for i in indexes]}
++
++
++def adopt_handed_off_delegations(make_runner: Callable[[dict], tuple]) -> int:
++    """Gateway start: claim this home's ``handed_off`` units and run each as a live unit of this process.
++
++    ``make_runner(unit)`` receives the unit's record fields plus ``kept`` (task_index -> entry of a child that
++    already finished) and returns ``(runner, interrupt_fn, progress_fn, handoff_fn)``. The runner's combined result
++    finalizes the unit like a first run: one completion event and the usual delivery. The claim is one conditional
++    update, so two processes never both adopt a unit. Returns how many were adopted."""
++    require_ledger_owner()
++    if not _db_path().exists():
++        return 0
++    try:
++        from gateway.status import get_process_start_time
++        owner_started_at = get_process_start_time(os.getpid())
++    except Exception:
++        owner_started_at = None
++    now, claimed = time.time(), []
++    with _DB_LOCK, _transaction() as conn:
++        rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id, parent_session_id,
++                      dispatched_at, task_json, origin_session_id, result_json
++               FROM async_delegations WHERE state='handed_off' ORDER BY dispatched_at, delegation_id""").fetchall()
++        for row in rows:
++            if conn.execute("""UPDATE async_delegations SET state='running', owner_pid=?, owner_started_at=?, updated_at=?
++                   WHERE delegation_id=? AND state='handed_off'""",
++                            (os.getpid(), owner_started_at, now, row[0])).rowcount:
++                claimed.append(row)
++    for delegation_id, session_key, origin_ui, parent_id, dispatched_at, task_json, origin_sid, result_json in claimed:
++        task, partial = _json_object(task_json), _json_object(result_json)
++        kept = {r["task_index"]: r for r in partial.get("results") or []
++                if isinstance(r, dict) and isinstance(r.get("task_index"), int)}
++        spec = task.get("handoff") if isinstance(task.get("handoff"), dict) else {}
++        record: dict[str, Any] = {
++            "delegation_id": delegation_id, "goal": task.get("goal", ""), "goals": list(task.get("goals") or []),
++            "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
++            "model": task.get("model"), "session_key": session_key or "", "origin_ui_session_id": origin_ui or "",
++            "origin_session_id": origin_sid or "", "parent_session_id": parent_id,
++            **{k: task[k] for k in _ROUTING_KEYS if task.get(k)},
++            "status": "running", "dispatched_at": dispatched_at or now, "completed_at": None, "is_batch": True,
++            "slot_key": spec.get("slot_key") or delegation_id, "handoff": spec,
++            **({"task_transcripts": dict(task["task_transcripts"])} if task.get("task_transcripts") else {}),
++            **({"task_indexes": list(task["task_indexes"])} if task.get("task_indexes") is not None else {}),
++            "_finished_children": dict(kept), "_context": contextvars.copy_context(),
++            "_progress_token": None, "_progress_ts": now, "_interrupted_at": None}
++        try:
++            runner, interrupt_fn, progress_fn, handoff_fn = make_runner({**record, "kept": dict(kept)})
++        except Exception as exc:
++            logger.warning("Async delegation %s: cannot resume after the restart", delegation_id, exc_info=True)
++            fallback = _handoff_fallback_result(record, kept, f"Could not be resumed after a gateway restart: {exc}")
++            runner, interrupt_fn, progress_fn, handoff_fn = (lambda f=fallback: f), None, None, None
++        record.update(interrupt_fn=interrupt_fn, progress_fn=progress_fn,
++                      **({"handoff_fn": handoff_fn} if callable(handoff_fn) else {}))
++        with _records_lock:
++            _records[delegation_id] = record
++            live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
++        try:
++            _submit_worker(_get_executor(max(_DEFAULT_MAX_ASYNC_CHILDREN, live_units)), delegation_id, runner,
++                           _batch_status, _batch_crash, " batch", record["dispatched_at"])
++        except Exception as exc:  # pragma: no cover - pool submit failure is rare
++            logger.error("Async delegation %s: could not schedule the resumed unit", delegation_id, exc_info=True)
++            _finalize(delegation_id, _handoff_fallback_result(record, kept, f"Could not be resumed: {exc}"), "error")
++            continue
++        if progress_fn is not None:
++            _ensure_stale_monitor()
++        logger.info("Adopted background delegation %s from the previous gateway", delegation_id)
++    return len(claimed)
++
++
+ # ── Stale monitor ───────────────────────────────────────────────────────────
+ def _ensure_stale_monitor() -> None:
+     """Start (once) the stale-delegation monitor thread. One daemon thread serves
+@@ -1356,7 +1558,8 @@ def list_async_delegations() -> list[dict[str, Any]]:
+     with _records_lock:
+         items = []
+         for r in _records.values():
+-            item = {k: v for k, v in r.items() if k not in {"interrupt_fn", "progress_fn"} and not k.startswith("_")}
++            item = {k: v for k, v in r.items()
++                    if k not in {"interrupt_fn", "progress_fn", "handoff", "handoff_fn"} and not k.startswith("_")}
+             status = r.get("status")
+             if status in _ACTIVE_STATES:
+                 if r.get("_progress_ts"):
+diff --git a/tools/delegate_tool.py b/tools/delegate_tool.py
+index c30ebcc04d..445b6f9d94 100644
+--- a/tools/delegate_tool.py
++++ b/tools/delegate_tool.py
+@@ -230,6 +230,9 @@ def _build_child_agent(
+     override_reasoning_effort: Any = None,
+     profile_home: Optional[Path] = None,
+     override_service_tier: Optional[str] = None,  # a route's checked speed tier (tools/delegate_tool_tuning.py)
++    # A child resumed after a gateway restart (tools/delegate_tool_handoff.py) keeps its stored session and id.
++    resume_session_id: Optional[str] = None,
++    subagent_id: Optional[str] = None,
+ ):
+     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
+     inheritance so children can run on a different provider:model pair. ``profile_home`` builds (and later runs,
+@@ -246,7 +249,7 @@ def _build_child_agent(
+ 
+     # One subagent_id shared by the progress callback, spawn_requested event and
+     # the live registry; parent_id is set when THIS parent is itself a subagent.
+-    subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
++    subagent_id = subagent_id or f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
+     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
+ 
+     # General delegation behavior (reasoning, compression, capabilities) stays
+@@ -308,7 +311,7 @@ def _build_child_agent(
+                         if child_progress_cb else None
+                     ),
+                     session_db=child_session_db, parent_session_id=parent_sid, request_overrides=request_overrides,
+-                    session_id=getattr(child_session_db, "reserved_session_id", None),
++                    session_id=resume_session_id or getattr(child_session_db, "reserved_session_id", None),
+                     tool_progress_callback=child_progress_cb,
+                     iteration_budget=None,  # fresh budget per subagent
+                     # A profile route carries that profile's identity (its SOUL.md under the bound home).
+@@ -509,6 +512,7 @@ def _build_children(
+             child._live_transcript_path = str(_writer.path)
+         if route.report() is not None:
+             child._delegate_route = route.report()
++        child._delegate_task_route = route  # what a restart handoff records (tools/delegate_tool_handoff.py)
+         if live_deleg_id:
+             child._delegation_id = live_deleg_id
+             _ident_ref = getattr(child, "_progress_identity_ref", None)
+diff --git a/tools/delegate_tool_child_run.py b/tools/delegate_tool_child_run.py
+index c86bbdb170..76a2bf82d2 100644
+--- a/tools/delegate_tool_child_run.py
++++ b/tools/delegate_tool_child_run.py
+@@ -117,6 +117,15 @@ def _close_child(child: Any, log_message: str) -> None:
+         if callable(close):
+             close()
+ 
++def _release_handed_off_child(child: Any) -> None:
++    """Teardown for a child stopped for a gateway restart handoff: release its clients and session handle but keep
++    its tool state (background processes, terminal) for the next gateway, and leave its session row open."""
++    with _quiet("Failed to release a handed-off child", exc_info=True):
++        child.release_clients()
++        child._end_session_on_close = False
++        child._finalize_owned_session_row()
++
++
+ def _with_children_lock(parent_agent: Any, op: str, child: Any) -> None:
+     """``parent_agent._active_children.<op>(child)`` under the parent's lock when it has one."""
+     lock = getattr(parent_agent, "_active_children_lock", None)
+@@ -829,14 +838,18 @@ class _ChildRun:
+         # The parent's record is read in the parent's scope; the child's is written in the child's (cwd records
+         # are keyed by the active profile, and a profile-routed child looks its own up as that profile).
+         from tools.delegate_tool_routes import child_profile_scope
++        # A child resumed after a gateway restart continues in the directory it had reached.
++        resume = getattr(self.child, "_delegate_resume", None)
++        resume = resume if isinstance(resume, dict) else None
+         with _quiet("Child cwd seed failed: %s"):
+             from tools.terminal_tool import get_session_cwd, record_session_cwd, register_container_alias
+-            parent_cwd = get_session_cwd(self.parent_task_id)
++            parent_cwd = (resume or {}).get("cwd") or get_session_cwd(self.parent_task_id)
+             with child_profile_scope(self.child):
+                 record_session_cwd(self.child_task_id, parent_cwd)
+             register_container_alias(self.child_task_id, self.parent_task_id)
+ 
+-        self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
++        if resume is None:
++            self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
+         if self.worktree_info is not None:
+             with _quiet("worktree cwd seed failed: %s"), child_profile_scope(self.child):
+                 from tools.terminal_tool import record_session_cwd as _rsc
+@@ -930,6 +943,12 @@ class _ChildRun:
+         # Resolved after seed_workspace so a multimodal goal's text part carries the worktree note too.
+         _images = list(getattr(child, "_delegate_images", None) or [])
+         user_message: Any = _build_child_goal_message(self.goal, _images, child) if _images else self.goal
++        # Resumed after a gateway restart: continue the stored transcript instead of starting the goal again.
++        resume = getattr(child, "_delegate_resume", None)
++        resume = resume if isinstance(resume, dict) else {}
++        history_kwargs = {"conversation_history": resume["history"]} if resume.get("history") else {}
++        if history_kwargs:
++            user_message = resume["message"]
+ 
+         def _run_with_thread_capture():
+             worker_thread_holder["t"] = threading.current_thread()
+@@ -939,6 +958,7 @@ class _ChildRun:
+             with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                 return child.run_conversation(
+                     user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
++                    **history_kwargs,
+                 )
+ 
+         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
+@@ -1152,7 +1172,9 @@ class _ChildRun:
+ 
+         # Close tool resources (terminal sandboxes, browser daemons, background
+         # processes, httpx clients) so subagent subprocesses don't outlive the delegation.
+-        if not close_deferred:
++        if not close_deferred and getattr(child, "_delegate_restart_handoff", False) is True:
++            _release_handed_off_child(child)
++        elif not close_deferred:
+             _close_child(child, "Failed to close child agent after delegation")
+         # The child's execute_code kernels live exactly as long as the child (pinned against the LRU
+         # cap while it runs); dispose them here so they never squat the cap after the child is gone.
+diff --git a/tools/delegate_tool_config.py b/tools/delegate_tool_config.py
+index 3f64182170..f04f4b6390 100644
+--- a/tools/delegate_tool_config.py
++++ b/tools/delegate_tool_config.py
+@@ -171,6 +171,20 @@ def _get_worktree_isolation() -> bool:
+     working copy. Git-only and local-backend-only; otherwise silently ignored."""
+     return bool(_cfg().get("worktree_isolation", False))
+ 
++def _get_restart_handoff() -> bool:
++    """delegation.restart_handoff (bool, default False): a graceful gateway restart hands running background
++    subagents to the next gateway, which resumes them from their stored transcripts (tools/delegate_tool_handoff.py).
++    Off = they are interrupted and their parent gets the interrupted results."""
++    return is_truthy_value(_cfg().get("restart_handoff", False))
++
++def _get_restart_handoff_grace_seconds() -> float:
++    """delegation.restart_handoff_grace_seconds (default 30): how long a restart handoff waits for each child to
++    finish its running tool call before it stops the child anyway (the call then reads as interrupted)."""
++    return _knob(
++        "restart_handoff_grace_seconds", None, lambda v: min(600.0, max(0.0, float(v))), 30.0,
++        "delegation.restart_handoff_grace_seconds=%r is not a number; using 30",
++    )
++
+ def _get_max_async_children() -> int:
+     """Concurrency cap for background delegations == delegation.max_concurrent_children. At capacity a new async
+     dispatch is REJECTED (not queued) so a runaway model can't pile up unbounded background work; the caller then
+diff --git a/tools/delegate_tool_dispatch.py b/tools/delegate_tool_dispatch.py
+index 1e79da1218..cf463458b9 100644
+--- a/tools/delegate_tool_dispatch.py
++++ b/tools/delegate_tool_dispatch.py
+@@ -428,7 +428,9 @@ def _units_of(batch: _Batch) -> list[_Batch]:
+ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
+     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
+     from tools.async_delegation import dispatch_async_delegation_batch
++    from tools.delegate_tool_handoff import unit_handoff
+     child_agents = [c for (_, _, c) in unit.children]
++    handoff, handoff_fn = unit_handoff(unit, slot_key or unit_id)
+ 
+     def _interrupt():
+         for c in child_agents:
+@@ -448,7 +450,7 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
+         task_transcripts={str(i): str(unit.live_writers[i].path) for i, _, _ in unit.children
+                           if i < len(unit.live_writers) and unit.live_writers[i] is not None
+                           and unit.live_writers[i].path is not None},
+-        progress_fn=lambda: _batch_progress_token(child_agents), **routing,
++        progress_fn=lambda: _batch_progress_token(child_agents), handoff=handoff, handoff_fn=handoff_fn, **routing,
+     )
+ 
+ def _restore_parent_cancellation(unit: _Batch) -> None:
+diff --git a/tools/delegate_tool_handoff.py b/tools/delegate_tool_handoff.py
+new file mode 100644
+index 0000000000..6461c3c27a
+--- /dev/null
++++ b/tools/delegate_tool_handoff.py
+@@ -0,0 +1,500 @@
++"""Background subagents that survive a graceful gateway restart (``delegation.restart_handoff``).
++
++At dispatch, ``unit_handoff`` records what a later gateway needs to rebuild each child of a background unit:
++its stored session and ``subagent_id``, goal, context, role and the route it ran on (without secrets), plus the
++dispatching agent's route and session context. On a restart stop the gateway calls
++``async_delegation.hand_off_for_restart``: each child stops at a clean point (out of its tool call, or at the
++grace bound) and keeps its tool state, so the background processes it started are handed off with the gateway's
++own (``terminal.process_handoff_backends``). At the next gateway's start, ``resume_handed_off_delegations``
++rebuilds every unfinished child on its saved route and continues its stored transcript under the same delegation
++id. The unit then completes like any other: one completion event, the usual delivery.
++
++A tool call cut by the restart reads as interrupted in the child's transcript: the agent loop writes a cancelled
++result naming the gateway restart, and a call the process died inside gets a synthetic interrupted result here
++before the child continues.
++"""
++
++from __future__ import annotations
++
++import json
++import logging
++import re
++import threading
++import time
++from dataclasses import replace
++from pathlib import Path
++from typing import Any, Callable, Optional
++
++from tools.delegate_tool_child_run import (
++    _close_child, _detach_child, _fabricated_entry, _release_handed_off_child, _signal_child_stop,
++)
++
++logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
++
++RESTART_TOOL_REASON = "gateway restart"
++RESUME_MESSAGE = (
++    "[The gateway restarted while you were working on this task. Your conversation so far is above. A tool call "
++    "that was running when it stopped is marked as interrupted: check its effects before you run it again. "
++    "Check background processes you started with the process tool before you rely on them: some may have stopped "
++    "with the gateway. Continue the task.]"
++)
++CUT_TOOL_RESULT = (
++    "Interrupted by a gateway restart before it returned; its outcome is unknown. Check its effects before you "
++    "run it again."
++)
++_SPEC_VERSION = 1
++# Credential-like names: any "key", "secret", "password", "auth", "cookie" or "credential", or ending in a
++# singular "token" (``access_token``, but not ``max_tokens``).
++_SECRET_KEY = re.compile(r"key|secret|passw|auth|cookie|credential|token$", re.IGNORECASE)
++# The dispatching agent's fields a child's construction reads (tools/delegate_tool_config.py): never its key.
++_PARENT_FIELDS = (
++    "model", "provider", "requested_provider", "base_url", "api_mode", "acp_command", "acp_args", "enabled_toolsets",
++    "disabled_toolsets", "reasoning_config", "max_tokens", "openrouter_min_coding_score", "providers_allowed",
++    "providers_ignored", "providers_order", "provider_sort", "provider_require_parameters", "provider_data_collection",
++    "capabilities",
++)
++
++
++class _NotResumable(Exception):
++    """Why one child cannot be resumed; it is then reported interrupted, as without a handoff."""
++
++
++def _jsonable(value: Any) -> Any:
++    try:
++        return json.loads(json.dumps(value, default=str))
++    except (TypeError, ValueError):
++        return None
++
++
++def _strip_secrets(value: Any) -> tuple[Any, bool]:
++    """``(value without secret-named keys at any depth, whether any were dropped)``."""
++    if isinstance(value, dict):
++        out, dropped = {}, False
++        for key, item in value.items():
++            if isinstance(key, str) and _SECRET_KEY.search(key):
++                dropped = dropped or item not in (None, "")
++                continue
++            if key == "base_url" and isinstance(item, str) and "?" in item:
++                dropped = True  # a query string can carry a key
++                continue
++            out[key], inner = _strip_secrets(item)
++            dropped = dropped or inner
++        return out, dropped
++    if isinstance(value, list):
++        items = [_strip_secrets(item) for item in value]
++        return [item for item, _ in items], any(inner for _, inner in items)
++    return value, False
++
++
++# ── Dispatch: what the next gateway needs ───────────────────────────────────
++def unit_handoff(unit: Any, slot_key: Optional[str]) -> tuple[Optional[dict], Optional[Callable]]:
++    """``(spec, handoff_fn)`` for one background unit, or ``(None, None)`` when the unit is not handed off
++    (``delegation.restart_handoff`` off, a multiplexed secondary profile, or nothing usable to record)."""
++    from tools.delegate_tool_config import _get_restart_handoff, _get_worktree_isolation
++    if not _get_restart_handoff() or _get_worktree_isolation():
++        return None, None  # a child's isolated worktree is finalized when it stops: nothing to resume into
++    from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
++    if hermes_home_key(get_hermes_home()) != hermes_home_key(get_routing_process_hermes_home()):
++        return None, None  # only the launch profile's ledger is adopted at the next start
++    try:
++        spec = _unit_spec(unit, slot_key)
++    except Exception:
++        logger.warning("delegation.restart_handoff: could not record a background unit; it stops with the gateway",
++                       exc_info=True)
++        return None, None
++    return spec, _handoff_fn({i: child for i, _, child in unit.children})
++
++
++def _unit_spec(unit: Any, slot_key: Optional[str]) -> dict[str, Any]:
++    parent = unit.parent_agent
++    children = {}
++    for i, task, child in unit.children:
++        route = getattr(child, "_delegate_task_route", None)
++        if route is None:
++            raise ValueError(f"task {i} has no recorded route")
++        children[str(i)] = {
++            "goal": task["goal"], "context": task.get("context"), "role": task.get("role"),
++            "subagent_id": getattr(child, "_subagent_id", None), "session_id": getattr(child, "session_id", None),
++            "route": _route_spec(route),
++            "task": _jsonable({k: v for k, v in task.items() if k != "images"}),
++            "output_schema": _jsonable(getattr(child, "_delegate_output_schema", None)),
++            "images": _jsonable(list(getattr(child, "_delegate_images", None) or [])) or None,
++            "transcript": getattr(child, "_live_transcript_path", None),
++            "max_iterations": getattr(child, "max_iterations", None)}
++    return {
++        "version": _SPEC_VERSION, "parent": _parent_snapshot(parent), "session": _session_snapshot(parent),
++        "children": children, "top_role": unit.top_role, "max_children": unit.max_children,
++        "task_count": len(unit.task_list), "live_deleg_id": unit.live_deleg_id, "group": unit.group,
++        "slot_key": slot_key}
++
++
++def _route_spec(route: Any) -> dict[str, Any]:
++    """A route as the next gateway resolves it again: the provider's answer, never a credential. A route that
++    carried one is asked of the provider again at resume (``reask``)."""
++    from agent.delegation_provider import ROUTE_KEYS
++    spec: dict[str, Any] = {"backend": route.backend, "label": route.label}
++    if route.profile_home is not None:
++        return {**spec, "profile_home": str(route.profile_home)}
++    clean, dropped = _strip_secrets(
++        {k: v for k, v in (route.routing_cfg or {}).items() if k in ROUTE_KEYS and k != "label"})
++    return {**spec, "route": _jsonable(clean) or {}, **({"reask": True} if dropped else {})}
++
++
++def _parent_snapshot(parent: Any) -> dict[str, Any]:
++    from agent.prompt_cache_scope import conversation_id
++    from tools.delegate_tool_progress import _resolve_workspace_hint
++    snap = {name: _jsonable(getattr(parent, name, None)) for name in _PARENT_FIELDS}
++    overrides, dropped = _strip_secrets(_jsonable(getattr(parent, "request_overrides", None)) or {})
++    snap.update(
++        session_id=getattr(parent, "session_id", None), delegate_depth=getattr(parent, "_delegate_depth", 0),
++        subagent_id=getattr(parent, "_subagent_id", None), conversation_id=conversation_id(parent),
++        workspace=_resolve_workspace_hint(parent), request_overrides=None if dropped else overrides,
++        current_task_id=_jsonable(getattr(parent, "_current_task_id", None)))
++    from tools.delegate_tool_config import _inherit_parent_endpoint
++    live_url, _ = _inherit_parent_endpoint(parent, getattr(parent, "base_url", None), None)
++    if live_url:
++        snap["base_url"] = live_url  # the endpoint the parent's client calls, as an inheriting child takes it
++    chain, dropped = _strip_secrets(_jsonable(getattr(parent, "_fallback_chain", None)))
++    snap["fallback_chain"] = None if dropped else chain
++    if snap["enabled_toolsets"] is None and getattr(parent, "valid_tool_names", None):
++        snap["valid_tool_names"] = sorted(parent.valid_tool_names)
++    try:
++        from tools.terminal_tool import get_session_cwd
++        snap["cwd"] = get_session_cwd(getattr(parent, "_current_task_id", None))
++    except Exception:
++        snap["cwd"] = None
++    return snap
++
++
++def _session_snapshot(parent: Any) -> dict[str, str]:
++    """The dispatching turn's session context (platform, chat, user, route keys): what tools that route by the
++    conversation read, such as a device terminal backend. Child construction rebinds HERMES_SESSION_ID to the
++    child, so the parent's own id is stamped back."""
++    try:
++        from gateway.session_context import _SESSION_VARS
++    except Exception:
++        return {}
++    snap = {var.name: value for var in _SESSION_VARS if isinstance(value := var.get(), str)}
++    if getattr(parent, "session_id", None):
++        snap["HERMES_SESSION_ID"] = str(parent.session_id)
++    return snap
++
++
++def _bind_session(snapshot: dict[str, str]) -> None:
++    from gateway.session_context import _SESSION_VARS
++    for var in _SESSION_VARS:
++        if isinstance(snapshot.get(var.name), str):
++            var.set(snapshot[var.name])
++
++
++# ── Restart: stop each child at a clean point ───────────────────────────────
++def _in_tool(child: Any) -> bool:
++    try:
++        return bool(child.get_activity_summary().get("current_tool"))
++    except Exception:
++        return False
++
++
++def _child_state(child: Any) -> dict[str, Any]:
++    """What the child reached that only this process knows: its working directory and current session id."""
++    state: dict[str, Any] = {"session_id": getattr(child, "session_id", None)}
++    try:
++        from tools.delegate_tool_routes import child_profile_scope
++        from tools.terminal_tool import get_session_cwd
++        with child_profile_scope(child):
++            state["cwd"] = get_session_cwd(getattr(child, "_subagent_id", None))
++    except Exception:
++        pass
++    return state
++
++
++def _handoff_fn(children: dict[int, Any]) -> Callable[[float, dict], None]:
++    """Stop each child as soon as it is not inside a tool call, and every child by ``deadline``. A stopped child
++    keeps its tool state (``_release_handed_off_child``); a call cut at the deadline is cancelled with the reason
++    ``gateway restart``, which the child's transcript shows."""
++    def hand_off(deadline: float, state: dict) -> None:
++        pending = dict(children)
++        while pending:
++            last = time.monotonic() >= deadline
++            for index, child in list(pending.items()):
++                if last or not _in_tool(child):
++                    state[str(index)] = _child_state(child)
++                    child._delegate_restart_handoff = True
++                    _signal_child_stop(child, tool_reason=RESTART_TOOL_REASON)
++                    del pending[index]
++            if pending:
++                time.sleep(0.25)
++    return hand_off
++
++
++# ── Next gateway: resume ────────────────────────────────────────────────────
++def resume_handed_off_delegations() -> int:
++    """Gateway start: run every unit the previous gateway handed off. With ``delegation.restart_handoff`` now off,
++    each unit is delivered at once with its unfinished children interrupted, as without a handoff."""
++    from tools.async_delegation import adopt_handed_off_delegations
++    from tools.delegate_tool_config import _get_restart_handoff
++    return adopt_handed_off_delegations(_resume_unit if _get_restart_handoff() else _not_resumed)
++
++
++def _not_resumed(unit: dict) -> tuple:
++    from tools.async_delegation import _handoff_fallback_result
++    result = _handoff_fallback_result(
++        unit, unit["kept"], "Interrupted by a gateway restart; delegation.restart_handoff is off, so it was not resumed.")
++    return (lambda: result), None, None, None
++
++
++def _resume_unit(unit: dict) -> tuple:
++    if (unit.get("handoff") or {}).get("version") != _SPEC_VERSION:
++        raise ValueError("unknown restart handoff record")
++    resumed = _ResumedUnit(unit)
++    return resumed.run, resumed.interrupt, resumed.progress, resumed.hand_off
++
++
++class _ResumeParent:
++    """The dispatching agent as a resumed child's construction reads it, rebuilt from the handoff record. Its
++    credential is resolved again only for a child that inherits the parent's route (``inherit_endpoint``)."""
++
++    def __init__(self, snap: dict[str, Any], session_db: Any):
++        for name in _PARENT_FIELDS:
++            setattr(self, name, snap.get(name))
++        if snap.get("valid_tool_names"):
++            self.valid_tool_names = list(snap["valid_tool_names"])
++        self.session_id = snap.get("session_id")
++        self._delegate_depth = int(snap.get("delegate_depth") or 0)
++        self._subagent_id = snap.get("subagent_id")
++        self._inherited_conversation_id = snap.get("conversation_id")
++        self.terminal_cwd, self.cwd = snap.get("workspace"), None
++        self.request_overrides = dict(snap.get("request_overrides") or {})
++        self._fallback_chain = snap.get("fallback_chain")
++        self.api_key, self._client_kwargs, self.client, self._credential_pool = None, {}, None, None
++        self.prefill_messages, self._print_fn, self.tool_progress_callback = None, None, None
++        self._session_db, self._memory_manager = session_db, None
++        self._current_task_id = snap.get("current_task_id")
++        self._active_children, self._active_children_lock = [], threading.Lock()
++        self._interrupt_requested = False
++        self.session_estimated_cost_usd, self.session_cost_source, self.session_cost_status = 0.0, "none", "unknown"
++        self._endpoint_error: Optional[str] = None
++        self._endpoint_checked = False
++
++    def inherit_endpoint(self, required: bool) -> None:
++        """Resolve the parent's credential for its own endpoint. ``required`` (a child that inherits the whole
++        route) refuses the resume when that endpoint no longer resolves to the one the parent ran on."""
++        if not self._endpoint_checked:
++            self._endpoint_checked = True
++            try:
++                from hermes_cli.runtime_provider import resolve_runtime_provider
++                runtime = resolve_runtime_provider(requested=self.requested_provider or self.provider,
++                                                   target_model=self.model)
++                if str(runtime.get("base_url") or "").rstrip("/") != str(self.base_url or "").rstrip("/"):
++                    raise ValueError("the parent's endpoint resolves elsewhere now")
++                self.api_key = runtime.get("api_key") or None
++                self._client_kwargs = {"api_key": self.api_key, "base_url": self.base_url}
++            except Exception as exc:
++                self._endpoint_error = str(exc)
++        if required and self._endpoint_error:
++            raise _NotResumable(f"cannot resolve the parent's route again: {self._endpoint_error}")
++
++
++class _ResumedUnit:
++    """One adopted unit: rebuild its unfinished children, run them, join with the children that had finished."""
++
++    def __init__(self, unit: dict):
++        self.unit, self.spec, self.kept = unit, unit["handoff"], dict(unit["kept"])
++        self.delegation_id = unit["delegation_id"]
++        self.children: dict[int, Any] = {}
++        self._stopped = self._handing_off = False
++
++    def interrupt(self) -> None:
++        self._stopped = True
++        for child in list(self.children.values()):
++            _signal_child_stop(child, "Async delegation cancelled")
++
++    def progress(self) -> tuple:
++        from tools.delegate_tool_dispatch import _batch_progress_token
++        return _batch_progress_token(list(self.children.values()))
++
++    def hand_off(self, deadline: float, state: dict) -> None:
++        self._stopped = self._handing_off = True  # a child not built yet stays unfinished for the next gateway
++        _handoff_fn(dict(self.children))(deadline, state)
++
++    def run(self) -> dict[str, Any]:
++        from hermes_state_registry import acquire, release_or_close
++        _bind_session(self.spec.get("session") or {})
++        goals = list(self.unit.get("goals") or [])
++        indexes = list(self.unit.get("task_indexes") or range(len(goals)))
++        results: dict[int, dict] = {i: self.kept[i] for i in indexes if i in self.kept}
++        db = acquire()
++        try:
++            parent = _ResumeParent(self.spec.get("parent") or {}, db)
++            built = []
++            for i in (i for i in indexes if i not in results):
++                if self._stopped:
++                    break
++                child_spec = (self.spec.get("children") or {}).get(str(i))
++                try:
++                    if child_spec is None:
++                        raise _NotResumable("the handoff record has no entry for it")
++                    child = self._build(i, child_spec, parent, db)
++                except Exception as exc:
++                    logger.warning("Async delegation %s: task %d cannot be resumed: %s", self.delegation_id, i, exc)
++                    results[i] = _fabricated_entry(
++                        i, "interrupted", f"Interrupted by a gateway restart and could not be resumed: {exc}", None)
++                    continue
++                self.children[i] = child
++                built.append((i, {"goal": child_spec["goal"]}, child))
++            if self._stopped:  # stopped while building: nothing runs here
++                for _, _, child in built:
++                    _detach_child(parent, child)
++                    if self._handing_off:  # unfinished: its tool state stays for the next gateway
++                        child._delegate_restart_handoff = True
++                        _release_handed_off_child(child)
++                    else:
++                        _close_child(child, "Failed to close a resumed subagent that was stopped")
++                built = []
++            combined = self._execute(built, goals, parent) if built else {}
++        finally:
++            release_or_close(db)
++        for entry in combined.get("results") or []:
++            results[entry["task_index"]] = entry
++        for i in indexes:
++            results.setdefault(i, _fabricated_entry(i, "interrupted", "Stopped before it was resumed", None))
++        out = {**combined, "results": [results[i] for i in indexes],
++               "total_duration_seconds": round(time.time() - (self.unit.get("dispatched_at") or time.time()), 2)}
++        if self.spec.get("live_deleg_id"):
++            out["delegation_id"] = self.spec["live_deleg_id"]
++        if self.spec.get("group") is not None:
++            out["group"] = self.spec["group"]
++        return out
++
++    def _execute(self, built: list, goals: list, parent: Any) -> dict[str, Any]:
++        from tools.delegate_tool_dispatch import _Batch, _execute_and_aggregate
++        task_count = int(self.spec.get("task_count") or len(goals))
++        writers: list = [None] * task_count
++        paths: list = [""] * task_count
++        for i, _task, child in built:
++            if i < task_count:
++                writers[i] = getattr(child, "_delegate_live_writer", None)
++                paths[i] = getattr(child, "_live_transcript_path", None) or ""
++        batch = _Batch(
++            [{"goal": goals[i] if i < len(goals) else ""} for i in range(task_count)], built, parent,
++            {"model": None, "provider": None}, None, self.spec.get("top_role") or "leaf",
++            int(self.spec.get("max_children") or len(built)), self.spec.get("live_deleg_id"), writers, paths,
++            "", self.unit.get("origin_ui_session_id") or "", None, None, False, time.monotonic(),
++            group=self.spec.get("group"), unit_id=self.delegation_id)
++        combined = _execute_and_aggregate(batch, honor_parent_interrupt=False)
++        if combined.get("live_transcripts"):
++            combined["live_transcripts"] = [p for p in combined["live_transcripts"] if p]
++        for _, _, child in built:
++            _detach_child(parent, child)
++        return combined
++
++    def _build(self, index: int, spec: dict, parent: _ResumeParent, db: Any) -> Any:
++        from tools.delegate_tool import (
++            DEFAULT_MAX_ITERATIONS, _build_child_preserving_parent_tools, _load_config, _normalize_role, _route_overrides,
++        )
++        from tools.delegate_tool_sessions import stored_child_session
++        from tools.delegate_tool_tuning import pin_child_service_tier
++        from tools.delegation_output_schema import append_output_contract
++        subagent_id = spec.get("subagent_id")
++        session_id = (stored_child_session(db, subagent_id, [self.unit.get("parent_session_id") or ""])
++                      if subagent_id else None) or spec.get("session_id")
++        row = db.get_session(session_id) if session_id else None
++        if row is None:
++            raise _NotResumable("its stored session is missing")
++        if row.get("ended_at") and row.get("end_reason") != "compression":
++            db.reopen_session(session_id)
++        cut = _close_cut_tool_calls(db, session_id)
++        if cut:
++            logger.info("Async delegation %s: task %d had %d tool call(s) cut by the restart", self.delegation_id,
++                        index, cut)
++        history = db.get_messages_as_conversation(session_id, repair_alternation=True)
++        cfg = _load_config()
++        route = self._route(index, spec, parent, cfg)
++        schema = spec.get("output_schema")
++        context = append_output_contract(spec.get("context"), schema) if isinstance(schema, dict) else spec.get("context")
++        child = _build_child_preserving_parent_tools(
++            task_index=index, goal=spec["goal"], context=context, toolsets=None, model=route.creds["model"],
++            max_iterations=spec.get("max_iterations") or cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS),
++            task_count=int(self.spec.get("task_count") or 1), parent_agent=parent,
++            role=_normalize_role(spec.get("role") or self.spec.get("top_role")),
++            resume_session_id=session_id, subagent_id=subagent_id, **_route_overrides(route))
++        pin_child_service_tier(child, route.creds)
++        if isinstance(schema, dict):
++            child._delegate_output_schema = schema
++        if spec.get("images") and not history:
++            child._delegate_images = list(spec["images"])
++        self._attach_transcript(index, spec, child)
++        if route.report() is not None:
++            child._delegate_route = route.report()
++        child._delegate_task_route = route
++        if live := self.spec.get("live_deleg_id"):
++            child._delegation_id = live
++            if isinstance(ident := getattr(child, "_progress_identity_ref", None), dict):
++                ident["delegation_id"] = live
++        # No stored turn means the child never started its conversation: it starts on its goal.
++        child._delegate_resume = {"cwd": spec.get("cwd"), **({"history": history, "message": RESUME_MESSAGE}
++                                                              if history else {})}
++        return child
++
++    def _attach_transcript(self, index: int, spec: dict, child: Any) -> None:
++        path = spec.get("transcript")
++        if not path:
++            return
++        from tools.delegation_live_log import LiveTranscriptWriter, wrap_progress_callback
++        writer = LiveTranscriptWriter.reopen(self.spec.get("live_deleg_id") or self.delegation_id, index, path)
++        if writer.path is not None and writer._ok:
++            child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), writer)
++            child._live_transcript_path = str(writer.path)
++            child._delegate_live_writer = writer
++
++    def _route(self, index: int, spec: dict, parent: _ResumeParent, cfg: dict) -> Any:
++        """The route the child ran on, from the record; the provider is asked again only for a route that carried
++        a credential, and its answer must match the recorded one."""
++        from tools.delegate_tool_routes import _profile_route, _route_to_task_route
++        saved = spec.get("route") or {}
++        backend, label = saved.get("backend") or "default", saved.get("label")
++        if saved.get("profile_home"):
++            return replace(_profile_route(Path(saved["profile_home"])), backend=backend, label=label)
++        route = dict(saved.get("route") or {})
++        if saved.get("reask"):
++            route = _ask_again(index, spec, route, backend, cfg)
++        if not route.get("profile"):
++            parent.inherit_endpoint(required=not route.get("provider") and not route.get("base_url"))
++        if label:
++            route["label"] = label
++        return _route_to_task_route(route, parent, {}, cfg, backend)
++
++
++def _ask_again(index: int, spec: dict, saved: dict, backend: str, cfg: dict) -> dict[str, Any]:
++    """Route a task again on its backend (under the parent's bound session context) and accept the answer only when
++    it is the recorded route plus the credentials the record left out."""
++    from tools.delegate_tool_routes import _active_provider, _declared_parameters, _route_one, _with_inherited_fallback
++    config = {**cfg, "backend": backend}
++    provider = _active_provider(config)
++    fresh = _with_inherited_fallback(
++        _route_one(provider, _declared_parameters(provider, config), index, spec.get("task") or {"goal": spec["goal"]},
++                   config), config)
++    if _jsonable(_strip_secrets({k: v for k, v in fresh.items() if k != "label"})[0]) != saved:
++        raise _NotResumable(f"delegation backend '{backend}' routes it differently now")
++    return {k: v for k, v in fresh.items() if k != "label"}
++
++
++def _close_cut_tool_calls(db: Any, session_id: str) -> int:
++    """A transcript that ends inside a tool round (the process died while the call ran) gets an interrupted result
++    for each unanswered call, so the child sees the cut instead of losing the call. Returns how many."""
++    messages = db.get_messages_as_conversation(session_id)
++    last = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") != "tool"), None)
++    if last is None or messages[last].get("role") != "assistant" or not messages[last].get("tool_calls"):
++        return 0
++    answered = {str(m.get("tool_call_id") or "") for m in messages[last + 1:]}
++    cut = 0
++    for call in messages[last]["tool_calls"]:
++        call = call if isinstance(call, dict) else {}
++        call_id = str(call.get("id") or call.get("call_id") or "")
++        if not call_id or call_id in answered:
++            continue
++        name = (call.get("function") or {}).get("name") or call.get("name")
++        db.append_message(session_id, "tool", content=json.dumps({"status": "interrupted", "error": CUT_TOOL_RESULT}),
++                          tool_name=name, tool_call_id=call_id)
++        cut += 1
++    return cut
+diff --git a/tools/delegation_live_log.py b/tools/delegation_live_log.py
+index 2e510b058e..0ec9fedd23 100644
+--- a/tools/delegation_live_log.py
++++ b/tools/delegation_live_log.py
+@@ -117,6 +117,18 @@ class LiveTranscriptWriter:
+             self.event("user", "kickoff: " + goal_line
+                        + (f" | context: {_one_line(context, _KICKOFF_MAX)}" if context else ""))
+ 
++    @classmethod
++    def reopen(cls, delegation_id: str, task_index: int, path: Any) -> "LiveTranscriptWriter":
++        """Append to the transcript an earlier process wrote for this task (a child resumed after a restart)."""
++        writer = cls.__new__(cls)
++        writer.delegation_id, writer.task_index = delegation_id, task_index
++        writer._lock = threading.Lock()
++        writer._stream_buf, writer._stream_len = [], 0
++        writer.path = Path(path)
++        writer._ok = writer.path.is_file()
++        writer.marker("resumed after a gateway restart")
++        return writer
++
+     def event(self, role: str, text: str) -> None:
+         """Append one ``HH:MM:SS role | text`` line. Single choke point: every typed
+         helper funnels through here so one redaction covers everything."""
+diff --git a/website/docs/user-guide/features/delegation.md b/website/docs/user-guide/features/delegation.md
+index 67596b0f73..357bfb6770 100644
+--- a/website/docs/user-guide/features/delegation.md
++++ b/website/docs/user-guide/features/delegation.md
+@@ -231,6 +231,47 @@ process disappears while it is still running is recorded as `unknown`, because
+ Hermes cannot prove whether its external side effects happened. Pending and
+ delivered records are bounded and profile-local.
+ 
++### Background subagents across a gateway restart (opt-in)
++
++Set `delegation.restart_handoff: true` to keep background subagents working
++across a graceful gateway restart (a restart stop, such as `hermes gateway
++restart` or a SIGTERM with `gateway.sigterm_restart_wait`). By default a
++restart interrupts them and the parent gets interrupted results.
++
++With the option on, a restart stop does this before the gateway stops its
++background processes:
++
++1. Each running child stops at a clean point: when it is not inside a tool
++   call, or after `delegation.restart_handoff_grace_seconds` (default 30) at
++   the latest. A tool call cut at that bound gets the result "cancelled:
++   gateway restart" in the child's transcript. A model call that was running
++   is sent again after the restart.
++2. The delegation stays in the `state.db` ledger with the state `handed_off`:
++   the children that finished keep their results, and each other child keeps
++   its stored session, `subagent_id`, goal, context, role and route. Routes
++   are stored without credentials.
++3. The child keeps its tool state, so its background processes go to the next
++   gateway with the others (`terminal.process_handoff_backends`). After the
++   restart the child can still poll them with the `process` tool.
++
++When the next gateway starts, it resumes each unfinished child from its stored
++transcript on the same route and model, under the same delegation id, with a
++message that tells the child the gateway restarted. If the process stopped
++while a tool call ran, the call gets an "interrupted by a gateway restart"
++result first, so the child sees that the call was cut. When every child is
++done, the delegation completes once and its result is delivered as usual,
++with the results of the children that had finished before the restart.
++
++A child whose stored session is missing, or whose route no longer resolves to
++the one it ran on, is reported as interrupted, as without the option. If the
++next gateway starts with the option off, the handed-off delegation is
++delivered at once as interrupted. A crash (no graceful stop) still records the
++delegation as `unknown`. Delegations started by a multiplexed secondary
++profile, and all delegations while `delegation.worktree_isolation` is on, are
++not handed off. A resumed child starts a new iteration budget, and the next
++gateway shows its progress in `/agents` but does not stream it into the
++parent's chat.
++
+ ### Child background-process notifications
+ 
+ Background processes a subagent starts (e.g. `npm ci` with
+@@ -687,7 +728,7 @@ Top-level model-facing `delegate_task` calls run in the background automatically
+ - Normal follow-up messages do not cancel background children, and neither does stopping the current turn: Ctrl+C, Esc, the Desktop/TUI Stop button and an ACP cancel end only the turn. The `/stop` command (gateway `/stop` — also when the session is idle after the dispatching turn ended — or CLI `/stop`) ends the session's running background delegations, and closing or resetting the owning session does the same.
+ - Explicit session close/reset interrupts that session's background children. In the CLI and TUI, the gateway owns the session and the client only views it: when the last viewer exits or runs `/new` (a TUI resume switch counts too), the gateway interrupts that session's background children at once and refuses new ones for it until a viewer opens the session again. A plain detach cancels nothing: closing Desktop, a dropped connection, or exiting while another viewer is still attached leaves the work running. Background processes (`terminal(background=True)`) keep running either way.
+ - A completion for a CLI or TUI session — a background child's result (including an interrupted one), or a `notify_on_complete` process exit or watch-pattern notice — that reaches the head of the session's queue while no viewer is attached does not start a turn. It is written into the session as a note, and the next turn reads it (for example after `hermes chat --resume`). If a viewer is attached by then, including one that came back after the completion arrived, the completion runs as a turn as before. With `sessions.unviewed_completion_turns` set, a background child's result and a `notify_on_complete` process exit run as a turn with no viewer too, unless the session was closed with exit or `/new` ([Sessions](../sessions.md)). Messaging chats have no viewers and are unchanged: their completions still start a turn.
+-- A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
++- A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened. The exception is a graceful gateway restart with `delegation.restart_handoff` on ([Background subagents across a gateway restart](#background-subagents-across-a-gateway-restart-opt-in)).
+ - A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
+ - Stopped children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`) whose `summary` is the last text the child produced before the stop (the interrupt placeholder moves to `error`). The stop recurses down the spawn tree — an orchestrator child's synchronous workers are interrupted first and their partial results roll up into the child's own interrupted result — and each background unit's result re-enters the conversation right away as its normal completion notice (`Subagent Task Interrupted: …`), so nothing waits for the child to exhaust its budget.
+ 
+@@ -765,6 +806,8 @@ delegation:
+   max_iterations: 250                       # Max turns per child (default: 250)
+   # max_concurrent_children: 10             # Parallel children per batch (default: 10)
+   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
++  # restart_handoff: false                  # true = background subagents resume after a graceful gateway restart
++  # restart_handoff_grace_seconds: 30       # how long a running tool call may finish before the restart stops it
+   # gateway_mode: auto                      # auto | inline | background (see Messaging chats without interim messages)
+   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
+   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
