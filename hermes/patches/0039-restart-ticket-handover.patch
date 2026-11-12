@@ -1,0 +1,306 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jacob McSwain <jacob@mcswain.dev>
+Date: Thu, 12 Nov 2026 13:07:28 -0600
+Subject: [PATCH] feat(gateway): socket tickets outlive a restart handover
+
+gateway.restart_ticket_handover (false = off): just before a restart releases the profile, the stopping gateway writes its unused, unexpired socket tickets to $HERMES_HOME/.ws-ticket-handover.json (mode 0600), and the gateway that takes the profile over loads them before its listener opens and removes the file. A dial with a ticket the old gateway minted, relayed or forwarded to the new one, opens instead of being refused with 403 or 1008. Tickets keep their expiry and stay single-use.
+---
+ gateway/config.py                             |  5 ++
+ gateway/config_loader.py                      |  1 +
+ gateway/run_bootstrap.py                      | 32 +++++++
+ gateway/ticket_handover.py                    | 90 +++++++++++++++++++
+ tests/gateway/test_restart_ticket_handover.py | 89 ++++++++++++++++++
+ 5 files changed, 217 insertions(+)
+ create mode 100644 gateway/ticket_handover.py
+ create mode 100644 tests/gateway/test_restart_ticket_handover.py
+
+diff --git a/gateway/config.py b/gateway/config.py
+index f4701068a5..45c6798d64 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -660,6 +660,9 @@ class GatewayConfig:
+     # Debug: a stop writes a timing trace (phase marks, asyncio task and thread stacks every 100 ms) to
+     # $HERMES_HOME/stop-trace/<pid>.log until shortly after the profile is released. False = no trace.
+     stop_trace: bool = False
++    # With restart_listener_relay_seconds: the stopping gateway hands its unused socket tickets to the one
++    # that takes the profile over, so a dial with a ticket the old gateway minted still opens there.
++    restart_ticket_handover: bool = False
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -698,6 +701,7 @@ class GatewayConfig:
+         "restart_wait_plugin_sockets", "restart_agent_cleanup_seconds",
+         "restart_wait_delegations", "restart_listener_handover", "listener_start_hold_seconds",
+         "restart_listener_relay_seconds", "restart_listener_hold_seconds", "stop_trace",
++        "restart_ticket_handover",
+         "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+@@ -840,6 +844,7 @@ class GatewayConfig:
+             restart_listener_relay_seconds=bounded_float("restart_listener_relay_seconds", 0.0, 0.0, 600.0),
+             restart_listener_hold_seconds=bounded_float("restart_listener_hold_seconds", 0.0, 0.0, 600.0),
+             stop_trace=_coerce_bool(pick("stop_trace"), False),
++            restart_ticket_handover=_coerce_bool(pick("restart_ticket_handover"), False),
+             restart_wait_plugin_sockets=[
+                 str(name).strip("/ ") for name in (pick("restart_wait_plugin_sockets") or [])
+                 if isinstance(pick("restart_wait_plugin_sockets"), list) and str(name).strip("/ ")],
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index 1dfdeec514..c687159696 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -103,6 +103,7 @@ _TOPLEVEL_BRIDGE: tuple = (
+     ("restart_listener_relay_seconds", "restart_listener_relay_seconds", "nested", None, None),
+     ("restart_listener_hold_seconds", "restart_listener_hold_seconds", "nested", None, None),
+     ("stop_trace", "stop_trace", "nested", None, None),
++    ("restart_ticket_handover", "restart_ticket_handover", "nested", None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
+index 156afbda7d..493d361a0f 100644
+--- a/gateway/run_bootstrap.py
++++ b/gateway/run_bootstrap.py
+@@ -954,6 +954,36 @@ def _start_gateway_early_environment_probe() -> None:
+         logger.debug("early environment probe did not start", exc_info=True)
+ 
+ 
++def _import_handed_over_tickets(config) -> None:
++    """``gateway.restart_ticket_handover``: before the listener opens, load the socket tickets the
++    previous gateway handed over (``gateway.ticket_handover``)."""
++    from gateway import ticket_handover
++    if not ticket_handover.enabled(config):
++        return
++    from gateway.run import get_hermes_home
++    try:
++        loaded = ticket_handover.import_tickets(get_hermes_home())
++    except Exception:
++        logger.warning("Could not load the socket tickets the previous gateway handed over", exc_info=True)
++        return
++    if loaded:
++        logger.info("Loaded %d socket ticket(s) the previous gateway handed over", loaded)
++
++
++def _export_tickets_for_successor(runner) -> None:
++    """``gateway.restart_ticket_handover``: just before a restart releases the profile, hand the unused
++    socket tickets to the gateway that takes it over."""
++    from gateway import ticket_handover
++    if (runner is None or not getattr(runner, "_restart_requested", False)
++            or not ticket_handover.enabled(getattr(runner, "config", None))):
++        return
++    from gateway.run import get_hermes_home
++    try:
++        ticket_handover.export_tickets(get_hermes_home())
++    except Exception:
++        logger.warning("Could not hand the socket tickets to the next gateway", exc_info=True)
++
++
+ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
+                         verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
+     """Run the gateway without ever turning an inherited daemon TTY (tmux respawn loop, hidden
+@@ -1045,6 +1075,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+     if not _start_gateway_claim_pid_file(force=force):
+         release_gateway_runtime_lock()
+         return False
++    _import_handed_over_tickets(resolved_config)
+ 
+     _control_server = None
+     runner = None
+@@ -1206,6 +1237,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+             stop_trace.mark("bootstrap: pid file and lock release")
+             remove_pid_file()
+             relay_to = _listener_relay_target(runner)
++            _export_tickets_for_successor(runner)
+             release_gateway_runtime_lock()
+             stop_trace.finish("bootstrap: lock released")
+             if runner is not None and getattr(runner, "_listener_handover", None):
+diff --git a/gateway/ticket_handover.py b/gateway/ticket_handover.py
+new file mode 100644
+index 0000000000..a3711c4a0b
+--- /dev/null
++++ b/gateway/ticket_handover.py
+@@ -0,0 +1,90 @@
++"""``gateway.restart_ticket_handover`` (false = off): socket tickets outlive a restart handover.
++
++A Webapp client mints a one-use socket ticket (``POST /api/webapp/socket-ticket``), then dials with it.
++Tickets live in the minting process (``hermes_cli.dashboard_auth.ws_tickets``). When a rolling update
++hands the profile to the next gateway between the mint and the dial, the dial reaches the new gateway,
++either through the old listener's relay (``restart_listener_relay_seconds``) or forwarded after a hold
++(``restart_listener_hold_seconds``), and the new gateway refuses a ticket it never minted.
++
++With this key the stopping gateway writes the tickets it minted that are still unused and valid to
++``$HERMES_HOME/.ws-ticket-handover.json`` (mode 0600) just before it releases the profile, and the
++gateway that takes the profile over loads them before its listener opens and removes the file. A dial
++the stopping gateway holds for the next one has not redeemed its ticket, so it is among them. Every
++ticket keeps its expiry (30 s after its mint) and stays single-use: once the stop began the old gateway
++mints and redeems none (both are held and forwarded).
++"""
++from __future__ import annotations
++
++import json
++import logging
++import os
++import time
++from pathlib import Path
++from typing import Any
++
++logger = logging.getLogger(__name__)
++
++FILE_NAME = ".ws-ticket-handover.json"
++# A file older than this is from an earlier handover, not the one this gateway takes over from.
++MAX_AGE_S = 60.0
++
++
++def enabled(config: Any) -> bool:
++    return bool(getattr(config, "restart_ticket_handover", False))
++
++
++def _path(home) -> Path:
++    return Path(home) / FILE_NAME
++
++
++def export_tickets(home) -> int:
++    """Write the valid tickets of this process for the next gateway; returns how many."""
++    from hermes_cli.dashboard_auth import ws_tickets
++    now = int(time.time())
++    with ws_tickets._lock:
++        tickets = {t: [exp, info] for t, (exp, info) in ws_tickets._tickets.items() if exp >= now}
++    path = _path(home)
++    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
++    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
++    try:
++        with os.fdopen(fd, "w", encoding="utf-8") as fh:
++            json.dump({"written_at": time.time(), "tickets": tickets}, fh)
++        os.replace(tmp, path)
++    except BaseException:
++        tmp.unlink(missing_ok=True)
++        raise
++    return len(tickets)
++
++
++def import_tickets(home) -> int:
++    """Load the tickets the previous gateway handed over, once; returns how many were still valid."""
++    path = _path(home)
++    try:
++        raw = path.read_text(encoding="utf-8")
++    except FileNotFoundError:
++        return 0
++    finally:
++        path.unlink(missing_ok=True)
++    try:
++        doc = json.loads(raw)
++        written_at = float(doc["written_at"])
++        tickets = dict(doc["tickets"])
++    except (ValueError, KeyError, TypeError):
++        logger.warning("Ignoring an unreadable socket ticket handover file")
++        return 0
++    if abs(time.time() - written_at) > MAX_AGE_S:
++        return 0
++    from hermes_cli.dashboard_auth import ws_tickets
++    now = int(time.time())
++    loaded = 0
++    with ws_tickets._lock:
++        for ticket, entry in tickets.items():
++            try:
++                expires_at, info = int(entry[0]), dict(entry[1])
++            except (ValueError, TypeError, IndexError):
++                continue
++            if expires_at >= now and isinstance(ticket, str) and ticket:
++                ws_tickets._tickets.setdefault(ticket, (expires_at, info))
++                loaded += 1
++    return loaded
++
+diff --git a/tests/gateway/test_restart_ticket_handover.py b/tests/gateway/test_restart_ticket_handover.py
+new file mode 100644
+index 0000000000..f9a0d403da
+--- /dev/null
++++ b/tests/gateway/test_restart_ticket_handover.py
+@@ -0,0 +1,89 @@
++"""gateway.restart_ticket_handover: socket tickets outlive a restart handover."""
++
++import json
++import os
++import stat
++import time
++from types import SimpleNamespace
++
++import pytest
++
++from gateway import ticket_handover
++from gateway.config import GatewayConfig
++from hermes_cli.dashboard_auth import ws_tickets
++
++
++@pytest.fixture(autouse=True)
++def _fresh_tickets():
++    ws_tickets._reset_for_tests()
++    yield
++    ws_tickets._reset_for_tests()
++
++
++def _mint():
++    return ws_tickets.mint_ticket(user_id="u", provider="basic", extra={"socket": "gateway"})
++
++
++def test_config_key_defaults_off():
++    assert GatewayConfig().restart_ticket_handover is False
++    assert GatewayConfig.from_dict({"restart_ticket_handover": True}).restart_ticket_handover is True
++    assert ticket_handover.enabled(GatewayConfig()) is False
++
++
++def test_unused_tickets_reach_the_next_gateway_once(tmp_path):
++    used, kept = _mint(), _mint()
++    ws_tickets.consume_ticket(used)
++    assert ticket_handover.export_tickets(tmp_path) == 1
++    path = tmp_path / ticket_handover.FILE_NAME
++    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
++
++    ws_tickets._reset_for_tests()  # the next process starts with none
++    assert ticket_handover.import_tickets(tmp_path) == 1
++    assert not path.exists()
++    info = ws_tickets.consume_ticket(kept)
++    assert info["user_id"] == "u" and info["socket"] == "gateway"
++    with pytest.raises(ws_tickets.TicketInvalid):
++        ws_tickets.consume_ticket(kept)  # still single-use
++    with pytest.raises(ws_tickets.TicketInvalid):
++        ws_tickets.consume_ticket(used)
++    assert ticket_handover.import_tickets(tmp_path) == 0  # the file is gone
++
++
++def test_expired_tickets_and_old_files_are_dropped(tmp_path):
++    now = int(time.time())
++    path = tmp_path / ticket_handover.FILE_NAME
++    path.write_text(json.dumps({"written_at": time.time(), "tickets": {
++        "live": [now + 20, {"user_id": "u", "provider": "p"}], "dead": [now - 1, {"user_id": "u"}]}}))
++    assert ticket_handover.import_tickets(tmp_path) == 1
++    assert ws_tickets.consume_ticket("live")["user_id"] == "u"
++
++    path.write_text(json.dumps({"written_at": time.time() - 3600, "tickets": {
++        "old": [now + 20, {"user_id": "u", "provider": "p"}]}}))
++    assert ticket_handover.import_tickets(tmp_path) == 0
++    assert not path.exists()
++    path.write_text("not json")
++    assert ticket_handover.import_tickets(tmp_path) == 0
++    assert not path.exists()
++
++
++def test_bootstrap_hooks_follow_the_key(tmp_path, monkeypatch):
++    from gateway import run_bootstrap
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.setattr("gateway.run.get_hermes_home", lambda: tmp_path)
++    _mint()
++    path = tmp_path / ticket_handover.FILE_NAME
++
++    off = SimpleNamespace(config=GatewayConfig(), _restart_requested=True)
++    run_bootstrap._export_tickets_for_successor(off)
++    assert not path.exists()
++    on = GatewayConfig.from_dict({"restart_ticket_handover": True})
++    run_bootstrap._export_tickets_for_successor(SimpleNamespace(config=on, _restart_requested=False))
++    assert not path.exists()  # not a restart: nobody takes over
++    run_bootstrap._export_tickets_for_successor(SimpleNamespace(config=on, _restart_requested=True))
++    assert path.exists()
++
++    ws_tickets._reset_for_tests()
++    run_bootstrap._import_handed_over_tickets(GatewayConfig())
++    assert path.exists() and not ws_tickets._tickets  # off: left alone
++    run_bootstrap._import_handed_over_tickets(on)
++    assert not path.exists() and len(ws_tickets._tickets) == 1
