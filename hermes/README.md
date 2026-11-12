@@ -52,6 +52,7 @@ The Test workflow runs on pull requests and before each release:
 | `0018-steer-controls-after-restart` | A chat a surface started (hub, Desktop, TUI, CLI, ACP) keeps steer and replace after a gateway restart instead of `unsupported_control`: the first turn relabels its row `local`, and a `local` row now reads as its `created_source`. Bug fix, no key. | Not fixed upstream; no PR. |
 | `0019-steer-current-turn` | A steer sent before the turn's first tool call waits, with its ticket, for a tool result of this turn instead of landing after a tool result of an earlier turn, where the model read it as history. Bug fix, no key. | Not fixed upstream; no PR. |
 | `0020-skill-config-managed-overlay` | Skill settings (`skills.disabled`, `skills.platform_disabled`, `agent.product_help_guidance` for 0017) in the managed scope apply even when config.yaml lacks them; before, they held only while config.yaml had a copy, and Hermes writes config.yaml without the managed values. Bug fix, no key. | Not fixed upstream; no PR. |
+| `0021-subagent-controls-listed-children` | Stop, Steer and tail reach every background subagent `subagent.list` shows, also after the parent's cached agent was rebuilt or evicted; before, Stop on such a row answered `found: false` (the hub's "no longer running"). Bug fix, no key. | Not fixed upstream; no PR. |
 
 ## Adding or changing a patch
 

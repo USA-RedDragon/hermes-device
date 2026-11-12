@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 23:10:26 -0600
+Subject: [PATCH] fix(gateway): stop, steer and tail reach every child the dock
+ lists
+
+subagent.list follows the conversation's durable owner id, so a background
+child stays listed after its parent agent is rebuilt or evicted. Desktop
+Stop, Steer and tail matched only children of the resident parent object,
+so Stop on that row answered found: false and the hub said the subagent
+was no longer running. They now resolve the same roster as the list, the
+rule delegate_task(action="stop") already uses.
+---
+ gateway/session_ancillary.py                  | 13 ++++++----
+ .../fixtures/subagent_controls_peer.py        | 17 ++++++++++---
+ .../gateway/test_session_subagent_controls.py | 25 ++++++++++++++++++-
+ 3 files changed, 45 insertions(+), 10 deletions(-)
+
+diff --git a/gateway/session_ancillary.py b/gateway/session_ancillary.py
+index db845f4bd3..a44b9ddd13 100644
+--- a/gateway/session_ancillary.py
++++ b/gateway/session_ancillary.py
+@@ -36,8 +36,9 @@ def handlers(connection):
+ 
+ 
+ async def subagent_control(connection, ref, params, *, steer):
+-    """Desktop's per-child Steer / Stop: only a child of THIS session's live agent (the
+-    ``subagent.list`` rule). The sidecar handler never held an authority session."""
++    """Desktop's per-child Steer / Stop: only a child ``subagent.list`` shows for THIS session,
++    including one whose parent agent was rebuilt or evicted. The sidecar handler never held an
++    authority session."""
+     fields = {'session_id', 'profile', 'subagent_id'} | ({'text'} if steer else set())
+     if (set(params) - fields or not ref.session_id or any(not isinstance(params.get(k), str) or not params[k]
+                                                            for k in fields - {'profile'})):
+@@ -48,7 +49,8 @@ async def subagent_control(connection, ref, params, *, steer):
+     live, sub = connection.authority.sessions[ref.session_id], params['subagent_id']
+     with live.event_stream.lock:
+         _require_current_route(connection.authority, ref)
+-        child = next((r['agent'] for r in _owner_objects(connection.authority, ref)[1] if r.get('subagent_id') == sub), None)
++        records = _owner_objects(connection.authority, ref, include_fallback_evicted=True)[1]
++        child = next((r['agent'] for r in records if r.get('subagent_id') == sub), None)
+     if not steer:
+         from agent.interrupt_compat import request_hard_interrupt
+         return {'found': child is not None and bool(request_hard_interrupt(child, f'Interrupted via Desktop ({sub})')),
+@@ -263,7 +265,7 @@ def _project(authority, ref, params, kind):
+         # route moved on to another conversation.
+         return {'control': control_snapshot(authority, ref)}
+     _require_current_route(authority, ref)
+-    agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
++    agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind in ('subagents', 'tail'))
+     if kind == 'subagents':
+         return {'subagents': [subagent_row(record) for record in records], 'delegations': []}
+     if kind == 'tail':
+@@ -563,7 +565,8 @@ def _owned_by_lineage(record, target_sids, expected_db):
+     child whose durable owner id is in this session's compression lineage, written to the same
+     session database file. Without it every cached-agent rebuild (``/reasoning``, ``/model``, a
+     policy refresh, idle eviction) hid still-running children from the dock while the status bar
+-    kept counting them. Control and tail stay pinned to the resident parent."""
++    kept counting them. Steer, Stop and tail resolve the same roster, so every listed child can be
++    stopped, as ``delegate_task(action="stop")`` already allows."""
+     if not target_sids or record.get('owner_agent_session_id') not in target_sids:
+         return False
+     expected_path = getattr(expected_db, 'db_path', None)
+diff --git a/tests/gateway/fixtures/subagent_controls_peer.py b/tests/gateway/fixtures/subagent_controls_peer.py
+index bb23e86491..cdb34e2efe 100644
+--- a/tests/gateway/fixtures/subagent_controls_peer.py
++++ b/tests/gateway/fixtures/subagent_controls_peer.py
+@@ -44,21 +44,30 @@ async def probe():
+         created = await rpc(ws, 'session.create', request_id='controls-owner', source='gui', toolsets=[])
+         sid = created['result']['session_id']
+         live = authority.sessions[sid]
+-        parent, other_parent = Agent(), Agent()
+-        parent.session_id, other_parent.session_id = sid, 'foreign-session'
++        parent, other_parent, replaced_parent = Agent(), Agent(), Agent()
++        parent.session_id, other_parent.session_id, replaced_parent.session_id = sid, 'foreign-session', sid
+         with runner._agent_cache_lock:
+             runner._agent_cache[live.route] = (parent, 'fixture')
+         children = {}
+         try:
+-            for name, ancestor in [('owned', parent), ('sibling', other_parent)]:
++            # 'rebuilt': a background child of this conversation whose parent agent object was
++            # replaced (a cached-agent rebuild or idle eviction); the dock still lists it.
++            for name, ancestor in [('owned', parent), ('sibling', other_parent), ('rebuilt', replaced_parent)]:
+                 child = children[name] = Agent()
+                 child._subagent_id = name
+                 child._delegate_parent_ref = weakref.ref(ancestor)
+                 child._parent_session_id = ancestor.session_id
++                child._session_db = authority.db
++                child._live_transcript_path = str(home / (name + '.transcript'))
++                Path(child._live_transcript_path).write_text(name + ' transcript')
+                 _register_child(child, ancestor, name + '-goal', owner_session_id=None,
+                                 owner_transport=None, owner_session_record=None)
++            listed = await rpc(ws, 'subagent.list', session_id=sid)
++            receipt['listed'] = sorted(row['subagent_id'] for row in listed['result']['subagents'])
++            receipt['tail'] = {name: (await rpc(ws, 'subagent.tail', session_id=sid, subagent_id=name))['result']['text']
++                               for name in ('owned', 'sibling', 'rebuilt')}
+             # The exact Desktop producer frames (subagent-controls.tsx).
+-            for name in ('owned', 'sibling'):
++            for name in ('owned', 'sibling', 'rebuilt'):
+                 steer = await rpc(ws, 'subagent.steer', session_id=sid, subagent_id=name, text='check ' + name)
+                 stop = await rpc(ws, 'subagent.interrupt', session_id=sid, subagent_id=name)
+                 receipt[name] = {'steer': steer.get('result', steer.get('error')),
+diff --git a/tests/gateway/test_session_subagent_controls.py b/tests/gateway/test_session_subagent_controls.py
+index 12f3da2290..a91cdce3c8 100644
+--- a/tests/gateway/test_session_subagent_controls.py
++++ b/tests/gateway/test_session_subagent_controls.py
+@@ -25,5 +25,28 @@ def test_desktop_subagent_steer_and_stop_reach_only_this_sessions_children(tmp_p
+                                 'stop': {'found': True, 'subagent_id': 'owned'}}, receipt
+     assert receipt['sibling'] == {'steer': {'status': 'rejected', 'subagent_id': 'sibling', 'text': 'check sibling'},
+                                   'stop': {'found': False, 'subagent_id': 'sibling'}}, receipt
+-    assert receipt['delivered'] == {'owned': [['check owned'], 1], 'sibling': [[], 0]}, receipt
++    assert receipt['delivered'] == {'owned': [['check owned'], 1], 'sibling': [[], 0],
++                                    'rebuilt': [['check rebuilt'], 1]}, receipt
+     assert receipt['late']['status'] == 'rejected', receipt
++
++
++def test_desktop_subagent_controls_reach_every_child_the_dock_lists(tmp_path):
++    """A background child whose parent agent was rebuilt or evicted stays in ``subagent.list`` (it
++    follows the conversation's durable owner id). Before: Stop on that row answered ``found: false``
++    ("no longer running"), Steer was rejected and the tail was empty, because control and tail matched
++    only children of the resident parent object."""
++    root = Path(__file__).resolve().parents[2]
++    home, user = tmp_path / 'state', tmp_path / 'user'
++    home.mkdir()
++    user.mkdir()
++    env = child_env()
++    env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
++               PYTHONPATH=str(root), PYTHONUNBUFFERED='1')
++    result = subprocess.run([sys.executable, str(root / 'tests/gateway/fixtures/subagent_controls_peer.py')],
++                            cwd=root, env=env, capture_output=True, text=True, timeout=90, check=False)
++    assert result.returncode == 0, result.stdout + result.stderr
++    receipt = json.loads((home / 'receipt.json').read_text())
++    assert receipt['listed'] == ['owned', 'rebuilt'], receipt
++    assert receipt['rebuilt'] == {'steer': {'status': 'queued', 'subagent_id': 'rebuilt', 'text': 'check rebuilt'},
++                                  'stop': {'found': True, 'subagent_id': 'rebuilt'}}, receipt
++    assert receipt['tail'] == {'owned': 'owned transcript', 'sibling': '', 'rebuilt': 'rebuilt transcript'}, receipt
