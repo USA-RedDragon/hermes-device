@@ -24,17 +24,17 @@ internal/device/device.go	202	163
 internal/device/devicetest/devicetest.go	522	467
 internal/device/files.go	71	57
 internal/device/gateway.go	419	331
-internal/device/legs.go	169	149
+internal/device/legs.go	169	151
 internal/device/pair.go	52	29
 internal/device/plugin.go	100	84
 internal/device/rpc.go	214	199
 internal/device/sessioncheck.go	23	22
 internal/device/usage.go	50	40
 internal/device/views.go	17	17
-internal/gateway/client.go	250	206
+internal/gateway/client.go	222	175
 internal/gateway/gatewaytest/activity.go	106	86
 internal/gateway/gatewaytest/compose.go	180	156
-internal/gateway/gatewaytest/fake.go	626	570
+internal/gateway/gatewaytest/fake.go	619	563
 internal/gateway/gatewaytest/files.go	40	35
 internal/gateway/gatewaytest/mutate.go	119	104
 internal/gateway/gatewaytest/runtime.go	22	19
@@ -70,7 +70,7 @@ internal/pdf/pdftest/pdftest.go	32	32
 internal/scheduled/client.go	110	88
 internal/scheduled/clock.go	75	66
 internal/scheduled/scheduledtest/scheduledtest.go	178	166
-internal/scheduled/service.go	473	411
+internal/scheduled/service.go	473	413
 internal/server/server.go	40	0
 internal/service/activity.go	123	102
 internal/service/agents.go	21	17
@@ -86,7 +86,7 @@ internal/service/outcome.go	89	85
 internal/service/page.go	51	47
 internal/service/pdf.go	71	55
 internal/service/rows.go	22	21
-internal/service/service.go	758	693
+internal/service/service.go	754	690
 internal/service/stopsend.go	90	74
 internal/service/turn.go	78	71
 internal/store/agents.go	52	43
@@ -123,7 +123,7 @@ internal/telegram/render.go	478	433
 internal/telegram/replymedia.go	102	87
 internal/telegram/status.go	59	53
 internal/telegram/todo.go	58	51
-internal/telegram/topics.go	521	380
+internal/telegram/topics.go	521	381
 internal/web/activity.go	119	79
 internal/web/api.go	245	177
 internal/web/auth.go	112	84
