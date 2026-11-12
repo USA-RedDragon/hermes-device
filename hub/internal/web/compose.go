@@ -17,6 +17,7 @@ func (s *Server) composeRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/sessions/{backend}/{session}/draft", s.api(s.handleDraft))
 	mux.Handle("PUT /api/sessions/{backend}/{session}/draft", s.api(s.handleSetDraft))
 	mux.Handle("POST /api/sessions/{backend}/{session}/pin", s.api(s.handlePin))
+	mux.Handle("PUT /api/pins/order", s.api(s.handlePinOrder))
 	mux.Handle("POST /api/sessions/{backend}/{session}/read", s.api(s.handleRead))
 	mux.Handle("GET /api/sessions/{backend}/{session}/commands", s.api(s.handleCommands))
 	mux.Handle("GET /api/sessions/{backend}/{session}/transcript", s.api(s.handleTranscript))
@@ -43,11 +44,18 @@ func (s *Server) allowedHere(w http.ResponseWriter, r *http.Request) bool {
 // chatStore returns the chat store after the access check, or answers 404
 // when the hub keeps no chat state.
 func (s *Server) chatStore(w http.ResponseWriter, r *http.Request) (hub.ChatStore, bool) {
-	if s.chats == nil {
-		errorJSON(w, http.StatusNotFound, "the hub keeps no drafts or chat marks")
+	cs, ok := s.userChats(w)
+	if !ok || !s.allowedHere(w, r) {
 		return nil, false
 	}
-	if !s.allowedHere(w, r) {
+	return cs, true
+}
+
+// userChats is the chat store, or answers 404 when the hub keeps none. It
+// only reads and writes the signed-in user's own marks.
+func (s *Server) userChats(w http.ResponseWriter) (hub.ChatStore, bool) {
+	if s.chats == nil {
+		errorJSON(w, http.StatusNotFound, "the hub keeps no drafts or chat marks")
 		return nil, false
 	}
 	return s.chats, true
@@ -111,6 +119,42 @@ func (s *Server) handlePin(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// maxPinOrder caps the chats one reorder names.
+const maxPinOrder = 1000
+
+func (s *Server) handlePinOrder(w http.ResponseWriter, r *http.Request) {
+	cs, ok := s.userChats(w)
+	if !ok {
+		return
+	}
+	var body struct {
+		Order []struct {
+			BackendID string `json:"backend_id"`
+			SessionID string `json:"session_id"`
+		} `json:"order"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if len(body.Order) > maxPinOrder {
+		errorJSON(w, http.StatusBadRequest, "too many chats")
+		return
+	}
+	order := make([]hub.SessionRef, 0, len(body.Order))
+	for _, x := range body.Order {
+		if x.BackendID == "" || x.SessionID == "" {
+			errorJSON(w, http.StatusBadRequest, "each chat needs backend_id and session_id")
+			return
+		}
+		order = append(order, hub.SessionRef{BackendID: x.BackendID, SessionID: x.SessionID})
+	}
+	if err := cs.SetPinOrder(r.Context(), userFrom(r), order); err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 	cs, ok := s.chatStore(w, r)
 	if !ok {
@@ -156,7 +200,7 @@ func (s *Server) marked(ctx context.Context, user string, ss []hub.Session) []se
 		j := toJSON(x)
 		if marks != nil {
 			m := marks[hub.SessionRef{BackendID: x.BackendID, SessionID: x.ID}]
-			j.Pinned, j.Unread, j.Page = m.Pinned, m.IsUnread(x, base), m.Page
+			j.Pinned, j.PinPos, j.Unread, j.Page = m.Pinned, m.PinPos, m.IsUnread(x, base), m.Page
 		}
 		out = append(out, j)
 	}

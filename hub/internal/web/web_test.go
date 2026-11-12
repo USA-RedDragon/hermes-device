@@ -253,7 +253,7 @@ func TestCSRFAndOrigin(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin stream = %d", resp.StatusCode)
 	}
-	resp, body := post(t, c, e.url+"/api/sessions", m.CSRF, e.url, map[string]string{"backend_id": "pc"})
+	resp, body := post(t, c, e.url+"/api/sessions", m.CSRF, e.url, map[string]string{keyBackendID: "pc"})
 	if resp.StatusCode != http.StatusCreated || !strings.Contains(body, `"live":true`) {
 		t.Fatalf("new session = %d %s", resp.StatusCode, body)
 	}

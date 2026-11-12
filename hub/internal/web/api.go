@@ -33,6 +33,7 @@ type sessionJSON struct {
 	Source       string    `json:"source,omitempty"`
 	Activity     int       `json:"activity,omitempty"`
 	Pinned       bool      `json:"pinned"`
+	PinPos       int64     `json:"pin_pos"`
 	Unread       bool      `json:"unread"`
 	Needs        string    `json:"needs"`
 	Page         bool      `json:"page"`

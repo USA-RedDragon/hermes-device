@@ -194,7 +194,7 @@ func startChats(t *testing.T, e *computersEnv, c *http.Client, csrf string) (str
 		t.Fatalf("row cwd = %q", row.RowCWD)
 	}
 	var plain startedJSON
-	if s := apiJSON(t, c, http.MethodPost, e.url+"/api/sessions", csrf, map[string]string{"backend_id": "pc"}, &plain); s != http.StatusCreated {
+	if s := apiJSON(t, c, http.MethodPost, e.url+"/api/sessions", csrf, map[string]string{keyBackendID: "pc"}, &plain); s != http.StatusCreated {
 		t.Fatalf("plain new chat = %d", s)
 	}
 	var places placesJSON

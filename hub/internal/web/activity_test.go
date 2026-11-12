@@ -26,7 +26,7 @@ func activityEnv(t *testing.T) *hubEnv {
 	e.gw.AddSession(&gatewaytest.Session{ID: "s1", Title: "First", Live: true, StartedAt: 100,
 		Subagents: []gateway.SubagentRow{{SubagentID: "sa-0-a", Goal: "Read the store", Status: optr(statusRunning), AcceptingSteer: optr(true)}},
 		Processes: []gateway.ProcessRow{{SessionID: "proc_a", Command: "go test ./...", Status: statusRunning}}})
-	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: "Second", Live: true, StartedAt: 50,
+	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: titleSecond, Live: true, StartedAt: 50,
 		Subagents: []gateway.SubagentRow{{SubagentID: "sa-0-b", Goal: "another chat's", Status: optr(statusRunning), AcceptingSteer: optr(true)}},
 		Processes: []gateway.ProcessRow{{SessionID: "proc_b", Command: "sleep 99", Status: statusRunning}}})
 	return e

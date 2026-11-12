@@ -296,3 +296,138 @@ func TestBranchFollowsItsParentsPlace(t *testing.T) {
 		t.Fatal("a prompt reached the misplaced branch")
 	}
 }
+
+type pinRow struct {
+	ID        string `json:"id"`
+	BackendID string `json:"backend_id"`
+	Pinned    bool   `json:"pinned"`
+	PinPos    int64  `json:"pin_pos"`
+}
+
+func pinnedIDs(t *testing.T, e *hubEnv, c *http.Client) string {
+	t.Helper()
+	var ss []pinRow
+	if s := apiJSON(t, c, http.MethodGet, e.url+"/api/sessions", "", nil, &ss); s != http.StatusOK {
+		t.Fatalf("sessions = %d", s)
+	}
+	var pins []pinRow
+	for _, x := range ss {
+		if x.Pinned {
+			pins = append(pins, x)
+		}
+	}
+	slices.SortStableFunc(pins, func(a, b pinRow) int { return int(a.PinPos - b.PinPos) })
+	ids := make([]string, 0, len(pins))
+	for _, p := range pins {
+		ids = append(ids, p.ID)
+	}
+	return strings.Join(ids, ",")
+}
+
+func pinChat(t *testing.T, e *hubEnv, c *http.Client, csrf, backend, id string, pinned bool) {
+	t.Helper()
+	if s := apiJSON(t, c, http.MethodPost, e.url+"/api/sessions/"+backend+"/"+id+"/pin", csrf, map[string]bool{"pinned": pinned}, nil); s != http.StatusNoContent {
+		t.Fatalf("pin %s = %d", id, s)
+	}
+}
+
+func orderBody(backend string, ids ...string) map[string]any {
+	order := make([]map[string]string, 0, len(ids))
+	for _, id := range ids {
+		order = append(order, map[string]string{keyBackendID: backend, "session_id": id})
+	}
+	return map[string]any{"order": order}
+}
+
+func TestPinOrderAPI(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: titleSecond, Live: true, StartedAt: 200})
+	e.gw.AddSession(&gatewaytest.Session{ID: "s3", Title: "Third", Live: true, StartedAt: 300})
+	c := client(t)
+	m := login(t, e, c)
+	for _, id := range []string{"s1", "s2", "s3"} {
+		pinChat(t, e, c, m.CSRF, "pc", id, true)
+	}
+	if got := pinnedIDs(t, e, c); got != "s3,s2,s1" {
+		t.Fatalf("new pins first: %s", got)
+	}
+	before := listed(t, e, c)
+	url := e.url + "/api/pins/order"
+	if s := putJSON(t, c, url, m.CSRF, orderBody("pc", "s2", "s1", "s3")); s != http.StatusNoContent {
+		t.Fatalf("reorder = %d", s)
+	}
+	if got := pinnedIDs(t, e, c); got != "s2,s1,s3" {
+		t.Fatalf("after reorder: %s", got)
+	}
+	after := listed(t, e, c)
+	for id, x := range before {
+		if !x.UpdatedAt.Equal(after[id].UpdatedAt) {
+			t.Fatalf("reordering changed the activity time of %s", id)
+		}
+	}
+	pinChat(t, e, c, m.CSRF, "pc", "s3", false)
+	pinChat(t, e, c, m.CSRF, "pc", "s3", true)
+	if got := pinnedIDs(t, e, c); got != "s3,s2,s1" {
+		t.Fatalf("pinned again goes first: %s", got)
+	}
+	if s := putJSON(t, c, url, "", orderBody("pc", "s1")); s != http.StatusForbidden {
+		t.Fatalf("reorder without CSRF = %d", s)
+	}
+	if s := putJSON(t, c, url, m.CSRF, map[string]any{"order": []map[string]string{{"backend_id": "pc"}}}); s != http.StatusBadRequest {
+		t.Fatalf("reorder with a missing ID = %d", s)
+	}
+	big := make([]string, maxPinsInBody+1)
+	for i := range big {
+		big[i] = "x"
+	}
+	if s := putJSON(t, c, url, m.CSRF, orderBody("pc", big...)); s != http.StatusBadRequest {
+		t.Fatalf("huge reorder = %d", s)
+	}
+}
+
+const (
+	maxPinsInBody = 1000
+	orderS2S1     = "s2,s1"
+)
+
+func TestPinOrderIsPerUserAPI(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: titleSecond, Live: true, StartedAt: 200})
+	alice := client(t)
+	am := login(t, e, alice)
+	for _, id := range []string{"s1", "s2"} {
+		pinChat(t, e, alice, am.CSRF, "pc", id, true)
+	}
+	e.is.as("sub-bob", userBob, "family")
+	bob := client(t)
+	bm := login(t, e, bob)
+	for _, id := range []string{"s2", "s1"} {
+		pinChat(t, e, bob, bm.CSRF, backendHome, id, true)
+	}
+	if got := pinnedIDs(t, e, bob); got != "s1,s2" {
+		t.Fatalf("bob's pins: %s", got)
+	}
+	if s := putJSON(t, bob, e.url+"/api/pins/order", bm.CSRF, orderBody(backendHome, "s2", "s1")); s != http.StatusNoContent {
+		t.Fatalf("bob reorders = %d", s)
+	}
+	if s := putJSON(t, bob, e.url+"/api/pins/order", bm.CSRF, orderBody("pc", "s1", "s2")); s != http.StatusNoContent {
+		t.Fatalf("bob names alice's backend = %d", s)
+	}
+	if got := pinnedIDs(t, e, bob); got != orderS2S1 {
+		t.Fatalf("bob's order: %s", got)
+	}
+	if got := pinnedIDs(t, e, alice); got != orderS2S1 {
+		t.Fatalf("alice's order changed by bob: %s", got)
+	}
+	if s := putJSON(t, alice, e.url+"/api/pins/order", am.CSRF, orderBody("pc", "s1", "s2")); s != http.StatusNoContent {
+		t.Fatalf("alice reorders = %d", s)
+	}
+	if got := pinnedIDs(t, e, bob); got != orderS2S1 {
+		t.Fatalf("bob's order changed by alice: %s", got)
+	}
+	if got := pinnedIDs(t, e, alice); got != "s1,s2" {
+		t.Fatalf("alice's order: %s", got)
+	}
+}

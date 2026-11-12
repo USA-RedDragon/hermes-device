@@ -8,7 +8,10 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 )
 
-const keyBackendID = "backend_id"
+const (
+	keyBackendID = "backend_id"
+	titleSecond  = "Second"
+)
 
 type pageChatJSON struct {
 	ID            string `json:"id"`
