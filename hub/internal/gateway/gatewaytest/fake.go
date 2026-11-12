@@ -464,6 +464,20 @@ func (g *Gateway) DropConnections() {
 	}
 }
 
+// RestartConnections closes every open WebSocket the way a gateway that
+// goes away for a restart does: close 1012 (service restart).
+func (g *Gateway) RestartConnections() {
+	g.mu.Lock()
+	conns := make([]*conn, 0, len(g.conns))
+	for c := range g.conns {
+		conns = append(conns, c)
+	}
+	g.mu.Unlock()
+	for _, c := range conns {
+		_ = c.ws.Close(websocket.StatusServiceRestart, "")
+	}
+}
+
 // ConnCount is the number of open WebSockets.
 func (g *Gateway) ConnCount() int {
 	g.mu.Lock()
