@@ -10,12 +10,12 @@ gateway.restart_listener_hold_seconds (0 = off; needs restart_listener_handover 
  gateway/config_loader.py                     |   1 +
  gateway/drain_control.py                     |  26 +-
  gateway/listener_forward.py                  | 167 ++++++++
- gateway/run_api.py                           | 115 ++++--
+ gateway/run_api.py                           | 116 +++++-
  gateway/run_shutdown.py                      |   8 +-
  tests/gateway/test_restart_listener_hold.py  | 413 +++++++++++++++++++
  tests/gateway/test_restart_listener_relay.py |   2 +-
  website/docs/user-guide/messaging/index.md   |   9 +
- 9 files changed, 717 insertions(+), 32 deletions(-)
+ 9 files changed, 725 insertions(+), 25 deletions(-)
  create mode 100644 gateway/listener_forward.py
  create mode 100644 tests/gateway/test_restart_listener_hold.py
 
@@ -284,7 +284,7 @@ index 0000000000..a734a1ffa4
 +        return await forward_websocket(scope, receive, send, target, deadline)
 +    return await forward_http(scope, receive, send, target, deadline)
 diff --git a/gateway/run_api.py b/gateway/run_api.py
-index 70e8f8c7c1..e5a5f9236b 100644
+index 70e8f8c7c1..96bc2c8f59 100644
 --- a/gateway/run_api.py
 +++ b/gateway/run_api.py
 @@ -380,12 +380,28 @@ async def stop_gateway_api(handle: GatewayAPIHandle) -> None:
@@ -360,7 +360,7 @@ index 70e8f8c7c1..e5a5f9236b 100644
  
      async def __call__(self, scope, receive, send):
          task = asyncio.current_task()
-@@ -502,6 +530,48 @@ class GatewayRuntimeAPI:
+@@ -502,6 +530,55 @@ class GatewayRuntimeAPI:
          finally:
              self.inflight.discard(task)
  
@@ -372,19 +372,26 @@ index 70e8f8c7c1..e5a5f9236b 100644
 +        if self._released is not None:
 +            self._released.set()
 +
-+    async def _hold_or_refuse(self, scope, receive, send, state='draining'):
++    async def _forward_held(self, scope, receive, send) -> bool:
 +        """``gateway.restart_listener_hold_seconds``: a restart stop holds a request it would refuse
-+        until the profile is released and forwards it to the successor; else (no key, no successor,
-+        or the bound passed) the not-ready answer (WebSocket: close 1013)."""
++        until the profile is released and forwards it to the successor. False (refuse as before)
++        without the key, without a successor, or once the bound passed."""
 +        from gateway.drain_control import restart_hold_configured
-+        target = None
-+        if (scope['type'] in {'http', 'websocket'} and restart_hold_configured(self.runner)
-+                and getattr(self.runner, '_restart_requested', False)):
-+            target = await self._await_successor(
-+                scope, float(getattr(self.runner.config, 'restart_listener_hold_seconds', 0) or 0))
-+        if target is not None:
-+            from gateway.listener_forward import forward
-+            return await forward(scope, receive, send, target, self.forward_deadline)
++        if (scope['type'] not in {'http', 'websocket'} or not restart_hold_configured(self.runner)
++                or not getattr(self.runner, '_restart_requested', False)):
++            return False
++        target = await self._await_successor(
++            scope, float(getattr(self.runner.config, 'restart_listener_hold_seconds', 0) or 0))
++        if target is None:
++            return False
++        from gateway.listener_forward import forward
++        await forward(scope, receive, send, target, self.forward_deadline)
++        return True
++
++    async def _hold_or_refuse(self, scope, receive, send, state='draining'):
++        """:meth:`_forward_held`, else the not-ready answer (WebSocket: close 1013)."""
++        if await self._forward_held(scope, receive, send):
++            return
 +        if scope['type'] == 'websocket':
 +            await send({'type': 'websocket.close', 'code': 1013})
 +        elif scope['type'] == 'http':
@@ -409,7 +416,7 @@ index 70e8f8c7c1..e5a5f9236b 100644
      async def _serve_sealed(self, scope, receive, send):
          """A sealed listener serves the handover's reads (the dashboard's while the stores are open,
          health itself once they close) and refuses everything else."""
-@@ -516,13 +586,13 @@ class GatewayRuntimeAPI:
+@@ -516,13 +593,13 @@ class GatewayRuntimeAPI:
                  'ok': True, 'version': info.base_version, 'displayVersion': info.display_version,
                  'commit': info.commit, 'auth_required': bool(getattr(self.web_app.state, 'auth_required', False)),
              })(scope, receive, send)
@@ -428,22 +435,16 @@ index 70e8f8c7c1..e5a5f9236b 100644
          if self.sealed:
              return await self._serve_sealed(scope, receive, send)
          if scope['type'] != 'websocket' or scope.get('path') != '/api/ws':
-@@ -564,13 +634,7 @@ class GatewayRuntimeAPI:
+@@ -564,6 +641,8 @@ class GatewayRuntimeAPI:
                  and not _restart_wait_socket_ticket(self.runner, scope)
                  and not _restart_wait_plugin_socket(self.runner, scope)
                  and not _restart_wait_sign_in(self.runner, scope)):
--            if scope['type'] == 'websocket':
--                await send({'type': 'websocket.close', 'code': 1013})
--            else:
--                from starlette.responses import JSONResponse
--                await JSONResponse({'error': 'gateway_not_ready', 'state': descriptor['state']},
--                                   status_code=503)(scope, receive, send)
--            return
-+            return await self._hold_or_refuse(scope, receive, send, descriptor['state'])
-         # Capture before Uvicorn's proxy middleware rewrites scope.client (native grants, both kinds).
-         scope['hermes.gateway_socket_peer'] = scope.get('client')
-         from gateway.run_idle_exit import attached_client, note_client_activity
-@@ -579,7 +643,7 @@ class GatewayRuntimeAPI:
++            if await self._forward_held(scope, receive, send):
++                return
+             if scope['type'] == 'websocket':
+                 await send({'type': 'websocket.close', 'code': 1013})
+             else:
+@@ -579,7 +658,7 @@ class GatewayRuntimeAPI:
              return await self.app(scope, receive, send)
          original_receive = receive
          allow_draining = False
@@ -452,7 +453,7 @@ index 70e8f8c7c1..e5a5f9236b 100644
          from gateway.drain_control import restart_wait_open
  
          async def receive_admitted():
-@@ -587,8 +651,10 @@ class GatewayRuntimeAPI:
+@@ -587,8 +666,10 @@ class GatewayRuntimeAPI:
              # Only a socket admitted INTO the restart wait (to answer a parked prompt) outlives it. One
              # opened before the wait is cut as before: its client reconnects to the next owner, and a
              # held one (a kanban worker polling its card) would otherwise pin the drain to its cap.
@@ -464,7 +465,7 @@ index 70e8f8c7c1..e5a5f9236b 100644
                  return {'type': 'websocket.disconnect', 'code': 1013}
              return message
  
-@@ -605,17 +671,18 @@ class GatewayRuntimeAPI:
+@@ -605,17 +686,18 @@ class GatewayRuntimeAPI:
          # Origin, #147361). Origin is client-controlled, so this reaches no gate an Origin could not.
          native_peer = bool(ws.client) and ws.client.host in {'127.0.0.1', '::1'}
          if reason == 'none' or ws.headers.get('origin') or (reason == 'ok' and not native_peer):
