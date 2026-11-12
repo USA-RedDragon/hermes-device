@@ -1225,10 +1225,7 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 			prompts = append(prompts, raw)
 		}
 	}
-	msgs := snap.Messages
-	if msgs == nil {
-		msgs = []json.RawMessage{}
-	}
+	msgs := viewRows(snap.Messages)
 	pending := make([]hub.Pending, 0, len(snap.Pending))
 	turn := runningAdmission(snap.Pending, "")
 	for _, p := range snap.Pending {
