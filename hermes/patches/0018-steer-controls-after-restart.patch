@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 22:39:54 -0600
+Subject: [PATCH] fix(gateway): a surface's chat keeps its steer controls after
+ a restart
+
+The first turn relabels a surface's session row source local. Once the
+launch-source cache was gone (an owner restart), every such chat lost
+steer and replace with unsupported_control. A local row now reads as
+its created_source.
+---
+ gateway/session_queued_controls.py           | 6 ++++--
+ tests/gateway/test_prompt_queued_transfer.py | 9 +++++++++
+ 2 files changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/gateway/session_queued_controls.py b/gateway/session_queued_controls.py
+index fb6845cc47..e36e3e282d 100644
+--- a/gateway/session_queued_controls.py
++++ b/gateway/session_queued_controls.py
+@@ -42,10 +42,12 @@ def _interactive(authority, session_id):
+     sources = authority.launch_sources
+     if session_id not in sources:
+         with authority.db._read_ctx() as conn:
+-            found = conn.execute('SELECT source FROM sessions WHERE id=?', (session_id,)).fetchone()
++            found = conn.execute('SELECT source, created_source FROM sessions WHERE id=?', (session_id,)).fetchone()
+         if found is None:
+             return False
+-        sources[session_id] = found[0]
++        # The first turn's routing write relabels a surface's row ``local`` (hermes_state_sessions
++        # _UPSERT_KEEP_EXISTING_SQL); its surface is then created_source, as the local listings read it.
++        sources[session_id] = found[1] if found[0] == 'local' else found[0]
+     return sources[session_id] in _INTERACTIVE_SOURCES
+ 
+ 
+diff --git a/tests/gateway/test_prompt_queued_transfer.py b/tests/gateway/test_prompt_queued_transfer.py
+index ab94ec5141..36e890be86 100644
+--- a/tests/gateway/test_prompt_queued_transfer.py
++++ b/tests/gateway/test_prompt_queued_transfer.py
+@@ -534,3 +534,12 @@ def test_only_interactive_local_sessions_are_offered_queued_controls(tmp_path, m
+             interactive(db, source=source)
+             controls = session_queued_controls.queued_controls(authority, row)
+             assert controls == (['steer', 'replace'] if offered else []), (source, controls)
++        # A surface's row reads ``local`` after its first turn: its creator decides, also once the
++        # cache is gone (an owner restart, a retired session).
++        for created, offered in (('desktop', True), ('tui', True), ('cli', True), ('acp', True), ('cron', False),
++                                 (None, False)):
++            authority.launch_sources = {}
++            db._execute_write(lambda conn, c=created: conn.execute(
++                "UPDATE sessions SET source='local', created_source=? WHERE id='s'", (c,)))
++            controls = session_queued_controls.queued_controls(authority, row)
++            assert controls == (['steer', 'replace'] if offered else []), ('local', created, controls)
