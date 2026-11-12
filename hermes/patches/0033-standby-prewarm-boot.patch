@@ -1,0 +1,195 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 02:34:12 -0600
+Subject: [PATCH] feat(gateway): standby prewarm covers what the boot after the
+ lock repeats
+
+The standby now also imports the modules the boot imports on its way to READY (about 400, aiohttp and uvicorn's server stack among them), the module of each enabled built-in adapter, and loads, without binding, the listener's server config. It fills the bundled platform access-policy manifests through the startup policy check, which only reads. Nothing read from the profile is cached before the lock. The work after the lock drops from about 0.45 to 0.2 CPU seconds; on a CPU-starved node that is most of the takeover.
+---
+ gateway/run_bootstrap.py                | 74 ++++++++++++++++++++++---
+ tests/gateway/test_runtime_lock_wait.py | 43 +++++++++++++-
+ 2 files changed, 107 insertions(+), 10 deletions(-)
+
+diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
+index d4f737339d..d5bea94bce 100644
+--- a/gateway/run_bootstrap.py
++++ b/gateway/run_bootstrap.py
+@@ -640,23 +640,80 @@ STANDBY_MARKER = "gateway.standby"
+ _RUNTIME_LOCK_PREWARM_MODULES = (
+     "gateway.run_runtime", "gateway.run_startup", "gateway.run_api", "gateway.run_adapters",
+     "gateway.session_authorities", "run_agent", "model_tools", "tui_gateway.server",
++    # What the boot after the lock imports on its way to READY, by the module that pulls each subtree in.
++    "gateway.session_authority", "gateway.session_bot", "gateway.session_hosted_controls",
++    "gateway.session_hosted_service", "gateway.session_viewer_close", "gateway.hosted_room_discussion",
++    "gateway.control_socket", "gateway.lifecycle_ledger", "gateway.channel_directory", "gateway.delivery_ledger",
++    "gateway.shutdown_flush", "gateway.restart_notice", "gateway.cron_store_notices", "gateway.run_heartbeat_restore",
++    "gateway.runtime_downgrade_exit", "gateway.scale_to_zero", "cron.scheduler_thread", "cron.scheduler_provider",
++    "tui_gateway.hosted_room_service", "tools.tool_search_catalog", "tools.mcp_tool", "tools.read_extract",
++    "tools.skills_sync", "tools.connectors.gateway.bridge", "hermes_cli.tools_config", "hermes_cli.model_switch",
++    "hermes_cli.observability.relay_shared_metrics", "hermes_cli.nous_auth_keepalive", "hermes_platform.declaration",
++    "agent.monitoring.gateway_health_export",
+ )
+ 
+ 
+-def _prewarm_before_runtime_lock() -> None:
++def _prewarm_platform_adapters(config) -> None:
++    """Import the module of each enabled built-in platform adapter (the API server's pulls in aiohttp)."""
++    import importlib
++    from gateway.run import _BUILTIN_ADAPTERS
++    for platform, platform_config in (getattr(config, "platforms", None) or {}).items():
++        spec = _BUILTIN_ADAPTERS.get(platform)
++        if spec is not None and getattr(platform_config, "enabled", False):
++            try:
++                importlib.import_module(f"gateway.platforms.{spec[0]}")
++            except Exception:
++                logger.debug("Prewarm import of the %s adapter failed", spec[0], exc_info=True)
++
++
++def _prewarm_listener_server() -> None:
++    """Build and load (never bind) the gateway listener's server config: uvicorn imports its server,
++    supervisors and protocol implementations there."""
++    from gateway.run import get_hermes_home
++    from gateway.run_api import _listener_gate
++    from gateway.webapp_listener import listener_plan
++    from hermes_cli.web_server_lifecycle import build_listener_server
++
++    async def app(scope, receive, send):  # never served
++        return None
++
++    host, port, webapp, _reason = listener_plan(get_hermes_home())
++    config, _server = build_listener_server(app, host, port, auth_required=bool(_listener_gate(host, webapp)[0]),
++                                            timeout_graceful_shutdown=5, lifespan="off")
++    config.load()
++
++
++def _prewarm_read_caches(config) -> None:
++    """Fill the caches of bundled files the boot after the lock fills anyway: the platform
++    access-policy manifests (the startup policy check itself, which only reads). Nothing read from the
++    profile is cached here: the gateway that owns it may still change it."""
++    if config is not None:
++        from gateway.run import _own_policy_open_startup_violation
++        _own_policy_open_startup_violation(config)
++
++
++def _prewarm_before_runtime_lock(config=None) -> None:
+     """Imports and plugin discovery that the boot after the lock runs anyway (the dashboard too when
+-    the listener mounts it before it serves), done while another gateway still owns the profile so
+-    the takeover after it exits is short. Opens no profile store."""
++    the listener mounts it before it serves, the adapters of the enabled built-in platforms and the
++    listener's server), done while another gateway still owns the profile so the takeover after it
++    exits is short, plus the caches of bundled files it fills. Opens no profile store and caches
++    nothing read from it."""
+     import importlib
+     for name in _RUNTIME_LOCK_PREWARM_MODULES:
+         try:
+             importlib.import_module(name)
+-        except Exception:
++        except (Exception, SystemExit):  # the boot after the lock reports it
+             logger.debug("Prewarm import of %s failed", name, exc_info=True)
++    for step in (lambda: _prewarm_platform_adapters(config), _prewarm_listener_server,
++                 lambda: _prewarm_read_caches(config)):
++        try:
++            step()
++        except (Exception, SystemExit):  # the boot after the lock reports it
++            logger.debug("Prewarm step failed", exc_info=True)
+     try:
+         from hermes_cli.plugins import discover_plugins
+         discover_plugins()
+-    except Exception:
++    except (Exception, SystemExit):
+         logger.debug("Prewarm plugin discovery failed", exc_info=True)
+     try:
+         from gateway.run import get_hermes_home
+@@ -701,7 +758,7 @@ def _remove_predecessor_pid_file() -> None:
+         path.unlink(missing_ok=True)
+ 
+ 
+-async def _start_gateway_wait_for_runtime_lock(profile_homes, wait_s: float) -> Optional[float]:
++async def _start_gateway_wait_for_runtime_lock(profile_homes, wait_s: float, config=None) -> Optional[float]:
+     """``gateway.runtime_lock_wait_seconds``: a standby gateway (the new pod of a rolling update on a
+     shared volume) warms up, then waits for the gateway that owns the profile to exit instead of
+     exiting 1, and takes over within one poll of it. When the wait runs out the boot goes on and
+@@ -715,7 +772,7 @@ async def _start_gateway_wait_for_runtime_lock(profile_homes, wait_s: float) ->
+     homes = [launch_home, *(home for _, home in profile_homes)]
+     started = time.monotonic()
+     deadline = started + wait_s
+-    _prewarm_before_runtime_lock()
++    _prewarm_before_runtime_lock(config)
+     marker = launch_home / STANDBY_MARKER
+     waited = False
+     try:
+@@ -943,7 +1000,8 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+     lock_wait_s = float(getattr(resolved_config, "runtime_lock_wait_seconds", 0) or 0)
+     took_over_after_s = None
+     if lock_wait_s > 0:
+-        took_over_after_s = await _start_gateway_wait_for_runtime_lock(profile_homes, lock_wait_s)
++        took_over_after_s = await _start_gateway_wait_for_runtime_lock(profile_homes, lock_wait_s,
++                                                                       config=resolved_config)
+     if not _start_gateway_reserve_profiles(profile_homes):
+         return False
+     # Freeze discovery: later profile additions must restart and reserve before opening stores.
+diff --git a/tests/gateway/test_runtime_lock_wait.py b/tests/gateway/test_runtime_lock_wait.py
+index 9ea7bc46e0..399d316e3f 100644
+--- a/tests/gateway/test_runtime_lock_wait.py
++++ b/tests/gateway/test_runtime_lock_wait.py
+@@ -16,7 +16,7 @@ def home(tmp_path, monkeypatch):
+     home.mkdir()
+     monkeypatch.setenv("HERMES_HOME", str(home))
+     monkeypatch.setattr("gateway.run.get_hermes_home", lambda: home)
+-    monkeypatch.setattr(run_bootstrap, "_prewarm_before_runtime_lock", lambda: None)
++    monkeypatch.setattr(run_bootstrap, "_prewarm_before_runtime_lock", lambda config=None: None)
+     monkeypatch.setattr(run_bootstrap, "RUNTIME_LOCK_POLL_S", 0.02)
+     yield home
+     process_ownership.close()
+@@ -102,7 +102,7 @@ async def test_standby_also_waits_out_the_predecessor_host_lock(home, monkeypatc
+ 
+ def test_prewarm_runs_before_the_wait(home, monkeypatch):
+     calls = []
+-    monkeypatch.setattr(run_bootstrap, "_prewarm_before_runtime_lock", lambda: calls.append("prewarm"))
++    monkeypatch.setattr(run_bootstrap, "_prewarm_before_runtime_lock", lambda config=None: calls.append("prewarm"))
+     monkeypatch.setattr(run_bootstrap, "_host_lock_held_by_predecessor", lambda _home: False)
+     asyncio.run(run_bootstrap._start_gateway_wait_for_runtime_lock([], 1))
+     assert calls == ["prewarm"]
+@@ -239,3 +239,42 @@ async def test_wait_reports_how_long_it_waited_for_the_caller_to_log(home, monke
+     owner.close()
+     waited = await asyncio.wait_for(waiter, 5)
+     assert waited is not None and waited >= 0.2
++
++
++def test_prewarm_covers_what_the_boot_after_the_lock_repeats(tmp_path, monkeypatch):
++    """The enabled built-in adapter's module, the listener's server stack and the bundled policy
++    manifests are ready before the lock; nothing in the profile is opened, written or cached (the
++    display language and the models.dev catalog are the profile's and may change until takeover)."""
++    import sys
++    from gateway.config import GatewayConfig, Platform, PlatformConfig
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.setattr("gateway.run.get_hermes_home", lambda: tmp_path)
++    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
++    calls = []
++    monkeypatch.setattr("agent.i18n.t", lambda key, **kw: calls.append("i18n") or key)
++    monkeypatch.setattr("gateway.run._own_policy_open_startup_violation", lambda config: calls.append("policy"))
++    monkeypatch.setattr("agent.models_dev.fetch_models_dev",
++                        lambda force_refresh=False, *, allow_network=True: calls.append(("models_dev", allow_network)))
++    loaded = []
++    import uvicorn
++    real_load = uvicorn.Config.load
++    monkeypatch.setattr(uvicorn.Config, "load", lambda self: loaded.append((self.host, self.port)) or real_load(self))
++    config = GatewayConfig(platforms={Platform.API_SERVER: PlatformConfig(enabled=True)})
++    before = set(tmp_path.rglob("*"))
++    run_bootstrap._prewarm_before_runtime_lock(config)
++    assert "gateway.platforms.api_server" in sys.modules
++    assert loaded == [("127.0.0.1", 0)]
++    assert calls == ["policy"]
++    assert not (tmp_path / "state.db").exists()
++    assert {p for p in set(tmp_path.rglob("*")) - before if p.suffix in {".db", ".lock"}} == set()
++
++
++def test_prewarm_skips_the_adapter_of_a_disabled_platform(monkeypatch):
++    from gateway.config import GatewayConfig, Platform, PlatformConfig
++    imported = []
++    import importlib
++    real = importlib.import_module
++    monkeypatch.setattr(importlib, "import_module", lambda name, package=None: imported.append(name) or real(name))
++    run_bootstrap._prewarm_platform_adapters(GatewayConfig(platforms={Platform.WEBHOOK: PlatformConfig(enabled=False)}))
++    run_bootstrap._prewarm_platform_adapters(None)
++    assert imported == []
