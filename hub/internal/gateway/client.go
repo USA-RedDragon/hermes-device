@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -78,10 +79,61 @@ type Dialer struct {
 	slow *http.Client
 }
 
+// attemptTimeout bounds one dashboard call.
+const attemptTimeout = 15 * time.Second
+
 // NewDialer returns a Dialer for creds.
 func NewDialer(creds Credentials) *Dialer {
+	return newDialer(creds, attemptTimeout)
+}
+
+func newDialer(creds Credentials, attempt time.Duration) *Dialer {
 	jar, _ := cookiejar.New(nil)
-	return &Dialer{creds: creds, http: &http.Client{Jar: jar, Timeout: 15 * time.Second}, slow: &http.Client{Jar: jar}}
+	return &Dialer{creds: creds, http: &http.Client{Jar: jar, Timeout: attempt}, slow: &http.Client{Jar: jar}}
+}
+
+// restartRetryWindow bounds how long a call is tried again when a gateway
+// held it past the attempt limit. A Hermes gateway that is stopping for a
+// restart holds what it cannot serve until the next gateway has taken over
+// (gateway.restart_listener_hold_seconds), then forwards it, so the next
+// attempt is answered.
+const restartRetryWindow = 90 * time.Second
+
+// held reports whether a call ran out of its attempt time after it was sent:
+// what a gateway that holds it across a restart causes. A refused or lost
+// connection is not one: callers still see ErrUnreachable at once.
+func held(err error) bool {
+	var ne net.Error
+	return errors.Is(err, ErrUnreachable) && errors.As(err, &ne) && ne.Timeout()
+}
+
+// repeatable reports whether a request with this method may be sent again
+// when its first attempt may already have run (RFC 9110 idempotent methods).
+func repeatable(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete:
+		return true
+	}
+	return false
+}
+
+// again runs f, and while it fails with held and safe is true, runs it
+// again within ctx and restartRetryWindow.
+func again[T any](ctx context.Context, safe bool, f func() (T, error)) (T, error) {
+	deadline := time.Now().Add(restartRetryWindow)
+	delay := 100 * time.Millisecond
+	for {
+		v, err := f()
+		if err == nil || !safe || !held(err) || ctx.Err() != nil || !time.Now().Before(deadline) {
+			return v, err
+		}
+		select {
+		case <-ctx.Done():
+			return v, err
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, 2*time.Second)
+	}
 }
 
 const maxFrame = 64 << 20
@@ -155,14 +207,21 @@ func WebSocketURL(base string) string {
 // Request sends one HTTP request to the listener with the dashboard
 // session, signing in again once when it is refused with 401. body may be
 // nil. The caller closes the response body.
+//
+// A request that a restarting gateway held past the attempt limit is sent
+// again when its method is idempotent.
 func (d *Dialer) Request(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
-	return d.request(ctx, d.http, method, path, body)
+	return again(ctx, repeatable(method), func() (*http.Response, error) {
+		return d.request(ctx, d.http, method, path, body)
+	})
 }
 
 // RequestSlow is Request with only ctx to bound it, for a request that
 // may take longer than a dashboard call, such as an upload.
 func (d *Dialer) RequestSlow(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
-	return d.request(ctx, d.slow, method, path, body)
+	return again(ctx, repeatable(method), func() (*http.Response, error) {
+		return d.request(ctx, d.slow, method, path, body)
+	})
 }
 
 func (d *Dialer) request(ctx context.Context, c *http.Client, method, path string, body []byte) (*http.Response, error) {
@@ -215,7 +274,14 @@ func (d *Dialer) post(ctx context.Context, path string, body any) (*http.Respons
 	return d.http.Do(req)
 }
 
+// login signs in. Signing in again is harmless, so a held attempt is
+// repeated.
 func (d *Dialer) login(ctx context.Context) error {
+	_, err := again(ctx, true, func() (struct{}, error) { return struct{}{}, d.loginOnce(ctx) })
+	return err
+}
+
+func (d *Dialer) loginOnce(ctx context.Context) error {
 	resp, err := d.post(ctx, "/auth/password-login", map[string]string{
 		"provider": d.creds.Provider, "username": d.creds.Username, "password": d.creds.Password,
 	})
@@ -233,7 +299,13 @@ func (d *Dialer) login(ctx context.Context) error {
 	return nil
 }
 
+// ticket mints a socket ticket. An unused ticket expires on its own, so a
+// held attempt is repeated.
 func (d *Dialer) ticket(ctx context.Context) (string, error) {
+	return again(ctx, true, func() (string, error) { return d.ticketOnce(ctx) })
+}
+
+func (d *Dialer) ticketOnce(ctx context.Context) (string, error) {
 	resp, err := d.post(ctx, "/api/webapp/socket-ticket?socket=gateway", nil)
 	if err != nil {
 		return "", fmt.Errorf("gateway ticket: %w: %w", ErrUnreachable, err)
