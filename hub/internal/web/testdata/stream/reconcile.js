@@ -35,17 +35,27 @@ assert.strictEqual(R.idOf({ id: "adm-9" }), "adm-9");
 // An older hub that has no submission_id still maps the one the page knows by the hub's id.
 assert.strictEqual(R.carry([{ id: "adm-2", inflight: true }], { pending: [{ id: "adm-2" }] })[0].act, "adopt");
 
-// Scroll: a reader at the end is not anchored, one above is kept at the same distance from the end.
+// Scroll: a reader at the end is not anchored, one above is kept on the row in view.
 const log = { scrollHeight: 5000, scrollTop: 1200 };
-assert.strictEqual(R.anchor(log, true), null);
-const kept = R.anchor(log, false);
-assert.strictEqual(kept, 3800);
+assert.strictEqual(R.anchor(log, true, { row: "7", off: -40 }), null);
+const kept = R.anchor(log, false, { row: "7", off: -40 });
+assert.strictEqual(kept.dist, 3800);
 log.scrollHeight = 5400;
 log.scrollTop = 0;
-assert.strictEqual(R.restore(log, kept), true);
+// The row is drawn again 300 px lower than it was: the reader follows it, whatever came after it.
+assert.strictEqual(R.restore(log, kept, (p) => (p.row === "7" ? -40 + 300 : null)), true);
+assert.strictEqual(log.scrollTop, 300);
+// Without the row, the distance to the end stands.
+log.scrollTop = 0;
+assert.strictEqual(R.restore(log, kept, () => null), true);
+assert.strictEqual(log.scrollTop, 1600);
+// A page with no row to name keeps the distance too.
+const bare = R.anchor({ scrollHeight: 5000, scrollTop: 1200 }, false, null);
+log.scrollTop = 0;
+assert.strictEqual(R.restore(log, bare), true);
 assert.strictEqual(log.scrollTop, 1600);
 assert.strictEqual(R.restore(log, null), false);
 log.scrollHeight = 100;
-R.restore(log, 3800);
+R.restore(log, bare);
 assert.strictEqual(log.scrollTop, 0);
 console.log("ok");

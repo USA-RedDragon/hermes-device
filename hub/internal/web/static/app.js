@@ -20,7 +20,8 @@
     lost: "Hermes restarted before it finished replying to this message. Messages sent after it wait until you dismiss it.",
     held: "Hermes is restarting. Your message will send when it is back.", notsent: "Not sent.", again: "Send again",
     steered: "Sent to the running turn", now: "Stop and send now",
-    unread: "The turn stopped before Talaria read this message." };
+    unread: "The turn stopped before Talaria read this message.",
+    tobottom: "Jump to the latest message", tobottomn: "Jump to the latest message (%d new)" };
   const t = (k) => words[k];
   // User rows Hermes writes itself (a cron result, a finished background job); shown as notes.
   const noteKinds = new Set(["internal_notification", "process_complete", "async_delegation_complete"]);
@@ -506,24 +507,61 @@
   }
 
   // Chat view state for one session.
-  // The log stays pinned to its end while the reader is at the end. Only the
-  // reader's own scrolling releases the pin; growth after the scroll (a
-  // rendered reply, a tool's output, highlighting, images, an opened row)
-  // does not, and the observers below follow that growth.
-  let pinned = true;
-  const pinGap = 30;
-  (() => {
+  // The log stays at its end while the reader is at the end, and on the
+  // same message while the reader is above it (HubStick). Only the reader's
+  // own scrolling moves between the two; a reply that grows, a composer
+  // that grows, a panel, a banner or the window's size do not.
+  let unseen = 0;
+  // stickProbe finds the first message in view, through the boxes that
+  // hold older messages, and how far below the top of the log it starts.
+  function stickProbe(l) {
+    const top = l.getBoundingClientRect().top;
+    let box = l;
+    for (;;) {
+      const n = Array.from(box.children).find((c) => !c.classList.contains("acts") && c.getBoundingClientRect().bottom > top);
+      if (!n) return null;
+      if (n.classList.contains("older") || n.classList.contains("part")) { box = n; continue; }
+      return { n, off: n.getBoundingClientRect().top - top };
+    }
+  }
+  // rowPlace names where the reader is by the nearest message row the
+  // server numbered, which a snapshot draws again under the same number.
+  function rowPlace(log) {
+    const at = stickProbe(log);
+    if (!at) return null;
+    const rows = Array.from(log.querySelectorAll("[data-row]"));
+    const before = rows.filter((r) => r === at.n || (r.compareDocumentPosition(at.n) & Node.DOCUMENT_POSITION_FOLLOWING));
+    const r = before.length ? before[before.length - 1] : rows[0];
+    if (!r) return null;
+    return { row: r.dataset.row, off: r.getBoundingClientRect().top - log.getBoundingClientRect().top };
+  }
+  function rowTop(log, row) {
+    const r = log.querySelector('[data-row="' + CSS.escape(row) + '"]');
+    return r ? r.getBoundingClientRect().top - log.getBoundingClientRect().top : null;
+  }
+  const stick = (() => {
     const log = $("log");
-    const gap = () => log.scrollHeight - log.scrollTop - log.clientHeight;
-    const follow = () => { if (pinned && !log.hidden) log.scrollTop = log.scrollHeight; };
+    const jump = $("tobottom");
+    const place = (n, l) => (n.isConnected ? n.getBoundingClientRect().top - l.getBoundingClientRect().top : null);
+    const s = window.HubStick(log, {
+      probe: stickProbe,
+      place,
+      changed: () => {
+        if (s.pinned()) unseen = 0;
+        jump.hidden = s.pinned() || log.hidden;
+        jump.querySelector(".n").textContent = unseen ? String(unseen) : "";
+        jump.setAttribute("aria-label", unseen ? t("tobottomn").replace("%d", unseen) : t("tobottom"));
+      },
+    });
     let queued = false;
     const soon = () => {
       if (queued) return;
       queued = true;
-      requestAnimationFrame(() => { queued = false; follow(); });
+      requestAnimationFrame(() => { queued = false; s.sync(); });
     };
-    const ro = new ResizeObserver(follow);
+    const ro = new ResizeObserver(() => s.sync());
     ro.observe(log);
+    for (const n of log.children) ro.observe(n);
     new MutationObserver((list) => {
       for (const m of list) {
         if (m.target === log) {
@@ -533,9 +571,30 @@
       }
       soon();
     }).observe(log, { childList: true, subtree: true, characterData: true });
-    log.addEventListener("scroll", () => { if (!log.hidden) pinned = gap() < pinGap; }, { passive: true });
+    log.addEventListener("scroll", () => s.scrolled(), { passive: true });
+    let swiped = false;
+    log.addEventListener("wheel", () => s.heard(400), { passive: true });
+    log.addEventListener("touchstart", () => { swiped = false; }, { passive: true });
+    log.addEventListener("touchmove", () => { swiped = true; s.heard(8000); }, { passive: true });
+    const lifted = () => s.heard(swiped ? 3000 : 1);
+    log.addEventListener("touchend", lifted, { passive: true });
+    log.addEventListener("touchcancel", lifted, { passive: true });
+    let down = false;
+    log.addEventListener("pointerdown", () => { down = true; s.heard(8000); }, { passive: true });
+    for (const up of ["pointerup", "pointercancel", "mouseup"]) {
+      window.addEventListener(up, () => { if (down) { down = false; s.heard(300); } }, { passive: true });
+    }
+    document.addEventListener("keydown", (e) => {
+      const tag = e.target && e.target.tagName;
+      if (tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT") return;
+      if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(e.key)) s.heard(800);
+    }, { capture: true, passive: true });
     log.addEventListener("load", soon, true);
-    log.addEventListener("click", (e) => { if (e.target.closest && e.target.closest("summary")) pinned = false; }, true);
+    log.addEventListener("click", (e) => { if (e.target.closest && e.target.closest("summary")) s.release(); }, true);
+    window.addEventListener("resize", soon);
+    if (window.visualViewport) window.visualViewport.addEventListener("resize", soon);
+    jump.addEventListener("click", () => { s.pin(); });
+    return s;
   })();
 
   // A snapshot renders its newest rows first: at least firstRows rows and
@@ -607,26 +666,24 @@
     // while a snapshot fills the log: scrolling reads the log's height,
     // which lays it out again, so a scroll per row made a long chat's
     // load quadratic. The snapshot scrolls once at the end.
-    stick() { return pinned && !this.filling; }
+    stick() { return stick.pinned() && !this.filling; }
 
-    bottom() {
-      pinned = true;
-      this.log.scrollTop = this.log.scrollHeight;
-    }
+    bottom() { stick.pin(); }
 
     add(node) {
       if (this.sink) return this.sink.appendChild(node);
-      const stick = this.stick();
+      const follow = this.stick();
       if (this.status && this.status.parentNode === this.log) this.log.insertBefore(node, this.status);
       else this.log.append(node);
-      if (stick) this.bottom();
+      if (follow) this.bottom();
+      else if (!this.filling && view === this) { unseen++; stick.refresh(); }
       return node;
     }
 
     follow(fn) {
-      const stick = this.stick();
+      const follow = this.stick();
       fn();
-      if (stick) this.bottom();
+      if (follow) this.bottom();
     }
 
     // when puts the time ms under a message, after the buttons that sit
@@ -1244,7 +1301,7 @@
 
     snapshot(s) {
       clearBanner("backend");
-      const kept = window.HubReconcile.anchor(this.log, pinned);
+      const kept = window.HubReconcile.anchor(this.log, stick.pinned(), rowPlace(this.log));
       const carried = window.HubReconcile.carry(this.pending, s);
       this.keep = new Set(carried.filter((c) => c.act === "again").flatMap((c) => (c.p.atts || []).map((a) => a.url)));
       this.reset();
@@ -1304,7 +1361,8 @@
       }
       for (const p of s.prompts || []) this.approval(p);
       if (kept !== null || window.HubRestore.state()) this.showOlder(() => true);
-      if (!window.HubReconcile.restore(this.log, kept)) this.bottom();
+      if (window.HubReconcile.restore(this.log, kept, (p) => rowTop(this.log, p.row))) stick.look();
+      else this.bottom();
       this.jumpTo();
       this.fillOlder();
       if (view === this) restoreView(this);
@@ -1350,11 +1408,8 @@
         this.olderBox = el("div", "older");
         log.insertBefore(this.olderBox, log.firstChild);
       }
-      const keep = !pinned && !log.hidden;
-      const top = log.scrollTop;
-      const height = keep ? log.scrollHeight : 0;
       this.olderBox.insertBefore(frag, this.olderBox.firstChild);
-      if (keep && log.scrollTop === top) log.scrollTop = top + log.scrollHeight - height;
+      stick.sync();
       if (view === this) msgActs.decorate();
     }
 
@@ -1384,6 +1439,7 @@
         return;
       }
       n.scrollIntoView({ block: "center" });
+      stick.look();
       n.classList.add("flash");
       setTimeout(() => n.classList.remove("flash"), 2500);
     }
@@ -3000,7 +3056,8 @@
     $("subtitle").textContent = "";
     banner("");
     settings.reset();
-    pinned = true;
+    unseen = 0;
+    stick.pin();
     view = new Chat(backend, session);
     msgActs.reset();
     composer.open(view);
@@ -3630,7 +3687,7 @@
     const tab = document.querySelector("#settabs [aria-selected=\"true\"]");
     return {
       hash: location.hash,
-      log: { top: log.scrollTop, pinned, anchor: logAnchor(log) },
+      log: { top: log.scrollTop, pinned: stick.pinned(), anchor: logAnchor(log) },
       side: $("sessions").scrollTop,
       details: Array.from(log.querySelectorAll("details")).map((d) => d.open),
       act: view ? activity.view() : null,
@@ -3651,11 +3708,11 @@
       (st.details || []).forEach((open, i) => { if (ds[i]) ds[i].open = open; });
       const place = () => {
         if (!st.log || st.log.pinned) { chat.bottom(); return; }
-        pinned = false;
         const a = st.log.anchor;
         const n = a && logItems(chat.log)[a.i];
-        if (!n) { chat.log.scrollTop = st.log.top; return; }
-        chat.log.scrollTop += n.getBoundingClientRect().top - chat.log.getBoundingClientRect().top - a.off;
+        if (!n) chat.log.scrollTop = st.log.top;
+        else chat.log.scrollTop += n.getBoundingClientRect().top - chat.log.getBoundingClientRect().top - a.off;
+        stick.release();
       };
       place();
       requestAnimationFrame(() => requestAnimationFrame(place));

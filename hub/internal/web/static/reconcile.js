@@ -30,14 +30,19 @@ window.HubReconcile = (() => {
   }
 
   // anchor remembers where a reader who is not at the end of the log is:
-  // the distance to its end, which stays the same when the same rows are
-  // drawn again. It is null for a reader at the end.
-  const anchor = (log, pinned) => (pinned ? null : log.scrollHeight - log.scrollTop);
+  // the message row in view and where it starts (place), and the distance
+  // to the end of the log for a page that has no row to name. It is null
+  // for a reader at the end.
+  const anchor = (log, pinned, place) => (pinned ? null : { dist: log.scrollHeight - log.scrollTop, place: place || null });
 
   // restore scrolls the log back to an anchor, and reports whether it did.
-  function restore(log, kept) {
+  // find gives the place's row's distance from the top of the log now, or
+  // null when the row is not there; then the distance to the end stands.
+  function restore(log, kept, find) {
     if (kept === null) return false;
-    log.scrollTop = Math.max(0, log.scrollHeight - kept);
+    const at = kept.place && find ? find(kept.place) : null;
+    if (at === null || at === undefined) log.scrollTop = Math.max(0, log.scrollHeight - kept.dist);
+    else log.scrollTop += at - kept.place.off;
     return true;
   }
 

@@ -45,6 +45,14 @@ func TestReconcileScript(t *testing.T) {
 	runStreamScript(t, "reconcile.js", "reconcile.js")
 }
 
+// The log stays at its end for a reader at the end through any change of
+// its size, and on the same message for a reader above it; a scroll the
+// layout caused is not the reader.
+func TestStickScript(t *testing.T) {
+	t.Parallel()
+	runStreamScript(t, "stick.js", "stick.js")
+}
+
 // A model pick that waited for the end of a turn can come back as a
 // question or a refusal; the page reads both.
 func TestModelPickScript(t *testing.T) {
