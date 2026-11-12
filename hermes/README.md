@@ -61,6 +61,7 @@ The Test workflow runs on pull requests and before each release:
 | `0027-delegation-keep-child-processes` | `delegation.keep_child_processes` (false = off): background processes a subagent leaves running when it ends move to its parent instead of being killed, and a child stopped for a restart handoff keeps them; the parent can poll, wait on and kill them and gets their completion. | Not fixed upstream; no PR. |
 | `0028-sandbox-background-tree-kill` | A sandbox (plugin backend) background process kill stops the whole process tree, not only the wrapper shell. Bug fix, no key. | Not fixed upstream; no PR. |
 | `0029-adapter-settle-push-only` | The 1 s settle before lifecycle sends at gateway start runs only when a connected adapter pushes (`supports_async_delivery`); the API server alone no longer adds 1 s to every boot and takeover. Bug fix, no key. | Not fixed upstream; no PR. |
+| `0030-standby-prewarm-dashboard` | A 0010 standby also imports the dashboard app its Webapp or gated listener mounts at start, so the listener serves within tens of ms of the takeover instead of about 0.5 s. Part of 0010, no key. | Not fixed upstream; no PR. |
 
 ## Adding or changing a patch
 

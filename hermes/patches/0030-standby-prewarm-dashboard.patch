@@ -1,0 +1,148 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 01:00:39 -0600
+Subject: [PATCH] feat(gateway): standby prewarm imports the dashboard the
+ listener mounts
+
+With the Webapp or a gated bind, the listener imports the dashboard before it serves, after the profile lock. A standby now imports it while it waits, so the takeover does not.
+---
+ gateway/run_api.py                      | 34 +++++++++++++-------
+ gateway/run_bootstrap.py                | 12 ++++++--
+ tests/gateway/test_runtime_lock_wait.py | 41 +++++++++++++++++++++++++
+ 3 files changed, 74 insertions(+), 13 deletions(-)
+
+diff --git a/gateway/run_api.py b/gateway/run_api.py
+index 253b14b34e..65813d73c4 100644
+--- a/gateway/run_api.py
++++ b/gateway/run_api.py
+@@ -210,13 +210,32 @@ def _listener_public_url(webapp) -> str | None:
+     return None if webapp is None else webapp.public_url
+ 
+ 
+-async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, webapp=None) -> GatewayAPIHandle:
+-    global _ACTIVE_RUNNER
+-    from gateway.webapp_listener import dial_origin
++def _listener_gate(host: str, webapp) -> tuple:
++    """``(auth_required, trusted_public_hosts)`` of a listener bound to *host* serving *webapp*."""
+     from hermes_cli.web_server_boundary import (
+         _dashboard_public_hosts, listener_auth_required, public_hosts_engage_gate, public_url_hosts,
+         should_require_auth,
+     )
++    public_url = _listener_public_url(webapp)
++    if public_url is None:
++        trusted = _dashboard_public_hosts()
++        return listener_auth_required(host, trusted), trusted
++    # What web_server._configure_auth_gate decides for a listener that declares its public URL.
++    trusted = public_url_hosts(public_url)
++    return should_require_auth(host) or public_hosts_engage_gate(trusted), trusted
++
++
++def dashboard_mounted_at_start(home) -> bool:
++    """Whether the gateway listener for *home* mounts the dashboard before it serves (the Webapp, or
++    a gated bind), so its import is on the path to READY."""
++    from gateway.webapp_listener import listener_plan
++    host, _port, webapp, _reason = listener_plan(home)
++    return webapp is not None or bool(_listener_gate(host, webapp)[0])
++
++
++async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, webapp=None) -> GatewayAPIHandle:
++    global _ACTIVE_RUNNER
++    from gateway.webapp_listener import dial_origin
+     from hermes_cli.web_server_lifecycle import build_listener_server
+ 
+     # Existing routers/auth helpers share one process-local app. Never rebind it
+@@ -225,14 +244,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
+     if _ACTIVE_RUNNER is not None or (
+             loaded_web is not None and getattr(loaded_web.app.state, "gateway_runner", None) is not None):
+         raise RuntimeError("gateway API already started")
+-    public_url = _listener_public_url(webapp)
+-    if public_url is None:
+-        trusted = _dashboard_public_hosts()
+-        auth_required = listener_auth_required(host, trusted)
+-    else:
+-        # What web_server._configure_auth_gate decides for a listener that declares its public URL.
+-        trusted = public_url_hosts(public_url)
+-        auth_required = should_require_auth(host) or public_hosts_engage_gate(trusted)
++    auth_required, trusted = _listener_gate(host, webapp)
+     state = types.SimpleNamespace(
+         bound_host=host, bound_port=None, auth_required=auth_required,
+         trusted_public_hosts=trusted, gateway_runner=runner,
+diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
+index 744719769b..9e432e6a63 100644
+--- a/gateway/run_bootstrap.py
++++ b/gateway/run_bootstrap.py
+@@ -644,8 +644,9 @@ _RUNTIME_LOCK_PREWARM_MODULES = (
+ 
+ 
+ def _prewarm_before_runtime_lock() -> None:
+-    """Imports and plugin discovery that the boot after the lock runs anyway, done while another
+-    gateway still owns the profile so the takeover after it exits is short. Opens no profile store."""
++    """Imports and plugin discovery that the boot after the lock runs anyway (the dashboard too when
++    the listener mounts it before it serves), done while another gateway still owns the profile so
++    the takeover after it exits is short. Opens no profile store."""
+     import importlib
+     for name in _RUNTIME_LOCK_PREWARM_MODULES:
+         try:
+@@ -657,6 +658,13 @@ def _prewarm_before_runtime_lock() -> None:
+         discover_plugins()
+     except Exception:
+         logger.debug("Prewarm plugin discovery failed", exc_info=True)
++    try:
++        from gateway.run import get_hermes_home
++        from gateway.run_api import dashboard_mounted_at_start
++        if dashboard_mounted_at_start(get_hermes_home()):
++            importlib.import_module("hermes_cli.web_server")
++    except (Exception, SystemExit):  # the dashboard exits at import when it cannot load; the boot reports it
++        logger.debug("Prewarm dashboard import failed", exc_info=True)
+ 
+ 
+ def _host_lock_held_by_predecessor(home) -> bool:
+diff --git a/tests/gateway/test_runtime_lock_wait.py b/tests/gateway/test_runtime_lock_wait.py
+index 55714c1a36..a698ce2c5f 100644
+--- a/tests/gateway/test_runtime_lock_wait.py
++++ b/tests/gateway/test_runtime_lock_wait.py
+@@ -183,3 +183,44 @@ async def test_wait_keeps_the_startup_watchdog_from_firing(home, monkeypatch):
+     finally:
+         owner.close()
+     assert len(kicks) >= 3
++
++
++def _prewarmed_modules(monkeypatch):
++    import importlib
++    imported = []
++    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
++    monkeypatch.setattr(importlib, "import_module", lambda name, package=None: imported.append(name))
++    return imported
++
++
++def test_prewarm_imports_the_dashboard_the_webapp_listener_mounts(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.setattr("gateway.run.get_hermes_home", lambda: tmp_path)
++    (tmp_path / "config.yaml").write_text("webapp:\n  enabled: true\n", encoding="utf-8")
++    imported = _prewarmed_modules(monkeypatch)
++    run_bootstrap._prewarm_before_runtime_lock()
++    assert "hermes_cli.web_server" in imported
++
++
++def test_prewarm_leaves_the_dashboard_lazy_on_a_private_listener(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.setattr("gateway.run.get_hermes_home", lambda: tmp_path)
++    imported = _prewarmed_modules(monkeypatch)
++    run_bootstrap._prewarm_before_runtime_lock()
++    assert "hermes_cli.web_server" not in imported
++    assert "gateway.run_api" in imported
++
++
++def test_prewarm_survives_a_dashboard_that_exits_at_import(tmp_path, monkeypatch):
++    import importlib
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.setattr("gateway.run.get_hermes_home", lambda: tmp_path)
++    (tmp_path / "config.yaml").write_text("webapp:\n  enabled: true\n", encoding="utf-8")
++    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
++
++    def import_module(name, package=None):
++        if name == "hermes_cli.web_server":
++            raise SystemExit("fastapi is not installed")
++
++    monkeypatch.setattr(importlib, "import_module", import_module)
++    run_bootstrap._prewarm_before_runtime_lock()
