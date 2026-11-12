@@ -48,6 +48,16 @@ func Retryable(err error) bool {
 		errors.Is(err, ErrNoAuthority)
 }
 
+// RestartClose reports whether a connection ended with the close a gateway
+// sends when it goes away for a restart (1012 service restart, 1001 going
+// away, or a normal closure the gateway chose), as opposed to a failure.
+// Its sessions are on the next gateway.
+func RestartClose(err error) bool {
+	code := websocket.CloseStatus(err)
+	return code == websocket.StatusServiceRestart || code == websocket.StatusGoingAway ||
+		code == websocket.StatusNormalClosure
+}
+
 // RPCError is a JSON-RPC error answer from the gateway.
 type RPCError struct {
 	Code    int             `json:"code"`
