@@ -1,0 +1,471 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jacob McSwain <jacob@mcswain.dev>
+Date: Thu, 12 Nov 2026 12:27:58 -0600
+Subject: [PATCH] feat(gateway): gateway.stop_trace writes a stop's timing
+ trace
+
+gateway.stop_trace (false = off): from the stop signal or restart request until shortly after the profile is released, a sampler thread writes $HERMES_HOME/stop-trace/<pid>.log with the stop path's phase marks and, every 100 ms when it changed, what each asyncio task awaits and what each thread runs. For diagnosing a slow stop without the gateway log.
+---
+ gateway/config.py                |   6 +-
+ gateway/config_loader.py         |   1 +
+ gateway/run_bootstrap.py         |  15 +++
+ gateway/run_shutdown.py          |  17 +++
+ gateway/stop_trace.py            | 184 +++++++++++++++++++++++++++++++
+ tests/gateway/test_stop_trace.py |  84 ++++++++++++++
+ 6 files changed, 306 insertions(+), 1 deletion(-)
+ create mode 100644 gateway/stop_trace.py
+ create mode 100644 tests/gateway/test_stop_trace.py
+
+diff --git a/gateway/config.py b/gateway/config.py
+index a4e13cbd0d..f4701068a5 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -657,6 +657,9 @@ class GatewayConfig:
+     # then forwarded to the gateway that took over. Every GET is served in the restart wait, health alone
+     # once the stop begins, and sockets opened before the restart wait stay open through it. 0 = refuse.
+     restart_listener_hold_seconds: float = 0.0
++    # Debug: a stop writes a timing trace (phase marks, asyncio task and thread stacks every 100 ms) to
++    # $HERMES_HOME/stop-trace/<pid>.log until shortly after the profile is released. False = no trace.
++    stop_trace: bool = False
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -694,7 +697,7 @@ class GatewayConfig:
+         "room_link_url", "systemd_watchdog_seconds", "runtime_lock_wait_seconds", "sigterm_restart_wait",
+         "restart_wait_plugin_sockets", "restart_agent_cleanup_seconds",
+         "restart_wait_delegations", "restart_listener_handover", "listener_start_hold_seconds",
+-        "restart_listener_relay_seconds", "restart_listener_hold_seconds",
++        "restart_listener_relay_seconds", "restart_listener_hold_seconds", "stop_trace",
+         "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+@@ -836,6 +839,7 @@ class GatewayConfig:
+             listener_start_hold_seconds=bounded_float("listener_start_hold_seconds", 0.0, 0.0, 600.0),
+             restart_listener_relay_seconds=bounded_float("restart_listener_relay_seconds", 0.0, 0.0, 600.0),
+             restart_listener_hold_seconds=bounded_float("restart_listener_hold_seconds", 0.0, 0.0, 600.0),
++            stop_trace=_coerce_bool(pick("stop_trace"), False),
+             restart_wait_plugin_sockets=[
+                 str(name).strip("/ ") for name in (pick("restart_wait_plugin_sockets") or [])
+                 if isinstance(pick("restart_wait_plugin_sockets"), list) and str(name).strip("/ ")],
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index ac00f36b1c..1dfdeec514 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -102,6 +102,7 @@ _TOPLEVEL_BRIDGE: tuple = (
+     ("listener_start_hold_seconds", "listener_start_hold_seconds", "nested", None, None),
+     ("restart_listener_relay_seconds", "restart_listener_relay_seconds", "nested", None, None),
+     ("restart_listener_hold_seconds", "restart_listener_hold_seconds", "nested", None, None),
++    ("stop_trace", "stop_trace", "nested", None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
+index 1b8609603d..156afbda7d 100644
+--- a/gateway/run_bootstrap.py
++++ b/gateway/run_bootstrap.py
+@@ -177,6 +177,8 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
+     planned_stop_seen = [False]
+ 
+     def shutdown_signal_handler(received_signal=None):
++        from gateway import stop_trace
++        stop_trace.arm(runner, f"signal {received_signal!r}")
+         # Planned --replace takeover (sibling marked this PID): exit 0 so systemd won't revive us.
+         def _takeover() -> bool:
+             from gateway.status import consume_takeover_marker_for_self
+@@ -509,6 +511,8 @@ async def _start_gateway_shutdown_tail(
+     # cron_thread.join() would block the loop, so that delivery could never run — it timed out and the
+     # message was silently dropped (#58818). Awaiting keeps the loop alive so the in-flight delivery
+     # finishes before we tear down.
++    from gateway.stop_trace import mark as _mark
++    _mark("tail: cron and housekeeping threads")
+     cron_stop.set()
+     _stop_cron_provider(cron_provider)
+     if not await _await_thread_exit(cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT):
+@@ -517,8 +521,10 @@ async def _start_gateway_shutdown_tail(
+     await _await_thread_exit(housekeeping_thread, timeout=_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT)
+ 
+     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
++    _mark("tail: planned-stop watcher")
+     _planned_stop_watcher_stop.set()
+     _planned_stop_watcher_thread.join(timeout=2)
++    _mark("tail: MCP shutdown")
+ 
+     # Never suppressed: a raise here is a real teardown failure (it once hid a changed signature,
+     # leaving every MCP connection and the shared loop up while the gateway reported a clean exit).
+@@ -1169,6 +1175,8 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+             try:
+                 await runner.stop()
+             finally:
++                from gateway.stop_trace import mark as _mark
++                _mark("bootstrap: shutdown tail")
+                 verdict = await _start_gateway_shutdown_tail(
+                     runner, _control_server, cron_stop, cron_provider, cron_thread, housekeeping_thread,
+                     _planned_stop_watcher_stop, _planned_stop_watcher_thread, _signal_initiated_shutdown)
+@@ -1178,7 +1186,10 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+         try:
+             if runner is not None:
+                 from gateway.run_runtime import drain_gateway_runtime
++                from gateway.stop_trace import mark as _mark
++                _mark("bootstrap: drain_gateway_runtime")
+                 await drain_gateway_runtime(runner)
++                _mark("bootstrap: final stop()")
+                 # Startup may have opened adapters before an exception or an early exit verdict. The
+                 # same stop path owns their writers and DB handles on every exit, but when no stop ran
+                 # yet this is cleanup, not a shutdown: keep startup_failed and the crash markers.
+@@ -1188,10 +1199,14 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+         finally:
+             if _planned_stop_watcher_stop is not None:
+                 _planned_stop_watcher_stop.set()
++            from gateway import stop_trace
++            stop_trace.mark("bootstrap: control server stop")
+             if _control_server is not None:
+                 await _control_server.stop()
++            stop_trace.mark("bootstrap: pid file and lock release")
+             remove_pid_file()
+             relay_to = _listener_relay_target(runner)
+             release_gateway_runtime_lock()
++            stop_trace.finish("bootstrap: lock released")
+             if runner is not None and getattr(runner, "_listener_handover", None):
+                 await _release_profile_then_close_listener(runner, relay_to)
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+index a7403e934f..669dc8a059 100644
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -1692,6 +1692,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+         self._restart_detached = detached
+         self._restart_via_service = via_service
+         self._restart_task_started = True
++        from gateway import stop_trace
++        stop_trace.arm(self, "restart requested")
+         # Refuse new turns; keep ``_running`` True so the active turn can still deliver its final response.
+         self._draining = True
+         from gateway.drain_control import open_restart_wait
+@@ -2362,6 +2364,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
+             )
+         try:
++            from gateway.stop_trace import mark as _mark
++            _mark("stop: begin_teardown")
+             await GatewayRunner._stop_begin_teardown(self, ctx)
+             timeout = effective_stop_drain_timeout(self)
+             if timeout < self._restart_drain_timeout:
+@@ -2370,19 +2374,30 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+                     "timeout of %.0fs — launchd SIGKILLs past it",
+                     timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
+                 )
++            _mark("stop: drain_active_work")
+             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
++            _mark("stop: hand_off_delegations")
+             await GatewayRunner._stop_hand_off_delegations(self, ctx)
++            _mark("stop: hand_off_processes")
+             await GatewayRunner._stop_hand_off_processes(self)
+             if ctx.timed_out:
+                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
++            _mark("stop: settle_gateway_runtime")
+             from gateway.run_runtime import settle_gateway_runtime  # within what the leash has left
+             await settle_gateway_runtime(self, _effective_watchdog_leash(self) - ctx.elapsed(), GatewayRunner._shutdown_interrupt_reason(self))
++            _mark("stop: finalize_agents_and_adapters")
+             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
++            _mark("stop: release_runtime_state")
+             await GatewayRunner._stop_release_runtime_state(self, ctx)
++            _mark("stop: end_listener_reads")
+             await GatewayRunner._stop_end_listener_reads(self, ctx)
++            _mark("stop: quiesce_and_close_session_dbs")
+             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)
++            _mark("stop: persist_exit_state")
+             await GatewayRunner._stop_persist_exit_state(self, ctx)
+         finally:
++            from gateway.stop_trace import mark as _mark
++            _mark("stop: done")
+             try:
+                 from gateway.drain_control import HANDOVER_READS
+                 if getattr(self, "_listener_handover", None) == HANDOVER_READS:  # a phase raised before it
+@@ -2403,6 +2418,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+         _stop_guards = getattr(self, "_stop_loop_liveness_guards", None)
+         if callable(_stop_guards):
+             _stop_guards()
++        from gateway import stop_trace
++        stop_trace.arm(self, "stop()")
+         if restart:
+             self._restart_requested = True
+             self._restart_detached = detached_restart
+diff --git a/gateway/stop_trace.py b/gateway/stop_trace.py
+new file mode 100644
+index 0000000000..ecddf1b9e9
+--- /dev/null
++++ b/gateway/stop_trace.py
+@@ -0,0 +1,184 @@
++"""``gateway.stop_trace`` (false = off): a timing trace of one gateway stop, for diagnosis.
++
++From the stop signal (or a restart request) until shortly after the profile is released, a sampler
++thread writes ``$HERMES_HOME/stop-trace/<pid>.log``: every ``MARK`` the stop path records (phase
++boundaries, with the offset from the first one) and, every 100 ms, what each asyncio task awaits
++(its coroutine chain, file:line) and what each thread runs. A sample is written only when it differs
++from the previous one, so a 20 s idle stop stays a few kilobytes. Nothing is read back; the file is
++for an operator who cannot read the gateway log.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import os
++import sys
++import threading
++import time
++from pathlib import Path
++from typing import Any, Optional
++
++_INTERVAL_S = 0.1
++_TAIL_S = 2.0  # keep sampling this long after the final mark
++_MAX_FRAMES = 12
++
++_lock = threading.Lock()
++_trace: Optional["_Trace"] = None
++
++
++def _enabled(runner: Any) -> bool:
++    return bool(getattr(getattr(runner, "config", None), "stop_trace", False))
++
++
++def _where(frame: Any) -> str:
++    code = frame.f_code
++    path = code.co_filename
++    for marker in ("/site-packages/", "/hermes/", "/lib/python"):
++        if marker in path:
++            path = path.split(marker, 1)[1]
++            break
++    return f"{path}:{frame.f_lineno}:{code.co_name}"
++
++
++def _coro_chain(coro: Any) -> list[str]:
++    """The await chain of a coroutine, outermost first."""
++    out: list[str] = []
++    seen = 0
++    while coro is not None and seen < 64:
++        seen += 1
++        frame = getattr(coro, "cr_frame", None) or getattr(coro, "gi_frame", None) or getattr(coro, "ag_frame", None)
++        if frame is not None:
++            out.append(_where(frame))
++        nxt = getattr(coro, "cr_await", None)
++        if nxt is None:
++            nxt = getattr(coro, "gi_yieldfrom", None)
++        if nxt is None:
++            nxt = getattr(coro, "ag_await", None)
++        if nxt is not None and not hasattr(nxt, "cr_frame") and not hasattr(nxt, "gi_frame"):
++            # A future or other awaitable: name it and stop.
++            out.append(f"<{type(nxt).__name__}>")
++            break
++        coro = nxt
++    return out
++
++
++class _Trace:
++    def __init__(self, path: Path, loop: Optional[asyncio.AbstractEventLoop]):
++        self.path = path
++        self.loop = loop
++        self.t0 = time.monotonic()
++        self.fh = open(path, "a", buffering=1, encoding="utf-8")
++        self.stop_at: Optional[float] = None
++        self.last_sample = ""
++        self.thread = threading.Thread(target=self._run, name="stop-trace", daemon=True)
++
++    def write(self, line: str) -> None:
++        with _lock:
++            try:
++                self.fh.write(f"+{time.monotonic() - self.t0:8.3f} {line}\n")
++            except Exception:
++                pass
++
++    def _tasks(self) -> list[str]:
++        loop = self.loop
++        if loop is None or loop.is_closed():
++            return ["(no loop)"]
++        done = threading.Event()
++        result: list[str] = []
++
++        def collect() -> None:
++            try:
++                for task in asyncio.all_tasks(loop):
++                    chain = _coro_chain(task.get_coro())
++                    result.append(f"{task.get_name()}: " + " > ".join(chain[-_MAX_FRAMES:]))
++            except Exception as exc:  # a debug aid must never raise into the loop
++                result.append(f"(tasks failed: {exc!r})")
++            finally:
++                done.set()
++
++        try:
++            loop.call_soon_threadsafe(collect)
++        except RuntimeError:
++            return ["(loop closed)"]
++        if not done.wait(1.0):
++            return ["(loop did not run the sampler within 1 s)"]
++        return sorted(result)
++
++    def _threads(self) -> list[str]:
++        names = {t.ident: t.name for t in threading.enumerate()}
++        out = []
++        me = threading.get_ident()
++        for ident, frame in sys._current_frames().items():
++            if ident == me:
++                continue
++            stack = []
++            f = frame
++            while f is not None and len(stack) < _MAX_FRAMES:
++                stack.append(_where(f))
++                f = f.f_back
++            out.append(f"{names.get(ident, ident)}: " + " < ".join(stack))
++        return sorted(out)
++
++    def _run(self) -> None:
++        while True:
++            now = time.monotonic()
++            if self.stop_at is not None and now >= self.stop_at:
++                self.write("END")
++                with _lock:
++                    try:
++                        self.fh.close()
++                    except Exception:
++                        pass
++                return
++            try:
++                lines = ["TASK " + t for t in self._tasks()] + ["THREAD " + t for t in self._threads()]
++                sample = "\n".join(lines)
++                if sample != self.last_sample:
++                    self.last_sample = sample
++                    self.write("SAMPLE\n" + "\n".join("    " + ln for ln in lines))
++            except Exception as exc:
++                self.write(f"(sample failed: {exc!r})")
++            time.sleep(_INTERVAL_S)
++
++
++def arm(runner: Any, reason: str) -> None:
++    """Start the trace for this process's stop (first call wins), if ``gateway.stop_trace`` is on."""
++    global _trace
++    if not _enabled(runner):
++        return
++    with _lock:
++        if _trace is not None:
++            existing = _trace
++        else:
++            existing = None
++            try:
++                from hermes_constants import get_hermes_home
++                d = Path(get_hermes_home()) / "stop-trace"
++                d.mkdir(parents=True, exist_ok=True)
++                try:
++                    loop = asyncio.get_running_loop()
++                except RuntimeError:
++                    loop = getattr(runner, "_loop", None)
++                _trace = _Trace(d / f"{os.getpid()}.log", loop)
++            except Exception:
++                return
++    if existing is not None:
++        existing.write(f"MARK {reason} (already armed)")
++        return
++    _trace.write(f"ARMED {reason} pid={os.getpid()} wall={time.time():.3f}")
++    _trace.thread.start()
++
++
++def mark(label: str) -> None:
++    """Record a phase boundary; a no-op unless a trace is armed."""
++    t = _trace
++    if t is not None:
++        t.write(f"MARK {label} wall={time.time():.3f}")
++
++
++def finish(label: str = "released") -> None:
++    """The last mark: sampling ends ``_TAIL_S`` later."""
++    t = _trace
++    if t is not None:
++        t.write(f"MARK {label} wall={time.time():.3f}")
++        t.stop_at = time.monotonic() + _TAIL_S
+diff --git a/tests/gateway/test_stop_trace.py b/tests/gateway/test_stop_trace.py
+new file mode 100644
+index 0000000000..47d48fe0a4
+--- /dev/null
++++ b/tests/gateway/test_stop_trace.py
+@@ -0,0 +1,84 @@
++"""gateway.stop_trace: a stop's timing trace in $HERMES_HOME/stop-trace/<pid>.log."""
++
++import asyncio
++import os
++import time
++from types import SimpleNamespace
++
++import pytest
++
++from gateway import stop_trace
++from gateway.config import GatewayConfig
++
++
++@pytest.fixture(autouse=True)
++def _fresh(monkeypatch, tmp_path):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.setattr(stop_trace, "_trace", None)
++    monkeypatch.setattr(stop_trace, "_TAIL_S", 0.05)
++    yield
++    t = stop_trace._trace
++    if t is not None and t.thread.is_alive():
++        t.stop_at = time.monotonic()
++        t.thread.join(2)
++
++
++def _runner(on: bool):
++    return SimpleNamespace(config=SimpleNamespace(stop_trace=on))
++
++
++def test_config_key_defaults_off():
++    assert GatewayConfig().stop_trace is False
++    assert GatewayConfig.from_dict({"stop_trace": True}).stop_trace is True
++    assert GatewayConfig.from_dict({}).stop_trace is False
++
++
++def test_off_writes_nothing(tmp_path):
++    stop_trace.arm(_runner(False), "signal")
++    stop_trace.mark("x")
++    stop_trace.finish()
++    assert stop_trace._trace is None
++    assert not (tmp_path / "stop-trace").exists()
++
++
++def test_records_marks_and_what_tasks_await(tmp_path):
++    async def waits_on_a_timer():
++        await asyncio.sleep(5)
++
++    async def main():
++        task = asyncio.create_task(waits_on_a_timer(), name="slow-step")
++        stop_trace.arm(_runner(True), "restart requested")
++        stop_trace.arm(_runner(True), "stop()")  # the first call wins
++        stop_trace.mark("stop: begin_teardown")
++        await asyncio.sleep(0.35)
++        stop_trace.finish("bootstrap: lock released")
++        await asyncio.sleep(0.3)
++        task.cancel()
++
++    asyncio.run(main())
++    stop_trace._trace.thread.join(2)
++    text = (tmp_path / "stop-trace" / f"{os.getpid()}.log").read_text()
++    assert "ARMED restart requested" in text
++    assert "MARK stop() (already armed)" in text
++    assert "MARK stop: begin_teardown" in text
++    assert "MARK bootstrap: lock released" in text
++    assert "TASK slow-step:" in text and "waits_on_a_timer" in text
++    assert "THREAD " in text
++    assert text.rstrip().endswith("END")
++
++
++def test_identical_samples_are_written_once(tmp_path, monkeypatch):
++    # Other test-process threads may change between rounds; hold the thread view still.
++    monkeypatch.setattr(stop_trace._Trace, "_threads", lambda self: ["main: idle"])
++
++    async def main():
++        stop_trace.arm(_runner(True), "signal")
++        await asyncio.sleep(0.6)
++        stop_trace.finish()
++        await asyncio.sleep(0.2)
++
++    asyncio.run(main())
++    stop_trace._trace.thread.join(2)
++    text = (tmp_path / "stop-trace" / f"{os.getpid()}.log").read_text()
++    # About six sampling rounds while nothing changes: one sample is written.
++    assert text.split("MARK released")[0].count(" SAMPLE\n") == 1, text
