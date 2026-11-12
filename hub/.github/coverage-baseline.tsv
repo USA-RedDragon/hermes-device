@@ -59,7 +59,7 @@ internal/memory/memorytest/memorytest.go	214	186
 internal/memory/notes.go	61	49
 internal/notify/jobs.go	55	43
 internal/notify/notify.go	296	193
-internal/pdf/pdf.go	180	159
+internal/pdf/pdf.go	180	160
 internal/pdf/pdftest/pdftest.go	32	32
 internal/scheduled/client.go	110	88
 internal/scheduled/clock.go	75	66
@@ -79,7 +79,7 @@ internal/service/observe.go	61	50
 internal/service/outcome.go	89	85
 internal/service/page.go	51	47
 internal/service/pdf.go	71	55
-internal/service/service.go	726	663
+internal/service/service.go	726	662
 internal/service/turn.go	75	68
 internal/store/agents.go	52	43
 internal/store/answers.go	22	20
@@ -98,7 +98,7 @@ internal/telegram/api.go	192	152
 internal/telegram/bot.go	651	532
 internal/telegram/budget.go	23	20
 internal/telegram/claude.go	106	88
-internal/telegram/commands.go	181	151
+internal/telegram/commands.go	181	150
 internal/telegram/computers.go	186	146
 internal/telegram/config.go	18	18
 internal/telegram/dmtopics.go	105	86
@@ -112,9 +112,9 @@ internal/telegram/render.go	474	429
 internal/telegram/replymedia.go	102	87
 internal/telegram/status.go	59	53
 internal/telegram/todo.go	58	51
-internal/telegram/topics.go	516	380
+internal/telegram/topics.go	516	379
 internal/web/activity.go	108	70
-internal/web/api.go	230	166
+internal/web/api.go	230	167
 internal/web/auth.go	112	84
 internal/web/claude.go	69	46
 internal/web/claudecode.go	30	19
