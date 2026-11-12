@@ -4,7 +4,8 @@ internal/agents/format.go	26	26
 internal/claude/chatgpt.go	49	46
 internal/claude/claudetest/claudetest.go	154	141
 internal/claude/client.go	55	50
-internal/claude/service.go	311	287
+internal/claude/pool.go	30	30
+internal/claude/service.go	313	289
 internal/claudecode/claudecode.go	264	224
 internal/claudecode/pricing.go	31	25
 internal/config/config.go	154	141
@@ -32,10 +33,10 @@ internal/device/views.go	17	17
 internal/gateway/client.go	222	176
 internal/gateway/gatewaytest/activity.go	106	86
 internal/gateway/gatewaytest/compose.go	180	156
-internal/gateway/gatewaytest/fake.go	618	562
+internal/gateway/gatewaytest/fake.go	619	563
 internal/gateway/gatewaytest/files.go	40	35
 internal/gateway/gatewaytest/mutate.go	119	104
-internal/gateway/gatewaytest/runtime.go	9	9
+internal/gateway/gatewaytest/runtime.go	22	19
 internal/gateway/gatewaytest/source.go	25	9
 internal/gateway/protocol.go	30	30
 internal/hub/activity.go	1	1
@@ -69,7 +70,7 @@ internal/scheduled/clock.go	75	66
 internal/scheduled/scheduledtest/scheduledtest.go	178	166
 internal/scheduled/service.go	473	413
 internal/server/server.go	40	0
-internal/service/activity.go	96	79
+internal/service/activity.go	123	102
 internal/service/agents.go	21	17
 internal/service/attach.go	82	68
 internal/service/claude.go	41	33
@@ -119,8 +120,8 @@ internal/telegram/render.go	474	429
 internal/telegram/replymedia.go	102	87
 internal/telegram/status.go	59	53
 internal/telegram/todo.go	58	51
-internal/telegram/topics.go	521	380
-internal/web/activity.go	108	70
+internal/telegram/topics.go	521	379
+internal/web/activity.go	119	79
 internal/web/api.go	242	174
 internal/web/auth.go	112	84
 internal/web/claude.go	69	46
@@ -139,7 +140,7 @@ internal/web/pagechat.go	50	40
 internal/web/prompts.go	64	53
 internal/web/scheduled.go	99	57
 internal/web/subagents.go	16	14
-internal/web/web.go	159	140
+internal/web/web.go	160	141
 internal/webpush/encrypt.go	40	32
 internal/webpush/key.go	49	42
 internal/webpush/send.go	80	68
