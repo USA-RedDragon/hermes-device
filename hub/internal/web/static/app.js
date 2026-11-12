@@ -21,7 +21,7 @@
     held: "Hermes is restarting. Your message will send when it is back.", notsent: "Not sent.", again: "Send again",
     steered: "Sent to the running turn", now: "Stop and send now",
     unread: "The turn stopped before Talaria read this message.",
-    tobottom: "Jump to the latest message", tobottomn: "Jump to the latest message (%d new)" };
+    tobottom: "Jump to latest", newone: "1 new message", newmany: "%d new messages" };
   const t = (k) => words[k];
 
   async function api(method, path, body) {
@@ -548,8 +548,9 @@
       changed: () => {
         if (s.pinned()) unseen = 0;
         jump.hidden = s.pinned() || log.hidden;
-        jump.querySelector(".n").textContent = unseen ? String(unseen) : "";
-        jump.setAttribute("aria-label", unseen ? t("tobottomn").replace("%d", unseen) : t("tobottom"));
+        const label = unseen ? (unseen === 1 ? t("newone") : t("newmany").replace("%d", unseen)) : t("tobottom");
+        jump.querySelector(".lbl").textContent = label;
+        jump.title = label;
       },
     });
     let queued = false;
@@ -684,7 +685,10 @@
       if (this.status && this.status.parentNode === this.log) this.log.insertBefore(node, this.status);
       else this.log.append(node);
       if (follow) this.bottom();
-      else if (!this.filling && view === this) { unseen++; stick.refresh(); }
+      else if (!this.filling && view === this) {
+        if (node.classList.contains("msg")) unseen++;
+        stick.refresh();
+      }
       return node;
     }
 
