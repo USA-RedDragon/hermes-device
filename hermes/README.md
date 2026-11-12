@@ -65,6 +65,7 @@ The Test workflow runs on pull requests and before each release:
 | `0031-restart-listener-handover` | `gateway.restart_listener_handover` (false = off): on a restart stop the Webapp listener stays up (health and the restart-wait reads while the stores are open, health only after they close) until the profile lock is released, then closes; a standby takes over within its 0.2 s poll, so clients see well under 2 s without a gateway. | Not fixed upstream; no PR. |
 | `0032-standby-takeover-log` | A 0010 standby's "Took over ... after waiting Xs" line reaches gateway.log (it was logged before logging was set up). Bug fix, no key. | Not fixed upstream; no PR. |
 | `0033-standby-prewarm-boot` | A 0010 standby also prewarms what the boot after the lock repeats (the entry modules behind about 400 post-lock imports, enabled adapters, the listener's uvicorn config, the read-only startup access check), so the takeover costs about half the CPU. Nothing read from the profile is cached before the lock. Part of 0010, no key. | Not fixed upstream; no PR. |
+| `0034-config-parse-once` | `read_config_doc` parses an unchanged config.yaml once (a private deep copy of a parse keyed by `file_cache_version`, as `load_yaml_file_readonly` does) instead of about 30 times per boot. Bug fix, no key. | Not fixed upstream; no PR. |
 
 ## Adding or changing a patch
 

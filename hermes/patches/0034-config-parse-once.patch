@@ -1,0 +1,168 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 02:38:48 -0600
+Subject: [PATCH] perf(config): parse an unchanged config.yaml once for
+ read_config_doc
+
+read_config_doc parsed config.yaml on every call, about 30 times on a gateway start (left-core recovery and the gateway loader read it once per feature). It now hands out a private copy of a parse redone only when the file's cache version changes, the rule load_yaml_file_readonly already uses.
+---
+ hermes_cli/config.py                  |  2 +-
+ hermes_cli/config_backend.py          | 10 +++----
+ scripts/check_config_yaml_readers.py  |  3 ++-
+ tests/test_load_yaml_file_readonly.py | 38 +++++++++++++++++++++++++++
+ utils.py                              | 29 +++++++++++++++-----
+ 5 files changed, 68 insertions(+), 14 deletions(-)
+
+diff --git a/hermes_cli/config.py b/hermes_cli/config.py
+index 1bebf6685f..494966f37a 100644
+--- a/hermes_cli/config.py
++++ b/hermes_cli/config.py
+@@ -1845,7 +1845,7 @@ def read_raw_config() -> dict[str, Any]:
+ 
+ 
+ def read_user_config_raw(config_path: Optional[Path] = None) -> dict[str, Any]:
+-    """Read a user ``config.yaml`` EXACTLY as written (no defaults/overlay/expansion, no cache).
++    """Read a user ``config.yaml`` EXACTLY as written (no defaults/overlay/expansion; a private copy).
+     ONLY legal for write-back round-trips and raw-file diagnostics — behavioral reads must use
+     load_config()/load_config_readonly()."""
+     if config_path is None:
+diff --git a/hermes_cli/config_backend.py b/hermes_cli/config_backend.py
+index 2363fbca56..5626571149 100644
+--- a/hermes_cli/config_backend.py
++++ b/hermes_cli/config_backend.py
+@@ -7,8 +7,9 @@ the hermes home (profile): one multiplexed process serves N profiles, and every
+ already keys on the config path, so a backend keeps per-home state.
+ 
+ :class:`FileBackend` (the default) is today's behaviour byte for byte:
+-the version is the ``file_signature`` stat tuple, reads are ``open`` + ``fast_safe_load`` and raise
+-exactly what those raise (``FileNotFoundError`` for an absent file, ``OSError``, YAML errors), and
++the version is the ``file_signature`` stat tuple, reads parse with ``fast_safe_load`` (an unchanged
++file once, through ``utils.load_yaml_file``, each caller getting its own copy) and raise
++exactly what ``open`` + ``fast_safe_load`` raise (``FileNotFoundError`` for an absent file, ``OSError``, YAML errors), and
+ writes are the ruamel round-trip writers in ``utils``. Callers keep their own error handling, so a
+ backend whose layer always exists simply never takes the "no file" branches. Every other kind
+ (``HERMES_CONFIG_BACKEND=<kind>``, e.g. ``remote``) is the package ``plugins/config_backends/<kind>/``,
+@@ -188,9 +189,8 @@ class FileBackend:
+ 
+     @staticmethod
+     def read_path(path: Path) -> Any:
+-        from utils import fast_safe_load
+-        with open(path, encoding="utf-8-sig") as f:
+-            return fast_safe_load(f)
++        from utils import load_yaml_file
++        return load_yaml_file(path)
+ 
+     @staticmethod
+     def read_path_readonly(path: Path) -> Any:
+diff --git a/scripts/check_config_yaml_readers.py b/scripts/check_config_yaml_readers.py
+index 4c61004c6e..2281acec5b 100644
+--- a/scripts/check_config_yaml_readers.py
++++ b/scripts/check_config_yaml_readers.py
+@@ -60,7 +60,8 @@ CONFIG_PATH_EXPR_RE = re.compile(r"""["']config\.yaml["']|\w*config_path\(\)""")
+ CONFIG_PARAM_NAMES = {"config_path", "cfg_path", "config_yaml_path"}
+ PATH_METHOD_READS = {"open", "read_text", "read_bytes", "stat", "exists", "is_file"}
+ FUNC_READS = {
+-    "exists", "isfile", "open", "getmtime", "getsize", "stat", "load_yaml_file_readonly", "fast_safe_load",
++    "exists", "isfile", "open", "getmtime", "getsize", "stat", "load_yaml_file_readonly", "load_yaml_file",
++    "fast_safe_load",
+     # Every PyYAML entry point that parses a stream, not just safe_load.
+     "safe_load", "safe_load_all", "full_load", "full_load_all", "unsafe_load", "unsafe_load_all",
+     "load_all", "compose", "compose_all",
+diff --git a/tests/test_load_yaml_file_readonly.py b/tests/test_load_yaml_file_readonly.py
+index 70151255bb..4df0ba6a4a 100644
+--- a/tests/test_load_yaml_file_readonly.py
++++ b/tests/test_load_yaml_file_readonly.py
+@@ -45,3 +45,41 @@ def test_callers_do_not_mutate_the_shared_cached_object(tmp_path, monkeypatch):
+     assert secrets == {"onepassword": {"enabled": False}}
+     assert cached == snapshot
+     assert load_yaml_file_readonly(path) is cached
++
++
++def test_load_yaml_file_parses_once_and_hands_out_private_copies(tmp_path, monkeypatch):
++    """``read_config_doc`` (config_backend.read_path) runs dozens of times on a gateway start; an
++    unchanged file is parsed once and every caller still gets a copy it may change."""
++    import utils
++    from hermes_cli.config_backend import read_config_doc
++    path = tmp_path / "config.yaml"
++    path.write_text("﻿model: {default: a}\n", encoding="utf-8")
++    os.utime(path, ns=(os.stat(path).st_mtime_ns - 10_000_000_000,) * 2)  # settled: no racy digest
++    parses = []
++    real = utils.fast_safe_load
++    monkeypatch.setattr(utils, "fast_safe_load", lambda stream: parses.append(1) or real(stream))
++    first = read_config_doc(path)
++    first["model"]["default"] = "changed by a caller"
++    second = read_config_doc(path)
++    assert second == {"model": {"default": "a"}}
++    assert len(parses) == 1
++
++    path.write_text("model: {default: b}\n", encoding="utf-8")
++    os.utime(path, ns=(os.stat(path).st_mtime_ns + 1_000_000,) * 2)
++    assert read_config_doc(path) == {"model": {"default": "b"}}
++    assert len(parses) == 2
++
++
++def test_load_yaml_file_always_reads_a_frozen_workers_config(tmp_path, monkeypatch):
++    """A frozen-config worker keys config.yaml on the stat alone, which misses a same-size rewrite in
++    one tick: it reads the bytes every time instead of trusting that key."""
++    import utils
++    path = tmp_path / "config.yaml"
++    path.write_text("a: 1\n", encoding="utf-8")
++    monkeypatch.setattr(utils, "_frozen_config_worker", lambda p: True)
++    parses = []
++    real = utils.fast_safe_load
++    monkeypatch.setattr(utils, "fast_safe_load", lambda stream: parses.append(1) or real(stream))
++    assert utils.load_yaml_file(path) == {"a": 1}
++    assert utils.load_yaml_file(path) == {"a": 1}
++    assert len(parses) == 2
+diff --git a/utils.py b/utils.py
+index 344d24eb16..d0f09ba092 100644
+--- a/utils.py
++++ b/utils.py
+@@ -693,25 +693,40 @@ _YAML_FILE_CACHE: dict = {}
+ _YAML_FILE_CACHE_LOCK = threading.Lock()
+ 
+ 
+-def load_yaml_file_readonly(path: str | Path) -> Any:
+-    """``fast_safe_load`` of a file, re-parsed only when its :func:`file_cache_version` changes.
+-
+-    Returns the cached object itself — callers must never mutate it. Parse errors propagate and
+-    are not cached; a missing file raises ``FileNotFoundError`` like ``open`` does."""
++def _load_yaml_file_cached(path: str | Path, encoding: str) -> Any:
+     path = Path(path)
+     sig = file_cache_version(path)
+-    key = str(path)
++    key = (os.path.abspath(path), encoding)
+     with _YAML_FILE_CACHE_LOCK:
+         cached = _YAML_FILE_CACHE.get(key)
+         if cached is not None and cached[0] == sig:
+             return cached[1]
+-    with open(path, encoding="utf-8") as f:
++    with open(path, encoding=encoding) as f:
+         data = fast_safe_load(f)
+     with _YAML_FILE_CACHE_LOCK:
+         _YAML_FILE_CACHE[key] = (sig, data)
+     return data
+ 
+ 
++def load_yaml_file_readonly(path: str | Path) -> Any:
++    """``fast_safe_load`` of a file, re-parsed only when its :func:`file_cache_version` changes.
++
++    Returns the cached object itself — callers must never mutate it. Parse errors propagate and
++    are not cached; a missing file raises ``FileNotFoundError`` like ``open`` does."""
++    return _load_yaml_file_cached(path, "utf-8")
++
++
++def load_yaml_file(path: str | Path) -> Any:
++    """``fast_safe_load`` of a file (a byte-order mark is skipped) as a private copy the caller may
++    change, parsed again only when its :func:`file_cache_version` changes. Errors as
++    :func:`load_yaml_file_readonly`."""
++    if _frozen_config_worker(path):  # its cache key is stat-only there: always read the bytes
++        with open(path, encoding="utf-8-sig") as f:
++            return fast_safe_load(f)
++    import copy
++    return copy.deepcopy(_load_yaml_file_cached(path, "utf-8-sig"))
++
++
+ def _env_number(key: str, default, cast):
+     raw = os.getenv(key, "").strip()
+     try:
