@@ -147,7 +147,8 @@ class Store:
 
 
 class Base(unittest.TestCase):
-    settings: dict = {}
+    # Tool calls wait this long for a device that is away; the tests of that wait set their own.
+    settings: dict = {"reconnect_wait_seconds": 0.2}
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
@@ -237,13 +238,86 @@ class EnvironmentTests(Base):
         self.assertTrue(all(p.poll() is not None for p in self.device.procs.values()))
 
     def test_bound_offline_fails_with_255_and_never_falls_back(self):
+        self.cfg["reconnect_wait_seconds"] = 0.3
         env = self.env()
         self.bind()
         self.hub.detach(self.device.conn)
+        start = time.monotonic()
         r = env.execute("pwd")
+        self.assertGreaterEqual(time.monotonic() - start, 0.3)
         self.assertEqual(r["returncode"], 255)
         self.assertIn("not connected", r["output"])
         self.assertIsNone(env._local)
+        start = time.monotonic()
+        self.assertEqual(env.execute("pwd")["returncode"], 255)
+        self.assertLess(time.monotonic() - start, 0.25, "a device whose wait ran out fails at once")
+
+    def reconnect_later(self, delay=0.5, device=None):
+        device = device or self.device
+        conn = device.conn
+
+        def back():
+            time.sleep(delay)
+            device.conn = device.make_conn(conn.device_id, conn.name, conn.tmp_dir, conn.home)
+            self.hub.attach(device.conn)
+        t = threading.Thread(target=back, daemon=True)
+        t.start()
+        self.addCleanup(t.join, 5)
+
+    def test_command_waits_for_a_reconnecting_device(self):
+        self.cfg["reconnect_wait_seconds"] = 10
+        env = self.env()
+        self.bind()
+        self.assertEqual(env.execute("echo before")["output"], "before\n")
+        self.hub.detach(self.device.conn, resumable=True)
+        self.reconnect_later(1.2)
+        r = env.execute("echo after")
+        self.assertEqual(r["returncode"], 0)
+        self.assertRegex(r["output"], r"^\[hermes-device: waited \d+s for device d_pc to reconnect\]\nafter\n$")
+        self.assertEqual(env.execute("echo again")["output"], "again\n")
+
+    def test_background_command_waits_for_a_reconnecting_device(self):
+        self.cfg["reconnect_wait_seconds"] = 10
+        env = self.env()
+        self.bind()
+        env.execute("true")
+        self.hub.detach(self.device.conn, resumable=True)
+        self.reconnect_later(1.2)
+        proc = env._run_bash("echo bg", timeout=10)
+        self.assertEqual(proc.wait(10), 0)
+        out = proc.stdout.read()
+        proc.stdout.close()
+        self.assertIn("to reconnect]\nbg\n", out)
+
+    def test_new_gateway_waits_for_a_bound_device_it_has_not_seen(self):
+        self.cfg["reconnect_wait_seconds"] = 10
+        self.bind()
+        self.hub.detach(self.device.conn)
+        fresh = core.Hub(self.base / "state" / "bindings.json", parent_lookup=self.store.lookup)
+        self.hub = fresh
+        self.device.hub = fresh
+        self.reconnect_later()
+        r = self.env().execute("echo hi")
+        self.assertEqual(r["returncode"], 0)
+        self.assertTrue(r["output"].endswith("hi\n"))
+
+    def test_unknown_device_is_not_waited_for(self):
+        self.cfg["reconnect_wait_seconds"] = 5
+        start = time.monotonic()
+        conn, waited = self.hub.await_device("d_never")
+        self.assertIsNone(conn)
+        self.assertEqual(waited, 0.0)
+        self.assertLess(time.monotonic() - start, 0.5)
+
+    def test_handing_off_gateway_does_not_wait(self):
+        self.cfg["reconnect_wait_seconds"] = 5
+        self.bind()
+        self.hub.detach(self.device.conn)
+        handoff = types.SimpleNamespace(handing_off=True)
+        with mock.patch.dict(sys.modules, {"hermes_device_handoff": handoff}):
+            start = time.monotonic()
+            self.assertEqual(self.env().execute("pwd")["returncode"], 255)
+            self.assertLess(time.monotonic() - start, 0.5)
 
     def test_never_bound_runs_on_pod(self):
         env = self.env()
@@ -683,6 +757,21 @@ class GuardTests(Base):
     def guard(self, tool, **args):
         return core.pre_tool_call(tool_name=tool, args=args, task_id="t", session_id=self.session)
 
+    def test_file_tool_waits_for_a_reconnecting_device(self):
+        self.cfg["reconnect_wait_seconds"] = 10
+        self.hub.detach(self.device.conn, resumable=True)
+        conn = self.device.conn
+
+        def back():
+            time.sleep(0.5)
+            self.device.conn = self.device.make_conn(conn.device_id, conn.name, conn.tmp_dir, conn.home)
+            self.hub.attach(self.device.conn)
+        t = threading.Thread(target=back, daemon=True)
+        t.start()
+        self.addCleanup(t.join, 5)
+        self.assertEqual(self.guard("read_file", path="f.txt"),
+                         {"action": "modify", "args": {"path": str(self.root / "f.txt")}})
+
     def test_relative_and_home_paths_rewritten(self):
         self.assertEqual(self.guard("read_file", path="f.txt"),
                          {"action": "modify", "args": {"path": str(self.root / "f.txt")}})
@@ -1043,6 +1132,28 @@ class SandboxTests(Base):
 
     def mkdirs(self, device=None):
         return [m for m in (device or self.sandbox).execs if m["cmd"].startswith("mkdir -p -- ")]
+
+    def test_sandbox_command_waits_for_the_sandbox_to_reconnect(self):
+        self.cfg["reconnect_wait_seconds"] = 10
+        env = self.env()
+        env.execute("true")
+        self.hub.detach(self.sandbox.conn, resumable=True)
+        conn = self.sandbox.conn
+
+        def back():
+            time.sleep(1.2)
+            self.sandbox.conn = self.sandbox.make_conn(conn.device_id, conn.name, conn.tmp_dir, conn.home)
+            self.hub.attach(self.sandbox.conn)
+        t = threading.Thread(target=back, daemon=True)
+        t.start()
+        self.addCleanup(t.join, 5)
+        with mock.patch("tools.file_tools_paths._terminal_env_type_for_task", lambda task_id="default": "device"):
+            self.assertIsNone(core.pre_tool_call(tool_name="terminal", args={"command": "pwd"}, task_id="t",
+                                                 session_id=self.session))
+        r = env.execute("pwd")
+        self.assertEqual(r["returncode"], 0)
+        self.assertRegex(r["output"], r"^\[hermes-device: waited \d+s for device d_sb to reconnect\]\n")
+        self.assertTrue(r["output"].endswith(str(self.sdir) + "\n"))
 
     def test_never_bound_runs_in_its_sandbox_dir(self):
         env = self.env()

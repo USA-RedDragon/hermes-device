@@ -109,6 +109,11 @@ HELLO_TIMEOUT_S = 10
 SILENCE_TIMEOUT_S = 60
 DEFAULT_GRACE_S = 120
 MAX_GRACE_S = 3600
+DEFAULT_RECONNECT_WAIT_S = 60
+MAX_RECONNECT_WAIT_S = 600
+# A tool call waits for a device that dropped (or, in a new gateway, has not come back yet) this
+# recently; one that has been away longer fails at once.
+RECONNECT_RECENT_S = 600
 
 # The assertion ``sub`` of a hub service device, such as the sandbox (protocol.md section 7.3).
 SERVICE_USER = "service"
@@ -263,6 +268,17 @@ def grace_seconds() -> float:
         logger.error("device: grace_seconds %r is not a number of seconds; using %d", value, DEFAULT_GRACE_S)
         return float(DEFAULT_GRACE_S)
     return float(min(value, MAX_GRACE_S))
+
+
+def reconnect_wait_seconds() -> float:
+    """How long a tool call waits for its device to reconnect before it fails with "not
+    connected". 0 fails at once."""
+    value = settings().get("reconnect_wait_seconds", DEFAULT_RECONNECT_WAIT_S)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        logger.error("device: reconnect_wait_seconds %r is not a number of seconds; using %d", value,
+                     DEFAULT_RECONNECT_WAIT_S)
+        return float(DEFAULT_RECONNECT_WAIT_S)
+    return float(min(value, MAX_RECONNECT_WAIT_S))
 
 
 def dev_static_tokens() -> bool:
@@ -684,6 +700,14 @@ class Hub:
         self._park_timers: dict[str, tuple[threading.Timer, object]] = {}
         # Commands the plugin killed. A resume never lists them, so the device kills them too.
         self._killed: set[str] = set()
+        # Signalled on every attach, for tool calls that wait for a device to reconnect.
+        self._arrived = threading.Condition(self._lock)
+        # When each device's last connection to this process dropped.
+        self._gone_at: dict[str, float] = {}
+        # Devices whose last wait ran out: later calls fail at once until the device connects.
+        self._waited_out: set[str] = set()
+        self._names: dict[str, str] = {}
+        self._born = time.monotonic()
         self._load()
 
     # persistence
@@ -780,6 +804,11 @@ class Hub:
             old = self._devices.get(conn.device_id)
             self._devices[conn.device_id] = conn
             self._seen.add(conn.device_id)
+            self._gone_at.pop(conn.device_id, None)
+            self._waited_out.discard(conn.device_id)
+            if conn.name:
+                self._names[conn.name] = conn.device_id
+            self._arrived.notify_all()
             timer = self._park_timers.pop(conn.device_id, None)
             carried = self._parked.pop(conn.device_id, {})
             if old is not None and old is not conn:
@@ -825,6 +854,7 @@ class Hub:
             current = self._devices.get(conn.device_id) is conn
             if current:
                 del self._devices[conn.device_id]
+                self._gone_at[conn.device_id] = time.monotonic()
             park = current and grace > 0
             if park:
                 with conn.lock:
@@ -887,6 +917,56 @@ class Hub:
     def devices(self) -> list[DeviceConn]:
         with self._lock:
             return list(self._devices.values())
+
+    def _lookup(self, key: str) -> tuple[Optional[DeviceConn], bool]:
+        """``(device, ambiguous)``: the connected device with id ``key``, else the one named ``key``;
+        ``ambiguous`` when several connected devices have that name. Call with the lock."""
+        conn = self._devices.get(key)
+        if conn is not None:
+            return conn, False
+        named = [c for c in self._devices.values() if c.name == key]
+        return (named[0] if len(named) == 1 else None), len(named) > 1
+
+    def _may_come_back(self, key: str) -> bool:
+        """Whether a tool call should wait for ``key`` (an id or a name): a device this process
+        knows of that dropped within RECONNECT_RECENT_S, or, in a gateway that started that
+        recently, one it has not seen connect yet. Call with the lock."""
+        handoff = sys.modules.get("hermes_device_handoff")
+        if handoff is not None and getattr(handoff, "handing_off", False):
+            return False
+        device_id = self._names.get(key, key)
+        if device_id in self._waited_out:
+            return False
+        if device_id not in self._seen and key != fallback_device():
+            return False
+        since = self._gone_at.get(device_id, self._born)
+        return time.monotonic() - since < RECONNECT_RECENT_S
+
+    def await_device(self, key: str, timeout: Optional[float] = None) -> tuple[Optional[DeviceConn], float]:
+        """``(connection, seconds waited)`` for the device with id or name ``key``. A device that
+        is away but may come back (a gateway handoff, a hub restart) is waited for up to
+        ``timeout`` (reconnect_wait_seconds); the connection is None when it did not come back."""
+        limit = reconnect_wait_seconds() if timeout is None else timeout
+        start = time.monotonic()
+        with self._lock:
+            conn, ambiguous = self._lookup(key)
+            if conn is not None or ambiguous or limit <= 0 or not self._may_come_back(key):
+                return conn, 0.0
+            logger.info("device: %s is not connected; waiting up to %ss for it to reconnect", key, limit)
+            deadline = start + limit
+            while conn is None:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    self._waited_out.add(self._names.get(key, key))
+                    logger.warning("device: %s did not reconnect within %ss", key, limit)
+                    return None, time.monotonic() - start
+                self._arrived.wait(left)
+                conn, ambiguous = self._lookup(key)
+                if ambiguous:
+                    return None, time.monotonic() - start
+        waited = time.monotonic() - start
+        logger.info("device: %s reconnected after %.1fs", key, waited)
+        return conn, waited
 
     def seen(self, device_id: str) -> bool:
         with self._lock:
@@ -1128,10 +1208,11 @@ class Hub:
 
     # execution
     def start(self, device_id: str, *, cmd: str, cwd: str, login: bool, timeout: float,
-              stdin: Optional[str]) -> DeviceProcess:
+              stdin: Optional[str], note: str = "") -> DeviceProcess:
+        """Send ``cmd`` to the device. ``note`` is output that comes before the command's own."""
         conn = self.device(device_id)
         if conn is None:
-            return finished_process(EXIT_LOST, f"[device {device_id} is not connected; the command did not run]")
+            return finished_process(EXIT_LOST, f"{note}[device {device_id} is not connected; the command did not run]")
         if not posixpath.isabs(cwd or ""):
             return finished_process(EXIT_REFUSED, f"[hermes-device: no device directory for this command ({cwd!r})]")
         failed = self._ensure_sandbox_dir(conn, device_id, cwd)
@@ -1140,6 +1221,7 @@ class Hub:
         rid = uuid.uuid4().hex
         proc = DeviceProcess(rid, lambda: self._kill(device_id, rid), lambda: self._detach_command(device_id, rid))
         proc.cwd = cwd
+        proc.feed(note)
         with conn.lock:
             conn.pending[rid] = proc
         msg = {"type": TYPE_EXEC, "id": rid, "cmd": cmd, "cwd": cwd, "login": bool(login), "timeout": timeout}
@@ -1570,6 +1652,42 @@ def resolve_current() -> Resolution:
     return resolve_session(current_session_id())
 
 
+# Seconds a terminal call's guard waited for the device, by session, for the command's note.
+_WAITED: dict[str, float] = {}
+_WAITED_LOCK = threading.Lock()
+
+
+def await_resolution(res: Resolution) -> tuple[Resolution, float]:
+    """For a tool call: wait for the device of a bound session, or the sandbox device of a sandbox
+    session, while it reconnects (Hub.await_device). Returns the resolution to use and the seconds
+    waited."""
+    if res.state == STATE_BOUND and res.binding is not None:
+        _, waited = hub().await_device(res.binding.device_id)
+        return res, waited
+    if res.state == STATE_FAIL_CLOSED and res.sandbox and fallback_device():
+        conn, waited = hub().await_device(fallback_device())
+        if conn is not None and waited > 0:
+            return resolve_session(res.session_id), waited
+        return res, waited
+    return res, 0.0
+
+
+def note_waited(session_id: str, waited: float) -> None:
+    if waited > 0 and session_id:
+        with _WAITED_LOCK:
+            _WAITED[session_id] = _WAITED.get(session_id, 0.0) + waited
+
+
+def take_waited(session_id: str) -> float:
+    with _WAITED_LOCK:
+        return _WAITED.pop(session_id, 0.0)
+
+
+def reconnect_note(device_id: str, waited: float) -> str:
+    """The status line of a command that waited for its device."""
+    return f"[hermes-device: waited {waited:.0f}s for device {device_id} to reconnect]\n"
+
+
 def valid_hooks() -> frozenset[str]:
     """The plugin hook names this Hermes knows. Hooks that a patched Hermes adds are registered
     only when it has them."""
@@ -1748,7 +1866,7 @@ def read_device_file(res: Resolution, path: str, max_bytes: int = MAX_READ_BYTES
 
 
 def active_conn(res: Resolution) -> DeviceConn:
-    conn = hub().device(res.binding.device_id) if res.binding else None
+    conn = hub().await_device(res.binding.device_id)[0] if res.binding else None
     if conn is None:
         device = res.binding.device_id if res.binding else "?"
         raise DeviceError(f"device {device} is not connected; session {res.session_id} cannot reach its files")
@@ -2537,11 +2655,11 @@ class DeviceShell(BaseEnvironment):
         return result
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
-                  stdin_data: Optional[str] = None):
+                  stdin_data: Optional[str] = None, note: str = ""):
         state = _EXEC_STATE.get()
         cwd = state["cwd"] if state else self._safe_cwd()
         proc = hub().start(self._binding.device_id, cmd=cmd_string, cwd=cwd, login=login,
-                           timeout=float(timeout), stdin=stdin_data)
+                           timeout=float(timeout), stdin=stdin_data, note=note)
         if state is not None:
             state["proc"] = proc
         return proc
@@ -2600,7 +2718,7 @@ class DeviceRouterEnvironment(BaseEnvironment):
 
     def _shell(self, res: Resolution) -> DeviceShell | dict:
         b = res.binding
-        conn = hub().device(b.device_id)
+        conn, _ = hub().await_device(b.device_id)
         if conn is None:
             if res.sandbox:
                 return {"output": f"[the sandbox device {b.device_id} is not connected; session {res.session_id} "
@@ -2672,23 +2790,35 @@ class DeviceRouterEnvironment(BaseEnvironment):
     def init_session(self):
         return None
 
+    def _await(self) -> tuple[Resolution, str]:
+        """The resolution, after waiting for a reconnecting device, and the status line to put
+        before the command's output when the call (or its guard) waited a second or more."""
+        res, waited = await_resolution(self._resolve())
+        waited += take_waited(res.session_id)
+        if waited < 1 or res.state != STATE_BOUND:
+            return res, ""
+        return res, reconnect_note(res.binding.device_id, waited)
+
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
-        res = self._resolve()
+        res, note = self._await()
         if res.state == STATE_BOUND:
             child = self._shell(res)
-            return child if isinstance(child, dict) else child.execute(command, cwd, **kwargs)
+            result = child if isinstance(child, dict) else child.execute(command, cwd, **kwargs)
+            if note and isinstance(result, dict):
+                result = {**result, "output": note + str(result.get("output") or "")}
+            return result
         if runs_on_pod(res):
             return self._local_env().execute(command, cwd, **kwargs)
         return {"output": refusal_message(res), "returncode": 1}
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: Optional[str] = None):
-        res = self._resolve()
+        res, note = self._await()
         if res.state == STATE_BOUND:
             child = self._shell(res)
             if isinstance(child, dict):
-                return finished_process(child["returncode"], child["output"])
-            return child._run_bash(cmd_string, login=login, timeout=timeout, stdin_data=stdin_data)
+                return finished_process(child["returncode"], note + child["output"])
+            return child._run_bash(cmd_string, login=login, timeout=timeout, stdin_data=stdin_data, note=note)
         if runs_on_pod(res):
             return self._local_env()._run_bash(cmd_string, login=login, timeout=timeout, stdin_data=stdin_data)
         return finished_process(1, refusal_message(res))
@@ -3163,6 +3293,10 @@ def pre_tool_call(tool_name: str = "", args: Optional[dict] = None, task_id: str
 
 def _guard(tool_name: str, args: dict, task_id: str) -> Optional[dict]:
     res = resolve_current()
+    if tool_name in FILE_AND_COMMAND_TOOLS:
+        res, waited = await_resolution(res)
+        if tool_name == "terminal":
+            note_waited(res.session_id, waited)
     if runs_on_pod(res):
         job_id = device_job_run(res.session_id)
         if job_id:

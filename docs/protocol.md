@@ -265,7 +265,7 @@ Bindings always survive a drop: the next connection of the same `device_id` serv
 
 The plugin side:
 
-1. When a version 3 leg drops, the plugin keeps the device's pending commands for `grace_seconds` (plugin setting, default <!-- docgen:const pkg=protocol name=DefaultGrace print=config -->`2m0s`<!-- /docgen:const -->, at most 3600; 0 turns resume off). The tool calls that wait on them keep waiting. New commands for the device fail at once, as for any device that is not connected.
+1. When a version 3 leg drops, the plugin keeps the device's pending commands for `grace_seconds` (plugin setting, default <!-- docgen:const pkg=protocol name=DefaultGrace print=config -->`2m0s`<!-- /docgen:const -->, at most 3600; 0 turns resume off). The tool calls that wait on them keep waiting. A new tool call for the device waits up to `reconnect_wait_seconds` (plugin setting, default 60) for it to connect again, and its output starts with a line that says how long it waited. It fails with "not connected" only after that. The wait applies to a device that dropped from this gateway in the last 10 minutes, or, in a gateway that started in the last 10 minutes, a device it knows but has not seen connect yet (a gateway handoff). A device whose wait ran out fails at once until it connects again.
 2. When the device connects again within the grace with version 3, the plugin moves those commands to the new connection and sends, right after `welcome`:
 
    ```json
@@ -749,6 +749,7 @@ The plugin is a Hermes user plugin named `device`, installed into `$HERMES_HOME/
 | `device_write_roots` | `[]` | Device directories the operator added to `HERMES_WRITE_SAFE_ROOT` so file tools can write to devices (section 8.7) |
 | `fallback` | `local` | What an unbound, never-bound session runs on: `local` (the pod shell, as without the plugin), `refuse`, or `device` (the sandbox device, section 8.10). `device` without `fallback_device` acts as `refuse` |
 | `fallback_device` | none | `fallback: device` only: the sandbox device, by device id (preferred) or by the unique name of a connected device |
+| `reconnect_wait_seconds` | `60` | How long a tool call (terminal, file tools) waits for its device, or the sandbox device, to reconnect after a gateway handoff or a hub restart before it fails with "not connected" (section 4.7). At most 600. `0` fails at once |
 | `grace_seconds` | `120` | How long the pending commands of a dropped version 3 exec leg wait for the device to reconnect and resume them (section 4.7). At most 3600. `0` turns resume off, and with it the restart handoff. For the restart handoff, set it to the devices' `device.max-grace` (`600` for the default) |
 | `fallback_root` | `/work` | `fallback: device` only: absolute directory on the sandbox device that holds one working directory per session lineage. Must be inside the sandbox's roots |
 | `user` | none | The hub user name of the one person who uses this backend. Sessions that no computer serves act for this user when they pick a browser device (docs/browser.md section 3.2). Leave it unset on a backend that more than one hub user may use |
