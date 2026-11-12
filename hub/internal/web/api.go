@@ -425,6 +425,7 @@ const reconnectRetry = 250 * time.Millisecond
 type sseEvent struct {
 	Kind string          `json:"kind"`
 	Data json.RawMessage `json:"data"`
+	At   int64           `json:"at,omitempty"`
 }
 
 // handleEvents streams a session as server-sent events. Each event's id is
@@ -514,7 +515,7 @@ func (s *Server) sinceSeq(id string) int64 {
 }
 
 func (s *Server) writeEvent(w io.Writer, e hub.Event) bool {
-	data, err := json.Marshal(sseEvent{Kind: e.Kind, Data: e.Data})
+	data, err := json.Marshal(sseEvent{Kind: e.Kind, Data: e.Data, At: e.At})
 	if err != nil {
 		return true
 	}

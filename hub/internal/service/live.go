@@ -286,7 +286,7 @@ func (ls *live) replayTurn(tail []gateway.Event, msgs []json.RawMessage) {
 				ev.Payload = payload
 			}
 		}
-		ls.emit(ev.Type, ls.trackTurn(ev))
+		ls.emitAt(ev.Type, ls.trackTurn(ev), 0)
 	}
 	ls.inputs, ls.texts = inputs, texts
 }
@@ -507,8 +507,14 @@ func (ls *live) apply(ev gateway.Event) {
 
 // emit records an event and sends it to viewers. ls.mu is held.
 func (ls *live) emit(kind string, data json.RawMessage) {
+	ls.emitAt(kind, data, time.Now().UnixMilli())
+}
+
+// emitAt is emit for an event that happened at the Unix millisecond at, or
+// at 0 when its time is not known. ls.mu is held.
+func (ls *live) emitAt(kind string, data json.RawMessage, at int64) {
 	ls.seq++
-	e := hub.Event{Seq: ls.seq, Kind: kind, Data: data}
+	e := hub.Event{Seq: ls.seq, Kind: kind, Data: data, At: at}
 	ls.ring = append(ls.ring, e)
 	if n := ls.b.svc.opts.RingSize; len(ls.ring) > n {
 		ls.ring = append([]hub.Event(nil), ls.ring[len(ls.ring)-n/2:]...)

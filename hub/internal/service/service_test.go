@@ -227,8 +227,12 @@ func TestAttachStreamsInOrder(t *testing.T) {
 	if got := text(t, evs[1]); got != "hello" {
 		t.Fatalf("message.start text = %q", got)
 	}
+	before := time.Now().Add(-time.Minute).UnixMilli()
 	last := snap.Seq
 	for _, ev := range evs {
+		if ev.At < before || ev.At > time.Now().UnixMilli() {
+			t.Fatalf("%s at = %d, want the time the hub saw it", ev.Kind, ev.At)
+		}
 		if ev.Seq <= last {
 			t.Fatalf("seq not increasing: %d after %d", ev.Seq, last)
 		}
@@ -245,6 +249,11 @@ func TestAttachStreamsInOrder(t *testing.T) {
 	evs2 := until(t, ch2, hub.KindMessageComplete)
 	if evs2[0].Kind != hub.KindSnapshot || !slices.Equal(kinds(evs2[1:]), want) {
 		t.Fatalf("second viewer = %v", kinds(evs2))
+	}
+	for i, ev := range evs2[1:] {
+		if ev.At != evs[i].At {
+			t.Fatalf("replayed %s at = %d, want %d", ev.Kind, ev.At, evs[i].At)
+		}
 	}
 	resumes := 0
 	for _, c := range e.gw.Calls() {

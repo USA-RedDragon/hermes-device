@@ -51,11 +51,14 @@ const (
 )
 
 // Event is one ordered event from an attached session. Data is the gateway
-// payload for that event, passed through unchanged.
+// payload for that event, passed through unchanged. At is when the hub got
+// the event, in Unix milliseconds; it is 0 for an event of a turn that ran
+// before the hub subscribed, whose time is not known.
 type Event struct {
 	Seq  int64
 	Kind string
 	Data json.RawMessage
+	At   int64
 }
 
 // Service is the hub core. user is always the Authentik username; every

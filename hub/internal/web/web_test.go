@@ -286,6 +286,7 @@ type sse struct {
 	id   string
 	kind string
 	data json.RawMessage
+	at   int64
 }
 
 func readEvents(t *testing.T, r *bufio.Reader, until string) []sse {
@@ -305,9 +306,10 @@ func readEvents(t *testing.T, r *bufio.Reader, until string) []sse {
 			var d struct {
 				Kind string          `json:"kind"`
 				Data json.RawMessage `json:"data"`
+				At   int64           `json:"at"`
 			}
 			_ = json.Unmarshal([]byte(line[6:]), &d)
-			cur.kind, cur.data = d.Kind, d.Data
+			cur.kind, cur.data, cur.at = d.Kind, d.Data, d.At
 		case line == "" && cur.kind != "":
 			out = append(out, cur)
 			if cur.kind == until {
@@ -355,6 +357,9 @@ func TestEventStreamAndResume(t *testing.T) {
 	kinds := make([]string, 0, len(evs))
 	for _, ev := range evs {
 		kinds = append(kinds, ev.kind)
+		if d := time.Now().UnixMilli() - ev.at; d < 0 || d > 60_000 {
+			t.Fatalf("%s at = %d, not the time the hub saw it", ev.kind, ev.at)
+		}
 	}
 	if strings.Join(kinds, ",") != "session.info,message.start,reasoning.delta,reasoning.delta,tool.start,tool.progress,tool.complete,message.delta,message.delta,message.complete" {
 		t.Fatalf("kinds = %v", kinds)
