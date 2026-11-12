@@ -44,3 +44,10 @@ func TestReconcileScript(t *testing.T) {
 	t.Parallel()
 	runStreamScript(t, "reconcile.js", "reconcile.js")
 }
+
+// A model pick that waited for the end of a turn can come back as a
+// question or a refusal; the page reads both.
+func TestModelPickScript(t *testing.T) {
+	t.Parallel()
+	runStreamScript(t, "modelpick.js", "modelpick.js")
+}

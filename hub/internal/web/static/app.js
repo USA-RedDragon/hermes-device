@@ -1116,6 +1116,22 @@
       this.add(el("div", "note", "Older messages were summarized to make room."));
     }
 
+    // pickEvent shows what Hermes decided about a model pick that waited
+    // for the end of a turn: a question to answer, or a pick it dropped.
+    pickEvent(p) {
+      const ask = window.HubModelPick.ask(p);
+      if (ask) {
+        $("info").open = true;
+        settings.askConfirm(ask.message, ask.token, ask.provider, ask.model);
+        return;
+      }
+      const text = window.HubModelPick.refusal(p);
+      if (text) {
+        settings.note(text, true);
+        settings.fill();
+      }
+    }
+
     deleted() {
       if (view !== this) return;
       notice = "This chat was deleted.";
@@ -1503,6 +1519,7 @@
         case "session.updated":
           if (typeof p.title === "string") setTitle(p.title);
           if (p.operation === "model" && p.model) this.showInfo({ model: p.model, provider: p.provider });
+          this.pickEvent(p);
           if (p.operation === "delete") this.deleted();
           break;
         case "session.deleted": this.deleted(); break;
@@ -2850,6 +2867,17 @@
       line.classList.toggle("bad", !!(r && r.bad));
       line.replaceChildren(...(r ? r.parts.filter((x) => x !== "") : []));
     },
+    // askConfirm shows the question Hermes put to a model pick, with the
+    // buttons that answer it, in the settings note.
+    askConfirm(message, token, provider, model) {
+      const box = el("span", "confirm");
+      box.append(message || "This model needs a confirmation.", " ");
+      const yes = button("primary", "Use it anyway", () => this.pickModel(token, [provider, model]));
+      const no = button("", "Cancel", () => { this.note(""); this.fill(); });
+      box.append(yes, " ", no);
+      this.note("");
+      $("settings-note").append(box);
+    },
     async pickModel(confirm, picked) {
       const chat = view;
       const [provider, model] = picked || $("model").value.split("\n");
@@ -2867,13 +2895,7 @@
         const r = await api("POST", chat.base + "/model", { provider, model, confirm: confirm || "" });
         if (chat !== view) return;
         if (r.status === "confirm") {
-          const box = el("span", "confirm");
-          box.append(r.message || "This model needs a confirmation.", " ");
-          const yes = button("primary", "Use it anyway", () => this.pickModel(r.confirm, [provider, model]));
-          const no = button("", "Cancel", () => { this.note(""); this.fill(); });
-          box.append(yes, " ", no);
-          this.note("");
-          $("settings-note").append(box);
+          this.askConfirm(r.message, r.confirm, provider, model);
           return;
         }
         if (r.status === "deferred") this.note("The new model starts when the current reply is done.");
