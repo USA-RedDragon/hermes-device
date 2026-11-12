@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 01:20:08 -0600
+Subject: [PATCH] fix(gateway): log a standby's takeover in gateway.log
+
+The "Took over" line ran before logging was set up and was dropped, so the log never showed when the boot after the profile lock began. The wait now returns how long it waited and the boot logs it once gateway.log is open.
+---
+ gateway/run_bootstrap.py                | 23 +++++++++++++++--------
+ tests/gateway/test_runtime_lock_wait.py | 15 +++++++++++++++
+ 2 files changed, 30 insertions(+), 8 deletions(-)
+
+diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
+index 8e8ab18529..d4f737339d 100644
+--- a/gateway/run_bootstrap.py
++++ b/gateway/run_bootstrap.py
+@@ -701,11 +701,12 @@ def _remove_predecessor_pid_file() -> None:
+         path.unlink(missing_ok=True)
+ 
+ 
+-async def _start_gateway_wait_for_runtime_lock(profile_homes, wait_s: float) -> None:
++async def _start_gateway_wait_for_runtime_lock(profile_homes, wait_s: float) -> Optional[float]:
+     """``gateway.runtime_lock_wait_seconds``: a standby gateway (the new pod of a rolling update on a
+     shared volume) warms up, then waits for the gateway that owns the profile to exit instead of
+     exiting 1, and takes over within one poll of it. When the wait runs out the boot goes on and
+-    refuses exactly as it does without the wait."""
++    refuses exactly as it does without the wait. Returns how long it waited before it took over,
++    None when it did not wait; the caller logs it once logging is set up."""
+     import asyncio
+     from gateway.run import get_hermes_home
+     from gateway.runtime_ownership import OwnershipConflict, process_ownership
+@@ -724,9 +725,9 @@ async def _start_gateway_wait_for_runtime_lock(profile_homes, wait_s: float) ->
+                 break
+             except OwnershipConflict:
+                 if time.monotonic() >= deadline:
+-                    return
++                    return None
+             except OSError:
+-                return
++                return None
+             if not waited:
+                 logger.info("Another gateway owns %s; waiting up to %.0fs for it to exit", launch_home, wait_s)
+                 _write_standby_marker(marker)
+@@ -739,9 +740,10 @@ async def _start_gateway_wait_for_runtime_lock(profile_homes, wait_s: float) ->
+     finally:
+         if waited:
+             marker.unlink(missing_ok=True)
+-    if waited:
+-        _remove_predecessor_pid_file()
+-        logger.info("Took over %s after waiting %.1fs", launch_home, time.monotonic() - started)
++    if not waited:
++        return None
++    _remove_predecessor_pid_file()
++    return time.monotonic() - started
+ 
+ 
+ def _start_gateway_reserve_profiles(profile_homes) -> bool:
+@@ -939,8 +941,9 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+ 
+     from gateway.status import remove_pid_file, release_gateway_runtime_lock
+     lock_wait_s = float(getattr(resolved_config, "runtime_lock_wait_seconds", 0) or 0)
++    took_over_after_s = None
+     if lock_wait_s > 0:
+-        await _start_gateway_wait_for_runtime_lock(profile_homes, lock_wait_s)
++        took_over_after_s = await _start_gateway_wait_for_runtime_lock(profile_homes, lock_wait_s)
+     if not _start_gateway_reserve_profiles(profile_homes):
+         return False
+     # Freeze discovery: later profile additions must restart and reserve before opening stores.
+@@ -959,6 +962,10 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
+     _planned_stop_watcher_stop = None
+     try:
+         _start_gateway_configure_logging(verbosity)
++        if took_over_after_s is not None:  # the wait ran before gateway.log was set up
++            from gateway.run import get_hermes_home
++            logger.info("Took over %s after waiting %.1fs for the previous gateway", get_hermes_home(),
++                        took_over_after_s)
+ 
+         from gateway.run_startup import recover_left_core_at_gateway_start
+         if await asyncio.to_thread(recover_left_core_at_gateway_start) and config is None:
+diff --git a/tests/gateway/test_runtime_lock_wait.py b/tests/gateway/test_runtime_lock_wait.py
+index a698ce2c5f..9ea7bc46e0 100644
+--- a/tests/gateway/test_runtime_lock_wait.py
++++ b/tests/gateway/test_runtime_lock_wait.py
+@@ -224,3 +224,18 @@ def test_prewarm_survives_a_dashboard_that_exits_at_import(tmp_path, monkeypatch
+ 
+     monkeypatch.setattr(importlib, "import_module", import_module)
+     run_bootstrap._prewarm_before_runtime_lock()
++
++
++@pytest.mark.platforms("linux")
++@pytest.mark.asyncio
++async def test_wait_reports_how_long_it_waited_for_the_caller_to_log(home, monkeypatch):
++    monkeypatch.setattr(run_bootstrap, "_host_lock_held_by_predecessor", lambda _home: False)
++    assert await run_bootstrap._start_gateway_wait_for_runtime_lock([], 30) is None
++    process_ownership.close()
++    owner = ProfileOwnership()
++    owner.reserve([home])
++    waiter = asyncio.create_task(run_bootstrap._start_gateway_wait_for_runtime_lock([], 30))
++    await asyncio.sleep(0.2)
++    owner.close()
++    waited = await asyncio.wait_for(waiter, 5)
++    assert waited is not None and waited >= 0.2
