@@ -55,6 +55,7 @@ The Test workflow runs on pull requests and before each release:
 | `0021-subagent-controls-listed-children` | Stop, Steer and tail reach every background subagent `subagent.list` shows, also after the parent's cached agent was rebuilt or evicted; before, Stop on such a row answered `found: false` (the hub's "no longer running"). Bug fix, no key. | Not fixed upstream; no PR. |
 | `0022-stale-breaker-ends-call` | A stale-stream kill that opens the consecutive-stale breaker (`HERMES_STREAM_STALE_GIVEUP`) ends the call instead of reconnecting up to `HERMES_STREAM_RETRIES` more times; a provider that holds the stream open with keepalive comments cost 6 stale windows (18 min at 180 s) before, 5 now. Bug fix, no key. | Not fixed upstream; no PR. |
 | `0023-subagent-provider-patience` | `delegation.stream_stale_giveup` and `delegation.auto_recovery_cycles` (null = inherit): a subagent's own stale-breaker threshold and overload/outage wait ladder, so a background child on a queued or overloaded model (DeepInfra 429 `engine_overloaded`) fails fast with the provider's error while the main agent keeps its patience. | Not fixed upstream; no PR. |
+| `0024-session-background-tool` | Gateway method `session.background_tool` (session_id, execution_generation, optional tool_call_id) asks the running turn's tool workers to yield, so a foreground terminal command moves to the background registry and the turn goes on; `runtime.describe` advertises `tool-background-v1`. New method, no key. | Not upstream; no PR. |
 
 ## Adding or changing a patch
 

@@ -1,0 +1,758 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 23:30:39 -0600
+Subject: [PATCH] feat(gateway): session.background_tool moves a running
+ terminal command to the background
+
+A canonical verb that asks the running turn's tool workers to yield, so a
+foreground terminal command hands its live process to the background
+registry and the turn goes on. Fenced like session.steer (session:control
+and the execution generation). tool_call_id narrows it to the worker that
+runs that call: tool workers now record their call id per thread.
+Advertised as runtime.describe capability tool-background-v1.
+---
+ agent/agent_init.py                           |   2 +
+ agent/interrupt_control.py                    |  30 +-
+ agent/terminal_approval_batch.py              |   7 +-
+ agent/tool_executor.py                        |  17 +-
+ apps/shared/src/gateway-contract.generated.ts |  15 +
+ apps/shared/src/gateway-contract.openrpc.json |  94 +++++++
+ gateway/session_busy_controls.py              |  26 ++
+ gateway/session_controls.py                   |   3 +-
+ tests/agent/test_start_order_gate.py          |  23 ++
+ tests/gateway/test_session_background_tool.py | 266 ++++++++++++++++++
+ tests/hermes_cli/serve_handler_ledger.json    |   3 +-
+ tui_gateway/contracts/canonical_sessions.py   |  21 ++
+ .../docs/developer-guide/gateway-internals.md |   9 +
+ 13 files changed, 499 insertions(+), 17 deletions(-)
+ create mode 100644 tests/gateway/test_session_background_tool.py
+
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index aeba25fe5e..a30a991e32 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -444,6 +444,8 @@ _CONTROL_STATE: dict[str, Any] = {
+     # reach ThreadPoolExecutor workers, so interrupt()/clear_interrupt() fan out to these.
+     "_tool_worker_threads": set,
+     "_tool_worker_threads_lock": threading.Lock,
++    # Worker tid -> the tool_call_id it runs, so a yield request can target one call.
++    "_tool_worker_call_ids": dict,
+     # Subagent delegation: depth (0 = top-level) and running children (interrupt propagation).
+     "_delegate_depth": 0,
+     "_active_children": list,
+diff --git a/agent/interrupt_control.py b/agent/interrupt_control.py
+index af647a1c4f..fabea24983 100644
+--- a/agent/interrupt_control.py
++++ b/agent/interrupt_control.py
+@@ -320,6 +320,28 @@ class InterruptControlMixin:
+         self._turn_user_intervened = True
+         return True
+ 
++    def request_tool_yield(self, tool_call_id: Optional[str] = None) -> int:
++        """Ask the running tool workers to yield: a foreground terminal command hands its live
++        process to the background registry and returns; other tools ignore the request. With
++        ``tool_call_id`` only the worker running that call is asked. Returns how many workers were
++        asked (0 when no tool batch is executing or no worker runs that call)."""
++        if not getattr(self, "_executing_tools", False):
++            return 0
++        tracker = getattr(self, "_tool_worker_threads", None)
++        tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
++        if tracker is None or tracker_lock is None:
++            return 0
++        with tracker_lock:
++            if tool_call_id is None:
++                worker_tids = list(tracker)
++            else:
++                call_ids = getattr(self, "_tool_worker_call_ids", None)
++                call_ids = call_ids if isinstance(call_ids, dict) else {}
++                worker_tids = [tid for tid in tracker if call_ids.get(tid) == tool_call_id]
++        for tid in worker_tids:
++            _request_yield(tid)
++        return len(worker_tids)
++
+     def redirect(self, text: str) -> bool:
+         """Redirect the active turn without converting it into a new task: during a model request only that
+         request is cancelled (completed messages kept, partial reasoning becomes assistant context, the
+@@ -350,13 +372,7 @@ class InterruptControlMixin:
+         if getattr(self, "_executing_tools", False):
+             accepted = self.steer(cleaned)
+             if accepted:
+-                tracker = getattr(self, "_tool_worker_threads", None)
+-                tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
+-                if tracker is not None and tracker_lock is not None:
+-                    with tracker_lock:
+-                        worker_tids = list(tracker)
+-                    for tid in worker_tids:
+-                        _request_yield(tid)
++                self.request_tool_yield()
+             return accepted
+ 
+         _model_active = getattr(self, "_model_request_active", None)
+diff --git a/agent/terminal_approval_batch.py b/agent/terminal_approval_batch.py
+index a347abb01c..f203a676d6 100644
+--- a/agent/terminal_approval_batch.py
++++ b/agent/terminal_approval_batch.py
+@@ -78,7 +78,7 @@ class _TerminalSlot:
+         pc, batch = self.parsed, self.batch
+         ref = pc.ref(batch.task_id)
+         try:
+-            with te._registered_tool_worker(batch.agent) as tid:
++            with te._registered_tool_worker(batch.agent, ref.call_id) as tid:
+                 self.tids.append(tid)
+                 self.check_cancelled()
+                 dispatch = te._resolve_sequential_dispatch(batch.agent, ref, batch.messages)
+@@ -160,14 +160,15 @@ def bind_prepared_dispatch(dispatch):
+     slot = _slot.get()
+     if slot is None:
+         return dispatch
+-    from agent.tool_executor import _registered_tool_worker
++    from agent.tool_executor import _pairing_tool_call_id, _registered_tool_worker
+ 
++    call_id = _pairing_tool_call_id(slot.parsed.tool_call)
+     owner_tid = threading.get_ident()
+ 
+     def tracked(*args, **kwargs):
+         if threading.get_ident() == owner_tid:
+             return dispatch(*args, **kwargs)
+-        with _registered_tool_worker(slot.batch.agent) as tid:
++        with _registered_tool_worker(slot.batch.agent, call_id) as tid:
+             slot.tids.append(tid)
+             slot.check_cancelled()
+             return dispatch(*args, **kwargs)
+diff --git a/agent/tool_executor.py b/agent/tool_executor.py
+index 019de243a1..0bd9e37434 100644
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -550,17 +550,24 @@ class _ConcurrentToolAuthorizationGate:
+ 
+ 
+ @contextlib.contextmanager
+-def _registered_tool_worker(agent):
+-    """Track this worker tid for interrupt fan-out (``AIAgent.interrupt()``); on ANY exit
+-    (incl. BaseException) discard it and clear its interrupt bit so a recycled tid starts clean."""
++def _registered_tool_worker(agent, call_id: str | None = None):
++    """Track this worker tid for interrupt fan-out (``AIAgent.interrupt()``) and, with ``call_id``,
++    for a yield aimed at that tool call (``AIAgent.request_tool_yield``); on ANY exit (incl.
++    BaseException) discard it and clear its interrupt bit so a recycled tid starts clean."""
+     tid = threading.current_thread().ident
++    call_ids = getattr(agent, "_tool_worker_call_ids", None)
++    call_ids = call_ids if isinstance(call_ids, dict) else None
+     with agent._tool_worker_threads_lock:
+         agent._tool_worker_threads.add(tid)
++        if call_ids is not None and call_id:
++            call_ids[tid] = call_id
+     try:
+         yield tid
+     finally:
+         with agent._tool_worker_threads_lock:
+             agent._tool_worker_threads.discard(tid)
++            if call_ids is not None:
++                call_ids.pop(tid, None)
+         with contextlib.suppress(Exception):
+             _ra()._set_interrupt(False, tid)
+ 
+@@ -934,7 +941,7 @@ def _run_sequential_tool_execution_middleware(
+         worker_tid: list[int] = []
+ 
+     def _run() -> _ManagedToolResult:
+-        with _registered_tool_worker(agent) as tid:
++        with _registered_tool_worker(agent, tool_call_id) as tid:
+             worker_tid.append(tid)
+             return _run_agent_tool_execution_middleware(agent, authorization_gate=authorization_gate, **kwargs)
+ 
+@@ -1393,7 +1400,7 @@ class _ConcurrentBatch:
+     def run_worker(self, index: int, start_order: int) -> None:
+         """Worker function executed in a thread."""
+         agent, pc = self.agent, self.parsed_calls[index]
+-        with _registered_tool_worker(agent) as _worker_tid:
++        with _registered_tool_worker(agent, _pairing_tool_call_id(pc.tool_call)) as _worker_tid:
+             # An interrupt may have fanned out before our registration; apply it to our tid.
+             if agent._interrupt_requested:
+                 _interrupt_worker_tids(agent, [_worker_tid], reason=getattr(agent, "_tool_interrupt_reason", None))
+diff --git a/apps/shared/src/gateway-contract.generated.ts b/apps/shared/src/gateway-contract.generated.ts
+index d44f0bb543..6bf3df5134 100644
+--- a/apps/shared/src/gateway-contract.generated.ts
++++ b/apps/shared/src/gateway-contract.generated.ts
+@@ -5399,6 +5399,18 @@ export interface CanonicalReplaceQueuedParams {
+   display_kind?: 'hidden' | null
+   title_preview?: string | null
+ }
++export interface CanonicalBackgroundToolParams {
++  profile?: string | null
++  session_id: string
++  execution_generation: number
++  tool_call_id?: string | null
++}
++export interface CanonicalBackgroundToolResult {
++  status: 'requested' | 'none'
++  count: number
++  execution_generation: number
++  authority_epoch: number
++}
+ export interface CanonicalConfigGetResult {
+   value?: string | null
+   display?: string | null
+@@ -7123,6 +7135,8 @@ export interface CanonicalRpcMethods {
+   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
+   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
+   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
++  /** Ask the running generation's tool workers to yield: a foreground terminal command hands its live process to the background registry (notify on complete) and its tool call returns; other tools ignore the request. tool_call_id narrows it to the worker running that call. 'requested' with count = workers asked; 'none' when no agent runs tools or no worker runs tool_call_id. Advertised as runtime.describe capability tool-background-v1. Refusals: invalid_params, permission_denied, unsupported_control (managed worker), stale_generation. */
++  'session.background_tool': { params: CanonicalBackgroundToolParams; result: CanonicalBackgroundToolResult }
+   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
+   /** Drop this connection's subscription; a stale subscription id answers detached=false. end_reason (snake_case): the viewer is closing the conversation; the last viewer leaving an idle local session ends its row with that reason. */
+   'session.detach': { params: SessionDetachParams; result: SessionDetachResult }
+@@ -7190,6 +7204,7 @@ export const CANONICAL_RPC_METHODS = [
+   'rollback.session_diff',
+   'runtime.describe',
+   'session.automation',
++  'session.background_tool',
+   'session.create',
+   'session.detach',
+   'session.events.since',
+diff --git a/apps/shared/src/gateway-contract.openrpc.json b/apps/shared/src/gateway-contract.openrpc.json
+index 5f02468cd5..8e0ab07d0c 100644
+--- a/apps/shared/src/gateway-contract.openrpc.json
++++ b/apps/shared/src/gateway-contract.openrpc.json
+@@ -7892,6 +7892,82 @@
+         "title": "CanonicalAttachment",
+         "type": "object"
+       },
++      "CanonicalBackgroundToolParams": {
++        "additionalProperties": false,
++        "properties": {
++          "profile": {
++            "anyOf": [
++              {
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null,
++            "title": "Profile"
++          },
++          "session_id": {
++            "title": "Session Id",
++            "type": "string"
++          },
++          "execution_generation": {
++            "title": "Execution Generation",
++            "type": "integer"
++          },
++          "tool_call_id": {
++            "anyOf": [
++              {
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null,
++            "title": "Tool Call Id"
++          }
++        },
++        "required": [
++          "session_id",
++          "execution_generation"
++        ],
++        "title": "CanonicalBackgroundToolParams",
++        "type": "object"
++      },
++      "CanonicalBackgroundToolResult": {
++        "additionalProperties": false,
++        "properties": {
++          "status": {
++            "enum": [
++              "requested",
++              "none"
++            ],
++            "title": "Status",
++            "type": "string"
++          },
++          "count": {
++            "title": "Count",
++            "type": "integer"
++          },
++          "execution_generation": {
++            "title": "Execution Generation",
++            "type": "integer"
++          },
++          "authority_epoch": {
++            "title": "Authority Epoch",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "status",
++          "count",
++          "execution_generation",
++          "authority_epoch"
++        ],
++        "title": "CanonicalBackgroundToolResult",
++        "type": "object"
++      },
+       "CanonicalBotCancelParams": {
+         "additionalProperties": false,
+         "properties": {
+@@ -50272,6 +50348,24 @@
+         }
+       }
+     },
++    {
++      "name": "session.background_tool",
++      "summary": "Ask the running generation's tool workers to yield: a foreground terminal command hands its live process to the background registry (notify on complete) and its tool call returns; other tools ignore the request. tool_call_id narrows it to the worker running that call. 'requested' with count = workers asked; 'none' when no agent runs tools or no worker runs tool_call_id. Advertised as runtime.describe capability tool-background-v1. Refusals: invalid_params, permission_denied, unsupported_control (managed worker), stale_generation.",
++      "params": [
++        {
++          "name": "params",
++          "schema": {
++            "$ref": "#/components/schemas/CanonicalBackgroundToolParams"
++          }
++        }
++      ],
++      "result": {
++        "name": "result",
++        "schema": {
++          "$ref": "#/components/schemas/CanonicalBackgroundToolResult"
++        }
++      }
++    },
+     {
+       "name": "session.create",
+       "summary": "",
+diff --git a/gateway/session_busy_controls.py b/gateway/session_busy_controls.py
+index 24c1abe5bb..447ca175cc 100644
+--- a/gateway/session_busy_controls.py
++++ b/gateway/session_busy_controls.py
+@@ -12,6 +12,7 @@ def handlers(connection):
+         'config.set': partial(busy_config, connection, write=True),
+         'session.steer': partial(correct, connection, verb='steer'),
+         'session.redirect': partial(correct, connection, verb='redirect'),
++        'session.background_tool': partial(background_tool, connection),
+     }
+ 
+ 
+@@ -216,3 +217,28 @@ async def correct(connection, ref, params, *, verb):
+         return {'status': ({'steer': 'queued', 'redirect': 'redirected'}[verb] if accepted else 'rejected'),
+                 'text': params['text'], 'execution_generation': generation,
+                 'authority_epoch': authority.epoch}
++
++
++async def background_tool(connection, ref, params):
++    """``session.background_tool``: ask the running generation's tool workers to yield, so a
++    foreground terminal command moves to the background process registry and the turn goes on.
++    ``tool_call_id`` narrows the request to the worker running that call. A request only: tools
++    that cannot yield ignore it. ``status: 'none'`` when no worker was asked."""
++    tool_call_id = params.get('tool_call_id')
++    if (set(params) - {'session_id', 'profile', 'execution_generation', 'tool_call_id'}
++            or type(params.get('execution_generation')) is not int
++            or (tool_call_id is not None and (not isinstance(tool_call_id, str) or not tool_call_id))):
++        raise RuntimeStoreError('invalid_params')
++    authorize(connection, ref, params, 'session:control')
++    authority = connection.authority
++    generation = params['execution_generation']
++    live = authority.sessions[ref.session_id]
++    with live.event_stream.lock:
++        authority.check_approval_generation(ref.session_id, generation)
++        if ref.session_id in getattr(authority, '_managed_workers', {}):
++            raise RuntimeStoreError('unsupported_control')
++        agent, _ = authority.steer_agent(ref, generation, None)
++        request = getattr(agent, 'request_tool_yield', None)
++        count = request(tool_call_id) if callable(request) else 0
++    return {'status': 'requested' if count else 'none', 'count': count,
++            'execution_generation': generation, 'authority_epoch': authority.epoch}
+diff --git a/gateway/session_controls.py b/gateway/session_controls.py
+index 2771e11fb0..9605a4d5dc 100644
+--- a/gateway/session_controls.py
++++ b/gateway/session_controls.py
+@@ -561,7 +561,8 @@ class AuthorityConnection:
+                 'authority_epoch': self.authority.epoch,
+                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1',
+                                  'acp-session-mcp-v1', 'clarify-batch-v1', 'plugin-rpc-v1', 'session-client-v1', 'session-transcript-v1', 'session-list-picker-v1',
+-                                 'session-list-audience-v1', *await asyncio.to_thread(self._image_render_capabilities)],
++                                 'session-list-audience-v1', 'tool-background-v1',
++                                 *await asyncio.to_thread(self._image_render_capabilities)],
+                 'session_create': {'sources': sorted(SURFACES),
+                                    'parameters': sorted(CREATE_FIELDS | {'title'})},
+                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
+diff --git a/tests/agent/test_start_order_gate.py b/tests/agent/test_start_order_gate.py
+index f8aa7aa517..67b00ef96d 100644
+--- a/tests/agent/test_start_order_gate.py
++++ b/tests/agent/test_start_order_gate.py
+@@ -272,3 +272,26 @@ def test_dict_error_result_reaches_the_model_from_a_concurrent_worker(monkeypatc
+     (tool_msg,) = [m for m in messages if m.get("role") == "tool"]
+     assert "thread did not return a result" not in str(tool_msg["content"])
+     agent._invoke_tool.assert_called_once()
++
++
++def test_concurrent_workers_record_their_tool_call_id(monkeypatch):
++    """Each worker maps its tid to the call it runs while it runs it, so a yield request
++    (``session.background_tool`` with ``tool_call_id``) reaches exactly that worker."""
++    agent = _make_agent(monkeypatch)
++    agent._tool_worker_call_ids = {}
++    agent._tool_guardrails = MagicMock()
++    agent._tool_guardrails.before_call = lambda name, args: MagicMock(allows_execution=True)
++    seen = {}
++
++    def _invoke(name, args, task_id, call_id, **kw):
++        with agent._tool_worker_threads_lock:
++            seen[call_id] = agent._tool_worker_call_ids.get(threading.current_thread().ident)
++        return json.dumps({"ok": name})
++
++    agent._invoke_tool = MagicMock(side_effect=_invoke)
++    msg = _FakeAssistantMsg([_FakeToolCall("tool_a", "tc_a"), _FakeToolCall("tool_b", "tc_b")])
++
++    agent._execute_tool_calls_concurrent(msg, [], "test_task")
++
++    assert seen == {"tc_a": "tc_a", "tc_b": "tc_b"}
++    assert agent._tool_worker_call_ids == {} and agent._tool_worker_threads == set()
+diff --git a/tests/gateway/test_session_background_tool.py b/tests/gateway/test_session_background_tool.py
+new file mode 100644
+index 0000000000..038994dde3
+--- /dev/null
++++ b/tests/gateway/test_session_background_tool.py
+@@ -0,0 +1,266 @@
++"""``session.background_tool`` moves a running foreground terminal command to the background.
++
++A client sees a long foreground command (a build, a ``sleep`` poller) blocking the turn and asks
++the owner to background it. The verb is fenced like ``session.steer`` (``session:control`` and the
++running execution generation) and asks the turn agent's tool workers to yield
++(``AIAgent.request_tool_yield``): the terminal tool hands the live process to the process registry
++and returns; other tools ignore the request. ``tool_call_id`` narrows it to the one worker running
++that call, and an id no worker runs yields nothing.
++"""
++import asyncio
++import json
++import os
++import threading
++import time
++from contextlib import asynccontextmanager, contextmanager
++from types import SimpleNamespace
++
++import pytest
++
++from agent.interrupt_control import InterruptControlMixin
++from agent.tool_executor import _registered_tool_worker
++from gateway.session_busy_controls import background_tool
++from gateway.session_contract import SessionActor
++from hermes_state_runtime import RuntimeStoreError
++from tests.gateway.test_session_authority_cancel_settlement import (
++    ACTOR, REF, _authority, _submit, _wire_turn_agent)
++from tools import interrupt as interrupt_mod
++from tui_gateway.contracts.registry import CANONICAL_METHODS
++
++
++class Agent(InterruptControlMixin):
++    _interrupt_requested = False
++    _pending_steer = None
++    _pending_redirect = None
++    api_mode = "chat_completions"
++
++    def __init__(self, executing=True):
++        self._executing_tools = executing
++        self._pending_steer_lock = threading.Lock()
++        self._pending_redirect_lock = threading.Lock()
++        self._tool_worker_threads = set()
++        self._tool_worker_threads_lock = threading.Lock()
++        self._tool_worker_call_ids = {}
++        self._execution_thread_id = None
++
++
++@contextmanager
++def _workers(agent, *call_ids):
++    """Park one registered tool worker per call id until the block exits; yields their tids."""
++    release, ready, tids = threading.Event(), [], {}
++
++    def run(call_id):
++        with _registered_tool_worker(agent, call_id) as tid:
++            tids[call_id] = tid
++            ready.append(call_id)
++            release.wait(10)
++
++    threads = [threading.Thread(target=run, args=(call_id,), daemon=True) for call_id in call_ids]
++    for thread in threads:
++        thread.start()
++    deadline = time.monotonic() + 5
++    while len(ready) < len(call_ids) and time.monotonic() < deadline:
++        time.sleep(0.01)
++    try:
++        yield tids
++    finally:
++        for tid in tids.values():
++            interrupt_mod.consume_yield(tid)
++        release.set()
++        for thread in threads:
++            thread.join(5)
++
++
++@asynccontextmanager
++async def _running_turn(tmp_path, monkeypatch, agent):
++    """A claimed running turn whose adopted agent is *agent*; yields (authority, generation)."""
++    from gateway import session_finite
++
++    db, authority = _authority(tmp_path, monkeypatch)
++    claimed, release = asyncio.Event(), asyncio.Event()
++
++    async def execute(authority, ref, row):
++        if agent is not None:
++            await asyncio.to_thread(_wire_turn_agent, authority, row['generation'], agent)
++        claimed.set()
++        await asyncio.wait_for(release.wait(), 30)
++        return 'done'
++
++    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
++    with db:
++        await _submit(authority, 'running')
++        await asyncio.wait_for(claimed.wait(), 5)
++        try:
++            yield authority, authority._handle(REF).execution_generation
++        finally:
++            release.set()
++            await asyncio.wait_for(authority.sessions['s'].task, 5)
++
++
++async def _call(authority, params, actor=ACTOR):
++    return await background_tool(SimpleNamespace(authority=authority, actor=actor), REF, params)
++
++
++def _result(reply):
++    CANONICAL_METHODS['session.background_tool'].result.model_validate(reply)
++    return reply
++
++
++@pytest.mark.asyncio
++async def test_background_tool_asks_every_tool_worker_to_yield(tmp_path, monkeypatch):
++    agent = Agent()
++    async with _running_turn(tmp_path, monkeypatch, agent) as (authority, generation):
++        with _workers(agent, 'call-a', 'call-b') as tids:
++            reply = _result(await _call(authority, {'session_id': 's', 'execution_generation': generation}))
++
++            assert reply == {'status': 'requested', 'count': 2, 'execution_generation': generation,
++                             'authority_epoch': authority.epoch}
++            assert all(interrupt_mod.is_thread_yield_requested(tid) for tid in tids.values())
++
++
++@pytest.mark.asyncio
++async def test_tool_call_id_yields_only_the_worker_running_that_call(tmp_path, monkeypatch):
++    agent = Agent()
++    async with _running_turn(tmp_path, monkeypatch, agent) as (authority, generation):
++        with _workers(agent, 'call-a', 'call-b') as tids:
++            reply = _result(await _call(authority, {'session_id': 's', 'execution_generation': generation,
++                                                    'tool_call_id': 'call-b', 'profile': None}))
++
++            assert (reply['status'], reply['count']) == ('requested', 1)
++            assert interrupt_mod.is_thread_yield_requested(tids['call-b'])
++            assert not interrupt_mod.is_thread_yield_requested(tids['call-a'])
++
++            unknown = _result(await _call(authority, {'session_id': 's', 'execution_generation': generation,
++                                                      'tool_call_id': 'call-gone'}))
++            assert (unknown['status'], unknown['count']) == ('none', 0)
++            assert not interrupt_mod.is_thread_yield_requested(tids['call-a'])
++
++
++def test_a_worker_deregistering_drops_its_call_id():
++    agent = Agent()
++    with _workers(agent, 'call-a'):
++        assert list(agent._tool_worker_call_ids.values()) == ['call-a']
++    assert agent._tool_worker_call_ids == {} and agent._tool_worker_threads == set()
++
++
++@pytest.mark.asyncio
++async def test_none_when_the_agent_is_not_executing_tools(tmp_path, monkeypatch):
++    agent = Agent(executing=False)
++    async with _running_turn(tmp_path, monkeypatch, agent) as (authority, generation):
++        with _workers(agent, 'call-a') as tids:
++            reply = _result(await _call(authority, {'session_id': 's', 'execution_generation': generation}))
++
++            assert (reply['status'], reply['count']) == ('none', 0)
++            assert not interrupt_mod.is_thread_yield_requested(tids['call-a'])
++
++
++@pytest.mark.asyncio
++async def test_none_when_the_claimed_turn_has_no_agent(tmp_path, monkeypatch):
++    async with _running_turn(tmp_path, monkeypatch, None) as (authority, generation):
++        reply = _result(await _call(authority, {'session_id': 's', 'execution_generation': generation}))
++
++        assert reply == {'status': 'none', 'count': 0, 'execution_generation': generation,
++                         'authority_epoch': authority.epoch}
++
++
++@pytest.mark.asyncio
++async def test_a_stale_generation_is_refused(tmp_path, monkeypatch):
++    agent = Agent()
++    async with _running_turn(tmp_path, monkeypatch, agent) as (authority, generation):
++        with _workers(agent, 'call-a') as tids:
++            with pytest.raises(RuntimeStoreError) as refused:
++                await _call(authority, {'session_id': 's', 'execution_generation': generation + 1})
++
++            assert refused.value.reason == 'stale_generation'
++            assert not interrupt_mod.is_thread_yield_requested(tids['call-a'])
++
++
++@pytest.mark.parametrize('params', [
++    {'session_id': 's'},
++    {'session_id': 's', 'execution_generation': '1'},
++    {'session_id': 's', 'execution_generation': True},
++    {'session_id': 's', 'execution_generation': 1, 'tool_call_id': ''},
++    {'session_id': 's', 'execution_generation': 1, 'tool_call_id': 7},
++    {'session_id': 's', 'execution_generation': 1, 'text': 'not a steer'},
++])
++@pytest.mark.asyncio
++async def test_invalid_params_are_refused(tmp_path, monkeypatch, params):
++    db, authority = _authority(tmp_path, monkeypatch)
++    with db, pytest.raises(RuntimeStoreError) as refused:
++        await _call(authority, params)
++    assert refused.value.reason == 'invalid_params'
++
++
++@pytest.mark.asyncio
++async def test_an_actor_without_session_control_is_refused(tmp_path, monkeypatch):
++    agent = Agent()
++    reader = SessionActor('human', 'owned', frozenset({'session:submit', 'session:read'}), 'cli')
++    async with _running_turn(tmp_path, monkeypatch, agent) as (authority, generation):
++        with _workers(agent, 'call-a') as tids:
++            with pytest.raises(RuntimeStoreError) as refused:
++                await _call(authority, {'session_id': 's', 'execution_generation': generation}, actor=reader)
++
++            assert refused.value.reason == 'permission_denied'
++            assert not interrupt_mod.is_thread_yield_requested(tids['call-a'])
++
++
++@pytest.mark.asyncio
++async def test_runtime_describe_advertises_tool_background(tmp_path, monkeypatch):
++    from gateway.session_controls import AuthorityConnection
++    from tests.gateway.test_local_source_labels import _authority as _store_authority
++
++    authority, _store = await _store_authority(tmp_path, monkeypatch)
++    monkeypatch.setenv('HERMES_HOME', authority.profile_id)
++    conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'owner'})
++    try:
++        described = await conn.dispatch({'id': 0, 'method': 'runtime.describe', 'params': {}})
++        assert 'tool-background-v1' in described['result']['capabilities']
++        assert 'session.background_tool' in CANONICAL_METHODS
++    finally:
++        await conn.close()
++        authority.db.close()
++
++
++@pytest.mark.platforms("linux")
++@pytest.mark.live_system_guard_bypass
++@pytest.mark.asyncio
++async def test_background_tool_moves_a_running_terminal_command_to_the_background(tmp_path, monkeypatch):
++    """The real terminal tool on a registered worker: the verb hands its live process to the
++    registry and the tool call returns at once. The kill below needs real signal delivery
++    (see tests/tools/test_terminal_yield_to_background.py)."""
++    import psutil
++
++    from tools.process_registry import process_registry
++    from tools.terminal_tool import terminal_tool
++
++    agent = Agent()
++    res = {}
++
++    def worker():
++        with _registered_tool_worker(agent, 'call-term'):
++            res['result'] = json.loads(terminal_tool('echo started; sleep 60; echo done',
++                                                     task_id='background-tool-test', timeout=90))
++
++    async with _running_turn(tmp_path, monkeypatch, agent) as (authority, generation):
++        thread = threading.Thread(target=worker, daemon=True)
++        thread.start()
++        await asyncio.sleep(1.5)
++        reply = await _call(authority, {'session_id': 's', 'execution_generation': generation,
++                                        'tool_call_id': 'call-term'})
++        assert (reply['status'], reply['count']) == ('requested', 1)
++
++        await asyncio.to_thread(thread.join, 15)
++        assert not thread.is_alive(), 'terminal tool still blocked after session.background_tool'
++    r = res['result']
++    try:
++        assert r['status'] == 'yielded_to_background'
++        assert r['exit_code'] is None and 'started' in r['output']
++        assert os.path.exists(f"/proc/{r['pid']}")
++        assert process_registry.poll(r['session_id'])['status'] == 'running'
++        descendants = psutil.Process(r['pid']).children(recursive=True)
++    finally:
++        killed = process_registry.kill_process(r['session_id'])
++    assert killed['status'] == 'killed', killed
++    assert not any(process_registry._proc_alive(p) for p in descendants), 'orphaned descendant survived kill'
++    evt = process_registry.completion_queue.get(timeout=5)
++    assert evt['session_id'] == r['session_id']
+diff --git a/tests/hermes_cli/serve_handler_ledger.json b/tests/hermes_cli/serve_handler_ledger.json
+index d6bbdfdc84..044cd4e30c 100644
+--- a/tests/hermes_cli/serve_handler_ledger.json
++++ b/tests/hermes_cli/serve_handler_ledger.json
+@@ -5,7 +5,7 @@
+    "undecided": 343
+   },
+   "rpc": {
+-   "authority": 108,
++   "authority": 109,
+    "keep-host-wide": 1,
+    "undecided": 182
+   },
+@@ -573,6 +573,7 @@
+   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "session.active_list", "kind": "rpc", "ref": ""},
+   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.archive", "kind": "rpc", "ref": "D3"},
+   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "session.automation", "kind": "rpc", "ref": ""},
++  {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "session.background_tool", "kind": "rpc", "ref": ""},
+   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.branch", "kind": "rpc", "ref": "D3"},
+   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.branch_stored", "kind": "rpc", "ref": "D3"},
+   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.branch_whole", "kind": "rpc", "ref": "D3"},
+diff --git a/tui_gateway/contracts/canonical_sessions.py b/tui_gateway/contracts/canonical_sessions.py
+index 8e3a3e6f02..90e8ac65ca 100644
+--- a/tui_gateway/contracts/canonical_sessions.py
++++ b/tui_gateway/contracts/canonical_sessions.py
+@@ -323,6 +323,17 @@ class CanonicalCorrectionResult(RootModel):
+     root: CanonicalCorrectionAck | CanonicalVoiceStopped
+ 
+ 
++class CanonicalBackgroundToolParams(CanonicalControlParams):
++    tool_call_id: str | None = None
++
++
++class CanonicalBackgroundToolResult(Result):
++    status: Literal['requested', 'none']
++    count: int
++    execution_generation: int
++    authority_epoch: int
++
++
+ class CanonicalApprovalParams(CanonicalControlParams):
+     prompt_id: str
+     choice: str
+@@ -384,3 +395,13 @@ canonical_method('prompt.replace_queued', params=CanonicalReplaceQueuedParams, r
+                      "at the back of the FIFO, in one write bound to the replaced admission. "
+                      "Refusals: admission_started, admission_conflict (the submission_id replaced "
+                      "another admission), queue_full, unsupported_control, not_found.")
++canonical_method('session.background_tool', params=CanonicalBackgroundToolParams,
++                 result=CanonicalBackgroundToolResult,
++                 doc="Ask the running generation's tool workers to yield: a foreground terminal "
++                     "command hands its live process to the background registry (notify on "
++                     "complete) and its tool call returns; other tools ignore the request. "
++                     "tool_call_id narrows it to the worker running that call. 'requested' with "
++                     "count = workers asked; 'none' when no agent runs tools or no worker runs "
++                     "tool_call_id. Advertised as runtime.describe capability tool-background-v1. "
++                     "Refusals: invalid_params, permission_denied, unsupported_control (managed "
++                     "worker), stale_generation.")
+diff --git a/website/docs/developer-guide/gateway-internals.md b/website/docs/developer-guide/gateway-internals.md
+index d5dbff3985..161a875afa 100644
+--- a/website/docs/developer-guide/gateway-internals.md
++++ b/website/docs/developer-guide/gateway-internals.md
+@@ -190,6 +190,15 @@ active correction window, while `stale_generation` rejects settled/replaced work
+ Managed-worker corrections currently return `unsupported_control`; normal durable
+ queue submission and Stop remain separate controls.
+ 
++`session.background_tool` takes `session_id`, the current `execution_generation`, and an
++optional `tool_call_id`, with the same rights and generation fence as `session.steer`. It
++asks the running turn's tool workers to yield: a foreground terminal command hands its live
++process to the background process registry (notify on complete) and its tool call returns.
++Other tools ignore the request. With `tool_call_id`, only the worker that runs that call is
++asked. The reply is `{status, count, execution_generation, authority_epoch}`: `requested`
++with the number of workers asked, or `none` when no agent runs tools or no worker runs that
++call. Owners that serve it advertise `tool-background-v1` in `runtime.describe`.
++
+ ## Shared authority setup readiness
+ 
+ Authenticated local clients can call `setup.status` and `setup.runtime_check` before
