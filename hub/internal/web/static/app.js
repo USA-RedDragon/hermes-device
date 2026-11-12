@@ -2071,6 +2071,10 @@
     if (lim.name && !lim.name.signed_in) line.append(el("span", "claude-off", "not signed in"));
     const ctx = contextPart(info);
     if (ctx) line.append(ctx);
+    const subs = el("span", "subs");
+    subs.id = "subsline";
+    line.append(subs);
+    drawSubs();
     const mt = el("span", "mtok");
     mt.id = "mtok";
     line.append(mt, el("span", "break"));
@@ -2088,6 +2092,31 @@
     if (view && !$("info").hidden) claude.note($("claudenote"), view.backend, info);
     settings.sync(info);
     if (page) page.meters(view ? pageMeters(info) : []);
+  }
+
+  // drawSubs shows the chat's running subagents in the line under the
+  // title, by model: "subagents: Haiku ×6".
+  function drawSubs() {
+    const sp = $("subsline");
+    if (!sp) return;
+    let models = [];
+    try { models = activity.liveModels(); } catch (_) { /* before Activity starts */ }
+    const counts = new Map();
+    for (const m of models) {
+      const name = shortModel(m);
+      counts.set(name, (counts.get(name) || 0) + 1);
+    }
+    const parts = [...counts].map(([name, n]) => name + " \u00D7" + n);
+    sp.hidden = !parts.length;
+    sp.textContent = parts.length ? "subagents: " + parts.join(", ") : "";
+    sp.title = parts.length ? "Subagents running now, by model" : "";
+  }
+
+  // shortModel names a model in a few letters: Haiku for claude-haiku-5-5.
+  function shortModel(id) {
+    const m = /^claude-([a-z]+)-/.exec(id || "");
+    if (m) return m[1][0].toUpperCase() + m[1].slice(1);
+    return id || "model";
   }
 
   // pageMeters are the page chat's meter row: the context window, the
@@ -2136,6 +2165,7 @@
   // line under the title. It loads the model list when first opened.
   const settings = {
     models: null,
+    subagents: null,
     info: {},
     note(text, bad) {
       const n = $("settings-note");
@@ -2145,6 +2175,10 @@
     reset() {
       this.busy = false;
       this.models = null;
+      this.subagents = null;
+      this.subSeq++;
+      $("subagents-row").hidden = true;
+      $("subagents-line").hidden = true;
       this.info = {};
       $("info").open = false;
       this.note("");
@@ -2157,6 +2191,7 @@
       const chat = view;
       if (!chat) return;
       this.fill();
+      if (!this.subagents) this.loadSubagents();
       if (this.models) return;
       this.note("Loading models...");
       try {
@@ -2231,6 +2266,77 @@
           eff.append(o);
         }
       }
+    },
+    // loadSubagents reads the chat's Subagents choice. A backend without
+    // the subagent-routes plugin answers 404, and the picker stays hidden.
+    subSeq: 0,
+    async loadSubagents() {
+      const chat = view;
+      const seq = ++this.subSeq;
+      try {
+        const s = await api("GET", chat.base + "/subagents");
+        if (chat !== view || seq !== this.subSeq) return;
+        this.subagents = s;
+      } catch (_) {
+        if (chat !== view || seq !== this.subSeq) return;
+        this.subagents = null;
+      }
+      this.fillSubagents();
+    },
+    fillSubagents() {
+      const s = this.subagents;
+      const sel = $("subagents");
+      $("subagents-row").hidden = !s;
+      if (!s) { $("subagents-line").hidden = true; return; }
+      if (document.activeElement !== sel) {
+        sel.replaceChildren();
+        const heads = new Map();
+        for (const c of s.choices || []) {
+          let parent = sel;
+          if (c.group) {
+            parent = heads.get(c.group);
+            if (!parent) {
+              parent = el("optgroup");
+              parent.label = c.group;
+              heads.set(c.group, parent);
+              sel.append(parent);
+            }
+          }
+          const o = el("option", "", c.label);
+          o.value = c.id;
+          if (c.id === s.choice) o.selected = true;
+          parent.append(o);
+        }
+      }
+      this.subLine(sel.value || s.choice);
+    },
+    // subLine says under the pickers what the Subagents choice means.
+    subLine(id) {
+      const line = $("subagents-line");
+      const c = ((this.subagents && this.subagents.choices) || []).find((x) => x.id === id);
+      line.hidden = !c;
+      line.replaceChildren();
+      if (!c) return;
+      const at = c.em ? c.line.indexOf(c.em) : -1;
+      if (at < 0) line.append(c.line);
+      else line.append(c.line.slice(0, at), el("b", "", c.em), c.line.slice(at + c.em.length));
+    },
+    async pickSubagents() {
+      const chat = view;
+      const choice = $("subagents").value;
+      if (!chat || !this.subagents) return;
+      this.subLine(choice);
+      const seq = ++this.subSeq;
+      try {
+        const s = await api("PUT", chat.base + "/subagents", { choice });
+        if (chat !== view || seq !== this.subSeq) return;
+        this.subagents = s;
+        this.note("Subagents set. It applies from the next subagent.");
+      } catch (e) {
+        if (chat !== view || seq !== this.subSeq) return;
+        this.note("Could not change subagents: " + e.message, true);
+      }
+      this.fillSubagents();
     },
     // route fills the line under the model picker: which account a chat on
     // the Claude pool runs on, or what an API credit provider bills.
@@ -2856,7 +2962,7 @@
     if (view && view.backend === j.b && view.session === j.s) view.jumpTo();
   },
     closeSide: () => openSide(false) });
-  const activity = window.HubActivity({ api, el, showText });
+  const activity = window.HubActivity({ api, el, showText, drawn: () => drawSubs() });
   const claude = window.HubClaude({ api, el, me: () => me, redraw: () => { if (view) drawInfo(view.info); } });
   const claudeCode = window.HubClaudeCode({ api, el });
   const usage = window.HubUsage({ api, el, chatHash, defaultBackend: () => me.default_backend || "",
@@ -3019,6 +3125,7 @@
     notices.start(!!me.notify);
     $("model").onchange = () => settings.pickModel();
     $("effort").onchange = () => settings.pickEffort();
+    $("subagents").onchange = () => settings.pickSubagents();
     window.HubShortcuts({ search: showSearch, newChat: () => newChat(), stop: stopTurn, running: () => !!(view && view.running),
       hasChat: () => !!view, exportChat: () => $("exportbtn").click(), activity: () => $("actbtn").click(),
       closeMenus: () => {

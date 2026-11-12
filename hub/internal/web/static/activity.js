@@ -644,6 +644,7 @@ window.HubActivity = (ctx) => {
   function draw() {
     if (!S.chat) return;
     drawTokens();
+    if (ctx.drawn) ctx.drawn();
     const subs = [...S.subs.values()], bgs = [...S.bgs.values()];
     const liveSub = subs.filter((r) => live.has(r.state)).length, liveBg = bgs.filter((r) => live.has(r.state)).length;
     const n = liveSub + liveBg;
@@ -767,6 +768,9 @@ window.HubActivity = (ctx) => {
     $("actbody").scrollTop = v.top || 0;
   }
 
-  return { view, restore, show, event: (kind, p) => { if (S.chat && event(kind, p)) draw(); }, opens, fromTool, background,
+  // liveModels are the models of the chat's running subagents.
+  const liveModels = () => S.chat ? [...S.subs.values()].filter((r) => live.has(r.state)).map((r) => r.model) : [];
+
+  return { view, restore, show, event: (kind, p) => { if (S.chat && event(kind, p)) draw(); }, opens, fromTool, background, liveModels,
     running: (on) => { S.running = !!on; draw(); }, usage: (u) => { if (u) { S.usage = u; draw(); } } };
 };

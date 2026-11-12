@@ -82,7 +82,9 @@ type Options struct {
 	// Notices finds the notices whose buttons people press. Optional.
 	Notices NoticeStore
 	// Claude signs Claude accounts in from Telegram. Optional.
-	Claude     hub.Claude
+	Claude hub.Claude
+	// Subagents sets a chat's Subagents choice from /model. Optional.
+	Subagents  hub.SubagentRoutes
 	Logger     *slog.Logger
 	HTTPClient *http.Client
 	// statusTick replaces the package's statusTick in tests.
@@ -121,6 +123,7 @@ type Bot struct {
 	computers hub.Computers
 	notices   NoticeStore
 	claude    hub.Claude
+	subagents hub.SubagentRoutes
 	botID     int64
 	logger    *slog.Logger
 	defaults  map[string]string
@@ -286,6 +289,7 @@ func New(cfg Config, opts Options) (*Bot, error) {
 		computers: opts.Computers,
 		notices:   opts.Notices,
 		claude:    opts.Claude,
+		subagents: opts.Subagents,
 		botID:     BotID(cfg.Token),
 		logger:    logger,
 		defaults:  defaults,
@@ -1174,7 +1178,7 @@ func (b *Bot) handleCallback(ctx context.Context, q *CallbackQuery) {
 			return
 		}
 		b.pressPrompt(ctx, q, user, t, parts[2])
-	case len(parts) == 3 && parts[0] == cbModel, len(parts) == 2 && parts[0] == cbModelYes:
+	case modelButton(parts):
 		b.pressModel(ctx, q, to, user, parts)
 	case len(parts) == 1 && parts[0] == cbSteps:
 		b.sendSteps(ctx, q, to)

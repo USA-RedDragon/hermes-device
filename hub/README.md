@@ -14,7 +14,7 @@ The hub of Talaria: one web front end, behind OpenID Connect login, for many [He
 - Pages: interactive HTML that the agent writes, opened full screen in a sandboxed frame, with a way to send an answer back to the chat (see [Pages](#pages)).
 - Claude subscription accounts as one pool of models, and each account's Claude API key as models of their own, with each account's usage, an API credit estimate and a sign-in from the hub (see [Claude](#claude)).
 - Replies in Markdown, with colored code blocks and a Copy button. Model output never becomes HTML, and links open only `http`, `https` and `mailto` targets.
-- A line under the chat title with the model, how full its context is (such as `41k / 131k context`, with a small meter), reply speed and the working folder. It opens to pick the model and the thinking level.
+- A line under the chat title with the model, how full its context is (such as `41k / 131k context`, with a small meter), the subagents that run now by model (such as `subagents: Haiku ×6`), reply speed and the working folder. It opens to pick the model, the thinking level and the chat's Subagents (see [Subagent routes](#subagent-routes)).
 - Rename, archive, delete, pin and export chats, and search their titles. The list marks chats that run, replies you have not seen yet, and chats that wait for your approval or answer (see [The message box and the chat list](#the-message-box-and-the-chat-list)).
 - An optional Telegram bot (`telegram.*`) that uses the same backends and permissions.
 - Optional [talaria](https://github.com/USA-RedDragon/talaria) computer support (`device.*`): users pair their own computers, start or move chats onto a computer and folder from the web page or Telegram, and Talaria runs commands, edits files and serves VS Code there.
@@ -260,6 +260,17 @@ The hub calls the plugin's routes on the Hermes web server with its dashboard lo
 - The sign-in link goes only in the answer to the admin who asked for it, and on Telegram only to that admin's own chat or group. The account list leaves it out, and chat notes and Web Push notices never carry it.
 - The hub passes the code straight to the plugin. It never logs, stores or sends back the code, and it does not log the link. The page clears the code box when it sends the code, and the Telegram bot deletes the code's message.
 
+## Subagent routes
+
+The Subagents picker beside Model and Thinking sets which models the chat's subagents (`delegate_task`) may use. The chat's own model stays the orchestrator. The choices come from the backend's subagent-routes Hermes plugin, which provides the `model_map` delegation backend with the routes of `delegation.backends.model_map.options` in Hermes's config:
+
+- **Auto (model chooses)**: the model picks a route for each subagent by the routes' descriptions.
+- **Every subagent on** a route, such as Haiku 5.5: every subagent runs on that route, whatever the model asks for.
+- **Ask for help**, such as Opus when stuck: subagents run on the chat's own model, and the model may start one subagent at a time on the stronger route. A second one while the first runs or starts is refused, and so is any other route.
+- **No subagents**: every subagent is refused.
+
+The line under the pickers says what the choice means. The choice belongs to the chat and follows it across context compression; the next subagent takes it. Each turn of a chat with a choice tells the model the rule in one line. `/model` in Telegram shows the choice with a button for each one. The hub calls `GET` and `PUT /api/plugins/subagent-routes/sessions/{session}` (`{"choice"}`) with its dashboard login; its own route is `GET` and `PUT /api/sessions/<backend>/<session>/subagents`. A backend whose Hermes answers 404 has no plugin, and the hub shows no picker for it.
+
 ## Chat files
 
 For a chat that runs on one of the user's own computers or in the sandbox, "Files" in the chat's header opens a read-only view of the chat's folder:
@@ -320,7 +331,7 @@ When a chat switches to another model, Hermes drops `model.context_length` from 
 
 Set `telegram.enabled`, `telegram.token` and `http.public_url`. A Telegram user sends `/link` to the bot and gets a link to `/link/telegram?token=...`. That page needs a hub login and asks the user to confirm; only the confirmation (a POST with the CSRF token) links the account. A link token is valid for <!-- docgen:const pkg=internal/store name=LinkTokenTTL -->`10m0s`<!-- /docgen:const --> and works once.
 
-`/status` shows the attached chat's model and how full its context is, such as `Context: 41k / 131k (31%)`, from the same usage figures as the page. `/model` shows the chat's model with a button for each model it can switch to, named by its group and name as the hub's model list shows them (such as `Claude: Opus 5.5`; up to <!-- docgen:const pkg=internal/telegram name=maxModelButtons -->`24`<!-- /docgen:const -->), and `/model NAME` or `/model provider/NAME` switches directly, with the model's ID as NAME. When Hermes asks to confirm a model, the bot shows its reason and a "Use it anyway" button. `/bg TEXT` runs a prompt in the background, as on the page (see [Activity](#activity)), and the bot sends its answer to the chat when it is done.
+`/status` shows the attached chat's model and how full its context is, such as `Context: 41k / 131k (31%)`, from the same usage figures as the page. `/model` shows the chat's model with a button for each model it can switch to, named by its group and name as the hub's model list shows them (such as `Claude: Opus 5.5`; up to <!-- docgen:const pkg=internal/telegram name=maxModelButtons -->`24`<!-- /docgen:const -->), and `/model NAME` or `/model provider/NAME` switches directly, with the model's ID as NAME. When Hermes asks to confirm a model, the bot shows its reason and a "Use it anyway" button. On a backend with the subagent-routes plugin, `/model` also shows the chat's Subagents choice and what it means, with a button for each choice (see [Subagent routes](#subagent-routes)). `/bg TEXT` runs a prompt in the background, as on the page (see [Activity](#activity)), and the bot sends its answer to the chat when it is done.
 
 **Command menu.** When it starts, the bot sets its command menu (`setMyCommands`) for each place: private chats get `/new`, `/stop`, `/model`, `/bg`, `/status`, `/sessions`, `/backends`, `/devices`, `/where`, `/move` (the last three with computers on), `/link`, `/unlink` and `/help`; groups get `/link` and `/help`; each linked group gets the commands of a linked group. `/device` and `/computers` work as `/devices`.
 

@@ -78,6 +78,8 @@ type Options struct {
 	Claude hub.Claude
 	// ClaudeCode serves the Usage page's Claude Code panel. Nil: no panel.
 	ClaudeCode hub.ClaudeCode
+	// Subagents serves the Subagents setting of chats. Nil: no picker.
+	Subagents hub.SubagentRoutes
 	// Chats keeps each user's drafts, pins and read state. Nil: none.
 	Chats hub.ChatStore
 	// Version is the hub's release, shown in Settings.
@@ -119,6 +121,7 @@ type Server struct {
 	claude       hub.Claude
 	scheduled    hub.Scheduled
 	claudeCode   hub.ClaudeCode
+	subagents    hub.SubagentRoutes
 	chats        hub.ChatStore
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
@@ -166,7 +169,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory,
 		insights: opts.Insights, files: opts.Files,
 		notices: opts.Notices, notifier: opts.Notifier, claude: opts.Claude, scheduled: opts.Scheduled,
-		claudeCode: opts.ClaudeCode, chats: opts.Chats,
+		claudeCode: opts.ClaudeCode, subagents: opts.Subagents, chats: opts.Chats,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,
@@ -262,6 +265,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/sessions/{backend}/{session}/subagents/{subagent}/stop", s.api(s.handleStopSubagent))
 	mux.Handle("POST /api/sessions/{backend}/{session}/processes/{process}/stop", s.api(s.handleStopProcess))
 	mux.Handle("POST /api/sessions/{backend}/{session}/subagents-paused", s.api(s.handlePauseSubagents))
+	mux.Handle("GET /api/sessions/{backend}/{session}/subagents", s.api(s.handleSubagents))
+	mux.Handle("PUT /api/sessions/{backend}/{session}/subagents", s.api(s.handleSubagents))
 	mux.Handle("POST /api/sessions/{backend}/{session}/background", s.api(s.handleBackground))
 	mux.Handle("GET /api/sessions/{backend}/{session}/background-tokens", s.api(s.handleBackgroundTokens))
 	mux.Handle("POST /api/places", s.api(s.handlePlaces))

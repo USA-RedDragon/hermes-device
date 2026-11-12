@@ -31,6 +31,7 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/server"
 	"github.com/USA-RedDragon/hermes-hub/internal/service"
 	"github.com/USA-RedDragon/hermes-hub/internal/store"
+	"github.com/USA-RedDragon/hermes-hub/internal/subagents"
 	"github.com/USA-RedDragon/hermes-hub/internal/telegram"
 	"github.com/USA-RedDragon/hermes-hub/internal/web"
 	"github.com/prometheus/client_golang/prometheus"
@@ -152,6 +153,10 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	if sc := newScheduled(cfg, svc, st, dialers); sc != nil {
 		webOpts.Scheduled = sc
 	}
+	sa := newSubagents(cfg, svc, dialers)
+	if sa != nil {
+		webOpts.Subagents = sa
+	}
 	ui, err := web.New(cfg, webOpts)
 	if err != nil {
 		return err
@@ -173,6 +178,9 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 		}
 		if cs != nil {
 			topts.Claude = cs
+		}
+		if sa != nil {
+			topts.Subagents = sa
 		}
 		bot, err := telegram.New(telegram.Config(cfg.Telegram), topts)
 		if err != nil {
@@ -338,6 +346,20 @@ func newClaude(cfg *config.Config, svc *service.Service, n *notify.Notifier, dia
 	}
 	return claude.New(claude.Options{Access: svc, Admins: admins, Location: cfg.Claude.Location(), Requesters: rs,
 		Notify: n.Notify, Announce: svc.Announce})
+}
+
+// newSubagents returns the core of the chats' Subagents setting, or nil
+// when there is no backend. Any backend's Hermes may have the
+// subagent-routes plugin.
+func newSubagents(cfg *config.Config, svc *service.Service, dialers map[string]*gateway.Dialer) *subagents.Service {
+	if len(cfg.Backends) == 0 {
+		return nil
+	}
+	rs := make(map[string]device.Requester, len(dialers))
+	for id, d := range dialers {
+		rs[id] = d
+	}
+	return subagents.New(subagents.Options{Access: svc, Requesters: rs})
 }
 
 // newScheduled returns the Scheduled page's core, or nil when there is no

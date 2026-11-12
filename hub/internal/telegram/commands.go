@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -14,6 +15,8 @@ const (
 	// confirms a model that Hermes asked about: "my:<gen>".
 	cbModel    = "md"
 	cbModelYes = "my"
+	// cbSubagents is a Subagents button of /model: "sa:<gen>:<i>".
+	cbSubagents = "sa"
 	// maxModelButtons bounds the model buttons /model shows.
 	maxModelButtons = 24
 	// bgCompleteEvent ends a /bg prompt with its answer.
@@ -33,6 +36,8 @@ type modelMenu struct {
 	// confirmation it gave.
 	confirm modelPick
 	token   string
+	// subagents are the Subagents choices it showed.
+	subagents []string
 }
 
 // model handles /model: with no argument it shows the chat's model and a
@@ -99,11 +104,76 @@ func (b *Bot) model(ctx context.Context, to dest, user, arg string) {
 	default:
 		sb.WriteString("\nPick one, or send /model NAME.")
 	}
+	rows = append(rows, b.subagentsMenu(ctx, &sb, st, user, a)...)
 	var kb *InlineKeyboard
 	if len(rows) > 0 {
 		kb = &InlineKeyboard{InlineKeyboard: rows}
 	}
 	b.sendHTML(ctx, to, sb.String(), kb)
+}
+
+// subagentsMenu adds the chat's Subagents choice to /model, with a button
+// for each choice, when its backend has the subagent-routes plugin.
+func (b *Bot) subagentsMenu(ctx context.Context, sb *strings.Builder, st *chatState, user string, a *attachment) [][]InlineButton {
+	st.models.subagents = nil
+	if b.subagents == nil {
+		return nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	sa, err := b.subagents.ChatSubagents(cctx, user, a.backendID, a.sessionID)
+	if err != nil {
+		if !errors.Is(err, hub.ErrNoSubagentRoutes) {
+			b.logger.Warn("Failed to read a chat's Subagents choice", "error", err.Error())
+		}
+		return nil
+	}
+	cur, _ := sa.Current()
+	fmt.Fprintf(sb, "\n\n<b>Subagents:</b> %s", escapeHTML(cmpOr(cur.Label, sa.Choice)))
+	if cur.Line != "" {
+		fmt.Fprintf(sb, "\n<i>%s</i>", escapeHTML(cur.Line))
+	}
+	var rows [][]InlineButton
+	for _, c := range sa.Choices {
+		st.models.subagents = append(st.models.subagents, c.ID)
+		label := "Subagents: " + c.Label
+		if c.ID == sa.Choice {
+			label = "• " + label
+		}
+		rows = append(rows, []InlineButton{{Text: truncate(label, 60),
+			CallbackData: fmt.Sprintf("%s:%d:%d", cbSubagents, st.models.gen, len(st.models.subagents)-1)}})
+	}
+	return rows
+}
+
+// pressSubagents handles a Subagents button of /model.
+func (b *Bot) pressSubagents(ctx context.Context, q *CallbackQuery, to dest, user string, parts []string) {
+	st := b.chat(to)
+	gen, err1 := strconv.Atoi(parts[1])
+	i, err2 := strconv.Atoi(parts[2])
+	if err1 != nil || err2 != nil || gen != st.models.gen || i < 0 || i >= len(st.models.subagents) || b.subagents == nil {
+		b.answer(ctx, q.ID, "That list is out of date. Send /model again.")
+		return
+	}
+	a := st.att
+	if a == nil || st.user != user {
+		b.answer(ctx, q.ID, msgNoAttach)
+		return
+	}
+	b.answer(ctx, q.ID, "")
+	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	sa, err := b.subagents.SetChatSubagents(cctx, user, a.backendID, a.sessionID, st.models.subagents[i])
+	if err != nil {
+		b.reportErr(ctx, to, user, "set subagents", err)
+		return
+	}
+	cur, _ := sa.Current()
+	text := "Subagents set to <b>" + escapeHTML(cmpOr(cur.Label, sa.Choice)) + "</b>."
+	if cur.Line != "" {
+		text += " " + escapeHTML(cur.Line)
+	}
+	b.sendHTML(ctx, to, text, nil)
 }
 
 func cmpOr(s, def string) string {
@@ -179,8 +249,25 @@ func (b *Bot) setModel(ctx context.Context, to dest, user string, a *attachment,
 	}
 }
 
-// pressModel handles a model button of /model or its confirmation.
+// modelButton reports whether a button's data is one of /model: a model,
+// its confirmation or a Subagents choice.
+func modelButton(parts []string) bool {
+	switch len(parts) {
+	case 2:
+		return parts[0] == cbModelYes
+	case 3:
+		return parts[0] == cbModel || parts[0] == cbSubagents
+	}
+	return false
+}
+
+// pressModel handles a button of /model: a model, its confirmation or a
+// Subagents choice.
 func (b *Bot) pressModel(ctx context.Context, q *CallbackQuery, to dest, user string, parts []string) {
+	if parts[0] == cbSubagents {
+		b.pressSubagents(ctx, q, to, user, parts)
+		return
+	}
 	st := b.chat(to)
 	gen, err := strconv.Atoi(parts[1])
 	if err != nil || gen != st.models.gen {

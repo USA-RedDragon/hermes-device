@@ -62,8 +62,10 @@
       <summary id="infoline" title="Show model and thinking settings"></summary>
       <div class="info-body">
         <label>Model <select id="model"></select></label>
-        <p id="model-route" class="route" aria-live="polite" hidden></p>
         <label id="effort-row">Thinking <select id="effort" title="How long the model thinks before it replies"></select></label>
+        <label id="subagents-row" hidden>Subagents <select id="subagents" title="Which models this chat's subagents may use"></select></label>
+        <p id="model-route" class="route" aria-live="polite" hidden></p>
+        <p id="subagents-line" class="route" aria-live="polite" hidden></p>
         <div id="settings-note" class="status" aria-live="polite"></div>
       </div>
     </details>

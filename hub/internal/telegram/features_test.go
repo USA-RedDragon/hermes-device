@@ -1,10 +1,12 @@
 package telegram_test
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -670,5 +672,66 @@ func TestLargeImagesSplitIntoAlbumsBySize(t *testing.T) {
 	}
 	if names, _ := albums[0].Params["names"].([]string); len(names) != 4 {
 		t.Fatalf("album of %d images", len(names))
+	}
+}
+
+// fakeSubagents is a hub.SubagentRoutes with one chat's choice.
+type fakeSubagents struct {
+	mu     sync.Mutex
+	choice string
+	sets   []string
+}
+
+func (f *fakeSubagents) answer() hub.Subagents {
+	return hub.Subagents{Choice: f.choice, Choices: []hub.SubagentChoice{
+		{ID: "auto", Label: "Auto (model chooses)", Line: "The model picks a route for each subagent."},
+		{ID: "haiku", Label: "Haiku 5.5", Group: "Every subagent on", Line: "Every subagent runs on Haiku 5.5, through the Claude account pool.", Em: "Haiku 5.5"},
+		{ID: "none", Label: "No subagents", Line: "This chat does not start subagents."},
+	}}
+}
+
+func (f *fakeSubagents) ChatSubagents(context.Context, string, string, string) (hub.Subagents, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.answer(), nil
+}
+
+func (f *fakeSubagents) SetChatSubagents(_ context.Context, _, _, session, choice string) (hub.Subagents, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.choice = choice
+	f.sets = append(f.sets, session+"/"+choice)
+	return f.answer(), nil
+}
+
+func TestModelCommandSubagents(t *testing.T) {
+	t.Parallel()
+	subs := &fakeSubagents{choice: "auto"}
+	h := startBotNotices(t, nil, newFakeState(), nil, nil, func(o *telegram.Options) { o.Subagents = subs })
+	h.hub.mu.Lock()
+	h.hub.models = hub.Models{Provider: "subs-provider", Model: "gpt-sub", Providers: []hub.ModelProvider{
+		{ID: "subs-provider", Name: "Subs", Models: []hub.ModelChoice{{ID: "gpt-sub"}}},
+	}}
+	h.hub.mu.Unlock()
+	h.startTurn(t)
+	h.tg.say(dm(aliceTG), aliceTG, "/model")
+	menu := h.tg.wait(mSend, "<b>Subagents:</b> Auto (model chooses)\n<i>The model picks a route for each subagent.</i>")
+	btns := menu.buttons()
+	got := make([]string, 0, len(btns))
+	for _, b := range btns {
+		text, _ := b[kText].(string)
+		got = append(got, text)
+	}
+	want := []string{"• gpt-sub", "• Subagents: Auto (model chooses)", "Subagents: Haiku 5.5", "Subagents: No subagents"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("buttons = %q, want %q", got, want)
+	}
+	data, _ := btns[2]["callback_data"].(string)
+	h.tg.press(dm(aliceTG), aliceTG, menu.ResultID, data)
+	h.tg.wait(mSend, "Subagents set to <b>Haiku 5.5</b>. Every subagent runs on Haiku 5.5, through the Claude account pool.")
+	subs.mu.Lock()
+	defer subs.mu.Unlock()
+	if len(subs.sets) != 1 || !strings.HasSuffix(subs.sets[0], "/haiku") {
+		t.Fatalf("sets = %q", subs.sets)
 	}
 }
