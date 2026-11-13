@@ -105,7 +105,7 @@ internal/service/turn.go	78	71
 internal/store/accounts.go	187	156
 internal/store/agents.go	83	70
 internal/store/answers.go	22	20
-internal/store/chats.go	70	58
+internal/store/chats.go	75	62
 internal/store/claudecode.go	97	79
 internal/store/device.go	199	165
 internal/store/import.go	74	61
@@ -137,7 +137,7 @@ internal/telegram/render.go	476	429
 internal/telegram/replymedia.go	102	87
 internal/telegram/status.go	59	53
 internal/telegram/todo.go	58	51
-internal/telegram/topics.go	521	380
+internal/telegram/topics.go	521	379
 internal/web/accounts.go	255	192
 internal/web/activity.go	119	79
 internal/web/api.go	252	184
@@ -145,7 +145,7 @@ internal/web/auth.go	134	101
 internal/web/authpages.go	39	37
 internal/web/claude.go	79	54
 internal/web/claudecode.go	30	19
-internal/web/compose.go	189	146
+internal/web/compose.go	196	153
 internal/web/computers.go	85	58
 internal/web/cookies.go	46	38
 internal/web/devices.go	173	120
