@@ -39,8 +39,8 @@ docker compose up -d --wait
 ```
 
 The first start downloads the images (about 1.5 GB, mostly the Hermes image) and then takes under a minute:
-`--wait` returns when every part is healthy. On a fresh Debian 13 VM with a fast connection, this step took about
-a minute, downloads included.
+`--wait` returns when every part is healthy. On fresh Debian 13 VMs with a fast connection, this step took one to
+two minutes, downloads included.
 
 ## Step 3: Make your account
 
