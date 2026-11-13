@@ -233,3 +233,13 @@ claude:
 models:
   # Who may connect models to a backend's Hermes from the hub (Settings > Models, Connect a model), as user=backend pairs, the same form as claude.admins. Once set, only these pairs may, also for hub admins. Empty: the hub's admins (auth.admins and accounts marked admin), on every backend they use
   # admins: []
+agent:
+  # Who may change a backend's agent from the hub (Settings > Agent, Skills and tools, Diagnostics, and the switches in a chat), as user=backend pairs, the same form as models.admins. Once set, only these pairs may, also for hub admins. Empty: the hub's admins, on every backend they use
+  # admins: []
+  # Agent settings the install owns, shown read-only in Settings with "Set in the deployment config": approvals.mode, compression.enabled, compression.threshold, timezone, soul (the personality), tools.<toolset>, skills.<skill> or mcp_servers.<name>. A key also locks the keys under it. The Helm chart sets the keys of hermes.config here
+  # locked_keys: []
+updates:
+  # Check Talaria's public releases once a day (read only) and show admins a banner when the hub, the agent or a computer is behind. Members never see it
+  # check: true
+  # Releases feed to check, in the GitHub releases API form. Empty: Talaria's own repository
+  # url: ""

@@ -13,11 +13,14 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/USA-RedDragon/talaria/hub/internal/agentcfg"
 	"github.com/USA-RedDragon/talaria/hub/internal/auth"
 	"github.com/USA-RedDragon/talaria/hub/internal/config"
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
@@ -100,6 +103,22 @@ type Options struct {
 	Scheduled hub.Scheduled
 	// Accounts keeps the hub's own accounts. Nil: only users[] log in.
 	Accounts AccountStore
+	// Agent drives the agent's own settings from Settings and the chat's
+	// quick panel. Nil: none.
+	Agent *agentcfg.Service
+	// Telegram sets the bot token from Settings > Telegram. Nil: none.
+	Telegram hub.TelegramAdmin
+	// Updates says which parts are behind, for the admin banner. Nil: no
+	// banner.
+	Updates UpdateChecker
+	// Snapshot copies the hub's database to a file for a backup. Nil: the
+	// backup has no hub data.
+	Snapshot func(ctx context.Context, path string) error
+	// Scratch is where a backup's hub data is put together. Default the
+	// system's temporary folder.
+	Scratch string
+	// Started is when the hub started, for Settings > Diagnostics.
+	Started time.Time
 	// Hasher hashes passwords. Default auth.DefaultParams, 4 at once.
 	Hasher *auth.Hasher
 }
@@ -153,6 +172,14 @@ type Server struct {
 	deviceBackendIDs map[string]bool
 	backendNames     map[string]string
 	instance         string
+	agent            *agentcfg.Service
+	agentAdmins      map[string][]string
+	telegram         hub.TelegramAdmin
+	updates          UpdateChecker
+	snapshot         func(ctx context.Context, path string) error
+	scratch          string
+	hubKeys          string
+	started          time.Time
 	version          string
 	install          string
 	telegramSteps    string
@@ -199,7 +226,13 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	agentAdmins, err := cfg.Agent.AdminMap()
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
+		agent: opts.Agent, agentAdmins: agentAdmins, telegram: opts.Telegram, updates: opts.Updates,
+		snapshot: opts.Snapshot, scratch: opts.Scratch, hubKeys: hubKeys(cfg), started: opts.Started,
 		authState: st,
 		devices:   opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory, models: opts.Models,
 		insights: opts.Insights, files: opts.Files,
@@ -302,6 +335,27 @@ func newAuthState(cfg *config.Config, opts Options) (authState, error) {
 }
 
 var errLocalNeedsAccounts = errors.New("web: auth.mode local needs an account store")
+
+// hubKeys is the keys part of a backup: the hub's own secrets, as YAML.
+func hubKeys(cfg *config.Config) string {
+	var b strings.Builder
+	b.WriteString("# The hub's keys. Keep this file private.\n")
+	line := func(k, v string) {
+		if v != "" {
+			b.WriteString(k + ": " + strconv.Quote(v) + "\n")
+		}
+	}
+	line("session_secret", cfg.Session.Secret)
+	line("device_signing_key", cfg.Device.SigningKey)
+	if cfg.Device.SigningKeyFile != "" {
+		if data, err := os.ReadFile(cfg.Device.SigningKeyFile); err == nil {
+			line("device_signing_key", strings.TrimSpace(string(data)))
+		}
+	}
+	line("vapid_private_key", cfg.Notify.VAPIDPrivateKey)
+	line("telegram_token", cfg.Telegram.Token)
+	return b.String()
+}
 
 // telegramSteps is the bot's steps setting, or "" without a bot.
 func telegramSteps(cfg *config.Config) string {
@@ -410,6 +464,8 @@ func (s *Server) Handler() http.Handler {
 	s.promptRoutes(mux)
 	s.partnerRoutes(mux)
 	s.userRoutes(mux)
+	s.agentRoutes(mux)
+	s.adminRoutes(mux)
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
 	mux.HandleFunc("GET /device/pair", s.handlePairPage)

@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/USA-RedDragon/talaria/hub/internal/agentcfg"
 	"github.com/USA-RedDragon/talaria/hub/internal/agents"
 	"github.com/USA-RedDragon/talaria/hub/internal/claude"
 	"github.com/USA-RedDragon/talaria/hub/internal/claudecode"
@@ -30,11 +31,13 @@ import (
 	"github.com/USA-RedDragon/talaria/hub/internal/notify"
 	"github.com/USA-RedDragon/talaria/hub/internal/pdf"
 	"github.com/USA-RedDragon/talaria/hub/internal/scheduled"
+	"github.com/USA-RedDragon/talaria/hub/internal/secretbox"
 	"github.com/USA-RedDragon/talaria/hub/internal/server"
 	"github.com/USA-RedDragon/talaria/hub/internal/service"
 	"github.com/USA-RedDragon/talaria/hub/internal/store"
 	"github.com/USA-RedDragon/talaria/hub/internal/subagents"
 	"github.com/USA-RedDragon/talaria/hub/internal/telegram"
+	"github.com/USA-RedDragon/talaria/hub/internal/updates"
 	"github.com/USA-RedDragon/talaria/hub/internal/web"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
@@ -114,7 +117,7 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	}
 	svc.SetNotify(notifier.Notify)
 	webOpts := web.Options{Service: svc, Links: st, Tokens: st, Groups: st, Notices: st, Notifier: notifier, Chats: st, Prompts: st, Partners: st, AgentMessages: st, Accounts: st,
-		Version: cmd.Annotations["version"]}
+		Version: cmd.Annotations["version"], Started: time.Now(), Agent: newAgent(cfg, svc, dialers), Snapshot: st.Snapshot, Scratch: cfg.Store.ScratchDir()}
 	devices, err := newDevices(cfg, st, svc, dialers)
 	if err != nil {
 		return err
@@ -163,6 +166,29 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	if sa != nil {
 		webOpts.Subagents = sa
 	}
+	box, err := secretbox.New(st, cfg.Session.Secret)
+	if err != nil {
+		slog.Warn("The hub cannot keep secrets in its database, so Settings cannot set a Telegram token", "error", err.Error())
+		box = nil
+	}
+	topts := telegram.Options{PublicURL: cfg.HTTP.PublicURL, Service: svc, Links: st, Tokens: st, State: st, Notices: st,
+		Prompts: st, Pins: st, Logger: slog.Default()}
+	if devices != nil {
+		topts.Computers = devices
+	}
+	if cs != nil {
+		topts.Claude = cs
+	}
+	if sa != nil {
+		topts.Subagents = sa
+	}
+	bots := newBotManager(cfg.Telegram, topts, st, box)
+	webOpts.Telegram = bots
+	if cfg.Updates.Check {
+		uc := updates.New(cfg.Updates.URL, cmd.Annotations["version"], cfg.UI.Install, updateSources(cfg, st, devices), nil)
+		webOpts.Updates = uc
+		go uc.Run(ctx)
+	}
 	ui, err := web.New(cfg, webOpts)
 	if err != nil {
 		return err
@@ -175,30 +201,19 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	botCtx, stopBot := context.WithCancel(context.Background())
 	defer stopBot()
 	botDone := make(chan struct{})
-	notifyOn := false
 	if cfg.Telegram.Enabled {
-		topts := telegram.Options{PublicURL: cfg.HTTP.PublicURL, Service: svc, Links: st, Tokens: st, State: st, Notices: st,
-			Prompts: st, Pins: st, Logger: slog.Default()}
-		if devices != nil {
-			topts.Computers = devices
-		}
-		if cs != nil {
-			topts.Claude = cs
-		}
-		if sa != nil {
-			topts.Subagents = sa
-		}
-		bot, err := telegram.New(telegram.Config(cfg.Telegram), topts)
-		if err != nil {
+		cfgCopy := cfg.Telegram
+		if _, err := telegram.New(telegram.Config(cfgCopy), topts); err != nil {
 			return fmt.Errorf("failed to start Telegram bot: %w", err)
 		}
-		notifier.SetTelegram(bot)
-		notifyOn = true
-		go runBot(botCtx, st, bot, cfg.Telegram, botDone)
-	} else {
-		close(botDone)
 	}
-	notifyOn = notifyOn || notifier.PushKey() != ""
+	notifier.SetTelegram(bots)
+	go func() {
+		defer close(botDone)
+		bots.run(botCtx)
+	}()
+	// The notifier also serves a bot started later from Settings
+	notifyOn := true
 	notifyCtx, stopNotify := context.WithCancel(context.Background())
 	defer stopNotify()
 	if notifyOn {
@@ -341,6 +356,48 @@ func newModels(cfg *config.Config, svc *service.Service, cs *claude.Service, dia
 		}
 	}
 	return models.New(opts)
+}
+
+// newAgent returns the core of Settings > Agent, Skills and tools,
+// Diagnostics and the chat's quick panel, or nil when there is no backend.
+func newAgent(cfg *config.Config, svc *service.Service, dialers map[string]*gateway.Dialer) *agentcfg.Service {
+	if len(cfg.Backends) == 0 {
+		return nil
+	}
+	rs := make(map[string]device.Requester, len(dialers))
+	for id, d := range dialers {
+		rs[id] = d
+	}
+	return agentcfg.New(agentcfg.Options{Access: svc, Requesters: rs, Locked: cfg.Agent.LockedKeys})
+}
+
+// updateSources tell the update check what this install runs: each
+// backend's agent release (from its device plugin) and paired computers.
+func updateSources(cfg *config.Config, st *store.Store, devices *device.Server) updates.Sources {
+	src := updates.Sources{Computers: func(ctx context.Context) [][2]string {
+		v, err := st.ClientVersions(ctx)
+		if err != nil {
+			return nil
+		}
+		return v
+	}}
+	if devices == nil {
+		return src
+	}
+	src.Agents = func(ctx context.Context) map[string]string {
+		out := map[string]string{}
+		for _, b := range cfg.Backends {
+			p := devices.Plugin(b.ID)
+			if p == nil {
+				continue
+			}
+			if info, err := p.Info(ctx); err == nil && info.HermesVersion != "" {
+				out[b.Name] = info.HermesVersion
+			}
+		}
+		return out
+	}
+	return src
 }
 
 // newInsights returns the core of chat search and the Usage page, or nil

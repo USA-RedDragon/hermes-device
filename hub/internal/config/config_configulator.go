@@ -214,6 +214,16 @@ type modelsShadow struct {
 	Admins *[]string `json:"admins" toml:"admins" yaml:"admins"`
 }
 
+type agentShadow struct {
+	Admins     *[]string `json:"admins"      toml:"admins"      yaml:"admins"`
+	LockedKeys *[]string `json:"locked_keys" toml:"locked_keys" yaml:"locked_keys"`
+}
+
+type updatesShadow struct {
+	Check *bool   `json:"check" toml:"check" yaml:"check"`
+	URL   *string `json:"url"   toml:"url"   yaml:"url"`
+}
+
 type configShadow struct {
 	LogLevel *string          `json:"log_level" toml:"log_level" yaml:"log_level"`
 	HTTP     *hTTPShadow      `json:"http"      toml:"http"      yaml:"http"`
@@ -233,6 +243,8 @@ type configShadow struct {
 	Notify   *notifyShadow    `json:"notify"    toml:"notify"    yaml:"notify"`
 	Claude   *claudeShadow    `json:"claude"    toml:"claude"    yaml:"claude"`
 	Models   *modelsShadow    `json:"models"    toml:"models"    yaml:"models"`
+	Agent    *agentShadow     `json:"agent"     toml:"agent"     yaml:"agent"`
+	Updates  *updatesShadow   `json:"updates"   toml:"updates"   yaml:"updates"`
 }
 
 // ConfigSchema returns the generated schema for Config.
@@ -345,6 +357,8 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("notify.watch_interval", configulator.LayerDefault, "default tag")
 	cfg.Notify.JobInterval = time.Duration(int64(60000000000))
 	set("notify.job_interval", configulator.LayerDefault, "default tag")
+	cfg.Updates.Check = true
+	set("updates.check", configulator.LayerDefault, "default tag")
 	return nil
 }
 
@@ -1013,6 +1027,26 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			set("models.admins", configulator.LayerFile, file)
 		}
 	}
+	if s.Agent != nil {
+		if s.Agent.Admins != nil {
+			cfg.Agent.Admins = *s.Agent.Admins
+			set("agent.admins", configulator.LayerFile, file)
+		}
+		if s.Agent.LockedKeys != nil {
+			cfg.Agent.LockedKeys = *s.Agent.LockedKeys
+			set("agent.locked_keys", configulator.LayerFile, file)
+		}
+	}
+	if s.Updates != nil {
+		if s.Updates.Check != nil {
+			cfg.Updates.Check = *s.Updates.Check
+			set("updates.check", configulator.LayerFile, file)
+		}
+		if s.Updates.URL != nil {
+			cfg.Updates.URL = *s.Updates.URL
+			set("updates.url", configulator.LayerFile, file)
+		}
+	}
 	return nil
 }
 
@@ -1637,6 +1671,33 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Models.Admins = lst
 		set("models.admins", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "agent", "admins"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Agent.Admins = lst
+		set("agent.admins", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "agent", "locked_keys"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Agent.LockedKeys = lst
+		set("agent.locked_keys", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "updates", "check"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "updates.check",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Updates.Check = p
+		set("updates.check", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "updates", "url"); ok {
+		cfg.Updates.URL = v
+		set("updates.url", configulator.LayerEnv, n)
+	}
 	return nil
 }
 
@@ -1740,6 +1801,10 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"claude" + o.Separator + "admins",
 		"claude" + o.Separator + "time_zone",
 		"models" + o.Separator + "admins",
+		"agent" + o.Separator + "admins",
+		"agent" + o.Separator + "locked_keys",
+		"updates" + o.Separator + "check",
+		"updates" + o.Separator + "url",
 	}
 	for i, name := range names {
 		if f := fs.Lookup(name); f != nil {
@@ -1846,6 +1911,10 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.StringSlice(names[87], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
 	fs.String(names[88], "", "IANA time zone of the reset times of Claude usage windows and of the days of Claude Code usage. Default: ui.time_zone")
 	fs.StringSlice(names[89], nil, "Who may connect models to a backend's Hermes from the hub (Settings > Models, Connect a model), as user=backend pairs, the same form as claude.admins. Once set, only these pairs may, also for hub admins. Empty: the hub's admins (auth.admins and accounts marked admin), on every backend they use")
+	fs.StringSlice(names[90], nil, "Who may change a backend's agent from the hub (Settings > Agent, Skills and tools, Diagnostics, and the switches in a chat), as user=backend pairs, the same form as models.admins. Once set, only these pairs may, also for hub admins. Empty: the hub's admins, on every backend they use")
+	fs.StringSlice(names[91], nil, "Agent settings the install owns, shown read-only in Settings with \"Set in the deployment config\": approvals.mode, compression.enabled, compression.threshold, timezone, soul (the personality), tools.<toolset>, skills.<skill> or mcp_servers.<name>. A key also locks the keys under it. The Helm chart sets the keys of hermes.config here")
+	fs.Bool(names[92], true, "Check Talaria's public releases once a day (read only) and show admins a banner when the hub, the agent or a computer is behind. Members never see it")
+	fs.String(names[93], "", "Releases feed to check, in the GitHub releases API form. Empty: Talaria's own repository")
 	return nil
 }
 
@@ -2930,6 +2999,54 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.Models.Admins = v
 		set("models.admins", configulator.LayerCLI, "--"+n)
 	}
+	if n := "agent" + o.Separator + "admins"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "agent.admins",
+				Source: "--" + n,
+			}
+		}
+		cfg.Agent.Admins = v
+		set("agent.admins", configulator.LayerCLI, "--"+n)
+	}
+	if n := "agent" + o.Separator + "locked_keys"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "agent.locked_keys",
+				Source: "--" + n,
+			}
+		}
+		cfg.Agent.LockedKeys = v
+		set("agent.locked_keys", configulator.LayerCLI, "--"+n)
+	}
+	if n := "updates" + o.Separator + "check"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "updates.check",
+				Source: "--" + n,
+			}
+		}
+		cfg.Updates.Check = v
+		set("updates.check", configulator.LayerCLI, "--"+n)
+	}
+	if n := "updates" + o.Separator + "url"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "updates.url",
+				Source: "--" + n,
+			}
+		}
+		cfg.Updates.URL = v
+		set("updates.url", configulator.LayerCLI, "--"+n)
+	}
 	return nil
 }
 
@@ -3315,6 +3432,44 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Models = &sub
+			}
+		case "agent":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("agent", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub agentShadow
+				if err := sub.decodeJSON(dec, "agent"); err != nil {
+					return err
+				}
+				s.Agent = &sub
+			}
+		case "updates":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("updates", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub updatesShadow
+				if err := sub.decodeJSON(dec, "updates"); err != nil {
+					return err
+				}
+				s.Updates = &sub
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -5942,6 +6097,138 @@ func (s *modelsShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	}
 }
 
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *agentShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "admins":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".admins", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".admins"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.Admins = &out
+			}
+		case "locked_keys":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".locked_keys", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".locked_keys"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.LockedKeys = &out
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *updatesShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "check":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Check = &b
+			default:
+				return configJSONError(path+".check", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "url":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.URL = &str
+			default:
+				return configJSONError(path+".url", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // configJSONError returns a ParseError for the JSON token v at path.
 func configJSONError(path string, v jsontext.Token, err error) error {
 	return &configulator.ParseError{
@@ -6048,6 +6335,10 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "claude.admins = %v\n", c.Claude.Admins)
 	fmt.Fprintf(&b, "claude.time_zone = %v\n", c.Claude.TimeZone)
 	fmt.Fprintf(&b, "models.admins = %v\n", c.Models.Admins)
+	fmt.Fprintf(&b, "agent.admins = %v\n", c.Agent.Admins)
+	fmt.Fprintf(&b, "agent.locked_keys = %v\n", c.Agent.LockedKeys)
+	fmt.Fprintf(&b, "updates.check = %v\n", c.Updates.Check)
+	fmt.Fprintf(&b, "updates.url = %v\n", c.Updates.URL)
 	return b.String()
 }
 

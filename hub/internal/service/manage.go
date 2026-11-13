@@ -299,3 +299,22 @@ func (s *Service) SessionExists(ctx context.Context, user, backendID, sessionID 
 	}
 	return true, nil
 }
+
+// Yolo reads a session's approval bypass (the chat's /yolo) and, with set,
+// turns it on or off first. It applies from the session's next command.
+func (s *Service) Yolo(ctx context.Context, user, backendID, sessionID string, set *bool) (bool, error) {
+	var out struct {
+		Value string `json:"value"`
+	}
+	err := s.withSession(ctx, user, backendID, sessionID, func(b *backend, ls *live) error {
+		if set != nil {
+			v := "off"
+			if *set {
+				v = "on"
+			}
+			return refusal(b.call(ctx, ls, gateway.MethodConfigSet, gateway.ConfigSetParams{SessionID: ls.id, Key: gateway.KeyYolo, Value: v}, &out))
+		}
+		return refusal(b.read(ctx, ls, gateway.MethodConfigGet, gateway.ConfigGetParams{SessionID: ls.id, Key: gateway.KeyYolo}, &out))
+	})
+	return out.Value == "1", err
+}

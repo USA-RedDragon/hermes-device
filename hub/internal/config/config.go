@@ -203,6 +203,24 @@ type Models struct {
 	Admins []string `name:"admins" description:"Who may connect models to a backend's Hermes from the hub (Settings > Models, Connect a model), as user=backend pairs, the same form as claude.admins. Once set, only these pairs may, also for hub admins. Empty: the hub's admins (auth.admins and accounts marked admin), on every backend they use"`
 }
 
+// Agent are the settings of Settings, Agent and Skills and tools.
+type Agent struct {
+	Admins     []string `name:"admins" description:"Who may change a backend's agent from the hub (Settings > Agent, Skills and tools, Diagnostics, and the switches in a chat), as user=backend pairs, the same form as models.admins. Once set, only these pairs may, also for hub admins. Empty: the hub's admins, on every backend they use"`
+	LockedKeys []string `name:"locked_keys" description:"Agent settings the install owns, shown read-only in Settings with \"Set in the deployment config\": approvals.mode, compression.enabled, compression.threshold, timezone, soul (the personality), tools.<toolset>, skills.<skill> or mcp_servers.<name>. A key also locks the keys under it. The Helm chart sets the keys of hermes.config here"`
+}
+
+// AdminMap parses Admins: the agent admins of each backend. Empty means
+// the hub's admins.
+func (a Agent) AdminMap() (map[string][]string, error) {
+	return adminMap(a.Admins, ErrModelsAdmin)
+}
+
+// Updates is the check for new Talaria releases.
+type Updates struct {
+	Check bool   `name:"check" default:"true" description:"Check Talaria's public releases once a day (read only) and show admins a banner when the hub, the agent or a computer is behind. Members never see it"`
+	URL   string `name:"url" description:"Releases feed to check, in the GitHub releases API form. Empty: Talaria's own repository"`
+}
+
 // AdminMap parses Admins: the model admins of each backend. Empty means
 // the hub's admins.
 func (m Models) AdminMap() (map[string][]string, error) {
@@ -227,6 +245,13 @@ func (c *Config) validateModels(known userNames) error {
 	admins, err := c.Models.AdminMap()
 	if err != nil {
 		return err
+	}
+	agent, err := c.Agent.AdminMap()
+	if err != nil {
+		return err
+	}
+	for backend, users := range agent {
+		admins[backend] = append(admins[backend], users...)
 	}
 	backends := map[string]bool{}
 	for _, b := range c.Backends {
@@ -323,6 +348,8 @@ type Config struct {
 	Notify   Notify    `name:"notify"`
 	Claude   Claude    `name:"claude"`
 	Models   Models    `name:"models"`
+	Agent    Agent     `name:"agent"`
+	Updates  Updates   `name:"updates"`
 }
 
 // Validation errors.

@@ -262,15 +262,22 @@ func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	sess, _ := s.session(r)
 	modelBackends := s.modelAdminBackends(r.Context(), sess.User)
+	agentBackends := s.agentAdminBackends(r.Context(), sess.User)
+	steps := s.telegramSteps
+	if s.telegram != nil {
+		steps = s.telegram.Steps()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": sess.User, "display": sess.Display, "groups": sess.Groups, "csrf": sess.CSRF,
 		"default_backend": s.defaults[sess.User], "devices": s.devices != nil, "computers": s.computers != nil,
 		"memory": s.memory != nil, "usage": s.insights != nil || s.claudeCode != nil, "claude_code": s.claudeCode != nil,
 		"files": s.files != nil, "notify": s.notices != nil,
-		"claude": s.hasClaude(r.Context(), sess.User), "claude_admin": s.isClaudeAdmin(sess.User), "telegram_steps": s.telegramSteps, "version": s.version, "install": s.install,
+		"claude": s.hasClaude(r.Context(), sess.User), "claude_admin": s.isClaudeAdmin(sess.User), "telegram_steps": steps, "version": s.version, "install": s.install,
 		"scheduled": s.scheduled != nil, "prompts": s.prompts != nil, "partners": s.partners != nil,
 		"auth": s.mode, "admin": s.accounts != nil && s.isAdmin(r.Context(), sess.User), "password": s.mode == config.AuthLocal && sess.Account,
 		"models_admin": len(modelBackends) > 0, "models_admin_backends": modelBackends,
-		"logout_url": s.logoutURL, "identity": sess.Identity, "issuer": s.issuer})
+		"agent": s.agent != nil, "agent_admin": len(agentBackends) > 0, "agent_admin_backends": agentBackends,
+		"telegram_admin": s.telegram != nil && s.isAdmin(r.Context(), sess.User),
+		"logout_url":     s.logoutURL, "identity": sess.Identity, "issuer": s.issuer})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

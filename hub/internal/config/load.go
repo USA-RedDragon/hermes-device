@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/USA-RedDragon/configulator/v2"
 	cpflag "github.com/USA-RedDragon/configulator/v2/flags/pflag"
@@ -31,4 +32,10 @@ func NewLoader(fs *pflag.FlagSet) *configulator.Configulator[Config] {
 			Decoders: configulator.Decoders{".yaml": yaml.Unmarshal, ".yml": yaml.Unmarshal},
 		})
 	return cpflag.Bind(c, fs, ConfigPFlagHooks(), nil)
+}
+
+// ScratchDir is where the hub puts files it makes for a moment, such as a
+// backup's copy of the database: next to the database, on the data volume.
+func (s Store) ScratchDir() string {
+	return filepath.Dir(s.Path)
 }
