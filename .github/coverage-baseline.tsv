@@ -21,8 +21,8 @@ internal/acpbridge/inline.go	38	35
 internal/acpbridge/place.go	155	141
 internal/acphost/acphost.go	275	218
 internal/acphost/rewrite.go	260	237
-internal/acphost/sweep.go	42	36
-internal/acphost/sweep_linux.go	38	28
+internal/acphost/sweep.go	42	33
+internal/acphost/sweep_linux.go	38	27
 internal/allowlist/allowlist.go	25	25
 internal/attest/attest.go	141	123
 internal/attest/bundle.go	248	212
@@ -50,7 +50,7 @@ internal/claudeusage/timeline.go	96	86
 internal/config/config.go	87	77
 internal/config/load.go	18	17
 internal/daemonstate/daemonstate.go	17	13
-internal/device/device.go	691	619
+internal/device/device.go	691	618
 internal/device/mcp.go	69	60
 internal/executor/executor.go	118	108
 internal/executor/scope.go	90	81
@@ -75,7 +75,7 @@ internal/setup/migrate.go	400	283
 internal/setup/release.go	128	108
 internal/setup/service.go	107	91
 internal/setup/setup.go	417	352
-internal/setup/shellenv.go	207	188
+internal/setup/shellenv.go	210	191
 internal/setup/state.go	63	44
 internal/setup/system.go	51	4
 internal/setup/update.go	79	68
