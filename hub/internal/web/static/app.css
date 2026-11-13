@@ -1306,3 +1306,100 @@ a.button, .page a.button { display: inline-flex; align-items: center; justify-co
 @media (max-width: 900px) { .rs.r { display: none; } }
 @media (max-width: 760px) { .rs.l { display: none; } }
 @media (prefers-reduced-motion: reduce) { .rs::after { transition: none; } }
+
+/* Connect a model: the first-run card, the Connect dialog and Settings > Models (models.js). */
+.ico { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.welcome.first-run { color: var(--fg); }
+.empty { width: min(30rem, 100%); display: flex; flex-direction: column; align-items: center; text-align: center; gap: .65rem; }
+.empty .badge-ic, .connect .badge-ic { width: 3.6rem; height: 3.6rem; display: grid; place-items: center; border-radius: 50%; background: var(--card);
+  border: 1px solid var(--line); color: var(--accent); }
+.empty .badge-ic svg, .connect .badge-ic svg { width: 2rem; height: 2rem; stroke-width: 1.75; }
+.empty h1 { margin: 0; font-size: 1.25rem; }
+.empty p { margin: 0; color: var(--muted); max-width: 46ch; }
+.empty .acts { display: flex; flex-wrap: wrap; gap: .5rem .8rem; justify-content: center; align-items: center; margin-top: .3rem; }
+.empty .acts button { display: inline-flex; align-items: center; gap: .35rem; min-height: 2.5rem; }
+.empty .acts svg { width: 1rem; height: 1rem; }
+.empty .fine { font-size: .82rem; }
+#modelbar.composer.off { flex-direction: row; align-items: center; }
+#modelbar .ta { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: .5rem .6rem; background: var(--bg); color: var(--muted); opacity: .7; }
+#welcome[hidden] + #modelbar { display: none; }
+.empty a { color: var(--accent); }
+#model option.connect { color: var(--accent); }
+.connect { width: min(34rem, 94vw); max-height: min(46rem, 92dvh); }
+.connect h2 { display: flex; align-items: center; gap: .4rem; }
+.connect h2 .grow { flex: 1; }
+.connect .pbody { display: flex; flex-direction: column; gap: .75rem; padding: .2rem 1rem .8rem; }
+.connect .pfoot .sp { flex: 1; }
+.connect .pbody.done { align-items: center; text-align: center; padding-top: 1rem; }
+.connect .pbody.done h2 { padding: 0; justify-content: center; }
+.connect .pbody.done .hint { max-width: 40ch; }
+.connect .badge-ic.ok { border-color: var(--ok); color: var(--ok); width: 3.2rem; height: 3.2rem; }
+.connect .label { margin: .2rem 0 -.3rem; }
+.connect button.choice { display: flex; align-items: flex-start; gap: .75rem; width: 100%; text-align: left; padding: .65rem .8rem; border-radius: 10px; margin: 0; justify-content: flex-start; }
+.connect .choice svg { width: 1.25rem; height: 1.25rem; flex: none; }
+.connect .choice .lead { color: var(--accent); margin-top: .1rem; }
+.connect .choice .tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .1rem; }
+.connect .choice .tx b { font-weight: 600; }
+.connect .choice .tx span { color: var(--muted); font-size: .86rem; }
+.connect .choice .go { color: var(--muted); align-self: center; width: 1rem; height: 1rem; }
+.connect .chipset, .set-pane .chipset { display: flex; flex-wrap: wrap; gap: .4rem; }
+.connect .chipset button { border-radius: 999px; min-height: 2.25rem; padding: .25rem .8rem; font-size: .9rem; }
+.connect .chipset button[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); font-weight: 600; }
+.connect .field, .set-pane .field { display: flex; flex-direction: column; gap: .3rem; font-size: .9rem; }
+.connect .field > span:first-child, .set-pane .field > span:first-child { color: var(--muted); }
+.connect .field small, .set-pane .field small { color: var(--muted); font-size: .8rem; }
+.connect input[type=text], .connect input[type=password], .connect input[type=search], .connect input[type=number], .connect select.f, .set-pane select.f {
+  font: inherit; padding: .4rem .55rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); min-height: 2.5rem; width: 100%; min-width: 0; }
+.connect input.badf { border-color: var(--bad); }
+.pw { position: relative; display: block; }
+.pw input { width: 100%; padding-right: 4.5rem !important; }
+.pw button { position: absolute; right: .25rem; top: .25rem; min-height: 2rem !important; padding: .1rem .5rem; font-size: .8rem; }
+.connect .hint, .set-pane .hint { color: var(--muted); font-size: .88rem; margin: 0; }
+.connect .hint svg { width: 1rem; height: 1rem; vertical-align: -.2em; }
+.say { display: flex; gap: .5rem; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; padding: .5rem .65rem; font-size: .9rem; overflow-wrap: anywhere; }
+.say > svg { width: 1.25rem; height: 1.25rem; flex: none; }
+.say > div { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: .3rem; }
+.say p { margin: 0; }
+.say.bad { border-color: var(--bad); }
+.say.bad > svg { color: var(--bad); }
+.say.warn { border-color: var(--warn); }
+.say.warn > svg { color: var(--warn); }
+.say.good { border-color: var(--ok); }
+.say.good > svg { color: var(--ok); }
+.say .row { display: flex; flex-wrap: wrap; gap: .4rem; }
+.say .row button { min-height: 2.1rem; font-size: .85rem; padding: .2rem .65rem; }
+.connect .models { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.connect .models label { display: flex; gap: .6rem; align-items: center; padding: .5rem .7rem; min-height: 2.6rem; cursor: pointer; }
+.connect .models label + label { border-top: 1px solid var(--line); }
+.connect .models label:hover { background: var(--hover); }
+.connect .models input { margin: 0; flex: none; }
+.connect .models .nm { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88rem; }
+.connect .tag { font-size: .72rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 .45rem; white-space: nowrap; }
+.connect details.adv { font-size: .9rem; }
+.connect details.adv > summary { cursor: pointer; color: var(--muted); padding: .2rem 0; }
+.connect details.adv .inner { display: flex; flex-direction: column; gap: .6rem; padding: .5rem 0 0; }
+.connect label.check { display: flex; gap: .5rem; align-items: flex-start; }
+.connect label.check input { margin-top: .3rem; }
+.connect label.check small { color: var(--muted); }
+.connect .plist { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; max-height: 15rem; overflow-y: auto; }
+.connect .plist button { display: flex; justify-content: space-between; align-items: center; gap: .5rem; border: 0; border-radius: 0; background: none; text-align: left; min-height: 2.5rem; }
+.connect .plist button + button { border-top: 1px solid var(--line); }
+.connect .plist button:hover { background: var(--hover); }
+.connect .plist button.on { font-weight: 600; color: var(--accent); }
+.connect .plist .hint { padding: .5rem .7rem; }
+.code-big { font: 700 1.7rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-align: center; padding: .6rem .5rem;
+  border: 1px dashed var(--line); border-radius: 10px; background: var(--code); overflow-wrap: anywhere; }
+.connect .acts { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.connect .acts button, .connect .acts a.button { display: inline-flex; align-items: center; gap: .35rem; }
+.connect .acts svg { width: 1rem; height: 1rem; }
+.connect a.button { max-width: 100%; overflow-wrap: anywhere; padding: .45rem .8rem; border-radius: 8px; text-decoration: none; border: 1px solid var(--accent); background: var(--accent); color: #fff; min-height: 2.5rem; }
+.connect .wait { display: flex; gap: .5rem; align-items: center; color: var(--muted); font-size: .9rem; margin: 0; }
+.spin { width: .9rem; height: .9rem; border-radius: 50%; border: 2px solid var(--accent); border-right-color: transparent; animation: spin 1s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+.connect .cmd { background: var(--code); padding: .5rem; border-radius: 6px; overflow-x: auto; white-space: pre; font: .82rem ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; }
+.set-row .pill.okp { color: var(--ok); }
+.set-pane .acts button svg { width: 1rem; height: 1rem; vertical-align: -.2em; margin-right: .3rem; }
+.set-pane h3 { margin: 0; font-size: .95rem; }
+.set-alert .field { margin: 0; }
+.connect a:not(.button), .set-pane a:not(.button) { color: var(--accent); }

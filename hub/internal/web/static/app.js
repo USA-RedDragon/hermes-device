@@ -13,6 +13,8 @@
   let stream = null;
   let view = null;
   let me = {};
+  // connectValue is the model menu line that opens Connect a model.
+  const connectValue = "\u0000connect";
   let current = null;
   const words = { approval: "Talaria asks to run this", allow: "Allow", deny: "Deny",
     args: "Input", result: "Output", running: "Running", done: "Done", failed: "Failed",
@@ -466,10 +468,63 @@
       openSide(false);
       location.hash = chatHash(id, s.id);
     } catch (e) {
+      if (e.status === 409 && !page) {
+        // Hermes has no model: the chat area says so, with the way out.
+        location.hash = "";
+        showWelcome();
+        checkModels(true);
+        return;
+      }
       banner("Could not start a chat: " + e.message, true);
     } finally {
       btn.disabled = false;
     }
+  }
+
+  // checkModels shows the first-run card in the chat area while the
+  // backend's Hermes has no model a chat can use, and the usual welcome
+  // otherwise. A hub without the models routes keeps the welcome.
+  let modelSeq = 0;
+  async function checkModels(force) {
+    const seq = ++modelSeq;
+    const b = me.default_backend || (lastList && lastList.backends && lastList.backends[0] && lastList.backends[0].id) ||
+      (await api("GET", "/api/backends").catch(() => []))[0]?.id;
+    if (!b || seq !== modelSeq) return;
+    let st;
+    try {
+      st = await api("GET", "/api/models/" + encodeURIComponent(b) + "/status");
+    } catch (_) {
+      if (!force) return;
+      st = null;
+    }
+    if (seq !== modelSeq || view || page || $("welcome").hidden) return;
+    const box = $("welcome");
+    box.classList.remove("first-run");
+    $("modelbar")?.remove();
+    if (!st || st.ready) {
+      box.replaceChildren(el("p", "", "Pick a chat, or start a new one."));
+      return;
+    }
+    box.classList.add("first-run");
+    const bar = modelsUI.firstRun(box, Object.assign({ backend: b }, st), () => checkModels(true));
+    bar.id = "modelbar";
+    box.after(bar);
+  }
+
+  // modelsChanged follows a connected model or a new default: the model
+  // menu asks Hermes for fresh lists, and the chat area checks again.
+  async function modelsChanged() {
+    if (!view) {
+      checkModels(true);
+      return;
+    }
+    const chat = view;
+    try {
+      const m = await api("GET", chat.base + "/models?refresh=1");
+      if (chat !== view) return;
+      settings.models = m;
+      settings.fill();
+    } catch (_) { settings.models = null; }
   }
 
   // showPlace shows where the open chat runs, and a note when its
@@ -2680,6 +2735,13 @@
             parent.append(o);
           }
         }
+        if (me.models_admin && providers.length) {
+          // Admins get one more line at the menu's foot.
+          sel.append(document.createElement("hr"));
+          const o = el("option", "connect", "Connect another model");
+          o.value = connectValue;
+          sel.append(o);
+        }
         sel.disabled = !providers.length || this.busy;
       }
       this.route(cur.p ? cur.p.id : cur.provider, cur.m ? cur.m.id : cur.model);
@@ -2799,6 +2861,11 @@
     },
     async pickModel(confirm, picked) {
       const chat = view;
+      if (!picked && $("model").value === connectValue) {
+        this.fill();
+        modelsUI.open(chat ? chat.backend : "");
+        return;
+      }
       const [provider, model] = picked || $("model").value.split("\n");
       if (!chat && page && model && idle.data) {
         idle.pick = { provider, model };
@@ -2874,6 +2941,7 @@
     $("composer").hidden = true;
     $("exportbtn").hidden = true;
     composer.open(null);
+    if (!page) checkModels(false);
     $("info").hidden = true;
     $("place").hidden = true;
     $("placenote").hidden = true;
@@ -2913,6 +2981,7 @@
     attachments.clear();
     current = { b: backend, s: session };
     $("welcome").hidden = true;
+    $("modelbar")?.remove();
     $("log").hidden = false;
     $("composer").hidden = false;
     $("title").textContent = t("newchat");
@@ -3608,7 +3677,10 @@
     try { await api("POST", view.base + "/interrupt"); } catch (e) { banner("Could not stop: " + e.message, true); }
   }
 
-  const prefs = window.HubSettings({ api, el, me: () => me, computers: () => computers, notices, logout, refreshMe,
+  const modelsUI = window.HubModels.create({ api, el, me: () => me, toast,
+    backend: () => (view && view.backend) || me.default_backend || (lastList && lastList.backends && lastList.backends[0] ? lastList.backends[0].id : ""),
+    connected: () => modelsChanged(), startChat: () => newChat() });
+  const prefs = window.HubSettings({ api, el, me: () => me, computers: () => computers, notices, logout, refreshMe, models: modelsUI,
     closeSide: () => openSide(false), promptsChanged: () => composer.promptsChanged() });
 
   // refreshMe reads /api/me again: a new password gives this browser a new session and CSRF token.

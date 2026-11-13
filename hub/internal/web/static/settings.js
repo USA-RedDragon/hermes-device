@@ -18,6 +18,7 @@ window.HubSettings = (ctx) => {
   const account = window.HubAccount({ api, el, logout: ctx.logout, refreshMe: ctx.refreshMe });
   const tabs = [
     ["computers", "Computers", (me) => me.devices],
+    ["models", "Models", (me) => !!me.models_admin && !!ctx.models],
     ["notifications", "Notifications", (me) => me.notify],
     ["telegram", "Telegram", (me) => !!me.telegram_steps],
     ["claude", "Claude accounts", (me) => me.claude],
@@ -25,6 +26,9 @@ window.HubSettings = (ctx) => {
     ["users", "Users", (me) => me.admin],
     ["account", "Account", () => true],
   ];
+  let models = null;
+  // modelsPane is Settings > Models, made when first shown.
+  const modelsPane = () => models || (models = ctx.models.settings(document.getElementById("set-models")));
   let tab = "";
   let list = [];
   let loaded = false;
@@ -120,6 +124,7 @@ window.HubSettings = (ctx) => {
     if (k === "claude") drawClaude();
     if (k === "prompts") { drawPrompts(); loadPrompts(); }
     if (k === "users") people.load();
+    if (k === "models") modelsPane().load();
     if (k === "account") drawAccount();
   }
 
