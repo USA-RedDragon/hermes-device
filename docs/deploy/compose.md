@@ -1,8 +1,9 @@
 # Install with Docker Compose
 
 This page takes you from a Linux host with Docker to your first chat in Talaria. It starts three parts: the hub
-(the web app), Hermes (the agent) and a sandbox (where the agent runs commands), plus a small web front and a
-built-in login. Every secret is made for you on the first start.
+(the web app, with its own accounts), Hermes (the agent) and a sandbox (where the agent runs commands), plus a
+small web front. Every secret is made for you on the first start, and the first person who opens Talaria makes
+the admin account.
 
 ## What you need
 
@@ -37,9 +38,9 @@ You now have `compose.yaml`, `.env` and a `files` folder.
 docker compose up -d --wait
 ```
 
-The first start downloads the images (about 1.2 GB, mostly the Hermes image) and then takes under a minute:
-`--wait` returns when every part is healthy. On the test VM, with the Hermes image already there, this step
-took 26 seconds.
+The first start downloads the images (about 1.5 GB, mostly the Hermes image) and then takes under a minute:
+`--wait` returns when every part is healthy. On a fresh Debian 13 VM with a fast connection, this step took about
+a minute, downloads included.
 
 ## Step 3: Make your account
 
@@ -53,21 +54,15 @@ shows the address:
  Open:  http://localhost:8080
 ```
 
-Open it in a browser on the same host. While Talaria has no account, it shows the setup page: give a user name, a
-display name and a password of at least 12 characters. The first person who does this becomes the admin, so do it
+Open it in a browser on the same host. While Talaria has no account, it shows the setup page: give your user name
+("Your name": lowercase letters, digits, dots and dashes; you log in with it), a display name if you like, and a
+password of at least 12 characters, twice. The first person who does this becomes the admin, so do it
 right away, before Talaria is reachable from other machines. There is no password in the log.
 
 ![The setup page](images/setup.png)
 
 Add other people later under Settings, Users (see [Set up logins](auth.md)). Before the first chat, Hermes needs a
-model (step 4). With the demo model, the reply starts with "This is the Talaria demo model". A few messages show
-more:
-
-- `run: uname -a`: the agent runs the command in the sandbox. A risky command, such as `run: rm -rf /work/old`,
-  asks for your approval first.
-- `page:`: the reply has a small page with buttons that answer back to the chat.
-- `remember: <a fact>` saves it to memory; then, in a new chat, `recall: <a word of it>` shows that the memory
-  came back (with Honcho on, from Honcho too).
+model (step 4): until then, a new chat stops with "Could not start a chat".
 
 To open Talaria from another computer, see [Reach it from other computers](#reach-it-from-other-computers).
 
@@ -80,10 +75,18 @@ docker compose exec -u hermes hermes hermes model
 ```
 
 Pick a provider with the arrow keys, give it what it asks for (an API key, a sign-in, or an address), then the
-model. New chats use it at once. [Choosing models and providers](models.md) has the details, Ollama included.
+model. At the last question, the reasoning effort, Enter keeps the default. New chats use it at once.
+[Choosing models and providers](models.md) has the details, Ollama on this host or on another machine included.
 
 To look around without any provider first, start the demo model (`COMPOSE_PROFILES=demo` in `.env`, then
-`docker compose up -d --wait`) and pick `talaria-demo` in `hermes model`.
+`docker compose up -d --wait`) and pick `talaria-demo` in `hermes model` (near the end of the list). Its replies
+start with "This is the Talaria demo model". A few messages show more:
+
+- `run: uname -a`: the agent runs the command in the sandbox. A risky command, such as `run: rm -rf /work/old`,
+  asks for your approval first.
+- `page:`: the reply has a small page with buttons that answer back to the chat.
+- `remember: <a fact>` saves it to memory; then, in a new chat, `recall: <a word of it>` shows that the memory
+  came back (with Honcho on, from Honcho too).
 
 ## Reach it from other computers
 
@@ -153,7 +156,6 @@ Install `talaria` on each computer you want the agent to work on, and pair it wi
 - `docker compose up` says `pull access denied`: every image is public, so check the image names in `.env`
   (`TALARIA_HERMES_IMAGE`) and that the host reaches ghcr.io. See [Images](images.md).
 - `docker compose ps -a` shows every service and why one stopped; `docker compose logs <service>` shows its log.
-- The login page says the address is wrong, or the hub log shows `oidc discovery ... connection refused`:
-  `TALARIA_PUBLIC_URL` does not match how you open Talaria. Use the same address in both, then
-  `docker compose up -d`.
+- The login page says `cross-origin request.`: `TALARIA_PUBLIC_URL` does not match how you open Talaria. Use the
+  same address in both, then `docker compose up -d`.
 - Start over (deletes all chats and settings): `docker compose down -v`.

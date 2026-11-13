@@ -1,7 +1,7 @@
 # Install the all-in-one image
 
 Unraid and TrueNAS install apps as one container with a few settings and folders. The all-in-one image puts the
-hub, Hermes, the sandbox and the built-in login in one container, so those platforms need nothing else. On any
+hub, Hermes, the sandbox and the hub's own accounts in one container, so those platforms need nothing else. On any
 Docker host it is also the shortest way to try Talaria:
 
 ```bash

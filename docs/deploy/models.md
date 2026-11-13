@@ -29,12 +29,16 @@ needs a model with a context window of at least 64,000 tokens.
 
 [Ollama](https://ollama.com) is reached through Hermes's **Custom endpoint**:
 
-1. Run `hermes model`, pick **Custom endpoint**.
+1. Run `hermes model`, pick **Custom endpoint** (the last entry of the list).
 2. API base URL: `http://<Ollama's address>:11434/v1`. From a container, `localhost` is the container itself:
-   use the server's LAN address (such as `http://192.168.1.10:11434/v1`), or `http://ollama:11434/v1` for the
-   compose `ollama` profile.
-3. Leave the API key empty, pick the model Hermes lists, and leave the context length empty: Hermes asks Ollama for
-   the model's window and sends it with every request.
+   use the address of the machine that runs Ollama (such as `http://192.168.1.10:11434/v1`; Ollama there must
+   listen on that address, `OLLAMA_HOST=0.0.0.0:11434`), or `http://ollama:11434/v1` for the compose `ollama`
+   profile. Hermes checks the address at once and says how many models it sees.
+3. Leave the API key empty and press Enter for the API compatibility mode (auto-detect). Hermes lists Ollama's
+   models by number: type the number of yours. Press Enter for the context length (Hermes asks Ollama for the
+   model's window and sends it with every request), the display name and the reasoning effort.
+4. Hermes prints `Default model set to: <model> (via <address>)`. Start a new chat; the model's name shows above
+   the chat.
 
 Ollama's own settings matter too (they are Ollama's, not Talaria's):
 
