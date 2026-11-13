@@ -159,7 +159,7 @@ func (s *Server) finishIdentity(w http.ResponseWriter, r *http.Request, kind str
 	}
 	if !ok {
 		s.log.Warn("login refused: no account for this identity", "mode", kind, "identity", id.ID, "display", id.Display)
-		s.renderRefused(w)
+		s.renderRefused(w, r, id)
 		return false
 	}
 	if s.groups != nil {
@@ -183,7 +183,7 @@ func (s *Server) handleProxyLogin(w http.ResponseWriter, r *http.Request) {
 	id, err := s.proxy.Identity(r)
 	if err != nil {
 		s.log.Warn("proxy login", "client", auth.Peer(r).String(), "error", err.Error())
-		http.Error(w, "The proxy in front of the hub did not say who you are. Check auth.trusted_proxies and the proxy's user header", http.StatusUnauthorized)
+		s.renderProxyError(w, r)
 		return
 	}
 	if !s.finishIdentity(w, r, config.AuthProxy, id, s.proxyAuto) {
@@ -268,7 +268,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"claude": s.claude != nil, "claude_admin": s.isClaudeAdmin(sess.User), "telegram_steps": s.telegramSteps, "version": s.version,
 		"scheduled": s.scheduled != nil, "prompts": s.prompts != nil,
 		"auth": s.mode, "admin": s.accounts != nil && s.isAdmin(r.Context(), sess.User), "password": s.mode == config.AuthLocal && sess.Account,
-		"logout_url": s.logoutURL})
+		"logout_url": s.logoutURL, "identity": sess.Identity, "issuer": s.issuer})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

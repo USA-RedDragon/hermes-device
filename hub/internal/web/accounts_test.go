@@ -72,8 +72,8 @@ func TestLocalSetupAndLogin(t *testing.T) {
 		!strings.Contains(body, `"mode":"local"`) || strings.Contains(body, "token") {
 		t.Fatalf("info = %d %s", resp.StatusCode, body)
 	}
-	if resp, _ := get(t, c, e.url+"/auth/login?next=/a"); resp.Request.URL.Path != "/login" || resp.Request.URL.Query().Get("next") != "/a" {
-		t.Fatalf("login redirect = %s", resp.Request.URL)
+	if resp, _ := get(t, c, e.url+"/auth/login?next=/a"); resp.Request.URL.Path != "/setup" {
+		t.Fatalf("login with no account = %s, want /setup", resp.Request.URL)
 	}
 	if resp, _ := get(t, c, e.url+"/"); resp.Request.URL.Path != "/setup" {
 		t.Fatalf("root with no account = %s, want /setup", resp.Request.URL)
@@ -103,6 +103,9 @@ func TestLocalSetupAndLogin(t *testing.T) {
 		t.Fatalf("info after setup = %s", body)
 	}
 
+	if resp, _ := get(t, client(t), e.url+"/auth/login?next=/a"); resp.Request.URL.Path != "/login" || resp.Request.URL.Query().Get("next") != "/a" {
+		t.Fatalf("login redirect = %s", resp.Request.URL)
+	}
 	if resp, _ := get(t, c, e.url+"/"); resp.Request.URL.Path != "/" {
 		t.Fatalf("root after setup = %s", resp.Request.URL)
 	}

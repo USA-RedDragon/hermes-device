@@ -115,6 +115,8 @@ type Server struct {
 	keepAlive    time.Duration
 	linkPage     *template.Template
 	pairPage     *template.Template
+	refusedPage  *template.Template
+	proxyPage    *template.Template
 	defaults     map[string]string
 	devices      hub.DeviceStore
 	deviceAPI    http.Handler
@@ -192,11 +194,13 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		sessions: sessions, logins: logins, ttl: cfg.Session.TTL,
 		origin: u.Scheme + "://" + u.Host, secure: u.Scheme == "https",
 		displayClaim: cfg.OIDC.DisplayClaim, users: cfg.UserMap(), groupsClaim: cfg.OIDC.GroupsClaim, keepAlive: opts.KeepAlive,
-		defaults: defaults,
-		linkPage: template.Must(template.New("link").Parse(linkHTML)),
-		draining: make(chan struct{}),
-		instance: uuid.NewString()[:8],
-		version:  opts.Version, telegramSteps: telegramSteps(cfg),
+		defaults:    defaults,
+		linkPage:    template.Must(template.New("link").Parse(linkHTML)),
+		refusedPage: template.Must(template.New("refused").Parse(refusedHTML)),
+		proxyPage:   template.Must(template.New("proxy").Parse(proxyErrorHTML)),
+		draining:    make(chan struct{}),
+		instance:    uuid.NewString()[:8],
+		version:     opts.Version, telegramSteps: telegramSteps(cfg),
 	}, nil
 }
 
@@ -220,6 +224,10 @@ type authState struct {
 	emailClaim   string
 	proxyAuto    bool
 	logoutURL    string
+	// loginInfo tells Settings how people get in, for the Users banner
+	// and the Account page.
+	loginInfo map[string]any
+	issuer    string
 }
 
 func newAuthState(cfg *config.Config, opts Options) (authState, error) {
@@ -255,6 +263,8 @@ func newAuthState(cfg *config.Config, opts Options) (authState, error) {
 		}
 		s.logoutURL = a.Proxy.LogoutURL
 	}
+	s.loginInfo = loginInfo(cfg, s.mode, trusted)
+	s.issuer = hostOf(cfg.OIDC.IssuerURL)
 	if s.mode == config.AuthLocal && s.accounts == nil {
 		return authState{}, errLocalNeedsAccounts
 	}
@@ -297,6 +307,8 @@ func (s *Server) Handler() http.Handler {
 		http.ServeFileFS(w, r, static, "index.html")
 	})
 	mux.HandleFunc("GET /pagechat", s.handlePageChatView(static))
+	mux.HandleFunc("GET /login", s.handleLoginPage(static))
+	mux.HandleFunc("GET /setup", s.handleSetupPage(static))
 	for _, f := range []struct{ path, file, mime string }{
 		{"/manifest.webmanifest", "manifest.webmanifest", "application/manifest+json"},
 		{"/sw.js", "sw.js", "text/javascript; charset=utf-8"},

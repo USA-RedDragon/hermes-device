@@ -58,9 +58,14 @@ type userView struct {
 	Disabled bool   `json:"disabled"`
 	Locked   bool   `json:"locked"`
 	// LockedUntil is when a locked account unlocks, in Unix seconds.
-	LockedUntil int64    `json:"locked_until,omitempty"`
-	Password    bool     `json:"password"`
-	Backends    []string `json:"backends"`
+	LockedUntil int64 `json:"locked_until,omitempty"`
+	// Failures counts the wrong passwords since the last good login.
+	Failures int      `json:"failures,omitempty"`
+	Password bool     `json:"password"`
+	Backends []string `json:"backends"`
+	// Groups are the groups of the person's latest login, which the
+	// backends' groups match.
+	Groups []string `json:"groups"`
 	// Source is "account" for an account in the hub's database and
 	// "config" for an entry of users[], which only the config changes.
 	Source  string `json:"source"`
@@ -84,15 +89,30 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	users := make([]userView, 0, len(accounts)+len(s.users))
 	for _, a := range accounts {
-		users = append(users, userView{Name: a.Name, Display: a.Display, Email: a.Email, Identity: a.Identity,
-			Admin: a.Admin || s.admins[a.Name], Disabled: a.Disabled, Locked: a.Locked(now), LockedUntil: lockedUntil(a, now), Password: a.PasswordHash != "",
+		users = append(users, userView{Groups: s.groupsOf(r.Context(), a.Name), Name: a.Name, Display: a.Display, Email: a.Email, Identity: a.Identity,
+			Admin: a.Admin || s.admins[a.Name], Disabled: a.Disabled, Locked: a.Locked(now), LockedUntil: lockedUntil(a, now), Failures: a.Failures, Password: a.PasswordHash != "",
 			Backends: nonNil(a.Backends), Source: "account", Created: a.CreatedAt.Unix()})
 	}
 	for sub, name := range s.users {
-		users = append(users, userView{Name: name, Identity: s.mode + ":" + sub, Admin: s.admins[name], Backends: []string{}, Source: "config"})
+		users = append(users, userView{Name: name, Identity: s.mode + ":" + sub, Admin: s.admins[name], Backends: []string{}, Groups: s.groupsOf(r.Context(), name), Source: "config"})
 	}
 	slices.SortFunc(users, func(a, b userView) int { return strings.Compare(a.Name, b.Name) })
-	writeJSON(w, http.StatusOK, map[string]any{"mode": s.mode, "users": users, "backends": s.backendViews, "me": userFrom(r)})
+	writeJSON(w, http.StatusOK, map[string]any{keyMode: s.mode, "users": users, "backends": s.backendViews, "me": userFrom(r), "login": s.loginInfo})
+}
+
+// groupsOf is the groups of a person's latest login, or none.
+func (s *Server) groupsOf(ctx context.Context, name string) []string {
+	g, ok := s.groups.(interface {
+		Groups(ctx context.Context, user string) ([]string, error)
+	})
+	if !ok {
+		return []string{}
+	}
+	list, err := g.Groups(ctx, name)
+	if err != nil {
+		return []string{}
+	}
+	return nonNil(list)
 }
 
 func lockedUntil(a store.Account, now time.Time) int64 {

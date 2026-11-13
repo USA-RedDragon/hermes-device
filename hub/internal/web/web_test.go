@@ -471,7 +471,7 @@ func TestIdentityIsSubNotUsername(t *testing.T) {
 	c2 := client(t)
 	e.is.as("sub-mallory", userAlice, groupAdmins)
 	resp, body := get(t, c2, e.url+"/auth/login?next=/")
-	if resp.StatusCode != http.StatusForbidden || !strings.Contains(body, "not set up") {
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(body, "Not set up") || !strings.Contains(body, "<code>sub-mallory</code>") {
 		t.Fatalf("unknown sub login = %d %s", resp.StatusCode, body)
 	}
 	if resp, _ := get(t, c2, e.url+"/api/me"); resp.StatusCode != http.StatusUnauthorized {

@@ -156,7 +156,7 @@ func (s *Server) needsSetup(ctx context.Context) bool {
 // handleAuthInfo tells the login and setup pages how this hub logs people
 // in. It needs no session.
 func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
-	out := map[string]any{"mode": s.mode, "setup": false, "logout_url": s.logoutURL}
+	out := map[string]any{keyMode: s.mode, "setup": false, "logout_url": s.logoutURL}
 	if s.mode == config.AuthLocal && s.accounts != nil {
 		n, err := s.accounts.CountAccounts(r.Context())
 		if err != nil {
