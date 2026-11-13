@@ -64,7 +64,8 @@ Settings are environment variables with the same names as in the compose `.env`:
 `TALARIA_PORT`, `TALARIA_USER`,
 `TALARIA_TELEGRAM_TOKEN`, `TZ`, plus `TALARIA_DEMO`, and Hermes's own `PUID` and
 `PGID`. Login settings are the hub's own `HUB_AUTH_*` and `HUB_OIDC_*` variables ([Set up logins](auth.md)); the
-default is local accounts, made on the setup page by the first visitor.
+default is local accounts, made on the setup page by the first visitor. `TALARIA_INSTALL` (`aio` when unset; the
+Unraid template sets `unraid` and the TrueNAS file `truenas`) tells the hub which commands to show for this install.
 
 The sandbox runs as its own user. It cannot read the Hermes home (mode 700, owned by hermes) or Talaria's keys
 (each part's folder is readable only by its user), and it cannot read other processes' environments. This was

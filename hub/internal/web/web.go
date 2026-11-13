@@ -154,6 +154,7 @@ type Server struct {
 	backendNames     map[string]string
 	instance         string
 	version          string
+	install          string
 	telegramSteps    string
 	ready            atomic.Bool
 	draining         chan struct{}
@@ -218,7 +219,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		proxyPage:   template.Must(template.New("proxy").Parse(proxyErrorHTML)),
 		draining:    make(chan struct{}),
 		instance:    uuid.NewString()[:8],
-		version:     opts.Version, telegramSteps: telegramSteps(cfg),
+		version:     opts.Version, telegramSteps: telegramSteps(cfg), install: cfg.UI.Install,
 	}, nil
 }
 

@@ -165,6 +165,20 @@ func TestLoadErrors(t *testing.T) {
 	}
 }
 
+func TestInstall(t *testing.T) {
+	t.Parallel()
+	env := secrets()
+	env["HUB_UI_INSTALL"] = "helm"
+	cfg, err := load(t, env, file)
+	if err != nil || cfg.UI.Install != "helm" {
+		t.Fatalf("install = %q %v", cfg.UI.Install, err)
+	}
+	env["HUB_UI_INSTALL"] = "podman"
+	if _, err := load(t, env, file); !errors.Is(err, config.ErrInstall) {
+		t.Fatalf("unknown install: %v", err)
+	}
+}
+
 // testKey is a throwaway key from openssl genpkey -algorithm ed25519, and
 // testPub its openssl pkey -pubout.
 const (

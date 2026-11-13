@@ -198,6 +198,8 @@ services:
       # Caddy runs in the same network namespace, so device addresses come from X-Forwarded-For
       HUB_DEVICE_TRUSTED_PROXIES: 127.0.0.1/32
       HUB_UI_TIME_ZONE: ${TZ:-UTC}
+      # Which install this is, so the hub shows commands that fit it
+      HUB_UI_INSTALL: compose
       HUB_CLAUDE_TIME_ZONE: ${TZ:-UTC}
       # Login settings (HUB_AUTH_MODE, HUB_OIDC_*, HUB_AUTH_PROXY_*): add them in compose.override.yaml, see https://usa-reddragon.github.io/talaria/deploy/auth.html
     volumes:

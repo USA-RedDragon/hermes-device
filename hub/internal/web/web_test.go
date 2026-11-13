@@ -574,11 +574,13 @@ func TestMeSettings(t *testing.T) {
 		cfg.Telegram = config.Telegram{Enabled: true, Token: "t", PollTimeout: time.Second, EditInterval: time.Second,
 			LeaderRetry: time.Second, TopicSync: time.Second, Steps: "expanded"}
 		opts.Version = "v9.8.7"
+		cfg.UI.Install = "unraid"
 	})
 	c := client(t)
 	login(t, e, c)
 	_, body := get(t, c, e.url+"/api/me")
-	if !strings.Contains(body, `"telegram_steps":"expanded"`) || !strings.Contains(body, `"version":"v9.8.7"`) {
+	if !strings.Contains(body, `"telegram_steps":"expanded"`) || !strings.Contains(body, `"version":"v9.8.7"`) ||
+		!strings.Contains(body, `"install":"unraid"`) {
 		t.Fatalf("me = %s", body)
 	}
 	plain := setup(t)

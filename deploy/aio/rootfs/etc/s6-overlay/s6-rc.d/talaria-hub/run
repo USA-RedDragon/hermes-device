@@ -6,4 +6,6 @@ export HUB_STORE_DRIVER=sqlite HUB_STORE_PATH=/talaria/hub/talaria-hub.db
 export HUB_DEVICE_ENABLED=true HUB_DEVICE_TRUSTED_PROXIES=127.0.0.1/32
 # Login: local accounts unless HUB_AUTH_MODE and its settings come from the container's environment (https://usa-reddragon.github.io/talaria/deploy/auth.html)
 export HUB_UI_TIME_ZONE="${TZ:-UTC}" HUB_CLAUDE_TIME_ZONE="${TZ:-UTC}"
+# Which install this is (the Unraid and TrueNAS files set TALARIA_INSTALL), so the hub shows commands that fit it
+export HUB_UI_INSTALL="${TALARIA_INSTALL:-aio}"
 exec s6-setuidgid nobody talaria-hub

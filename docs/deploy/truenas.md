@@ -80,6 +80,7 @@ services:
       # and provider are Hermes settings: see the TrueNAS page of the docs
       TALARIA_DEMO: "false"
       TZ: UTC
+      TALARIA_INSTALL: truenas
       # The "apps" user of TrueNAS owns the Hermes data
       PUID: "568"
       PGID: "568"

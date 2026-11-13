@@ -98,6 +98,7 @@ type User struct {
 type UI struct {
 	DefaultBackends []string `name:"default_backends" description:"Default backend per user, as user=backend pairs. A user without one gets their first backend"`
 	TimeZone        string   `name:"time_zone" description:"IANA time zone of the times on the Scheduled page, such as Europe/Berlin. Default: the server's zone (the TZ environment variable, else /etc/localtime), else UTC"`
+	Install         string   `name:"install" description:"How Talaria was installed, so the web UI shows commands that fit: compose, helm, aio, unraid or truenas. The install files set it. Empty: commands in a generic form"`
 }
 
 // Location is TimeZone's location; UTC for an unknown zone.
@@ -338,6 +339,7 @@ var (
 	ErrDuration        = errors.New("shutdown.drain_delay, shutdown.timeout and hold.timeout must not be negative")
 	ErrDevice          = errors.New("invalid device settings")
 	ErrPrometheusURL   = errors.New("usage.prometheus_url must be an absolute http or https URL")
+	ErrInstall         = errors.New("ui.install must be compose, helm, aio, unraid, truenas or empty")
 	ErrClaudeAdmin     = errors.New("claude.admins entries must be user=backend with a known backend")
 	ErrModelsAdmin     = errors.New("models.admins entries must be user=backend with a known backend")
 	ErrClaudeTimeZone  = errors.New("claude.time_zone is not a known time zone")
@@ -483,6 +485,11 @@ func (c *Config) Validate() error {
 			return ErrPublicURL
 		}
 		c.HTTP.PublicURL = strings.TrimRight(c.HTTP.PublicURL, "/")
+	}
+	switch c.UI.Install {
+	case "", "compose", "helm", "aio", "unraid", "truenas":
+	default:
+		return ErrInstall
 	}
 	if c.Usage.PrometheusURL != "" {
 		if _, ok := webURL(c.Usage.PrometheusURL); !ok {

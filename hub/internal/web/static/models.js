@@ -16,7 +16,18 @@
 window.HubModels = (() => {
   const minWindow = 64000;
   const docs = "https://usa-reddragon.github.io/talaria/deploy/models.html";
-  const composeCmd = "docker compose exec -u hermes hermes hermes model";
+
+  // serverCommand is where and what to run for the agent's own model setup, for the install type that the
+  // hub's ui.install names (compose, helm, aio, unraid, truenas); a generic container form for any other.
+  function serverCommand(install) {
+    return ({
+      compose: ["In the folder with compose.yaml, run:", "docker compose exec -u hermes hermes hermes model"],
+      helm: ["Run, with your namespace and release name:", "kubectl -n <namespace> exec -it deploy/<release>-hermes -c gateway -- hermes model"],
+      aio: ["Run:", "docker exec -it -u hermes talaria hermes model"],
+      unraid: ["In Unraid's terminal, run:", "docker exec -it -u hermes Talaria hermes model"],
+      truenas: ["In the TrueNAS shell, run:", "sudo docker exec -it -u hermes $(sudo docker ps -qf name=talaria) hermes model"],
+    })[install] || ["Run, with the name of Talaria's agent container:", "docker exec -it -u hermes <container> hermes model"];
+  }
 
   // isLocal reports an address that names the Hermes container itself.
   function isLocal(address) {
@@ -354,13 +365,13 @@ window.HubModels = (() => {
       const d = el("details", "adv");
       d.append(el("summary", "", "Not listed here?"));
       const inner = el("div", "inner");
-      const p = el("p", "hint", "Anthropic account sign-in, Qwen sign-in, AWS Bedrock and Google Vertex AI are set up on the server, not here. On a Compose install, run this in the folder with ");
-      p.append(el("code", "", "compose.yaml"), ":");
+      const [where, cmd] = serverCommand(ctx.me().install);
+      const p = el("p", "hint", "Anthropic account sign-in, Qwen sign-in, AWS Bedrock and Google Vertex AI are set up on the server, not here. " + where);
       const a = el("a", "", "Commands for other installs");
       a.href = docs + "#set-a-model-on-the-server";
       a.target = "_blank";
       a.rel = "noopener";
-      inner.append(p, el("pre", "cmd", composeCmd), a);
+      inner.append(p, el("pre", "cmd", cmd), a);
       d.append(inner);
       // On a phone the opened part is below the fold of the dialog.
       d.ontoggle = () => { if (d.open) inner.scrollIntoView({ block: "nearest" }); };
@@ -883,7 +894,7 @@ window.HubModels = (() => {
     return { open, close, firstRun, settings: (pane) => window.HubModelSettings({ api, el, me: ctx.me, connect: open, pane, say, btn, field, secret, input, path, hermesDown, toast: ctx.toast, changed: ctx.connected }) };
   }
 
-  return { create, split, isLocal, serverVerdict, keyVerdict, signInState, minutesLeft, windowWarning, findProviders, next };
+  return { create, split, serverCommand, isLocal, serverVerdict, keyVerdict, signInState, minutesLeft, windowWarning, findProviders, next };
 })();
 
 // HubModelSettings is Settings > Models: what Hermes has connected, with

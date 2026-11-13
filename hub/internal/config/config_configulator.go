@@ -59,6 +59,7 @@ type sessionShadow struct {
 type uIShadow struct {
 	DefaultBackends *[]string `json:"default_backends" toml:"default_backends" yaml:"default_backends"`
 	TimeZone        *string   `json:"time_zone"        toml:"time_zone"        yaml:"time_zone"`
+	Install         *string   `json:"install"          toml:"install"          yaml:"install"`
 }
 
 type storeShadow struct {
@@ -474,6 +475,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		if s.UI.TimeZone != nil {
 			cfg.UI.TimeZone = *s.UI.TimeZone
 			set("ui.time_zone", configulator.LayerFile, file)
+		}
+		if s.UI.Install != nil {
+			cfg.UI.Install = *s.UI.Install
+			set("ui.install", configulator.LayerFile, file)
 		}
 	}
 	if s.Store != nil {
@@ -1161,6 +1166,10 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.UI.TimeZone = v
 		set("ui.time_zone", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "ui", "install"); ok {
+		cfg.UI.Install = v
+		set("ui.install", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "driver"); ok {
 		cfg.Store.Driver = v
 		set("store.driver", configulator.LayerEnv, n)
@@ -1666,6 +1675,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"session" + o.Separator + "ttl",
 		"ui" + o.Separator + "default_backends",
 		"ui" + o.Separator + "time_zone",
+		"ui" + o.Separator + "install",
 		"store" + o.Separator + "driver",
 		"store" + o.Separator + "path",
 		"store" + o.Separator + "dsn",
@@ -1771,70 +1781,71 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[22], time.Duration(int64(604800000000000)), "How long a login lasts")
 	fs.StringSlice(names[23], nil, "Default backend per user, as user=backend pairs. A user without one gets their first backend")
 	fs.String(names[24], "", "IANA time zone of the times on the Scheduled page, such as Europe/Berlin. Default: the server's zone (the TZ environment variable, else /etc/localtime), else UTC")
-	fs.String(names[25], "sqlite", "Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices")
-	fs.String(names[26], "/data/hermes-hub.db", "Path of the SQLite database (store.driver sqlite)")
-	fs.String(names[27], "", "PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session")
-	fs.String(names[28], "", "File that holds store.dsn. Wins over dsn")
-	fs.String(names[29], "", "With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped")
-	fs.Duration(names[30], time.Duration(int64(5000000000)), "How long the hub keeps serving after SIGTERM while /readyz fails, so load balancers stop sending it requests")
-	fs.Duration(names[31], time.Duration(int64(20000000000)), "How long the hub then waits for open requests and the Telegram bot to stop. Keep drain_delay plus timeout below the pod's termination grace period")
-	fs.Duration(names[32], time.Duration(int64(600000000000)), "How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default")
-	fs.String(names[33], "", "Base URL of a Prometheus query API, such as http://prometheus:9090, that scrapes the metrics of ollama-priority-proxy in front of the local GPU's Ollama. The Usage page then shows how long the GPU was busy. Empty: it does not")
-	fs.String(names[34], "", "How people log in: local (accounts in the hub's database, with a setup page that makes the first one), proxy (a reverse proxy in front of the hub tells it who the user is) or oidc (an OpenID Connect provider). Default: oidc when oidc.issuer_url is set, else local")
-	fs.StringSlice(names[35], nil, "Hub user names that are admins besides accounts marked admin in Settings > Users: admins manage people and connect models (Settings > Models; models.admins can limit that per backend). The first local account is an admin")
-	fs.StringSlice(names[36], nil, "CIDRs or addresses of the reverse proxies in front of the hub, such as 10.0.0.0/8 or 127.0.0.1. In proxy mode the hub reads the user header only on requests from them. In every mode the hub takes the client address for login limits from their X-Forwarded-For")
-	fs.Var(impl.NewInt(5), names[37], "Wrong passwords in a row that lock an account. 0 is the default")
-	fs.Duration(names[38], time.Duration(int64(900000000000)), "How long a locked account stays locked. An admin can unlock it sooner by setting a new password. 0 is the default")
-	fs.String(names[39], "Remote-User", "Header that holds the user's identity: Remote-User (Authelia, Authentik), X-Auth-Request-User or X-Forwarded-User (oauth2-proxy), Tailscale-User-Login (tailscale serve). Not used with proxy.jwt.jwks_url")
-	fs.String(names[40], "Remote-Name", "Header with the user's display name. Not used with proxy.jwt.jwks_url")
-	fs.String(names[41], "Remote-Email", "Header with the user's email address. Not used with proxy.jwt.jwks_url")
-	fs.String(names[42], "Remote-Groups", "Header with the user's groups, separated by commas or |, for backends[].groups. Not used with proxy.jwt.jwks_url")
-	fs.Bool(names[43], false, "Make an account for each new identity the proxy sends. Off: only identities in users[] and accounts an admin made log in")
-	fs.String(names[44], "", "Where Log out sends the browser after the hub's own logout, such as the proxy's logout page. Empty: the hub's start page")
-	fs.String(names[45], "", "URL of the JSON Web Key Set that signs the proxy's tokens, such as https://<team>.cloudflareaccess.com/cdn-cgi/access/certs or the jwks_uri of the identity provider. Set: the hub reads the user from a verified token instead of user_header")
-	fs.String(names[46], "", "Header that holds the token: Authorization (Bearer), Cf-Access-Jwt-Assertion (Cloudflare Access) or the header an Envoy Gateway SecurityPolicy forwards the ID token in. Default Authorization when cookie is empty")
-	fs.String(names[47], "", "Cookie that holds the token, such as CF_Authorization. Read when header has none")
-	fs.String(names[48], "", "Token issuer (iss) to require. Required with jwks_url")
-	fs.StringSlice(names[49], nil, "Audiences (aud) the hub accepts: the OIDC client ID, or the application AUD tag of Cloudflare Access. Empty: any audience")
-	fs.String(names[50], "sub", "Claim that holds the user's identity, such as sub or email")
-	fs.String(names[51], "preferred_username", "Claim with the user's display name")
-	fs.String(names[52], "email", "Claim with the user's email address")
-	fs.String(names[53], "groups", "Claim with the user's groups, for backends[].groups")
-	fs.String(names[54], "", "Base URL of a Hermes Webapp listener, such as http://hermes:9120. Set: the hub adds a backend with id hermes that every hub user may use, in front of backends[]")
-	fs.String(names[55], "Hermes", "Display name of that backend")
-	fs.String(names[56], "", "Hermes dashboard user name of that backend. Required with url")
-	fs.String(names[57], "", "Hermes dashboard password of that backend. Required with url unless password_file is set")
-	fs.String(names[58], "", "File that holds hermes.password. Wins over password")
-	fs.Bool(names[59], false, "Let users pair talaria computers with that backend, as backends[].devices")
-	fs.Bool(names[60], false, "Run the Telegram bot")
-	fs.String(names[61], "", "Telegram bot token from BotFather. Required with enabled unless token_file is set")
-	fs.String(names[62], "", "File that holds telegram.token. Wins over token")
-	fs.String(names[63], "https://api.telegram.org", "Telegram Bot API base URL")
-	fs.StringSlice(names[64], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
-	fs.Int64Slice(names[65], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
-	fs.Duration(names[66], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
-	fs.Duration(names[67], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
-	fs.Var(impl.NewInt(5), names[68], "Retries of a Bot API call that Telegram answers with 429")
-	fs.Duration(names[69], time.Duration(int64(2000000000)), "With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over")
-	fs.Duration(names[70], time.Duration(int64(20000000000)), "How often the bot reads the chats of each linked group to add topics for new chats, rename topics and follow the chats that run")
-	fs.String(names[71], "collapsed", "How the status line of a turn shows its steps and thinking: collapsed (a quote that opens on a tap), expanded, or off")
-	fs.Bool(names[72], true, "In private chats, stream each turn into a draft (sendMessageDraft) that shows what runs and the reply as it is written, instead of editing the status line")
-	fs.Bool(names[73], false, "Serve the talaria device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
-	fs.String(names[74], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
-	fs.String(names[75], "", "File that holds device.signing_key. Wins over signing_key")
-	fs.Duration(names[76], time.Duration(int64(600000000000)), "How long a pairing code from talaria setup or talaria login stays valid")
-	fs.Duration(names[77], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
-	fs.Duration(names[78], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
-	fs.StringSlice(names[79], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
-	fs.String(names[80], "", "Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription")
-	fs.String(names[81], "", "File that holds notify.vapid_private_key. Wins over vapid_private_key")
-	fs.String(names[82], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url when that is https. With neither, the hub logs a warning and runs without Web Push")
-	fs.Duration(names[83], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
-	fs.Duration(names[84], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
-	fs.Duration(names[85], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
-	fs.StringSlice(names[86], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
-	fs.String(names[87], "", "IANA time zone of the reset times of Claude usage windows and of the days of Claude Code usage. Default: ui.time_zone")
-	fs.StringSlice(names[88], nil, "Who may connect models to a backend's Hermes from the hub (Settings > Models, Connect a model), as user=backend pairs, the same form as claude.admins. Once set, only these pairs may, also for hub admins. Empty: the hub's admins (auth.admins and accounts marked admin), on every backend they use")
+	fs.String(names[25], "", "How Talaria was installed, so the web UI shows commands that fit: compose, helm, aio, unraid or truenas. The install files set it. Empty: commands in a generic form")
+	fs.String(names[26], "sqlite", "Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices")
+	fs.String(names[27], "/data/hermes-hub.db", "Path of the SQLite database (store.driver sqlite)")
+	fs.String(names[28], "", "PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session")
+	fs.String(names[29], "", "File that holds store.dsn. Wins over dsn")
+	fs.String(names[30], "", "With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped")
+	fs.Duration(names[31], time.Duration(int64(5000000000)), "How long the hub keeps serving after SIGTERM while /readyz fails, so load balancers stop sending it requests")
+	fs.Duration(names[32], time.Duration(int64(20000000000)), "How long the hub then waits for open requests and the Telegram bot to stop. Keep drain_delay plus timeout below the pod's termination grace period")
+	fs.Duration(names[33], time.Duration(int64(600000000000)), "How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default")
+	fs.String(names[34], "", "Base URL of a Prometheus query API, such as http://prometheus:9090, that scrapes the metrics of ollama-priority-proxy in front of the local GPU's Ollama. The Usage page then shows how long the GPU was busy. Empty: it does not")
+	fs.String(names[35], "", "How people log in: local (accounts in the hub's database, with a setup page that makes the first one), proxy (a reverse proxy in front of the hub tells it who the user is) or oidc (an OpenID Connect provider). Default: oidc when oidc.issuer_url is set, else local")
+	fs.StringSlice(names[36], nil, "Hub user names that are admins besides accounts marked admin in Settings > Users: admins manage people and connect models (Settings > Models; models.admins can limit that per backend). The first local account is an admin")
+	fs.StringSlice(names[37], nil, "CIDRs or addresses of the reverse proxies in front of the hub, such as 10.0.0.0/8 or 127.0.0.1. In proxy mode the hub reads the user header only on requests from them. In every mode the hub takes the client address for login limits from their X-Forwarded-For")
+	fs.Var(impl.NewInt(5), names[38], "Wrong passwords in a row that lock an account. 0 is the default")
+	fs.Duration(names[39], time.Duration(int64(900000000000)), "How long a locked account stays locked. An admin can unlock it sooner by setting a new password. 0 is the default")
+	fs.String(names[40], "Remote-User", "Header that holds the user's identity: Remote-User (Authelia, Authentik), X-Auth-Request-User or X-Forwarded-User (oauth2-proxy), Tailscale-User-Login (tailscale serve). Not used with proxy.jwt.jwks_url")
+	fs.String(names[41], "Remote-Name", "Header with the user's display name. Not used with proxy.jwt.jwks_url")
+	fs.String(names[42], "Remote-Email", "Header with the user's email address. Not used with proxy.jwt.jwks_url")
+	fs.String(names[43], "Remote-Groups", "Header with the user's groups, separated by commas or |, for backends[].groups. Not used with proxy.jwt.jwks_url")
+	fs.Bool(names[44], false, "Make an account for each new identity the proxy sends. Off: only identities in users[] and accounts an admin made log in")
+	fs.String(names[45], "", "Where Log out sends the browser after the hub's own logout, such as the proxy's logout page. Empty: the hub's start page")
+	fs.String(names[46], "", "URL of the JSON Web Key Set that signs the proxy's tokens, such as https://<team>.cloudflareaccess.com/cdn-cgi/access/certs or the jwks_uri of the identity provider. Set: the hub reads the user from a verified token instead of user_header")
+	fs.String(names[47], "", "Header that holds the token: Authorization (Bearer), Cf-Access-Jwt-Assertion (Cloudflare Access) or the header an Envoy Gateway SecurityPolicy forwards the ID token in. Default Authorization when cookie is empty")
+	fs.String(names[48], "", "Cookie that holds the token, such as CF_Authorization. Read when header has none")
+	fs.String(names[49], "", "Token issuer (iss) to require. Required with jwks_url")
+	fs.StringSlice(names[50], nil, "Audiences (aud) the hub accepts: the OIDC client ID, or the application AUD tag of Cloudflare Access. Empty: any audience")
+	fs.String(names[51], "sub", "Claim that holds the user's identity, such as sub or email")
+	fs.String(names[52], "preferred_username", "Claim with the user's display name")
+	fs.String(names[53], "email", "Claim with the user's email address")
+	fs.String(names[54], "groups", "Claim with the user's groups, for backends[].groups")
+	fs.String(names[55], "", "Base URL of a Hermes Webapp listener, such as http://hermes:9120. Set: the hub adds a backend with id hermes that every hub user may use, in front of backends[]")
+	fs.String(names[56], "Hermes", "Display name of that backend")
+	fs.String(names[57], "", "Hermes dashboard user name of that backend. Required with url")
+	fs.String(names[58], "", "Hermes dashboard password of that backend. Required with url unless password_file is set")
+	fs.String(names[59], "", "File that holds hermes.password. Wins over password")
+	fs.Bool(names[60], false, "Let users pair talaria computers with that backend, as backends[].devices")
+	fs.Bool(names[61], false, "Run the Telegram bot")
+	fs.String(names[62], "", "Telegram bot token from BotFather. Required with enabled unless token_file is set")
+	fs.String(names[63], "", "File that holds telegram.token. Wins over token")
+	fs.String(names[64], "https://api.telegram.org", "Telegram Bot API base URL")
+	fs.StringSlice(names[65], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
+	fs.Int64Slice(names[66], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
+	fs.Duration(names[67], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
+	fs.Duration(names[68], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
+	fs.Var(impl.NewInt(5), names[69], "Retries of a Bot API call that Telegram answers with 429")
+	fs.Duration(names[70], time.Duration(int64(2000000000)), "With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over")
+	fs.Duration(names[71], time.Duration(int64(20000000000)), "How often the bot reads the chats of each linked group to add topics for new chats, rename topics and follow the chats that run")
+	fs.String(names[72], "collapsed", "How the status line of a turn shows its steps and thinking: collapsed (a quote that opens on a tap), expanded, or off")
+	fs.Bool(names[73], true, "In private chats, stream each turn into a draft (sendMessageDraft) that shows what runs and the reply as it is written, instead of editing the status line")
+	fs.Bool(names[74], false, "Serve the talaria device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
+	fs.String(names[75], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
+	fs.String(names[76], "", "File that holds device.signing_key. Wins over signing_key")
+	fs.Duration(names[77], time.Duration(int64(600000000000)), "How long a pairing code from talaria setup or talaria login stays valid")
+	fs.Duration(names[78], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
+	fs.Duration(names[79], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
+	fs.StringSlice(names[80], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
+	fs.String(names[81], "", "Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription")
+	fs.String(names[82], "", "File that holds notify.vapid_private_key. Wins over vapid_private_key")
+	fs.String(names[83], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url when that is https. With neither, the hub logs a warning and runs without Web Push")
+	fs.Duration(names[84], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
+	fs.Duration(names[85], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
+	fs.Duration(names[86], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
+	fs.StringSlice(names[87], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
+	fs.String(names[88], "", "IANA time zone of the reset times of Claude usage windows and of the days of Claude Code usage. Default: ui.time_zone")
+	fs.StringSlice(names[89], nil, "Who may connect models to a backend's Hermes from the hub (Settings > Models, Connect a model), as user=backend pairs, the same form as claude.admins. Once set, only these pairs may, also for hub admins. Empty: the hub's admins (auth.admins and accounts marked admin), on every backend they use")
 	return nil
 }
 
@@ -2138,6 +2149,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.UI.TimeZone = v
 		set("ui.time_zone", configulator.LayerCLI, "--"+n)
+	}
+	if n := "ui" + o.Separator + "install"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "ui.install",
+				Source: "--" + n,
+			}
+		}
+		cfg.UI.Install = v
+		set("ui.install", configulator.LayerCLI, "--"+n)
 	}
 	if n := "store" + o.Separator + "driver"; fs.Changed(n) {
 		v, err := fs.GetString(n)
@@ -3843,6 +3866,19 @@ func (s *uIShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				s.TimeZone = &str
 			default:
 				return configJSONError(path+".time_zone", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "install":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Install = &str
+			default:
+				return configJSONError(path+".install", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -5945,6 +5981,7 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "session.ttl = %v\n", c.Session.TTL)
 	fmt.Fprintf(&b, "ui.default_backends = %v\n", c.UI.DefaultBackends)
 	fmt.Fprintf(&b, "ui.time_zone = %v\n", c.UI.TimeZone)
+	fmt.Fprintf(&b, "ui.install = %v\n", c.UI.Install)
 	fmt.Fprintf(&b, "store.driver = %v\n", c.Store.Driver)
 	fmt.Fprintf(&b, "store.path = %v\n", c.Store.Path)
 	b.WriteString("store.dsn = (redacted)\n")

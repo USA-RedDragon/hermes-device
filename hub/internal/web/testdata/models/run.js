@@ -15,6 +15,12 @@ const eq = (a, b, msg) => assert.deepStrictEqual(JSON.parse(JSON.stringify(a)), 
 for (const a of ["http://localhost:11434/v1", "http://127.0.0.1:1234", "http://[::1]:8000/v1", "http://0.0.0.0:11434"]) assert.ok(M.isLocal(a), a);
 for (const a of ["http://192.168.1.10:11434/v1", "http://ollama:11434/v1", "not a url", ""]) assert.ok(!M.isLocal(a), a);
 
+// The server command for the providers set up on the server: per install type, generic otherwise.
+eq(M.serverCommand("compose"), ["In the folder with compose.yaml, run:", "docker compose exec -u hermes hermes hermes model"]);
+assert.ok(M.serverCommand("helm")[1].startsWith("kubectl -n <namespace> exec -it deploy/<release>-hermes"));
+eq(M.serverCommand("unraid")[1], "docker exec -it -u hermes Talaria hermes model");
+for (const k of ["", undefined, "other"]) eq(M.serverCommand(k)[1], "docker exec -it -u hermes <container> hermes model", String(k));
+
 // Address tests, with Hermes's own answers (v0.23.1, read live).
 let v = M.serverVerdict({ ok: true, reachable: true, message: "", models: ["qwen2.5:0.5b"], resolved_base_url: "http://ollama:11434/v1" }, "http://ollama:11434");
 eq([v.tone, v.title, v.at, v.models], ["good", "Found 1 model", "http://ollama:11434/v1", ["qwen2.5:0.5b"]]);

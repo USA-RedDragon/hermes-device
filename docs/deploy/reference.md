@@ -283,6 +283,7 @@ TALARIA_USER             (empty)                            Your hub user
 TALARIA_TELEGRAM_TOKEN   (empty)                            Telegram bot token
 PUID                     99                                 PUID
 PGID                     100                                PGID
+TALARIA_INSTALL          unraid                             Install type
 ```
 <!-- /docgen:output -->
 

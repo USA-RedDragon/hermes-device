@@ -54,6 +54,8 @@ ui:
   # default_backends: []
   # IANA time zone of the times on the Scheduled page, such as Europe/Berlin. Default: the server's zone (the TZ environment variable, else /etc/localtime), else UTC
   # time_zone: ""
+  # How Talaria was installed, so the web UI shows commands that fit: compose, helm, aio, unraid or truenas. The install files set it. Empty: commands in a generic form
+  # install: ""
 store:
   # Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices
   driver: "sqlite"

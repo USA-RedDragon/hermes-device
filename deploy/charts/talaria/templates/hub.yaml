@@ -96,6 +96,7 @@ spec:
             # The front container is in the same pod; ingress and gateway proxies sit in front of it
             - {name: HUB_DEVICE_TRUSTED_PROXIES, value: "127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"}
             - {name: HUB_UI_TIME_ZONE, value: {{ .Values.timeZone | quote }}}
+            - {name: HUB_UI_INSTALL, value: helm}
             - {name: HUB_CLAUDE_TIME_ZONE, value: {{ .Values.timeZone | quote }}}
             - {name: HUB_STORE_DRIVER, value: {{ .Values.hub.store.driver | quote }}}
             {{- if eq .Values.hub.store.driver "sqlite" }}
