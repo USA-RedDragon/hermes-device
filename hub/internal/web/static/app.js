@@ -223,7 +223,7 @@
       const group = el("div", "group pinned");
       const h = el("div", "group-head");
       h.append(el("span", "grow", "Pinned"));
-      h.title = q ? "Clear the search to reorder pins" : "Drag to reorder. On a touch screen, press and hold a chat first.";
+      h.title = q ? "Clear the search to reorder pins" : "Drag to reorder, or drag a chat here to pin it. On a touch screen, press and hold a chat first.";
       group.append(h);
       for (const s of pinned) group.append(chatItem(s, many));
       if (!q) pinOrder.enable(group);
@@ -231,7 +231,7 @@
       nav.append(group);
     }
     for (const b of backends) {
-      const group = el("div", "group");
+      const group = el("div", "group recent");
       if (many || pinned.length) {
         const h = el("div", "group-head");
         h.append(el("span", "grow", many ? b.name : "Recent"));
@@ -249,6 +249,7 @@
       if (!mine.length && !b.error) group.append(el("p", "none", "No chats yet."));
       if (!hits.length && mine.length && !b.error && !many) continue;
       for (const s of hits) group.append(chatItem(s));
+      if (!q) pinOrder.enable(group);
       nav.append(group);
     }
     if (q && !found) nav.append(el("p", "none", "No chat titles match."));
@@ -288,7 +289,7 @@
     if (isCurrent(s)) row.classList.add("active");
     const a = el("a", "go");
     a.href = chatHash(s.backend_id, s.id);
-    if (s.pinned && !s.archived) a.draggable = false;
+    if (!s.archived) a.draggable = false;
     a.append(chats.mark(s));
     const badge = s.activity > 0 ? el("span", "badge", String(s.activity)) : null;
     if (badge) badge.title = s.activity + " running beside this chat: subagents and background commands";
@@ -3576,6 +3577,8 @@
 
   const pinOrder = window.HubPinOrder({ api, el, toast, banner, pinned: pinnedChats, redraw: () => drawList(), refresh: () => refreshList(),
     nav: () => $("sessions"),
+    find: (key) => (lastList ? lastList.sessions.find((s) => s.backend_id + "\n" + s.id === key) : null),
+    unpin: (s) => { s.pinned = false; s.pin_pos = 0; drawList(); chats.pin(s, false); },
     onMoved: (s, byKeyboard) => { if (byKeyboard) refocus(s.backend_id + "\n" + s.id, true); } });
 
   const page = pageMode ? window.HubPageChat({ api, el, toast, banner, view: () => view,

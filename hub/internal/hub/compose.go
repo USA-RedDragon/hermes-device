@@ -136,6 +136,9 @@ type ChatStore interface {
 	// that order. Names of chats that are not pinned are ignored, and
 	// pinned chats not named follow in their old order.
 	SetPinOrder(ctx context.Context, user string, order []SessionRef) error
+	// PinInOrder pins add, if it is not pinned, and orders the pins as
+	// SetPinOrder does, as one change.
+	PinInOrder(ctx context.Context, user string, add SessionRef, order []SessionRef) error
 	// MarkRead moves the chat's read time to at, never back and never past
 	// now, and clears a hand-set unread mark.
 	MarkRead(ctx context.Context, user, backendID, sessionID string, at time.Time) error

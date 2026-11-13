@@ -55,11 +55,29 @@ func (s *Store) SetPinned(ctx context.Context, user, backendID, sessionID string
 // and pinned chats not named follow in their old order. Pins of other
 // users are never touched.
 func (s *Store) SetPinOrder(ctx context.Context, user string, order []hub.SessionRef) error {
+	return s.pinOrder(ctx, user, nil, order)
+}
+
+// PinInOrder pins the chat add, if it is not pinned yet, and sets the
+// order of the pins as SetPinOrder does, in one transaction: add lands
+// where order names it, so a chat dropped into the pinned list never shows
+// at the top first.
+func (s *Store) PinInOrder(ctx context.Context, user string, add hub.SessionRef, order []hub.SessionRef) error {
+	return s.pinOrder(ctx, user, &add, order)
+}
+
+func (s *Store) pinOrder(ctx context.Context, user string, add *hub.SessionRef, order []hub.SessionRef) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if add != nil {
+		if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO chat_marks ("user", backend_id, session_id, pinned, pin_pos) VALUES (?, ?, ?, 1, 0)
+			ON CONFLICT ("user", backend_id, session_id) DO UPDATE SET pinned = 1`), user, add.BackendID, add.SessionID); err != nil {
+			return err
+		}
+	}
 	rows, err := tx.QueryContext(ctx, s.q(`SELECT backend_id, session_id, pin_pos FROM chat_marks
 		WHERE "user" = ? AND pinned = 1 ORDER BY pin_pos, backend_id, session_id`), user)
 	if err != nil {

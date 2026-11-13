@@ -132,6 +132,11 @@ func (s *Server) handlePinOrder(w http.ResponseWriter, r *http.Request) {
 			BackendID string `json:"backend_id"`
 			SessionID string `json:"session_id"`
 		} `json:"order"`
+		// Pin names a chat to pin at its place in order, in the same change.
+		Pin *struct {
+			BackendID string `json:"backend_id"`
+			SessionID string `json:"session_id"`
+		} `json:"pin"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -148,7 +153,17 @@ func (s *Server) handlePinOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		order = append(order, hub.SessionRef{BackendID: x.BackendID, SessionID: x.SessionID})
 	}
-	if err := cs.SetPinOrder(r.Context(), userFrom(r), order); err != nil {
+	var err error
+	if p := body.Pin; p != nil {
+		if p.BackendID == "" || p.SessionID == "" {
+			errorJSON(w, http.StatusBadRequest, "pin needs backend_id and session_id")
+			return
+		}
+		err = cs.PinInOrder(r.Context(), userFrom(r), hub.SessionRef{BackendID: p.BackendID, SessionID: p.SessionID}, order)
+	} else {
+		err = cs.SetPinOrder(r.Context(), userFrom(r), order)
+	}
+	if err != nil {
 		s.fail(w, err)
 		return
 	}

@@ -316,3 +316,29 @@ func TestPinnedFirstKeepsActivityOrder(t *testing.T) {
 		t.Fatalf("activity time changed")
 	}
 }
+
+func TestPinInOrder(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		for _, id := range []string{"a", "b"} {
+			if err := s.SetPinned(ctx, userCarol, backendB, id, true); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// b,a are pinned; z was never marked at all and lands in the middle.
+		if err := s.PinInOrder(ctx, userCarol, hub.SessionRef{BackendID: backendB, SessionID: "z"}, refs("b", "z", "a")); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(pinOrder(t, s, userCarol), ","); got != "b,z,a" {
+			t.Fatalf("pinned in place: %s, want b,z,a", got)
+		}
+		// A chat that is pinned already is only moved.
+		if err := s.PinInOrder(ctx, userCarol, hub.SessionRef{BackendID: backendB, SessionID: "a"}, refs("a", "b", "z")); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(pinOrder(t, s, userCarol), ","); got != "a,b,z" {
+			t.Fatalf("moved: %s, want a,b,z", got)
+		}
+	})
+}

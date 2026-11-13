@@ -146,5 +146,5 @@ window.HubChatList = (ctx) => {
     $("newchat").title = on ? "New chat in the Sandbox (Ctrl+Shift+O)" : "New chat (Ctrl+Shift+O)";
   }
 
-  return { mark, tail, label, menu, seen, read, showChevron, closeNew, newOpen: () => !menuBox.hidden };
+  return { mark, tail, label, menu, seen, read, pin, showChevron, closeNew, newOpen: () => !menuBox.hidden };
 };

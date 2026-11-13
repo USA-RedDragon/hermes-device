@@ -386,6 +386,33 @@ func TestPinOrderAPI(t *testing.T) {
 	}
 }
 
+func TestPinInOrderAPI(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: titleSecond, Live: true, StartedAt: 200})
+	e.gw.AddSession(&gatewaytest.Session{ID: "s3", Title: "Third", Live: true, StartedAt: 300})
+	c := client(t)
+	m := login(t, e, c)
+	pinChat(t, e, c, m.CSRF, "pc", "s1", true)
+	pinChat(t, e, c, m.CSRF, "pc", "s2", true)
+	if got := pinnedIDs(t, e, c); got != "s2,s1" {
+		t.Fatalf("start: %s", got)
+	}
+	body := orderBody("pc", "s2", "s3", "s1")
+	body["pin"] = map[string]string{keyBackendID: "pc", "session_id": "s3"}
+	url := e.url + "/api/pins/order"
+	if s := putJSON(t, c, url, m.CSRF, body); s != http.StatusNoContent {
+		t.Fatalf("pin in order = %d", s)
+	}
+	if got := pinnedIDs(t, e, c); got != "s2,s3,s1" {
+		t.Fatalf("after pin in order: %s", got)
+	}
+	body["pin"] = map[string]string{keyBackendID: "pc"}
+	if s := putJSON(t, c, url, m.CSRF, body); s != http.StatusBadRequest {
+		t.Fatalf("pin without a session = %d", s)
+	}
+}
+
 const (
 	maxPinsInBody = 1000
 	orderS2S1     = "s2,s1"
