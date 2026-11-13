@@ -60,6 +60,10 @@ func (l *subagentLocks) prune(now time.Time) bool {
 	return true
 }
 
+// subagentLiveWait bounds the live read of Hermes inside SubagentEvents, so a
+// Hermes that is restarting or gone leaves the stored copy to answer fast.
+const subagentLiveWait = 4 * time.Second
+
 // SubagentEvents reads the steps of one subagent of the session after seq
 // after. It reads what Hermes wrote since the last read into the hub's log
 // first, so the steps stay after the subagent ends and Hermes forgets it;
@@ -78,9 +82,11 @@ func (s *Service) SubagentEvents(ctx context.Context, user, backendID, sessionID
 	var liveErr error
 	if log != nil {
 		unlock := s.subagentLocks.lock(k)
-		liveErr = s.withSession(ctx, user, backendID, sessionID, func(b *backend, ls *live) error {
-			return s.syncSubagent(ctx, b, ls, k, &out)
+		lctx, cancel := context.WithTimeout(ctx, subagentLiveWait)
+		liveErr = s.withSession(lctx, user, backendID, sessionID, func(b *backend, ls *live) error {
+			return s.syncSubagent(lctx, b, ls, k, &out)
 		})
+		cancel()
 		unlock()
 		if errors.Is(liveErr, hub.ErrForbidden) || errors.Is(liveErr, hub.ErrUnknownBackend) {
 			return out, liveErr
