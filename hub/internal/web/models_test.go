@@ -62,7 +62,13 @@ type modelsEnv struct {
 
 func setupModels(t *testing.T) *modelsEnv {
 	t.Helper()
-	pc, home := modelstest.New(), modelstest.New()
+	return setupModelsWith(t, modelstest.New())
+}
+
+// setupModelsWith is setupModels with pc as the Hermes of backend pc.
+func setupModelsWith(t *testing.T, pc *modelstest.Hermes) *modelsEnv {
+	t.Helper()
+	home := modelstest.New()
 	logs := &syncBuf{}
 	var e *hubEnv
 	e = setupWith(t, func(cfg *config.Config, opts *web.Options, _ *store.Store) {

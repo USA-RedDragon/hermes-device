@@ -110,7 +110,6 @@ type KeySetup struct {
 type DefaultSetup struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
-	BaseURL  string `json:"base_url,omitempty"`
 	Confirm  bool   `json:"confirm"`
 }
 

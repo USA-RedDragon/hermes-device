@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -148,9 +149,9 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	if devices != nil {
 		webOpts.Files = devices
 	}
-	webOpts.Models = newModels(cfg, svc, dialers)
-	webOpts.Insights = newInsights(cfg, svc, webOpts.Memory, dialers)
 	cs := newClaude(cfg, svc, notifier, dialers)
+	webOpts.Models = newModels(cfg, svc, cs, dialers)
+	webOpts.Insights = newInsights(cfg, svc, webOpts.Memory, dialers)
 	if cs != nil {
 		svc.SetTurnErrors(cs.TurnFailed)
 		webOpts.Claude = cs
@@ -319,8 +320,9 @@ func newMemory(cfg *config.Config, svc *service.Service, dialers map[string]*gat
 }
 
 // newModels returns the core of Settings > Models, or nil when there is no
-// backend.
-func newModels(cfg *config.Config, svc *service.Service, dialers map[string]*gateway.Dialer) hub.ModelSetup {
+// backend. A backend whose Hermes has the Claude accounts plugin (cs says
+// so) does not offer an Anthropic API key in Connect a model.
+func newModels(cfg *config.Config, svc *service.Service, cs *claude.Service, dialers map[string]*gateway.Dialer) hub.ModelSetup {
 	if len(cfg.Backends) == 0 {
 		return nil
 	}
@@ -328,7 +330,17 @@ func newModels(cfg *config.Config, svc *service.Service, dialers map[string]*gat
 	for id, d := range dialers {
 		rs[id] = d
 	}
-	return models.New(models.Options{Access: svc, Backends: cfg.Backends, Requesters: rs})
+	opts := models.Options{Access: svc, Backends: cfg.Backends, Requesters: rs}
+	if cs != nil {
+		opts.Claude = func(ctx context.Context, user, backendID string) bool {
+			a, err := cs.ClaudeAccounts(ctx, user, backendID, false)
+			if err != nil {
+				return !errors.Is(err, hub.ErrNoClaude)
+			}
+			return slices.ContainsFunc(a.Accounts, func(x hub.ClaudeAccount) bool { return x.ID != claude.ChatGPTAccount })
+		}
+	}
+	return models.New(opts)
 }
 
 // newInsights returns the core of chat search and the Usage page, or nil

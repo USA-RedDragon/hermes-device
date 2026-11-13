@@ -30,12 +30,24 @@ type Hermes struct {
 	Paths []string
 	// Down makes every request fail as if Hermes were away.
 	Down bool
-	mux  *http.ServeMux
+	// Pinned makes the default one a deployment sets: Hermes keeps it. With
+	// ReadOnly (Hermes with dashboard.managed_read_only), Hermes says so and
+	// refuses the change with 409; without, it answers ok and keeps it, as
+	// Hermes without that key does.
+	Pinned, ReadOnly bool
+	// Managed names servers the deployment sets.
+	Managed map[string]bool
+	// InEnvironment names API key variables set in Hermes's environment.
+	InEnvironment map[string]bool
+	// ClaudePool lists the Claude accounts plugin's provider.
+	ClaudePool bool
+	mux        *http.ServeMux
 }
 
 // New returns a Hermes with no model.
 func New() *Hermes {
-	h := &Hermes{Keys: map[string]string{}, Endpoints: map[string]map[string]any{}, SignedIn: map[string]bool{}, mux: http.NewServeMux()}
+	h := &Hermes{Keys: map[string]string{}, Endpoints: map[string]map[string]any{}, SignedIn: map[string]bool{}, Managed: map[string]bool{},
+		InEnvironment: map[string]bool{}, mux: http.NewServeMux()}
 	h.routes()
 	return h
 }
@@ -78,6 +90,8 @@ const (
 	kIsCurrent = "is_current"
 	kIsSet     = "is_set"
 	kReachable = "reachable"
+	kAuthed    = "authenticated"
+	kSlug      = "slug"
 	kName      = "name"
 	openRouter = "openrouter"
 	sessionID  = "sess1"
@@ -116,10 +130,19 @@ func envVars() map[string]envVar {
 		"DEEPSEEK_API_KEY":   {"deepseek", "DeepSeek", "https://platform.deepseek.com/api_keys"},
 		"GOOGLE_API_KEY":     {"gemini", "Google AI Studio", "https://aistudio.google.com/app/apikey"},
 		"LM_API_KEY":         {"lmstudio", "LM Studio", ""},
+		"ANTHROPIC_API_KEY":  {"anthropic", "Anthropic", "https://console.anthropic.com/settings/keys"},
 	}
 }
 
 func (h *Hermes) routes() {
+	h.envRoutes()
+	h.endpointRoutes()
+	h.modelRoutes()
+	h.oauthRoutes()
+}
+
+// envRoutes are the API key routes.
+func (h *Hermes) envRoutes() {
 	h.mux.HandleFunc("GET /api/env", func(w http.ResponseWriter, _ *http.Request) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
@@ -134,6 +157,9 @@ func (h *Hermes) routes() {
 			if val != "" {
 				row["redacted_value"] = mask(val)
 			}
+			if h.ReadOnly && h.InEnvironment[k] {
+				row["in_environment"] = true
+			}
 			out[k] = row
 		}
 		write(w, http.StatusOK, out)
@@ -143,6 +169,9 @@ func (h *Hermes) routes() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		key, _ := b["key"].(string)
+		if h.refuseKey(w, key) {
+			return
+		}
 		h.Keys[key], _ = b["value"].(string)
 		write(w, http.StatusOK, map[string]any{"ok": true, "key": key})
 	})
@@ -151,6 +180,9 @@ func (h *Hermes) routes() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		key, _ := b["key"].(string)
+		if h.refuseKey(w, key) {
+			return
+		}
 		if _, ok := h.Keys[key]; !ok {
 			write(w, http.StatusNotFound, map[string]any{kDetail: key + " not found in .env"})
 			return
@@ -166,6 +198,10 @@ func (h *Hermes) routes() {
 		}
 		write(w, http.StatusOK, map[string]any{"ok": true, kReachable: true, kMessage: ""})
 	})
+}
+
+// endpointRoutes are the routes of servers of one's own.
+func (h *Hermes) endpointRoutes() {
 	h.mux.HandleFunc("POST /api/providers/custom-endpoints/validate", func(w http.ResponseWriter, r *http.Request) {
 		b := read(r)
 		u, _ := b["base_url"].(string)
@@ -185,8 +221,13 @@ func (h *Hermes) routes() {
 			id, _ = b[kName].(string)
 			id = strings.ToLower(id)
 		}
+		mk, _ := b["make_default"].(bool)
+		if h.ReadOnly && (h.Managed[id] || (mk && h.Pinned)) {
+			write(w, http.StatusConflict, map[string]any{kDetail: id + " is set in the deployment config (/etc/hermes-managed/config.yaml), so it cannot be changed or removed here. Change it there."})
+			return
+		}
 		h.Endpoints[id] = b
-		if mk, _ := b["make_default"].(bool); mk {
+		if mk && !h.Pinned {
 			h.Model, _ = b[kModel].(string)
 			h.Provider = id
 		}
@@ -197,15 +238,47 @@ func (h *Hermes) routes() {
 		defer h.mu.Unlock()
 		eps := make([]any, 0, len(h.Endpoints))
 		for id, e := range h.Endpoints {
-			eps = append(eps, map[string]any{"id": id, kName: e[kName], "base_url": e["base_url"], kModel: e[kModel],
-				"has_api_key": e["api_key"] != nil, "api_key_preview": nil, kIsCurrent: h.Provider == id})
+			row := map[string]any{"id": id, kName: e[kName], "base_url": e["base_url"], kModel: e[kModel],
+				"has_api_key": e["api_key"] != nil, "api_key_preview": nil, kIsCurrent: h.Provider == id}
+			if h.ReadOnly {
+				row["managed"] = h.Managed[id]
+			}
+			eps = append(eps, row)
 		}
-		write(w, http.StatusOK, map[string]any{"endpoints": eps})
+		current := map[string]any{kProvider: h.Provider, kModel: h.Model, "base_url": ""}
+		if h.ReadOnly {
+			current["managed"] = h.Pinned
+			if h.Pinned {
+				current["managed_source"] = "/etc/hermes-managed/config.yaml"
+			}
+		}
+		write(w, http.StatusOK, map[string]any{"endpoints": eps, "current": current})
+	})
+	h.mux.HandleFunc("POST /api/providers/custom-endpoints/{id}/activate", func(w http.ResponseWriter, r *http.Request) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		id := r.PathValue("id")
+		if h.refuseDefault(w) {
+			return
+		}
+		e, ok := h.Endpoints[id]
+		if !ok {
+			write(w, http.StatusNotFound, map[string]any{kDetail: "custom endpoint not found"})
+			return
+		}
+		if m, _ := e[kModel].(string); !h.Pinned {
+			h.Provider, h.Model = id, m
+		}
+		write(w, http.StatusOK, map[string]any{"ok": true, kProvider: id, kModel: e[kModel]})
 	})
 	h.mux.HandleFunc("DELETE /api/providers/custom-endpoints/{id}", func(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		id := r.PathValue("id")
+		if h.ReadOnly && h.Managed[id] {
+			write(w, http.StatusConflict, map[string]any{kDetail: id + " is set in the deployment config (/etc/hermes-managed/config.yaml), so it cannot be changed or removed here. Change it there."})
+			return
+		}
 		if _, ok := h.Endpoints[id]; !ok {
 			write(w, http.StatusNotFound, map[string]any{kDetail: "custom endpoint not found"})
 			return
@@ -213,18 +286,26 @@ func (h *Hermes) routes() {
 		delete(h.Endpoints, id)
 		write(w, http.StatusOK, map[string]any{"ok": true})
 	})
+}
+
+// modelRoutes are the routes of the default model and the model lists.
+func (h *Hermes) modelRoutes() {
 	h.mux.HandleFunc("GET /api/model/options", func(w http.ResponseWriter, _ *http.Request) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		yes := true
 		ps := []any{}
 		for id, e := range h.Endpoints {
-			ps = append(ps, map[string]any{"slug": id, kName: e[kName], kModels: []string{"qwen2.5:0.5b", "llama3.2:3b"}, "authenticated": yes,
+			ps = append(ps, map[string]any{kSlug: id, kName: e[kName], kModels: []string{"qwen2.5:0.5b", "llama3.2:3b"}, kAuthed: yes,
 				kIsCurrent: h.Provider == id})
 		}
 		if h.Keys["OPENROUTER_API_KEY"] != "" || h.Provider == openRouter {
-			ps = append(ps, map[string]any{"slug": openRouter, kName: "OpenRouter", kModels: []string{"openai/gpt-5"},
-				"authenticated": h.Keys["OPENROUTER_API_KEY"] != "", kIsCurrent: h.Provider == openRouter})
+			ps = append(ps, map[string]any{kSlug: openRouter, kName: "OpenRouter", kModels: []string{"openai/gpt-5"},
+				kAuthed: h.Keys["OPENROUTER_API_KEY"] != "", kIsCurrent: h.Provider == openRouter})
+		}
+		if h.ClaudePool {
+			ps = append(ps, map[string]any{kSlug: "claude-pool", kName: "Claude accounts", kModels: []string{"claude-sonnet-5-5"}, kAuthed: yes,
+				kIsCurrent: h.Provider == "claude-pool"})
 		}
 		write(w, http.StatusOK, map[string]any{"providers": ps, kModel: h.Model, kProvider: h.Provider})
 	})
@@ -233,13 +314,19 @@ func (h *Hermes) routes() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		m, _ := b[kModel].(string)
+		if h.refuseDefault(w) {
+			return
+		}
 		if c, _ := b["confirm_expensive_model"].(bool); strings.Contains(m, "opus") && !c {
 			write(w, http.StatusOK, map[string]any{"ok": false, "confirm_required": true, "confirm_message": m + " is a high-priced model."})
 			return
 		}
-		h.Model, _ = b[kModel].(string)
-		h.Provider, _ = b[kProvider].(string)
-		write(w, http.StatusOK, map[string]any{"ok": true, kProvider: h.Provider, kModel: h.Model})
+		p, _ := b[kProvider].(string)
+		if !h.Pinned {
+			h.Model, h.Provider = m, p
+		}
+		// Hermes without managed_read_only answers ok for a pinned default.
+		write(w, http.StatusOK, map[string]any{"ok": true, kProvider: p, kModel: m})
 	})
 	h.mux.HandleFunc("GET /api/model/info", func(w http.ResponseWriter, _ *http.Request) {
 		h.mu.Lock()
@@ -249,6 +336,10 @@ func (h *Hermes) routes() {
 	h.mux.HandleFunc("GET /api/model/recommended-default", func(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusOK, map[string]any{kProvider: r.URL.Query().Get("provider"), kModel: "openai/gpt-5", "free_tier": nil})
 	})
+}
+
+// oauthRoutes are the sign-in routes.
+func (h *Hermes) oauthRoutes() {
 	h.mux.HandleFunc("GET /api/providers/oauth", func(w http.ResponseWriter, _ *http.Request) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
@@ -283,6 +374,26 @@ func (h *Hermes) routes() {
 		delete(h.SignedIn, r.PathValue("id"))
 		write(w, http.StatusOK, map[string]any{"ok": true})
 	})
+}
+
+// refuseKey answers 409 for a key the deployment sets, as Hermes with
+// dashboard.managed_read_only does. Call with h.mu held.
+func (h *Hermes) refuseKey(w http.ResponseWriter, key string) bool {
+	if !h.ReadOnly || !h.InEnvironment[key] {
+		return false
+	}
+	write(w, http.StatusConflict, map[string]any{kDetail: key + " is set in the deployment (the environment Hermes was started with), so it cannot be changed or removed here."})
+	return true
+}
+
+// refuseDefault answers 409 for a change of a pinned default, as Hermes
+// with dashboard.managed_read_only does. Call with h.mu held.
+func (h *Hermes) refuseDefault(w http.ResponseWriter) bool {
+	if !h.ReadOnly || !h.Pinned {
+		return false
+	}
+	write(w, http.StatusConflict, map[string]any{kDetail: "The default model is set in the deployment config (/etc/hermes-managed/config.yaml), so it cannot be changed here. Change it there."})
+	return true
 }
 
 // Seen reports whether Hermes got a request whose method and path start

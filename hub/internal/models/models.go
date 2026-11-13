@@ -39,6 +39,11 @@ type Options struct {
 	// SlowTimeout bounds calls that probe other hosts (an address test, a
 	// sign-in poll, a model list refresh). Default 60s.
 	SlowTimeout time.Duration
+	// Claude says whether a backend's Hermes runs Claude subscription
+	// accounts (the Claude accounts plugin). Such a backend offers no
+	// Anthropic API key, which would compete with the accounts. Nil: none
+	// does, unless its model options list a subscription provider.
+	Claude func(ctx context.Context, user, backendID string) bool
 }
 
 // Service implements hub.ModelSetup.
@@ -46,6 +51,7 @@ type Service struct {
 	access Access
 	rs     map[string]device.Requester
 	slow   time.Duration
+	claude func(ctx context.Context, user, backendID string) bool
 }
 
 var _ hub.ModelSetup = (*Service)(nil)
@@ -55,7 +61,7 @@ func New(opts Options) *Service {
 	if opts.SlowTimeout == 0 {
 		opts.SlowTimeout = 60 * time.Second
 	}
-	s := &Service{access: opts.Access, rs: map[string]device.Requester{}, slow: opts.SlowTimeout}
+	s := &Service{access: opts.Access, rs: map[string]device.Requester{}, slow: opts.SlowTimeout, claude: opts.Claude}
 	for _, b := range opts.Backends {
 		if r := opts.Requesters[b.ID]; r != nil {
 			s.rs[b.ID] = r
@@ -84,6 +90,7 @@ const (
 	geminiKey     = "GEMINI_API_KEY"
 	notUnderstood = "Hermes's answer was not understood."
 	fieldProvider = "provider"
+	fieldModel    = "model"
 	fieldKey      = "key"
 	flowDevice    = "device_code"
 )
@@ -250,6 +257,13 @@ func (s *Service) options(ctx context.Context, r device.Requester, refresh, all 
 	return out, nil
 }
 
+// readDefault reads the default model back after a change; false when
+// Hermes did not answer.
+func (s *Service) readDefault(ctx context.Context, r device.Requester) (options, bool) {
+	o, err := s.options(ctx, r, false, false)
+	return o, err == nil
+}
+
 // ModelStatus implements hub.ModelSetup.
 func (s *Service) ModelStatus(ctx context.Context, user, backendID string) (hub.ModelStatus, error) {
 	r, err := s.requester(ctx, user, backendID)
@@ -295,7 +309,7 @@ func (s *Service) ModelCall(ctx context.Context, user, backendID string, c hub.M
 	}
 	switch c.Op {
 	case hub.ModelCatalog:
-		return s.catalog(ctx, r)
+		return s.catalog(ctx, r, user, backendID)
 	case hub.ModelConnected:
 		return s.connected(ctx, r)
 	case hub.ModelOptions:
@@ -321,7 +335,9 @@ func (s *Service) ModelCall(ctx context.Context, user, backendID string, c hub.M
 		}
 		path := "/api/providers/custom-endpoints/" + url.PathEscape(c.ID)
 		if c.Op == hub.ModelUseEndpoint {
-			return s.call(ctx, r, false, http.MethodPost, path+"/activate", nil)
+			return s.checkedDefault(ctx, r, c.ID, "", func() (json.RawMessage, error) {
+				return s.call(ctx, r, false, http.MethodPost, path+"/activate", nil)
+			})
 		}
 		return s.call(ctx, r, false, http.MethodDelete, path, nil)
 	case hub.ModelTestKey, hub.ModelSaveKey, hub.ModelRemoveKey:
@@ -336,12 +352,48 @@ func (s *Service) setDefault(ctx context.Context, r device.Requester, d *hub.Def
 	if d == nil || strings.TrimSpace(d.Model) == "" || !providerPattern.MatchString(strings.ToLower(d.Provider)) {
 		return nil, bad("Pick a model first.")
 	}
-	body := map[string]any{"scope": "main", fieldProvider: d.Provider, "model": strings.TrimSpace(d.Model),
+	// No base_url: Hermes resolves a provider's address itself, and one
+	// sent here would stay in model.base_url for the next default too.
+	body := map[string]any{"scope": "main", fieldProvider: d.Provider, fieldModel: strings.TrimSpace(d.Model),
 		"confirm_expensive_model": d.Confirm}
-	if d.BaseURL != "" {
-		body["base_url"] = d.BaseURL
+	return s.checkedDefault(ctx, r, d.Provider, strings.TrimSpace(d.Model), func() (json.RawMessage, error) {
+		return s.call(ctx, r, true, http.MethodPost, "/api/model/set", body)
+	})
+}
+
+// checkedDefault runs set, a call that makes provider's model (any model
+// of it when model is "") the default, then reads the default back. A
+// Hermes whose default is set elsewhere (a deployment's managed config)
+// can answer ok and keep its own; that comes back as unchanged, never as
+// a success.
+func (s *Service) checkedDefault(ctx context.Context, r device.Requester, provider, model string, set func() (json.RawMessage, error)) (json.RawMessage, error) {
+	before, err := s.options(ctx, r, false, false)
+	if err != nil {
+		return nil, err
 	}
-	return s.call(ctx, r, true, http.MethodPost, "/api/model/set", body)
+	data, err := set()
+	if err != nil {
+		return nil, err
+	}
+	ans := map[string]any{}
+	_ = json.Unmarshal(data, &ans)
+	if v, _ := ans["confirm_required"].(bool); v {
+		return data, nil
+	}
+	after, read := s.readDefault(ctx, r)
+	if !read {
+		// The call went through; only the check could not be made.
+		return data, nil
+	}
+	changed := after.Model != before.Model || after.Provider != before.Provider
+	already := strings.EqualFold(before.Provider, provider) && (model == "" || before.Model == model)
+	if !changed && !already {
+		return json.Marshal(map[string]any{"ok": false, "unchanged": true, fieldModel: after.Model, fieldProvider: after.Provider,
+			"message": "Hermes kept " + after.Model + " as the model new chats start with. Its default may be set in the deployment config."})
+	}
+	// Hermes may store another name for the model (an alias it resolved).
+	ans["ok"], ans[fieldModel], ans[fieldProvider] = true, after.Model, after.Provider
+	return json.Marshal(ans)
 }
 
 func (s *Service) endpoint(ctx context.Context, r device.Requester, op hub.ModelOp, e *hub.EndpointSetup) (json.RawMessage, error) {
@@ -384,6 +436,17 @@ type envRow struct {
 	Provider        string `json:"provider"`
 	ProviderLabel   string `json:"provider_label"`
 	ProviderPrimary bool   `json:"provider_primary"`
+	// Managed and InEnvironment say the deployment sets the key: in
+	// Hermes's managed .env, or in the environment Hermes started with
+	// (Hermes's dashboard.managed_read_only; never with the value).
+	Managed       bool `json:"managed"`
+	InEnvironment bool `json:"in_environment"`
+}
+
+// deployment reports a key the deployment sets, which the hub shows but
+// never writes: one saved to Hermes's .env would hide it for good.
+func (row envRow) deployment() bool {
+	return row.Managed || row.InEnvironment
 }
 
 func (s *Service) env(ctx context.Context, r device.Requester) (map[string]envRow, error) {
@@ -421,6 +484,14 @@ func (s *Service) key(ctx context.Context, r device.Requester, c hub.ModelCall) 
 	}
 	if !keyVar(rows, name) {
 		return nil, bad("Unknown provider.")
+	}
+	if row := rows[name]; row.deployment() && c.Op != hub.ModelTestKey {
+		label := row.ProviderLabel
+		if label == "" {
+			label = name
+		}
+		return nil, &hub.ModelSetupError{Status: http.StatusConflict,
+			Message: "The " + label + " key is set in the deployment, so it cannot be changed or removed here. Change it where the deployment sets it."}
 	}
 	if c.Op == hub.ModelRemoveKey {
 		return s.call(ctx, r, false, http.MethodDelete, "/api/env", map[string]string{fieldKey: name})
@@ -514,6 +585,9 @@ type keyProvider struct {
 	Description string `json:"description,omitempty"`
 	Set         bool   `json:"set"`
 	Preview     string `json:"preview,omitempty"`
+	// Deployment is true for a key the deployment sets: shown, never
+	// edited or removed here.
+	Deployment bool `json:"deployment,omitempty"`
 	// Checked is true when Hermes checks the key with the provider
 	// before a save.
 	Checked bool `json:"checked"`
@@ -531,11 +605,13 @@ type signInAccount struct {
 	Removable  bool   `json:"removable"`
 }
 
-func keyProviders(rows map[string]envRow, order []string) []keyProvider {
+// keyProviders are the API-key providers of rows, common ones first, then
+// in order. hide names providers left out.
+func keyProviders(rows map[string]envRow, order []string, hide ...string) []keyProvider {
 	common := commonProviders()
 	byProvider := map[string]keyProvider{}
 	for name, row := range rows {
-		if !keyVar(rows, name) || !row.ProviderPrimary {
+		if !keyVar(rows, name) || !row.ProviderPrimary || slices.Contains(hide, row.Provider) {
 			continue
 		}
 		label := row.ProviderLabel
@@ -544,7 +620,8 @@ func keyProviders(rows map[string]envRow, order []string) []keyProvider {
 		}
 		checked := probeKey(name) != ""
 		byProvider[row.Provider] = keyProvider{Provider: row.Provider, Name: label, KeyEnv: name, URL: row.URL, Description: row.Description,
-			Set: row.IsSet, Preview: preview(row), Checked: checked, Common: slices.Contains(common, row.Provider)}
+			Set: row.IsSet || row.deployment(), Preview: preview(row), Deployment: row.deployment(), Checked: checked,
+			Common: slices.Contains(common, row.Provider)}
 	}
 	rank := func(p string) int {
 		if i := slices.Index(common, p); i >= 0 {
@@ -577,7 +654,49 @@ func preview(row envRow) string {
 	return v
 }
 
-func (s *Service) catalog(ctx context.Context, r device.Requester) (json.RawMessage, error) {
+// endpoints is Hermes's list of custom endpoints, with the default and
+// whether the deployment pins it.
+type endpoints struct {
+	Endpoints []json.RawMessage `json:"endpoints"`
+	Current   struct {
+		Provider      string `json:"provider"`
+		Model         string `json:"model"`
+		Managed       bool   `json:"managed"`
+		ManagedSource string `json:"managed_source"`
+	} `json:"current"`
+}
+
+func (s *Service) endpoints(ctx context.Context, r device.Requester) (endpoints, error) {
+	var ep endpoints
+	data, err := s.call(ctx, r, false, http.MethodGet, "/api/providers/custom-endpoints", nil)
+	if err != nil {
+		return ep, err
+	}
+	if err := json.Unmarshal(data, &ep); err != nil {
+		return ep, &hub.ModelSetupError{Status: http.StatusBadGateway, Message: notUnderstood}
+	}
+	if ep.Endpoints == nil {
+		ep.Endpoints = []json.RawMessage{}
+	}
+	return ep, nil
+}
+
+// pinned is the default model a deployment sets, for the answers of
+// catalog and connected; nil when the default is Hermes's own to change.
+func (ep endpoints) pinned() map[string]string {
+	if !ep.Current.Managed {
+		return nil
+	}
+	return map[string]string{fieldModel: ep.Current.Model, fieldProvider: ep.Current.Provider, "source": ep.Current.ManagedSource}
+}
+
+// subscriptionProvider reports a provider slug of a Claude subscription
+// plugin: the Claude accounts pool or Nous's Claude subscription plugin.
+func subscriptionProvider(slug string) bool {
+	return slug == "claude-pool" || strings.HasPrefix(slug, "claude-subscription")
+}
+
+func (s *Service) catalog(ctx context.Context, r device.Requester, user, backendID string) (json.RawMessage, error) {
 	rows, err := s.env(ctx, r)
 	if err != nil {
 		return nil, err
@@ -586,19 +705,31 @@ func (s *Service) catalog(ctx context.Context, r device.Requester) (json.RawMess
 	if err != nil {
 		return nil, err
 	}
+	ep, err := s.endpoints(ctx, r)
+	if err != nil {
+		return nil, err
+	}
 	var order []string
+	claude := s.claude != nil && s.claude(ctx, user, backendID)
 	all, err := s.options(ctx, r, false, true)
 	if err == nil {
 		for _, p := range all.Providers {
 			order = append(order, p.Slug)
+			claude = claude || subscriptionProvider(p.Slug)
 		}
+	}
+	var hide []string
+	if claude {
+		// Claude runs on the backend's subscription accounts; an API key
+		// would compete with them.
+		hide = append(hide, "anthropic")
 	}
 	accounts := make([]signInAccount, 0, len(ps))
 	for _, p := range ps {
 		accounts = append(accounts, signInAccount{ID: p.ID, Name: p.Name, SignedIn: p.Status.LoggedIn, Here: p.Flow == flowDevice,
 			CLICommand: p.CLICommand, Removable: p.Disconnectable && p.Flow == flowDevice})
 	}
-	return json.Marshal(map[string]any{"keys": keyProviders(rows, order), "accounts": accounts})
+	return json.Marshal(map[string]any{"keys": keyProviders(rows, order, hide...), "accounts": accounts, "pinned": ep.pinned()})
 }
 
 // modelsOf is the authenticated providers of the options with their
@@ -622,7 +753,7 @@ func authenticated(o options) map[string]any {
 		}
 		ps = append(ps, providerModels{ID: p.Slug, Name: name, Models: nonNil(p.Models), Current: p.IsCurrent})
 	}
-	return map[string]any{"model": o.Model, "provider": o.Provider, "providers": ps}
+	return map[string]any{fieldModel: o.Model, fieldProvider: o.Provider, "providers": ps}
 }
 
 func nonNil(s []string) []string {
@@ -637,15 +768,9 @@ func (s *Service) connected(ctx context.Context, r device.Requester) (json.RawMe
 	if err != nil {
 		return nil, err
 	}
-	data, err := s.call(ctx, r, false, http.MethodGet, "/api/providers/custom-endpoints", nil)
+	ep, err := s.endpoints(ctx, r)
 	if err != nil {
 		return nil, err
-	}
-	var ep struct {
-		Endpoints []json.RawMessage `json:"endpoints"`
-	}
-	if err := json.Unmarshal(data, &ep); err != nil {
-		return nil, &hub.ModelSetupError{Status: http.StatusBadGateway, Message: notUnderstood}
 	}
 	rows, err := s.env(ctx, r)
 	if err != nil {
@@ -668,11 +793,7 @@ func (s *Service) connected(ctx context.Context, r device.Requester) (json.RawMe
 				CLICommand: p.CLICommand, Removable: p.Disconnectable && p.Flow == flowDevice})
 		}
 	}
-	endpoints := ep.Endpoints
-	if endpoints == nil {
-		endpoints = []json.RawMessage{}
-	}
 	out := authenticated(o)
-	out["endpoints"], out["keys"], out["accounts"], out["status"] = endpoints, keys, accounts, status(o)
+	out["endpoints"], out["keys"], out["accounts"], out["status"], out["pinned"] = ep.Endpoints, keys, accounts, status(o), ep.pinned()
 	return json.Marshal(out)
 }
