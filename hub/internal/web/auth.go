@@ -261,6 +261,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	sess, _ := s.session(r)
+	modelBackends := s.modelAdminBackends(r.Context(), sess.User)
 	writeJSON(w, http.StatusOK, map[string]any{"user": sess.User, "display": sess.Display, "groups": sess.Groups, "csrf": sess.CSRF,
 		"default_backend": s.defaults[sess.User], "devices": s.devices != nil, "computers": s.computers != nil,
 		"memory": s.memory != nil, "usage": s.insights != nil || s.claudeCode != nil, "claude_code": s.claudeCode != nil,
@@ -268,8 +269,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"claude": s.hasClaude(r.Context(), sess.User), "claude_admin": s.isClaudeAdmin(sess.User), "telegram_steps": s.telegramSteps, "version": s.version,
 		"scheduled": s.scheduled != nil, "prompts": s.prompts != nil, "partners": s.partners != nil,
 		"auth": s.mode, "admin": s.accounts != nil && s.isAdmin(r.Context(), sess.User), "password": s.mode == config.AuthLocal && sess.Account,
-		"models_admin": s.models != nil && s.isAdmin(r.Context(), sess.User),
-		"logout_url":   s.logoutURL, "identity": sess.Identity, "issuer": s.issuer})
+		"models_admin": len(modelBackends) > 0, "models_admin_backends": modelBackends,
+		"logout_url": s.logoutURL, "identity": sess.Identity, "issuer": s.issuer})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

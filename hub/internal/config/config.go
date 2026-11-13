@@ -193,16 +193,55 @@ type Claude struct {
 
 // AdminMap parses Admins: the Claude admins of each backend.
 func (c Claude) AdminMap() (map[string][]string, error) {
+	return adminMap(c.Admins, ErrClaudeAdmin)
+}
+
+// Models configures who connects models to each backend's Hermes from
+// the hub (Settings > Models and Connect a model).
+type Models struct {
+	Admins []string `name:"admins" description:"Who may connect models to a backend's Hermes from the hub (Settings > Models, Connect a model), as user=backend pairs, the same form as claude.admins. Once set, only these pairs may, also for hub admins. Empty: the hub's admins (auth.admins and accounts marked admin), on every backend they use"`
+}
+
+// AdminMap parses Admins: the model admins of each backend. Empty means
+// the hub's admins.
+func (m Models) AdminMap() (map[string][]string, error) {
+	return adminMap(m.Admins, ErrModelsAdmin)
+}
+
+// adminMap parses user=backend pairs into the users of each backend.
+func adminMap(pairs []string, bad error) (map[string][]string, error) {
 	out := map[string][]string{}
-	for _, pair := range c.Admins {
+	for _, pair := range pairs {
 		user, backend, ok := strings.Cut(pair, "=")
 		user, backend = strings.TrimSpace(user), strings.TrimSpace(backend)
 		if !ok || user == "" || backend == "" {
-			return nil, fmt.Errorf("%w: %q", ErrClaudeAdmin, pair)
+			return nil, fmt.Errorf("%w: %q", bad, pair)
 		}
 		out[backend] = append(out[backend], user)
 	}
 	return out, nil
+}
+
+func (c *Config) validateModels(known userNames) error {
+	admins, err := c.Models.AdminMap()
+	if err != nil {
+		return err
+	}
+	backends := map[string]bool{}
+	for _, b := range c.Backends {
+		backends[b.ID] = true
+	}
+	for backend, users := range admins {
+		if !backends[backend] {
+			return fmt.Errorf("%w: models.admins names unknown backend %q", ErrModelsAdmin, backend)
+		}
+		for _, u := range users {
+			if !known.known(u) {
+				return fmt.Errorf("%w: models.admins names unknown user %q", ErrUser, u)
+			}
+		}
+	}
+	return nil
 }
 
 // Location is TimeZone's location; UTC for an unknown zone.
@@ -282,6 +321,7 @@ type Config struct {
 	Device   Device    `name:"device"`
 	Notify   Notify    `name:"notify"`
 	Claude   Claude    `name:"claude"`
+	Models   Models    `name:"models"`
 }
 
 // Validation errors.
@@ -299,6 +339,7 @@ var (
 	ErrDevice          = errors.New("invalid device settings")
 	ErrPrometheusURL   = errors.New("usage.prometheus_url must be an absolute http or https URL")
 	ErrClaudeAdmin     = errors.New("claude.admins entries must be user=backend with a known backend")
+	ErrModelsAdmin     = errors.New("models.admins entries must be user=backend with a known backend")
 	ErrClaudeTimeZone  = errors.New("claude.time_zone is not a known time zone")
 	ErrUITimeZone      = errors.New("ui.time_zone is not a known time zone")
 )
@@ -377,7 +418,10 @@ func (c *Config) validateUsers() error {
 	if _, err := time.LoadLocation(c.UI.TimeZone); err != nil {
 		return fmt.Errorf("%w: %q", ErrUITimeZone, c.UI.TimeZone)
 	}
-	return c.validateClaude(known)
+	if err := c.validateClaude(known); err != nil {
+		return err
+	}
+	return c.validateModels(known)
 }
 
 func (c *Config) validateStore() error {

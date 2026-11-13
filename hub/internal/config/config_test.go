@@ -422,4 +422,22 @@ func TestClaudeSettings(t *testing.T) {
 			t.Errorf("admins %q zone %q: %v, want %v", c.admins, c.zone, err, c.want)
 		}
 	}
+	env = secrets()
+	env["HUB_MODELS_ADMINS"] = "alice=desktop,alice=cluster"
+	if cfg, err = load(t, env, file); err != nil {
+		t.Fatal(err)
+	}
+	if m, err := cfg.Models.AdminMap(); err != nil || len(m["desktop"]) != 1 || m["cluster"][0] != userAlice {
+		t.Fatalf("models admins = %v %v", m, err)
+	}
+	for _, c := range []struct {
+		admins string
+		want   error
+	}{{userAlice, config.ErrModelsAdmin}, {"alice=nowhere", config.ErrModelsAdmin}, {"mallory=desktop", config.ErrUser}} {
+		env := secrets()
+		env["HUB_MODELS_ADMINS"] = c.admins
+		if _, err := load(t, env, file); !errors.Is(err, c.want) {
+			t.Errorf("models admins %q: %v, want %v", c.admins, err, c.want)
+		}
+	}
 }

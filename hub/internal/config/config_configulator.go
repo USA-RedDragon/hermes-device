@@ -209,6 +209,10 @@ type claudeShadow struct {
 	TimeZone *string   `json:"time_zone" toml:"time_zone" yaml:"time_zone"`
 }
 
+type modelsShadow struct {
+	Admins *[]string `json:"admins" toml:"admins" yaml:"admins"`
+}
+
 type configShadow struct {
 	LogLevel *string          `json:"log_level" toml:"log_level" yaml:"log_level"`
 	HTTP     *hTTPShadow      `json:"http"      toml:"http"      yaml:"http"`
@@ -227,6 +231,7 @@ type configShadow struct {
 	Device   *deviceShadow    `json:"device"    toml:"device"    yaml:"device"`
 	Notify   *notifyShadow    `json:"notify"    toml:"notify"    yaml:"notify"`
 	Claude   *claudeShadow    `json:"claude"    toml:"claude"    yaml:"claude"`
+	Models   *modelsShadow    `json:"models"    toml:"models"    yaml:"models"`
 }
 
 // ConfigSchema returns the generated schema for Config.
@@ -997,6 +1002,12 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			set("claude.time_zone", configulator.LayerFile, file)
 		}
 	}
+	if s.Models != nil {
+		if s.Models.Admins != nil {
+			cfg.Models.Admins = *s.Models.Admins
+			set("models.admins", configulator.LayerFile, file)
+		}
+	}
 	return nil
 }
 
@@ -1612,6 +1623,11 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Claude.TimeZone = v
 		set("claude.time_zone", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "models", "admins"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Models.Admins = lst
+		set("models.admins", configulator.LayerEnv, n)
+	}
 	return nil
 }
 
@@ -1713,6 +1729,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"notify" + o.Separator + "job_interval",
 		"claude" + o.Separator + "admins",
 		"claude" + o.Separator + "time_zone",
+		"models" + o.Separator + "admins",
 	}
 	for i, name := range names {
 		if f := fs.Lookup(name); f != nil {
@@ -1764,7 +1781,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[32], time.Duration(int64(600000000000)), "How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default")
 	fs.String(names[33], "", "Base URL of a Prometheus query API, such as http://prometheus:9090, that scrapes the metrics of ollama-priority-proxy in front of the local GPU's Ollama. The Usage page then shows how long the GPU was busy. Empty: it does not")
 	fs.String(names[34], "", "How people log in: local (accounts in the hub's database, with a setup page that makes the first one), proxy (a reverse proxy in front of the hub tells it who the user is) or oidc (an OpenID Connect provider). Default: oidc when oidc.issuer_url is set, else local")
-	fs.StringSlice(names[35], nil, "Hub user names that are admins besides accounts marked admin in Settings > Users: admins manage people and connect models (Settings > Models). The first local account is an admin")
+	fs.StringSlice(names[35], nil, "Hub user names that are admins besides accounts marked admin in Settings > Users: admins manage people and connect models (Settings > Models; models.admins can limit that per backend). The first local account is an admin")
 	fs.StringSlice(names[36], nil, "CIDRs or addresses of the reverse proxies in front of the hub, such as 10.0.0.0/8 or 127.0.0.1. In proxy mode the hub reads the user header only on requests from them. In every mode the hub takes the client address for login limits from their X-Forwarded-For")
 	fs.Var(impl.NewInt(5), names[37], "Wrong passwords in a row that lock an account. 0 is the default")
 	fs.Duration(names[38], time.Duration(int64(900000000000)), "How long a locked account stays locked. An admin can unlock it sooner by setting a new password. 0 is the default")
@@ -1817,6 +1834,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[85], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
 	fs.StringSlice(names[86], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
 	fs.String(names[87], "", "IANA time zone of the reset times of Claude usage windows and of the days of Claude Code usage. Default: ui.time_zone")
+	fs.StringSlice(names[88], nil, "Who may connect models to a backend's Hermes from the hub (Settings > Models, Connect a model), as user=backend pairs, the same form as claude.admins. Once set, only these pairs may, also for hub admins. Empty: the hub's admins (auth.admins and accounts marked admin), on every backend they use")
 	return nil
 }
 
@@ -2877,6 +2895,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.Claude.TimeZone = v
 		set("claude.time_zone", configulator.LayerCLI, "--"+n)
 	}
+	if n := "models" + o.Separator + "admins"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "models.admins",
+				Source: "--" + n,
+			}
+		}
+		cfg.Models.Admins = v
+		set("models.admins", configulator.LayerCLI, "--"+n)
+	}
 	return nil
 }
 
@@ -3243,6 +3273,25 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Claude = &sub
+			}
+		case "models":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("models", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub modelsShadow
+				if err := sub.decodeJSON(dec, "models"); err != nil {
+					return err
+				}
+				s.Models = &sub
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -5804,6 +5853,59 @@ func (s *claudeShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	}
 }
 
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *modelsShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "admins":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".admins", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".admins"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.Admins = &out
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // configJSONError returns a ParseError for the JSON token v at path.
 func configJSONError(path string, v jsontext.Token, err error) error {
 	return &configulator.ParseError{
@@ -5908,6 +6010,7 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "notify.job_interval = %v\n", c.Notify.JobInterval)
 	fmt.Fprintf(&b, "claude.admins = %v\n", c.Claude.Admins)
 	fmt.Fprintf(&b, "claude.time_zone = %v\n", c.Claude.TimeZone)
+	fmt.Fprintf(&b, "models.admins = %v\n", c.Models.Admins)
 	return b.String()
 }
 

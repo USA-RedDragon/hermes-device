@@ -2758,7 +2758,8 @@
             parent.append(o);
           }
         }
-        if (me.models_admin && providers.length) {
+        const menuBackend = view ? view.backend : idle.backend;
+        if ((me.models_admin_backends || []).includes(menuBackend) && providers.length) {
           // Admins get one more line at the menu's foot.
           sel.append(document.createElement("hr"));
           const o = el("option", "connect", "Connect another model");

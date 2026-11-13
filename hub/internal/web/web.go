@@ -233,6 +233,9 @@ type authState struct {
 	proxy        *auth.Proxy
 	local        config.Local
 	admins       map[string]bool
+	// modelAdmins are models.admins, the model admins of each backend.
+	// Empty: the hub's admins.
+	modelAdmins  map[string][]string
 	configNames  map[string]bool
 	backendIDs   []string
 	backendViews []backendView
@@ -266,6 +269,9 @@ func newAuthState(cfg *config.Config, opts Options) (authState, error) {
 	}
 	for _, name := range a.Admins {
 		s.admins[name] = true
+	}
+	if s.modelAdmins, err = cfg.Models.AdminMap(); err != nil {
+		return authState{}, err
 	}
 	for _, u := range cfg.Users {
 		s.configNames[u.Name] = true
