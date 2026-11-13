@@ -241,7 +241,9 @@ func (c *rowConverter) rows(raw []json.RawMessage) []hub.SubagentEvent {
 }
 
 func (c *rowConverter) row(row gateway.TranscriptRow) []hub.SubagentEvent {
-	at := time.Now().UTC()
+	// A row Hermes gave no time stays without one: stamping it with the time
+	// of this read would show a column of steps all at the moment of the read.
+	var at time.Time
 	if row.Timestamp != nil && *row.Timestamp > 0 {
 		at = time.UnixMilli(int64(*row.Timestamp * 1000)).UTC()
 	}
@@ -284,8 +286,11 @@ func (c *rowConverter) row(row gateway.TranscriptRow) []hub.SubagentEvent {
 			ToolOutcome *gateway.ToolOutcome `json:"tool_outcome"`
 		}
 		if len(row.DisplayMetadata) > 0 && json.Unmarshal(row.DisplayMetadata, &md) == nil && md.ToolOutcome != nil {
-			d := md.ToolOutcome.DurationMS
-			e.DurationMS, e.Error = &d, md.ToolOutcome.IsError
+			// A duration of 0 is no measure: leave it unset so none is shown.
+			if d := md.ToolOutcome.DurationMS; d > 0 {
+				e.DurationMS = &d
+			}
+			e.Error = md.ToolOutcome.IsError
 		}
 		return []hub.SubagentEvent{e}
 	}

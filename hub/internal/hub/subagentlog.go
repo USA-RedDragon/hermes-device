@@ -35,7 +35,7 @@ const MaxStepResult = 8192
 // the step happened.
 type SubagentEvent struct {
 	Seq    int64     `json:"seq"`
-	TS     time.Time `json:"ts"`
+	TS     time.Time `json:"ts,omitzero"`
 	Type   string    `json:"type"`
 	CallID string    `json:"call_id,omitempty"`
 	Name   string    `json:"name,omitempty"`

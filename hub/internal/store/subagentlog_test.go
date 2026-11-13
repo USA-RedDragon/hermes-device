@@ -80,3 +80,20 @@ func resetAndPrune(t *testing.T, s *store.Store, k hub.SubagentKey, now time.Tim
 		t.Fatalf("after prune = %+v", got)
 	}
 }
+
+// A step with no time is stored without one and read back without one.
+func TestSubagentLogKeepsUnknownTimeUnset(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		k := hub.SubagentKey{User: userAlice, BackendID: "b1", SessionID: "s1", SubagentID: "sa-0-z"}
+		evs := []hub.SubagentEvent{{Type: hub.StepGoal, Text: "go"}, {TS: time.UnixMilli(1_800_000_000_000), Type: hub.StepMessage, Text: "hi"}}
+		if ok, err := s.AppendSubagentEvents(ctx, k, "", "0:2", false, evs); !ok || err != nil {
+			t.Fatalf("append = %v %v", ok, err)
+		}
+		got, err := s.SubagentEvents(ctx, k, 0, 10)
+		if err != nil || len(got) != 2 || !got[0].TS.IsZero() || got[1].TS.UnixMilli() != 1_800_000_000_000 {
+			t.Fatalf("events = %+v %v", got, err)
+		}
+	})
+}

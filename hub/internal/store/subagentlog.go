@@ -65,9 +65,13 @@ func (s *Store) insertEvents(ctx context.Context, tx *sql.Tx, k hub.SubagentKey,
 		if len(e.Args) > 0 {
 			args = string(e.Args)
 		}
+		var atMS int64
+		if !e.TS.IsZero() {
+			atMS = e.TS.UnixMilli()
+		}
 		if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO subagent_events ("user", backend_id, session_id, subagent_id, seq, at_ms, kind,
 			call_id, name, args, result, result_size, duration_ms, failed, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-			append(keyArgs(k), e.Seq, e.TS.UnixMilli(), e.Type, e.CallID, e.Name, args, e.Result, e.ResultSize, dur, failed, e.Text)...); err != nil {
+			append(keyArgs(k), e.Seq, atMS, e.Type, e.CallID, e.Name, args, e.Result, e.ResultSize, dur, failed, e.Text)...); err != nil {
 			return 0, fmt.Errorf("subagent event: %w", err)
 		}
 	}
@@ -125,7 +129,9 @@ func (s *Store) SubagentEvents(ctx context.Context, k hub.SubagentKey, after int
 		if err := rows.Scan(&e.Seq, &at, &e.Type, &e.CallID, &e.Name, &args, &e.Result, &e.ResultSize, &dur, &failed, &e.Text); err != nil {
 			return nil, err
 		}
-		e.TS = time.UnixMilli(at).UTC()
+		if at > 0 {
+			e.TS = time.UnixMilli(at).UTC()
+		}
 		if args != "" {
 			e.Args = json.RawMessage(args)
 		}
