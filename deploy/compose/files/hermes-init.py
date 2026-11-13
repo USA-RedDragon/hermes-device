@@ -116,8 +116,10 @@ def talaria_config(pubkey_path):
     cfg = {
         "webapp": {"enabled": True, "host": "0.0.0.0", "port": 9120},
         # detach_removed_default: removing the default model's provider in Settings > Models also drops the default
+        # managed_read_only: models and keys the deployment sets (its environment, a managed config) are read-only there
         "dashboard": {"basic_auth": {"username": "hub", "password_hash": password_hash(),
-                                     "secret": secret("session-secret")}, "detach_removed_default": True},
+                                     "secret": secret("session-secret")}, "detach_removed_default": True,
+                      "managed_read_only": True},
         "terminal": {"backend": "device", "cwd": os.path.join(HOME, "empty-cwd")},
         "security": {"image_render_paths": "media"},
         "updates": {"check": False},
