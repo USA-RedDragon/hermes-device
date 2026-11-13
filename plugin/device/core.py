@@ -2646,9 +2646,16 @@ def device_system_note(conn: Optional["DeviceConn"]) -> str:
             f"where.exe, cmd //c), and powershell -Command runs PowerShell when you need it.")
 
 
+# The note pre_llm_call last gave each session. Hermes replays a turn's context with the turn, so a
+# session needs it again only when its device or shell changes (or after a restart of this process).
+_NOTED: dict[str, str] = {}
+_NOTED_LOCK = threading.Lock()
+
+
 def pre_llm_call(session_id: str = "", **_kwargs) -> Optional[dict]:
-    """Tell the agent which OS and shell a Windows device uses, at every turn of a session bound to
-    one, so that it writes commands in the right language. Nothing for other sessions."""
+    """Tell the agent which OS and shell a Windows device uses, at the first turn of a session bound
+    to one and when that changes, so that it writes commands in the right language. Nothing for
+    sessions on Linux and macOS devices."""
     try:
         res = resolve_session(session_id) if session_id else resolve_current()
     except Exception:
@@ -2656,7 +2663,11 @@ def pre_llm_call(session_id: str = "", **_kwargs) -> Optional[dict]:
     if res.state != STATE_BOUND or res.binding is None:
         return None
     note = device_system_note(hub().device(res.binding.device_id))
-    return {"context": note} if note else None
+    with _NOTED_LOCK:
+        if not note or _NOTED.get(res.session_id) == note:
+            return None
+        _NOTED[res.session_id] = note
+    return {"context": note}
 
 
 _PS_SCRIPT = """$ProgressPreference = 'SilentlyContinue'

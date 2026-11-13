@@ -57,7 +57,12 @@ class NoteTest(unittest.TestCase):
         hub.device.return_value = conn("windows", "powershell")
         with mock.patch.object(core, "resolve_session", return_value=res), mock.patch.object(core, "hub", return_value=hub):
             out = core.pre_llm_call(session_id="s1")
+            again = core.pre_llm_call(session_id="s1")
         self.assertIn("PowerShell", out["context"])
+        self.assertIsNone(again, "the note repeats while the device and shell stay")
+        hub.device.return_value = conn("windows", "wsl")
+        with mock.patch.object(core, "resolve_session", return_value=res), mock.patch.object(core, "hub", return_value=hub):
+            self.assertIn("WSL", core.pre_llm_call(session_id="s1")["context"])
         hub.device.return_value = conn("linux", "bash")
         with mock.patch.object(core, "resolve_session", return_value=res), mock.patch.object(core, "hub", return_value=hub):
             self.assertIsNone(core.pre_llm_call(session_id="s1"))

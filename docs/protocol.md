@@ -1142,8 +1142,9 @@ With `powershell`, the plugin wraps the agent's own terminal commands (Hermes's 
 -ExecutionPolicy Bypass -EncodedCommand` (the device sets `TALARIA_POWERSHELL` to `pwsh.exe` when PowerShell 7 is
 installed, else Windows PowerShell), and the folder it ends in becomes bash's, so `Set-Location` carries over like `cd`.
 
-The plugin tells the agent the OS and shell of a Windows device in a `pre_llm_call` context at each turn of a session
-bound to one; sessions on Linux and macOS devices get nothing. `/device list` and the device list API add `shell` for
+The plugin tells the agent the OS and shell of a Windows device in a `pre_llm_call` context at the first turn of a session
+bound to one, and again when the session's device or shell changes (Hermes replays a turn's context with it); sessions
+on Linux and macOS devices get nothing. `/device list` and the device list API add `shell` for
 Windows devices.
 
 A command and everything it starts run in a Job Object: `kill` ends the whole tree (Windows has no SIGTERM for a
