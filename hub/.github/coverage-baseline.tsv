@@ -32,7 +32,7 @@ internal/device/device.go	202	163
 internal/device/devicetest/devicetest.go	522	467
 internal/device/files.go	71	57
 internal/device/gateway.go	419	331
-internal/device/legs.go	169	149
+internal/device/legs.go	169	151
 internal/device/pair.go	52	29
 internal/device/plugin.go	100	84
 internal/device/rpc.go	214	199
@@ -77,7 +77,7 @@ internal/notify/jobs.go	55	43
 internal/notify/notify.go	307	195
 internal/origin/fallback.go	73	71
 internal/origin/origin.go	117	102
-internal/pdf/pdf.go	180	159
+internal/pdf/pdf.go	180	160
 internal/pdf/pdftest/pdftest.go	32	32
 internal/scheduled/client.go	110	88
 internal/scheduled/clock.go	75	66
@@ -136,7 +136,7 @@ internal/telegram/render.go	476	429
 internal/telegram/replymedia.go	102	87
 internal/telegram/status.go	59	53
 internal/telegram/todo.go	58	51
-internal/telegram/topics.go	521	380
+internal/telegram/topics.go	521	381
 internal/web/accounts.go	255	192
 internal/web/activity.go	119	79
 internal/web/api.go	252	184
