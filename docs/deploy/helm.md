@@ -5,7 +5,7 @@ The chart in `deploy/charts/talaria` runs the same parts as the compose install:
 ## What you need
 
 - Kubernetes 1.29 or newer, `kubectl` and Helm 3.14 or newer (Helm 4 works).
-- For editors (`talaria acp`): nothing more. On Kubernetes 1.33 or newer the chart mounts the talaria image as a volume for `acp-host`; on older clusters an init container copies the binary instead (set `hermes.editorBridge.binary` to `image` or `copy` to force one). To turn the editor bridge off, set `hermes.editorBridge.enabled=false`; the hub then tells editors it has no editor bridge.
+- For editors (`talaria acp`): nothing more. On Kubernetes 1.35 or newer the chart mounts the talaria image as a volume for `acp-host`. On older clusters an init container copies the binary into the pod instead; that needs a talaria release with the `copy-self` command, which the pinned device image may not have yet. On 1.33 or 1.34 with the `ImageVolume` feature gate on, set `hermes.editorBridge.binary=image`; `copy` forces the copy. To turn the editor bridge off, set `hermes.editorBridge.enabled=false`; the hub then tells editors it has no editor bridge.
 - A default StorageClass, or set `*.persistence.storageClass`. Hermes needs 20 GiB by default.
 - For people outside the cluster: an Ingress controller or a Gateway API gateway, and a host name.
 

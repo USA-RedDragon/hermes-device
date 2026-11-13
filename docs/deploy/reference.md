@@ -215,9 +215,10 @@ hermes:
   # talaria acp
   editorBridge:
     enabled: true
-    # -- How acp-host gets the talaria binary: "auto" mounts the talaria image as a volume on Kubernetes 1.33 or newer
-    # and has an init container copy the binary into an emptyDir on older clusters. Force "image" or "copy" when the
-    # detection is wrong (helm template without --kube-version). "copy" needs a talaria image with copy-self
+    # -- How acp-host gets the talaria binary: "auto" mounts the talaria image as a volume on Kubernetes 1.35 or newer
+    # and has an init container copy the binary into an emptyDir on older clusters. Force "image" on 1.33 or 1.34
+    # with the ImageVolume feature gate on, or "copy" or "image" when the detection is wrong (helm template without
+    # --kube-version). "copy" needs a talaria release with the copy-self command
     binary: auto
   persistence:
     size: 20Gi

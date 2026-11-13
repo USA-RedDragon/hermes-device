@@ -1,9 +1,9 @@
 {{- $full := include "talaria.fullname" . -}}
 {{- $rolling := .Values.hermes.rolling.enabled -}}
-{{- /* Image volumes need Kubernetes 1.33; older clusters get an init container that copies the binary */ -}}
+{{- /* Image volumes work without a feature gate from Kubernetes 1.35; older clusters get an init container that copies the binary */ -}}
 {{- $mode := .Values.hermes.editorBridge.binary -}}
 {{- if eq $mode "auto" -}}
-{{- $mode = ternary "image" "copy" (semverCompare ">=1.33-0" .Capabilities.KubeVersion.Version) -}}
+{{- $mode = ternary "image" "copy" (semverCompare ">=1.35-0" .Capabilities.KubeVersion.Version) -}}
 {{- end -}}
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -91,7 +91,7 @@ spec:
           volumeMounts:
             - {name: plugin-src, mountPath: /plugin-src}
         {{- if and .Values.hermes.editorBridge.enabled (eq $mode "copy") }}
-        # Clusters older than 1.33 (no image volumes): the talaria binary for acp-host, copied into a shared emptyDir
+        # Clusters older than 1.35 (image volumes need a feature gate): the talaria binary for acp-host, copied into a shared emptyDir
         # (the image has no shell or cp)
         - name: device-bin
           image: {{ .Values.images.device }}
