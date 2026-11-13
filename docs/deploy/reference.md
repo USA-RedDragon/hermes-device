@@ -58,7 +58,7 @@ TALARIA_SEARXNG=1
 
 # --- Images ---
 # Another agent image, such as one you built or loaded (the default is pinned by digest)
-# TALARIA_HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p34
+# TALARIA_HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p35
 
 # --- Time zone of schedules and the agent's clock (IANA name, such as Europe/Berlin). Empty: UTC
 TZ=
@@ -118,7 +118,7 @@ type: application
 version: 0.3.0
 # The talaria-hub release that images.hub pins, without its v (deploy/hack/check-sync.sh checks it; deploy/hack/pin.sh
 # and Renovate move both)
-appVersion: "0.26.71"
+appVersion: "0.26.74"
 home: https://github.com/USA-RedDragon/talaria
 sources:
   - https://github.com/USA-RedDragon/talaria
@@ -193,9 +193,9 @@ telegram:
   existingSecret: ""
 
 images:
-  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.71@sha256:fde74c13919426def8d516f42227512e3fc80a4b85dc9a10eec5ca82545f7f1e
+  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.74@sha256:44356abd1e34d2482cc2f319b2e3028c9747a73cdb936f9b34edbcea559251a7
   # -- Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
-  hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p34@sha256:b6aaa214fab517e2d0d08874f90e1b6b5ee1f062fcf3e3f4b9d8c292049064e8
+  hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p35@sha256:ad5c37383bd5c20607cfa8575c301bc8a22ab48084ad76b87b25a5a1a97ab1fc
   device: ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
   # -- The binary's file name at the root of the device image, for the image volume; "hermes-device" before v0.26.0
   deviceBinary: talaria
@@ -344,8 +344,8 @@ docker.io/pgvector/pgvector:0.8.1-pg17
 docker.io/searxng/searxng:2026.11.13-8a53a6aa5
 ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
 ghcr.io/plastic-labs/honcho:v3.6.0
-ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p34
-ghcr.io/usa-reddragon/talaria-hub:v0.26.71
+ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p35
+ghcr.io/usa-reddragon/talaria-hub:v0.26.74
 ghcr.io/usa-reddragon/talaria-sandbox:v0.26.0
 ghcr.io/usa-reddragon/talaria:v0.26.0
 ```
