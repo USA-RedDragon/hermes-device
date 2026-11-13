@@ -8,13 +8,14 @@ cmd/browserstatus.go	7	2
 cmd/chat.go	36	7
 cmd/cmd.go	37	32
 cmd/copyself.go	27	18
+cmd/headless.go	39	0
 cmd/login.go	45	36
 cmd/managed.go	145	96
 cmd/migrate.go	97	8
 cmd/nativehost_other.go	2	0
 cmd/parent_other.go	1	0
 cmd/plugin.go	14	10
-cmd/run.go	260	175
+cmd/run.go	271	178
 cmd/setup.go	154	126
 cmd/signal.go	1	1
 cmd/supervise.go	74	0
@@ -24,11 +25,11 @@ extension/firefox/embed.go	45	39
 internal/acpbridge/acpbridge.go	489	427
 internal/acpbridge/inline.go	38	35
 internal/acpbridge/place.go	160	146
-internal/acphost/acphost.go	291	233
+internal/acphost/acphost.go	291	232
 internal/acphost/proc_unix.go	3	1
 internal/acphost/rewrite.go	260	237
 internal/acphost/sweep.go	30	28
-internal/acphost/sweep_linux.go	49	35
+internal/acphost/sweep_linux.go	49	36
 internal/allowlist/allowlist.go	27	26
 internal/attest/attest.go	141	123
 internal/attest/bundle.go	248	212
@@ -41,6 +42,8 @@ internal/autoupdate/release.go	109	86
 internal/browser/bidi/bidi.go	51	0
 internal/browser/broker/broker.go	174	137
 internal/browser/broker/peercred_linux.go	13	9
+internal/browser/headless/group_unix.go	6	5
+internal/browser/headless/headless.go	70	55
 internal/browser/host/host.go	47	30
 internal/browser/launch/detach_unix.go	1	0
 internal/browser/launch/launch.go	132	98
@@ -94,7 +97,7 @@ internal/setup/system.go	52	7
 internal/setup/task.go	67	54
 internal/setup/update.go	82	71
 internal/setup/windows.go	76	63
-internal/splice/conn.go	306	264
+internal/splice/conn.go	306	265
 internal/splice/resolve.go	127	111
 internal/splice/rpc.go	97	83
 internal/splice/splice.go	225	201
