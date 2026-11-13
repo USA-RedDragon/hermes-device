@@ -99,6 +99,8 @@ CLOSE_UNSUPPORTED_PLATFORM = 4427
 CLOSE_BACKEND_UNAVAILABLE = 4502
 
 EXIT_REFUSED = 126
+EXIT_REFUSAL_REPORTED = 1
+ROOTS_REFUSAL = "outside the allowed roots"
 EXIT_KILLED = 130
 EXIT_LOST = 255
 EXIT_REASON_OOM = "oom"
@@ -2662,9 +2664,22 @@ class DeviceShell(BaseEnvironment):
         proc = state["proc"]
         if proc is not None and proc.refused:
             self.cwd = self._binding.dir
+            result = self._refusal_result(result, proc, effective)
         self.cwd = self._safe_cwd()
         hub().set_device_cwd(self._binding, self.cwd)
         return result
+
+    def _refusal_result(self, result: dict, proc: Any, cwd: str) -> dict:
+        """A refused command reports exit 1, not 126: Hermes explains 126 as a file that is not
+        executable. A refusal for a folder outside the allowed roots says so and where the chat is now."""
+        out = dict(result) if isinstance(result, dict) else {"output": str(result or "")}
+        out["returncode"] = EXIT_REFUSAL_REPORTED
+        directory = self._binding.dir
+        if ROOTS_REFUSAL in (proc.error or "") and posixpath.normpath(cwd) != posixpath.normpath(directory):
+            out["output"] = (f"[talaria: the folder {cwd} is outside this computer's allowed folders, so the "
+                             f"command did not run. The chat is back in {directory}. Run it again, or give a "
+                             f"workdir inside an allowed folder.]")
+        return out
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: Optional[str] = None, note: str = ""):
