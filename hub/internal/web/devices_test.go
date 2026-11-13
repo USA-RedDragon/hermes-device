@@ -133,7 +133,13 @@ func pairRevoke(t *testing.T, e *hubEnv, c *http.Client, res hub.PairPoll, revok
 		By: hub.CloseByBackend, At: opened.Add(time.Second)}); err != nil {
 		t.Fatal(err)
 	}
+	if err := e.store.DeviceHello(ctx, res.Device.ID, "linux", "arm64", "v0.9.0"); err != nil {
+		t.Fatal(err)
+	}
 	resp, body := get(t, c, e.url+"/api/devices")
+	if !strings.Contains(body, `"client_version":"v0.9.0"`) || !strings.Contains(body, `"arch":"arm64"`) {
+		t.Fatalf("version after a hello = %s", body)
+	}
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"name":"work laptop"`) || !strings.Contains(body, `"paired":true`) {
 		t.Fatalf("devices = %d %s", resp.StatusCode, body)
 	}

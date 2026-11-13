@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -124,6 +125,9 @@ type leg struct {
 	done   chan struct{}
 	// id is unique to the leg, for the store's record of its close.
 	id string
+	// helloSeen is set by the device-to-backend pump once it looked at the
+	// first device message.
+	helloSeen bool
 	// closed is how the leg ended, set once by finish.
 	closed legClose
 }
@@ -275,7 +279,27 @@ func (l *leg) pump(src, dst *websocket.Conn, fromDevice bool) {
 			l.ended(err, !fromDevice)
 			return
 		}
+		if fromDevice && !l.helloSeen {
+			l.helloSeen = true
+			l.recordHello(typ, data)
+		}
 	}
+}
+
+// recordHello keeps the OS, architecture and talaria version of the hello
+// that opens an exec leg, since the client updates itself and reconnects
+// with a new version after pairing.
+func (l *leg) recordHello(typ websocket.MessageType, data []byte) {
+	if !l.records() || typ != websocket.MessageText {
+		return
+	}
+	var h protocol.Hello
+	if json.Unmarshal(data, &h) != nil || h.Type != protocol.TypeHello {
+		return
+	}
+	l.s.recordLeg(l.ctx, l.dev.ID, func(ctx context.Context) error {
+		return l.s.store.DeviceHello(ctx, l.dev.ID, clip(h.OS, 32), clip(h.Arch, 32), clip(h.ClientVersion, 64))
+	})
 }
 
 func (l *leg) ping(c *websocket.Conn, device bool) {

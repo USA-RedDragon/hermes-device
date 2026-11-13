@@ -142,6 +142,10 @@ type DeviceStore interface {
 	// ExecLegOpened records that the exec leg legID of the device opened,
 	// and clears its LastClose. legID is unique to the leg.
 	ExecLegOpened(ctx context.Context, id, legID string) error
+	// DeviceHello records the OS, architecture and talaria version a device
+	// sent in its hello, so they follow the client's self-updates. An empty
+	// value keeps what is stored.
+	DeviceHello(ctx context.Context, id, os, arch, clientVersion string) error
 	// ExecLegClosed records how the exec leg legID ended, unless another
 	// exec leg of the device opened since.
 	ExecLegClosed(ctx context.Context, id, legID string, c LegClose) error

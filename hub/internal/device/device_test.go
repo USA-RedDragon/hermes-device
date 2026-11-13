@@ -278,6 +278,11 @@ func closeCode(t *testing.T, c *websocket.Conn) websocket.StatusCode {
 
 // connectExec opens the exec leg and finishes the handshake.
 func (e *env) connectExec(r *replica, token string) (*websocket.Conn, *devicetest.Conn) {
+	return e.connectExecAs(r, token, "v0.3.0")
+}
+
+// connectExecAs is connectExec with a talaria version in the hello.
+func (e *env) connectExecAs(r *replica, token, version string) (*websocket.Conn, *devicetest.Conn) {
 	t := e.t
 	t.Helper()
 	c, _, err := dial(t, r, "/api/device/exec", token)
@@ -286,7 +291,7 @@ func (e *env) connectExec(r *replica, token string) (*websocket.Conn, *devicetes
 	}
 	writeJSON(t, c, protocol.Hello{Type: protocol.TypeHello, Version: protocol.MinVersion, MaxVersion: protocol.Version,
 		Roots: []string{homeDir}, Home: homeDir, Hostname: hostName, OS: osLinux, Arch: archAMD64, Shell: "bash",
-		ClientVersion: "v0.3.0"})
+		ClientVersion: version})
 	if w := readJSON(t, c); w["type"] != protocol.TypeWelcome || w["version"] != float64(protocol.Version) {
 		t.Fatalf("welcome = %v", w)
 	}
@@ -419,6 +424,36 @@ func TestExecLegCarriesAssertion(t *testing.T) {
 		if code := closeCode(t, c); code != protocol.CloseReplaced {
 			t.Fatalf("close = %d", code)
 		}
+	})
+}
+
+func TestHelloUpdatesVersion(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, id := e.pair(e.a)
+		version := func() string {
+			d, _, err := st.Device(context.Background(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return d.ClientVersion
+		}
+		wait := func(want string) {
+			t.Helper()
+			deadline := time.Now().Add(5 * time.Second)
+			for version() != want {
+				if time.Now().After(deadline) {
+					t.Fatalf("client version = %q, want %q", version(), want)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+		c, _ := e.connectExecAs(e.a, tok, "v0.3.0")
+		wait("v0.3.0")
+		c.Close(websocket.StatusNormalClosure, "")
+		e.connectExecAs(e.a, tok, "v0.5.0")
+		wait("v0.5.0")
 	})
 }
 

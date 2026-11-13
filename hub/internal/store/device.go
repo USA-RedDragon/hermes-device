@@ -350,6 +350,14 @@ func (s *Store) ExecLegOpened(ctx context.Context, id, legID string) error {
 		WHERE id = ?`, legID, id)
 }
 
+// DeviceHello records what a device's hello said about it. See hub.DeviceStore.
+func (s *Store) DeviceHello(ctx context.Context, id, osName, arch, clientVersion string) error {
+	return s.exec(ctx, `UPDATE devices SET os = CASE WHEN ? <> '' THEN ? ELSE os END,
+		arch = CASE WHEN ? <> '' THEN ? ELSE arch END,
+		client_version = CASE WHEN ? <> '' THEN ? ELSE client_version END
+		WHERE id = ? AND revoked_at = 0`, osName, osName, arch, arch, clientVersion, clientVersion, id)
+}
+
 // ExecLegClosed records how an exec leg ended. See hub.DeviceStore.
 func (s *Store) ExecLegClosed(ctx context.Context, id, legID string, c hub.LegClose) error {
 	return s.exec(ctx, `UPDATE devices SET close_code = ?, close_reason = ?, close_by = ?, closed_at = ?
