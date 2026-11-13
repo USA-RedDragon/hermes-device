@@ -175,14 +175,17 @@ Not in it: files on your computers and the sandbox's work folder.
 To restore on a new install (Docker Compose shown; the other install types are alike):
 
 1. Start the new install once so it makes its volumes, then stop it: docker compose down
-2. Put the keys back: copy the values of hub/keys.yaml into the secrets volume's generated/ files
-   (session-secret, hub-signing-seed, vapid-key).
-3. Put the hub's data back: copy hub/hub.db over hub.db in the hub's data volume.
+2. Put the keys back: write the values of hub/keys.yaml, without their quotes or a line break, into the
+   secrets volume's generated/ files (session_secret into session-secret, device_signing_key into
+   hub-signing-seed, vapid_private_key into vapid-key).
+3. Put the hub's data back: copy hub/hub.db over talaria-hub.db in the hub's data volume, and delete
+   talaria-hub.db-wal and talaria-hub.db-shm there if they exist.
 4. Start it again: docker compose up -d --wait
-5. Put the agent's data back: copy agent/agent-backup.zip into the agent's data volume (for example as
-   /opt/data/restore.zip), then in the server's folder run
-   docker compose exec -u 10000 hermes /opt/hermes/.venv/bin/hermes import /opt/data/restore.zip --force
-   and docker compose restart hermes.
+5. Put the agent's data back. The import refuses to run while the agent is up, so in the server's folder:
+   docker compose stop hermes
+   docker compose cp agent/agent-backup.zip hermes:/opt/data/restore.zip
+   docker compose run --rm --no-deps -u 10000 --entrypoint /opt/hermes/.venv/bin/hermes hermes import /opt/data/restore.zip --force
+   docker compose up -d --wait
 
 The full steps for each install type are in the Talaria docs, under Backups.
 `

@@ -40,12 +40,36 @@ To restore it on a new Compose install:
 1. Start the new install once, so it makes its volumes, then stop it with `docker compose down`.
 2. Put the keys back: write the values of `hub/keys.yaml` into the `secrets` volume's `generated/` files
    (`session_secret` into `session-secret`, `device_signing_key` into `hub-signing-seed`, `vapid_private_key` into
-   `vapid-key`).
-3. Put the hub's data back: copy `hub/hub.db` over `talaria-hub.db` in the `hub-data` volume.
+   `vapid-key`). The file quotes each value; leave the quotes and the line break out. From the folder that holds
+   the unzipped backup:
+
+   ```bash
+   docker run --rm -v talaria_secrets:/v -v "$PWD":/b:ro alpine sh -c '
+   g() { sed -n "s/^$1: *//p" /b/hub/keys.yaml | tr -d "\"\n"; }
+   g session_secret > /v/generated/session-secret
+   g device_signing_key > /v/generated/hub-signing-seed
+   g vapid_private_key > /v/generated/vapid-key'
+   ```
+
+3. Put the hub's data back: copy `hub/hub.db` over `talaria-hub.db` in the `hub-data` volume, and delete any
+   `talaria-hub.db-wal` and `talaria-hub.db-shm` next to it:
+
+   ```bash
+   docker run --rm -v talaria_hub-data:/h -v "$PWD":/b:ro alpine sh -c \
+     'rm -f /h/talaria-hub.db-wal /h/talaria-hub.db-shm; cp /b/hub/hub.db /h/talaria-hub.db'
+   ```
+
 4. Start it with `docker compose up -d --wait`.
-5. Put the agent's data back: copy `agent/agent-backup.zip` into the agent's data volume (for example to
-   `/opt/data/restore.zip`), run `docker compose exec -u 10000 hermes /opt/hermes/.venv/bin/hermes import /opt/data/restore.zip --force`,
-   then `docker compose restart hermes`.
+5. Put the agent's data back. The import refuses to run while the agent is up, so stop it first, and run the
+   import in a one-off container:
+
+   ```bash
+   docker compose stop hermes
+   docker compose cp agent/agent-backup.zip hermes:/opt/data/restore.zip
+   docker compose run --rm --no-deps -u 10000 --entrypoint /opt/hermes/.venv/bin/hermes hermes \
+     import /opt/data/restore.zip --force
+   docker compose up -d --wait
+   ```
 
 On Helm, put the keys into the `<release>-keys` Secret and the files into the PVCs the same way.
 
