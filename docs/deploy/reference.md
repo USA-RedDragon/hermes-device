@@ -287,6 +287,24 @@ TALARIA_INSTALL          unraid                             Install type
 ```
 <!-- /docgen:output -->
 
+## Web search
+
+The agent searches the web through its own [SearXNG](https://docs.searxng.org), a free metasearch engine that
+runs next to it: no API key and no account. It is on by default. Only the agent reaches it: compose runs it as the
+`searxng` service with no published port, and the all-in-one image runs it inside the container on 127.0.0.1. Its
+key is made on the first start and kept with the other secrets. Its settings are
+[`deploy/searxng/settings.yml`](../../deploy/searxng/settings.yml) (the JSON API on, no rate limiter, as one local
+client uses it).
+
+- **Turn it off:** compose: `TALARIA_SEARXNG=0` in `.env`, then `docker compose up -d`. All-in-one:
+  `TALARIA_SEARXNG=false`. The agent then uses whatever web search is set up in it, if any.
+- **Use another search provider:** set it up in the agent, for example with
+  `docker compose exec -u hermes hermes hermes tools` (or `web.search_backend` in the agent's `config.yaml`).
+  Talaria points web search at SearXNG only while no search provider is chosen there, so your choice wins and
+  stays.
+- **Use your own SearXNG:** give the agent `SEARXNG_URL` (compose: in `compose.override.yaml` under
+  `hermes: environment:`) and turn the bundled one off.
+
 ## Images
 
 Every install pulls these, pinned by digest. [Images](images.md) says what each one is.

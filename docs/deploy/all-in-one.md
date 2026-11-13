@@ -43,7 +43,8 @@ The image is built from `deploy/aio/Dockerfile` for amd64 and arm64 and publishe
 
 ## Design
 
-The image is the Talaria agent image with three static binaries copied in (the hub, `talaria` and Caddy).
+The image is the Talaria agent image with three static binaries copied in (the hub, `talaria` and Caddy), plus
+SearXNG for web search (its code and the same package versions as the upstream image, about 135 MB).
 The agent image already ships s6-overlay as its process supervisor, so the image adds its services to it instead of
 bringing a second supervisor.
 
@@ -54,6 +55,7 @@ bringing a second supervisor.
 | Hub | s6 service `talaria-hub`, on 127.0.0.1:8081 | nobody |
 | Front | s6 service `talaria-front` (Caddy), the one port inside the container: `TALARIA_PORT` (8080). Publish it on any host port. Until the agent answers its health check, it holds requests (up to a minute, then a page that reloads itself) | nobody |
 | Sandbox | s6 service `talaria-sandbox`, `talaria run` as a service device | agent (2568) |
+| Web search | s6 service `talaria-searxng`: SearXNG on 127.0.0.1:8888, for the agent only; off with `TALARIA_SEARXNG=false` ([Web search](reference.md#web-search)) | searxng (977) |
 | Demo model | s6 service `talaria-demo`, only with `TALARIA_DEMO=true`, offered to the agent as the provider `talaria-demo` | nobody |
 
 Two folders hold all state: `/opt/data` is the agent's data folder (chats, memory, settings), and `/talaria` holds the
@@ -61,7 +63,7 @@ hub database, the generated keys (`/talaria/secrets`) and the sandbox's files (`
 
 Settings are environment variables with the same names as in the compose `.env`: `TALARIA_PUBLIC_URL`,
 `TALARIA_PORT`, `TALARIA_USER`,
-`TALARIA_TELEGRAM_TOKEN`, `TZ`, plus `TALARIA_DEMO`, and the agent image's own `PUID` and
+`TALARIA_TELEGRAM_TOKEN`, `TZ`, `TALARIA_SEARXNG`, plus `TALARIA_DEMO`, and the agent image's own `PUID` and
 `PGID`. Login settings are the hub's own `HUB_AUTH_*` and `HUB_OIDC_*` variables ([Set up logins](auth.md)); the
 default is local accounts, made on the setup page by the first visitor. `TALARIA_INSTALL` (`aio` when unset; the
 Unraid template sets `unraid` and the TrueNAS file `truenas`) tells the hub which commands to show for this install.

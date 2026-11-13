@@ -153,6 +153,7 @@ start; it never changes a secret it made.
 | `front` | Caddy: the one published port, in front of the hub (and HTTPS when `TALARIA_SITE` is set) |
 | `hub` | The Talaria hub: web app, Telegram bot, device connections |
 | `sandbox` | Runs the agent's commands for chats that are not on one of your computers |
+| `searxng` | The agent's web search (SearXNG), reachable only inside the compose network. See [Web search](reference.md#web-search) |
 | `demo-llm` | The demo model (profile `demo`) |
 
 Data lives in Docker volumes: `talaria_hermes-data` (chats, memory, agent settings), `talaria_hub-data`,
