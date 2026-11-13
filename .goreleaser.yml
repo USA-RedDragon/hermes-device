@@ -3,6 +3,16 @@ version: 2
 
 project_name: talaria
 
+# The monorepo also has hub/, hermes/, aio/ and plugins/ tags. Only v*
+# tags are releases of this daemon, so git describe skips the others, for
+# snapshots too (a snapshot after hub/v0.26.59 was talaria_hub/v0.26.59-SNAPSHOT).
+# goreleaser still takes any tag on HEAD itself, so on a commit that has
+# another part's tag set GORELEASER_CURRENT_TAG, as the release workflow does:
+#   GORELEASER_CURRENT_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*') goreleaser release --snapshot --clean
+git:
+  ignore_tags:
+    - "[!v]*"
+
 release:
   github:
     owner: USA-RedDragon
