@@ -19,10 +19,18 @@
 //  4. A submission ID (display_metadata.submission_id) names who admitted
 //     the row: a producer's JSON array (cron, a route wake) or the hub's
 //     agent delivery prefix is a card; any other ID is a client send of
-//     the user, shown as typed with no text sniffing.
+//     the user, shown as typed. Its text is never read as a notice, but
+//     the notes Hermes added around it for the model are cut (see below).
 //  5. Only a row with none of these marks (written before Hermes stored
 //     them, imported, or copied without them) is read by its text: the
 //     notices in package notice and the exact formats in fallback.go.
+//
+// View.Text is what the user typed: the notes Hermes put before it (a model
+// switch note, a skills reload note) are a card in View.Notice, and the notes
+// Hermes and its plugins appended to it for the model are cut, on every
+// path. Callers render View.Text as it is and do not cut notes again.
+// Attachment lines and the page chat head stay in the text; each surface
+// turns them into its own attachments.
 //
 // internal/web/static/origin.js follows this file; both run against
 // testdata/cases.json.
@@ -153,10 +161,15 @@ func typed(r Row, why string) View {
 		text = r.TypedAsk
 	}
 	text, _ = UnwrapSteer(text)
-	if n, tail, ok := foldedSummary(text); ok {
+	text, lead, title := cutLead(hub.CutInjectedNotes(text))
+	if n, tail, ok := foldedSummary(text); ok && len(lead) == 0 {
 		return View{Show: ShowUser, Text: tail, Notice: n, Why: why}
 	}
-	return View{Show: ShowUser, Text: text, Why: why}
+	v := View{Show: ShowUser, Text: text, Why: why}
+	if len(lead) > 0 && title != "" {
+		v.Notice = &notice.Notice{Kind: notice.KindNotice, Title: title, Result: strings.Join(lead, "\n\n")}
+	}
+	return v
 }
 
 // The marker Hermes wraps a mid-turn message of the user in for the model

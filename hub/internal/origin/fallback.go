@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 	"github.com/USA-RedDragon/talaria/hub/internal/notice"
 )
 
@@ -75,18 +76,9 @@ func ccQuiet(tag string) bool {
 	return tag == "system-reminder" || tag == "local-command-caveat" || tag == "user-prompt-submit-hook"
 }
 
-func fallback(r Row) View {
-	t := strings.TrimSpace(r.Text)
-	// Hermes hides these in its history (tui_gateway/session_history.py
-	// _is_display_hidden_marker); its other reads keep them.
-	if strings.HasPrefix(t, "[System:") {
-		return View{Show: ShowHidden, Why: whyText}
-	}
-	for _, w := range wholeCards() {
-		if strings.HasPrefix(t, w.prefix) {
-			return View{Show: ShowCard, Notice: &notice.Notice{Kind: notice.KindNotice, Title: w.title, Result: t}, Why: whyText}
-		}
-	}
+// cutLead takes the lead notes off the start of a message and returns the
+// rest, the notes that make a card, and the title of the first of them.
+func cutLead(t string) (string, []string, string) {
 	var cards []string
 	title := ""
 	for changed := true; changed; {
@@ -106,13 +98,30 @@ func fallback(r Row) View {
 			changed = true
 		}
 	}
+	return t, cards, title
+}
+
+func fallback(r Row) View {
+	text := hub.CutInjectedNotes(r.Text)
+	t := strings.TrimSpace(text)
+	// Hermes hides these in its history (tui_gateway/session_history.py
+	// _is_display_hidden_marker); its other reads keep them.
+	if strings.HasPrefix(t, "[System:") {
+		return View{Show: ShowHidden, Why: whyText}
+	}
+	for _, w := range wholeCards() {
+		if strings.HasPrefix(t, w.prefix) {
+			return View{Show: ShowCard, Notice: &notice.Notice{Kind: notice.KindNotice, Title: w.title, Result: t}, Why: whyText}
+		}
+	}
+	t, cards, title := cutLead(t)
 	t, ccCards, ccTitle, cut := cutClaudeCode(t)
 	cards = append(cards, ccCards...)
 	if title == "" {
 		title = ccTitle
 	}
-	if len(cards) == 0 && !cut && t == strings.TrimSpace(r.Text) {
-		return View{Show: ShowUser, Text: r.Text, Why: whyTyped}
+	if len(cards) == 0 && !cut && t == strings.TrimSpace(text) {
+		return View{Show: ShowUser, Text: text, Why: whyTyped}
 	}
 	var n *notice.Notice
 	if len(cards) > 0 {

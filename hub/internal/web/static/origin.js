@@ -92,10 +92,13 @@ window.HubOrigin = (() => {
   }
 
   function typed(r, why) {
-    const text = unwrapSteer(r.typed_ask.trim() ? r.typed_ask : r.text);
+    const lead = cutLead(cutNotes(unwrapSteer(r.typed_ask.trim() ? r.typed_ask : r.text)));
+    const text = lead.t;
     const f = window.HubNotice.folded(text);
-    if (f) return { show: "user", text: f.tail, notice: f.notice, why };
-    return { show: "user", text, why };
+    if (f && !lead.cards.length) return { show: "user", text: f.tail, notice: f.notice, why };
+    const v = { show: "user", text, why };
+    if (lead.cards.length && lead.title) v.notice = card(lead.title, lead.cards.join("\n\n"));
+    return v;
   }
 
   function classify(m) {
@@ -181,14 +184,9 @@ window.HubOrigin = (() => {
     return { t: t.replace(/\n{3,}/g, "\n\n").trim(), cards, title, cut: true };
   }
 
-  function fallback(r) {
-    const orig = r.text;
-    let t = orig.trim();
-    if (t.startsWith("[System:")) return { show: "hidden", why: "text" };
-    for (const [prefix, title] of wholeCards) {
-      if (t.startsWith(prefix)) return { show: "card", notice: card(title, t), why: "text" };
-    }
-    let cards = [];
+  // cutLead takes the lead notes off the start of a message (cutLead in fallback.go).
+  function cutLead(t) {
+    const cards = [];
     let title = "";
     for (let changed = true; changed;) {
       changed = false;
@@ -203,6 +201,20 @@ window.HubOrigin = (() => {
         changed = true;
       }
     }
+    return { t, cards, title };
+  }
+
+  function fallback(r) {
+    const orig = cutNotes(r.text);
+    let t = orig.trim();
+    if (t.startsWith("[System:")) return { show: "hidden", why: "text" };
+    for (const [prefix, title] of wholeCards) {
+      if (t.startsWith(prefix)) return { show: "card", notice: card(title, t), why: "text" };
+    }
+    const lead = cutLead(t);
+    t = lead.t;
+    let cards = lead.cards;
+    let title = lead.title;
     const cc = cutClaudeCode(t);
     t = cc.t;
     cards = cards.concat(cc.cards);

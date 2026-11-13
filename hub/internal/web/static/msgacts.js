@@ -214,10 +214,7 @@ window.HubMsgActions = (ctx) => {
   }
 
   const rowID = (m) => (Number.isInteger(m.row_id) ? m.row_id : Number.isInteger(m._row_id) ? m._row_id : null);
-  const rowText = (m) => {
-    const text = m.text != null ? m.text : typeof m.content === "string" ? m.content : "";
-    return m.role === "user" ? window.HubAttach.cutNotes(text) : text;
-  };
+  const rowText = (m) => (m.text != null ? m.text : typeof m.content === "string" ? m.content : "");
   // A user row is the user's turn when HubOrigin shows it as their bubble.
   const userTurn = (m) => m.role === "user" && window.HubOrigin.classify(m).show === "user";
   const visible = (m) => m.display_kind !== "hidden" && (userTurn(m) || (m.role === "assistant" && rowText(m)));
@@ -334,7 +331,7 @@ window.HubMsgActions = (ctx) => {
         if (v.show !== "user") continue;
         who = "";
         head("You");
-        out.push(window.HubAttach.cutNotes(v.text), "");
+        out.push(v.text, "");
       } else if (m.role === "assistant") {
         for (const c of m.tool_calls || []) {
           const fn = c.function || {};

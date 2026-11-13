@@ -100,7 +100,7 @@ window.HubAttach = (() => {
   }
 
   function split(text) {
-    text = cutPage(cutNotes(text));
+    text = cutPage(text);
     let atts = [];
     const keep = [];
     let skipTo = "";

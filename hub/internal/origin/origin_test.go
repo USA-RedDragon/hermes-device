@@ -23,6 +23,9 @@ type testCase struct {
 		Text   string      `json:"text"`
 		Why    string      `json:"why"`
 		Notice *wantNotice `json:"notice"`
+		// TypedText is the text of the same row sent with a client
+		// submission ID, when notes are cut from it.
+		TypedText *string `json:"typed_text"`
 	} `json:"want"`
 }
 
@@ -73,6 +76,9 @@ func TestTypedNeverLost(t *testing.T) {
 		want := r.Text
 		if c.Want.Show == origin.ShowUser && c.Want.Notice != nil && c.Want.Notice.Kind == "compaction" {
 			want = c.Want.Text
+		}
+		if c.Want.TypedText != nil {
+			want = *c.Want.TypedText
 		}
 		if _, wrapped := origin.UnwrapSteer(r.Text); wrapped {
 			want = c.Want.Text

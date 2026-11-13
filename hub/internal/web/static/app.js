@@ -948,7 +948,7 @@
     // userText adds a user message. atts are the files the page sent with
     // it; without them they come from the lines Hermes keeps in the text.
     userText(text, pending, atts) {
-      const shown = atts ? { text: window.HubAttach.cutNotes(text), atts } : splitAttachments(text);
+      const shown = atts ? { text, atts } : splitAttachments(text);
       const from = window.HubPageSend.split(shown.text);
       shown.text = from.text;
       const m = el("div", "msg user" + (pending ? " pending" : ""));
@@ -1430,15 +1430,16 @@
         else if (p.status === "steering") {
           // Hermes also hands a background result or another agent's message to the running turn; the
           // sender named in the input ID decides if it is the user's bubble or a card.
-          if (this.originCard(window.HubOrigin.classify(p), p.text, true)) return;
-          this.userText(p.text, true);
+          const v = window.HubOrigin.classify(p);
+          if (this.originCard(v, p.text, true)) return;
+          this.userText(v.text, true);
           const x = this.pending[this.pending.length - 1];
           x.id = window.HubReconcile.idOf(p);
           x.adm = p.id;
           this.adopt(x, mine.get(i));
           this.steered(x);
         } else if (!this.originCard(window.HubOrigin.classify(p), p.text, true)) {
-          const bubble = this.userText(p.text, true);
+          const bubble = this.userText(window.HubOrigin.classify(p).text, true);
           this.queued(bubble, p.id);
           const x = this.pending.find((y) => y.bubble === bubble);
           if (x) {

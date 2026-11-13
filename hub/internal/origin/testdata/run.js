@@ -26,7 +26,8 @@ for (const c of all) {
   // A typed send is never read by its text.
   const typed = classify({ text: c.row.text, submission_id: "web-typed" });
   assert.strictEqual(typed.show, "user", c.name + ": typed send");
-  assert.strictEqual(typed.text, want.show === "user" && ((want.notice && want.notice.kind === "compaction") || sandbox.window.HubOrigin.unwrapSteer(c.row.text) !== c.row.text) ? want.text : c.row.text, c.name + ": typed text");
+  if (want.typed_text !== undefined) assert.strictEqual(typed.text, want.typed_text, c.name + ": typed text");
+  else assert.strictEqual(typed.text, want.show === "user" && ((want.notice && want.notice.kind === "compaction") || sandbox.window.HubOrigin.unwrapSteer(c.row.text) !== c.row.text) ? want.text : c.row.text, c.name + ": typed text");
 }
 // The shapes rows come in.
 assert.strictEqual(classify({ role: "user", content: [{ type: "text", text: "hi" }], display_metadata: "{\"submission_id\":\"web-1\"}" }).why, "submission");
