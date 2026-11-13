@@ -115,8 +115,9 @@ def talaria_config(pubkey_path):
             "files your reply names this way. Save such files in the chat's working folder, never in /tmp.")
     cfg = {
         "webapp": {"enabled": True, "host": "0.0.0.0", "port": 9120},
+        # detach_removed_default: removing the default model's provider in Settings > Models also drops the default
         "dashboard": {"basic_auth": {"username": "hub", "password_hash": password_hash(),
-                                     "secret": secret("session-secret")}},
+                                     "secret": secret("session-secret")}, "detach_removed_default": True},
         "terminal": {"backend": "device", "cwd": os.path.join(HOME, "empty-cwd")},
         "security": {"image_render_paths": "media"},
         "updates": {"check": False},
