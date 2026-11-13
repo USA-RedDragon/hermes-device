@@ -7,7 +7,7 @@
 
 ARG HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a
 ARG HUB_IMAGE=ghcr.io/usa-reddragon/talaria-hub:v0.26.54@sha256:832bd2db5b0aa144c28687990aca006cfda1a89268a73c1179b68e6fb4ea5504
-ARG DEVICE_IMAGE=ghcr.io/usa-reddragon/hermes-device:v0.25.3@sha256:c19e36561ac6b34798eea6464dfbf5f974b44102d30c1e1f789abc88c3a7eeb0
+ARG DEVICE_IMAGE=ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
 ARG CADDY_IMAGE=docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 
 FROM ${HUB_IMAGE} AS hub
@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils \
  && groupadd -g 2568 agent && useradd -u 2568 -g 2568 -d /talaria/work -s /bin/bash -M agent
 # All three are static binaries
 COPY --from=hub /talaria-hub /usr/local/bin/talaria-hub
-COPY --from=device /hermes-device /usr/local/bin/talaria
+COPY --from=device /talaria /usr/local/bin/talaria
 COPY --from=caddy /usr/bin/caddy /usr/local/bin/caddy
 COPY compose/files/init.sh compose/files/hermes-init.py compose/files/demo-llm.py /usr/share/talaria/
 COPY aio/rootfs/ /

@@ -54,10 +54,10 @@ images:
   hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.54@sha256:832bd2db5b0aa144c28687990aca006cfda1a89268a73c1179b68e6fb4ea5504
   # -- Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
   hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a
-  device: ghcr.io/usa-reddragon/hermes-device:v0.25.3@sha256:c19e36561ac6b34798eea6464dfbf5f974b44102d30c1e1f789abc88c3a7eeb0
-  # -- The binary's file name at the root of the device image, for the image volume; "talaria" from v0.26.0
-  deviceBinary: hermes-device
-  sandbox: ghcr.io/usa-reddragon/hermes-device-sandbox:v0.25.3@sha256:ec2ffbec87ada250eec859e98467d91bf3cf1e59b65e158c5d3e0faec3cd2ebb
+  device: ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
+  # -- The binary's file name at the root of the device image, for the image volume; "hermes-device" before v0.26.0
+  deviceBinary: talaria
+  sandbox: ghcr.io/usa-reddragon/talaria-sandbox:v0.26.0@sha256:95c0ad9f33ab6bb5f19064c4c9cca23b05b5b635b6fb10999d1895d843b81090
   caddy: docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
   pullPolicy: IfNotPresent
 # -- Secrets for private images, such as [{name: ghcr}]

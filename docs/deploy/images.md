@@ -10,10 +10,10 @@ docker.io/ollama/ollama:0.40.16
 docker.io/pgvector/pgvector:0.8.1-pg17
 ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
 ghcr.io/plastic-labs/honcho:v3.6.0
-ghcr.io/usa-reddragon/hermes-device-sandbox:v0.25.3
-ghcr.io/usa-reddragon/hermes-device:v0.25.3
 ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30
 ghcr.io/usa-reddragon/talaria-hub:v0.26.54
+ghcr.io/usa-reddragon/talaria-sandbox:v0.26.0
+ghcr.io/usa-reddragon/talaria:v0.26.0
 ```
 <!-- /docgen:output -->
 
@@ -21,8 +21,8 @@ ghcr.io/usa-reddragon/talaria-hub:v0.26.54
 | ----- | ---------- | ------ |
 | `ghcr.io/usa-reddragon/talaria-hub` | The hub | Yes |
 | `ghcr.io/usa-reddragon/talaria-hermes` | Talaria Hermes: Hermes Agent with the Talaria patches | Yes |
-| `ghcr.io/usa-reddragon/hermes-device` | The `talaria` binary; the chart and compose copy the device plugin out of it | Yes |
-| `ghcr.io/usa-reddragon/hermes-device-sandbox` | The sandbox | Yes |
+| `ghcr.io/usa-reddragon/talaria` | The `talaria` binary; the chart and compose copy the device plugin out of it | Yes |
+| `ghcr.io/usa-reddragon/talaria-sandbox` | The sandbox | Yes |
 | `docker.io/library/caddy` | The web front | Yes |
 | `ghcr.io/usa-reddragon/talaria-aio` | The all-in-one image (Unraid, TrueNAS, `docker run`) | Yes |
 
