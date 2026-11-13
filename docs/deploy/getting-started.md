@@ -52,4 +52,4 @@ The setup page that makes the first account, the first chat with the demo model,
 
 ## Where to look when something is wrong
 
-[Troubleshooting](troubleshooting.md) lists the problems people hit first, with what to check. [Friction review](friction-review.md) is a log of a first install on a fresh machine.
+[Troubleshooting](troubleshooting.md) lists the problems people hit first, with what to check.

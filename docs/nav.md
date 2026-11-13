@@ -42,5 +42,4 @@ This page lists the pages of the docs site in reading order, by section; the sit
 - Project
   - [Releases and verification](releases.md)
   - [Upgrade Hermes (for maintainers)](../hub/docs/hermes-upgrade.md)
-  - [Friction review](deploy/friction-review.md)
   - [Brand assets](brand/README.md)

@@ -73,14 +73,6 @@ Optional. Set it to the hub user name of the person this Hermes works for, once 
   to a computer. Empty: it belongs to the one person whose computers are connected; with several people's
   computers connected, move such chats from the hub instead.
 
-### Upgrading from the built-in login
-
-Releases of these install files before local accounts ran a small built-in login (Dex) with one account, `admin`.
-After the upgrade the hub has no account yet, so the first visit shows the setup page. Name the first account
-`admin` (the old `TALARIA_ADMIN_USER`): paired computers and Telegram links belong to a hub user name, so they
-stay yours. The old login's volume (`talaria_dex-data`) is no longer used and can be removed. With Helm and OIDC
-before, keep `auth.mode=oidc`; move `auth.oidc.users` to `auth.users`.
-
 ## Behind a reverse proxy
 
 Use this when a proxy already logs your people in. The proxy sends the person's name in a header, and the hub
