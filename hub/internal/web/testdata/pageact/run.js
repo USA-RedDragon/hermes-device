@@ -165,6 +165,7 @@ process.on("exit", (code) => { if (!finished && code === 0) { console.error("a t
   const after = await posts();
   assert.ok(after.length <= 1, "a loop after one click sent " + after.length);
   await cmd({ cmd: "stop" });
+  await sleep(500); // the page's loop is over, so it cannot take the next gesture
 
   // A key press counts: Enter on a focused button.
   await reset();
