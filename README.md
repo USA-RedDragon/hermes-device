@@ -10,6 +10,11 @@ Talaria is built on Hermes Agent by Nous Research (MIT). Not affiliated with or 
 
 ## Install
 
+Talaria includes its own Hermes, the agent that talks to models. You do not need a separate Hermes, and an
+existing Hermes install is not used. You connect models once, with Hermes's own setup command (`hermes model`, run
+inside Talaria's container), and then pick them in the chat's model menu. Every install guide has that as a
+numbered step right after you make your account.
+
 Every install runs the hub (web app and Telegram bot, with its own accounts), Hermes Agent with the Talaria
 patches, and a sandbox for the agent's commands. Secrets are made for you on the first start, and the first person
 who opens Talaria makes the admin account.

@@ -1,10 +1,14 @@
 # Choose a model and provider
 
-Hermes does the talking to the model, and the model and provider are Hermes settings. Talaria's install files do
-not set them: after the first start you pick them in Hermes, with its own setup wizard, `hermes model`. Hermes
-keeps the choice (and any API key you give it) in its data folder, so it survives upgrades.
+Talaria includes its own Hermes, the agent that talks to models. You do not need a separate Hermes, and an
+existing Hermes install is not used. Models and providers are settings of the Hermes inside Talaria. You connect
+them once, after you make your account, with Hermes's own setup command, `hermes model`, run in Talaria's
+container (the commands are below). The display name you give a connection becomes its group in the chat's model
+menu, where you pick the model for each chat.
 
-Until you pick one, Hermes has no model and a new chat cannot start (the chat page says "Could not start a chat").
+Hermes keeps what you set (and any API key you give it) in its data folder, so it survives upgrades. Until you
+connect a model, a new chat cannot start: it says Hermes is not connected to any AI provider, and the model menu
+is empty.
 
 ## Run `hermes model`
 
@@ -17,9 +21,14 @@ Run it in the Hermes container, as the `hermes` user, from a terminal on the ser
 | TrueNAS (app named `talaria`) | `sudo docker exec -it -u hermes $(sudo docker ps -qf name=talaria) hermes model` |
 | Helm | `kubectl -n talaria exec -it deploy/talaria-hermes -c gateway -- hermes model` |
 
-Pick a provider with the arrow keys, give it what it asks for (an API key, a sign-in, or an address), then pick the
-model. New chats use it at once; no restart is needed. Run it again at any time to switch. Inside a chat, `/model`
-switches between providers you already set up.
+What you will see: a list of providers, which you move through with the arrow keys. Pick one and give it what it
+asks for (an API key, a sign-in, or an address), then pick the model. For Ollama, LM Studio or vLLM, pick **Custom
+endpoint**, the last entry (see [Ollama](#ollama)). At the end Hermes asks for a display name: that name is the
+group your models show under in the chat's model menu.
+
+What happens next: open a new chat (or reload the page) and pick the model in the chat's model menu. No restart is
+needed. Models you pull into Ollama later appear on their own. Run `hermes model` again at any time to add another
+connection or switch. Inside a chat, `/model` switches between providers you already set up.
 
 Which providers Hermes offers, what each needs and how to set them in Hermes's `config.yaml` instead: Hermes
 Agent's [LLM and model providers](https://hermes-agent.nousresearch.com/docs/integrations/providers) page. Hermes
