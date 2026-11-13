@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/USA-RedDragon/talaria/internal/legacy"
@@ -63,28 +64,30 @@ func supervise(ctx context.Context, exe string, args []string, dir string) error
 // superviseOnce runs the daemon once, in a process tree that ends with
 // the supervisor, and returns its exit code.
 func superviseOnce(ctx context.Context, exe string, args []string, log io.Writer, pidPath string) (int, error) {
-	child := exec.Command(exe, args...) //nolint:gosec,noctx // our own binary; the tree is killed when ctx ends
+	var tree atomic.Pointer[proctree.Tree]
+	child := exec.CommandContext(ctx, exe, args...)
 	child.Env = append(os.Environ(), setup.ServiceEnv+"="+setup.ServiceTask)
 	child.Stdout, child.Stderr = log, log
+	// When ctx ends, the whole tree goes, not only the daemon.
+	child.Cancel = func() error {
+		if t := tree.Load(); t != nil {
+			return t.Kill()
+		}
+		return child.Process.Kill()
+	}
 	proctree.Prepare(child)
 	if err := child.Start(); err != nil {
 		return -1, err
 	}
-	tree, err := proctree.Attach(child)
+	t, err := proctree.Attach(child)
 	if err != nil {
 		_ = child.Wait()
 		return -1, err
 	}
-	defer tree.Release()
+	tree.Store(t)
+	defer t.Release()
 	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
-	done := make(chan error, 1)
-	go func() { done <- child.Wait() }()
-	select {
-	case err = <-done:
-	case <-ctx.Done():
-		_ = tree.Kill()
-		err = <-done
-	}
+	err = child.Wait()
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		return ee.ExitCode(), nil
@@ -102,7 +105,7 @@ func openLog(path string) (*os.File, error) {
 		_ = os.Remove(path + ".1")
 		_ = os.Rename(path, path+".1")
 	}
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // our own log
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 }
 
 // serviceExe is the binary the supervisor runs: the path the task started
@@ -127,7 +130,7 @@ func childRunArgs(args []string) []string {
 
 // runSupervisor is run --service.
 func runSupervisor(ctx context.Context, b *base) error {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != goosWindows {
 		return errors.New("--service is for the Windows scheduled task; systemd and launchd restart run themselves")
 	}
 	exe, err := serviceExe(b.executable)

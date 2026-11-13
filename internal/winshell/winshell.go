@@ -24,13 +24,11 @@ const (
 )
 
 // Kinds lists the shell kinds in the order setup offers them.
-//
-//nolint:gochecknoglobals // a fixed list
-var Kinds = []string{GitBash, PowerShell, WSL}
+func Kinds() []string { return []string{GitBash, PowerShell, WSL} }
 
 // Valid reports whether kind is one of Kinds.
 func Valid(kind string) bool {
-	for _, k := range Kinds {
+	for _, k := range Kinds() {
 		if k == kind {
 			return true
 		}

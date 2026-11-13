@@ -89,6 +89,8 @@ type Server struct {
 	// orphans is set once the host is a child subreaper. Every process
 	// reparented to it is then an orphan of a hermes acp child.
 	orphans atomic.Bool
+	// trees holds the process tree of each running hermes acp command.
+	trees sync.Map
 
 	mu       sync.Mutex
 	children map[int]bool
@@ -305,7 +307,7 @@ func (c *connection) serve() {
 		c.stop(cmd, stdin, exited)
 	}
 	_ = stdin.Close()
-	killGroup(cmd, syscall.SIGKILL)
+	c.killGroup(cmd, syscall.SIGKILL)
 	select {
 	case <-stdoutDone:
 	case <-time.After(time.Second):
@@ -354,7 +356,7 @@ func (c *connection) start() (*exec.Cmd, *os.File, *os.File, *os.File, error) {
 			_ = cmd.Wait()
 		} else {
 			c.srv.children[cmd.Process.Pid] = true
-			trees.Store(cmd, tree)
+			c.srv.trees.Store(cmd, tree)
 		}
 	}
 	c.srv.mu.Unlock()
@@ -382,26 +384,21 @@ func (c *connection) stop(cmd *exec.Cmd, stdin *os.File, exited <-chan struct{})
 	case <-time.After(c.srv.opts.StopGrace):
 	}
 	c.log.Info("hermes acp still running after stdin closed; sending SIGTERM")
-	killGroup(cmd, syscall.SIGTERM)
+	c.killGroup(cmd, syscall.SIGTERM)
 	select {
 	case <-exited:
 		return
 	case <-time.After(c.srv.opts.KillGrace):
 	}
 	c.log.Warn("hermes acp ignored SIGTERM; sending SIGKILL")
-	killGroup(cmd, syscall.SIGKILL)
+	c.killGroup(cmd, syscall.SIGKILL)
 	<-exited
 }
 
-// trees holds the process tree of each running hermes acp command.
-//
-//nolint:gochecknoglobals // keyed by the command, so no state is shared between servers
-var trees sync.Map
-
 // killGroup sends sig (SIGTERM or SIGKILL) to cmd's process tree. On
 // Windows both end the tree. SIGKILL also forgets the tree.
-func killGroup(cmd *exec.Cmd, sig syscall.Signal) {
-	v, ok := trees.Load(cmd)
+func (c *connection) killGroup(cmd *exec.Cmd, sig syscall.Signal) {
+	v, ok := c.srv.trees.Load(cmd)
 	if !ok {
 		return
 	}
@@ -412,7 +409,7 @@ func killGroup(cmd *exec.Cmd, sig syscall.Signal) {
 	}
 	_ = tree.Kill()
 	tree.Release()
-	trees.Delete(cmd)
+	c.srv.trees.Delete(cmd)
 }
 
 func exitStatus(err error) string {

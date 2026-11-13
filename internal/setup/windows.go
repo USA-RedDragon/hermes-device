@@ -16,12 +16,16 @@ const (
 )
 
 // shellMeaning tells the user what each Windows shell means for the agent.
-//
-//nolint:gochecknoglobals // fixed text
-var shellMeaning = map[string]string{
-	shellGitBash:    "Git Bash: the agent writes bash commands; Windows programs and files are at /c/...",
-	shellPowerShell: "PowerShell: the agent writes PowerShell commands (file tools still use Git Bash)",
-	shellWSL:        "WSL: the agent writes bash commands that run in Linux; your Windows files are at /mnt/c/...",
+func shellMeaning(kind string) string {
+	switch kind {
+	case shellGitBash:
+		return "Git Bash: the agent writes bash commands; Windows programs and files are at /c/..."
+	case shellPowerShell:
+		return "PowerShell: the agent writes PowerShell commands (file tools still use Git Bash)"
+	case shellWSL:
+		return "WSL: the agent writes bash commands that run in Linux; your Windows files are at /mnt/c/..."
+	}
+	return kind
 }
 
 // ErrNoWindowsShell is returned when Windows has no shell talaria can use.
@@ -51,7 +55,7 @@ func (s *System) chooseShell(ctx context.Context, o *Options) (string, error) {
 		if i == 0 {
 			def = " (default)"
 		}
-		s.printf("  %d. %s%s\n", i+1, shellMeaning[k], def)
+		s.printf("  %d. %s%s\n", i+1, shellMeaning(k), def)
 	}
 	for {
 		s.printf("Shell [1-%d, Enter for 1]: ", len(o.Shells))

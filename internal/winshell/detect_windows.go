@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,7 +93,7 @@ func Resolve(ctx context.Context, kind, distro string) (Shell, error) {
 			s.MountRoot = root
 		}
 	default:
-		return s, fmt.Errorf("unknown shell %q: use one of %s", kind, strings.Join(Kinds, ", "))
+		return s, fmt.Errorf("unknown shell %q: use one of %s", kind, strings.Join(Kinds(), ", "))
 	}
 	return s, nil
 }
@@ -130,9 +131,8 @@ func findGitBash() string {
 		}
 	}
 	for _, d := range dirs {
-		p := filepath.Join(d, "bin", "bash.exe")
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			return p
+		if st, err := fs.Stat(os.DirFS(d), "bin/bash.exe"); err == nil && !st.IsDir() {
+			return filepath.Join(d, "bin", "bash.exe")
 		}
 	}
 	return ""
@@ -142,9 +142,10 @@ func findPowerShell() string {
 	if p, err := exec.LookPath("pwsh.exe"); err == nil {
 		return p
 	}
-	p := filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-	if _, err := os.Stat(p); err == nil {
-		return p
+	if root := os.Getenv("SystemRoot"); root != "" {
+		if _, err := fs.Stat(os.DirFS(root), "System32/WindowsPowerShell/v1.0/powershell.exe"); err == nil {
+			return filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+		}
 	}
 	if p, err := exec.LookPath("powershell.exe"); err == nil {
 		return p
@@ -157,7 +158,7 @@ func findPowerShell() string {
 func wslDistros(ctx context.Context, wsl string) []string {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, wsl, "--list", "--quiet").Output() //nolint:gosec // fixed arguments
+	out, err := runWSL(ctx, wsl, "--list", "--quiet")
 	if err != nil {
 		return nil
 	}
@@ -168,6 +169,11 @@ func wslDistros(ctx context.Context, wsl string) []string {
 		}
 	}
 	return list
+}
+
+// runWSL runs wsl.exe with args and returns its output.
+func runWSL(ctx context.Context, wsl string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, wsl, args...).Output()
 }
 
 // decodeWSL decodes wsl.exe's UTF-16LE output; output that is not UTF-16
@@ -193,7 +199,7 @@ func wslMountRoot(ctx context.Context, s Shell) string {
 		argv = append(argv, "-d", s.Distro)
 	}
 	argv = append(argv, "--exec", "wslpath", "-u", `C:\`)
-	out, err := exec.CommandContext(ctx, s.WSL, argv...).Output() //nolint:gosec // wsl.exe with fixed arguments
+	out, err := runWSL(ctx, s.WSL, argv...)
 	if err != nil {
 		return ""
 	}

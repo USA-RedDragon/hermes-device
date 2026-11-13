@@ -2,6 +2,7 @@ package proctree_test
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,7 +21,12 @@ const helperEnv = "TALARIA_PROCTREE_HELPER"
 func TestMain(m *testing.M) {
 	switch os.Getenv(helperEnv) {
 	case "parent":
-		child := exec.Command(os.Args[0]) //nolint:gosec,noctx // the test binary itself
+		exe, err := os.Executable()
+		if err != nil {
+			fmt.Println("error", err)
+			os.Exit(1)
+		}
+		child := exec.CommandContext(context.Background(), exe)
 		child.Env = append(os.Environ(), helperEnv+"=child")
 		if err := child.Start(); err != nil {
 			fmt.Println("error", err)
@@ -43,7 +49,11 @@ func TestMain(m *testing.M) {
 // pid.
 func start(t *testing.T, exit bool) (*exec.Cmd, *proctree.Tree, int) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0]) //nolint:gosec,noctx // the test binary itself
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), exe)
 	cmd.Env = append(os.Environ(), helperEnv+"=parent")
 	if exit {
 		cmd.Env = append(cmd.Env, helperEnv+"_EXIT=1")

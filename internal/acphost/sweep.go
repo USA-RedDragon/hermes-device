@@ -2,8 +2,6 @@ package acphost
 
 import (
 	"os"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -59,28 +57,4 @@ func (s *Server) stopStray(pid int) {
 	_ = signalPid(pid, syscall.SIGTERM)
 	time.Sleep(s.opts.KillGrace)
 	_ = signalPid(pid, syscall.SIGKILL)
-}
-
-type procInfo struct {
-	ppid, pgid int
-	zombie     bool
-}
-
-// parseStat reads state, ppid and pgrp from a /proc/<pid>/stat line. The
-// command name is in parentheses and may itself hold spaces or parentheses.
-func parseStat(line string) (procInfo, bool) {
-	i := strings.LastIndexByte(line, ')')
-	if i < 0 {
-		return procInfo{}, false
-	}
-	f := strings.Fields(line[i+1:])
-	if len(f) < 3 {
-		return procInfo{}, false
-	}
-	ppid, err1 := strconv.Atoi(f[1])
-	pgid, err2 := strconv.Atoi(f[2])
-	if err1 != nil || err2 != nil {
-		return procInfo{}, false
-	}
-	return procInfo{ppid: ppid, pgid: pgid, zombie: f[0] == "Z"}, true
 }

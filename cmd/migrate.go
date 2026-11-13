@@ -17,8 +17,9 @@ import (
 
 // goosDarwin is macOS's GOOS.
 const (
-	goosDarwin = "darwin"
-	goosLinux  = "linux"
+	goosDarwin  = "darwin"
+	goosLinux   = "linux"
+	goosWindows = "windows"
 )
 
 // handOffWait is how long a process that handed over to the talaria

@@ -18,7 +18,7 @@ func how(m Mode) int {
 // Lock waits for a lock of mode m on f.
 func Lock(f *os.File, m Mode) error {
 	for {
-		err := syscall.Flock(int(f.Fd()), how(m)) //nolint:gosec // fds fit in int
+		err := syscall.Flock(int(f.Fd()), how(m))
 		if !errors.Is(err, syscall.EINTR) {
 			return err
 		}
@@ -27,7 +27,7 @@ func Lock(f *os.File, m Mode) error {
 
 // TryLock takes a lock of mode m on f, or returns ErrLocked at once.
 func TryLock(f *os.File, m Mode) error {
-	err := syscall.Flock(int(f.Fd()), how(m)|syscall.LOCK_NB) //nolint:gosec // fds fit in int
+	err := syscall.Flock(int(f.Fd()), how(m)|syscall.LOCK_NB)
 	if errors.Is(err, syscall.EWOULDBLOCK) {
 		return ErrLocked
 	}
@@ -36,5 +36,5 @@ func TryLock(f *os.File, m Mode) error {
 
 // Unlock drops the lock on f.
 func Unlock(f *os.File) error {
-	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // fds fit in int
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }

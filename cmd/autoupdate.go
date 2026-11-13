@@ -93,7 +93,7 @@ func underService() bool {
 	case goosDarwin:
 		name := os.Getenv("XPC_SERVICE_NAME")
 		return name == setup.LaunchdLabel || name == setup.LegacyLaunchdLabel
-	case "windows":
+	case goosWindows:
 		return os.Getenv(setup.ServiceEnv) == setup.ServiceTask
 	}
 	return false

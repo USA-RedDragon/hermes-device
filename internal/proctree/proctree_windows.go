@@ -5,6 +5,7 @@ package proctree
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -17,8 +18,11 @@ import (
 // ends: STATUS_CONTROL_C_EXIT, what Windows uses for a Ctrl+C.
 const KillExitCode = 0xC000013A
 
-//nolint:gochecknoglobals // one lazy proc for the process
-var ntResumeProcess = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtResumeProcess")
+// ntResumeProcess is ntdll's NtResumeProcess, which resumes every thread of a
+// process that was started suspended.
+func ntResumeProcess() *windows.LazyProc {
+	return windows.NewLazySystemDLL("ntdll.dll").NewProc("NtResumeProcess")
+}
 
 // Tree is a Job Object that holds the command and every process it starts.
 type Tree struct {
@@ -48,13 +52,16 @@ func Attach(cmd *exec.Cmd) (*Tree, error) {
 	if cmd.Process == nil {
 		return nil, errors.New("proctree: command not started")
 	}
-	pid := uint32(cmd.Process.Pid) //nolint:gosec // a pid fits
+	if cmd.Process.Pid <= 0 || cmd.Process.Pid > math.MaxUint32 {
+		return nil, fmt.Errorf("proctree: bad pid %d", cmd.Process.Pid)
+	}
+	pid := uint32(cmd.Process.Pid)
 	h, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_SUSPEND_RESUME, false, pid)
 	if err != nil {
 		_ = cmd.Process.Kill()
 		return nil, fmt.Errorf("proctree: open process %d: %w", pid, err)
 	}
-	defer windows.CloseHandle(h) //nolint:errcheck // a close error leaves nothing to do
+	defer func() { _ = windows.CloseHandle(h) }()
 	job, err := newJob()
 	if err != nil {
 		_ = windows.TerminateProcess(h, KillExitCode)
@@ -65,7 +72,7 @@ func Attach(cmd *exec.Cmd) (*Tree, error) {
 		_ = windows.CloseHandle(job)
 		return nil, fmt.Errorf("proctree: assign process %d to a job: %w", pid, err)
 	}
-	if r, _, _ := ntResumeProcess.Call(uintptr(h)); r != 0 {
+	if r, _, _ := ntResumeProcess().Call(uintptr(h)); r != 0 {
 		_ = windows.TerminateJobObject(job, KillExitCode)
 		_ = windows.CloseHandle(job)
 		return nil, fmt.Errorf("proctree: resume process %d: NTSTATUS 0x%x", pid, r)
@@ -131,7 +138,8 @@ func (t *Tree) Release() {
 func Killed(err error) bool {
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
-		return uint32(ee.ExitCode()) == KillExitCode //nolint:gosec // exit codes are DWORDs
+		code := ee.ExitCode()
+		return code >= 0 && uint64(code) == KillExitCode
 	}
 	return false
 }

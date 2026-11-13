@@ -80,7 +80,7 @@ func TestArgv(t *testing.T) {
 
 func TestValid(t *testing.T) {
 	t.Parallel()
-	for _, k := range winshell.Kinds {
+	for _, k := range winshell.Kinds() {
 		if !winshell.Valid(k) {
 			t.Errorf("Valid(%q) = false", k)
 		}

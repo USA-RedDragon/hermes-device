@@ -1,4 +1,4 @@
-//go:build unix
+//go:build unix && !linux
 
 package diskfree
 
@@ -11,8 +11,9 @@ func Available(path string) (uint64, error) {
 	if err := syscall.Statfs(path, &st); err != nil {
 		return 0, err
 	}
-	return st.Bavail * uint64(st.Bsize), nil //nolint:gosec,unconvert // Bsize is positive; its type differs per OS
+	return st.Bavail * uint64(st.Bsize), nil
 }
 
-// Sync flushes every file system's buffers to disk.
-func Sync() { syscall.Sync() }
+// Sync flushes every file system's buffers to disk. It reports no error:
+// the callers only make a written file durable before they go on.
+func Sync() { _ = syscall.Sync() }
