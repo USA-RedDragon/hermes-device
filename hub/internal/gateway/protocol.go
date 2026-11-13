@@ -304,6 +304,8 @@ type ModelPayload struct {
 // ModelOptionsParams is model.options's params.
 type ModelOptionsParams struct {
 	SessionID string `json:"session_id"`
+	// Refresh asks for fresh model lists instead of the hour-long cache.
+	Refresh bool `json:"refresh,omitempty"`
 }
 
 // ModelCapabilities is one model's capabilities in a model.options row.

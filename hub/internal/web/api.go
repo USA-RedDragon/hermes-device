@@ -415,8 +415,18 @@ type modelsJSON struct {
 	Efforts []string `json:"efforts"`
 }
 
+// freshModels is the optional part of a hub.Service that lists a chat's
+// models without the backend's cache.
+type freshModels interface {
+	ModelsRefresh(ctx context.Context, user, backendID, sessionID string) (hub.Models, error)
+}
+
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	m, err := s.svc.Models(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"))
+	list := s.svc.Models
+	if f, ok := s.svc.(freshModels); ok && r.URL.Query().Get("refresh") == "1" {
+		list = f.ModelsRefresh
+	}
+	m, err := list(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"))
 	if err != nil {
 		s.fail(w, err)
 		return

@@ -151,10 +151,21 @@ func (s *Service) DeleteSession(ctx context.Context, user, backendID, sessionID 
 // Models lists the models Hermes offers the session: those of providers
 // it can sign in to, without the ones it marks unavailable.
 func (s *Service) Models(ctx context.Context, user, backendID, sessionID string) (hub.Models, error) {
+	return s.models(ctx, user, backendID, sessionID, false)
+}
+
+// ModelsRefresh is Models with fresh lists: Hermes asks the providers
+// again instead of answering from its hour-long cache, so models connected
+// a moment ago show at once.
+func (s *Service) ModelsRefresh(ctx context.Context, user, backendID, sessionID string) (hub.Models, error) {
+	return s.models(ctx, user, backendID, sessionID, true)
+}
+
+func (s *Service) models(ctx context.Context, user, backendID, sessionID string, refresh bool) (hub.Models, error) {
 	var out hub.Models
 	err := s.withSession(ctx, user, backendID, sessionID, func(b *backend, ls *live) error {
 		var res gateway.ModelOptionsResult
-		if err := b.read(ctx, ls, gateway.MethodModelOptions, gateway.ModelOptionsParams{SessionID: ls.id}, &res); err != nil {
+		if err := b.read(ctx, ls, gateway.MethodModelOptions, gateway.ModelOptionsParams{SessionID: ls.id, Refresh: refresh}, &res); err != nil {
 			return refusal(err)
 		}
 		out = hub.Models{Provider: res.Provider, Model: res.Model, Providers: []hub.ModelProvider{}}
