@@ -6,7 +6,7 @@
 # Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research.
 
 ARG HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p35@sha256:ad5c37383bd5c20607cfa8575c301bc8a22ab48084ad76b87b25a5a1a97ab1fc
-ARG HUB_IMAGE=ghcr.io/usa-reddragon/talaria-hub:v0.26.75@sha256:457d639da2ada7476af31bd315ffedd6574d9a8615db8526dbbf9bc3c0ee8000
+ARG HUB_IMAGE=ghcr.io/usa-reddragon/talaria-hub:v0.26.76@sha256:8f6b3e492d5c7936fba1a7a7d10932c805b1ba0ad9c81b120ccca18ed726a909
 ARG DEVICE_IMAGE=ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
 # SearXNG, the agent's web search: its code and package versions come from this image
 ARG SEARXNG_IMAGE=docker.io/searxng/searxng:2026.11.13-8a53a6aa5@sha256:82b222dd1854c43241874874fbc985006556230804dc819ef2a639eeb574d0e2

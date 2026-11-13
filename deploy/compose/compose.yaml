@@ -10,7 +10,7 @@
 name: talaria
 
 x-images:
-  hub: &hub-image ghcr.io/usa-reddragon/talaria-hub:v0.26.75@sha256:457d639da2ada7476af31bd315ffedd6574d9a8615db8526dbbf9bc3c0ee8000
+  hub: &hub-image ghcr.io/usa-reddragon/talaria-hub:v0.26.76@sha256:8f6b3e492d5c7936fba1a7a7d10932c805b1ba0ad9c81b120ccca18ed726a909
   # Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
   hermes: &hermes-image ${TALARIA_HERMES_IMAGE:-ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p35@sha256:ad5c37383bd5c20607cfa8575c301bc8a22ab48084ad76b87b25a5a1a97ab1fc}
   device: &device-image ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
