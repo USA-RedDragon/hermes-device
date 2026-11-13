@@ -23,6 +23,7 @@ const (
 	titleCopy  = "Copy"
 	cmdUsage   = "/usage"
 	sessionNew = "s-new"
+	titleLong  = "Long"
 	textEdit   = "edited"
 )
 
@@ -426,9 +427,9 @@ func TestTranscript(t *testing.T) {
 	for i := range msgs {
 		msgs[i] = map[string]any{kRole: roleUser, kText: fmt.Sprint("m", i)}
 	}
-	e.gw.AddSession(&gatewaytest.Session{ID: sessionNew, Title: "Long", StartedAt: 10, Messages: msgs})
+	e.gw.AddSession(&gatewaytest.Session{ID: sessionNew, Title: titleLong, StartedAt: 10, Messages: msgs})
 	tr, err := e.svc.Transcript(ctx, userAlice, backendPC, sessionNew)
-	if err != nil || tr.Title != "Long" || len(tr.Messages) != len(msgs) {
+	if err != nil || tr.Title != titleLong || len(tr.Messages) != len(msgs) {
 		t.Fatalf("transcript = %q %d %v", tr.Title, len(tr.Messages), err)
 	}
 	var last struct {
@@ -450,7 +451,7 @@ func TestTranscriptWaitsOutARestart(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
 	ctx := context.Background()
-	e.gw.AddSession(&gatewaytest.Session{ID: sessionNew, Title: "Long", StartedAt: 10,
+	e.gw.AddSession(&gatewaytest.Session{ID: sessionNew, Title: titleLong, StartedAt: 10,
 		Messages: []map[string]any{{kRole: roleUser, kText: "hi"}}})
 	if _, err := e.svc.Transcript(ctx, userAlice, backendPC, sessionNew); err != nil {
 		t.Fatal(err)

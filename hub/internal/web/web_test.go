@@ -350,7 +350,7 @@ func TestEventStreamAndResume(t *testing.T) {
 	if len(first) != 1 || !strings.Contains(string(first[0].data), `"title":"First"`) {
 		t.Fatalf("first = %+v", first)
 	}
-	if resp, _ := post(t, c, e.url+"/api/sessions/pc/s1/prompt", m.CSRF, e.url, map[string]string{kText: "hello"}); resp.StatusCode != http.StatusAccepted {
+	if resp, _ := post(t, c, e.url+"/api/sessions/pc/s1/prompt", m.CSRF, e.url, map[string]string{kText: textHello}); resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("prompt = %d", resp.StatusCode)
 	}
 	evs := readEvents(t, r, "message.complete")

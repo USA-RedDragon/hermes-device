@@ -65,7 +65,7 @@ func setupComputers(t *testing.T) *computersEnv {
 		cfg.Backends[0].ServiceDevices = []config.ServiceDevice{{ID: sandboxPC, Name: "Sandbox", Token: "hdt_" + strings.Repeat("s", 40)}}
 		b := cfg.Backends[0]
 		d, err := device.New(device.Options{Store: st, Access: late{&e}, Sessions: late{&e}, Backends: []config.Backend{b},
-			Dialers: map[string]device.Dialer{"pc": gateway.NewDialer(gateway.Credentials{BaseURL: b.URL, Provider: "basic", Username: b.Username, Password: b.Password})},
+			Dialers: map[string]device.Dialer{"pc": gateway.NewDialer(gateway.Credentials{BaseURL: b.URL, Provider: providerBasic, Username: b.Username, Password: b.Password})},
 			Key:     key, PublicURL: cfg.HTTP.PublicURL, Config: config.Device{Enabled: true}})
 		if err != nil {
 			t.Fatal(err)

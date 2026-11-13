@@ -343,7 +343,7 @@ func TestPinOrderAPI(t *testing.T) {
 	t.Parallel()
 	e := setup(t)
 	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: titleSecond, Live: true, StartedAt: 200})
-	e.gw.AddSession(&gatewaytest.Session{ID: "s3", Title: "Third", Live: true, StartedAt: 300})
+	e.gw.AddSession(&gatewaytest.Session{ID: "s3", Title: titleThird, Live: true, StartedAt: 300})
 	c := client(t)
 	m := login(t, e, c)
 	for _, id := range []string{"s1", "s2", "s3"} {
@@ -390,7 +390,7 @@ func TestPinInOrderAPI(t *testing.T) {
 	t.Parallel()
 	e := setup(t)
 	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: titleSecond, Live: true, StartedAt: 200})
-	e.gw.AddSession(&gatewaytest.Session{ID: "s3", Title: "Third", Live: true, StartedAt: 300})
+	e.gw.AddSession(&gatewaytest.Session{ID: "s3", Title: titleThird, Live: true, StartedAt: 300})
 	c := client(t)
 	m := login(t, e, c)
 	pinChat(t, e, c, m.CSRF, "pc", "s1", true)

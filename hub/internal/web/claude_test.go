@@ -49,7 +49,7 @@ func TestClaudeAPI(t *testing.T) {
 		cfg.Backends[0].Users = []string{userAlice, userBob}
 		cfg.Claude.Admins = []string{"alice=pc"}
 		admins, _ := cfg.Claude.AdminMap()
-		d := gateway.NewDialer(gateway.Credentials{BaseURL: cfg.Backends[0].URL, Provider: "basic", Username: clientID, Password: "pw"})
+		d := gateway.NewDialer(gateway.Credentials{BaseURL: cfg.Backends[0].URL, Provider: providerBasic, Username: clientID, Password: "pw"})
 		opts.Claude = claude.New(claude.Options{Access: lateAccess{&e}, Admins: admins, Requesters: map[string]device.Requester{"pc": d}})
 	})
 	plugin := claudetest.New(e.gw)
@@ -178,7 +178,7 @@ func TestMeClaudeNeedsPlugin(t *testing.T) {
 		var e *hubEnv
 		e = setupWith(t, func(cfg *config.Config, opts *web.Options, _ *store.Store) {
 			cfg.Backends[0].Users = []string{userAlice}
-			d := gateway.NewDialer(gateway.Credentials{BaseURL: cfg.Backends[0].URL, Provider: "basic", Username: clientID, Password: "pw"})
+			d := gateway.NewDialer(gateway.Credentials{BaseURL: cfg.Backends[0].URL, Provider: providerBasic, Username: clientID, Password: "pw"})
 			opts.Claude = claude.New(claude.Options{Access: lateAccess{&e}, Requesters: map[string]device.Requester{"pc": d}})
 		})
 		if plugin {

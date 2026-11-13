@@ -11,6 +11,8 @@ import (
 const (
 	keyBackendID = "backend_id"
 	titleSecond  = "Second"
+	titleThird   = "Third"
+	textHello    = "hello"
 )
 
 type pageChatJSON struct {

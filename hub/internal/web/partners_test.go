@@ -28,7 +28,7 @@ func listPartners(t *testing.T, c *http.Client, u string) []hub.AgentPartner {
 func TestPartnersAPI(t *testing.T) {
 	t.Parallel()
 	e := setup(t)
-	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: "Second", Live: true, StartedAt: 200})
+	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: titleSecond, Live: true, StartedAt: 200})
 	e.gw.AddSession(&gatewaytest.Session{ID: "s3", Title: "Other", Live: true, StartedAt: 300})
 	c := client(t)
 	u := e.url + "/api/backends/pc/partners"
@@ -89,7 +89,7 @@ func TestPartnersAPI(t *testing.T) {
 func TestPartnersAPIOwnerOnly(t *testing.T) {
 	t.Parallel()
 	e := setup(t)
-	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: "Second", Live: true, StartedAt: 200})
+	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: titleSecond, Live: true, StartedAt: 200})
 	c := client(t)
 	m := login(t, e, c)
 	u := e.url + "/api/backends/pc/partners"
@@ -133,7 +133,7 @@ func TestPartnersAPIOff(t *testing.T) {
 func TestAgentMessagesAPI(t *testing.T) {
 	t.Parallel()
 	e := setup(t)
-	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: "Second", Live: true, StartedAt: 200})
+	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: titleSecond, Live: true, StartedAt: 200})
 	c := client(t)
 	m := login(t, e, c)
 	ctx := context.Background()

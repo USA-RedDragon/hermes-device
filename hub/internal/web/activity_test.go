@@ -121,7 +121,7 @@ func TestBackgroundToolAPI(t *testing.T) {
 	if resp, body := post(t, c, e.url+path, m.CSRF, "", nil); resp.StatusCode != http.StatusConflict {
 		t.Fatalf("idle chat = %d %s", resp.StatusCode, body)
 	}
-	e.gw.AddSession(&gatewaytest.Session{ID: "s3", Title: "Third", Live: true, StartedAt: 30, Running: true})
+	e.gw.AddSession(&gatewaytest.Session{ID: "s3", Title: titleThird, Live: true, StartedAt: 30, Running: true})
 	if resp, body := post(t, c, e.url+"/api/sessions/pc/s3/tools/call_1/background", m.CSRF, "", nil); resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("running chat = %d %s", resp.StatusCode, body)
 	}

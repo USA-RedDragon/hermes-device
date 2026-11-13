@@ -202,7 +202,7 @@ func TestMediaFromTheDevice(t *testing.T) {
 	e := setup(t)
 	chart, notes, fake, unnamed := "/home/alice/src/chart.png", "/home/alice/src/notes.txt", "/home/alice/src/fake.png", "/home/alice/src/secret.txt"
 	shot, onDevice, report := shotDir+"server.jpg", shotDir+"device.jpg", "/home/alice/src/report.html"
-	dev := &deviceFiles{files: map[string]string{chart: shotPNG, notes: "hello", fake: "<svg onload=alert(1)>", unnamed: "no",
+	dev := &deviceFiles{files: map[string]string{chart: shotPNG, notes: textHello, fake: "<svg onload=alert(1)>", unnamed: "no",
 		shot: "device copy", onDevice: shotJPEG, report: "<!doctype html><title>Report</title>"}}
 	e.svc.SetFiles(dev)
 	e.gw.SetFile(shot, []byte(shotJPEG))
@@ -266,7 +266,7 @@ func TestMediaFromDeviceNote(t *testing.T) {
 	t.Parallel()
 	e := setup(t)
 	pasted, notes, other := "/home/alice/src/.hermes/attachments/image.png", "/home/alice/src/.hermes/attachments/notes.txt", "/home/alice/src/other.png"
-	dev := &deviceFiles{files: map[string]string{pasted: shotPNG, notes: "hello", other: shotPNG}}
+	dev := &deviceFiles{files: map[string]string{pasted: shotPNG, notes: textHello, other: shotPNG}}
 	e.svc.SetFiles(dev)
 	e.gw.AddSession(&gatewaytest.Session{ID: "n1", Title: titleMedia, Live: true, StartedAt: 200, Messages: []map[string]any{
 		{kRole: roleUser, kText: hub.FileNote("image.png", pasted) + "\n" + hub.FileNote("notes.txt", notes)},
