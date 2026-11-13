@@ -22,7 +22,7 @@ func TestTypedRowShowsWithoutHermesNotes(t *testing.T) {
 	}
 	chrome := chromePath(t)
 	e := setup(t)
-	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Work", Live: true, StartedAt: 900,
+	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Typed notes", Live: true, StartedAt: 900,
 		Messages: []map[string]any{
 			{kRole: roleUser, kText: "[Note: model was just switched from gpt-5 to claude-sonnet-5-5 via anthropic. Adjust your self-identification accordingly.]\n\nis this a bug?", "submission_id": "web-1"},
 			{kRole: roleAssistant, kText: "Let me look."},
@@ -34,11 +34,9 @@ func TestTypedRowShowsWithoutHermesNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(prof) })
-	args := []string{filepath.Join("testdata", "notebubble", "run.js"), chrome, e.url, prof}
-	if p := os.Getenv("NOTEBUBBLE_SHOT"); p != "" {
-		args = append(args, p)
-	}
-	out, err := exec.CommandContext(t.Context(), node, args...).CombinedOutput()
+	cmd := exec.CommandContext(t.Context(), node, filepath.Join("testdata", "notebubble", "run.js"), chrome, e.url, prof)
+	cmd.Env = append(os.Environ(), "SHOT_PREFIX="+os.Getenv("NOTEBUBBLE_SHOT"))
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}

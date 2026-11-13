@@ -25,12 +25,12 @@ func TestOpenStateSurvivesASnapshot(t *testing.T) {
 	chrome := chromePath(t)
 	e := setup(t)
 	call := func(id, cmd string) map[string]any {
-		return map[string]any{"id": id, "function": map[string]any{fieldName: "terminal", "arguments": `{"command":"` + cmd + `"}`}}
+		return map[string]any{"id": id, fnKey: map[string]any{fieldName: toolTerminal, "arguments": `{"command":"` + cmd + `"}`}}
 	}
 	result := func(id, out string) map[string]any {
-		return map[string]any{kRole: "tool", kCallID: id, fieldName: "terminal", kText: `{"output": "` + out + `", "exit_code": 0}`}
+		return map[string]any{kRole: "tool", kCallID: id, fieldName: toolTerminal, kText: `{"output": "` + out + `", "exit_code": 0}`}
 	}
-	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Work", Live: true, StartedAt: 900,
+	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Open state", Live: true, StartedAt: 900,
 		Messages: []map[string]any{
 			{kRole: roleUser, kText: "look around"},
 			{kRole: roleAssistant, kText: "", "reasoning": "I will list the folder first and then read the file that matters here.",
@@ -54,12 +54,12 @@ func TestOpenStateSurvivesASnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(prof) })
-	args := []string{filepath.Join("testdata", "snapstate", "run.js"), chrome, e.url, prof, poke.URL}
-	if p := os.Getenv("SNAPSTATE_SHOT"); p != "" {
-		args = append(args, p)
-	}
-	out, err := exec.CommandContext(t.Context(), node, args...).CombinedOutput()
+	cmd := exec.CommandContext(t.Context(), node, filepath.Join("testdata", "snapstate", "run.js"), chrome, e.url, prof, poke.URL)
+	cmd.Env = append(os.Environ(), "SHOT_PREFIX="+os.Getenv("SNAPSTATE_SHOT"))
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 }
+
+const fnKey = "function"

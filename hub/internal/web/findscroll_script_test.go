@@ -29,17 +29,15 @@ func TestScrollNotFromTheReaderStays(t *testing.T) {
 		ms = append(ms, map[string]any{kRole: roleUser, kText: fmt.Sprintf("question %d", i)},
 			map[string]any{kRole: roleAssistant, kText: strings.Repeat(fmt.Sprintf("Answer %d fills the log. ", i), 8)})
 	}
-	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Long", Live: true, StartedAt: 900, Messages: ms})
+	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Find scroll", Live: true, StartedAt: 900, Messages: ms})
 	prof, err := os.MkdirTemp("", "findscroll-profile-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(prof) })
-	args := []string{filepath.Join("testdata", "findscroll", "run.js"), chrome, e.url, prof}
-	if p := os.Getenv("FINDSCROLL_SHOT"); p != "" {
-		args = append(args, p)
-	}
-	out, err := exec.CommandContext(t.Context(), node, args...).CombinedOutput()
+	cmd := exec.CommandContext(t.Context(), node, filepath.Join("testdata", "findscroll", "run.js"), chrome, e.url, prof)
+	cmd.Env = append(os.Environ(), "SHOT_PREFIX="+os.Getenv("FINDSCROLL_SHOT"))
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}

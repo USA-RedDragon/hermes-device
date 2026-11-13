@@ -1,13 +1,14 @@
 "use strict";
 // Drives the real hub page in headless Chrome over the DevTools protocol.
-// usage: node run.js CHROME HUB_URL PROFILE_DIR GATEWAY_BREAK_URL [SHOT_PREFIX]
+// usage: node run.js CHROME HUB_URL PROFILE_DIR GATEWAY_BREAK_URL (env SHOT_PREFIX writes screenshots)
 // Asserts that what the reader opened in a chat (a tool group, a tool card
 // in it, a thinking block) is still open after a reconnect that draws the
 // whole chat again from a snapshot, and what the reader left closed stays
 // closed.
 const assert = require("assert");
 const http = require("http");
-const [bin, url, dir, breakURL, shot] = process.argv.slice(2);
+const [bin, url, dir, breakURL] = process.argv.slice(2);
+const shot = process.env.SHOT_PREFIX;
 
 const { proc, connect } = require("../cdp.js").launch(bin, dir);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

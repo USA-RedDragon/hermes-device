@@ -1,6 +1,6 @@
 "use strict";
 // Drives the real hub page in headless Chrome over the DevTools protocol.
-// usage: node run.js CHROME HUB_URL PROFILE_DIR [SHOT_PREFIX]
+// usage: node run.js CHROME HUB_URL PROFILE_DIR (env SHOT_PREFIX writes screenshots)
 // Asserts that a scroll the reader did not make with a wheel, touch, pointer
 // or key (find in page, focus on a link, a jump to an anchor: here
 // scrollIntoView) stays where it went while the log grows at its end, and
@@ -8,7 +8,8 @@
 // writes PREFIX-412-light.png and the three others.
 const assert = require("assert");
 const fs = require("fs");
-const [bin, url, dir, shot] = process.argv.slice(2);
+const [bin, url, dir] = process.argv.slice(2);
+const shot = process.env.SHOT_PREFIX;
 
 const { proc, connect } = require("../cdp.js").launch(bin, dir);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

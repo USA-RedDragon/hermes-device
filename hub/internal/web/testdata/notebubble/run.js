@@ -1,13 +1,14 @@
 "use strict";
 // Drives the real hub page in headless Chrome over the DevTools protocol.
-// usage: node run.js CHROME HUB_URL PROFILE_DIR [SHOT_PREFIX]
+// usage: node run.js CHROME HUB_URL PROFILE_DIR (env SHOT_PREFIX writes screenshots)
 // Asserts that a message the user typed shows without the notes Hermes
 // added around it for the model, as a bubble and in the notice card of the
 // model-switch note, at 412 px and on a desktop, in light and dark. With a
 // prefix it writes PREFIX-412-light.png and the three others.
 const assert = require("assert");
 const fs = require("fs");
-const [bin, url, dir, shot] = process.argv.slice(2);
+const [bin, url, dir] = process.argv.slice(2);
+const shot = process.env.SHOT_PREFIX;
 
 const { proc, connect } = require("../cdp.js").launch(bin, dir);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
