@@ -25,7 +25,7 @@ hub:
 device:
   # Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Defaults to the home directory
   # roots: []
-  # Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory
+  # Directory the agent uses on this device for its shell snapshot files. Defaults to the system temp directory
   # tmp-dir: ""
   # Shell used to run commands. On Windows: git-bash (Git for Windows' bash), powershell (pwsh when installed, else Windows PowerShell; needs Git Bash too, for the file tools) or wsl (bash in a WSL distribution); bash there picks Git Bash, else WSL
   shell: "bash"
