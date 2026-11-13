@@ -1,0 +1,6 @@
+# The socket lanes this patch changes: the serial lane, the concurrent reads, the frames held for a
+# starting profile, the send deadline and the ws transport.
+tests/tui_gateway/test_ws_concurrent_reads.py
+tests/tui_gateway/test_tui_gateway_ws.py
+tests/tui_gateway/test_ws_send_timeout.py
+tests/gateway/test_sibling_attach_while_profile_starting.py

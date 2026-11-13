@@ -1,0 +1,473 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 07:12:37 +0000
+Subject: [PATCH] fix(tui-gateway): a chat's slow request no longer holds the
+ rest of its socket
+
+A WebSocket answered its frames one at a time in arrival order. A prompt.submit waiting for its
+chat's mutation lock (a turn-start claim, a model switch, a held SQLite writer) left every later
+frame on the socket unanswered, so on a socket that carries many chats session.list and every
+other chat's request timed out behind it.
+
+A frame naming a chat (params.session_id) now dispatches on that chat's own lane, in arrival order
+with the chat's other frames. Frames without a chat keep the serial lane, and a chat frame starts
+only after the serial frames read before it finished, so connection state a client sets first is in
+place for it. Waiting chat frames are bounded; past the bound the reader parks as before. Frames
+read before a hang-up still finish before the teardown, a server shutdown cancels them, and after a
+reply cannot be sent a lane's unstarted frames are dropped.
+---
+ tests/gateway/test_ws_chat_lanes_authority.py | 103 +++++++++
+ tests/tui_gateway/test_ws_chat_lanes.py       | 205 ++++++++++++++++++
+ tui_gateway/ws.py                             |  75 ++++++-
+ 3 files changed, 382 insertions(+), 1 deletion(-)
+ create mode 100644 tests/gateway/test_ws_chat_lanes_authority.py
+ create mode 100644 tests/tui_gateway/test_ws_chat_lanes.py
+
+diff --git a/tests/gateway/test_ws_chat_lanes_authority.py b/tests/gateway/test_ws_chat_lanes_authority.py
+new file mode 100644
+index 00000000..35bcedbe
+--- /dev/null
++++ b/tests/gateway/test_ws_chat_lanes_authority.py
+@@ -0,0 +1,103 @@
++"""A prompt.submit that waits for its chat's mutation lock holds only that chat's frames.
++
++A hub socket carries every chat of a user. On the serial lane a submit parked on one chat's
++``mutation_lock`` (a turn-start claim, a model switch) left every later frame on the socket
++unanswered: ``session.list`` and another chat's submit timed out behind it.
++
++The real ``handle_ws`` lanes and a real session authority; only the chat's lock is held by the test.
++"""
++import asyncio
++import json
++
++import pytest
++
++from tests.gateway.test_surface_admission import _authority
++
++
++class _Socket:
++    def __init__(self, authority):
++        self.scope = {'hermes.session_authority': authority}
++        self.inbound = asyncio.Queue()
++        self.replies = {}
++        self.arrived = asyncio.Event()
++
++    async def accept(self, **_kw):
++        pass
++
++    async def send_text(self, line):
++        for part in line.splitlines():
++            frame = json.loads(part)
++            if 'id' in frame and 'method' not in frame:
++                self.replies[frame['id']] = frame
++                self.arrived.set()
++
++    async def receive_text(self):
++        frame = await self.inbound.get()
++        if frame is None:
++            from tui_gateway.ws import _WebSocketDisconnect
++            raise _WebSocketDisconnect()
++        return json.dumps(frame)
++
++    async def close(self, **_kw):
++        pass
++
++    def send(self, request_id, method, **params):
++        self.inbound.put_nowait({'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params})
++
++    async def reply(self, request_id, timeout=10):
++        async def arrived():
++            while request_id not in self.replies:
++                self.arrived.clear()
++                await self.arrived.wait()
++            return self.replies[request_id]
++        return await asyncio.wait_for(arrived(), timeout)
++
++
++@pytest.mark.asyncio
++async def test_a_submit_waiting_for_its_chats_lock_does_not_hold_the_rest_of_the_socket(tmp_path, monkeypatch):
++    from gateway.config import Platform
++    from gateway.session import SessionSource
++    from gateway.session_authority import LiveSession
++    from tui_gateway import server
++    from tui_gateway import ws as ws_mod
++
++    monkeypatch.setattr(ws_mod, '_start_backend_liveness', lambda: None)
++    monkeypatch.setattr(server, '_ensure_skin_watcher', lambda: None)
++    monkeypatch.setattr(server, '_ensure_lease_watcher', lambda: None)
++    monkeypatch.setattr(server, '_WS_ORPHAN_REAP_GRACE_S', 0)
++    answered = []
++
++    async def answer(event):
++        answered.append(event.text)
++        return 'ok'
++    authority = await _authority(tmp_path, monkeypatch, answer)
++    authority.db.create_session('t', source='telegram')
++    authority.sessions['t'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='d'), 't')
++
++    sock = _Socket(authority)
++    task = asyncio.create_task(ws_mod.handle_ws(sock, auth_identity={'user_id': 'owner'}))
++    lock = authority.sessions['s'].mutation_lock
++    try:
++        for sid in ('s', 't'):
++            sock.send(f'resume-{sid}', 'session.resume', session_id=sid)
++            assert 'result' in await sock.reply(f'resume-{sid}'), sock.replies[f'resume-{sid}']
++        await lock.acquire()  # a turn-start claim or a model switch on chat s
++        try:
++            sock.send('stuck', 'prompt.submit', session_id='s', submission_id='stuck', text='to s')
++            sock.send('list', 'session.list')
++            sock.send('other', 'prompt.submit', session_id='t', submission_id='other', text='to t')
++            listed = await sock.reply('list', timeout=5)
++            assert 'result' in listed, listed
++            other = await sock.reply('other', timeout=5)
++            assert other.get('result', {}).get('status') == 'queued', other
++            assert 'stuck' not in sock.replies
++        finally:
++            lock.release()
++        stuck = await sock.reply('stuck')
++        assert stuck.get('result', {}).get('status') == 'queued', stuck
++        for sid in ('s', 't'):
++            await authority.sessions[sid].task
++    finally:
++        sock.inbound.put_nowait(None)
++        await asyncio.wait_for(task, 30)
++    assert sorted(answered) == ['to s', 'to t']
+diff --git a/tests/tui_gateway/test_ws_chat_lanes.py b/tests/tui_gateway/test_ws_chat_lanes.py
+new file mode 100644
+index 00000000..465bf716
+--- /dev/null
++++ b/tests/tui_gateway/test_ws_chat_lanes.py
+@@ -0,0 +1,205 @@
++"""Per-chat dispatch lanes on one WebSocket.
++
++A frame naming a chat (``params.session_id``) runs on that chat's lane: in arrival order with the
++chat's other frames, never behind another chat's handler. Frames without a chat keep the serial lane,
++and a chat frame starts only after every frame read before it on that lane has finished.
++
++The real ``handle_ws`` dispatcher; only ``_dispatch_request`` is a gated async stand-in.
++"""
++import asyncio
++import json
++
++import pytest
++
++from tui_gateway import server
++from tui_gateway import ws as ws_mod
++
++
++class Socket:
++    def __init__(self):
++        self.inbound = asyncio.Queue()
++        self.received = 0
++        self.sent = []
++        self.fail_ids = set()
++
++    async def accept(self):
++        pass
++
++    async def send_text(self, line):
++        frame = json.loads(line)
++        if frame.get("id") in self.fail_ids:
++            raise RuntimeError("peer gone")
++        self.sent.append(frame)
++
++    async def receive_text(self):
++        item = await self.inbound.get()
++        if item is None:
++            raise ws_mod._WebSocketDisconnect()
++        self.received += 1
++        return json.dumps(item)
++
++    async def close(self):
++        pass
++
++
++@pytest.fixture
++def rig(monkeypatch):
++    gates, log = {}, []
++
++    async def dispatch(authority, req, method, transport):
++        log.append(f"start:{req['id']}")
++        try:
++            gate = gates.get(req["id"])
++            if gate is not None:
++                await gate.wait()
++        except asyncio.CancelledError:
++            log.append(f"cancelled:{req['id']}")
++            raise
++        log.append(f"done:{req['id']}")
++        return {"jsonrpc": "2.0", "id": req["id"], "result": {}}
++
++    monkeypatch.setattr(ws_mod, "_dispatch_request", dispatch)
++    monkeypatch.setattr(ws_mod, "_start_backend_liveness", lambda: None)
++    monkeypatch.setattr(server, "_ensure_skin_watcher", lambda: None)
++    monkeypatch.setattr(server, "_ensure_lease_watcher", lambda: None)
++    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
++    monkeypatch.setattr(server, "_close_sessions_for_transport", lambda transport, end_reason: (log.append("teardown"), (0, 0))[1])
++    return Socket(), gates, log
++
++
++def rpc(req_id, method, session_id=None):
++    return {"jsonrpc": "2.0", "id": req_id, "method": method,
++            "params": {} if session_id is None else {"session_id": session_id}}
++
++
++async def settle(predicate, timeout=5.0):
++    deadline = asyncio.get_running_loop().time() + timeout
++    while not predicate():
++        if asyncio.get_running_loop().time() > deadline:
++            return False
++        await asyncio.sleep(0.01)
++    return True
++
++
++@pytest.mark.asyncio
++async def test_a_chat_waiting_on_its_lock_does_not_hold_other_frames(rig):
++    sock, gates, log = rig
++    gates["stuck"] = release = asyncio.Event()
++    task = asyncio.create_task(ws_mod.handle_ws(sock))
++    sock.inbound.put_nowait(rpc("stuck", "prompt.submit", "a"))
++    sock.inbound.put_nowait(rpc("list", "session.list"))
++    sock.inbound.put_nowait(rpc("other", "prompt.submit", "b"))
++    sock.inbound.put_nowait(rpc("attach", "image.attach_bytes", "b"))
++    try:
++        assert await settle(lambda: {"done:list", "done:other", "done:attach"} <= set(log)), log
++        assert "done:stuck" not in log
++    finally:
++        release.set()
++    assert await settle(lambda: "done:stuck" in log)
++    sock.inbound.put_nowait(None)
++    await asyncio.wait_for(task, 10)
++    assert {frame["id"] for frame in sock.sent if "id" in frame} == {"stuck", "list", "other", "attach"}
++
++
++@pytest.mark.asyncio
++async def test_one_chats_frames_keep_arrival_order(rig):
++    sock, gates, log = rig
++    gates["submit"] = release = asyncio.Event()
++    task = asyncio.create_task(ws_mod.handle_ws(sock))
++    sock.inbound.put_nowait(rpc("submit", "prompt.submit", "a"))
++    sock.inbound.put_nowait(rpc("interrupt", "session.interrupt", "a"))
++    sock.inbound.put_nowait(rpc("info", "session.info", "a"))
++    assert await settle(lambda: "start:submit" in log)
++    assert not await settle(lambda: "start:interrupt" in log, timeout=0.5), "a chat's later frame overtook its running one"
++    release.set()
++    assert await settle(lambda: "done:info" in log)
++    sock.inbound.put_nowait(None)
++    await asyncio.wait_for(task, 10)
++    assert [e for e in log if e.startswith("start:")] == ["start:submit", "start:interrupt", "start:info"]
++
++
++@pytest.mark.asyncio
++async def test_a_chat_frame_waits_for_the_connection_frames_read_before_it(rig):
++    """Connection-wide state a client sets first (``client.capabilities``) is in place for its chat frames."""
++    sock, gates, log = rig
++    gates["caps"] = release = asyncio.Event()
++    task = asyncio.create_task(ws_mod.handle_ws(sock))
++    sock.inbound.put_nowait(rpc("caps", "client.capabilities"))
++    sock.inbound.put_nowait(rpc("submit", "prompt.submit", "a"))
++    assert await settle(lambda: "start:caps" in log)
++    assert not await settle(lambda: "start:submit" in log, timeout=0.5), "a chat frame overtook an earlier connection frame"
++    release.set()
++    assert await settle(lambda: "done:submit" in log)
++    sock.inbound.put_nowait(None)
++    await asyncio.wait_for(task, 10)
++
++
++@pytest.mark.asyncio
++async def test_waiting_chat_frames_keep_reader_backpressure(rig):
++    sock, gates, log = rig
++    gates[0] = release = asyncio.Event()
++    task = asyncio.create_task(ws_mod.handle_ws(sock))
++    burst = ws_mod._WS_DISPATCH_QUEUE_MAX * 4
++    for n in range(burst):
++        sock.inbound.put_nowait(rpc(n, "prompt.submit", "a"))
++    try:
++        assert not await settle(lambda: sock.inbound.empty(), timeout=2.0)
++        bound = ws_mod._WS_DISPATCH_QUEUE_MAX + ws_mod._WS_CHAT_LANE_WAITING_MAX + 2
++        assert sock.received <= bound, (sock.received, bound)
++        assert [e for e in log if e.startswith("start:")] == ["start:0"]
++    finally:
++        release.set()
++    assert await settle(lambda: sock.inbound.empty())
++    sock.inbound.put_nowait(None)
++    await asyncio.wait_for(task, 30)
++    assert len(sock.sent) == burst + 1  # gateway.ready + one reply per frame
++    assert [e for e in log if e.startswith("start:")] == [f"start:{n}" for n in range(burst)]
++
++
++@pytest.mark.asyncio
++async def test_hang_up_finishes_frames_read_before_it(rig):
++    """As on the serial lane: a viewer leaving never drops a chat's frames already read, and the
++    transport teardown runs after them."""
++    sock, gates, log = rig
++    gates["submit"] = release = asyncio.Event()
++    task = asyncio.create_task(ws_mod.handle_ws(sock))
++    sock.inbound.put_nowait(rpc("submit", "prompt.submit", "a"))
++    sock.inbound.put_nowait(rpc("interrupt", "session.interrupt", "a"))
++    assert await settle(lambda: sock.received == 2 and "start:submit" in log)
++    sock.inbound.put_nowait(None)
++    assert not await settle(lambda: "teardown" in log, timeout=1.0), "teardown ran under a chat's running frame"
++    release.set()
++    await asyncio.wait_for(task, 10)
++    assert log[-3:] == ["start:interrupt", "done:interrupt", "teardown"]
++
++
++@pytest.mark.asyncio
++async def test_server_shutdown_does_not_wait_for_a_chat_frame(rig):
++    sock, gates, log = rig
++    gates["submit"] = release = asyncio.Event()
++    task = asyncio.create_task(ws_mod.handle_ws(sock))
++    sock.inbound.put_nowait(rpc("submit", "prompt.submit", "a"))
++    try:
++        assert await settle(lambda: "start:submit" in log)
++        task.cancel()
++        done, _ = await asyncio.wait({task}, timeout=5)
++        assert task in done, "socket shutdown still waits for the chat's frame"
++        assert "cancelled:submit" in log
++    finally:
++        release.set()
++        await asyncio.gather(task, return_exceptions=True)
++
++
++@pytest.mark.asyncio
++async def test_a_failed_chat_reply_ends_the_link_and_drops_the_chats_unstarted_frames(rig):
++    sock, gates, log = rig
++    gates["first"] = release = asyncio.Event()
++    sock.fail_ids.add("first")
++    task = asyncio.create_task(ws_mod.handle_ws(sock))
++    sock.inbound.put_nowait(rpc("first", "prompt.submit", "a"))
++    sock.inbound.put_nowait(rpc("second", "session.interrupt", "a"))
++    assert await settle(lambda: sock.received == 2 and "start:first" in log)
++    release.set()
++    await asyncio.wait_for(task, 10)
++    assert "start:second" not in log
++    assert log[-1] == "teardown"
+diff --git a/tui_gateway/ws.py b/tui_gateway/ws.py
+index 2c603446..0961ffad 100644
+--- a/tui_gateway/ws.py
++++ b/tui_gateway/ws.py
+@@ -111,6 +111,16 @@ _WS_WAITING_READ_LIMIT = 8
+ # Bounded under the Desktop's 30 s request deadline; a start still running then is refused
+ # retryably (``runtime_draining``).
+ _WS_PROFILE_START_WAIT_S = 20.0
++# A frame naming a chat (``params.session_id``) dispatches on that chat's own lane, in arrival order
++# with the chat's other frames. On the serial lane a handler waiting on one chat (its mutation lock
++# behind a turn-start claim or a model switch, a held SQLite writer) left every later frame on the
++# socket unanswered: one user's hub socket carries all of that user's chats, so ``session.list`` and
++# every other chat's submit timed out behind it. Frames without a chat stay on the serial lane, and a
++# chat frame is routed only once every frame read before it there has finished, so connection-wide
++# state a client sets first (``client.capabilities``) is in place for it. Replies carry their request
++# ids, so replies of different chats may cross. At most this many chat frames wait; one more parks the
++# dispatcher, then the reader, as a busy handler does.
++_WS_CHAT_LANE_WAITING_MAX = 256
+ # A viewer's answer to an open server→client request (its response frame, a batch clarify's
+ # ``clarify.lock``) settles in memory and never queues: the serial lane may be running the very handler
+ # that waits for it (a plugin slash command's ``ctx.ask_choice`` under ``slash.exec``).
+@@ -121,6 +131,14 @@ def _answers_open_request(req: Any) -> bool:
+     from tui_gateway.server_requests import is_response_frame
+     return isinstance(req, dict) and (req.get("method") in _WS_ANSWER_METHODS or is_response_frame(req))
+ 
++
++def _chat_lane_key(req: Any) -> str | None:
++    """The chat a frame names (``params.session_id``), whose lane it dispatches on; None for a frame
++    of the connection. Keyed on the id alone: a chat's frames with and without ``profile`` share one lane."""
++    params = req.get("params") if isinstance(req, dict) else None
++    session_id = params.get("session_id") if isinstance(params, dict) else None
++    return session_id if isinstance(session_id, str) and session_id else None
++
+ # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
+ # of waking the loop once per token (each wakeup competes with the agent turn for the GIL). Keep this
+ # set to genuinely high-frequency, display-only events — anything a client must see promptly
+@@ -473,6 +491,11 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol:
+     # leaves, so a start that ends a moment later (before the lane resumes) cannot run them.
+     held_waiting: dict[str, asyncio.Event] = {}
+     held_dropped: set[str] = set()
++    # Frames per chat, in arrival order (the head is running); one lane task drains each, and the
++    # entry goes when its lane ends. Waiting frames count against ``chat_room``.
++    chat_lanes: dict[str, collections.deque] = {}
++    chat_lane_tasks: set[asyncio.Task] = set()
++    chat_room = asyncio.Semaphore(_WS_CHAT_LANE_WAITING_MAX)
+ 
+     def _client_left() -> None:
+         """At the disconnect, with no yield: drop every lane whose start has not ended yet. A lane that
+@@ -584,6 +607,51 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol:
+                 lane.cancel()
+         await asyncio.gather(*held_lanes, return_exceptions=True)
+ 
++    async def _dispatch_chat_lane(key: str) -> None:
++        """Dispatch one chat's frames in arrival order until none waits. After a reply could not be
++        sent the frames that have not started are dropped, as the serial lane drops its queue."""
++        frames = chat_lanes[key]
++        try:
++            while frames and not send_failed.done():
++                try:
++                    await _dispatch_one(frames[0])
++                finally:
++                    frames.popleft()
++                    chat_room.release()
++        except _SendFailed:
++            if not send_failed.done():
++                send_failed.set_result(None)
++        finally:
++            for _ in frames:
++                chat_room.release()
++            frames.clear()
++            del chat_lanes[key]  # no yield since the last check: a frame routed later starts a new lane
++
++    def _finish_chat_lane(task: asyncio.Task) -> None:
++        chat_lane_tasks.discard(task)
++        if not task.cancelled():
++            task.exception()  # _dispatch_one answers its own crashes; nothing else is expected here
++
++    async def _queue_on_chat_lane(key: str, req: Any) -> None:
++        await _unless_dispatch_failed(chat_room.acquire())
++        frames = chat_lanes.get(key)
++        if frames is not None:
++            frames.append(req)
++            return
++        chat_lanes[key] = collections.deque([req])
++        lane = asyncio.create_task(_dispatch_chat_lane(key))
++        chat_lane_tasks.add(lane)
++        lane.add_done_callback(_finish_chat_lane)
++
++    async def _end_chat_lanes() -> None:
++        """Chat frames read before the disconnect finish, as the serial lane's queue does, unless the
++        connection itself was cancelled (server shutdown)."""
++        task = asyncio.current_task()
++        if task is not None and task.cancelling():
++            for lane in chat_lane_tasks:
++                lane.cancel()
++        await asyncio.gather(*chat_lane_tasks, return_exceptions=True)
++
+     async def _next_request() -> Any:
+         """The next queued frame, or ``stop`` once the read lane failed to send a reply."""
+         step = asyncio.ensure_future(pending.get())
+@@ -594,7 +662,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol:
+         return stop
+ 
+     async def _dispatch_loop() -> None:
+-        """Dispatch controls in arrival order; bounded expensive read-only projections run alongside them."""
++        """Dispatch controls in arrival order: a chat's on its own lane, the connection's here; bounded
++        expensive read-only projections run alongside them."""
+         while (req := await _next_request()) is not stop:
+             req_method = req.get("method") if isinstance(req, dict) else None
+             if req_method in _WS_CONCURRENT_READ_METHODS:
+@@ -604,6 +673,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol:
+                 continue
+             if await _hold_for_profile_start(req):
+                 continue
++            if (key := _chat_lane_key(req)) is not None:
++                await _queue_on_chat_lane(key, req)
++                continue
+             await _dispatch_one(req)
+ 
+     async def _queue_request(req: Any) -> None:
+@@ -731,6 +803,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol:
+                 _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
+         await _end_reads()
+         await _end_held()
++        await _end_chat_lanes()
+         if authority_connection is not None:
+             # After the dispatcher drained: an in-flight authority call must not see its connection closed.
+             await authority_connection.close()
