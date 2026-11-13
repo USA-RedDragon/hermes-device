@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,6 +52,12 @@ type hubEnv struct {
 	svc   *service.Service
 	// db is the path of the store's database file.
 	db string
+	// cfg, opts and so are what the hub was made with (see replica).
+	cfg  *config.Config
+	opts web.Options
+	so   service.Options
+	// front is the door to the hub at url.
+	front *frontDoor
 }
 
 func setup(t *testing.T) *hubEnv {
@@ -60,6 +67,12 @@ func setup(t *testing.T) *hubEnv {
 
 // setupWith is setup with fn changing the config and options first.
 func setupWith(t *testing.T, fn func(cfg *config.Config, opts *web.Options, st *store.Store)) *hubEnv {
+	t.Helper()
+	return setupService(t, fn, nil)
+}
+
+// setupService is setupWith with sfn changing the service's options too.
+func setupService(t *testing.T, fn func(cfg *config.Config, opts *web.Options, st *store.Store), sfn func(o *service.Options)) *hubEnv {
 	t.Helper()
 	is := newIssuer(t)
 	gw := gatewaytest.New(clientID, "pw")
@@ -91,18 +104,48 @@ func setupWith(t *testing.T, fn func(cfg *config.Config, opts *web.Options, st *
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	svc := service.New(cfg.Backends, st, service.Options{HoldRetryMin: 20 * time.Millisecond, HoldRetryMax: 100 * time.Millisecond, Grants: st,
-		SubagentLog: st})
+	so := service.Options{HoldRetryMin: 20 * time.Millisecond, HoldRetryMax: 100 * time.Millisecond, Grants: st,
+		SubagentLog: st, Views: st}
+	if sfn != nil {
+		sfn(&so)
+	}
+	svc := service.New(cfg.Backends, st, so)
 	t.Cleanup(svc.Close)
 	opts.Service = svc
 	s, err := web.New(cfg, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.Config.Handler = s.Handler()
+	front := &frontDoor{}
+	front.to(s.Handler())
+	srv.Config.Handler = front
 	srv.Start()
 	t.Cleanup(srv.Close)
-	return &hubEnv{url: pub, is: is, gw: gw, store: st, ui: s, svc: svc, db: db}
+	return &hubEnv{url: pub, is: is, gw: gw, store: st, ui: s, svc: svc, db: db, cfg: cfg, opts: opts, so: so, front: front}
+}
+
+// frontDoor sends every request to one hub, as a load balancer in front
+// of replicas; to switches it to another.
+type frontDoor struct{ h atomic.Pointer[http.Handler] }
+
+func (f *frontDoor) to(h http.Handler) { f.h.Store(&h) }
+
+func (f *frontDoor) ServeHTTP(w http.ResponseWriter, r *http.Request) { (*f.h.Load()).ServeHTTP(w, r) }
+
+// replica starts a second hub on e's store and config, as the other
+// replica of a hub with two, which has seen nothing of the backends, and
+// returns its handler for e.front.
+func (e *hubEnv) replica(t *testing.T) http.Handler {
+	t.Helper()
+	svc := service.New(e.cfg.Backends, e.store, e.so)
+	t.Cleanup(svc.Close)
+	opts := e.opts
+	opts.Service = svc
+	s, err := web.New(e.cfg, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s.Handler()
 }
 
 func client(t *testing.T) *http.Client {

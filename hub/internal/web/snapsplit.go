@@ -13,16 +13,10 @@ import (
 const kindSnapshotOlder = "snapshot.older"
 
 // A chat opened fresh gets its snapshot in two events: the newest rows
-// first, at least headRows rows or headBytes bytes in whole turns, so a
+// first, at least hub.HeadRows rows or hub.HeadBytes bytes in whole turns, so a
 // phone draws the end of a big chat before the rest has downloaded, and
 // then the older rows. The first event's id is <instance>.0, which no
 // stream covers: a reconnect between the two gets a whole snapshot again.
-const (
-	rowUser      = "user"
-	rowAssistant = "assistant"
-	headRows     = 40
-	headBytes    = 96 << 10
-)
 
 // eventWriter writes one stream's events. split is for a fresh open,
 // whose first snapshot goes in two parts.
@@ -75,7 +69,7 @@ func splitSnapshot(data json.RawMessage) (head, older json.RawMessage, ok bool) 
 	if json.Unmarshal(snap["messages"], &msgs) != nil {
 		return nil, nil, false
 	}
-	cut := headCut(msgs)
+	cut := hub.HeadCut(msgs)
 	if cut <= 0 {
 		return nil, nil, false
 	}
@@ -94,43 +88,4 @@ func splitSnapshot(data json.RawMessage) (head, older json.RawMessage, ok bool) 
 		return nil, nil, false
 	}
 	return head, older, true
-}
-
-// headCut is where the head starts: back from the end until headRows rows
-// or headBytes bytes, then back to the user message that starts the turn.
-func headCut(msgs []json.RawMessage) int {
-	i, size := len(msgs), 0
-	for i > 0 && len(msgs)-i < headRows && size < headBytes {
-		i--
-		size += len(msgs[i])
-	}
-	// A long turn (hundreds of tool calls) is cut at an assistant row, whose
-	// tool calls name the tool rows after it, rather than sent whole.
-	at, firstAssistant := i, -1
-	for i > 0 && size < 4*headBytes {
-		r := rowRole(msgs[i])
-		if r == rowUser {
-			return i
-		}
-		if r == rowAssistant && firstAssistant < 0 {
-			firstAssistant = i
-		}
-		i--
-		size += len(msgs[i])
-	}
-	if i == 0 {
-		return 0
-	}
-	if firstAssistant >= 0 {
-		return firstAssistant
-	}
-	return at
-}
-
-func rowRole(m json.RawMessage) string {
-	var r struct {
-		Role string `json:"role"`
-	}
-	_ = json.Unmarshal(m, &r)
-	return r.Role
 }

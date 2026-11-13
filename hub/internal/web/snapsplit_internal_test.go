@@ -5,12 +5,26 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 const (
-	kRole = "role"
-	kText = "text"
+	kRole        = "role"
+	kText        = "text"
+	rowUser      = "user"
+	rowAssistant = "assistant"
+	headRows     = hub.HeadRows
+	headBytes    = hub.HeadBytes
 )
+
+func rowRole(m json.RawMessage) string {
+	var r struct {
+		Role string `json:"role"`
+	}
+	_ = json.Unmarshal(m, &r)
+	return r.Role
+}
 
 func rows(turns, tools int) []map[string]any {
 	ms := make([]map[string]any, 0, turns*(2*tools+2))

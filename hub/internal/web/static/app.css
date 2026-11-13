@@ -139,7 +139,10 @@ button.primary.ib:hover { filter: brightness(1.08); }
 .log { flex: 1 1 0px; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: clip; overflow-anchor: none; padding: .75rem var(--gutter) 1rem;
   display: flex; flex-direction: column; gap: .6rem; }
 /* A chat whose snapshot has not come yet: grey bars, not an empty chat. */
-.log .loading { display: flex; flex-direction: column; gap: .9rem; margin-top: auto; padding-bottom: .5rem; }
+/* The bars show only when the chat is slow to come: the hub's copy of it
+   usually comes first. */
+.log .loading { display: flex; flex-direction: column; gap: .9rem; margin-top: auto; padding-bottom: .5rem; animation: loadshow 0s linear 1s both; }
+@keyframes loadshow { from { visibility: hidden; } to { visibility: visible; } }
 .log .loading .bar { height: 3.2rem; width: 78%; border-radius: 10px; background: var(--line); opacity: .55; animation: loadpulse 1.2s ease-in-out infinite alternate; }
 .log .loading .bar.mine { align-self: flex-end; width: 46%; height: 2.2rem; }
 @keyframes loadpulse { from { opacity: .3; } to { opacity: .65; } }

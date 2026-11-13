@@ -157,6 +157,10 @@
       const meta = {};
       const [backends, got] = await Promise.all([api("GET", "/api/backends"), api("GET", "/api/sessions", undefined, meta)]);
       const down = unreachableIDs(meta.headers && meta.headers.get("X-Talaria-Unreachable"));
+      // Refreshing backends sent the hub's copy of their chats while the
+      // fresh list is on its way, as during an agent restart: shown as
+      // is, asked for again soon, and no banner unless that lasts.
+      const refreshing = unreachableIDs(meta.headers && meta.headers.get("X-Talaria-Refreshing"));
       const sessions = keepUnreachable(lastList, got, down);
       for (const b of backends) if (down.has(b.id) && !b.error) b.error = "The agent is not answering. Retrying";
       lastList = { backends, sessions };
@@ -166,7 +170,11 @@
       } else {
         listBackoff.reset();
         clearBanner("list");
+        if (refreshing.size) listRetry = setTimeout(refreshList, 2000);
       }
+      // A chat opened before the list came shows its title now.
+      const open = view && !view.loaded && sessions.find(isCurrent);
+      if (open && open.title) setTitle(open.title);
       if (unhid) {
         if (sessions.some((s) => s.id === unhid && s.archived)) banner("Talaria keeps this chat hidden, so it stays with the archived chats.");
         unhid = "";
@@ -3193,7 +3201,14 @@
     // comes, never the empty New chat state.
     const listed = lastList && lastList.sessions.find((x) => x.backend_id === backend && x.id === session);
     setTitle(listed ? listed.title : "");
-    if (!listed) { $("title").textContent = t("loading"); document.title = "Talaria"; }
+    if (!listed) {
+      // The list or the chat brings the title, at once when the hub has a
+      // copy; say it is loading only when neither came for a while.
+      $("title").textContent = "";
+      document.title = "Talaria";
+      const opened = current;
+      setTimeout(() => { if (current === opened && view && !view.loaded && !$("title").textContent) $("title").textContent = t("loading"); }, 2000);
+    }
     $("subtitle").textContent = "";
     banner("");
     settings.reset();

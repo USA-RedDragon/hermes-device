@@ -91,6 +91,15 @@ type Service struct {
 	usage    map[string]usageEntry
 	chatgpt  map[string]chatGPTEntry
 	handled  map[string]time.Time
+	// present is Present's last answer for each backend, by backend and
+	// user, and probing the probes in flight.
+	present map[string]presentEntry
+	probing map[string]bool
+}
+
+type presentEntry struct {
+	at time.Time
+	ok bool
 }
 
 var _ hub.Claude = (*Service)(nil)
@@ -134,6 +143,10 @@ const presentTimeout = 3 * time.Second
 // without the Claude accounts plugin answers "none"; one that cannot be
 // reached counts as present, so the Claude pages do not vanish while
 // it restarts. The answers come from the same cache as ClaudeAccounts.
+//
+// Once a backend answered, Present gives that answer at once and asks again
+// in the background when it is older than cacheTTL, so a page that loads
+// while Hermes restarts does not wait for it.
 func (s *Service) Present(ctx context.Context, user string) bool {
 	var wg sync.WaitGroup
 	found := make(chan struct{}, len(s.clients))
@@ -141,18 +154,60 @@ func (s *Service) Present(ctx context.Context, user string) bool {
 		if s.o.Access.Allowed(ctx, user, id) != nil {
 			continue
 		}
+		key := id + "\n" + user
+		s.mu.Lock()
+		e, known := s.present[key]
+		stale := known && s.o.Now().Sub(e.at) >= cacheTTL && !s.probing[key]
+		if stale {
+			if s.probing == nil {
+				s.probing = map[string]bool{}
+			}
+			s.probing[key] = true
+		}
+		s.mu.Unlock()
+		if known {
+			if e.ok {
+				found <- struct{}{}
+			}
+			if stale {
+				go func() {
+					s.probe(context.WithoutCancel(ctx), user, id, key)
+					s.mu.Lock()
+					delete(s.probing, key)
+					s.mu.Unlock()
+				}()
+			}
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			pctx, cancel := context.WithTimeout(ctx, presentTimeout)
-			defer cancel()
-			if _, err := s.ClaudeAccounts(pctx, user, id, false); !errors.Is(err, hub.ErrNoClaude) {
+			if s.probe(ctx, user, id, key) {
 				found <- struct{}{}
 			}
 		}()
 	}
 	wg.Wait()
 	return len(found) > 0
+}
+
+// probe asks one backend whether it has Claude accounts and keeps the
+// answer for Present. A backend that cannot be reached counts as having
+// them, and that answer is not kept.
+func (s *Service) probe(ctx context.Context, user, id, key string) bool {
+	pctx, cancel := context.WithTimeout(ctx, presentTimeout)
+	defer cancel()
+	_, err := s.ClaudeAccounts(pctx, user, id, false)
+	ok := !errors.Is(err, hub.ErrNoClaude)
+	if err == nil || !ok {
+		s.mu.Lock()
+		if s.present == nil {
+			s.present = map[string]presentEntry{}
+		}
+		s.present[key] = presentEntry{at: s.o.Now(), ok: ok}
+		s.mu.Unlock()
+	}
+	return ok
 }
 
 // IsAdmin reports whether user may sign a backend's Claude accounts in.

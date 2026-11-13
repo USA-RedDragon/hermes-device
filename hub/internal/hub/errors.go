@@ -39,9 +39,13 @@ var (
 // come with it hold the backends that answered, plus the last list of a
 // failed backend when the hub still has one; Stale names those backends.
 // A caller must never take the rows for a failed backend as its whole list.
+// Pending names the backends whose rows are the hub's copy because their
+// fresh list is still on its way (see WithCached); they are not in
+// Backends until they have been away long enough to tell the user.
 type UnreachableError struct {
 	Backends map[string]string
 	Stale    map[string]bool
+	Pending  map[string]bool
 }
 
 func (e *UnreachableError) Error() string {

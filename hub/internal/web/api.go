@@ -67,21 +67,21 @@ func (s *Server) handleBackends(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r)
-	ss, err := s.svc.Sessions(r.Context(), user)
+	ss, err := s.svc.Sessions(hub.WithCached(r.Context()), user)
 	ue := hub.Unreachable(err)
 	if err != nil && ue == nil {
 		s.fail(w, err)
 		return
 	}
-	if ue != nil {
+	if ue != nil && len(ue.Pending) > 0 {
+		// The hub's copy of these backends' chats, while their fresh lists
+		// are on the way: the page shows it and asks again soon.
+		w.Header().Set(RefreshingHeader, idList(ue.Pending))
+	}
+	if ue != nil && len(ue.Backends) > 0 {
 		// The page must never take a failed list for an empty one: it
 		// keeps the chats it has for these backends, says so and retries.
-		ids := make([]string, 0, len(ue.Backends))
-		for id := range ue.Backends {
-			ids = append(ids, url.QueryEscape(id))
-		}
-		slices.Sort(ids)
-		w.Header().Set(UnreachableHeader, strings.Join(ids, ","))
+		w.Header().Set(UnreachableHeader, idList(ue.Backends))
 		if len(ss) == 0 {
 			errorJSON(w, http.StatusServiceUnavailable, "Cannot reach the agent ("+unreachableWords(ue)+"). Retrying")
 			return
@@ -94,6 +94,20 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 // a session list could not reach. Their rows in the answer, if any, are
 // the hub's last list of them.
 const UnreachableHeader = "X-Talaria-Unreachable"
+
+// RefreshingHeader names, as UnreachableHeader does, the backends whose
+// rows are the hub's copy because their fresh list is still on its way.
+const RefreshingHeader = "X-Talaria-Refreshing"
+
+// idList is the keys of m, query-escaped, sorted and comma separated.
+func idList[V any](m map[string]V) string {
+	ids := make([]string, 0, len(m))
+	for id := range m {
+		ids = append(ids, url.QueryEscape(id))
+	}
+	slices.Sort(ids)
+	return strings.Join(ids, ",")
+}
 
 func unreachableWords(ue *hub.UnreachableError) string {
 	seen := map[string]bool{}
@@ -506,7 +520,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
-	ch, stop, err := s.svc.Attach(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), sinceSeq)
+	// While the backend is slow to answer, a page that opens the chat gets
+	// the hub's copy of it first.
+	ch, stop, err := s.svc.Attach(hub.WithCached(r.Context()), userFrom(r), r.PathValue("backend"), r.PathValue("session"), sinceSeq)
 	if err != nil {
 		s.fail(w, err)
 		return

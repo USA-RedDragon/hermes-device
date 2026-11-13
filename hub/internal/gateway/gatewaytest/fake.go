@@ -216,6 +216,9 @@ type Gateway struct {
 	compressed        []string
 	// stalls hold the next call of a method on its connection (StallNext).
 	stalls map[string]chan struct{}
+	// silent, while open, holds every call and every new connection
+	// (Silence).
+	silent chan struct{}
 }
 
 type submission struct {
@@ -403,6 +406,44 @@ func (g *Gateway) StallNext(method string) (release func()) {
 	g.mu.Unlock()
 	var once sync.Once
 	return func() { once.Do(func() { close(ch) }) }
+}
+
+// Silence makes the gateway stop answering until release is called, as a
+// Hermes gateway that hands its sessions to the next one during a rollout
+// can: calls on open connections and new connections' ticket requests
+// hang, then are answered once released.
+func (g *Gateway) Silence() (release func()) {
+	ch := make(chan struct{})
+	g.mu.Lock()
+	g.silent = ch
+	g.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			g.mu.Lock()
+			if g.silent == ch {
+				g.silent = nil
+			}
+			g.mu.Unlock()
+			close(ch)
+		})
+	}
+}
+
+// hush waits while the gateway is silent; false when done ended first.
+func (g *Gateway) hush(done <-chan struct{}) bool {
+	g.mu.Lock()
+	ch := g.silent
+	g.mu.Unlock()
+	if ch == nil {
+		return true
+	}
+	select {
+	case <-ch:
+		return true
+	case <-done:
+		return false
+	}
 }
 
 // Stop makes the gateway's process exit: every connection closes and new
@@ -736,6 +777,9 @@ func (g *Gateway) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) ticket(w http.ResponseWriter, r *http.Request) {
+	if !g.hush(r.Context().Done()) {
+		return
+	}
 	if r.URL.Query().Get("socket") != "gateway" {
 		http.Error(w, `{"detail":"Unknown socket"}`, http.StatusBadRequest)
 		return
@@ -826,6 +870,9 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 			case <-r.Context().Done():
 				return
 			}
+		}
+		if !g.hush(r.Context().Done()) {
+			return
 		}
 		g.mu.Lock()
 		if g.notReady {

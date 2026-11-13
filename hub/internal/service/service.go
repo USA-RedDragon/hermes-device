@@ -89,6 +89,16 @@ type Options struct {
 	// CommandsTTL is how long the hub keeps a backend's command catalog.
 	// Default 5m.
 	CommandsTTL time.Duration
+	// Views keeps the hub's copy of each backend's chat list and chats for
+	// every replica. Nil: each replica keeps its own in memory.
+	Views hub.ViewCache
+	// ListFast and AttachFast are how long Sessions and Attach wait for a
+	// slow backend before they answer with the hub's copy (with
+	// hub.WithCached). Defaults 800ms.
+	ListFast, AttachFast time.Duration
+	// AwayNotice is how long a backend may not answer before a page is told
+	// it is away. Default 10s.
+	AwayNotice time.Duration
 }
 
 // Service is the hub core.
@@ -176,6 +186,15 @@ func New(cfgs []config.Backend, dir Directory, opts Options) *Service {
 	}
 	if opts.CommandsTTL == 0 {
 		opts.CommandsTTL = 5 * time.Minute
+	}
+	if opts.ListFast == 0 {
+		opts.ListFast = defaultListFast
+	}
+	if opts.AttachFast == 0 {
+		opts.AttachFast = defaultAttachFast
+	}
+	if opts.AwayNotice == 0 {
+		opts.AwayNotice = defaultAwayNotice
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	s := &Service{backends: map[string]*backend{}, dir: dir, grants: opts.Grants, opts: opts, log: opts.Logger, origin: uuid.NewString(), stop: stop,
@@ -275,7 +294,9 @@ func (s *Service) Backends(ctx context.Context, user string) ([]hub.Backend, err
 }
 
 // BackendStatus is the last connection error of each of user's backends
-// ("" when the last attempt worked).
+// ("" when the last attempt worked, or while a backend that stopped
+// answering, and whose chats the hub has a copy of, has been away less than
+// Options.AwayNotice).
 func (s *Service) BackendStatus(ctx context.Context, user string) (map[string]string, error) {
 	bs, err := s.Backends(ctx, user)
 	if err != nil {
@@ -283,7 +304,14 @@ func (s *Service) BackendStatus(ctx context.Context, user string) (map[string]st
 	}
 	out := map[string]string{}
 	for _, hb := range bs {
-		out[hb.ID] = s.backends[hb.ID].lastError()
+		b := s.backends[hb.ID]
+		msg := b.lastError()
+		if away := b.awayFor(); away > 0 && away < s.opts.AwayNotice && b.hasListed() {
+			// A restart that may end any moment, while the page shows the
+			// hub's copy of the chats: not worth a word yet.
+			msg = ""
+		}
+		out[hb.ID] = msg
 	}
 	return out, nil
 }
@@ -304,20 +332,44 @@ func (s *Service) Sessions(ctx context.Context, user string) ([]hub.Session, err
 		failed *hub.UnreachableError
 		wg     sync.WaitGroup
 	)
+	fail := func() *hub.UnreachableError {
+		if failed == nil {
+			failed = &hub.UnreachableError{Backends: map[string]string{}, Stale: map[string]bool{}, Pending: map[string]bool{}}
+		}
+		return failed
+	}
+	cached := hub.Cached(ctx)
 	for _, hb := range bs {
 		b := s.backends[hb.ID]
 		wg.Go(func() {
-			list, err := b.listRetry(ctx)
+			list, slow, err := b.listFor(ctx, cached)
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil {
-				b.log.Warn("list sessions", "error", err.Error())
-				if failed == nil {
-					failed = &hub.UnreachableError{Backends: map[string]string{}, Stale: map[string]bool{}}
+			switch {
+			case slow:
+				// The hub's copy, while the fresh list is on its way.
+				f := fail()
+				f.Stale[hb.ID] = true
+				if b.noticeAway() {
+					f.Backends[hb.ID] = reason(gateway.ErrStalled)
+				} else {
+					f.Pending[hb.ID] = true
 				}
-				failed.Backends[hb.ID] = reason(err)
-				if list = b.lastList(); list != nil {
-					failed.Stale[hb.ID] = true
+			case err != nil:
+				b.log.Warn("list sessions", "error", err.Error())
+				f := fail()
+				if cached {
+					list = b.cachedList(ctx)
+				} else {
+					list = b.lastList()
+				}
+				if list != nil {
+					f.Stale[hb.ID] = true
+				}
+				if list != nil && cached && !b.noticeAway() {
+					f.Pending[hb.ID] = true
+				} else {
+					f.Backends[hb.ID] = reason(err)
 				}
 			}
 			out = append(out, list...)
@@ -346,6 +398,40 @@ func reason(err error) string {
 // waits at most about this long for a backend that stopped answering.
 const listWait = 15 * time.Second
 
+// listFor lists the backend's sessions. With cached, a list that takes
+// longer than Options.ListFast is answered with the hub's copy, when it has
+// one, and slow is true; the list goes on and keeps a fresh copy.
+func (b *backend) listFor(ctx context.Context, cached bool) (list []hub.Session, slow bool, err error) {
+	c := b.sharedList(ctx)
+	if !cached {
+		select {
+		case <-c.done:
+			return slices.Clone(c.list), false, c.err
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		}
+	}
+	t := time.NewTimer(b.svc.opts.ListFast)
+	defer t.Stop()
+	select {
+	case <-c.done:
+		return slices.Clone(c.list), false, c.err
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
+	case <-t.C:
+	}
+	if list := b.cachedList(ctx); list != nil {
+		b.markAway()
+		return list, true, nil
+	}
+	select {
+	case <-c.done:
+		return slices.Clone(c.list), false, c.err
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
+	}
+}
+
 // listRetry is list, tried once more on a new connection when the first
 // try ended the old one because the gateway stopped answering on it.
 func (b *backend) listRetry(ctx context.Context) ([]hub.Session, error) {
@@ -356,8 +442,12 @@ func (b *backend) listRetry(ctx context.Context) ([]hub.Session, error) {
 	}
 	if err != nil {
 		b.setListErr(reason(err))
+		if gateway.Retryable(err) || errors.Is(err, gateway.ErrStalled) || errors.Is(err, context.DeadlineExceeded) {
+			b.markAway()
+		}
 	} else {
 		b.setListErr("")
+		b.markBack()
 	}
 	return list, err
 }
@@ -395,13 +485,45 @@ func (s *Service) Attach(ctx context.Context, user, backendID, sessionID string,
 	if err != nil {
 		return nil, nil, err
 	}
-	ls, offline, err := b.attachable(ctx, sessionID)
+	res := make(chan attached, 1)
+	go func() {
+		ls, offline, err := b.attachable(ctx, sessionID)
+		res <- attached{ls: ls, offline: offline, err: err}
+	}()
+	var r attached
+	if hub.Cached(ctx) && sinceSeq == 0 {
+		// A page that opens the chat: while the backend is slow to answer
+		// it shows the hub's copy, and the chat as it is when it answers.
+		t := time.NewTimer(s.opts.AttachFast)
+		select {
+		case r = <-res:
+		case <-t.C:
+			b.markAway()
+			if known := b.known(sessionID); known != nil {
+				go release(res)
+				r = attached{ls: known, offline: true}
+			} else if data := b.cachedSnapshot(ctx, sessionID); data != nil {
+				ch, stop := s.attachLater(ctx, b, sinceSeq, data, res)
+				return ch, stop, nil
+			} else {
+				r = <-res
+			}
+		}
+		t.Stop()
+	} else {
+		r = <-res
+	}
+	ls, offline, err := r.ls, r.offline, r.err
 	if err != nil {
 		return nil, nil, refusal(err)
 	}
 	ch, cancel := ls.attach(sinceSeq)
 	if offline {
-		ls.status(false)
+		// Tell the viewer only once the backend has been away a while; a
+		// restart that ends sooner goes unseen.
+		if b.noticeAway() {
+			ls.status(false)
+		}
 		b.retry()
 	}
 	ls.unpin()
@@ -454,11 +576,16 @@ func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text s
 func (s *Service) promptLocked(ctx context.Context, b *backend, user, sessionID, id, text string,
 	files []hub.Attachment) (hub.PromptResult, gateway.Receipt, error) {
 	if b.heldCount(sessionID) > 0 {
-		if len(files) > 0 {
+		if len(files) == 0 {
+			res, err := b.hold(user, sessionID, id, text, nil, false)
+			return res, gateway.Receipt{}, err
+		}
+		// Files are staged on the backend, so a prompt with them cannot be
+		// held: it waits for the held prompts ahead of it to go out, as it
+		// waits for the backend while it restarts (stageWaiting).
+		if !b.waitHeld(ctx, sessionID) {
 			return hub.PromptResult{}, gateway.Receipt{}, errAway
 		}
-		res, err := b.hold(user, sessionID, id, text, nil, false)
-		return res, gateway.Receipt{}, err
 	}
 	var (
 		atts   []gateway.Attachment
@@ -482,6 +609,23 @@ func (s *Service) promptLocked(ctx context.Context, b *backend, user, sessionID,
 	res, err := b.hold(user, sessionID, id, text, atts, errors.Is(err, gateway.ErrClosed))
 	res.Notice = notice
 	return res, gateway.Receipt{}, err
+}
+
+// waitHeld waits up to readRestartWait for a session's held prompts to be
+// sent, and reports whether they were.
+func (b *backend) waitHeld(ctx context.Context, sessionID string) bool {
+	deadline := time.Now().Add(readRestartWait)
+	for b.heldCount(sessionID) > 0 {
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return true
 }
 
 // submit sends one prompt.submit. Hermes answers a repeated submission ID
@@ -734,6 +878,9 @@ type backend struct {
 	sessions map[string]*live
 	closed   bool
 	retrying bool
+	// awaySince is when the backend stopped answering, zero while it
+	// answers (see markAway).
+	awaySince time.Time
 
 	// holdMu guards the held prompts. It is taken before ls.mu, never
 	// after, and events about held prompts are sent while it is held.
@@ -759,10 +906,17 @@ type backend struct {
 	cmdsAt time.Time
 
 	// listMu guards the last session list that worked, served while the
-	// backend restarts.
-	listMu   sync.Mutex
-	listed   []hub.Session
-	listedAt time.Time
+	// backend restarts, the copy of it in the store (listSaved) and the
+	// list in flight.
+	listMu    sync.Mutex
+	listed    []hub.Session
+	listedAt  time.Time
+	listSaved []byte
+	listing   *listCall
+
+	// snapMu guards snaps, the newest rows of each chat as it last opened.
+	snapMu sync.Mutex
+	snaps  map[string]viewCopy
 
 	// capsMu guards caps, what runtime.describe listed on capsOf.
 	capsMu sync.Mutex
@@ -915,6 +1069,7 @@ func (b *backend) watch(c *gateway.Client) {
 		return
 	}
 	b.log.Warn("gateway connection lost", "error", fmt.Sprint(c.Err()))
+	b.markAway()
 	offline := func() {
 		for _, ls := range sessions {
 			if ls.on(c) {
@@ -1058,9 +1213,7 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 		}
 		out = append(out, s)
 	}
-	b.listMu.Lock()
-	b.listed, b.listedAt = slices.Clone(out), time.Now()
-	b.listMu.Unlock()
+	b.keepList(out)
 	return out, nil
 }
 
@@ -1287,6 +1440,7 @@ func (b *backend) ensure(ctx context.Context, ls *live) (*gateway.Client, error)
 			ls.mu.Unlock()
 			ls.setClient(c)
 			ls.status(true)
+			b.markBack()
 			return c, nil
 		}
 		if err != nil {
@@ -1308,6 +1462,7 @@ func (b *backend) ensure(ctx context.Context, ls *live) (*gateway.Client, error)
 	if recovering {
 		ls.status(true)
 	}
+	b.markBack()
 	return c, nil
 }
 
@@ -1364,9 +1519,11 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 			pending = append(pending, hub.Pending{ID: p.AdmissionID, Status: hub.PendingLost, Text: p.Text, SubmissionID: sub(p)})
 		}
 	}
-	data, err := json.Marshal(hub.Snapshot{SessionID: snap.SessionID, BackendID: b.cfg.ID, Title: title,
+	hs := hub.Snapshot{SessionID: snap.SessionID, BackendID: b.cfg.ID, Title: title,
 		Running: snap.Running, Messages: msgs, Prompts: prompts, Pending: pending, Info: info(snap.Info),
-		ToolBackground: b.capable(ctx, c, gateway.CapToolBackground)})
+		ToolBackground: b.capable(ctx, c, gateway.CapToolBackground)}
+	b.keepSnapshot(ls.id, hs)
+	data, err := json.Marshal(hs)
 	if err != nil {
 		b.log.Warn("encode snapshot", "session", snap.SessionID, "error", err.Error())
 		data = json.RawMessage(`{}`)
