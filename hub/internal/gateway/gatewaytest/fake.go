@@ -258,15 +258,15 @@ type conn struct {
 	writeMu sync.Mutex
 }
 
-//nolint:contextcheck // a test fake: every write gets its own deadline
-func (c *conn) send(v any) {
+// send writes v, giving the write its own deadline within ctx.
+func (c *conn) send(ctx context.Context, v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		panic(err)
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	_ = c.ws.Write(ctx, websocket.MessageText, b)
 }
@@ -603,7 +603,7 @@ func (g *Gateway) ServerRequest(id, method string, params any) {
 	}
 	g.mu.Unlock()
 	for _, c := range conns {
-		c.send(map[string]any{kJSONRPC: jsonRPCVersion, "id": id, kMethod: method, kParams: params})
+		c.send(context.Background(), map[string]any{kJSONRPC: jsonRPCVersion, "id": id, kMethod: method, kParams: params})
 	}
 }
 
@@ -638,7 +638,7 @@ func (g *Gateway) RetireSubscriptions(sessionID string) {
 	defer g.mu.Unlock()
 	s := g.sessions[sessionID]
 	for c := range s.subs {
-		c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: map[string]any{
+		c.send(context.Background(), map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: map[string]any{
 			"type": gateway.ReplayGapEvent, kSessionID: s.ID,
 			kPayload: map[string]any{kReplayEpoch: s.epoch, "latest_seq": s.seq}}})
 	}
@@ -694,7 +694,7 @@ func (g *Gateway) publishAdmissionLocked(s *Session, typ, admission string, payl
 		s.ring = append([]gateway.Event(nil), s.ring[drop:]...)
 	}
 	for c := range s.subs {
-		c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: ev})
+		c.send(context.Background(), map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: ev})
 	}
 }
 
@@ -801,7 +801,7 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 		g.mu.Unlock()
 		_ = ws.CloseNow()
 	}()
-	c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: map[string]any{
+	c.send(r.Context(), map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: map[string]any{
 		"type": gateway.ReadyEvent, kPayload: map[string]any{"session_authority": true, kReplayEpoch: "x"}}})
 	for {
 		_, data, err := ws.Read(r.Context())
@@ -864,9 +864,9 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errFrame != nil {
-			c.send(map[string]any{kJSONRPC: jsonRPCVersion, "id": req.ID, "error": errFrame})
+			c.send(r.Context(), map[string]any{kJSONRPC: jsonRPCVersion, "id": req.ID, "error": errFrame})
 		} else {
-			c.send(map[string]any{kJSONRPC: jsonRPCVersion, "id": req.ID, kResult: result})
+			c.send(r.Context(), map[string]any{kJSONRPC: jsonRPCVersion, "id": req.ID, kResult: result})
 		}
 		if after != nil {
 			go after()
@@ -1151,7 +1151,7 @@ func (g *Gateway) hSessionResume(c *conn, p map[string]any) (any, string, func()
 	again := append([]gateway.Event(nil), s.ring[max(0, len(s.ring)-g.ResendOnResume):]...)
 	return snap, "", func() {
 		for _, ev := range again {
-			c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: ev})
+			c.send(context.Background(), map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: ev})
 		}
 	}
 }
