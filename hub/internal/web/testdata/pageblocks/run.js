@@ -70,4 +70,28 @@ assert.strictEqual(short.pages[0], "<script>x = `");
 const two = pageBlocks("```page\n<p>1</p>\n```\nmid\n```page\n<p>2", true);
 assert.strictEqual(two.pages.length, 1);
 assert.strictEqual(two.writing, true);
+
+// open: the reply ends inside a fence that is not closed.
+const { open: isOpen } = sandbox.window.HubPageBlocks;
+assert.strictEqual(isOpen("plain text"), false);
+assert.strictEqual(isOpen("a\n```page\n<p>x"), true);
+assert.strictEqual(isOpen("a\n```page\n<p>x</p>\n```\nb"), false);
+assert.strictEqual(isOpen("a\n```js\nx\n```\n~~~page\ny"), true);
+assert.strictEqual(isOpen("````md\n```\nx\n```\n"), true);
+
+// A mockup with a template literal, "$ " content, a script close tag and a
+// line that starts with a backtick, cut in two by a message that arrives
+// while the reply streams. The second half alone has a closing fence and no
+// opening one: that is the raw text and the empty code block. Together the
+// halves are one page.
+const mock = "<!doctype html><style>.p::before{content:\"$ \"}</style>\n<script>\nconst r = `<li>${a}</li>\n`;\n`x ${n}` + \"\u25cb \u00b7\";\n</script></body></html>";
+const text = "Here:\n\n```page\n" + mock + "\n```\n\nDone.";
+const at = text.indexOf("const r") + 10;
+assert.strictEqual(isOpen(text.slice(0, at)), true, "the first half is inside the page block");
+assert.strictEqual(pageBlocks(text.slice(0, at), true).writing, true);
+const whole = pageBlocks(text, false);
+assert.strictEqual(JSON.stringify(whole.pages), JSON.stringify([mock]));
+assert.strictEqual(whole.text, "Here:\n\nDone.");
+const rest = pageBlocks(text.slice(at), false);
+assert.strictEqual(rest.pages.length, 0, "the second half alone is not a page");
 console.log("ok");

@@ -52,5 +52,21 @@ window.HubPageBlocks = (() => {
     if (!found) return { pages: [], text, writing: false };
     return { pages, text: keep.join("\n").replace(/\n{3,}/g, "\n\n").trim(), writing };
   }
-  return { pageBlocks };
+
+  // open says whether text ends inside a fenced block that is not closed
+  // yet: the reply is still being written in the middle of a code or page
+  // block.
+  function open(text) {
+    if (!text.includes("```") && !text.includes("~~~")) return false;
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].replace(/\r$/, "").match(fenceStart);
+      if (!m) continue;
+      const end = fenceEnd(lines, i + 1, m[1]);
+      if (end < 0) return true;
+      i = end;
+    }
+    return false;
+  }
+  return { pageBlocks, open };
 })();

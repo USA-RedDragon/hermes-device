@@ -37,6 +37,17 @@ func TestPageBlocks(t *testing.T) {
 	}
 }
 
+// A mockup with CSS content, template literals with ${}, a line that starts
+// with a backtick, non-ASCII characters and a script close tag is one page.
+func TestPageBlocksMockup(t *testing.T) {
+	t.Parallel()
+	mock := "<!doctype html><style>.p::before{content:\"$ \"}</style>\n<script>\nconst r = `<li>${a}</li>\n`;\n`x ${n}` + \"\u25cb \u00b7\";\n</script></body></html>"
+	pages, text := hub.PageBlocks("Here:\n\n```page\n" + mock + "\n```\n\nDone.")
+	if !slices.Equal(pages, []string{mock}) || text != "Here:\n\nDone." {
+		t.Errorf("pages = %q, text = %q", pages, text)
+	}
+}
+
 func TestPageID(t *testing.T) {
 	t.Parallel()
 	id := hub.PageID("<p>hi</p>")

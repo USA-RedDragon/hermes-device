@@ -1473,7 +1473,11 @@
           else banner("Lost the connection to Hermes. Reconnecting.", false, "backend");
           break;
         case "message.start":
-          this.turn = null;
+          // A message handed to the running turn can arrive while a reply
+          // streams. The reply goes on after it, so a reply that is inside
+          // an open fence stays one text: cut in two, its page block would
+          // lose its opening fence and show as raw text.
+          if (!(this.turn && this.turn.text && window.HubPageBlocks.open(this.turn.raw))) this.turn = null;
           this.setRunning(true);
           this.started(p.text, p.note, p.submission_id, p.admission_id, p);
           break;
