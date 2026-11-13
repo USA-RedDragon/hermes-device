@@ -32,17 +32,17 @@ internal/device/device.go	202	163
 internal/device/devicetest/devicetest.go	522	467
 internal/device/files.go	71	57
 internal/device/gateway.go	419	331
-internal/device/legs.go	169	154
+internal/device/legs.go	169	151
 internal/device/pair.go	52	29
 internal/device/plugin.go	100	84
 internal/device/rpc.go	214	199
 internal/device/sessioncheck.go	23	22
 internal/device/usage.go	50	40
 internal/device/views.go	17	17
-internal/gateway/client.go	264	223
+internal/gateway/client.go	264	229
 internal/gateway/gatewaytest/activity.go	106	88
 internal/gateway/gatewaytest/compose.go	184	159
-internal/gateway/gatewaytest/fake.go	692	635
+internal/gateway/gatewaytest/fake.go	704	647
 internal/gateway/gatewaytest/files.go	40	35
 internal/gateway/gatewaytest/mutate.go	139	122
 internal/gateway/gatewaytest/runtime.go	22	19
@@ -83,7 +83,7 @@ internal/notify/jobs.go	55	43
 internal/notify/notify.go	307	195
 internal/origin/fallback.go	73	71
 internal/origin/origin.go	127	111
-internal/pdf/pdf.go	183	162
+internal/pdf/pdf.go	183	163
 internal/pdf/pdftest/pdftest.go	32	32
 internal/scheduled/client.go	110	88
 internal/scheduled/clock.go	75	66
@@ -96,7 +96,7 @@ internal/service/attach.go	100	85
 internal/service/claude.go	41	33
 internal/service/compose.go	251	209
 internal/service/hold.go	233	202
-internal/service/live.go	345	303
+internal/service/live.go	347	307
 internal/service/manage.go	150	140
 internal/service/media.go	139	115
 internal/service/observe.go	61	50
@@ -126,7 +126,7 @@ internal/store/subagentlog.go	101	84
 internal/store/telegram.go	64	55
 internal/subagents/subagents.go	39	32
 internal/telegram/api.go	192	152
-internal/telegram/bot.go	665	543
+internal/telegram/bot.go	667	547
 internal/telegram/budget.go	23	20
 internal/telegram/claude.go	106	88
 internal/telegram/commands.go	245	203
@@ -135,7 +135,7 @@ internal/telegram/config.go	18	18
 internal/telegram/dmtopics.go	105	86
 internal/telegram/draft.go	78	63
 internal/telegram/echo.go	133	112
-internal/telegram/format.go	114	111
+internal/telegram/format.go	126	123
 internal/telegram/library.go	49	43
 internal/telegram/media.go	39	37
 internal/telegram/prompts.go	454	348
@@ -147,7 +147,7 @@ internal/telegram/todo.go	58	51
 internal/telegram/topics.go	521	380
 internal/web/accounts.go	255	192
 internal/web/activity.go	135	93
-internal/web/api.go	276	209
+internal/web/api.go	277	210
 internal/web/auth.go	135	102
 internal/web/authpages.go	39	37
 internal/web/claude.go	83	58
@@ -167,6 +167,7 @@ internal/web/pagechat.go	50	40
 internal/web/partners.go	99	80
 internal/web/prompts.go	64	53
 internal/web/scheduled.go	99	57
+internal/web/snapsplit.go	62	53
 internal/web/stream.go	32	30
 internal/web/subagents.go	16	14
 internal/web/users.go	182	114
