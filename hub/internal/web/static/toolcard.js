@@ -429,6 +429,33 @@ window.HubToolCard = (() => {
     return d;
   }
 
+  function parse(r) {
+    if (isObj(r)) return r;
+    if (typeof r !== "string" || r[0] !== "{") return null;
+    try {
+      return JSON.parse(r);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // outcome reads a finished call's result p (result, is_error, error,
+  // result_text): the parsed result, whether it failed, and the output to
+  // show (a command's output with its error and exit code).
+  function outcome(name, p) {
+    const res = parse(p.result);
+    const exit = res && typeof res.exit_code === "number" ? res.exit_code : null;
+    const failed = !!(p.is_error || p.error || (res && res.error) || (exit !== null && exit !== 0));
+    let out = p.result_text;
+    if (!out && res && name === "terminal" && "output" in res) {
+      out = String(res.output || "");
+      if (res.error) out += (out ? "\n" : "") + res.error;
+      if (exit !== null && exit !== 0) out += (out ? "\n" : "") + "(exit code " + exit + ")";
+    }
+    if (!out && p.result !== undefined && p.result !== null) out = typeof p.result === "string" ? p.result : JSON.stringify(p.result, null, 2);
+    return { res, failed, out: out || "" };
+  }
+
   function create(ctx, c0) {
     const { el } = ctx;
     const T = window.HubTimes;
@@ -524,5 +551,5 @@ window.HubToolCard = (() => {
     return view;
   }
 
-  return { derive, memory, create, wrapped, take };
+  return { derive, memory, create, wrapped, take, parse, outcome };
 })();

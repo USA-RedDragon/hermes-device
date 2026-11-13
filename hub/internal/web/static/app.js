@@ -1121,18 +1121,9 @@
       if (p.result !== undefined) card.result = p.result;
       card.classList.remove("running");
       const call = card.call;
-      const res = parseResult(p.result);
-      const exit = res && typeof res.exit_code === "number" ? res.exit_code : null;
-      const failed = !!(p.is_error || p.error || (res && res.error) || (exit !== null && exit !== 0));
+      const { res, failed, out } = window.HubToolCard.outcome(card.toolName, p);
       card.failed = failed;
       if (failed) card.classList.add("failed");
-      let out = p.result_text;
-      if (!out && res && card.toolName === "terminal" && "output" in res) {
-        out = String(res.output || "");
-        if (res.error) out += (out ? "\n" : "") + res.error;
-        if (exit !== null && exit !== 0) out += (out ? "\n" : "") + "(exit code " + exit + ")";
-      }
-      if (!out && p.result !== undefined && p.result !== null) out = typeof p.result === "string" ? p.result : JSON.stringify(p.result, null, 2);
       call.done = true;
       call.res = res;
       call.failed = failed;
@@ -1155,22 +1146,7 @@
     // groupTools folds each run of finished tool cards into one line that
     // opens to show them. keep is a node after which cards stay as they are.
     groupTools(keep, parent = this.log) {
-      let run = [];
-      const fold = () => {
-        if (!run.length) return;
-        const g = toolGroup(run);
-        if (run.some((c) => ui.expanded(c))) g.open = true;
-        parent.insertBefore(g, run[0]);
-        g.lastChild.append(...run);
-        run = [];
-      };
-      let live = false;
-      for (const n of Array.from(parent.children)) {
-        if (n === keep) live = true;
-        if (!live && n.classList.contains("tool") && !n.classList.contains("running")) run.push(n);
-        else fold();
-      }
-      fold();
+      window.HubToolGroup.fold(el, parent, keep, (c) => ui.expanded(c));
     }
 
     showInfo(p) {
@@ -2267,8 +2243,6 @@
     try { return JSON.parse(r); } catch (_) { return null; }
   }
 
-  const duration = (sec) => window.HubTimes.span(sec);
-
   // diffView shows Hermes' inline edit diff. Hermes renders it for a
   // terminal, with ANSI colors and a header line; the colors are dropped
   // and each line is styled by its diff prefix instead.
@@ -2288,60 +2262,6 @@
       pre.append(el("span", cls, line));
     });
     return pre;
-  }
-
-  const toolWords = {
-    terminal: ["ran a command", "ran %d commands"],
-    read_file: ["read a file", "read %d files"],
-    write_file: ["edited a file", "edited %d files"],
-    patch: ["edited a file", "edited %d files"],
-    search_files: ["searched files", "searched files %d times"],
-    web_search: ["searched the web", "searched the web %d times"],
-    web_extract: ["read a web page", "read %d web pages"],
-    browser_snapshot: ["read a tab", "read %d tabs"],
-    todo: ["updated the to-do list", "updated the to-do list %d times"],
-    process_manage: ["managed a background command", "managed background commands %d times"],
-    delegate_task: ["used a subagent", "used subagents %d times"],
-    agent_send: ["sent a message", "sent %d messages"],
-    memory: ["used memory", "used memory %d times"],
-    skill_view: ["used a skill", "used skills %d times"],
-    skill_manage: ["used a skill", "used skills %d times"],
-    skills_list: ["used a skill", "used skills %d times"],
-  };
-
-  const toolWord = (name) => toolWords[name] || (name.startsWith("browser_") ? ["used the browser", "used the browser %d times"] : ["used " + name, "used " + name + " %d times"]);
-
-  // toolGroup is the one line a run of finished tool cards folds into.
-  function toolGroup(cards) {
-    const counts = new Map();
-    let total = 0;
-    let failed = 0;
-    let from = 0;
-    let to = 0;
-    for (const c of cards) {
-      const w = toolWord(c.toolName);
-      const key = w[0];
-      counts.set(key, { w, n: (counts.get(key)?.n || 0) + 1 });
-      if (typeof c.duration === "number") total += c.duration;
-      if (c.failed) failed++;
-      const at = c.call || {};
-      const end = at.endedAt || at.startedAt || 0;
-      const begin = at.startedAt || (end && typeof at.duration === "number" ? end - at.duration * 1000 : end);
-      if (window.HubTimes.valid(begin)) from = from ? Math.min(from, begin) : begin;
-      if (window.HubTimes.valid(end)) to = Math.max(to, end);
-    }
-    const parts = Array.from(counts.values()).map(({ w, n }) => (n === 1 ? w[0] : w[1].replace("%d", n)));
-    let text = parts.join(", ");
-    text = text[0].toUpperCase() + text.slice(1);
-    if (total) text += " (" + duration(total) + ")";
-    const span = window.HubTimes.range(from, to || from);
-    if (span) text += " \u00B7 " + span;
-    const d = el("details", "toolgroup" + (failed ? " failed" : ""));
-    d.dataset.ukey = "g:" + cards[0].dataset.ukey;
-    const sum = el("summary", "", text);
-    if (failed) sum.append(el("span", "bad", failed === 1 ? " 1 step failed" : " " + failed + " steps failed"));
-    d.append(sum, el("div", "group-body"));
-    return d;
   }
 
   function size(n) {
