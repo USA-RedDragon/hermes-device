@@ -192,23 +192,27 @@ func (s *Supervisor) runOnce(ctx context.Context) error {
 	s.running = true
 	s.mu.Unlock()
 	slog.Info("Headless Firefox started", "pid", cmd.Process.Pid, "profile", s.o.ProfileDir)
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	var waitErr error
+	exited := make(chan struct{})
+	go func() {
+		waitErr = cmd.Wait()
+		close(exited)
+	}()
 	defer func() {
 		s.mu.Lock()
 		s.running = false
 		s.mu.Unlock()
 	}()
 	select {
-	case err := <-done:
-		return err
+	case <-exited:
+		return waitErr
 	case <-ctx.Done():
 		terminate(cmd, true)
 		select {
-		case <-done:
+		case <-exited:
 		case <-time.After(stopGrace):
 			terminate(cmd, false)
-			<-done
+			<-exited
 		}
 		return ctx.Err()
 	}
