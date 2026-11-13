@@ -188,3 +188,23 @@ func (s *Store) ChatMarks(ctx context.Context, user string) (map[hub.SessionRef]
 	}
 	return out, time.UnixMilli(base), rows.Err()
 }
+
+// DeleteMarks drops user's marks (pin, read time, unread, page) of the
+// chats in refs, which Hermes no longer has.
+func (s *Store) DeleteMarks(ctx context.Context, user string, refs []hub.SessionRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, ref := range refs {
+		if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM chat_marks WHERE "user" = ? AND backend_id = ? AND session_id = ?`),
+			user, ref.BackendID, ref.SessionID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}

@@ -154,6 +154,7 @@
   async function refreshList() {
     if (listing) return;
     listing = true;
+    const asked = Date.now();
     clearTimeout(listRetry);
     listRetry = 0;
     try {
@@ -179,6 +180,10 @@
         clearBanner("list");
         if (refreshing.size) listRetry = setTimeout(refreshList, 2000);
       }
+      // A chat the hub's fresh list does not have, opened before that list
+      // was asked for, is gone from Hermes: say so, with a way out.
+      if (!page && view && !down.size && !refreshing.size && view.openedAt < asked && !sessions.some(isCurrent) &&
+        sessions.some((s) => s.backend_id === view.backend)) showGone();
       // A chat opened before the list came shows its title now.
       const open = view && !view.loaded && sessions.find(isCurrent);
       if (open && open.title) setTitle(open.title);
@@ -536,7 +541,7 @@
       if (!force) return;
       st = null;
     }
-    if (seq !== modelSeq || view || page || $("welcome").hidden) return;
+    if (seq !== modelSeq || view || page || gone || $("welcome").hidden) return;
     const box = $("welcome");
     box.classList.remove("first-run");
     $("modelbar")?.remove();
@@ -3135,7 +3140,21 @@
     },
   };
 
+  // gone is true while the welcome shows that the chat in the address no
+  // longer exists.
+  let gone = false;
+  function showGone() {
+    showWelcome();
+    gone = true;
+    $("welcome").classList.remove("first-run");
+    $("modelbar")?.remove();
+    const back = el("a", "", "Back to your chats");
+    back.href = "#";
+    $("welcome").replaceChildren(el("p", "", "This chat no longer exists. "), back);
+  }
+
   function showWelcome() {
+    gone = false;
     pagesView.destroy();
     memory.hide();
     usage.hide();
@@ -3227,6 +3246,7 @@
     unseen = 0;
     stick.reset();
     view = new Chat(backend, session);
+    view.openedAt = Date.now();
     view.log.append(loadingRows());
     msgActs.reset();
     composer.open(view);

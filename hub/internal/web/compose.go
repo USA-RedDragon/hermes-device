@@ -196,9 +196,60 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// markPruner is a chat store that can drop the marks of chats that are gone.
+type markPruner interface {
+	DeleteMarks(ctx context.Context, user string, refs []hub.SessionRef) error
+}
+
+// pruneEvery is how soon the marks of one user are swept again.
+const pruneEvery = 5 * time.Minute
+
+// pruneMarks drops user's pins and other marks of chats that the backends
+// no longer list, so a deleted chat does not stay pinned for ever. It
+// takes only a complete, fresh list as the truth: callers pass it for an
+// answer where every backend replied. A backend that listed no chat at
+// all is left alone, since an empty list is more often a fault than the
+// end of every chat.
+func (s *Server) pruneMarks(ctx context.Context, user string, ss []hub.Session, marks map[hub.SessionRef]hub.ChatMark) {
+	mp, ok := s.chats.(markPruner)
+	if !ok || len(marks) == 0 || len(ss) == 0 {
+		return
+	}
+	s.pruneMu.Lock()
+	if s.pruned == nil {
+		s.pruned = map[string]time.Time{}
+	}
+	if last, ok := s.pruned[user]; ok && time.Since(last) < pruneEvery {
+		s.pruneMu.Unlock()
+		return
+	}
+	s.pruned[user] = time.Now()
+	s.pruneMu.Unlock()
+	listed := map[string]bool{}
+	have := make(map[hub.SessionRef]bool, len(ss))
+	for _, x := range ss {
+		listed[x.BackendID] = true
+		have[hub.SessionRef{BackendID: x.BackendID, SessionID: x.ID}] = true
+	}
+	var gone []hub.SessionRef
+	for ref := range marks {
+		if listed[ref.BackendID] && !have[ref] {
+			gone = append(gone, ref)
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	if err := mp.DeleteMarks(ctx, user, gone); err != nil {
+		s.log.Warn("drop marks of deleted chats", "error", err.Error())
+		return
+	}
+	s.log.Info("Dropped the marks of chats Hermes no longer has", "user", user, "chats", len(gone))
+}
+
 // marked adds the user's pins, unread state and what each chat waits for.
 // Without a chat store, or when it fails, chats are unpinned and read.
-func (s *Server) marked(ctx context.Context, user string, ss []hub.Session) []sessionJSON {
+func (s *Server) marked(ctx context.Context, user string, ss []hub.Session, fresh bool) []sessionJSON {
 	var (
 		marks map[hub.SessionRef]hub.ChatMark
 		base  time.Time
@@ -208,6 +259,8 @@ func (s *Server) marked(ctx context.Context, user string, ss []hub.Session) []se
 		if marks, base, err = s.chats.ChatMarks(ctx, user); err != nil {
 			s.log.Warn("read chat marks", "error", err.Error())
 			marks = nil
+		} else if fresh {
+			s.pruneMarks(ctx, user, ss, marks)
 		}
 	}
 	out := make([]sessionJSON, 0, len(ss))

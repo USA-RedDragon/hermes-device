@@ -161,6 +161,8 @@ type Server struct {
 	claudeCode   hub.ClaudeCode
 	subagents    hub.SubagentRoutes
 	chats        hub.ChatStore
+	pruneMu      sync.Mutex
+	pruned       map[string]time.Time
 	prompts      hub.PromptLibrary
 	partners     hub.AgentPartners
 	// partnerOwners maps each single-user backend to its user.

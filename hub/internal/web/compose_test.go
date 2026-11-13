@@ -496,3 +496,29 @@ func TestPromptIDRunsOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestListDropsMarksOfDeletedChats(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	c := client(t)
+	m := login(t, e, c)
+	for _, id := range []string{"s1", "ghost"} {
+		if s := apiJSON(t, c, http.MethodPost, e.url+"/api/sessions/pc/"+id+"/pin", m.CSRF, map[string]bool{"pinned": true}, nil); s != http.StatusNoContent {
+			t.Fatalf("pin %s = %d", id, s)
+		}
+	}
+	got := listed(t, e, c)
+	if !got["s1"].Pinned {
+		t.Fatalf("s1 lost its pin: %+v", got["s1"])
+	}
+	marks, _, err := e.store.ChatMarks(context.Background(), userAlice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := marks[hub.SessionRef{BackendID: "pc", SessionID: "ghost"}]; ok {
+		t.Fatalf("the pin of a chat Hermes no longer has stayed: %+v", marks)
+	}
+	if !marks[hub.SessionRef{BackendID: "pc", SessionID: "s1"}].Pinned {
+		t.Fatalf("a listed chat lost its pin: %+v", marks)
+	}
+}

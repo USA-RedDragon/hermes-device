@@ -90,7 +90,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, s.marked(r.Context(), user, ss))
+	writeJSON(w, http.StatusOK, s.marked(r.Context(), user, ss, ue == nil))
 }
 
 // UnreachableHeader names, comma separated and query-escaped, the backends

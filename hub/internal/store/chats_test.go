@@ -342,3 +342,27 @@ func TestPinInOrder(t *testing.T) {
 		}
 	})
 }
+
+func TestDeleteMarks(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		for _, id := range []string{"a", "b"} {
+			if err := s.SetPinned(ctx, userCarol, backendB, id, true); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.SetPinned(ctx, "dave", backendB, "a", true); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DeleteMarks(ctx, userCarol, refs("a")); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(pinOrder(t, s, userCarol), ","); got != "b" {
+			t.Fatalf("after deleting a: %s", got)
+		}
+		if got := strings.Join(pinOrder(t, s, "dave"), ","); got != "a" {
+			t.Fatalf("another user's mark was touched: %s", got)
+		}
+	})
+}
