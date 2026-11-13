@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -110,7 +111,7 @@ func runToken(cfg *config.Config) (token, deviceID, stateDir string, err error) 
 		if err != nil {
 			return "", "", "", err
 		}
-		if fi.Mode().Perm()&0o007 != 0 {
+		if runtime.GOOS != "windows" && fi.Mode().Perm()&0o007 != 0 {
 			return "", "", "", fmt.Errorf("%s (mode %o): %w", cfg.Hub.TokenFile, fi.Mode().Perm(), ErrTokenFileMode)
 		}
 		data, err := os.ReadFile(cfg.Hub.TokenFile)

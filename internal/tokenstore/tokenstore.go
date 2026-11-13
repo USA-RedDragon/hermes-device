@@ -154,7 +154,9 @@ func (s *Store) Load(hub string) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	if fi, err := os.Stat(s.File); err == nil && fi.Mode().Perm()&0o077 != 0 {
+	// Windows has no mode bits: a file there reads as 0666, and its ACL,
+	// inherited from the user's profile folder, keeps others out.
+	if fi, err := os.Stat(s.File); err == nil && runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("%s is readable by others (mode %o); chmod 600 it", s.File, fi.Mode().Perm())
 	}
 	var r Record
