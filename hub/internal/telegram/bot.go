@@ -765,7 +765,7 @@ func (b *Bot) listSessions(ctx context.Context, to dest, user string) {
 	cctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	list, err := b.svc.Sessions(cctx, user)
-	if err != nil {
+	if err != nil && hub.Unreachable(err) == nil {
 		b.reportErr(ctx, to, user, "list sessions", err)
 		return
 	}

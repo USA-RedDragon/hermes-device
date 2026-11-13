@@ -71,7 +71,7 @@ func (s *Server) handleAddPartner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessions, err := s.svc.Sessions(r.Context(), userFrom(r))
-	if err != nil {
+	if err != nil && hub.Unreachable(err) == nil {
 		s.fail(w, err)
 		return
 	}

@@ -68,6 +68,9 @@ type Event struct {
 // method fails with ErrForbidden when the backend is not mapped to user.
 type Service interface {
 	Backends(ctx context.Context, user string) ([]Backend, error)
+	// Sessions lists the user's chats on every backend. When some backends
+	// could not be listed it returns the rows it has together with an
+	// *UnreachableError.
 	Sessions(ctx context.Context, user string) ([]Session, error)
 	NewSession(ctx context.Context, user, backendID string) (Session, error)
 	// Attach streams events after sinceSeq (0 for a fresh attach). With

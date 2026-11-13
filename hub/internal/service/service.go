@@ -49,6 +49,10 @@ type Options struct {
 	ViewerBuffer int
 	// CallTimeout bounds each gateway request.
 	CallTimeout time.Duration
+	// StallAfter is how long a gateway request may go unanswered before
+	// its deadline also ends the connection, so later requests go out on a
+	// new one (see gateway.Client.Call). Default gateway.DefaultStallAfter.
+	StallAfter time.Duration
 	// Dialer builds the dialer of a backend. Default: gateway.NewDialer.
 	Dialer func(config.Backend) Dialer
 	Logger *slog.Logger
@@ -140,6 +144,9 @@ func New(cfgs []config.Backend, dir Directory, opts Options) *Service {
 	}
 	if opts.CallTimeout == 0 {
 		opts.CallTimeout = 30 * time.Second
+	}
+	if opts.StallAfter == 0 {
+		opts.StallAfter = gateway.DefaultStallAfter
 	}
 	if opts.Dialer == nil {
 		opts.Dialer = func(b config.Backend) Dialer {
@@ -282,35 +289,83 @@ func (s *Service) BackendStatus(ctx context.Context, user string) (map[string]st
 }
 
 // Sessions lists live and stored sessions on all of user's backends, newest
-// first. A backend that cannot be reached is left out; BackendStatus says why.
+// first. When a backend cannot be listed, its last list (if the hub has a
+// recent one) stands in for it and the result comes with a
+// *hub.UnreachableError that names it: an empty list never stands for a
+// failed one.
 func (s *Service) Sessions(ctx context.Context, user string) ([]hub.Session, error) {
 	bs, err := s.Backends(ctx, user)
 	if err != nil {
 		return nil, err
 	}
 	var (
-		mu  sync.Mutex
-		out = []hub.Session{}
-		wg  sync.WaitGroup
+		mu     sync.Mutex
+		out    = []hub.Session{}
+		failed *hub.UnreachableError
+		wg     sync.WaitGroup
 	)
 	for _, hb := range bs {
 		b := s.backends[hb.ID]
 		wg.Go(func() {
-			list, err := b.list(ctx)
+			list, err := b.listRetry(ctx)
+			mu.Lock()
+			defer mu.Unlock()
 			if err != nil {
 				b.log.Warn("list sessions", "error", err.Error())
-				if list = b.lastList(err); list == nil {
-					return
+				if failed == nil {
+					failed = &hub.UnreachableError{Backends: map[string]string{}, Stale: map[string]bool{}}
+				}
+				failed.Backends[hb.ID] = reason(err)
+				if list = b.lastList(); list != nil {
+					failed.Stale[hb.ID] = true
 				}
 			}
-			mu.Lock()
 			out = append(out, list...)
-			mu.Unlock()
 		})
 	}
 	wg.Wait()
 	sort.SliceStable(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	if failed != nil {
+		return out, failed
+	}
 	return out, nil
+}
+
+// reason is why a backend could not be listed, in words for a person.
+func reason(err error) string {
+	switch {
+	case errors.Is(err, gateway.ErrStalled), errors.Is(err, context.DeadlineExceeded):
+		return "Hermes is not answering"
+	case gateway.Retryable(err):
+		return "Hermes is restarting or cannot be reached"
+	}
+	return err.Error()
+}
+
+// listWait bounds one attempt to list a backend's sessions, so a page
+// waits at most about this long for a backend that stopped answering.
+const listWait = 15 * time.Second
+
+// listRetry is list, tried once more on a new connection when the first
+// try ended the old one because the gateway stopped answering on it.
+func (b *backend) listRetry(ctx context.Context) ([]hub.Session, error) {
+	list, err := b.list(ctx)
+	if errors.Is(err, gateway.ErrStalled) && ctx.Err() == nil {
+		b.log.Info("gateway stopped answering, listing again on a new connection", "error", err.Error())
+		list, err = b.list(ctx)
+	}
+	if err != nil {
+		b.setListErr(reason(err))
+	} else {
+		b.setListErr("")
+	}
+	return list, err
+}
+
+func (b *backend) setListErr(msg string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.listErr = msg
 }
 
 // NewSession starts a session on a backend and subscribes the hub to it.
@@ -668,10 +723,12 @@ type backend struct {
 	dialer Dialer
 	log    *slog.Logger
 
-	dialMu   sync.Mutex
-	mu       sync.Mutex
-	client   *gateway.Client
-	lastErr  string
+	dialMu  sync.Mutex
+	mu      sync.Mutex
+	client  *gateway.Client
+	lastErr string
+	// listErr is why the last session list failed, "" when it worked.
+	listErr  string
 	sessions map[string]*live
 	closed   bool
 	retrying bool
@@ -712,15 +769,12 @@ type backend struct {
 }
 
 // listStaleAfter bounds how old a session list may be to stand in for a
-// backend that is restarting.
+// backend that cannot be listed.
 const listStaleAfter = 15 * time.Minute
 
-// lastList is the last session list that worked, when err says the backend
-// is only restarting and that list is recent; else nil.
-func (b *backend) lastList(err error) []hub.Session {
-	if !gateway.Retryable(err) {
-		return nil
-	}
+// lastList is the last session list that worked when it is recent; else
+// nil.
+func (b *backend) lastList() []hub.Session {
 	b.listMu.Lock()
 	defer b.listMu.Unlock()
 	if b.listed == nil || time.Since(b.listedAt) > listStaleAfter {
@@ -761,6 +815,9 @@ func (b *backend) gate(sessionID string) func() {
 func (b *backend) lastError() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.lastErr == "" {
+		return b.listErr
+	}
 	return b.lastErr
 }
 
@@ -828,6 +885,7 @@ func (b *backend) conn(ctx context.Context) (*gateway.Client, error) {
 		c.Close()
 		return nil, errClosed
 	}
+	c.SetStallAfter(b.svc.opts.StallAfter)
 	b.client, b.lastErr = c, ""
 	go b.watch(c)
 	b.wake()
@@ -862,8 +920,9 @@ func (b *backend) watch(c *gateway.Client) {
 			}
 		}
 	}
-	if gateway.RestartClose(c.Err()) {
-		// A gateway that closed for a restart is replaced within seconds: re-subscribe first and
+	if gateway.RestartClose(c.Err()) || errors.Is(c.Err(), gateway.ErrStalled) {
+		// A gateway that closed for a restart is replaced within seconds, and a connection the
+		// hub dropped because it stalled is replaced at once: re-subscribe first and
 		// tell viewers only when that takes longer than restartReconnectGrace.
 		time.AfterFunc(restartReconnectGrace, offline)
 	} else {
@@ -950,7 +1009,7 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	cctx, cancel := b.timeout(ctx)
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), min(b.svc.opts.CallTimeout, listWait))
 	defer cancel()
 	rows := map[string]hub.Session{}
 	// The live list with include_hidden adds archived (and hidden)

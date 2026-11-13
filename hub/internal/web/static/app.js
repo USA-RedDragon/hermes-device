@@ -24,7 +24,7 @@
     tobottom: "Jump to latest", newone: "1 new message", newmany: "%d new messages" };
   const t = (k) => words[k];
 
-  async function api(method, path, body) {
+  async function api(method, path, body, meta) {
     const opts = { method, headers: { "X-CSRF-Token": csrf }, credentials: "same-origin" };
     if (body instanceof FormData) {
       opts.body = body;
@@ -33,6 +33,7 @@
       opts.body = JSON.stringify(body);
     }
     const r = await fetch(path, opts);
+    if (meta) meta.headers = r.headers;
     if (r.status === 401) {
       if (pageMode) page.signIn();
       else location.href = "/auth/login?next=" + encodeURIComponent(location.pathname + location.hash);
@@ -112,16 +113,35 @@
   let showArchived = false;
   const listBackoff = window.HubBackoff();
   let listRetry = 0;
+  // unreachableIDs reads the backends a list answer could not reach.
+  const unreachableIDs = (h) => new Set((h || "").split(",").filter(Boolean).map(decodeURIComponent));
+  // keepUnreachable is the new list, where a backend the hub could not
+  // reach and sent no rows for keeps the rows the page had: a failed list
+  // is never an empty one.
+  function keepUnreachable(prev, got, down) {
+    if (!down.size || !prev) return got;
+    const sent = new Set(got.map((s) => s.backend_id));
+    return got.concat(prev.sessions.filter((s) => down.has(s.backend_id) && !sent.has(s.backend_id)));
+  }
   async function refreshList() {
     if (listing) return;
     listing = true;
     clearTimeout(listRetry);
     listRetry = 0;
     try {
-      const [backends, sessions] = await Promise.all([api("GET", "/api/backends"), api("GET", "/api/sessions")]);
+      const meta = {};
+      const [backends, got] = await Promise.all([api("GET", "/api/backends"), api("GET", "/api/sessions", undefined, meta)]);
+      const down = unreachableIDs(meta.headers && meta.headers.get("X-Talaria-Unreachable"));
+      const sessions = keepUnreachable(lastList, got, down);
+      for (const b of backends) if (down.has(b.id) && !b.error) b.error = "Hermes is not answering. Retrying";
       lastList = { backends, sessions };
-      listBackoff.reset();
-      clearBanner("list");
+      if (down.size) {
+        banner("Cannot reach Hermes. Showing the chats from before; retrying.", true, "list");
+        listRetry = setTimeout(refreshList, listBackoff.next());
+      } else {
+        listBackoff.reset();
+        clearBanner("list");
+      }
       if (unhid) {
         if (sessions.some((s) => s.id === unhid && s.archived)) banner("Talaria keeps this chat hidden, so it stays with the archived chats.");
         unhid = "";
@@ -133,6 +153,8 @@
       if (e.message !== "login required") {
         banner("Could not load chats: " + e.message, true, "list");
         listRetry = setTimeout(refreshList, listBackoff.next());
+        // The chats shown stay as they were; with none yet, say why.
+        if (!lastList) $("sessions").replaceChildren(el("p", "none", "Cannot reach Hermes. Retrying\u2026"));
       }
     } finally {
       listing = false;

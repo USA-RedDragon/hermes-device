@@ -1,6 +1,11 @@
 package hub
 
-import "errors"
+import (
+	"errors"
+	"maps"
+	"slices"
+	"strings"
+)
 
 // Errors returned by Service implementations.
 var (
@@ -28,3 +33,31 @@ var (
 	// ErrNoModel is a new chat on a Hermes that has no model set up.
 	ErrNoModel = errors.New("no model configured")
 )
+
+// UnreachableError comes with a session list that misses backends: their
+// list call failed. Backends maps each such backend to why. The rows that
+// come with it hold the backends that answered, plus the last list of a
+// failed backend when the hub still has one; Stale names those backends.
+// A caller must never take the rows for a failed backend as its whole list.
+type UnreachableError struct {
+	Backends map[string]string
+	Stale    map[string]bool
+}
+
+func (e *UnreachableError) Error() string {
+	ids := slices.Sorted(maps.Keys(e.Backends))
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, id+": "+e.Backends[id])
+	}
+	return "cannot list the chats of " + strings.Join(parts, "; ")
+}
+
+// Unreachable returns the UnreachableError in err, or nil.
+func Unreachable(err error) *UnreachableError {
+	var ue *UnreachableError
+	if errors.As(err, &ue) {
+		return ue
+	}
+	return nil
+}

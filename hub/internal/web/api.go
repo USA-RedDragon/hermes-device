@@ -8,6 +8,8 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -66,11 +68,44 @@ func (s *Server) handleBackends(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r)
 	ss, err := s.svc.Sessions(r.Context(), user)
-	if err != nil {
+	ue := hub.Unreachable(err)
+	if err != nil && ue == nil {
 		s.fail(w, err)
 		return
 	}
+	if ue != nil {
+		// The page must never take a failed list for an empty one: it
+		// keeps the chats it has for these backends, says so and retries.
+		ids := make([]string, 0, len(ue.Backends))
+		for id := range ue.Backends {
+			ids = append(ids, url.QueryEscape(id))
+		}
+		slices.Sort(ids)
+		w.Header().Set(UnreachableHeader, strings.Join(ids, ","))
+		if len(ss) == 0 {
+			errorJSON(w, http.StatusServiceUnavailable, "Cannot reach Hermes ("+unreachableWords(ue)+"). Retrying")
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, s.marked(r.Context(), user, ss))
+}
+
+// UnreachableHeader names, comma separated and query-escaped, the backends
+// a session list could not reach. Their rows in the answer, if any, are
+// the hub's last list of them.
+const UnreachableHeader = "X-Talaria-Unreachable"
+
+func unreachableWords(ue *hub.UnreachableError) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, why := range ue.Backends {
+		if !seen[why] {
+			seen[why] = true
+			out = append(out, why)
+		}
+	}
+	slices.Sort(out)
+	return strings.Join(out, "; ")
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {

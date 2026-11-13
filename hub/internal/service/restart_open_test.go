@@ -43,7 +43,7 @@ func TestListDuringRestartKeepsTheLastList(t *testing.T) {
 	e.gw.BeginRestart()
 	e.gw.Stop()
 	during, err := e.svc.Sessions(ctx, userAlice)
-	if err != nil || len(during) != len(before) {
+	if ue := hub.Unreachable(err); ue == nil || !ue.Stale[backendPC] || len(during) != len(before) {
 		t.Fatalf("sessions during a restart = %v, %v (before %d)", during, err, len(before))
 	}
 }

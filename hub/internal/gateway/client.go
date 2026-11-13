@@ -20,7 +20,11 @@ import (
 
 // Errors from the client.
 var (
-	ErrClosed       = errors.New("gateway connection closed")
+	ErrClosed = errors.New("gateway connection closed")
+	// ErrStalled is a connection the hub dropped because the gateway left
+	// a request on it unanswered for too long. It always comes with
+	// ErrClosed.
+	ErrStalled      = errors.New("gateway stopped answering on this connection")
 	ErrNoAuthority  = errors.New("gateway has no session authority")
 	ErrProtocol     = errors.New("gateway protocol mismatch")
 	ErrUnauthorized = errors.New("gateway login failed")
@@ -382,12 +386,27 @@ type Client struct {
 	pending map[int64]chan answer
 	done    chan struct{}
 	err     error
+	// stallAfter is how long a request may wait for its answer before a
+	// deadline that ends it also ends the connection (see Call).
+	stallAfter time.Duration
 }
 
 const readyTimeout = 10 * time.Second
 
+// DefaultStallAfter is the stallAfter of a new Client.
+const DefaultStallAfter = 15 * time.Second
+
+// SetStallAfter sets how long a request may go unanswered before its
+// deadline ends the connection too; 0 never ends it.
+func (c *Client) SetStallAfter(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stallAfter = d
+}
+
 func newClient(ctx context.Context, conn *websocket.Conn, onEvent func(Event)) (*Client, error) {
-	c := &Client{conn: conn, onEvent: onEvent, pending: map[int64]chan answer{}, done: make(chan struct{})}
+	c := &Client{conn: conn, onEvent: onEvent, pending: map[int64]chan answer{}, done: make(chan struct{}),
+		stallAfter: DefaultStallAfter}
 	readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
 	defer cancel()
 	var ready struct {
@@ -490,6 +509,14 @@ func (c *Client) Close() {
 }
 
 // Call sends one request and decodes its result into out (which may be nil).
+//
+// A Hermes gateway answers the control requests of one connection one at a
+// time, in the order they came (tui_gateway/ws.py, _dispatch_loop). One
+// request it does not finish holds every later one on the connection, while
+// the other connections of the same gateway keep working. So when a request
+// that waited stallAfter or longer runs out of time, Call ends the
+// connection: every request still waiting on it fails with ErrClosed and
+// ErrStalled, which callers retry on a new connection.
 func (c *Client) Call(ctx context.Context, method string, params, out any) error {
 	raw, err := json.Marshal(params)
 	if err != nil {
@@ -506,7 +533,9 @@ func (c *Client) Call(ctx context.Context, method string, params, out any) error
 	c.nextID++
 	id := c.nextID
 	c.pending[id] = ch
+	stallAfter := c.stallAfter
 	c.mu.Unlock()
+	sent := time.Now()
 	msg, err := json.Marshal(struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      int64           `json:"id"`
@@ -545,8 +574,22 @@ func (c *Client) Call(ctx context.Context, method string, params, out any) error
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
+		waited := time.Since(sent)
+		if stallAfter > 0 && waited >= stallAfter && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("%s: %w", method, c.stall(method, waited))
+		}
 		return fmt.Errorf("%s: %w", method, ctx.Err())
 	}
+}
+
+// stall ends a connection whose gateway left a request unanswered for
+// waited, and returns the error every request on it gets.
+func (c *Client) stall(method string, waited time.Duration) error {
+	c.fail(fmt.Errorf("%w: no answer to %s in %s", ErrStalled, method, waited.Round(time.Millisecond)))
+	// The close handshake may wait for a peer that is stuck too: never
+	// hold the caller for it.
+	go func() { _ = c.conn.Close(websocket.StatusNormalClosure, "no answer") }()
+	return c.Err()
 }
 
 // ErrNoFile is a file the listener does not serve: missing, not a regular

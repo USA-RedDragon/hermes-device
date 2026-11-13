@@ -187,6 +187,8 @@ type Gateway struct {
 	orphanBranches    bool
 	commands          []string
 	compressed        []string
+	// stalls hold the next call of a method on its connection (StallNext).
+	stalls map[string]chan struct{}
 }
 
 type submission struct {
@@ -357,6 +359,23 @@ func (g *Gateway) RefuseCalls(method, reason string) {
 		g.refusedCalls = map[string]string{}
 	}
 	g.refusedCalls[method] = reason
+}
+
+// StallNext makes the next call of method hang on its connection until
+// release is called, as Hermes does with a control request it is stuck
+// on: the gateway answers the requests of one connection in order, so every
+// later request on that connection waits too, while other connections are
+// answered at once. Once released the held call is answered.
+func (g *Gateway) StallNext(method string) (release func()) {
+	ch := make(chan struct{})
+	g.mu.Lock()
+	if g.stalls == nil {
+		g.stalls = map[string]chan struct{}{}
+	}
+	g.stalls[method] = ch
+	g.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { close(ch) }) }
 }
 
 // Stop makes the gateway's process exit: every connection closes and new
@@ -730,6 +749,17 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 		}
 		if json.Unmarshal(data, &req) != nil {
 			continue
+		}
+		g.mu.Lock()
+		stall := g.stalls[req.Method]
+		delete(g.stalls, req.Method)
+		g.mu.Unlock()
+		if stall != nil {
+			select {
+			case <-stall:
+			case <-r.Context().Done():
+				return
+			}
 		}
 		g.mu.Lock()
 		if g.notReady {
