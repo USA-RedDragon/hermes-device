@@ -145,6 +145,6 @@ func verify(encoded, password string) (bool, error) {
 	if err != nil || len(want) == 0 || len(want) > 128 {
 		return false, ErrBadHash
 	}
-	got := argon2.IDKey([]byte(password), salt, p.Time, p.Memory, p.Threads, uint32(min(len(want), math.MaxUint32)))
+	got := argon2.IDKey([]byte(password), salt, p.Time, p.Memory, p.Threads, uint32(min(uint64(len(want)), math.MaxUint32)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }
