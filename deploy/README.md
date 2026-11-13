@@ -40,7 +40,8 @@ All guides: https://usa-reddragon.github.io/talaria/
 ## What is here
 
 - `compose/`: the Docker Compose install and its setup scripts (`compose/files`).
-- `charts/talaria/`: the Helm chart. It carries copies of `compose/files/hermes-init.py` and `demo-llm.py`;
+- `charts/talaria/`: the Helm chart, built on the bjw-s common library (packaged in `charts/talaria/charts/`).
+  It carries copies of `compose/files/hermes-init.py`, `demo-llm.py` and `searxng/settings.yml`;
   `hack/check-sync.sh` checks that they match.
 - `aio/`: the all-in-one image (`aio/Dockerfile`, build context `deploy/`), with the Unraid template and the
   TrueNAS app file. A tag `aio/vX.Y.Z` publishes `ghcr.io/usa-reddragon/talaria-aio:vX.Y.Z`.

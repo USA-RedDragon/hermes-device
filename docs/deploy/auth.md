@@ -191,7 +191,7 @@ services:
 **Helm:**
 
 ```sh
-helm upgrade talaria oci://ghcr.io/usa-reddragon/charts/talaria -n talaria --reuse-values \
+helm upgrade talaria ./talaria -n talaria --reset-then-reuse-values \
   --set auth.mode=oidc \
   --set auth.oidc.issuerUrl=https://id.example.com/realms/home \
   --set auth.oidc.clientId=talaria \

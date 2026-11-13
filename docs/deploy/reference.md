@@ -115,13 +115,19 @@ apiVersion: v2
 name: talaria
 description: Talaria, a web and Telegram front end for Hermes Agent with paired computers and a sandbox
 type: application
-version: 0.1.0
+version: 0.2.0
 # The talaria-hub release this chart was tested with
 appVersion: "0.26.54"
 home: https://github.com/USA-RedDragon/talaria
 sources:
   - https://github.com/USA-RedDragon/talaria
 kubeVersion: ">=1.29.0-0"
+dependencies:
+  # The bjw-s common library renders the objects; charts/ carries the packaged copy, so the chart installs
+  # from a plain checkout
+  - name: common
+    repository: oci://ghcr.io/bjw-s-labs/helm
+    version: 5.3.0
 ```
 <!-- /docgen:code -->
 
@@ -192,6 +198,8 @@ images:
   deviceBinary: talaria
   sandbox: ghcr.io/usa-reddragon/talaria-sandbox:v0.26.0@sha256:95c0ad9f33ab6bb5f19064c4c9cca23b05b5b635b6fb10999d1895d843b81090
   caddy: docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+  # -- SearXNG, the agent's web search (searxng below)
+  searxng: docker.io/searxng/searxng:2026.11.13-8a53a6aa5@sha256:82b222dd1854c43241874874fbc985006556230804dc819ef2a639eeb574d0e2
   pullPolicy: IfNotPresent
 # -- Secrets for private images, such as [{name: ghcr}]
 imagePullSecrets: []
@@ -253,6 +261,14 @@ sandbox:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 8Gi}
 
+searxng:
+  # -- SearXNG, a metasearch engine in its own pod, for the agent's web_search with no API key. Only the agent
+  # reaches it (Service <release>-searxng). Hermes uses it unless you set another search provider
+  enabled: true
+  resources:
+    requests: {cpu: 10m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
 service:
   type: ClusterIP
   port: 8080
@@ -298,19 +314,21 @@ TALARIA_INSTALL          unraid                             Install type
 
 The agent searches the web through its own [SearXNG](https://docs.searxng.org), a free metasearch engine that
 runs next to it: no API key and no account. It is on by default. Only the agent reaches it: compose runs it as the
-`searxng` service with no published port, and the all-in-one image runs it inside the container on 127.0.0.1. Its
+`searxng` service with no published port, the Helm chart as the Deployment and ClusterIP Service
+`<release>-searxng`, and the all-in-one image runs it inside the container on 127.0.0.1. Its
 key is made on the first start and kept with the other secrets. Its settings are
 [`deploy/searxng/settings.yml`](../../deploy/searxng/settings.yml) (the JSON API on, no rate limiter, as one local
 client uses it).
 
 - **Turn it off:** compose: `TALARIA_SEARXNG=0` in `.env`, then `docker compose up -d`. All-in-one:
-  `TALARIA_SEARXNG=false`. The agent then uses whatever web search is set up in it, if any.
+  `TALARIA_SEARXNG=false`. Helm: `--set searxng.enabled=false`. The agent then uses whatever web search is set up
+  in it, if any.
 - **Use another search provider:** set it up in the agent, for example with
   `docker compose exec -u hermes hermes hermes tools` (or `web.search_backend` in the agent's `config.yaml`).
   Talaria points web search at SearXNG only while no search provider is chosen there, so your choice wins and
   stays.
 - **Use your own SearXNG:** give the agent `SEARXNG_URL` (compose: in `compose.override.yaml` under
-  `hermes: environment:`) and turn the bundled one off.
+  `hermes: environment:`; Helm: `hermes.env.SEARXNG_URL`) and turn the bundled one off.
 
 ## Images
 

@@ -1,10 +1,12 @@
 # Install on Kubernetes with Helm
 
-The chart in `deploy/charts/talaria` runs the same parts as the compose install: the hub (with its web front in one pod), the agent, and the sandbox. It makes every key it needs on the first install.
+The chart in `deploy/charts/talaria` runs the same parts as the compose install: the hub (with its web front in one pod), the agent, the sandbox, and SearXNG for the agent's web search. It makes every key it needs on the first install.
+
+It is built on the [bjw-s common library](https://bjw-s-labs.github.io/helm-charts/docs/common-library/) (a copy is in `charts/`, so a plain checkout installs). Its own values stay short; the chart maps them onto the library's controllers, services, volumes and routes.
 
 ## What you need
 
-- Kubernetes 1.29 or newer, `kubectl` and Helm 3.14 or newer (Helm 4 works).
+- Kubernetes 1.29 or newer, `kubectl` and Helm 3.18 or newer (Helm 4 works).
 - For editors (`talaria acp`): nothing more. On Kubernetes 1.35 or newer the chart mounts the talaria image as a volume for `acp-host`. On older clusters an init container copies the binary into the pod instead. On 1.33 or 1.34 with the `ImageVolume` feature gate on, set `hermes.editorBridge.binary=image`; `copy` forces the copy. To turn the editor bridge off, set `hermes.editorBridge.enabled=false`; the hub then tells editors it has no editor bridge.
 - A default StorageClass, or set `*.persistence.storageClass`. The agent needs 20 GiB by default.
 - For people outside the cluster: an Ingress controller or a Gateway API gateway, and a host name.
@@ -58,7 +60,9 @@ helm upgrade --install talaria ./talaria --namespace talaria --create-namespace 
 ```
 
 Then make your account and connect a model, as in steps 2 and 3 of the quick start. For Gateway
-API, use `httpRoute.enabled=true` and `httpRoute.parentRefs` instead of the Ingress. The chart makes two routes:
+API, use `httpRoute.enabled=true` and `httpRoute.parentRefs` instead of the Ingress. The routes use the newest
+`HTTPRoute` version the cluster serves; for `helm template` without a cluster, add
+`--api-versions gateway.networking.k8s.io/v1/HTTPRoute`. The chart makes two routes:
 `<release>-device` for `/api/device/` (device WebSockets, no request timeout) and `<release>` for the rest (24
 hours, for server-sent events). An authenticating policy belongs on `<release>` only ([Login](auth.md)).
 
@@ -88,10 +92,30 @@ rolling update with `maxUnavailable: 0` and a PodDisruptionBudget.
 
 The sandbox is one pod that is replaced: a second sandbox would take over the first one's connection.
 
+## Web search
+
+`searxng.enabled` (the default) runs SearXNG as `<release>-searxng`, reachable only inside the cluster, and points
+the agent's web search at it while no other search provider is chosen in the agent. Turn it off with
+`--set searxng.enabled=false`. Details: [Web search](reference.md#web-search).
+
+## Upgrade from chart 0.1.x
+
+Chart 0.2.0 moved to the bjw-s common library. Upgrade with the same values as before (`--reuse-values` keeps
+only the old values, so SearXNG stays off with it; `--reset-then-reuse-values` takes the new defaults):
+
+```bash
+helm upgrade talaria ./talaria --namespace talaria --reset-then-reuse-values
+```
+
+Every volume, Secret and Service keeps its name, so data and keys stay. Only the Deployments change their pod
+selector, which Kubernetes does not allow in place: a pre-upgrade hook (`<release>-migrate`, run once, only while
+old Deployments exist) deletes them, waits until the old hub and sandbox pods are gone, and Helm makes them again.
+The hub is away for under a minute; the agent hands over as in a rolling update.
+
 ## Keys and secrets
 
 On the first install the chart makes the hub's Ed25519 signing key, the Web Push key, the session secret, the
-password the hub uses with the agent and the sandbox token, and keeps
+password the hub uses with the agent, the sandbox token and the SearXNG key, and keeps
 them in the Secret `<release>-keys`. Upgrades read them back, so they never change. Uninstall leaves that Secret
 and the volumes in place (`helm.sh/resource-policy: keep`); delete them by hand to start over.
 
