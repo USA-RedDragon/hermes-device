@@ -598,6 +598,7 @@ window.HubAgent = (() => {
           try {
             const a = await api("PUT", base() + "/connections/" + enc(c.name), { enabled: tg.checked });
             dot.className = "dot " + (tg.checked ? "" : "off");
+            sub.textContent = tg.checked ? (c.url || c.command || "") : "Off";
             result(box, say("good", liveLine(cn, tg.checked, a.applied_live)));
           } catch (e) { tg.checked = !tg.checked; result(box, say("bad", cn + " was not changed.", [e.message])); }
           tg.disabled = false;
