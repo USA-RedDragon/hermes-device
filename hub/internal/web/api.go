@@ -510,6 +510,12 @@ type sseEvent struct {
 	Kind string          `json:"kind"`
 	Data json.RawMessage `json:"data"`
 	At   int64           `json:"at,omitempty"`
+	// Provisional marks the hub's copy of a chat, sent while the fresh
+	// snapshot is on its way: a page that already shows the chat ignores it.
+	Provisional bool `json:"provisional,omitempty"`
+	// FP names the transcript of a snapshot (see snapFP); a page that
+	// reconnects sends it back as ?fp=.
+	FP string `json:"fp,omitempty"`
 }
 
 // handleEvents streams a session as server-sent events. Each event's id is
@@ -521,20 +527,33 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		since = r.URL.Query().Get("since")
 	}
 	sinceSeq := s.sinceSeq(since)
-	ew := &eventWriter{s: s, split: since == ""}
+	ew := &eventWriter{s: s, split: since == "", fp: r.URL.Query().Get("fp")}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
 	// While the backend is slow to answer, a page that opens the chat gets
-	// the hub's copy of it first.
-	ch, stop, err := s.svc.Attach(hub.WithCached(r.Context()), userFrom(r), r.PathValue("backend"), r.PathValue("session"), sinceSeq)
+	// the hub's copy of it first. A page that reconnects already shows the
+	// chat: a copy, often older than what it shows, would only replace it.
+	ctx := r.Context()
+	if since == "" {
+		ctx = hub.WithCached(ctx)
+	}
+	ch, stop, err := s.svc.Attach(ctx, userFrom(r), r.PathValue("backend"), r.PathValue("session"), sinceSeq)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	defer stop()
+	// Why and when each stream ends, so a stream that keeps ending young is
+	// told from one a client or a proxy cut.
+	began, ended := time.Now(), "client gone"
+	defer func() {
+		if d := time.Since(began); d < 10*time.Second {
+			s.log.Info("event stream ended young", "session", r.PathValue("session"), "why", ended, "after", d.Round(time.Millisecond).String(), "since", since != "")
+		}
+	}()
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{})
 	h := w.Header()
@@ -554,20 +573,24 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-s.draining:
+			ended = "hub draining"
 			s.flushEvents(out, ch)
 			_, _ = fmt.Fprintf(out, "retry: %d\ndata: {\"kind\":%q}\n\n", reconnectRetry.Milliseconds(), kindReconnect)
 			out.Flush()
 			return
 		case <-tick.C:
 			if _, err := fmt.Fprint(out, ": keepalive\n\n"); err != nil {
+				ended = "keepalive write failed"
 				return
 			}
 			out.Flush()
 		case e, ok := <-ch:
 			if !ok {
+				ended = "hub closed the viewer"
 				return
 			}
 			if !ew.write(out, e) {
+				ended = "write failed"
 				return
 			}
 			out.Flush()
@@ -601,8 +624,11 @@ func (s *Server) sinceSeq(id string) int64 {
 	return n
 }
 
-func (s *Server) writeEvent(w io.Writer, e hub.Event) bool {
-	data, err := json.Marshal(sseEvent{Kind: e.Kind, Data: e.Data, At: e.At})
+func (s *Server) writeEvent(w io.Writer, e hub.Event) bool { return s.writeEventFP(w, e, "") }
+
+// writeEventFP is writeEvent for a snapshot that names its transcript.
+func (s *Server) writeEventFP(w io.Writer, e hub.Event, fp string) bool {
+	data, err := json.Marshal(sseEvent{Kind: e.Kind, Data: e.Data, At: e.At, Provisional: e.Provisional, FP: fp})
 	if err != nil {
 		return true
 	}

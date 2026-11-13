@@ -1,12 +1,18 @@
 package web
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
+
+// kindSnapshotSame answers a reconnect whose page already shows the chat's
+// transcript (its ?fp= is the snapshot's): nothing to redraw.
+const kindSnapshotSame = "snapshot.same"
 
 // kindSnapshotOlder carries the rows a split snapshot left out: the page
 // renders them above what it shows, in the background.
@@ -23,21 +29,57 @@ const kindSnapshotOlder = "snapshot.older"
 type eventWriter struct {
 	s     *Server
 	split bool
+	// fp is the transcript the page says it shows (?fp=), "" when it does
+	// not.
+	fp string
+}
+
+// snapFP names a snapshot's transcript: a hash of its messages. It is ""
+// for a snapshot that is not an idle chat's (a turn runs, an input waits,
+// or an approval is open), whose live state the page must take whole.
+func snapFP(data json.RawMessage) string {
+	var snap struct {
+		Messages json.RawMessage   `json:"messages"`
+		Running  bool              `json:"running"`
+		Pending  []json.RawMessage `json:"pending"`
+		Prompts  []json.RawMessage `json:"prompts"`
+	}
+	if json.Unmarshal(data, &snap) != nil || len(snap.Messages) == 0 {
+		return ""
+	}
+	if snap.Running || len(snap.Pending) > 0 || len(snap.Prompts) > 0 {
+		return ""
+	}
+	sum := sha256.Sum256(snap.Messages)
+	return hex.EncodeToString(sum[:12])
 }
 
 func (ew *eventWriter) write(w io.Writer, e hub.Event) bool {
-	if e.Kind != hub.KindSnapshot || (!ew.split && !e.Provisional) {
+	if e.Kind != hub.KindSnapshot {
 		return ew.s.writeEvent(w, e)
+	}
+	var fp string
+	if !e.Provisional {
+		fp = snapFP(e.Data)
+		if ew.fp != "" && fp == ew.fp {
+			// The page shows this transcript already, as it was when it
+			// reconnected to a replica that did not know its event id.
+			ew.fp, ew.split = "", false
+			return ew.s.writeEventFP(w, hub.Event{Seq: e.Seq, Kind: kindSnapshotSame, Data: json.RawMessage("{}")}, fp)
+		}
+	}
+	if !ew.split && !e.Provisional {
+		return ew.s.writeEventFP(w, e, fp)
 	}
 	head, older, ok := splitSnapshot(e.Data)
 	if !ok {
 		if e.Provisional {
-			return ew.s.writeEvent(w, hub.Event{Kind: e.Kind, Data: e.Data, At: e.At})
+			return ew.s.writeEvent(w, hub.Event{Kind: e.Kind, Data: e.Data, At: e.At, Provisional: true})
 		}
 		ew.split = false
-		return ew.s.writeEvent(w, e)
+		return ew.s.writeEventFP(w, e, fp)
 	}
-	if !ew.s.writeEvent(w, hub.Event{Kind: e.Kind, Data: head, At: e.At}) {
+	if !ew.s.writeEventFP(w, hub.Event{Kind: e.Kind, Data: head, At: e.At, Provisional: e.Provisional}, fp) {
 		return false
 	}
 	if e.Provisional {

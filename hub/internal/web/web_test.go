@@ -427,6 +427,57 @@ func TestEventStreamAndResume(t *testing.T) {
 	stop3()
 }
 
+// firstFrame reads the next "data:" line of a stream, as the page's
+// EventSource would hand it over.
+func firstFrame(t *testing.T, r *bufio.Reader) (kind, fp string) {
+	t.Helper()
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue
+		}
+		var f struct {
+			Kind string `json:"kind"`
+			FP   string `json:"fp"`
+		}
+		if json.Unmarshal([]byte(d), &f) != nil || f.Kind == "" {
+			continue
+		}
+		return f.Kind, f.FP
+	}
+}
+
+// A page that reconnects to a replica that cannot resume its event id
+// does not get the whole chat again when it still shows the same
+// transcript: the hub names the transcript in the snapshot (fp) and
+// answers a reconnect that sends it back with snapshot.same.
+func TestReconnectToAnotherReplicaGetsNoSecondSnapshot(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	c := client(t)
+	login(t, e, c)
+	r, stop := stream(t, c, e.url+"/api/sessions/pc/s1/events", "")
+	kind, fp := firstFrame(t, r)
+	stop()
+	if kind != "snapshot" || fp == "" {
+		t.Fatalf("first frame = %q fp %q: an idle chat's snapshot names its transcript", kind, fp)
+	}
+	r2, stop2 := stream(t, c, e.url+"/api/sessions/pc/s1/events?since=otherreplica.9&fp="+fp, "")
+	defer stop2()
+	if kind, _ := firstFrame(t, r2); kind != "snapshot.same" {
+		t.Fatalf("a reconnect that shows the same transcript got %q", kind)
+	}
+	r3, stop3 := stream(t, c, e.url+"/api/sessions/pc/s1/events?since=otherreplica.9&fp=stale", "")
+	defer stop3()
+	if kind, _ := firstFrame(t, r3); kind != "snapshot" {
+		t.Fatalf("a reconnect that shows another transcript got %q", kind)
+	}
+}
+
 func TestTelegramLink(t *testing.T) {
 	t.Parallel()
 	e := setup(t)

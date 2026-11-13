@@ -8,22 +8,35 @@ window.HubReconcile = (() => {
   // one it sent it under, or the hub's own for an input from elsewhere.
   const idOf = (p) => p.submission_id || p.id;
 
-  // carry tells what to do with each message this page has sent and has no
-  // answer for yet (inflight): "done" when the snapshot's transcript has it
-  // (it started), "adopt" with the index of its entry in the snapshot's
-  // pending list, or "again" when the snapshot knows nothing of it and the
-  // page shows it again as sending. A message the hub answered is not
-  // carried: the snapshot is the hub's word for it.
-  function carry(local, snap) {
+  // A message the hub accepted stays on screen this long when a snapshot
+  // does not show it yet: Hermes stores a steered or queued message only
+  // when its turn ends, and the hub's own copy of the chat, or another
+  // replica's, may not know it.
+  const keepFor = 10 * 60 * 1000;
+
+  // carry tells what to do with each message this page has sent and the
+  // snapshot does not account for: "done" when the snapshot's transcript
+  // has it (it started), "adopt" with the index of its entry in the
+  // snapshot's pending list, or "again" when the snapshot knows nothing of
+  // it and the page shows it again as sending. That holds for a message
+  // still in flight and for one the hub accepted lately (a steer, a queued
+  // or held message): the snapshot is the hub's word for it only when it
+  // lists it or shows it started. A message the hub refused is not carried.
+  function carry(local, snap, now) {
     const started = new Set();
-    for (const m of snap.messages || []) if (m && m.submission_id) started.add(m.submission_id);
+    const typed = new Set();
+    const msgs = snap.messages || [];
+    for (const m of msgs) if (m && m.submission_id) started.add(m.submission_id);
+    for (const m of msgs.slice(-60)) if (m && m.role === "user" && typeof m.text === "string") typed.add(m.text.trim());
     const pending = snap.pending || [];
+    const at = now === undefined ? Date.now() : now;
     const out = [];
     for (const p of local) {
-      if (!p.inflight) continue;
-      const at = pending.findIndex((x) => idOf(x) === p.id || x.id === p.id);
-      if (started.has(p.id)) out.push({ p, act: "done" });
-      else if (at >= 0) out.push({ p, act: "adopt", at });
+      const lately = !!p.id && !!p.at && at - p.at < keepFor;
+      if (!p.inflight && !lately) continue;
+      const i = pending.findIndex((x) => idOf(x) === p.id || x.id === p.id);
+      if (started.has(p.id) || (!p.inflight && typed.has(String(p.text || "").trim()))) out.push({ p, act: "done" });
+      else if (i >= 0) out.push({ p, act: "adopt", at: i });
       else out.push({ p, act: "again" });
     }
     return out;

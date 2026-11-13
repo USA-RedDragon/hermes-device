@@ -981,7 +981,7 @@
       m.rawText = shown.text || "";
       if (atts) for (const a of atts) if (a.url) this.urls.push(a.url);
       this.add(m);
-      if (pending) this.pending.push({ bubble: m, label: null, text, id: null });
+      if (pending) this.pending.push({ bubble: m, label: null, text, id: null, at: Date.now() });
       else this.when(m, this.at);
       return m;
     }
@@ -3266,12 +3266,23 @@
     loadPlace();
     const chat = view;
     let first = true;
+    // fp names the transcript this page shows, while nothing has changed it
+    // since the snapshot: a reconnect to a replica that cannot resume from
+    // the event id then gets "snapshot.same" instead of the whole chat.
+    let fp = "";
     const follow = window.HubStream(view.base + "/events", {
+      query: () => (fp ? "fp=" + encodeURIComponent(fp) : ""),
       message: (m) => {
         if (first) mark("event");
         let e;
         try { e = JSON.parse(m.data); } catch (_) { return; }
         if (e.kind === "hub.reconnect") { follow.moving(); return; }
+        // The hub's copy of a chat it is still fetching: a page that shows
+        // the chat already would swap it for an older one.
+        if (e.provisional && chat.loaded) return;
+        if (e.kind === "snapshot.same") return;
+        if (e.kind === "snapshot") fp = e.fp || "";
+        else if (e.kind !== "snapshot.older" && e.kind !== "backend.status") fp = "";
         if (first) mark("parsed");
         chat.event(e.kind, e.data, e.at);
         if (first) {

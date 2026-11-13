@@ -45,6 +45,22 @@ const harness = (opt) => {
   assert.strictEqual(h.sources.length, 1, "a closed follower opens nothing");
 }
 
+// The page's own query text (the fp of the transcript it shows) rides on
+// every try, after ?since= once there is an id.
+{
+  let fp = "";
+  const h = harness({ query: () => (fp ? "fp=" + fp : "") });
+  assert.strictEqual(h.last().url, "/api/sessions/pc/s1/events", "nothing to add yet");
+  h.last().open();
+  h.advance(50);
+  h.last().send("a.5", "{}");
+  fp = "abc";
+  h.last().fail();
+  h.advance(2000);
+  assert.strictEqual(h.last().url, "/api/sessions/pc/s1/events?since=a.5&fp=abc");
+  h.s.close();
+}
+
 // The last event id comes back as ?since=, and an id from another replica
 // is sent as it is (the hub answers it with a snapshot).
 {

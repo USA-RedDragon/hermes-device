@@ -27,6 +27,7 @@ window.HubBackoff = (o) => {
 // healthy once it has stayed open for healthy ms: that clears the banner,
 // starts the waits over and asks for one check of the hub's version. Until
 // then a stream that ended counts as a failure, whatever it carried.
+// o.query() may give more query text for the stream URL (the page's fp).
 // h: message(m) for each event, lost() when no healthy stream came for 5
 // seconds, back() when one did after lost(), healthy() when a stream is
 // healthy after a failure, failed() every minute once nothing opened for
@@ -86,7 +87,9 @@ window.HubStream = (url, h, o) => {
   function connect() {
     retryTimer = 0;
     if (dead) return;
-    const target = lastId ? url + (url.includes("?") ? "&" : "?") + "since=" + encodeURIComponent(lastId) : url;
+    let target = lastId ? url + (url.includes("?") ? "&" : "?") + "since=" + encodeURIComponent(lastId) : url;
+    const more = opt.query ? opt.query() : "";
+    if (more) target += (target.includes("?") ? "&" : "?") + more;
     const src = new EventSource(target);
     es = src;
     src.onopen = () => {

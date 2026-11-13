@@ -124,3 +124,96 @@ func TestSplitSnapshotLongTurnCutAtAssistant(t *testing.T) {
 		t.Fatalf("head starts with %s and has %d bytes", rowRole(h.Messages[0]), len(head))
 	}
 }
+
+type fpOut struct {
+	buf strings.Builder
+}
+
+func (o *fpOut) Write(p []byte) (int, error) { return o.buf.Write(p) }
+
+func fpServer() *Server { return &Server{instance: "i"} }
+
+func snapWith(t *testing.T, ms []map[string]any, extra map[string]any) json.RawMessage {
+	t.Helper()
+	m := map[string]any{"session_id": "s", "title": "T", "messages": ms}
+	for k, v := range extra {
+		m[k] = v
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// A page that reconnected to a replica that cannot resume its event id
+// says which transcript it shows (?fp=). An idle chat with that same
+// transcript gets a one-line "snapshot.same", not the whole chat again;
+// a changed transcript, or a running turn, gets the snapshot.
+func TestSnapshotSameWhenThePageShowsIt(t *testing.T) {
+	t.Parallel()
+	ms := rows(40, 1)
+	data := snapWith(t, ms, nil)
+	fp := snapFP(data)
+	if fp == "" {
+		t.Fatal("an idle chat has no fingerprint")
+	}
+	out := &fpOut{}
+	ew := &eventWriter{s: fpServer(), split: true, fp: fp}
+	if !ew.write(out, hub.Event{Seq: 7, Kind: hub.KindSnapshot, Data: data}) {
+		t.Fatal("write failed")
+	}
+	got := out.buf.String()
+	if !strings.Contains(got, `"kind":"snapshot.same"`) || strings.Contains(got, "q0") || len(got) > 200 {
+		t.Fatalf("not a one-line answer (%d bytes): %.200s", len(got), got)
+	}
+	if !strings.Contains(got, "id: i.7\n") {
+		t.Fatalf("the answer lost the event id: %s", got)
+	}
+
+	// The transcript changed since: the whole snapshot, with its new fingerprint.
+	out = &fpOut{}
+	ew = &eventWriter{s: fpServer(), fp: fp}
+	data2 := snapWith(t, append(ms[:len(ms):len(ms)], map[string]any{kRole: rowUser, kText: "new"}), nil)
+	ew.write(out, hub.Event{Seq: 8, Kind: hub.KindSnapshot, Data: data2})
+	if !strings.Contains(out.buf.String(), `"kind":"snapshot"`) || !strings.Contains(out.buf.String(), `"fp":"`+snapFP(data2)+`"`) {
+		t.Fatalf("a changed chat was not sent: %.200s", out.buf.String())
+	}
+
+	// A running turn, a waiting input or an open approval is live state
+	// the page must take whole.
+	for name, extra := range map[string]map[string]any{
+		"running": {"running": true},
+		"pending": {"pending": []any{map[string]any{"id": "a"}}},
+		"prompt":  {"prompts": []any{map[string]any{"id": "p"}}},
+	} {
+		d := snapWith(t, ms, extra)
+		if snapFP(d) != "" {
+			t.Fatalf("%s: a live chat has a fingerprint", name)
+		}
+		out = &fpOut{}
+		ew = &eventWriter{s: fpServer(), fp: fp}
+		ew.write(out, hub.Event{Kind: hub.KindSnapshot, Data: d})
+		if strings.Contains(out.buf.String(), "snapshot.same") {
+			t.Fatalf("%s: answered with snapshot.same", name)
+		}
+	}
+}
+
+// The hub's copy of a chat goes out marked provisional, so a page that
+// shows the chat can ignore it.
+func TestProvisionalSnapshotIsMarked(t *testing.T) {
+	t.Parallel()
+	out := &fpOut{}
+	ew := &eventWriter{s: fpServer()}
+	ew.write(out, hub.Event{Kind: hub.KindSnapshot, Data: snapWith(t, rows(900, 1), nil), Provisional: true})
+	if !strings.Contains(out.buf.String(), `"provisional":true`) {
+		t.Fatalf("a held copy is not marked: %.200s", out.buf.String())
+	}
+	out = &fpOut{}
+	ew = &eventWriter{s: fpServer()}
+	ew.write(out, hub.Event{Kind: hub.KindSnapshot, Data: snapWith(t, rows(2, 1), nil), Provisional: true})
+	if !strings.Contains(out.buf.String(), `"provisional":true`) {
+		t.Fatalf("a small held copy is not marked: %.200s", out.buf.String())
+	}
+}
