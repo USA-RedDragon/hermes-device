@@ -108,20 +108,6 @@ The sandbox is one pod that is replaced: a second sandbox would take over the fi
 the agent's web search at it while no other search provider is chosen in the agent. Turn it off with
 `--set searxng.enabled=false`. Details: [Web search](reference.md#web-search).
 
-## Upgrade from chart 0.1.x
-
-Chart 0.2.0 moved to the bjw-s common library. Upgrade with the same values as before (`--reuse-values` keeps
-only the old values, so SearXNG stays off with it; `--reset-then-reuse-values` takes the new defaults):
-
-```bash
-helm upgrade talaria ./talaria --namespace talaria --reset-then-reuse-values
-```
-
-Every volume, Secret and Service keeps its name, so data and keys stay. Only the Deployments change their pod
-selector, which Kubernetes does not allow in place: a pre-upgrade hook (`<release>-migrate`, run once, only while
-old Deployments exist) deletes them, waits until the old hub and sandbox pods are gone, and Helm makes them again.
-The hub is away for under a minute; the agent hands over as in a rolling update.
-
 ## Upgrade from chart 0.2.x
 
 Chart 0.3.0 drops the Caddy container that sat in front of the hub in its pod: the hub flushes chat streams itself.

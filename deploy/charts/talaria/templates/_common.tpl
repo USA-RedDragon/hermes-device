@@ -2,8 +2,8 @@
 talaria.common: Talaria's short values mapped onto the bjw-s common library's values (controllers, service,
 persistence, configMaps, secrets, ingress, route). common.yaml renders the library with them.
 
-Every object keeps the name the chart gave it before it moved to the library (forceRename), so an upgrade keeps
-the volumes, the Secrets and the Service addresses.
+Every object has a fixed name (forceRename), so the volumes, the Secrets and the Service addresses stay the same
+across upgrades.
 */ -}}
 {{- define "talaria.common" -}}
 {{- $full := include "talaria.fullname" . -}}
@@ -13,8 +13,7 @@ the volumes, the Secrets and the Service addresses.
 {{- $mode := include "talaria.binaryMode" . -}}
 {{- $bridge := $v.hermes.editorBridge.enabled -}}
 {{- $sqlite := eq $v.hub.store.driver "sqlite" -}}
-{{- /* Off when the values have no searxng block (an upgrade with --reuse-values from chart 0.1.x) */ -}}
-{{- $searxng := and (not (empty ($v.searxng | default dict).enabled)) (not (empty $v.images.searxng)) -}}
+{{- $searxng := $v.searxng.enabled -}}
 {{- if and (gt (int $v.hub.replicas) 1) $sqlite }}
 {{- fail "hub.replicas above 1 needs hub.store.driver postgres" }}
 {{- end }}
