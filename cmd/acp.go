@@ -48,7 +48,7 @@ func newACPCommand(b *base) *cobra.Command {
 			ctx, stop := signalContext(cmd.Context())
 			defer stop()
 			err = br.Run(ctx)
-			if errors.Is(err, hubapi.ErrUnauthorized) || errors.Is(err, acpbridge.ErrUnsupportedVersion) {
+			if errors.Is(err, hubapi.ErrUnauthorized) || errors.Is(err, hubapi.ErrNoEditorBridge) || errors.Is(err, acpbridge.ErrUnsupportedVersion) {
 				fmt.Fprintln(os.Stderr, "talaria acp: "+err.Error())
 			}
 			return err

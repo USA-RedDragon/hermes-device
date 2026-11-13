@@ -631,6 +631,25 @@ func TestUnauthorized(t *testing.T) {
 	})
 }
 
+func TestNoEditorBridge(t *testing.T) {
+	t.Parallel()
+	hub := newFakeHub(t)
+	hub.refuse, hub.status = true, http.StatusNotImplemented
+	ed := startBridge(t, hub)
+	select {
+	case err := <-ed.done:
+		if !errors.Is(err, hubapi.ErrNoEditorBridge) {
+			t.Errorf("Run = %v", err)
+		}
+		ed.done <- err
+	case <-time.After(10 * time.Second):
+		t.Fatal("bridge did not stop")
+	}
+	if n := hub.refusedCount(); n != 1 {
+		t.Errorf("upgrades = %d, want 1", n)
+	}
+}
+
 func TestEditorEOF(t *testing.T) {
 	t.Parallel()
 	hub := newFakeHub(t)

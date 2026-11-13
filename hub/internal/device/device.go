@@ -30,6 +30,7 @@ import (
 const (
 	codeUnauthorized       = "unauthorized"
 	codeBackendUnavailable = "backend_unavailable"
+	codeNoEditorBridge     = "no_editor_bridge"
 	codeForbidden          = "forbidden"
 	codeBadRequest         = "bad_request"
 	codeRateLimited        = "rate_limited"

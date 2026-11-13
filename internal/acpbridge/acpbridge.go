@@ -466,6 +466,9 @@ func fatalError(err error) error {
 	if errors.Is(err, hubapi.ErrUnauthorized) {
 		return hubapi.ErrUnauthorized
 	}
+	if errors.Is(err, hubapi.ErrNoEditorBridge) {
+		return hubapi.ErrNoEditorBridge
+	}
 	switch websocket.CloseStatus(err) { //nolint:exhaustive // close codes are an open set; only these two are fatal
 	case protocol.CloseUnauthorized:
 		return hubapi.ErrUnauthorized

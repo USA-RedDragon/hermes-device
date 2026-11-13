@@ -51,7 +51,7 @@ func (s *Server) handleACP(w http.ResponseWriter, r *http.Request) {
 	d := deviceFrom(r)
 	b := s.backends[d.BackendID]
 	if b.cfg.ACPURL == "" {
-		apiError(w, http.StatusBadGateway, codeBackendUnavailable, "this device's Hermes has no acp-host set up in the hub")
+		apiError(w, http.StatusNotImplemented, codeNoEditorBridge, "this hub has no editor bridge for your Hermes (the backend has no acp_url); ask the hub admin to set it up")
 		return
 	}
 	s.proxy(w, r, d, assertion.LegACP, gateway.WebSocketURL(b.cfg.ACPURL), protocol.ACPHostPath, func(l *leg) { //nolint:contextcheck // the leg outlives the upgrade request

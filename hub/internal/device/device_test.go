@@ -496,6 +496,37 @@ func TestLegRefusals(t *testing.T) {
 	})
 }
 
+func TestACPLegWithoutBridge(t *testing.T) {
+	t.Parallel()
+	stores(t, func(t *testing.T, st *store.Store) {
+		e := setup(t, st)
+		tok, _ := e.pair(e.a)
+		b := e.backend()
+		b.ACPURL = ""
+		d, err := device.New(device.Options{Store: e.st, Access: e.access, Sessions: e.svc, Backends: []config.Backend{b},
+			Dialers: map[string]device.Dialer{backendID: gateway.NewDialer(gateway.Credentials{BaseURL: b.URL, Provider: providerBasic,
+				Username: hubUser, Password: "pw"})}, Key: e.key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := httptest.NewServer(d.Handler())
+		t.Cleanup(srv.Close)
+		t.Cleanup(d.Drain)
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/api/device/acp", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var body map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		if resp.StatusCode != http.StatusNotImplemented || body["error"] != "no_editor_bridge" || body["message"] == "" {
+			t.Fatalf("no acp_url = %d %v", resp.StatusCode, body)
+		}
+	})
+}
+
 func TestACPLeg(t *testing.T) {
 	t.Parallel()
 	stores(t, func(t *testing.T, st *store.Store) {

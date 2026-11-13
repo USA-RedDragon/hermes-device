@@ -43,6 +43,10 @@ const (
 // token is revoked or wrong; only login fixes it.
 var ErrUnauthorized = errors.New("hub refused the device token; run talaria login")
 
+// ErrNoEditorBridge is returned when the hub has no acp-host for this
+// device's Hermes.
+var ErrNoEditorBridge = errors.New("this hub has no editor bridge for your Hermes (the backend has no acp_url); ask the hub admin to set it up")
+
 // Error is an error answer from the hub.
 type Error struct {
 	Status  int    `json:"-"`
@@ -247,6 +251,9 @@ func (c *Client) DialLeg(ctx context.Context, path string) (*websocket.Conn, err
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
 			return nil, ErrUnauthorized
+		}
+		if resp != nil && resp.StatusCode == http.StatusNotImplemented && path == PathACPLeg {
+			return nil, ErrNoEditorBridge
 		}
 		return nil, fmt.Errorf("dial %s: %w", path, err)
 	}
