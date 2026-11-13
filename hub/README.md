@@ -2,9 +2,11 @@
 
 [![Release](https://github.com/USA-RedDragon/talaria-hub/actions/workflows/release.yaml/badge.svg)](https://github.com/USA-RedDragon/talaria-hub/actions/workflows/release.yaml) [![go.mod version](https://img.shields.io/github/go-mod/go-version/USA-RedDragon/talaria-hub.svg)](https://github.com/USA-RedDragon/talaria-hub) [![License](https://badgen.net/github/license/USA-RedDragon/talaria-hub)](https://github.com/USA-RedDragon/talaria-hub/blob/main/LICENSE)
 
-The hub of Talaria: one web front end, behind OpenID Connect login, for many [Hermes Agent](https://github.com/NousResearch/hermes-agent) gateways. It is made for a phone first.
+The hub of Talaria: one web front end, with its own accounts, a reverse-proxy login or OpenID Connect, for many [Hermes Agent](https://github.com/NousResearch/hermes-agent) gateways. It is made for a phone first.
 
 Docs: https://usa-reddragon.github.io/talaria-hub/
+
+Guides: [admin guide](docs/admin.md) (people, backends, computers, proxies), [logging in](docs/auth.md), [configuration](docs/configuration.md) (every setting) and the [API overview](docs/api.md). To install the hub with Hermes and a sandbox in one step, use [talaria-deploy](https://github.com/USA-RedDragon/talaria-deploy). `docs/site/build.sh` builds these pages into a static site with pandoc.
 
 Guides: the [API overview](docs/api.md). To install the hub with Hermes and a sandbox in one step, use [talaria-deploy](https://github.com/USA-RedDragon/talaria-deploy). `docs/site/build.sh` builds the pages in `docs/` into a static site with pandoc.
 
