@@ -232,8 +232,14 @@ DEFAULTS = {
     # 0015; Claude Code re-attaches up to 5K tokens per skill, and 40 of 44 skills measured fit), and old tool
     # output over 8000 chars is cut to a one-line summary once a chat passes 100K tokens (upstream's proactive
     # prune; the trigger of Anthropic's own tool-result clearing), so a long chat compacts less often. The prune
-    # spares the skill compaction keeps (patched Hermes 0071).
-    "compression": {"keep_last_skill_chars": 20000, "proactive_prune_tokens": 100000},
+    # spares the skill compaction keeps (patched Hermes 0071). The summary is the compact layout: the model writes
+    # three short sections and code writes the user's messages, agents' approval claims and the touched files, with
+    # a checked reply and a fallback that needs no model (patched Hermes 0079); a decision ledger (the user's
+    # approvals with their questions, dispatched work, tags) rides every handoff verbatim (0078). In the compaction
+    # eval this kept recall on models from qwen3.5:2b to Claude Opus through three compactions, with the fewest
+    # wrong attributions and about 60% fewer summarizer tokens than upstream's layout.
+    "compression": {"keep_last_skill_chars": 20000, "proactive_prune_tokens": 100000,
+                    "summary_style": "compact", "decision_ledger_chars": 6000},
     # Smart approval judges each risky step by who asked for it (patched Hermes 0077): only the user's own words
     # can clear a force push, a deletion or a publish, never a file, page, script output or another agent, and a
     # block names its rule. It takes effect with approvals.mode: smart.
