@@ -828,7 +828,8 @@ func TestSendToBusyChatSteersAndSaysSo(t *testing.T) {
 		if how, _ := res["delivery"].(string); !strings.HasPrefix(how, c.say) {
 			t.Fatalf("%s: delivery %q, want %q", c.outcome, how, c.say)
 		}
-		m, ok, err := e.store.AgentMessage(context.Background(), "b1", res["message_id"].(string))
+		id, _ := res["message_id"].(string)
+		m, ok, err := e.store.AgentMessage(context.Background(), "b1", id)
 		if err != nil || !ok || m.Mode != c.mode || m.Status != statusDelivered {
 			t.Fatalf("%s: stored %+v %v %v", c.outcome, m, ok, err)
 		}
