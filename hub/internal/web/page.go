@@ -31,8 +31,8 @@ func pageCSP(origin string) string {
 }
 
 // pageBridge goes first in every page. It defines window.hermes: send(text)
-// sends text to the chat as the user's message once the user allows it in
-// the hub, draft(text) puts it in the
+// sends text to the chat as the user's message when it follows the user's own
+// click or key press in the page (the hub checks that, not the page), draft(text) puts it in the
 // chat's message box for the user to edit first, and copy(text) copies it,
 // through the hub when the frame may not. send and draft answer a promise
 // with {ok, error}. It talks to the hub only over the MessagePort that the

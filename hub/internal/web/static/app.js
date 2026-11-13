@@ -2099,7 +2099,6 @@
       const cur = { chat, ref, box, frame, port: null, blob: save.href.startsWith("blob:") ? save.href : "", status, note, timer: 0 };
       const sender = () => window.HubPageSend.sender({
         title: () => (pageInfo.get(ref) || {}).title || title.textContent,
-        ask: (text) => this.ask(cur, text),
         deliver: (text) => {
           if (view !== chat) throw new Error("The chat is not open");
           return deliver(chat, text, [], undefined, true);
@@ -2108,6 +2107,21 @@
         reply: (id, r) => { if (id && cur.port) cur.port.postMessage({ type: "result", id, ok: r.ok, error: r.error || "" }); },
       });
       cur.sender = sender();
+      cur.act = window.HubPageSend.activation({
+        win: window,
+        active: () => !!navigator.userActivation && navigator.userActivation.isActive,
+        // showPicker on a text input whose list is not in the document ends
+        // the activation in Chrome and Firefox and shows nothing. Date and
+        // color inputs would open their picker; do not use them.
+        consume: () => {
+          const i = document.createElement("input");
+          i.setAttribute("list", "hub-no-such-list");
+          try { i.showPicker(); } catch (_) { /* not active, or not supported: take() refuses */ }
+        },
+        later: (f, ms) => setTimeout(f, ms),
+        cancel: (id) => clearTimeout(id),
+      });
+      cur.act.settle();
       this.cur = cur;
       let loads = 0;
       frame.addEventListener("load", () => {
@@ -2123,7 +2137,7 @@
         frame.contentWindow.postMessage({ type: "hermes-page:init" }, "*", [ch.port2]);
       });
       back.onclick = () => this.back();
-      reload.onclick = () => { loads = 0; this.say(cur, ""); this.unask(cur); cur.sender = sender(); frame.src = src; };
+      reload.onclick = () => { loads = 0; this.say(cur, ""); cur.sender = sender(); frame.src = src; };
       box.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); this.back(); } });
       frame.src = src;
       document.body.append(box);
@@ -2136,8 +2150,10 @@
     message(cur, d) {
       if (cur !== this.cur || !cur.port || cur.box.hidden || !d || typeof d !== "object") return;
       const text = typeof d.text === "string" && d.text.length <= maxPageText ? d.text : null;
-      if (d.type === "send" && text !== null) cur.sender.send(typeof d.id === "number" ? d.id : 0, text);
-      else if (d.type === "draft" && text !== null) { this.toComposer(cur, text); if (d.id && cur.port) cur.port.postMessage({ type: "result", id: d.id, ok: true }); }
+      // A send or draft is taken only right after the user's own click or key
+      // press in the frame: fresh(cur) reads the hub's own activation.
+      if (d.type === "send" && text !== null) cur.sender.send(typeof d.id === "number" ? d.id : 0, text, this.fresh(cur));
+      else if (d.type === "draft" && text !== null) this.draft(cur, d.id, text);
       else if (d.type === "copy" && text !== null) this.copy(cur, text);
       else if (d.type === "copied") this.say(cur, "Copied", 2000);
       else if (d.type === "send" || d.type === "draft" || d.type === "copy") this.say(cur, "The page sent too much text.", 4000);
@@ -2154,40 +2170,23 @@
       banner("The page put text in the message box. Edit it, then send it.");
     },
 
-    // ask shows the text a page wants to send in the line under the bar and
-    // resolves true when the user picks Send there. The line is the hub's, so
-    // the page's script cannot press it.
-    ask(cur, text) {
-      this.unask(cur);
-      return new Promise((resolve) => {
-        const n = cur.note;
-        clearTimeout(cur.noteTimer);
-        n.replaceChildren();
-        n.classList.remove("bad");
-        n.hidden = false;
-        const shown = text.length > 300 ? text.slice(0, 300) + "\u2026" : text;
-        const q = el("span", "ask", "Send this from the page? ");
-        const quote = el("q", "", shown);
-        const yes = el("button", "", "Send");
-        yes.type = "button";
-        const no = el("button", "", "Don't send");
-        no.type = "button";
-        const done = (v) => {
-          if (cur.asking !== done) return;
-          cur.asking = null;
-          n.replaceChildren();
-          n.hidden = true;
-          resolve(v);
-        };
-        cur.asking = done;
-        yes.onclick = () => done(true);
-        no.onclick = () => done(false);
-        n.append(q, quote, yes, no);
-      });
+    // fresh answers true once per click or key press of the user in the
+    // page's frame (see HubPageSend.activation).
+    fresh(cur) {
+      return cur.act.take();
     },
 
-    unask(cur) {
-      if (cur.asking) cur.asking(false);
+    // draft puts a page's text in the message box, with the same rule as a
+    // send; a refused draft shows the error the way a refused send does.
+    draft(cur, id, text) {
+      const reply = (r) => { if (id && cur.port) cur.port.postMessage({ type: "result", id, ok: r.ok, error: r.error || "" }); };
+      if (!this.fresh(cur)) {
+        this.sendState(cur, { failed: new Error(window.HubPageSend.noClick), text });
+        reply({ ok: false, error: window.HubPageSend.noClick });
+        return;
+      }
+      this.toComposer(cur, text);
+      reply({ ok: true });
     },
 
     // sendState shows the result of a page's send in a line under the bar:
@@ -2204,13 +2203,16 @@
         n.append("Sent to the chat at " + st.sent.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
       } else {
         n.append("Could not send: " + st.failed.message);
-        const retry = el("button", "", "Retry");
-        retry.type = "button";
-        retry.onclick = () => st.retry();
         const copy = el("button", "", "Copy");
         copy.type = "button";
         copy.onclick = () => this.copy(cur, st.text);
-        n.append(retry, copy);
+        if (st.retry) {
+          const retry = el("button", "", "Retry");
+          retry.type = "button";
+          retry.onclick = () => st.retry();
+          n.append(retry);
+        }
+        n.append(copy);
       }
     },
 
@@ -2254,6 +2256,7 @@
       if (!c) return;
       clearTimeout(c.timer);
       if (c.port) c.port.close();
+      c.act.off();
       if (c.blob) URL.revokeObjectURL(c.blob);
       c.box.remove();
     },
