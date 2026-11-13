@@ -124,7 +124,7 @@ func TestProxyErrorPage(t *testing.T) {
 	}
 	for _, want := range []string{"<h1>The proxy did not say who you are</h1>", "<ol class=\"checks\">", "<code>auth.trusted_proxies</code>",
 		"<code>auth.proxy.user_header</code>", "<code>auth.proxy.jwt</code>", "Show setup help",
-		"https://github.com/USA-RedDragon/talaria-hub/blob/main/docs/auth.md#behind-a-proxy-authmode-proxy", `href="/auth/login?next=%2Fa"`, "Try again"} {
+		"https://usa-reddragon.github.io/talaria/hub/auth.html#behind-a-proxy-authmode-proxy", `href="/auth/login?next=%2Fa"`, "Try again"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("proxy error page lacks %q: %s", want, body)
 		}

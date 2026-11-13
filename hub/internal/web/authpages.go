@@ -15,7 +15,7 @@ import (
 // keyMode is the key of the login mode in the JSON the pages read.
 const keyMode = "mode"
 
-const docsURL = "https://github.com/USA-RedDragon/talaria-hub/blob/main/docs/auth.md#behind-a-proxy-authmode-proxy"
+const docsURL = "https://usa-reddragon.github.io/talaria/hub/auth.html#behind-a-proxy-authmode-proxy"
 
 // hostOf is the host of a URL, or "" when it has none.
 func hostOf(raw string) string {
