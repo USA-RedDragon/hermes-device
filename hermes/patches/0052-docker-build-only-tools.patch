@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 23:41:22 -0600
+Subject: [PATCH] fix(cli): a docker image does not report pnpm as out of sync
+
+pnpm is in the lockfile and installs the JS workspaces in the image's build stage, but the runtime stage never carries it. Every hermes command in the image printed 'install out of sync (pnpm: not installed or outdated)'. For a sealed docker tree the startup check now skips build-only tools; other drift is still reported.
+---
+ hermes_cli/venv_sync.py                       | 10 +++-
+ .../test_docker_build_only_tools.py           | 49 +++++++++++++++++++
+ 2 files changed, 58 insertions(+), 1 deletion(-)
+ create mode 100644 tests/hermes_cli/test_docker_build_only_tools.py
+
+diff --git a/hermes_cli/venv_sync.py b/hermes_cli/venv_sync.py
+index 8a492b8e54..afb47e4dad 100644
+--- a/hermes_cli/venv_sync.py
++++ b/hermes_cli/venv_sync.py
+@@ -48,6 +48,10 @@ def _is_sealed(project_root: Path) -> bool:
+     return True
+ 
+ 
++#: PM packages that only the Docker image's build stage uses (pnpm installs the JS workspaces).
++DOCKER_BUILD_ONLY_TOOLS = frozenset({"pnpm"})
++
++
+ def check_runtime(project_root: Path) -> str | None:
+     """One passive startup verdict; callers only choose stderr or logging."""
+     import pm
+@@ -57,9 +61,13 @@ def check_runtime(project_root: Path) -> str | None:
+         return None  # A developer's checkout does not owe managed products.
+ 
+     problems = pm.activate()
++    steward = sealed_steward(Path(project_root))
++    if steward == "docker":
++        # The image's build stage installs these and the runtime stage never carries them, so the
++        # lockfile's pin for them is never "installed" in a sealed docker tree: not drift.
++        problems = [p for p in problems if p.split(":", 1)[0] not in DOCKER_BUILD_ONLY_TOOLS]
+     if not problems:
+         return None
+-    steward = sealed_steward(Path(project_root))
+     remedy = (f"this {steward}-managed install must rebuild the artifact to fix"
+               if steward else "run `hermes pm install`")
+     return f"install out of sync ({'; '.join(problems)}) — {remedy}"
+diff --git a/tests/hermes_cli/test_docker_build_only_tools.py b/tests/hermes_cli/test_docker_build_only_tools.py
+new file mode 100644
+index 0000000000..eb4c74054d
+--- /dev/null
++++ b/tests/hermes_cli/test_docker_build_only_tools.py
+@@ -0,0 +1,49 @@
++"""A sealed Docker image does not report its build-only tools as drift.
++
++``pnpm`` is in the lockfile and installs the JS workspaces in the image's build stage; the runtime
++stage never carries it, so every ``hermes`` command in the image printed
++``install out of sync (pnpm: not installed or outdated)``.
++"""
++import json
++
++import pytest
++
++from hermes_cli import venv_sync
++
++PNPM = "pnpm: not installed or outdated"
++
++
++def _tree(tmp_path, distribution, name="tree"):
++    from pm.paths import install_stamp_path
++    root = tmp_path / name
++    root.mkdir()
++    if distribution:
++        stamp = install_stamp_path(root)
++        stamp.parent.mkdir(parents=True, exist_ok=True)
++        stamp.write_text(json.dumps({"distribution": distribution, "updateMechanism": "external"}))
++    return root
++
++
++@pytest.fixture
++def drift(monkeypatch):
++    problems = []
++    monkeypatch.setattr("pm.activate", lambda *a, **k: list(problems))
++    return problems
++
++
++def test_docker_image_ignores_pnpm(tmp_path, drift):
++    drift.append(PNPM)
++    assert venv_sync.check_runtime(_tree(tmp_path, "docker")) is None
++
++
++def test_docker_image_still_reports_real_drift(tmp_path, drift):
++    drift.extend([PNPM, "node: not installed or outdated"])
++    message = venv_sync.check_runtime(_tree(tmp_path, "docker"))
++    assert "node: not installed or outdated" in message and "pnpm" not in message
++    assert "docker-managed" in message
++
++
++def test_other_installs_still_report_pnpm(tmp_path, drift):
++    drift.append(PNPM)
++    assert PNPM in venv_sync.check_runtime(_tree(tmp_path, "nix"))
++    assert PNPM in venv_sync.check_runtime(_tree(tmp_path, None, "bare"))
