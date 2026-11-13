@@ -4,6 +4,7 @@ name: Docs
 # hermes/README.md and plugins/README.md (docs/nav.md lists the pages), published to GitHub Pages.
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
@@ -50,7 +51,7 @@ jobs:
           retention-days: 14
 
   pages:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: docgen
     runs-on: ubuntu-24.04
     permissions:
