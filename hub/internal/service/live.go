@@ -601,7 +601,9 @@ func (ls *live) status(connected bool) {
 }
 
 // attach adds a viewer: the buffered events after sinceSeq when the
-// buffer still has all of them, else the snapshot and everything after it.
+// buffer still has all of them, else the snapshot and everything after it,
+// or a new snapshot when the buffer holds a finished turn the held one
+// lacks.
 // A fresh snapshot it starts outlives the request.
 //
 //nolint:contextcheck // see above
@@ -617,7 +619,12 @@ func (ls *live) attach(sinceSeq int64) (<-chan hub.Event, func()) {
 		ls.send(v, ls.turnStartSeq())
 	case covered:
 		ls.send(v, sinceSeq)
-	case ls.truncated:
+	case ls.truncated, ls.turnStartSeq() > 0:
+		// The held snapshot is older than finished turns in the buffer. A
+		// viewer that opens fresh would draw the old transcript and then
+		// every event of those turns one by one, with a render and a scroll
+		// each: a warm replica sent megabytes and froze the page. A new
+		// snapshot has the transcript as it is, and the buffer starts over.
 		ls.resnapshotLocked()
 	default:
 		v.ch <- ls.snapshot
