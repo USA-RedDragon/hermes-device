@@ -101,6 +101,7 @@ main { min-width: 0; overflow-wrap: break-word; }
 .figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 16px; margin: 12px 0 20px; }
 .figs img { width: 100%; height: auto; background: oklch(0.99 0 0); border: 1px solid var(--line); }
 img { max-width: 100%; }
+img[src*="brand/"] { width: 6rem; height: 6rem; padding: .5rem; background: #8a9099; color: #000; border-radius: .5rem; }
 code { font-family: var(--font-mono); font-size: 0.95em; background: var(--panel); padding: 1px 5px; overflow-wrap: anywhere; }
 pre { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 14px 16px; overflow-x: auto; line-height: 1.4; font-size: 16px; }
 pre code { background: none; padding: 0; overflow-wrap: normal; }
