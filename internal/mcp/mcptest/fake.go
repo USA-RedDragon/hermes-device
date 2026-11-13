@@ -16,11 +16,11 @@ import (
 )
 
 // Env makes Main run the fake server.
-const Env = "HERMES_DEVICE_FAKE_MCP"
+const Env = "TALARIA_FAKE_MCP"
 
 // PIDFileEnv names a file the fake server appends its pid to when it
 // starts, so tests can check that it stopped.
-const PIDFileEnv = "HERMES_DEVICE_FAKE_MCP_PID_FILE"
+const PIDFileEnv = "TALARIA_FAKE_MCP_PID_FILE"
 
 // Tool names the fake server lists.
 const (
@@ -40,7 +40,7 @@ const (
 )
 
 // HangInitEnv makes the fake server never answer initialize.
-const HangInitEnv = "HERMES_DEVICE_FAKE_MCP_HANG_INIT"
+const HangInitEnv = "TALARIA_FAKE_MCP_HANG_INIT"
 
 const (
 	rpcVersion = "2.0"
