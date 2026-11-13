@@ -22,7 +22,7 @@ func TestNoIdsInVisibleText(t *testing.T) {
 	e.pc.Toolsets = append(e.pc.Toolsets,
 		toolset("brand_new_set", "", "calls new_tool and other_tool"),
 		toolset("code_execution", "Code Execution", "execute_code"))
-	e.pc.Skills = append(e.pc.Skills, map[string]any{fieldName: "weather_brief_daily", "description": "Short forecasts", keyEnabled: true, "provenance": "hub"})
+	e.pc.Skills = append(e.pc.Skills, map[string]any{fieldName: "weather_brief_daily", keyDesc: "Short forecasts", keyEnabled: true, "provenance": "hub"})
 	e.pc.Servers = append(e.pc.Servers, map[string]any{fieldName: "home_assistant", "transport": "http", keyURL: "https://ha.example/mcp", keyEnabled: true, "source": "config"})
 	prof, err := os.MkdirTemp("", "ids-profile-")
 	if err != nil {
@@ -36,5 +36,5 @@ func TestNoIdsInVisibleText(t *testing.T) {
 }
 
 func toolset(name, label, desc string) map[string]any {
-	return map[string]any{fieldName: name, "label": label, "description": desc, keyEnabled: true, "configured": true}
+	return map[string]any{fieldName: name, "label": label, keyDesc: desc, keyEnabled: true, "configured": true}
 }
