@@ -2,15 +2,19 @@
 
 Talaria on Unraid is one container from the all-in-one image ([design](all-in-one.md)).
 
-1. Get the template. Once Talaria is in Community Applications, search for Talaria in the **Apps** tab and click
-   **Install**, then go to step 2. Until then, on the **Docker** tab, add this line under
-   **Template repositories** at the bottom and click **Save**:
+1. Get the template. Talaria is not in Community Applications yet (a listing is pending). Once it is, search for
+   Talaria in the **Apps** tab, click **Install**, and go to step 2. Until then, download the template onto the
+   server. Unraid removed the **Template repositories** field from the Docker tab in 6.10, so there is no URL to
+   add there. In the Unraid terminal (the **>_** icon at the top right), run:
 
-   ```text
-   https://github.com/USA-RedDragon/talaria
+   ```bash
+   mkdir -p /boot/config/plugins/dockerMan/templates-user
+   curl -fL -o /boot/config/plugins/dockerMan/templates-user/my-Talaria.xml \
+     https://raw.githubusercontent.com/USA-RedDragon/talaria/main/deploy/aio/unraid/talaria.xml
    ```
 
-   Then click **Add Container** and pick **Talaria** under **Template**.
+   Then, on the **Docker** tab, click **Add Container** and pick **Talaria** under **User templates** in the
+   **Template** list. To update the template later, run the same `curl` again.
 2. Set **Public URL** to `http://<your Unraid address>:8080`, such as `http://192.168.1.10:8080`.
 3. To look around without a model provider, set **Demo model** to `true`.
 4. **Apply**. The first start downloads about 1.2 GB.
@@ -65,11 +69,18 @@ cannot reach the server's own address unless **Settings, Docker, Host access to 
   <Repository>ghcr.io/usa-reddragon/talaria-aio:latest</Repository>
   <Registry>https://github.com/users/USA-RedDragon/packages/container/package/talaria-aio</Registry>
   <Network>bridge</Network>
+  <Shell>bash</Shell>
   <Privileged>false</Privileged>
   <Support>https://github.com/USA-RedDragon/talaria/issues</Support>
   <Project>https://github.com/USA-RedDragon/talaria</Project>
   <Overview>Talaria: a web app and Telegram bot for Hermes Agent, with a sandbox for the agent's commands and your own computers paired in. One container: hub, agent and sandbox. Open the web UI right after the first start: the first visitor makes the admin account.</Overview>
-  <Category>Productivity: Tools:</Category>
+  <Category>AI: Productivity:</Category>
+  <ExtraSearchTerms>hermes agent telegram chat llm assistant</ExtraSearchTerms>
+  <Requires>A model provider for Hermes (or turn on the demo model to look around). The first start downloads about 1.2 GB.</Requires>
+  <Changes>Initial release.</Changes>
+  <License>MIT</License>
+  <ReadMe>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/README.md</ReadMe>
+  <Screenshot>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/docs/deploy/images/chat-reply.png</Screenshot>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/deploy/aio/unraid/talaria.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/hub/internal/web/static/icon-512.png</Icon>
