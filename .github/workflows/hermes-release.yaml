@@ -5,6 +5,7 @@ name: Hermes release
 # v0.23.1-p32, then v0.24.0-p1 after Renovate moves the base), with the git tag
 # and GitHub release hermes/v<upstream>-p<n> (never marked latest: the latest
 # release is the talaria daemon's, which auto-update reads).
+# Runs queue and each releases the commit it tested, so a busy main still ships.
 # Run it by hand with publish off (the default) for a dry run: it prints the
 # next tag and builds both platforms without pushing. With publish on it
 # releases HEAD again.
@@ -81,20 +82,29 @@ jobs:
           fi
           n=$(( ${last##*-p} + 0 ))
           tag="$upstream-p$(( n + 1 ))"
+          # A run releases the commit it tested, so a busy main still releases: runs are
+          # queued (one at a time, never cancelled mid-run) and each one with image
+          # changes since the last release makes the next pN at its own commit. A run
+          # never releases a commit that is not a descendant of the last release, so a
+          # newer release is never followed by an older one, and the diff above keeps two
+          # pN from carrying the same content.
           # The git tag comes first: if it cannot be made, nothing is pushed and the
           # image tag never moves. GITHUB_TOKEN may only create a ref at a commit whose
-          # .github/workflows matches the tip of main (anywhere else it gets 403, as it
-          # does for a tag that would carry workflow changes), so the tag goes on the tip
-          # of main. When the tip changed the image inputs after this commit, its own run
-          # releases it and this one stops.
+          # .github/workflows matches the tip of main (anywhere else it gets 403), so
+          # when this commit's workflows differ from the tip's, the run stops and the
+          # run of a later commit, which has the tip's workflows, releases it.
+          if [ "$release" = true ] && [ -n "$last" ] && [ "$MANUAL" != true ] && ! git merge-base --is-ancestor "$last" "$GITHUB_SHA"; then
+            release=false
+            echo "$last is not an ancestor of $GITHUB_SHA: a newer commit is already released." >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ "$release" = true ] && [ "$PUBLISH" = true ]; then
             git fetch --no-tags origin main
             tip=$(git rev-parse FETCH_HEAD)
-            if [ "$tip" != "$GITHUB_SHA" ] && ! git diff --quiet "$GITHUB_SHA" "$tip" -- Dockerfile patches scripts; then
+            if ! git diff --quiet "$GITHUB_SHA" "$tip" -- ../.github/workflows; then
               release=false
-              echo "Main moved on with newer image changes ($tip); its run releases them." >> "$GITHUB_STEP_SUMMARY"
+              echo "Workflows at $GITHUB_SHA differ from main's tip ($tip); a later run releases." >> "$GITHUB_STEP_SUMMARY"
             else
-              gh api -X POST "repos/$GH_REPO/git/refs" --field "ref=refs/tags/hermes/$tag" --field "sha=$tip" > /dev/null
+              gh api -X POST "repos/$GH_REPO/git/refs" --field "ref=refs/tags/hermes/$tag" --field "sha=$GITHUB_SHA" > /dev/null
             fi
           fi
           {
