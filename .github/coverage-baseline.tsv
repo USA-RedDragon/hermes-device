@@ -1,4 +1,4 @@
-assertion/assertion.go	106	89
+assertion/assertion.go	106	88
 cmd/acp.go	29	1
 cmd/acphost.go	57	23
 cmd/autoupdate.go	75	58
@@ -29,7 +29,7 @@ internal/acphost/acphost.go	291	232
 internal/acphost/proc_unix.go	3	1
 internal/acphost/rewrite.go	260	237
 internal/acphost/sweep.go	30	28
-internal/acphost/sweep_linux.go	49	36
+internal/acphost/sweep_linux.go	49	35
 internal/allowlist/allowlist.go	27	26
 internal/attest/attest.go	141	123
 internal/attest/bundle.go	248	212
@@ -100,7 +100,7 @@ internal/setup/windows.go	76	63
 internal/splice/conn.go	306	264
 internal/splice/resolve.go	127	111
 internal/splice/rpc.go	97	83
-internal/splice/splice.go	225	204
+internal/splice/splice.go	225	201
 internal/tokenstore/tokenstore.go	104	72
 internal/userdir/userdir.go	3	2
 internal/winshell/winshell.go	52	42
