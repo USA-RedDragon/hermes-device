@@ -118,7 +118,7 @@ type: application
 version: 0.3.0
 # The talaria-hub release that images.hub pins, without its v (deploy/hack/check-sync.sh checks it; deploy/hack/pin.sh
 # and Renovate move both)
-appVersion: "0.26.81"
+appVersion: "0.26.82"
 home: https://github.com/USA-RedDragon/talaria
 sources:
   - https://github.com/USA-RedDragon/talaria
@@ -193,7 +193,7 @@ telegram:
   existingSecret: ""
 
 images:
-  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.81@sha256:c7003a07490bbbfdc999f8c3132d0dc4972a62b8b2d7070f325645fca41e0067
+  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.82@sha256:79b9a3720c5734e70499ede629e1aa6eb7969f1677bae26caa469255273893d6
   # -- Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
   hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p41@sha256:c3060ca3f584d6f2bb3d63f6efcd8ed2183a891679eb4d91da5a3a514eab7d16
   device: ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
@@ -345,7 +345,7 @@ docker.io/searxng/searxng:2026.11.13-8a53a6aa5
 ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
 ghcr.io/plastic-labs/honcho:v3.6.0
 ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p41
-ghcr.io/usa-reddragon/talaria-hub:v0.26.81
+ghcr.io/usa-reddragon/talaria-hub:v0.26.82
 ghcr.io/usa-reddragon/talaria-sandbox:v0.26.0
 ghcr.io/usa-reddragon/talaria:v0.26.0
 ```
