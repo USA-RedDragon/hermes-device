@@ -55,23 +55,27 @@ func (s *Store) AgentMessage(ctx context.Context, backendID, id string) (hub.Age
 	return scanAgentMessage(s.row(ctx, `SELECT `+agentColumns+` FROM agent_messages WHERE id = ? AND backend_id = ?`, id, backendID))
 }
 
-// MaxAgentHop is the highest hop of the messages any of sessions got
-// since since, or 0.
-func (s *Store) MaxAgentHop(ctx context.Context, backendID string, sessions []string, since time.Time) (int, error) {
-	if len(sessions) == 0 {
-		return 0, nil
+// LastAgentIn is the newest message at or after since that any of
+// toSessions got from the session or tree from.
+func (s *Store) LastAgentIn(ctx context.Context, backendID string, toSessions []string, from string, since time.Time) (hub.AgentMessage, bool, error) {
+	if len(toSessions) == 0 {
+		return hub.AgentMessage{}, false, nil
 	}
-	args := []any{backendID, since.UnixMilli()}
-	for _, sid := range sessions {
+	args := []any{backendID, since.UnixMilli(), from, from}
+	for _, sid := range toSessions {
 		args = append(args, sid)
 	}
-	var hop int
-	err := s.row(ctx, `SELECT COALESCE(MAX(hop), 0) FROM agent_messages WHERE backend_id = ? AND created_at >= ?
-		AND to_session IN (?`+strings.Repeat(", ?", len(sessions)-1)+`)`, args...).Scan(&hop)
-	if err != nil {
-		return 0, fmt.Errorf("agent message hops: %w", err)
-	}
-	return hop, nil
+	return scanAgentMessage(s.row(ctx, `SELECT `+agentColumns+` FROM agent_messages WHERE backend_id = ? AND created_at >= ?
+		AND (from_root = ? OR from_session = ?) AND to_session IN (?`+strings.Repeat(", ?", len(toSessions)-1)+`)
+		ORDER BY created_at DESC, hop DESC LIMIT 1`, args...))
+}
+
+// LastAgentOut is the newest message at or after since that the tree
+// of fromRoot sent to toSession.
+func (s *Store) LastAgentOut(ctx context.Context, backendID, fromRoot, toSession string, since time.Time) (hub.AgentMessage, bool, error) {
+	return scanAgentMessage(s.row(ctx, `SELECT `+agentColumns+` FROM agent_messages WHERE backend_id = ? AND created_at >= ?
+		AND from_root = ? AND to_session = ? ORDER BY created_at DESC, hop DESC LIMIT 1`,
+		backendID, since.UnixMilli(), fromRoot, toSession))
 }
 
 // AgentCounts counts the recent messages that limit a send.
@@ -130,4 +134,69 @@ func (s *Store) SetAgentName(ctx context.Context, backendID, session, name strin
 		return hub.ErrAgentNameTaken
 	}
 	return err
+}
+
+// AgentPartners lists the user's partner pairs on a backend.
+func (s *Store) AgentPartners(ctx context.Context, user, backendID string) ([]hub.AgentPartner, error) {
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT session_a, session_b FROM agent_partners WHERE "user" = ? AND backend_id = ?
+		ORDER BY created_at, session_a, session_b`), user, backendID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []hub.AgentPartner{}
+	for rows.Next() {
+		var p hub.AgentPartner
+		if err := rows.Scan(&p.A, &p.B); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// agentPartnerLockKey is the first key of the PostgreSQL advisory lock
+// that keeps two adds of one user from passing the limit together.
+const agentPartnerLockKey = 0x61706172 // "apar"
+
+// AddAgentPartner adds a pair; an existing pair stays.
+func (s *Store) AddAgentPartner(ctx context.Context, user, backendID string, p hub.AgentPartner) error {
+	p = hub.NewAgentPartner(p.A, p.B)
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if s.dialect == postgresDialect {
+			if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1, hashtext($2))`, agentPartnerLockKey, user); err != nil {
+				return err
+			}
+		}
+		var have int
+		if err := tx.QueryRowContext(ctx, s.q(`SELECT COUNT(*) FROM agent_partners WHERE "user" = ? AND backend_id = ?
+			AND session_a = ? AND session_b = ?`), user, backendID, p.A, p.B).Scan(&have); err != nil {
+			return err
+		}
+		if have > 0 {
+			return nil
+		}
+		var n int
+		if err := tx.QueryRowContext(ctx, s.q(`SELECT COUNT(*) FROM agent_partners WHERE "user" = ? AND backend_id = ?`), user, backendID).Scan(&n); err != nil {
+			return err
+		}
+		if n >= hub.MaxAgentPartners {
+			return hub.ErrTooManyAgentPartners
+		}
+		_, err := tx.ExecContext(ctx, s.q(`INSERT INTO agent_partners ("user", backend_id, session_a, session_b, created_at)
+			VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`), user, backendID, p.A, p.B, s.now().UnixMilli())
+		return err
+	})
+}
+
+// RemoveAgentPartner removes a pair and reports whether it was there.
+func (s *Store) RemoveAgentPartner(ctx context.Context, user, backendID string, p hub.AgentPartner) (bool, error) {
+	p = hub.NewAgentPartner(p.A, p.B)
+	res, err := s.db.ExecContext(ctx, s.q(`DELETE FROM agent_partners WHERE "user" = ? AND backend_id = ? AND session_a = ? AND session_b = ?`),
+		user, backendID, p.A, p.B)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }

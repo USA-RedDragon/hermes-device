@@ -306,6 +306,13 @@ var migrations = []migration{
 			`CREATE TABLE account_backends (name TEXT NOT NULL, backend_id TEXT NOT NULL, PRIMARY KEY (name, backend_id))`,
 		},
 	},
+	{
+		version: 21,
+		sqlite: []string{`CREATE TABLE agent_partners ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_a TEXT NOT NULL,
+			session_b TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY ("user", backend_id, session_a, session_b))`},
+		postgres: []string{`CREATE TABLE agent_partners ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_a TEXT NOT NULL,
+			session_b TEXT NOT NULL, created_at BIGINT NOT NULL, PRIMARY KEY ("user", backend_id, session_a, session_b))`},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas

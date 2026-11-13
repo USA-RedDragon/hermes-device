@@ -31,7 +31,9 @@ type AgentMessage struct {
 	ToSession, ToSubagent, ToName string
 	ReplyTo                       string
 	// Hop counts the messages of one back-and-forth chain: 1 for a message
-	// that answers none.
+	// that answers none. Only an answer continues a chain: one that names
+	// ReplyTo, or the first message a turn sends back to the agent whose
+	// message the sender still has not answered.
 	Hop  int
 	Text string
 	// Mode is how the hub delivered it: AgentModeInput, AgentModeInbox or
@@ -76,12 +78,53 @@ type AgentStore interface {
 	AddAgentMessage(ctx context.Context, m AgentMessage) error
 	SetAgentMessageStatus(ctx context.Context, id, mode, status string) error
 	AgentMessage(ctx context.Context, backendID, id string) (AgentMessage, bool, error)
-	// MaxAgentHop is the highest hop of the messages any of sessions got
-	// since since, or 0.
-	MaxAgentHop(ctx context.Context, backendID string, sessions []string, since time.Time) (int, error)
+	// LastAgentIn is the newest message at or after since that any of
+	// toSessions got from the session or delegation tree from. On equal
+	// times the one with the higher hop.
+	LastAgentIn(ctx context.Context, backendID string, toSessions []string, from string, since time.Time) (AgentMessage, bool, error)
+	// LastAgentOut is the newest message at or after since that the tree
+	// of fromRoot sent to toSession.
+	LastAgentOut(ctx context.Context, backendID, fromRoot, toSession string, since time.Time) (AgentMessage, bool, error)
 	AgentCounts(ctx context.Context, backendID, fromRoot, toSession string, short, long time.Time) (AgentCounts, error)
 	// AgentNames maps each named session of the backend to its name.
 	AgentNames(ctx context.Context, backendID string) (map[string]string, error)
 	// SetAgentName names a session; "" removes the name.
 	SetAgentName(ctx context.Context, backendID, session, name string) error
+	AgentPartners
+}
+
+// MaxAgentPartners is the most partner pairs a user keeps per backend.
+const MaxAgentPartners = 200
+
+// ErrTooManyAgentPartners is a user who has MaxAgentPartners pairs.
+var ErrTooManyAgentPartners = errors.New("too many partner pairs")
+
+// AgentPartner is an unordered pair of chats the user marked as working
+// together: A sorts before B.
+type AgentPartner struct {
+	A string `json:"a"`
+	B string `json:"b"`
+}
+
+// NewAgentPartner orders a pair of sessions.
+func NewAgentPartner(a, b string) AgentPartner {
+	if b < a {
+		a, b = b, a
+	}
+	return AgentPartner{A: a, B: b}
+}
+
+// Has reports whether s is one of the pair.
+func (p AgentPartner) Has(s string) bool { return p.A == s || p.B == s }
+
+// AgentPartners keeps each user's pairs of chats that work together. The
+// agents of a pair, and of their subagents, may exchange longer chains.
+type AgentPartners interface {
+	// AgentPartners lists the user's pairs on a backend.
+	AgentPartners(ctx context.Context, user, backendID string) ([]AgentPartner, error)
+	// AddAgentPartner adds a pair; a pair that exists stays. It fails
+	// with ErrTooManyAgentPartners past MaxAgentPartners.
+	AddAgentPartner(ctx context.Context, user, backendID string, p AgentPartner) error
+	// RemoveAgentPartner removes a pair, and reports whether it was there.
+	RemoveAgentPartner(ctx context.Context, user, backendID string, p AgentPartner) (bool, error)
 }

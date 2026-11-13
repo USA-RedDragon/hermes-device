@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,16 +21,22 @@ import (
 )
 
 const (
-	alice       = "alice"
-	research    = "research"
-	parent      = "parent"
-	saA         = "sa-0-aa"
-	saB         = "sa-1-bb"
-	keyName     = "name"
-	gui         = "gui"
-	unknownPeer = "unknown_peer"
-	carol       = "carol"
-	keyText     = "text"
+	alice           = "alice"
+	research        = "research"
+	parent          = "parent"
+	saA             = "sa-0-aa"
+	saB             = "sa-1-bb"
+	keyName         = "name"
+	gui             = "gui"
+	unknownPeer     = "unknown_peer"
+	carol           = "carol"
+	keyText         = "text"
+	saZ             = "sa-0-99"
+	keyReplyTo      = "reply_to"
+	codeHops        = "too_many_hops"
+	codeRate        = "rate_limited"
+	keyPing         = "ping"
+	statusDelivered = "delivered"
 )
 
 type submit struct{ session, id, text string }
@@ -274,15 +281,15 @@ func TestHopLimit(t *testing.T) {
 	e := newEnv(t)
 	from, to := "s1", "s2"
 	for i := 1; i <= agents.MaxHop; i++ {
-		a := e.do("send", chat(from), map[string]string{"to": to, keyText: "ping"})
+		a := e.do("send", chat(from), map[string]string{"to": to, keyText: keyPing})
 		if a.code != "" {
 			t.Fatalf("hop %d refused: %s", i, a.msg)
 		}
 		e.now = e.now.Add(time.Minute)
 		from, to = to, from
 	}
-	a := e.do("send", chat(from), map[string]string{"to": to, keyText: "ping"})
-	if a.code != "too_many_hops" {
+	a := e.do("send", chat(from), map[string]string{"to": to, keyText: keyPing})
+	if a.code != codeHops {
 		t.Fatalf("code %q, want too_many_hops", a.code)
 	}
 	e.now = e.now.Add(agents.HopWindow + time.Minute)
@@ -296,10 +303,10 @@ func TestRateLimits(t *testing.T) {
 	e := newEnv(t)
 	for i := range agents.MaxPair {
 		_ = e.store.AddAgentMessage(context.Background(), hub.AgentMessage{ID: fmt.Sprintf("am_x%d", i), BackendID: "b1",
-			FromSession: "s1", FromRoot: "s1", ToSession: "s2", Hop: 1, Mode: hub.AgentModeInput, Status: "delivered",
+			FromSession: "s1", FromRoot: "s1", ToSession: "s2", Hop: 1, Mode: hub.AgentModeInput, Status: statusDelivered,
 			CreatedAt: e.now})
 	}
-	if a := e.do("send", chat("s1"), map[string]string{"to": "s2", keyText: "x"}); a.code != "rate_limited" {
+	if a := e.do("send", chat("s1"), map[string]string{"to": "s2", keyText: "x"}); a.code != codeRate {
 		t.Fatalf("code %q, want rate_limited", a.code)
 	}
 	if a := e.do("send", chat("s1"), map[string]string{"to": "s3", keyText: "x"}); a.code != "" {
@@ -474,7 +481,7 @@ func TestSubagentCannotResetHops(t *testing.T) {
 	e := newEnv(t)
 	for i := 1; i < agents.MaxHop; i++ {
 		_ = e.store.AddAgentMessage(context.Background(), hub.AgentMessage{ID: fmt.Sprintf("am_h%d", i), BackendID: "b1",
-			FromSession: "s2", FromRoot: "s2", ToSession: "s1", Hop: i, Mode: hub.AgentModeInput, Status: "delivered",
+			FromSession: "s2", FromRoot: "s2", ToSession: "s1", Hop: i, Mode: hub.AgentModeInput, Status: statusDelivered,
 			CreatedAt: e.now})
 	}
 	if a := e.do("send", chat("s1"), map[string]string{"to": "s2", keyText: "last"}); a.code != "" {
@@ -482,9 +489,9 @@ func TestSubagentCannotResetHops(t *testing.T) {
 	}
 	// A new subagent of s2 counts the hops s2 got, so it cannot answer
 	// with a fresh chain.
-	sub := device.AgentCaller{SessionID: "c9", RootSessionID: "s2", SubagentID: "sa-0-99", ParentSessionID: "s2",
-		Tree: []device.AgentSubagent{{SubagentID: "sa-0-99", SessionID: "c9"}}}
-	if a := e.do("send", sub, map[string]string{"to": "s1", keyText: "again"}); a.code != "too_many_hops" {
+	sub := device.AgentCaller{SessionID: "c9", RootSessionID: "s2", SubagentID: saZ, ParentSessionID: "s2",
+		Tree: []device.AgentSubagent{{SubagentID: saZ, SessionID: "c9"}}}
+	if a := e.do("send", sub, map[string]string{"to": "s1", keyText: "again"}); a.code != codeHops {
 		t.Fatalf("code %q, want too_many_hops", a.code)
 	}
 }
@@ -500,5 +507,201 @@ func TestDeliveryErrorsStayVague(t *testing.T) {
 	e.sessions.err = service.ErrAgentYolo
 	if a := e.do("send", chat("s1"), map[string]string{"to": "s3", keyText: "x"}); a.code != "yolo" {
 		t.Fatalf("code %q, want yolo", a.code)
+	}
+}
+
+// sendHop sends text from caller to a chat and returns the stored hop of
+// the message, or the refusal.
+func (e *env) sendHop(caller device.AgentCaller, to string, extra map[string]string) (int, string, answer) {
+	e.t.Helper()
+	args := map[string]string{"to": to, keyText: keyPing}
+	maps.Copy(args, extra)
+	a := e.do("send", caller, args)
+	if a.code != "" {
+		return 0, "", a
+	}
+	id, _ := a.result.(map[string]any)["message_id"].(string)
+	m, ok, err := e.store.AgentMessage(context.Background(), "b1", id)
+	if err != nil || !ok {
+		e.t.Fatalf("message %q: %v %v", id, ok, err)
+	}
+	return m.Hop, id, a
+}
+
+func (e *env) wantHop(caller device.AgentCaller, to string, extra map[string]string, want int) string {
+	e.t.Helper()
+	hop, id, a := e.sendHop(caller, to, extra)
+	if a.code != "" || hop != want {
+		e.t.Fatalf("hop %d code %q %s, want %d", hop, a.code, a.msg, want)
+	}
+	e.now = e.now.Add(time.Minute)
+	return id
+}
+
+func TestUnrelatedMessagesDoNotPileUp(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	// Messages that answer nothing each start a chain, however many.
+	for range 2 * agents.MaxHop {
+		e.wantHop(chat("s1"), "s2", nil, 1)
+		e.now = e.now.Add(2 * time.Minute)
+	}
+	// A message to a third chat after s2 wrote to s1 answers nothing from s3.
+	e.wantHop(chat("s2"), "s1", nil, 2)
+	e.wantHop(chat("s1"), "s3", nil, 1)
+}
+
+func TestOnlyAnAnswerContinuesAChain(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	m1 := e.wantHop(chat("s1"), "s2", nil, 1)
+	// A reply_to continues it, whatever else s2 got.
+	e.wantHop(chat("s3"), "s2", nil, 1)
+	m2 := e.wantHop(chat("s2"), "s1", map[string]string{keyReplyTo: m1}, 2)
+	e.wantHop(chat("s1"), "s2", map[string]string{keyReplyTo: m2}, 3)
+	// s1 answered s2's message, so s1's next one to s2 is new: it
+	// answers nothing, though s2's reply to it waits.
+	e.wantHop(chat("s1"), "s2", nil, 1)
+	// A reply_to of a message the sender never got does not count.
+	e.wantHop(chat("s3"), "s1", map[string]string{keyReplyTo: m1}, 1)
+}
+
+func TestAnswerWithoutReplyToCounts(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	e.wantHop(chat("s1"), "s2", nil, 1)
+	e.wantHop(chat("s2"), "s1", nil, 2)
+	// s2 wrote again; the first answer already used up s1's message.
+	e.wantHop(chat("s2"), "s1", nil, 1)
+	// s1 answers the newest message it got.
+	e.wantHop(chat("s1"), "s2", nil, 2)
+	// Outside HopWindow the old message starts nothing.
+	e.now = e.now.Add(agents.HopWindow + time.Minute)
+	e.wantHop(chat("s2"), "s1", nil, 1)
+}
+
+func TestLoopWithoutReplyToStops(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	from, to := "s1", "s2"
+	extra := map[string]string{keyReplyTo: "am_0000000000000000"}
+	for i := 1; i <= agents.MaxHop; i++ {
+		// A made-up reply_to cannot reset the count.
+		e.wantHop(chat(from), to, extra, i)
+		from, to = to, from
+	}
+	hop, _, a := e.sendHop(chat(from), to, extra)
+	if a.code != codeHops || hop != 0 {
+		t.Fatalf("code %q, want too_many_hops", a.code)
+	}
+	if !strings.Contains(a.msg, "mark these chats as working together") {
+		t.Fatalf("message %q", a.msg)
+	}
+	// A subagent of the chat that is stuck counts what its chat got.
+	sub := device.AgentCaller{SessionID: "c9", RootSessionID: from, SubagentID: saZ, ParentSessionID: from,
+		Tree: []device.AgentSubagent{{SubagentID: saZ, SessionID: "c9"}}}
+	if _, _, a := e.sendHop(sub, to, nil); a.code != codeHops {
+		t.Fatalf("subagent code %q", a.code)
+	}
+}
+
+func TestPartnersChainLonger(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	if err := e.store.AddAgentPartner(context.Background(), alice, "b1", hub.NewAgentPartner("s2", "s1")); err != nil {
+		t.Fatal(err)
+	}
+	from, to := "s1", "s2"
+	for i := 1; i <= agents.MaxPartnerHop; i++ {
+		e.wantHop(chat(from), to, nil, i)
+		from, to = to, from
+	}
+	_, _, a := e.sendHop(chat(from), to, nil)
+	if a.code != codeHops || strings.Contains(a.msg, "working together") {
+		t.Fatalf("code %q %q", a.code, a.msg)
+	}
+	// A pair with another chat is not a partner.
+	e.now = e.now.Add(agents.HopWindow + time.Minute)
+	from, to = "s1", "s3"
+	for i := 1; i <= agents.MaxHop; i++ {
+		e.wantHop(chat(from), to, nil, i)
+		from, to = to, from
+	}
+	if _, _, a := e.sendHop(chat(from), to, nil); a.code != codeHops {
+		t.Fatalf("non-partner code %q", a.code)
+	}
+}
+
+func TestPartnerSubagentInherits(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	if err := e.store.AddAgentPartner(context.Background(), alice, "b1", hub.NewAgentPartner("s1", "s2")); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < agents.MaxHop; i++ {
+		_ = e.store.AddAgentMessage(context.Background(), hub.AgentMessage{ID: fmt.Sprintf("am_h%d", i), BackendID: "b1",
+			FromSession: "s2", FromRoot: "s2", ToSession: "s1", Hop: i, Mode: hub.AgentModeInput, Status: statusDelivered,
+			CreatedAt: e.now})
+	}
+	e.wantHop(chat("s1"), "s2", nil, agents.MaxHop)
+	sub := device.AgentCaller{SessionID: "c9", RootSessionID: "s2", SubagentID: saZ, ParentSessionID: "s2",
+		Tree: []device.AgentSubagent{{SubagentID: saZ, SessionID: "c9"}}}
+	e.wantHop(sub, "s1", nil, agents.MaxHop+1)
+}
+
+func TestPartnerPairRate(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	seed := func() {
+		for i := range agents.MaxPair {
+			_ = e.store.AddAgentMessage(context.Background(), hub.AgentMessage{ID: fmt.Sprintf("am_x%d", i), BackendID: "b1",
+				FromSession: "s1", FromRoot: "s1", ToSession: "s2", Hop: 1, Mode: hub.AgentModeInput, Status: statusDelivered,
+				CreatedAt: e.now})
+		}
+	}
+	seed()
+	a := e.do("send", chat("s1"), map[string]string{"to": "s2", keyText: "x"})
+	if a.code != codeRate || !strings.Contains(a.msg, "mark these chats as working together") {
+		t.Fatalf("code %q %q", a.code, a.msg)
+	}
+	if err := e.store.AddAgentPartner(context.Background(), alice, "b1", hub.NewAgentPartner("s1", "s2")); err != nil {
+		t.Fatal(err)
+	}
+	if a := e.do("send", chat("s1"), map[string]string{"to": "s2", keyText: "x"}); a.code != "" {
+		t.Fatalf("partner: %s", a.msg)
+	}
+	// The tree limit still holds.
+	for i := range agents.MaxFromTree {
+		_ = e.store.AddAgentMessage(context.Background(), hub.AgentMessage{ID: fmt.Sprintf("am_t%d", i), BackendID: "b1",
+			FromSession: "s1", FromRoot: "s1", ToSession: "s3", Hop: 1, Mode: hub.AgentModeInput, Status: statusDelivered,
+			CreatedAt: e.now})
+	}
+	if a := e.do("send", chat("s1"), map[string]string{"to": "s2", keyText: "x"}); a.code != codeRate {
+		t.Fatalf("tree limit: %q", a.code)
+	}
+}
+
+func TestPeersFlagsPartners(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	if err := e.store.AddAgentPartner(context.Background(), alice, "b1", hub.NewAgentPartner("s2", "s1")); err != nil {
+		t.Fatal(err)
+	}
+	p := e.do("peers", subagentCaller(), map[string]string{})
+	var got struct {
+		Chats []struct {
+			SessionID string `json:"session_id"`
+			Partner   bool   `json:"partner"`
+		}
+	}
+	if err := json.Unmarshal(mustJSON(t, p.result), &got); err != nil {
+		t.Fatal(err)
+	}
+	flags := map[string]bool{}
+	for _, c := range got.Chats {
+		flags[c.SessionID] = c.Partner
+	}
+	if !flags["s2"] || flags["s3"] || flags["loc"] {
+		t.Fatalf("partner flags %v", flags)
 	}
 }

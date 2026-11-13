@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -42,14 +43,24 @@ func TestAgentMessages(t *testing.T) {
 			!m.CreatedAt.Equal(now.Add(-20*time.Minute)) {
 			t.Fatalf("message = %+v %v %v", m, ok, err)
 		}
-		if hop, err := s.MaxAgentHop(ctx, "b1", []string{"s1", "s9"}, now.Add(-30*time.Minute)); err != nil || hop != 2 {
-			t.Fatalf("hop = %d %v", hop, err)
+		m, ok, err = s.LastAgentIn(ctx, "b1", []string{"s1", "s9"}, "s2", now.Add(-30*time.Minute))
+		if err != nil || !ok || m.ID != "am_2" || m.Hop != 2 {
+			t.Fatalf("last in = %+v %v %v", m, ok, err)
 		}
-		if hop, err := s.MaxAgentHop(ctx, "b1", []string{"s2", "s3"}, now.Add(-30*time.Minute)); err != nil || hop != 1 {
-			t.Fatalf("hop = %d %v", hop, err)
+		if _, ok, err := s.LastAgentIn(ctx, "b1", []string{"s1"}, "s2", now.Add(-time.Minute)); err != nil || ok {
+			t.Fatalf("last in outside the window = %v %v", ok, err)
 		}
-		if hop, err := s.MaxAgentHop(ctx, "b1", []string{"s1"}, now.Add(-time.Minute)); err != nil || hop != 0 {
-			t.Fatalf("hop outside the window = %d %v", hop, err)
+		if _, ok, err := s.LastAgentIn(ctx, "b1", []string{"s1"}, "s3", now.Add(-time.Hour)); err != nil || ok {
+			t.Fatalf("last in from another chat = %v %v", ok, err)
+		}
+		if _, ok, err := s.LastAgentIn(ctx, "b1", nil, "s2", now.Add(-time.Hour)); err != nil || ok {
+			t.Fatalf("last in to nobody = %v %v", ok, err)
+		}
+		if m, ok, err := s.LastAgentOut(ctx, "b1", "s1", "s2", now.Add(-time.Hour)); err != nil || !ok || m.ID != "am_1" {
+			t.Fatalf("last out = %+v %v %v", m, ok, err)
+		}
+		if _, ok, err := s.LastAgentOut(ctx, "b2", "s1", "s2", now.Add(-time.Hour)); err != nil || ok {
+			t.Fatalf("last out of another backend = %v %v", ok, err)
 		}
 		c, err := s.AgentCounts(ctx, "b1", "s1", "s2", now.Add(-10*time.Minute), now.Add(-time.Hour))
 		if err != nil || c != (hub.AgentCounts{FromRoot: 1, Pair: 0, Backend: 3}) {
@@ -90,6 +101,47 @@ func TestAgentNames(t *testing.T) {
 		}
 		if names, _ := s.AgentNames(ctx, "b1"); len(names) != 1 {
 			t.Fatalf("names after removal = %v", names)
+		}
+	})
+}
+
+func TestAgentPartners(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		add := func(user, backend, a, b string) {
+			t.Helper()
+			if err := s.AddAgentPartner(ctx, user, backend, hub.AgentPartner{A: a, B: b}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		add("alice", "b1", "s2", "s1")
+		add("alice", "b1", "s1", "s2")
+		add("alice", "b1", "s1", "s3")
+		add("alice", "b2", "s1", "s2")
+		add("bob", "b1", "s5", "s6")
+		got, err := s.AgentPartners(ctx, "alice", "b1")
+		if err != nil || len(got) != 2 || got[0] != (hub.AgentPartner{A: "s1", B: "s2"}) || got[1] != (hub.AgentPartner{A: "s1", B: "s3"}) {
+			t.Fatalf("pairs = %+v %v", got, err)
+		}
+		if got, err := s.AgentPartners(ctx, "carol", "b1"); err != nil || got == nil || len(got) != 0 {
+			t.Fatalf("none = %#v %v", got, err)
+		}
+		if ok, err := s.RemoveAgentPartner(ctx, "alice", "b1", hub.AgentPartner{A: "s2", B: "s1"}); err != nil || !ok {
+			t.Fatalf("remove = %v %v", ok, err)
+		}
+		if ok, err := s.RemoveAgentPartner(ctx, "alice", "b1", hub.AgentPartner{A: "s1", B: "s2"}); err != nil || ok {
+			t.Fatalf("remove twice = %v %v", ok, err)
+		}
+		if got, _ := s.AgentPartners(ctx, "alice", "b2"); len(got) != 1 {
+			t.Fatalf("other backend = %+v", got)
+		}
+		for i := range hub.MaxAgentPartners {
+			add("dave", "b1", "a", fmt.Sprintf("s%03d", i))
+		}
+		add("dave", "b1", "a", "s000")
+		if err := s.AddAgentPartner(ctx, "dave", "b1", hub.AgentPartner{A: "a", B: "extra"}); !errors.Is(err, hub.ErrTooManyAgentPartners) {
+			t.Fatalf("past the limit = %v", err)
 		}
 	})
 }

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -41,12 +42,21 @@ const (
 	// MaxBackend messages in LongWindow.
 	LongWindow = time.Hour
 	MaxBackend = 200
-	// MaxHop is the longest back-and-forth chain. A message counts one hop
-	// more than the newest message its sender got in HopWindow, or than
-	// the message it answers.
+	// MaxHop is the longest back-and-forth chain. Only an answer continues
+	// a chain: a message counts one hop more than the message it answers
+	// (reply_to), or than the newest message in HopWindow from its target
+	// that its sender's tree has not answered yet. Any other message
+	// starts a chain at 1.
 	MaxHop    = 6
 	HopWindow = 30 * time.Minute
+	// MaxPartnerHop and MaxPartnerPair replace MaxHop and MaxPair for two
+	// chats the user marked as working together. The pair limit equals
+	// MaxFromTree: a higher one could never apply.
+	MaxPartnerHop  = 30
+	MaxPartnerPair = 20
 )
+
+const partnerHint = " If these chats work together, the user can mark these chats as working together to raise the limit"
 
 // InputPrefix starts the submission ID of each agent message the hub
 // submits as a chat's input. Devices may not use it (hermes-hub- ids are
@@ -276,6 +286,9 @@ type peerChat struct {
 	Where     string `json:"where,omitempty"`
 	Running   bool   `json:"running"`
 	StartedBy string `json:"started_by,omitempty"`
+	// Partner: the user marked this chat as working with yours, so the
+	// two may exchange longer chains.
+	Partner bool `json:"partner,omitempty"`
 }
 
 type peerSubagent struct {
@@ -334,9 +347,14 @@ func (r *Router) peers(ctx context.Context, b config.Backend, c device.AgentCall
 	if r.opts.Places != nil && len(refs) > 0 {
 		places = r.opts.Places.Places(ctx, owner(b), refs)
 	}
+	partners, err := r.partnerSet(ctx, b, c.RootSessionID)
+	if err != nil {
+		return nil, err
+	}
 	chats := make([]peerChat, 0, len(list))
 	for _, s := range list {
 		chats = append(chats, peerChat{SessionID: s.ID, Name: names[s.ID], Title: label(s.Title), Running: s.Running,
+			Partner:   partners[s.ID],
 			StartedBy: s.Source, Where: where(places[hub.SessionRef{BackendID: b.ID, SessionID: s.ID}])})
 	}
 	var subs []peerSubagent
@@ -684,14 +702,24 @@ func (r *Router) send(ctx context.Context, b config.Backend, p Plugin, c device.
 	}
 	defer unlock()
 	now := r.opts.Now()
+	partner, err := r.isPartner(ctx, b, c, t)
+	if err != nil {
+		return nil, err
+	}
+	maxPair, maxHop, hint := MaxPair, MaxHop, ""
+	if partner {
+		maxPair, maxHop = MaxPartnerPair, MaxPartnerHop
+	} else if !inTreeSession(c, t.session) {
+		hint = partnerHint
+	}
 	counts, err := r.opts.Store.AgentCounts(ctx, b.ID, c.RootSessionID, t.session, now.Add(-ShortWindow), now.Add(-LongWindow))
 	if err != nil {
 		return nil, err
 	}
 	switch {
-	case counts.Pair >= MaxPair:
-		return nil, refuse("rate_limited", "you sent %s %d messages in the last %s; wait, or let the user decide",
-			t.label, counts.Pair, ShortWindow)
+	case counts.Pair >= maxPair:
+		return nil, refuse("rate_limited", "you sent %s %d messages in the last %s; wait, or let the user decide.%s",
+			t.label, counts.Pair, ShortWindow, hint)
 	case counts.FromRoot >= MaxFromTree:
 		return nil, refuse("rate_limited", "your chat and its subagents sent %d messages in the last %s; wait, "+
 			"or let the user decide", counts.FromRoot, ShortWindow)
@@ -699,13 +727,13 @@ func (r *Router) send(ctx context.Context, b config.Backend, p Plugin, c device.
 		return nil, refuse("rate_limited", "the user's agents sent %d messages in the last %s, the most allowed",
 			counts.Backend, LongWindow)
 	}
-	hop, err := r.hop(ctx, b, c, a.ReplyTo, now)
+	hop, err := r.hop(ctx, b, c, t, a.ReplyTo, now)
 	if err != nil {
 		return nil, err
 	}
-	if hop > MaxHop {
+	if hop > maxHop {
 		return nil, refuse("too_many_hops", "this exchange has gone back and forth %d times, the most allowed. "+
-			"Stop messaging about it and tell the user where it stands", hop-1)
+			"Stop messaging about it and tell the user where it stands.%s", hop-1, hint)
 	}
 	from, fromName, err := r.sender(ctx, b, c)
 	if err != nil {
@@ -750,31 +778,102 @@ func replyHint(c device.AgentCaller, t target) string {
 	return c.RootSessionID
 }
 
-// hop is the new message's place in its back-and-forth chain: one more
-// than the highest hop any agent of the sender's tree got in HopWindow, so
-// a new subagent cannot start a chain afresh, or than the message it
-// answers.
-func (r *Router) hop(ctx context.Context, b config.Backend, c device.AgentCaller, replyTo string, now time.Time) (int, error) {
-	sessions := make([]string, 0, 1+len(c.Tree))
+// treeSessions are the sessions of the sender's delegation tree.
+func treeSessions(c device.AgentCaller) []string {
+	sessions := make([]string, 0, 2+len(c.Tree))
 	sessions = append(sessions, c.RootSessionID)
+	if c.SessionID != c.RootSessionID {
+		sessions = append(sessions, c.SessionID)
+	}
 	for _, s := range c.Tree {
 		sessions = append(sessions, s.SessionID)
 	}
-	got, err := r.opts.Store.MaxAgentHop(ctx, b.ID, sessions, now.Add(-HopWindow))
-	if err != nil {
-		return 0, err
-	}
-	hop := got + 1
+	return sessions
+}
+
+func inTreeSession(c device.AgentCaller, session string) bool {
+	return slices.Contains(treeSessions(c), session)
+}
+
+// hop is the new message's place in its back-and-forth chain. Only an
+// answer continues a chain, so unrelated messages between two chats never
+// pile up:
+//   - reply_to names a message the sender's tree got: one more than its hop.
+//   - else the newest message in HopWindow that the target's tree sent to
+//     the sender's tree, if the sender's tree has not sent the target
+//     anything since, counts as the message being answered: one more than
+//     its hop. A turn starts on the message it answers, so an agent that
+//     never sets reply_to still counts; a subagent counts what its chat
+//     got.
+//   - else it starts a chain at 1.
+//
+// A bad reply_to cannot lower the second rule: the highest applies.
+func (r *Router) hop(ctx context.Context, b config.Backend, c device.AgentCaller, t target, replyTo string, now time.Time) (int, error) {
+	sessions := treeSessions(c)
+	hop := 1
 	if replyTo != "" {
 		m, ok, err := r.opts.Store.AgentMessage(ctx, b.ID, replyTo)
 		if err != nil {
 			return 0, err
 		}
-		if ok && m.ToSession == c.SessionID {
-			hop = max(hop, m.Hop+1)
+		if ok && slices.Contains(sessions, m.ToSession) {
+			hop = m.Hop + 1
 		}
 	}
+	in, ok, err := r.opts.Store.LastAgentIn(ctx, b.ID, sessions, t.session, now.Add(-HopWindow))
+	if err != nil || !ok {
+		return hop, err
+	}
+	out, sent, err := r.opts.Store.LastAgentOut(ctx, b.ID, c.RootSessionID, t.session, in.CreatedAt)
+	if err != nil {
+		return 0, err
+	}
+	if !sent || !out.CreatedAt.After(in.CreatedAt) {
+		hop = max(hop, in.Hop+1)
+	}
 	return hop, nil
+}
+
+// partnerSet is the chats the user marked as working with session.
+func (r *Router) partnerSet(ctx context.Context, b config.Backend, session string) (map[string]bool, error) {
+	out := map[string]bool{}
+	user := PartnerOwner(b)
+	if user == "" {
+		return out, nil
+	}
+	pairs, err := r.opts.Store.AgentPartners(ctx, user, b.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range pairs {
+		switch session {
+		case p.A:
+			out[p.B] = true
+		case p.B:
+			out[p.A] = true
+		}
+	}
+	return out, nil
+}
+
+// isPartner reports whether the sender's chat and the target chat work
+// together. Subagents count with their chat.
+func (r *Router) isPartner(ctx context.Context, b config.Backend, c device.AgentCaller, t target) (bool, error) {
+	if inTreeSession(c, t.session) {
+		return false, nil
+	}
+	set, err := r.partnerSet(ctx, b, c.RootSessionID)
+	return set[t.session], err
+}
+
+// PartnerOwner is the one user whose partner pairs a backend honors: the
+// owner of a single-user backend. A backend with several users has none,
+// so no one's pairs raise another user's limits.
+func PartnerOwner(b config.Backend) string {
+	if len(b.Users) == 1 {
+		return b.Users[0]
+	}
+	return ""
 }
 
 func (r *Router) deliver(ctx context.Context, b config.Backend, p Plugin, m hub.AgentMessage, t target) (string, string, string, error) {
