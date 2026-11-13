@@ -33,10 +33,11 @@ Behind your own reverse proxy, turn off response buffering and request timeouts 
 
 ## The model does not answer
 
-- "Context too small" in the chat: the model's window is under 64,000 tokens. Pick another model, or set `TALARIA_MODEL_CONTEXT` if your service allows more than it reports. Ollama's `qwen3` models have 40K.
-- An error with a status like 401 or 404 from the model: the base URL, the model name or the key is wrong. Check `.env`, then `docker compose up -d`. See [Choosing models and providers](models.md).
-- A local model is very slow: expected without a GPU. See [Choosing models and providers](models.md#local-models-with-ollama).
-- Still the canned reply: the `demo` profile is still on, or the model variables are empty.
+- "Could not start a chat" (`storage_unavailable` in the Hermes log): Hermes has no model yet. Run `hermes model`, see [Choosing models and providers](models.md).
+- "Context too small" in the chat: the model's window is under 64,000 tokens. Pick another model in `hermes model`. In Ollama, `qwen3` has 40K and `qwen2.5` 32K.
+- An error with a status like 401 or 404 from the model: the address, the model name or the key in Hermes is wrong. Run `hermes model` again.
+- A local model is very slow: expected without a GPU. See [Choosing models and providers](models.md#ollama).
+- Still the canned reply: Hermes still uses `talaria-demo`. Pick another model in `hermes model`.
 
 ## Pages and notifications do not work
 

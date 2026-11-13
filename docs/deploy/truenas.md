@@ -13,8 +13,14 @@ YAML, with the all-in-one image ([design](all-in-one.md)).
    first account, an admin; the first person who opens it gets that account. Add other people under Settings,
    Users.
 
-For real use, set `TALARIA_MODEL_BASE_URL`, `TALARIA_MODEL` and `TALARIA_MODEL_API_KEY`, and `TALARIA_DEMO` to
-`"false"` (**Edit** on the app).
+Then pick a model in Hermes (Hermes's own setting), from **System, Shell** or SSH:
+
+```bash
+sudo docker exec -it -u hermes $(sudo docker ps -qf name=talaria) hermes model
+```
+
+Pick a provider and give it what it asks for. To look around without a provider, set `TALARIA_DEMO` to `"true"`
+(**Edit** on the app) and pick `talaria-demo`. For Ollama, see [Ollama as a TrueNAS app](#ollama-as-a-truenas-app).
 
 `PUID` and `PGID` 568 are the TrueNAS `apps` user, which owns datasets with the Apps preset.
 
@@ -32,11 +38,9 @@ services:
     environment:
       # CHANGE: the address you open Talaria at: http://<TrueNAS address>:8080, or https://... behind a proxy
       TALARIA_PUBLIC_URL: http://192.168.1.10:8080
-      # A stand-in model to try Talaria. For real use set the three TALARIA_MODEL settings and make this false
-      TALARIA_DEMO: "true"
-      TALARIA_MODEL_BASE_URL: ""
-      TALARIA_MODEL: ""
-      TALARIA_MODEL_API_KEY: ""
+      # "true": a stand-in model to try Talaria without a provider (pick talaria-demo in hermes model). The model
+      # and provider are Hermes settings: see the TrueNAS page of the docs
+      TALARIA_DEMO: "false"
       TZ: UTC
       # The "apps" user of TrueNAS owns the Hermes data
       PUID: "568"
@@ -47,6 +51,21 @@ services:
       - /mnt/tank/apps/talaria/talaria:/talaria
 ```
 <!-- /docgen:code -->
+
+## Ollama as a TrueNAS app
+
+1. **Apps**, **Discover Apps**, search for **Ollama**, **Install**. Note its web port (the app's default is
+   `30068`) and add the environment variable `OLLAMA_CONTEXT_LENGTH` = `65536` (Ollama's setting).
+2. Download a model that handles tool calls and a 64K window, from **System, Shell**:
+
+   ```bash
+   sudo docker exec -it $(sudo docker ps -qf name=ollama) ollama pull llama3.1:8b
+   ```
+
+3. Point Hermes at it: `hermes model` as above, **Custom endpoint**, API base URL
+   `http://<TrueNAS address>:30068/v1`, no API key, the model it lists, and an empty context length.
+
+More in [Choosing models and providers](models.md#ollama).
 
 ## A TrueNAS catalog entry (not done yet)
 

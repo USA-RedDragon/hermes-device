@@ -21,7 +21,11 @@ kubectl -n talaria port-forward svc/talaria 8080:8080
 
 Open http://localhost:8080 right away: the setup page makes the first account, an admin. The first person who
 opens it gets that account, so do it before the hub is reachable from anywhere else. Add other people under
-Settings, Users ([Login options](auth.md)).
+Settings, Users ([Login options](auth.md)). Then pick a model in Hermes, `talaria-demo` to look around:
+
+```bash
+kubectl -n talaria exec -it deploy/talaria-hermes -c gateway -- hermes model
+```
 
 ## With a host name
 
@@ -29,11 +33,10 @@ Settings, Users ([Login options](auth.md)).
 helm upgrade --install talaria ./talaria --namespace talaria --create-namespace \
   --set publicUrl=https://talaria.example.com \
   --set ingress.enabled=true --set ingress.className=nginx --set ingress.tlsSecret=talaria-tls \
-  --set model.baseUrl=https://openrouter.ai/api/v1 --set model.name=anthropic/claude-sonnet-4.5 \
-  --set model.existingSecret=talaria-model
 ```
 
-with `kubectl -n talaria create secret generic talaria-model --from-literal=api-key=sk-or-...` first. For Gateway
+Then pick the model in Hermes: `kubectl -n talaria exec -it deploy/talaria-hermes -c gateway -- hermes model` ([Choosing
+models and providers](models.md)). For Gateway
 API, use `httpRoute.enabled=true` and `httpRoute.parentRefs` instead of the Ingress. The chart makes two routes:
 `<release>-device` for `/api/device/` (device WebSockets, no request timeout) and `<release>` for the rest (24
 hours, for server-sent events). An authenticating policy belongs on `<release>` only ([Login](auth.md)).

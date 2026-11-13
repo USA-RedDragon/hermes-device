@@ -41,10 +41,10 @@ The setup page that makes the first account, the first chat with the demo model,
 
 ## The first fifteen minutes
 
-1. Start Talaria with the demo model, on the machine itself ([Docker Compose](compose.md), steps 1 to 3). It takes a few minutes, mostly the download.
+1. Start Talaria on the machine itself ([Docker Compose](compose.md), steps 1 to 3). It takes a few minutes, mostly the download.
 2. Open the address it prints right away and make your account on the setup page: the first visitor becomes the admin.
-3. Send a message. Send `run: uname -a` to see the agent run a command in the sandbox.
-4. Switch to a real model: [Choosing models and providers](models.md).
+3. Pick a model in Hermes with `hermes model` ([Choosing models and providers](models.md)), or the demo model to look around.
+4. Send a message. Send `run: uname -a` to see the agent run a command in the sandbox.
 5. Pair your own computer so the agent can work on your files: [Adding your computers](computers.md).
 6. Optional: [Telegram](telegram.md), [Notifications](notifications.md), [Memory](memory.md).
 

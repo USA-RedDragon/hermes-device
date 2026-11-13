@@ -1,83 +1,87 @@
 # Choosing models and providers
 
-Hermes does the talking to the model. Talaria's installs set up one model for you, and you can add others in Hermes later. This page covers the four choices: the demo model, a hosted API, local models with Ollama, and subscriptions.
+Hermes does the talking to the model, and the model and provider are Hermes settings. Talaria's install files do
+not set them: after the first start you pick them in Hermes, with its own setup wizard, `hermes model`. Hermes
+keeps the choice (and any API key you give it) in its data folder, so it survives upgrades.
 
-## Demo model
+Until you pick one, Hermes has no model and a new chat cannot start (the chat page says "Could not start a chat").
 
-For trying Talaria. It needs no key and no download, and it answers with a canned reply. Send `run: <command>` and it makes the agent run that command in the sandbox, so you can see the whole path work.
+## Run `hermes model`
 
-- Compose: `COMPOSE_PROFILES=demo`, the default in `.env`.
+Run it in the Hermes container, as the `hermes` user, from a terminal on the server:
+
+| Install | Command |
+| ------- | ------- |
+| Compose (in the folder with `compose.yaml`) | `docker compose exec -u hermes hermes hermes model` |
+| All-in-one, Unraid (container named `Talaria`) | `docker exec -it -u hermes Talaria hermes model` |
+| TrueNAS (app named `talaria`) | `sudo docker exec -it -u hermes $(sudo docker ps -qf name=talaria) hermes model` |
+| Helm | `kubectl -n talaria exec -it deploy/talaria-hermes -c gateway -- hermes model` |
+
+Pick a provider with the arrow keys, give it what it asks for (an API key, a sign-in, or an address), then pick the
+model. New chats use it at once; no restart is needed. Run it again at any time to switch. Inside a chat, `/model`
+switches between providers you already set up.
+
+Which providers Hermes offers, what each needs and how to set them in Hermes's `config.yaml` instead: Hermes
+Agent's [LLM and model providers](https://hermes-agent.nousresearch.com/docs/integrations/providers) page. Hermes
+needs a model with a context window of at least 64,000 tokens.
+
+## Ollama
+
+[Ollama](https://ollama.com) is reached through Hermes's **Custom endpoint**:
+
+1. Run `hermes model`, pick **Custom endpoint**.
+2. API base URL: `http://<Ollama's address>:11434/v1`. From a container, `localhost` is the container itself:
+   use the server's LAN address (such as `http://192.168.1.10:11434/v1`), or `http://ollama:11434/v1` for the
+   compose `ollama` profile.
+3. Leave the API key empty, pick the model Hermes lists, and leave the context length empty: Hermes asks Ollama for
+   the model's window and sends it with every request.
+
+Ollama's own settings matter too (they are Ollama's, not Talaria's):
+
+- Pick a model that handles tool calls and a 64K window, such as `llama3.1:8b` or `gpt-oss:20b`. `qwen3` (40K) and
+  `qwen2.5` (32K) in Ollama are too small for Hermes. Small CPU models (`llama3.2:3b`) work but are slow
+  and often write tool calls as plain text.
+- `OLLAMA_CONTEXT_LENGTH=65536` (or more) on the Ollama container sets the window it serves to clients that do not
+  ask for one; the compose `ollama` profile sets it. Hermes asks for the window itself, so this is a safety net.
+- On Unraid, a container on a custom `br0` network cannot reach one on the host's bridge (and the other way round)
+  unless **Settings, Docker, Host access to custom networks** is on. Using the server's address and Ollama's
+  published port 11434 works in the default bridge setup.
+
+Compose can start Ollama for you: add `ollama` to `COMPOSE_PROFILES` and set `TALARIA_OLLAMA_PULL` to a model to
+download on start (see `.env`).
+
+## The demo model
+
+For trying Talaria without any provider. It needs no key and no download, and it answers with a canned reply. Send
+`run: <command>` and it makes the agent run that command in the sandbox, so you can see the whole path work.
+
+Turn it on, then pick it in `hermes model` (it is listed as `talaria-demo`, near the end), or set it without the picker:
+
+```bash
+hermes config set model.provider custom:talaria-demo
+hermes config set model.default talaria-demo
+```
+
+(in the Hermes container, like `hermes model` above). To turn it on:
+
+- Compose: `COMPOSE_PROFILES=demo` in `.env`.
 - Helm: `--set demo.enabled=true`.
-- All-in-one: `TALARIA_DEMO=true`.
+- All-in-one, Unraid, TrueNAS: `TALARIA_DEMO=true`.
 
-It does not understand language. Turn it off when you set a real model.
-
-## A hosted API
-
-Any service with an OpenAI-compatible API works: OpenRouter, OpenAI, DeepInfra, Together, Groq, and others. You need the API's base URL, a model name and a key.
-
-| Service | Base URL | Model name looks like |
-| ------- | -------- | --------------------- |
-| OpenRouter | `https://openrouter.ai/api/v1` | `anthropic/claude-sonnet-4.5` |
-| OpenAI | `https://api.openai.com/v1` | `gpt-5-mini` |
-| DeepInfra | `https://api.deepinfra.com/v1/openai` | the model's name on DeepInfra |
-
-Model names change often. Take the current one from the service's own list.
-
-**Compose:** edit `.env`, take `demo` out of `COMPOSE_PROFILES`, and set:
-
-```sh
-COMPOSE_PROFILES=
-TALARIA_MODEL_BASE_URL=https://openrouter.ai/api/v1
-TALARIA_MODEL=anthropic/claude-sonnet-4.5
-TALARIA_MODEL_API_KEY=sk-or-...
-```
-
-Then `docker compose up -d --wait` and `docker compose rm -sf demo-llm`. New chats use the new model.
-
-**Helm:** put the key in a Secret and point the chart at it:
-
-```sh
-kubectl -n talaria create secret generic talaria-model --from-literal=api-key=sk-or-...
-helm upgrade talaria ./talaria -n talaria --reuse-values \
-  --set demo.enabled=false \
-  --set model.baseUrl=https://openrouter.ai/api/v1 \
-  --set model.name=anthropic/claude-sonnet-4.5 \
-  --set model.existingSecret=talaria-model
-```
-
-**All-in-one:** set the same `TALARIA_MODEL_*` variables on the container.
-
-The model must handle a context window of at least 64,000 tokens. Hermes refuses smaller ones and says so in the chat. If your service reports a different window, set `TALARIA_MODEL_CONTEXT` (compose) or `model.contextLength` (Helm).
-
-## Local models with Ollama
-
-Compose can start [Ollama](https://ollama.com) for you:
-
-```sh
-COMPOSE_PROFILES=ollama
-TALARIA_OLLAMA_PULL=llama3.2:3b
-TALARIA_MODEL=llama3.2:3b
-TALARIA_MODEL_BASE_URL=http://ollama:11434/v1
-```
-
-The first start downloads the model. Pick one that handles a 64K window or more: Ollama's `qwen3` models have 40K, so Hermes refuses them.
-
-Know what to expect:
-
-- Without a GPU, local models are slow and weak at using tools. On a test machine with 6 CPU cores and no GPU, a 1B model took 80 seconds to answer, used 5.5 GB of RAM and wrote a tool call as plain text instead of calling the tool.
-- Hermes sends a long prompt with every turn, so a small local model spends most of its time reading it.
-- If you already run Ollama on another machine with a GPU, leave the `ollama` profile off and set `TALARIA_MODEL_BASE_URL` to `http://<that machine>:11434/v1`.
+It does not understand language. Pick a real model when you are done looking around.
 
 ## Subscriptions
 
-Talaria can show how much of a ChatGPT subscription you used, when Hermes is signed in to ChatGPT with its own `openai-codex` provider. That sign-in is a Hermes feature, not a Talaria one, and the install files here do not set it up. It is untested in these installs.
+Talaria can show how much of a ChatGPT subscription you used, when Hermes is signed in to ChatGPT with its own
+`openai-codex` provider (`hermes model`, OpenAI). That sign-in is a Hermes feature; it is untested in these
+installs.
 
-## Several models, and other providers
+## Provider keys from the environment
 
-The installs set one model. Hermes itself can use many providers and switches between them in a chat (the model picker in the web app lists what Hermes offers). To add providers beyond the one in `.env`:
+Hermes also reads provider keys from environment variables, such as `OPENROUTER_API_KEY` (the names are on Hermes's
+providers page). `hermes model` saves keys you type in Hermes's own `.env` in its data folder, which is usually
+simpler. To pass them from outside instead:
 
-- Helm: put Hermes settings in `hermes.config` and provider keys in `hermes.env`.
-- Compose: add environment variables to the `hermes` service in a `compose.override.yaml`.
-
-Which variable name a provider reads is in [Hermes Agent's docs](https://github.com/NousResearch/hermes-agent). This path is not covered by the install tests.
+- Compose: a `compose.override.yaml` with the variables under `services: hermes: environment:`.
+- Helm: `hermes.env`, and Hermes settings in `hermes.config`.
+- All-in-one: variables on the container.

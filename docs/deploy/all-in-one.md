@@ -28,13 +28,13 @@ bringing a second supervisor.
 | Hub | s6 service `talaria-hub`, on 127.0.0.1:8081 | nobody |
 | Front | s6 service `talaria-front` (Caddy), the one port inside the container: `TALARIA_PORT` (8080). Publish it on any host port. Until the Hermes gateway answers its health check, it holds requests (up to a minute, then a page that reloads itself) | nobody |
 | Sandbox | s6 service `talaria-sandbox`, `talaria run` as a service device | agent (2568) |
-| Demo model | s6 service `talaria-demo`, only with `TALARIA_DEMO=true` | nobody |
+| Demo model | s6 service `talaria-demo`, only with `TALARIA_DEMO=true`, offered to Hermes as the provider `talaria-demo` | nobody |
 
 Two folders hold all state: `/opt/data` is the Hermes home (chats, memory, settings), and `/talaria` holds the
 hub database, the generated keys (`/talaria/secrets`) and the sandbox's files (`/talaria/work`).
 
 Settings are environment variables with the same names as in the compose `.env`: `TALARIA_PUBLIC_URL`,
-`TALARIA_PORT`, `TALARIA_MODEL_BASE_URL`, `TALARIA_MODEL`, `TALARIA_MODEL_API_KEY`, `TALARIA_USER`,
+`TALARIA_PORT`, `TALARIA_USER`,
 `TALARIA_TELEGRAM_TOKEN`, `TZ`, plus `TALARIA_DEMO`, and Hermes's own `PUID` and
 `PGID`. Login settings are the hub's own `HUB_AUTH_*` and `HUB_OIDC_*` variables ([Login options](auth.md)); the
 default is local accounts, made on the setup page by the first visitor.

@@ -12,18 +12,47 @@ Talaria on Unraid is one container from the all-in-one image ([design](all-in-on
 
    Then click **Add Container** and pick **Talaria** under **Template**.
 2. Set **Public URL** to `http://<your Unraid address>:8080`, such as `http://192.168.1.10:8080`.
-3. Leave **Demo model** at `true` to try it, or set **Model API URL**, **Model** and **Model API key** and make
-   it `false`.
+3. To look around without a model provider, set **Demo model** to `true`.
 4. **Apply**. The first start downloads about 1.2 GB.
 5. Right after the start, open **WebUI** in the container's menu (or `http://192.168.1.10:8080`). The setup page
    makes the first account, an admin: the first person who opens it gets that account, so do it before the port
    is reachable from outside your network. Add other people under Settings, Users.
+6. Pick a model in Hermes (Hermes's own setting). In the Unraid terminal (the **>_** icon at the top right):
+
+   ```bash
+   docker exec -it -u hermes Talaria hermes model
+   ```
+
+   Pick a provider with the arrow keys and give it what it asks for, or `talaria-demo` with the demo model on. For
+   Ollama, see [Ollama on the same server](#ollama-on-the-same-server).
 
 Data is in `/mnt/user/appdata/talaria`: `hermes` (chats, memory) and `talaria` (hub database, keys, the
 sandbox's files). Back up both.
 
 The container is stopped with a 120 second timeout (`--stop-timeout 120` in **Extra Parameters**), so running
 replies can finish.
+
+## Ollama on the same server
+
+Ollama is its own container; Hermes reaches it by the server's address.
+
+1. Install Ollama: in **Apps**, search for Ollama and install the `ollama/ollama` template, or on the **Docker**
+   tab add a container with repository `ollama/ollama`, port 11434 and a path for `/root/.ollama`.
+2. Add a variable to the Ollama container: key `OLLAMA_CONTEXT_LENGTH`, value `65536` (Ollama's setting: the
+   window it serves to clients that do not ask for one).
+3. Download a model that handles tool calls and a 64K window, in the Unraid terminal:
+
+   ```bash
+   docker exec -it ollama ollama pull llama3.1:8b
+   ```
+
+4. Point Hermes at it: `docker exec -it -u hermes Talaria hermes model`, pick **Custom endpoint**, API base URL
+   `http://<your Unraid address>:11434/v1` (such as `http://192.168.1.10:11434/v1`), no API key, the model it
+   lists, and an empty context length (Hermes asks Ollama).
+
+Both containers on the default bridge network reach each other this way. A container on a custom `br0` network
+cannot reach the server's own address unless **Settings, Docker, Host access to custom networks** is on. More in
+[Choosing models and providers](models.md#ollama).
 
 ## Template
 
@@ -51,10 +80,7 @@ replies can finish.
   <Config Name="Public URL" Target="TALARIA_PUBLIC_URL" Default="" Description="The address you open Talaria at, such as http://192.168.1.10:8080 (this server's address and the web port) or https://talaria.example.com behind a reverse proxy. Pages and push notifications need HTTPS." Type="Variable" Display="always" Required="true" Mask="false"/>
   <Config Name="Hermes data" Target="/opt/data" Default="/mnt/user/appdata/talaria/hermes" Mode="rw" Description="Chats, memory and agent settings" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/talaria/hermes</Config>
   <Config Name="Talaria data" Target="/talaria" Default="/mnt/user/appdata/talaria/talaria" Mode="rw" Description="Hub database, keys, and the sandbox's files" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/talaria/talaria</Config>
-  <Config Name="Demo model" Target="TALARIA_DEMO" Default="true" Description="true: a stand-in model that needs no API key, to try Talaria. Set the model below and make this false for real use." Type="Variable" Display="always" Required="false" Mask="false">true</Config>
-  <Config Name="Model API URL" Target="TALARIA_MODEL_BASE_URL" Default="" Description="Any OpenAI-compatible API, such as https://openrouter.ai/api/v1" Type="Variable" Display="always" Required="false" Mask="false"/>
-  <Config Name="Model" Target="TALARIA_MODEL" Default="" Description="Model name at that API, such as anthropic/claude-sonnet-4.5" Type="Variable" Display="always" Required="false" Mask="false"/>
-  <Config Name="Model API key" Target="TALARIA_MODEL_API_KEY" Default="" Description="API key of that service" Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Demo model" Target="TALARIA_DEMO" Default="false" Description="true: a stand-in model that needs no API key, to try Talaria (pick talaria-demo with: docker exec -it -u hermes Talaria hermes model). The model and provider are Hermes settings, see the docs" Type="Variable" Display="always" Required="false" Mask="false">false</Config>
   <Config Name="Your hub user" Target="TALARIA_USER" Default="" Description="Optional: the hub account of the person this agent works for, once it exists. Names that person in memory, and owns chats that are on no computer" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Telegram bot token" Target="TALARIA_TELEGRAM_TOKEN" Default="" Description="Optional, from @BotFather" Type="Variable" Display="advanced" Required="false" Mask="true"/>
   <Config Name="Time zone" Target="TZ" Default="" Description="IANA name, such as America/New_York. Empty: UTC" Type="Variable" Display="advanced" Required="false" Mask="false"/>

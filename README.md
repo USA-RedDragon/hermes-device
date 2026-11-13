@@ -32,8 +32,15 @@ docker compose up -d --wait
 docker compose logs init
 ```
 
-Open the address it prints and make your account. It starts with a demo model that needs no API key; then
-[choose a real model](docs/deploy/models.md). To let the agent work on your own computers, install the `talaria`
+Open the address it prints right away and make your account (the first visitor becomes the admin). Then pick a
+model and provider in Hermes, the agent ([details](docs/deploy/models.md)):
+
+```bash
+docker compose exec -u hermes hermes hermes model
+```
+
+To look around without a provider, set `COMPOSE_PROFILES=demo` in `.env`, run `docker compose up -d --wait` again
+and pick `talaria-demo` there. To let the agent work on your own computers, install the `talaria`
 program on each one and [pair it](docs/start/setup-and-pairing.md).
 
 ## What is in this repository

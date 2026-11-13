@@ -16,8 +16,9 @@ built-in login. Every secret is made for you on the first start.
 
   then log out and back in, so that `docker` works without `sudo`.
 - 2 GB of free RAM and 10 GB of free disk. The Hermes image alone is about 1.1 GB to download.
-- A model: an API key for an OpenAI-compatible service (OpenRouter, OpenAI, and others), or Ollama for local
-  models. To try Talaria first, use the demo model: it needs no key, but it only answers with a canned reply.
+- A model provider that Hermes supports: an API key or sign-in (OpenRouter, Nous Portal, OpenAI, Anthropic, and
+  many others), or Ollama for local models. To try Talaria first, use the demo model: it needs no key, but it only
+  answers with a canned reply.
 
 ## Step 1: Get the files
 
@@ -54,13 +55,13 @@ shows the address:
 
 Open it in a browser on the same host. While Talaria has no account, it shows the setup page: give a user name, a
 display name and a password of at least 12 characters. The first person who does this becomes the admin, so do it
-right away, before Talaria is reachable from other machines. There is no password in the log. Then send a
-message.
+right away, before Talaria is reachable from other machines. There is no password in the log.
 
 ![The setup page](images/setup.png)
 
-Add other people later under Settings, Users (see [Login options](auth.md)). With the demo model, the reply
-starts with "This is the Talaria demo model". Two messages show more:
+Add other people later under Settings, Users (see [Login options](auth.md)). Before the first chat, Hermes needs a
+model (step 4). With the demo model, the reply starts with "This is the Talaria demo model". A few messages show
+more:
 
 - `run: uname -a`: the agent runs the command in the sandbox. A risky command, such as `run: rm -rf /work/old`,
   asks for your approval first.
@@ -70,32 +71,19 @@ starts with "This is the Talaria demo model". Two messages show more:
 
 To open Talaria from another computer, see [Reach it from other computers](#reach-it-from-other-computers).
 
-## Step 4: Use a real model
+## Step 4: Pick a model in Hermes
 
-Edit `.env`: set the model, and take `demo` out of `COMPOSE_PROFILES`. For example, OpenRouter:
-
-```bash
-COMPOSE_PROFILES=
-TALARIA_MODEL_BASE_URL=https://openrouter.ai/api/v1
-TALARIA_MODEL=anthropic/claude-sonnet-4.5
-TALARIA_MODEL_API_KEY=sk-or-...
-```
-
-Then apply it, and remove the demo model:
+The model and provider are Hermes settings. Run Hermes's setup wizard in its container:
 
 ```bash
-docker compose up -d --wait
-docker compose rm -sf demo-llm
+docker compose exec -u hermes hermes hermes model
 ```
 
-New chats use the new model.
+Pick a provider with the arrow keys, give it what it asks for (an API key, a sign-in, or an address), then the
+model. New chats use it at once. [Choosing models and providers](models.md) has the details, Ollama included.
 
-For local models, add `ollama` to `COMPOSE_PROFILES`, set `TALARIA_OLLAMA_PULL` and `TALARIA_MODEL` to a model
-such as `llama3.2:3b`, and point `TALARIA_MODEL_BASE_URL` at `http://ollama:11434/v1`. Pick a model that handles
-a window of 64K tokens or more: Hermes refuses smaller ones, and says so in the chat (Ollama's `qwen3` models
-have 40K). Without a GPU, local models are slow and weak at using tools: Hermes sends a long prompt with every
-turn. On the test VM (6 CPU cores, no GPU), `llama3.2:1b` took 80 seconds to answer, used 5.5 GB of RAM with
-the 128K window, and wrote a tool call as plain text instead of calling the tool.
+To look around without any provider first, start the demo model (`COMPOSE_PROFILES=demo` in `.env`, then
+`docker compose up -d --wait`) and pick `talaria-demo` in `hermes model`.
 
 ## Reach it from other computers
 
