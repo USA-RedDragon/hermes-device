@@ -434,7 +434,7 @@ func TestExecLegCloseRecorded(t *testing.T) {
 		writeJSON(t, c, protocol.Hello{Type: protocol.TypeHello, Version: 4, MaxVersion: 5, Roots: []string{"/home/alice"},
 			Home: "/home/alice", Hostname: hostName, OS: osLinux, Arch: archAMD64, ClientVersion: "v0.4.0"})
 		_, _, err = c.Read(context.Background())
-		want := "hermes-device v0.4.0 speaks protocol 4 to 5; plugin " + devicetest.PluginVersion + " speaks 2 to 3; upgrade them together"
+		want := "talaria v0.4.0 speaks protocol 4 to 5; plugin " + devicetest.PluginVersion + " speaks 2 to 3; upgrade them together"
 		var ce websocket.CloseError
 		if !errors.As(err, &ce) || ce.Code != protocol.CloseUnsupportedVersion || ce.Reason != want {
 			t.Fatalf("close = %v", err)

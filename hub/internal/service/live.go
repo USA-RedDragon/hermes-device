@@ -459,9 +459,9 @@ func (ls *live) turnNotices(ev gateway.Event) {
 	}
 }
 
-// noUserMarker is in the message hermes-device's browser tools give when
+// noUserMarker is in the message talaria's browser tools give when
 // they refuse a step that needs the user in a run with no user present
-// (hermes-device plugin/device/browser.py).
+// (plugin/device/browser.py).
 const noUserMarker = "no user is present in this run"
 
 // apply passes one gateway frame to viewers once, in order. ls.mu is held.

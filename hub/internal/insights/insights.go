@@ -1,5 +1,5 @@
 // Package insights serves the hub's chat search and its Usage page: the
-// hermes-device plugin's views of each backend's session store, what the
+// talaria device plugin's views of each backend's session store, what the
 // hub saw in usage events, Honcho's backlog and the local GPU's time from
 // the Ollama proxy's metrics.
 package insights

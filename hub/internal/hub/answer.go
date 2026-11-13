@@ -11,7 +11,7 @@ const (
 	// AnsweredInTelegram is an answer given with the Telegram bot.
 	AnsweredInTelegram = "telegram"
 	// AnsweredOnDevice is an answer given in a client of a paired device,
-	// such as the Hermes TUI through hermes-device.
+	// such as the Hermes TUI through talaria.
 	AnsweredOnDevice = "device"
 	// AnsweredElsewhere is an answer the hub did not see: from a client
 	// that talks to Hermes directly.

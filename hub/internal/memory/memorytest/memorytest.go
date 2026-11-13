@@ -1,4 +1,4 @@
-// Package memorytest has fakes of the hermes-device plugin's memory routes
+// Package memorytest has fakes of the talaria device plugin's memory routes
 // and of the Honcho API, for tests.
 package memorytest
 

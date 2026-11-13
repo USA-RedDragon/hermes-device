@@ -1,4 +1,4 @@
-// Package device is the hub side of hermes-device (docs/protocol.md of
+// Package device is the hub side of talaria (docs/protocol.md of
 // github.com/USA-RedDragon/talaria): pairing, the device token, the
 // bind API and the exec, ACP and gateway legs that the hub proxies to a
 // device's backend.

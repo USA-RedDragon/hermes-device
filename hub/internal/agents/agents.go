@@ -1,7 +1,7 @@
 // Package agents routes messages between the agents of one backend: its
-// chats and the subagents they delegate to. The hermes-device plugin's
+// chats and the subagents they delegate to. The talaria device plugin's
 // device-agents tools put each call on a bus that the hub takes with a
-// long poll (hermes-device docs/protocol.md section 12). The hub checks the
+// long poll (docs/protocol.md section 12). The hub checks the
 // call, records it and delivers the message: as a new input of a chat
 // (prompt.submit), or into a running agent through the plugin.
 package agents

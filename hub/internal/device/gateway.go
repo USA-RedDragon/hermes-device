@@ -353,7 +353,8 @@ func (g *guard) sendList(f *frame, params map[string]json.RawMessage) {
 }
 
 // audience is the session.list audience of this device, which the device
-// plugin judges.
+// plugin judges. The hermes-device: prefix is a wire name from before the
+// rename to talaria; deployed plugins match it, so it stays.
 func (g *guard) audience() string { return "hermes-device:" + g.dev.ID }
 
 // audienceHonored reports whether the gateway scopes session.list to this

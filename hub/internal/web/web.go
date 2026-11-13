@@ -54,7 +54,7 @@ type Options struct {
 	// Devices turns on the pairing page and the device list. Nil when
 	// device.enabled is off.
 	Devices hub.DeviceStore
-	// DeviceAPI serves /api/device/, the API of the hermes-device client.
+	// DeviceAPI serves /api/device/, the API of the talaria client.
 	DeviceAPI http.Handler
 	// OnRevoke is called with the id of each device a user revokes, to
 	// close its connections on this replica.

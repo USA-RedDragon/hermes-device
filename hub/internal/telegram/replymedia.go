@@ -24,7 +24,7 @@ const (
 const maxReplyMedia = 10
 
 // mediaReadTimeout bounds reading one file a reply names. A file on a
-// device can take the plugin's 120 seconds and its transfer (hermes-device
+// device can take the plugin's 120 seconds and its transfer (talaria
 // plugin/device/core.py FILE_READ_TIMEOUT_S).
 const mediaReadTimeout = 150 * time.Second
 

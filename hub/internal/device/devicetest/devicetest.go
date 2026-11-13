@@ -1,7 +1,7 @@
-// Package devicetest has fakes of the Hermes side of hermes-device for
+// Package devicetest has fakes of the Hermes side of talaria for
 // tests: the device plugin, mounted on a gatewaytest.Gateway as the
 // dashboard mounts it on the gateway listener, and acp-host. Both verify
-// the hub assertion with the hermes-device assertion package.
+// the hub assertion with the talaria assertion package.
 package devicetest
 
 import (
@@ -552,7 +552,7 @@ func (p *Plugin) exec(w http.ResponseWriter, r *http.Request) {
 	}
 	version, ok := negotiate(hello)
 	if !ok {
-		_ = ws.Close(protocol.CloseUnsupportedVersion, fmt.Sprintf("hermes-device %s speaks protocol %d to %d; plugin %s speaks %d to %d; upgrade them together",
+		_ = ws.Close(protocol.CloseUnsupportedVersion, fmt.Sprintf("talaria %s speaks protocol %d to %d; plugin %s speaks %d to %d; upgrade them together",
 			hello.ClientVersion, hello.Version, max(hello.MaxVersion, hello.Version), PluginVersion, protocol.MinVersion, protocol.Version))
 		return
 	}

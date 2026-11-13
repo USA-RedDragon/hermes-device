@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Device is a paired hermes-device client: one computer of one user,
+// Device is a paired talaria client: one computer of one user,
 // pinned to one backend at pairing.
 type Device struct {
 	ID            string

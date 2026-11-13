@@ -262,7 +262,7 @@ func runNotifyLeader(ctx context.Context, st *store.Store, svc *service.Service,
 	})
 }
 
-// newDevices returns the hermes-device server, or nil when
+// newDevices returns the talaria device server, or nil when
 // device.enabled is off. Only backends with devices on get device legs.
 func newDevices(cfg *config.Config, st *store.Store, svc *service.Service, dialers map[string]*gateway.Dialer) (*device.Server, error) {
 	if !cfg.Device.Enabled {
@@ -303,7 +303,7 @@ func newClaudeCode(cfg *config.Config, st *store.Store, svc *service.Service, de
 }
 
 // newMemory returns the Memory page's core, or nil when no backend has
-// memory: every backend's Hermes may have the hermes-device plugin's
+// memory: every backend's Hermes may have the talaria device plugin's
 // memory routes, so each one counts.
 func newMemory(cfg *config.Config, svc *service.Service, dialers map[string]*gateway.Dialer) (hub.Memory, error) {
 	if len(cfg.Backends) == 0 {

@@ -238,7 +238,7 @@ func (c *Config) validateClaude(known userNames) error {
 	return nil
 }
 
-// Device configures hermes-device: computers that users pair with one of
+// Device configures talaria: computers that users pair with one of
 // their backends, so Hermes runs commands and editors on them.
 type Device struct {
 	Enabled         bool          `name:"enabled" default:"false" description:"Serve the talaria device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices"`

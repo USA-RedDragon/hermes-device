@@ -22,7 +22,7 @@ type Attachment struct {
 // Attachment limits. MaxImageBytes and MaxImages are the gateway's
 // (tui_gateway/prompt_attachments.py _ATTACH_BYTES_MAX_BYTES,
 // gateway/session_ingress_media.py _ATTACHMENT_LIMIT); MaxFileBytes is the
-// device plugin's upload limit (hermes-device docs/protocol.md section 9).
+// device plugin's upload limit (docs/protocol.md section 9).
 const (
 	MaxImageBytes = 25 << 20
 	MaxImages     = 10

@@ -60,7 +60,7 @@ var ErrMediaTooLarge = errors.New("file too large")
 // MaxMediaBytes bounds a file the hub passes on.
 const MaxMediaBytes = 64 << 20
 
-// ScreenshotTool is the hermes-device tool that saves a browser screenshot
+// ScreenshotTool is the talaria tool that saves a browser screenshot
 // for the user and returns its path.
 const ScreenshotTool = "browser_screenshot"
 

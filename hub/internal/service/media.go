@@ -24,7 +24,7 @@ type fileReader interface {
 }
 
 // defaultMedia are the files the hub shows on a backend without media
-// roots, when they are images: hermes-device's browser_screenshot files,
+// roots, when they are images: talaria's browser_screenshot files,
 // <HERMES_HOME>/cache/screenshots/hermes-device/<session>/<file>, and the
 // images users attach, which the gateway stages in <HERMES_HOME>/cache/images
 // (<HERMES_HOME>/image_cache on older installs).

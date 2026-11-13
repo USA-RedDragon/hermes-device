@@ -1,5 +1,5 @@
 // Package memory serves the hub's Memory page: Hermes's built-in memory
-// (MEMORY.md and USER.md, through the hermes-device plugin's memory routes)
+// (MEMORY.md and USER.md, through the talaria device plugin's memory routes)
 // and what Honcho learned about the user.
 package memory
 

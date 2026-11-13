@@ -17,7 +17,7 @@ const maxNotesBody = 4 << 20
 const fieldContent = "content"
 
 // notes is a client of the device plugin's memory routes and of the
-// dashboard's config route on one backend (hermes-device docs/protocol.md
+// dashboard's config route on one backend (docs/protocol.md
 // section 9.1).
 type notes struct {
 	r device.Requester
