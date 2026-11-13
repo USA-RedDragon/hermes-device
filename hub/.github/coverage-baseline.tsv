@@ -32,14 +32,14 @@ internal/device/device.go	202	163
 internal/device/devicetest/devicetest.go	522	467
 internal/device/files.go	71	57
 internal/device/gateway.go	419	331
-internal/device/legs.go	169	151
+internal/device/legs.go	169	152
 internal/device/pair.go	52	29
 internal/device/plugin.go	100	84
 internal/device/rpc.go	214	199
 internal/device/sessioncheck.go	23	22
 internal/device/usage.go	50	40
 internal/device/views.go	17	17
-internal/gateway/client.go	252	212
+internal/gateway/client.go	252	206
 internal/gateway/gatewaytest/activity.go	106	86
 internal/gateway/gatewaytest/compose.go	184	159
 internal/gateway/gatewaytest/fake.go	651	595
@@ -100,9 +100,9 @@ internal/service/outcome.go	92	88
 internal/service/page.go	51	47
 internal/service/pdf.go	71	55
 internal/service/rows.go	22	21
-internal/service/service.go	802	737
+internal/service/service.go	802	734
 internal/service/stopsend.go	93	77
-internal/service/subagentlog.go	174	141
+internal/service/subagentlog.go	177	143
 internal/service/turn.go	78	71
 internal/store/accounts.go	187	156
 internal/store/agents.go	83	70
@@ -128,7 +128,7 @@ internal/telegram/claude.go	106	88
 internal/telegram/commands.go	245	203
 internal/telegram/computers.go	186	146
 internal/telegram/config.go	18	18
-internal/telegram/dmtopics.go	105	86
+internal/telegram/dmtopics.go	105	88
 internal/telegram/draft.go	78	63
 internal/telegram/echo.go	133	112
 internal/telegram/format.go	114	111
@@ -148,7 +148,7 @@ internal/web/auth.go	134	101
 internal/web/authpages.go	39	37
 internal/web/claude.go	83	58
 internal/web/claudecode.go	30	19
-internal/web/compose.go	196	153
+internal/web/compose.go	196	155
 internal/web/computers.go	85	58
 internal/web/cookies.go	46	38
 internal/web/devices.go	173	120
