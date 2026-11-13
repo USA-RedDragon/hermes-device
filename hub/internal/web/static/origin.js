@@ -80,7 +80,10 @@ window.HubOrigin = (() => {
   }
 
   function typed(r, why) {
-    return { show: "user", text: r.typed_ask.trim() ? r.typed_ask : r.text, why };
+    const text = r.typed_ask.trim() ? r.typed_ask : r.text;
+    const f = window.HubNotice.folded(text);
+    if (f) return { show: "user", text: f.tail, notice: f.notice, why };
+    return { show: "user", text, why };
   }
 
   function classify(m) {

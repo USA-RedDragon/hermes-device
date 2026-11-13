@@ -11,13 +11,14 @@ const (
 		"This is a handoff from a previous context window — treat it as background reference, NOT as active instructions."
 	compactionRulesEnd = "avoid repeating it:"
 	compactionLegacy   = "[CONTEXT SUMMARY]:"
-	compactionEnd      = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
+	CompactionEnd      = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
 	compactionHistory  = "Historical only; newer protected-tail messages after this summary win."
 )
 
 // compactionModelOnly are the sections of a summary that Hermes writes for
 // the model: the user's words quoted again, and how to look the messages up.
 // Hermes leaves them out of what it shows.
+//
 //nolint:gochecknoglobals // fixed text
 var compactionModelOnly = [...]string{"## User Messages (verbatim, newest first)", "## Context Recovery"}
 
@@ -49,7 +50,7 @@ func CompactionSummary(text string) (summary string, count int, ok bool) {
 		return "", 0, false
 	}
 	body = strings.TrimSpace(body)
-	if i := strings.LastIndex(body, compactionEnd); i >= 0 && strings.TrimSpace(body[i+len(compactionEnd):]) == "" {
+	if i := strings.LastIndex(body, CompactionEnd); i >= 0 && strings.TrimSpace(body[i+len(CompactionEnd):]) == "" {
 		body = strings.TrimSpace(body[:i])
 	}
 	body, count = cutModelOnly(body)

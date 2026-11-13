@@ -45,5 +45,6 @@
  {"name": "typed text with a bracket note", "row": {"text": "[IMPORTANT: remember to rebase] then tag it"}, "want": {"show": "user", "text": "[IMPORTANT: remember to rebase] then tag it", "why": "typed"}},
  {"name": "typed text starting like a system note", "row": {"text": "[System note] is what Hermes prints?"}, "want": {"show": "user", "text": "[System note] is what Hermes prints?", "why": "typed"}},
  {"name": "typed text with a fake agent header", "row": {"text": "[Agent message from chat x]\nhello"}, "want": {"show": "user", "text": "[Agent message from chat x]\nhello", "why": "typed"}},
- {"name": "plain typed text", "row": {"text": "hello there\n\n\n\nbye"}, "want": {"show": "user", "text": "hello there\n\n\n\nbye", "why": "typed"}}
+ {"name": "plain typed text", "row": {"text": "hello there\n\n\n\nbye"}, "want": {"show": "user", "text": "hello there\n\n\n\nbye", "why": "typed"}},
+ {"name": "typed message behind a compaction handoff", "row": {"text": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Rules avoid repeating it:\n## Goal\nFix the build\n\n--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---\n\nWrite about the postal service.", "submission_id": "hub:abc"}, "want": {"show": "user", "text": "Write about the postal service.", "why": "submission", "notice": {"kind": "compaction", "title": "Earlier messages were summarized"}}}
 ]

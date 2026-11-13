@@ -511,5 +511,16 @@ window.HubNotice = (() => {
     else head.append(line);
   }
 
-  return { parse, card, stamp, metaLine };
+  // folded reads a typed message that a compaction handoff came before:
+  // the handoff's card and the words after its end line.
+  function folded(text) {
+    const t = trim(String(text || ""));
+    const i = t.lastIndexOf(compactionEnd);
+    if (i < 0) return null;
+    const tail = trim(t.slice(i + compactionEnd.length));
+    const n = tail ? parse(t.slice(0, i)) : null;
+    return n && n.kind === "compaction" ? { notice: n, tail } : null;
+  }
+
+  return { parse, folded, card, stamp, metaLine };
 })();

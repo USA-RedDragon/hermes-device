@@ -14,6 +14,8 @@
 //  3. Any other display_kind (internal_notification, process_complete,
 //     async_delegation_complete, model_switch, personality_switch,
 //     auto_continue, and kinds Hermes adds later) is not typed: a card.
+//     A typed message that Hermes put a compaction handoff in front of
+//     shows the handoff as a card and the typed words as the bubble.
 //  4. A submission ID (display_metadata.submission_id) names who admitted
 //     the row: a producer's JSON array (cron, a route wake) or the hub's
 //     agent delivery prefix is a card; any other ID is a client send of
@@ -147,7 +149,28 @@ func typed(r Row, why string) View {
 	if strings.TrimSpace(r.TypedAsk) != "" {
 		text = r.TypedAsk
 	}
+	if n, tail, ok := foldedSummary(text); ok {
+		return View{Show: ShowUser, Text: tail, Notice: n, Why: why}
+	}
 	return View{Show: ShowUser, Text: text, Why: why}
+}
+
+// foldedSummary reads a typed message that Hermes put a compaction handoff
+// in front of, when the compacted chat's next user message came first in
+// what it kept: the summary is a card, and what follows its end line is
+// what the user typed.
+func foldedSummary(text string) (*notice.Notice, string, bool) {
+	t := strings.TrimSpace(text)
+	i := strings.LastIndex(t, hub.CompactionEnd)
+	if i < 0 {
+		return nil, "", false
+	}
+	tail := strings.TrimSpace(t[i+len(hub.CompactionEnd):])
+	summary, count, ok := hub.CompactionSummary(t[:i])
+	if !ok || tail == "" {
+		return nil, "", false
+	}
+	return notice.Compaction(summary, count), tail, true
 }
 
 func kindNotice(kind string, r Row) *notice.Notice {
