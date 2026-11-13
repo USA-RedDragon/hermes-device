@@ -55,7 +55,7 @@ telegram:
 images:
   hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.76@sha256:8f6b3e492d5c7936fba1a7a7d10932c805b1ba0ad9c81b120ccca18ed726a909
   # -- Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
-  hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p36@sha256:fdd51ef8455b8400070fb8f5e92fc6b94875e2157d9c7451e3cdb018cc415025
+  hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p37@sha256:bd7a3b43c3d38c6dc71b9377443b65ac1a115124c657272fcf539745c7dae647
   device: ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
   # -- The binary's file name at the root of the device image, for the image volume; "hermes-device" before v0.26.0
   deviceBinary: talaria
