@@ -1,4 +1,4 @@
-# Choosing models and providers
+# Choose a model and provider
 
 Hermes does the talking to the model, and the model and provider are Hermes settings. Talaria's install files do
 not set them: after the first start you pick them in Hermes, with its own setup wizard, `hermes model`. Hermes

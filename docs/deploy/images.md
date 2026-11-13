@@ -1,4 +1,4 @@
-# Images
+# Container images
 
 Every install uses these images, pinned by digest. The compose file, the Helm chart and the all-in-one
 Dockerfile pin the same versions.

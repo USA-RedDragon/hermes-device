@@ -1,4 +1,4 @@
-# Admin guide
+# Users, backends and computers
 
 This page is for the person who runs the hub: adding people, connecting Hermes backends, managing computers, and keeping the hub healthy. If you have not installed the hub yet, start with the [install kit](https://github.com/USA-RedDragon/talaria/blob/main/docs/deploy/getting-started.md), which installs the hub, Hermes and a sandbox with one command.
 
@@ -8,7 +8,7 @@ This page is for the person who runs the hub: adding people, connecting Hermes b
 2. Open that address, give a name and a password. The first account is an admin with every backend. There is no setup token, so open the page yourself before you expose the hub to the internet.
 3. Add the other people under Settings, then Users.
 
-[Logging in](auth.md) describes the other login modes: a reverse-proxy header and OpenID Connect.
+[Login settings reference](auth.md) describes the other login modes: a reverse-proxy header and OpenID Connect.
 
 ## Users
 

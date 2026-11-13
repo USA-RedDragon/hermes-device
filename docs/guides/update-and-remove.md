@@ -1,4 +1,4 @@
-# Update, move and remove
+# Update, move or remove a computer
 
 ## Update
 

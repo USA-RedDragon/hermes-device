@@ -1,4 +1,4 @@
-# Configuration
+# Hub settings (config.yaml)
 
 The hub reads `config.yaml` in its working directory, or the file named by `--config` (`-c`) or the `CONFIG` environment variable. Environment variables override the file, and flags override both. Every setting has all three forms: the key `http.public_url` is the environment variable `HUB_HTTP_PUBLIC_URL` and the flag `--http.public_url`.
 

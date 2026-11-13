@@ -1,4 +1,4 @@
-# Install Talaria with Docker Compose
+# Install with Docker Compose
 
 This page takes you from a Linux host with Docker to your first chat in Talaria. It starts three parts: the hub
 (the web app), Hermes (the agent) and a sandbox (where the agent runs commands), plus a small web front and a
@@ -59,7 +59,7 @@ right away, before Talaria is reachable from other machines. There is no passwor
 
 ![The setup page](images/setup.png)
 
-Add other people later under Settings, Users (see [Login options](auth.md)). Before the first chat, Hermes needs a
+Add other people later under Settings, Users (see [Set up logins](auth.md)). Before the first chat, Hermes needs a
 model (step 4). With the demo model, the reply starts with "This is the Talaria demo model". A few messages show
 more:
 
@@ -117,7 +117,7 @@ The hub accepts requests only for the address in `TALARIA_PUBLIC_URL`. By defaul
 - **Behind your own reverse proxy:** proxy to port 8080 of the host and set `TALARIA_PUBLIC_URL` to the
   proxy's address. Turn off response buffering (chats stream as server-sent events) and allow WebSockets on
   `/api/device/`. To let the proxy log people in (Authelia, oauth2-proxy), see
-  [Login options](auth.md#behind-a-reverse-proxy).
+  [Set up logins](auth.md#behind-a-reverse-proxy).
 
 ## Settings
 

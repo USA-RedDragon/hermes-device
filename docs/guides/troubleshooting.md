@@ -1,4 +1,4 @@
-# Troubleshooting
+# Fix computer problems
 
 Start with the daemon's log. On Linux:
 

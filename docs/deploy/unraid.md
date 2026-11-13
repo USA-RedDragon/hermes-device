@@ -1,4 +1,4 @@
-# Install Talaria on Unraid
+# Install on Unraid
 
 Talaria on Unraid is one container from the all-in-one image ([design](all-in-one.md)).
 

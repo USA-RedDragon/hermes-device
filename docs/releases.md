@@ -1,4 +1,4 @@
-# Release verification
+# Releases and verification
 
 From v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false -->0.13.0<!-- /docgen:const --> on, every release has GitHub artifact attestations, and `talaria update` installs a release only when the attestation of its archive verifies. This page says what is attested, what `update` checks, what it trusts, and how to check a file by hand.
 

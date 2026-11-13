@@ -1,4 +1,4 @@
-# Install Talaria on Kubernetes with Helm
+# Install on Kubernetes with Helm
 
 The chart in `deploy/charts/talaria` runs the same parts as the compose install: the hub (with its web front in one pod), Hermes, and the sandbox. It makes every key it needs on the first install.
 
@@ -21,7 +21,7 @@ kubectl -n talaria port-forward svc/talaria 8080:8080
 
 Open http://localhost:8080 right away: the setup page makes the first account, an admin. The first person who
 opens it gets that account, so do it before the hub is reachable from anywhere else. Add other people under
-Settings, Users ([Login options](auth.md)). Then pick a model in Hermes, `talaria-demo` to look around:
+Settings, Users ([Set up logins](auth.md)). Then pick a model in Hermes, `talaria-demo` to look around:
 
 ```bash
 kubectl -n talaria exec -it deploy/talaria-hermes -c gateway -- hermes model

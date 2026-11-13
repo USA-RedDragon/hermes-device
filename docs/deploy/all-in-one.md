@@ -1,4 +1,4 @@
-# The all-in-one image
+# Install the all-in-one image
 
 Unraid and TrueNAS install apps as one container with a few settings and folders. The all-in-one image puts the
 hub, Hermes, the sandbox and the built-in login in one container, so those platforms need nothing else. On any
@@ -36,7 +36,7 @@ hub database, the generated keys (`/talaria/secrets`) and the sandbox's files (`
 Settings are environment variables with the same names as in the compose `.env`: `TALARIA_PUBLIC_URL`,
 `TALARIA_PORT`, `TALARIA_USER`,
 `TALARIA_TELEGRAM_TOKEN`, `TZ`, plus `TALARIA_DEMO`, and Hermes's own `PUID` and
-`PGID`. Login settings are the hub's own `HUB_AUTH_*` and `HUB_OIDC_*` variables ([Login options](auth.md)); the
+`PGID`. Login settings are the hub's own `HUB_AUTH_*` and `HUB_OIDC_*` variables ([Set up logins](auth.md)); the
 default is local accounts, made on the setup page by the first visitor.
 
 The sandbox runs as its own user. It cannot read the Hermes home (mode 700, owned by hermes) or Talaria's keys

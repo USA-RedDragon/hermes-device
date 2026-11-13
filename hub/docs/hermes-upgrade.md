@@ -1,4 +1,4 @@
-# Upgrading Hermes
+# Upgrade Hermes (for maintainers)
 
 The Talaria hub and the talaria device plugin depend on Hermes internals: gateway protocol lines, client method names and the Python functions the plugin wraps. A Hermes release can break them. This page tells how to know before the upgrade, and in which order to roll it out.
 

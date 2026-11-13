@@ -1,4 +1,4 @@
-# Getting started
+# Pick an install
 
 Talaria is a web app and Telegram bot for [Hermes Agent](https://github.com/NousResearch/hermes-agent). You run it on your own server. The agent works in a sandbox on the server, or on your own computers once you pair them.
 

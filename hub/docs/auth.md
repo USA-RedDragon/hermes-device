@@ -1,4 +1,4 @@
-# Logging in
+# Login settings reference
 
 The hub has three ways to log people in, set by `auth.mode`:
 

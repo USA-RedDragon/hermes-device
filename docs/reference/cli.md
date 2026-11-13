@@ -103,7 +103,7 @@ Flags:
 
 ## update
 
-Install the latest release or a given one. See [Update, move and remove](../guides/update-and-remove.md).
+Install the latest release or a given one. See [Update, move or remove a computer](../guides/update-and-remove.md).
 
 <!-- docgen:output exec="scripts/cli-usage.sh update" -->
 ```text

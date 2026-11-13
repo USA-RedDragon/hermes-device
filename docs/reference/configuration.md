@@ -1,4 +1,4 @@
-# Configuration
+# Computer settings (talaria config)
 
 The program reads `~/.config/talaria/config.yaml` (on macOS, the same path under your home directory), or the file you give with `-c`. Then it reads environment variables, then flags, and a later source wins. A `config.yaml` in the current directory is not read. `talaria setup` writes the file when it does not exist, and never changes an existing one unless you pass `--overwrite-config`.
 

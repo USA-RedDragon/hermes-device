@@ -1,4 +1,4 @@
-# Reference
+# Install settings (.env and Helm values)
 
 Everything on this page is generated from the files in the repository, so it matches the version you downloaded.
 

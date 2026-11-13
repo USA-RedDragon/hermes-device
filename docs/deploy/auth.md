@@ -1,4 +1,4 @@
-# Login options
+# Set up logins
 
 The hub has three ways to log people in. Which one you use decides who can sign in and where the accounts live.
 
@@ -8,7 +8,7 @@ The hub has three ways to log people in. Which one you use decides who can sign 
 | Reverse proxy | A proxy in front of the hub that logs people in and says who they are | A setup that already has Authelia, an Authentik proxy outpost, oauth2-proxy, Tailscale Serve, Cloudflare Access or Envoy Gateway |
 | OpenID Connect (OIDC) | Your identity provider: Keycloak, Authentik, Authelia, Pocket ID, Google and others | Several people, with accounts you already manage in one place |
 
-Every mode ends in the same session cookie. The hub's own page, [Logging in](../../hub/docs/auth.md), has every setting.
+Every mode ends in the same session cookie. The hub's own page, [Login settings reference](../../hub/docs/auth.md), has every setting.
 
 | Install | Local accounts | Reverse proxy | OIDC |
 | ------- | -------------- | ------------- | ---- |
@@ -49,7 +49,7 @@ Each person can then change their own password under Settings, Account.
 
 The install files run one Hermes, shared by everyone you give it to: the people who share it see the same chats
 and memory. Give it to people you would share a computer with. For separate agents per person, run more Hermes
-backends (see the hub's [Logging in](../../hub/docs/auth.md) page,
+backends (see the hub's [Login settings reference](../../hub/docs/auth.md) page,
 `backends[]`).
 
 ![Settings, Account](images/settings-account.png)

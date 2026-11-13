@@ -1,4 +1,4 @@
-# Troubleshooting
+# Fix server problems
 
 Start with what is running and what it says.
 
@@ -25,7 +25,7 @@ On Kubernetes: `kubectl -n talaria get pods`, `kubectl -n talaria logs deploy/ta
 - Locked after 5 wrong passwords: wait 15 minutes, or an admin sets a new password.
 - A redirect to the wrong host after login: `TALARIA_PUBLIC_URL` does not match how you open Talaria. Use the same
   address in both, then `docker compose up -d`.
-- With your own OIDC provider, the hub refuses you and logs a `sub`: make an account with their email, turn on `auto_create`, or list the `sub`. See [Login options](auth.md#your-own-oidc-provider).
+- With your own OIDC provider, the hub refuses you and logs a `sub`: make an account with their email, turn on `auto_create`, or list the `sub`. See [Set up logins](auth.md#your-own-oidc-provider).
 
 ## Chats do not stream, or stop after a while
 

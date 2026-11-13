@@ -64,7 +64,7 @@ paths. `talaria` was called `hermes-device` before release 0.19.0. See
 
 - [Add a computer](docs/start/add-a-computer.md): install on Linux or macOS and pair it with your hub.
 - [Chat from a terminal](docs/guides/terminal-chat.md), [let the agent use Firefox](docs/guides/browser-extension.md) and [use Talaria in an editor](docs/guides/editor-bridge.md).
-- [Update, move and remove](docs/guides/update-and-remove.md) a computer, and [troubleshooting](docs/guides/troubleshooting.md).
+- [Update, move or remove a computer](docs/guides/update-and-remove.md) a computer, and [troubleshooting](docs/guides/troubleshooting.md).
 - Reference: [command line](docs/reference/cli.md) and [configuration](docs/reference/configuration.md).
 
 ### Parts

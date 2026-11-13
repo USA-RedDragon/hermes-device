@@ -1,4 +1,4 @@
-# talaria protocol
+# Wire protocol
 
 Status: phase 3, exec leg protocol version 3 (version 2 peers still served). Pinned to Hermes Agent v0.22.7.
 

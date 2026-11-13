@@ -1,4 +1,4 @@
-# Install Talaria on TrueNAS SCALE
+# Install on TrueNAS SCALE
 
 TrueNAS SCALE 24.10 (Electric Eel) and later run apps with Docker Compose. Talaria installs as a custom app from
 YAML, with the all-in-one image ([design](all-in-one.md)).

@@ -1,4 +1,4 @@
-# Browser control
+# Browser control design
 
 Status: built (phase 5). The device side and the plugin's `device-browser` toolset run end to end against a throwaway headless Firefox (section 10). Frames, shadow DOM, scrolling, keys, hover, waiting, full-page screenshots, scripts (`browser_eval`), Salesforce click approvals and starting Firefox from the device were added in phase 6. Each release signs the extension on addons.mozilla.org once the AMO secrets are set (section 6.1). No signed release exists yet, so for now it loads only as a temporary add-on.
 
