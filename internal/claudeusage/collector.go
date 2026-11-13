@@ -154,7 +154,7 @@ func (c *Collector) dim(k dimKey) uint32 {
 	if i, ok := c.dimIdx[k]; ok {
 		return i
 	}
-	i := uint32(min(len(c.dims), math.MaxUint32))
+	i := uint32(min(uint64(len(c.dims)), math.MaxUint32))
 	c.dims = append(c.dims, k)
 	c.dimIdx[k] = i
 	return i
@@ -649,7 +649,7 @@ func (c *Collector) compactDims() {
 	var dims []dimKey
 	for i, d := range c.dims {
 		if used[i] {
-			remap[i] = uint32(min(len(dims), math.MaxUint32))
+			remap[i] = uint32(min(uint64(len(dims)), math.MaxUint32))
 			dims = append(dims, d)
 		}
 	}
