@@ -42,7 +42,10 @@ All guides: https://usa-reddragon.github.io/talaria/
 - `compose/`: the Docker Compose install and its setup scripts (`compose/files`).
 - `charts/talaria/`: the Helm chart, built on the bjw-s common library (packaged in `charts/talaria/charts/`).
   It carries copies of `compose/files/hermes-init.py`, `demo-llm.py` and `searxng/settings.yml`;
-  `hack/check-sync.sh` checks that they match.
+  `hack/check-sync.sh` checks that they match, that every kit pins the same images, and that the chart's
+  `appVersion` is the hub release it pins.
+- `hack/pin.sh`: pins an image release in every kit at once, such as `hack/pin.sh hub v0.26.71` (the hub also
+  moves the chart's `appVersion`). Renovate moves the same pins together.
 - `aio/`: the all-in-one image (`aio/Dockerfile`, build context `deploy/`), with the Unraid template and the
   TrueNAS app file. A tag `aio/vX.Y.Z` publishes `ghcr.io/usa-reddragon/talaria-aio:vX.Y.Z`.
 - `hack/smoke.py`: logs in, chats and runs a command in the sandbox against a running install with the demo

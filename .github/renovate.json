@@ -3,6 +3,35 @@
     "extends": [
         "local>USA-RedDragon/renovate-configs"
     ],
+    "customManagers": [
+        {
+            "customType": "regex",
+            "description": "The image pins of the install kit in compose's x-images, the chart's images and the Hermes example in .env.example. The dockerfile manager reads the all-in-one image's ARGs; deploy/hack/check-sync.sh fails CI when the kits differ",
+            "managerFilePatterns": [
+                "/^deploy/compose/compose\\.yaml$/",
+                "/^deploy/compose/\\.env\\.example$/",
+                "/^deploy/charts/talaria/values\\.yaml$/"
+            ],
+            "matchStrings": [
+                "(?<depName>(?:ghcr\\.io/usa-reddragon|docker\\.io/searxng)/[a-z-]+):(?<currentValue>[^@\\s\"}]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+                "# TALARIA_HERMES_IMAGE=(?<depName>ghcr\\.io/usa-reddragon/talaria-hermes):(?<currentValue>\\S+)"
+            ],
+            "datasourceTemplate": "docker"
+        },
+        {
+            "customType": "regex",
+            "description": "The chart's appVersion is the talaria-hub release that its images.hub pins, without the v, so it moves in the same update",
+            "managerFilePatterns": [
+                "/^deploy/charts/talaria/Chart\\.yaml$/"
+            ],
+            "matchStrings": [
+                "appVersion: \"(?<currentValue>[^\"]+)\""
+            ],
+            "depNameTemplate": "ghcr.io/usa-reddragon/talaria-hub",
+            "datasourceTemplate": "docker",
+            "extractVersionTemplate": "^v(?<version>.+)$"
+        }
+    ],
     "packageRules": [
         {
             "description": "Each Hermes release gets its own PR at once, so the Hermes compatibility check runs on it before the Flux upgrade PR is merged. Merge it by hand: see hub/docs/hermes-upgrade.md.",
