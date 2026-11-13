@@ -20,6 +20,7 @@ const (
 	backendHome = "cluster-home"
 	liveTitle   = "Live one"
 	kText       = "text"
+	kStatus     = "status"
 	sLive       = "s-live"
 	userAlice   = "alice"
 	userBob     = "bob"

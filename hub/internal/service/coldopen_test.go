@@ -27,7 +27,7 @@ func TestFreshOpenOfWarmChatGetsNewSnapshot(t *testing.T) {
 		for range 50 {
 			e.gw.Publish(sLive, hub.KindMessageDelta, map[string]any{kText: "words "})
 		}
-		e.gw.Publish(sLive, hub.KindMessageComplete, map[string]any{"status": "complete"})
+		e.gw.Publish(sLive, hub.KindMessageComplete, map[string]any{kStatus: "complete"})
 	}
 	for n := 0; n < turns; {
 		if next(t, first).Kind == hub.KindMessageComplete {

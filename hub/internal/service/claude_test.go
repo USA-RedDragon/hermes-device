@@ -31,8 +31,8 @@ func TestTurnErrorsAndAnnounce(t *testing.T) {
 	defer cancel()
 	next(t, ch)
 	e.gw.Publish(sLive, "session.info", map[string]any{kProvider: provAccount1, "model": modelClaude})
-	e.gw.Publish(sLive, "message.complete", map[string]any{"status": "complete", kText: "fine"})
-	e.gw.Publish(sLive, "message.complete", map[string]any{"status": "error", kText: "Error",
+	e.gw.Publish(sLive, "message.complete", map[string]any{kStatus: "complete", kText: "fine"})
+	e.gw.Publish(sLive, "message.complete", map[string]any{kStatus: "error", kText: "Error",
 		"error": "Claude Code is installed but has no usable login (login: /x)"})
 	select {
 	case te := <-got:
