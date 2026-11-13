@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// ExtensionID is the Hermes Firefox extension's id.
+// ExtensionID is the Talaria Firefox extension's id.
 const ExtensionID = "browser@hermes-device"
 
 // Firefox is what setup found of Firefox.
@@ -75,7 +75,7 @@ func (s *System) FindFirefox() *Firefox {
 	return f
 }
 
-// ExtensionInstalled reports whether a profile has the Hermes extension
+// ExtensionInstalled reports whether a profile has the Talaria extension
 // installed and not disabled.
 func (f *Firefox) ExtensionInstalled() bool {
 	for _, p := range f.Profiles {

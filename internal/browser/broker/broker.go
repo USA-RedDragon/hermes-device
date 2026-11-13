@@ -1,6 +1,6 @@
 // Package broker is the daemon side of browser control. It listens on a
 // private Unix socket for the native messaging host that Firefox starts for
-// the Hermes extension, and sends the extension requests (docs/browser.md).
+// the Talaria extension, and sends the extension requests (docs/browser.md).
 package broker
 
 import (
@@ -47,8 +47,8 @@ const CodeRefused = "refused"
 
 // Errors from Call.
 var (
-	ErrNotConnected = errors.New("the Hermes Firefox extension is not connected")
-	ErrClosed       = errors.New("the Hermes Firefox extension disconnected")
+	ErrNotConnected = errors.New("the Talaria Firefox extension is not connected")
+	ErrClosed       = errors.New("the Talaria Firefox extension disconnected")
 )
 
 // Message is every frame on the socket. Unused fields are empty.

@@ -133,8 +133,8 @@ Usage:
   talaria browser [command]
 
 Available Commands:
-  extension   Write the Hermes Firefox extension's files to a directory, to load as a temporary add-on
-  install     Register this binary as the native messaging host of the Hermes Firefox extension, for this user
+  extension   Write the Talaria Firefox extension's files to a directory, to load as a temporary add-on
+  install     Register this binary as the native messaging host of the Talaria Firefox extension, for this user
   uninstall   Remove the native messaging host manifest that install wrote
 
 Flags:
@@ -148,7 +148,7 @@ Register the native messaging host for the Firefox extension.
 
 <!-- docgen:output exec="scripts/cli-usage.sh browser install" -->
 ```text
-Register this binary as the native messaging host of the Hermes Firefox extension, for this user
+Register this binary as the native messaging host of the Talaria Firefox extension, for this user
 
 Usage:
   talaria browser install [flags]
@@ -167,7 +167,7 @@ Write the extension's files to a folder, to load as a temporary add-on.
 
 <!-- docgen:output exec="scripts/cli-usage.sh browser extension" -->
 ```text
-Write the Hermes Firefox extension's files to a directory, to load as a temporary add-on. Each release also publishes the extension signed by Mozilla, which installs for good and updates itself (docs/browser.md section 6.1).
+Write the Talaria Firefox extension's files to a directory, to load as a temporary add-on. Each release also publishes the extension signed by Mozilla, which installs for good and updates itself (docs/browser.md section 6.1).
 
 Usage:
   talaria browser extension [flags]

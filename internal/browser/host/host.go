@@ -1,5 +1,5 @@
 // Package host is the native messaging host that Firefox starts for the
-// Hermes extension. It dials the run daemon's browser socket and relays
+// Talaria extension. It dials the run daemon's browser socket and relays
 // frames between it and Firefox, unchanged except for size limits.
 package host
 
@@ -28,7 +28,7 @@ const Name = "talaria"
 // that such a version still connects until Firefox updates it.
 const LegacyName = "hermes_device"
 
-// ExtensionID is the id of the Hermes Firefox extension.
+// ExtensionID is the id of the Talaria Firefox extension.
 const ExtensionID = "browser@hermes-device"
 
 // SocketFileName is the file next to the manifest that holds the daemon's

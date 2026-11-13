@@ -71,7 +71,7 @@ type ACPHost struct {
 
 // Browser is Firefox browser control (docs/browser.md).
 type Browser struct {
-	Enabled        bool     `name:"enabled" default:"false" description:"Serve the Hermes Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run talaria browser install once"`
+	Enabled        bool     `name:"enabled" default:"false" description:"Serve the Talaria Firefox extension on a private socket in the state directory and offer browser control to the plugin, so the agent can use tabs in its tab group. Run talaria browser install once"`
 	AllowHosts     []string `name:"allow-hosts" description:"Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs"`
 	ConfirmHosts   []string `name:"confirm-hosts" description:"Sites where every click and every Enter or Space key press asks the user each time and scripts may only read. Host names; each covers its subdomains. The plugin cannot change this list"`
 	AutologinHosts []string `name:"autologin-hosts" description:"Exact host names where browser_login may submit the login form that Firefox fills from its own saved login, so a scheduled job can sign in without the agent seeing the password. Only https pages whose top-level host is listed; no subdomains. Scripts are refused there, and clicks, typing, key presses and screenshots on its login pages. Example: login.w3.ibm.com. The plugin cannot change this list"`

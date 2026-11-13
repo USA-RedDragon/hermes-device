@@ -18,7 +18,7 @@ device plugin  ==exec leg==> relay ==exec leg==> talaria run
                                                 talaria (native host, started by Firefox)
                                                   | stdin/stdout, native messaging
                                                   v
-                                                Hermes extension (background page) -> tabs in the "Hermes" tab group
+                                                Talaria extension (background page) -> tabs in the "Hermes" tab group
 ```
 
 Reasons:
@@ -236,7 +236,7 @@ Op arguments (`args`):
 
 ```json
 {"type": "browser_result", "id": "9c0f...", "ok": true, "result": {"title": "Example Domain", "url": "https://example.com/", "snapshot": "..."}}
-{"type": "browser_result", "id": "9c0f...", "ok": false, "code": "not_connected", "error": "the Hermes Firefox extension is not connected"}
+{"type": "browser_result", "id": "9c0f...", "ok": false, "code": "not_connected", "error": "the Talaria Firefox extension is not connected"}
 ```
 
 | `code` | Meaning |

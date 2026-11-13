@@ -1,5 +1,5 @@
 """The ``device-browser`` toolset: the agent drives the user's own Firefox on one of the user's
-computers, through the Hermes extension and the exec leg (docs/browser.md).
+computers, through the Talaria extension and the exec leg (docs/browser.md).
 
 Every call goes to the session's browser device (:func:`pick`): the device a scheduled job or the
 session chose, else the computer the session is bound to, else the user's one computer with

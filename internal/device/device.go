@@ -1402,7 +1402,7 @@ func (s *session) startAndWait(ctx context.Context, timeout time.Duration) (star
 				return res, protocol.BrowserCancelled, "browser start cancelled"
 			}
 			return res, protocol.BrowserTimeout, fmt.Sprintf("Firefox did not connect to talaria on %s within %s: "+
-				"check that the Hermes extension is installed and enabled in the default Firefox profile", s.name, timeout)
+				"check that the Talaria extension is installed and enabled in the default Firefox profile", s.name, timeout)
 		case <-changed:
 		case <-tick.C:
 		}

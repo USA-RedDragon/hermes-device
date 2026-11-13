@@ -24,7 +24,7 @@ func newBrowserCommand(b *base) *cobra.Command {
 	c.AddCommand(&cobra.Command{
 		Use:     installCommand,
 		Aliases: []string{"install-host"},
-		Short:   "Register this binary as the native messaging host of the Hermes Firefox extension, for this user",
+		Short:   "Register this binary as the native messaging host of the Talaria Firefox extension, for this user",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := b.load()
@@ -74,8 +74,8 @@ func newBrowserCommand(b *base) *cobra.Command {
 	var out, extVersion string
 	ext := &cobra.Command{
 		Use:   "extension",
-		Short: "Write the Hermes Firefox extension's files to a directory, to load as a temporary add-on",
-		Long: "Write the Hermes Firefox extension's files to a directory, to load as a temporary add-on. " +
+		Short: "Write the Talaria Firefox extension's files to a directory, to load as a temporary add-on",
+		Long: "Write the Talaria Firefox extension's files to a directory, to load as a temporary add-on. " +
 			"Each release also publishes the extension signed by Mozilla, which installs for good and updates itself " +
 			"(docs/browser.md section 6.1).",
 		Args: cobra.NoArgs,

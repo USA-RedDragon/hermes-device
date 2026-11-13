@@ -237,7 +237,7 @@ func (s *System) hostStep(o *Options, st *State, r *Report, ff *Firefox, bin str
 	}
 	r.done("Registered Firefox's native messaging host in %s", path)
 	if ff.Flatpak {
-		r.todo("Firefox from Flatpak cannot start the native messaging host outside its sandbox. Install Firefox from your distribution or Mozilla to use it with Hermes")
+		r.todo("Firefox from Flatpak cannot start the native messaging host outside its sandbox. Install Firefox from your distribution or Mozilla to use it with Talaria")
 	}
 	return st.Save(o.StateDir)
 }
@@ -497,21 +497,21 @@ func (s *System) firefoxStep(ctx context.Context, o *Options, ff *Firefox, r *Re
 		u, err := s.xpiURL(ctx, o)
 		switch {
 		case err != nil:
-			r.todo("Install the Hermes Firefox extension: download talaria-firefox-<version>.xpi from %s/latest, then in Firefox open about:addons, choose the gear menu, \"Install Add-on From File...\" and pick the file (setup could not find it: %v)", o.Releases.BaseURL, err)
+			r.todo("Install the Talaria Firefox extension: download talaria-firefox-<version>.xpi from %s/latest, then in Firefox open about:addons, choose the gear menu, \"Install Add-on From File...\" and pick the file (setup could not find it: %v)", o.Releases.BaseURL, err)
 		case len(ff.Command) == 0 || !s.HasDesktop():
 			r.todo("Open %s in Firefox and choose \"Continue to Installation\", then \"Add\"", u)
 		default:
 			if err := s.Open(ctx, ff, u); err != nil {
 				r.todo("Open %s in Firefox and choose \"Continue to Installation\", then \"Add\" (setup could not start Firefox: %v)", u, err)
 			} else {
-				s.printf("\nFirefox opens %s.\nChoose \"Continue to Installation\", then \"Add\" to install the Hermes extension.\n", u)
+				s.printf("\nFirefox opens %s.\nChoose \"Continue to Installation\", then \"Add\" to install the Talaria extension.\n", u)
 			}
 		}
 	} else {
-		r.done("The Hermes Firefox extension is installed")
+		r.done("The Talaria Firefox extension is installed")
 	}
 	if !running || o.Wait <= 0 || o.BrowserStatus == nil {
-		r.todo("Check that the Hermes button in Firefox's toolbar says it is connected to talaria")
+		r.todo("Check that the Talaria button in Firefox's toolbar says it is connected to talaria")
 		return
 	}
 	s.waitBrowser(ctx, o, r)
@@ -661,7 +661,7 @@ func uninstallHost(o *UninstallOptions, st *State, r *Report) error {
 		return fmt.Errorf("remove the native messaging host: %w", err)
 	}
 	r.done("Removed Firefox's native messaging host")
-	r.todo("Remove the Hermes extension in Firefox: about:addons, Hermes, Remove")
+	r.todo("Remove the Talaria extension in Firefox: about:addons, Talaria, Remove")
 	st.NativeHost = ""
 	return nil
 }
