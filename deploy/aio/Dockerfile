@@ -5,7 +5,7 @@
 # Design and trade-offs: https://usa-reddragon.github.io/talaria/deploy/all-in-one.html
 # Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research.
 
-ARG HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p37@sha256:bd7a3b43c3d38c6dc71b9377443b65ac1a115124c657272fcf539745c7dae647
+ARG HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p38@sha256:d3633b3a9dfd1a952be13eb77a8700b297efb918f80be63dcf0594a0a780d5d4
 ARG HUB_IMAGE=ghcr.io/usa-reddragon/talaria-hub:v0.26.78@sha256:1cae8ef5c8ac4139250912b3c7294e2e7d132f71f0850b38b10295673ba84059
 ARG DEVICE_IMAGE=ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
 # SearXNG, the agent's web search: its code and package versions come from this image
