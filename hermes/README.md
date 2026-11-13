@@ -1,4 +1,4 @@
-# hermes-patches
+# Talaria Hermes (`hermes/`)
 
 A small set of patches on top of the pinned [Hermes Agent](https://github.com/NousResearch/hermes-agent) release, built into a multi-arch image (`linux/amd64`, `linux/arm64`, the same platforms as upstream's image). The image is published publicly as **Talaria Hermes**, `ghcr.io/usa-reddragon/talaria-hermes`.
 
@@ -16,21 +16,21 @@ Each patch fixes one limit, sits behind a config option whose default keeps upst
 
 ## Releases and tags
 
-Tags are `v<upstream release>-p<n>`: `v0.23.1-p1`, `v0.23.1-p2`, then `v0.24.0-p1` after the base moves. The upstream release is always the part before `-p`.
+Image tags are `v<upstream release>-p<n>`: `v0.23.1-p1`, `v0.23.1-p2`, then `v0.24.0-p1` after the base moves. The upstream release is always the part before `-p`. In this repository the git tag and GitHub release of each image are `hermes/v<upstream release>-p<n>` (bare `v*` tags are talaria daemon releases). Releases up to `v0.23.1-p31` were made in the former hermes-patches repository; their tags were carried over with the `hermes/` prefix.
 
-The Release workflow runs on every push to `main` that changes the Dockerfile, the patches, the scripts or the workflows. It runs the tests, then builds and pushes one image under two names, `ghcr.io/usa-reddragon/talaria-hermes:<tag>` (public, also tagged `latest-stable`) and `ghcr.io/usa-reddragon/hermes-patches:<tag>` (the name existing deployments pull), with BuildKit SLSA provenance and an SBOM, signs the image keyless with cosign (GitHub artifact attestations are not available for private repositories of a user account), and creates the tag and a GitHub release that lists the patches. Run it by hand (workflow_dispatch) to release HEAD again.
+The Hermes release workflow (`.github/workflows/hermes-release.yaml`) runs on every push to `main` that changes `hermes/Dockerfile`, `hermes/patches`, `hermes/scripts` or the Hermes workflows. It runs the tests, then builds and pushes one image under two names, `ghcr.io/usa-reddragon/talaria-hermes:<tag>` (public, also tagged `latest-stable`) and `ghcr.io/usa-reddragon/hermes-patches:<tag>` (the name existing deployments pull), with BuildKit SLSA provenance and an SBOM, signs the image keyless with cosign (GitHub artifact attestations are not available for private repositories of a user account), and creates the tag and a GitHub release that lists the patches (never marked latest, so the talaria daemon's release stays latest). Run it by hand (workflow_dispatch) for a dry run that prints the next tag and builds without pushing; with `publish` on it releases HEAD again.
 
-Verify a release with `cosign verify ghcr.io/usa-reddragon/talaria-hermes:<tag> --certificate-identity-regexp '^https://github.com/USA-RedDragon/hermes-patches/' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
+Verify a release with `cosign verify ghcr.io/usa-reddragon/talaria-hermes:<tag> --certificate-identity-regexp '^https://github.com/USA-RedDragon/(talaria|hermes-patches)/' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
 
 Renovate bumps `HERMES_BASE` in the Dockerfile as soon as upstream releases. A green PR merges on its own, which publishes `v<new release>-p1`. Rolling it out is a separate Renovate PR in the Flux repo that is never merged on its own.
 
 ## CI
 
-The Test workflow runs on pull requests and before each release:
+The Hermes test workflow (`.github/workflows/hermes-test.yaml`) runs on pull requests and before each release:
 
 - **Patches**: clones upstream at the release in the Dockerfile, applies every patch to the full tree, installs the locked test environment with uv, and runs each patch's tests. A patch that no longer applies fails with `<patch> does not apply to Hermes <release>`. A patch's tests are the test files it adds or changes plus the files in `patches/<name>.tests`.
-- **Hub contract**: the hermes-hub contract tests (`TestContractAgainstSource`, `TestClientMethodsAgainstSource`) against the patched tree, with `HERMES_AGENT_VERSION` set to the upstream release.
-- **Image**: builds the image for both platforms, then runs the hermes-device plugin tests inside the amd64 image.
+- **Hub contract**: the contract tests of the hub in `hub/` (`TestContractAgainstSource`, `TestClientMethodsAgainstSource`) against the patched tree, with `HERMES_AGENT_VERSION` set to the upstream release.
+- **Image**: builds the image for both platforms, then runs the device plugin tests (`plugin/` at the repository root) inside the amd64 image.
 
 ## Patches
 
