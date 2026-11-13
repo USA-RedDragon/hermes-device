@@ -117,16 +117,23 @@ window.HubModels = (() => {
       case "back": return { step: "kind" };
       case "tested": return Object.assign(s, { test: ev.verdict, models: ev.verdict.models || [], model: s.model || (ev.verdict.models || [])[0] || "" });
       case "saved-server": return ev.warning ? Object.assign(s, { step: "window", warning: ev.warning }) : Object.assign(s, { step: "done" });
+      // With ev.pinned (the deployment sets the default) there is no
+      // default to pick.
       case "key-checked":
         if (!ev.verdict.save) return Object.assign(s, { verdict: ev.verdict });
-        return Object.assign(s, { step: "pick", verdict: ev.verdict, provider: ev.provider, name: ev.name });
+        return Object.assign(s, { step: ev.pinned ? "done" : "pick", verdict: ev.verdict, provider: ev.provider, name: ev.name });
       case "code": return Object.assign(s, { code: ev.code, signin: "pending" });
       case "polled":
-        if (ev.state.kind === "approved") return Object.assign(s, { step: "pick", provider: ev.provider, name: ev.name, verdict: { tone: "good", title: "Signed in to " + ev.name + "." } });
+        if (ev.state.kind === "approved") {
+          return Object.assign(s, { step: ev.pinned ? "done" : "pick", provider: ev.provider, name: ev.name,
+            verdict: { tone: "good", title: "Signed in to " + ev.name + "." } });
+        }
         if (ev.state.kind === "pending") return s;
         return Object.assign(s, { signin: ev.state.kind, message: ev.state.message || "" });
       case "confirm": return Object.assign(s, { step: "confirm", confirm: ev.message, model: ev.model });
       case "default-set": return Object.assign(s, { step: "done", model: ev.model, skipped: !!ev.skipped });
+      // Hermes kept its default: say so where the pick was made.
+      case "default-kept": return Object.assign(s, { step: "pick", kept: ev.message });
       default: return s;
     }
   }
@@ -240,6 +247,21 @@ window.HubModels = (() => {
       return dlg;
     }
 
+    // pinned is the default model the deployment sets ({ model, provider,
+    // source }), or null when the default can be picked here.
+    function pinned() {
+      return (catalog && catalog.pinned) || null;
+    }
+
+    // pinnedNote says where the default is set, for a pinned default.
+    function pinnedNote(p) {
+      const n = el("p", "hint", "New chats keep starting with ");
+      n.append(el("code", "", p.model || p.provider), ". The default model is set in the deployment config");
+      if (p.source) n.append(" (", el("code", "", p.source), ")");
+      n.append(", so it is changed there.");
+      return n;
+    }
+
     function close() {
       cancelSignIn();
       if (dlg && dlg.open) dlg.close();
@@ -322,6 +344,7 @@ window.HubModels = (() => {
         choice("key", "A provider, with an API key", "OpenRouter, OpenAI, Anthropic, Google AI Studio, DeepSeek, xAI and more. The provider bills you.", "key"),
         choice("user", "A subscription account", "Sign in with ChatGPT or Codex, Nous Portal, xAI Grok or MiniMax. You approve on the provider's own page.", "signin"));
       if (catalog && catalog.error) body.append(say("bad", catalog.error, []));
+      if (pinned()) body.append(pinnedNote(pinned()));
       body.append(notListed());
       const intro = el("p", "intro", "Where does the model run?");
       return [head("Connect a model"), intro, body];
@@ -339,6 +362,8 @@ window.HubModels = (() => {
       a.rel = "noopener";
       inner.append(p, el("pre", "cmd", composeCmd), a);
       d.append(inner);
+      // On a phone the opened part is below the fold of the dialog.
+      d.ontoggle = () => { if (d.open) inner.scrollIntoView({ block: "nearest" }); };
       return d;
     }
 
@@ -371,7 +396,7 @@ window.HubModels = (() => {
       const v = st.test;
       if (v) body.append(serverSay(v));
       if (v && v.models && v.models.length) {
-        body.append(el("div", "label", "Start new chats with"), radios("cm-model", v.models, st.model, (m) => { st.model = m; }),
+        body.append(el("div", "label", pinned() ? "Its model" : "Start new chats with"), radios("cm-model", v.models, st.model, (m) => { st.model = m; }),
           el("p", "hint", "Hermes needs a model with a window of at least 64,000 tokens. It asks the server for each model's window when you save."));
       } else if (v && v.noModels) {
         const typed = input("text", st.model, "The name the server uses, such as llama3.1:8b");
@@ -381,7 +406,7 @@ window.HubModels = (() => {
       }
       body.append(advanced(f, v && v.needMode));
       if (st.error) body.append(st.error);
-      const saveBtn = btn("primary", busy ? "Saving..." : "Save and use", () => saveServer());
+      const saveBtn = btn("primary", busy ? "Saving..." : pinned() ? "Save" : "Save and use", () => saveServer());
       saveBtn.disabled = busy || !v || !st.model || (v.tone === "bad" && !v.noModels);
       return [head("On my own computer or network", true), body, foot(btn("", "Back", () => go({ type: "back" })), el("span", "sp"), saveBtn)];
     }
@@ -427,7 +452,7 @@ window.HubModels = (() => {
       const syncT = el("span", "", "Keep the model list in sync with the server");
       syncT.append(el("br"), el("small", "", "Turn off to use only the model you picked above."));
       syncL.append(sync, syncT);
-      inner.append(field("API mode", sel, "Only if the server speaks just one of them."), field("Context window in tokens", cl), syncL);
+      inner.append(field("API type", sel, "Only if the server speaks just one of them."), field("Context window in tokens", cl), syncL);
       d.append(inner);
       return d;
     }
@@ -476,7 +501,8 @@ window.HubModels = (() => {
       draw();
       try {
         const b = endpointBody(f, st.model);
-        b.make_default = true;
+        // A default the deployment sets stays; the server is added next to it.
+        b.make_default = !pinned();
         if (st.test && st.test.models) b.models = st.test.models;
         await api("POST", path(backend, "/endpoints"), b);
         if (f.keyInput) f.keyInput.value = "";
@@ -485,7 +511,7 @@ window.HubModels = (() => {
         st.count = (st.test && st.test.models.length) || 1;
         let warning = null;
         try {
-          warning = windowWarning(await api("GET", path(backend, "/info")));
+          if (!pinned()) warning = windowWarning(await api("GET", path(backend, "/info")));
         } catch (_) { /* the window is a hint only */ }
         busy = false;
         go({ type: "saved-server", warning, changed: true });
@@ -544,14 +570,18 @@ window.HubModels = (() => {
           b.type = "button";
           b.setAttribute("role", "option");
           b.setAttribute("aria-selected", String(k.provider === st.provider));
-          if (k.set) b.append(el("span", "tag", "connected"));
+          if (k.set) b.append(el("span", "tag", k.deployment ? "set in the deployment" : "connected"));
           b.onclick = () => { st.provider = k.provider; st.verdict = null; st.all = false; st.query = ""; draw(); };
           list.append(b);
         }
         if (!found.length) list.append(el("p", "hint", "No provider by that name. See Not listed here? on the first step."));
         body.append(list);
       }
-      if (chosen) {
+      if (chosen && chosen.deployment) {
+        const n = el("p", "hint");
+        n.append(I.icon("lock"), " The " + chosen.name + " key is set in the deployment, so it is changed where the deployment sets it, not here. Its models are in the chat's model menu.");
+        body.append(n);
+      } else if (chosen) {
         const key = secret(chosen.set ? "Saved (" + chosen.preview + "). Type a new key to replace it." : "");
         key.input.id = "cm-apikey";
         st.keyInput = key.input;
@@ -573,7 +603,7 @@ window.HubModels = (() => {
       if (st.verdict) body.append(say(st.verdict.tone, st.verdict.title, [st.verdict.lead, st.verdict.text ? "~" + st.verdict.text : ""]));
       if (st.error) body.append(st.error);
       const go2 = btn("primary", busy ? "Checking..." : "Check and connect", () => checkKey(chosen));
-      go2.disabled = busy || !chosen;
+      go2.disabled = busy || !chosen || !!chosen.deployment;
       return [head("A provider, with an API key", true), body, foot(btn("", "Back", () => go({ type: "back" })), el("span", "sp"), go2)];
     }
 
@@ -604,8 +634,8 @@ window.HubModels = (() => {
         }
         if (st.keyInput) st.keyInput.value = "";
         busy = false;
-        go({ type: "key-checked", verdict: v, provider: p.provider, name: p.name, changed: v.save });
-        if (v.save) loadPick();
+        go({ type: "key-checked", verdict: v, provider: p.provider, name: p.name, changed: v.save, pinned: !!pinned() });
+        if (v.save && !pinned()) loadPick();
         return;
       } catch (e) {
         st.error = hermesDown(e);
@@ -712,8 +742,8 @@ window.HubModels = (() => {
         pollSeq++;
         st.session = "";
         if (s.kind === "approved") st.changed = true;
-        go({ type: "polled", state: s, provider: st.account, name: st.name, changed: s.kind === "approved" });
-        if (s.kind === "approved") loadPick();
+        go({ type: "polled", state: s, provider: st.account, name: st.name, changed: s.kind === "approved", pinned: !!pinned() });
+        if (s.kind === "approved" && !pinned()) loadPick();
         return;
       }
     }
@@ -753,6 +783,7 @@ window.HubModels = (() => {
         body.append(radios("cm-pick", st.pick.models.slice(0, 12), st.model, (m) => { st.model = m; }, tags),
           el("p", "hint", "A short list from Hermes. Every model of the provider is in the chat's model menu once you connect; each chat can use a different one."));
       }
+      if (st.kept) body.append(say("warn", st.kept, []));
       if (st.step === "confirm") {
         body.append(say("warn", "", [st.confirm, "Use it as the default for new chats?"], [
           btn("primary", "Use it anyway", () => setDefault(true)), btn("", "Choose another", () => { st.step = "pick"; draw(); })]));
@@ -778,7 +809,11 @@ window.HubModels = (() => {
           go({ type: "confirm", message: r.confirm_message, model: st.model });
           return;
         }
-        go({ type: "default-set", model: st.model, changed: true });
+        if (r && r.unchanged) {
+          go({ type: "default-kept", message: r.message });
+          return;
+        }
+        go({ type: "default-set", model: (r && r.model) || st.model, changed: true });
         return;
       } catch (e) {
         st.error = hermesDown(e);
@@ -795,6 +830,12 @@ window.HubModels = (() => {
       const h = el("h2", "", name + " is connected");
       h.id = "connect-title";
       const p = el("p", "hint");
+      if (pinned()) {
+        p.append("Pick its models in a chat's model menu.");
+        body.append(badge, h, p, pinnedNote(pinned()));
+        return [body, foot(btn("", "Connect another", () => { const c = st.changed; st = { step: "kind", changed: c }; draw(); }), el("span", "sp"),
+          btn("primary", "Start a chat", () => { close(); ctx.startChat(); }))];
+      }
       if (st.model && !st.skipped) {
         p.append("New chats start with ", el("code", "", st.model), ".");
         if (st.form) p.append(" You can pick any of its " + (st.count || 1) + " model" + (st.count === 1 ? "" : "s") + " in a chat's model menu.");
@@ -860,6 +901,15 @@ window.HubModelSettings = (ctx) => {
   let note = null;
   let busy = false;
   let insteadModel = "";
+  // removeConfirm is Hermes's price warning for the default a removal
+  // picks instead, until the admin answers it.
+  let removeConfirm = "";
+  const deployedConfig = "Set in the deployment config";
+  const deployed = "Set in the deployment";
+  const apiTypes = { chat_completions: "OpenAI Chat Completions", codex_responses: "OpenAI Responses", anthropic_messages: "Anthropic Messages" };
+
+  // pinned is the default the deployment sets, or null.
+  const pinned = () => (data && data.pinned) || null;
 
   async function load() {
     if (!backends.length) {
@@ -868,6 +918,9 @@ window.HubModelSettings = (ctx) => {
       } catch (_) {
         backends = [];
       }
+      // Only the agents this admin connects models to (models.admins).
+      const mine = ctx.me().models_admin_backends;
+      if (Array.isArray(mine)) backends = backends.filter((b) => mine.includes(b.id));
       backend = backend || (ctx.me().default_backend && backends.some((b) => b.id === ctx.me().default_backend) ? ctx.me().default_backend : (backends[0] || {}).id || "");
     }
     try {
@@ -885,14 +938,16 @@ window.HubModelSettings = (ctx) => {
     const out = [];
     const st = data.status || {};
     const models = (id) => ((data.providers || []).find((p) => p.id === id) || {}).models || [];
+    // The address shows once, in the row's details.
     for (const e of data.endpoints || []) {
       const ms = models(e.id).length ? models(e.id) : e.models || [];
-      out.push({ key: "ep:" + e.id, kind: "endpoint", id: e.id, name: e.name || e.id, provider: e.id, e, models: ms,
-        isDefault: !!e.is_current || st.provider === e.id, meta: ["Your own server", ms.length ? ms.length + (ms.length === 1 ? " model" : " models") : "", e.base_url] });
+      out.push({ key: "ep:" + e.id, kind: "endpoint", id: e.id, name: e.name || e.id, provider: e.id, e, models: ms, managed: !!e.managed,
+        isDefault: !!e.is_current || st.provider === e.id,
+        meta: [e.managed ? deployedConfig : "Your own server", ms.length ? ms.length + (ms.length === 1 ? " model" : " models") : ""] });
     }
     for (const k of data.keys || []) {
       out.push({ key: "key:" + k.key_env, kind: "key", id: k.key_env, name: k.name, provider: k.provider, k, models: models(k.provider),
-        isDefault: st.provider === k.provider, meta: ["API key saved (" + k.preview + ")"] });
+        managed: !!k.deployment, isDefault: st.provider === k.provider, meta: [k.deployment ? deployed : "API key saved (" + k.preview + ")"] });
     }
     for (const a of data.accounts || []) {
       out.push({ key: "acct:" + a.id, kind: "account", id: a.id, name: a.name, provider: a.id, a, models: models(a.id), isDefault: st.provider === a.id, meta: ["Signed in"] });
@@ -906,6 +961,7 @@ window.HubModelSettings = (ctx) => {
       el("p", "hint", "What Hermes can use. New chats start with the default; each chat can pick any model from these in its model menu. Hermes keeps these on the server."));
     if (backends.length > 1) {
       const sel = document.createElement("select");
+      sel.id = "set-models-agent";
       sel.className = "f";
       for (const b of backends) {
         const o = el("option", "", b.name || b.id);
@@ -925,6 +981,14 @@ window.HubModelSettings = (ctx) => {
       if (!err) p.append(el("p", "none", "Loading..."));
       return;
     }
+    const pin = pinned();
+    if (pin) {
+      const n = el("p", "hint pinned");
+      n.append(I.icon("lock"), " New chats start with ", el("code", "", pin.model || pin.provider), ". The default model is set in the deployment config");
+      if (pin.source) n.append(" (", el("code", "", pin.source), ")");
+      n.append(", so it is changed there, not here.");
+      p.append(n);
+    }
     const list = rows();
     if (!list.length) {
       p.append(el("p", "none", "No model is connected yet."));
@@ -940,7 +1004,7 @@ window.HubModelSettings = (ctx) => {
     const head = el("button", "set-rowhead", "");
     head.type = "button";
     head.setAttribute("aria-expanded", String(!!open[r.key]));
-    const st = el("span", "st on");
+    const st = el("span", r.managed ? "st lock" : "st on");
     st.setAttribute("aria-hidden", "true");
     const top = el("span", "set-top");
     top.append(st, el("span", "nm", r.name));
@@ -965,17 +1029,23 @@ window.HubModelSettings = (ctx) => {
     if (r.kind === "endpoint") {
       add("Address", r.e.base_url);
       add("API key", r.e.has_api_key ? r.e.api_key_preview || "Saved" : "None");
-      add("API mode", { chat_completions: "Chat Completions", codex_responses: "Responses API", anthropic_messages: "Anthropic Messages" }[r.e.api_mode] || "Detected");
-    } else if (r.kind === "key") add("API key", r.k.preview);
+      // Only an API type someone chose; Hermes finds out the others.
+      add("API type", apiTypes[r.e.api_mode] || "");
+    } else if (r.kind === "key") add("API key", r.k.deployment ? deployed : r.k.preview);
     else add("Account", "Signed in");
     add("Models", ms);
     box.append(dl);
+    if (r.managed) {
+      const n = el("p", "hint");
+      n.append(I.icon("lock"), r.kind === "key" ? " " + deployed + ", so it is changed where the deployment sets it, not here." : " " + deployedConfig + ", so it is changed there, not here.");
+      box.append(n);
+    }
     const acts = el("div", "acts");
-    if (r.kind !== "account") acts.append(btn("", "Edit", () => { editing = r.key; note = null; draw(); }, "edit"));
+    if (r.kind !== "account" && !r.managed) acts.append(btn("", "Edit", () => { editing = r.key; note = null; draw(); }, "edit"));
     if (r.kind === "endpoint") acts.append(btn("", "Test again", () => testAgain(r), "retry"));
-    if (!r.isDefault) acts.append(btn("", "Make default for new chats", () => makeDefault(r)));
-    if (r.kind !== "account" || r.a.removable) acts.append(btn("danger-text", "Remove", () => { removing = r.key; insteadModel = ""; draw(); }, "trash"));
-    box.append(acts);
+    if (!r.isDefault && !pinned()) acts.append(btn("", "Make default for new chats", () => makeDefault(r)));
+    if ((r.kind !== "account" || r.a.removable) && !r.managed) acts.append(btn("danger-text", "Remove", () => { removing = r.key; insteadModel = ""; removeConfirm = ""; draw(); }, "trash"));
+    if (acts.childNodes.length) box.append(acts);
     return box;
   }
 
@@ -1056,10 +1126,16 @@ window.HubModelSettings = (ctx) => {
     });
   }
 
-  async function makeDefault(r, model) {
+  // kept is the note for a default Hermes did not change.
+  function kept(res) {
+    return say("warn", res.message || "Hermes kept its default model.", []);
+  }
+
+  async function makeDefault(r, model, confirm) {
     await run(async () => {
       if (r.kind === "endpoint" && !model) {
-        await api("POST", path(backend, "/endpoints/" + encodeURIComponent(r.id) + "/use"));
+        const res = await api("POST", path(backend, "/endpoints/" + encodeURIComponent(r.id) + "/use"));
+        if (res && res.unchanged) { note = kept(res); return false; }
         note = say("good", "New chats start with " + r.name + ".", []);
         return true;
       }
@@ -1069,9 +1145,16 @@ window.HubModelSettings = (ctx) => {
         pick = rec.model || r.models[0];
       }
       if (!pick) { note = say("warn", "Hermes lists no models for " + r.name + " yet.", []); return false; }
-      const res = await api("POST", path(backend, "/default"), { provider: r.provider, model: pick, confirm: true });
-      note = say("good", "New chats start with " + pick + ".", []);
-      return !!(res && res.ok !== false);
+      const res = await api("POST", path(backend, "/default"), { provider: r.provider, model: pick, confirm: !!confirm });
+      if (res && res.confirm_required) {
+        // Hermes's price warning, answered here before anything changes.
+        note = say("warn", "", [res.confirm_message, "Use it as the default for new chats?"], [
+          btn("primary", "Use it anyway", () => makeDefault(r, pick, true)), btn("", "Keep the current default", () => { note = null; draw(); })]);
+        return false;
+      }
+      if (res && res.unchanged) { note = kept(res); return false; }
+      note = say("good", "New chats start with " + ((res && res.model) || pick) + ".", []);
+      return true;
     });
   }
 
@@ -1083,7 +1166,7 @@ window.HubModelSettings = (ctx) => {
     t.append(el("b", "", "Remove " + r.name + "?"), " " + what + " Chats that use its models stop until you pick another model.");
     box.append(t);
     const others = [];
-    if (r.isDefault) {
+    if (r.isDefault && !pinned()) {
       for (const p of data.providers || []) {
         if (p.id === r.provider) continue;
         for (const m of p.models) others.push({ provider: p.id, name: p.name, model: m });
@@ -1103,17 +1186,35 @@ window.HubModelSettings = (ctx) => {
       } else box.append(el("p", "hint", "It is the default and the only model connected: chats cannot start until you connect another."));
     }
     const acts = el("div", "acts");
-    acts.append(btn("danger", busy ? "Removing..." : "Remove", () => remove(r, others.length ? insteadModel : "")), btn("", "Keep it", () => { removing = ""; draw(); }));
+    if (removeConfirm) {
+      // The model picked instead needs the same yes as Make default.
+      box.append(say("warn", "", [removeConfirm, "Use it as the default for new chats, and remove " + r.name + "?"]));
+      acts.append(btn("danger", busy ? "Removing..." : "Use it and remove", () => remove(r, insteadModel, true)),
+        btn("", "Choose another", () => { removeConfirm = ""; draw(); }));
+    } else {
+      acts.append(btn("danger", busy ? "Removing..." : "Remove", () => remove(r, others.length ? insteadModel : "")), btn("", "Keep it", () => { removing = ""; draw(); }));
+    }
     box.append(acts);
     return box;
   }
 
-  async function remove(r, instead) {
+  async function remove(r, instead, confirm) {
     await run(async () => {
       if (instead) {
         const [provider, model] = instead.split("\n");
-        await api("POST", path(backend, "/default"), { provider, model, confirm: true });
+        const res = await api("POST", path(backend, "/default"), { provider, model, confirm: !!confirm });
+        if (res && res.confirm_required) {
+          removeConfirm = res.confirm_message || "This model needs a confirmation.";
+          return false;
+        }
+        if (res && res.unchanged) {
+          // Removing it now would leave the default without its provider.
+          note = kept(res);
+          removing = "";
+          return false;
+        }
       }
+      removeConfirm = "";
       if (r.kind === "endpoint") await api("DELETE", path(backend, "/endpoints/" + encodeURIComponent(r.id)));
       else if (r.kind === "key") await api("DELETE", path(backend, "/keys/" + encodeURIComponent(r.id)));
       else await api("DELETE", path(backend, "/signin/" + encodeURIComponent(r.id)));

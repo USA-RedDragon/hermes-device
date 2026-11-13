@@ -1331,6 +1331,8 @@ a.button, .page a.button { display: inline-flex; align-items: center; justify-co
 .connect h2 { display: flex; align-items: center; gap: .4rem; }
 .connect h2 .grow { flex: 1; }
 .connect .pbody { display: flex; flex-direction: column; gap: .75rem; padding: .2rem 1rem .8rem; }
+/* The body scrolls; its parts keep their height (a list with overflow hidden shrank to nothing). */
+.connect .pbody > * { flex-shrink: 0; }
 .connect .pfoot .sp { flex: 1; }
 .connect .pbody.done { align-items: center; text-align: center; padding-top: 1rem; }
 .connect .pbody.done h2 { padding: 0; justify-content: center; }
@@ -1357,7 +1359,8 @@ a.button, .page a.button { display: inline-flex; align-items: center; justify-co
 .pw input { width: 100%; padding-right: 4.5rem !important; }
 .pw button { position: absolute; right: .25rem; top: .25rem; min-height: 2rem !important; padding: .1rem .5rem; font-size: .8rem; }
 .connect .hint, .set-pane .hint { color: var(--muted); font-size: .88rem; margin: 0; }
-.connect .hint svg { width: 1rem; height: 1rem; vertical-align: -.2em; }
+.connect .hint svg, #set-models .hint svg { width: 1rem; height: 1rem; vertical-align: -.2em; flex: none; }
+#set-models .set-detail .hint { margin: .2rem 0 .4rem; }
 .say { display: flex; gap: .5rem; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; padding: .5rem .65rem; font-size: .9rem; overflow-wrap: anywhere; }
 .say > svg { width: 1.25rem; height: 1.25rem; flex: none; }
 .say > div { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: .3rem; }
@@ -1399,7 +1402,8 @@ a.button, .page a.button { display: inline-flex; align-items: center; justify-co
 .spin { width: .9rem; height: .9rem; border-radius: 50%; border: 2px solid var(--accent); border-right-color: transparent; animation: spin 1s linear infinite; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
-.connect .cmd { background: var(--code); padding: .5rem; border-radius: 6px; overflow-x: auto; white-space: pre; font: .82rem ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; }
+.connect .cmd { background: var(--code); padding: .5rem; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; font: .82rem ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; }
+.connect details.adv, .connect details.adv .inner { min-width: 0; }
 .set-row .pill.okp { color: var(--ok); }
 .set-pane .acts button svg { width: 1rem; height: 1rem; vertical-align: -.2em; margin-right: .3rem; }
 .set-pane h3 { margin: 0; font-size: .95rem; }

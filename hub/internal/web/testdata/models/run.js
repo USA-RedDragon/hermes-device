@@ -98,4 +98,12 @@ eq([failed.signin, failed.message], ["failed", "OpenAI rejected the device-code 
 const ok = M.next(st, { type: "polled", state: { kind: "approved" }, provider: "nous", name: "Nous Portal" });
 eq([ok.step, ok.provider, ok.verdict.title], ["pick", "nous", "Signed in to Nous Portal."]);
 
+// A default the deployment sets: no pick after a key or a sign-in, and a
+// default Hermes kept is reported where it was picked, never as done.
+eq(M.next(st, { type: "polled", state: { kind: "approved" }, provider: "nous", name: "Nous Portal", pinned: true }).step, "done");
+st = M.next({ step: "key" }, { type: "key-checked", verdict: M.keyVerdict({ ok: true, reachable: true }, "OpenRouter"), provider: "openrouter", name: "OpenRouter", pinned: true });
+eq([st.step, st.provider], ["done", "openrouter"]);
+st = M.next({ step: "pick", provider: "deepseek", model: "deepseek-chat" }, { type: "default-kept", message: "Hermes kept claude-sonnet-5-5 as the model new chats start with." });
+eq([st.step, st.kept], ["pick", "Hermes kept claude-sonnet-5-5 as the model new chats start with."]);
+
 console.log("models.js: ok");
