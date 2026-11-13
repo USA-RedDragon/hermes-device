@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>$pagetitle$</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%232f6fde'/%3E%3Cg transform='translate(14.205 21.795) scale(1.0256)'%3E%3Cpath d='M3.00 45.00 Q30.50 36.00 38.00 9.00 Q38.40 18.00 40.72 25.72 C47.80 18.30 57.30 12.60 66.80 12.60 C61.10 16.40 57.30 21.15 56.35 24.95 C59.20 23.05 62.05 24.47 64.42 24.95 C58.25 31.60 50.65 34.45 43.85 33.82 Q47.06 40.49 52.00 46.00 Q27.50 40.00 3.00 45.00 Z' fill='none' stroke='%23fff' stroke-width='2.5' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/g%3E%3C/svg%3E">
 <meta name="description" content="$description$">
 <script>try { var m = localStorage.getItem("mode"); if (m === "light" || m === "dark") { document.documentElement.setAttribute("data-theme", m); } } catch (e) {}</script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito+Sans:ital,wght@0,400;0,600;0,700;1,400&family=Inconsolata:wght@400;600&display=swap">
@@ -42,7 +43,7 @@ a { color: var(--accent-ink); }
 a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 header { background: var(--band); color: var(--band-ink); padding-block: 12px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: flex; gap: 8px 22px; align-items: center; flex-wrap: wrap; }
 .brand { font-family: var(--font-mono); font-size: 24px; font-weight: 600; color: var(--band-ink); text-decoration: none; display: flex; align-items: center; gap: 10px; }
-.brand::before { content: ""; width: 14px; height: 14px; background: var(--accent); box-shadow: 18px 0 0 oklch(from var(--accent) l c h / 0.55), 36px 0 0 oklch(from var(--accent) l c h / 0.25); margin-right: 36px; }
+.brand svg { width: 42px; height: 42px; color: var(--accent); flex: none; }
 header nav { display: flex; gap: 16px; flex-wrap: wrap; }
 header nav a { color: var(--band-soft); text-decoration: none; }
 header nav a:hover { color: var(--band-ink); text-decoration: underline; }
@@ -145,7 +146,7 @@ footer { border-top: 1px solid var(--line); color: var(--soft); font-size: 14px;
 </head>
 <body>
 <header>
-  <a class="brand" href="${root}index.html">$site$</a>
+  <a class="brand" href="${root}index.html"><svg viewBox="-0.1 -7.5 70 70" aria-hidden="true"><path d="M3.00 45.00 Q30.50 36.00 38.00 9.00 Q38.40 18.00 40.72 25.72 C47.80 18.30 57.30 12.60 66.80 12.60 C61.10 16.40 57.30 21.15 56.35 24.95 C59.20 23.05 62.05 24.47 64.42 24.95 C58.25 31.60 50.65 34.45 43.85 33.82 Q47.06 40.49 52.00 46.00 Q27.50 40.00 3.00 45.00 Z" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/></svg>$site$</a>
   <nav>$links$</nav>
   <div class="search" role="search" data-root="$root$"><input type="search" placeholder="Search the docs ( / )" aria-label="Search the docs" autocomplete="off" spellcheck="false"><ol hidden></ol></div>
   <div class="mode" role="group" aria-label="Color mode"><button type="button" data-mode="auto">Auto</button><button type="button" data-mode="light">Light</button><button type="button" data-mode="dark">Dark</button></div>
