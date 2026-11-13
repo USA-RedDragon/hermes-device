@@ -64,7 +64,11 @@ launchctl list | grep talaria        # macOS
 tail -f ~/Library/Logs/talaria.log   # macOS logs
 ```
 
-In a chat on the hub, the agent can now pick this computer: use `/device` in the chat to choose it and the folder to work in.
+To use it, start a chat on it: choose the arrow next to the plus button in the hub, pick this computer, then a folder. In a chat that already exists, `/device` moves it to this computer.
+
+![The folder picker for a new chat on the paired computer](../images/pick-folder.png)
+
+![A chat on the paired computer: the header names the computer and the folder, and the agent's command ran there](../images/command-on-computer.png)
 
 ## What the agent can and cannot do here
 
