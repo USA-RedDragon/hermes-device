@@ -1,4 +1,4 @@
-assertion/assertion.go	106	88
+assertion/assertion.go	106	89
 cmd/acp.go	29	1
 cmd/acphost.go	57	23
 cmd/autoupdate.go	75	58
