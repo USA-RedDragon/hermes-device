@@ -12,7 +12,8 @@ RUN apply-patches --image /opt/hermes /patches /out
 
 FROM ${HERMES_BASE}
 ARG HERMES_BASE
-# The upstream image this one patches, with its digest: clients that need the matching upstream build read it,
-#   since this image is private
+# The upstream image this one patches, with its digest: clients that need the matching upstream build read it
 ENV HERMES_BASE_IMAGE=${HERMES_BASE}
 COPY --from=patch /out/ /opt/hermes/
+# Upstream's MIT license and the "built on Hermes Agent" notice
+COPY LICENSE NOTICE /usr/share/doc/talaria-hermes/

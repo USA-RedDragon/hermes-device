@@ -1,0 +1,13 @@
+Talaria Hermes
+
+Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed
+by Nous Research.
+
+This image is the upstream Hermes Agent image
+(https://github.com/NousResearch/hermes-agent) with the patches from
+https://github.com/USA-RedDragon/hermes-patches applied. "Hermes Agent" names
+the upstream project only; this build is published as part of Talaria.
+
+Hermes Agent is Copyright (c) 2025 Nous Research and is licensed under the MIT
+License; its license text is in the LICENSE file next to this notice. The
+patches are provided under the same MIT License terms.
