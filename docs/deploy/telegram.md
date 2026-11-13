@@ -16,6 +16,12 @@ You need:
 
 ## Turn it on
 
+**In the hub (any install):** sign in as an admin, open **Settings, Telegram**, paste the token, click **Test**,
+then **Save and start**. The bot starts at once, without a restart. The hub keeps the token in its own database,
+sealed with a key from its secrets; nobody can read it back in Settings. **Stop** turns the bot off again.
+
+A token set by the install (below) wins over one set in Settings, and Settings then shows the bot read-only.
+
 **Compose:** put the token in `.env` and apply:
 
 ```sh

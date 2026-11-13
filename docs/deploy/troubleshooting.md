@@ -1,6 +1,10 @@
 # Fix server problems
 
-Start with what is running and what it says.
+Admins can start in the hub: **Settings, Diagnostics** shows whether each part is working (the hub, the agent,
+the sandbox, your computers, Telegram), runs a health check of the agent, and shows the newest lines of the agent's
+log with a filter for warnings and errors. **Copy support info** copies all of it for a bug report.
+
+On the server, start with what is running and what it says.
 
 ```bash
 docker compose ps -a                 # every service, and why one stopped
@@ -77,7 +81,7 @@ See the `talaria` [troubleshooting](../guides/troubleshooting.md) page. The usua
 
 ## Telegram does not answer
 
-- Check the token with `curl https://api.telegram.org/bot<token>/getMe`.
+- Check the token in Settings, Telegram with **Test**, or with `curl https://api.telegram.org/bot<token>/getMe`.
 - Only one process can read a bot's messages. Stop any other copy that uses the same token.
 - You must link your account first: send `/link` to the bot and confirm on the hub page.
 

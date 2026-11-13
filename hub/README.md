@@ -223,6 +223,48 @@ The hub checks on every request that the user may use the backend, so a user see
 
 The whole-file editor sends the entries it showed with the edited text. Entries Hermes added meanwhile stay; when Hermes changed or removed one of the shown entries meanwhile, the save fails and asks for a reload. The Learned tab shows only conclusions whose observer is `ai_peer` or `user_peer`, so conclusions of other peers in the workspace never show and cannot be deleted from the hub. A fact links to its chat only when Hermes names its Honcho sessions after its own session ids (Honcho `sessionStrategy: per-session` without a peer prefix); with other strategies the link does not show. Honcho errors go to the hub log; users get a short message.
 
+## The agent's settings
+
+Admins of a backend (`agent.admins`, or the hub's admins when it is empty) change its agent from the hub; members
+never see these tabs, and every route checks it on the server (403 for anyone else).
+
+- **Settings, Agent**: the personality (what the agent is told about itself in every chat), how it asks before
+  risky commands (every time, only when a command looks risky, never), whether long chats summarize their older
+  messages and from how full, and the time zone for scheduled jobs and the agent's clock. Each applies to everyone
+  on the server. The install's `TZ` sets the time zone until someone picks one here; from then on the choice in
+  Settings wins, also after a restart.
+- **Settings, Skills and tools**: skills (on or off, add one from the catalog after a safety check, remove one
+  added from the catalog), tools (groups of things the agent can do, with a key prompt for those that need one;
+  files and commands are always on) and connections (other services the agent can use, by address and an optional
+  token: on or off, test, remove).
+- **Settings, Diagnostics**: whether the hub, the agent, the sandbox, your computers and Telegram work, a health
+  check of the agent, the newest 200 lines of the agent's log (all, warnings or errors; it updates every 10 seconds
+  while open) and Copy support info.
+- **Settings, Backup** (hub admins): one zip with the hub's data, its keys and the agent's data. See
+  [Upgrade and back up](../docs/deploy/upgrades.md#back-up).
+- **Settings, Telegram** (hub admins): the bot token, with a Test button. The hub keeps it sealed in its database
+  and starts the bot at once; a token the install sets wins and shows read-only.
+- **The update banner** (hub admins only): a new hub, agent release or `talaria` for a computer, with the steps
+  for the install type (`ui.install`). The hub reads the public release list once a day (`updates.check`).
+- **In a chat**: the sliders button in the top bar, or the chip at the end of the model line, opens a panel with
+  the same switches for tools, skills, connections and how the agent asks. An admin's change applies to every open
+  chat from its next message, without a restart: the agent rebuilds the chat's tool list, reconnects connections
+  and rebuilds its instructions before the next reply (the reply that runs keeps what it had). Everyone can turn
+  asking off for their own chat only ("Never ask in this chat", what `/yolo` does); members see the rest read
+  only.
+
+Settings the install owns are read-only with "Set in the deployment config": the keys in `agent.locked_keys`
+(the Helm chart lists the keys of its `hermes.config` there) and model keys and models the deployment sets.
+
+Routes, under `/api/agent/{backend}`: `GET summary` (any user of the backend: names and on or off; admins get
+everything), `GET`/`PUT settings`, `PUT soul`, `GET tools`, `PUT tools/{name}`, `GET`/`PUT tools/{name}/keys`,
+`GET skills`, `PUT`/`DELETE skills/{name}`, `GET catalog?q=`, `GET catalog/check?identifier=`,
+`POST catalog/install`, `GET`/`POST connections`, `PUT`/`DELETE connections/{name}`, `POST connections/{name}/test`,
+`GET diagnostics`, `GET log?level=&search=`, `POST healthcheck`. Per chat: `GET`/`PUT
+/api/sessions/{backend}/{session}/yolo`. Hub admins: `GET /api/admin/updates`, `GET`/`PUT`/`DELETE
+/api/admin/telegram`, `POST /api/admin/telegram/test`, `POST /api/admin/backup` then
+`GET /api/admin/backup/{token}`. Bodies that hold a key or token are never logged.
+
 ## Search
 
 The search box over the chat list matches chat titles as the user types. From the second character it also searches the messages of every chat on each backend the user may use, and lists the chats with matching messages under "In messages": the title, the date the chat was last used and up to two short excerpts with the matches marked. A click opens the chat at the first matching message, or says that the message is further back than the chat shows.

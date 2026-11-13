@@ -1,5 +1,12 @@
 # Upgrade and back up Talaria
 
+## Know when to upgrade
+
+Admins see a banner in the hub when a new Talaria is out: a new hub, a new agent release, or a computer that runs an
+older `talaria`. **How to update** shows the steps for your install type. Members never see it. The hub reads the
+public release list once a day and sends nothing about your install. To turn the check off, set `updates.check`
+to false in the hub's settings (`HUB_UPDATES_CHECK=false`).
+
 ## Upgrade
 
 - Compose: get the new files (Step 1 of [the quick start](compose.md), into the same folder; your `.env` stays),
@@ -13,6 +20,36 @@
 Keys and secrets never change on an upgrade.
 
 ## Back up
+
+### From Settings (one file)
+
+Admins can open **Settings, Backup** and click **Download backup**. Talaria packs one zip file:
+
+| In the file | What it holds |
+| ----------- | ------------- |
+| `hub/hub.db` | The hub's data: accounts, paired computers, Telegram links, saved prompts and settings, with the Telegram token set in Settings. Left out when the hub keeps its data in PostgreSQL: back that up with `pg_dump`. |
+| `hub/keys.yaml` | The hub's keys: the session secret (it also opens the Telegram token above), the key that signs the hub's messages to computers, and the Web Push key. |
+| `agent/agent-backup.zip` | The agent's data: chats, memory, skills, agent settings and model keys. |
+| `README.txt` | What is in the file and how to restore it. |
+
+Not in it: files on your computers and the sandbox's work folder. The file holds keys: keep it somewhere
+private. Packing a large agent takes a few minutes; Talaria keeps running meanwhile.
+
+To restore it on a new Compose install:
+
+1. Start the new install once, so it makes its volumes, then stop it with `docker compose down`.
+2. Put the keys back: write the values of `hub/keys.yaml` into the `secrets` volume's `generated/` files
+   (`session_secret` into `session-secret`, `device_signing_key` into `hub-signing-seed`, `vapid_private_key` into
+   `vapid-key`).
+3. Put the hub's data back: copy `hub/hub.db` over `talaria-hub.db` in the `hub-data` volume.
+4. Start it with `docker compose up -d --wait`.
+5. Put the agent's data back: copy `agent/agent-backup.zip` into the agent's data volume (for example to
+   `/opt/data/restore.zip`), run `docker compose exec -u 10000 hermes /opt/hermes/.venv/bin/hermes import /opt/data/restore.zip --force`,
+   then `docker compose restart hermes`.
+
+On Helm, put the keys into the `<release>-keys` Secret and the files into the PVCs the same way.
+
+### By hand
 
 What to keep:
 
