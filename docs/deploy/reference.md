@@ -84,6 +84,7 @@ init
 plugin
 hermes-init
 hermes
+acp-host
 front
 hub
 sandbox
@@ -208,6 +209,11 @@ hub:
     limits: {memory: 1Gi}
 
 hermes:
+  # -- The editor bridge: runs acp-host in the Hermes pod and gives the hub its address, so that editors can use
+  # talaria acp. Mounts the talaria image as a volume, which needs Kubernetes 1.33 or newer; turn it off on older
+  # clusters
+  editorBridge:
+    enabled: true
   persistence:
     size: 20Gi
     storageClass: ""
