@@ -1193,7 +1193,13 @@
       }
       this.tools.set(id, card);
       this.endText();
-      this.ensureTurn().text = null;
+      // A card ends the thinking before it and the reply text: what comes
+      // next opens a new block after the card, so the log keeps the order
+      // the steps happened in.
+      const tn = this.ensureTurn();
+      tn.text = null;
+      if (tn.reasoning) ui.closeUnlessKept(tn.reasoning);
+      tn.reasoning = null;
       this.add(card);
       return card;
     }

@@ -324,9 +324,28 @@ window.HubToolCard = (() => {
     const to = str(a.to);
     const out = { icon: "mail", blocks: [] };
     const label = str(res.to) || to;
-    out.title = to === "parent" ? "Message to parent" : /^sa-/.test(to) ? "Message to subagent " + short(label) : "Message to chat " + short(label);
+    const m = verb(c, "Sent a message to ", "Sending a message to ");
+    out.title = to === "parent" ? m + "the parent chat" : /^sa-/.test(to) ? m + "subagent " + short(label) : m + (label ? "chat " + short(label) : "a chat");
     out.status = str(res.delivery) ? upperFirst(squash(res.delivery)) : "Sent";
     if (a.text) out.blocks.push({ label: "Message", text: str(a.text), pre: true });
+    if (c.out) out.blocks.push({ label: "Output", text: c.out, pre: true });
+    return out;
+  }
+
+  // agentPeers and agentName are the tools that list the user's chats and
+  // name this one.
+  function agentPeers(c) {
+    const out = { icon: "list", blocks: [], status: "Done" };
+    out.title = verb(c, "Listed", "Listing") + " your chats";
+    if (c.out) out.blocks.push({ label: "Output", text: c.out, pre: true });
+    return out;
+  }
+
+  function agentName(c) {
+    const a = isObj(c.args) ? c.args : {};
+    const name = short(str(a.name));
+    const out = { icon: "edit", blocks: [], status: "Done" };
+    out.title = name ? verb(c, "Named this chat ", "Naming this chat ") + name : verb(c, "Cleared", "Clearing") + " this chat's name";
     if (c.out) out.blocks.push({ label: "Output", text: c.out, pre: true });
     return out;
   }
@@ -562,7 +581,7 @@ window.HubToolCard = (() => {
   }
 
   const handlers = {
-    terminal, process_manage: pm, delegate_task: delegate, agent_send: send, search_files: search,
+    terminal, process_manage: pm, delegate_task: delegate, agent_send: send, agent_peers: agentPeers, agent_set_name: agentName, search_files: search,
     read_file: read, write_file: edit, patch: edit, web_search: web, web_extract: web,
     memory: memoryTool, project_memory: projectMemory, skills_list: skill, skill_view: skill, skill_manage: skill,
     session_search: sessionSearch, browser_vault: vault, mcp_device_call: mcpCall, mcp_device_servers: mcpCall, mcp_device_tools: mcpCall,
@@ -642,7 +661,7 @@ window.HubToolCard = (() => {
   const lineWords = {
     todo: ["checkcircle", "Updating the to-do list"], todo_list: ["checkcircle", "Updating the to-do list"],
     memory: ["database", "Saving to memory"], project_memory: ["database", "Updating the project notes"],
-    delegate_task: ["bot", "Starting a subagent"], agent_send: ["mail", "Sending a message"],
+    delegate_task: ["bot", "Starting a subagent"], agent_send: ["mail", "Sending a message"], agent_peers: ["list", "Listing your chats"], agent_set_name: ["edit", "Naming this chat"],
     skills_list: ["book", "Looking at skills"], skill_view: ["book", "Reading a skill"], skill_manage: ["book", "Editing a skill"],
     tool_search: ["search", "Looking up a tool"], tool_describe: ["search", "Looking up a tool"],
     mcp_device_servers: ["plug", "Looking up the servers on your computer"], mcp_device_tools: ["plug", "Looking up tools on your computer"],
