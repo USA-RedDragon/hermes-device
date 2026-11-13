@@ -11,6 +11,8 @@ import (
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
+const textKey = "text"
+
 type allowAll struct{}
 
 func (allowAll) Groups(context.Context, string) ([]string, error) { return nil, nil }
@@ -26,7 +28,7 @@ func TestIdleDetachDoesNotEndTheSubscriptionOfANewViewer(t *testing.T) {
 	gw := gatewaytest.New("hub", "pw")
 	t.Cleanup(gw.Close)
 	gw.AddSession(&gatewaytest.Session{ID: "s1", Title: "One", Live: true, StartedAt: 1,
-		Messages: []map[string]any{{"role": "user", "text": "hi", "row_id": 1}}})
+		Messages: []map[string]any{{"role": "user", textKey: "hi", "row_id": 1}}})
 	cfg := &config.Config{LogLevel: "info", Users: []config.User{{Sub: "s", Name: "alice"}}, Backends: []config.Backend{
 		{ID: "pc", Name: "PC", URL: gw.URL(), Username: "hub", Password: "pw", Users: []string{"alice"}}}}
 	if err := cfg.Validate(); err != nil {
@@ -81,7 +83,7 @@ func TestIdleDetachDoesNotEndTheSubscriptionOfANewViewer(t *testing.T) {
 		}
 	}
 	time.Sleep(100 * time.Millisecond)
-	gw.Publish("s1", "message.delta", map[string]any{"text": "later"})
+	gw.Publish("s1", "message.delta", map[string]any{textKey: "later"})
 	deadline := time.After(3 * time.Second)
 	for {
 		select {

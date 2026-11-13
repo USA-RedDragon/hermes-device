@@ -1430,6 +1430,9 @@ func retryRead(ctx context.Context, try func() error) error {
 	}
 }
 
+// detachWait bounds the session.detach of an idle detach.
+const detachWait = 3 * time.Second
+
 // detachIdle runs from a timer, with no request behind it.
 //
 //nolint:contextcheck // see above
@@ -1469,7 +1472,8 @@ func (b *backend) detachIdle(ls *live) {
 	if !alive(c) || sub == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), b.svc.opts.CallTimeout)
+	// Best effort, and bounded: viewers of the session wait for it.
+	ctx, cancel := context.WithTimeout(context.Background(), min(b.svc.opts.CallTimeout, detachWait))
 	defer cancel()
 	if err := c.Call(ctx, gateway.MethodSessionDetach, gateway.DetachParams{SessionID: ls.id, SubscriptionID: sub}, nil); err != nil {
 		b.log.Debug("detach", "session", ls.id, "error", err.Error())
