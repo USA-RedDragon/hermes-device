@@ -48,22 +48,54 @@ On Linux, run the unpacked program once. It installs itself under `~/.talaria/bi
 ./talaria setup https://hub.example.com
 ```
 
-On macOS, if you downloaded the archive with a browser, macOS marks the program as untrusted. Clear the mark first:
+### On macOS
 
-```sh
-xattr -d com.apple.quarantine ./talaria
-./talaria setup https://hub.example.com
-```
+The program is not signed with an Apple Developer ID and not notarized by Apple. What happens on the first run depends on how you downloaded it:
 
-The macOS service is a launchd agent, `~/Library/LaunchAgents/io.github.usa-reddragon.talaria.plist`, and its log is `~/Library/Logs/talaria.log`.
+- **With `curl` in Terminal**, macOS does not mark the file, and it runs at once. This is the simplest way (use `darwin_amd64` on an Intel Mac):
+
+  ```sh
+  V=<version>   # for example 0.25.4, without the v
+  curl -fsSLO https://github.com/USA-RedDragon/talaria/releases/download/v$V/talaria_${V}_darwin_arm64.tar.gz
+  curl -fsSLO https://github.com/USA-RedDragon/talaria/releases/download/v$V/talaria_${V}_checksums.txt
+  grep talaria_${V}_darwin_arm64 talaria_${V}_checksums.txt | shasum -a 256 -c -
+  tar -xzf talaria_${V}_darwin_arm64.tar.gz
+  ./talaria setup https://hub.example.com
+  ```
+
+- **With a browser**, macOS marks the archive as downloaded from the internet, and `tar` passes the mark on to `talaria`. Clear the mark before you run it the first time:
+
+  ```sh
+  xattr -d com.apple.quarantine ./talaria
+  ./talaria setup https://hub.example.com
+  ```
+
+  If you run it with the mark, macOS refuses it with "talaria" Not Opened. In Terminal the command then just waits with no output; press Ctrl-C.
+
+  ![macOS dialog: "talaria" Not Opened. Apple could not verify "talaria" is free of malware that may harm your Mac or compromise your privacy. Buttons: Move to Trash, Done](../images/macos-not-opened.png)
+
+  Choose Done. Clearing the mark on that same file afterwards was not enough in our test on macOS 26: unpack the archive again, then run `xattr -d` on the new file before its first run. The other way is System Settings, Privacy & Security, "Open Anyway".
+
+The macOS service is a launchd agent, `~/Library/LaunchAgents/io.github.usa-reddragon.talaria.plist`, and its log is `~/Library/Logs/talaria.log`. macOS shows a notification that a login item was added; that is this agent, and it is listed under System Settings, General, Login Items & Extensions.
+
+**A hub on your local network.** If the hub address is a LAN address (such as `http://192.168.1.10:8080`), macOS asks once whether talaria may use the local network:
+
+![macOS dialog: Allow "talaria" to find devices on local networks? Buttons: Don't Allow, Allow](../images/macos-local-network.png)
+
+Choose Allow. Until you do, the service cannot reach the hub and its log says `connect: no route to host`, even though `curl` to the same address works from an SSH session. If you chose Don't Allow, turn talaria on under System Settings, Privacy & Security, Local Network. A hub at a public HTTPS name or a Tailscale address is not affected.
+
+**Setup over SSH.** You can run setup on a Mac over SSH while you are also logged in at the Mac. Setup then prints the pairing link and does not open a browser or Firefox on the Mac's screen; the Local Network question above still appears on that screen. macOS keeps the login keychain locked in SSH sessions, so:
+
+- setup over SSH stores the token in a file readable only by you, `~/Library/Application Support/talaria/token`, instead of the Keychain;
+- if setup ran in Terminal and the token is in the Keychain, commands that need it (`talaria chat`, `talaria acp`, `talaria setup --uninstall`) cannot read it over SSH and say so. Run them in Terminal on the Mac.
 
 Setup works through these steps, in this order:
 
 1. **Install.** The program copies itself to `~/.talaria/bin/talaria` and makes a short link, `tal`, next to it. It will not replace a newer installed release unless you pass `--force`.
-2. **Pair.** It prints a link and a code and opens the link in your browser when it can. [Approve the pairing](#approve-the-pairing) below.
-3. **Config.** It writes `~/.config/talaria/config.yaml` when that file does not exist, with your hub address and `device.roots` set to your home directory. An existing file is never changed unless you pass `--overwrite-config`, and then the old one is saved first.
+2. **Pair.** It prints a link and a code and opens the link in your browser when it can (not over SSH). [Approve the pairing](#approve-the-pairing) below.
+3. **Config.** It writes `~/.config/talaria/config.yaml` (on macOS `~/Library/Application Support/talaria/config.yaml`) when that file does not exist, with your hub address and `device.roots` set to your home directory. An existing file is never changed unless you pass `--overwrite-config`, and then the old one is saved first.
 4. **Firefox.** When it finds Firefox, it turns browser control on and registers the native messaging host.
-5. **PATH.** It checks that `~/.talaria/bin` is on your `PATH`, also for `bash -l`, because the agent runs commands with a login shell. It asks before it changes any of your shell files, and it saves a backup of each one first.
+5. **PATH.** It checks that `~/.talaria/bin` is on your `PATH`, also for `bash -l`, because the agent runs commands with a login shell. It asks before it changes any of your shell files, and it saves a backup of each one first. When setup does not run in a terminal, it changes nothing and lists what to add.
 6. **Service.** It installs and starts the daemon so that it starts when you log in: a systemd user unit on Linux, a launchd agent on macOS. The daemon connects to the hub and reconnects by itself.
 7. **Extension.** If Firefox does not have the Talaria extension yet, it opens Firefox at the extension's install page. Choose "Continue to Installation", then "Add". Setup waits up to 10 minutes for the extension to connect.
 8. **Summary.** It prints what it did and what is left for you. If a step failed, the summary ends with the error and the later steps did not run.
@@ -143,7 +175,7 @@ A chat that was ever tied to a computer never falls back to the server. If the c
 
 ## Which folders and what the agent can do
 
-By default the agent may run commands in your home directory and below, and nowhere else. A command whose working directory is outside the allowed folders is refused. To narrow it, edit `~/.config/talaria/config.yaml`:
+By default the agent may run commands in your home directory and below, and nowhere else. A command whose working directory is outside the allowed folders is refused. The folders limit where commands start, not what a command does: a command can still `cd` elsewhere, and the next command in that chat is then refused until it starts in an allowed folder again. To narrow it, edit `~/.config/talaria/config.yaml` (on macOS `~/Library/Application Support/talaria/config.yaml`):
 
 ```yaml
 device:
@@ -152,13 +184,13 @@ device:
     - /home/alice/notes
 ```
 
-Then restart the service: `systemctl --user restart talaria` on Linux, or run `talaria setup` again on macOS. Every key is listed in the [configuration reference](../reference/configuration.md).
+Then restart the service: `systemctl --user restart talaria` on Linux, `launchctl kickstart -k gui/$(id -u)/io.github.usa-reddragon.talaria` on macOS, or run `talaria setup` again on either. Every key is listed in the [configuration reference](../reference/configuration.md).
 
 - The agent runs commands as your user, so it can do what you can do in the allowed folders. Treat it like a person who has your terminal.
 - Each command runs with a memory cap on Linux with systemd, so a runaway command is killed and nothing else is affected. The default is 75% of the service's limit.
 - The agent asks before it does anything you cannot undo in Firefox: see [Let the agent use Firefox](../guides/browser-extension.md).
 - The agent cannot reach the computer when the daemon is not running.
-- The computer's token stays in your system keyring (Secret Service on Linux, Keychain on macOS), or in a file readable only by you when there is no keyring.
+- The computer's token stays in your system keyring (Secret Service on Linux, Keychain on macOS), or in a file readable only by you when there is no keyring (or, on macOS, when setup ran over SSH).
 - To cut a computer off, remove it in Settings, Computers. Its token stops working at once.
 
 ## Firefox and editors

@@ -19,10 +19,19 @@ Run `talaria login` again, and confirm the code in the browser within 10 minutes
 
 ## The computer shows offline on the hub
 
-1. Is the daemon running? `systemctl --user status talaria`.
+1. Is the daemon running? `systemctl --user status talaria` on Linux, `launchctl list | grep talaria` on macOS (a number in the first column is its process id).
 2. Can the computer reach the hub? `curl -fsS https://hub.example.com/healthz`.
 3. Does the log say the token was refused? The computer was removed on the hub, or the token store changed. Pair again with `talaria login`.
 4. On a headless Linux machine, the service stops when you log out. Run `loginctl enable-linger "$USER"` once.
+5. On macOS with a hub on your local network, a log full of `connect: no route to host` means macOS has not let talaria use the local network yet: answer the question on the Mac's screen with Allow, or turn talaria on under System Settings, Privacy & Security, Local Network. See [Add a computer](../start/add-a-computer.md#on-macos).
+
+## macOS: `talaria` waits and prints nothing
+
+macOS blocked a program downloaded with a browser and shows "talaria" Not Opened on the Mac's screen. Press Ctrl-C, choose Done, unpack the archive again and run `xattr -d com.apple.quarantine ./talaria` before the first run. See [Add a computer](../start/add-a-computer.md#on-macos).
+
+## macOS over SSH: `could not read the device token from the OS keyring`
+
+The token is in the login keychain, which macOS keeps locked in SSH sessions. Run the command in Terminal on the Mac, or unlock the keychain first with `security unlock-keychain`.
 
 ## No systemd user manager
 
