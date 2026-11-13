@@ -97,7 +97,7 @@ func (s *Server) handleGateway(w http.ResponseWriter, r *http.Request) {
 		<-l.done
 		g.markLost()
 	}()
-	l.run() //nolint:contextcheck // the leg outlives the upgrade request
+	l.run()
 	loops.Wait()
 	g.work.Wait()
 }
@@ -329,7 +329,9 @@ func (g *guard) sendChecked(f *frame, params map[string]json.RawMessage) {
 		})
 	case f.Method == methodList:
 		g.work.Go(func() { g.sendList(f, params) })
-	case slices.Contains(listMethods, f.Method):
+	case slices.Contains([]string{methodList, methodActiveList, methodMostRecent}, f.Method):
+		// These answers list the sessions of the whole profile. The hub keeps only the
+		// rows of this device's sessions.
 		g.send(f, params, &held{kind: heldList, id: f.ID, method: f.Method})
 	default:
 		g.send(f, params, nil)
@@ -774,12 +776,6 @@ func (g *guard) call(method string, params any) (frame, error) {
 		return frame{}, fmt.Errorf("%s: %w", method, ctx.Err())
 	}
 }
-
-// listMethods are the methods whose answers list sessions of the whole
-// profile. The hub keeps only the rows of this device's sessions.
-//
-//nolint:gochecknoglobals // a fixed list
-var listMethods = []string{methodList, methodActiveList, methodMostRecent}
 
 // listAnswered keeps only the sessions bound to this device (through their
 // lineage) in a list answer. A session whose binding cannot be read is

@@ -20,8 +20,6 @@ import (
 // CLI (hermes_cli) and tui_gateway/owner_forward.py mention, with the rule
 // the gateway leg applies. TestClientMethodsAgainstSource rebuilds the list
 // from a checkout, so a Hermes upgrade that adds or renames one fails.
-//
-//nolint:goconst // the inventory names each method once
 func clientMethods() map[string]string {
 	return map[string]string{
 		"approval.respond": device.RuleAllowed, "billing.auto_reload": device.RuleDenied, "billing.charge": device.RuleDenied,

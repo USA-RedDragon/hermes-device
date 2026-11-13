@@ -187,13 +187,13 @@ func deniedAnswer(id json.RawMessage, method string, params map[string]json.RawM
 		switch r := paramRefusal(method, params); {
 		case r != "":
 			why = r
-		case slices.Contains(textMethods, method):
+		case carriesText(method):
 			why = "its text is a slash command that is not allowed: only " + strings.Join(SlashCommands(), ", ") +
 				" (a /model needs --session)"
 		case method == methodMutate:
 			why = "operation " + strconv.Quote(rawString(params["operation"])) + " is refused"
 		case method == methodImageRender:
-			why = "it takes only " + strings.Join(imageRenderParams, ", ")
+			why = "it takes only " + strings.Join(imageRenderParams(), ", ")
 		case method == methodCapabilities:
 			why = "it takes only " + keyServerRequests + ", as true or false"
 		}
@@ -312,13 +312,17 @@ var deniedWhy = map[string]string{
 // whyUnknown is the reason for a method in neither table.
 const whyUnknown = "the hub allows only the methods a terminal chat needs"
 
-// mutateOps are the session.mutate operations a device may run. The
-// others are refused: editor_mcp spawns editor MCP programs on the pod,
-// import reads other agents' histories from pod files.
-//
-//nolint:gochecknoglobals // a fixed table
-var mutateOps = []string{"rename", "archive", "sidebar", "model", "reasoning", opWorkspace, "edit_policy", opDelete,
-	"rewind", opReset, opBranch, opCompress}
+// mutateAllowed reports whether op is a session.mutate operation a device
+// may run. The others are refused: editor_mcp spawns editor MCP programs on
+// the pod, import reads other agents' histories from pod files.
+func mutateAllowed(op string) bool {
+	switch op {
+	case "rename", "archive", "sidebar", "model", "reasoning", opWorkspace, "edit_policy", opDelete,
+		"rewind", opReset, opBranch, opCompress:
+		return true
+	}
+	return false
+}
 
 // GatewayMethods are the methods the gateway leg lets through, in order.
 func GatewayMethods() []string { return slices.Sorted(maps.Keys(gatewayRules)) }
@@ -407,12 +411,27 @@ const (
 	keyText        = "text"
 )
 
-// slashAliases are the Hermes v0.23.1 aliases (hermes_cli/commands.py) of
-// the allowed slash commands.
-//
-//nolint:gochecknoglobals // a fixed table
-var slashAliases = map[string]string{opReset: "new", "fork": "branch", "compact": opCompress, "q": "queue",
-	"s": "steer", "ctx": "context", "v": "version"}
+// slashAlias is the command that a Hermes v0.23.1 alias (hermes_cli/commands.py)
+// of an allowed slash command stands for, or name itself.
+func slashAlias(name string) string {
+	switch name {
+	case opReset:
+		return "new"
+	case "fork":
+		return "branch"
+	case "compact":
+		return opCompress
+	case "q":
+		return "queue"
+	case "s":
+		return "steer"
+	case "ctx":
+		return "context"
+	case "v":
+		return "version"
+	}
+	return name
+}
 
 // flagForm is an argument as Hermes' flag parsers may read it: shlex
 // joins quoted pieces, /reasoning and /fast replace an em dash with --,
@@ -483,13 +502,17 @@ func forceSessionModel(method string, params map[string]json.RawMessage) {
 	params[keyCommandText] = mustRaw("/" + slashModel + " " + flagSession + strings.TrimPrefix(cmd, slashModel))
 }
 
-// textMethods are the methods whose text member Hermes may read as a slash
-// command: prompt.submit and prompt.replace_queued admit it as a message
-// event (gateway/run_inbound.py dispatches its command). The others hand
-// the text to the model, and are checked the same way.
-//
-//nolint:gochecknoglobals // a fixed table
-var textMethods = []string{"prompt.submit", "prompt.replace_queued", "session.steer", "session.redirect", "prompt.btw"}
+// carriesText reports whether method is one whose text member Hermes may
+// read as a slash command: prompt.submit and prompt.replace_queued admit it
+// as a message event (gateway/run_inbound.py dispatches its command). The
+// others hand the text to the model, and are checked the same way.
+func carriesText(method string) bool {
+	switch method {
+	case "prompt.submit", "prompt.replace_queued", "session.steer", "session.redirect", "prompt.btw":
+		return true
+	}
+	return false
+}
 
 // attachmentRefs are the leading Desktop attachment refs Hermes strips
 // before it looks for a command (gateway/platforms/event.py
@@ -521,7 +544,7 @@ func textCommand(text string) (name, arg string, ok bool) {
 	return name, strings.TrimLeftFunc(t[end:], pySpace), true
 }
 
-// textAllowed applies SlashCommands to the text of a textMethods request.
+// textAllowed applies SlashCommands to the text of a request of a carriesText method.
 // A name that is not plain ASCII is refused, since Python lowers some
 // characters differently from Go. An alias counts as its command. /model
 // is refused: its value flags can take a --session as their value
@@ -541,9 +564,7 @@ func textAllowed(params map[string]json.RawMessage) bool {
 			return false
 		}
 	}
-	if canonical, ok := slashAliases[name]; ok {
-		name = canonical
-	}
+	name = slashAlias(name)
 	if !commandAllowed(name, arg) {
 		return false
 	}
@@ -637,7 +658,7 @@ func denied(method string, params map[string]json.RawMessage) bool {
 	if _, ok := gatewayRules[method]; !ok {
 		return true
 	}
-	if paramRefusal(method, params) != "" || (slices.Contains(textMethods, method) && !textAllowed(params)) {
+	if paramRefusal(method, params) != "" || (carriesText(method) && !textAllowed(params)) {
 		return true
 	}
 	switch method {
@@ -649,10 +670,10 @@ func denied(method string, params map[string]json.RawMessage) bool {
 		p, ok := params["path"]
 		return ok && !isNull(p)
 	case methodMutate:
-		return !slices.Contains(mutateOps, rawString(params["operation"]))
+		return !mutateAllowed(rawString(params["operation"]))
 	case methodImageRender:
 		for k := range params {
-			if !slices.Contains(imageRenderParams, k) {
+			if !slices.Contains(imageRenderParams(), k) {
 				return true
 			}
 		}
@@ -675,9 +696,9 @@ func capabilitiesAllowed(params map[string]json.RawMessage) bool {
 
 // imageRenderParams are the params of image.render
 // (tui_gateway/methods_images.py).
-//
-//nolint:gochecknoglobals // a fixed list
-var imageRenderParams = []string{"path", keyCols, keyRows, "graphics", "terminal"}
+func imageRenderParams() []string {
+	return []string{"path", keyCols, keyRows, "graphics", "terminal"}
+}
 
 // capImageRenderConfined is the runtime.describe capability of a Hermes
 // whose image.render reads only images it stored

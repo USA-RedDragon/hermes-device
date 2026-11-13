@@ -55,7 +55,7 @@ func (s *Server) handleACP(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotImplemented, codeNoEditorBridge, "editor access is not set up on this server (the backend has no acp_url); ask the hub admin to set it up")
 		return
 	}
-	s.proxy(w, r, d, assertion.LegACP, gateway.WebSocketURL(b.cfg.ACPURL), protocol.ACPHostPath, func(l *leg) { //nolint:contextcheck // the leg outlives the upgrade request
+	s.proxy(w, r, d, assertion.LegACP, gateway.WebSocketURL(b.cfg.ACPURL), protocol.ACPHostPath, func(l *leg) {
 		newACPGuard(s, b, d, l).run()
 	})
 }
@@ -160,10 +160,10 @@ func (s *Server) newLeg(ctx context.Context, d hub.Device, name string, down, up
 
 // run pings both hops and rechecks the device until the leg ends.
 func (l *leg) run() {
-	go l.ping(l.down, true)
-	go l.ping(l.up, false)
+	go l.ping(l.ctx, l.down, true)
+	go l.ping(l.ctx, l.up, false)
 	if !l.dev.Service {
-		go l.recheck()
+		go l.recheck(l.ctx)
 	}
 	<-l.done
 	l.s.mu.Lock()
@@ -302,23 +302,23 @@ func (l *leg) recordHello(typ websocket.MessageType, data []byte) {
 	})
 }
 
-func (l *leg) ping(c *websocket.Conn, device bool) {
+func (l *leg) ping(ctx context.Context, c *websocket.Conn, device bool) {
 	t := time.NewTicker(l.s.opts.PingInterval)
 	defer t.Stop()
 	for {
 		select {
-		case <-l.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
-		ctx, cancel := context.WithTimeout(l.ctx, l.s.opts.PingTimeout)
-		err := c.Ping(ctx)
-		timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+		pctx, cancel := context.WithTimeout(ctx, l.s.opts.PingTimeout)
+		err := c.Ping(pctx)
+		timedOut := errors.Is(pctx.Err(), context.DeadlineExceeded)
 		cancel()
 		if err == nil {
 			continue
 		}
-		if l.ctx.Err() == nil && timedOut {
+		if ctx.Err() == nil && timedOut {
 			hop := hopBackend
 			if device {
 				hop = hopDevice
@@ -336,21 +336,21 @@ func (l *leg) ping(c *websocket.Conn, device bool) {
 
 // recheck closes the leg with 4401 once the device is revoked or its user
 // may no longer use its backend.
-func (l *leg) recheck() {
+func (l *leg) recheck(ctx context.Context) {
 	t := time.NewTicker(l.s.opts.Config.RecheckInterval)
 	defer t.Stop()
 	for {
 		select {
-		case <-l.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-l.s.stopped:
 			return
 		case <-t.C:
 		}
-		ctx, cancel := context.WithTimeout(l.ctx, 10*time.Second)
-		d, ok, err := l.s.store.Device(ctx, l.dev.ID)
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		d, ok, err := l.s.store.Device(cctx, l.dev.ID)
 		if err == nil && ok {
-			err = l.s.allowed(ctx, d)
+			err = l.s.allowed(cctx, d)
 			if errors.Is(err, hub.ErrForbidden) || errors.Is(err, hub.ErrUnknownBackend) {
 				ok = false
 				err = nil
@@ -358,7 +358,7 @@ func (l *leg) recheck() {
 		}
 		cancel()
 		if err != nil {
-			if l.ctx.Err() == nil {
+			if ctx.Err() == nil {
 				l.s.log.Warn("recheck device", "device", l.dev.ID, "error", err.Error())
 			}
 			continue
