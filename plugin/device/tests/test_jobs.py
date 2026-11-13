@@ -245,7 +245,8 @@ class JobDeviceTests(tb.BrowserDeviceTests):
             done.set()
             return {"ok": True}
         self.run_of("job1")
-        with mock.patch.object(agents.BUS, "call", call), mock.patch.object(browser, "no_user", lambda: True):
+        with mock.patch.object(agents.BUS, "call", call), mock.patch.object(agents.BUS, "connected", lambda: True), \
+                mock.patch.object(browser, "no_user", lambda: True):
             out = self.run_tool("browser_navigate", url="https://chosozo.com/")
             self.assertIn("rule browser:visit:chosozo.com", out["error"])
             self.assertIn("The job's chat was told once", out["error"])
@@ -269,7 +270,8 @@ class JobDeviceTests(tb.BrowserDeviceTests):
             done.set()
             raise agents.HubUnavailable("hub away")
         self.run_of("job1")
-        with mock.patch.object(agents.BUS, "call", call), mock.patch.object(browser, "no_user", lambda: True):
+        with mock.patch.object(agents.BUS, "call", call), mock.patch.object(agents.BUS, "connected", lambda: True), \
+                mock.patch.object(browser, "no_user", lambda: True):
             self.run_tool("browser_navigate", url="https://chosozo.com/")
             self.assertTrue(done.wait(5))
             for _ in range(50):
@@ -277,6 +279,20 @@ class JobDeviceTests(tb.BrowserDeviceTests):
                     break
                 threading.Event().wait(0.05)
             self.assertEqual(json.loads(self.choices_path.read_text())["job_asks"], {})
+
+    def test_no_notice_from_a_process_the_hub_does_not_poll(self):
+        """A run in a process with no hub (``hermes cron run`` in a shell) marks nothing, so the
+        gateway's next run still tells the chat."""
+        self.bound_chat()
+        self.cron(action="create", prompt="p", schedule="every 3h")
+        agents = core._load_sibling("hermes_device_agents", "agents.py")
+        self.run_of("job1")
+        with mock.patch.object(agents.BUS, "call", side_effect=AssertionError("sent")), \
+                mock.patch.object(agents.BUS, "connected", lambda: False), \
+                mock.patch.object(browser, "no_user", lambda: True):
+            out = self.run_tool("browser_navigate", url="https://chosozo.com/")
+        self.assertNotIn("told once", out["error"])
+        self.assertEqual(json.loads(self.choices_path.read_text()).get("job_asks") or {}, {})
 
     def test_allow_site_asks_for_exactly_that_rule(self):
         self.session = "sess-1"

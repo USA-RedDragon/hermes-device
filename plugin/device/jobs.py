@@ -396,11 +396,8 @@ def ask_chat(session_id: str, rule: str, tool_name: str) -> str:
     if not job_id or not RULE_RE.fullmatch(rule or ""):
         return ""
     chat = _job_chat(job_id)
-    if not chat or not br.choices().mark_ask(job_id, rule):
-        return ""
     agents = sys.modules.get("hermes_device_agents")
-    if agents is None:
-        br.choices().unmark_ask(job_id, rule)
+    if not chat or agents is None or not agents.BUS.connected() or not br.choices().mark_ask(job_id, rule):
         return ""
     kind, site = rule.split(":", 2)[1:]
     text = (f"Scheduled job {job_id} could not run {tool_name} because the user has not approved \"{kind}\" on "
