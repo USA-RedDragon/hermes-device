@@ -57,7 +57,11 @@ func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "login required", http.StatusUnauthorized)
 		return
 	}
-	if !s.originOK(r) || subtle.ConstantTimeCompare([]byte(r.PostFormValue("csrf")), []byte(sess.CSRF)) != 1 {
+	if !s.originOK(r) {
+		s.wrongAddress(w, "/link/telegram?token="+url.QueryEscape(r.PostFormValue("token")))
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(r.PostFormValue("csrf")), []byte(sess.CSRF)) != 1 {
 		http.Error(w, "bad request origin or CSRF token", http.StatusForbidden)
 		return
 	}

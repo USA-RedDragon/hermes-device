@@ -73,8 +73,10 @@ func TestPairPage(t *testing.T) {
 func pairApprove(t *testing.T, e *hubEnv, c *http.Client, csrf, code, user string) hub.PairPoll {
 	t.Helper()
 	ctx := context.Background()
-	if resp, _ := form(t, c, e.url+"/device/pair", "https://evil.example.com", url.Values{fieldCSRF: {csrf}, fieldCode: {user}}); resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("cross-origin = %d", resp.StatusCode)
+	if resp, body := form(t, c, e.url+"/device/pair", "https://evil.example.com", url.Values{fieldCSRF: {csrf}, fieldCode: {user}}); resp.StatusCode != http.StatusForbidden ||
+		!strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") ||
+		!strings.Contains(body, `Open Talaria at <a href="`+e.url+`/device/pair">`+e.url+`</a>, or set TALARIA_PUBLIC_URL to this address.`) {
+		t.Fatalf("cross-origin = %d %s", resp.StatusCode, body)
 	}
 	if resp, _ := form(t, c, e.url+"/device/pair", "", url.Values{fieldCSRF: {"x"}, fieldCode: {user}}); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("bad csrf = %d", resp.StatusCode)

@@ -418,6 +418,22 @@ func TestTelegramLink(t *testing.T) {
 	if resp, _ := form(tok, "wrong"); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("bad csrf = %d", resp.StatusCode)
 	}
+	other, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, e.url+"/link/telegram",
+		strings.NewReader(url.Values{"token": {tok}, fieldCSRF: {csrf[1]}}.Encode()))
+	other.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	other.Header.Set("Origin", "http://tower.local:8080")
+	resp, err = c.Do(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if want := `Open Talaria at <a href="` + e.url + `/link/telegram?token=` + url.QueryEscape(tok) + `">` + e.url + `</a>`; resp.StatusCode != http.StatusForbidden || !strings.Contains(string(b), want) {
+		t.Fatalf("other address = %d %s", resp.StatusCode, b)
+	}
+	if _, ok, _ := e.store.UserForTelegram(ctx, 777); ok {
+		t.Fatal("a post from another address bound the account")
+	}
 	if resp, body := form(tok, csrf[1]); resp.StatusCode != http.StatusOK || !strings.Contains(body, "now linked") {
 		t.Fatalf("link = %d %s", resp.StatusCode, body)
 	}

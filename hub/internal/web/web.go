@@ -446,6 +446,26 @@ func (s *Server) crossOrigin(w http.ResponseWriter) {
 	errorJSON(w, http.StatusForbidden, "Open Talaria at "+s.origin+", or set TALARIA_PUBLIC_URL to this address.")
 }
 
+const wrongAddressHTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wrong address - Talaria</title><link rel="stylesheet" href="/static/app.css"></head>
+<body class="doc"><main class="page">
+<h1>Wrong address</h1>
+<p class="err">Open Talaria at <a href="{{.URL}}">{{.Origin}}</a>, or set TALARIA_PUBLIC_URL to this address.</p>
+</main></body></html>`
+
+// wrongAddress answers a form post (a full page) sent from another address
+// than the public URL with a page that links to the same page at the right one.
+func (s *Server) wrongAddress(w http.ResponseWriter, pathAndQuery string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusForbidden)
+	page := template.Must(template.New("wrong-address").Parse(wrongAddressHTML))
+	if err := page.Execute(w, struct{ URL, Origin string }{s.origin + pathAndQuery, s.origin}); err != nil {
+		s.log.Debug("render wrong address page", "error", err.Error())
+	}
+}
+
 type userKey struct{}
 
 func userFrom(r *http.Request) string {
