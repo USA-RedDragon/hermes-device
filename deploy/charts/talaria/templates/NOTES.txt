@@ -12,7 +12,9 @@ and open http://localhost:8080 (set publicUrl to that address).
 Open it now: the first person who opens it makes the admin account on its setup page. Do that before it
 is reachable from the internet.
 {{- end }}
-{{- if not (include "talaria.modelBaseUrl" .) }}
 
-No model is set: set model.baseUrl and model.name, or demo.enabled=true to try it.
+Pick a model and provider in Hermes (Hermes's own setting):
+  kubectl -n {{ .Release.Namespace }} exec -it deploy/{{ include "talaria.fullname" . }}-hermes -c gateway -- hermes model
+{{- if .Values.demo.enabled }}
+To try it without a provider, pick talaria-demo there.
 {{- end }}

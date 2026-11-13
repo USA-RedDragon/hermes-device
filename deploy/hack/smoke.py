@@ -6,7 +6,10 @@ the demo model to run a command and checks that it ran in the sandbox.
 
   python3 deploy/hack/smoke.py http://localhost:8080 alice '<password of 12 or more characters>'
 
-Exit 0 when every step passed. Works with the demo model (profile demo); a real model will not follow the
+Exit 0 when every step passed. Works with the demo model (profile demo), picked in Hermes first:
+  docker compose exec -u hermes hermes hermes config set model.provider custom:talaria-demo
+  docker compose exec -u hermes hermes hermes config set model.default talaria-demo
+ a real model will not follow the
 "run:" convention reliably, so with a real model add --real: it only waits for any reply.
 """
 

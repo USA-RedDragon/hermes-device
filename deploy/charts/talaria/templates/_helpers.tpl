@@ -36,18 +36,3 @@ imagePullSecrets:
 {{- end }}
 {{- end -}}
 
-{{- define "talaria.modelBaseUrl" -}}
-{{- if .Values.model.baseUrl -}}
-{{- .Values.model.baseUrl -}}
-{{- else if .Values.demo.enabled -}}
-{{- printf "http://%s-demo-llm:8000/v1" (include "talaria.fullname" .) -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "talaria.modelName" -}}
-{{- if .Values.model.name -}}
-{{- .Values.model.name -}}
-{{- else if .Values.demo.enabled -}}
-talaria-demo
-{{- end -}}
-{{- end -}}

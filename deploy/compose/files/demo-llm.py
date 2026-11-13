@@ -116,7 +116,7 @@ def reply_for(body):
     text = "\n\n".join(p for p in text.split("\n\n") if not p.lstrip().startswith("[")).strip()
     quoted = text if len(text) <= 200 else text[:200] + "..."
     out = ("This is the Talaria demo model. Talaria works: the hub reached Hermes, and Hermes reached this "
-           "model. Set a real model in .env to get real answers. You wrote: " + quoted)
+           "model. Pick a real model in Hermes (hermes model) to get real answers. You wrote: " + quoted)
     if files or images:
         out += " You attached %s. A real model can open %s." % (
             ", ".join(files) if files else "%d image%s" % (images, "s" if images > 1 else ""),

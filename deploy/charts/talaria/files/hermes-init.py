@@ -142,14 +142,7 @@ def talaria_config(pubkey_path):
     tz = env("TZ")
     if tz:
         cfg["timezone"] = tz
-    base_url, model = env("TALARIA_MODEL_BASE_URL"), env("TALARIA_MODEL")
-    if base_url and model:
-        m = {"provider": "custom", "base_url": base_url, "default": model,
-             "context_length": int(env("TALARIA_MODEL_CONTEXT", "131072"))}
-        key = env("TALARIA_MODEL_API_KEY")
-        if key:
-            m["api_key"] = key
-        cfg["model"] = m
+    # The model and provider are Hermes's own settings (hermes model, hermes setup); Talaria does not set them
     if env("TALARIA_ROLLING"):
         merge(cfg, ROLLING)
     return cfg
@@ -203,6 +196,7 @@ def main():
         # Your own Hermes settings (Helm value hermes.config), merged last
         with open(extra) as f:
             merge(config, safe_load(f) or {})
+    demo_provider(config)
     with open(path + ".tmp", "w") as f:
         safe_dump(config, f, sort_keys=False)
     os.chmod(path + ".tmp", 0o600)
@@ -210,6 +204,41 @@ def main():
     subprocess.run([HERMES, "plugins", "enable", "device"], check=False)
     setup_honcho()
     print("hermes-init: done")
+
+
+DEMO = "talaria-demo"
+
+
+def demo_provider(config):
+    """With TALARIA_DEMO_URL (the demo model is on), offer it as a Hermes provider named talaria-demo (in Hermes's
+    providers: section), so Talaria can be tried without a model provider. It never becomes the default model:
+    pick it with `hermes model`. Without it, take that provider out again. Other providers stay as they are."""
+    old = config.get("custom_providers")
+    if isinstance(old, list):
+        # An entry in the older custom_providers list, which Hermes moves into providers:
+        old = [p for p in old if not (isinstance(p, dict) and p.get("name") == DEMO)]
+        if old:
+            config["custom_providers"] = old
+        else:
+            config.pop("custom_providers", None)
+    providers = config.get("providers") if isinstance(config.get("providers"), dict) else {}
+    providers.pop(DEMO, None)
+    url = env("TALARIA_DEMO_URL")
+    if url and env("TALARIA_DEMO_PROBE"):
+        # Compose names the demo model always; it runs only with the demo profile
+        import urllib.request
+        try:
+            urllib.request.urlopen(url.rstrip("/") + "/models", timeout=5).read()
+        except OSError:
+            url = ""
+    if url:
+        print("hermes-init: the demo model is a Hermes provider, talaria-demo (pick it with: hermes model)")
+        providers[DEMO] = {"name": DEMO, "api": url, "api_key": "none", "default_model": DEMO,
+                           "models": {DEMO: {"context_length": 131072}}}
+    if providers:
+        config["providers"] = providers
+    else:
+        config.pop("providers", None)
 
 
 def setup_honcho():

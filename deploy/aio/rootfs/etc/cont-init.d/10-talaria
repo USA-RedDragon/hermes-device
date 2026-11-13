@@ -22,12 +22,9 @@ rm -rf /run/talaria/plugin-src
 /usr/local/bin/hermes-device plugin install --dest /run/talaria/plugin-src/device >/dev/null
 chmod -R a+rX /run/talaria
 
-# With the demo model on and no model set, use the demo model
+# With the demo model on, Hermes offers it as the provider talaria-demo (pick it with: hermes model)
 case "${TALARIA_DEMO:-}" in
-  1|true|TRUE|True|yes|YES|Yes)
-    if [ -z "${TALARIA_MODEL_BASE_URL:-}" ]; then
-      export TALARIA_MODEL_BASE_URL=http://127.0.0.1:8000/v1 TALARIA_MODEL=talaria-demo
-    fi ;;
+  1|true|TRUE|True|yes|YES|Yes) export TALARIA_DEMO_URL=http://127.0.0.1:8000/v1 ;;
 esac
 
 # The Hermes home, as the hermes user

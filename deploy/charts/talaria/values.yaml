@@ -39,18 +39,9 @@ auth:
 # -- Contact address that push services get with Web Push, such as mailto:you@example.com. Empty: publicUrl
 pushContact: ""
 
-model:
-  # -- Any OpenAI-compatible API, such as https://openrouter.ai/api/v1. Empty with demo.enabled: the demo model
-  baseUrl: ""
-  # -- Model name at that API
-  name: ""
-  # -- API key, or name a Secret with key api-key in existingSecret
-  apiKey: ""
-  existingSecret: ""
-  # -- Context window in tokens; Hermes needs at least 64000
-  contextLength: 131072
-
-# -- A stand-in model that needs no API key, to try Talaria. Turn it off once model is set
+# -- A stand-in model that needs no API key, to try Talaria. Hermes offers it as the provider talaria-demo; pick it
+# with: kubectl -n <namespace> exec -it deploy/<release>-hermes -c gateway -- hermes model. The model and provider are Hermes
+# settings (hermes model), not chart values
 demo:
   enabled: false
 

@@ -25,8 +25,14 @@ docker compose logs init
 ```
 
 Open the address it prints right away and make your account on the setup page (the first visitor becomes the
-admin). This starts with a demo model that needs no API key; set a real model in
-`.env` next ([Step 4](../docs/deploy/compose.md#step-4-use-a-real-model)).
+admin). Then pick a model and provider in Hermes:
+
+```bash
+docker compose exec -u hermes hermes hermes model
+```
+
+To look around without a provider, set `COMPOSE_PROFILES=demo` in `.env`, run `docker compose up -d --wait` and
+pick `talaria-demo` there ([Step 4](../docs/deploy/compose.md#step-4-pick-a-model-in-hermes)).
 
 All guides: https://usa-reddragon.github.io/talaria/
 

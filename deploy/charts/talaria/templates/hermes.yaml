@@ -102,15 +102,9 @@ spec:
             {{- if $rolling }}
             - {name: TALARIA_ROLLING, value: "1"}
             {{- end }}
-            - {name: TALARIA_MODEL_BASE_URL, value: {{ include "talaria.modelBaseUrl" . | quote }}}
-            - {name: TALARIA_MODEL, value: {{ include "talaria.modelName" . | quote }}}
-            - {name: TALARIA_MODEL_CONTEXT, value: {{ .Values.model.contextLength | quote }}}
-            {{- if or .Values.model.apiKey .Values.model.existingSecret }}
-            - name: TALARIA_MODEL_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.model.existingSecret | default (printf "%s-config" $full) }}
-                  key: {{ ternary "api-key" "model-api-key" (not (empty .Values.model.existingSecret)) }}
+            {{- if .Values.demo.enabled }}
+            # The demo model, offered as the Hermes provider talaria-demo
+            - {name: TALARIA_DEMO_URL, value: {{ printf "http://%s-demo-llm:8000/v1" $full | quote }}}
             {{- end }}
             {{- range $k, $v := .Values.hermes.env }}
             - {name: {{ $k }}, value: {{ $v | quote }}}

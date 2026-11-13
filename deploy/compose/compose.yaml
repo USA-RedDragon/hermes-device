@@ -20,11 +20,10 @@ x-hermes-env: &hermes-env
   # File tools may write in the Hermes home and in the sandbox's /work
   HERMES_WRITE_SAFE_ROOT: /opt/data:/work
   TZ: ${TZ:-}
-  # The demo model (profile demo) unless .env names another
-  TALARIA_MODEL_BASE_URL: ${TALARIA_MODEL_BASE_URL:-http://demo-llm:8000/v1}
-  TALARIA_MODEL: ${TALARIA_MODEL:-talaria-demo}
-  TALARIA_MODEL_API_KEY: ${TALARIA_MODEL_API_KEY:-}
-  TALARIA_MODEL_CONTEXT: ${TALARIA_MODEL_CONTEXT:-131072}
+  # The model and provider are Hermes settings: docker compose exec hermes hermes model
+  # With profile demo, the demo model is offered as the Hermes provider talaria-demo
+  TALARIA_DEMO_URL: http://demo-llm:8000/v1
+  TALARIA_DEMO_PROBE: "1"
   TALARIA_HONCHO_URL: ${TALARIA_HONCHO_URL:-}
 
 services:
@@ -69,6 +68,10 @@ services:
         condition: service_completed_successfully
       plugin:
         condition: service_completed_successfully
+      # Only with profile demo: then hermes-init offers it as a Hermes provider
+      demo-llm:
+        condition: service_healthy
+        required: false
     volumes:
       - ./files:/files:ro
       - hermes-data:/opt/data
@@ -216,7 +219,7 @@ services:
     image: docker.io/ollama/ollama:0.40.16@sha256:910d0d8107b538fb0894e63163eb195de0cc7aefcbc666dc62d3b18f71124592
     restart: unless-stopped
     environment:
-      OLLAMA_CONTEXT_LENGTH: ${TALARIA_MODEL_CONTEXT:-131072}
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-65536}
       OLLAMA_KEEP_ALIVE: 24h
     volumes:
       - ollama-data:/root/.ollama
@@ -266,17 +269,17 @@ services:
     environment: &honcho-env
       DB_CONNECTION_URI: postgresql+psycopg://honcho:honcho@honcho-db:5432/honcho
       AUTH_USE_AUTH: "false"
-      LLM_OPENAI_API_KEY: ${TALARIA_MODEL_API_KEY:-none}
-      LLM_OPENAI_BASE_URL: ${TALARIA_MODEL_BASE_URL:-http://demo-llm:8000/v1}
-      DERIVER_MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
-      SUMMARY_MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
-      DREAM_DEDUCTION_MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
-      DREAM_INDUCTION_MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
-      DIALECTIC_LEVELS__minimal__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
-      DIALECTIC_LEVELS__low__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
-      DIALECTIC_LEVELS__medium__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
-      DIALECTIC_LEVELS__high__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
-      DIALECTIC_LEVELS__max__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
+      LLM_OPENAI_API_KEY: ${TALARIA_HONCHO_LLM_API_KEY:-none}
+      LLM_OPENAI_BASE_URL: ${TALARIA_HONCHO_LLM_BASE_URL:-http://demo-llm:8000/v1}
+      DERIVER_MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-talaria-demo}
+      SUMMARY_MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-talaria-demo}
+      DREAM_DEDUCTION_MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-talaria-demo}
+      DREAM_INDUCTION_MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-talaria-demo}
+      DIALECTIC_LEVELS__minimal__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-talaria-demo}
+      DIALECTIC_LEVELS__low__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-talaria-demo}
+      DIALECTIC_LEVELS__medium__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-talaria-demo}
+      DIALECTIC_LEVELS__high__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-talaria-demo}
+      DIALECTIC_LEVELS__max__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-talaria-demo}
       EMBEDDING_MODEL_CONFIG__TRANSPORT: openai
       EMBEDDING_MODEL_CONFIG__MODEL: ${TALARIA_EMBEDDINGS_MODEL:-BAAI/bge-small-en-v1.5}
       EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL: ${TALARIA_EMBEDDINGS_BASE_URL:-http://honcho-embeddings:8080/v1}
