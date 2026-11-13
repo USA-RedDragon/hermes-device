@@ -113,7 +113,34 @@ act.event("subagent.thinking", { subagent_id: "sa-1", text: "Looking at the flux
 assert.ok(!body().querySelector("button.now2"));
 assert.ok(text().includes("Looking at the flux drift"));
 act.event("subagent.tool", { subagent_id: "sa-1", tool_name: "some_new_tool", tool_preview: "{...}" });
-assert.match(body().querySelector("button.now2").textContent, /^Using some_new_tool/);
+assert.match(body().querySelector("button.now2").textContent, /^Using some new tool/);
+// A batched call arrives as progress text with Hermes's emoji: a sentence with a
+// line icon, no emoji, and not the monospace text.
+const pict = /\p{Extended_Pictographic}|\uFE0F/u;
+act.event("subagent.progress", { subagent_id: "sa-1", text: "\u{1F500} [set 5] terminal, terminal, process_manage" });
+line = body().querySelector("button.now2");
+assert.ok(line, "a batch is a status line");
+assert.match(line.textContent, /^Running 5 tools: terminal, process_manage/);
+assert.ok(line.querySelector("svg.i-tool"));
+assert.ok(!body().querySelector(".now"), "no raw monospace line: " + text());
+// Hermes events with emoji everywhere: nothing rendered carries one, closed or open.
+const fixtures = [
+  ["subagent.tool", { tool_name: "\u{1F9E0}memory", tool_preview: "\u{1F4BE} save" }],
+  ["subagent.tool", { tool_name: "\u{1F5A5}\uFE0F brand_new_tool", tool_preview: "\u2705 {...}" }],
+  ["subagent.tool", { tool_name: "tool_call", tool_preview: "\u{1F500} [set 3] web_search, web_search, read_file" }],
+  ["subagent.progress", { text: "\u26A1 Working on it" }],
+  ["subagent.tool", { tool_name: "delegate_task", tool_preview: "\u{1F500} go" }],
+];
+for (const [kind, p] of fixtures) {
+  act.event(kind, Object.assign({ subagent_id: "sa-1" }, p));
+  assert.ok(!pict.test(text()), kind + " leaked an emoji: " + text());
+  const l = body().querySelector("button.now2");
+  if (l && l.getAttribute("aria-expanded") !== "true") l.onclick({ stopPropagation() {} });
+  assert.ok(!pict.test(text()), kind + " leaked an emoji when open: " + text());
+  const l2 = body().querySelector("button.now2");
+  if (l2 && l2.getAttribute("aria-expanded") === "true") l2.onclick({ stopPropagation() {} });
+}
+assert.match(body().querySelector("button.now2").textContent, /^Starting a subagent/);
 assert.ok(!text().includes("{...}"));
 
 // The header does not claim 0 tokens when none are counted yet.

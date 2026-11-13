@@ -22,7 +22,7 @@
   "want": {"icon": "stop", "title": "Stopped background command true", "status": "Exited 0", "state": "ok"}},
  {"name": "process wait that finished", "call": {"name": "process_manage", "args": {"action": "wait", "session_id": "p", "timeout": 60}, "res": {"status": "exited", "command": "sleep 5", "exit_code": 0}},
   "want": {"icon": "clock", "title": "Waited for background command sleep 5", "status": "Exited 0", "state": "ok"}},
- {"name": "process wait that timed out", "call": {"name": "process_manage", "args": {"action": "wait", "session_id": "p", "timeout": 38}, "res": {"status": "timeout", "command": "sleep 500"}},
+ {"name": "process wait that timed out", "call": {"name": "process_manage", "args": {"action": "wait", "session_id": "p", "timeout": 38}, "res": {"status": "timeout", "command": "sleep 500"}, "duration": 38},
   "want": {"icon": "clock", "title": "Waited for background command sleep 500", "status": "Still running after waiting 38 s", "state": "ok"}},
  {"name": "process wait running", "call": {"name": "process_manage", "args": {"action": "wait", "session_id": "p"}, "done": false},
   "want": {"icon": "clock", "title": "Waiting for background command p", "status": "", "state": "run"}},

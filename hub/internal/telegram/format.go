@@ -205,3 +205,31 @@ func pack(pieces []string, limit int) []string {
 	flush()
 	return chunks
 }
+
+// plain drops the emoji and variation selectors Hermes puts in its tool
+// names, progress and summaries. The text of messages never goes through it.
+func plain(s string) string {
+	if !strings.ContainsFunc(s, isEmoji) {
+		return s
+	}
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if isEmoji(r) {
+			return -1
+		}
+		return r
+	}, s))
+}
+
+func isEmoji(r rune) bool {
+	switch {
+	case r >= 0x1F000 && r <= 0x1FAFF, r >= 0xE0020 && r <= 0xE007F:
+		return true
+	case r == 0xFE0E, r == 0xFE0F, r == 0x200D, r == 0x20E3:
+		return true
+	case r == 0x2713 || r == 0x2717:
+		return false // the check and cross marks are text, not emoji
+	case r >= 0x2600 && r <= 0x27BF, r >= 0x2B00 && r <= 0x2BFF, r >= 0x2300 && r <= 0x23FF:
+		return true
+	}
+	return false
+}

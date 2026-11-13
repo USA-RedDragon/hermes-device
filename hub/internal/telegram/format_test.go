@@ -90,3 +90,17 @@ func TestLongProseLineIsHardSplit(t *testing.T) {
 		t.Fatalf("got %d ampersands", total)
 	}
 }
+
+func TestPlainDropsEmoji(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"\U0001F500 [set 5] terminal": "[set 5] terminal",
+		"\u26A1\uFE0F go":             "go",
+		"Done \u2713 fine":            "Done \u2713 fine",
+		"plain text":                  "plain text",
+	} {
+		if got := telegram.Plain(in); got != want {
+			t.Errorf("Plain(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

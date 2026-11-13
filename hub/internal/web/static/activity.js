@@ -173,10 +173,11 @@ window.HubActivity = (ctx) => {
         if (r.state === "queued") r.state = "run";
         break;
       case "subagent.tool": {
-        const line = ((p.tool_name || "tool") + "  " + (p.tool_preview || text)).trim();
+        const P = window.HubToolCard.plain;
+        const line = P((P(p.tool_name) || "tool") + "  " + (p.tool_preview || text));
         push(r, "t", line);
         r.now = line;
-        r.tool = { name: p.tool_name || "tool", preview: String(p.tool_preview || text || ""), at: Date.now() };
+        r.tool = { name: P(p.tool_name) || "tool", preview: P(p.tool_preview || text || ""), at: Date.now() };
         r.lastTool = p.tool_name || "";
         r.lastPreview = p.tool_preview || text;
         if (typeof p.tool_count !== "number") r.tools++;
@@ -184,7 +185,13 @@ window.HubActivity = (ctx) => {
         break;
       }
       case "subagent.progress":
-        if (text) { push(r, "k", text); r.now = text; r.tool = null; }
+        if (text) {
+          // A batched call arrives as plain progress text: shown as a sentence, like a tool.
+          const clean = window.HubToolCard.plain(text);
+          push(r, "k", clean);
+          r.now = clean;
+          r.tool = window.HubToolCard.batch(clean) ? { name: "tool_call", preview: clean, at: Date.now() } : null;
+        }
         break;
       case "subagent.complete":
         r.state = subState(p.status || "completed");

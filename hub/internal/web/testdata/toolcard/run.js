@@ -47,10 +47,36 @@ assert.strictEqual(wrapped("tool_call", "x"), null);
   assert.strictEqual(say("todo_list", ""), "checkcircle|Updating the to-do list");
   assert.strictEqual(say("tool_search", "gmail"), "search|Looking up a tool");
   assert.strictEqual(say("browser_navigate", "https://example.com/a"), "globe|Opening example.com");
-  assert.strictEqual(say("some_new_tool", "{...}"), "tool|Using some_new_tool");
+  assert.strictEqual(say("some_new_tool", "{...}"), "tool|Using some new tool");
+  // A batch is a sentence, with or without Hermes's emoji and a tool name.
+  assert.strictEqual(say("tool_call", "[set 5] terminal, terminal, process_manage"), "tool|Running 5 tools: terminal, process_manage");
+  assert.strictEqual(say("", "\u{1F500} [set 5] terminal, terminal, process_manage"), "tool|Running 5 tools: terminal, process_manage");
+  assert.strictEqual(say("tool_call", "\u{1F500} [set 2] read_file, read_file"), "tool|Running 2 tools: read_file");
+  // An unknown tool with an emoji is never printed raw.
+  assert.strictEqual(say("\u{1F9EA} brand_new_tool", "\u2705 {...}"), "tool|Using brand new tool");
+  assert.strictEqual(say("\u{1F9EA}", "x"), "tool|Working");
+  const pict = /\p{Extended_Pictographic}|\uFE0F/u;
+  for (const [n, p] of [["delegate_task", "\u{1F500} go"], ["terminal", "\u{1F4BB} ls"], ["web_search", "\u{1F50E} cats"], ["browser_navigate", "\u{1F310} https://a.com/"], ["x\u{1F680}y", "\u2699\uFE0F"]]) {
+    assert.ok(!pict.test(say(n, p)), say(n, p));
+  }
   assert.strictEqual(say("", ""), "tool|Working");
   // Whatever the tool, the raw preview is not the sentence.
   assert.ok(!say("some_new_tool", "{...}").includes("{...}"));
+}
+// A wait that did not finish says how long it really waited (the card's own
+// duration, not the timeout it asked for) and is not a success.
+{
+  const wait = (extra) => derive(Object.assign({ name: "process_manage", args: { action: "wait", session_id: "proc_1", timeout: 3600 }, res: { status: "running" }, done: true, failed: false }, extra));
+  const d = wait({ duration: 181 });
+  assert.strictEqual(d.status, "Still running after waiting 3 min");
+  assert.ok(d.idle, "an unfinished wait is not colored as success");
+  assert.strictEqual(wait({ duration: 12 }).status, "Still running after waiting 12 s");
+  assert.strictEqual(wait({ duration: 3720 }).status, "Still running after waiting 1 h 2 min");
+  assert.strictEqual(wait({}).status, "Still running");
+  assert.ok(!/1800|3600/.test(wait({ duration: 180 }).status));
+  const pict = /\p{Extended_Pictographic}|\uFE0F/u;
+  const e = derive({ name: "\u{1F500}delegate_task", args: { goal: "x" }, done: true, failed: false });
+  assert.ok(!pict.test(e.title + e.status), e.title);
 }
 // The vault's call is shown with its secrets hidden, and its output not at all.
 {

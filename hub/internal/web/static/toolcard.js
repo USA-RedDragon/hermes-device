@@ -158,7 +158,12 @@ window.HubToolCard = (() => {
         out.title = verb(c, "Waited for", "Waiting for") + " background command " + cmd;
         if (exited) out.status = exitText;
         else if (res.status === "interrupted") out.status = "Interrupted";
-        else out.status = "Still running" + (typeof a.timeout === "number" ? " after waiting " + a.timeout + " s" : "");
+        else {
+          // The timeout asked for is not how long it waited; the card's own
+          // duration is. A wait that has not finished is not a success.
+          out.status = "Still running" + (typeof c.duration === "number" && c.duration >= 1 ? " after waiting " + span(c.duration) : "");
+          out.idle = true;
+        }
         break;
       }
       case "poll":
@@ -564,6 +569,15 @@ window.HubToolCard = (() => {
     tool_search: toolLookup, tool_describe: toolLookup, tool_call: wrapper,
   };
 
+  // span writes a length of time: 45 s, 3 min, 1 h 5 min.
+  function span(s) {
+    s = Math.round(s);
+    if (s < 60) return s + " s";
+    if (s < 3600) return Math.round(s / 60) + " min";
+    const m = Math.round((s % 3600) / 60);
+    return Math.floor(s / 3600) + " h" + (m ? " " + m + " min" : "");
+  }
+
   function todo(c) {
     const a = isObj(c.args) ? c.args : {};
     const out = { icon: "checkcircle", blocks: [] };
@@ -588,9 +602,32 @@ window.HubToolCard = (() => {
     const code = exitCode(isObj(c.res) ? c.res : null);
     if (c.failed && !(name === "terminal" && code !== null && code !== 0)) d.status = failure(c);
     if (!c.done) d.status = d.waiting ? "Waiting for approval" : "";
+    d.title = plain(d.title);
+    d.status = plain(d.status);
     d.blocks = d.blocks.filter((b) => b.text);
     for (const b of d.blocks) if (b.text.length > outLen) b.text = b.text.slice(0, outLen) + "\n...";
     return d;
+  }
+
+  // plain drops the emoji and variation selectors that Hermes puts in its
+  // labels and progress text. Message text of the user and the assistant never
+  // goes through it.
+  const emojiRe = /[\p{Extended_Pictographic}\uFE0E\uFE0F\u200D\u20E3\u{E0020}-\u{E007F}]/gu;
+  function plain(s) {
+    return String(s === undefined || s === null ? "" : s).replace(emojiRe, "").replace(/ {2,}/g, " ").trim();
+  }
+
+  // batch reads the progress text of a batched call, "[set 5] terminal,
+  // terminal, process_manage", into its size and its distinct tool names.
+  function batch(text) {
+    const m = /^\[set\s+(\d+)\]\s*(.*)$/i.exec(plain(text));
+    if (!m) return null;
+    const names = [];
+    for (const n of m[2].split(",")) {
+      const t = n.trim().split(/\s+/)[0];
+      if (t && !names.includes(t)) names.push(t);
+    }
+    return { n: +m[1], names };
   }
 
   // statusLine turns what Hermes says a subagent is doing now (the tool name
@@ -612,7 +649,14 @@ window.HubToolCard = (() => {
   };
 
   function statusLine(name, preview, mem) {
+    const l = statusLine0(plain(name), plain(preview), mem);
+    return { icon: l.icon, text: plain(l.text) };
+  }
+
+  function statusLine0(name, preview, mem) {
     name = str(name).trim();
+    const b = batch(preview);
+    if (b && (!name || name === "tool_call" || name === "tool")) name = "tool_call";
     const p = squash(preview);
     const arg = (p.split(" ")[0] || "");
     const tail = (t) => (t ? " " + short(t) : "");
@@ -637,7 +681,9 @@ window.HubToolCard = (() => {
     if (name === "mcp_device_call") return { icon: "plug", text: "Calling " + (arg ? short(arg) : "a tool") + " on your computer" };
     if (name === "tool_call") {
       const m = /(\d+)\s+calls?/.exec(p);
-      return { icon: "tool", text: m && +m[1] !== 1 ? "Running " + m[1] + " tools" : "Running a tool" };
+      const n = b ? b.n : m ? +m[1] : 1;
+      const list = b && b.names.length ? ": " + b.names.join(", ") : "";
+      return { icon: "tool", text: n !== 1 ? "Running " + n + " tools" + list : "Running a tool" };
     }
     if (lineWords[name]) return { icon: lineWords[name][0], text: lineWords[name][1] };
     if (browserWords[name]) {
@@ -645,7 +691,12 @@ window.HubToolCard = (() => {
       return { icon: w[0], text: w[2] + tail(w[3]({ url: arg, ref: arg, key: arg })) };
     }
     if (name.startsWith("browser_")) return { icon: "globe", text: "Using the browser" };
-    return { icon: "tool", text: "Using " + name };
+    return { icon: "tool", text: "Using " + toolLabel(name) };
+  }
+
+  // toolLabel is a tool's name in plain words: get_thing is "get thing".
+  function toolLabel(name) {
+    return plain(name).replace(/[_-]+/g, " ").trim() || "a tool";
   }
 
   function parse(r) {
@@ -746,7 +797,7 @@ window.HubToolCard = (() => {
         }
         return;
       }
-      const lead = d.status ? el("span", "notice-" + (d.waiting ? "wait" : d.state), d.status) : null;
+      const lead = d.status ? el("span", "notice-" + (d.waiting ? "wait" : d.idle ? "still" : d.state), d.status) : null;
       if (T) {
         T.finished(meta, c.endedAt, c.duration, lead || undefined);
       } else if (lead) {
@@ -770,5 +821,5 @@ window.HubToolCard = (() => {
     return view;
   }
 
-  return { derive, memory, create, wrapped, take, calls, split, parse, outcome, statusLine };
+  return { derive, memory, create, wrapped, take, calls, split, parse, outcome, statusLine, plain, batch };
 })();

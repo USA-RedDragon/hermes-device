@@ -14,5 +14,8 @@ func WithEditGaps(private, group time.Duration) func(*Options) {
 	return func(o *Options) { o.editGaps = [2]time.Duration{private, group} }
 }
 
+// Plain drops the emoji Hermes puts in its labels and progress.
+func Plain(s string) string { return plain(s) }
+
 // PromptChunks is how many messages a saved prompt's text takes.
 func PromptChunks(text string) int { return len(promptChunks(text)) }

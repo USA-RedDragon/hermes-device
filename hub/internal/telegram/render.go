@@ -837,7 +837,7 @@ func (r *renderer) outcome(ctx context.Context, msgID int64, head, body, note st
 
 func toolArgs(p toolPayload) string {
 	for _, s := range []string{p.Context, p.Preview, p.ArgsText} {
-		if s = strings.TrimSpace(s); s != "" {
+		if s = plain(strings.TrimSpace(s)); s != "" {
 			return s
 		}
 	}
@@ -848,7 +848,7 @@ func toolArgs(p toolPayload) string {
 }
 
 func toolHead(p toolPayload) string {
-	name := p.Name
+	name := plain(p.Name)
 	if name == "" {
 		name = "tool"
 	}
@@ -920,7 +920,7 @@ func (r *renderer) toolProgress(ctx context.Context, ev hub.Event) {
 	if _, ok := r.turn.tools[p.ToolID]; !ok {
 		return
 	}
-	line := strings.TrimSpace(p.Message)
+	line := plain(strings.TrimSpace(p.Message))
 	if p.Percent != nil {
 		line = strings.TrimSpace(fmt.Sprintf("%s %d%%", line, *p.Percent))
 	}
@@ -948,7 +948,7 @@ func (r *renderer) toolComplete(ctx context.Context, ev hub.Event) {
 	if p.DurationS != nil {
 		step += fmt.Sprintf(" <i>(%.1fs)</i>", *p.DurationS)
 	}
-	if s := strings.TrimSpace(p.Summary); s != "" {
+	if s := plain(strings.TrimSpace(p.Summary)); s != "" {
 		step += " " + escapeHTML(truncate(strings.Join(strings.Fields(s), " "), statusLen))
 	}
 	t.steps = append(t.steps, step)

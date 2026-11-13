@@ -185,6 +185,7 @@ button.primary.ib:hover { filter: brightness(1.08); }
 .notice-meta { grid-column: 2 / 4; margin-top: .15rem; color: var(--muted); font-size: .85rem; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .notice-ok { color: var(--ok); }
 .notice-bad { color: var(--bad); }
+.notice-still { color: var(--muted); }
 .notice-wait { color: var(--warn, #b7791f); font-weight: 600; }
 .notice-body-wrap { position: relative; margin: 0 .75rem; padding: .6rem 0 .4rem; border-top: 1px solid var(--line); min-width: 0; }
 .notice-sec { margin-bottom: .6rem; font-size: .92rem; overflow-wrap: anywhere; }
