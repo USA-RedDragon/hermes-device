@@ -1,4 +1,4 @@
 name: device
-version: 0.26.3
+version: 0.26.4
 description: "Run a session's shell and file operations on the user's own device, which dials in through the Talaria hub (/device <device> <dir>)."
 author: "Jacob McSwain"
