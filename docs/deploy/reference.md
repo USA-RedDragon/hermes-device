@@ -114,7 +114,6 @@ version: 0.1.0
 appVersion: "0.26.54"
 home: https://github.com/USA-RedDragon/talaria
 sources:
-  - https://github.com/USA-RedDragon/talaria-hub
   - https://github.com/USA-RedDragon/talaria
 kubeVersion: ">=1.29.0-0"
 ```
