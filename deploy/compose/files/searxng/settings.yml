@@ -1,0 +1,40 @@
+# SearXNG settings for Talaria: web search for the agent, over SearXNG's JSON API, for one local client.
+# The same file is in compose/files/searxng/settings.yml (hack/check-sync.sh keeps the copies equal).
+# Everything not set here keeps SearXNG's defaults (use_default_settings).
+use_default_settings:
+  engines:
+    # Search over Tor only; they fail to load without a Tor proxy
+    remove:
+      - ahmia
+      - torch
+
+general:
+  instance_name: Talaria search
+  enable_metrics: false
+  # Wikipedia, Wikidata and OpenStreetMap only answer clients that name a contact (their user-agent policy)
+  contact_url: https://github.com/USA-RedDragon/talaria
+
+server:
+  # Never used: SEARXNG_SECRET replaces it, a key the install makes on the first start and keeps with its other
+  # secrets. The install does not start SearXNG without that key.
+  secret_key: "ultrasecretkey"
+  # Only the agent calls it, on the internal network: no bot limiter (it would need Valkey and block bursts of
+  # searches from one address)
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: GET
+
+search:
+  # json is what the agent reads; html stays for a look in a browser while debugging
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ""
+
+valkey:
+  url: false
+
+ui:
+  static_use_hash: true

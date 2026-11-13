@@ -22,8 +22,9 @@ ACP_URL=${TALARIA_ACP_URL-http://hermes:9130}
 HUB_UID=${TALARIA_HUB_UID:-65534}
 HERMES_UID=${TALARIA_HERMES_UID:-10000}
 SANDBOX_UID=${TALARIA_SANDBOX_UID:-568}
+SEARXNG_UID=${TALARIA_SEARXNG_UID:-977}
 umask 077
-mkdir -p "$S/generated" "$S/hub" "$S/hermes" "$S/sandbox"
+mkdir -p "$S/generated" "$S/hub" "$S/hermes" "$S/sandbox" "$S/searxng"
 
 rand() { head -c "$1" /dev/urandom | base64 | tr -d '\n=' | tr '+/' '-_'; }
 
@@ -47,6 +48,8 @@ gen hermes-session-secret rand 48
 # Token of the sandbox, a service device of the hub
 token() { printf 'hdt_%s' "$(rand 33)"; }
 gen sandbox-token token
+# Key that SearXNG (the agent's web search) signs its cookies with
+gen searxng-secret rand 48
 
 g() { cat "$S/generated/$1"; }
 
@@ -115,6 +118,9 @@ printf '%s' "$USER_NAME" > "$S/hermes/user"
 # --- sandbox ---
 cp "$S/generated/sandbox-token" "$S/sandbox/token"
 
+# --- searxng ---
+cp "$S/generated/searxng-secret" "$S/searxng/secret"
+
 # Each service reads only its own part
 mkdir -p "$HUB_DATA" "$WORK"
 chown -R "$HUB_UID:$HUB_UID" "$S/hub" "$HUB_DATA"
@@ -122,6 +128,7 @@ chown -R "$HUB_UID:$HUB_UID" "$S/hub" "$HUB_DATA"
 if [ -d "${TALARIA_CADDY_DATA:-/caddy-data}" ]; then chown -R "$HUB_UID:$HUB_UID" "${TALARIA_CADDY_DATA:-/caddy-data}"; fi
 chown -R "$HERMES_UID:$HERMES_UID" "$S/hermes"
 chown -R "$SANDBOX_UID:$SANDBOX_UID" "$S/sandbox"
+chown -R "$SEARXNG_UID:$SEARXNG_UID" "$S/searxng"
 chown "$SANDBOX_UID:$SANDBOX_UID" "$WORK"
 # The Hermes home, so its init step can run before the Hermes image's own start-up script
 if [ -n "${TALARIA_HERMES_DATA:-/hermes-data}" ] && [ -d "${TALARIA_HERMES_DATA:-/hermes-data}" ]; then
@@ -129,7 +136,7 @@ if [ -n "${TALARIA_HERMES_DATA:-/hermes-data}" ] && [ -d "${TALARIA_HERMES_DATA:
   [ "$(stat -c %u "$H")" = "$HERMES_UID" ] || chown -R "$HERMES_UID:$HERMES_UID" "$H"
 fi
 chmod 711 "$S"
-chmod 700 "$S/generated" "$S/hub" "$S/hermes" "$S/sandbox"
+chmod 700 "$S/generated" "$S/hub" "$S/hermes" "$S/sandbox" "$S/searxng"
 chmod 400 "$S/sandbox/token"
 
 cat <<EOF

@@ -5,7 +5,8 @@
 #   docker compose exec -u hermes hermes hermes model    # or pick a model here (talaria-demo with profile demo)
 #
 # Settings are in .env (copy .env.example). Every secret is made by the init service on the first start and
-# kept in the "secrets" volume. Optional parts are profiles: demo, ollama, honcho, honcho-embeddings.
+# kept in the "secrets" volume. Optional parts are profiles: demo, ollama, honcho, honcho-embeddings. Web search
+# (SearXNG) is on; TALARIA_SEARXNG=0 in .env turns it off.
 name: talaria
 
 x-images:
@@ -14,6 +15,8 @@ x-images:
   hermes: &hermes-image ${TALARIA_HERMES_IMAGE:-ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p33@sha256:29e36b1cd8e846dc60b6697b599c7e010b64972e2a5f4b9334642f4535defe9f}
   device: &device-image ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
   sandbox: &sandbox-image ghcr.io/usa-reddragon/talaria-sandbox:v0.26.0@sha256:95c0ad9f33ab6bb5f19064c4c9cca23b05b5b635b6fb10999d1895d843b81090
+  # SearXNG, the agent's web search (https://docs.searxng.org)
+  searxng: &searxng-image docker.io/searxng/searxng:2026.11.13-8a53a6aa5@sha256:82b222dd1854c43241874874fbc985006556230804dc819ef2a639eeb574d0e2
   caddy: &caddy-image docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 
 x-hermes-env: &hermes-env
@@ -64,6 +67,9 @@ services:
     environment:
       <<: *hermes-env
       HOME: /opt/data
+      # Web search through the searxng service, unless you set another way (https://usa-reddragon.github.io/talaria/deploy/reference.html#web-search)
+      TALARIA_SEARXNG: ${TALARIA_SEARXNG:-1}
+      TALARIA_SEARXNG_URL: http://searxng:8080
     depends_on:
       init:
         condition: service_completed_successfully
@@ -242,6 +248,39 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+
+  # The agent's web search: SearXNG, reachable only inside this compose network (no published port).
+  # TALARIA_SEARXNG=0 in .env turns it off
+  searxng:
+    image: *searxng-image
+    restart: unless-stopped
+    user: "977:977"
+    # The key it signs its cookies with is made by init on the first start
+    entrypoint: ["/bin/sh", "-c", "SEARXNG_SECRET=$$(cat /secrets/secret) && [ -n \"$$SEARXNG_SECRET\" ] && export SEARXNG_SECRET && exec /usr/local/searxng/entrypoint.sh"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    deploy:
+      replicas: ${TALARIA_SEARXNG:-1}
+    volumes:
+      - ./files/searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - type: volume
+        source: secrets
+        target: /secrets
+        read_only: true
+        volume:
+          subpath: searxng
+    read_only: true
+    tmpfs:
+      - /etc/searxng:uid=977,gid=977
+      - /var/cache/searxng:uid=977,gid=977
+      - /tmp
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 1s
 
   # --- profile demo: a stand-in model, so you can try Talaria with no API key ---
   demo-llm:
