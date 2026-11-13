@@ -21,7 +21,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	info, err := b.plugin.Info(ctx)
 	if err != nil {
 		s.log.Warn("device plugin info", "backend", d.BackendID, "error", err.Error())
-		apiError(w, http.StatusBadGateway, codeBackendUnavailable, "the hub could not reach the device plugin of this device's Hermes")
+		apiError(w, http.StatusBadGateway, codeBackendUnavailable, "the hub could not reach the Talaria plugin of this device's agent server")
 		return
 	}
 	b.setPlaceholder(info.Placeholder, s.opts.Now())

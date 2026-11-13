@@ -83,7 +83,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		slices.Sort(ids)
 		w.Header().Set(UnreachableHeader, strings.Join(ids, ","))
 		if len(ss) == 0 {
-			errorJSON(w, http.StatusServiceUnavailable, "Cannot reach Hermes ("+unreachableWords(ue)+"). Retrying")
+			errorJSON(w, http.StatusServiceUnavailable, "Cannot reach the agent ("+unreachableWords(ue)+"). Retrying")
 			return
 		}
 	}

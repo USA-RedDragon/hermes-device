@@ -152,7 +152,7 @@ func AttachmentReason(err error) string {
 		msg = after
 	}
 	if msg == "" {
-		return "Hermes did not take the attachments"
+		return "The agent did not take the attachments"
 	}
 	return msg
 }

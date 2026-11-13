@@ -267,15 +267,15 @@ var gatewayRules = map[string]string{
 
 // Reasons the hub refuses methods the TUI or CLI send.
 const (
-	whyPodExec    = "it runs programs in the Hermes pod, not on the device"
-	whyPodFiles   = "it reads or writes files of the Hermes pod, not of the device"
-	whyProfile    = "it changes settings or data of the whole Hermes profile"
-	whyAccount    = "it acts on credentials or the account of the Hermes profile"
-	whyHost       = "it uses the Hermes pod's own audio or display"
+	whyPodExec    = "it runs programs on the server, not on the device"
+	whyPodFiles   = "it reads or writes files of the server, not of the device"
+	whyProfile    = "it changes settings or data of the whole agent"
+	whyAccount    = "it acts on credentials or the account of the agent"
+	whyHost       = "it uses the server's own audio or display"
 	whyLegacy     = "the gateway serves it only to legacy clients and refuses it on the hub's connection"
 	whyOtherSess  = "it acts on or reads many sessions at once"
 	whyBackground = "a background agent has no lineage to its session, so it would run on the pod"
-	whyProfiles   = "it reads or changes other Hermes profiles"
+	whyProfiles   = "it reads or changes other agent profiles"
 	whyNotChat    = "it is not part of chatting"
 )
 
@@ -310,7 +310,7 @@ var deniedWhy = map[string]string{
 }
 
 // whyUnknown is the reason for a method in neither table.
-const whyUnknown = "the hub allows only the methods the Hermes TUI and CLI need for chatting"
+const whyUnknown = "the hub allows only the methods a terminal chat needs"
 
 // mutateOps are the session.mutate operations a device may run. The
 // others are refused: editor_mcp spawns editor MCP programs on the pod,
@@ -566,8 +566,8 @@ var refusedParams = map[string]map[string]string{
 		"latest":  "resume a session by its id: the hub checks the id before the gateway attaches it",
 		"api_key": "a launch key is not part of a device session",
 	},
-	methodConfigGet:  {keyCWD: "it runs git in a directory of the Hermes pod"},
-	methodFileAttach: {"staged_upload": "it copies a browser upload out of the Hermes pod"},
+	methodConfigGet:  {keyCWD: "it runs git in a directory of the server"},
+	methodFileAttach: {"staged_upload": "it copies a browser upload out of the server"},
 }
 
 // scopedListParams are the session.list params the gateway leg refuses,
@@ -622,7 +622,7 @@ func paramRefusal(method string, params map[string]json.RawMessage) string {
 		}
 	}
 	if method == methodConfigGet && rawString(params[keyKey]) == "project" {
-		return "key project runs git in a directory of the Hermes pod"
+		return "key project runs git in a directory of the server"
 	}
 	if method == methodResume {
 		if sid, ok := rawStringOK(params[keySessionID]); !ok || sid == "" {
@@ -686,7 +686,7 @@ const capImageRenderConfined = "image-render-confined-v1"
 
 // whyImageRender is why image.render is refused by a Hermes that does not
 // confine it.
-const whyImageRender = "this Hermes does not confine it to images it stored, so it would read any file of the Hermes pod"
+const whyImageRender = "this agent does not confine it to images it stored, so it would read any file of the server"
 
 // sizeBounds are the bounds the hub clamps the size params of the TUI's
 // render methods to: Hermes renders whatever size it is asked for.

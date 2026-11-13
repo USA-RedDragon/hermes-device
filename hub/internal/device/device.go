@@ -323,7 +323,7 @@ func (s *Server) authed(h http.HandlerFunc) http.Handler {
 			if errors.Is(err, hub.ErrForbidden) || errors.Is(err, hub.ErrUnknownBackend) {
 				s.log.Warn("device refused: its backend is not allowed for its user", "device", d.ID, "user", d.User,
 					"backend", d.BackendID)
-				apiError(w, http.StatusUnauthorized, codeUnauthorized, "this device's Hermes is no longer available to its user")
+				apiError(w, http.StatusUnauthorized, codeUnauthorized, "this device's agent server is no longer available to its user")
 				return
 			}
 			s.log.Error("check device backend", "device", d.ID, "error", err.Error())

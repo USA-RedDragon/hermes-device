@@ -30,7 +30,7 @@ var (
 	ErrSteerRejected = errors.New("the subagent no longer takes messages")
 	// ErrNoToolBackground is a backend that cannot move a running command
 	// to the background.
-	ErrNoToolBackground = errors.New("this Hermes cannot move a running command to the background; update Hermes")
+	ErrNoToolBackground = errors.New("this agent server cannot move a running command to the background; upgrade Talaria on the server")
 	// ErrNoRunningTool is a turn with no running tool to move.
 	ErrNoRunningTool = errors.New("no command of this chat is running")
 	// ErrUsageUnavailable is token use the backend's records could not

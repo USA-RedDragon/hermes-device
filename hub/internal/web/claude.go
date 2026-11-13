@@ -93,7 +93,7 @@ func (s *Server) claudeFail(w http.ResponseWriter, err error) {
 		s.fail(w, err)
 	default:
 		s.log.Warn("Claude request failed", "error", err.Error())
-		errorJSON(w, http.StatusBadGateway, "Could not reach the Claude accounts plugin on Hermes")
+		errorJSON(w, http.StatusBadGateway, "Could not reach the Claude accounts plugin on the agent server")
 	}
 }
 

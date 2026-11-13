@@ -162,7 +162,7 @@ func computerError(w http.ResponseWriter, err error) bool {
 	reason := func() string {
 		_, msg, _ := strings.Cut(err.Error(), ": ")
 		if msg == "" {
-			return "Hermes did not accept that"
+			return "The agent did not accept that"
 		}
 		return strings.ToUpper(msg[:1]) + msg[1:]
 	}
@@ -176,7 +176,7 @@ func computerError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, hub.ErrCannotMove):
 		errorJSON(w, http.StatusConflict, reason())
 	case errors.Is(err, hub.ErrOtherBackend):
-		errorJSON(w, http.StatusBadRequest, "That computer works with another Hermes. Pick a computer of this chat's Hermes")
+		errorJSON(w, http.StatusBadRequest, "That computer works with another agent server. Pick a computer of this chat's agent server")
 	case errors.Is(err, hub.ErrNotOnComputer):
 		errorJSON(w, http.StatusConflict, "This chat is not on a computer")
 	case errors.Is(err, hub.ErrInheritedPlace):

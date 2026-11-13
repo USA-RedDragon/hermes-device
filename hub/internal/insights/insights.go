@@ -101,17 +101,17 @@ func pluginReason(err error) string {
 	var pe *device.PluginError
 	switch {
 	case errors.As(err, &pe) && pe.Code == "busy":
-		return "Hermes is busy with other searches. Try again in a moment"
+		return "The agent is busy with other searches. Try again in a moment"
 	case errors.As(err, &pe) && pe.Code == "store_unavailable":
-		return "Hermes could not open its chat history"
+		return "The agent could not open its chat history"
 	case errors.As(err, &pe) && (pe.Status == http.StatusNotFound || pe.Status == http.StatusMethodNotAllowed):
-		return "The Talaria device plugin is too old for this. Update talaria on the Hermes server"
+		return "The server runs an older Talaria that cannot do this. Upgrade Talaria on the server: https://usa-reddragon.github.io/talaria/deploy/upgrades.html"
 	case errors.As(err, &pe) && pe.Message != "":
 		return pe.Message
 	case errors.Is(err, context.DeadlineExceeded):
-		return "Hermes took too long to answer"
+		return "The agent took too long to answer"
 	}
-	return "Could not reach Hermes"
+	return "Could not reach the agent"
 }
 
 // Search searches the messages of user's chats on each backend they may
@@ -246,7 +246,7 @@ func (s *Service) Usage(ctx context.Context, user, backendID string, days int) (
 func (s *Service) tokens(ctx context.Context, backendID string, days int, out *hub.UsageReport) {
 	p := s.plugins[backendID]
 	if p == nil {
-		out.TokensError = "This Hermes has no usage records the hub can read"
+		out.TokensError = "This agent server has no usage records the hub can read"
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, s.opts.Timeout)

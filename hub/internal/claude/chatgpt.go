@@ -31,8 +31,8 @@ const (
 
 // Answers when Hermes has no usage to show.
 const (
-	chatGPTNotRead = "Hermes has not read it yet. Try again in a minute."
-	chatGPTPooled  = "This Hermes has more than one ChatGPT login, and the hub shows usage for one login only."
+	chatGPTNotRead = "The agent has not read it yet. Try again in a minute."
+	chatGPTPooled  = "This agent server has more than one ChatGPT login, and the hub shows usage for one login only."
 )
 
 // ProviderWindow is one usage window of a model options provider row.

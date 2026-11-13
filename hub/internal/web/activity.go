@@ -33,7 +33,7 @@ func (s *Server) activityFail(w http.ResponseWriter, err error) {
 	case errors.Is(err, hub.ErrSteerRejected):
 		errorJSON(w, http.StatusConflict, "The subagent no longer takes messages: it is finishing or has ended")
 	case errors.Is(err, hub.ErrNoToolBackground):
-		errorJSON(w, http.StatusNotImplemented, "This Hermes cannot move a running command to the background yet")
+		errorJSON(w, http.StatusNotImplemented, "This agent server cannot move a running command to the background yet. Upgrade Talaria on the server")
 	case errors.Is(err, hub.ErrNoRunningTool):
 		errorJSON(w, http.StatusConflict, "The command is no longer running")
 	case errors.Is(err, hub.ErrUsageUnavailable):
@@ -244,7 +244,7 @@ func (s *Server) backgroundHere(w http.ResponseWriter, r *http.Request) bool {
 	case "", hub.PlaceSandbox, hub.PlaceServer:
 		return true
 	case hub.PlaceComputer:
-		errorJSON(w, http.StatusConflict, "/bg does not work in a chat on a computer: Hermes would run it in the sandbox or on the Hermes server, not on "+
+		errorJSON(w, http.StatusConflict, "/bg does not work in a chat on a computer: the agent would run it in the sandbox or on the server, not on "+
 			placeName(p))
 	default:
 		errorJSON(w, http.StatusConflict, "/bg does not work in this chat: it runs no commands until you move it to a computer")

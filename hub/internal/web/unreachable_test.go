@@ -31,7 +31,7 @@ func TestSessionsWhenHermesIsUnreachable(t *testing.T) {
 	c2 := client(t)
 	login(t, fresh, c2)
 	resp, body = get(t, c2, fresh.url+"/api/sessions")
-	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "Cannot reach Hermes") || resp.Header.Get(web.UnreachableHeader) != "pc" {
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "Cannot reach the agent") || resp.Header.Get(web.UnreachableHeader) != "pc" {
 		t.Fatalf("sessions on a fresh hub with Hermes down = %d %s; want 503", resp.StatusCode, body)
 	}
 }

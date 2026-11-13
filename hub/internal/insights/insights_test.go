@@ -171,7 +171,7 @@ func TestUsage(t *testing.T) {
 		t.Fatalf("gpu = %+v", u.GPU)
 	}
 	u, err = s.Usage(ctx, alice, "home", 7)
-	if err != nil || u.Backlog == nil || u.Backlog.Pending != 2 || !strings.Contains(u.TokensError, "too old") {
+	if err != nil || u.Backlog == nil || u.Backlog.Pending != 2 || !strings.Contains(u.TokensError, "older Talaria") {
 		t.Fatalf("home usage = %+v, %v", u, err)
 	}
 	if _, err := s.Usage(ctx, alice, "bobs", 7); !errors.Is(err, hub.ErrForbidden) {

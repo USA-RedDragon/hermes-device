@@ -755,7 +755,7 @@ func TestGatewayLegDenyList(t *testing.T) {
 		if got := e.called(methodConfigSet); len(got) != 0 {
 			t.Fatalf("denied calls reached the gateway: %v", got)
 		}
-		for method, why := range map[string]string{"session.foo": "the hub allows only the methods", methodShell: "runs programs in the Hermes pod",
+		for method, why := range map[string]string{"session.foo": "the hub allows only the methods", methodShell: "runs programs on the server",
 			methodTitle: "refuses it on the hub's connection"} {
 			m := g.request("why-"+method, method, map[string]any{})
 			rpcErr, _ := m["error"].(map[string]any)

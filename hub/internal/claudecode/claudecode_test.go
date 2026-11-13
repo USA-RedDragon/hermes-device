@@ -224,7 +224,7 @@ func TestUsageDaysAcrossDST(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := find(u, desktop)
-	if d == nil || find(u, "Hermes") == nil || len(u.Groups) != 2 {
+	if d == nil || find(u, "Server") == nil || len(u.Groups) != 2 {
 		t.Fatalf("groups %+v", u.Groups)
 	}
 	// Nov 1 2026 ends daylight saving time in Chicago: 00:00 and 23:00

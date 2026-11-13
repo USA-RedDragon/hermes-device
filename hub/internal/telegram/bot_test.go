@@ -412,9 +412,9 @@ func TestHeldPromptIsAnnounced(t *testing.T) {
 	h.hub.hold = true
 	h.hub.mu.Unlock()
 	sid := h.startTurn(t)
-	h.tg.wait(mSend, "Hermes is restarting. Your message will send when it is back.")
+	h.tg.wait(mSend, "The agent is restarting. Your message will send when it is back.")
 	h.hub.emit(t, sid, hub.KindInputNotSent, hub.HeldInput{ID: "p1", Text: "hello", Reason: hub.NotSentTimeout,
-		Message: "Hermes did not come back in time."})
+		Message: "The agent did not come back in time."})
 	c := h.tg.wait(mSend, "Your message was not sent")
 	if !strings.Contains(c.text(), "did not come back in time") || !strings.Contains(c.text(), "hello") {
 		t.Fatalf("not sent message = %q", c.text())

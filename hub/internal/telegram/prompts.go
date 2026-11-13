@@ -644,7 +644,7 @@ func (b *Bot) submitAnswer(ctx context.Context, callbackID, user string, t promp
 		b.reply(ctx, callbackID, t.to, msgNotPending)
 		return false
 	case errors.Is(err, hub.ErrBadValue):
-		b.reply(ctx, callbackID, t.to, "Hermes did not take that answer.")
+		b.reply(ctx, callbackID, t.to, "The agent did not take that answer.")
 		return false
 	case err != nil:
 		b.logger.Error("Failed to answer a prompt", "user", user, "error", err)
@@ -683,7 +683,7 @@ func (b *Bot) reportAnswerErr(ctx context.Context, to dest, user string, t promp
 		b.logger.Warn("Prompt answer forbidden", "user", user, "backend", t.backendID)
 		b.sendText(ctx, to, msgNotYours)
 	case errors.Is(err, hub.ErrBadValue):
-		b.sendText(ctx, to, "Hermes did not take that answer.")
+		b.sendText(ctx, to, "The agent did not take that answer.")
 	default:
 		b.logger.Error("Failed to answer a prompt", "user", user, "error", err)
 		b.sendText(ctx, to, errGeneric)

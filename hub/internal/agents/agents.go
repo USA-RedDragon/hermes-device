@@ -420,7 +420,7 @@ func (r *Router) peers(ctx context.Context, b config.Backend, c device.AgentCall
 	return map[string]any{
 		"you": you, "chats": chats, "subagents": subs,
 		"note": "Send with agent_send, to a session id, a name, an exact title, a subagent id or parent. " +
-			"Chats are the user's other chats on this Hermes; it does not matter which computer they run on.",
+			"Chats are the user's other chats on this server; it does not matter which computer they run on.",
 	}, nil
 }
 
@@ -469,7 +469,7 @@ func where(p hub.Place) string {
 		}
 		return "sandbox" + off
 	case hub.PlaceServer:
-		return "Hermes server"
+		return "server"
 	case hub.PlaceNone:
 		return "no computer: it runs no commands"
 	}

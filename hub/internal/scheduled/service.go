@@ -160,7 +160,7 @@ func hermesErr(err error) error {
 	case http.StatusBadRequest, http.StatusUnprocessableEntity, http.StatusConflict:
 		msg := strings.TrimSpace(he.Detail)
 		if msg == "" {
-			msg = "Hermes did not accept that"
+			msg = "The agent did not accept that"
 		}
 		return fmt.Errorf("%w: %s", hub.ErrBadValue, notify.Short(msg))
 	}
@@ -355,7 +355,7 @@ func (s *Service) hermesZone(ctx context.Context, b *backend) *time.Location {
 // runsIn says where a job's runs work: the sandbox or the Hermes server,
 // and the Firefox of the computer talaria gave the job.
 func (s *Service) runsIn(ctx context.Context, user string, b *backend, id string, ch choices) string {
-	where := "Hermes server"
+	where := "Server"
 	if b.sandbox {
 		where = "Sandbox"
 	}
@@ -401,7 +401,7 @@ func results(j rawJob) (string, string) {
 	case "origin":
 		return hub.ResultsOrigin, resultsText(hub.ResultsOrigin)
 	default:
-		return "", "Hermes sends them to " + d
+		return "", "The agent sends them to " + d
 	}
 }
 
@@ -547,7 +547,7 @@ func (s *Service) JobOptions(ctx context.Context, user, backendID string) (hub.J
 	if err != nil {
 		return hub.JobOptions{}, err
 	}
-	out := hub.JobOptions{DefaultModel: s.defaultModel(ctx, b), Providers: []hub.ModelProvider{}, RunsIn: "Hermes server"}
+	out := hub.JobOptions{DefaultModel: s.defaultModel(ctx, b), Providers: []hub.ModelProvider{}, RunsIn: "Server"}
 	if b.sandbox {
 		out.RunsIn = "Sandbox"
 	}

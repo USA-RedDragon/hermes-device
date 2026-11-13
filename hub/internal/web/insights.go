@@ -66,7 +66,7 @@ func (s *Server) filesFail(w http.ResponseWriter, err error) {
 	case errors.Is(err, hub.ErrNoFolder):
 		errorJSON(w, http.StatusNotFound, "This chat does not run on one of your computers or in the sandbox, so it has no folder to show")
 	case errors.Is(err, hub.ErrFilesTooOld):
-		errorJSON(w, http.StatusNotFound, "The Talaria device plugin is too old for this. Update talaria on the Hermes server")
+		errorJSON(w, http.StatusNotFound, "The server runs an older Talaria that cannot do this. Upgrade Talaria on the server: https://usa-reddragon.github.io/talaria/deploy/upgrades.html")
 	case errors.Is(err, hub.ErrFileNotFound):
 		errorJSON(w, http.StatusNotFound, "Not found. It may have been moved or deleted")
 	case errors.Is(err, hub.ErrFileRefused):

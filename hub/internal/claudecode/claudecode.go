@@ -387,7 +387,7 @@ func (s *Service) visible(ctx context.Context, user string) ([]string, map[strin
 			}
 			names[src.ID] = d.Name
 		case src.Kind == hub.ClaudeCodeHermes && slices.Contains(hermes, src.BackendID):
-			names[src.ID] = "Hermes"
+			names[src.ID] = "Server"
 			herm = append(herm, src)
 		default:
 			continue
@@ -396,7 +396,7 @@ func (s *Service) visible(ctx context.Context, user string) ([]string, map[strin
 	}
 	if len(herm) > 1 {
 		for _, src := range herm {
-			names[src.ID] = "Hermes (" + backendName[src.BackendID] + ")"
+			names[src.ID] = "Server (" + backendName[src.BackendID] + ")"
 		}
 	}
 	return ids, names, nil

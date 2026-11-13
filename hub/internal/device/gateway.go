@@ -76,7 +76,7 @@ func (s *Server) handleGateway(w http.ResponseWriter, r *http.Request) {
 	up, err := b.dialer.DialRaw(ctx)
 	if err != nil {
 		s.log.Warn("dial gateway leg", "device", d.ID, "backend", d.BackendID, "error", err.Error())
-		apiError(w, http.StatusBadGateway, codeBackendUnavailable, "the hub could not reach this device's Hermes")
+		apiError(w, http.StatusBadGateway, codeBackendUnavailable, "the hub could not reach this device's agent server")
 		return
 	}
 	up.SetReadLimit(maxMessage)
@@ -281,7 +281,7 @@ func (g *guard) fromDevice(typ websocket.MessageType, data []byte) {
 		g.toDevice(deniedAnswer(f.ID, f.Method, params))
 		return
 	case otherProfile(params):
-		g.toDevice(answerError(f.ID, codeDenied, "talaria serves only the device's own Hermes profile",
+		g.toDevice(answerError(f.ID, codeDenied, "talaria serves only the device's own agent profile",
 			map[string]any{keyReason: reasonDenied}))
 		return
 	case ownRequestID(params):

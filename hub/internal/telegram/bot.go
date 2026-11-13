@@ -45,7 +45,7 @@ const (
 	untitledName = "(untitled)"
 	cmdLink      = "link"
 	cmdSkip      = "skip"
-	msgHeld      = "Hermes is restarting. Your message will send when it is back."
+	msgHeld      = "The agent is restarting. Your message will send when it is back."
 )
 
 var tagRe = regexp.MustCompile(`<[^>]*>`)
@@ -1277,7 +1277,7 @@ func (b *Bot) reportErr(ctx context.Context, to dest, user, action string, err e
 	case errors.Is(err, hub.ErrAttachment):
 		b.sendText(ctx, to, hub.AttachmentReason(err)+".")
 	case errors.Is(err, hub.ErrHoldFull):
-		b.sendText(ctx, to, "Too many messages are waiting for Hermes to come back. Send this one again later.")
+		b.sendText(ctx, to, "Too many messages are waiting for the agent to come back. Send this one again later.")
 	default:
 		b.logger.Error("Telegram request failed", "user", user, "action", action, "error", err)
 		b.sendText(ctx, to, errGeneric)

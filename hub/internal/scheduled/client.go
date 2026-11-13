@@ -38,7 +38,7 @@ type HermesError struct {
 }
 
 func (e *HermesError) Error() string {
-	return fmt.Sprintf("Hermes answered %d: %s", e.Status, e.Detail)
+	return fmt.Sprintf("The agent answered %d: %s", e.Status, e.Detail)
 }
 
 // text is a JSON string that may be null or of another type, which reads

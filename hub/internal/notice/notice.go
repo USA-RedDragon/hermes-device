@@ -154,7 +154,7 @@ func parseGeneric(t string) *Notice {
 	}
 	n := &Notice{Kind: KindNotice, Title: short(first), Result: strings.TrimSpace(rest)}
 	if n.Title == "" {
-		n.Title = "Notice from Hermes"
+		n.Title = "Notice from the agent"
 	}
 	return n
 }

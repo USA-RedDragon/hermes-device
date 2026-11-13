@@ -48,4 +48,4 @@ type SubagentRoutes interface {
 
 // ErrNoSubagentRoutes is a backend whose Hermes has no subagent-routes
 // plugin.
-var ErrNoSubagentRoutes = errors.New("this Hermes has no subagent-routes plugin")
+var ErrNoSubagentRoutes = errors.New("this agent server has no subagent-routes plugin")

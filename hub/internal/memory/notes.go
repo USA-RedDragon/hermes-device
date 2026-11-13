@@ -39,12 +39,12 @@ func (n *notes) send(ctx context.Context, method, path string, body, out any) er
 	}
 	resp, err := n.r.Request(ctx, method, path, b)
 	if err != nil {
-		return &hub.MemoryError{Status: http.StatusBadGateway, Message: "Could not reach Hermes"}
+		return &hub.MemoryError{Status: http.StatusBadGateway, Message: "Could not reach the agent"}
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxNotesBody))
 	if err != nil {
-		return &hub.MemoryError{Status: http.StatusBadGateway, Message: "Hermes's answer was cut off"}
+		return &hub.MemoryError{Status: http.StatusBadGateway, Message: "The agent's answer was cut off"}
 	}
 	if resp.StatusCode != http.StatusOK {
 		return pluginFailure(resp.StatusCode, data)
@@ -56,7 +56,7 @@ func (n *notes) send(ctx context.Context, method, path string, body, out any) er
 }
 
 func errNotUnderstood() error {
-	return &hub.MemoryError{Status: http.StatusBadGateway, Message: "Hermes's answer was not understood"}
+	return &hub.MemoryError{Status: http.StatusBadGateway, Message: "The agent's answer was not understood"}
 }
 
 func (n *notes) do(ctx context.Context, method, path string, body any) (hub.Notes, error) {
@@ -131,7 +131,7 @@ func pluginFailure(status int, data []byte) error {
 	}
 	msg := pe.Message
 	if msg == "" {
-		msg = fmt.Sprintf("Hermes refused the request (status %d)", status)
+		msg = fmt.Sprintf("The agent refused the request (status %d)", status)
 	}
 	switch status {
 	case http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
@@ -188,12 +188,12 @@ func (n *notes) setApproval(ctx context.Context, on bool) error {
 	}
 	resp, err := n.r.Request(ctx, http.MethodPut, "/api/config", b)
 	if err != nil {
-		return &hub.MemoryError{Status: http.StatusBadGateway, Message: "Could not reach Hermes"}
+		return &hub.MemoryError{Status: http.StatusBadGateway, Message: "Could not reach the agent"}
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxNotesBody))
 	if resp.StatusCode != http.StatusOK {
-		return &hub.MemoryError{Status: http.StatusBadGateway, Message: fmt.Sprintf("Hermes did not save the setting (status %d)", resp.StatusCode)}
+		return &hub.MemoryError{Status: http.StatusBadGateway, Message: fmt.Sprintf("The agent did not save the setting (status %d)", resp.StatusCode)}
 	}
 	return nil
 }

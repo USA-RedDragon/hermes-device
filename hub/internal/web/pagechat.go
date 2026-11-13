@@ -101,10 +101,10 @@ func (s *Server) handleNewPageChat(w http.ResponseWriter, r *http.Request) {
 func browserReason(err error) string {
 	switch {
 	case errors.Is(err, hub.ErrComputerOffline):
-		return "This computer's Firefox is not connected to Hermes, so Talaria cannot read its tabs yet"
+		return "This computer's Firefox is not connected to Talaria, so Talaria cannot read its tabs yet"
 	case errors.Is(err, hub.ErrUnknownDevice):
 		return "The hub does not know this computer"
 	default:
-		return "Hermes did not set this computer's browser for the chat. Update talaria on the Hermes server"
+		return "The agent did not set this computer's browser for the chat: the server runs an older Talaria. Upgrade Talaria on the server: https://usa-reddragon.github.io/talaria/deploy/upgrades.html"
 	}
 }

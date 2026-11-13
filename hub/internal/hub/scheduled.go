@@ -14,7 +14,7 @@ var (
 	ErrUnknownJob = errors.New("that scheduled job no longer exists")
 	// ErrJobLocked is a change refused because the job has fields that
 	// run on the Hermes server itself, such as a script.
-	ErrJobLocked = errors.New("this job runs a script or other code on the Hermes server, so it can only be paused, stopped or deleted here")
+	ErrJobLocked = errors.New("this job runs a script or other code on the server, so it can only be paused, stopped or deleted here")
 )
 
 // Results-go-to choices of a scheduled job, kept on the Hermes job as

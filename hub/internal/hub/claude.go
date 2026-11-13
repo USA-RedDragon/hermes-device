@@ -363,7 +363,7 @@ type Claude interface {
 
 // Claude errors.
 var (
-	ErrNoClaude       = errors.New("this Hermes has no Claude accounts plugin")
+	ErrNoClaude       = errors.New("this agent server has no Claude accounts plugin")
 	ErrUnknownAccount = errors.New("unknown Claude account")
 	ErrNoSignIn       = errors.New("no sign-in is running for this account")
 	ErrWrongSignIn    = errors.New("that sign-in is no longer the current one; start it again")

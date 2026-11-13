@@ -43,7 +43,7 @@ const pairHTML = `<!doctype html>
 <form method="post" action="/device/pair">
 <input type="hidden" name="code" value="{{.Pairing.UserCode}}"><input type="hidden" name="csrf" value="{{.CSRF}}">
 <label>Name for this computer <input name="name" value="{{.Name}}" maxlength="64" required autocomplete="off"></label>
-{{if gt (len .Backends) 1}}<label>Hermes <select name="backend">{{range .Backends}}<option value="{{.ID}}"{{if eq .ID $.Backend}} selected{{end}}>{{.Name}}</option>{{end}}</select></label>
+{{if gt (len .Backends) 1}}<label>Agent server <select name="backend">{{range .Backends}}<option value="{{.ID}}"{{if eq .ID $.Backend}} selected{{end}}>{{.Name}}</option>{{end}}</select></label>
 {{else}}{{range .Backends}}<input type="hidden" name="backend" value="{{.ID}}">{{end}}{{end}}
 <div class="buttons"><button class="primary" type="submit" name="action" value="approve">Connect this computer</button>
 <button class="ghost" type="submit" name="action" value="deny">Do not connect</button></div>
@@ -170,7 +170,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(backends) == 0 {
-		v.Error = "None of your Hermes assistants is set up for computers yet. Ask the owner to turn this on."
+		v.Error = "None of your agent servers is set up for computers yet. Ask the owner to turn this on."
 		s.renderPair(w, http.StatusForbidden, v)
 		return
 	}
@@ -211,7 +211,7 @@ func (s *Server) approvePairing(w http.ResponseWriter, r *http.Request, user str
 		}
 	}
 	if picked == nil {
-		v.Error = "Pick which Hermes this computer works with."
+		v.Error = "Pick which agent server this computer works with."
 		s.renderPair(w, http.StatusBadRequest, v)
 		return
 	}

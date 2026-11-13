@@ -235,5 +235,5 @@ var (
 	ErrFileRefused  = errors.New("refused")
 	ErrFileNotFound = errors.New("not found")
 	ErrFilesBusy    = errors.New("the computer is busy with other file reads; try again in a moment")
-	ErrFilesTooOld  = errors.New("the Talaria device plugin is too old for this; update talaria on the Hermes server")
+	ErrFilesTooOld  = errors.New("the server runs an older Talaria that cannot do this; upgrade Talaria on the server: https://usa-reddragon.github.io/talaria/deploy/upgrades.html")
 )

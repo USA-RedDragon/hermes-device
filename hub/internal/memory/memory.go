@@ -228,7 +228,7 @@ func (s *Service) project(ctx context.Context, user, backendID, projectID string
 		return nil, err
 	}
 	if !projectIDPattern.MatchString(projectID) {
-		return nil, &hub.MemoryError{Status: http.StatusNotFound, Message: "Hermes has no such project"}
+		return nil, &hub.MemoryError{Status: http.StatusNotFound, Message: "The agent has no such project"}
 	}
 	return n, nil
 }

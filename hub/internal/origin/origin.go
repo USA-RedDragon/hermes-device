@@ -216,7 +216,7 @@ func kindNotice(kind string, r Row) *notice.Notice {
 		title = firstLine(text)
 	}
 	if title == "" {
-		title = "Note from Hermes"
+		title = "Note from the agent"
 	}
 	return &notice.Notice{Kind: notice.KindNotice, Title: title, Result: strings.TrimSpace(text)}
 }

@@ -65,13 +65,13 @@ func (s *Server) PutFile(ctx context.Context, user, backendID, sessionID, name s
 func uploadError(name string, err error) error {
 	var pe *PluginError
 	if !errors.As(err, &pe) {
-		return fmt.Errorf("%w: Could not reach Hermes to save %s. Try again in a moment", hub.ErrAttachment, name)
+		return fmt.Errorf("%w: Could not reach the agent to save %s. Try again in a moment", hub.ErrAttachment, name)
 	}
 	switch {
 	case pe.Code == codeOffline:
 		return fmt.Errorf("%w: The computer this chat runs on is offline, so %s cannot reach it", hub.ErrAttachment, name)
 	case pe.Code == codeBusy:
-		return fmt.Errorf("%w: Hermes is busy with other uploads. Send %s again in a moment", hub.ErrAttachment, name)
+		return fmt.Errorf("%w: The agent is busy with other uploads. Send %s again in a moment", hub.ErrAttachment, name)
 	case pe.Code == codeTooLarge:
 		return fmt.Errorf("%w: The file %s is too large for the computer: %s", hub.ErrAttachment, name, pe.Message)
 	case pe.Code == StateFailClosed:
@@ -79,7 +79,7 @@ func uploadError(name string, err error) error {
 	case pe.Code == "write_refused":
 		return fmt.Errorf("%w: The computer refused to save %s: %s", hub.ErrAttachment, name, pe.Message)
 	case pe.Status == http.StatusNotFound || pe.Status == http.StatusMethodNotAllowed:
-		return fmt.Errorf("%w: The Talaria device plugin is too old to take files. Update talaria on the Hermes server", hub.ErrAttachment)
+		return fmt.Errorf("%w: The server runs an older Talaria that cannot take files. Upgrade Talaria on the server: https://usa-reddragon.github.io/talaria/deploy/upgrades.html", hub.ErrAttachment)
 	}
 	return fmt.Errorf("%w: Could not save %s on the computer: %w", hub.ErrAttachment, name, err)
 }

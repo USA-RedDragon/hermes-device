@@ -13,7 +13,7 @@ import (
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
-var errAway = fmt.Errorf("%w: Hermes is restarting or cannot be reached, so the attachments were not sent. "+
+var errAway = fmt.Errorf("%w: The agent is restarting or cannot be reached, so the attachments were not sent. "+
 	"Send them again when it is back", hub.ErrAttachment)
 
 const noticeNoVision = "This chat's tools have no image reader (vision_analyze), so the model may not be able to see the images."
@@ -157,7 +157,7 @@ func (b *backend) stageImage(ctx context.Context, ls *live, name string, data []
 		return gateway.Attachment{}, stageError(name, err)
 	}
 	if out.Path == "" {
-		return gateway.Attachment{}, fmt.Errorf("%w: Hermes did not take %s", hub.ErrAttachment, name)
+		return gateway.Attachment{}, fmt.Errorf("%w: The agent did not take %s", hub.ErrAttachment, name)
 	}
 	return gateway.Attachment{Path: out.Path, MIME: mime}, nil
 }
@@ -199,7 +199,7 @@ func (b *backend) placeFile(ctx context.Context, ls *live, user, sessionID, name
 		return "", stageError(name, err)
 	}
 	if out.Path == "" {
-		return "", fmt.Errorf("%w: Hermes did not take %s", hub.ErrAttachment, name)
+		return "", fmt.Errorf("%w: The agent did not take %s", hub.ErrAttachment, name)
 	}
 	return out.Path, nil
 }
@@ -211,7 +211,7 @@ func stageError(name string, err error) error {
 	case gateway.Retryable(err):
 		return errAway
 	case errors.As(err, &r) && r.Message == gateway.ReasonInvalidParams:
-		return fmt.Errorf("%w: Hermes refused %s: it may be damaged, too large or of a type it does not take", hub.ErrAttachment, name)
+		return fmt.Errorf("%w: The agent refused %s: it may be damaged, too large or of a type it does not take", hub.ErrAttachment, name)
 	}
 	return refusal(err)
 }

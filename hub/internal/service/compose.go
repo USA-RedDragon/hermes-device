@@ -19,7 +19,7 @@ var _ hub.ChatActions = (*Service)(nil)
 
 // errCommandAway is a slash command sent while the backend is away: Hermes
 // runs a command at once, so the hub cannot hold it.
-var errCommandAway = fmt.Errorf("%w: Hermes is restarting or cannot be reached. Run the command again when it is back",
+var errCommandAway = fmt.Errorf("%w: The agent is restarting or cannot be reached. Run the command again when it is back",
 	hub.ErrBackendAway)
 
 // command runs a slash command through slash.exec, as Hermes' own clients
@@ -29,7 +29,7 @@ var errCommandAway = fmt.Errorf("%w: Hermes is restarting or cannot be reached. 
 func (s *Service) command(ctx context.Context, b *backend, user, sessionID, id, text string) (hub.PromptResult, error) {
 	name, arg, _ := hub.SlashCommand(text)
 	if strings.EqualFold(name, "diff") {
-		return hub.PromptResult{}, fmt.Errorf("%w: /diff reads the Hermes server's folder, not the chat's folder", hub.ErrUnknownCommand)
+		return hub.PromptResult{}, fmt.Errorf("%w: /diff reads the server's folder, not the chat's folder", hub.ErrUnknownCommand)
 	}
 	if strings.EqualFold(name, compressCommand) || strings.EqualFold(name, compactAlias) {
 		return s.compress(ctx, b, sessionID, arg)

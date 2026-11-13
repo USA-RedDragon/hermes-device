@@ -526,7 +526,7 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, hub.ErrBusy):
 		errorJSON(w, http.StatusConflict, "Talaria is still working on this chat. Stop it or wait until it is done, then try again")
 	case errors.Is(err, hub.ErrHoldFull):
-		errorJSON(w, http.StatusTooManyRequests, "Too many messages are waiting for Hermes to come back. Send this one again later")
+		errorJSON(w, http.StatusTooManyRequests, "Too many messages are waiting for the agent to come back. Send this one again later")
 	case errors.Is(err, hub.ErrBackendAway):
 		errorJSON(w, http.StatusServiceUnavailable, strings.TrimPrefix(err.Error(), hub.ErrBackendAway.Error()+": "))
 	case errors.Is(err, hub.ErrNoModel):
@@ -534,13 +534,13 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, hub.ErrShuttingDown):
 		errorJSON(w, http.StatusServiceUnavailable, "The hub is restarting. Send the message again in a moment")
 	case errors.Is(err, hub.ErrTitleInUse):
-		errorJSON(w, http.StatusConflict, "Hermes did not accept that name. Another chat may already use it")
+		errorJSON(w, http.StatusConflict, "The agent did not accept that name. Another chat may already use it")
 	case errors.Is(err, hub.ErrAttachment):
 		errorJSON(w, http.StatusBadRequest, hub.AttachmentReason(err))
 	case errors.Is(err, hub.ErrBadValue):
 		msg := strings.TrimPrefix(err.Error(), hub.ErrBadValue.Error()+": ")
 		if !strings.Contains(msg, " ") {
-			msg = "Hermes did not accept that"
+			msg = "The agent did not accept that"
 		}
 		errorJSON(w, http.StatusBadRequest, msg)
 	default:

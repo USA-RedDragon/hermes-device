@@ -390,7 +390,7 @@ func unknownCommand(w http.ResponseWriter, err error) bool {
 	if !errors.Is(err, hub.ErrUnknownCommand) {
 		return false
 	}
-	msg := "Hermes does not run this command from the hub"
+	msg := "The agent does not run this command from the hub"
 	if hint, ok := strings.CutPrefix(err.Error(), hub.ErrUnknownCommand.Error()+": "); ok && hint != "" {
 		msg += ". " + hint
 	}

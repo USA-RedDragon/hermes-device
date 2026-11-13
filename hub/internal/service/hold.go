@@ -50,7 +50,7 @@ var errTransient = errors.New("try again later")
 // have it after all when a try lost its answer.
 func notSentMessage(p *heldPrompt, why string) string {
 	if p.maybe {
-		return why + " Hermes may have received it before the connection dropped: check before you send it again."
+		return why + " The agent may have received it before the connection dropped: check before you send it again."
 	}
 	return why
 }
@@ -267,7 +267,7 @@ func (b *backend) expire(now time.Time) time.Time {
 	b.holdMu.Unlock()
 	for _, e := range expired {
 		b.log.Warn("held prompt timed out", "session", e.sid)
-		b.settle(e.sid, e.p, hub.KindInputNotSent, hub.NotSentTimeout, "Hermes did not come back in time.")
+		b.settle(e.sid, e.p, hub.KindInputNotSent, hub.NotSentTimeout, "The agent did not come back in time.")
 	}
 	return next
 }
@@ -323,7 +323,7 @@ func (b *backend) flushStep() (progress, stalled bool) {
 	}
 }
 
-const msgShutdown = "The hub restarted before Hermes was back."
+const msgShutdown = "The hub restarted before the agent was back."
 
 func (b *backend) isDraining() bool {
 	b.holdMu.Lock()
@@ -361,7 +361,7 @@ func refusedMessage(err error) string {
 	case errors.Is(err, hub.ErrUnknownSession):
 		return "This chat no longer exists."
 	}
-	return "Hermes did not accept it."
+	return "The agent did not accept it."
 }
 
 // flush runs while prompts are held: it retries with backoff, sooner when

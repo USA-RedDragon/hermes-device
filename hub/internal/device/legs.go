@@ -51,7 +51,7 @@ func (s *Server) handleACP(w http.ResponseWriter, r *http.Request) {
 	d := deviceFrom(r)
 	b := s.backends[d.BackendID]
 	if b.cfg.ACPURL == "" {
-		apiError(w, http.StatusNotImplemented, codeNoEditorBridge, "this hub has no editor bridge for your Hermes (the backend has no acp_url); ask the hub admin to set it up")
+		apiError(w, http.StatusNotImplemented, codeNoEditorBridge, "editor access is not set up on this server (the backend has no acp_url); ask the hub admin to set it up")
 		return
 	}
 	s.proxy(w, r, d, assertion.LegACP, gateway.WebSocketURL(b.cfg.ACPURL), protocol.ACPHostPath, func(l *leg) { //nolint:contextcheck // the leg outlives the upgrade request
@@ -82,7 +82,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, d hub.Device, leg
 	}
 	if err != nil {
 		s.log.Warn("dial backend leg", "leg", legName, "device", d.ID, "backend", d.BackendID, "error", err.Error())
-		apiError(w, http.StatusBadGateway, codeBackendUnavailable, "the hub could not reach this device's Hermes")
+		apiError(w, http.StatusBadGateway, codeBackendUnavailable, "the hub could not reach this device's agent server")
 		return
 	}
 	up.SetReadLimit(maxMessage)

@@ -335,9 +335,9 @@ func (s *Service) Sessions(ctx context.Context, user string) ([]hub.Session, err
 func reason(err error) string {
 	switch {
 	case errors.Is(err, gateway.ErrStalled), errors.Is(err, context.DeadlineExceeded):
-		return "Hermes is not answering"
+		return "The agent is not answering"
 	case gateway.Retryable(err):
-		return "Hermes is restarting or cannot be reached"
+		return "The agent is restarting or cannot be reached"
 	}
 	return err.Error()
 }

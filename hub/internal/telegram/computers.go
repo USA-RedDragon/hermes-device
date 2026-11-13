@@ -167,9 +167,9 @@ func placeLine(p hub.Place) string {
 	case hub.PlaceNone:
 		return "This chat is not on a computer, so Talaria cannot run commands for it. /move NAME [folder] fixes that."
 	case hub.PlaceServer:
-		return "This chat runs on the Hermes server."
+		return "This chat runs on the server."
 	}
-	return "This chat's Hermes has no computers."
+	return "This chat's agent has no computers."
 }
 
 // placeTag is the short form of a place in /sessions.
@@ -309,7 +309,7 @@ func (b *Bot) computerErr(ctx context.Context, to dest, err error) bool {
 	reason := func() string {
 		_, msg, _ := strings.Cut(err.Error(), ": ")
 		if msg == "" {
-			return "Hermes did not accept that."
+			return "The agent did not accept that."
 		}
 		return strings.ToUpper(msg[:1]) + msg[1:] + "."
 	}
@@ -322,7 +322,7 @@ func (b *Bot) computerErr(ctx context.Context, to dest, err error) bool {
 	case errors.Is(err, hub.ErrFolderRefused), errors.Is(err, hub.ErrCannotMove):
 		text = reason()
 	case errors.Is(err, hub.ErrOtherBackend):
-		text = "That computer works with another Hermes than this chat. Send /new NAME to start a chat on it."
+		text = "That computer works with another agent server than this chat. Send /new NAME to start a chat on it."
 	case errors.Is(err, hub.ErrNotOnComputer):
 		text = "This chat is not on a computer."
 	case errors.Is(err, hub.ErrInheritedPlace):
