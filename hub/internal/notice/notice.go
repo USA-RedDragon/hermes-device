@@ -169,7 +169,11 @@ func parseDelegation(t string) *Notice {
 	case "COMPLETE":
 		return parseSingle(body)
 	case "TASK FAILED":
-		return parseTaskFailed(body)
+		n := parseTaskFailed(body)
+		if n != nil && m[3] != "" {
+			n.Meta = append(n.Meta, partLabel([]string{m[3]}, m[4]))
+		}
+		return n
 	}
 	return parseBatch(body)
 }
@@ -236,6 +240,7 @@ func parseBatch(body string) *Notice {
 	unitModel := roleModelOf(head)
 	rows := make([]Row, 0, len(idx))
 	bad := 0
+	var seen []string
 	for i, loc := range idx {
 		end := len(body)
 		if i+1 < len(idx) {
@@ -253,9 +258,20 @@ func parseBatch(body string) *Notice {
 			bad++
 		}
 		rows = append(rows, row)
+		seen = append(seen, g(2))
+	}
+	// A unit holds some of a call's tasks; say which, so "1 subagent" of a
+	// 2-task call does not read as the whole call.
+	part := ""
+	if total, _ := strconv.Atoi(body[idx[0][6]:idx[0][7]]); total > len(rows) {
+		part = partLabel(seen, strconv.Itoa(total))
 	}
 	if len(rows) == 1 {
-		return rowNotice(rows[0])
+		n := rowNotice(rows[0])
+		if part != "" {
+			n.Meta = append(n.Meta, part)
+		}
+		return n
 	}
 	n := &Notice{Kind: KindDelegation, Rows: rows}
 	ok := len(rows) - bad
@@ -279,7 +295,19 @@ func parseBatch(body string) *Notice {
 	if m := totalDuration.FindStringSubmatch(head); m != nil {
 		n.Meta = append(n.Meta, duration(m[1])+" in all")
 	}
+	if part != "" {
+		n.Meta = append(n.Meta, part)
+	}
 	return n
+}
+
+// partLabel names the tasks of a call that a notice holds: "task 1 of 2" for
+// one, "tasks 1, 3 of 4" for several.
+func partLabel(idx []string, total string) string {
+	if len(idx) == 1 {
+		return "task " + idx[0] + " of " + total
+	}
+	return "tasks " + strings.Join(idx, ", ") + " of " + total
 }
 
 func rowNotice(r Row) *Notice {

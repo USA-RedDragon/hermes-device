@@ -1357,6 +1357,9 @@
       (s.pending || []).forEach((p, i) => {
         if (p.status === "lost") this.lost(p.id, p.text);
         else if (p.status === "steering") {
+          // Hermes also hands a background result or another agent's message to the running turn; the
+          // sender named in the input ID decides if it is the user's bubble or a card.
+          if (this.originCard(window.HubOrigin.classify(p), p.text, true)) return;
           this.userText(p.text, true);
           const x = this.pending[this.pending.length - 1];
           x.id = window.HubReconcile.idOf(p);

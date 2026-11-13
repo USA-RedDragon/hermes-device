@@ -173,7 +173,14 @@ window.HubNotice = (() => {
       if (row.state === "bad") bad++;
       rows.push(row);
     });
-    if (rows.length === 1) return rowNotice(rows[0]);
+    // A unit holds some of a call's tasks; say which.
+    const total = Number(heads[0][3]);
+    const part = total > rows.length ? partLabel(heads.map((m) => m[2]), String(total)) : "";
+    if (rows.length === 1) {
+      const one = rowNotice(rows[0]);
+      if (part) one.meta = (one.meta || []).concat(part);
+      return one;
+    }
     const n = { kind: "delegation", rows };
     const ok = rows.length - bad;
     if (bad === 0) {
@@ -191,7 +198,14 @@ window.HubNotice = (() => {
     if (bad > 0) n.meta.push(bad + " failed");
     const tm = totalDuration.exec(head);
     if (tm) n.meta.push(duration(tm[1]) + " in all");
+    if (part) n.meta.push(part);
     return n;
+  }
+
+  // partLabel names the tasks of a call that a notice holds: "task 1 of 2"
+  // for one, "tasks 1, 3 of 4" for several.
+  function partLabel(idx, total) {
+    return idx.length === 1 ? "task " + idx[0] + " of " + total : "tasks " + idx.join(", ") + " of " + total;
   }
 
   function parseDelegation(t) {
@@ -199,7 +213,11 @@ window.HubNotice = (() => {
     if (!m) return null;
     const body = t.slice(m[0].length);
     if (m[1] === "COMPLETE") return parseSingle(body);
-    if (m[1] === "TASK FAILED") return parseTaskFailed(body);
+    if (m[1] === "TASK FAILED") {
+      const n = parseTaskFailed(body);
+      if (n && m[3]) n.meta = (n.meta || []).concat(partLabel([m[3]], m[4]));
+      return n;
+    }
     return parseBatch(body);
   }
 
