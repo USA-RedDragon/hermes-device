@@ -11,11 +11,15 @@ import (
 )
 
 type fakeKeyring struct {
-	m    map[string]string
-	fail bool
+	m      map[string]string
+	fail   bool
+	getErr error
 }
 
 func (f *fakeKeyring) Get(s, u string) (string, error) {
+	if f.getErr != nil {
+		return "", f.getErr
+	}
 	if v, ok := f.m[s+"/"+u]; ok && !f.fail {
 		return v, nil
 	}
@@ -109,5 +113,33 @@ func TestLoadCopiesLegacyKeyringEntry(t *testing.T) {
 	}
 	if _, ok := kr.m["talaria/hub.example.com"]; !ok {
 		t.Error("no talaria entry")
+	}
+}
+
+// A keychain that is there but cannot be read (macOS over SSH) is an
+// error of its own, so setup does not pair the computer a second time.
+func TestLoadLockedKeychain(t *testing.T) {
+	t.Parallel()
+	locked := errors.New("exit status 36")
+	s := &tokenstore.Store{
+		Keyring: &fakeKeyring{m: map[string]string{}, getErr: locked}, KeyringAlwaysThere: true,
+		File: filepath.Join(t.TempDir(), "token"),
+	}
+	_, err := s.Load(record().Hub)
+	if !errors.Is(err, tokenstore.ErrKeyring) || !errors.Is(err, locked) || errors.Is(err, tokenstore.ErrNoToken) {
+		t.Fatalf("Load = %v, want ErrKeyring wrapping %v", err, locked)
+	}
+	// A token file still wins.
+	if _, err := (&tokenstore.Store{File: s.File}).Save(record()); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Load(record().Hub); err != nil || got.Token != record().Token {
+		t.Fatalf("Load with a file = %+v, %v", got, err)
+	}
+	// Where a keyring may be missing (Linux without Secret Service), an
+	// error still means no token.
+	s = &tokenstore.Store{Keyring: &fakeKeyring{m: map[string]string{}, getErr: locked}, File: filepath.Join(t.TempDir(), "token")}
+	if _, err := s.Load(record().Hub); !errors.Is(err, tokenstore.ErrNoToken) {
+		t.Fatalf("Load without KeyringAlwaysThere = %v, want ErrNoToken", err)
 	}
 }

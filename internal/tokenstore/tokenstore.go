@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/USA-RedDragon/talaria/internal/legacy"
 	"github.com/zalando/go-keyring"
@@ -24,6 +25,11 @@ const LegacyService = "hermes-device"
 
 // ErrNoToken is returned when no token is stored for the hub.
 var ErrNoToken = errors.New("no device token stored; run talaria login")
+
+// ErrKeyring is returned when the keyring could not be read and there is
+// no token file. On macOS that is the login keychain over SSH: it stays
+// locked for that session, even though the token is in it.
+var ErrKeyring = errors.New("could not read the device token from the OS keyring")
 
 // Record is what login stores.
 type Record struct {
@@ -53,6 +59,10 @@ type Store struct {
 	Keyring Keyring
 	// File is the fallback file.
 	File string
+	// KeyringAlwaysThere is true where every user has a keyring (macOS). A
+	// keyring error other than not found then means it could not be read,
+	// not that there is none, so Load reports it instead of ErrNoToken.
+	KeyringAlwaysThere bool
 }
 
 // New returns a store. useKeyring selects the OS keyring.
@@ -60,6 +70,7 @@ func New(useKeyring bool, file string) *Store {
 	s := &Store{File: file}
 	if useKeyring {
 		s.Keyring = osKeyring{}
+		s.KeyringAlwaysThere = runtime.GOOS == "darwin"
 	}
 	return s
 }
@@ -114,13 +125,18 @@ func (s *Store) Load(hub string) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	var kerr error
 	if s.Keyring != nil {
-		if v, err := s.Keyring.Get(Service, acct); err == nil {
+		v, err := s.Keyring.Get(Service, acct)
+		if err == nil {
 			var r Record
 			if err := json.Unmarshal([]byte(v), &r); err != nil {
 				return nil, fmt.Errorf("keyring entry for %s: %w", acct, err)
 			}
 			return &r, nil
+		}
+		if s.KeyringAlwaysThere && !errors.Is(err, keyring.ErrNotFound) {
+			kerr = err
 		}
 		if r, ok := s.moveLegacy(acct); ok {
 			return r, nil
@@ -128,6 +144,10 @@ func (s *Store) Load(hub string) (*Record, error) {
 	}
 	data, err := os.ReadFile(s.File)
 	if errors.Is(err, os.ErrNotExist) {
+		if kerr != nil {
+			return nil, fmt.Errorf("%w for %s: %w. Over SSH, macOS keeps the login keychain locked: "+
+				"run talaria in Terminal on the Mac, or run security unlock-keychain first", ErrKeyring, acct, kerr)
+		}
 		return nil, ErrNoToken
 	}
 	if err != nil {
