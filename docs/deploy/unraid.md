@@ -2,10 +2,9 @@
 
 Talaria on Unraid is one container from the all-in-one image ([design](all-in-one.md)).
 
-1. Get the template. Talaria is not in Community Applications yet (a listing is pending). Once it is, search for
-   Talaria in the **Apps** tab, click **Install**, and go to step 2. Until then, download the template onto the
-   server. Unraid removed the **Template repositories** field from the Docker tab in 6.10, so there is no URL to
-   add there. In the Unraid terminal (the **>_** icon at the top right), run:
+1. Get the template. Unraid removed the **Template repositories** field from the Docker tab in 6.10, so there is
+   no URL to add there. Instead, download the template onto the server. In the Unraid terminal (the **>_** icon at
+   the top right), run:
 
    ```bash
    mkdir -p /boot/config/plugins/dockerMan/templates-user
@@ -69,18 +68,11 @@ cannot reach the server's own address unless **Settings, Docker, Host access to 
   <Repository>ghcr.io/usa-reddragon/talaria-aio:latest</Repository>
   <Registry>https://github.com/users/USA-RedDragon/packages/container/package/talaria-aio</Registry>
   <Network>bridge</Network>
-  <Shell>bash</Shell>
   <Privileged>false</Privileged>
   <Support>https://github.com/USA-RedDragon/talaria/issues</Support>
   <Project>https://github.com/USA-RedDragon/talaria</Project>
   <Overview>Talaria: a web app and Telegram bot for Hermes Agent, with a sandbox for the agent's commands and your own computers paired in. One container: hub, agent and sandbox. Open the web UI right after the first start: the first visitor makes the admin account.</Overview>
-  <Category>AI: Productivity:</Category>
-  <ExtraSearchTerms>hermes agent telegram chat llm assistant</ExtraSearchTerms>
-  <Requires>A model provider for Hermes (or turn on the demo model to look around). The first start downloads about 1.2 GB.</Requires>
-  <Changes>Initial release.</Changes>
-  <License>MIT</License>
-  <ReadMe>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/README.md</ReadMe>
-  <Screenshot>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/docs/deploy/images/chat-reply.png</Screenshot>
+  <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/deploy/aio/unraid/talaria.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/hub/internal/web/static/icon-512.png</Icon>

@@ -1,7 +1,0 @@
-<CommunityApplications>
-  <Profile>
-    Talaria is a web app and Telegram bot for Hermes Agent, with a sandbox for the agent's commands and your own computers paired in. This repository ships the Unraid template for the all-in-one Talaria container. Setup guide: https://usa-reddragon.github.io/talaria/deploy/unraid.html. Support: https://github.com/USA-RedDragon/talaria/issues
-  </Profile>
-  <Icon>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/hub/internal/web/static/icon-512.png</Icon>
-  <WebPage>https://github.com/USA-RedDragon/talaria</WebPage>
-</CommunityApplications>
