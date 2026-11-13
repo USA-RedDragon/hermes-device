@@ -83,7 +83,7 @@ openssl genpkey -algorithm ed25519 -out hub-device.pem
 
 Give the PEM to the hub as `device.signing_key` (environment variable `HUB_DEVICE_SIGNING_KEY`) or as a file in `device.signing_key_file`. Give each Hermes only the public key: `openssl pkey -in hub-device.pem -pubout`.
 
-Each person pairs their own computers with the `talaria` program ([install and pairing](https://github.com/USA-RedDragon/talaria/blob/main/docs/start/setup-and-pairing.md)). In Settings, Computers, a person sees their computers with when and from where each last connected, and can rename or remove them. Removing a computer ends its token at once.
+Each person pairs their own computers with the `talaria` program ([add a computer](https://github.com/USA-RedDragon/talaria/blob/main/docs/start/add-a-computer.md)). In Settings, Computers, a person sees their computers with when and from where each last connected, and can rename or remove them. Removing a computer ends its token at once.
 
 A computer is pinned to one backend when it pairs. Sandbox devices, the pods that run the agent's commands for chats that are not on a person's computer, are listed in the config as `backends[].service_devices` and show up as Sandbox.
 

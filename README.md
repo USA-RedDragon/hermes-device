@@ -41,7 +41,7 @@ docker compose exec -u hermes hermes hermes model
 
 To look around without a provider, set `COMPOSE_PROFILES=demo` in `.env`, run `docker compose up -d --wait` again
 and pick `talaria-demo` there. To let the agent work on your own computers, install the `talaria`
-program on each one and [pair it](docs/start/setup-and-pairing.md).
+program on each one and [pair it](docs/start/add-a-computer.md).
 
 ## What is in this repository
 
@@ -62,7 +62,7 @@ Pinned to Hermes Agent v0.23.1. Linux and macOS only: Windows is not supported, 
 paths. `talaria` was called `hermes-device` before release 0.19.0. See
 [Renamed from hermes-device](#renamed-from-hermes-device).
 
-- [Install](docs/start/install.md) on Linux or macOS, then [set up and pair a computer](docs/start/setup-and-pairing.md) with your hub.
+- [Add a computer](docs/start/add-a-computer.md): install on Linux or macOS and pair it with your hub.
 - [Chat from a terminal](docs/guides/terminal-chat.md), [let the agent use Firefox](docs/guides/browser-extension.md) and [use Talaria in an editor](docs/guides/editor-bridge.md).
 - [Update, move and remove](docs/guides/update-and-remove.md) a computer, and [troubleshooting](docs/guides/troubleshooting.md).
 - Reference: [command line](docs/reference/cli.md) and [configuration](docs/reference/configuration.md).

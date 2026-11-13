@@ -8,7 +8,7 @@ The text under each command is generated from the program's own help.
 
 ## setup
 
-Install, pair, configure, start the service and connect Firefox. See [Set up and pair a computer](../start/setup-and-pairing.md).
+Install, pair, configure, start the service and connect Firefox. See [Add a computer](../start/add-a-computer.md).
 
 <!-- docgen:output exec="scripts/cli-usage.sh setup" -->
 ```text

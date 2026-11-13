@@ -145,7 +145,7 @@ Data lives in Docker volumes: `talaria_hermes-data` (chats, memory, Hermes setti
 ## Add your computers
 
 Install `talaria` on each computer you want the agent to work on, and pair it with your hub. See the
-[Set up and pair a computer](../start/setup-and-pairing.md) page. Give `talaria setup` your hub's address
+[Add a computer](../start/add-a-computer.md) page. Give `talaria setup` your hub's address
 (`TALARIA_PUBLIC_URL`).
 
 ## Troubleshooting

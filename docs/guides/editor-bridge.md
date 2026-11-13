@@ -4,7 +4,7 @@
 
 ## Set up
 
-1. Set up the computer first: [Set up and pair a computer](../start/setup-and-pairing.md). The computer must be paired.
+1. Set up the computer first: [Add a computer](../start/add-a-computer.md). The computer must be paired.
 2. In the editor's ACP settings, use `talaria acp` as the agent command. Use the full path, `~/.talaria/bin/talaria`, if the editor does not see your shell's `PATH`.
 3. Open a folder and start a chat.
 

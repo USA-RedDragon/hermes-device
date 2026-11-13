@@ -12,9 +12,7 @@ This page lists the pages of the docs site in reading order, by section; the sit
   - [Choosing models and providers](deploy/models.md)
 - Use
   - [Chat, approvals and pages](../hub/README.md)
-  - [Adding your computers](deploy/computers.md)
-  - [Install talaria on a computer](start/install.md)
-  - [Set up and pair a computer](start/setup-and-pairing.md)
+  - [Add a computer](start/add-a-computer.md)
   - [Chat from a terminal](guides/terminal-chat.md)
   - [Let the agent use Firefox](guides/browser-extension.md)
   - [Use Talaria in an editor](guides/editor-bridge.md)
