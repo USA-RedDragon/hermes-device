@@ -1147,7 +1147,7 @@ func (b *backend) known(id string) *live {
 // attachRestartWait is how long opening a session the hub has not seen yet
 // keeps retrying while its backend restarts, so a chat picked during a
 // gateway handoff opens instead of failing.
-const attachRestartWait = 90 * time.Second
+const attachRestartWait = gateway.RestartBudget
 
 // attachable is the session to attach a viewer to: subscribed, or, while the
 // backend is away, the copy the hub already has (offline is true then). A
@@ -1474,9 +1474,9 @@ func (b *backend) callWithin(ctx context.Context, ls *live, d time.Duration, met
 }
 
 // readRestartWait bounds how long a read-only call is tried again while
-// its backend restarts. A Hermes gateway that stops for a rollout closes the
-// hub's socket once and is replaced within seconds.
-const readRestartWait = 30 * time.Second
+// its backend restarts: on the next connection, whose dial a stopping
+// gateway may hold for the whole restart budget.
+const readRestartWait = gateway.RestartBudget
 
 // read is call for a method that changes nothing: while the backend is
 // restarting (gateway.Retryable: a closed socket, a refusal while it drains)

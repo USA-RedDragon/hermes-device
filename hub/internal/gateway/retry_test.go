@@ -34,6 +34,10 @@ func (h *heldOnce) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.next(w, r)
 }
 
+const ticketKey = "ticket"
+
+func ticketReply() map[string]string { return map[string]string{ticketKey: "t1"} }
+
 func okJSON(v any) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -41,43 +45,33 @@ func okJSON(v any) http.HandlerFunc {
 	}
 }
 
-func TestHeldTicketAndLoginAreTriedAgain(t *testing.T) {
+func TestHeldCallsAreSentOnceAndAnswered(t *testing.T) {
 	t.Parallel()
-	login := &heldOnce{hold: time.Second, next: okJSON(map[string]bool{"ok": true})}
-	ticket := &heldOnce{hold: time.Second, next: okJSON(map[string]string{"ticket": "t1"})}
+	hold := 300 * time.Millisecond
+	login := &heldOnce{hold: hold, next: okJSON(map[string]bool{"ok": true})}
+	ticket := &heldOnce{hold: hold, next: okJSON(ticketReply())}
+	read := &heldOnce{hold: hold, next: okJSON(map[string]int{"jobs": 0})}
+	write := &heldOnce{hold: hold, next: okJSON(map[string]bool{"ok": true})}
+	post := &heldOnce{hold: hold, next: okJSON(map[string]bool{"ok": true})}
 	mux := http.NewServeMux()
 	mux.Handle("POST /auth/password-login", login)
 	mux.Handle("POST /api/webapp/socket-ticket", ticket)
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-	d := gateway.NewDialerWithAttempt(gateway.Credentials{BaseURL: srv.URL}, 200*time.Millisecond)
-	ctx := context.Background()
-	if err := d.LoginForTest(ctx); err != nil {
-		t.Fatalf("login = %v", err)
-	}
-	got, err := d.TicketForTest(ctx)
-	if err != nil || got != "t1" {
-		t.Fatalf("ticket = %q, %v", got, err)
-	}
-	if login.calls.Load() != 2 || ticket.calls.Load() != 2 {
-		t.Fatalf("calls: login %d, ticket %d; want 2 each", login.calls.Load(), ticket.calls.Load())
-	}
-}
-
-func TestHeldRequestIsTriedAgainOnlyWhenIdempotent(t *testing.T) {
-	t.Parallel()
-	read := &heldOnce{hold: time.Second, next: okJSON(map[string]int{"jobs": 0})}
-	write := &heldOnce{hold: time.Second, next: okJSON(map[string]bool{"ok": true})}
-	post := &heldOnce{hold: time.Second, next: okJSON(map[string]bool{"ok": true})}
-	mux := http.NewServeMux()
 	mux.Handle("GET /api/cron/jobs", read)
 	mux.Handle("PUT /api/config", write)
 	mux.Handle("POST /api/plugins/x", post)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	d := gateway.NewDialerWithAttempt(gateway.Credentials{BaseURL: srv.URL}, 200*time.Millisecond)
+	d := gateway.NewDialerWithAttempt(gateway.Credentials{BaseURL: srv.URL}, 5*time.Second)
 	ctx := context.Background()
-	for _, tc := range []struct{ method, path string }{{http.MethodGet, "/api/cron/jobs"}, {http.MethodPut, "/api/config"}} {
+	if err := d.LoginForTest(ctx); err != nil {
+		t.Fatalf("login = %v", err)
+	}
+	if got, err := d.TicketForTest(ctx); err != nil || got != "t1" {
+		t.Fatalf("ticket = %q, %v", got, err)
+	}
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/cron/jobs"}, {http.MethodPut, "/api/config"}, {http.MethodPost, "/api/plugins/x"},
+	} {
 		resp, err := d.Request(ctx, tc.method, tc.path, []byte(`{}`))
 		if err != nil {
 			t.Fatalf("%s %s = %v", tc.method, tc.path, err)
@@ -85,11 +79,48 @@ func TestHeldRequestIsTriedAgainOnlyWhenIdempotent(t *testing.T) {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}
-	if _, err := d.Request(ctx, http.MethodPost, "/api/plugins/x", []byte(`{}`)); !errors.Is(err, gateway.ErrUnreachable) {
-		t.Fatalf("held POST = %v, want the timeout (it may have run)", err)
+	for name, h := range map[string]*heldOnce{"login": login, "socket ticket": ticket, "GET": read, "PUT": write, "POST": post} {
+		if n := h.calls.Load(); n != 1 {
+			t.Errorf("%s sent %d times, want 1", name, n)
+		}
 	}
-	if read.calls.Load() != 2 || write.calls.Load() != 2 || post.calls.Load() != 1 {
-		t.Fatalf("calls: GET %d, PUT %d, POST %d; want 2, 2, 1", read.calls.Load(), write.calls.Load(), post.calls.Load())
+}
+
+// A call held past its attempt is not sent again: a stopping Hermes gateway
+// would hold the second one too and forward both, so a write would run twice.
+func TestHeldCallPastItsAttemptIsNotSentAgain(t *testing.T) {
+	t.Parallel()
+	write := &heldOnce{hold: time.Second, next: okJSON(map[string]bool{"ok": true})}
+	ticket := &heldOnce{hold: time.Second, next: okJSON(ticketReply())}
+	mux := http.NewServeMux()
+	mux.Handle("PUT /api/config", write)
+	mux.Handle("POST /api/webapp/socket-ticket", ticket)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	d := gateway.NewDialerWithAttempt(gateway.Credentials{BaseURL: srv.URL}, 200*time.Millisecond)
+	ctx := context.Background()
+	if _, err := d.Request(ctx, http.MethodPut, "/api/config", []byte(`{}`)); !errors.Is(err, gateway.ErrUnreachable) {
+		t.Fatalf("held PUT = %v, want the timeout", err)
+	}
+	if _, err := d.TicketForTest(ctx); !errors.Is(err, gateway.ErrUnreachable) {
+		t.Fatalf("held ticket = %v, want the timeout", err)
+	}
+	if write.calls.Load() != 1 || ticket.calls.Load() != 1 {
+		t.Fatalf("PUT sent %d times, ticket %d; want 1 each", write.calls.Load(), ticket.calls.Load())
+	}
+}
+
+// The attempt outlasts the longest a Hermes restart holds a call (the Flux
+// overlays: restart_listener_hold_seconds 90, listener_start_hold_seconds 20),
+// so the held call itself gets the answer.
+func TestAttemptOutlastsTheHermesRestartHold(t *testing.T) {
+	t.Parallel()
+	const hermesHold, hermesStartHold = 90 * time.Second, 20 * time.Second
+	if gateway.AttemptTimeout < hermesHold+hermesStartHold {
+		t.Fatalf("attempt %v is shorter than the restart hold %v", gateway.AttemptTimeout, hermesHold+hermesStartHold)
+	}
+	if gateway.AttemptTimeout > gateway.RestartBudget {
+		t.Fatalf("attempt %v is longer than the restart budget %v", gateway.AttemptTimeout, gateway.RestartBudget)
 	}
 }
 
@@ -116,7 +147,7 @@ func TestDialMintsAgainWhenTheTicketIsRefused(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/webapp/socket-ticket", func(w http.ResponseWriter, _ *http.Request) {
 		tickets.Add(1)
-		okJSON(map[string]string{"ticket": "t"})(w, nil)
+		okJSON(map[string]string{ticketKey: "t"})(w, nil)
 	})
 	mux.HandleFunc("GET /api/ws", func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{gateway.Subprotocol}})

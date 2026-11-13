@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// AttemptTimeout is the time limit of one dashboard call.
+const AttemptTimeout = attemptTimeout
+
 // NewDialerWithAttempt is newDialer for tests: a Dialer whose calls time out after attempt.
 func NewDialerWithAttempt(creds Credentials, attempt time.Duration) *Dialer {
 	return newDialer(creds, attempt)
