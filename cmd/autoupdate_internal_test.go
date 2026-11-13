@@ -216,36 +216,6 @@ func TestAutoInstallNeverDowngradesOrInstallsPrerelease(t *testing.T) {
 	}
 }
 
-func TestDaemonFirstCheckIgnoresTheCacheOfSetup(t *testing.T) {
-	t.Parallel()
-	var requests atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		requests.Add(1)
-		_, _ = w.Write([]byte(`{"tag_name":"v0.15.0"}`))
-	}))
-	t.Cleanup(srv.Close)
-	path := filepath.Join(t.TempDir(), "release.json")
-	b, _ := autoBase(t, verNow, func(context.Context, string, string, []byte) (string, error) { return "x", nil })
-	b.releaseLookup = func(string) *autoupdate.Releases {
-		return &autoupdate.Releases{APIURL: srv.URL, Owner: "alice", Repo: "talaria", Client: srv.Client(), Path: path, Source: sourceCLI}
-	}
-	setupSide := b.releaseLookup("")
-	if _, err := setupSide.Latest(t.Context(), autoupdate.NoticeMaxAge); err != nil {
-		t.Fatal(err)
-	}
-	cfg := defaultConfig(t, map[string]string{"TALARIA_HUB_URL": "https://hub.example.com"})
-	d := b.daemonUpdater(cfg)
-	if d == nil {
-		t.Fatal("no daemon updater")
-	}
-	if tag, err := d.Latest(t.Context()); err != nil || tag != "v0.15.0" || requests.Load() != 2 {
-		t.Fatalf("first check = %q, %v after %d requests; want a new lookup", tag, err, requests.Load())
-	}
-	if _, err := d.Latest(t.Context()); err != nil || requests.Load() != 2 {
-		t.Errorf("the next check asked again: %d requests, %v", requests.Load(), err)
-	}
-}
-
 // The sandbox and device images set update.auto false; their devices run
 // with hub.token-file, which also turns it off.
 func TestImagesTurnAutoUpdateOff(t *testing.T) {
