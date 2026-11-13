@@ -588,3 +588,49 @@ func TestSetupReportsFailure(t *testing.T) {
 		t.Errorf("summary without an error:\n%s", out)
 	}
 }
+
+// Uninstall leaves nothing of talaria's own behind: its cache, and on
+// macOS the log that launchd wrote for the agent.
+func TestUninstallRemovesCacheAndLaunchdLog(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.opts.NoShell, f.opts.NoBrowser = true, true
+	if _, err := f.sys.Setup(t.Context(), f.opts); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(f.sys.CacheDir, "talaria")
+	writeFile(t, filepath.Join(cache, "release.json"), "{}")
+	writeFile(t, filepath.Join(cache, "hermes", "builds", "x", "file"), "x")
+	other := filepath.Join(f.sys.CacheDir, "other", "keep")
+	writeFile(t, other, "x")
+	rep, err := f.sys.Uninstall(t.Context(), &setup.UninstallOptions{StateDir: f.opts.StateDir, Unpair: noUnpair})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists(cache) || !exists(other) || !strings.Contains(strings.Join(rep.Done, "\n"), "Removed the cache "+cache) {
+		t.Errorf("cache left or other cache removed: %+v", rep)
+	}
+
+	r := &fakeRunner{respond: func(string, []string) ([]byte, error) { return nil, errNotFound }}
+	sys := newSystem(t, "darwin", r, map[string]string{launchctl: binLaunchctl}, nil)
+	svc, err := sys.NewService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(sys.Home, "Library", "Application Support", "talaria")
+	content := string(svc.Content("/bin/talaria", filepath.Join(stateDir, "config.yaml")))
+	writeFile(t, svc.Path(), content)
+	logFile := filepath.Join(sys.Home, "Library", "Logs", "talaria.log")
+	writeFile(t, logFile, "time=... msg=Running\n")
+	st := &setup.State{Service: svc.Path(), ServiceSHA256: sha256Hex(content), ServiceOn: true}
+	if err := st.Save(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = sys.Uninstall(t.Context(), &setup.UninstallOptions{StateDir: stateDir, Unpair: noUnpair})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists(svc.Path()) || exists(logFile) {
+		t.Errorf("agent file or its log left: %+v", rep)
+	}
+}

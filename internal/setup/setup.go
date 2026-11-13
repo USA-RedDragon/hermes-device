@@ -572,7 +572,7 @@ func (s *System) Uninstall(ctx context.Context, o *UninstallOptions) (*Report, e
 	errs := []error{s.uninstallService(ctx, st, r)}
 	if errs[0] == nil {
 		errs = append(errs, uninstallHost(o, st, r), uninstallToken(o, st, r), uninstallConfig(st, r),
-			uninstallEdits(st, r), s.uninstallBinary(st, r))
+			uninstallEdits(st, r), s.uninstallBinary(st, r), s.uninstallCache(r))
 	} else {
 		r.todo("Kept the binary, the config and the token, because the service still runs. Stop it, then run setup --uninstall again")
 	}
@@ -630,6 +630,14 @@ func (s *System) uninstallService(ctx context.Context, st *State, r *Report) err
 		return err
 	}
 	r.done("Removed %s", st.Service)
+	if l, ok := svc.(*launchdService); ok {
+		// launchd wrote the daemon's log where the agent file said
+		if err := os.Remove(l.LogFile()); err == nil {
+			r.done("Removed the service's log %s", l.LogFile())
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
 	if st.ServiceBackup != "" {
 		if err := os.Rename(st.ServiceBackup, st.Service); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
@@ -717,6 +725,23 @@ func uninstallEdits(st *State, r *Report) error {
 	}
 	st.Edits = kept
 	return errors.Join(errs...)
+}
+
+// uninstallCache removes talaria's cache directory: the release lookup
+// cache, and on Linux the managed Hermes builds of talaria chat.
+func (s *System) uninstallCache(r *Report) error {
+	if s.CacheDir == "" {
+		return nil
+	}
+	dir := filepath.Join(s.CacheDir, dirName)
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	r.done("Removed the cache %s", dir)
+	return nil
 }
 
 func (s *System) uninstallBinary(st *State, r *Report) error {
