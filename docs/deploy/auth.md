@@ -76,8 +76,9 @@ Optional. Set it to the hub user name of the person this agent works for, once t
 ## Behind a reverse proxy
 
 Use this when a proxy already logs your people in. The proxy sends the person's name in a header, and the hub
-believes that header from the address of the proxy right in front of it. In the install files that is the Caddy
-of Talaria itself (`front`), which passes on what your proxy sends. So **only your proxy may reach Talaria's port**:
+believes that header from the address of the proxy right in front of it. In compose and the all-in-one image that
+is the Caddy of Talaria itself (`front`), which passes on what your proxy sends; with Helm it is your ingress
+controller or gateway (`auth.trustedProxies`). So **only your proxy may reach Talaria's port**:
 anyone else could send the header themselves. Bind the port to the proxy's network or to `127.0.0.1`, and make your
 proxy replace the header on every request (Authelia, oauth2-proxy and the Authentik outpost do).
 
@@ -130,8 +131,9 @@ through without the login (in Authelia, an `access_control` rule with `policy: b
 oauth2-proxy run with `--set-xauthrequest` behind your proxy's `auth_request` or `forward_auth`.
 
 **Helm:** `--set auth.mode=proxy --set auth.proxy.user_header=Remote-User --set auth.proxy.auto_create=true`.
-`auth.proxy` takes the hub's `auth.proxy` settings as they are. Limit who reaches the Service, for example with a
-NetworkPolicy, or use a signed token (below), which the hub checks itself.
+`auth.proxy` takes the hub's `auth.proxy` settings as they are. The hub reads the header only from
+`auth.trustedProxies`, by default the private address ranges of pods; set it to your proxy's addresses. Limit who
+reaches the Service, for example with a NetworkPolicy, or use a signed token (below), which the hub checks itself.
 
 **All-in-one:** add `HUB_AUTH_MODE=proxy` and the `HUB_AUTH_PROXY_*` variables to the container, and publish its
 port only to your proxy.

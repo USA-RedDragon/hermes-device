@@ -115,9 +115,10 @@ apiVersion: v2
 name: talaria
 description: Talaria, a web and Telegram front end for Hermes Agent with paired computers and a sandbox
 type: application
-version: 0.2.0
-# The talaria-hub release this chart was tested with
-appVersion: "0.26.54"
+version: 0.3.0
+# The talaria-hub release that images.hub pins, without its v (deploy/hack/check-sync.sh checks it; deploy/hack/pin.sh
+# and Renovate move both)
+appVersion: "0.26.65"
 home: https://github.com/USA-RedDragon/talaria
 sources:
   - https://github.com/USA-RedDragon/talaria
@@ -157,8 +158,10 @@ auth:
   user: ""
   # -- Hub user names that are admins, besides accounts marked admin in Settings > Users
   admins: []
-  # -- Addresses the hub reads the client address from X-Forwarded-For for: the front container in the same pod
-  trustedProxies: ["127.0.0.1/32"]
+  # -- Addresses of the proxies in front of the hub (your ingress controller or gateway), the private ranges of
+  # pod addresses by default. The hub reads the client address from their X-Forwarded-For, and with mode proxy
+  # it reads the user header only from them
+  trustedProxies: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]
   # -- The hub's auth.proxy settings, as they are, for mode proxy, such as {user_header: Remote-User} or a jwt
   # block. Only the proxy may reach the Service then: anyone else could send the header
   proxy: {}
@@ -197,7 +200,6 @@ images:
   # -- The binary's file name at the root of the device image, for the image volume; "hermes-device" before v0.26.0
   deviceBinary: talaria
   sandbox: ghcr.io/usa-reddragon/talaria-sandbox:v0.26.0@sha256:95c0ad9f33ab6bb5f19064c4c9cca23b05b5b635b6fb10999d1895d843b81090
-  caddy: docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
   # -- SearXNG, the agent's web search (searxng below)
   searxng: docker.io/searxng/searxng:2026.11.13-8a53a6aa5@sha256:82b222dd1854c43241874874fbc985006556230804dc819ef2a639eeb574d0e2
   pullPolicy: IfNotPresent

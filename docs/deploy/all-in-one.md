@@ -51,9 +51,10 @@ bringing a second supervisor.
 | Part | How it runs | User |
 | ---- | ----------- | ---- |
 | Setup | `/etc/cont-init.d/10-talaria`, once per start, after the agent's own setup: the same `init.sh` and `hermes-init.py` as the compose install | root, then hermes |
-| Agent gateway | The container's command (`gateway run`), as in the plain agent image | hermes (`PUID`) |
-| Hub | s6 service `talaria-hub`, on 127.0.0.1:8081 | nobody |
-| Front | s6 service `talaria-front` (Caddy), the one port inside the container: `TALARIA_PORT` (8080). Publish it on any host port. Until the agent answers its health check, it holds requests (up to a minute, then a page that reloads itself) | nobody |
+| Agent gateway | The container's command (`gateway run`), as in the plain agent image. Its Webapp listener (127.0.0.1:9120) serves every agent route the hub uses; no Hermes dashboard runs | hermes (`PUID`) |
+| Editor bridge | s6 service `talaria-acp-host`, on 127.0.0.1:9130: one `hermes acp` per editor connection that the hub forwards (`talaria acp`) | hermes |
+| Hub | s6 service `talaria-hub`, on 127.0.0.1:8081. It flushes chat streams itself | nobody |
+| Front | s6 service `talaria-front` (Caddy), the one port inside the container: `TALARIA_PORT` (8080). Publish it on any host port. The hub starts before the agent; until the agent answers its health check, Caddy holds requests (up to a minute, then a page that reloads itself) | nobody |
 | Sandbox | s6 service `talaria-sandbox`, `talaria run` as a service device | agent (2568) |
 | Web search | s6 service `talaria-searxng`: SearXNG on 127.0.0.1:8888, for the agent only; off with `TALARIA_SEARXNG=false` ([Web search](reference.md#web-search)) | searxng (977) |
 | Demo model | s6 service `talaria-demo`, only with `TALARIA_DEMO=true`, offered to the agent as the provider `talaria-demo` | nobody |

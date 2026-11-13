@@ -149,8 +149,9 @@ start; it never changes a secret it made.
 | `init` | Makes the secrets once, writes the hub config, prints the address, then exits |
 | `plugin` | Copies the Talaria device plugin out of its image, then exits |
 | `hermes-init` | Sets up the agent's data folder: plugin, hub key, Talaria settings in `config.yaml`, then exits |
-| `hermes` | The agent itself |
-| `front` | Caddy: the one published port, in front of the hub (and HTTPS when `TALARIA_SITE` is set) |
+| `hermes` | The agent itself. Its Webapp listener (port 9120) serves every agent route the hub uses; no Hermes dashboard runs |
+| `acp-host` | Runs one `hermes acp` per editor connection that the hub forwards (`talaria acp`), in the `hermes` service's network |
+| `front` | Caddy: the one published port, in front of the hub. HTTPS when `TALARIA_SITE` is set, and it holds requests while the agent starts (up to a minute, then a page that reloads itself). The hub flushes chat streams itself |
 | `hub` | The Talaria hub: web app, Telegram bot, device connections |
 | `sandbox` | Runs the agent's commands for chats that are not on one of your computers |
 | `searxng` | The agent's web search (SearXNG), reachable only inside the compose network. See [Web search](reference.md#web-search) |

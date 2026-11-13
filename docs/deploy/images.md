@@ -1,7 +1,8 @@
 # Container images
 
 Every install uses these images, pinned by digest. The compose file, the Helm chart and the all-in-one
-Dockerfile pin the same versions.
+Dockerfile pin the same versions (`deploy/hack/check-sync.sh` checks it in CI, and `deploy/hack/pin.sh` moves a
+pin in all of them), and the chart's `appVersion` is the hub release it pins.
 
 <!-- docgen:output exec="grep -oE '(ghcr\.io|docker\.io)/[a-z0-9./_-]+:[A-Za-z0-9._-]+' deploy/compose/compose.yaml | sort -u" -->
 ```text
@@ -24,7 +25,7 @@ ghcr.io/usa-reddragon/talaria:v0.26.0
 | `ghcr.io/usa-reddragon/talaria-hermes` | Talaria Hermes: Hermes Agent with the Talaria patches | Yes |
 | `ghcr.io/usa-reddragon/talaria` | The `talaria` binary; the chart and compose copy the device plugin out of it | Yes |
 | `ghcr.io/usa-reddragon/talaria-sandbox` | The sandbox | Yes |
-| `docker.io/library/caddy` | The web front | Yes |
+| `docker.io/library/caddy` | The web front of compose (HTTPS, and holding requests while the agent starts); the all-in-one image carries its binary. The Helm chart does not use it | Yes |
 | `docker.io/searxng/searxng` | SearXNG, the agent's web search ([Web search](reference.md#web-search)) | Yes |
 | `ghcr.io/usa-reddragon/talaria-aio` | The all-in-one image (Unraid, TrueNAS, `docker run`) | Yes |
 

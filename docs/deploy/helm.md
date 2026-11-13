@@ -1,6 +1,6 @@
 # Install on Kubernetes with Helm
 
-The chart in `deploy/charts/talaria` runs the same parts as the compose install: the hub (with its web front in one pod), the agent, the sandbox, and SearXNG for the agent's web search. It makes every key it needs on the first install.
+The chart in `deploy/charts/talaria` runs the same parts as the compose install: the hub, the agent, the sandbox, and SearXNG for the agent's web search. It makes every key it needs on the first install.
 
 It is built on the [bjw-s common library](https://bjw-s-labs.github.io/helm-charts/docs/common-library/) (a copy is in `charts/`, so a plain checkout installs). Its own values stay short; the chart maps them onto the library's controllers, services, volumes and routes.
 
@@ -69,6 +69,16 @@ hours, for server-sent events). An authenticating policy belongs on `<release>` 
 With `auth.mode=oidc` and a provider whose certificate comes from a private CA (your own, or step-ca), give the
 hub that CA with `--set-file hub.caBundle=ca.crt`.
 
+## What runs
+
+| Deployment | Containers | What they do |
+| ---------- | ---------- | ------------ |
+| `<release>-hub` | `hub` | The hub: the web app, its API and the device connections, on the Service `<release>` (port 8080) and `<release>-hub-internal` (8081, for the sandbox). It flushes each chat event as it writes it, so no proxy sits in front of it in the pod. |
+| `<release>-hermes` | `gateway`, `acp-host` (init: `plugin`, `device-bin` below 1.35, `init`) | `gateway` is the agent; its Webapp listener (port 9120) serves every agent route the hub uses: chats, models, settings and Connect a model. `acp-host` runs one `hermes acp` per editor connection (`hermes.editorBridge`). The agent's pod runs no Hermes dashboard. |
+| `<release>-sandbox` | `sandbox` | Where the agent runs commands for chats that are on none of your computers. |
+| `<release>-searxng` | `searxng` | The agent's web search (`searxng.enabled`). |
+| `<release>-demo-llm` | `demo-llm` | The stand-in model (`demo.enabled`). |
+
 ## Zero-downtime updates
 
 With `hermes.rolling.enabled` (the default), an upgrade or a restart of the agent loses nothing:
@@ -111,6 +121,18 @@ Every volume, Secret and Service keeps its name, so data and keys stay. Only the
 selector, which Kubernetes does not allow in place: a pre-upgrade hook (`<release>-migrate`, run once, only while
 old Deployments exist) deletes them, waits until the old hub and sandbox pods are gone, and Helm makes them again.
 The hub is away for under a minute; the agent hands over as in a rolling update.
+
+## Upgrade from chart 0.2.x
+
+Chart 0.3.0 drops the Caddy container that sat in front of the hub in its pod: the hub flushes chat streams itself.
+Nothing else moves, so a plain `helm upgrade` keeps every volume, Secret and Service. The hub's pod is replaced
+once, and the agent hands over as in a rolling update.
+
+The hub now sees your ingress controller or gateway as the client, not a proxy on `127.0.0.1`. `auth.trustedProxies`
+therefore defaults to the private address ranges of pods (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
+`fc00::/7`). Upgrade with your own values file, not `--reuse-values`, which would keep the old `127.0.0.1/32`.
+With `auth.mode=proxy` and plain headers, set it to the addresses of your proxy if you can, as the hub reads the
+user header only from them.
 
 ## Keys and secrets
 
