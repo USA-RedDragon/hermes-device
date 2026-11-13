@@ -222,10 +222,15 @@ func (b *base) pairIfNeeded(ctx context.Context, out io.Writer, sys *setup.Syste
 	return true, nil
 }
 
-// openURL opens u in the default browser when there is a desktop.
+// openURL opens u in the default browser when there is a desktop. On
+// macOS over SSH it does not: open would show the page on the screen of
+// whoever sits at the Mac, not to the person who runs setup.
 func openURL(sys *setup.System, u string) {
 	prog := "xdg-open"
 	if sys.GOOS == goosDarwin {
+		if sys.Getenv("SSH_CONNECTION") != "" || sys.Getenv("SSH_TTY") != "" {
+			return
+		}
 		prog = "open"
 	} else if sys.Getenv("DISPLAY") == "" && sys.Getenv("WAYLAND_DISPLAY") == "" {
 		return

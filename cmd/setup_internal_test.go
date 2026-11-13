@@ -179,3 +179,43 @@ func TestPairIfNeededKeepsAcceptedToken(t *testing.T) {
 		t.Fatalf("pairIfNeeded = %t, %v, %q", paired, err, out.String())
 	}
 }
+
+type startRecorder struct {
+	nullRunner
+	started []string
+}
+
+func (r *startRecorder) Start(name string, args ...string) error {
+	r.started = append(r.started, name+" "+strings.Join(args, " "))
+	return nil
+}
+
+func TestOpenURLSkipsSSHOnMacOS(t *testing.T) {
+	t.Parallel()
+	const u = "https://hub.example.com/device/pair"
+	for _, tc := range []struct {
+		name, goos string
+		env        map[string]string
+		want       bool
+	}{
+		{"mac desktop", goosDarwin, nil, true},
+		{"mac over ssh", goosDarwin, map[string]string{"SSH_CONNECTION": "192.0.2.1 50000 192.0.2.2 22"}, false},
+		{"mac over ssh with a tty", goosDarwin, map[string]string{"SSH_TTY": "/dev/ttys001"}, false},
+		{"linux desktop", goosLinux, map[string]string{"DISPLAY": ":0"}, true},
+		{"linux headless", goosLinux, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := &startRecorder{}
+			sys := &setup.System{
+				GOOS: tc.goos, Run: r,
+				Getenv:   func(k string) string { return tc.env[k] },
+				LookPath: func(p string) (string, error) { return "/usr/bin/" + p, nil },
+			}
+			openURL(sys, u)
+			if got := len(r.started) == 1; got != tc.want {
+				t.Fatalf("opened = %v (%q), want %v", got, r.started, tc.want)
+			}
+		})
+	}
+}
