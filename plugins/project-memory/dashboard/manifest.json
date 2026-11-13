@@ -1,0 +1,7 @@
+{
+  "name": "project-memory",
+  "label": "Project memory",
+  "description": "The notes of each project (git repository) for hermes-hub's Memory page.",
+  "api": "plugin_api.py",
+  "tab": { "hidden": true }
+}

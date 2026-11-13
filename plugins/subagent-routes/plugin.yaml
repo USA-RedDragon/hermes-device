@@ -1,0 +1,7 @@
+name: subagent-routes
+kind: standalone
+version: 0.3.0
+description: The model routes a chat's subagents may use (delegation.backend model_map, in place of advanced-delegation's), chosen per chat in hermes-hub
+author: Talaria contributors
+requires_hermes: ">=0.22.5"
+provides_hooks: [pre_llm_call, pre_tool_call, subagent_stop, on_session_delete]

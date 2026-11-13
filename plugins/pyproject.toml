@@ -1,0 +1,11 @@
+# Tooling only: the plugins are loaded by Hermes from their directories, not installed as a package.
+[tool.ruff]
+line-length = 140
+extend-exclude = [".git"]
+
+[tool.ruff.lint]
+select = ["E9", "F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]

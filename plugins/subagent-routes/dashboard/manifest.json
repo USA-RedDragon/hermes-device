@@ -1,0 +1,7 @@
+{
+  "name": "subagent-routes",
+  "label": "Subagent routes",
+  "description": "The Subagents choice of each chat (which model routes its subagents may use), for hermes-hub.",
+  "api": "plugin_api.py",
+  "tab": { "hidden": true }
+}
