@@ -1,6 +1,6 @@
 cmd/auth.go	15	0
 cmd/cmd.go	235	0
-internal/agents/agents.go	407	320
+internal/agents/agents.go	447	361
 internal/agents/format.go	26	26
 internal/auth/limit.go	45	40
 internal/auth/names.go	17	16
@@ -32,14 +32,14 @@ internal/device/device.go	202	163
 internal/device/devicetest/devicetest.go	522	467
 internal/device/files.go	71	57
 internal/device/gateway.go	419	331
-internal/device/legs.go	169	151
+internal/device/legs.go	169	149
 internal/device/pair.go	52	29
 internal/device/plugin.go	100	84
 internal/device/rpc.go	214	199
 internal/device/sessioncheck.go	23	22
 internal/device/usage.go	50	40
 internal/device/views.go	17	17
-internal/gateway/client.go	252	207
+internal/gateway/client.go	252	206
 internal/gateway/gatewaytest/activity.go	106	86
 internal/gateway/gatewaytest/compose.go	180	156
 internal/gateway/gatewaytest/fake.go	642	586
@@ -49,6 +49,7 @@ internal/gateway/gatewaytest/runtime.go	22	19
 internal/gateway/gatewaytest/source.go	25	9
 internal/gateway/protocol.go	30	30
 internal/hub/activity.go	1	1
+internal/hub/agents.go	4	4
 internal/hub/answer.go	5	5
 internal/hub/attach.go	45	39
 internal/hub/claude.go	79	78
@@ -77,7 +78,7 @@ internal/notify/jobs.go	55	43
 internal/notify/notify.go	307	195
 internal/origin/fallback.go	73	71
 internal/origin/origin.go	117	102
-internal/pdf/pdf.go	180	160
+internal/pdf/pdf.go	180	159
 internal/pdf/pdftest/pdftest.go	32	32
 internal/scheduled/client.go	110	88
 internal/scheduled/clock.go	75	66
@@ -102,7 +103,7 @@ internal/service/service.go	785	718
 internal/service/stopsend.go	93	77
 internal/service/turn.go	78	71
 internal/store/accounts.go	187	156
-internal/store/agents.go	52	43
+internal/store/agents.go	83	70
 internal/store/answers.go	22	20
 internal/store/chats.go	70	58
 internal/store/claudecode.go	97	79
@@ -136,7 +137,7 @@ internal/telegram/render.go	476	429
 internal/telegram/replymedia.go	102	87
 internal/telegram/status.go	59	53
 internal/telegram/todo.go	58	51
-internal/telegram/topics.go	521	381
+internal/telegram/topics.go	521	380
 internal/web/accounts.go	255	192
 internal/web/activity.go	119	79
 internal/web/api.go	252	184
@@ -155,12 +156,13 @@ internal/web/memory.go	148	105
 internal/web/notify.go	137	97
 internal/web/page.go	80	73
 internal/web/pagechat.go	50	40
+internal/web/partners.go	64	51
 internal/web/prompts.go	64	53
 internal/web/scheduled.go	99	57
 internal/web/stream.go	32	30
 internal/web/subagents.go	16	14
 internal/web/users.go	182	113
-internal/web/web.go	196	172
+internal/web/web.go	199	175
 internal/webpush/encrypt.go	40	32
 internal/webpush/key.go	49	42
 internal/webpush/send.go	80	68
