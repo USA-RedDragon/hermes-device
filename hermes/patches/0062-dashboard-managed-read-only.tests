@@ -1,0 +1,12 @@
+# Upstream tests of the setup routes and the managed scope this patch reads
+tests/hermes_cli/test_managed_scope_writeguard.py
+tests/hermes_cli/test_managed_scope_overlay.py
+tests/hermes_cli/test_credential_lifecycle.py
+tests/hermes_cli/test_env_custom_keys.py
+tests/hermes_cli/test_model_set_preserve_custom_endpoint.py
+tests/hermes_cli/test_model_set_explicit_custom_endpoint.py
+tests/hermes_cli/test_model_set_secret_copy.py
+tests/hermes_cli/test_model_assignment_env_key_mirror.py
+tests/hermes_cli/test_model_info_probe_timeout.py
+tests/hermes_cli/test_web_profiles_model_scope.py
+tests/hermes_cli/test_detach_removed_default.py

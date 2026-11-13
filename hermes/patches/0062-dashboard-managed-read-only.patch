@@ -1,0 +1,622 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 08:32:49 +0000
+Subject: [PATCH] fix(dashboard): leave the model settings a deployment sets
+ alone
+
+A deployment can pin the main model and custom endpoints in the managed scope and supply provider keys in the process environment. The dashboard's setup routes only knew config.yaml and .env: setting the default answered ok while the pinned one stayed (and wrote model.base_url and model.api_mode next to it), a removed managed endpoint came back on the next start, and a key saved over one from the environment went to .env, which loads with override and hid the deployment's key for good. dashboard.managed_read_only (false = off) marks these items (managed on endpoints and on the default in the custom-endpoints list and /api/model/info, managed or in_environment on /api/env rows, never the value) and refuses their writes with 409 and where they are set. Setting the default also stops writing base_url and api_mode for a provider that is not a custom endpoint.
+---
+ hermes_cli/config_defaults.py                 |   5 +
+ hermes_cli/dashboard_managed.py               | 114 +++++++++
+ hermes_cli/web_routers/config_env.py          |  69 ++++-
+ hermes_cli/web_routers/models.py              |  21 +-
+ hermes_cli/web_server_config.py               |  18 ++
+ .../test_dashboard_managed_read_only.py       | 238 ++++++++++++++++++
+ 6 files changed, 458 insertions(+), 7 deletions(-)
+ create mode 100644 hermes_cli/dashboard_managed.py
+ create mode 100644 tests/hermes_cli/test_dashboard_managed_read_only.py
+
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index b5d9c395d2..05928b1fdc 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1008,6 +1008,11 @@ DEFAULT_CONFIG = {
+         # model.default and model.provider, so new chats are refused as no_model_configured instead of
+         # failing on authentication against a provider that has no credential.
+         "detach_removed_default": False,
++        # The model setup routes (custom endpoints, API keys, the main model) mark what the deployment sets
++        # (the managed scope's main model and endpoints, keys in the managed .env or the process environment)
++        # and refuse to change it with 409: a save there was overridden or came back on the next start, and a
++        # key saved to .env hid the deployment's key for good.
++        "managed_read_only": False,
+         # IPs / bounded CIDRs of reverse proxies trusted to supply X-Forwarded-Proto/-For. Loopback
+         # always trusted; wildcards and /0 rejected (spoofing guard).
+         "trusted_proxies": [],
+diff --git a/hermes_cli/dashboard_managed.py b/hermes_cli/dashboard_managed.py
+new file mode 100644
+index 0000000000..4b7b5ff2a1
+--- /dev/null
++++ b/hermes_cli/dashboard_managed.py
+@@ -0,0 +1,114 @@
++"""``dashboard.managed_read_only``: the dashboard's model setup leaves what the deployment sets alone.
++
++A deployment can set the main model and custom endpoints in the managed scope (``HERMES_MANAGED_DIR`` or
++``/etc/hermes``, see :mod:`hermes_cli.managed_scope`) and supply provider keys in the process environment.
++The dashboard's setup routes read and write only ``config.yaml`` and ``.env``, so without this key a save
++"succeeded" while the managed value kept winning (and wrote route keys such as ``model.base_url`` next to
++the pinned default), a removed managed endpoint came back on the next start, and a key saved to ``.env``
++shadowed the deployment's own key for good (``.env`` loads with override). With the key on, the setup
++routes mark these items (``managed``, ``in_environment``) and refuse to change them with 409.
++"""
++from __future__ import annotations
++
++import os
++from typing import Any, Optional
++
++from hermes_cli import managed_scope
++
++# The 409 every refusal here answers with: the item exists, the request conflicts with where it is set.
++CONFLICT = 409
++
++
++def enabled(cfg: Optional[dict] = None) -> bool:
++    """``dashboard.managed_read_only`` (false = off), read from the merged config when *cfg* is None."""
++    if cfg is None:
++        from hermes_cli.config import load_config
++        try:
++            cfg = load_config()
++        except Exception:
++            return False  # an unreadable home: the route's own handling answers, as upstream's does
++    dashboard = cfg.get("dashboard") if isinstance(cfg, dict) else None
++    return isinstance(dashboard, dict) and bool(dashboard.get("managed_read_only"))
++
++
++def source() -> str:
++    """The managed config file, for messages."""
++    managed_dir = managed_scope.get_managed_dir()
++    return str(managed_dir / "config.yaml") if managed_dir else "the deployment config"
++
++
++def _managed_config() -> dict:
++    cfg = managed_scope.load_managed_config()
++    return cfg if isinstance(cfg, dict) else {}
++
++
++def default_managed() -> bool:
++    """True when the managed scope pins the main model (``model.default`` or ``model.provider``)."""
++    model = _managed_config().get("model")
++    if isinstance(model, str):
++        return bool(model.strip())
++    return isinstance(model, dict) and any(model.get(k) not in (None, "") for k in ("default", "name", "provider"))
++
++
++def managed_provider_ids() -> set[str]:
++    """Keys of the ``providers:`` entries the managed scope defines."""
++    providers = _managed_config().get("providers")
++    return {str(k) for k in providers} if isinstance(providers, dict) else set()
++
++
++def managed_custom_provider_slugs() -> set[str]:
++    """Endpoint ids (name slugs) of the ``custom_providers:`` entries the managed scope defines."""
++    from hermes_cli.web_routers.config_env import _custom_endpoint_id
++
++    legacy = _managed_config().get("custom_providers")
++    if not isinstance(legacy, list):
++        return set()
++    return {_custom_endpoint_id(str(e.get("name") or "")) for e in legacy if isinstance(e, dict) and e.get("name")}
++
++
++def endpoint_managed(endpoint_id: str, row_source: str = "", name: Any = None) -> bool:
++    """True when the custom endpoint *endpoint_id* (display *name*) comes from the managed scope. A
++    ``direct-config`` row is the main model's own address, managed with the main model. A managed
++    ``custom_providers`` row counts under either source: the config migration moves one that a start-up merge
++    copied into config.yaml to ``providers.<slug>``, and the next start brings it back if it is removed there."""
++    if row_source == "direct-config":
++        return default_managed()
++    if row_source != "custom_providers" and endpoint_id in managed_provider_ids():
++        return True
++    from hermes_cli.web_routers.config_env import _custom_endpoint_id
++    slugs = managed_custom_provider_slugs()
++    return _custom_endpoint_id(endpoint_id) in slugs or (bool(name) and _custom_endpoint_id(str(name)) in slugs)
++
++
++def env_origin(name: str, env_on_disk: dict) -> Optional[str]:
++    """Where a variable Hermes's ``.env`` does not hold comes from: ``managed`` (the managed ``.env``),
++    ``environment`` (the process environment the deployment started Hermes with), or None (``.env``, or
++    unset). Never reads out the value."""
++    if managed_scope.is_env_managed(name):
++        return "managed"
++    if env_on_disk.get(name):
++        return None
++    return "environment" if os.environ.get(name) else None
++
++
++def env_refusal(name: str, env_on_disk: dict) -> Optional[str]:
++    """The 409 detail for a write of *name* the deployment sets, or None when it may be written."""
++    origin = env_origin(name, env_on_disk)
++    if origin == "managed":
++        return (f"{name} is set in the deployment ({managed_scope.get_managed_dir()}/.env), so it cannot be "
++                "changed or removed here. Change it where the deployment sets it.")
++    if origin == "environment":
++        return (f"{name} is set in the deployment (the environment Hermes was started with), so it cannot be "
++                "changed or removed here. A key saved here would hide the deployment's key, also after the "
++                "deployment changes it. Change it where the deployment sets it.")
++    return None
++
++
++def default_refusal() -> str:
++    return (f"The default model is set in the deployment config ({source()}), so it cannot be changed here. "
++            "Change it there.")
++
++
++def endpoint_refusal(name: Any) -> str:
++    return (f"{name} is set in the deployment config ({source()}), so it cannot be changed or removed here. "
++            "Change it there.")
+diff --git a/hermes_cli/web_routers/config_env.py b/hermes_cli/web_routers/config_env.py
+index 8f68e14043..b1ca803648 100644
+--- a/hermes_cli/web_routers/config_env.py
++++ b/hermes_cli/web_routers/config_env.py
+@@ -327,9 +327,29 @@ def _get_env_vars_sync(profile: Optional[str] = None):
+         row["category"] = "custom"
+         row["is_password"] = True
+         result[var_name] = row
++    from hermes_cli import dashboard_managed
++    if not _is_other_profile(profile) and dashboard_managed.enabled():
++        # A key the deployment sets is no .env row: say where it comes from, never what it is.
++        for var_name, row in result.items():
++            origin = dashboard_managed.env_origin(var_name, env_on_disk)
++            if origin == "managed":
++                row["managed"] = True
++            elif origin == "environment":
++                row["in_environment"] = True
+     return result
+ 
+ 
++def _refuse_deployment_env(key: str, profile: Optional[str]) -> None:
++    """``dashboard.managed_read_only``: 409 for a write of a key the deployment sets. The process
++    environment belongs to the launch profile only."""
++    from hermes_cli import dashboard_managed
++    if _is_other_profile(profile) or not dashboard_managed.enabled():
++        return
++    refusal = dashboard_managed.env_refusal(key, load_env())
++    if refusal:
++        raise HTTPException(status_code=dashboard_managed.CONFLICT, detail=refusal)
++
++
+ @router.put("/api/env")
+ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
+     # Unified credential lifecycle: writes .env AND reconciles any config.yaml
+@@ -339,6 +359,7 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
+     # Display-only previews (sentinel or legacy mask) must never gain write authority.
+     if is_redacted_credential_preview(body.value):
+         raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
++    await asyncio.to_thread(_refuse_deployment_env, body.key, body.profile or profile)
+     with _env_write_errors("PUT /api/env failed"):
+         return await scoped_to_thread(body.profile or profile, lambda: _save_env_credential(body.key, body.value, body.provider_setup))
+ 
+@@ -535,12 +556,39 @@ def _custom_endpoint_response(cfg: dict[str, Any]) -> dict[str, Any]:
+             model_cfg.get("context_length"), True, model_cfg, True, "direct-config",
+         ))
+ 
+-    return {
+-        "endpoints": endpoints,
+-        "current": {
+-            "provider": current_provider, "model": current_model, "base_url": current_base_url,
+-        },
+-    }
++    current = {"provider": current_provider, "model": current_model, "base_url": current_base_url}
++    from hermes_cli import dashboard_managed
++    if dashboard_managed.enabled(cfg):
++        # What the deployment sets: shown, but not editable here (the writes below refuse with 409).
++        for e in endpoints:
++            e["managed"] = dashboard_managed.endpoint_managed(e["id"], e["source"], e["name"])
++        current["managed"] = dashboard_managed.default_managed()
++        if current["managed"]:
++            current["managed_source"] = dashboard_managed.source()
++    return {"endpoints": endpoints, "current": current}
++
++
++def _refuse_managed_endpoint(cfg: dict[str, Any], endpoint_id: str, *, default: bool = False,
++                             endpoint: bool = True) -> None:
++    """``dashboard.managed_read_only``: 409 for a write of an endpoint the deployment config defines
++    (*endpoint*), or of the main model it pins (*default*). Runs in the caller's profile scope."""
++    from hermes_cli import dashboard_managed
++    if not dashboard_managed.enabled(cfg):
++        return
++    if default and dashboard_managed.default_managed():
++        raise HTTPException(status_code=dashboard_managed.CONFLICT, detail=dashboard_managed.default_refusal())
++    if not endpoint:
++        return
++    stored_key, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), endpoint_id)
++    if entry is not None:
++        managed, name = dashboard_managed.endpoint_managed(str(stored_key), "providers", entry.get("name")), entry.get("name") or stored_key
++    else:
++        managed, name = dashboard_managed.endpoint_managed(endpoint_id, "custom_providers"), endpoint_id
++        for legacy in get_compatible_custom_providers(cfg):
++            if not legacy.get("provider_key") and _custom_endpoint_id(legacy.get("name") or "") == _custom_endpoint_id(endpoint_id):
++                name = legacy.get("name") or name
++    if managed:
++        raise HTTPException(status_code=dashboard_managed.CONFLICT, detail=dashboard_managed.endpoint_refusal(name))
+ 
+ 
+ def _pop_legacy_custom_provider(cfg: dict[str, Any], provider_key: str) -> Optional[dict[str, Any]]:
+@@ -604,6 +652,9 @@ def detach_removed_default(providers: List[str]) -> bool:
+         current = str(model_cfg.get("provider") or "").strip().lower().removeprefix("custom:")
+         if current not in wanted:
+             return False
++        from hermes_cli import dashboard_managed
++        if dashboard_managed.enabled(cfg) and dashboard_managed.default_managed():
++            return False  # the deployment pins it; a save would only strip its route keys
+         _drop_default_model(model_cfg)
+         cfg["model"] = model_cfg
+         save_config(cfg)
+@@ -809,6 +860,7 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] =
+             providers = cfg.get("providers")
+             created = _resolve_custom_endpoint_entry(
+                 providers if isinstance(providers, dict) else {}, body.id or body.name)[1] is None
++            _refuse_managed_endpoint(cfg, body.id or _custom_endpoint_id(body.name or ""), default=bool(body.make_default))
+             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
+             # make_default: the model route and the provider definition it names are one change,
+             # so a lock on either refuses both (never a model.provider naming an omitted entry).
+@@ -841,6 +893,9 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
+         with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
+             cfg = load_config()
+             stored_key, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), endpoint_id)
++            # A pinned default refuses; so does a managed custom_providers row, which activation would copy
++            # into providers: in config.yaml next to the deployment's own entry.
++            _refuse_managed_endpoint(cfg, endpoint_id, default=True, endpoint=entry is None)
+             if entry is None:
+                 # A legacy ``custom_providers:`` row: the main slot names providers by
+                 # key, so promote the entry to ``providers.<key>`` (the v12 shape the
+@@ -893,6 +948,7 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
+     ):
+         with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
+             cfg = load_config()
++            _refuse_managed_endpoint(cfg, endpoint_id)
+             providers = cfg.get("providers")
+             stored_key, entry = _resolve_custom_endpoint_entry(providers, endpoint_id)
+             if entry is not None and isinstance(providers, dict):
+@@ -1138,6 +1194,7 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
+     # ones kept providers alive in the model picker), the affected providers'
+     # model-cache rows, and value-matched config.yaml api_key mirrors.
+     # OAuth/device-code/manual pool entries for the same provider are preserved.
++    await asyncio.to_thread(_refuse_deployment_env, body.key, body.profile or profile)
+     with _env_write_errors("DELETE /api/env failed"):
+         from hermes_cli.credential_lifecycle import remove_provider_env_credential
+ 
+diff --git a/hermes_cli/web_routers/models.py b/hermes_cli/web_routers/models.py
+index 43c7e06e72..50525d3ee6 100644
+--- a/hermes_cli/web_routers/models.py
++++ b/hermes_cli/web_routers/models.py
+@@ -87,6 +87,21 @@ def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> i
+         pool.shutdown(wait=False)
+ 
+ 
++def _managed_default_info(profile: Optional[str]) -> dict:
++    """``dashboard.managed_read_only``: ``{managed: true, managed_source}`` when the deployment pins the main
++    model, else ``{}``. The managed scope overlays every profile's config, so it pins theirs too."""
++    from hermes_cli import dashboard_managed
++    if not dashboard_managed.enabled(_load_config_scoped(profile)) or not dashboard_managed.default_managed():
++        return {}
++    return {"managed": True, "managed_source": dashboard_managed.source()}
++
++
++def _refuse_managed_default(profile: Optional[str]) -> None:
++    from hermes_cli import dashboard_managed
++    if _managed_default_info(profile):
++        raise HTTPException(status_code=dashboard_managed.CONFLICT, detail=dashboard_managed.default_refusal())
++
++
+ @router.get("/api/model/info")
+ def get_model_info(profile: Optional[str] = None):
+     """Resolved metadata for the configured model: auto-detected vs configured
+@@ -99,7 +114,7 @@ def get_model_info(profile: Optional[str] = None):
+         config_ctx = model_cfg.get("context_length") if isinstance(model_cfg, dict) else None
+ 
+         if not model_name:
+-            return dict(_EMPTY_MODEL_INFO, provider=provider)
++            return dict(_EMPTY_MODEL_INFO, provider=provider, **_managed_default_info(profile))
+ 
+         try:
+             # config_context_length=None: ignore the override — we want the auto value.
+@@ -125,6 +140,7 @@ def get_model_info(profile: Optional[str] = None):
+             "config_context_length": config_ctx_int,
+             "effective_context_length": config_ctx_int or auto_ctx,  # what the agent actually uses
+             "capabilities": caps,
++            **_managed_default_info(profile),
+         }
+     except HTTPException:
+         # Unknown/invalid profile must surface as 404, not degrade into a
+@@ -393,6 +409,9 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
+         if skew_msg:
+             _log.warning("POST /api/model/set refused: %s", skew_msg)
+             raise HTTPException(status_code=503, detail=f"Restart required: {skew_msg}")
++        if scope == "main":
++            # Before the price warning: a pinned default is no choice to confirm.
++            await asyncio.to_thread(_refuse_managed_default, body.profile or profile)
+ 
+         # Expensive-model warning runs BEFORE the profile scope is entered: _profile_scope
+         # must never be held across an await (the RLock is reentrant per-thread, so a second
+diff --git a/hermes_cli/web_server_config.py b/hermes_cli/web_server_config.py
+index 4ef358e7c4..15ac191d5d 100644
+--- a/hermes_cli/web_server_config.py
++++ b/hermes_cli/web_server_config.py
+@@ -798,6 +798,18 @@ def _provider_entry(cfg: dict, provider: str) -> Any:
+     return providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
+ 
+ 
++def _is_custom_route(cfg: dict, provider: str) -> bool:
++    """True when *provider* is a custom endpoint (bare ``custom``/``local``, ``custom:<name>``, a ``providers``
++    entry or a ``custom_providers`` row), whose address and wire protocol live in ``model``."""
++    from hermes_cli.config import get_compatible_custom_providers
++
++    name = str(provider or "").strip()
++    lowered = name.lower()
++    if lowered in {"custom", "local"} or lowered.startswith("custom:") or isinstance(_provider_entry(cfg, name), dict):
++        return True
++    return any(lowered == str(e.get("name") or "").strip().lower() for e in get_compatible_custom_providers(cfg))
++
++
+ def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str, api_key: str) -> "tuple[str, ModelSwitchResult]":
+     """Validation half of a main-slot assignment: ``(effective base_url, switch result)``.
+     ``switch_model`` fetches catalogs / probes endpoints, so callers run this BEFORE taking
+@@ -840,6 +852,12 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url:
+         # ANOTHER host shares the selector's name, and hydrating from it would pair the new URL with
+         # that host's key. A block for the same host (its ``key_env``) still supplies the credential.
+         _resolve_assignment_credentials(model_cfg, provider, provider_entry)
++    from hermes_cli import dashboard_managed
++    if dashboard_managed.enabled(cfg) and not _is_custom_route(cfg, provider):
++        # Hermes resolves a built-in provider's address and wire protocol itself. Written here they outlived
++        # the provider, and applied to a main model the managed scope pins (whose own keys a save strips).
++        for key in ("base_url", "api_mode"):
++            drop_model_key(model_cfg, key)
+     cfg["model"] = model_cfg
+ 
+     new_provider = provider.strip().lower()
+diff --git a/tests/hermes_cli/test_dashboard_managed_read_only.py b/tests/hermes_cli/test_dashboard_managed_read_only.py
+new file mode 100644
+index 0000000000..f78017dc21
+--- /dev/null
++++ b/tests/hermes_cli/test_dashboard_managed_read_only.py
+@@ -0,0 +1,238 @@
++"""``dashboard.managed_read_only``: the model setup routes leave what the deployment sets alone.
++
++A deployment pins the main model and custom endpoints in the managed scope and supplies keys in the process
++environment. Without the key, a dashboard save of those answered ok while the managed value kept winning (and
++wrote route keys next to the pinned default), a removed managed endpoint came back, and a key saved to .env
++shadowed the deployment's key. With the key, they are marked and their writes refused with 409, and nothing is
++written. Off (the default) keeps upstream's behavior.
++"""
++import pytest
++
++MANAGED = """\
++model:
++  provider: lab
++  default: lab-model
++providers:
++  lab:
++    name: Lab
++    base_url: http://lab.example:8000/v1
++    key_env: LAB_API_KEY
++    models: [lab-model]
++custom_providers:
++  - name: local-ollama
++    base_url: http://ollama.example:11434/v1
++dashboard:
++  managed_read_only: true
++"""
++
++
++def _reset_caches():
++    import hermes_cli.config as cfg
++    from hermes_cli import managed_scope
++
++    cfg._LOAD_CONFIG_CACHE.clear()
++    cfg._RAW_CONFIG_CACHE.clear()
++    managed_scope.invalidate_managed_cache()
++
++
++@pytest.fixture
++def client(monkeypatch, tmp_path, _isolate_hermes_home):
++    try:
++        from starlette.testclient import TestClient
++    except ImportError:
++        pytest.skip("fastapi/starlette not installed")
++    import hermes_state
++    from hermes_constants import get_hermes_home
++    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
++
++    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
++    for name in ("DEEPSEEK_API_KEY", "LAB_API_KEY", "OPENROUTER_API_KEY"):
++        monkeypatch.delenv(name, raising=False)
++    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "no-managed-dir"))
++    _reset_caches()
++    c = TestClient(app)
++    c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
++    yield c
++    _reset_caches()
++
++
++def _managed(monkeypatch, tmp_path, text=MANAGED):
++    managed = tmp_path / "managed"
++    managed.mkdir(exist_ok=True)
++    (managed / "config.yaml").write_text(text, encoding="utf-8")
++    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
++    _reset_caches()
++    return managed
++
++
++def _gate(on):
++    from hermes_cli.config import load_config, save_config
++    cfg = load_config()
++    cfg.setdefault("dashboard", {})["managed_read_only"] = on
++    save_config(cfg)
++    _reset_caches()
++
++
++def _files():
++    from hermes_constants import get_hermes_home
++    home = get_hermes_home()
++    return tuple((home / n).read_bytes() if (home / n).exists() else b"" for n in ("config.yaml", ".env"))
++
++
++def test_managed_items_are_marked(client, monkeypatch, tmp_path):
++    managed = _managed(monkeypatch, tmp_path)
++    r = client.get("/api/providers/custom-endpoints").json()
++    rows = {e["id"]: e for e in r["endpoints"]}
++    assert rows["lab"]["managed"] is True
++    assert rows["local-ollama"]["managed"] is True
++    assert r["current"]["managed"] is True
++    assert r["current"]["managed_source"] == str(managed / "config.yaml")
++    info = client.get("/api/model/info").json()
++    assert info["managed"] is True and info["model"] == "lab-model"
++
++
++def test_a_managed_server_copied_into_config_stays_managed(client, monkeypatch, tmp_path):
++    """A start-up merge copies the managed custom_providers into config.yaml, and the config migration moves
++    them to providers.<slug>: removing that copy only lasted until the next merge."""
++    _managed(monkeypatch, tmp_path)
++    from hermes_constants import get_hermes_home
++    (get_hermes_home() / "config.yaml").write_text(
++        "providers:\n  local-ollama:\n    name: local-ollama\n    base_url: http://ollama.example:11434/v1\n", encoding="utf-8")
++    _reset_caches()
++    rows = {e["id"]: e for e in client.get("/api/providers/custom-endpoints").json()["endpoints"]}
++    assert rows["local-ollama"]["source"] == "providers" and rows["local-ollama"]["managed"] is True
++    before = _files()
++    r = client.request("DELETE", "/api/providers/custom-endpoints/local-ollama")
++    assert r.status_code == 409 and "local-ollama is set in the deployment config" in r.json()["detail"]
++    assert _files() == before
++
++
++def test_a_users_own_endpoint_is_not_managed(client, monkeypatch, tmp_path):
++    _managed(monkeypatch, tmp_path)
++    r = client.post("/api/providers/custom-endpoints", json={
++        "id": "mine", "name": "Mine", "base_url": "http://mine.example:8080/v1", "model": "m1", "make_default": False})
++    assert r.status_code == 200, r.text
++    rows = {e["id"]: e for e in r.json()["endpoints"]}
++    assert rows["mine"]["managed"] is False
++    assert client.request("DELETE", "/api/providers/custom-endpoints/mine").status_code == 200
++
++
++@pytest.mark.parametrize("call", [
++    ("DELETE", "/api/providers/custom-endpoints/local-ollama", None),
++    ("DELETE", "/api/providers/custom-endpoints/lab", None),
++    ("POST", "/api/providers/custom-endpoints", {"id": "lab", "name": "Lab", "base_url": "http://evil.example/v1", "model": "x"}),
++    ("POST", "/api/providers/custom-endpoints", {"name": "local-ollama", "base_url": "http://evil.example/v1", "model": "x"}),
++    ("POST", "/api/providers/custom-endpoints", {"id": "new", "name": "New", "base_url": "http://new.example/v1", "model": "x",
++                                                  "make_default": True}),
++    ("POST", "/api/providers/custom-endpoints/local-ollama/activate", None),
++    ("POST", "/api/model/set", {"scope": "main", "provider": "deepseek", "model": "deepseek-chat", "confirm_expensive_model": True}),
++    ("POST", "/api/model/set", {"scope": "main", "provider": "deepseek", "model": "deepseek-chat"}),
++])
++def test_writes_of_managed_items_are_refused(client, monkeypatch, tmp_path, call):
++    _managed(monkeypatch, tmp_path)
++    before = _files()
++    method, path, body = call
++    r = client.request(method, path, json=body) if body is not None else client.request(method, path)
++    assert r.status_code == 409, r.text
++    assert "set in the deployment" in r.json()["detail"]
++    assert _files() == before
++
++
++def test_a_key_in_the_environment_is_marked_and_kept(client, monkeypatch, tmp_path):
++    _managed(monkeypatch, tmp_path)
++    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-from-the-deployment-0001")
++    r = client.get("/api/env")
++    assert "sk-from-the-deployment-0001" not in r.text and "0001" not in r.text
++    row = r.json()["DEEPSEEK_API_KEY"]
++    assert row["in_environment"] is True and not row["is_set"] and row["redacted_value"] is None
++    before = _files()
++    put = client.put("/api/env", json={"key": "DEEPSEEK_API_KEY", "value": "sk-typed-in-the-dashboard"})
++    assert put.status_code == 409 and "environment Hermes was started with" in put.json()["detail"]
++    assert client.request("DELETE", "/api/env", json={"key": "DEEPSEEK_API_KEY"}).status_code == 409
++    assert _files() == before
++
++
++def test_a_key_in_the_managed_env_is_marked_and_refused(client, monkeypatch, tmp_path):
++    managed = _managed(monkeypatch, tmp_path)
++    (managed / ".env").write_text("DEEPSEEK_API_KEY=sk-managed-env\n", encoding="utf-8")
++    _reset_caches()
++    assert client.get("/api/env").json()["DEEPSEEK_API_KEY"]["managed"] is True
++    put = client.put("/api/env", json={"key": "DEEPSEEK_API_KEY", "value": "sk-other"})
++    assert put.status_code == 409 and str(managed) in put.json()["detail"]
++
++
++def test_a_key_in_env_file_stays_editable(client, monkeypatch, tmp_path):
++    _managed(monkeypatch, tmp_path)
++    assert client.put("/api/env", json={"key": "OPENROUTER_API_KEY", "value": "sk-or-v1-saved-here"}).status_code == 200
++    row = client.get("/api/env").json()["OPENROUTER_API_KEY"]
++    assert row["is_set"] and "in_environment" not in row
++    assert client.request("DELETE", "/api/env", json={"key": "OPENROUTER_API_KEY"}).status_code == 200
++
++
++def test_off_keeps_upstreams_behavior(client, monkeypatch, tmp_path):
++    _managed(monkeypatch, tmp_path, MANAGED.replace("managed_read_only: true", "managed_read_only: false"))
++    r = client.get("/api/providers/custom-endpoints").json()
++    assert all("managed" not in e for e in r["endpoints"]) and "managed" not in r["current"]
++    assert "managed" not in client.get("/api/model/info").json()
++    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-from-the-deployment")
++    assert "in_environment" not in client.get("/api/env").json()["DEEPSEEK_API_KEY"]
++    assert client.put("/api/env", json={"key": "DEEPSEEK_API_KEY", "value": "sk-saved"}).status_code == 200
++
++
++def _model_on_disk():
++    from hermes_cli.config import read_raw_config
++    _reset_caches()
++    return read_raw_config().get("model") or {}
++
++
++@pytest.mark.parametrize("on", [True, False])
++def test_set_default_writes_no_route_keys_for_a_built_in_provider(client, monkeypatch, on):
++    _gate(on)
++    # A previous own server left its address and wire protocol in model.
++    from hermes_cli.config import load_config, save_config, save_env_value
++    cfg = load_config()
++    cfg["model"] = {"provider": "custom", "default": "m", "base_url": "http://old.example/v1", "api_mode": "chat_completions"}
++    save_config(cfg)
++    save_env_value("DEEPSEEK_API_KEY", "sk-test-deepseek")
++    r = client.post("/api/model/set", json={"scope": "main", "provider": "deepseek", "model": "deepseek-chat",
++                                            "confirm_expensive_model": True})
++    assert r.status_code == 200, r.text
++    m = _model_on_disk()
++    assert m.get("provider") == "deepseek" and m.get("default") == r.json()["model"]
++    if on:
++        assert "base_url" not in m and "api_mode" not in m
++    else:
++        assert m.get("base_url")
++
++
++def test_set_default_keeps_a_custom_endpoints_address(client):
++    _gate(True)
++    assert client.post("/api/providers/custom-endpoints", json={
++        "id": "ollama", "name": "Ollama", "base_url": "http://ollama.example:11434/v1", "model": "qwen", "make_default": False,
++    }).status_code == 200
++    r = client.post("/api/model/set", json={"scope": "main", "provider": "ollama", "model": "qwen", "confirm_expensive_model": True})
++    assert r.status_code == 200, r.text
++    assert _model_on_disk().get("base_url") == "http://ollama.example:11434/v1"
++
++
++def test_without_a_managed_scope_nothing_is_managed(client, monkeypatch):
++    _gate(True)
++    r = client.post("/api/providers/custom-endpoints", json={
++        "id": "ollama", "name": "Ollama", "base_url": "http://ollama.example:11434/v1", "model": "qwen", "make_default": True,
++    })
++    assert r.status_code == 200, r.text
++    body = r.json()
++    assert body["endpoints"][0]["managed"] is False and body["current"]["managed"] is False
++    assert "managed" not in client.get("/api/model/info").json()
++    assert client.request("DELETE", "/api/providers/custom-endpoints/ollama").status_code == 200
++
++
++def test_removing_the_pinned_defaults_key_keeps_the_default(client, monkeypatch, tmp_path):
++    _managed(monkeypatch, tmp_path, MANAGED.replace("provider: lab", "provider: openrouter").replace(
++        "default: lab-model", "default: openai/gpt-5") + "  detach_removed_default: true\n")
++    from hermes_cli.config import save_env_value
++    save_env_value("OPENROUTER_API_KEY", "sk-or-v1-x")
++    _reset_caches()
++    before = _model_on_disk()
++    assert client.request("DELETE", "/api/env", json={"key": "OPENROUTER_API_KEY"}).status_code == 200
++    assert _model_on_disk() == before
+-- 
+2.56.0
+
