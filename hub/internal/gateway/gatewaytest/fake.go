@@ -829,7 +829,12 @@ func num(p map[string]any, k string) (int64, bool) {
 }
 
 func (g *Gateway) snapshotLocked(c *conn, s *Session) map[string]any {
-	sub := randHex()
+	// A connection that resumes a session it is subscribed to again gets
+	// the subscription it has, as Hermes' session authority answers.
+	sub := s.subs[c]
+	if sub == "" {
+		sub = randHex()
+	}
 	s.subs[c] = sub
 	prompts := make([]gateway.Prompt, 0, len(s.prompts))
 	for _, p := range s.prompts {

@@ -94,9 +94,12 @@ type Service struct {
 	dir      Directory
 	grants   Grants
 	opts     Options
-	log      *slog.Logger
-	origin   string
-	relayOut chan []byte
+	// beforeDetach runs in an idle detach, after the session left the
+	// map and before the gateway is told, for a test to open it again.
+	beforeDetach func()
+	log          *slog.Logger
+	origin       string
+	relayOut     chan []byte
 	// relayPending counts relay events queued but not yet published.
 	relayPending atomic.Int64
 	stop         context.CancelFunc
@@ -1135,6 +1138,18 @@ func (b *backend) sessionOnce(ctx context.Context, id string) (*live, error) {
 		b.sessions[id] = ls
 	}
 	b.mu.Unlock()
+	ls.mu.Lock()
+	gone := ls.gone
+	ls.mu.Unlock()
+	if gone != nil {
+		// An idle detach is telling the gateway: resume after it, not before.
+		select {
+		case <-gone:
+			return nil, errRetired
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if _, err := b.ensure(ctx, ls); err != nil {
 		ls.opMu.Lock()
 		b.mu.Lock()
@@ -1428,15 +1443,29 @@ func (b *backend) detachIdle(ls *live) {
 		b.mu.Unlock()
 		return
 	}
-	for id, other := range b.sessions {
-		if other == ls {
-			delete(b.sessions, id)
-		}
-	}
 	c, sub := ls.client, ls.subID
 	ls.client, ls.cur, ls.retired = nil, nil, true
+	ls.gone = make(chan struct{})
 	ls.mu.Unlock()
 	b.mu.Unlock()
+	// The session stays in the map, retired, until the gateway has been told:
+	// Hermes answers a second session.resume of this connection with the
+	// subscription it has, so a viewer that resumed the session while this
+	// detach was on its way would have its subscription ended by it, and
+	// would show the snapshot it got for ever. sessionOnce waits for gone.
+	defer func() {
+		b.mu.Lock()
+		for id, other := range b.sessions {
+			if other == ls {
+				delete(b.sessions, id)
+			}
+		}
+		b.mu.Unlock()
+		close(ls.gone)
+	}()
+	if h := b.svc.beforeDetach; h != nil {
+		h()
+	}
 	if !alive(c) || sub == "" {
 		return
 	}

@@ -25,9 +25,12 @@ type live struct {
 	opMu   sync.Mutex
 	client *gateway.Client
 
-	mu         sync.Mutex
-	stale      bool
-	retired    bool
+	mu      sync.Mutex
+	stale   bool
+	retired bool
+	// gone is closed when a retired session has left the map, after the
+	// gateway was told it is detached; nil when it was not retired by an idle detach.
+	gone       chan struct{}
 	pins       int
 	cur        *gateway.Client
 	pending    bool
