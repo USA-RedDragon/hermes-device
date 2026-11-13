@@ -1,0 +1,9 @@
+# Upstream tests of the recall injection, the api_content sidecar, session persistence and the summarizer input
+tests/agent/test_api_content_sidecar.py
+tests/agent/test_api_content_row_addressed_backfill.py
+tests/agent/test_turn_context.py
+tests/agent/test_memory_provider.py
+tests/agent/test_context_compressor.py
+tests/agent/test_prepared_compaction.py
+tests/gateway/test_agent_cache.py
+tests/hermes_cli/test_config_edit_seed.py
