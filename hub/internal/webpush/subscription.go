@@ -76,6 +76,19 @@ func ValidEndpoint(raw string) error {
 	return nil
 }
 
+// keylessChromiumHost is the GCM host that Chromium builds without Google API
+// keys (Arch and Debian packages, some forks) subscribe through.
+const keylessChromiumHost = "jmt17.google.com"
+
+// IsKeylessChromium reports whether the endpoint is on the push host of a
+// Chromium build without Google API keys. Such a build cannot register with
+// Google's push service, so nothing sent there reaches it; the hub refuses
+// the subscription rather than accept messages that vanish.
+func IsKeylessChromium(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Hostname() == keylessChromiumHost
+}
+
 func knownPushHost(h string) bool {
 	for _, c := range h {
 		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '.' {

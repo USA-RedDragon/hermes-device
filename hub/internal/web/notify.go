@@ -110,6 +110,10 @@ func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sub := webpush.Subscription{Endpoint: body.Endpoint, P256dh: body.Keys.P256dh, Auth: body.Keys.Auth}
+	if webpush.IsKeylessChromium(body.Endpoint) {
+		errorJSON(w, http.StatusBadRequest, "This browser is a Chromium build without Google API keys, which cannot receive Web Push. Use Google Chrome or Firefox, or a Chromium build with Google API keys")
+		return
+	}
 	if len(body.Endpoint) > maxEndpoint || sub.Validate() != nil {
 		errorJSON(w, http.StatusBadRequest, "This browser's push service is not one the hub sends to")
 		return

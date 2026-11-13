@@ -543,3 +543,23 @@ func TestGenerateKeyIsPKCS8(t *testing.T) {
 		t.Fatal("public key is not 65 bytes base64url")
 	}
 }
+
+func TestIsKeylessChromium(t *testing.T) {
+	t.Parallel()
+	for u, want := range map[string]bool{
+		"https://jmt17.google.com/fcm/send/abc":     true,
+		"https://jmt17.google.com:443/fcm/send/abc": true,
+		"https://fcm.googleapis.com/fcm/send/abc":   false,
+		"https://evil.jmt17.google.com/x":           false,
+		"https://jmt17.google.com.evil.example/x":   false,
+		"": false,
+	} {
+		if got := webpush.IsKeylessChromium(u); got != want {
+			t.Errorf("IsKeylessChromium(%q) = %v, want %v", u, got, want)
+		}
+	}
+	// Still not an endpoint the hub sends to.
+	if err := webpush.ValidEndpoint("https://jmt17.google.com/fcm/send/abc"); err == nil {
+		t.Error("ValidEndpoint accepts the keyless Chromium host")
+	}
+}

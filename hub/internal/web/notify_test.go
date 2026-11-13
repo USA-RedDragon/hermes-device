@@ -117,6 +117,10 @@ func TestPushSubscriptionsArePerUser(t *testing.T) {
 	if resp, _ := post(t, alice, e.url+"/api/notify/push", am.CSRF, "", internal); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("internal endpoint = %d", resp.StatusCode)
 	}
+	keyless := map[string]any{kEndpoint: "https://jmt17.google.com/fcm/send/abc", kKeys: map[string]string{kP256dh: p256dh, kAuth: auth}}
+	if resp, body := post(t, alice, e.url+"/api/notify/push", am.CSRF, "", keyless); resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "without Google API keys") {
+		t.Fatalf("keyless Chromium endpoint = %d %s", resp.StatusCode, body)
+	}
 	resp, body := post(t, alice, e.url+"/api/notify/push", am.CSRF, "", sub)
 	var st notifyState
 	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &st) != nil || len(st.Subscriptions) != 1 || st.Subscriptions[0].Label != "Pixel" {
