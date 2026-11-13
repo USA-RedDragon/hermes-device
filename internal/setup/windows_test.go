@@ -20,15 +20,18 @@ const (
 
 func TestTaskService(t *testing.T) {
 	t.Parallel()
-	status := "Ready"
+	status, sid := "Ready", ""
 	r := &fakeRunner{respond: func(name string, args []string) ([]byte, error) {
+		if name == "whoami.exe" && sid != "" {
+			return []byte(`"pc\alice","` + sid + `"` + "\r\n"), nil
+		}
 		if name == schtasks && args[0] == "/Query" {
 			return []byte(`"\talaria","N/A","` + status + `"` + "\r\n"), nil
 		}
 		return nil, nil
 	}}
 	sys := newSystem(t, windows, r, map[string]string{schtasks: `C:\Windows\System32\schtasks.exe`},
-		map[string]string{"USERNAME": "alice", "USERDOMAIN": "PC"})
+		map[string]string{"USERNAME": "alice", "COMPUTERNAME": "PC"})
 	svc, err := sys.NewService()
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +53,10 @@ func TestTaskService(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Errorf("task XML lacks %s:\n%s", want, content)
 		}
+	}
+	sid = "S-1-5-21-1-2-3-1001"
+	if c := string(svc.Content("a.exe", "c.yaml")); !strings.Contains(c, "<UserId>S-1-5-21-1-2-3-1001</UserId>") {
+		t.Errorf("task XML does not name the SID:\n%s", c)
 	}
 	if svc.Active(ctx) {
 		t.Error("Active with status Ready")

@@ -59,11 +59,20 @@ func (t *taskService) Available(context.Context) error {
 	return nil
 }
 
-// user is DOMAIN\name of the user that setup runs as.
+// user is the SID of the user that setup runs as, which the task's
+// trigger and principal name. Without whoami it is COMPUTERNAME\USERNAME;
+// USERDOMAIN is no help, as an ssh session sets it to WORKGROUP.
 func (t *taskService) user() string {
+	out, err := t.s.Run.Output(context.Background(), nil, "whoami.exe", "/user", "/fo", "csv", "/nh")
+	if err == nil {
+		recs, cerr := csv.NewReader(bytes.NewReader(bytes.TrimSpace(out))).ReadAll()
+		if cerr == nil && len(recs) == 1 && len(recs[0]) == 2 && strings.HasPrefix(recs[0][1], "S-1-") {
+			return recs[0][1]
+		}
+	}
 	name := t.s.Getenv("USERNAME")
-	if d := t.s.Getenv("USERDOMAIN"); d != "" {
-		return d + `\` + name
+	if c := t.s.Getenv("COMPUTERNAME"); c != "" {
+		return c + `\` + name
 	}
 	return name
 }
@@ -73,11 +82,13 @@ func quoteArg(s string) string { return `"` + strings.ReplaceAll(s, `"`, `\"`) +
 func (t *taskService) Content(bin, cfg string) []byte {
 	user := xmlEscape(t.user())
 	args := xmlEscape("--headless " + quoteArg(bin) + " run -c " + quoteArg(cfg) + " --service")
+	// The file is kept in UTF-8; Load hands schtasks a UTF-16 copy, which
+	// the declaration describes. A comment may not hold "--", so the
+	// marker is in the description.
 	return []byte(`<?xml version="1.0" encoding="UTF-16"?>
-<!-- ` + serviceMarker + `. talaria setup --uninstall removes it. -->
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>talaria: runs the Hermes agent's commands on this PC</Description>
+    <Description>talaria: runs the Hermes agent's commands on this PC. ` + serviceMarker + `; talaria setup --uninstall removes it.</Description>
     <URI>\` + TaskName + `</URI>
   </RegistrationInfo>
   <Triggers>
