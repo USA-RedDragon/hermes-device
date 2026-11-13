@@ -524,6 +524,11 @@ func (c *Client) Call(ctx context.Context, method string, params, out any) error
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
+		if ctx.Err() == nil {
+			// The peer closed the socket before the reader saw its close
+			// frame: a lost connection, which a caller may retry.
+			err = fmt.Errorf("%w: %w", ErrClosed, err)
+		}
 		return fmt.Errorf("%s: %w", method, err)
 	}
 	select {
