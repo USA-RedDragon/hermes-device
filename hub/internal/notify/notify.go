@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -74,8 +75,11 @@ type Options struct {
 	Store   hub.NotifyStore
 	Access  Access
 	Prompts hub.Prompter
-	// Users are every hub user.
+	// Users are every hub user in the config.
 	Users []string
+	// Accounts lists the hub's accounts, who are hub users too. Nil:
+	// only Users.
+	Accounts func(ctx context.Context) ([]string, error)
 	// Backends maps each backend ID to its display name.
 	Backends map[string]string
 	// Jobs reads each backend's scheduled jobs; a backend without one is
@@ -208,6 +212,25 @@ func (n *Notifier) Lead(ctx context.Context) {
 	}
 }
 
+// users are every hub user: those in the config and the accounts.
+func (n *Notifier) users(ctx context.Context) []string {
+	if n.o.Accounts == nil {
+		return n.o.Users
+	}
+	names, err := n.o.Accounts(ctx)
+	if err != nil {
+		n.log.Warn("list accounts", "error", err.Error())
+		return n.o.Users
+	}
+	out := slices.Clone(n.o.Users)
+	for _, name := range names {
+		if !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 func (n *Notifier) handle(ctx context.Context, nt hub.Notice) {
 	cctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
@@ -219,7 +242,7 @@ func (n *Notifier) handle(ctx context.Context, nt hub.Notice) {
 		n.outcome(cctx, nt)
 		return
 	}
-	users := n.o.Users
+	users := n.users(cctx)
 	if nt.Users != nil {
 		users = nt.Users
 	}
