@@ -143,17 +143,11 @@ func (ls *live) busy() bool {
 // lastUserMessage finds the session's last message from its user in its
 // stored transcript, newest pages first.
 func (b *backend) lastUserMessage(ctx context.Context, sessionID string) (hub.UserMessage, bool, error) {
-	c, err := b.conn(ctx)
-	if err != nil {
-		return hub.UserMessage{}, false, err
-	}
 	cursor := ""
 	for range maxRewindPages {
-		cctx, cancel := b.timeout(ctx)
 		var r gateway.TranscriptResult
-		err := c.Call(cctx, gateway.MethodTranscript, gateway.TranscriptParams{SessionID: sessionID, Cursor: cursor,
+		err := b.readConn(ctx, gateway.MethodTranscript, gateway.TranscriptParams{SessionID: sessionID, Cursor: cursor,
 			Limit: rewindPage, Order: gateway.OrderLatest}, &r)
-		cancel()
 		if err != nil {
 			return hub.UserMessage{}, false, refusal(err)
 		}
@@ -306,16 +300,9 @@ func (s *Service) Transcript(ctx context.Context, user, backendID, sessionID str
 	if err != nil {
 		return hub.Transcript{}, err
 	}
-	c, err := b.conn(ctx)
-	if err != nil {
-		return hub.Transcript{}, err
-	}
 	out := hub.Transcript{Messages: []json.RawMessage{}}
-	cctx, cancel := b.timeout(ctx)
 	var info gateway.SnapshotInfo
-	err = c.Call(cctx, gateway.MethodSessionInfo, gateway.SessionParams{SessionID: sessionID}, &info)
-	cancel()
-	if err != nil {
+	if err := b.readConn(ctx, gateway.MethodSessionInfo, gateway.SessionParams{SessionID: sessionID}, &info); err != nil {
 		return hub.Transcript{}, refusal(err)
 	}
 	if info.Title != nil {
@@ -323,11 +310,9 @@ func (s *Service) Transcript(ctx context.Context, user, backendID, sessionID str
 	}
 	cursor, restarts := "", 0
 	for range maxTranscriptPages {
-		cctx, cancel := b.timeout(ctx)
 		var r gateway.TranscriptResult
-		err := c.Call(cctx, gateway.MethodTranscript, gateway.TranscriptParams{SessionID: sessionID, Cursor: cursor,
+		err := b.readConn(ctx, gateway.MethodTranscript, gateway.TranscriptParams{SessionID: sessionID, Cursor: cursor,
 			Limit: gateway.MaxTranscriptPage, Order: gateway.OrderOldest}, &r)
-		cancel()
 		if err != nil {
 			return hub.Transcript{}, refusal(err)
 		}

@@ -445,3 +445,20 @@ func TestTranscript(t *testing.T) {
 		t.Fatalf("unknown session = %v", err)
 	}
 }
+
+func TestTranscriptWaitsOutARestart(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ctx := context.Background()
+	e.gw.AddSession(&gatewaytest.Session{ID: sessionNew, Title: "Long", StartedAt: 10,
+		Messages: []map[string]any{{kRole: roleUser, kText: "hi"}}})
+	if _, err := e.svc.Transcript(ctx, userAlice, backendPC, sessionNew); err != nil {
+		t.Fatal(err)
+	}
+	e.gw.RestartConnections()
+	e.gw.RefuseWhileDraining(gateway.MethodTranscript, 2)
+	tr, err := e.svc.Transcript(ctx, userAlice, backendPC, sessionNew)
+	if err != nil || len(tr.Messages) != 1 {
+		t.Fatalf("transcript during a restart = %d %v", len(tr.Messages), err)
+	}
+}

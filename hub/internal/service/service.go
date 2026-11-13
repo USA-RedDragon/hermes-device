@@ -1352,10 +1352,28 @@ const readRestartWait = 30 * time.Second
 // readRestartWait, so a page that polls it sees a slower answer instead of
 // an error.
 func (b *backend) read(ctx context.Context, ls *live, method string, params, out any) error {
+	return retryRead(ctx, func() error { return b.call(ctx, ls, method, params, out) })
+}
+
+// readConn is read for a call that needs no session: each try takes the
+// backend's current connection.
+func (b *backend) readConn(ctx context.Context, method string, params, out any) error {
+	return retryRead(ctx, func() error {
+		c, err := b.conn(ctx)
+		if err != nil {
+			return err
+		}
+		cctx, cancel := b.timeout(ctx)
+		defer cancel()
+		return c.Call(cctx, method, params, out)
+	})
+}
+
+func retryRead(ctx context.Context, try func() error) error {
 	deadline := time.Now().Add(readRestartWait)
 	delay := 250 * time.Millisecond
 	for {
-		err := b.call(ctx, ls, method, params, out)
+		err := try()
 		if err == nil || !gateway.Retryable(err) || ctx.Err() != nil || !time.Now().Add(delay).Before(deadline) {
 			return err
 		}
