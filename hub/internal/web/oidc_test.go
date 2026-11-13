@@ -31,6 +31,8 @@ type issuer struct {
 	groups   []string
 	codes    map[string]grant
 	badNonce bool
+	email    string
+	verified bool
 }
 
 type grant struct {
@@ -79,7 +81,7 @@ func newIssuer(t *testing.T) *issuer {
 		is.mu.Lock()
 		g, found := is.codes[r.PostForm.Get(fieldCode)]
 		delete(is.codes, r.PostForm.Get(fieldCode))
-		user, groups, badNonce, sub := is.user, is.groups, is.badNonce, is.sub
+		user, groups, badNonce, sub, email, verified := is.user, is.groups, is.badNonce, is.sub, is.email, is.verified
 		is.mu.Unlock()
 		sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
 		if id != is.clientID || sec != is.secret || !found || base64.RawURLEncoding.EncodeToString(sum[:]) != g.challenge ||
@@ -98,7 +100,7 @@ func newIssuer(t *testing.T) *issuer {
 		tok, _ := jwt.Signed(signer).Claims(jwt.Claims{
 			Issuer: is.srv.URL, Subject: sub, Audience: jwt.Audience{is.clientID},
 			Expiry: jwt.NewNumericDate(time.Now().Add(time.Hour)), IssuedAt: jwt.NewNumericDate(time.Now()),
-		}).Claims(map[string]any{"nonce": nonce, "preferred_username": user, "groups": groups}).Serialize()
+		}).Claims(map[string]any{"nonce": nonce, "preferred_username": user, "groups": groups, "email": email, "email_verified": verified}).Serialize()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at", "token_type": "Bearer", "expires_in": 3600, "id_token": tok})
 	})

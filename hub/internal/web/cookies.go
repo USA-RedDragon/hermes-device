@@ -69,6 +69,13 @@ type session struct {
 	Groups  []string `json:"g"`
 	CSRF    string   `json:"c"`
 	Expires int64    `json:"e"`
+	// Account is set for a user with an account in the hub's database,
+	// whose sessions end when it is disabled or its Epoch goes up.
+	Account bool  `json:"a,omitempty"`
+	Epoch   int64 `json:"p,omitempty"`
+	// Identity is the proxy or OIDC identity of the login. In auth.mode
+	// proxy every request must come with the same one.
+	Identity string `json:"i,omitempty"`
 }
 
 // login is the content of the short-lived cookie that carries the OIDC
@@ -118,6 +125,15 @@ func (s *Server) session(r *http.Request) (*session, bool) {
 	var sess session
 	if s.sessions.open(c.Value, &sess) != nil || sess.User == "" || time.Now().Unix() >= sess.Expires {
 		return nil, false
+	}
+	if sess.Account && !s.accountOK(r.Context(), sess.User, sess.Epoch) {
+		return nil, false
+	}
+	if s.proxy != nil {
+		id, err := s.proxy.Identity(r)
+		if err != nil || id.ID != sess.Identity {
+			return nil, false
+		}
 	}
 	return &sess, true
 }

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/USA-RedDragon/hermes-hub/internal/auth"
+	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 )
@@ -67,7 +69,17 @@ func safeNext(next string) string {
 	return next
 }
 
+// handleLogin starts a login: the OIDC redirect, the proxy's identity, or
+// the hub's own login page.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	switch s.mode {
+	case config.AuthLocal:
+		http.Redirect(w, r, "/login?next="+url.QueryEscape(safeNext(r.URL.Query().Get("next"))), http.StatusFound)
+		return
+	case config.AuthProxy:
+		s.handleProxyLogin(w, r)
+		return
+	}
 	_, oc, err := s.oidc.get(r.Context())
 	if err != nil {
 		s.log.Error("login", "error", err.Error())
@@ -112,11 +124,16 @@ var errLogin = errors.New("login failed")
 
 // identity is what a verified login says about the user.
 type identity struct {
-	sub, display, next string
-	groups             []string
+	sub, display, next, email string
+	emailVerified             bool
+	groups                    []string
 }
 
 func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
+	if s.mode != config.AuthOIDC {
+		http.NotFound(w, r)
+		return
+	}
 	id, err := s.finishLogin(r)
 	s.clearCookie(w, loginCookie)
 	if err != nil {
@@ -124,28 +141,55 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "login failed", http.StatusUnauthorized)
 		return
 	}
-	user, ok := s.users[id.sub]
-	if !ok {
-		s.log.Warn("login refused: sub is not in users", "sub", id.sub, "display", id.display)
-		s.renderRefused(w)
+	ident := auth.Identity{ID: id.sub, Display: id.display, Email: id.email, EmailVerified: id.emailVerified, Groups: id.groups}
+	if !s.finishIdentity(w, r, config.AuthOIDC, ident, s.oidcAuto) {
 		return
+	}
+	http.Redirect(w, r, id.next, http.StatusFound)
+}
+
+// finishIdentity starts the session of an identity from the OIDC provider
+// or the proxy, or answers that it may not log in.
+func (s *Server) finishIdentity(w http.ResponseWriter, r *http.Request, kind string, id auth.Identity, autoCreate bool) bool {
+	sess, ok, err := s.resolve(r.Context(), kind, id, autoCreate)
+	if err != nil {
+		s.log.Error("login", "identity", id.ID, "error", err.Error())
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return false
+	}
+	if !ok {
+		s.log.Warn("login refused: no account for this identity", "mode", kind, "identity", id.ID, "display", id.Display)
+		s.renderRefused(w)
+		return false
 	}
 	if s.groups != nil {
-		if err := s.groups.SetGroups(r.Context(), user, id.groups); err != nil {
-			s.log.Error("save groups", "user", user, "error", err.Error())
+		if err := s.groups.SetGroups(r.Context(), sess.User, id.Groups); err != nil {
+			s.log.Error("save groups", "user", sess.User, "error", err.Error())
 			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
+			return false
 		}
 	}
-	sess := session{User: user, Display: id.display, Groups: id.groups, CSRF: randomToken(), Expires: time.Now().Add(s.ttl).Unix()}
-	v, err := s.sessions.seal(sess)
-	if err != nil {
+	if err := s.startSession(w, sess); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return false
+	}
+	s.log.Info("login", "user", sess.User, "mode", kind, "identity", id.ID, "display", id.Display, "groups", id.Groups)
+	return true
+}
+
+// handleProxyLogin starts a session for the identity the proxy sends
+// (auth.mode proxy).
+func (s *Server) handleProxyLogin(w http.ResponseWriter, r *http.Request) {
+	id, err := s.proxy.Identity(r)
+	if err != nil {
+		s.log.Warn("proxy login", "client", auth.Peer(r).String(), "error", err.Error())
+		http.Error(w, "The proxy in front of the hub did not say who you are. Check auth.trusted_proxies and the proxy's user header", http.StatusUnauthorized)
 		return
 	}
-	s.setCookie(w, sessionCookie, v, s.ttl)
-	s.log.Info("login", "user", user, "sub", id.sub, "display", id.display, "groups", id.groups)
-	http.Redirect(w, r, id.next, http.StatusFound)
+	if !s.finishIdentity(w, r, config.AuthProxy, id, s.proxyAuto) {
+		return
+	}
+	http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusFound) //nolint:gosec // safeNext keeps only same-origin paths
 }
 
 // finishLogin checks the callback against the login cookie, exchanges the
@@ -205,7 +249,9 @@ func (s *Server) finishLogin(r *http.Request) (identity, error) {
 			}
 		}
 	}
-	return identity{sub: idt.Subject, display: cl.str(s.displayClaim), groups: cl.list(s.groupsClaim), next: l.Next}, nil
+	verified, _ := cl["email_verified"].(bool)
+	return identity{sub: idt.Subject, display: cl.str(s.displayClaim), groups: cl.list(s.groupsClaim), next: l.Next,
+		email: cl.str(s.emailClaim), emailVerified: verified}, nil
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
@@ -220,7 +266,9 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"memory": s.memory != nil, "usage": s.insights != nil || s.claudeCode != nil, "claude_code": s.claudeCode != nil,
 		"files": s.files != nil, "notify": s.notices != nil,
 		"claude": s.claude != nil, "claude_admin": s.isClaudeAdmin(sess.User), "telegram_steps": s.telegramSteps, "version": s.version,
-		"scheduled": s.scheduled != nil, "prompts": s.prompts != nil})
+		"scheduled": s.scheduled != nil, "prompts": s.prompts != nil,
+		"auth": s.mode, "admin": s.accounts != nil && s.isAdmin(r.Context(), sess.User), "password": s.mode == config.AuthLocal && sess.Account,
+		"logout_url": s.logoutURL})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

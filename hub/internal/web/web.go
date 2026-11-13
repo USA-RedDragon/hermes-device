@@ -11,12 +11,14 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/USA-RedDragon/hermes-hub/internal/auth"
 	"github.com/USA-RedDragon/hermes-hub/internal/config"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
 	"github.com/google/uuid"
@@ -88,6 +90,10 @@ type Options struct {
 	Version string
 	// Scheduled serves the Scheduled page. Nil: no Scheduled page.
 	Scheduled hub.Scheduled
+	// Accounts keeps the hub's own accounts. Nil: only users[] log in.
+	Accounts AccountStore
+	// Hasher hashes passwords. Default auth.DefaultParams, 4 at once.
+	Hasher *auth.Hasher
 }
 
 // Server is the web front end.
@@ -126,6 +132,7 @@ type Server struct {
 	subagents    hub.SubagentRoutes
 	chats        hub.ChatStore
 	prompts      hub.PromptLibrary
+	authState
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
 	backendNames     map[string]string
@@ -168,8 +175,13 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 			deviceBackends[b.ID] = true
 		}
 	}
+	st, err := newAuthState(cfg, opts)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
-		devices: opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory,
+		authState: st,
+		devices:   opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory,
 		insights: opts.Insights, files: opts.Files,
 		notices: opts.Notices, notifier: opts.Notifier, claude: opts.Claude, scheduled: opts.Scheduled,
 		claudeCode: opts.ClaudeCode, subagents: opts.Subagents, chats: opts.Chats, prompts: opts.Prompts,
@@ -187,6 +199,70 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		version:  opts.Version, telegramSteps: telegramSteps(cfg),
 	}, nil
 }
+
+// authState is how the server logs people in.
+type authState struct {
+	mode         string
+	accounts     AccountStore
+	accountCache *accountCache
+	hasher       *auth.Hasher
+	limiter      *auth.Limiter
+	trusted      []netip.Prefix
+	proxy        *auth.Proxy
+	local        config.Local
+	setupToken   string
+	admins       map[string]bool
+	configNames  map[string]bool
+	backendIDs   []string
+	backendViews []backendView
+	oidcAuto     bool
+	oidcDomains  []string
+	oidcGroups   []string
+	emailClaim   string
+	proxyAuto    bool
+	logoutURL    string
+}
+
+func newAuthState(cfg *config.Config, opts Options) (authState, error) {
+	a := cfg.Auth
+	trusted, err := a.Proxies()
+	if err != nil {
+		return authState{}, err
+	}
+	s := authState{mode: a.Mode, accounts: opts.Accounts, accountCache: &accountCache{}, hasher: opts.Hasher, limiter: auth.NewLimiter(loginsPerWindow, loginWindow),
+		trusted: trusted, local: a.Local, setupToken: a.Local.SetupToken, admins: map[string]bool{}, configNames: map[string]bool{},
+		oidcAuto: cfg.OIDC.AutoCreate, oidcDomains: cfg.OIDC.AllowedDomains, oidcGroups: cfg.OIDC.AllowedGroups,
+		emailClaim: cfg.OIDC.EmailClaim, proxyAuto: a.Proxy.AutoCreate}
+	if s.mode == "" {
+		s.mode = config.AuthOIDC
+	}
+	if s.hasher == nil {
+		s.hasher = auth.NewHasher(auth.DefaultParams, 4)
+	}
+	for _, name := range a.Admins {
+		s.admins[name] = true
+	}
+	for _, u := range cfg.Users {
+		s.configNames[u.Name] = true
+	}
+	for _, b := range cfg.Backends {
+		s.backendIDs = append(s.backendIDs, b.ID)
+		s.backendViews = append(s.backendViews, backendView{ID: b.ID, Name: b.Name, Everyone: b.Everyone,
+			Users: nonNil(b.Users), Groups: nonNil(b.Groups)})
+	}
+	if s.mode == config.AuthProxy {
+		if s.proxy, err = auth.NewProxy(a, opts.HTTPClient); err != nil {
+			return authState{}, err
+		}
+		s.logoutURL = a.Proxy.LogoutURL
+	}
+	if s.mode == config.AuthLocal && s.accounts == nil {
+		return authState{}, errLocalNeedsAccounts
+	}
+	return s, nil
+}
+
+var errLocalNeedsAccounts = errors.New("web: auth.mode local needs an account store")
 
 // telegramSteps is the bot's steps setting, or "" without a bot.
 func telegramSteps(cfg *config.Config) string {
@@ -285,6 +361,7 @@ func (s *Server) Handler() http.Handler {
 	s.scheduledRoutes(mux)
 	s.composeRoutes(mux)
 	s.promptRoutes(mux)
+	s.userRoutes(mux)
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)
 	mux.HandleFunc("GET /device/pair", s.handlePairPage)

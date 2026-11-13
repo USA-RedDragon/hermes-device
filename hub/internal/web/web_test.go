@@ -87,7 +87,7 @@ func setupWith(t *testing.T, fn func(cfg *config.Config, opts *web.Options, st *
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	svc := service.New(cfg.Backends, st, service.Options{HoldRetryMin: 20 * time.Millisecond, HoldRetryMax: 100 * time.Millisecond})
+	svc := service.New(cfg.Backends, st, service.Options{HoldRetryMin: 20 * time.Millisecond, HoldRetryMax: 100 * time.Millisecond, Grants: st})
 	t.Cleanup(svc.Close)
 	opts.Service = svc
 	s, err := web.New(cfg, opts)
