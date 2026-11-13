@@ -39,18 +39,14 @@ Pair this computer with the hub and store its token. `setup` does this for you.
 
 <!-- docgen:output exec="scripts/cli-usage.sh login" -->
 ```text
-github.com/USA-RedDragon/talaria/internal/claudeusage: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/browser/broker: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/attest: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/autoupdate: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/oci: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/acpbridge: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/setup: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/daemonstate: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/executor: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/mcp: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/splice: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/pairing: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
+Pair this device with the Talaria hub and store its token
+
+Usage:
+  talaria login [flags]
+
+Flags:
+  -h, --help[=true|false]   help for login
+      --name string         Name to suggest for this device on the hub (default the host name)
 ```
 <!-- /docgen:output -->
 
@@ -60,10 +56,15 @@ The daemon: runs the agent's commands here and serves the loopback connection th
 
 <!-- docgen:output exec="scripts/cli-usage.sh run" -->
 ```text
-github.com/USA-RedDragon/talaria/internal/oci: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/setup: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/executor: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/daemonstate: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
+Run the device daemon: the exec leg and the chat splice. With --no-splice (or gateway.splice false) it runs only the exec leg, for a headless service device such as the sandbox pod.
+
+Usage:
+  talaria run [flags]
+
+Flags:
+      --check-config[=true|false]   Load and check the config the way run does, then exit; auto-update runs a new release with it before it installs it
+  -h, --help[=true|false]           help for run
+      --no-splice[=true|false]      Run only the exec leg, without the chat splice (sets gateway.splice to false)
 ```
 <!-- /docgen:output -->
 
@@ -73,7 +74,16 @@ Open the Hermes terminal interface on a server session. See [Chat from a termina
 
 <!-- docgen:output exec="scripts/cli-usage.sh chat" -->
 ```text
-github.com/USA-RedDragon/talaria/internal/browser/broker: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
+chat starts the agent's terminal chat (hermes --tui) in the current directory and points it at the running talaria run daemon, which carries it to the server's agent. On Linux it runs the exact build the server runs, which run fetches from the server's container image and verifies (chat.managed); otherwise, or when the server reports no image, it runs chat.hermes of the same release. Arguments after -- go to the agent. Its -c/--continue and -r/--resume flags are looked up on the server: -c alone continues the most recent session bound to this device. --status shows the managed builds and --refresh fetches the server's build again.
+
+Usage:
+  talaria chat [-- agent-args...] [flags]
+
+Flags:
+      --allow-version-mismatch[=true|false]   Start the chat even when the local agent build is not the server's release
+  -h, --help[=true|false]                     help for chat
+      --refresh[=true|false]                  Fetch and verify the server's agent build again, remove old builds, then exit
+      --status[=true|false]                   Show the server's agent release and the managed builds on this device, then exit
 ```
 <!-- /docgen:output -->
 
@@ -99,8 +109,17 @@ Install the latest release or a given one. See [Update, move or remove a compute
 
 <!-- docgen:output exec="scripts/cli-usage.sh update" -->
 ```text
-github.com/USA-RedDragon/talaria/internal/setup: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/executor: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
+update downloads the release archive for this OS and architecture from GitHub, checks it against the release's checksum file, verifies the archive's GitHub artifact attestation (Sigstore-signed build provenance from this repository's release workflow at the release tag), checks that the new binary runs and reports the release's version, replaces the installed binary (~/.talaria/bin/talaria when it exists, else this binary) and restarts the service when it runs. It refuses a downgrade, and replacing a development build, without --force. It refuses a release without a valid attestation, which includes every release before v0.13.0, without --insecure-skip-attestation.
+
+Usage:
+  talaria update [version] [flags]
+
+Flags:
+      --check[=true|false]                       Download and verify the release (checksum, attestation, the binary runs) but install nothing
+      --force[=true|false]                       Install even when it is a downgrade, the same version, or replaces a development build
+  -h, --help[=true|false]                        help for update
+      --insecure-skip-attestation[=true|false]   UNSAFE: install without verifying the release's attestation, for emergencies and releases before v0.13.0
+      --no-restart[=true|false]                  Do not restart the service
 ```
 <!-- /docgen:output -->
 
@@ -168,9 +187,13 @@ Remove the native messaging host.
 
 <!-- docgen:output exec="scripts/cli-usage.sh browser uninstall" -->
 ```text
-github.com/USA-RedDragon/talaria/internal/attest: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/autoupdate: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
-github.com/USA-RedDragon/talaria/internal/acpbridge: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
+Remove the native messaging host manifest that install wrote
+
+Usage:
+  talaria browser uninstall [flags]
+
+Flags:
+  -h, --help[=true|false]   help for uninstall
 ```
 <!-- /docgen:output -->
 
@@ -180,7 +203,14 @@ On the server: write the Hermes device plugin into a plugins folder. For people 
 
 <!-- docgen:output exec="scripts/cli-usage.sh plugin install" -->
 ```text
-github.com/USA-RedDragon/talaria/internal/daemonstate: /usr/lib/go/pkg/tool/linux_amd64/compile: fork/exec /usr/lib/go/pkg/tool/linux_amd64/compile: resource temporarily unavailable
+Writes the device plugin files and a VERSION file into --dest, replacing an older copy. Run it before Hermes starts, for example from an init container, then enable the plugin with hermes plugins enable device.
+
+Usage:
+  talaria plugin install [flags]
+
+Flags:
+      --dest string         Plugin directory to write, for example /opt/data/hermes/plugins/device
+  -h, --help[=true|false]   help for install
 ```
 <!-- /docgen:output -->
 

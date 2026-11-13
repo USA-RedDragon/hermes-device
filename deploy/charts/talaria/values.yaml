@@ -53,7 +53,7 @@ telegram:
   existingSecret: ""
 
 images:
-  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.74@sha256:44356abd1e34d2482cc2f319b2e3028c9747a73cdb936f9b34edbcea559251a7
+  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.75@sha256:457d639da2ada7476af31bd315ffedd6574d9a8615db8526dbbf9bc3c0ee8000
   # -- Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
   hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p35@sha256:ad5c37383bd5c20607cfa8575c301bc8a22ab48084ad76b87b25a5a1a97ab1fc
   device: ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
