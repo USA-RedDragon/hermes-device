@@ -1,0 +1,386 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 07:09:17 -0600
+Subject: [PATCH] fix(compression): one classifier for the user's words
+
+The task snapshot and the verbatim user-message section used two prefix lists that drifted apart: the snapshot took a subagent result ([ASYNC DELEGATION ...]) as the user's request, and both quoted peer-agent messages ([Agent message ...]) as the user's words, which crowded real messages out of the verbatim budget. One classifier in conversation_compression_scaffolding now serves the snapshot, the verbatim section, the auto-focus hint, anchor restoration and the recall query, and the summarizer input labels such rows USER ROLE, NOT WRITTEN BY THE USER instead of USER. It also drops recalled memory from quotes, unwraps steer messages, skips gateway notices and leading system notes, and keeps hub page answers whole up to 16K chars instead of cutting them at 4K. Bug fix, no key.
+---
+ agent/context_compressor.py                   |  62 ++++++----
+ agent/conversation_compression_scaffolding.py |  89 +++++++++++++-
+ agent/prompt_builder.py                       |   2 +-
+ .../agent/test_compaction_user_provenance.py  | 113 ++++++++++++++++++
+ 4 files changed, 240 insertions(+), 26 deletions(-)
+ create mode 100644 tests/agent/test_compaction_user_provenance.py
+
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+index 191b30fe..76efe2ce 100644
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -932,19 +932,13 @@ TAIL_MAX_CONTEXT_FRACTION = 0.20
+ # Newest-first budget, straddler truncated; lives inside the single summary message.
+ _LEAN_USER_MESSAGES_BUDGET_CHARS = 24_000  # ~6K tokens
+ _LEAN_USER_MESSAGE_MAX_CHARS = 4_000
++# A page answer is the user's reply to a whole page of questions; cutting it to 4K kept the first answers
++# and dropped the rest. Kept whole up to this bound (still inside the section budget).
++_LEAN_PAGE_ANSWER_MAX_CHARS = 16_000
+ _LEAN_USER_MESSAGES_HEADING = "## User Messages (verbatim, newest first)"
+ _LEAN_RECOVERY_HEADING = "## Context Recovery"
+-_SYNTHETIC_USER_ROW_PREFIXES = (
+-    "[System:", "[CONTEXT", "[PRIOR CONTEXT", "[IMPORTANT: Background", "[Your active task list",
+-    "[Planning state preserved", "[ASYNC DELEGATION", "[OUT-OF-BAND", "Cronjob Response:",
+-)
+-
+-
+-def _synthetic_user_row(content: str) -> bool:
+-    """True for scaffolding user rows that carry no real user words."""
+-    if not isinstance(content, str) or not content.strip():
+-        return True
+-    return content.lstrip().startswith(_SYNTHETIC_USER_ROW_PREFIXES)
++# Compaction frames that may carry a user's words after the frame; never quoted as the user's own message.
++_COMPACTION_FRAME_PREFIXES = ("[CONTEXT", "[PRIOR CONTEXT")
+ 
+ 
+ def _typed_user_text(content: str) -> str:
+@@ -954,23 +948,35 @@ def _typed_user_text(content: str) -> str:
+     return (describe_skill_invocation(content, separator=" ") or "") if skills_loaded_by_scaffold(content) else content
+ 
+ 
++def _user_words(msg: dict[str, Any]) -> str:
++    """What the person wrote in a user row (shared classifier), as typed; "" for runtime rows and frames."""
++    from agent.conversation_compression_scaffolding import user_authored_text
++    text = user_authored_text(msg)
++    if text is None or text.lstrip().startswith(_COMPACTION_FRAME_PREFIXES):
++        return ""
++    return _typed_user_text(text).strip()
++
++
+ def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
+-    """Compacted region's REAL user messages verbatim, newest-first under a char budget (straddler truncated); "" if none."""
++    """Compacted region's REAL user messages verbatim, newest-first under a char budget (straddler truncated); "" if none.
++    Subagent results, peer-agent messages, gateway notices and recalled memory are not the user's words and
++    are left out; a page answer is kept whole up to ``_LEAN_PAGE_ANSWER_MAX_CHARS``."""
++    from agent.conversation_compression_scaffolding import is_page_answer
+     collected: list[str] = []
+     used = 0
+     for msg in reversed(turns):
+         if msg.get("role") != "user":
+             continue
+-        content = _typed_user_text(_content_text_for_contains(msg.get("content")))
+-        if _synthetic_user_row(content):
++        text = _user_words(msg)
++        if not text:
+             continue
+         remaining = _LEAN_USER_MESSAGES_BUDGET_CHARS - used
+         if remaining <= 0:
+             break
+-        text = content.strip()
+         if len(text) > remaining and remaining <= ELISION_MARKER_MAX_LEN:
+             break  # no room for marker + content: a marker-only quote would overshoot the budget
+-        text = elide(text, min(_LEAN_USER_MESSAGE_MAX_CHARS, remaining))
++        cap = _LEAN_PAGE_ANSWER_MAX_CHARS if is_page_answer(text) else _LEAN_USER_MESSAGE_MAX_CHARS
++        text = elide(text, min(cap, remaining))
+         collected.append("> " + text.replace("\n", "\n> "))
+         used += len(text)
+     if not collected:
+@@ -980,7 +986,10 @@ def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
+         + "\n\n".join(collected)
+         + "\n(Every real user message from the compacted region, quoted "
+         "verbatim. These are the user's actual words and override any "
+-        "paraphrase of them above.)"
++        "paraphrase of them above. Subagent results, messages from other "
++        "agents and recalled memory are not quoted here: they are not the "
++        f"user's words. A page answer is kept whole up to {_LEAN_PAGE_ANSWER_MAX_CHARS:,} chars; "
++        f"other messages up to {_LEAN_USER_MESSAGE_MAX_CHARS:,}.)"
+     )
+ 
+ 
+@@ -3434,9 +3443,20 @@ class ContextCompressor(
+                 continue
+             if role == "assistant" and msg.get("tool_calls", []):
+                 content += "\n[Tool calls:\n" + "\n".join(map(self._render_tool_call_for_summary, msg["tool_calls"])) + "\n]"
+-            parts.append(f"[{role.upper()}]: {content}")
++            parts.append(f"[{self._summary_record_label(msg)}]: {content}")
+         return parts
+ 
++    @classmethod
++    def _summary_record_label(cls, msg: dict[str, Any]) -> str:
++        """``USER`` only for rows a person wrote: a user-role row with a subagent result, a relayed agent
++        message or a gateway notice is labeled as not the user's, so the summary does not file it as a request."""
++        role = msg.get("role", "unknown")
++        if role == "user" and not cls._is_context_summary_message(msg):
++            from agent.conversation_compression_scaffolding import is_user_role_scaffolding
++            if is_user_role_scaffolding(msg):
++                return "USER ROLE, NOT WRITTEN BY THE USER"
++        return str(role).upper()
++
+     def _serialize_for_summary(self, turns: list[dict[str, Any]]) -> str:
+         """Serialize turns into labeled, redacted text for the summarizer."""
+         return "\n\n".join(self._serialize_records_for_summary(turns))
+@@ -4336,7 +4356,7 @@ Write only the summary body. Do not include any preamble or prefix."""
+             # display_kind notices are operational traffic, not user intent.
+             if msg.get("role") != "user" or cls._is_synthetic_compression_user_turn(msg) or msg.get("display_kind"):
+                 continue
+-            text = _redact_compaction_text(_typed_user_text(_content_text_for_contains(msg.get("content"))).strip())
++            text = _redact_compaction_text(_user_words(msg))
+             if not text:
+                 continue
+             text = " ".join(text.split())
+@@ -4363,13 +4383,13 @@ Write only the summary body. Do not include any preamble or prefix."""
+         for msg in reversed(messages):
+             if msg.get("role") != "user" or not _is_real_user_message(msg):
+                 continue
+-            text = _redact_compaction_text(_typed_user_text(_content_text_for_contains(msg.get("content"))).strip())
++            text = _redact_compaction_text(_user_words(msg))
+             if not text:
+                 continue
+             if len(text) > _ACTIVE_TASK_MAX_CHARS:
+                 # Past the cap, drop a gateway reply quote first so elision cannot keep the quote
+                 # and cut the request.
+-                text = _redact_compaction_text(_authored_request_text(msg.get("content"))) or text
++                text = _redact_compaction_text(_authored_request_text(_user_words(msg))) or text
+             text = re.sub(r"\s+", " ", text)
+             # Elide AFTER repr: repr would escape the marker's "Hermes's" and hide a copy from the
+             # guard. Authored text within the cap stays whole; a longer request split out of an
+diff --git a/agent/conversation_compression_scaffolding.py b/agent/conversation_compression_scaffolding.py
+index 3378cc89..e5e0be53 100644
+--- a/agent/conversation_compression_scaffolding.py
++++ b/agent/conversation_compression_scaffolding.py
+@@ -1,14 +1,39 @@
+-"""Which user-role rows are runtime scaffolding rather than something the person typed."""
++"""Which user-role rows are runtime scaffolding rather than something the person typed.
++
++One classifier for every reader that asks "did the user write this": the compaction task snapshot, the
++verbatim user-message section, anchor restoration and the memory recall query. Separate prefix lists drifted
++apart before (one lacked ``[ASYNC DELEGATION``, both lacked ``[Agent message``), so subagent results and
++peer-agent messages were quoted as the user's own words.
++"""
+ 
+ from __future__ import annotations
+ 
+-from typing import Any
++import re
++from typing import Any, Optional
+ 
++# Openers of user-role rows no person wrote. Matched after a leading gateway timestamp is removed.
+ _SYNTHETIC_USER_PREFIXES = (
+     "[System: Your previous response was truncated", "[System: The previous response was cut off",
+     "[System: Your previous tool call", "[Your active task list was preserved across context compression]",
+     "[IMPORTANT: Background process ",
++    "[System:", "[Planning state preserved", "Cronjob Response:",
++    # A background subagent's result (tools/process_registry_notifications.py).
++    "[ASYNC DELEGATION",
++    # Another agent's message relayed into this chat by a hub: "[Agent message am_<id> from <sender>]".
++    "[Agent message ",
++    # Gateway notices: a process notification and a subagent resumed after a restart.
++    "[INTERNAL NOTIFICATION", "[The gateway restarted while you were working",
+ )
++# Appended (not prepended) to gateway process notifications (gateway/run_notifications.py).
++_INTERNAL_NOTIFICATION_FOOTER_OPEN = "[INTERNAL NOTIFICATION — generated by the Hermes gateway"
++# A mid-turn steer: the user's own words inside the marker.
++_STEER_OPEN = "[OUT-OF-BAND USER MESSAGE"
++_STEER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
++# A hub page's answer, sent as the user: '[Answer from the page "<title>"]' then the page's text.
++PAGE_ANSWER_PREFIX = "[Answer from the page "
++# Gateway notes put in front of a user's message ("[System note: ...]\n\n<message>").
++_LEADING_NOTE_RE = re.compile(r"\A\[System note:[^\n]*\](?:[ \t]*\n\n|\s*\Z)")
++_MEMORY_CONTEXT_RE = re.compile(r"\s*<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>", re.IGNORECASE)
+ 
+ 
+ def _message_text(message: Any) -> str:
+@@ -33,6 +58,62 @@ def has_scaffolding_flag(message: dict) -> bool:
+     return any(message.get(f) for f in _SYNTHETIC_USER_FLAGS)
+ 
+ 
++def strip_memory_context(text: str) -> str:
++    """*text* without fenced ``<memory-context>`` blocks (recalled memory is not the user's words)."""
++    return _MEMORY_CONTEXT_RE.sub("", text) if "memory-context" in text.lower() else text
++
++
++def _strip_timestamp(text: str) -> str:
++    try:
++        from gateway.message_timestamps import strip_leading_message_timestamps
++    except Exception:  # pragma: no cover - the gateway package ships with the agent
++        return text
++    return strip_leading_message_timestamps(text)[0]
++
++
++def user_authored_text_of(text: str) -> Optional[str]:
++    """The words a person wrote in user-role *text*, or ``None`` when no person wrote any of it.
++
++    Recalled memory is removed, a steer marker is unwrapped, leading ``[System note: ...]`` blocks a gateway
++    put in front of a message are dropped, and a page answer keeps its ``[Answer from the page ...]`` line
++    (it says where the answer came from). Subagent results, peer-agent messages, gateway notices and
++    runtime nudges give ``None``. A ``/skill`` turn is the user's (its typed form is read elsewhere)."""
++    text = strip_memory_context(_strip_timestamp(text or "").strip()).strip()
++    while (note := _LEADING_NOTE_RE.match(text)) is not None:
++        text = text[note.end():].lstrip()
++    if not text:
++        return None
++    if text.startswith(_STEER_OPEN):
++        body = text.split("\n", 1)[1] if "\n" in text else ""
++        # A steer can carry a relayed agent message (a parent steering its subagent through a hub).
++        return user_authored_text_of(body.split(_STEER_CLOSE, 1)[0])
++    if text.startswith(PAGE_ANSWER_PREFIX):
++        return text
++    from agent.skill_commands import skills_loaded_by_scaffold
++    if skills_loaded_by_scaffold(text):
++        return text
++    if text.startswith(_SYNTHETIC_USER_PREFIXES) or _INTERNAL_NOTIFICATION_FOOTER_OPEN in text[-400:]:
++        return None
++    return text
++
++
++def user_authored_text(message: Any) -> Optional[str]:
++    """``user_authored_text_of`` for a message: ``None`` for non-user roles and flagged scaffolding rows."""
++    if not isinstance(message, dict) or message.get("role") != "user" or has_scaffolding_flag(message):
++        return None
++    return user_authored_text_of(_message_text(message))
++
++
++def is_page_answer(text: str) -> bool:
++    """Whether *text* (as ``user_authored_text`` returns it) is an answer sent from a hub page."""
++    return isinstance(text, str) and text.startswith(PAGE_ANSWER_PREFIX)
++
++
+ def is_user_role_scaffolding(message: dict) -> bool:
+-    """A runtime row in the user role, by flag or opening text (nudges, task-list snapshots, single background-process completion and watch-match notices)."""
+-    return has_scaffolding_flag(message) or _message_text(message).strip().startswith(_SYNTHETIC_USER_PREFIXES)
++    """A runtime row in the user role: flagged by its producer, or text in which no person wrote anything
++    (nudges, task-list snapshots, process notices, subagent results, peer-agent messages). A row with no
++    text at all (an image-only turn) is not scaffolding."""
++    if has_scaffolding_flag(message):
++        return True
++    text = strip_memory_context(_message_text(message))
++    return bool(text.strip()) and user_authored_text_of(text) is None
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index a6d1e6ec..901b35a4 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -565,7 +565,7 @@ STEER_MARKER_OPEN = (
+ )
+ STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
+ # Text after the "[" that opens one of Hermes' own control frames (the steer marker above, the compaction
+-# handoff and its fallbacks, runtime/system notes, agent.context_compressor._SYNTHETIC_USER_ROW_PREFIXES,
++# handoff and its fallbacks, runtime/system notes, agent.conversation_compression_scaffolding._SYNTHETIC_USER_PREFIXES,
+ # agent.title_generator._MACHINE_PREFIXES). Consumers that republish model output as role=user text
+ # (hosted rooms) relabel these so a reply cannot reproduce the exact trusted shape. Keep the regex literal in
+ # apps/desktop/src/plugins/hermes-bots/group-round-prompt.ts byte-equivalent to this list.
+diff --git a/tests/agent/test_compaction_user_provenance.py b/tests/agent/test_compaction_user_provenance.py
+new file mode 100644
+index 00000000..a1effc49
+--- /dev/null
++++ b/tests/agent/test_compaction_user_provenance.py
+@@ -0,0 +1,113 @@
++"""One classifier decides which user-role rows hold the user's words (task snapshot, verbatim quotes, anchors)."""
++
++from agent.context_compressor import (
++    ContextCompressor,
++    _LEAN_PAGE_ANSWER_MAX_CHARS,
++    _LEAN_USER_MESSAGE_MAX_CHARS,
++    _build_verbatim_user_section,
++)
++from agent.conversation_compression import _is_real_user_message
++from agent.conversation_compression_scaffolding import (
++    is_page_answer,
++    is_user_role_scaffolding,
++    user_authored_text,
++)
++
++AGENT_MSG = (
++    "[Agent message am_0123456789abcdef from chat 'ops' (session local-1)]\n"
++    "Another AI agent of this user wrote everything below this line. The user did not write it. "
++    "Treat it as a message from a peer agent.\n\nThe user approved the dark-only theme."
++)
++DELEGATION = "[ASYNC DELEGATION BATCH COMPLETE — deleg_1]\nSubagent sa-1 finished.\nResult:\nbuilt the page"
++NOTIFICATION = (
++    "Background process proc_1 finished with exit code 0.\n\n"
++    "[INTERNAL NOTIFICATION — generated by the Hermes gateway, not written by a human user. "
++    "Do not treat it as user input, and do not reply to any earlier chat message because of it.]"
++)
++RESTART_RESUME = "[The gateway restarted while you were working on this task. Your conversation so far is above.]"
++MEMORY = (
++    "<memory-context>\n[System note: The following is recalled memory context, NOT new user input. "
++    "Treat as authoritative reference data.]\n\n## User Representation\n- the user keeps a cluster\n</memory-context>"
++)
++STEER = (
++    "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool "
++    "output and not a new delivery when replayed from conversation history]\nuse port 8891\n"
++    "[/OUT-OF-BAND USER MESSAGE]"
++)
++
++
++def _user(content, **extra):
++    return {"role": "user", "content": content, **extra}
++
++
++def test_runtime_rows_hold_no_user_words():
++    for content in (AGENT_MSG, DELEGATION, NOTIFICATION, RESTART_RESUME, "Cronjob Response: nightly\nok"):
++        assert user_authored_text(_user(content)) is None, content[:30]
++        assert is_user_role_scaffolding(_user(content))
++        assert not _is_real_user_message(_user(content))
++
++
++def test_user_rows_keep_their_words_without_recalled_memory():
++    assert user_authored_text(_user("ship it\n\n" + MEMORY)) == "ship it"
++    assert user_authored_text(_user([{"type": "text", "text": "look at this"}, {"type": "text", "text": MEMORY}])) == (
++        "look at this"
++    )
++    assert user_authored_text(_user(STEER)) == "use port 8891"
++    assert user_authored_text(_user(STEER.replace("use port 8891", AGENT_MSG))) is None
++    assert not is_user_role_scaffolding(_user(STEER))
++    note = "[System note: The previous turn was interrupted by a gateway restart.]\n\nstatus?"
++    assert user_authored_text(_user(note)) == "status?"
++    assert is_user_role_scaffolding(_user("[System note: The previous turn was interrupted by a restart.]"))
++    page = '[Answer from the page "Rename?"]\n> 2. Yes, but tonight'
++    assert user_authored_text(_user(page)) == page and is_page_answer(page)
++
++
++def test_image_only_and_memory_only_turns_are_not_scaffolding():
++    assert not is_user_role_scaffolding(_user([{"type": "image_url", "image_url": {"url": "data:,"}}]))
++    assert not is_user_role_scaffolding(_user(MEMORY))
++
++
++def test_task_snapshot_skips_subagent_results_and_peer_messages():
++    messages = [_user("Make the app installable.\n\n" + MEMORY), {"role": "assistant", "content": "on it"},
++                _user(DELEGATION), {"role": "assistant", "content": "noted"}, _user(AGENT_MSG)]
++    snapshot = ContextCompressor._latest_user_task_snapshot(messages)
++    assert "Make the app installable." in snapshot
++    assert "ASYNC DELEGATION" not in snapshot and "Agent message" not in snapshot
++    assert "memory-context" not in snapshot
++
++
++def test_verbatim_section_quotes_only_the_users_words():
++    section = _build_verbatim_user_section([
++        _user("restic, offsite isn't worth the cost yet\n\n" + MEMORY), _user(DELEGATION), _user(AGENT_MSG),
++        _user(NOTIFICATION), _user(STEER),
++    ])
++    assert "restic, offsite" in section and "> use port 8891" in section
++    for leaked in ("ASYNC DELEGATION", "Agent message", "INTERNAL NOTIFICATION", "memory-context", "OUT-OF-BAND"):
++        assert leaked not in section.split("\n(Every real user message")[0], leaked
++
++
++def test_page_answers_are_kept_whole_up_to_their_bound():
++    answers = "\n".join(f"> {i}. option {i % 3} because reason {i}" for i in range(400))
++    page = '[Answer from the page "Settings review"]\n' + answers
++    assert _LEAN_USER_MESSAGE_MAX_CHARS < len(page) < _LEAN_PAGE_ANSWER_MAX_CHARS
++    section = _build_verbatim_user_section([_user(page)])
++    assert "399. option" in section and "chars omitted" not in section
++    assert f"{_LEAN_PAGE_ANSWER_MAX_CHARS:,} chars" in section
++    plain = _build_verbatim_user_section([_user("x" * (_LEAN_USER_MESSAGE_MAX_CHARS + 2000))])
++    assert "chars omitted" in plain
++
++
++def test_peer_messages_no_longer_crowd_out_user_messages():
++    old = _user("keep the old namespace for a day")
++    peers = [_user(AGENT_MSG + "\n" + "detail " * 600) for _ in range(12)]
++    section = _build_verbatim_user_section([old, *peers])
++    assert "keep the old namespace for a day" in section
++
++
++def test_summarizer_input_labels_rows_the_user_did_not_write():
++    compressor = ContextCompressor(model="test/model", quiet_mode=True, config_context_length=64_000)
++    text = compressor._serialize_for_summary([_user("ship it"), _user(DELEGATION), _user(AGENT_MSG), _user(STEER)])
++    assert "[USER]: ship it" in text
++    assert "[USER ROLE, NOT WRITTEN BY THE USER]: [ASYNC DELEGATION" in text
++    assert "[USER ROLE, NOT WRITTEN BY THE USER]: [Agent message" in text
++    assert "[USER]: [OUT-OF-BAND USER MESSAGE" in text

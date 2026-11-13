@@ -1,0 +1,16 @@
+# Upstream tests of the user-row classifier's readers: task snapshot, verbatim section, anchors, recall query
+tests/agent/test_compression_marker.py
+tests/agent/test_context_compressor.py
+tests/agent/test_context_compressor_tail.py
+tests/agent/test_context_compressor_summary_continuity.py
+tests/agent/test_context_compressor_zero_user_provenance.py
+tests/agent/test_compressor_actionable_tail_anchor.py
+tests/agent/test_split_turn_compaction.py
+tests/agent/test_steer.py
+tests/agent/test_turn_context.py
+tests/agent/test_memory_skill_scaffolding.py
+tests/agent/test_skill_todo_retention_parity.py
+tests/gateway/test_session_stored_reads.py
+tests/gateway/test_session_stored_reads_bounds.py
+tests/gateway/test_internal_notification_marker.py
+tests/tools/test_async_delegation.py
