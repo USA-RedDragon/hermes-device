@@ -15,19 +15,25 @@ Admins of the hub (the account made on the setup page, and anyone made an admin 
 proxy or OIDC, the people in `auth.admins`) see **Connect a model** in the chat area while no model is connected,
 and a Models tab in Settings at any time. Everyone else sees "No model is set up yet" and a Check again button.
 
+With more than one backend, `models.admins` (environment variable `HUB_MODELS_ADMINS`) says who connects models to
+which backend's Hermes, as `user=backend` pairs, the same form as `claude.admins`: `alice=main,bob=family`. Once it
+is set, only those pairs may, hub admins included; empty (the default) leaves it to the hub's admins on every
+backend they use.
+
 Connect a model asks where the model runs:
 
 - **On my own computer or network**: Ollama, LM Studio, vLLM, llama.cpp, or any server that speaks the OpenAI
   API. Give it a name and the address, ending in `/v1` for Ollama and LM Studio, then **Test address**: Hermes
   calls the address from its own container and lists the models it finds. Pick the one new chats start with, then
   **Save and use**. From a container, `localhost` is the container itself, so use the address of the machine that
-  runs the server (see [Ollama](#ollama)). Advanced holds the API mode, the context window and whether the model
+  runs the server (see [Ollama](#ollama)). Advanced holds the API type, the context window and whether the model
   list follows the server.
 - **A provider, with an API key**: OpenRouter, Anthropic, OpenAI, Google AI Studio, DeepSeek, xAI, or any of the
   others under **All providers**. Paste the key and **Check and connect**. Hermes checks keys for OpenRouter,
   OpenAI, xAI and Google AI Studio with the provider before it saves them; a rejected key is not saved. Keys of
   the other providers are saved but not checked: if the first reply fails with an authentication error, edit the
-  key in Settings, Models.
+  key in Settings, Models. A backend whose Hermes runs Claude subscription accounts (the Claude accounts plugin)
+  does not offer an Anthropic API key here, so the two do not compete.
 - **A subscription account**: ChatGPT or Codex, Nous Portal, xAI Grok or MiniMax. Talaria shows a code and a link
   to the provider's page, where you sign in and enter the code; it waits until you approve. A code works for 15
   minutes; **Get a new code** starts again.
@@ -37,8 +43,23 @@ model of the provider is in the chat's model menu, which an admin can also use t
 
 **Settings, Models** lists what Hermes has connected. Each row can be edited (a key field left empty keeps the
 saved key; Talaria never shows a key, only Hermes's masked preview), tested again, made the default for new chats,
-or removed. Removing the default asks which model to use instead; removing the only one brings back the Connect a
-model card.
+or removed. Removing the default asks which model to use instead (a model Hermes calls high-priced asks for a yes
+first, as Make default does); removing the only one brings back the Connect a model card. A default Hermes did not
+change is reported as such, never as done.
+
+### Models the deployment sets
+
+A deployment can set models outside Hermes's own files: keys in the container's environment (Compose `.env`,
+Kubernetes secrets), and with Helm or Flux a managed Hermes config (`HERMES_MANAGED_DIR`) that sets the default
+model and servers. Hermes reads those over its own settings, so a change made in Talaria would be overridden, come
+back after a restart, or (a key saved over one from the environment) hide the deployment's key for good.
+
+With `dashboard.managed_read_only: true` in Hermes's config (Talaria's kits set it), Talaria shows these read-only:
+servers from the managed config are marked **Set in the deployment config**, keys from the environment **Set in the
+deployment**, and neither has Edit or Remove. When the managed config sets the default model, Settings, Models says
+where, Make default is gone, and Connect a model skips the pick of a default: new chats keep starting with the
+deployment's model, and what you connect is in the chat's model menu. Hermes refuses any change to these with a
+message that says where they are set, and writes nothing. Change them where the deployment sets them.
 
 Anthropic account sign-in, Qwen sign-in, AWS Bedrock and Google Vertex AI cannot be set up from the page: use
 `hermes model` on the server, below.

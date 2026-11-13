@@ -41,7 +41,11 @@ Behind your own reverse proxy, turn off response buffering and request timeouts 
   [Unraid](unraid.md), [TrueNAS](truenas.md), [all-in-one](all-in-one.md), [Helm](helm.md#quick-start-try-it-with-port-forward),
   and [Choosing models and providers](models.md#set-a-model-on-the-server).
 - Connect a model is not there: only hub admins see it. The first account (made on the setup page) is one; others
-  are made admins in Settings, Users, or named in `auth.admins` (login proxy, OIDC).
+  are made admins in Settings, Users, or named in `auth.admins` (login proxy, OIDC). With `models.admins` set, only
+  the `user=backend` pairs it names see it, for those backends.
+- A model, server or key in Settings, Models says "Set in the deployment config" or "Set in the deployment", with
+  no Edit or Remove: the deployment sets it (its managed Hermes config or the container's environment). Change it
+  there ([Models the deployment sets](models.md#models-the-deployment-sets)).
 - "Could not reach http://localhost:11434/v1/models." when you test an address: Hermes runs in its own container,
   so `localhost` is that container. Use the address of the machine that runs the server, and let the server
   listen on it (Ollama: `OLLAMA_HOST=0.0.0.0:11434`).
