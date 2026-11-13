@@ -4,6 +4,12 @@ on:
     paths:
       - hub/**
       - .github/workflows/hub-go-static-checks.yaml
+  push:
+    branches:
+      - main
+    paths:
+      - hub/**
+      - .github/workflows/hub-go-static-checks.yaml
 
 permissions:
   contents: read

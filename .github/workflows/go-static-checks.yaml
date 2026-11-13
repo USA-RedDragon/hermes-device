@@ -10,6 +10,18 @@ on:
       - .github/workflows/aio.yaml
       - .github/workflows/deploy.yaml
       - .github/workflows/docs.yaml
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - deploy/**
+      - docs/**
+      - hub/**
+      - hermes/**
+      - README.md
+      - .github/workflows/aio.yaml
+      - .github/workflows/deploy.yaml
+      - .github/workflows/docs.yaml
 
 permissions:
   contents: read
