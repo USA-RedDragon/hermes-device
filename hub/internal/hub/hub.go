@@ -397,7 +397,10 @@ type PromptInfo struct {
 	Multi       bool     `json:"multi_select,omitempty"`
 	Command     string   `json:"command,omitempty"`
 	Description string   `json:"description,omitempty"`
-	Question    string   `json:"question,omitempty"`
+	// Subagent is the goal of the subagent that asks an approval, empty
+	// when the chat itself does.
+	Subagent string `json:"subagent,omitempty"`
+	Question string `json:"question,omitempty"`
 	// Timeout is how many seconds Hermes waits for the answer, 0 when
 	// it did not say.
 	Timeout float64 `json:"timeout_s,omitempty"`

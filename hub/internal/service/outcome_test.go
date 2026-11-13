@@ -244,3 +244,40 @@ func TestOutcomeMatchesTheCommand(t *testing.T) {
 		t.Fatalf("outcome = %+v, want %+v", o, want)
 	}
 }
+
+func TestASubagentApprovalLinksToNoToolCall(t *testing.T) {
+	t.Parallel()
+	subagent := "Check the rollout and report"
+	cmd := cmdP9
+	ask := published{hub.KindApprovalRequest, gateway.Prompt{Kind: gateway.PromptApproval, PromptID: promptP9, Command: &cmd,
+		Subagent: &subagent, Choices: []string{hub.ChoiceOnce, hub.ChoiceDeny}}}
+	// The chat runs a terminal call with the same command: it did not ask.
+	evs := attachPublish(t, setup(t, service.Options{}), terminalStart("t1", cmd), ask, settles(),
+		toolDone("t1", `{"output": "", "exit_code": 0}`))
+	if o, ok := outcomeOf(t, evs); ok {
+		t.Fatalf("outcome %+v", o)
+	}
+}
+
+func TestAnApprovalCardNamesItsSubagent(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ch, cancel, err := e.svc.Attach(context.Background(), userAlice, backendPC, sLive, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	next(t, ch)
+	subagent := "Check the rollout and report"
+	cmd, desc := "true # approval-test", `Subagent "Check the rollout and report" asks: a test`
+	e.gw.Ask(sLive, gateway.Prompt{Kind: gateway.PromptApproval, PromptID: promptP9, Command: &cmd, Description: &desc,
+		Subagent: &subagent, Choices: []string{hub.ChoiceOnce, hub.ChoiceDeny}})
+	until(t, ch, hub.KindApprovalRequest)
+	info, err := e.svc.PendingPrompt(context.Background(), userAlice, backendPC, sLive, promptP9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Subagent != subagent || info.Description != desc {
+		t.Fatalf("prompt = %+v", info)
+	}
+}

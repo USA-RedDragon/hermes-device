@@ -126,9 +126,12 @@ func (ls *live) trackOutcomes(ev gateway.Event) {
 // gateApproval links a new approval to the tool call that asked for it:
 // the only running terminal call with its command, or else the only
 // running call, when it is a tool that asks while it runs and no subagent
-// runs that could have asked instead. ls.mu is held.
+// runs that could have asked instead. An approval that names its subagent
+// links to no call. ls.mu is held.
 func (ls *live) gateApproval(p gateway.Prompt) {
-	if p.Kind != gateway.PromptApproval {
+	// A subagent's approval is not from a tool call of this chat: the call that
+	// runs here, even with the same command, did not ask.
+	if p.Kind != gateway.PromptApproval || p.Subagent != nil {
 		return
 	}
 	var cmd string

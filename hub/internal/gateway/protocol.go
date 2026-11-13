@@ -159,8 +159,11 @@ type Prompt struct {
 	Choices             []string `json:"choices"`
 	Command             *string  `json:"command,omitempty"`
 	Description         *string  `json:"description,omitempty"`
-	Question            *string  `json:"question,omitempty"`
-	MultiSelect         bool     `json:"multi_select,omitempty"`
+	// Subagent is the goal of the subagent that asks, for an approval of a
+	// subagent: it waits on the chat, not on one of its turns.
+	Subagent    *string `json:"subagent,omitempty"`
+	Question    *string `json:"question,omitempty"`
+	MultiSelect bool    `json:"multi_select,omitempty"`
 	// Timeout is how many seconds Hermes waits for the answer, 0 when it
 	// did not say.
 	Timeout float64 `json:"timeout_s,omitempty"`
