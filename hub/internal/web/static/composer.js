@@ -46,11 +46,26 @@ window.HubComposer = (ctx) => {
     update();
   }
 
+  // grow sizes the box to its text. It measures on a hidden twin, never on
+  // the box itself: collapsing the box to read its scrollHeight shortens
+  // the composer for a moment, the log grows, and the browser clamps the
+  // log's scrollTop to the shorter content, so the log jumps on every key.
+  let twin = null;
   function grow() {
-    input.style.height = "0px";
+    if (!twin) {
+      twin = document.createElement("textarea");
+      twin.setAttribute("aria-hidden", "true");
+      twin.tabIndex = -1;
+      twin.readOnly = true;
+      twin.style.cssText = "position:absolute;left:0;top:0;visibility:hidden;pointer-events:none;height:0;min-height:0;flex:none;overflow:hidden";
+      input.parentNode.appendChild(twin);
+    }
+    twin.style.width = input.offsetWidth + "px";
+    twin.value = input.value;
     const border = input.offsetHeight - input.clientHeight;
     const cap = Math.min(200, window.innerHeight * 0.4);
-    input.style.height = Math.max(42, Math.min(input.scrollHeight + border, cap)) + "px";
+    const h = Math.max(42, Math.min(twin.scrollHeight + border, cap)) + "px";
+    if (input.style.height !== h) input.style.height = h;
   }
 
   // Drafts: saved a moment after the last keystroke, per chat.
@@ -66,6 +81,7 @@ window.HubComposer = (ctx) => {
   }
 
   async function putDraft(base, value) {
+    if (draft.base === base && input.value === value && value.trim()) say("Saving draft…");
     try {
       await api("PUT", base + "/draft", { text: value });
       if (draft.base === base) {
@@ -91,7 +107,9 @@ window.HubComposer = (ctx) => {
     if (draft.base !== chat.base) return;
     if (input.value === draft.saved && !draft.timer) return;
     draft.text = input.value;
-    say(input.value.trim() || draft.saved ? "Saving draft…" : "");
+    // The note says "Saving draft…" only once typing pauses and the save
+    // starts, not on every key.
+    if (!(input.value.trim() || draft.saved)) say("");
     clearTimeout(draft.timer);
     draft.timer = setTimeout(() => { draft.timer = 0; saveDraft(draft.base, draft.text); }, 700);
   }

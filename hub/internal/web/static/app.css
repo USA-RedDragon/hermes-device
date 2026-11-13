@@ -27,7 +27,7 @@ button.ghost { border-color: transparent; background: transparent; color: var(--
 button.icon { border: 0; background: transparent; font-size: 1.3rem; padding: .2rem .5rem; color: var(--fg); }
 
 /* App shell: the page never scrolls; the sidebar list and the conversation scroll on their own. */
-.app { height: 100dvh; display: grid; grid-template-columns: var(--wl, 17rem) minmax(0, 1fr); position: relative; }
+.app { height: var(--vvh, 100dvh); display: grid; grid-template-columns: var(--wl, 17rem) minmax(0, 1fr); position: relative; }
 .side { display: flex; flex-direction: column; min-height: 0; background: var(--side); border-right: 1px solid var(--line);
   padding-top: env(safe-area-inset-top); padding-left: env(safe-area-inset-left); overflow-x: clip; }
 .side-head { display: flex; align-items: center; gap: .5rem; padding: .6rem .75rem; min-width: 0; }
@@ -986,6 +986,8 @@ dialog.steps .pbody { overflow-y: auto; }
 .composer .send:disabled { opacity: .45; }
 .composer .hint { display: flex; align-items: center; gap: .8rem; color: var(--muted); font-size: .74rem; line-height: 1.9; margin-top: .2rem; min-height: 1.6rem; }
 .composer .hint .grow { flex: 1; }
+/* The draft note keeps its line whether or not it has text, so it never moves the composer. */
+#draftnote { display: block; min-height: 1.4rem; line-height: 1.4rem; white-space: nowrap; }
 kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; border: 1px solid var(--line); border-bottom-width: 2px;
   border-radius: 5px; padding: .1rem .35rem; margin: 0 .1rem; line-height: 1.2; background: var(--card); color: var(--fg); }
 .pop { position: absolute; left: var(--gutter); bottom: calc(100% - .2rem); width: min(30rem, calc(100% - 1.5rem));

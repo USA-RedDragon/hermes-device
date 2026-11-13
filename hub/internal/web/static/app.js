@@ -95,6 +95,29 @@
 
   const chatHash = (b, s) => "#/s/" + encodeURIComponent(b) + "/" + encodeURIComponent(s);
 
+  // focusInput puts the caret in the message box. On a touch screen it
+  // does nothing: focus raises the on-screen keyboard, and opening or
+  // switching a chat must not do that. The user taps the box when they
+  // want to type.
+  function focusInput() {
+    if (matchMedia("(pointer: coarse)").matches) return;
+    $("input").focus({ preventScroll: true });
+  }
+
+  // With the on-screen keyboard open, a browser that does not honor
+  // interactive-widget=resizes-content (iOS) pans the page and hides the
+  // header. Bind the app to the visual viewport there and undo the pan.
+  if (window.visualViewport) {
+    const vv = window.visualViewport;
+    const fit = () => {
+      const shrunk = window.innerHeight - vv.height > 1;
+      document.documentElement.style.setProperty("--vvh", shrunk ? vv.height + "px" : "");
+      if (shrunk && (window.scrollY || vv.offsetTop)) window.scrollTo(0, 0);
+    };
+    vv.addEventListener("resize", fit);
+    vv.addEventListener("scroll", fit);
+  }
+
   function openSide(open) {
     $("side").classList.toggle("open", open);
     $("scrim").hidden = !open;
@@ -2001,7 +2024,7 @@
       input.value = had ? had + "\n\n" + text : text;
       this.back();
       grow();
-      input.focus();
+      focusInput();
       banner("The page put text in the message box. Edit it, then send it.");
     },
 
@@ -3030,7 +3053,7 @@
       },
     });
     stream = follow;
-    $("input").focus({ preventScroll: true });
+    focusInput();
     if (page) {
       page.remember(backend, session);
       page.shown();
@@ -3665,7 +3688,7 @@
       if (st.files) files.restore(st.files);
       if (st.focus) {
         const input = $("input");
-        input.focus({ preventScroll: true });
+        focusInput();
         try { input.setSelectionRange(st.focus[0], st.focus[1]); } catch (_) { /* text changed */ }
       }
     }
@@ -3736,7 +3759,7 @@
       if ($("search").value) { $("search").value = ""; search.query(""); drawList(); return; }
       openSide(false);
       $("search").blur();
-      if (view) $("input").focus();
+      if (view) focusInput();
     };
     $("usagenav").hidden = !me.usage;
     $("filesbtn").onclick = () => {
