@@ -1,0 +1,257 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 18:21:33 +0000
+Subject: [PATCH] fix(gateway): a killed standby's marker does not outlive it
+
+A standby (gateway.runtime_lock_wait_seconds) removed gateway.standby only in a finally of the process that waited. When that process was SIGKILLed or OOM-killed while it waited, the file stayed in HERMES_HOME for good, since a gateway that boots with no predecessor never writes or removes it. A supervisor probe that skips the health check while a standby waits then passed on the file alone, so a hung gateway was never restarted.
+
+The waiting standby now touches the marker every 2 seconds and writes its host name in it. A marker untouched for 10 seconds is stale: the listener relay ignores it, and the gateway that reserves the profile removes it. A fresh marker is a successor that waits for this gateway and stays. No new key.
+---
+ gateway/run_bootstrap.py                   | 64 +++++++++++++-
+ tests/gateway/test_standby_marker_stale.py | 99 ++++++++++++++++++++++
+ website/docs/user-guide/messaging/index.md |  8 +-
+ 3 files changed, 169 insertions(+), 2 deletions(-)
+ create mode 100644 tests/gateway/test_standby_marker_stale.py
+
+diff --git a/gateway/run_bootstrap.py b/gateway/run_bootstrap.py
+index c8b6c752..2aefec60 100644
+--- a/gateway/run_bootstrap.py
++++ b/gateway/run_bootstrap.py
+@@ -643,6 +643,11 @@ RUNTIME_LOCK_POLL_S = 0.2
+ # Present while a warmed-up standby waits for the profile lock, so a supervisor can stop the owner
+ # only once its successor is ready to take over (for example a Kubernetes preStop hook).
+ STANDBY_MARKER = "gateway.standby"
++# The waiting standby touches its marker this often, and a marker untouched for STANDBY_MARKER_STALE_S
++# is left over from a standby that died (SIGKILL, OOM) while it waited: readers ignore it and the next
++# gateway that owns the profile removes it. A probe can test the same age (``find -newermt``).
++STANDBY_MARKER_REFRESH_S = 2.0
++STANDBY_MARKER_STALE_S = 10.0
+ _RUNTIME_LOCK_PREWARM_MODULES = (
+     "gateway.run_runtime", "gateway.run_startup", "gateway.run_api", "gateway.run_adapters",
+     "gateway.session_authorities", "run_agent", "model_tools", "tui_gateway.server",
+@@ -744,10 +749,53 @@ def _host_lock_held_by_predecessor(home) -> bool:
+     return record is None or not record.home or canonical_home(Path(record.home)) == canonical_home(home)
+ 
+ 
++def standby_marker_is_fresh(path, now: Optional[float] = None) -> bool:
++    """True while a live standby keeps touching the marker at *path*."""
++    import os
++    try:
++        age = (time.time() if now is None else now) - os.stat(path).st_mtime
++    except OSError:
++        return False
++    return age < STANDBY_MARKER_STALE_S
++
++
++def remove_stale_standby_marker(home) -> bool:
++    """Remove a ``gateway.standby`` in *home* that no live standby touches any more. A fresh one is a
++    successor that waits for this gateway, so it stays. True when one was removed."""
++    path = Path(home) / STANDBY_MARKER
++    if not path.exists() or standby_marker_is_fresh(path):
++        return False
++    try:
++        path.unlink()
++    except FileNotFoundError:
++        return False
++    except OSError:
++        logger.debug("Could not remove the stale %s", path, exc_info=True)
++        return False
++    logger.info("Removed %s left by a standby that no longer runs", path)
++    return True
++
++
++def _touch_standby_marker(path) -> None:
++    import os
++    try:
++        os.utime(path)
++    except FileNotFoundError:
++        _write_standby_marker(path)
++    except OSError:
++        logger.debug("Could not touch %s", path, exc_info=True)
++
++
+ def _write_standby_marker(path) -> None:
++    import socket
+     from gateway.status import _build_pid_record
+     from utils import atomic_json_write
+     record = {**_build_pid_record(), "since": time.time()}
++    try:
++        # Which pod waits: a probe on a volume that two pods share reads only its own marker.
++        record["hostname"] = socket.gethostname()
++    except OSError:
++        pass
+     try:
+         # Where the gateway being replaced relays to (gateway.restart_listener_relay_seconds).
+         from gateway.listener_relay import standby_listener_record
+@@ -790,6 +838,7 @@ async def _start_gateway_wait_for_runtime_lock(profile_homes, wait_s: float, con
+     _prewarm_before_runtime_lock(config)
+     marker = launch_home / STANDBY_MARKER
+     waited = False
++    touched = 0.0
+     try:
+         while True:
+             try:
+@@ -804,10 +853,17 @@ async def _start_gateway_wait_for_runtime_lock(profile_homes, wait_s: float, con
+                 logger.info("Another gateway owns %s; waiting up to %.0fs for it to exit", launch_home, wait_s)
+                 _write_standby_marker(marker)
+                 waited = True
++                touched = time.monotonic()
++            elif time.monotonic() - touched >= STANDBY_MARKER_REFRESH_S:
++                _touch_standby_marker(marker)
++                touched = time.monotonic()
+             kick_startup_watchdog()  # an idle wait, not a stalled boot
+             await asyncio.sleep(RUNTIME_LOCK_POLL_S)
+         while _host_lock_held_by_predecessor(launch_home) and time.monotonic() < deadline:
+             waited = True
++            if time.monotonic() - touched >= STANDBY_MARKER_REFRESH_S:
++                _touch_standby_marker(marker)
++                touched = time.monotonic()
+             await asyncio.sleep(RUNTIME_LOCK_POLL_S / 4)
+     finally:
+         if waited:
+@@ -845,6 +901,9 @@ def _start_gateway_reserve_profiles(profile_homes) -> bool:
+     except OSError as exc:
+         logger.error("Cannot reserve gateway profiles: %s", exc)
+         return False
++    # The profile is ours now: a standby marker nobody touches is left over from a killed standby, and
++    # a probe that reads it would skip this gateway's health check.
++    remove_stale_standby_marker(homes[0])
+     return True
+ 
+ 
+@@ -857,7 +916,10 @@ def _listener_relay_target(runner) -> Optional[tuple]:
+     try:
+         from gateway.listener_relay import successor_target
+         from gateway.run import get_hermes_home
+-        return successor_target(get_hermes_home() / STANDBY_MARKER)
++        marker = get_hermes_home() / STANDBY_MARKER
++        if not standby_marker_is_fresh(marker):
++            return None
++        return successor_target(marker)
+     except Exception:
+         logger.debug("No listener relay target", exc_info=True)
+         return None
+diff --git a/tests/gateway/test_standby_marker_stale.py b/tests/gateway/test_standby_marker_stale.py
+new file mode 100644
+index 00000000..6dd8ce40
+--- /dev/null
++++ b/tests/gateway/test_standby_marker_stale.py
+@@ -0,0 +1,99 @@
++"""gateway.standby: a marker left by a killed standby does not outlive it."""
++import asyncio
++import json
++import os
++import socket
++import time
++
++import pytest
++
++from gateway import run_bootstrap
++from gateway.runtime_ownership import ProfileOwnership, process_ownership
++
++
++@pytest.fixture
++def home(tmp_path, monkeypatch):
++    home = tmp_path / "home"
++    home.mkdir()
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    monkeypatch.setattr("gateway.run.get_hermes_home", lambda: home)
++    monkeypatch.setattr(run_bootstrap, "_prewarm_before_runtime_lock", lambda config=None: None)
++    monkeypatch.setattr(run_bootstrap, "_host_lock_held_by_predecessor", lambda _home: False)
++    monkeypatch.setattr(run_bootstrap, "RUNTIME_LOCK_POLL_S", 0.02)
++    yield home
++    process_ownership.close()
++
++
++def _leftover(home, age_s):
++    marker = home / "gateway.standby"
++    marker.write_text(json.dumps({"pid": 99999, "hostname": "gone-pod"}), encoding="utf-8")
++    then = time.time() - age_s
++    os.utime(marker, (then, then))
++    return marker
++
++
++@pytest.mark.platforms("linux")
++def test_owner_removes_a_marker_left_by_a_killed_standby(home):
++    marker = _leftover(home, run_bootstrap.STANDBY_MARKER_STALE_S + 5)
++    assert run_bootstrap._start_gateway_reserve_profiles([])
++    assert not marker.exists()
++
++
++@pytest.mark.platforms("linux")
++def test_owner_keeps_the_marker_of_a_standby_that_still_waits(home):
++    marker = _leftover(home, 0)
++    assert run_bootstrap._start_gateway_reserve_profiles([])
++    assert marker.exists()
++
++
++@pytest.mark.platforms("linux")
++@pytest.mark.asyncio
++async def test_free_profile_with_a_leftover_marker_is_taken_and_cleaned(home):
++    marker = _leftover(home, 3600)
++    await run_bootstrap._start_gateway_wait_for_runtime_lock([], 30)
++    assert run_bootstrap._start_gateway_reserve_profiles([])
++    assert not marker.exists()
++
++
++@pytest.mark.platforms("linux")
++@pytest.mark.asyncio
++async def test_waiting_standby_keeps_its_marker_fresh_and_names_its_host(home, monkeypatch):
++    monkeypatch.setattr(run_bootstrap, "STANDBY_MARKER_REFRESH_S", 0.1)
++    owner = ProfileOwnership()
++    owner.reserve([home])
++    waiter = asyncio.create_task(run_bootstrap._start_gateway_wait_for_runtime_lock([], 30))
++    try:
++        marker = home / "gateway.standby"
++        for _ in range(100):
++            if marker.exists():
++                break
++            await asyncio.sleep(0.02)
++        assert json.loads(marker.read_text())["hostname"] == socket.gethostname()
++        old = time.time() - 3600
++        os.utime(marker, (old, old))
++        assert not run_bootstrap.standby_marker_is_fresh(marker)
++        await asyncio.sleep(0.3)
++        assert run_bootstrap.standby_marker_is_fresh(marker)
++        assert not run_bootstrap.remove_stale_standby_marker(home)
++    finally:
++        owner.close()
++        await asyncio.wait_for(waiter, 5)
++    assert not (home / "gateway.standby").exists()
++
++
++def test_relay_ignores_a_stale_marker(home, monkeypatch):
++    marker = home / "gateway.standby"
++    marker.write_text(json.dumps({"listener": {"host": "10.0.0.9", "port": 9120, "netns": "net:[1]"}}),
++                      encoding="utf-8")
++    monkeypatch.setattr("gateway.listener_relay.net_namespace_id", lambda: "net:[2]")
++
++    class Runner:
++        _listener_handover = True
++
++        class config:
++            restart_listener_relay_seconds = 30
++
++    assert run_bootstrap._listener_relay_target(Runner()) == ("10.0.0.9", 9120)
++    old = time.time() - 3600
++    os.utime(marker, (old, old))
++    assert run_bootstrap._listener_relay_target(Runner()) is None
+diff --git a/website/docs/user-guide/messaging/index.md b/website/docs/user-guide/messaging/index.md
+index f3bd93a9..a4d2ef27 100644
+--- a/website/docs/user-guide/messaging/index.md
++++ b/website/docs/user-guide/messaging/index.md
+@@ -725,7 +725,13 @@ profile lock and takes over within a fraction of a second of the old gateway's
+ exit. It opens no store, port or platform connection until it owns the
+ profile. While it waits, `gateway.standby` exists in `HERMES_HOME`, so a
+ supervisor can stop the old gateway only once its successor is ready (for
+-example a Kubernetes `preStop` hook that waits for the file). When the wait runs out it exits as before. Set the wait above the old
++example a Kubernetes `preStop` hook that waits for the file). The waiting gateway
++touches the file every 2 seconds and writes its host name in it (`hostname`), so a
++file older than 10 seconds is left over from a gateway that was killed while it
++waited: readers ignore it, and the next gateway that owns the profile removes it. A
++probe that skips its health check for a standby should test the same, for example
++`find "$HERMES_HOME/gateway.standby" -newermt '-10 seconds' | grep -q . && grep -qF "\"hostname\": \"$(cat /etc/hostname)\"" "$HERMES_HOME/gateway.standby"`.
++When the wait runs out it exits as before. Set the wait above the old
+ gateway's drain (`agent.restart_drain_timeout`) plus its shutdown. The default
+ `0` keeps the immediate exit.
+ 

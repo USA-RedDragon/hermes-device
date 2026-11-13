@@ -1,0 +1,4 @@
+# Upstream-style tests of the standby wait (0010) and the listener relay (0036) that read the marker
+tests/gateway/test_runtime_lock_wait.py
+tests/gateway/test_restart_listener_relay.py
+tests/gateway/test_restart_listener_handover.py
