@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!-- Unraid Community Applications template for the Talaria all-in-one image. See https://usa-reddragon.github.io/talaria/deploy/unraid.html -->
+<!-- Unraid template for the Talaria all-in-one image. See https://usa-reddragon.github.io/talaria/deploy/unraid.html -->
 <Container version="2">
   <Name>Talaria</Name>
   <Repository>ghcr.io/usa-reddragon/talaria-aio:latest</Repository>

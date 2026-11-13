@@ -62,7 +62,7 @@ cannot reach the server's own address unless **Settings, Docker, Host access to 
 <!-- docgen:code file=deploy/aio/unraid/talaria.xml -->
 ```
 <?xml version="1.0"?>
-<!-- Unraid Community Applications template for the Talaria all-in-one image. See https://usa-reddragon.github.io/talaria/deploy/unraid.html -->
+<!-- Unraid template for the Talaria all-in-one image. See https://usa-reddragon.github.io/talaria/deploy/unraid.html -->
 <Container version="2">
   <Name>Talaria</Name>
   <Repository>ghcr.io/usa-reddragon/talaria-aio:latest</Repository>
