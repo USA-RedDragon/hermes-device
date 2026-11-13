@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
@@ -21,16 +20,7 @@ func TestChipOpensViewer(t *testing.T) {
 	if err != nil {
 		t.Skip("node is not installed")
 	}
-	var chrome string
-	for _, n := range strings.Fields("chromium chromium-browser google-chrome google-chrome-stable chrome") {
-		if p, err := exec.LookPath(n); err == nil {
-			chrome = p
-			break
-		}
-	}
-	if chrome == "" {
-		t.Skip("Chrome is not installed")
-	}
+	chrome := chromePath(t)
 	e := setup(t)
 	e.gw.QueueWhileRunning = true
 	const waiting = "/opt/data/hermes/cache/images/waiting.png"

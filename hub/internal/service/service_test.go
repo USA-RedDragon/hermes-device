@@ -249,9 +249,13 @@ func TestAttachStreamsInOrder(t *testing.T) {
 	defer stop2()
 	// A fresh open after a finished turn gets a new snapshot that shows the
 	// turn, not the old snapshot and the turn's events replayed.
+	// The held snapshot comes first, marked provisional, to show at once.
+	if evs2 := until(t, ch2, hub.KindSnapshot); len(evs2) != 1 || !evs2[0].Provisional {
+		t.Fatalf("second viewer = %v, want the held snapshot first", kinds(evs2))
+	}
 	evs2 := until(t, ch2, hub.KindSnapshot)
-	if len(evs2) != 1 {
-		t.Fatalf("second viewer = %v, want a snapshot first", kinds(evs2))
+	if len(evs2) != 1 || evs2[0].Provisional {
+		t.Fatalf("second viewer = %v, want the fresh snapshot next", kinds(evs2))
 	}
 	var s2 hub.Snapshot
 	if err := json.Unmarshal(evs2[0].Data, &s2); err != nil || len(s2.Messages) < 3 {

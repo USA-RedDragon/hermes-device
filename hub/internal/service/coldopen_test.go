@@ -39,9 +39,15 @@ func TestFreshOpenOfWarmChatGetsNewSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop2()
+	// The held snapshot comes at once to show while the fresh one is
+	// taken, then the fresh one, and nothing of the old turns.
 	evs := until(t, second, hub.KindSnapshot)
-	if len(evs) != 1 {
-		t.Fatalf("a fresh open began with %v, want one snapshot", kinds(evs))
+	if len(evs) != 1 || !evs[0].Provisional || evs[0].Seq != 0 {
+		t.Fatalf("a fresh open began with %v, want the held snapshot marked provisional", kinds(evs))
+	}
+	evs = until(t, second, hub.KindSnapshot)
+	if len(evs) != 1 || evs[0].Provisional {
+		t.Fatalf("after the held snapshot came %v, want one fresh snapshot", kinds(evs))
 	}
 	e.gw.Publish(sLive, hub.KindMessageStart, map[string]any{})
 	e.gw.Publish(sLive, hub.KindMessageDelta, map[string]any{kText: "marker"})

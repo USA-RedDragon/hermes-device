@@ -138,6 +138,12 @@ button.primary.ib:hover { filter: brightness(1.08); }
 .main { --gutter: clamp(.75rem, 2.5vw, 2.5rem); --read: 60rem; }
 .log { flex: 1 1 0px; min-height: 0; overflow-y: auto; overflow-anchor: none; padding: .75rem var(--gutter) 1rem;
   display: flex; flex-direction: column; gap: .6rem; }
+/* A chat whose snapshot has not come yet: grey bars, not an empty chat. */
+.log .loading { display: flex; flex-direction: column; gap: .9rem; margin-top: auto; padding-bottom: .5rem; }
+.log .loading .bar { height: 3.2rem; width: 78%; border-radius: 10px; background: var(--line); opacity: .55; animation: loadpulse 1.2s ease-in-out infinite alternate; }
+.log .loading .bar.mine { align-self: flex-end; width: 46%; height: 2.2rem; }
+@keyframes loadpulse { from { opacity: .3; } to { opacity: .65; } }
+@media (prefers-reduced-motion: reduce) { .log .loading .bar { animation: none; } }
 .tbhold { flex: none; position: relative; height: 0; z-index: 3; }
 .tobottom { position: absolute; left: 50%; bottom: .6rem; transform: translateX(-50%); display: inline-flex; align-items: center; gap: .35rem; padding: .35rem .85rem; border-radius: 999px;
   border: 0; background: var(--accent); color: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); font-size: .85rem; white-space: nowrap; max-width: calc(100% - 1.5rem); }

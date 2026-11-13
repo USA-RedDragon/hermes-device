@@ -170,12 +170,16 @@ const wheelTo = (x, top) => {
   assert.strictEqual(x.log.scrollTop, x.log.scrollHeight - x.log.client);
 }
 
-// Any scroll up unpins at once; scrolling down to within the threshold pins again.
+// A scroll up of less than the threshold (a tap's jitter, a sub-pixel
+// scrollTop) keeps the reader at the end; a real distance unpins, and
+// scrolling down to within the threshold pins again.
 {
   const x = make([500, 500, 500, 500], 600);
   x.s.pin();
-  wheelTo(x, 1400 - 20);
-  assert.strictEqual(x.s.pinned(), false);
+  for (const d of [0.5, 1, 3, 20]) {
+    wheelTo(x, 1400 - d);
+    assert.strictEqual(x.s.pinned(), true, "up by " + d);
+  }
   wheelTo(x, 1400 - 80);
   assert.strictEqual(x.s.pinned(), false);
   wheelTo(x, 1400 - 20);
@@ -251,5 +255,33 @@ const wheelTo = (x, top) => {
     last = x.log.scrollTop;
   }
   assert.strictEqual(x.s.pinned(), false);
+}
+// A log that grows taller at the end (a sidebar that opens, a keyboard
+// that closes) right after a swipe lowers scrollTop: still at the end.
+{
+  const x = make([500, 500, 500, 500], 600);
+  x.s.pin();
+  x.s.heard(3000);
+  x.log.client = 900;
+  x.log.clamp();
+  x.s.scrolled();
+  assert.strictEqual(x.s.pinned(), true);
+}
+// Another chat in the log: the swipe heard on the old one does not make
+// the clamp of the emptied log a scroll up, and the reader is at the end.
+{
+  const x = make([500, 500, 500, 500], 600);
+  wheelTo(x, 200);
+  assert.strictEqual(x.s.pinned(), false);
+  x.s.heard(3000);
+  x.s.reset();
+  assert.strictEqual(x.s.pinned(), true);
+  x.log.heights = [100];
+  x.log.clamp();
+  x.s.scrolled();
+  assert.strictEqual(x.s.pinned(), true, "the emptied log's clamp is not the reader");
+  x.log.heights = [500, 500, 500];
+  x.s.sync();
+  assert.strictEqual(x.log.scrollTop, 900);
 }
 console.log("ok");

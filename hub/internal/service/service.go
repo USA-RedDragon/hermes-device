@@ -1329,10 +1329,14 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	if snap.Running {
 		var r gateway.EventsSinceResult
 		err := c.Call(ctx, gateway.MethodEventsSince, gateway.EventsSinceParams{SessionID: snap.SessionID, ReplayEpoch: snap.ReplayEpoch}, &r)
-		if err == nil && !r.SnapshotRequired {
+		switch {
+		case err == nil && !r.SnapshotRequired:
 			before, tail = currentTurn(r.Events, snap.LastSequence)
-		} else {
-			// The running turn started before what Hermes can replay.
+		case snap.InflightTurn != nil:
+			// The running turn started before what Hermes can replay; the
+			// snapshot has its events so far (Talaria Hermes patch 0063).
+			_, tail = currentTurn(snap.InflightTurn.Events, snap.LastSequence)
+		default:
 			late = true
 		}
 	}
@@ -1407,9 +1411,9 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 			ls.emitAt(hub.KindMessageDelta, seed, 0)
 		}
 	default:
-		// An older Hermes: hold the rest of the reply back until it ends.
+		// An older Hermes: hold the rest of the reply back until it ends,
+		// when its whole text comes. The chat shows it is working meanwhile.
 		ls.late = true
-		ls.emit("status.update", json.RawMessage(lateStatus))
 	}
 	b.heldEventsLocked(ls, ls.id, snap.SessionID)
 	ls.flushEarly()

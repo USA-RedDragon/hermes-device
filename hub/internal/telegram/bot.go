@@ -1142,6 +1142,10 @@ func (b *Bot) pump(a *attachment) {
 				return
 			}
 			a.lastEvent.Store(b.now().UnixNano())
+			if ev.Provisional {
+				// The fresh snapshot follows; a chat message is drawn once.
+				continue
+			}
 			a.status.track(ev)
 			r.handle(ctx, ev)
 			if ev.Seq > a.lastSeq.Load() {

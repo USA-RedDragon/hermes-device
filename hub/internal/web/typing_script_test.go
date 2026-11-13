@@ -20,16 +20,7 @@ func TestTypingMovesNothing(t *testing.T) {
 	if err != nil {
 		t.Skip("node is not installed")
 	}
-	var chrome string
-	for _, n := range []string{"chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "chrome"} {
-		if p, err := exec.LookPath(n); err == nil {
-			chrome = p
-			break
-		}
-	}
-	if chrome == "" {
-		t.Skip("Chrome is not installed")
-	}
+	chrome := chromePath(t)
 	e := setup(t)
 	ms := make([]map[string]any, 0, 80)
 	for i := range 40 {

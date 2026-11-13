@@ -381,6 +381,18 @@ type Snapshot struct {
 	// segment, and the sequence it is current as of; nil when no reply text
 	// streams, or from a Hermes without Talaria Hermes patch 0057.
 	InflightReply *InflightReply `json:"inflight_reply,omitempty"`
+	// InflightTurn is the running turn's events so far (deltas joined) and
+	// the sequence they are current as of; nil when no turn runs, or from a
+	// Hermes without Talaria Hermes patch 0063.
+	InflightTurn *InflightTurn `json:"inflight_turn,omitempty"`
+}
+
+// InflightTurn is a running turn's events up to Sequence, as
+// session.events.since returns events: the frames after Sequence carry the
+// rest of it.
+type InflightTurn struct {
+	Events   []Event `json:"events"`
+	Sequence int64   `json:"sequence"`
 }
 
 // InflightReply is a running reply's text up to Sequence: the frames after

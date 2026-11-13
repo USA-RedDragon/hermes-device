@@ -500,6 +500,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		since = r.URL.Query().Get("since")
 	}
 	sinceSeq := s.sinceSeq(since)
+	ew := &eventWriter{s: s, split: since == ""}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -543,7 +544,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if !s.writeEvent(out, e) {
+			if !ew.write(out, e) {
 				return
 			}
 			out.Flush()

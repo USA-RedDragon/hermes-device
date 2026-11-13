@@ -19,7 +19,7 @@
 // distance now, or null when n is gone. o.changed() runs when the state
 // the reader sees may have changed.
 window.HubStick = (log, o) => {
-  const gapMax = o.gap || 30;
+  const gapMax = o.gap || 24;
   const changed = o.changed || (() => {});
   const now = o.now || Date.now;
   const hold = o.hold || 1200;
@@ -62,7 +62,13 @@ window.HubStick = (log, o) => {
     until = Math.max(until, now() + 300);
     const up = log.scrollTop < rec.top;
     note();
-    pinned = !up && gap() < gapMax;
+    // Only a real distance from the end leaves it: a tap's jitter, a
+    // sub-pixel scrollTop after layout, or a log that grows taller (a
+    // sidebar that opens, a keyboard that closes) lowering scrollTop at the
+    // end keep a reader at the end pinned. A reader above the end pins
+    // again by coming back within gapMax.
+    const g = gap();
+    pinned = g < gapMax && (pinned || !up || g < 1);
     take();
     changed();
   }
@@ -92,5 +98,13 @@ window.HubStick = (log, o) => {
     changed();
   }
 
-  return { sync, scrolled, heard, pin, release, look, refresh: changed, pinned: () => pinned };
+  // reset is for a log that now shows another chat: the reader is at its
+  // end, and a scroll the old chat's swipe was still heard for is not the
+  // reader's (emptying the log drops scrollTop to 0).
+  function reset() {
+    until = 0;
+    pin();
+  }
+
+  return { sync, scrolled, heard, pin, release, look, reset, refresh: changed, pinned: () => pinned };
 };

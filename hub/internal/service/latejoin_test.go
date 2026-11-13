@@ -126,9 +126,6 @@ func joinLate(t *testing.T, e *env, id string) <-chan hub.Event {
 	if ev := next(t, ch); ev.Kind != hub.KindSnapshot {
 		t.Fatalf("first event %s", ev.Kind)
 	}
-	if ev := next(t, ch); ev.Kind != "status.update" {
-		t.Fatalf("second event %s, want the late reply status", ev.Kind)
-	}
 	return ch
 }
 
@@ -220,4 +217,123 @@ func TestLateJoinSeedsTheReplyAndKeepsStreaming(t *testing.T) {
 	if streamed != reply {
 		t.Fatalf("streamed %d bytes, want the reply's %d once", len(streamed), len(reply))
 	}
+}
+
+// midTurn runs a turn of tools tool calls, each with its result, a reply
+// between them, and the start of a last reply, n deltas, on session id.
+func midTurn(e *env, id string, tools int) (toolIDs []string, replySoFar string) {
+	e.gw.Publish(id, "message.start", map[string]any{})
+	for i := range tools {
+		tid := "t" + strings.Repeat("x", i%3) + string(rune('a'+i%26)) + strings.Repeat("0", i/26)
+		toolIDs = append(toolIDs, tid)
+		e.gw.Publish(id, "tool.start", map[string]any{kToolID: tid, kName: toolTerm})
+		for range 5 {
+			e.gw.Publish(id, "tool.progress", map[string]any{kToolID: tid, "message": "running"})
+		}
+		e.gw.Publish(id, "tool.complete", map[string]any{kToolID: tid, kName: toolTerm, "result": "ok"})
+		for k := range 10 {
+			e.gw.Publish(id, "message.delta", map[string]any{kText: "step " + string(rune('0'+k)) + " "})
+		}
+		e.gw.Publish(id, "message.interim", map[string]any{kText: strings.Repeat("x", 3), "already_streamed": true})
+	}
+	for _, d := range []string{"The answer ", "so far "} {
+		e.gw.Publish(id, "message.delta", map[string]any{kText: d})
+		replySoFar += d
+	}
+	return toolIDs, replySoFar
+}
+
+// checkWholeTurn reads a viewer's events up to the turn's end: every tool
+// card of the turn once, the reply so far, then the live rest, no status
+// that holds the reply back, nothing twice.
+func checkWholeTurn(t *testing.T, e *env, ch <-chan hub.Event, id string, toolIDs []string, soFar string) {
+	t.Helper()
+	e.gw.Publish(id, "message.delta", map[string]any{kText: "and the end."})
+	e.gw.FinishReply(id, "whole")
+	var got []string
+	last := ""
+	for _, ev := range until(t, ch, hub.KindMessageComplete) {
+		switch ev.Kind {
+		case hub.KindToolComplete:
+			var p struct {
+				ToolID string `json:"tool_id"`
+			}
+			_ = json.Unmarshal(ev.Data, &p)
+			got = append(got, p.ToolID)
+		case hub.KindMessageDelta:
+			last += text(t, ev)
+		case hub.KindMessageInterim:
+			last = ""
+		case "status.update":
+			if strings.Contains(string(ev.Data), "late") {
+				t.Fatalf("a status held the reply back: %s", ev.Data)
+			}
+		case hub.KindSnapshot:
+			t.Fatal("a second snapshot")
+		}
+	}
+	if !slices.Equal(got, toolIDs) {
+		t.Fatalf("tool cards %d, want %d once each in order", len(got), len(toolIDs))
+	}
+	if last != soFar+"and the end." {
+		t.Fatalf("reply %q, want %q", last, soFar+"and the end.")
+	}
+}
+
+// A chat opened mid-turn on a hub that does not hold it (cold), after
+// Hermes's replay ring dropped the turn's start, shows the whole turn so
+// far from the snapshot's inflight turn (Talaria Hermes patch 0063), then
+// goes on live.
+func TestColdOpenMidTurnShowsTheWholeTurn(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{ViewerBuffer: 1 << 15})
+	e.gw.ReplayMax = 16
+	e.gw.InflightTurn = true
+	e.gw.AddSession(&gatewaytest.Session{ID: "s-cold", Live: true, Running: true,
+		Messages: []map[string]any{{kRole: roleUser, kText: "do it"}}})
+	tools, soFar := midTurn(e, "s-cold", 30)
+	ch, stop, err := e.svc.Attach(context.Background(), userAlice, backendPC, "s-cold", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	if ev := next(t, ch); ev.Kind != hub.KindSnapshot {
+		t.Fatalf("first event %s", ev.Kind)
+	}
+	checkWholeTurn(t, e, ch, "s-cold", tools, soFar)
+}
+
+// The same on a hub that held the chat (warm) but whose own buffer dropped
+// the turn's start: the fresh snapshot it takes has the turn so far.
+func TestWarmOpenMidTurnShowsTheWholeTurn(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{ViewerBuffer: 1 << 15, RingSize: 32})
+	e.gw.ReplayMax = 16
+	e.gw.InflightTurn = true
+	e.gw.AddSession(&gatewaytest.Session{ID: "s-warm", Live: true,
+		Messages: []map[string]any{{kRole: roleUser, kText: "earlier"}, {kRole: "assistant", kText: "finished"}}})
+	first, stop1, err := e.svc.Attach(context.Background(), userAlice, backendPC, "s-warm", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	until(t, first, hub.KindSnapshot)
+	stop1()
+	e.gw.SetRunning("s-warm", true)
+	tools, soFar := midTurn(e, "s-warm", 30)
+	ch, stop, err := e.svc.Attach(context.Background(), userAlice, backendPC, "s-warm", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	// The held snapshot shows at once; the fresh one replaces it.
+	for _, want := range []bool{true, false} {
+		ev := next(t, ch)
+		for ev.Kind != hub.KindSnapshot {
+			ev = next(t, ch)
+		}
+		if ev.Provisional != want {
+			t.Fatalf("snapshot provisional = %v, want %v", ev.Provisional, want)
+		}
+	}
+	checkWholeTurn(t, e, ch, "s-warm", tools, soFar)
 }

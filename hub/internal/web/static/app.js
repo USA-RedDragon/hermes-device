@@ -18,7 +18,7 @@
   let current = null;
   const words = { approval: "Talaria asks to run this", allow: "Allow", deny: "Deny",
     args: "Input", result: "Output", running: "Running", done: "Done", failed: "Failed",
-    working: "Working", queued: "Queued: Talaria reads this when the current turn ends", waiting: "Waiting to run", newchat: "New chat",
+    working: "Working", queued: "Queued: Talaria reads this when the current turn ends", waiting: "Waiting to run", newchat: "New chat", loading: "Loading\u2026",
     lost: "The agent restarted before it finished replying to this message. Messages sent after it wait until you dismiss it.",
     held: "The agent is restarting. Your message will send when it is back.", notsent: "Not sent.", again: "Send again",
     steered: "Sent to the running turn", now: "Stop and send now",
@@ -650,7 +650,8 @@
       place,
       changed: () => {
         if (s.pinned()) unseen = 0;
-        jump.hidden = s.pinned() || log.hidden;
+        // A chat that is still loading has no latest to jump to.
+        jump.hidden = s.pinned() || log.hidden || !!(view && !view.loaded);
         const label = unseen ? (unseen === 1 ? t("newone") : t("newmany").replace("%d", unseen)) : t("tobottom");
         jump.querySelector(".lbl").textContent = label;
         jump.title = label;
@@ -679,7 +680,10 @@
     let swiped = false;
     log.addEventListener("wheel", (e) => { s.heard(400); if (e.deltaY < 0) s.release(); }, { passive: true });
     log.addEventListener("touchstart", () => { swiped = false; }, { passive: true });
-    log.addEventListener("touchmove", () => { swiped = true; s.heard(8000); if (s.pinned()) s.release(); }, { passive: true });
+    // A touch only says the reader may scroll; whether the reader left the
+    // end is for the scroll events to tell (a tap or a long press that
+    // moves a pixel is not a scroll).
+    log.addEventListener("touchmove", () => { swiped = true; s.heard(8000); }, { passive: true });
     const lifted = () => s.heard(swiped ? 3000 : 1);
     log.addEventListener("touchend", lifted, { passive: true });
     log.addEventListener("touchcancel", lifted, { passive: true });
@@ -752,6 +756,9 @@
       this.session = session;
       this.base = "/api/sessions/" + encodeURIComponent(backend) + "/" + encodeURIComponent(session);
       this.log = $("log");
+      // loaded turns true with the first snapshot; until then the log
+      // shows a loading state, not an empty chat.
+      this.loaded = false;
       this.reset();
     }
 
@@ -1388,6 +1395,7 @@
       this.keep = new Set(carried.filter((c) => c.act === "again").flatMap((c) => (c.p.atts || []).map((a) => a.url)));
       this.reset();
       this.keep = null;
+      this.loaded = true;
       this.canBackground = !!s.tool_background;
       setTitle(s.title);
       this.setRunning(s.running);
@@ -1400,6 +1408,9 @@
       const msgs = s.messages || [];
       const cut = olderCut(msgs, msgs.length, firstRows, firstChars);
       this.older = msgs.slice(0, cut);
+      // A split snapshot sends its older rows next (snapshot.older).
+      this.olderWait = Number.isInteger(s.older) && s.older > 0;
+      this.afterOlder = undefined;
       try {
         for (let i = cut; i < msgs.length; i++) this.row(msgs[i]);
       } finally {
@@ -1445,14 +1456,39 @@
         x.id = c.p.id;
       }
       for (const p of s.prompts || []) this.approval(p);
+      const j = jump;
+      if (this.olderWait && (kept !== null || window.HubRestore.state() || (j && j.b === this.backend && j.s === this.session))) {
+        // The place to show may be in the rows still coming: show the end
+        // and go to the place when they are here.
+        this.afterOlder = kept;
+        this.bottom();
+      } else this.place(kept);
+      if (this.onLoad) this.onLoad();
+      this.onLoad = null;
+    }
+
+    // place puts the reader where the snapshot found them (kept), at the
+    // message a search opened, or where a reload left them; else at the end.
+    place(kept) {
       if (kept !== null || window.HubRestore.state()) this.showOlder(() => true);
       if (window.HubReconcile.restore(this.log, kept, (p) => rowTop(this.log, p.row))) stick.look();
       else this.bottom();
       this.jumpTo();
       this.fillOlder();
       if (view === this) restoreView(this);
-      if (this.onLoad) this.onLoad();
-      this.onLoad = null;
+    }
+
+    // olderRows takes the rows a split snapshot sent after its newest ones.
+    olderRows(p) {
+      if (!this.olderWait) return;
+      this.olderWait = false;
+      const idle = !this.older.length;
+      this.older = (p.messages || []).concat(this.older);
+      if (this.afterOlder !== undefined) {
+        const kept = this.afterOlder;
+        this.afterOlder = undefined;
+        this.place(kept);
+      } else if (idle) this.fillOlder();
     }
 
     // showOlder renders older history that the snapshot left out above
@@ -1602,6 +1638,7 @@
     dispatch(kind, p) {
       switch (kind) {
         case "snapshot": this.snapshot(p); break;
+        case "snapshot.older": this.olderRows(p); break;
         case "backend.status":
           if (p.connected) clearBanner("backend");
           else banner("Lost the connection to the agent. Reconnecting.", false, "backend");
@@ -2542,7 +2579,7 @@
       who.append(claude.apiName);
       who.title = "Anthropic API with an API key" + (model ? ", " + model : "");
     } else {
-      who.append(model || "Chat settings");
+      who.append(model || (view && !view.loaded ? "\u2026" : "Chat settings"));
       who.title = model ? "Model: " + model : "";
     }
     line.append(who);
@@ -3076,6 +3113,16 @@
     } catch (_) { /* no User Timing */ }
   }
 
+  // loadingRows is the log of a chat whose snapshot has not come yet: a
+  // few grey bars where its newest messages will be.
+  function loadingRows() {
+    const box = el("div", "loading");
+    box.setAttribute("role", "status");
+    box.setAttribute("aria-label", t("loading"));
+    for (const w of ["mine", "", "", "mine", ""]) box.append(el("div", "bar" + (w ? " " + w : "")));
+    return box;
+  }
+
   function showChat(backend, session) {
     mark("open");
     pagesView.destroy();
@@ -3091,13 +3138,18 @@
     $("modelbar")?.remove();
     $("log").hidden = false;
     $("composer").hidden = false;
-    $("title").textContent = t("newchat");
+    // The chosen chat's title and a loading state until its snapshot
+    // comes, never the empty New chat state.
+    const listed = lastList && lastList.sessions.find((x) => x.backend_id === backend && x.id === session);
+    setTitle(listed ? listed.title : "");
+    if (!listed) { $("title").textContent = t("loading"); document.title = "Talaria"; }
     $("subtitle").textContent = "";
     banner("");
     settings.reset();
     unseen = 0;
-    stick.pin();
+    stick.reset();
     view = new Chat(backend, session);
+    view.log.append(loadingRows());
     msgActs.reset();
     composer.open(view);
     composer.setRunning(false);

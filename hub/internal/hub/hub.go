@@ -62,6 +62,10 @@ type Event struct {
 	Kind string
 	Data json.RawMessage
 	At   int64
+	// Provisional marks a held snapshot sent while a fresh one is on its
+	// way: something to show at once, which the fresh one replaces. It
+	// has no place in the stream (Seq 0).
+	Provisional bool
 }
 
 // Service is the hub core. user is always the Authentik username; every

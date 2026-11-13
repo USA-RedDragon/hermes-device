@@ -19,16 +19,7 @@ func TestPageBackKeepsTaps(t *testing.T) {
 	if err != nil {
 		t.Skip("node is not installed")
 	}
-	var chrome string
-	for _, n := range []string{"chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "chrome"} {
-		if p, err := exec.LookPath(n); err == nil {
-			chrome = p
-			break
-		}
-	}
-	if chrome == "" {
-		t.Skip("Chrome is not installed")
-	}
+	chrome := chromePath(t)
 	e := setup(t)
 	reply := "Here is the page.\n\n```page\n<!doctype html><title>Demo</title><style>p{height:900px}</style><p>Hello</p><input id=\"q\"><button>Pick</button><p>End</p>\n```\n"
 	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Pages", Live: true, StartedAt: 900, Messages: []map[string]any{

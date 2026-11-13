@@ -37,6 +37,9 @@ const (
 	kParams          = "params"
 	kToolID          = "tool_id"
 	kText            = "text"
+	kInflightSeq     = "sequence"
+	kInflightEvents  = "events"
+	kMessageComplete = "message.complete"
 	kStatus          = "status"
 	kOutcome         = "outcome"
 	kName            = "name"
@@ -139,9 +142,13 @@ type Session struct {
 	// evicted is the seq of the newest event the replay ring dropped.
 	evicted int64
 	// reply is the running reply's text in its current segment.
-	reply   string
-	prompts map[string]gateway.Prompt
-	subs    map[*conn]string
+	reply string
+	// turnEvents are the running turn's events, for InflightTurn;
+	// turnEnded says the last of them ended it.
+	turnEvents []gateway.Event
+	turnEnded  bool
+	prompts    map[string]gateway.Prompt
+	subs       map[*conn]string
 }
 
 // Gateway is the fake. Lock-free methods are safe for concurrent use.
@@ -168,6 +175,9 @@ type Gateway struct {
 	// InflightReply makes session.resume of a running session carry the
 	// reply's text so far, as Talaria Hermes patch 0057 does.
 	InflightReply bool
+	// InflightTurn makes session.resume of a running session carry the
+	// running turn's events so far, as Talaria Hermes patch 0063 does.
+	InflightTurn bool
 	// ResendOnResume sends the last that many ring events again after a
 	// resume of a running session: frames the snapshot already covers, as a
 	// frame published while the subscription opens can arrive.
@@ -663,6 +673,11 @@ func (g *Gateway) publishAdmissionLocked(s *Session, typ, admission string, payl
 	ev := gateway.Event{Type: typ, SessionID: s.ID, Payload: raw, ReplayEpoch: s.epoch, Seq: s.seq, ExecutionGeneration: &gen,
 		AdmissionID: admission}
 	s.ring = append(s.ring, ev)
+	if s.turnEnded {
+		s.turnEvents, s.turnEnded = nil, false
+	}
+	s.turnEvents = append(s.turnEvents, ev)
+	s.turnEnded = typ == kMessageComplete
 	var p struct {
 		Text *string `json:"text"`
 	}
@@ -681,6 +696,14 @@ func (g *Gateway) publishAdmissionLocked(s *Session, typ, admission string, payl
 	for c := range s.subs {
 		c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: ev})
 	}
+}
+
+// SetRunning marks a session's turn running or not, as a turn another
+// client started.
+func (g *Gateway) SetRunning(sessionID string, running bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.sessions[sessionID].Running = running
 }
 
 // FinishReply ends the running turn as Hermes does: the reply is stored in
@@ -932,7 +955,14 @@ func (g *Gateway) snapshotLocked(c *conn, s *Session) map[string]any {
 		"info": g.infoLocked(s, true),
 	}
 	if g.InflightReply && s.Running && s.reply != "" {
-		out["inflight_reply"] = map[string]any{kText: s.reply, "sequence": s.seq}
+		out["inflight_reply"] = map[string]any{kText: s.reply, kInflightSeq: s.seq}
+	}
+	if g.InflightTurn && s.Running {
+		evs := []gateway.Event{}
+		if !s.turnEnded {
+			evs = append(evs, s.turnEvents...)
+		}
+		out["inflight_turn"] = map[string]any{kInflightEvents: evs, kInflightSeq: s.seq}
 	}
 	return out
 }

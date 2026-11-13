@@ -562,10 +562,6 @@ func (ls *live) apply(ev gateway.Event) {
 	ls.trackOutcomes(ev)
 }
 
-// lateStatus is what a viewer sees while the hub holds back the rest of a
-// reply whose start it could not replay.
-const lateStatus = `{"kind":"late_reply","text":"Writing a reply that started before this chat was opened. It shows in full when it is done."}`
-
 // holdLate says whether ev is held back from viewers because the turn was
 // joined late (see live.late): the deltas of the reply that was streaming
 // when the hub subscribed are the rest of a reply without its start, and
@@ -681,6 +677,11 @@ func (ls *live) attach(sinceSeq int64) (<-chan hub.Event, func()) {
 		// every event of those turns one by one, with a render and a scroll
 		// each: a warm replica sent megabytes and froze the page. A new
 		// snapshot has the transcript as it is, and the buffer starts over.
+		// Until it comes the viewer gets the held one to show at once: a
+		// fresh snapshot waits for Hermes, a second on a big chat.
+		if ls.snapshot.Kind == hub.KindSnapshot {
+			v.ch <- hub.Event{Kind: hub.KindSnapshot, Data: ls.snapshot.Data, At: ls.snapshot.At, Provisional: true}
+		}
 		ls.resnapshotLocked()
 	default:
 		v.ch <- ls.snapshot
