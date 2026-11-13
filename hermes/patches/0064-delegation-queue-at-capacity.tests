@@ -1,0 +1,6 @@
+# Upstream tests of the dispatch, registry and control paths this patch changes
+tests/tools/test_delegate_capacity_interrupt.py
+tests/tools/test_async_delegation.py
+tests/tools/test_delegate_control_actions.py
+tests/tools/test_subagent_steer.py
+tests/tools/test_delegate_liveness_timeout.py

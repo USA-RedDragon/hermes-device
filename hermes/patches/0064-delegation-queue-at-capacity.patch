@@ -1,0 +1,906 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 03:34:23 -0600
+Subject: [PATCH] feat(delegation): queue background calls the full pool cannot
+ take
+
+delegation.at_capacity (sync = off, queue): a background delegate_task that finds the async pool full was run synchronously in the parent's turn, so the chat could not answer or take steers until it ended. With queue it returns at once with status queued and starts when a slot frees, oldest first. Queued units are listed (queue_position) and their children are in the subagent registry as queued: a steer joins the goal when the child starts, a stop settles it as interrupted without running. A graceful restart hands a queued unit off whole, and the next gateway queues it again.
+---
+ hermes_cli/config_defaults.py                 |   3 +
+ tests/tools/test_delegate_capacity_queue.py   | 204 ++++++++++++++++++
+ .../tools/test_delegation_restart_handoff.py  |  47 ++++
+ tools/async_delegation.py                     | 180 ++++++++++++++--
+ tools/delegate_tool_child_run.py              |  20 +-
+ tools/delegate_tool_config.py                 |   5 +
+ tools/delegate_tool_dispatch.py               |  64 +++++-
+ tools/delegate_tool_registry.py               |  43 +++-
+ 8 files changed, 542 insertions(+), 24 deletions(-)
+ create mode 100644 tests/tools/test_delegate_capacity_queue.py
+
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 24477e1c..2220a2e2 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1387,6 +1387,9 @@ DEFAULT_CONFIG = {
+         "reasoning_effort": "",
+         # Max parallel children per batch AND concurrent background units (async beyond it runs sync). Floor 1.
+         "max_concurrent_children": 10,
++        # A background call that finds the pool full: "sync" runs it in the turn (the chat waits for it); "queue"
++        # returns at once and starts it when a slot frees (FIFO), listed as queued, steerable and stoppable.
++        "at_capacity": "sync",
+         "prefix_stagger_seconds": 0,  # max s siblings wait for the 1st child's 1st chunk (not a stagger); 0 = off
+         # Background fan-outs return as ONE message when the whole call finishes. true = each task
+         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
+diff --git a/tests/tools/test_delegate_capacity_queue.py b/tests/tools/test_delegate_capacity_queue.py
+new file mode 100644
+index 00000000..6c8ebcc6
+--- /dev/null
++++ b/tests/tools/test_delegate_capacity_queue.py
+@@ -0,0 +1,204 @@
++"""delegation.at_capacity: queue -- a background call the full pool cannot take is queued, not run in the turn."""
++
++from __future__ import annotations
++
++import json
++import queue
++import threading
++import time
++
++import pytest
++
++from agent.interrupt_control import InterruptControlMixin
++from tools import async_delegation
++from tools.delegate_tool_dispatch import _Batch, _dispatch_background
++from tools.delegate_tool_registry import list_active_subagents, interrupt_subagent, steer_subagent
++from tools.process_registry import process_registry
++
++
++class _Parent(InterruptControlMixin):
++    def __init__(self):
++        self.session_id = "capacity-queue-parent"
++        self._active_children = []
++        self._active_children_lock = threading.Lock()
++        self._execution_thread_id = None
++        self._interrupt_requested = False
++        self._hard_interrupt_requested = threading.Event()
++        self.quiet_mode = True
++
++
++class _Child(_Parent):
++    def __init__(self, n):
++        super().__init__()
++        self.session_id = f"capacity-queue-child-{n}"
++        self._subagent_id = f"sa-queued-{n}"
++        self._delegate_role = "leaf"
++        self._delegate_depth = 1
++        self._delegate_saved_tool_names = []
++        self._credential_pool = None
++        self.tool_progress_callback = None
++        self.model = "test-model"
++        self.started = threading.Event()
++        self.user_message = None
++        self.close_count = 0
++
++    def run_conversation(self, user_message=None, **_kwargs):
++        self.user_message = user_message
++        self.started.set()
++        return {"final_response": "ran", "completed": True, "interrupted": False, "api_calls": 1, "messages": []}
++
++    def get_activity_summary(self):
++        return {"api_call_count": 0}
++
++    def close(self):
++        self.close_count += 1
++
++
++def _batch(parent, child):
++    tasks = [{"goal": "work that must not run in the parent's turn"}]
++    parent._active_children.append(child)
++    return _Batch(
++        task_list=tasks, children=[(0, tasks[0], child)], parent_agent=parent, creds={"model": child.model},
++        context=None, top_role="leaf", max_children=1, live_deleg_id=None, live_writers=[], live_paths=[],
++        origin_wake_sid="", origin_ui_session_id="", origin_owner_transport=None, origin_owner_session_record=None,
++        origin_session_history_delivery=False, overall_start=time.monotonic(),
++    )
++
++
++@pytest.fixture
++def full_pool(tmp_path, monkeypatch):
++    """One slot, held by another session's delegation until ``release`` is set."""
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
++    async_delegation._reset_for_tests()
++    completions = queue.Queue()
++    monkeypatch.setattr(process_registry, "completion_queue", completions)
++    release, occupied = threading.Event(), threading.Event()
++
++    def occupy_slot():
++        occupied.set()
++        assert release.wait(30)
++        return {"status": "completed", "summary": "slot released"}
++
++    accepted = async_delegation.dispatch_async_delegation(
++        goal="occupy the only slot", context=None, toolsets=None, role="leaf", model="test-model",
++        session_key="other-session", runner=occupy_slot, max_async_children=1,
++    )
++    assert accepted["status"] == "dispatched"
++    assert occupied.wait(5)
++    yield tmp_path, release, completions, accepted["delegation_id"]
++    release.set()
++    if async_delegation._executor is not None:
++        async_delegation._executor.shutdown(wait=True)
++    async_delegation._reset_for_tests()
++
++
++def _config(home, at_capacity):
++    line = f"  at_capacity: {at_capacity}\n" if at_capacity else ""
++    (home / "config.yaml").write_text(
++        "delegation:\n  max_concurrent_children: 1\n  worktree_isolation: false\n" + line, encoding="utf-8")
++
++
++def _completion_for(completions, delegation_id):
++    while True:
++        event = completions.get(timeout=10)
++        if event["delegation_id"] == delegation_id:
++            return event
++
++
++def test_queued_dispatch_returns_at_once_and_runs_when_a_slot_frees(full_pool):
++    home, release, completions, occupier = full_pool
++    _config(home, "queue")
++    parent, child = _Parent(), _Child(1)
++    started = time.monotonic()
++    result = json.loads(_dispatch_background(_batch(parent, child)))
++    assert time.monotonic() - started < 5
++    assert result["status"] == "queued"
++    assert result["queued_units"] == [result["delegation_id"]]
++    assert "QUEUED" in result["note"]
++    assert result["subagent_ids"] == ["sa-queued-1"]
++    assert not child.started.is_set()
++    listed = {r["delegation_id"]: r for r in async_delegation.list_async_delegations()}
++    assert listed[result["delegation_id"]]["status"] == "queued"
++    assert listed[result["delegation_id"]]["queue_position"] == 1
++    assert [r["status"] for r in list_active_subagents() if r["subagent_id"] == "sa-queued-1"] == ["queued"]
++
++    release.set()
++    assert _completion_for(completions, occupier)["status"] == "completed"
++    assert child.started.wait(10)
++    event = _completion_for(completions, result["delegation_id"])
++    assert event["results"][0]["status"] == "completed"
++    assert child.user_message == "work that must not run in the parent's turn"
++
++
++def test_steer_while_queued_joins_the_goal(full_pool):
++    home, release, completions, _ = full_pool
++    _config(home, "queue")
++    parent, child = _Parent(), _Child(2)
++    result = json.loads(_dispatch_background(_batch(parent, child)))
++    assert result["status"] == "queued"
++    assert steer_subagent("sa-queued-2", "use the staging cluster")
++    release.set()
++    _completion_for(completions, result["delegation_id"])
++    assert "use the staging cluster" in child.user_message
++    assert child.user_message.startswith("work that must not run in the parent's turn")
++
++
++def test_stop_while_queued_settles_without_running(full_pool):
++    home, release, completions, _ = full_pool
++    _config(home, "queue")
++    parent, child = _Parent(), _Child(3)
++    result = json.loads(_dispatch_background(_batch(parent, child)))
++    assert result["status"] == "queued"
++    assert interrupt_subagent("sa-queued-3")
++    event = _completion_for(completions, result["delegation_id"])  # before the slot frees
++    assert event["results"][0]["status"] == "interrupted"
++    assert not child.started.is_set()
++    assert child.close_count == 1
++    assert not [r for r in list_active_subagents() if r["subagent_id"] == "sa-queued-3"]
++
++
++def test_session_interrupt_reaches_queued_units(full_pool):
++    home, release, completions, _ = full_pool
++    _config(home, "queue")
++    parent, child = _Parent(), _Child(4)
++    result = json.loads(_dispatch_background(_batch(parent, child)))
++    assert async_delegation.interrupt_for_session(parent_session_id=parent.session_id) == 1
++    event = _completion_for(completions, result["delegation_id"])
++    assert event["results"][0]["status"] == "interrupted"
++    assert not child.started.is_set()
++
++
++def test_queue_is_first_in_first_out(full_pool):
++    home, release, completions, _ = full_pool
++    _config(home, "queue")
++    parent = _Parent()
++    first, second = _Child(5), _Child(6)
++    order = []
++    for child in (first, second):
++        original = child.run_conversation
++
++        def run(original=original, child=child, **kwargs):
++            order.append(child._subagent_id)
++            return original(**kwargs)
++
++        child.run_conversation = run
++    a = json.loads(_dispatch_background(_batch(parent, first)))
++    b = json.loads(_dispatch_background(_batch(parent, second)))
++    assert (a["status"], b["status"]) == ("queued", "queued")
++    positions = {r["delegation_id"]: r.get("queue_position") for r in async_delegation.list_async_delegations()}
++    assert (positions[a["delegation_id"]], positions[b["delegation_id"]]) == (1, 2)
++    release.set()
++    _completion_for(completions, b["delegation_id"])
++    assert order == ["sa-queued-5", "sa-queued-6"]
++
++
++@pytest.mark.parametrize("at_capacity", [None, "sync"])
++def test_default_still_runs_the_call_in_the_turn(full_pool, at_capacity):
++    home, *_ = full_pool
++    _config(home, at_capacity)
++    parent, child = _Parent(), _Child(7)
++    result = json.loads(_dispatch_background(_batch(parent, child)))
++    assert child.started.is_set()
++    assert "SYNCHRONOUSLY" in result["note"]
++    assert result["results"][0]["status"] == "completed"
+diff --git a/tests/tools/test_delegation_restart_handoff.py b/tests/tools/test_delegation_restart_handoff.py
+index 5ea16078..9f593220 100644
+--- a/tests/tools/test_delegation_restart_handoff.py
++++ b/tests/tools/test_delegation_restart_handoff.py
+@@ -538,3 +538,50 @@ def test_child_in_a_command_at_the_deadline_yields_it_instead_of_being_cut(monke
+     assert stopped[1] == ("child-102", True)
+     assert time.monotonic() - started >= 0.8
+     assert set(state) == {"0", "1"}
++
++
++def _occupy_only_slot():
++    release, occupied = threading.Event(), threading.Event()
++
++    def occupy():
++        occupied.set()
++        release.wait(10)
++        return {"status": "completed", "summary": "slot released"}
++
++    handle = ad.dispatch_async_delegation(
++        goal="occupy", context=None, toolsets=None, role="leaf", model="m", session_key="other",
++        runner=occupy, max_async_children=1)
++    assert handle["status"] == "dispatched" and occupied.wait(5)
++    return release
++
++
++def test_queued_unit_is_handed_off_whole_and_queued_again_on_the_next_gateway():
++    """delegation.at_capacity: queue -- a unit still waiting for a slot survives the restart and keeps waiting."""
++    first_release = _occupy_only_slot()
++    released, ran = [], threading.Event()
++    handle = ad.dispatch_async_delegation_batch(
++        goals=[f"task {i}" for i in range(3)], context=None, toolsets=None, role="leaf", model="m",
++        session_key=ROUTE_KEY, parent_session_id=PARENT, runner=lambda: ran.set() or {"results": []},
++        delegation_id="deleg_call", handoff=_spec(3), handoff_fn=lambda deadline, state: None, max_async_children=1,
++        queue_at_capacity=True, release_fn=lambda: released.append(True))
++    assert handle["status"] == "queued"
++    assert ad.hand_off_for_restart(0.1, 0.5) == 1
++    assert released == [True] and not ran.is_set()
++    assert _completions("deleg_call") == []
++    row = _row("deleg_call")
++    spec = json.loads(row["task_json"])["handoff"]
++    assert row["state"] == "handed_off" and spec["queued"] is True and spec["resume"] == [0, 1, 2]
++    assert spec["max_async_children"] == 1
++    first_release.set()
++
++    ad._reset_for_tests()
++    _drain(process_registry.completion_queue)
++    second_release = _occupy_only_slot()
++    make_runner, seen = _resume_with(lambda i: _entry(i, "completed", f"resumed {i}"))
++    assert ad.adopt_handed_off_delegations(make_runner) == 1
++    assert [r["status"] for r in ad.list_async_delegations() if r["delegation_id"] == "deleg_call"] == ["queued"]
++    assert _completions("deleg_call") == []
++    second_release.set()
++    event = wait_until(lambda: _completions("deleg_call"), what="the queued unit's completion")[0]
++    assert [(r["task_index"], r["summary"]) for r in event["results"]] == [
++        (0, "resumed 0"), (1, "resumed 1"), (2, "resumed 2")]
+diff --git a/tools/async_delegation.py b/tools/async_delegation.py
+index 9abafa80..b449f033 100644
+--- a/tools/async_delegation.py
++++ b/tools/async_delegation.py
+@@ -11,6 +11,7 @@ from __future__ import annotations
+ 
+ import collections
+ import contextvars
++import itertools
+ import json
+ import logging
+ import os
+@@ -100,8 +101,12 @@ _monitor_lock = threading.Lock()
+ _monitor_thread: Optional[threading.Thread] = None
+ _monitor_stop = threading.Event()
+ 
+-_LIVE_STATES = {"running", "stalling", "finalizing"}
++# "queued" (delegation.at_capacity: queue): admitted while the pool was full, waiting for a slot. Live work that
++# holds no slot: it starts (``_start_queued``) when a slot frees, oldest first.
++_LIVE_STATES = {"queued", "running", "stalling", "finalizing"}
+ _ACTIVE_STATES = ("running", "stalling")
++_STOPPABLE_STATES = (*_ACTIVE_STATES, "queued")
++_queue_seq = itertools.count()
+ # Routing origin persisted at dispatch so a restart-recovered completion can
+ # reconstruct a full SessionSource (scope_id drives relay tenant egress).
+ _ROUTING_KEYS = ("scope_id", "user_id", "user_name")
+@@ -930,11 +935,16 @@ def _dispatch_admitted(
+     task_indexes: Optional[list[int]] = None,
+     task_transcripts: Optional[dict[str, str]] = None,
+     handoff: Optional[dict[str, Any]] = None, handoff_fn: Optional[Callable[[float, dict], None]] = None,
++    queue_at_capacity: bool = False, on_queued: Optional[Callable[[], None]] = None,
++    release_fn: Optional[Callable[[], None]] = None,
+ ) -> dict[str, Any]:
+     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
+     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
+     and exceed the cap. At capacity the dispatch is REJECTED (never queued) so a runaway model
+-    can't pile up unbounded background work. ``slot_key`` names the pool slot the unit occupies
++    can't pile up unbounded background work, unless ``queue_at_capacity`` (``delegation.at_capacity: queue``):
++    then the unit is recorded ``queued`` and starts when a slot frees, oldest first; ``on_queued`` runs (under the
++    registry lock, before it can start) when it is queued, and ``release_fn`` releases its never-started children
++    when a restart hands it off while still queued. ``slot_key`` names the pool slot the unit occupies
+     (default: its own id); the units of one delegate_task call share the first unit's id so
+     splitting a call into per-group completions never consumes more capacity than the call did."""
+     worker_ledger()  # refuse unbound workers before publishing a live record
+@@ -966,11 +976,37 @@ def _dispatch_admitted(
+         if any((field, record[field]) in _refused_by for field in _FENCED_FIELDS):
+             return {"status": "rejected", "error": "This session was closed (exit or /new): no new background work."}
+         active_slots = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
+-        if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
++        full = record["slot_key"] not in active_slots and len(active_slots) >= max_async_children
++        # FIFO: while older units wait, a new one waits behind them even if a slot is free this instant.
++        waiting = queue_at_capacity and any(r.get("status") == "queued" for r in _records.values())
++        if full and not queue_at_capacity:
+             return {"status": "rejected", "error": capacity_error}
++        queued = full or waiting
++        if queued:
++            record.update(
++                status="queued", _queued_seq=next(_queue_seq), _max_async_children=max_async_children,
++                _queued_run=(runner, classify, crash_result, label),
++                # The dispatching thread's context and approval callbacks, for a start from another thread.
++                _launcher=propagate_context_to_thread(lambda fn: fn()), _persisted=False,
++                **({"_release_fn": release_fn} if callable(release_fn) else {}))
+         _records[delegation_id] = record
++        if queued and on_queued is not None:
++            on_queued()
+         live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
+     _persist_dispatch(record)
++    if queued:
++        with _records_lock:
++            record["_persisted"] = True  # its row exists: a start (and its completion write) may follow
++        _start_queued()
++        with _records_lock:
++            still_queued = record.get("status") == "queued"
++            position = 1 + sum(1 for r in _records.values() if r.get("status") == "queued"
++                               and r.get("_queued_seq", 0) < record.get("_queued_seq", 0))
++        if still_queued:
++            if progress_fn is not None:
++                _ensure_stale_monitor()
++            return {"status": "queued", "delegation_id": delegation_id, "queue_position": position}
++        return {"status": "dispatched", "delegation_id": delegation_id}
+     # Units of one call share a slot, so live units can exceed slots: size the pool by units or a
+     # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
+     executor = _get_executor(max(max_async_children, live_units))
+@@ -991,7 +1027,7 @@ def _dispatch_admitted(
+ 
+ 
+ def _submit_worker(executor, delegation_id: str, runner: Callable[[], dict[str, Any]], classify, crash_result,
+-                   label: str, dispatched_at: float) -> None:
++                   label: str, dispatched_at: float, launcher: Optional[Callable] = None) -> None:
+     """Run ``runner`` for the registered record on ``executor`` and finalize it with the outcome."""
+     def _worker() -> None:
+         result: dict[str, Any] = {}
+@@ -1016,13 +1052,63 @@ def _submit_worker(executor, delegation_id: str, runner: Callable[[], dict[str,
+     # reservation too: the stall monitor may finalize its registry record before it really exits.
+     retirement.acquire()
+     try:
+-        future = executor.submit(propagate_context_to_thread(_worker))
++        future = executor.submit(launcher, _worker) if launcher is not None else executor.submit(
++            propagate_context_to_thread(_worker))
+         future.add_done_callback(lambda _: retirement.release())
+     except Exception:
+         retirement.release()
+         raise
+ 
+ 
++def _start_queued(force=()) -> int:
++    """Start queued units: each in ``force`` at once (a stopped unit, whose children only settle), then the oldest
++    while a slot is free (or its call's slot is already running). Strict FIFO: a unit that cannot start holds the
++    ones behind it. Returns how many started."""
++    force, starts = set(force), []
++    with _records_lock:
++        active = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
++        waiting = sorted((r for r in _records.values() if r.get("status") == "queued" and r.get("_persisted")),
++                         key=lambda r: r.get("_queued_seq", 0))
++        picked = [r for r in waiting if r["delegation_id"] in force]
++        for r in waiting:
++            if r["delegation_id"] in force:
++                continue
++            if r["slot_key"] not in active and len(active) >= int(r.get("_max_async_children") or 1):
++                break
++            active.add(r["slot_key"])
++            picked.append(r)
++        for r in picked:
++            active.add(r["slot_key"])
++            r.update(status="running", _progress_ts=time.time(), dispatched_at=r.get("dispatched_at") or time.time())
++            r.pop("_release_fn", None)
++            starts.append((r["delegation_id"], r.pop("_queued_run"), r.pop("_launcher", None), r.get("dispatched_at"),
++                           r.get("progress_fn") is not None, int(r.get("_max_async_children") or 1)))
++        live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
++    monitor = False
++    for delegation_id, (runner, classify, crash_result, label), launcher, dispatched_at, monitored, cap in starts:
++        logger.info("Starting queued async delegation%s %s", label, delegation_id)
++        try:
++            _submit_worker(_get_executor(max(cap, live_units)), delegation_id, runner, classify, crash_result, label,
++                           dispatched_at, launcher)
++        except Exception as exc:  # pragma: no cover - pool submit failure is rare
++            logger.error("Async delegation %s: could not start it from the queue", delegation_id, exc_info=True)
++            _finalize(delegation_id, crash_result(f"Failed to start queued async delegation{label}: {exc}", 0), "error")
++            continue
++        monitor = monitor or monitored
++    if monitor:
++        _ensure_stale_monitor()
++    return len(starts)
++
++
++def release_queued(delegation_id: str) -> bool:
++    """Start one queued unit now, outside the pool limit: every child of it was stopped while queued, so it only
++    settles their results. False when it is not queued."""
++    with _records_lock:
++        if (_records.get(delegation_id) or {}).get("status") != "queued":
++            return False
++    return bool(_start_queued(force=[delegation_id]))
++
++
+ def dispatch_async_delegation(
+     *, goal: str, context: Optional[str], toolsets: Optional[list[str]], role: str, model: Optional[str],
+     session_key: str, parent_session_id: Optional[str] = None, runner: Callable[[], dict[str, Any]],
+@@ -1060,6 +1146,8 @@ def dispatch_async_delegation_batch(
+     task_indexes: Optional[list[int]] = None,
+     task_transcripts: Optional[dict[str, str]] = None,
+     handoff: Optional[dict[str, Any]] = None, handoff_fn: Optional[Callable[[float, dict], None]] = None,
++    queue_at_capacity: bool = False, on_queued: Optional[Callable[[], None]] = None,
++    release_fn: Optional[Callable[[], None]] = None,
+ ) -> dict[str, Any]:
+     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
+     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
+@@ -1079,6 +1167,7 @@ def dispatch_async_delegation_batch(
+         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
+         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
+         task_indexes=task_indexes, task_transcripts=task_transcripts, handoff=handoff, handoff_fn=handoff_fn,
++        queue_at_capacity=queue_at_capacity, on_queued=on_queued, release_fn=release_fn,
+         capacity_error=(
+             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
+             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
+@@ -1086,6 +1175,9 @@ def dispatch_async_delegation_batch(
+     if handle["status"] == "dispatched":
+         logger.info("Dispatched async delegation batch %s (%d task(s), session_key=%s)",
+                     delegation_id, n, session_key or "<cli>")
++    elif handle["status"] == "queued":
++        logger.info("Queued async delegation batch %s (%d task(s), session_key=%s, position %d): the pool is full",
++                    delegation_id, n, session_key or "<cli>", handle.get("queue_position", 0))
+     return handle
+ 
+ 
+@@ -1130,6 +1222,7 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
+             _records[delegation_id].pop("_context", None)
+             _records[delegation_id].pop("_finished_children", None)
+         _prune_completed_locked()
++    _start_queued()  # this unit's slot is free: the oldest queued unit takes it
+ 
+ 
+ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], status: str) -> None:
+@@ -1246,8 +1339,16 @@ def hand_off_for_restart(grace_seconds: float, timeout_seconds: float) -> int:
+         for record in targets:
+             record.update(_handoff=True, _handoff_state={},
+                           _handoff_finished=frozenset(record.get("_finished_children") or ()))
++        # Queued units never started: handed off whole, and the next gateway queues them again.
++        queued = [r for r in _records.values() if r.get("status") == "queued" and callable(r.get("handoff_fn"))
++                  and r.get("_persisted")]
++        for record in queued:
++            record["status"] = "handed_off"
++            record.pop("_queued_run", None)
++            record.pop("_launcher", None)
++    queued_handed = _hand_off_queued(queued)
+     if not targets:
+-        return 0
++        return queued_handed
+     ids = [r["delegation_id"] for r in targets]
+     now = time.time()
+     with _DB_LOCK, _transaction() as conn:
+@@ -1272,6 +1373,30 @@ def hand_off_for_restart(grace_seconds: float, timeout_seconds: float) -> int:
+                        "resumes them from their stored transcripts", unsettled)
+     if handed:
+         logger.info("Handed %d background delegation(s) to the next gateway", handed)
++    return handed + queued_handed
++
++
++def _hand_off_queued(records: list[dict[str, Any]]) -> int:
++    """Record each queued unit as handed off with every task to resume, then release its unstarted children."""
++    handed = 0
++    for record in records:
++        indexes = list(record.get("task_indexes") or range(len(record.get("goals") or [])))
++        try:
++            if _persist_handoff(record["delegation_id"], [], indexes, {}, queued=True,
++                                max_async_children=record.get("_max_async_children")):
++                handed += 1
++        except Exception:
++            logger.error("Async delegation %s: could not hand the queued unit to the next gateway",
++                         record.get("delegation_id"), exc_info=True)
++        release = record.pop("_release_fn", None)
++        if callable(release):
++            try:
++                release()
++            except Exception:
++                logger.debug("Async delegation %s: releasing queued children failed", record.get("delegation_id"),
++                              exc_info=True)
++    if handed:
++        logger.info("Handed %d queued background delegation(s) to the next gateway", handed)
+     return handed
+ 
+ 
+@@ -1312,8 +1437,10 @@ def _hand_off_unit(record: dict[str, Any], result: dict[str, Any]) -> bool:
+     return True
+ 
+ 
+-def _persist_handoff(delegation_id: str, kept: list, resume: list, state: dict) -> bool:
+-    """Record the handoff on the unit's row; False when this process no longer owns the row."""
++def _persist_handoff(delegation_id: str, kept: list, resume: list, state: dict, *, queued: bool = False,
++                     max_async_children: Optional[int] = None) -> bool:
++    """Record the handoff on the unit's row; False when this process no longer owns the row. ``queued``: the unit
++    never started, and the next gateway queues it again under ``max_async_children``."""
+     now = time.time()
+     with _DB_LOCK, _transaction() as conn:
+         row = conn.execute("SELECT task_json FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()
+@@ -1325,7 +1452,10 @@ def _persist_handoff(delegation_id: str, kept: list, resume: list, state: dict)
+         for key, extra in state.items():
+             if isinstance(children.get(key), dict) and isinstance(extra, dict):
+                 children[key].update(extra)
+-        task["handoff"] = {**spec, "children": children, "resume": list(resume), "handed_off_at": now}
++        task["handoff"] = {**spec, "children": children, "resume": list(resume), "handed_off_at": now,
++                           "queued": bool(queued)}
++        if queued and max_async_children:
++            task["handoff"]["max_async_children"] = int(max_async_children)
+         return bool(conn.execute("""UPDATE async_delegations SET state='handed_off', updated_at=?, task_json=?,
+                       result_json=?
+                WHERE delegation_id=? AND state IN ('running','finalizing','handed_off') AND owner_pid=?""",
+@@ -1390,6 +1520,15 @@ def adopt_handed_off_delegations(make_runner: Callable[[dict], tuple]) -> int:
+             runner, interrupt_fn, progress_fn, handoff_fn = (lambda f=fallback: f), None, None, None
+         record.update(interrupt_fn=interrupt_fn, progress_fn=progress_fn,
+                       **({"handoff_fn": handoff_fn} if callable(handoff_fn) else {}))
++        if spec.get("queued"):  # it never started: queue it again, behind nothing older than itself
++            record.update(status="queued", _queued_seq=next(_queue_seq), _persisted=True,
++                          _max_async_children=int(spec.get("max_async_children") or _DEFAULT_MAX_ASYNC_CHILDREN),
++                          _queued_run=(runner, _batch_status, _batch_crash, " batch"),
++                          _launcher=propagate_context_to_thread(lambda fn: fn()))
++            with _records_lock:
++                _records[delegation_id] = record
++            logger.info("Adopted queued background delegation %s from the previous gateway", delegation_id)
++            continue
+         with _records_lock:
+             _records[delegation_id] = record
+             live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
+@@ -1403,6 +1542,7 @@ def adopt_handed_off_delegations(make_runner: Callable[[dict], tuple]) -> int:
+         if progress_fn is not None:
+             _ensure_stale_monitor()
+         logger.info("Adopted background delegation %s from the previous gateway", delegation_id)
++    _start_queued()
+     return len(claimed)
+ 
+ 
+@@ -1558,10 +1698,15 @@ def list_async_delegations() -> list[dict[str, Any]]:
+     samplers: dict[str, Callable] = {}
+     with _records_lock:
+         items = []
++        order = sorted((r.get("_queued_seq", 0), r["delegation_id"]) for r in _records.values()
++                       if r.get("status") == "queued")
++        positions = {delegation_id: k + 1 for k, (_, delegation_id) in enumerate(order)}
+         for r in _records.values():
+             item = {k: v for k, v in r.items()
+                     if k not in {"interrupt_fn", "progress_fn", "handoff", "handoff_fn"} and not k.startswith("_")}
+             status = r.get("status")
++            if status == "queued":
++                item["queue_position"] = positions.get(r["delegation_id"])
+             if status in _ACTIVE_STATES:
+                 if r.get("_progress_ts"):
+                     item["seconds_since_progress"] = round(now - r["_progress_ts"], 1)
+@@ -1604,8 +1749,17 @@ def interrupt_all(reason: str = "shutdown") -> int:
+     many. The child still emits a completion event (status='interrupted') via the
+     normal finalize path."""
+     with _records_lock:
+-        targets = [r for r in _records.values() if r.get("status") in _ACTIVE_STATES]
+-    return _interrupt_records(targets, "interrupt_all", reason, "Interrupted %d async delegation(s) (%s)")
++        targets = [r for r in _records.values() if r.get("status") in _STOPPABLE_STATES]
++    return _interrupt_with_queued(targets, "interrupt_all", reason, "Interrupted %d async delegation(s) (%s)")
++
++
++def _interrupt_with_queued(targets: list[dict[str, Any]], caller: str, reason: str, msg: str) -> int:
++    """``_interrupt_records``, then start each stopped queued unit at once so its children settle as interrupted."""
++    queued = [r["delegation_id"] for r in targets if r.get("status") == "queued"]
++    count = _interrupt_records(targets, caller, reason, msg)
++    if queued:
++        _start_queued(force=queued)
++    return count
+ 
+ 
+ def interrupt_for_session(
+@@ -1613,8 +1767,8 @@ def interrupt_for_session(
+ ) -> int:
+     """Signal running async delegations owned by ONE ending session to stop (any
+     selector matches, see ``_session_records``). Returns how many."""
+-    targets = _session_records(_ACTIVE_STATES, session_key, origin_ui_session_id, parent_session_id)
+-    return _interrupt_records(
++    targets = _session_records(_STOPPABLE_STATES, session_key, origin_ui_session_id, parent_session_id)
++    return _interrupt_with_queued(
+         targets, "interrupt_for_session", reason, "Interrupted %d async delegation(s) for ending session (%s)")
+ 
+ 
+diff --git a/tools/delegate_tool_child_run.py b/tools/delegate_tool_child_run.py
+index 92241593..35fd6e98 100644
+--- a/tools/delegate_tool_child_run.py
++++ b/tools/delegate_tool_child_run.py
+@@ -443,6 +443,19 @@ def _register_child(
+ ) -> Optional[str]:
+     """Register the live child in the module registry; return its subagent_id. Test doubles without a stable string
+     ``_subagent_id`` are not registered (None) and the caller skips every registry interaction for them."""
++    record = _subagent_record(child, parent_agent, goal, owner_session_id=owner_session_id,
++                              owner_transport=owner_transport, owner_session_record=owner_session_record)
++    if record is None:
++        return None
++    _register_subagent(record)
++    return record["subagent_id"]
++
++def _subagent_record(
++    child: Any, parent_agent: Any, goal: str, *, owner_session_id: Optional[str], owner_transport: Any,
++    owner_session_record: Any, status: str = "running",
++) -> Optional[dict[str, Any]]:
++    """The registry record of a child (``status`` "queued" for one waiting in the background queue), or None for a
++    test double without a stable string ``_subagent_id``."""
+     _subagent_id = getattr(child, "_subagent_id", None)
+     if not isinstance(_subagent_id, str) or not _subagent_id:
+         return None
+@@ -453,14 +466,14 @@ def _register_child(
+     if owner_session_id and (owner_transport is None or owner_session_record is None):
+         owner_transport, owner_session_record = _capture_gateway_steer_authority(owner_session_id)
+     _raw_depth = getattr(child, "_delegate_depth", 1)
+-    _register_subagent({
++    return {
+         "subagent_id": _subagent_id,
+         "parent_id": _str_or_none(getattr(child, "_parent_subagent_id", None)),
+         "depth": max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0,
+         "goal": goal,
+         "delegation_id": _str_or_none(getattr(child, "_delegation_id", None)),
+         "model": _str_or_none(getattr(child, "model", None)),
+-        "started_at": time.time(), "status": "running", "tool_count": 0, "agent": child,
++        "started_at": time.time(), "status": status, "tool_count": 0, "agent": child,
+         # Owning conversation's durable session id (same lineage completion delivery routes by), sourced from the
+         # child's stamp so it survives a parent_agent rebuild between dispatch and run; used for list/steer/stop
+         # ownership when the weakref chain breaks.
+@@ -472,8 +485,7 @@ def _register_child(
+         "owner_session_id": owner_session_id,
+         "owner_transport": owner_transport,
+         "owner_session_record": owner_session_record,
+-    })
+-    return _subagent_id
++    }
+ 
+ def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str]):
+     """Opt-in worktree isolation: own git worktree off the parent's HEAD (the
+diff --git a/tools/delegate_tool_config.py b/tools/delegate_tool_config.py
+index 064f250e..14075832 100644
+--- a/tools/delegate_tool_config.py
++++ b/tools/delegate_tool_config.py
+@@ -118,6 +118,11 @@ def _get_max_concurrent_children() -> int:
+         )
+     return result
+ 
++def _get_queue_at_capacity() -> bool:
++    """delegation.at_capacity: "queue" queues a background call the full pool cannot take (it starts when a slot
++    frees); anything else ("sync", the default) runs the call synchronously in the turn, as before."""
++    return str(_cfg().get("at_capacity") or "sync").strip().lower() == "queue"
++
+ def _get_independent_completions() -> bool:
+     """delegation.independent_completions (bool, default False): split a background call into per-task / per-group
+     completion messages that land as each finishes. Off = one consolidated message when the whole call is done."""
+diff --git a/tools/delegate_tool_dispatch.py b/tools/delegate_tool_dispatch.py
+index 300ff096..f9920f7e 100644
+--- a/tools/delegate_tool_dispatch.py
++++ b/tools/delegate_tool_dispatch.py
+@@ -66,7 +66,12 @@ class _Batch:
+ 
+     def run_child(self, i: int, task: dict[str, Any], child: Any) -> dict[str, Any]:
+         from tools.delegate_tool import _run_single_child
+-        return _run_single_child(task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
++        from tools.delegate_tool_registry import claim_queued_child
++        goal, cancelled = claim_queued_child(child, task["goal"])
++        if cancelled:  # stopped while its unit waited in the queue (delegation.at_capacity: queue)
++            _release_unstarted_child(self, child)
++            return _fabricated_entry(i, "interrupted", "Stopped while queued; it never started", child)
++        return _run_single_child(task_index=i, goal=goal, child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
+ 
+ 
+ def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) -> None:
+@@ -374,6 +379,15 @@ _BACKGROUND_NOTES = {
+         "after you END YOUR TURN: do anything that does not depend on them, then stop with a one-line status. Do not "
+         "poll transcripts or artifacts to wait for them."
+     ),
++    "queued": (
++        "The background delegation pool is full (delegation.max_concurrent_children), so this call is QUEUED: it "
++        "starts on its own when a running delegation finishes (first in, first out). Steer or stop a queued subagent "
++        "like a running one; a steer joins its goal when it starts."
++    ),
++    "queued_some": (
++        "The background delegation pool is full, so {q} of the {k} units are QUEUED: each starts on its own when a "
++        "running delegation finishes (first in, first out)."
++    ),
+     "control_hint": (
+         "While a child runs you can orchestrate it live with this same tool: delegate_task(action='list') to see live "
+         "children, action='steer' with subagent_id + message to redirect one, action='stop' with subagent_id to end "
+@@ -431,17 +445,45 @@ def _units_of(batch: _Batch) -> list[_Batch]:
+         members.setdefault(key, []).append((i, t, c))
+     return [replace(batch, children=ch, group=(key[1] if key[0] == "g" else None)) for key, ch in members.items()]
+ 
+-def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
+-    """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
+-    from tools.async_delegation import dispatch_async_delegation_batch
++def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict,
++                   queue: bool = False) -> dict:
++    """Hand ONE unit to the async registry; the runner joins on that unit's children only. ``queue``
++    (``delegation.at_capacity: queue``): a full pool queues the unit instead of rejecting it."""
++    from tools.async_delegation import dispatch_async_delegation_batch, release_queued
+     from tools.delegate_tool_handoff import unit_handoff
+     child_agents = [c for (_, _, c) in unit.children]
+     handoff, handoff_fn = unit_handoff(unit, slot_key or unit_id)
+ 
+     def _interrupt():
+         for c in child_agents:
++            c._queued_cancelled = True  # a child that has not started yet never does
+             _signal_child_stop(c, "Async delegation cancelled")
+ 
++    queue_kwargs: dict[str, Any] = {}
++    if queue:
++        from tools.delegate_tool_child_run import _subagent_record
++        from tools.delegate_tool_registry import _unregister_subagent, register_queued_children
++
++        def _cancel_child(child):
++            child._queued_cancelled = True
++            if all(getattr(c, "_queued_cancelled", False) is True for c in child_agents):
++                release_queued(unit_id)  # nothing left to wait for: settle the unit now
++
++        records = []
++        for _, task, child in unit.children:
++            record = _subagent_record(child, unit.parent_agent, task["goal"], status="queued", **unit.owner_kwargs())
++            if record is not None:
++                records.append({**record, "on_cancel": partial(_cancel_child, child)})
++
++        def _release():
++            for _, _, child in unit.children:
++                if isinstance(sid := getattr(child, "_subagent_id", None), str):
++                    _unregister_subagent(sid, agent=child)
++                _release_unstarted_child(unit, child)
++
++        queue_kwargs = dict(queue_at_capacity=True, on_queued=partial(register_queued_children, records),
++                            release_fn=_release)
++
+     return dispatch_async_delegation_batch(
+         # Call-wide goals: completion formatting indexes them by task_index.
+         goals=[t["goal"] for t in unit.task_list], context=unit.context,
+@@ -457,6 +499,7 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
+                           if i < len(unit.live_writers) and unit.live_writers[i] is not None
+                           and unit.live_writers[i].path is not None},
+         progress_fn=lambda: _batch_progress_token(child_agents), handoff=handoff, handoff_fn=handoff_fn, **routing,
++        **queue_kwargs,
+     )
+ 
+ def _restore_parent_cancellation(unit: _Batch) -> None:
+@@ -486,8 +529,11 @@ def _dispatch_background(batch: _Batch) -> str:
+         parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children(),
+     )
+ 
++    from tools.delegate_tool_config import _get_queue_at_capacity
++    queue = _get_queue_at_capacity()
+     units = [replace(unit, refused=[]) for unit in _units_of(batch)]
+     dispatched: list[tuple[_Batch, str]] = []
++    queued: list[str] = []
+     inline_results: list[dict] = []
+     slot_key: Optional[str] = None
+     for k, unit in enumerate(units):
+@@ -499,10 +545,12 @@ def _dispatch_background(batch: _Batch) -> str:
+         # unsubmitted units must still receive parent stops while a fallback runs.
+         for _, _, child in unit.children:
+             _detach_child(parent_agent, child)
+-        dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
+-        if dispatch.get("status") == "dispatched":
++        dispatch = _dispatch_unit(unit, unit_id, slot_key, routing, queue=queue)
++        if dispatch.get("status") in ("dispatched", "queued"):
+             slot_key = slot_key or dispatch["delegation_id"]
+             dispatched.append((unit, dispatch["delegation_id"]))
++            if dispatch["status"] == "queued":
++                queued.append(dispatch["delegation_id"])
+             continue
+         _restore_parent_cancellation(unit)
+         if not dispatched:
+@@ -516,6 +564,10 @@ def _dispatch_background(batch: _Batch) -> str:
+         logger.warning("delegate_task: unit %d/%d not accepted (%s); running it inline.", k + 1, len(units), dispatch.get("error"))
+         inline_results.extend(_execute_and_aggregate(unit)["results"])
+     payload = _dispatched_payload(batch, dispatched)
++    if queued:
++        payload.update(status="queued", queued_units=queued, note=(
++            _BACKGROUND_NOTES["queued"] if len(queued) == len(dispatched)
++            else _BACKGROUND_NOTES["queued_some"].format(q=len(queued), k=len(dispatched))) + " " + payload["note"])
+     if inline_results:
+         payload["inline_results"] = inline_results
+     return json.dumps(payload, ensure_ascii=False)
+diff --git a/tools/delegate_tool_registry.py b/tools/delegate_tool_registry.py
+index 2a7cb5d2..493b7931 100644
+--- a/tools/delegate_tool_registry.py
++++ b/tools/delegate_tool_registry.py
+@@ -55,6 +55,31 @@ def _register_subagent(record: dict[str, Any]) -> None:
+     with _active_subagents_lock:
+         _active_subagents[sid] = record
+ 
++def register_queued_children(records: list[dict[str, Any]]) -> None:
++    """List the children of a queued background unit (``status`` "queued"): list, steer and stop reach them before
++    they start. A steer is kept for the child's goal; a stop calls the record's ``on_cancel``."""
++    with _active_subagents_lock:
++        for record in records:
++            record.setdefault("accepting_steer", True)
++            _active_subagents[record["subagent_id"]] = record
++
++def claim_queued_child(child: Any, goal: str) -> tuple[str, bool]:
++    """A queued child is starting: ``(goal with the steers it got while queued, whether it was stopped)``. Closes
++    its queued record to new steers (the running record replaces it); a stopped one leaves the registry."""
++    sid = getattr(child, "_subagent_id", None)
++    with _active_subagents_lock:
++        record = _active_subagents.get(sid) if isinstance(sid, str) else None
++        if record is not None and record.get("agent") is child and record.get("status") in ("queued", "cancelled"):
++            record["accepting_steer"] = False
++        steers = list(getattr(child, "_queued_steers", None) or [])
++        cancelled = getattr(child, "_queued_cancelled", False) is True
++    if cancelled and isinstance(sid, str):
++        _unregister_subagent(sid, agent=child)
++    if steers:
++        goal = (f"{goal}\n\n[While this task waited in the queue, the parent sent these course corrections:]\n"
++                + "\n".join(f"- {text}" for text in steers))
++    return goal, cancelled
++
+ def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
+     """Drop the live record (exact agent identity when given) and keep a bounded attribution stub."""
+     with _active_subagents_lock:
+@@ -95,6 +120,17 @@ def interrupt_subagent(subagent_id: str) -> bool:
+     grandchildren via AIAgent.interrupt()). True iff a matching subagent was found."""
+     with _active_subagents_lock:
+         record = _active_subagents.get(subagent_id)
++        on_cancel = None
++        if record is not None and record.get("status") == "queued":
++            record.update(status="cancelled", accepting_steer=False)
++            on_cancel = record.get("on_cancel")
++    if on_cancel is not None:  # never started: it settles as interrupted without running
++        try:
++            on_cancel()
++            return True
++        except Exception as exc:
++            logger.debug("interrupt_subagent(%s) of a queued child failed: %s", subagent_id, exc)
++            return False
+     agent = record.get("agent") if record else None
+     if agent is None:
+         return False
+@@ -150,6 +186,10 @@ def steer_subagent(
+         agent = record.get("agent")
+         if agent is None:
+             return False
++        if record.get("status") == "queued":  # not started: the text joins its goal when it starts
++            queued_steers = getattr(agent, "_queued_steers", None)
++            agent._queued_steers = [*(queued_steers if isinstance(queued_steers, list) else []), text]
++            return True
+         try:
+             return bool(agent.steer(text))
+         except Exception as exc:
+@@ -168,7 +208,8 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
+         return None, None
+ 
+ # Registry record fields never exposed to the TUI/RPC snapshot.
+-_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})
++_PRIVATE_RECORD_KEYS = frozenset({
++    "agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer", "on_cancel"})
+ 
+ def list_active_subagents() -> list[dict[str, Any]]:
+     """Copy of the running subagent tree ({subagent_id, parent_id, depth, goal, model,
