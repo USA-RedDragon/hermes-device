@@ -3636,13 +3636,20 @@
     try { await api("POST", view.base + "/interrupt"); } catch (e) { banner("Could not stop: " + e.message, true); }
   }
 
-  const prefs = window.HubSettings({ api, el, me: () => me, computers: () => computers, notices, logout,
+  const prefs = window.HubSettings({ api, el, me: () => me, computers: () => computers, notices, logout, refreshMe,
     closeSide: () => openSide(false), promptsChanged: () => composer.promptsChanged() });
+
+  // refreshMe reads /api/me again: a new password gives this browser a new session and CSRF token.
+  async function refreshMe() {
+    me = await api("GET", "/api/me");
+    csrf = me.csrf;
+  }
 
   async function logout() {
     await notices.logout();
     try { await api("POST", "/auth/logout"); } catch (_) { /* ignore */ }
     closeStream();
+    if (me.logout_url) { location.href = me.logout_url; return; }
     const page = el("main", "page");
     const a = el("a", "", "Log in again");
     a.href = "/auth/login";

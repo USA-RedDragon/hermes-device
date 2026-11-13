@@ -14,12 +14,15 @@ window.HubSettings = (ctx) => {
   const back = document.getElementById("setback");
   const title = document.getElementById("settings-title");
   const phone = matchMedia("(max-width: 700px)");
+  const people = window.HubUsers({ api, el, me: ctx.me });
+  const account = window.HubAccount({ api, el, logout: ctx.logout, refreshMe: ctx.refreshMe });
   const tabs = [
     ["computers", "Computers", (me) => me.devices],
     ["notifications", "Notifications", (me) => me.notify],
     ["telegram", "Telegram", (me) => !!me.telegram_steps],
     ["claude", "Claude accounts", (me) => me.claude],
     ["prompts", "Prompts", (me) => me.prompts],
+    ["users", "Users", (me) => me.admin],
     ["account", "Account", () => true],
   ];
   let tab = "";
@@ -116,6 +119,7 @@ window.HubSettings = (ctx) => {
     if (k === "telegram") drawTelegram();
     if (k === "claude") drawClaude();
     if (k === "prompts") { drawPrompts(); loadPrompts(); }
+    if (k === "users") people.load();
     if (k === "account") drawAccount();
   }
 
@@ -451,27 +455,12 @@ window.HubSettings = (ctx) => {
   async function drawAccount() {
     const me = ctx.me();
     const p = pane("account", "Account", "");
-    const dl = el("dl", "kv");
-    const name = me.display && me.display !== me.user ? me.display + " (" + me.user + ")" : me.user || me.display || "";
-    dl.append(el("dt", "", "Signed in as"), el("dd", "", name));
     const backend = el("dd", "", me.default_backend || "The first one you may use");
-    dl.append(el("dt", "", "Default assistant"), backend);
-    dl.append(el("dt", "", "Hub version"), el("dd", "", me.version || "Unknown"));
-    p.append(dl);
-    const out = el("div", "acts");
-    const ask = () => {
-      out.replaceChildren(el("span", "", "Log out of Talaria?"),
-        button("", "Cancel", () => { out.replaceChildren(logoutButton()); out.firstChild.focus(); }),
-        button("danger", "Log out", () => ctx.logout()));
-      out.children[1].focus();
-    };
-    const logoutButton = () => button("", "Log out", ask);
-    out.append(logoutButton());
-    p.append(out);
+    const rows = account.draw(p, me, [["Default assistant", backend.textContent], ["Hub version", me.version || "Unknown"]]);
     if (!me.default_backend) return;
     try {
       const b = (await api("GET", "/api/backends")).find((x) => x.id === me.default_backend);
-      if (b && b.name) backend.textContent = b.name;
+      if (b && b.name && rows["Default assistant"]) rows["Default assistant"].textContent = b.name;
     } catch (_) { /* the id stays */ }
   }
 
@@ -491,6 +480,7 @@ window.HubSettings = (ctx) => {
     const keys = shownTabs().map(([x]) => x);
     tab = keys.includes(k) ? k : keys.includes(tab) ? tab : keys[0];
     open = {};
+    people.reset();
     editing = confirming = "";
     pr.editing = pr.draft = null;
     pr.formErr = "";
