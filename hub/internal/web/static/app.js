@@ -1463,6 +1463,11 @@
         return;
       }
       if (m.role === "assistant") {
+        const sum = m.archived ? window.HubNotice.parse(text) : null;
+        if (sum && sum.kind === "compaction") {
+          this.add(window.HubNotice.card(sum, text, { el, toast, at: this.at }));
+          return;
+        }
         for (const c of m.tool_calls || []) {
           const fn = c.function || {};
           let args = fn.arguments;
