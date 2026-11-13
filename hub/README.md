@@ -4,6 +4,8 @@
 
 The hub of Talaria: one web front end, behind OpenID Connect login, for many [Hermes Agent](https://github.com/NousResearch/hermes-agent) gateways. It is made for a phone first.
 
+Docs: https://usa-reddragon.github.io/talaria-hub/
+
 Guides: the [API overview](docs/api.md). To install the hub with Hermes and a sandbox in one step, use [talaria-deploy](https://github.com/USA-RedDragon/talaria-deploy). `docs/site/build.sh` builds the pages in `docs/` into a static site with pandoc.
 
 - One list of the sessions on every Hermes backend that you may use, live and stored.
