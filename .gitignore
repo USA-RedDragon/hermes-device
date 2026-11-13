@@ -4,3 +4,5 @@ __pycache__/
 *.log
 config.yaml
 /artifacts/
+/deploy/compose/.env
+*.tgz

@@ -1,0 +1,72 @@
+# Install Talaria on Unraid
+
+Talaria on Unraid is one container from the all-in-one image ([design](all-in-one.md)).
+
+1. Get the template. Once Talaria is in Community Applications, search for Talaria in the **Apps** tab and click
+   **Install**, then go to step 2. Until then, on the **Docker** tab, add this line under
+   **Template repositories** at the bottom and click **Save**:
+
+   ```text
+   https://github.com/USA-RedDragon/talaria-deploy
+   ```
+
+   Then click **Add Container** and pick **Talaria** under **Template**.
+2. Set **Public URL** to `http://<your Unraid address>:8080`, such as `http://192.168.1.10:8080`.
+3. Leave **Demo model** at `true` to try it, or set **Model API URL**, **Model** and **Model API key** and make
+   it `false`.
+4. **Apply**. The first start downloads about 1.2 GB.
+5. Click the container's icon, **Logs**, and find the lines
+
+   ```text
+    Open:      http://192.168.1.10:8080
+    Log in as: admin@talaria.local
+    Password:  <random>
+   ```
+
+6. Open the address (or **WebUI** in the container's menu) and log in.
+
+Data is in `/mnt/user/appdata/talaria`: `hermes` (chats, memory) and `talaria` (hub database, keys, the
+sandbox's files). Back up both.
+
+The container is stopped with a 120 second timeout (`--stop-timeout 120` in **Extra Parameters**), so running
+replies can finish.
+
+## Template
+
+<!-- docgen:code file=aio/unraid/talaria.xml -->
+```
+<?xml version="1.0"?>
+<!-- Unraid Community Applications template for the Talaria all-in-one image. See docs/unraid.md -->
+<Container version="2">
+  <Name>Talaria</Name>
+  <Repository>ghcr.io/usa-reddragon/talaria-aio:latest</Repository>
+  <Registry>https://github.com/users/USA-RedDragon/packages/container/package/talaria-aio</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/USA-RedDragon/talaria-deploy/issues</Support>
+  <Project>https://github.com/USA-RedDragon/talaria-deploy</Project>
+  <Overview>Talaria: a web app and Telegram bot for Hermes Agent, with a sandbox for the agent's commands and your own computers paired in. One container: hub, agent, sandbox and a built-in login. The first login is in the container's log (look for "Open:").</Overview>
+  <Category>Productivity: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/USA-RedDragon/talaria-deploy/main/aio/unraid/talaria.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/USA-RedDragon/talaria-hub/main/internal/web/static/icon-512.png</Icon>
+  <ExtraParams>--stop-timeout 120</ExtraParams>
+  <DonateText/>
+  <DonateLink/>
+  <Config Name="Web port" Target="8080" Default="8080" Mode="tcp" Description="Port of the web app" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Public URL" Target="TALARIA_PUBLIC_URL" Default="" Description="The address you open Talaria at, such as http://192.168.1.10:8080 (this server's address and the web port) or https://talaria.example.com behind a reverse proxy. Pages and push notifications need HTTPS." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Hermes data" Target="/opt/data" Default="/mnt/user/appdata/talaria/hermes" Mode="rw" Description="Chats, memory and agent settings" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/talaria/hermes</Config>
+  <Config Name="Talaria data" Target="/talaria" Default="/mnt/user/appdata/talaria/talaria" Mode="rw" Description="Hub database, keys, and the sandbox's files" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/talaria/talaria</Config>
+  <Config Name="Demo model" Target="TALARIA_DEMO" Default="true" Description="true: a stand-in model that needs no API key, to try Talaria. Set the model below and make this false for real use." Type="Variable" Display="always" Required="false" Mask="false">true</Config>
+  <Config Name="Model API URL" Target="TALARIA_MODEL_BASE_URL" Default="" Description="Any OpenAI-compatible API, such as https://openrouter.ai/api/v1" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Model" Target="TALARIA_MODEL" Default="" Description="Model name at that API, such as anthropic/claude-sonnet-4.5" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Model API key" Target="TALARIA_MODEL_API_KEY" Default="" Description="API key of that service" Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Admin email" Target="TALARIA_ADMIN_EMAIL" Default="admin@talaria.local" Description="Login of the first user" Type="Variable" Display="advanced" Required="false" Mask="false">admin@talaria.local</Config>
+  <Config Name="Admin password" Target="TALARIA_ADMIN_PASSWORD" Default="" Description="Empty: a random one, printed in the log" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Telegram bot token" Target="TALARIA_TELEGRAM_TOKEN" Default="" Description="Optional, from @BotFather" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Time zone" Target="TZ" Default="" Description="IANA name, such as America/New_York. Empty: UTC" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="PUID" Target="PUID" Default="99" Description="Owner of the Hermes data folder" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Description="Group of the Hermes data folder" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+</Container>
+```
+<!-- /docgen:code -->

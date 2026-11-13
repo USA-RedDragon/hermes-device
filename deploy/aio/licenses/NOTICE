@@ -1,0 +1,22 @@
+Talaria all-in-one
+
+Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed
+by Nous Research.
+
+This image is built from the Talaria Hermes image
+(ghcr.io/usa-reddragon/talaria-hermes), which is the upstream Hermes Agent
+image with the Talaria patches. "Hermes Agent" names the upstream project
+only. The image contains:
+
+- Hermes Agent, https://github.com/NousResearch/hermes-agent
+  Copyright (c) 2025 Nous Research, MIT License: LICENSE.hermes-agent
+  The Talaria patches use the same terms; their own notice is in
+  /usr/share/doc/talaria-hermes/.
+- talaria-hub (/usr/local/bin/talaria-hub), MIT License:
+  https://github.com/USA-RedDragon/talaria-hub/blob/main/LICENSE
+- talaria (/usr/local/bin/hermes-device), MIT License:
+  https://github.com/USA-RedDragon/talaria/blob/main/LICENSE
+- Caddy (/usr/local/bin/caddy), https://github.com/caddyserver/caddy
+  Apache License 2.0: LICENSE.apache-2.0
+- poppler-utils and the other Debian packages, under their own licenses in
+  /usr/share/doc/<package>/copyright.

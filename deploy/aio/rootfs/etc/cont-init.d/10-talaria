@@ -1,0 +1,37 @@
+#!/command/with-contenv sh
+# Talaria all-in-one: secrets, configs and the Hermes home, before the services start.
+# Runs as root after the Hermes image's own setup (01-hermes-setup), which may remap the hermes user to PUID.
+set -eu
+T=/talaria
+mkdir -p "$T" /run/talaria
+chmod 755 "$T"
+export TALARIA_SECRETS="$T/secrets" TALARIA_HUB_DATA="$T/hub" TALARIA_WORK="$T/work"
+export TALARIA_HERMES_URL=http://127.0.0.1:9120 TALARIA_HERMES_DATA=
+export TALARIA_HUB_UID=65534 TALARIA_SANDBOX_UID=2568
+TALARIA_HERMES_UID="$(id -u hermes)"
+export TALARIA_HERMES_UID
+if [ "$TALARIA_HERMES_UID" = 2568 ] || [ "$TALARIA_HERMES_UID" = 65534 ]; then
+  echo "talaria: PUID $TALARIA_HERMES_UID is taken by the sandbox or the hub; pick another" >&2
+  exit 1
+fi
+export TALARIA_SHOW_AGAIN="docker logs <container> 2>&1 | grep -A3 Open:"
+sh /usr/share/talaria/init.sh
+
+# The device plugin, from the talaria binary in this image
+rm -rf /run/talaria/plugin-src
+/usr/local/bin/hermes-device plugin install --dest /run/talaria/plugin-src/device >/dev/null
+chmod -R a+rX /run/talaria
+
+# With the demo model on and no model set, use the demo model
+case "${TALARIA_DEMO:-}" in
+  1|true|TRUE|True|yes|YES|Yes)
+    if [ -z "${TALARIA_MODEL_BASE_URL:-}" ]; then
+      export TALARIA_MODEL_BASE_URL=http://127.0.0.1:8000/v1 TALARIA_MODEL=talaria-demo
+    fi ;;
+esac
+
+# The Hermes home, as the hermes user
+cd /opt/data
+HOME=/opt/data TALARIA_SECRETS_DIR="$T/secrets/hermes" TALARIA_FALLBACK_ROOT="$T/work" \
+  HERMES_WRITE_SAFE_ROOT="/opt/data:$T/work" \
+  s6-setuidgid hermes /opt/hermes/.venv/bin/python -I /usr/share/talaria/hermes-init.py

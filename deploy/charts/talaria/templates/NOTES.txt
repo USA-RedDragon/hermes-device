@@ -1,0 +1,18 @@
+Talaria is starting. Hermes takes a minute or two on the first start.
+
+Open: {{ include "talaria.publicUrl" . }}
+{{- if and (not .Values.ingress.enabled) (not .Values.httpRoute.enabled) }}
+
+No Ingress or HTTPRoute is on. From this computer:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "talaria.fullname" . }} 8080:{{ .Values.service.port }}
+and open http://localhost:8080 (set publicUrl to that address).
+{{- end }}
+{{- if eq .Values.auth.mode "local" }}
+
+Open it now: the first person who opens it makes the admin account on its setup page. Do that before it
+is reachable from the internet.
+{{- end }}
+{{- if not (include "talaria.modelBaseUrl" .) }}
+
+No model is set: set model.baseUrl and model.name, or demo.enabled=true to try it.
+{{- end }}

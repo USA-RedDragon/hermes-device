@@ -1,0 +1,7 @@
+#!/command/with-contenv sh
+# The demo model (TALARIA_DEMO=true): a stand-in that needs no API key. Off by default
+case "${TALARIA_DEMO:-}" in
+  1|true|TRUE|True|yes|YES|Yes) ;;
+  *) exit 0 ;;
+esac
+exec s6-setuidgid nobody /opt/hermes/.venv/bin/python -I /usr/share/talaria/demo-llm.py

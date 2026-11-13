@@ -1,0 +1,53 @@
+# Getting started
+
+Talaria is a web app and Telegram bot for [Hermes Agent](https://github.com/NousResearch/hermes-agent). You run it on your own server. The agent works in a sandbox on the server, or on your own computers once you pair them.
+
+A Talaria install has four parts, and every install path starts all of them:
+
+- **The hub:** the web app, the Telegram bot and the place your computers connect to.
+- **Hermes:** the agent itself, with the Talaria plugin.
+- **The sandbox:** a small container where the agent runs commands for chats that are not on one of your computers.
+- **A login:** one admin account, made on the first start.
+
+Every key and secret is made for you on the first start. You do not write any config file to try it.
+
+## Pick a path
+
+| You have | Use | Page |
+| -------- | --- | ---- |
+| A Linux machine with Docker | Docker Compose | [Docker Compose](compose.md) |
+| A Kubernetes cluster | The Helm chart | [Kubernetes](helm.md) |
+| Unraid | The all-in-one container template | [Unraid](unraid.md) |
+| TrueNAS SCALE 24.10 or later | The all-in-one container as a custom app | [TrueNAS](truenas.md) |
+| Any Docker host, only to look around | The all-in-one container | [The all-in-one image](all-in-one.md) |
+
+If you are not sure, use Docker Compose. It is the path with the most testing.
+
+## What you will see
+
+The login page, the first chat with the demo model, and an approval, which the agent asks for before it runs something risky:
+
+![The Talaria login page](images/login.png)
+
+![A first chat: the demo model answers "This is the Talaria demo model", and the line under the title shows the model and the context size](images/chat-reply.png)
+
+![An approval: Talaria asks to run a command, with Allow, Deny, Allow in this chat and Always allow](images/approval.png)
+
+## What you need
+
+- 2 GB of free RAM and 10 GB of free disk, for one person, with a hosted model. The Hermes image alone is about 1.1 GB to download.
+- A model to talk to. To look around first, the demo model needs nothing and answers with a canned reply. For real work, see [Choosing models and providers](models.md).
+- For other people to use it: a name for the server and HTTPS. See [Reach it from other computers](compose.md#reach-it-from-other-computers).
+
+## The first fifteen minutes
+
+1. Start Talaria with the demo model, on the machine itself ([Docker Compose](compose.md), steps 1 to 3). It takes a few minutes, mostly the download.
+2. Open the address it prints and log in with the password in the log.
+3. Send a message. Send `run: uname -a` to see the agent run a command in the sandbox.
+4. Switch to a real model: [Choosing models and providers](models.md).
+5. Pair your own computer so the agent can work on your files: [Adding your computers](computers.md).
+6. Optional: [Telegram](telegram.md), [Notifications](notifications.md), [Memory](memory.md).
+
+## Where to look when something is wrong
+
+[Troubleshooting](troubleshooting.md) lists the problems people hit first, with what to check. [Friction review](friction-review.md) is a log of a first install on a fresh machine.

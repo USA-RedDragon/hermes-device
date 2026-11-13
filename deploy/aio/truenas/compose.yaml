@@ -1,0 +1,25 @@
+# TrueNAS SCALE (24.10 and later): Apps, Discover Apps, the menu next to Custom App, Install via YAML. Paste this
+# file, change the four lines marked CHANGE, and save. See docs/truenas.md
+services:
+  talaria:
+    image: ghcr.io/usa-reddragon/talaria-aio:latest
+    restart: unless-stopped
+    stop_grace_period: 2m
+    ports:
+      - "8080:8080"
+    environment:
+      # CHANGE: the address you open Talaria at: http://<TrueNAS address>:8080, or https://... behind a proxy
+      TALARIA_PUBLIC_URL: http://192.168.1.10:8080
+      # A stand-in model to try Talaria. For real use set the three TALARIA_MODEL settings and make this false
+      TALARIA_DEMO: "true"
+      TALARIA_MODEL_BASE_URL: ""
+      TALARIA_MODEL: ""
+      TALARIA_MODEL_API_KEY: ""
+      TZ: UTC
+      # The "apps" user of TrueNAS owns the Hermes data
+      PUID: "568"
+      PGID: "568"
+    volumes:
+      # CHANGE: datasets on your pool. Create them first (Datasets, Add Dataset, preset Apps)
+      - /mnt/tank/apps/talaria/hermes:/opt/data
+      - /mnt/tank/apps/talaria/talaria:/talaria

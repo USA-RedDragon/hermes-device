@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "talaria.fullname" . }}-files
+  labels: {{- include "talaria.labels" . | nindent 4 }}
+data:
+  Caddyfile: |
+    {{- .Files.Get "files/Caddyfile" | nindent 4 }}
+  hermes-init.py: |
+    {{- .Files.Get "files/hermes-init.py" | nindent 4 }}
+  demo-llm.py: |
+    {{- .Files.Get "files/demo-llm.py" | nindent 4 }}

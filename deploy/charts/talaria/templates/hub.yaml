@@ -1,0 +1,211 @@
+{{- $full := include "talaria.fullname" . -}}
+{{- if and (gt (int .Values.hub.replicas) 1) (eq .Values.hub.store.driver "sqlite") }}
+{{- fail "hub.replicas above 1 needs hub.store.driver postgres" }}
+{{- end }}
+{{- if eq .Values.hub.store.driver "sqlite" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $full }}-hub
+  labels: {{- include "talaria.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.hub.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.hub.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $full }}-hub
+  labels: {{- include "talaria.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hub
+spec:
+  replicas: {{ .Values.hub.replicas }}
+  {{- if eq .Values.hub.store.driver "sqlite" }}
+  # One SQLite file on a ReadWriteOnce volume: the old pod stops before the new one starts
+  strategy:
+    type: Recreate
+  {{- else }}
+  # Several replicas share PostgreSQL; a stopping replica fails /readyz first and drains (shutdown.drain_delay)
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  {{- end }}
+  selector:
+    matchLabels: {{- include "talaria.selector" (list . "hub") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "talaria.selector" (list . "hub") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+        checksum/files: {{ include (print $.Template.BasePath "/files.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      {{- include "talaria.pullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        # The pod's one port, in front of the hub
+        - name: front
+          image: {{ .Values.images.caddy }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+          env:
+            - {name: XDG_DATA_HOME, value: /tmp/caddy}
+            - {name: XDG_CONFIG_HOME, value: /tmp/caddy}
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /, port: 8079}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 5m, memory: 16Mi}
+            limits: {memory: 128Mi}
+          # The caddy binary carries the file capability cap_net_bind_service; without it in the bounding set
+          #   the kernel refuses to run it
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL], add: [NET_BIND_SERVICE]}
+          volumeMounts:
+            - {name: files, mountPath: /etc/caddy/Caddyfile, subPath: Caddyfile, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+        - name: hub
+          image: {{ .Values.images.hub }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          env:
+            - {name: CONFIG, value: /config/hub.yaml}
+            - {name: TMPDIR, value: /tmp}
+            - {name: HUB_HTTP_PORT, value: "8081"}
+            - {name: HUB_HTTP_PUBLIC_URL, value: {{ include "talaria.publicUrl" . | quote }}}
+            - {name: HUB_DEVICE_ENABLED, value: "true"}
+            # The front container is in the same pod; ingress and gateway proxies sit in front of it
+            - {name: HUB_DEVICE_TRUSTED_PROXIES, value: "127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"}
+            - {name: HUB_UI_TIME_ZONE, value: {{ .Values.timeZone | quote }}}
+            - {name: HUB_CLAUDE_TIME_ZONE, value: {{ .Values.timeZone | quote }}}
+            - {name: HUB_STORE_DRIVER, value: {{ .Values.hub.store.driver | quote }}}
+            {{- if eq .Values.hub.store.driver "sqlite" }}
+            - {name: HUB_STORE_PATH, value: /data/talaria-hub.db}
+            {{- else }}
+            - name: HUB_STORE_DSN
+              valueFrom:
+                secretKeyRef: {name: {{ required "hub.store.existingSecret is required with driver postgres" .Values.hub.store.existingSecret }}, key: dsn}
+            {{- end }}
+            {{- if and (eq .Values.auth.mode "oidc") .Values.auth.oidc.existingSecret }}
+            - name: HUB_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.auth.oidc.existingSecret }}, key: client-secret}
+            {{- end }}
+            {{- if .Values.telegram.existingSecret }}
+            - {name: HUB_TELEGRAM_ENABLED, value: "true"}
+            - name: HUB_TELEGRAM_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.telegram.existingSecret }}, key: token}
+            {{- end }}
+            {{- if .Values.hub.caBundle }}
+            # The system's authorities and the ones in hub.caBundle
+            - {name: SSL_CERT_DIR, value: /etc/ssl/certs:/etc/talaria-ca}
+            {{- end }}
+            {{- range $k, $v := .Values.hub.env }}
+            - {name: {{ $k }}, value: {{ $v | quote }}}
+            {{- end }}
+          readinessProbe:
+            # Fails as soon as a stopping replica starts to drain
+            httpGet: {path: /readyz, port: 8081}
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 1
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8081}
+            periodSeconds: 30
+            timeoutSeconds: 5
+          startupProbe:
+            httpGet: {path: /healthz, port: 8081}
+            periodSeconds: 2
+            failureThreshold: 30
+          resources: {{- toYaml .Values.hub.resources | nindent 12 }}
+          securityContext: &sc
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /config/hub.yaml, subPath: hub.yaml, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            {{- if eq .Values.hub.store.driver "sqlite" }}
+            - {name: data, mountPath: /data}
+            {{- end }}
+            {{- if .Values.hub.caBundle }}
+            - {name: ca, mountPath: /etc/talaria-ca, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: config
+          secret: {secretName: {{ $full }}-config, defaultMode: 0440}
+        - name: files
+          configMap: {name: {{ $full }}-files}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.hub.caBundle }}
+        - name: ca
+          configMap: {name: {{ $full }}-ca}
+        {{- end }}
+        {{- if eq .Values.hub.store.driver "sqlite" }}
+        - name: data
+          persistentVolumeClaim: {claimName: {{ $full }}-hub}
+        {{- end }}
+{{- if .Values.hub.caBundle }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $full }}-ca
+  labels: {{- include "talaria.labels" . | nindent 4 }}
+data:
+  ca.crt: {{- .Values.hub.caBundle | toYaml | indent 1 }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}
+  labels: {{- include "talaria.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector: {{- include "talaria.selector" (list . "hub") | nindent 4 }}
+  ports:
+    - {name: http, port: {{ .Values.service.port }}, targetPort: http}
+---
+# The sandbox dials the hub directly, not through the front
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}-hub-internal
+  labels: {{- include "talaria.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "talaria.selector" (list . "hub") | nindent 4 }}
+  ports:
+    - {name: http, port: 8081, targetPort: 8081}
+{{- if gt (int .Values.hub.replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $full }}-hub
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {{- include "talaria.selector" (list . "hub") | nindent 6 }}
+{{- end }}

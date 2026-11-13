@@ -1,0 +1,9 @@
+#!/bin/sh
+# The chart and the all-in-one image carry copies of the setup scripts in compose/files; they must match.
+set -eu
+cd "$(dirname "$0")/.."
+rc=0
+for f in hermes-init.py demo-llm.py; do
+  cmp -s "compose/files/$f" "charts/talaria/files/$f" || { echo "charts/talaria/files/$f differs from compose/files/$f"; rc=1; }
+done
+exit $rc

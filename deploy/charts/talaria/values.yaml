@@ -1,0 +1,137 @@
+# Talaria Helm chart values. Only publicUrl is required. Secrets and keys that Talaria needs inside are made on
+# the first install and kept in the Secret <release>-talaria-keys, which uninstall leaves in place.
+
+# -- The address people open, such as https://talaria.example.com. With kubectl port-forward on this computer:
+# http://localhost:8080 (forward local port 8080, see the notes after install)
+publicUrl: ""
+
+# -- IANA time zone of schedules and the agent's clock, such as Europe/Berlin
+timeZone: UTC
+
+auth:
+  # -- local: the hub's own accounts; the first person who opens Talaria makes the admin account on its setup
+  # page. proxy: a reverse proxy that logs people in (Authelia, oauth2-proxy, Envoy Gateway) says who they are.
+  # oidc: your OpenID Connect provider. See docs/auth.md
+  mode: local
+  # -- The hub account of the person this Hermes works for (optional). Owns chats that are on no computer.
+  # Empty: works while one person's computers are paired
+  user: ""
+  # -- Hub user names that are admins, besides accounts marked admin in Settings > Users
+  admins: []
+  # -- Addresses the hub reads the client address from X-Forwarded-For for: the front container in the same pod
+  trustedProxies: ["127.0.0.1/32"]
+  # -- The hub's auth.proxy settings, as they are, for mode proxy, such as {user_header: Remote-User} or a jwt
+  # block. Only the proxy may reach the Service then: anyone else could send the header
+  proxy: {}
+  oidc:
+    # -- Issuer URL of your identity provider (mode oidc)
+    issuerUrl: ""
+    clientId: ""
+    # -- Client secret. Or name a Secret with key client-secret in existingSecret
+    clientSecret: ""
+    existingSecret: ""
+    # -- More of the hub's oidc settings, as they are, such as {auto_create: true, allowed_domains: [example.com]}
+    settings: {}
+  # -- Identities from the provider or proxy and their hub user names, such as [{sub: "...", name: alice}].
+  # Optional: an admin can also make accounts in Settings > Users
+  users: []
+
+# -- Contact address that push services get with Web Push, such as mailto:you@example.com. Empty: publicUrl
+pushContact: ""
+
+model:
+  # -- Any OpenAI-compatible API, such as https://openrouter.ai/api/v1. Empty with demo.enabled: the demo model
+  baseUrl: ""
+  # -- Model name at that API
+  name: ""
+  # -- API key, or name a Secret with key api-key in existingSecret
+  apiKey: ""
+  existingSecret: ""
+  # -- Context window in tokens; Hermes needs at least 64000
+  contextLength: 131072
+
+# -- A stand-in model that needs no API key, to try Talaria. Turn it off once model is set
+demo:
+  enabled: false
+
+telegram:
+  # -- Bot token from @BotFather, or a Secret with key token in existingSecret
+  token: ""
+  existingSecret: ""
+
+images:
+  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.53@sha256:8e7f087e2636b62f0fdc4a6ff2c773282366c76b734f89f92a0730a9ae03caca
+  # -- Talaria Hermes: Hermes Agent with the Talaria patches (docs/images.md)
+  hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a
+  device: ghcr.io/usa-reddragon/hermes-device:v0.25.3@sha256:c19e36561ac6b34798eea6464dfbf5f974b44102d30c1e1f789abc88c3a7eeb0
+  sandbox: ghcr.io/usa-reddragon/hermes-device-sandbox:v0.25.3@sha256:ec2ffbec87ada250eec859e98467d91bf3cf1e59b65e158c5d3e0faec3cd2ebb
+  caddy: docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+  pullPolicy: IfNotPresent
+# -- Secrets for private images, such as [{name: ghcr}]
+imagePullSecrets: []
+
+hub:
+  # -- Replicas. More than 1 needs store postgres
+  replicas: 1
+  store:
+    # -- sqlite (one replica, on the hub's volume) or postgres
+    driver: sqlite
+    # -- Secret with key dsn (a postgres:// URL) for driver postgres
+    existingSecret: ""
+  persistence:
+    size: 1Gi
+    storageClass: ""
+  # -- Extra HUB_* environment variables, such as HUB_LOG_LEVEL: debug
+  env: {}
+  # -- PEM certificates of private authorities the hub trusts besides the usual public ones: for an OIDC provider
+  # or a proxy's key set (jwks_url) whose certificates a private CA signs
+  caBundle: ""
+  resources:
+    requests: {cpu: 10m, memory: 64Mi}
+    limits: {memory: 1Gi}
+
+hermes:
+  persistence:
+    size: 20Gi
+    storageClass: ""
+    # -- ReadWriteOnce: the rolling update starts the new pod on the old pod's node (pod affinity)
+    accessMode: ReadWriteOnce
+  # -- Zero-downtime rolling updates: the new pod waits as a standby and takes over in about a second, running
+  # turns finish in the old pod, and approvals stay answerable. Needs the patched Hermes image
+  rolling:
+    enabled: true
+    # -- Longest a stop waits for running turns plus the handover; keep it above 540 s plus the drain
+    terminationGracePeriodSeconds: 780
+  # -- Your own Hermes config.yaml settings, merged over Talaria's on every start
+  config: {}
+  # -- Extra environment variables for Hermes, such as provider keys
+  env: {}
+  resources:
+    requests: {cpu: 100m, memory: 512Mi}
+    limits: {memory: 8Gi}
+
+sandbox:
+  persistence:
+    size: 10Gi
+    storageClass: ""
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 8Gi}
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  # -- An Ingress for publicUrl's host
+  enabled: false
+  className: ""
+  annotations: {}
+  # -- TLS secret name; empty: no tls block
+  tlsSecret: ""
+
+httpRoute:
+  # -- A Gateway API HTTPRoute for publicUrl's host
+  enabled: false
+  # -- Gateways to attach to, such as [{name: public, namespace: gateway, sectionName: https}]
+  parentRefs: []

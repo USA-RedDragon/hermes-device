@@ -1,0 +1,347 @@
+# Talaria: the hub (web app), Hermes (the agent) and a sandbox (where the agent runs commands), on one host.
+#
+#   docker compose --profile demo up -d      # try it with the demo model, no API key
+#   docker compose logs init                 # the address to open; the first visitor makes the admin account
+#
+# Settings are in .env (copy .env.example). Every secret is made by the init service on the first start and
+# kept in the "secrets" volume. Optional parts are profiles: demo, ollama, honcho, honcho-embeddings.
+name: talaria
+
+x-images:
+  hub: &hub-image ghcr.io/usa-reddragon/talaria-hub:v0.26.53@sha256:8e7f087e2636b62f0fdc4a6ff2c773282366c76b734f89f92a0730a9ae03caca
+  # Talaria Hermes: Hermes Agent with the Talaria patches (docs/images.md)
+  hermes: &hermes-image ${TALARIA_HERMES_IMAGE:-ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a}
+  device: &device-image ghcr.io/usa-reddragon/hermes-device:v0.25.3@sha256:c19e36561ac6b34798eea6464dfbf5f974b44102d30c1e1f789abc88c3a7eeb0
+  sandbox: &sandbox-image ghcr.io/usa-reddragon/hermes-device-sandbox:v0.25.3@sha256:ec2ffbec87ada250eec859e98467d91bf3cf1e59b65e158c5d3e0faec3cd2ebb
+  caddy: &caddy-image docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+
+x-hermes-env: &hermes-env
+  HERMES_HOME: /opt/data
+  # File tools may write in the Hermes home and in the sandbox's /work
+  HERMES_WRITE_SAFE_ROOT: /opt/data:/work
+  TZ: ${TZ:-}
+  # The demo model (profile demo) unless .env names another
+  TALARIA_MODEL_BASE_URL: ${TALARIA_MODEL_BASE_URL:-http://demo-llm:8000/v1}
+  TALARIA_MODEL: ${TALARIA_MODEL:-talaria-demo}
+  TALARIA_MODEL_API_KEY: ${TALARIA_MODEL_API_KEY:-}
+  TALARIA_MODEL_CONTEXT: ${TALARIA_MODEL_CONTEXT:-131072}
+  TALARIA_HONCHO_URL: ${TALARIA_HONCHO_URL:-}
+
+services:
+  # Makes the secrets once, writes the hub config on every start, prints the address
+  init:
+    image: *caddy-image
+    entrypoint: ["/bin/sh", "/files/init.sh"]
+    user: "0:0"
+    environment:
+      TALARIA_PUBLIC_URL: ${TALARIA_PUBLIC_URL:-http://localhost:${TALARIA_PORT:-8080}}
+      TALARIA_USER: ${TALARIA_USER:-}
+      TALARIA_PUSH_CONTACT: ${TALARIA_PUSH_CONTACT:-}
+      TALARIA_TELEGRAM_TOKEN: ${TALARIA_TELEGRAM_TOKEN:-}
+      TALARIA_HONCHO_URL: ${TALARIA_HONCHO_URL:-}
+    volumes:
+      - ./files:/files:ro
+      - secrets:/secrets
+      - hub-data:/hub-data
+      - sandbox-work:/work
+      - hermes-data:/hermes-data
+      - caddy-data:/caddy-data
+
+  # Copies the talaria device plugin out of its image, for hermes-init
+  plugin:
+    image: *device-image
+    user: "0:0"
+    command: ["plugin", "install", "--dest", "/plugin-src/device"]
+    volumes:
+      - plugin-src:/plugin-src
+
+  # Sets up the Hermes home: device plugin, hub public key, Talaria settings in config.yaml
+  # Runs the script directly, not through the image's entrypoint: that one would also start a gateway here
+  hermes-init:
+    image: *hermes-image
+    entrypoint: ["/opt/hermes/.venv/bin/python", "-I", "/files/hermes-init.py"]
+    user: "10000:10000"
+    environment:
+      <<: *hermes-env
+      HOME: /opt/data
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      plugin:
+        condition: service_completed_successfully
+    volumes:
+      - ./files:/files:ro
+      - hermes-data:/opt/data
+      - plugin-src:/plugin-src:ro
+      - type: volume
+        source: secrets
+        target: /secrets
+        read_only: true
+        volume:
+          subpath: hermes
+
+  hermes:
+    image: *hermes-image
+    command: ["gateway", "run"]
+    restart: unless-stopped
+    environment: *hermes-env
+    depends_on:
+      hermes-init:
+        condition: service_completed_successfully
+    volumes:
+      - hermes-data:/opt/data
+    # A stop lets running turns finish first
+    stop_grace_period: 2m
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-m", "5", "-o", "/dev/null", "http://127.0.0.1:9120/api/health"]
+      interval: 10s
+      timeout: 6s
+      retries: 3
+      start_period: 3m
+      start_interval: 2s
+
+  # The one published port. The hub lives in this container's network
+  front:
+    image: *caddy-image
+    restart: unless-stopped
+    # Unprivileged, as the hub's user
+    user: "65534:65534"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    environment:
+      # Same port inside and outside
+      TALARIA_SITE: ${TALARIA_SITE:-:${TALARIA_PORT:-8080}}
+      TALARIA_TLS_LINE: ${TALARIA_TLS:+tls ${TALARIA_TLS}}
+    ports:
+      - "${TALARIA_PORT:-8080}:${TALARIA_PORT:-8080}"
+    volumes:
+      - ./files/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    tmpfs:
+      - /config:uid=65534,gid=65534
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8079/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+
+  hub:
+    image: *hub-image
+    restart: unless-stopped
+    network_mode: service:front
+    depends_on:
+      init:
+        condition: service_completed_successfully
+        # init rewrites their configs from .env: start them again after it ran
+        restart: true
+      front:
+        condition: service_started
+    environment:
+      CONFIG: /secrets/config.yaml
+      TMPDIR: /tmp
+      HUB_HTTP_PORT: "8081"
+      HUB_HTTP_PUBLIC_URL: ${TALARIA_PUBLIC_URL:-http://localhost:${TALARIA_PORT:-8080}}
+      HUB_STORE_DRIVER: sqlite
+      HUB_STORE_PATH: /data/talaria-hub.db
+      HUB_DEVICE_ENABLED: "true"
+      # Caddy runs in the same network namespace, so device addresses come from X-Forwarded-For
+      HUB_DEVICE_TRUSTED_PROXIES: 127.0.0.1/32
+      HUB_UI_TIME_ZONE: ${TZ:-UTC}
+      HUB_CLAUDE_TIME_ZONE: ${TZ:-UTC}
+      # Login settings (HUB_AUTH_MODE, HUB_OIDC_*, HUB_AUTH_PROXY_*): add them in compose.override.yaml, see docs/auth.md
+    volumes:
+      - hub-data:/data
+      - type: volume
+        source: secrets
+        target: /secrets
+        read_only: true
+        volume:
+          subpath: hub
+    tmpfs:
+      - /tmp
+    read_only: true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+
+  # Where the agent runs commands for chats that are not on one of your computers
+  sandbox:
+    image: *sandbox-image
+    restart: unless-stopped
+    depends_on:
+      hub:
+        condition: service_healthy
+    environment:
+      TALARIA_HUB_URL: http://front:8081
+      TALARIA_HUB_TOKEN_FILE: /secrets/token
+    volumes:
+      - sandbox-work:/work
+      - type: volume
+        source: secrets
+        target: /secrets
+        read_only: true
+        volume:
+          subpath: sandbox
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  # --- profile demo: a stand-in model, so you can try Talaria with no API key ---
+  demo-llm:
+    profiles: [demo]
+    image: *hermes-image
+    entrypoint: ["/opt/hermes/.venv/bin/python", "-I", "/files/demo-llm.py"]
+    user: "65534:65534"
+    restart: unless-stopped
+    volumes:
+      - ./files:/files:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 20s
+      start_interval: 1s
+
+  # --- profile ollama: local models on this host (a GPU helps a lot) ---
+  ollama:
+    profiles: [ollama]
+    image: docker.io/ollama/ollama:0.40.16@sha256:910d0d8107b538fb0894e63163eb195de0cc7aefcbc666dc62d3b18f71124592
+    restart: unless-stopped
+    environment:
+      OLLAMA_CONTEXT_LENGTH: ${TALARIA_MODEL_CONTEXT:-131072}
+      OLLAMA_KEEP_ALIVE: 24h
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      start_interval: 2s
+
+  # Downloads TALARIA_OLLAMA_PULL (for example llama3.2:3b) once
+  ollama-pull:
+    profiles: [ollama]
+    image: docker.io/ollama/ollama:0.40.16@sha256:910d0d8107b538fb0894e63163eb195de0cc7aefcbc666dc62d3b18f71124592
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      M: ${TALARIA_OLLAMA_PULL:-}
+    entrypoint: ["/bin/sh", "-c", "[ -z \"$$M\" ] || ollama pull \"$$M\""]
+
+  # --- profile honcho: long-term memory (Honcho by Plastic Labs) ---
+  honcho-db:
+    profiles: [honcho]
+    image: docker.io/pgvector/pgvector:0.8.1-pg17@sha256:3e8b3adfd27b5707128f60956f62a793c3c9326ea8cfaf0eab7adccb5d700b21
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: honcho
+      POSTGRES_PASSWORD: honcho
+      POSTGRES_DB: honcho
+    volumes:
+      - honcho-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "honcho"]
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      start_interval: 1s
+
+  honcho-migrate:
+    profiles: [honcho]
+    image: &honcho-image ghcr.io/plastic-labs/honcho:v3.6.0@sha256:eb906a2d251aa48b22347e4465b40785ea7a84e2bfd1105780416bf1f0121099
+    depends_on:
+      honcho-db:
+        condition: service_healthy
+    environment: &honcho-env
+      DB_CONNECTION_URI: postgresql+psycopg://honcho:honcho@honcho-db:5432/honcho
+      AUTH_USE_AUTH: "false"
+      LLM_OPENAI_API_KEY: ${TALARIA_MODEL_API_KEY:-none}
+      LLM_OPENAI_BASE_URL: ${TALARIA_MODEL_BASE_URL:-http://demo-llm:8000/v1}
+      DERIVER_MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
+      SUMMARY_MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
+      DREAM_DEDUCTION_MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
+      DREAM_INDUCTION_MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
+      DIALECTIC_LEVELS__minimal__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
+      DIALECTIC_LEVELS__low__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
+      DIALECTIC_LEVELS__medium__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
+      DIALECTIC_LEVELS__high__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
+      DIALECTIC_LEVELS__max__MODEL_CONFIG__MODEL: ${TALARIA_HONCHO_MODEL:-${TALARIA_MODEL:-talaria-demo}}
+      EMBEDDING_MODEL_CONFIG__TRANSPORT: openai
+      EMBEDDING_MODEL_CONFIG__MODEL: ${TALARIA_EMBEDDINGS_MODEL:-BAAI/bge-small-en-v1.5}
+      EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL: ${TALARIA_EMBEDDINGS_BASE_URL:-http://honcho-embeddings:8080/v1}
+      EMBEDDING_MODEL_CONFIG__OVERRIDES__API_KEY: ${TALARIA_EMBEDDINGS_API_KEY:-none}
+      EMBEDDING_MODEL_CONFIG__DIMENSIONS_MODE: never
+      EMBEDDING_VECTOR_DIMENSIONS: ${TALARIA_EMBEDDINGS_DIMENSIONS:-384}
+      EMBEDDING_MAX_INPUT_TOKENS: "480"
+      SENTRY_ENABLED: "false"
+      METRICS_ENABLED: "false"
+      TELEMETRY_ENABLED: "false"
+      CACHE_ENABLED: "false"
+      TIKTOKEN_CACHE_DIR: /tmp/tiktoken
+    command: ["sh", "-c", "python scripts/provision_db.py && python scripts/configure_embeddings.py --yes"]
+
+  honcho:
+    profiles: [honcho]
+    image: *honcho-image
+    restart: unless-stopped
+    depends_on:
+      honcho-migrate:
+        condition: service_completed_successfully
+    environment: *honcho-env
+    command: ["fastapi", "run", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "src/main.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      start_interval: 2s
+
+  honcho-deriver:
+    profiles: [honcho]
+    image: *honcho-image
+    restart: unless-stopped
+    depends_on:
+      honcho-migrate:
+        condition: service_completed_successfully
+    environment: *honcho-env
+    command: ["python", "-m", "src.deriver"]
+
+  # A small CPU embedding model (BAAI/bge-small-en-v1.5, 384 dimensions, about 1 GB of RAM). Leave this profile
+  # off and set TALARIA_EMBEDDINGS_* to use a hosted embeddings API instead
+  honcho-embeddings:
+    profiles: [honcho-embeddings]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4@sha256:2538ea1c9640d3763b15af668039d24172d063b42337b0c27796fc2be180c78d
+    restart: unless-stopped
+    command: ["--model-id", "BAAI/bge-small-en-v1.5", "--hostname", "0.0.0.0", "--port", "8080", "--max-batch-tokens", "2048"]
+    environment:
+      HUGGINGFACE_HUB_CACHE: /data
+    volumes:
+      - honcho-embeddings:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5m
+      start_interval: 5s
+
+volumes:
+  secrets:
+  hermes-data:
+  plugin-src:
+  hub-data:
+  caddy-data:
+  sandbox-work:
+  ollama-data:
+  honcho-db:
+  honcho-embeddings:

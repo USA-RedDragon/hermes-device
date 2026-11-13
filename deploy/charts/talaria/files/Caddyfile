@@ -1,0 +1,17 @@
+# Front of the hub: Caddy in front of the hub on localhost, so chat streams flush at once
+{
+	admin off
+}
+
+:8079 {
+	respond "ok" 200
+}
+
+:8080 {
+	handle {
+		# Chats stream as server-sent events: send each event at once
+		reverse_proxy 127.0.0.1:8081 {
+			flush_interval -1
+		}
+	}
+}

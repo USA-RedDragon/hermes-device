@@ -1,0 +1,14 @@
+#!/command/with-contenv sh
+# Commands of chats that are not on one of your computers run here, as their own user, which cannot read the
+# Hermes home or Talaria's secrets
+W=/talaria/work
+export HOME=$W TMPDIR=$W/.cache/tmp XDG_CACHE_HOME=$W/.cache XDG_CONFIG_HOME=$W/.config XDG_DATA_HOME=$W/.local/share
+export PATH="$W/.local/bin:$PATH" npm_config_prefix=$W/.local PIP_BREAK_SYSTEM_PACKAGES=1
+export TALARIA_DEVICE_ROOTS=$W TALARIA_DEVICE_SHELL=bash TALARIA_STORE_KEYRING=false TALARIA_GATEWAY_SPLICE=false
+export TALARIA_BROWSER_START_FIREFOX=false TALARIA_UPDATE_AUTO=false
+export TALARIA_HUB_URL=http://127.0.0.1:8081 TALARIA_HUB_TOKEN_FILE=/talaria/secrets/sandbox/token
+# Start once the hub answers; s6 runs this again after a failed start
+curl -fsS -m 5 -o /dev/null http://127.0.0.1:8081/healthz || { s6-sleep 2; exit 1; }
+s6-setuidgid agent mkdir -p "$TMPDIR"
+cd "$W"
+exec s6-setuidgid agent hermes-device run

@@ -1,0 +1,4 @@
+#!/command/with-contenv sh
+# The one port, in front of the hub
+export XDG_DATA_HOME=/tmp/caddy XDG_CONFIG_HOME=/tmp/caddy
+exec s6-setuidgid nobody caddy run --config /usr/share/talaria/Caddyfile --adapter caddyfile

@@ -1,0 +1,6 @@
+#!/command/with-contenv sh
+# Not turned on: tell s6 not to start it again
+case "${TALARIA_DEMO:-}" in
+  1|true|TRUE|True|yes|YES|Yes) exit 0 ;;
+esac
+exit 125

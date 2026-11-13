@@ -1,0 +1,22 @@
+# The one web address of Talaria. The hub shares this container's network, so it is on localhost here.
+{
+	admin off
+}
+
+# Health check of this container only
+:8079 {
+	respond "ok" 200
+}
+
+# TALARIA_SITE is :<TALARIA_PORT> by default (plain HTTP). Set it to a domain name, and publish ports 80 and 443, for
+# automatic HTTPS (docs/compose.md)
+{$TALARIA_SITE} {
+	# Empty, or "tls internal" (Caddy's own CA) or "tls <email>" from TALARIA_TLS
+	{$TALARIA_TLS_LINE}
+	handle {
+		# Chats stream as server-sent events: send each event at once
+		reverse_proxy 127.0.0.1:8081 {
+			flush_interval -1
+		}
+	}
+}
