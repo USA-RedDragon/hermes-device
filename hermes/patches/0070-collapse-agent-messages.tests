@@ -1,0 +1,5 @@
+# Upstream tests of the request build and the summarizer input this patch changes
+tests/agent/test_api_content_sidecar.py
+tests/agent/test_turn_context.py
+tests/agent/test_context_compressor.py
+tests/gateway/test_agent_cache.py
