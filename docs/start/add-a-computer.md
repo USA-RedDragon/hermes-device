@@ -87,7 +87,7 @@ Choose Allow. Until you do, the service cannot reach the hub and its log says `c
 **Setup over SSH.** You can run setup on a Mac over SSH while you are also logged in at the Mac. Setup then prints the pairing link and does not open a browser or Firefox on the Mac's screen; the Local Network question above still appears on that screen. macOS keeps the login keychain locked in SSH sessions, so:
 
 - setup over SSH stores the token in a file readable only by you, `~/Library/Application Support/talaria/token`, instead of the Keychain;
-- if setup ran in Terminal and the token is in the Keychain, commands that need it (`talaria chat`, `talaria acp`, `talaria setup --uninstall`) cannot read it over SSH and say so. Run them in Terminal on the Mac.
+- if setup ran in Terminal and the token is in the Keychain, commands that read it (`talaria chat`, `talaria acp`) cannot do so over SSH and say so. Run them in Terminal on the Mac.
 
 Setup works through these steps, in this order:
 
