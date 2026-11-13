@@ -40,7 +40,7 @@ config:
     hub.yaml: |
       auth:
         mode: {{ $mode }}
-        # The front container sits in the same pod: read the client address from X-Forwarded-For
+        # The ingress or gateway proxy in front of the hub: read the client address from X-Forwarded-For
         trusted_proxies: {{ toJson .Values.auth.trustedProxies }}
         {{- with .Values.auth.admins }}
         admins: {{ toJson . }}

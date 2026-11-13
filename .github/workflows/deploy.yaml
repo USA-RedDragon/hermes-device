@@ -63,6 +63,12 @@ jobs:
             --set hub.store.driver=postgres --set hub.store.existingSecret=db --set hub.replicas=2 > /dev/null
           helm template t charts/talaria --set publicUrl=http://localhost:8080 --set searxng.enabled=false \
             --set hermes.editorBridge.enabled=false --set hermes.rolling.enabled=false > /dev/null
+          # The containers of each pod: the hub serves its port itself, and the agent's pod runs no Hermes dashboard
+          got=$(helm template t charts/talaria --kube-version 1.35.0 --set publicUrl=http://localhost:8080 \
+            | yq 'select(.kind == "Deployment") | [.metadata.name, ([.spec.template.spec.containers[].name] | join(","))] | join("=")' \
+            | grep = | sort | xargs)
+          want="t-talaria-hermes=acp-host,gateway t-talaria-hub=hub t-talaria-sandbox=sandbox t-talaria-searxng=searxng"
+          [ "$got" = "$want" ] || { echo "containers: $got, want $want"; exit 1; }
           # The editor bridge's binary: an image volume from 1.35, an init container's copy below
           helm template t charts/talaria --kube-version 1.35.0 --set publicUrl=http://localhost:8080 | grep 'reference: ghcr.io/usa-reddragon/talaria:' > /dev/null
           helm template t charts/talaria --kube-version 1.34.0 --set publicUrl=http://localhost:8080 | grep 'copy-self' > /dev/null

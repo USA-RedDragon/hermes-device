@@ -20,7 +20,6 @@ the volumes, the Secrets and the Service addresses.
 {{- end }}
 {{- $secrets := include "talaria.secrets" . | fromYaml -}}
 {{- $files := dict
-  "Caddyfile" (.Files.Get "files/Caddyfile")
   "hermes-init.py" (.Files.Get "files/hermes-init.py")
   "demo-llm.py" (.Files.Get "files/demo-llm.py")
 -}}
@@ -72,33 +71,8 @@ controllers:
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile: {type: RuntimeDefault}
     containers:
-      # The pod's one port, in front of the hub
-      front:
-        image: {{- include "talaria.image" (list $v.images.caddy $pull) | nindent 10 }}
-        command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
-        env:
-          - {name: XDG_DATA_HOME, value: /tmp/caddy}
-          - {name: XDG_CONFIG_HOME, value: /tmp/caddy}
-        ports:
-          - {name: http, containerPort: 8080, protocol: TCP}
-        probes:
-          readiness:
-            enabled: true
-            custom: true
-            spec:
-              httpGet: {path: /, port: 8079}
-              periodSeconds: 5
-        resources:
-          requests: {cpu: 5m, memory: 16Mi}
-          limits: {memory: 128Mi}
-        # The caddy binary carries the file capability cap_net_bind_service; without it in the bounding set the
-        # kernel refuses to run it
-        securityContext:
-          readOnlyRootFilesystem: true
-          allowPrivilegeEscalation: false
-          capabilities: {drop: [ALL], add: [NET_BIND_SERVICE]}
+      # The pod's one port. The hub flushes each chat event as it writes it, so no proxy sits in front of it here
       hub:
-        dependsOn: front
         image: {{- include "talaria.image" (list $v.images.hub $pull) | nindent 10 }}
         env:
           - {name: CONFIG, value: /config/hub.yaml}
@@ -106,7 +80,7 @@ controllers:
           - {name: HUB_HTTP_PORT, value: "8081"}
           - {name: HUB_HTTP_PUBLIC_URL, value: {{ include "talaria.publicUrl" . | quote }}}
           - {name: HUB_DEVICE_ENABLED, value: "true"}
-          # The front container is in the same pod; ingress and gateway proxies sit in front of it
+          # Ingress and gateway proxies in front of the hub
           - {name: HUB_DEVICE_TRUSTED_PROXIES, value: "127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"}
           - {name: HUB_UI_TIME_ZONE, value: {{ $v.timeZone | quote }}}
           - {name: HUB_UI_INSTALL, value: helm}
@@ -138,7 +112,7 @@ controllers:
           - {name: {{ $k }}, value: {{ $val | quote }}}
           {{- end }}
         ports:
-          - {name: hub, containerPort: 8081, protocol: TCP}
+          - {name: http, containerPort: 8081, protocol: TCP}
         probes:
           # Fails as soon as a stopping replica starts to drain
           readiness:
@@ -468,7 +442,7 @@ service:
       http:
         port: {{ $v.service.port }}
         targetPort: http
-  # The sandbox dials the hub directly, not through the front
+  # The address the sandbox dials
   hub-internal:
     controller: hub
     forceRename: {{ $full }}-hub-internal
@@ -564,7 +538,6 @@ persistence:
     type: emptyDir
     advancedMounts:
       hub:
-        front: [{path: /tmp}]
         hub: [{path: /tmp}]
       hermes:
         init: [{path: /tmp}]
@@ -582,8 +555,6 @@ persistence:
     type: configMap
     identifier: files
     advancedMounts:
-      hub:
-        front: [{path: /etc/caddy/Caddyfile, subPath: Caddyfile, readOnly: true}]
       hermes:
         init: [{path: /talaria, readOnly: true}]
         gateway: [{path: /talaria, readOnly: true}]
