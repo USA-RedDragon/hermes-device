@@ -37,7 +37,7 @@ jobs:
           version=${TAG#plugins/}
           prev=$(git tag -l 'plugins/v*' --sort=-version:refname | grep -vx "$TAG" | head -n1 || true)
           mkdir dist
-          tar -czf "dist/talaria-plugins-$version.tar.gz" --exclude=__pycache__ \
+          tar -czf "dist/talaria-hermes-plugins-$version.tar.gz" --exclude=__pycache__ \
             subagent-routes project-memory scripts/install-plugin.sh .hermes-version README.md
           gh release create "$TAG" --verify-tag --latest=false --generate-notes ${prev:+--notes-start-tag "$prev"} \
-            --title "Plugins $version" "dist/talaria-plugins-$version.tar.gz"
+            --title "Plugins $version" "dist/talaria-hermes-plugins-$version.tar.gz"

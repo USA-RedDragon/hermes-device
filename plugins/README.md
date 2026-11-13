@@ -22,7 +22,7 @@ hermes plugins enable subagent-routes
 
 `install-plugin.sh` replaces the destination only when its content changed, by two renames, so a gateway that
 still runs can keep loading the old copy while the new one is put in place. Run it again on every start.
-Release tarballs (`talaria-plugins-vX.Y.Z.tar.gz` on the GitHub release `plugins/vX.Y.Z`) hold the same directories.
+Release tarballs (`talaria-hermes-plugins-vX.Y.Z.tar.gz` on the GitHub release `plugins/vX.Y.Z`) hold the same directories.
 
 Settings go under `plugins.entries.<plugin>.settings` in `config.yaml`, as each plugin's README says.
 
