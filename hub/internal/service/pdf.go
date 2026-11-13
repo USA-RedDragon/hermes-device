@@ -125,11 +125,16 @@ func pageSpan(from, to int) string {
 // shows of the PDF, then its text between markers with a random id, so
 // text in the PDF cannot end the block. Web pages parse them back
 // (internal/web/static/app.js).
-func pdfNotes(name string, d *pdf.Doc) string {
+func pdfNotes(name string, d *pdf.Doc, inline bool) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "[The PDF %s has %d %s. ", name, d.Pages, plural(d.Pages, "page", "pages"))
 	k := len(d.Images)
+	if !inline {
+		k = 0
+	}
 	switch {
+	case !inline:
+		sb.WriteString("No pages are attached as images, since this message went to the running turn, which takes text only. Open the saved file to see them. ")
 	case k == 1:
 		fmt.Fprintf(&sb, "Page %d of %d is attached as an image. ", d.From, d.Pages)
 	case k > 1:

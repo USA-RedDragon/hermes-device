@@ -162,7 +162,27 @@ func (ls *live) names(p string) bool {
 	ls.mu.Lock()
 	snap := ls.snapshot.Data
 	ring := ls.ring[:len(ls.ring):len(ls.ring)]
+	// A message that waits for the running turn is in neither the
+	// snapshot's transcript nor the ring yet, but its page already shows
+	// the images it carries.
+	var queued []string
+	for id, t := range ls.texts {
+		queued = append(queued, t)
+		if in, ok := ls.inputs[id]; ok && in.Text != t {
+			queued = append(queued, in.Text)
+		}
+	}
+	for id, in := range ls.inputs {
+		if _, ok := ls.texts[id]; !ok {
+			queued = append(queued, in.Text)
+		}
+	}
 	ls.mu.Unlock()
+	for _, t := range queued {
+		if slices.Contains(hub.AttachedImages(t), p) {
+			return true
+		}
+	}
 	var s struct {
 		Messages []json.RawMessage `json:"messages"`
 	}

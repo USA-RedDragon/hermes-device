@@ -3224,6 +3224,7 @@
       body = new FormData();
       body.append("id", cid);
       body.append("text", text);
+      if (steer) body.append("steer", "true");
       for (const a of files) {
         body.append("file", a.file, a.file.name || "attachment");
         if (a.pdf && a.range) body.append("pages", a.range);
@@ -3263,7 +3264,7 @@
           toast("Sent; Talaria reads it after its current step");
         } else if (p) {
           chat.queued(p.bubble);
-          if (steer && !files.length) toast("Queued: Talaria reads it when the current turn ends");
+          if (steer) toast("Queued: Talaria reads it when the current turn ends");
         }
       }
       composer.sent(chat);

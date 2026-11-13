@@ -124,3 +124,26 @@ func TestCSPAllowsBlobImages(t *testing.T) {
 		t.Fatalf("CSP = %q", csp)
 	}
 }
+
+func TestFormPromptSteersWithFiles(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	c := client(t)
+	m := login(t, e, c)
+	e.gw.QueueWhileRunning = true
+	e.gw.StartElsewhere("s1", "tui-1", "work", false, true)
+	u := e.url + "/api/sessions/pc/s1/prompt"
+	resp, body := postForm(t, c, u, m.CSRF, e.url, part{field: kText, data: []byte("see this")}, part{field: "steer", data: []byte("true")},
+		part{field: fieldFile, name: "shot.png", data: []byte("\x89PNG\r\n\x1a\nxx")})
+	if resp.StatusCode != http.StatusAccepted || !strings.Contains(body, `"steered":true`) {
+		t.Fatalf("steer with a file = %d %s", resp.StatusCode, body)
+	}
+	if got := e.gw.Steered(); len(got) != 1 {
+		t.Fatalf("steered = %v", got)
+	}
+	resp, body = postForm(t, c, u, m.CSRF, e.url, part{field: kText, data: []byte("later")},
+		part{field: fieldFile, name: "n.txt", data: []byte("n")})
+	if resp.StatusCode != http.StatusAccepted || !strings.Contains(body, `"steered":false`) {
+		t.Fatalf("a form without steer = %d %s", resp.StatusCode, body)
+	}
+}

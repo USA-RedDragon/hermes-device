@@ -46,11 +46,11 @@ func imageExt(mime string) string {
 // readRestartWait: a Hermes gateway that hands its turns to the next one
 // during a rollout refuses or drops the staging calls for a few seconds, and
 // a prompt with attachments waits that out instead of being refused.
-func (b *backend) stageWaiting(ctx context.Context, user, sessionID, text string, files []hub.Attachment) (string, []gateway.Attachment, string, error) {
+func (b *backend) stageWaiting(ctx context.Context, user, sessionID, text string, files []hub.Attachment, inline bool) (string, []gateway.Attachment, string, error) {
 	deadline := time.Now().Add(readRestartWait)
 	delay := 250 * time.Millisecond
 	for {
-		staged, atts, notice, err := b.stage(ctx, user, sessionID, text, files)
+		staged, atts, notice, err := b.stage(ctx, user, sessionID, text, files, inline)
 		if !errors.Is(err, errAway) || ctx.Err() != nil || !time.Now().Add(delay).Before(deadline) {
 			return staged, atts, notice, err
 		}
@@ -68,8 +68,11 @@ func (b *backend) stageWaiting(ctx context.Context, user, sessionID, text string
 // that runs the session, else to Hermes with file.attach, and the text
 // gets a line that says where each one is. For a PDF the hub also stages
 // its first pages as images and adds its text. It returns the text, the
-// staged images and a notice for the user.
-func (b *backend) stage(ctx context.Context, user, sessionID, text string, files []hub.Attachment) (string, []gateway.Attachment, string, error) {
+// staged images and a notice for the user. With inline false, for a message
+// that steers the running turn (Hermes steers text only), nothing goes to
+// the model as an image: every file, images and PDF pages too, is saved
+// where the tools read it and the text names it.
+func (b *backend) stage(ctx context.Context, user, sessionID, text string, files []hub.Attachment, inline bool) (string, []gateway.Attachment, string, error) {
 	select {
 	case b.svc.uploads <- struct{}{}:
 		defer func() { <-b.svc.uploads }()
@@ -89,6 +92,14 @@ func (b *backend) stage(ctx context.Context, user, sessionID, text string, files
 	var notes, notices []string
 	for i, f := range files {
 		name := hub.CleanName(f.Name)
+		if mime := hub.ImageMIME(f.Data); mime != "" && !inline {
+			p, err := b.placeFile(ctx, ls, user, sessionID, name, f.Data)
+			if err != nil {
+				return "", nil, "", err
+			}
+			notes = append(notes, hub.FileNote(path.Base(p), p))
+			continue
+		}
 		if mime := hub.ImageMIME(f.Data); mime != "" {
 			a, err := b.stageImage(ctx, ls, name, f.Data, mime)
 			if err != nil {
@@ -108,14 +119,18 @@ func (b *backend) stage(ctx context.Context, user, sessionID, text string, files
 		switch r := pdfs[i]; {
 		case r == nil:
 		case r.doc != nil:
-			for _, img := range r.doc.Images {
+			images := r.doc.Images
+			if !inline {
+				images = nil
+			}
+			for _, img := range images {
 				a, err := b.stageImage(ctx, ls, name, img, hub.MIMEPNG)
 				if err != nil {
 					return "", nil, "", err
 				}
 				atts = append(atts, a)
 			}
-			notes = append(notes, pdfNotes(path.Base(p), r.doc))
+			notes = append(notes, pdfNotes(path.Base(p), r.doc, inline))
 		default:
 			notes = append(notes, r.note)
 			notices = append(notices, r.notice)

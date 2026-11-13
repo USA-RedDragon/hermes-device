@@ -418,7 +418,9 @@ func (s *Service) Attach(ctx context.Context, user, backendID, sessionID string,
 // ones is held too, to keep their order. Attachments need the backend: a
 // prompt with files is refused while it is away. A slash command runs
 // through slash.exec (see command). With hub.WithSteer, a prompt that
-// queues behind the running turn is handed to that turn (see steer).
+// queues behind the running turn is handed to that turn (see steer). Hermes
+// steers text only, so such a prompt's files are saved where the tools read
+// them and named in its text, and no image goes to the model inline.
 func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text string, files ...hub.Attachment) (hub.PromptResult, error) {
 	if err := hub.CheckAttachments(files); err != nil {
 		return hub.PromptResult{}, err
@@ -440,7 +442,7 @@ func (s *Service) Prompt(ctx context.Context, user, backendID, sessionID, text s
 	release := b.gate(sessionID)
 	res, receipt, err := s.promptLocked(ctx, b, user, sessionID, id, text, files)
 	release()
-	if err != nil || !hub.Steer(ctx) || len(files) > 0 || res.Held || (receipt.Status != gateway.AdmissionQueued && receipt.Status != gateway.AdmissionStarted) {
+	if err != nil || !hub.Steer(ctx) || res.Held || (receipt.Status != gateway.AdmissionQueued && receipt.Status != gateway.AdmissionStarted) {
 		return res, err
 	}
 	res.Steered = b.steerOrFind(context.WithoutCancel(ctx), sessionID, receipt)
@@ -464,7 +466,7 @@ func (s *Service) promptLocked(ctx context.Context, b *backend, user, sessionID,
 		err    error
 	)
 	if len(files) > 0 {
-		text, atts, notice, err = b.stageWaiting(ctx, user, sessionID, text, files)
+		text, atts, notice, err = b.stageWaiting(ctx, user, sessionID, text, files, !hub.Steer(ctx))
 		if err != nil {
 			return hub.PromptResult{}, gateway.Receipt{}, err
 		}
