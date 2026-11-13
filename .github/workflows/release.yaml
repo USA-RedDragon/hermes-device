@@ -186,6 +186,21 @@ jobs:
           cp "$sums" "hermes-device_${version}_checksums.txt"
           gh release upload "$TAG" "$sums" "hermes-device_${version}_checksums.txt" --clobber
 
+      # The extension's version is bumped only when the extension changes, so
+      # it can be older than the tag. Say so in the notes, once.
+      - name: Note the extension version in the release notes
+        run: |
+          xpi=$(gh release view "$TAG" --json assets --jq '[.assets[].name | select(endswith(".xpi"))][0] // empty')
+          [ -n "$xpi" ] || exit 0
+          marker='<!-- firefox-extension-note -->'
+          body=$(gh release view "$TAG" --json body --jq .body)
+          case "$body" in *"$marker"*) exit 0 ;; esac
+          ext=${xpi#talaria-firefox-}
+          ext=${ext%.xpi}
+          notes="$RUNNER_TEMP/notes.md"
+          printf '%s\n\n%s\n**Firefox extension:** this release has `%s` (extension version %s). The extension version can be older than the Talaria version: it is bumped only when the extension changes, and a release whose extension did not change reuses the last signed file. It works with this release.\n' "$body" "$marker" "$xpi" "$ext" > "$notes"
+          gh release edit "$TAG" --notes-file "$notes"
+
   # Attests the release files that the release and firefox-extension jobs
   # uploaded. talaria update verifies these attestations.
   attest-files:
