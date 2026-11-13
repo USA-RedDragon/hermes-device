@@ -48,3 +48,23 @@ func RemoveOldBinaries(bin string) {
 		_ = os.Remove(m)
 	}
 }
+
+// removeBinary removes path. While the daemon that the scheduled task
+// ran still exits, the file is busy for a moment, so it tries for a few
+// seconds. A program that still runs then, such as the talaria.exe that
+// runs setup --uninstall itself, cannot be deleted, so it moves to the
+// temp folder instead, and removeBinary returns where.
+func removeBinary(path string) (string, error) {
+	var err error
+	for range 20 {
+		if err = os.Remove(path); err == nil || errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	aside := filepath.Join(os.TempDir(), "talaria-removed-"+strconv.FormatInt(time.Now().UnixNano(), 36)+".exe")
+	if rerr := os.Rename(path, aside); rerr != nil {
+		return "", errors.Join(err, rerr)
+	}
+	return aside, nil
+}

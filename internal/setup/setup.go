@@ -785,10 +785,15 @@ func (s *System) uninstallBinary(st *State, r *Report) error {
 	if st.Binary == "" {
 		return nil
 	}
-	if err := os.Remove(st.Binary); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	aside, err := removeBinary(st.Binary)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	r.done("Removed %s", st.Binary)
+	if aside != "" {
+		r.done("Moved %s to %s, because it still runs and Windows cannot delete a running program. Delete that file after this command ends", st.Binary, aside)
+	} else {
+		r.done("Removed %s", st.Binary)
+	}
 	alias := filepath.Join(filepath.Dir(st.Binary), AliasName)
 	if target, err := os.Readlink(alias); err == nil && (target == filepath.Base(st.Binary) || target == st.Binary) {
 		_ = os.Remove(alias)
