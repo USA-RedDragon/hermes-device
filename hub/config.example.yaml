@@ -240,6 +240,6 @@ agent:
   # locked_keys: []
 updates:
   # Check Talaria's public releases once a day (read only) and show admins a banner when the hub, the agent or a computer is behind. Members never see it
-  # check: true
+  check: true
   # Releases feed to check, in the GitHub releases API form. Empty: Talaria's own repository
   # url: ""
