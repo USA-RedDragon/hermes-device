@@ -177,9 +177,9 @@ jobs:
           dir="$RUNNER_TEMP/sums"
           mkdir -p "$dir"
           cd "$dir"
-          gh release download "$TAG" --pattern '*.tar.gz' --pattern '*.xpi'
+          gh release download "$TAG" --pattern '*.tar.gz' --pattern '*.zip' --pattern '*.xpi'
           shopt -s nullglob
-          files=(*.tar.gz *.xpi)
+          files=(*.tar.gz *.zip *.xpi)
           xpis=(*.xpi)
           [ "${#xpis[@]}" -gt 0 ] || echo "::notice title=No extension::$TAG has no .xpi, so the checksums cover the archives only."
           version=${TAG#v}
@@ -238,12 +238,12 @@ jobs:
         run: |
           dir="$RUNNER_TEMP/assets"
           mkdir -p "$dir"
-          gh release download "$TAG" --dir "$dir" --pattern '*.tar.gz' --pattern 'talaria_*_checksums.txt' --pattern '*.xpi'
+          gh release download "$TAG" --dir "$dir" --pattern '*.tar.gz' --pattern '*.zip' --pattern 'talaria_*_checksums.txt' --pattern '*.xpi'
           cd "$dir"
           ls -l
           version=${TAG#v}
           sha256sum --check --strict "talaria_${version}_checksums.txt"
-          [ "$(grep -c '\.\(tar\.gz\|xpi\)$' "talaria_${version}_checksums.txt")" = "$(ls -1 ./*.tar.gz ./*.xpi 2>/dev/null | wc -l)" ] || { echo "::error::the archives do not match the checksum file"; exit 1; }
+          [ "$(grep -c '\.\(tar\.gz\|zip\|xpi\)$' "talaria_${version}_checksums.txt")" = "$(ls -1 ./*.tar.gz ./*.zip ./*.xpi 2>/dev/null | wc -l)" ] || { echo "::error::the archives do not match the checksum file"; exit 1; }
 
       - name: Attest the release files
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

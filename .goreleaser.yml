@@ -62,6 +62,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm
@@ -74,6 +75,10 @@ builds:
       - goos: darwin
         goarch: arm
       - goos: darwin
+        goarch: riscv64
+      - goos: windows
+        goarch: arm
+      - goos: windows
         goarch: riscv64
     env:
       - CGO_ENABLED=0
@@ -121,6 +126,10 @@ archives:
   - id: talaria
     ids: [talaria]
     formats: [tar.gz]
+    # Windows: talaria.exe in a zip, which Explorer opens without a tool.
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     name_template: 'talaria_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}'
   - id: hermes-device
     ids: [hermes-device]
