@@ -1,12 +1,12 @@
 # Install on Kubernetes with Helm
 
-The chart in `deploy/charts/talaria` runs the same parts as the compose install: the hub (with its web front in one pod), Hermes, and the sandbox. It makes every key it needs on the first install.
+The chart in `deploy/charts/talaria` runs the same parts as the compose install: the hub (with its web front in one pod), the agent, and the sandbox. It makes every key it needs on the first install.
 
 ## What you need
 
 - Kubernetes 1.29 or newer, `kubectl` and Helm 3.14 or newer (Helm 4 works).
 - For editors (`talaria acp`): nothing more. On Kubernetes 1.35 or newer the chart mounts the talaria image as a volume for `acp-host`. On older clusters an init container copies the binary into the pod instead. On 1.33 or 1.34 with the `ImageVolume` feature gate on, set `hermes.editorBridge.binary=image`; `copy` forces the copy. To turn the editor bridge off, set `hermes.editorBridge.enabled=false`; the hub then tells editors it has no editor bridge.
-- A default StorageClass, or set `*.persistence.storageClass`. Hermes needs 20 GiB by default.
+- A default StorageClass, or set `*.persistence.storageClass`. The agent needs 20 GiB by default.
 - For people outside the cluster: an Ingress controller or a Gateway API gateway, and a host name.
 
 ## Quick start (try it, with port-forward)
@@ -26,16 +26,15 @@ The chart in `deploy/charts/talaria` runs the same parts as the compose install:
    opens it gets that account, so do it before the hub is reachable from anywhere else. Add other people under
    Settings, Users ([Set up logins](auth.md)).
 3. **Connect a model.** This step is required: until you do it, the chat area says Talaria has no model yet.
-   Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate Hermes, and an
-   existing one is not used.
+   Talaria includes its own agent, the part that talks to models, so you need nothing else.
 
    As the admin, click **Connect a model** in the chat area (it shows until a model is connected; later it is
    in Settings, Models) and pick where the model runs: a server of your own (Ollama, LM Studio, vLLM, llama.cpp),
-   a provider with an API key, or a subscription sign-in. Talaria checks the address or key through Hermes, lets
-   you pick the model new chats start with, and keeps nothing itself: Hermes stores the provider and key.
+   a provider with an API key, or a subscription sign-in. Talaria checks the address or key through the agent, lets
+   you pick the model new chats start with, and keeps nothing itself: the agent stores the provider and key.
    [Choosing models and providers](models.md) walks through each kind.
 
-   Or run Hermes's own setup command in the Hermes pod (the Deployment is
+   Or run the agent's own setup command in the agent's pod (the Deployment is
    named `<release>-hermes`, and its container `gateway`; here the release is `talaria`):
 
    ```bash
@@ -44,7 +43,7 @@ The chart in `deploy/charts/talaria` runs the same parts as the compose install:
 
    You will see a list of providers; move with the arrow keys. Pick one and give it what it asks for (an API
    key, a sign-in, or an address), or `talaria-demo` to look around (the `demo.enabled=true` above). For Ollama,
-   LM Studio or vLLM, pick **Custom endpoint**, the last entry. Hermes asks for a display name at the end: it
+   LM Studio or vLLM, pick **Custom endpoint**, the last entry. It asks for a display name at the end: it
    becomes the group your models show under in the chat's model menu.
 
    Then open a new chat (or reload the page) and pick the model in the chat's model menu. No restart is needed,
@@ -68,7 +67,7 @@ hub that CA with `--set-file hub.caBundle=ca.crt`.
 
 ## Zero-downtime updates
 
-With `hermes.rolling.enabled` (the default), an upgrade or a restart of Hermes loses nothing:
+With `hermes.rolling.enabled` (the default), an upgrade or a restart of the agent loses nothing:
 
 1. The new pod starts on the same node (pod affinity, because the volume is ReadWriteOnce) and its gateway waits
    as a standby for the old one's lock.
@@ -78,7 +77,7 @@ With `hermes.rolling.enabled` (the default), an upgrade or a restart of Hermes l
 3. The old gateway hands its Webapp listener over and relays connections until the new gateway is ready. The
    hub holds messages for up to 10 minutes and reconnects by itself.
 
-This needs the patched Hermes image (the default) and the settings the chart writes into Hermes's config
+This needs Talaria's agent image (the default) and the settings the chart writes into the agent's config
 (`TALARIA_ROLLING` in `hermes-init.py`). `terminationGracePeriodSeconds` is 780 seconds. With a ReadWriteMany
 volume, set `hermes.persistence.accessMode=ReadWriteMany` and the pod affinity is left out.
 
@@ -92,7 +91,7 @@ The sandbox is one pod that is replaced: a second sandbox would take over the fi
 ## Keys and secrets
 
 On the first install the chart makes the hub's Ed25519 signing key, the Web Push key, the session secret, the
-password the hub uses with Hermes and the sandbox token, and keeps
+password the hub uses with the agent and the sandbox token, and keeps
 them in the Secret `<release>-keys`. Upgrades read them back, so they never change. Uninstall leaves that Secret
 and the volumes in place (`helm.sh/resource-policy: keep`); delete them by hand to start over.
 

@@ -60,17 +60,16 @@ On a new Unraid server, two things are off until you turn them on:
    ![The Talaria setup page with the user name alice and a display name filled in](images/unraid/setup.png)
 
 8. Connect a model. This step is required: until you do it, the chat area says Talaria has no model yet.
-   Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate Hermes, and an
-   existing one is not used.
+   Talaria includes its own agent, the part that talks to models, so you need nothing else.
 
    As the admin, click **Connect a model** in the chat area (it shows until a model is connected; later it is
    in Settings, Models) and pick where the model runs: a server of your own (Ollama, LM Studio, vLLM, llama.cpp),
-   a provider with an API key, or a subscription sign-in. Talaria checks the address or key through Hermes, lets
-   you pick the model new chats start with, and keeps nothing itself: Hermes stores the provider and key.
+   a provider with an API key, or a subscription sign-in. Talaria checks the address or key through the agent, lets
+   you pick the model new chats start with, and keeps nothing itself: the agent stores the provider and key.
    [Choosing models and providers](models.md) walks through each kind.
 
    Or, in the Unraid terminal (the **>_** icon at the top right), run
-   Hermes's own setup command in the container:
+   the agent's own setup command in the container:
 
    ```bash
    docker exec -it -u hermes Talaria hermes model
@@ -83,7 +82,7 @@ On a new Unraid server, two things are off until you turn them on:
    and give it what it asks for (an API key, a sign-in, or an address). With the demo model on, `talaria-demo` is
    near the end of the list (Enter, Enter for its one model, Enter for the reasoning effort). For Ollama, LM Studio
    or vLLM, pick **Custom endpoint**, near the end, right after **Local models** (see
-   [Ollama on the same server](#ollama-on-the-same-server)). Hermes asks for a display name at the end: it becomes
+   [Ollama on the same server](#ollama-on-the-same-server)). It asks for a display name at the end: it becomes
    the group your models show under in the chat's model menu.
 
    ![hermes model in the Unraid terminal, with talaria-demo selected near the end of the provider list](images/unraid/hermes-model-demo.png)
@@ -144,7 +143,7 @@ Chats, accounts and the model setup come back as they were.
 
 ## Ollama on the same server
 
-Ollama is its own container; Hermes reaches it by the server's address.
+Ollama is its own container; The agent reaches it by the server's address.
 
 1. Install Ollama. On the **Docker** tab, **Add Container**, with **Name** `ollama` (the commands below use it)
    and **Repository** `ollama/ollama`. Then, with **Add another Path, Port, Variable, Label or Device**, add:
@@ -152,7 +151,7 @@ Ollama is its own container; Hermes reaches it by the server's address.
    - a **Port**: container port and host port `11434`;
    - a **Path**: container path `/root/.ollama`, host path `/mnt/user/appdata/ollama` (the models);
    - a **Variable** `OLLAMA_CONTEXT_LENGTH` = `65536` (Ollama's setting: the window it serves to clients that
-     do not ask for one; its default is a few thousand tokens, and Hermes's prompts get cut);
+     do not ask for one; its default is a few thousand tokens, and the agent's prompts get cut);
    - without a GPU, a **Variable** `OLLAMA_KV_CACHE_TYPE` = `q8_0`. It halves the memory the window takes: with
      the default, a 3B model with a 64K window needed about 9 GB and was killed on a 10 GB server.
 
@@ -170,17 +169,17 @@ Ollama is its own container; Hermes reaches it by the server's address.
 
    ![ollama pull llama3.2:3b in the Unraid terminal, then ollama show with a 131072 context length and the tools capability](images/unraid/ollama-pull.png)
 
-3. Point Hermes at it: `docker exec -it -u hermes Talaria hermes model`, **Custom endpoint**, API base URL
+3. Point the agent at it: `docker exec -it -u hermes Talaria hermes model`, **Custom endpoint**, API base URL
    `http://<your Unraid address>:11434/v1` (such as `http://192.168.1.10:11434/v1`), then: no API key, Enter for
    auto-detect, Enter to use the model it found, context length `65536` (the window you gave Ollama; left empty,
-   Hermes takes the model's own maximum, 131072 for llama3.2), a display name such as `Ollama`, and Enter for the
+   the agent takes the model's own maximum, 131072 for llama3.2), a display name such as `Ollama`, and Enter for the
    reasoning effort.
 
    ![hermes model with the custom endpoint http://10.0.2.15:11434/v1: Verified endpoint, Detected model llama3.2:3b, context length 65536, display name Ollama, Default model set to llama3.2:3b](images/unraid/hermes-model-ollama.png)
 
 ![A Talaria chat on llama3.2:3b: it ran uname -r (shown as Ran a command) and answered The kernel version is 6.18.60-Unraid](images/unraid/chat-ollama.png)
 
-On 4 CPU cores, that first answer took about ten minutes (Hermes sends about 13K tokens of instructions and
+On 4 CPU cores, that first answer took about ten minutes (the agent sends about 13K tokens of instructions and
 tools). Use a GPU or a provider for daily use.
 
 Both containers on the default bridge network reach each other this way. A container on a custom `br0` network
@@ -201,7 +200,7 @@ cannot reach the server's own address unless **Settings, Docker, Host access to 
   <Privileged>false</Privileged>
   <Support>https://github.com/USA-RedDragon/talaria/issues</Support>
   <Project>https://github.com/USA-RedDragon/talaria</Project>
-  <Overview>Talaria: a web app and Telegram bot for Hermes Agent, with a sandbox for the agent's commands and your own computers paired in. One container: hub, agent and sandbox. Open the web UI right after the first start: the first visitor makes the admin account.</Overview>
+  <Overview>Talaria: a web app and Telegram bot for your own AI agent, with a sandbox for the agent's commands and your own computers paired in. One container: hub, agent and sandbox. Open the web UI right after the first start: the first visitor makes the admin account.</Overview>
   <Category>AI: Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/deploy/aio/unraid/talaria.xml</TemplateURL>
@@ -213,11 +212,11 @@ cannot reach the server's own address unless **Settings, Docker, Host access to 
   <Config Name="Public URL" Target="TALARIA_PUBLIC_URL" Default="" Description="The address you open Talaria at, such as http://192.168.1.10:8080 (this server's address and the web port) or https://talaria.example.com behind a reverse proxy. Pages and push notifications need HTTPS." Type="Variable" Display="always" Required="true" Mask="false"/>
   <Config Name="Hermes data" Target="/opt/data" Default="/mnt/user/appdata/talaria/hermes" Mode="rw" Description="Chats, memory and agent settings" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/talaria/hermes</Config>
   <Config Name="Talaria data" Target="/talaria" Default="/mnt/user/appdata/talaria/talaria" Mode="rw" Description="Hub database, keys, and the sandbox's files" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/talaria/talaria</Config>
-  <Config Name="Demo model" Target="TALARIA_DEMO" Default="false" Description="true: a stand-in model that needs no API key, to try Talaria (pick talaria-demo with: docker exec -it -u hermes Talaria hermes model). The model and provider are Hermes settings, see the docs" Type="Variable" Display="always" Required="false" Mask="false">false</Config>
+  <Config Name="Demo model" Target="TALARIA_DEMO" Default="false" Description="true: a stand-in model that needs no API key, to try Talaria (then pick talaria-demo with: docker exec -it -u hermes Talaria hermes model). Connect a real model in Talaria with Connect a model, see the docs" Type="Variable" Display="always" Required="false" Mask="false">false</Config>
   <Config Name="Your hub user" Target="TALARIA_USER" Default="" Description="Optional: the hub account of the person this agent works for, once it exists. Names that person in memory, and owns chats that are on no computer" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Telegram bot token" Target="TALARIA_TELEGRAM_TOKEN" Default="" Description="Optional, from @BotFather" Type="Variable" Display="advanced" Required="false" Mask="true"/>
-  <Config Name="PUID" Target="PUID" Default="99" Description="Owner of the Hermes data folder" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
-  <Config Name="PGID" Target="PGID" Default="100" Description="Group of the Hermes data folder" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Description="Owner of the agent's data folder" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Description="Group of the agent's data folder" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
   <Config Name="Install type" Target="TALARIA_INSTALL" Default="unraid" Description="Tells Talaria it runs on Unraid, for the commands it shows. Leave it as is" Type="Variable" Display="always-hide" Required="false" Mask="false">unraid</Config>
 </Container>
 ```

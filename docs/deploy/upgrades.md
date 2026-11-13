@@ -3,9 +3,9 @@
 ## Upgrade
 
 - Compose: get the new files (Step 1 of [the quick start](compose.md), into the same folder; your `.env` stays),
-  then `docker compose up -d --wait`. Running replies finish first: Hermes gets 2 minutes to
+  then `docker compose up -d --wait`. Running replies finish first: the agent gets 2 minutes to
   stop.
-- Helm: `helm upgrade talaria ./talaria -n talaria --reuse-values` with the new chart. Hermes updates without a
+- Helm: `helm upgrade talaria ./talaria -n talaria --reuse-values` with the new chart. The agent updates without a
   gap (see [Helm](helm.md#zero-downtime-updates)).
 - All-in-one: pull the new image and recreate the container (Unraid: **Check for Updates**, then **Apply
   Update**).
@@ -22,7 +22,7 @@ What to keep:
 | Helm | PVCs `<release>-hermes`, `<release>-hub`, `<release>-sandbox`, and the Secret `<release>-keys` |
 | All-in-one | The `/opt/data` and `/talaria` folders |
 
-The Hermes data holds the chats, memory and Hermes settings; the hub data holds paired computers, Telegram
+The agent's data holds the chats, memory and agent settings; the hub data holds paired computers, Telegram
 links, drafts and saved prompts. Stop Talaria for a consistent copy of the SQLite files, or copy them with
 `sqlite3 <file> .backup`.
 
@@ -65,7 +65,7 @@ All-in-one: stop the container, put the two folders back, start it.
 ## Before you upgrade
 
 - Back up first, and read the [release notes](https://github.com/USA-RedDragon/talaria/releases): the hub's
-  releases are tagged `hub/vX.Y.Z`, the Hermes image's `hermes/v<release>-p<n>`, the all-in-one image's
+  releases are tagged `hub/vX.Y.Z`, the agent image's `hermes/v<release>-p<n>`, the all-in-one image's
   `aio/vX.Y.Z`, and the `talaria` program's `vX.Y.Z`.
 - The install files pin exact image digests. A new copy of the install files brings new pins, so the upgrade is
   the files, not `docker compose pull`. [Images](images.md) lists what is pinned now.

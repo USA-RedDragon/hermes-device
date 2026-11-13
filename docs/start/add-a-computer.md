@@ -19,7 +19,7 @@ The computer connects out to the hub over HTTPS. You do not open any port on the
 
 Two features have more limits:
 
-- **Chat from a terminal** (`talaria chat`) runs the same Hermes build as your server on Linux with glibc 2.28 or newer. On macOS it runs a Hermes that you installed yourself, and it must be the same release as the server's.
+- **Chat from a terminal** (`talaria chat`) runs the same agent build as your server on Linux with glibc 2.28 or newer. On macOS it runs a Hermes Agent that you installed yourself, and it must be the same release as the server's.
 - **Firefox control** needs Firefox 139 or newer from your distribution or from Mozilla. The Flatpak build of Firefox cannot reach the program that the extension talks to, and the Snap build is untested and likely has the same problem, so use another build.
 
 ## Download the program

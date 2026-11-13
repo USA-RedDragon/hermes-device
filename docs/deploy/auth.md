@@ -47,8 +47,8 @@ Each person can then change their own password under Settings, Account.
 
 ![Settings, Users](images/settings-users.png)
 
-The install files run one Hermes, shared by everyone you give it to: the people who share it see the same chats
-and memory. Give it to people you would share a computer with. For separate agents per person, run more Hermes
+The install files run one agent, shared by everyone you give it to: the people who share it see the same chats
+and memory. Give it to people you would share a computer with. For separate agents per person, run more agent
 backends (see the hub's [Login settings reference](../../hub/docs/auth.md) page,
 `backends[]`).
 
@@ -63,7 +63,7 @@ password, restore a backup of the hub's data or start over (see [Upgrades and ba
 
 ### Whose agent this is: `TALARIA_USER`
 
-Optional. Set it to the hub user name of the person this Hermes works for, once that account exists
+Optional. Set it to the hub user name of the person this agent works for, once that account exists
 (`TALARIA_USER` in `.env` or on the all-in-one container, `auth.user` with Helm), then apply (`docker compose up
 -d`, or `helm upgrade`). It does two things:
 

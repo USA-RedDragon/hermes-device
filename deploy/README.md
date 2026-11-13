@@ -1,7 +1,7 @@
 # Talaria install kit
 
-Install Talaria on your own server: the hub (web app and Telegram bot, with its own accounts), Hermes Agent with
-the Talaria patches, and a sandbox for the agent's commands. Every secret and key is made for you on the first
+Install Talaria on your own server: the hub (web app and Telegram bot, with its own accounts), the agent (Hermes Agent with
+the Talaria patches), and a sandbox for the agent's commands. Every secret and key is made for you on the first
 start; the first person who opens Talaria makes the admin account.
 
 Talaria is built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research.
@@ -25,7 +25,7 @@ docker compose logs init
 ```
 
 Open the address it prints right away and make your account on the setup page (the first visitor becomes the
-admin). Then click **Connect a model** in the chat area, or pick a model and provider with Hermes's own setup
+admin). Then click **Connect a model** in the chat area, or pick a model and provider with the agent's own setup
 command:
 
 ```bash

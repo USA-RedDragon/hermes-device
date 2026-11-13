@@ -1,6 +1,6 @@
 # Memory
 
-Hermes keeps three kinds of memory, and the hub shows them on the Memory page.
+The agent keeps three kinds of memory, and the hub shows them on the Memory page.
 
 | Kind | What it is | Needs |
 | ---- | ---------- | ----- |
@@ -8,9 +8,9 @@ Hermes keeps three kinds of memory, and the hub shows them on the Memory page.
 | About you | The agent's profile of you (`USER.md`) | Nothing, on by default |
 | Learned | Facts that [Honcho](https://github.com/plastic-labs/honcho) drew from your chats | Honcho, optional |
 
-Notes and About you are plain text files in the Hermes home. You can read, edit and delete entries on the Memory page. A meter shows how much of the size limit you used. A chat keeps the memory it loaded when it started, so changes apply to new chats.
+Notes and About you are plain text files in the agent's data folder. You can read, edit and delete entries on the Memory page. A meter shows how much of the size limit you used. A chat keeps the memory it loaded when it started, so changes apply to new chats.
 
-Everyone who shares one Hermes shares one memory. An install here has one Hermes, so on a hub with several people, they all see and change the same notes. Give each person their own Hermes if that matters.
+Everyone who shares one agent shares one memory. An install here has one agent, so on a hub with several people, they all see and change the same notes. Give each person their own agent if that matters.
 
 ## Honcho (optional)
 
@@ -48,7 +48,7 @@ The dimensions must match the model, and cannot change once Honcho stored facts.
 
 ### Helm and the all-in-one image
 
-The chart and the all-in-one image do not include Honcho. Run Honcho yourself, and point Hermes and the hub at it. This is untested here.
+The chart and the all-in-one image do not include Honcho. Run Honcho yourself, and point the agent and the hub at it. This is untested here.
 
 ## The Learned tab
 

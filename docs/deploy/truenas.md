@@ -27,18 +27,17 @@ YAML, with the all-in-one image ([design](all-in-one.md)). Tested on TrueNAS SCA
    ![The Talaria setup page with the user name alice and a display name filled in](images/truenas/setup.png)
 
 6. **Connect a model.** This step is required: until you do it, the chat area says Talaria has no model yet.
-   Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate Hermes, and an
-   existing one is not used.
+   Talaria includes its own agent, the part that talks to models, so you need nothing else.
 
    As the admin, click **Connect a model** in the chat area (it shows until a model is connected; later it is
    in Settings, Models) and pick where the model runs: a server of your own (Ollama, LM Studio, vLLM, llama.cpp),
-   a provider with an API key, or a subscription sign-in. Talaria checks the address or key through Hermes, lets
-   you pick the model new chats start with, and keeps nothing itself: Hermes stores the provider and key.
+   a provider with an API key, or a subscription sign-in. Talaria checks the address or key through the agent, lets
+   you pick the model new chats start with, and keeps nothing itself: the agent stores the provider and key.
    [Choosing models and providers](models.md) walks through each kind.
 
    Or open a shell in the container: **Apps**, **Installed**, `talaria`,
    then under **Workloads**, **Containers**, the shell icon (the first icon next to `talaria – Running`). That
-   shell runs as root; run Hermes's own setup command as its own user:
+   shell runs as root; run the agent's own setup command as its own user:
 
    ```bash
    runuser -u hermes -- hermes model
@@ -50,7 +49,7 @@ YAML, with the all-in-one image ([design](all-in-one.md)). Tested on TrueNAS SCA
    You will see a list of providers; move with the arrow keys. Pick one and give it what it asks for (an API
    key, a sign-in, or an address). With `TALARIA_DEMO` on, `talaria-demo` is near the end of the list (Enter,
    then Enter for its one model). For Ollama, LM Studio or vLLM, pick **Custom endpoint** (see
-   [Ollama as a TrueNAS app](#ollama-as-a-truenas-app)). Hermes asks for a display name at the end: it becomes
+   [Ollama as a TrueNAS app](#ollama-as-a-truenas-app)). It asks for a display name at the end: it becomes
    the group your models show under in the chat's model menu.
 
    Then open a new chat (or reload the page) and pick the model in the chat's model menu. No restart is needed,
@@ -76,12 +75,12 @@ services:
     environment:
       # CHANGE: the address you open Talaria at: http://<TrueNAS address>:8080, or https://... behind a proxy
       TALARIA_PUBLIC_URL: http://192.168.1.10:8080
-      # "true": a stand-in model to try Talaria without a provider (pick talaria-demo in hermes model). The model
-      # and provider are Hermes settings: see the TrueNAS page of the docs
+      # "true": a stand-in model to try Talaria without a provider (pick talaria-demo with the agent's setup command
+      # hermes model). Connect a real model in Talaria with Connect a model: see the TrueNAS page of the docs
       TALARIA_DEMO: "false"
       TZ: UTC
       TALARIA_INSTALL: truenas
-      # The "apps" user of TrueNAS owns the Hermes data
+      # The "apps" user of TrueNAS owns the agent's data
       PUID: "568"
       PGID: "568"
     volumes:
@@ -111,16 +110,16 @@ services:
 
    ![ollama pull llama3.2:3b in the Ollama container shell, then ollama show with a 131072 context length and the tools capability](images/truenas/ollama-pull.png)
 
-3. Point Hermes at it: `runuser -u hermes -- hermes model` in the Talaria shell, **Custom endpoint** (right after
+3. Point the agent at it: `runuser -u hermes -- hermes model` in the Talaria shell, **Custom endpoint** (right after
    `talaria-demo` and **Local models**), API base URL `http://<TrueNAS address>:30068/v1`, then Enter for the rest:
-   no API key, auto-detect, the model it found, an empty context length (Hermes asks Ollama), the display name and
+   no API key, auto-detect, the model it found, an empty context length (the agent asks Ollama), the display name and
    the reasoning effort.
 
    ![hermes model with the custom endpoint http://10.0.2.15:30068/v1: Verified endpoint, Detected model llama3.2:3b, Default model set to llama3.2:3b](images/truenas/hermes-model-ollama.png)
 
 ![A Talaria chat on llama3.2:3b: it ran uname -r with a command (shown as "Ran a command") and answered "The kernel version is 6.12.113-production+truenas"](images/truenas/chat-ollama.png)
 
-On 4 CPU cores, that first answer took about ten minutes (Hermes sends about 13K tokens of instructions and
+On 4 CPU cores, that first answer took about ten minutes (the agent sends about 13K tokens of instructions and
 tools). Use a GPU or a provider for daily use.
 
 More in [Choosing models and providers](models.md#ollama).

@@ -28,7 +28,7 @@ TALARIA_PUBLIC_URL=
 # --- Accounts ---
 # There is no admin password here: the first person who opens Talaria makes the admin account on its setup
 # page. Other login options (your OIDC provider, or a reverse proxy such as Authelia): https://usa-reddragon.github.io/talaria/deploy/auth.html
-# The hub account of the person this Hermes works for, once it exists (optional). Names that person in Honcho
+# The hub account of the person this agent works for, once it exists (optional). Names that person in Honcho
 # memory, and owns chats that are on no computer. Empty: works while one person's computers are paired
 TALARIA_USER=
 # Contact address that push services get with Web Push, such as mailto:you@example.com. Empty: the public URL
@@ -36,23 +36,23 @@ TALARIA_USER=
 TALARIA_PUSH_CONTACT=
 
 # --- Model ---
-# The model and provider are Hermes settings, not Talaria ones. After the first start:
+# After the first start, open Talaria and click Connect a model. Or, from this folder, the agent's own setup:
 #   docker compose exec -u hermes hermes hermes model
-# (see the docs page "Choosing models and providers"). Provider keys that Hermes reads from its environment,
+# (see the docs page "Choosing models and providers"). Provider keys that the agent reads from its environment,
 # such as OPENROUTER_API_KEY, can go in compose.override.yaml under hermes: environment:.
 #
 # Optional parts to start, comma-separated: demo, ollama, honcho, honcho-embeddings.
-# demo: a stand-in model that needs no API key, to try Talaria. Hermes then offers it as the provider
-# talaria-demo; pick it with "hermes model". ollama: Ollama on this host (its address for Hermes:
+# demo: a stand-in model that needs no API key, to try Talaria. The agent then offers it as the provider
+# talaria-demo; pick it with "hermes model". ollama: Ollama on this host (its address for the agent:
 # http://ollama:11434/v1).
 COMPOSE_PROFILES=
-# Ollama's own setting: the context window it serves. Hermes needs at least 64K
+# Ollama's own setting: the context window it serves. The agent needs at least 64K
 OLLAMA_CONTEXT_LENGTH=65536
 # With profile ollama: a model to download on start, such as llama3.1:8b (it needs tool calls and a 64K window)
 TALARIA_OLLAMA_PULL=
 
 # --- Images ---
-# Another Hermes image, such as one you built or loaded (the default is pinned by digest)
+# Another agent image, such as one you built or loaded (the default is pinned by digest)
 # TALARIA_HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p33
 
 # --- Time zone of schedules and the agent's clock (IANA name, such as Europe/Berlin). Empty: UTC
@@ -140,7 +140,7 @@ auth:
   # page. proxy: a reverse proxy that logs people in (Authelia, oauth2-proxy, Envoy Gateway) says who they are.
   # oidc: your OpenID Connect provider. See https://usa-reddragon.github.io/talaria/deploy/auth.html
   mode: local
-  # -- The hub account of the person this Hermes works for (optional). Owns chats that are on no computer.
+  # -- The hub account of the person this agent works for (optional). Owns chats that are on no computer.
   # Empty: works while one person's computers are paired
   user: ""
   # -- Hub user names that are admins, besides accounts marked admin in Settings > Users
@@ -166,9 +166,9 @@ auth:
 # -- Contact address that push services get with Web Push, such as mailto:you@example.com. Empty: publicUrl
 pushContact: ""
 
-# -- A stand-in model that needs no API key, to try Talaria. Hermes offers it as the provider talaria-demo; pick it
-# with: kubectl -n <namespace> exec -it deploy/<release>-hermes -c gateway -- hermes model. The model and provider are Hermes
-# settings (hermes model), not chart values
+# -- A stand-in model that needs no API key, to try Talaria. The agent offers it as the provider talaria-demo; pick it
+# with: kubectl -n <namespace> exec -it deploy/<release>-hermes -c gateway -- hermes model. Models are connected in
+# Talaria (Connect a model), not with chart values
 demo:
   enabled: false
 
@@ -211,7 +211,7 @@ hub:
     limits: {memory: 1Gi}
 
 hermes:
-  # -- The editor bridge: runs acp-host in the Hermes pod and gives the hub its address, so that editors can use
+  # -- The editor bridge: runs acp-host in the agent's pod and gives the hub its address, so that editors can use
   # talaria acp
   editorBridge:
     enabled: true
@@ -226,14 +226,14 @@ hermes:
     # -- ReadWriteOnce: the rolling update starts the new pod on the old pod's node (pod affinity)
     accessMode: ReadWriteOnce
   # -- Zero-downtime rolling updates: the new pod waits as a standby and takes over in about a second, running
-  # turns finish in the old pod, and approvals stay answerable. Needs the patched Hermes image
+  # turns finish in the old pod, and approvals stay answerable. Needs Talaria's agent image
   rolling:
     enabled: true
     # -- Longest a stop waits for running turns plus the handover; keep it above 540 s plus the drain
     terminationGracePeriodSeconds: 780
-  # -- Your own Hermes config.yaml settings, merged over Talaria's on every start
+  # -- Your own agent settings (its config.yaml), merged over Talaria's on every start
   config: {}
-  # -- Extra environment variables for Hermes, such as provider keys
+  # -- Extra environment variables for the agent, such as provider keys
   env: {}
   resources:
     requests: {cpu: 100m, memory: 512Mi}

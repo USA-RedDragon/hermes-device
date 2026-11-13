@@ -10,12 +10,12 @@ services:
     environment:
       # CHANGE: the address you open Talaria at: http://<TrueNAS address>:8080, or https://... behind a proxy
       TALARIA_PUBLIC_URL: http://192.168.1.10:8080
-      # "true": a stand-in model to try Talaria without a provider (pick talaria-demo in hermes model). The model
-      # and provider are Hermes settings: see the TrueNAS page of the docs
+      # "true": a stand-in model to try Talaria without a provider (pick talaria-demo with the agent's setup command
+      # hermes model). Connect a real model in Talaria with Connect a model: see the TrueNAS page of the docs
       TALARIA_DEMO: "false"
       TZ: UTC
       TALARIA_INSTALL: truenas
-      # The "apps" user of TrueNAS owns the Hermes data
+      # The "apps" user of TrueNAS owns the agent's data
       PUID: "568"
       PGID: "568"
     volumes:

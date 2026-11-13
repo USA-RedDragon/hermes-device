@@ -99,10 +99,10 @@ The agent sees `[killed: out of memory (limit 1.5 GiB)...]`. Only that command w
 - `refusing to replace a newer talaria`: you have a newer release. Use `--force` to go back.
 - GitHub rate limit: the program caches the lookup and backs off by itself. Try again later.
 
-## `chat` cannot start Hermes
+## `chat` cannot start the agent
 
-- On Linux, `chat` downloads the server's Hermes build on first use. Check disk space (about 1.4 GB) and that the computer can reach the registry that holds the image. `talaria chat --status` shows what it knows.
-- With a local Hermes (macOS, or `chat.managed: false`), it must be the same release as the server's. `talaria chat` says which two releases differ.
+- On Linux, `chat` downloads the server's agent build on first use. Check disk space (about 1.4 GB) and that the computer can reach the registry that holds the image. `talaria chat --status` shows what it knows.
+- With a local agent install (macOS, or `chat.managed: false`), it must be the same release as the server's. `talaria chat` says which two releases differ.
 
 ## Still stuck
 

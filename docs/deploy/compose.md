@@ -1,7 +1,7 @@
 # Install with Docker Compose
 
 This page takes you from a Linux host with Docker to your first chat in Talaria. It starts three parts: the hub
-(the web app, with its own accounts), Hermes (the agent) and a sandbox (where the agent runs commands), plus a
+(the web app, with its own accounts), the agent and a sandbox (where the agent runs commands), plus a
 small web front. Every secret is made for you on the first start, and the first person who opens Talaria makes
 the admin account.
 
@@ -16,8 +16,8 @@ the admin account.
   ```
 
   then log out and back in, so that `docker` works without `sudo`.
-- 2 GB of free RAM and 10 GB of free disk. The Hermes image alone is about 1.1 GB to download.
-- A model provider that Hermes supports: an API key or sign-in (OpenRouter, Nous Portal, OpenAI, Anthropic, and
+- 2 GB of free RAM and 10 GB of free disk. The agent image alone is about 1.1 GB to download.
+- A model provider that the agent supports: an API key or sign-in (OpenRouter, Nous Portal, OpenAI, Anthropic, and
   many others), or Ollama for local models. To try Talaria first, use the demo model: it needs no key, but it only
   answers with a canned reply.
 
@@ -38,7 +38,7 @@ You now have `compose.yaml`, `.env` and a `files` folder.
 docker compose up -d --wait
 ```
 
-The first start downloads the images (about 1.5 GB, mostly the Hermes image) and then takes under a minute:
+The first start downloads the images (about 1.5 GB, mostly the agent image) and then takes under a minute:
 `--wait` returns when every part is healthy. On fresh Debian 13 VMs with a fast connection, this step took one to
 two minutes, downloads included.
 
@@ -61,23 +61,22 @@ right away, before Talaria is reachable from other machines. There is no passwor
 
 ![The setup page](images/setup.png)
 
-Add other people later under Settings, Users (see [Set up logins](auth.md)). Before the first chat, Hermes needs a
-model: do step 4 next.
+Add other people later under Settings, Users (see [Set up logins](auth.md)). Before the first chat, the agent needs a model: do step 4 next.
 
 To open Talaria from another computer, see [Reach it from other computers](#reach-it-from-other-computers).
 
 ## Step 4: Connect a model
 
 This step is required: until you do it, the chat area says Talaria has no model yet. Talaria includes its own
-Hermes, the agent that talks to models, so you do not need a separate Hermes, and an existing one is not used.
+agent, the part that talks to models, so you need nothing else.
 
 As the admin, click **Connect a model** in the chat area (it shows until a model is connected; later it is
 in Settings, Models) and pick where the model runs: a server of your own (Ollama, LM Studio, vLLM, llama.cpp),
-a provider with an API key, or a subscription sign-in. Talaria checks the address or key through Hermes, lets
-you pick the model new chats start with, and keeps nothing itself: Hermes stores the provider and key.
+a provider with an API key, or a subscription sign-in. Talaria checks the address or key through the agent, lets
+you pick the model new chats start with, and keeps nothing itself: the agent stores the provider and key.
 [Choosing models and providers](models.md) walks through each kind.
 
-Or run Hermes's own setup command in its container, from the folder with `compose.yaml`:
+Or run the agent's own setup command in its container, from the folder with `compose.yaml`:
 
 ```bash
 docker compose exec -u hermes hermes hermes model
@@ -85,7 +84,7 @@ docker compose exec -u hermes hermes hermes model
 
 You will see a list of providers; move with the arrow keys. Pick one and give it what it asks for (an API key, a
 sign-in, or an address), then the model. For Ollama, LM Studio or vLLM, pick **Custom endpoint**, the last entry.
-Hermes asks for a display name at the end: it becomes the group your models show under in the chat's model menu.
+It asks for a display name at the end: it becomes the group your models show under in the chat's model menu.
 At the last question, the reasoning effort, Enter keeps the default.
 
 Then open a new chat (or reload the page) and pick the model in the chat's model menu. No restart is needed, and
@@ -149,14 +148,14 @@ start; it never changes a secret it made.
 | ------- | ------------ |
 | `init` | Makes the secrets once, writes the hub config, prints the address, then exits |
 | `plugin` | Copies the Talaria device plugin out of its image, then exits |
-| `hermes-init` | Sets up the Hermes home: plugin, hub key, Talaria settings in `config.yaml`, then exits |
-| `hermes` | Hermes Agent, the agent itself |
+| `hermes-init` | Sets up the agent's data folder: plugin, hub key, Talaria settings in `config.yaml`, then exits |
+| `hermes` | The agent itself |
 | `front` | Caddy: the one published port, in front of the hub (and HTTPS when `TALARIA_SITE` is set) |
 | `hub` | The Talaria hub: web app, Telegram bot, device connections |
 | `sandbox` | Runs the agent's commands for chats that are not on one of your computers |
 | `demo-llm` | The demo model (profile `demo`) |
 
-Data lives in Docker volumes: `talaria_hermes-data` (chats, memory, Hermes settings), `talaria_hub-data`,
+Data lives in Docker volumes: `talaria_hermes-data` (chats, memory, agent settings), `talaria_hub-data`,
 `talaria_sandbox-work` (the sandbox's files), `talaria_secrets`. See [Upgrades and backups](upgrades.md).
 
 ## Add your computers

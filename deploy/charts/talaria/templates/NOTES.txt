@@ -1,4 +1,4 @@
-Talaria is starting. Hermes takes a minute or two on the first start.
+Talaria is starting. The agent takes a minute or two on the first start.
 
 Open: {{ include "talaria.publicUrl" . }}
 {{- if and (not .Values.ingress.enabled) (not .Values.httpRoute.enabled) }}
@@ -13,7 +13,7 @@ Open it now: the first person who opens it makes the admin account on its setup 
 is reachable from the internet.
 {{- end }}
 
-Pick a model and provider in Hermes (Hermes's own setting):
+Then click Connect a model in Talaria. Or use the agent's own setup command:
   kubectl -n {{ .Release.Namespace }} exec -it deploy/{{ include "talaria.fullname" . }}-hermes -c gateway -- hermes model
 {{- if .Values.demo.enabled }}
 To try it without a provider, pick talaria-demo there.

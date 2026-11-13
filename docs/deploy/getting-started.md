@@ -1,13 +1,13 @@
 # Pick an install
 
-Talaria is a web app and Telegram bot for [Hermes Agent](https://github.com/NousResearch/hermes-agent). You run it on your own server. The agent works in a sandbox on the server, or on your own computers once you pair them.
+Talaria is a web app and Telegram bot for your own AI agent, built on [Hermes Agent](https://github.com/NousResearch/hermes-agent). You run it on your own server. The agent works in a sandbox on the server, or on your own computers once you pair them.
 
-Talaria includes its own Hermes, the agent that talks to models. You do not need a separate Hermes, and an existing Hermes install is not used. You connect models once, from Talaria's own page (Connect a model, for admins) or with Hermes's own setup command (`hermes model`, run inside Talaria's container), and then pick them in the chat's model menu. Every install guide has that as a numbered step right after you make your account.
+Talaria includes its own agent, the part that talks to models, so you need nothing else. You connect models once, from Talaria's own page (Connect a model, for admins) or with the agent's own setup command (`hermes model`, run inside Talaria's container), and then pick them in the chat's model menu. Every install guide has that as a numbered step right after you make your account.
 
 A Talaria install has four parts, and every install path starts all of them:
 
 - **The hub:** the web app, the Telegram bot and the place your computers connect to.
-- **Hermes:** the agent itself, with the Talaria plugin.
+- **The agent:** the part that talks to models and does the work, with the Talaria plugin.
 - **The sandbox:** a small container where the agent runs commands for chats that are not on one of your computers.
 - **Accounts:** the hub's own. The first person who opens Talaria makes the admin account, and adds the others.
 
@@ -37,7 +37,7 @@ The setup page that makes the first account, the first chat with the demo model,
 
 ## What you need
 
-- 2 GB of free RAM and 10 GB of free disk, for one person, with a hosted model. The Hermes image alone is about 1.1 GB to download.
+- 2 GB of free RAM and 10 GB of free disk, for one person, with a hosted model. The agent image alone is about 1.1 GB to download.
 - A model to talk to. To look around first, the demo model needs nothing and answers with a canned reply. For real work, see [Choosing models and providers](models.md).
 - For other people to use it: a name for the server and HTTPS. See [Reach it from other computers](compose.md#reach-it-from-other-computers).
 

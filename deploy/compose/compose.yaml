@@ -1,8 +1,8 @@
-# Talaria: the hub (web app), Hermes (the agent) and a sandbox (where the agent runs commands), on one host.
+# Talaria: the hub (web app), the agent and a sandbox (where the agent runs commands), on one host.
 #
 #   docker compose up -d --wait                          # start it
-#   docker compose logs init                             # the address to open; the first visitor makes the admin
-#   docker compose exec -u hermes hermes hermes model    # pick a model (or talaria-demo, with profile demo)
+#   docker compose logs init                             # the address to open; then click Connect a model
+#   docker compose exec -u hermes hermes hermes model    # or pick a model here (talaria-demo with profile demo)
 #
 # Settings are in .env (copy .env.example). Every secret is made by the init service on the first start and
 # kept in the "secrets" volume. Optional parts are profiles: demo, ollama, honcho, honcho-embeddings.
@@ -18,11 +18,11 @@ x-images:
 
 x-hermes-env: &hermes-env
   HERMES_HOME: /opt/data
-  # File tools may write in the Hermes home and in the sandbox's /work
+  # File tools may write in the agent's data folder and in the sandbox's /work
   HERMES_WRITE_SAFE_ROOT: /opt/data:/work
   TZ: ${TZ:-}
-  # The model and provider are Hermes settings: docker compose exec hermes hermes model
-  # With profile demo, the demo model is offered as the Hermes provider talaria-demo
+  # Connect a model in Talaria, or: docker compose exec -u hermes hermes hermes model
+  # With profile demo, the demo model is offered to the agent as the provider talaria-demo
   TALARIA_DEMO_URL: http://demo-llm:8000/v1
   TALARIA_DEMO_PROBE: "1"
   TALARIA_HONCHO_URL: ${TALARIA_HONCHO_URL:-}
@@ -55,7 +55,7 @@ services:
     volumes:
       - plugin-src:/plugin-src
 
-  # Sets up the Hermes home: device plugin, hub public key, Talaria settings in config.yaml
+  # Sets up the agent's data folder: device plugin, hub public key, Talaria settings in config.yaml
   # Runs the script directly, not through the image's entrypoint: that one would also start a gateway here
   hermes-init:
     image: *hermes-image
@@ -69,7 +69,7 @@ services:
         condition: service_completed_successfully
       plugin:
         condition: service_completed_successfully
-      # Only with profile demo: then hermes-init offers it as a Hermes provider
+      # Only with profile demo: then hermes-init offers it to the agent as a provider
       demo-llm:
         condition: service_healthy
         required: false
