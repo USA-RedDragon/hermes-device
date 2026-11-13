@@ -137,7 +137,7 @@ window.HubChatList = (ctx) => {
       chev.focus();
     }
   });
-  document.addEventListener("click", (e) => { if (!menuBox.hidden && !menuBox.contains(e.target)) closeNew(); });
+  document.addEventListener("click", (e) => { if (!menuBox.hidden && !e.composedPath().includes(menuBox)) closeNew(); });
 
   // showChevron shows the arrow only when the user has computers to pick.
   function showChevron(on) {

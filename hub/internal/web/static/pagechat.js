@@ -164,7 +164,7 @@ window.HubPageChat = (ctx) => {
     });
     list.replaceChildren(...(rows.length ? rows : [el("p", "none", "No page chats yet.")]));
   }
-  document.addEventListener("click", (e) => { if (listOpen && !bar.contains(e.target) && !list.contains(e.target)) showList(false); });
+  document.addEventListener("click", (e) => { if (listOpen && !e.composedPath().includes(bar) && !e.composedPath().includes(list)) showList(false); });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && listOpen) { e.stopPropagation(); showList(false); ttl.focus(); }
   }, true);
@@ -219,7 +219,7 @@ window.HubPageChat = (ctx) => {
     modelChip.setAttribute("aria-expanded", String(info.open));
   }
   document.addEventListener("click", (e) => {
-    if ($("info").open && !$("info").contains(e.target) && !modelChip.contains(e.target)) modelPanel(false);
+    if ($("info").open && !e.composedPath().includes($("info")) && !e.composedPath().includes(modelChip)) modelPanel(false);
   });
 
   function chips() {

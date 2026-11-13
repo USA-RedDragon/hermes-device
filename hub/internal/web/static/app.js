@@ -3963,7 +3963,10 @@
     $("qpanel").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); quickPanel(false); } });
     document.addEventListener("click", (e) => {
       const box = $("qpanel");
-      if (!box.hidden && !box.contains(e.target) && !e.target.closest("#qpbtn, .qp")) quickPanel(false);
+      // composedPath is fixed when the click starts, so a control the click
+      // removed (Show more) still counts as inside the panel.
+      const path = e.composedPath();
+      if (!box.hidden && !path.includes(box) && !e.target.closest("#qpbtn, .qp")) quickPanel(false);
     });
     agentUI.updateBanner($("updbanner"));
     $("scrim").onclick = () => openSide(false);
