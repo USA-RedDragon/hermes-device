@@ -1,0 +1,189 @@
+diff --git a/tests/tools/test_code_execution_device_cwd.py b/tests/tools/test_code_execution_device_cwd.py
+new file mode 100644
+index 00000000..855985b8
+--- /dev/null
++++ b/tests/tools/test_code_execution_device_cwd.py
+@@ -0,0 +1,67 @@
++"""execute_code on a device-backed env: probes run in the chat's folder, never at ``/``.
++
++A talaria device runs only in the allowed folders and refuses any other cwd with a message
++instead of running the command, so a probe sent with ``cwd="/"`` never printed ``OK`` and
++every execute_code call failed with "Python 3 is not available".
++"""
++import json
++import pathlib
++import re
++from unittest.mock import MagicMock, patch
++
++from tools.code_execution_tool import _execute_remote
++
++CHAT_DIR = "/home/user/Projects"
++
++
++class RootsEnv:
++    """Runs commands only in CHAT_DIR; an empty cwd means the chat's folder."""
++
++    def __init__(self):
++        self.calls = []
++
++    def get_temp_dir(self):
++        return "/tmp"
++
++    def execute(self, command, cwd="", **kwargs):
++        self.calls.append((command, cwd))
++        effective = cwd or CHAT_DIR
++        if effective != CHAT_DIR:
++            return {"output": f"[talaria: the folder {effective} is outside this computer's allowed "
++                              "folders, so the command did not run.]", "returncode": 1}
++        if "command -v python3" in command:
++            return {"output": "OK\n", "returncode": 0}
++        return {"output": "", "returncode": 0}
++
++
++def _run(env):
++    with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
++         patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "device")), \
++         patch("tools.code_execution_tool._ship_file_to_remote"), \
++         patch("tools.code_execution_tool.threading.Thread", return_value=MagicMock()):
++        return json.loads(_execute_remote("print('hi')", "task-1", ["terminal"]))
++
++
++def test_python_probe_runs_in_the_chat_folder():
++    env = RootsEnv()
++    result = _run(env)
++    assert "not available" not in result.get("error", ""), result
++    assert all(cwd != "/" for _, cwd in env.calls), env.calls
++
++
++def test_probe_failure_says_what_was_checked():
++    class NoPython(RootsEnv):
++        def execute(self, command, cwd="", **kwargs):
++            if "command -v python3" in command:
++                return {"output": "", "returncode": 1}
++            return super().execute(command, cwd, **kwargs)
++
++    result = _run(NoPython())
++    assert result["status"] == "error"
++    assert "command -v python3" in result["error"] and "exit 1" in result["error"]
++
++
++def test_no_remote_helper_pins_cwd_to_root():
++    for name in ("code_execution_tool", "code_execution_rpc", "code_kernel_remote"):
++        text = (pathlib.Path(__file__).parents[2] / "tools" / f"{name}.py").read_text()
++        assert not re.search(r'cwd\s*=\s*["\']/["\']', text), name
+diff --git a/tools/code_execution_rpc.py b/tools/code_execution_rpc.py
+index e062d3e5..d2d7d96a 100644
+--- a/tools/code_execution_rpc.py
++++ b/tools/code_execution_rpc.py
+@@ -47,7 +47,7 @@ def _execute_checked(env, cmd: str, what: str, *, timeout: int, **kwargs) -> dic
+     Used where a silent failure would ship secrets or code into a missing,
+     half-written, or still-permissive remote path. The error carries the
+     command output only, never the payload."""
+-    result = env.execute(cmd, cwd="/", timeout=timeout, **kwargs)
++    result = env.execute(cmd, cwd="", timeout=timeout, **kwargs)
+     if result.get("returncode", 1) != 0:
+         raise RuntimeError(f"{what} failed: {result.get('output')!r}")
+     return result
+@@ -73,7 +73,7 @@ def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
+     if check:
+         return _execute_checked(env, cmd, f"remote file ship for {remote_path!r}",
+                                 timeout=timeout, stdin_data=encoded)
+-    return env.execute(cmd, cwd="/", timeout=timeout, stdin_data=encoded)
++    return env.execute(cmd, cwd="", timeout=timeout, stdin_data=encoded)
+ 
+ 
+ def _rpc_token_ok(request: dict, rpc_token: str) -> bool:
+@@ -207,7 +207,7 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
+     quoted_rpc_dir = shlex.quote(rpc_dir)
+     while not stop_event.is_set():
+         try:
+-            ls_result = env.execute(f"ls -1 {quoted_rpc_dir}/req_* 2>/dev/null || true", cwd="/", timeout=10)
++            ls_result = env.execute(f"ls -1 {quoted_rpc_dir}/req_* 2>/dev/null || true", cwd="", timeout=10)
+             output = ls_result.get("output", "").strip()
+             if not output:
+                 stop_event.wait(poll_interval)
+@@ -219,16 +219,16 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
+                     break
+                 call_start = time.monotonic()
+                 quoted_req_file = shlex.quote(req_file)
+-                read_result = env.execute(f"cat {quoted_req_file}", cwd="/", timeout=10)
++                read_result = env.execute(f"cat {quoted_req_file}", cwd="", timeout=10)
+                 try:
+                     request = json.loads(read_result.get("output", ""))
+                 except (json.JSONDecodeError, ValueError):
+                     logger.debug("Malformed RPC request in %s", req_file)
+-                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
++                    env.execute(f"rm -f {quoted_req_file}", cwd="", timeout=5)
+                     continue
+                 if not _rpc_token_ok(request, rpc_token):
+                     logger.debug("Unauthorized RPC request in %s", req_file)
+-                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
++                    env.execute(f"rm -f {quoted_req_file}", cwd="", timeout=5)
+                     continue
+                 seq = request.get("seq", 0)
+                 if not isinstance(seq, int):
+@@ -236,7 +236,7 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
+                     # polls; formatting it after dispatch would raise, leave the
+                     # request in place, and replay the tool call every cycle.
+                     logger.debug("RPC request with malformed seq in %s", req_file)
+-                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
++                    env.execute(f"rm -f {quoted_req_file}", cwd="", timeout=5)
+                     continue
+                 tool_result = _handle_rpc_request(
+                     request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
+@@ -247,7 +247,7 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
+                 # on a shared-host backend.
+                 _remote_write(env, f"{rpc_dir}/res_{seq:06d}", tool_result,
+                               atomic=True, timeout=60)
+-                env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
++                env.execute(f"rm -f {quoted_req_file}", cwd="", timeout=5)
+         except Exception as e:
+             if not stop_event.is_set():
+                 logger.debug("RPC poll error: %s", e, exc_info=True)
+diff --git a/tools/code_execution_tool.py b/tools/code_execution_tool.py
+index 365645b0..7ec0cca2 100644
+--- a/tools/code_execution_tool.py
++++ b/tools/code_execution_tool.py
+@@ -637,7 +637,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
+         if rpc_thread is not None:
+             rpc_thread.join(timeout=5)
+         try:
+-            env.execute(f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15)
++            env.execute(f"rm -rf {quoted_sandbox_dir}", cwd="", timeout=15)
+         except Exception:
+             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
+     result = _remote_result(status, stdout_text, exec_start,
+@@ -671,10 +671,15 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
+     with _call_in_flight(_resolve_container_task_id(effective_task_id)):
+         exec_start = time.monotonic()
+         try:
+-            py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15)
+-            if "OK" not in py_check.get("output", ""):
++            py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="", timeout=15)
++            py_out = str(py_check.get("output", "") if isinstance(py_check, dict) else py_check or "")
++            if "OK" not in py_out:
++                seen = py_out.strip()[:300] or "no output"
+                 return _error_result(f"Python 3 is not available in the {env_type} terminal "
+-                                     "environment. Install Python to use execute_code with remote backends.")
++                                     "environment. Install Python to use execute_code with remote backends. "
++                                     f"(Checked `command -v python3` in the environment's working directory; "
++                                     f"exit {py_check.get('returncode') if isinstance(py_check, dict) else '?'}, "
++                                     f"output: {seen})")
+             # Session-kernel path: one persistent kernel per owner on the
+             # run-to-completion transport. Spawn failure falls OPEN to the per-call
+             # path below so a degraded remote host never blocks execution.
+diff --git a/tools/code_kernel_remote.py b/tools/code_kernel_remote.py
+index e0e23651..5a7c4fa4 100644
+--- a/tools/code_kernel_remote.py
++++ b/tools/code_kernel_remote.py
+@@ -99,8 +99,8 @@ if __name__ == "__main__":
+ 
+ 
+ def _sh(env, cmd: str, timeout: int = 15) -> str:
+-    """Run *cmd* on the remote from ``/`` and return its output text."""
+-    result = env.execute(cmd, cwd="/", timeout=timeout)
++    """Run *cmd* on the remote in the env's own working directory and return its output text."""
++    result = env.execute(cmd, cwd="", timeout=timeout)
+     return (result.get("output", "") if isinstance(result, dict) else "") or ""
+ 
+ 

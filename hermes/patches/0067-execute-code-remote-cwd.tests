@@ -1,0 +1,3 @@
+# Upstream tests of the remote execute_code paths this patch changes
+tests/tools/test_code_execution.py
+tests/tools/test_code_kernel_remote.py
