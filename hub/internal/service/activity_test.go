@@ -381,21 +381,21 @@ func TestActivityKeepsStartAndToolsAcrossARestart(t *testing.T) {
 		}
 		return got.Subagents[0]
 	}
-	real := 1_800_000_000.0
-	if s := list(e.svc, real, 41); s.StartedAt != real || s.ToolCount != 41 {
+	realStart := 1_800_000_000.0
+	if s := list(e.svc, realStart, 41); s.StartedAt != realStart || s.ToolCount != 41 {
 		t.Fatalf("before = %v %d", s.StartedAt, s.ToolCount)
 	}
 	// Hermes restarted: start now, 0 tools.
-	if s := list(e.svc, real+1000, 0); s.StartedAt != real || s.ToolCount != 41 {
+	if s := list(e.svc, realStart+1000, 0); s.StartedAt != realStart || s.ToolCount != 41 {
 		t.Fatalf("after the Hermes restart = %v %d", s.StartedAt, s.ToolCount)
 	}
 	// The hub restarted too: a new service over the same store.
 	e2 := setup(t, service.Options{SubagentLog: st})
 	e.gw, e.svc = e2.gw, e2.svc
-	if s := list(e2.svc, real+2000, 2); s.StartedAt != real || s.ToolCount != 41 {
+	if s := list(e2.svc, realStart+2000, 2); s.StartedAt != realStart || s.ToolCount != 41 {
 		t.Fatalf("after the hub restart = %v %d", s.StartedAt, s.ToolCount)
 	}
-	if s := list(e2.svc, real+2000, 50); s.ToolCount != 50 {
+	if s := list(e2.svc, realStart+2000, 50); s.ToolCount != 50 {
 		t.Fatalf("a higher count = %d", s.ToolCount)
 	}
 }
