@@ -36,7 +36,7 @@ internal/device/device.go	202	163
 internal/device/devicetest/devicetest.go	522	467
 internal/device/files.go	71	57
 internal/device/gateway.go	419	331
-internal/device/legs.go	179	163
+internal/device/legs.go	179	162
 internal/device/pair.go	52	29
 internal/device/plugin.go	100	84
 internal/device/rpc.go	229	210
@@ -108,7 +108,7 @@ internal/service/manage.go	159	145
 internal/service/media.go	139	115
 internal/service/observe.go	61	50
 internal/service/outcome.go	95	90
-internal/service/page.go	63	55
+internal/service/page.go	63	57
 internal/service/pdf.go	74	56
 internal/service/rows.go	22	21
 internal/service/service.go	909	828
