@@ -136,7 +136,7 @@ button.primary.ib:hover { filter: brightness(1.08); }
 .welcome { flex: 1; display: grid; place-items: center; color: var(--muted); padding: 1rem; }
 
 .main { --gutter: clamp(.75rem, 2.5vw, 2.5rem); --read: 60rem; }
-.log { flex: 1 1 0px; min-height: 0; overflow-y: auto; overflow-anchor: none; padding: .75rem var(--gutter) 1rem;
+.log { flex: 1 1 0px; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: clip; overflow-anchor: none; padding: .75rem var(--gutter) 1rem;
   display: flex; flex-direction: column; gap: .6rem; }
 /* A chat whose snapshot has not come yet: grey bars, not an empty chat. */
 .log .loading { display: flex; flex-direction: column; gap: .9rem; margin-top: auto; padding-bottom: .5rem; }
@@ -149,7 +149,12 @@ button.primary.ib:hover { filter: brightness(1.08); }
   border: 0; background: var(--accent); color: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); font-size: .85rem; white-space: nowrap; max-width: calc(100% - 1.5rem); }
 .tobottom[hidden] { display: none; }
 .tobottom svg { width: 1rem; height: 1rem; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.log > * { max-width: min(100%, var(--read)); }
+.log > * { max-width: min(100%, var(--read)); min-width: 0; }
+/* Nothing in the stream may widen it: every card and block shrinks to the stream, long text breaks, and code and
+   tables scroll inside their own box. test: overflow_script_test.go. */
+.log :where(div, p, li, span, a, summary, button, h1, h2, h3, h4, h5, h6, blockquote, dd, dt, label) { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.log :where(pre) { max-width: 100%; overflow-x: auto; }
+.log button { white-space: normal; text-align: left; }
 .log > .older { max-width: none; gap: inherit; }
 .log > .older > .part { display: flex; flex-direction: column; gap: inherit; content-visibility: auto; contain-intrinsic-size: auto 3000px; }
 .log > .older > .part:not(:last-child) { margin-bottom: .6rem; }
@@ -235,7 +240,10 @@ details.toolgroup .group-body { display: flex; flex-direction: column; gap: .5re
 @keyframes pulse { 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .notice-run::before { animation: none; } }
 .approval { border: 2px solid var(--warn); border-radius: 10px; padding: .6rem .75rem; background: var(--card); min-width: 0; }
-.approval pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow-y: auto; }
+.approval { overflow-wrap: anywhere; max-width: 100%; }
+.approval pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; margin: .4rem 0; padding: .5rem; border-radius: 6px; background: var(--code);
+  font: .82rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.approval .rule { margin: .2rem 0 0; font-size: .82rem; color: var(--muted); }
 .approval .actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
 .approval .sendnote { margin-top: .5rem; font-size: .85rem; color: var(--muted, inherit); }
 .approval .sendnote.bad { color: var(--warn); }

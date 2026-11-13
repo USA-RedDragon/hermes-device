@@ -45,8 +45,15 @@ window.HubApprovals = (() => {
       const box = el("div", "approval");
       const clarify = p.kind === "clarify";
       box.append(el("b", "", clarify ? "Question" : words("approval")));
-      if (p.description) box.append(el("div", "", p.description));
-      if (p.command) box.append(el("pre", "", p.command));
+      // A plugin's description may carry the script it asks to run after "Script:"; that goes in a code box of its
+      // own, not in the sentence. The command of a plugin rule is "<tool> (plugin approval rule)", which is
+      // internal: the description already says it, and without one the card says it in words.
+      const rule = p.command ? /^<([\w.-]+)> \(plugin approval rule\)$/.exec(p.command) : null;
+      const split = p.description ? /^([\s\S]*?)\s*\bScript:\s*([\s\S]+)$/.exec(p.description) : null;
+      if (p.description) box.append(el("div", "", split ? split[1] : p.description));
+      if (split) box.append(el("pre", "", split[2]));
+      if (p.command && !rule) box.append(el("pre", "", p.command));
+      if (rule && !p.description) box.append(el("div", "rule", "An approval rule asks before the " + rule[1].replace(/_/g, " ") + " tool runs."));
       if (p.question) box.append(el("div", "", p.question));
       const actions = el("div", "actions");
       const buttons = [];
