@@ -4,7 +4,7 @@ cmd/telegram.go	132	7
 internal/agentcfg/agentcfg.go	440	256
 internal/agentcfg/agentcfgtest/agentcfgtest.go	125	109
 internal/agentcfg/plain.go	28	28
-internal/agents/agents.go	473	385
+internal/agents/agents.go	477	389
 internal/agents/format.go	29	29
 internal/auth/limit.go	45	40
 internal/auth/names.go	17	16
@@ -43,7 +43,7 @@ internal/device/rpc.go	229	210
 internal/device/sessioncheck.go	23	22
 internal/device/usage.go	50	40
 internal/device/views.go	17	17
-internal/gateway/client.go	248	213
+internal/gateway/client.go	248	214
 internal/gateway/gatewaytest/activity.go	106	88
 internal/gateway/gatewaytest/compose.go	184	159
 internal/gateway/gatewaytest/fake.go	728	670
@@ -82,14 +82,14 @@ internal/memory/honcho.go	107	95
 internal/memory/memory.go	267	238
 internal/memory/memorytest/memorytest.go	262	232
 internal/memory/notes.go	108	94
-internal/models/models.go	333	270
+internal/models/models.go	336	273
 internal/models/modelstest/fake.go	210	190
 internal/notice/notice.go	255	235
 internal/notify/jobs.go	55	43
 internal/notify/notify.go	307	195
 internal/origin/fallback.go	76	74
-internal/origin/origin.go	131	115
-internal/pdf/pdf.go	185	164
+internal/origin/origin.go	141	125
+internal/pdf/pdf.go	185	165
 internal/pdf/pdftest/pdftest.go	32	32
 internal/scheduled/client.go	110	88
 internal/scheduled/clock.go	75	66
@@ -98,7 +98,7 @@ internal/scheduled/service.go	478	416
 internal/secretbox/secretbox.go	37	31
 internal/server/server.go	40	0
 internal/service/activity.go	144	123
-internal/service/agents.go	21	17
+internal/service/agents.go	31	26
 internal/service/attach.go	100	85
 internal/service/claude.go	41	33
 internal/service/compose.go	257	215
@@ -115,7 +115,7 @@ internal/service/service.go	916	835
 internal/service/stopsend.go	93	77
 internal/service/subagentlog.go	178	146
 internal/service/turn.go	79	72
-internal/service/views.go	145	119
+internal/service/views.go	145	120
 internal/store/accounts.go	187	156
 internal/store/agents.go	83	70
 internal/store/answers.go	22	20
@@ -165,7 +165,7 @@ internal/web/auth.go	143	110
 internal/web/authpages.go	39	37
 internal/web/claude.go	83	58
 internal/web/claudecode.go	30	19
-internal/web/compose.go	224	179
+internal/web/compose.go	241	195
 internal/web/computers.go	85	58
 internal/web/cookies.go	49	43
 internal/web/devices.go	178	125
