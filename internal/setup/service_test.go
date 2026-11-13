@@ -28,9 +28,12 @@ func TestSystemdUnitPaths(t *testing.T) {
 func TestLaunchdAgent(t *testing.T) {
 	t.Parallel()
 	loaded := false
+	disabled := "enabled"
 	r := &fakeRunner{}
 	r.respond = func(_ string, args []string) ([]byte, error) {
 		switch args[0] {
+		case "print-disabled":
+			return []byte("\tdisabled services = {\n\t\t\"com.example.other\" => disabled\n\t\t\"" + setup.LaunchdLabel + "\" => " + disabled + "\n\t}\n"), nil
 		case lcPrint:
 			if loaded {
 				return []byte("state = running\n"), nil
@@ -63,9 +66,19 @@ func TestLaunchdAgent(t *testing.T) {
 	if err := svc.Load(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if !svc.Active(t.Context()) || !r.has("launchctl bootstrap gui/1000 ") || !r.has("launchctl enable gui/1000/"+setup.LaunchdLabel) {
+	if !svc.Active(t.Context()) || !r.has("launchctl bootstrap gui/1000 ") || r.has("launchctl enable") {
 		t.Errorf("calls %q", r.Calls())
 	}
+	// Only an agent that launchd has disabled gets enabled: enable leaves a
+	// record in launchd's database that outlives the agent
+	for _, d := range []string{"disabled", "true"} {
+		disabled = d
+		r.Reset()
+		if err := svc.Load(t.Context()); err != nil || !r.has("launchctl enable gui/1000/"+setup.LaunchdLabel) {
+			t.Errorf("disabled %s: %v %q", d, err, r.Calls())
+		}
+	}
+	disabled = "enabled"
 	if err := svc.Load(t.Context()); err != nil || !r.has("launchctl bootout gui/1000/"+setup.LaunchdLabel) {
 		t.Errorf("reload: %v %q", err, r.Calls())
 	}

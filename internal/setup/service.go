@@ -335,11 +335,34 @@ func (l *launchdService) Load(ctx context.Context) error {
 			}
 		}
 	}
-	if _, err := l.launchctl(ctx, "enable", l.target()); err != nil {
-		return err
+	if l.disabled(ctx) {
+		if _, err := l.launchctl(ctx, "enable", l.target()); err != nil {
+			return err
+		}
 	}
 	_, err := l.launchctl(ctx, "bootstrap", fmt.Sprintf("gui/%d", l.s.UID), l.Path())
 	return err
+}
+
+// disabled reports whether launchd has the agent marked disabled, as
+// launchctl disable or an older uninstall leaves it. Only then does Load
+// enable it: launchctl enable writes a record to launchd's database that
+// stays after the agent is removed, and no command takes it out again.
+func (l *launchdService) disabled(ctx context.Context) bool {
+	out, err := l.launchctl(ctx, "print-disabled", fmt.Sprintf("gui/%d", l.s.UID))
+	if err != nil {
+		return true
+	}
+	for line := range strings.Lines(string(out)) {
+		k, v, ok := strings.Cut(line, "=>")
+		if !ok || strings.Trim(strings.TrimSpace(k), `"`) != LaunchdLabel {
+			continue
+		}
+		// macOS 13 and later say disabled or enabled, older ones true or false
+		v = strings.TrimSpace(v)
+		return v == "disabled" || v == "true"
+	}
+	return false
 }
 
 func (l *launchdService) LoadStarts() bool { return true }
