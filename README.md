@@ -2,6 +2,8 @@
 
 One server Hermes Agent owns every session. `talaria` lets that agent run its shell and file operations on your own PC, in a directory you choose, while the session itself stays on the server, where the web UI, Telegram and every other client can see it.
 
+Docs: https://usa-reddragon.github.io/talaria/
+
 Pinned to Hermes Agent v0.23.1. Linux and macOS only: Windows is not supported, because device paths must be POSIX paths.
 
 `talaria` was called `hermes-device` before release 0.19.0. See [Renamed from hermes-device](#renamed-from-hermes-device).
