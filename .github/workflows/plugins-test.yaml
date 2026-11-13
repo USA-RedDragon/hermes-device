@@ -61,5 +61,15 @@ jobs:
         working-directory: ${{ env.HERMES_AGENT_SRC }}
         run: uv sync --locked --python 3.14 --extra all --extra anthropic --group dev --group test
 
+      - name: Privacy deny list
+        env:
+          PRIVACY_DENYLIST: ${{ secrets.PRIVACY_DENYLIST }}
+        run: |
+          if [ -z "$PRIVACY_DENYLIST" ]; then
+            echo "::warning title=Privacy check skipped::The PRIVACY_DENYLIST secret is not set (or not available to this run), so the personal-name test is skipped. Set it with: gh secret set PRIVACY_DENYLIST -R USA-RedDragon/talaria"
+          fi
+
       - name: Plugin tests
-        run: scripts/run-tests.sh "$HERMES_AGENT_SRC"
+        env:
+          PRIVACY_DENYLIST: ${{ secrets.PRIVACY_DENYLIST }}
+        run: scripts/run-tests.sh "$HERMES_AGENT_SRC" -rs
