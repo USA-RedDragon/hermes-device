@@ -285,16 +285,21 @@ func status(o options) hub.ModelStatus {
 	if o.Model == "" {
 		return st
 	}
+	authed := func(p optionsRow) bool { return p.Authenticated == nil || *p.Authenticated }
+	auto := o.Provider == "" || strings.EqualFold(o.Provider, "auto")
 	for _, p := range o.Providers {
-		if p.Slug == o.Provider || (o.Provider == "" && p.IsCurrent) {
-			st.Ready = p.Authenticated == nil || *p.Authenticated
+		if p.Slug == o.Provider || (auto && p.IsCurrent) {
+			st.Ready = authed(p)
 			return st
 		}
 	}
 	// A provider the list does not name: an authenticated one exists and
-	// Hermes resolves the default at chat start.
+	// Hermes resolves the default at chat start. With provider auto (the
+	// agent's stock config: a model and no key) Hermes picks a provider
+	// from keys and sign-ins only, never a server added by name (such as
+	// the demo model), so only those count.
 	for _, p := range o.Providers {
-		if p.Authenticated == nil || *p.Authenticated {
+		if authed(p) && (!auto || !p.IsUserDefined) {
 			st.Ready = true
 		}
 	}
