@@ -106,25 +106,52 @@ def make_reference_provider(core):
 HIDDEN_TOOLS = ("browser_vault",)
 
 
+def _hidden_check() -> bool:
+    return False
+
+
+def _hidden_handler(args, **_kwargs) -> str:
+    return '{"error": "this tool is turned off on this server"}'
+
+
+def _hide_one(registry, name: str) -> bool:
+    """Remove the built-in tool name for this plugin's profile; False if it is already gone.
+
+    A plugin loaded for a profile cannot deregister a process-global tool (Hermes v0.23 says
+    "register a scoped override instead"), so on that refusal the plugin registers an override
+    in its own profile whose check_fn is never true: the tool is then left out of every tool
+    list there. Both ways need the same opt-in (tools.override)."""
+    entry = registry.get_entry(name)
+    if entry is None or entry.check_fn is _hidden_check:
+        return False
+    try:
+        registry.deregister(name)
+        return True
+    except PermissionError as exc:
+        if "scoped override" not in str(exc):
+            raise
+    registry.register(name, entry.toolset, entry.schema, _hidden_handler, check_fn=_hidden_check,
+                      description=entry.description, override=True)
+    return True
+
+
 def hide_builtin_tools(**_kwargs) -> list[str]:
-    """Deregister HIDDEN_TOOLS from Hermes's tool registry and return the ones removed.
+    """Hide HIDDEN_TOOLS from Hermes's tool list and return the ones hidden.
 
     Hermes allows a plugin to remove a built-in tool only with the operator's opt-in
     (plugins.entries.device.granted_capabilities: [tools.override], or the older
-    allow_tool_override: true). This runs from this module so that the registry sees the
-    plugin as the caller and applies that check. Without the opt-in it logs once and keeps
-    the tool. It runs at load and again at each session start, because the built-in tools can
-    be imported after the plugin."""
+    allow_tool_override: true, which Hermes still accepts as an alias). This runs from this
+    module so that the registry sees the plugin as the caller and applies that check. Without
+    the opt-in it logs once and keeps the tool. It runs at load and again at each session
+    start, because the built-in tools can be imported after the plugin."""
     try:
         from tools.registry import registry
     except ImportError:
         return []
     removed = []
     for name in HIDDEN_TOOLS:
-        if registry.get_entry(name) is None:
-            continue
         try:
-            registry.deregister(name)
+            hidden = _hide_one(registry, name)
         except PermissionError:
             if name not in _WARNED:
                 _WARNED.add(name)
@@ -132,7 +159,8 @@ def hide_builtin_tools(**_kwargs) -> list[str]:
                     "device: cannot hide the built-in tool %s: set plugins.entries.device.granted_capabilities "
                     "to include tools.override in config.yaml", name)
             continue
-        removed.append(name)
+        if hidden:
+            removed.append(name)
     return removed
 
 

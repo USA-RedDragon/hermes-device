@@ -1734,6 +1734,34 @@ class HermesBrowserContract(unittest.TestCase):
         self.assertIsNotNone(registry.get_entry("browser_exec"))
         self.assertEqual(plugin.hide_builtin_tools(), [], "a second run finds nothing to do")
 
+    def test_hides_browser_vault_for_a_profile_scoped_plugin(self):
+        import importlib.util
+        import tools.browser_use_cli  # noqa: F401  registers browser_exec
+        import tools.browser_vault_tool  # noqa: F401  registers browser_vault
+        from hermes_constants import hermes_home_key
+        from tools.registry import registry
+        vault = registry.get_entry("browser_vault")
+        self.assertIsNotNone(vault)
+        scope = hermes_home_key()
+        name = "hermes_plugins.device_scope_test"
+        spec = importlib.util.spec_from_file_location(name, Path(core.__file__).with_name("__init__.py"))
+        plugin = importlib.util.module_from_spec(spec)
+        sys.modules[name] = plugin
+        self.addCleanup(sys.modules.pop, name, None)
+        self.addCleanup(lambda: registry._scoped_tools.pop(scope, None))
+        self.addCleanup(lambda: registry._plugin_override_policy.pop((scope, name), None))
+        self.addCleanup(lambda: registry._plugin_module_scopes.pop(name, None))
+        spec.loader.exec_module(plugin)
+        names = {"browser_vault", "browser_exec"}
+        registry.register_plugin_override_policy(name, False, scope=scope)
+        self.assertEqual(plugin.hide_builtin_tools(), [], "no opt-in: Hermes keeps the tool")
+        self.assertIn("browser_vault", [d["function"]["name"] for d in registry.get_definitions(names, quiet=True)])
+        registry.register_plugin_override_policy(name, True, scope=scope)
+        self.assertEqual(plugin.hide_builtin_tools(), ["browser_vault"])
+        listed = [d["function"]["name"] for d in registry.get_definitions(names, quiet=True)]
+        self.assertEqual(listed, ["browser_exec"])
+        self.assertEqual(plugin.hide_builtin_tools(), [], "a second run finds nothing to do")
+
     def test_unattended_helpers(self):
         from tools import approval, approval_context
         self.assertTrue(callable(approval_context._no_user_can_answer))
