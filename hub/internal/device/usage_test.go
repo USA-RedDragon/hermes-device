@@ -65,7 +65,7 @@ func TestDeviceUsageRoute(t *testing.T) {
 		if got := postUsage(t, e.a.url, "", `{}`); got != http.StatusUnauthorized {
 			t.Fatalf("without a token: %d", got)
 		}
-		if got := postUsage(t, e.a.url, sandboxToken, `{}`); got != http.StatusForbidden {
+		if got := postUsage(t, e.a.url, sandboxDevKey, `{}`); got != http.StatusForbidden {
 			t.Fatalf("sandbox: %d", got)
 		}
 		if got := postUsage(t, e.a.url, tok, `{"rows":[]}`); got != http.StatusNoContent {

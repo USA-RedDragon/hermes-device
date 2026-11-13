@@ -35,7 +35,7 @@ func (h *pairHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSONBody(h.t, w, hubapi.PairStart{
 			DeviceCode: "dc", UserCode: "WDJB-MJHT", VerificationURI: "https://hub.example.com/device/pair", ExpiresIn: 600, Interval: 1,
 		})
-	case hubapi.PathPairToken:
+	case hubapi.PathPairExchange:
 		if h.polls.Add(1) == 1 {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))

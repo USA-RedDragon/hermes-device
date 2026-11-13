@@ -40,7 +40,7 @@ func (f *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case hubapi.PathPair:
 		_ = json.NewDecoder(r.Body).Decode(&f.pairReq)
 		f.encode(w, f.start)
-	case hubapi.PathPairToken:
+	case hubapi.PathPairExchange:
 		var body map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if body["device_code"] != f.start.DeviceCode {

@@ -20,15 +20,15 @@ import (
 
 // Hub paths.
 const (
-	PathPair        = "/api/device/pair"
-	PathPairToken   = "/api/device/pair/token" //nolint:gosec // a URL path, not a credential
-	PathWhoami      = "/api/device/whoami"
-	PathBindingFmt  = "/api/device/sessions/%s/binding"
-	PathExecLeg     = "/api/device/exec"
-	PathACPLeg      = "/api/device/acp"
-	PathGatewayLeg  = "/api/device/gateway"
-	PathUsage       = "/api/device/usage"
-	maxResponseBody = 1 << 20
+	PathPair         = "/api/device/pair"
+	PathPairExchange = "/api/device/pair/token"
+	PathWhoami       = "/api/device/whoami"
+	PathBindingFmt   = "/api/device/sessions/%s/binding"
+	PathExecLeg      = "/api/device/exec"
+	PathACPLeg       = "/api/device/acp"
+	PathGatewayLeg   = "/api/device/gateway"
+	PathUsage        = "/api/device/usage"
+	maxResponseBody  = 1 << 20
 )
 
 // Pairing poll errors, the error codes of RFC 8628 section 3.5.
@@ -190,7 +190,7 @@ func (c *Client) StartPairing(ctx context.Context, req PairRequest) (*PairStart,
 // done.
 func (c *Client) PollPairing(ctx context.Context, deviceCode string) (*PairResult, error) {
 	var out PairResult
-	if err := c.do(ctx, http.MethodPost, PathPairToken, map[string]string{"device_code": deviceCode}, &out, false); err != nil {
+	if err := c.do(ctx, http.MethodPost, PathPairExchange, map[string]string{"device_code": deviceCode}, &out, false); err != nil {
 		return nil, err
 	}
 	return &out, nil

@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	honchoKey    = "honcho-jwt-for-tests" //nolint:gosec // a test value, not a credential
+	honchoKey    = "honcho-jwt-for-tests"
 	fieldContent = "content"
 	fieldIDs     = "ids"
 )

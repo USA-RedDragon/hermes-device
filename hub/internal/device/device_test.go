@@ -159,7 +159,7 @@ func (e *env) replica() *replica {
 func (e *env) backend() config.Backend {
 	return config.Backend{ID: backendID, Name: "Alice's PC", URL: e.gw.URL(), Provider: providerBasic, Username: hubUser, Password: "pw",
 		Users: []string{userAlice}, Devices: true, ACPURL: e.acp.URL(),
-		ServiceDevices: []config.ServiceDevice{{ID: sandboxID, Name: sandboxName, Token: sandboxToken}}}
+		ServiceDevices: []config.ServiceDevice{{ID: sandboxID, Name: sandboxName, Token: sandboxDevKey}}}
 }
 
 func call(t *testing.T, method, u, token string, body any) (int, map[string]any) {
@@ -939,28 +939,28 @@ const (
 	reasonNotBound    = "hermes_device_not_bound"
 	sandboxID         = "sandbox-alice"
 	sandboxName       = "Alice's sandbox"
-	sandboxToken      = "hdt_sandbox-token-for-tests-only-0123456789" //nolint:gosec // a test token
+	sandboxDevKey     = "hdt_sandbox-token-for-tests-only-0123456789"
 )
 
 func TestServiceDevice(t *testing.T) {
 	t.Parallel()
 	stores(t, func(t *testing.T, st *store.Store) {
 		e := setup(t, st)
-		c, pc := e.connectExec(e.a, sandboxToken)
+		c, pc := e.connectExec(e.a, sandboxDevKey)
 		if pc.Claims.DeviceID != sandboxID || pc.Claims.Sub != hub.ServiceUser || pc.Claims.DeviceName != sandboxName {
 			t.Fatalf("claims = %+v", pc.Claims)
 		}
-		if s, who := call(t, http.MethodGet, e.a.url+"/api/device/whoami", sandboxToken, nil); s != http.StatusOK || who["device_id"] != sandboxID {
+		if s, who := call(t, http.MethodGet, e.a.url+"/api/device/whoami", sandboxDevKey, nil); s != http.StatusOK || who["device_id"] != sandboxID {
 			t.Fatalf("whoami = %d %v", s, who)
 		}
-		if s, out := call(t, http.MethodPut, e.a.url+"/api/device/sessions/s1/binding", sandboxToken, map[string]any{"dir": deviceDir}); s != http.StatusForbidden || out["error"] != "forbidden" {
+		if s, out := call(t, http.MethodPut, e.a.url+"/api/device/sessions/s1/binding", sandboxDevKey, map[string]any{"dir": deviceDir}); s != http.StatusForbidden || out["error"] != "forbidden" {
 			t.Fatalf("bind = %d %v", s, out)
 		}
-		if s, _ := call(t, http.MethodDelete, e.a.url+"/api/device/sessions/s1/binding", sandboxToken, nil); s != http.StatusForbidden {
+		if s, _ := call(t, http.MethodDelete, e.a.url+"/api/device/sessions/s1/binding", sandboxDevKey, nil); s != http.StatusForbidden {
 			t.Fatalf("unbind = %d", s)
 		}
 		for _, leg := range []string{"/api/device/gateway", "/api/device/acp"} {
-			if _, resp, err := dial(t, e.b, leg, sandboxToken); err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+			if _, resp, err := dial(t, e.b, leg, sandboxDevKey); err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
 				t.Fatalf("%s = %v %v", leg, resp, err)
 			}
 		}

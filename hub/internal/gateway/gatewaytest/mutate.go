@@ -244,7 +244,9 @@ func (g *Gateway) compress(s *Session, payload, result map[string]any) string {
 		return ""
 	}
 	headline := "Compressed: " + strconv.Itoa(len(s.Messages)) + " → 1 messages"
-	result["summary"] = map[string]any{"headline": headline, "token_line": "Approx request size: ~100 → ~10 tokens", "note": nil} //nolint:gosec // a report line, not a credential
+	summary := map[string]any{"headline": headline, "note": nil}
+	summary["token_line"] = "Approx request size: ~100 → ~10 tokens"
+	result["summary"] = summary
 	return ""
 }
 

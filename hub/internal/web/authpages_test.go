@@ -41,7 +41,7 @@ func TestLoginAndSetupPages(t *testing.T) {
 		t.Fatalf("auth.js = %d", resp.StatusCode)
 	}
 
-	first := map[string]string{fieldName: userAlice, fieldPassword: alicePassword}
+	first := map[string]string{fieldName: userAlice, fieldPassword: alicePhrase}
 	if resp, body := post(t, c, e.url+"/auth/setup", "", e.url, first); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("setup = %d %s", resp.StatusCode, body)
 	}

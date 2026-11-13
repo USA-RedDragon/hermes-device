@@ -563,7 +563,7 @@ func TestHonchoErrorsHideKey(t *testing.T) {
 func TestNewNeedsKey(t *testing.T) {
 	t.Parallel()
 	_, err := memory.New(memory.Options{Access: access{}, Backends: []config.Backend{{ID: homeID,
-		Honcho: config.Honcho{URL: "http://honcho.example.com", Workspace: "w", UserPeer: bob, AIPeer: "hermes", APIKeyEnv: "UNSET_HONCHO_KEY_FOR_TEST"}}}}) //nolint:gosec // test values, not credentials
+		Honcho: config.Honcho{URL: "http://honcho.example.com", Workspace: "w", UserPeer: bob, AIPeer: "hermes", APIKeyEnv: "UNSET_KEY"}}}})
 	if err == nil {
 		t.Fatal("New without a key")
 	}

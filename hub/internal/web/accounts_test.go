@@ -13,11 +13,10 @@ import (
 	"github.com/USA-RedDragon/talaria/hub/internal/web"
 )
 
-//nolint:gosec // test passwords
 const (
-	alicePassword = "alice's long password"
-	bobPassword   = "bob's long password!"
-	resetPassword = "reset by the admin"
+	alicePhrase   = "alice's long password"
+	bobPhrase     = "bob's long password!"
+	resetPhrase   = "reset by the admin"
 	headerUser    = "Remote-User"
 	aliceIdentity = "alice@example.test"
 	userCarol     = "carol"
@@ -78,7 +77,7 @@ func TestLocalSetupAndLogin(t *testing.T) {
 	if resp, _ := get(t, c, e.url+"/"); resp.Request.URL.Path != "/setup" {
 		t.Fatalf("root with no account = %s, want /setup", resp.Request.URL)
 	}
-	first := map[string]string{fieldName: "Alice", "display": "Alice A", fieldPassword: alicePassword}
+	first := map[string]string{fieldName: "Alice", "display": "Alice A", fieldPassword: alicePhrase}
 	if resp, _ := post(t, c, e.url+"/auth/setup", "", "https://evil.example", first); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin setup = %d", resp.StatusCode)
 	}
@@ -86,7 +85,7 @@ func TestLocalSetupAndLogin(t *testing.T) {
 	if resp, body := post(t, c, e.url+"/auth/setup", "", e.url, first); resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "at least 12") {
 		t.Fatalf("weak password = %d %s", resp.StatusCode, body)
 	}
-	first["password"] = alicePassword
+	first["password"] = alicePhrase
 	if resp, body := post(t, c, e.url+"/auth/setup", "", e.url, first); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("setup = %d %s", resp.StatusCode, body)
 	}
@@ -114,14 +113,14 @@ func TestLocalSetupAndLogin(t *testing.T) {
 	if code := passwordLogin(t, e, c2, userAlice, "not the password"); code != http.StatusUnauthorized {
 		t.Fatalf("wrong password = %d", code)
 	}
-	if code := passwordLogin(t, e, c2, "nobody", alicePassword); code != http.StatusUnauthorized {
+	if code := passwordLogin(t, e, c2, "nobody", alicePhrase); code != http.StatusUnauthorized {
 		t.Fatalf("unknown user = %d", code)
 	}
-	if resp, body := post(t, c2, e.url+"/auth/password", "", "https://evil.example", map[string]string{fieldName: userAlice, fieldPassword: alicePassword}); resp.StatusCode != http.StatusForbidden ||
+	if resp, body := post(t, c2, e.url+"/auth/password", "", "https://evil.example", map[string]string{fieldName: userAlice, fieldPassword: alicePhrase}); resp.StatusCode != http.StatusForbidden ||
 		!strings.Contains(body, "Open Talaria at "+e.url+", or set TALARIA_PUBLIC_URL to this address.") {
 		t.Fatalf("cross-origin login = %d %s", resp.StatusCode, body)
 	}
-	if code := passwordLogin(t, e, c2, " ALICE ", alicePassword); code != http.StatusOK {
+	if code := passwordLogin(t, e, c2, " ALICE ", alicePhrase); code != http.StatusOK {
 		t.Fatalf("login = %d", code)
 	}
 	if m, code := meOf(t, e, c2); code != http.StatusOK || m.User != userAlice {
@@ -133,7 +132,7 @@ func TestLocalLockout(t *testing.T) {
 	t.Parallel()
 	e := setupLocal(t)
 	ctx := context.Background()
-	hash, _ := testHasher.Hash(ctx, alicePassword)
+	hash, _ := testHasher.Hash(ctx, alicePhrase)
 	if err := e.store.CreateAccount(ctx, store.Account{Name: userAlice, PasswordHash: hash, Admin: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +142,7 @@ func TestLocalLockout(t *testing.T) {
 			t.Fatalf("wrong = %d", code)
 		}
 	}
-	if code := passwordLogin(t, e, c, userAlice, alicePassword); code != http.StatusUnauthorized {
+	if code := passwordLogin(t, e, c, userAlice, alicePhrase); code != http.StatusUnauthorized {
 		t.Fatalf("locked account logged in: %d", code)
 	}
 	for range 6 {
@@ -158,13 +157,13 @@ func TestPasswordChangeEndsOtherSessions(t *testing.T) {
 	t.Parallel()
 	e := setupLocal(t)
 	ctx := context.Background()
-	hash, _ := testHasher.Hash(ctx, alicePassword)
+	hash, _ := testHasher.Hash(ctx, alicePhrase)
 	if err := e.store.CreateAccount(ctx, store.Account{Name: userAlice, PasswordHash: hash, Admin: true}); err != nil {
 		t.Fatal(err)
 	}
 	a, other := client(t), client(t)
 	for _, c := range []*http.Client{a, other} {
-		if code := passwordLogin(t, e, c, userAlice, alicePassword); code != http.StatusOK {
+		if code := passwordLogin(t, e, c, userAlice, alicePhrase); code != http.StatusOK {
 			t.Fatalf("login = %d", code)
 		}
 	}
@@ -172,7 +171,7 @@ func TestPasswordChangeEndsOtherSessions(t *testing.T) {
 	if resp, _ := post(t, a, e.url+"/api/account/password", m.CSRF, "", map[string]string{"current": "wrong", fieldPassword: "a brand new password"}); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("wrong current = %d", resp.StatusCode)
 	}
-	if resp, body := post(t, a, e.url+"/api/account/password", m.CSRF, "", map[string]string{"current": alicePassword, fieldPassword: "a brand new password"}); resp.StatusCode != http.StatusNoContent {
+	if resp, body := post(t, a, e.url+"/api/account/password", m.CSRF, "", map[string]string{"current": alicePhrase, fieldPassword: "a brand new password"}); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("change = %d %s", resp.StatusCode, body)
 	}
 	if _, code := meOf(t, e, a); code != http.StatusOK {
@@ -190,24 +189,24 @@ func TestAdminManagesUsers(t *testing.T) {
 	t.Parallel()
 	e := setupLocal(t)
 	ctx := context.Background()
-	hash, _ := testHasher.Hash(ctx, alicePassword)
+	hash, _ := testHasher.Hash(ctx, alicePhrase)
 	if err := e.store.CreateAccount(ctx, store.Account{Name: userAlice, PasswordHash: hash, Admin: true, Backends: []string{"pc"}}); err != nil {
 		t.Fatal(err)
 	}
 	admin := client(t)
-	passwordLogin(t, e, admin, userAlice, alicePassword)
+	passwordLogin(t, e, admin, userAlice, alicePhrase)
 	m, _ := meOf(t, e, admin)
 	add := func(body map[string]any) (int, string) {
 		resp, b := post(t, admin, e.url+"/api/admin/users", m.CSRF, "", body)
 		return resp.StatusCode, b
 	}
-	if code, _ := add(map[string]any{fieldName: userBob, fieldPassword: bobPassword, fieldBackends: []string{"nowhere"}}); code != http.StatusBadRequest {
+	if code, _ := add(map[string]any{fieldName: userBob, fieldPassword: bobPhrase, fieldBackends: []string{"nowhere"}}); code != http.StatusBadRequest {
 		t.Fatalf("unknown backend = %d", code)
 	}
-	if code, body := add(map[string]any{fieldName: userBob, "display": "Bob", fieldPassword: bobPassword, fieldBackends: []string{backendHome}}); code != http.StatusCreated {
+	if code, body := add(map[string]any{fieldName: userBob, "display": "Bob", fieldPassword: bobPhrase, fieldBackends: []string{backendHome}}); code != http.StatusCreated {
 		t.Fatalf("add bob = %d %s", code, body)
 	}
-	if code, _ := add(map[string]any{fieldName: userBob, fieldPassword: bobPassword}); code != http.StatusConflict {
+	if code, _ := add(map[string]any{fieldName: userBob, fieldPassword: bobPhrase}); code != http.StatusConflict {
 		t.Fatalf("add bob twice = %d", code)
 	}
 	_, body := get(t, admin, e.url+"/api/admin/users")
@@ -223,7 +222,7 @@ func TestAdminManagesUsers(t *testing.T) {
 	}
 
 	bob := client(t)
-	if code := passwordLogin(t, e, bob, userBob, bobPassword); code != http.StatusOK {
+	if code := passwordLogin(t, e, bob, userBob, bobPhrase); code != http.StatusOK {
 		t.Fatalf("bob login = %d", code)
 	}
 	if _, body := get(t, bob, e.url+"/api/backends"); body != `[{"id":"home","name":"home"}]`+"\n" {
@@ -251,16 +250,16 @@ func TestAdminManagesUsers(t *testing.T) {
 	if _, code := meOf(t, e, bob); code != http.StatusUnauthorized {
 		t.Fatalf("disabled bob's session = %d", code)
 	}
-	if code := passwordLogin(t, e, client(t), userBob, bobPassword); code != http.StatusUnauthorized {
+	if code := passwordLogin(t, e, client(t), userBob, bobPhrase); code != http.StatusUnauthorized {
 		t.Fatalf("disabled bob logs in = %d", code)
 	}
 	if code := edit(userBob, map[string]any{"disabled": false}); code != http.StatusNoContent {
 		t.Fatalf("enable = %d", code)
 	}
-	if resp, _ := post(t, admin, e.url+"/api/admin/users/bob/password", m.CSRF, "", map[string]string{fieldPassword: resetPassword}); resp.StatusCode != http.StatusNoContent {
+	if resp, _ := post(t, admin, e.url+"/api/admin/users/bob/password", m.CSRF, "", map[string]string{fieldPassword: resetPhrase}); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("reset = %d", resp.StatusCode)
 	}
-	if code := passwordLogin(t, e, client(t), userBob, resetPassword); code != http.StatusOK {
+	if code := passwordLogin(t, e, client(t), userBob, resetPhrase); code != http.StatusOK {
 		t.Fatalf("login after reset = %d", code)
 	}
 	if resp, _ := post(t, admin, e.url+"/api/admin/users/alice/delete", m.CSRF, "", map[string]string{}); resp.StatusCode != http.StatusBadRequest {

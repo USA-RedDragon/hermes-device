@@ -49,7 +49,7 @@ func homelabEnv() map[string]string {
 		"HUB_LOG_LEVEL": "info", "HUB_HTTP_PORT": "8080", envPublicURL: publicURL,
 		"HUB_HTTP_METRICS_ENABLED": valTrue,
 		"HUB_OIDC_ISSUER_URL":      "https://auth.example.test/application/o/hub/",
-		"HUB_OIDC_CLIENT_ID":       "hub-client", envClientSecret: "cs", envSessionSecret: strings.Repeat("s", 40),
+		"HUB_OIDC_CLIENT_ID":       "hub-client", envOIDCClient: "cs", envSessionKey: strings.Repeat("s", 40),
 		"HUB_UI_DEFAULT_BACKENDS": "alice=alice,bob=bob", "HUB_STORE_DRIVER": "postgres",
 		"HUB_STORE_DSN": "postgres://hub@db.example.test/hub", "HUB_TELEGRAM_ENABLED": valTrue,
 		"HUB_TELEGRAM_TOKEN": "123:abc", "HUB_TELEGRAM_DEFAULT_BACKENDS": "alice=alice,bob=bob",
@@ -143,7 +143,7 @@ func TestSecretFiles(t *testing.T) {
 		return p
 	}
 	env := homelabEnv()
-	delete(env, envClientSecret)
+	delete(env, envOIDCClient)
 	env["HUB_SESSION_SECRET"] = "ignored"
 	env["HUB_OIDC_CLIENT_SECRET_FILE"] = write("cs", "client\n")
 	env["HUB_SESSION_SECRET_FILE"] = write("ss", strings.Repeat("k", 32))
@@ -190,9 +190,9 @@ func TestProxyAndOIDCSettings(t *testing.T) {
 			"HUB_AUTH_PROXY_JWT_ISSUER", "https://idp.example.test"), nil},
 		{base("HUB_AUTH_MODE", "proxy", "HUB_AUTH_TRUSTED_PROXIES", "127.0.0.1", "HUB_AUTH_PROXY_LOGOUT_URL", "javascript:x"), config.ErrProxy},
 		{base("HUB_AUTH_MODE", "oidc"), config.ErrOIDC},
-		{base("HUB_OIDC_ISSUER_URL", "https://idp.example.test", "HUB_OIDC_CLIENT_ID", "hub", envClientSecret, "cs",
+		{base("HUB_OIDC_ISSUER_URL", "https://idp.example.test", "HUB_OIDC_CLIENT_ID", "hub", envOIDCClient, "cs",
 			"HUB_OIDC_AUTO_CREATE", valTrue), config.ErrOIDC},
-		{base("HUB_OIDC_ISSUER_URL", "https://idp.example.test", "HUB_OIDC_CLIENT_ID", "hub", envClientSecret, "cs",
+		{base("HUB_OIDC_ISSUER_URL", "https://idp.example.test", "HUB_OIDC_CLIENT_ID", "hub", envOIDCClient, "cs",
 			"HUB_OIDC_AUTO_CREATE", valTrue, "HUB_OIDC_ALLOWED_DOMAINS", "example.test", "HUB_AUTH_ADMINS", "anyone"), nil},
 	} {
 		cfg, err := load(t, c.env, "")

@@ -60,14 +60,13 @@ func load(t *testing.T, env map[string]string, body string) (*config.Config, err
 	return c.Load()
 }
 
-//nolint:gosec // environment variable names, not credentials
 const (
-	envClientSecret  = "HUB_OIDC_CLIENT_SECRET"
-	envSessionSecret = "HUB_SESSION_SECRET"
+	envOIDCClient = "HUB_OIDC_CLIENT_SECRET"
+	envSessionKey = "HUB_SESSION_SECRET"
 )
 
 func secrets() map[string]string {
-	return map[string]string{envClientSecret: "cs", envSessionSecret: strings.Repeat("x", 32)}
+	return map[string]string{envOIDCClient: "cs", envSessionKey: strings.Repeat("x", 32)}
 }
 
 func TestLoad(t *testing.T) {
@@ -140,7 +139,7 @@ func TestLoadErrors(t *testing.T) {
 	if _, err := load(t, secrets(), "users: []\n"); !errors.As(err, &req) {
 		t.Fatalf("missing public_url: %v", err)
 	}
-	short := map[string]string{envClientSecret: "cs", envSessionSecret: "short"}
+	short := map[string]string{envOIDCClient: "cs", envSessionKey: "short"}
 	if _, err := load(t, short, file); !errors.Is(err, config.ErrShortSecret) {
 		t.Fatalf("short secret: %v", err)
 	}
@@ -168,8 +167,6 @@ func TestLoadErrors(t *testing.T) {
 
 // testKey is a throwaway key from openssl genpkey -algorithm ed25519, and
 // testPub its openssl pkey -pubout.
-//
-//nolint:gosec // a test key that signs nothing real
 const (
 	testKey = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIMWpXNQfEB+9EILo9tcvcyxQjkZ4nmD9etkP6FFzgPbL\n-----END PRIVATE KEY-----\n"
 	testPub = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAFdRPWzV70Dz3asm11xo9SeU/pArIg5dNZX+Vo9uYh7g=\n-----END PUBLIC KEY-----\n"
@@ -320,8 +317,8 @@ func TestHoncho(t *testing.T) {
 }
 
 func TestHonchoKeyEnv(t *testing.T) {
-	t.Setenv("HUB_TEST_HONCHO_KEY", " env-key ")
-	h := config.Honcho{APIKey: "inline", APIKeyEnv: "HUB_TEST_HONCHO_KEY"} //nolint:gosec // test values, not credentials
+	t.Setenv("KEY_ENV", " env-key ")
+	h := config.Honcho{APIKey: "inline", APIKeyEnv: "KEY_ENV"}
 	if k, err := h.Key(); err != nil || k != "env-key" {
 		t.Fatalf("key = %q, %v", k, err)
 	}

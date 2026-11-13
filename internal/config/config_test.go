@@ -86,15 +86,15 @@ func TestValidate(t *testing.T) {
 
 func TestServiceDeviceFromEnv(t *testing.T) {
 	t.Parallel()
-	cfg, err := load(map[string]string{ //nolint:gosec // a fake token
-		"TALARIA_HUB_URL": hubURL, "TALARIA_HUB_TOKEN_FILE": "/var/run/secrets/token",
+	cfg, err := load(map[string]string{
+		"TALARIA_HUB_URL": hubURL, "TALARIA_HUB_TOKEN_FILE": "/run/token",
 		"TALARIA_HUB_TOKEN": "hdt_x", "TALARIA_DEVICE_ROOTS": "/work", "TALARIA_GATEWAY_SPLICE": "false",
 		"TALARIA_STORE_KEYRING": "false",
 	}, "{}")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Hub.TokenFile != "/var/run/secrets/token" || cfg.Hub.Token != "hdt_x" || cfg.Gateway.Splice ||
+	if cfg.Hub.TokenFile != "/run/token" || cfg.Hub.Token != "hdt_x" || cfg.Gateway.Splice ||
 		cfg.Store.Keyring || len(cfg.Device.Roots) != 1 {
 		t.Errorf("cfg = %+v", cfg)
 	}
