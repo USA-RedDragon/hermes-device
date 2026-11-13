@@ -18,7 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // Ranges and groups of the panel.

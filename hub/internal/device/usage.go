@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/hermes-device/assertion"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // The Claude Code usage leg of acp-host (talaria docs/protocol.md section

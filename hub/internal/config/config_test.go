@@ -12,8 +12,8 @@ import (
 
 	"github.com/USA-RedDragon/configulator/v2"
 	"github.com/USA-RedDragon/hermes-device/assertion"
-	"github.com/USA-RedDragon/hermes-hub/internal/config"
-	"github.com/USA-RedDragon/hermes-hub/internal/webpush"
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
+	"github.com/USA-RedDragon/talaria/hub/internal/webpush"
 	"github.com/goccy/go-yaml"
 )
 

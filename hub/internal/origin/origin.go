@@ -32,8 +32,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/notice"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/notice"
 )
 
 // How a row shows.

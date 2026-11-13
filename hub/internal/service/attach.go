@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 var errAway = fmt.Errorf("%w: Hermes is restarting or cannot be reached, so the attachments were not sent. "+

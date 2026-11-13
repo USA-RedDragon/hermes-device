@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/config"
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/scheduled"
-	"github.com/USA-RedDragon/hermes-hub/internal/scheduled/scheduledtest"
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/scheduled"
+	"github.com/USA-RedDragon/talaria/hub/internal/scheduled/scheduledtest"
 )
 
 const (

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 func (n *Notifier) HandleNow(ctx context.Context, nt hub.Notice) { n.handle(ctx, nt) }

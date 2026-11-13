@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 var _ hub.AgentStore = (*Store)(nil)

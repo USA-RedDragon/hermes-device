@@ -3,7 +3,7 @@ package hub_test
 import (
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 func TestIsBackground(t *testing.T) {

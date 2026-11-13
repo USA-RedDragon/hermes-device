@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/service"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/service"
 )
 
 const providerAnthropic = "anthropic"

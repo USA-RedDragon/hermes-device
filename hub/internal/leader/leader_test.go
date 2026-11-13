@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/leader"
-	"github.com/USA-RedDragon/hermes-hub/internal/store"
-	"github.com/USA-RedDragon/hermes-hub/internal/store/storetest"
+	"github.com/USA-RedDragon/talaria/hub/internal/leader"
+	"github.com/USA-RedDragon/talaria/hub/internal/store"
+	"github.com/USA-RedDragon/talaria/hub/internal/store/storetest"
 )
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

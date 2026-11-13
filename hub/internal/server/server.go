@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/config"
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"

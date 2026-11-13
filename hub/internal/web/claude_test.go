@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/claude"
-	"github.com/USA-RedDragon/hermes-hub/internal/claude/claudetest"
-	"github.com/USA-RedDragon/hermes-hub/internal/config"
-	"github.com/USA-RedDragon/hermes-hub/internal/device"
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
-	"github.com/USA-RedDragon/hermes-hub/internal/store"
-	"github.com/USA-RedDragon/hermes-hub/internal/web"
+	"github.com/USA-RedDragon/talaria/hub/internal/claude"
+	"github.com/USA-RedDragon/talaria/hub/internal/claude/claudetest"
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
+	"github.com/USA-RedDragon/talaria/hub/internal/device"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
+	"github.com/USA-RedDragon/talaria/hub/internal/store"
+	"github.com/USA-RedDragon/talaria/hub/internal/web"
 )
 
 func do(t *testing.T, c *http.Client, method, u, csrf, origin string) (*http.Response, string) {

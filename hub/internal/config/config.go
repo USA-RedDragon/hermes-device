@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/telegram"
+	"github.com/USA-RedDragon/talaria/hub/internal/telegram"
 )
 
 // Metrics configures the Prometheus metrics server.

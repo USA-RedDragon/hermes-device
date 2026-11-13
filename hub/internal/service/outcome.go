@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // Hermes v0.23.1 asks for an approval from inside the tool call it holds:

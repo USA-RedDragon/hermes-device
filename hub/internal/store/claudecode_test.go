@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/store"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/store"
 )
 
 const slotWork = "work"

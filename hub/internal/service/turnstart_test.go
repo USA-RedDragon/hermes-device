@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/service"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/service"
 )
 
 const (

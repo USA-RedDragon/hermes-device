@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 const (

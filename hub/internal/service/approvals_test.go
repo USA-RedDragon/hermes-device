@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/service"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/service"
 )
 
 func approvalPrompt(id string) gateway.Prompt {

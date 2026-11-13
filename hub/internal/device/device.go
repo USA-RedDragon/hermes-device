@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/hermes-device/protocol"
-	"github.com/USA-RedDragon/hermes-hub/internal/config"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 	"github.com/coder/websocket"
 )
 

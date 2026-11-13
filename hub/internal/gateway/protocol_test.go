@@ -3,7 +3,7 @@ package gateway_test
 import (
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
 )
 
 func TestProducer(t *testing.T) {

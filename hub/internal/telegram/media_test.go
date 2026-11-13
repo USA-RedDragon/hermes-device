@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/telegram"
+	"github.com/USA-RedDragon/talaria/hub/internal/telegram"
 )
 
 // sendMedia sends m from alice in a direct message.

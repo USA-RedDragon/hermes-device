@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // uploadTimeout bounds one upload: the plugin sends the file to the

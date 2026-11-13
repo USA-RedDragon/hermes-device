@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/notice"
+	"github.com/USA-RedDragon/talaria/hub/internal/notice"
 )
 
 // NOTICE_UPDATE=1 go test ./internal/notice rewrites the expected notices

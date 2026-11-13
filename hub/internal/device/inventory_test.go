@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/device"
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
+	"github.com/USA-RedDragon/talaria/hub/internal/device"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
 )
 
 // clientMethods is every gateway method name that the Hermes v0.23.1 Ink TUI

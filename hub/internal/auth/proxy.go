@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/config"
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 

@@ -13,8 +13,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/device"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/device"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // PluginBase is where the Hermes dashboard mounts the subagent-routes

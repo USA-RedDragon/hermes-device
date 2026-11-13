@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
 )
 
 const (

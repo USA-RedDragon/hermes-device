@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 	"github.com/coder/websocket"
 )
 

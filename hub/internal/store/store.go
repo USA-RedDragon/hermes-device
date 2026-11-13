@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 	_ "modernc.org/sqlite"             // database/sql driver "sqlite"
 )

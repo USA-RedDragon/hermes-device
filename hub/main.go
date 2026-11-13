@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/USA-RedDragon/hermes-hub/cmd"
+	"github.com/USA-RedDragon/talaria/hub/cmd"
 )
 
 // https://goreleaser.com/cookbooks/using-main.version/

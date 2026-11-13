@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // claudeAdmin is the optional part of a hub.Claude that says whether a

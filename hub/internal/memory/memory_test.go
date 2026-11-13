@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/config"
-	"github.com/USA-RedDragon/hermes-hub/internal/device"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/memory"
-	"github.com/USA-RedDragon/hermes-hub/internal/memory/memorytest"
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
+	"github.com/USA-RedDragon/talaria/hub/internal/device"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/memory"
+	"github.com/USA-RedDragon/talaria/hub/internal/memory/memorytest"
 )
 
 const (

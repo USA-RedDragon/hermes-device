@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 const shot = "/opt/data/cache/screenshots/hermes-device/s1/shot.jpg"

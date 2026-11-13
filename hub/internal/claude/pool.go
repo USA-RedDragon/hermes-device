@@ -4,7 +4,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // apiCreditsPrefix starts the provider of an account's API key. Those

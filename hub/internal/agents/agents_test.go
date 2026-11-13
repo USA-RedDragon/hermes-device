@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/agents"
-	"github.com/USA-RedDragon/hermes-hub/internal/config"
-	"github.com/USA-RedDragon/hermes-hub/internal/device"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/service"
-	"github.com/USA-RedDragon/hermes-hub/internal/store"
+	"github.com/USA-RedDragon/talaria/hub/internal/agents"
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
+	"github.com/USA-RedDragon/talaria/hub/internal/device"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/service"
+	"github.com/USA-RedDragon/talaria/hub/internal/store"
 )
 
 const (

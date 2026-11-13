@@ -7,8 +7,8 @@ import (
 	"net/netip"
 	"net/url"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/auth"
-	"github.com/USA-RedDragon/hermes-hub/internal/config"
+	"github.com/USA-RedDragon/talaria/hub/internal/auth"
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
 )
 
 // docsURL is the setup help the proxy error page links to.

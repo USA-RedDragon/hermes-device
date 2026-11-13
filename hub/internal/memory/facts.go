@@ -4,7 +4,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // condensedLevels are the levels of conclusions Honcho's dreams write.

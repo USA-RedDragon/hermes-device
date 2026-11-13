@@ -20,8 +20,8 @@ import (
 	"time"
 	_ "time/tzdata" // quiet hours need time zones; the image has no tzdata
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/webpush"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/webpush"
 )
 
 // Telegram sends notices to Telegram chats.

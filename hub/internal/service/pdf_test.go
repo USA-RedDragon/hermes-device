@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/pdf"
-	"github.com/USA-RedDragon/hermes-hub/internal/pdf/pdftest"
-	"github.com/USA-RedDragon/hermes-hub/internal/service"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/pdf"
+	"github.com/USA-RedDragon/talaria/hub/internal/pdf/pdftest"
+	"github.com/USA-RedDragon/talaria/hub/internal/service"
 )
 
 type fakePDF struct {

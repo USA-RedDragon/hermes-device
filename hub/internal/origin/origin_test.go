@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/origin"
+	"github.com/USA-RedDragon/talaria/hub/internal/origin"
 )
 
 type wantNotice struct {

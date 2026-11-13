@@ -9,8 +9,8 @@ import (
 	"testing"
 	"unicode/utf16"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/telegram"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/telegram"
 )
 
 const (

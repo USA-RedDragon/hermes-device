@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/claude"
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
+	"github.com/USA-RedDragon/talaria/hub/internal/claude"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
 )
 
 // GoodCode is the code the fake accepts.

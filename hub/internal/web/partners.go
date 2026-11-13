@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // partnerRoutes adds the API of the chat pairs that work together.

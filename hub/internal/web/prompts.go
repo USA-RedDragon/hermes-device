@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // promptRoutes adds the API of each user's saved prompts.

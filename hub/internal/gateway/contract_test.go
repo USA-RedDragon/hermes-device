@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // contract lists source lines of Hermes v0.23.1 this client depends on, by

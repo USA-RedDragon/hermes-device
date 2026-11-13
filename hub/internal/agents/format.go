@@ -4,7 +4,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // Format is the text the target agent gets: a header that names the

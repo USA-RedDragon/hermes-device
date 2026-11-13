@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/notice"
+	"github.com/USA-RedDragon/talaria/hub/internal/notice"
 )
 
 // The exact formats of text that Hermes, Claude Code and the importer put

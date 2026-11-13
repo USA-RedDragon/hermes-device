@@ -14,7 +14,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/device"
+	"github.com/USA-RedDragon/talaria/hub/internal/device"
 )
 
 // PluginBase is where the Hermes dashboard mounts the Claude

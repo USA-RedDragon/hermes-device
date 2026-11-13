@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/notify"
-	"github.com/USA-RedDragon/hermes-hub/internal/store"
-	"github.com/USA-RedDragon/hermes-hub/internal/webpush"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/notify"
+	"github.com/USA-RedDragon/talaria/hub/internal/store"
+	"github.com/USA-RedDragon/talaria/hub/internal/webpush"
 )
 
 const (

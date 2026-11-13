@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/config"
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
 )
 
 const (

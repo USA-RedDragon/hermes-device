@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/pdf"
-	"github.com/USA-RedDragon/hermes-hub/internal/pdf/pdftest"
+	"github.com/USA-RedDragon/talaria/hub/internal/pdf"
+	"github.com/USA-RedDragon/talaria/hub/internal/pdf/pdftest"
 )
 
 const aPDF = "a.pdf"

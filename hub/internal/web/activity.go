@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // sessionTokens is the optional part of hub.Insights that reads the tokens

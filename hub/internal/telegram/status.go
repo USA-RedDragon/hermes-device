@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // sessionStatus is what the bot last heard about an attached session's

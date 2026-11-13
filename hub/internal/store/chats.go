@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 var _ hub.ChatStore = (*Store)(nil)

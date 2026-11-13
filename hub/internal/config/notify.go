@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/webpush"
+	"github.com/USA-RedDragon/talaria/hub/internal/webpush"
 )
 
 // Notify configures notices on people's phones: approvals and questions

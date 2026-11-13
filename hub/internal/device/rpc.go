@@ -12,7 +12,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // JSON-RPC error codes and data.reason values of the gateway leg. They

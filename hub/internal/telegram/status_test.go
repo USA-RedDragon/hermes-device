@@ -3,7 +3,7 @@ package telegram_test
 import (
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 func TestStatusShowsContext(t *testing.T) {

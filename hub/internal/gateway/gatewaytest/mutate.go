@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
 )
 
 // maxTitle is SessionDB.MAX_TITLE_LENGTH in hermes_state.py.

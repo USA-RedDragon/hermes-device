@@ -4,7 +4,7 @@ import (
 	"context"
 	"slices"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // NewChatModels lists what a chat that does not exist yet can use: the

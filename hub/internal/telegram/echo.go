@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
-	"github.com/USA-RedDragon/hermes-hub/internal/notice"
-	"github.com/USA-RedDragon/hermes-hub/internal/origin"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/notice"
+	"github.com/USA-RedDragon/talaria/hub/internal/origin"
 	"github.com/google/uuid"
 )
 

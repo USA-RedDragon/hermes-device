@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/telegram"
+	"github.com/USA-RedDragon/talaria/hub/internal/telegram"
 )
 
 func TestConfigValidate(t *testing.T) {

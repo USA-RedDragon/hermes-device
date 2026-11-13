@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // handleSubagents reads (GET) or sets (PUT {"choice"}) a chat's

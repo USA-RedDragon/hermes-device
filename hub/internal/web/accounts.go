@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/auth"
-	"github.com/USA-RedDragon/hermes-hub/internal/config"
-	"github.com/USA-RedDragon/hermes-hub/internal/store"
+	"github.com/USA-RedDragon/talaria/hub/internal/auth"
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
+	"github.com/USA-RedDragon/talaria/hub/internal/store"
 )
 
 // AccountStore keeps the hub's accounts. *store.Store implements it.

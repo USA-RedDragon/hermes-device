@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 // cronJob is the part of a row of the Hermes dashboard's /api/cron/jobs

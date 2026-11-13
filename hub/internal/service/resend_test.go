@@ -6,9 +6,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
-	"github.com/USA-RedDragon/hermes-hub/internal/gateway/gatewaytest"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 const pageID = "hub:7f1c2d3e-0000-4000-8000-0123456789ab"

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-hub/internal/claude"
-	"github.com/USA-RedDragon/hermes-hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/claude"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 func poolAccount(label string, used float64, resets time.Time) hub.ClaudeAccount {

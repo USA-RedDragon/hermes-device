@@ -1,4 +1,4 @@
-module github.com/USA-RedDragon/hermes-hub
+module github.com/USA-RedDragon/talaria/hub
 
 go 1.27.2
 
