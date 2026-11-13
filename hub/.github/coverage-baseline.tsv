@@ -3,7 +3,7 @@ cmd/cmd.go	282	0
 cmd/telegram.go	132	7
 internal/agentcfg/agentcfg.go	440	256
 internal/agentcfg/agentcfgtest/agentcfgtest.go	122	106
-internal/agentcfg/plain.go	26	26
+internal/agentcfg/plain.go	28	28
 internal/agents/agents.go	473	385
 internal/agents/format.go	29	29
 internal/auth/limit.go	45	40
@@ -36,14 +36,14 @@ internal/device/device.go	202	163
 internal/device/devicetest/devicetest.go	522	467
 internal/device/files.go	71	57
 internal/device/gateway.go	419	331
-internal/device/legs.go	169	151
+internal/device/legs.go	169	153
 internal/device/pair.go	52	29
 internal/device/plugin.go	100	84
 internal/device/rpc.go	214	199
 internal/device/sessioncheck.go	23	22
 internal/device/usage.go	50	40
 internal/device/views.go	17	17
-internal/gateway/client.go	264	229
+internal/gateway/client.go	264	223
 internal/gateway/gatewaytest/activity.go	106	88
 internal/gateway/gatewaytest/compose.go	184	159
 internal/gateway/gatewaytest/fake.go	704	647
@@ -136,10 +136,10 @@ internal/telegram/api.go	192	152
 internal/telegram/bot.go	667	544
 internal/telegram/budget.go	23	20
 internal/telegram/claude.go	106	88
-internal/telegram/commands.go	245	202
+internal/telegram/commands.go	245	203
 internal/telegram/computers.go	186	146
 internal/telegram/config.go	18	18
-internal/telegram/dmtopics.go	105	86
+internal/telegram/dmtopics.go	105	88
 internal/telegram/draft.go	78	63
 internal/telegram/echo.go	133	112
 internal/telegram/format.go	126	123
@@ -151,7 +151,7 @@ internal/telegram/render.go	498	450
 internal/telegram/replymedia.go	102	87
 internal/telegram/status.go	59	53
 internal/telegram/todo.go	58	51
-internal/telegram/topics.go	521	379
+internal/telegram/topics.go	521	381
 internal/updates/updates.go	95	82
 internal/web/accounts.go	255	192
 internal/web/activity.go	135	93
