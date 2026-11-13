@@ -120,7 +120,7 @@ func (s *Service) SubagentEvents(ctx context.Context, user, backendID, sessionID
 	// Without a log the hub reads the whole transcript every time.
 	err := s.withSession(ctx, user, backendID, sessionID, func(b *backend, ls *live) error {
 		var all []hub.SubagentEvent
-		_, _, err := s.readChild(ctx, b, ls, subagentID, "", func(evs []hub.SubagentEvent, _ bool) { all = append(all, evs...) }, &out)
+		_, _, err := s.readChild(ctx, b, ls, subagentID, "", true, func(evs []hub.SubagentEvent, _ bool) { all = append(all, evs...) }, &out)
 		for i := range all {
 			all[i].Seq = int64(i + 1)
 		}
@@ -147,7 +147,7 @@ func (s *Service) syncSubagent(ctx context.Context, b *backend, ls *live, k hub.
 	}
 	var pending []hub.SubagentEvent
 	reset := false
-	to, found, err := s.readChild(ctx, b, ls, k.SubagentID, from, func(evs []hub.SubagentEvent, r bool) {
+	to, found, err := s.readChild(ctx, b, ls, k.SubagentID, from, false, func(evs []hub.SubagentEvent, r bool) {
 		if r && from != "" {
 			pending, reset = nil, true
 		}
@@ -163,7 +163,10 @@ func (s *Service) syncSubagent(ctx context.Context, b *backend, ls *live, k hub.
 // readChild reads the child's transcript pages from cursor on and hands each
 // page's events to take, with whether the page starts the transcript again.
 // It returns the cursor to read on from and whether Hermes found the child.
-func (s *Service) readChild(ctx context.Context, b *backend, ls *live, subagentID, cursor string,
+//
+// With retry the read waits out a restarting backend (backend.read); without
+// it one failed try ends the read, for a caller that has the log to answer.
+func (s *Service) readChild(ctx context.Context, b *backend, ls *live, subagentID, cursor string, retry bool,
 	take func([]hub.SubagentEvent, bool), out *hub.SubagentEvents) (string, bool, error) {
 	c, err := b.ensure(ctx, ls)
 	if err != nil {
@@ -183,7 +186,11 @@ func (s *Service) readChild(ctx context.Context, b *backend, ls *live, subagentI
 			p.ToolDetails = hub.MaxStepResult
 		}
 		var r gateway.ChildTranscript
-		if err := b.read(ctx, ls, gateway.MethodTranscript, p, &r); err != nil {
+		call := b.call
+		if retry {
+			call = b.read
+		}
+		if err := call(ctx, ls, gateway.MethodTranscript, p, &r); err != nil {
 			return cursor, false, refusal(err)
 		}
 		if !r.Available {

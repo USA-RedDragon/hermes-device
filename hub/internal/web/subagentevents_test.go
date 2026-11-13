@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
@@ -135,6 +136,24 @@ func TestSubagentEventsKeptAfterTheEnd(t *testing.T) {
 	e.gw.Stop()
 	r = steps(t, c, e.url+eventsA)
 	if got := kinds(r); got != "goal,thinking,tool_start,tool_end,message,steer" || r.Live {
+		t.Fatalf("stored events = %s live=%v", got, r.Live)
+	}
+}
+
+// While Hermes restarts, the stored steps answer at once: the hub does not
+// wait the restart out for a read its log can serve.
+func TestSubagentEventsStoredWhileHermesRestarts(t *testing.T) {
+	t.Parallel()
+	e := activityEnv(t)
+	e.gw.SetCapabilities(gateway.CapTranscriptToolDetails)
+	e.gw.AddChildRows("s1", "sa-0-a", firstSteps()...)
+	c := client(t)
+	login(t, e, c)
+	steps(t, c, e.url+eventsA)
+	e.gw.BeginRestart()
+	c.Timeout = 5 * time.Second
+	r := steps(t, c, e.url+eventsA)
+	if got := kinds(r); got != "goal,thinking,tool_start,tool_end,message" || r.Live {
 		t.Fatalf("stored events = %s live=%v", got, r.Live)
 	}
 }
