@@ -6,7 +6,10 @@
 // running ones (subagent.list) and the background commands (process.list).
 // /bg prompts come from background.start (sent by the hub) and
 // background.complete. ctx gives it the app's api, el, banner, chat (the
-// open Chat or null), showText (a dialog with a long text) and words.
+// open Chat or null), showText (a dialog with a long text), words, and the
+// chat's toast, highlight and diff for the tool cards of a subagent's steps.
+// An open subagent row shows its steps as a small chat (minichat.js), read
+// from GET .../subagents/{id}/events after the last seq it holds.
 window.HubActivity = (ctx) => {
   const { api, el } = ctx;
   const $ = (id) => document.getElementById(id);
@@ -21,8 +24,8 @@ window.HubActivity = (ctx) => {
   let S = fresh(null);
   function fresh(chat) {
     return { chat, subs: new Map(), bgs: new Map(), open: new Set(), tab: "sub", paused: false, turn: null,
-      usage: null, running: false, error: "", failingSince: 0, loaded: false, polled: 0, timer: 0, tick: 0, tails: new Map(), tailAt: 0,
-      approvals: new Map(), asked: new Set() };
+      usage: null, running: false, error: "", failingSince: 0, loaded: false, polled: 0, timer: 0, tick: 0,
+      approvals: new Map(), asked: new Set(), minis: new Map() };
   }
 
   // k writes a token count: 812, 1.3k, 41k, 1.2M.
@@ -328,7 +331,7 @@ window.HubActivity = (ctx) => {
         if (!S.loaded || Date.now() - S.failingSince >= ACTIVITY_GAP_MS) S.error = e.message;
       }
       S.polled = Date.now();
-      await refreshTails();
+      await refreshMinis();
       if (chat !== S.chat) return;
       draw();
     }
@@ -355,25 +358,74 @@ window.HubActivity = (ctx) => {
     S.timer = setTimeout(poll, 400);
   }
 
-  // refreshTails reads the live transcript of each open, running subagent.
-  async function refreshTails() {
-    const chat = S.chat;
-    const want = [...S.open].filter((id) => { const r = S.subs.get(id); return r && live.has(r.state); });
-    await Promise.all(want.map(async (id) => {
-      try {
-        const t = await api("GET", chat.base + "/subagents/" + encodeURIComponent(id) + "/tail");
-        if (chat === S.chat && t && t.available) S.tails.set(id, transcript(t.text));
-      } catch (_) { /* it may have ended */ }
-    }));
+  // mini is the small chat of a subagent's steps, kept across draws so it
+  // keeps its place and what the reader opened.
+  function mini(r) {
+    let m = S.minis.get(r.id);
+    if (!m) {
+      m = { view: window.HubMiniChat.create({ el, toast, highlight: ctx.highlight, diff: ctx.diff }), seq: 0, epoch: null,
+        busy: false, done: false, top: 0, end: true };
+      S.minis.set(r.id, m);
+      m.view.empty("Loading the steps…");
+    }
+    m.view.set(miniInfo(r));
+    return m;
   }
 
-  // transcript turns a subagent's live transcript into tail lines,
-  // without its header.
-  function transcript(text) {
-    let lines = String(text || "").split("\n");
-    const bar = lines.findIndex((l) => /^={8,}$/.test(l.trim()));
-    if (bar >= 0 && bar < 12) lines = lines.slice(bar + 1);
-    return lines.filter((l) => l.trim()).slice(-80).map((l) => ["", l]);
+  function miniInfo(r) {
+    if (live.has(r.state)) return { model: r.model };
+    return { model: r.model, end: { state: r.state, durationS: r.endedAt && r.startedAt ? (r.endedAt - r.startedAt) / 1000 : 0,
+      result: r.result, tin: r.tin, tout: r.tout, tokens: r.tin !== null || r.tout !== null ? k(r.tin) + " in · " + k(r.tout) + " out" : "",
+      endedAt: r.endedAt } };
+  }
+
+  // readSteps reads the steps of subagent r after the last one its small
+  // chat holds, until the hub has no more. A transcript Hermes rewrote
+  // (a new epoch) is read again from the start.
+  async function readSteps(r) {
+    const chat = S.chat;
+    const m = mini(r);
+    if (m.busy) return;
+    m.busy = true;
+    try {
+      for (let i = 0; i < 20; i++) {
+        const got = await api("GET", chat.base + "/subagents/" + encodeURIComponent(r.id) + "/events?after=" + m.seq);
+        if (chat !== S.chat) return;
+        if (m.epoch !== null && got.epoch !== m.epoch && m.seq > 0) {
+          m.view.reset();
+          m.seq = 0;
+          m.epoch = got.epoch;
+          continue;
+        }
+        m.epoch = got.epoch;
+        const evs = got.events || [];
+        if (evs.length) {
+          m.view.clearEmpty();
+          m.view.add(evs);
+          m.seq = evs[evs.length - 1].seq;
+        }
+        if (!got.more) break;
+      }
+      if (!m.view.events().length) {
+        m.view.clearEmpty();
+        m.view.empty(live.has(r.state) ? "No steps yet." : "Hermes kept no steps of this subagent.");
+      }
+      m.done = !live.has(r.state);
+    } catch (e) {
+      if (chat === S.chat && !m.view.events().length) {
+        m.view.clearEmpty();
+        m.view.empty("Could not load the steps: " + e.message);
+      }
+    } finally {
+      m.busy = false;
+    }
+  }
+
+  // refreshMinis reads the new steps of each open subagent: a running one
+  // on every poll, an ended one until it has its last steps.
+  async function refreshMinis() {
+    const want = [...S.open].map((id) => S.subs.get(id)).filter((r) => r && (live.has(r.state) || !(S.minis.get(r.id) || {}).done));
+    await Promise.all(want.map(readSteps));
   }
 
   // tokensLater reads a finished /bg prompt's tokens from Hermes's records,
@@ -512,7 +564,7 @@ window.HubActivity = (ctx) => {
     const flip = () => {
       if (S.open.has(r.id)) S.open.delete(r.id); else S.open.add(r.id);
       draw();
-      if (S.open.has(r.id) && r.kind === "sub" && live.has(r.state)) soon();
+      if (S.open.has(r.id) && r.kind === "sub") soon();
     };
     head.onclick = flip;
     head.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(); } };
@@ -525,11 +577,9 @@ window.HubActivity = (ctx) => {
     const chat = S.chat;
     const b = el("div", "row-body");
     for (const [id, a] of S.approvals) if (a.sub === r.id) b.append(approvalBox(id, a.p));
-    if (r.result && !live.has(r.state)) {
-      const res = el("div", "result", r.kind === "prompt" ? r.result : r.result);
-      b.append(res);
-    }
-    const lines = (r.kind === "sub" && live.has(r.state) && S.tails.get(r.id)) || r.tail;
+    if (r.result && !live.has(r.state) && r.kind !== "sub") b.append(el("div", "result", r.result));
+    if (r.kind === "sub") b.append(mini(r).view.node);
+    const lines = r.kind === "sub" ? [] : r.tail;
     if (lines.length) {
       const tail = el("div", "tail");
       for (const [kind, text] of lines) {
@@ -559,6 +609,7 @@ window.HubActivity = (ctx) => {
           await api("POST", chat.base + "/subagents/" + encodeURIComponent(r.id) + "/steer", { text });
           push(r, "k", "You: " + text);
           inp.value = "";
+          await readSteps(r);
           draw();
         }, "Sent to " + (r.goal || "the subagent") + ". It reads it at its next step.", "Could not send").finally(() => { send.disabled = false; });
       };
@@ -582,6 +633,12 @@ window.HubActivity = (ctx) => {
       o.onclick = () => ctx.showText(r.command || r.goal, r.output || r.tail.map((l) => l[1]).join("\n"));
       acts.append(o);
     }
+    if (r.kind === "sub" && !running) {
+      const o = el("button", "", "Open full transcript");
+      o.type = "button";
+      o.onclick = () => fullSteps(r);
+      acts.append(o);
+    }
     if (r.kind === "prompt" && !running) {
       const o = el("button", "", "Open chat");
       o.type = "button";
@@ -602,6 +659,29 @@ window.HubActivity = (ctx) => {
     }
     if (acts.children.length) b.append(acts);
     return b;
+  }
+
+  // fullSteps shows every step of an ended subagent in a dialog, without
+  // the height of the row.
+  function fullSteps(r) {
+    if (document.querySelector("dialog.steps")) return;
+    const m = S.minis.get(r.id);
+    const d = el("dialog", "picker steps");
+    d.append(el("h2", "", r.goal || "Subagent"));
+    const v = window.HubMiniChat.create({ el, toast, highlight: ctx.highlight, diff: ctx.diff, full: true });
+    const body = el("div", "pbody");
+    body.append(v.node);
+    const foot = el("div", "pfoot");
+    const shut = el("button", "primary", "Close");
+    shut.type = "button";
+    shut.onclick = () => d.close();
+    foot.append(shut);
+    d.append(body, foot);
+    d.addEventListener("close", () => d.remove());
+    document.body.append(d);
+    d.showModal();
+    v.set(miniInfo(r));
+    v.add(m ? m.view.events() : []);
   }
 
   function approvalBox(id, p) {
@@ -691,6 +771,11 @@ window.HubActivity = (ctx) => {
     if (S.error) sum.append(el("div", "bad", "Could not load activity: " + S.error));
     const body = $("actbody");
     const top = body.scrollTop;
+    // A small chat loses its place when its row is drawn again: keep it.
+    for (const m of S.minis.values()) {
+      const n = m.view.node;
+      if (n.isConnected) { m.top = n.scrollTop; m.end = window.HubMiniChat.near(n); }
+    }
     const focus = document.activeElement && body.contains(document.activeElement) && document.activeElement.tagName === "INPUT"
       ? { row: document.activeElement.closest("[data-act]"), value: document.activeElement.value, pos: document.activeElement.selectionStart }
       : null;
@@ -711,6 +796,10 @@ window.HubActivity = (ctx) => {
       section(body, "Finished", done, null);
     }
     if (!rows.length) body.append(el("div", "empty", S.tab === "sub" ? "No subagents in this chat yet." : "Nothing running in the background. Start a prompt with /bg in the message box."));
+    for (const m of S.minis.values()) {
+      const n = m.view.node;
+      if (n.isConnected) n.scrollTop = m.end ? n.scrollHeight : m.top;
+    }
     body.scrollTop = top;
     if (focus && focus.row) {
       const again = body.querySelector('[data-act="' + CSS.escape(focus.row.dataset.act) + '"] input');

@@ -868,6 +868,38 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .act .result.muted { color: var(--muted); }
 .act .confirm { font-size: .82rem; display: flex; gap: .35rem; align-items: center; flex-wrap: wrap; overflow-wrap: anywhere; }
 .act .empty { color: var(--muted); font-size: .85rem; padding: 1rem .5rem; text-align: center; }
+/* A subagent's steps as a small chat (minichat.js). */
+.mc { background: var(--bg); border: 1px solid var(--line); border-radius: 9px; max-height: 24rem; overflow-y: auto; overflow-x: hidden;
+  padding: .55rem; display: flex; flex-direction: column; gap: .5rem; position: relative; font-size: .88rem; overscroll-behavior: contain;
+  min-width: 0; }
+.mc:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mc.full { max-height: none; border: 0; padding: 0; background: none; overflow: visible; }
+.mc > * { flex: none; min-width: 0; }
+.mc .msg { font-size: .86rem; padding: .4rem .65rem; }
+.mc .msg.assistant.md { white-space: normal; }
+.mc .msg.assistant .mc-text > :first-child { margin-top: 0; }
+.mc .msg.assistant .mc-text > :last-child { margin-bottom: 0; }
+.mc .msg.user.sm { max-width: 88%; white-space: pre-wrap; }
+.mc .queued { margin-top: -.3rem; text-align: right; }
+.mc .ts { font-size: .7rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.mc .msg > .ts { display: block; margin-top: .15rem; }
+.mc .note .ts, .mc summary .ts { font-size: inherit; }
+.mc details.reasoning { font-size: .84rem; }
+.mc details.reasoning .body { max-height: 12rem; }
+.mc .tool.notice { font-size: .84rem; }
+.mc .jump { position: sticky; bottom: 0; align-self: center; display: flex; gap: .3rem; align-items: center; background: var(--accent); color: #fff;
+  border: 1px solid var(--accent); border-radius: 999px; font-size: .78rem; padding: .2rem .7rem; box-shadow: 0 2px 8px rgba(0, 0, 0, .25); }
+.mc .jump .ico { width: .9rem; height: .9rem; }
+.mc-end { display: flex; gap: .5rem; align-items: flex-start; border: 1px solid var(--line); border-left: 3px solid var(--ok); border-radius: 10px;
+  background: var(--card); padding: .5rem .7rem; font-size: .86rem; overflow-wrap: anywhere; }
+.mc-end.bad { border-left-color: var(--bad); }
+.mc-end > .ico { width: 1rem; height: 1rem; margin-top: .15rem; flex: none; color: var(--ok); }
+.mc-end.bad > .ico { color: var(--bad); }
+.mc-end > div { min-width: 0; }
+.mc-end p { margin: .15rem 0 0; color: var(--muted); white-space: pre-wrap; }
+.mc-end .ts { display: block; margin-top: .15rem; }
+dialog.steps { width: min(48rem, calc(100vw - 1rem)); }
+dialog.steps .pbody { overflow-y: auto; }
 .toast { position: fixed; bottom: calc(1rem + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); z-index: 110;
   max-width: min(30rem, calc(100vw - 2rem)); background: var(--fg); color: var(--bg); padding: .45rem .8rem; border-radius: 8px; font-size: .85rem; }
 @media (max-width: 900px) {

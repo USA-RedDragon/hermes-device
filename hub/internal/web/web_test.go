@@ -436,7 +436,7 @@ func TestStaticAndHeaders(t *testing.T) {
 		resp.Header.Get("Referrer-Policy") != "same-origin" {
 		t.Fatalf("headers = %v", resp.Header)
 	}
-	for _, f := range []string{"/static/app.js", "/static/app.css", "/static/markdown.js", "/static/insights.js", "/static/settings.js", "/static/icons.js", "/static/composer.js", "/static/msgacts.js", "/static/notice.js", "/static/origin.js", "/static/toolcard.js", "/static/toolgroup.js", "/static/times.js", "/static/attach.js", "/static/pagesend.js", "/static/pageblocks.js", "/static/slashmatch.js", "/static/chatlist.js", "/static/pinorder.js", "/static/shortcuts.js", "/static/update.js", "/static/eventstream.js", "/static/send.js", "/static/reconcile.js", "/static/approvals.js", "/static/workswith.js", "/static/stick.js", "/static/sidebars.js", "/static/uistate.js", "/static/vendor/highlight.min.js"} {
+	for _, f := range []string{"/static/app.js", "/static/app.css", "/static/markdown.js", "/static/insights.js", "/static/settings.js", "/static/icons.js", "/static/composer.js", "/static/msgacts.js", "/static/notice.js", "/static/origin.js", "/static/toolcard.js", "/static/toolgroup.js", "/static/minichat.js", "/static/times.js", "/static/attach.js", "/static/pagesend.js", "/static/pageblocks.js", "/static/slashmatch.js", "/static/chatlist.js", "/static/pinorder.js", "/static/shortcuts.js", "/static/update.js", "/static/eventstream.js", "/static/send.js", "/static/reconcile.js", "/static/approvals.js", "/static/workswith.js", "/static/stick.js", "/static/sidebars.js", "/static/uistate.js", "/static/vendor/highlight.min.js"} {
 		if resp, _ := get(t, c, e.url+f); resp.StatusCode != http.StatusOK {
 			t.Fatalf("%s = %d", f, resp.StatusCode)
 		}

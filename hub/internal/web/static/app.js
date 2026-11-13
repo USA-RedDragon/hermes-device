@@ -3456,7 +3456,7 @@
     if (view && view.backend === j.b && view.session === j.s) view.jumpTo();
   },
     closeSide: () => openSide(false) });
-  const activity = window.HubActivity({ api, el, showText, drawn: () => drawSubs() });
+  const activity = window.HubActivity({ api, el, showText, drawn: () => drawSubs(), highlight: highlightBash, diff: diffView });
   const claude = window.HubClaude({ api, el, me: () => me, redraw: () => { if (view) drawInfo(view.info); else if (page) pageIdle(); } });
   const claudeCode = window.HubClaudeCode({ api, el });
   const usage = window.HubUsage({ api, el, chatHash, defaultBackend: () => me.default_backend || "",
