@@ -408,7 +408,7 @@ window.HubActivity = (ctx) => {
       }
       if (!m.view.events().length) {
         m.view.clearEmpty();
-        m.view.empty(live.has(r.state) ? "No steps yet." : "Hermes kept no steps of this subagent.");
+        m.view.empty(live.has(r.state) ? "No steps yet." : "The agent kept no steps of this subagent.");
       }
       m.done = !live.has(r.state);
     } catch (e) {

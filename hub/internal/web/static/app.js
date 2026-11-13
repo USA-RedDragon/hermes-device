@@ -19,8 +19,8 @@
   const words = { approval: "Talaria asks to run this", allow: "Allow", deny: "Deny",
     args: "Input", result: "Output", running: "Running", done: "Done", failed: "Failed",
     working: "Working", queued: "Queued: Talaria reads this when the current turn ends", waiting: "Waiting to run", newchat: "New chat",
-    lost: "Hermes restarted before it finished replying to this message. Messages sent after it wait until you dismiss it.",
-    held: "Hermes is restarting. Your message will send when it is back.", notsent: "Not sent.", again: "Send again",
+    lost: "The agent restarted before it finished replying to this message. Messages sent after it wait until you dismiss it.",
+    held: "The agent is restarting. Your message will send when it is back.", notsent: "Not sent.", again: "Send again",
     steered: "Sent to the running turn", now: "Stop and send now",
     unread: "The turn stopped before Talaria read this message.",
     tobottom: "Jump to latest", newone: "1 new message", newmany: "%d new messages" };
@@ -158,10 +158,10 @@
       const [backends, got] = await Promise.all([api("GET", "/api/backends"), api("GET", "/api/sessions", undefined, meta)]);
       const down = unreachableIDs(meta.headers && meta.headers.get("X-Talaria-Unreachable"));
       const sessions = keepUnreachable(lastList, got, down);
-      for (const b of backends) if (down.has(b.id) && !b.error) b.error = "Hermes is not answering. Retrying";
+      for (const b of backends) if (down.has(b.id) && !b.error) b.error = "The agent is not answering. Retrying";
       lastList = { backends, sessions };
       if (down.size) {
-        banner("Cannot reach Hermes. Showing the chats from before; retrying.", true, "list");
+        banner("Cannot reach the agent. Showing the chats from before; retrying.", true, "list");
         listRetry = setTimeout(refreshList, listBackoff.next());
       } else {
         listBackoff.reset();
@@ -179,7 +179,7 @@
         banner("Could not load chats: " + e.message, true, "list");
         listRetry = setTimeout(refreshList, listBackoff.next());
         // The chats shown stay as they were; with none yet, say why.
-        if (!lastList) $("sessions").replaceChildren(el("p", "none", "Cannot reach Hermes. Retrying\u2026"));
+        if (!lastList) $("sessions").replaceChildren(el("p", "none", "Cannot reach the agent. Retrying\u2026"));
       }
     } finally {
       listing = false;
@@ -1548,7 +1548,7 @@
         case "snapshot": this.snapshot(p); break;
         case "backend.status":
           if (p.connected) clearBanner("backend");
-          else banner("Lost the connection to Hermes. Reconnecting.", false, "backend");
+          else banner("Lost the connection to the agent. Reconnecting.", false, "backend");
           break;
         case "message.start":
           // A message handed to the running turn can arrive while a reply
@@ -3472,7 +3472,7 @@
           "instead of " + (p.mine ? p.name : "the computer it uses now") + (p.dir ? ", " + p.dir : "") + ".";
       }
       return "Talaria will run this chat's commands and file changes on the computer and in the folder you pick. " +
-        (p && p.kind === "server" ? "They then no longer run on the Hermes server." : "The chat then stops using the sandbox.");
+        (p && p.kind === "server" ? "They then no longer run on the server." : "The chat then stops using the sandbox.");
     },
     frame(title, body, foot) {
       const h = el("h2", "", title);
@@ -3487,7 +3487,7 @@
     computers() {
       const title = this.opts.move ? "Move to a computer" : "New chat on a computer";
       if (!this.list.length) {
-        this.frame(title, [el("p", "", this.opts.move ? "None of your computers works with this chat's Hermes." :
+        this.frame(title, [el("p", "", this.opts.move ? "None of your computers works with this chat's agent." :
           "You have no computers yet. To connect one, run talaria setup on it.")]);
         return;
       }

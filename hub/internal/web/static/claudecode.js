@@ -222,7 +222,7 @@ window.HubClaudeCode = (ctx) => {
     const h = el("h2", "", "Claude Code");
     h.id = "cc-h";
     head.append(h);
-    const hint = el("p", "mem-hint", "From the Claude Code transcripts on your computers and in Hermes. Only token counts leave each computer, " +
+    const hint = el("p", "mem-hint", "From the Claude Code transcripts on your computers and on the server. Only token counts leave each computer, " +
       "never what was said. Cost is what the tokens would cost at API prices; a subscription does not bill this.");
     const controls = el("div", "cc-controls");
     const groupBox = el("span");

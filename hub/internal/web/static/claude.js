@@ -198,7 +198,7 @@ window.HubClaude = (ctx) => {
   function signInControl(backend, account, signedIn) {
     const c = cache.get(backend);
     if (!c || !c.data || !c.data.admin) {
-      return el("span", "hint", "Ask a Claude admin of this Hermes to sign it in.");
+      return el("span", "hint", "Ask a Claude admin of this server to sign it in.");
     }
     const b = el("button", "", signedIn ? "Sign in again" : "Sign in");
     b.type = "button";
@@ -283,7 +283,7 @@ window.HubClaude = (ctx) => {
         line.append(a);
         body.append(line);
       } else {
-        body.append(el("p", "err", "Hermes has not shown the sign-in link yet. Close this and try again in a moment."));
+        body.append(el("p", "err", "The agent has not shown the sign-in link yet. Close this and try again in a moment."));
       }
       body.append(el("p", "", "2. Copy the code the Claude page shows and paste it here:"));
       const input = el("input", "claude-code");
@@ -339,10 +339,10 @@ window.HubClaude = (ctx) => {
       s.append(el("p", "err", "Could not read the subscription accounts: " + e.message));
       return s;
     }
-    s.append(el("p", "mem-hint", "The Claude and ChatGPT subscription accounts this Hermes reports, with the share of each usage window used. " +
+    s.append(el("p", "mem-hint", "The Claude and ChatGPT subscription accounts the agent reports, with the share of each usage window used. " +
       "Reset times are in " + (data.time_zone || "UTC") + " time. API credits are an estimate: the credit the plan includes each " +
-      "month, less what Hermes spent through the account's API key since the month started. Anthropic does not report the balance, " +
-      "so use outside Hermes is not counted."));
+      "month, less what the agent spent through the account's API key since the month started. Anthropic does not report the balance, " +
+      "so use outside Talaria is not counted."));
     if (!(data.accounts || []).length) s.append(el("p", "none", "No accounts."));
     const cards = el("div", "claude-cards");
     const poolCard = data.pool ? poolSummary(data.pool, cards) : null;
@@ -370,7 +370,7 @@ window.HubClaude = (ctx) => {
       for (const d of (u && u.details) || []) box.append(el("p", "hint", d));
       if (a.credits) {
         const line = el("p", "claude-meta", creditsLine(a.credits));
-        line.title = "An estimate that counts only Hermes's own use of this account's API key" +
+        line.title = "An estimate that counts only the agent's own use of this account's API key" +
           (a.credits.unpriced ? "; " + a.credits.unpriced + " calls had no known price and are not counted" : "");
         box.append(line);
       }

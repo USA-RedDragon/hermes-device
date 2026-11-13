@@ -181,7 +181,7 @@ window.HubUsers = (ctx) => {
       const c = el("div", "confirm");
       c.setAttribute("role", "alertdialog");
       c.setAttribute("aria-label", "Delete " + u.name);
-      c.append(el("p", "", "Delete " + u.name + "? Their chats stay in Hermes; their drafts, saved prompts and Telegram link on the hub go."),
+      c.append(el("p", "", "Delete " + u.name + "? Their chats stay with the agent; their drafts, saved prompts and Telegram link on the hub go."),
         button("danger", "Delete", () => { confirming = ""; run(u.name, () => api("POST", "/api/admin/users/" + encodeURIComponent(u.name) + "/delete"), ""); }),
         button("", "Cancel", () => { confirming = ""; focus = "del-" + u.name; draw(); }));
       box.append(c);
@@ -355,7 +355,7 @@ window.HubUsers = (ctx) => {
       head.append(add);
     }
     p.append(head);
-    if (local() && !adding) p.append(el("p", "hint", "People log in to this hub with a name and password. Pick which Hermes backends each person may use."));
+    if (local() && !adding) p.append(el("p", "hint", "People log in to this hub with a name and password. Pick which agent servers each person may use."));
     if (adding) p.append(addForm());
     const rows = el("div", "set-rows");
     for (const u of data.users) rows.append(personRow(u));

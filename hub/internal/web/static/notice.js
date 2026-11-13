@@ -298,7 +298,7 @@ window.HubNotice = (() => {
     let first = (i >= 0 ? t.slice(0, i) : t).trim();
     const rest = i >= 0 ? t.slice(i + 1) : "";
     if (first.startsWith("[IMPORTANT: ") && first.endsWith("]")) first = first.slice("[IMPORTANT: ".length, -1);
-    return { kind: "notice", title: short(first) || "Notice from Hermes", result: rest.trim() };
+    return { kind: "notice", title: short(first) || "Notice from the agent", result: rest.trim() };
   }
 
   const trim = (s) => s.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");

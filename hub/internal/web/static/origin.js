@@ -76,7 +76,7 @@ window.HubOrigin = (() => {
     const text = r.display_text.trim() ? r.display_text : r.text;
     const n = parse(r.text) || parse(text);
     if (n) return n;
-    return card(kindTitles[kind] || firstLine(text) || "Note from Hermes", text);
+    return card(kindTitles[kind] || firstLine(text) || "Note from the agent", text);
   }
 
   // The marker Hermes wraps a mid-turn message of the user in for the model

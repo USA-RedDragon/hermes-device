@@ -66,7 +66,7 @@ window.HubApprovals = (() => {
           if (done(card)) return;
           // 404: the prompt was settled where this page could not see it (another tab, Telegram, a timeout,
           // a restart of Hermes)
-          if (e && e.status === 404) { finish(id, "No longer waiting: Hermes closed this before the answer arrived"); return; }
+          if (e && e.status === 404) { finish(id, "No longer waiting: the agent closed this before the answer arrived"); return; }
           card.state = "open";
           enable(true);
           note(card, "Not delivered: " + ((e && e.message) || "the hub did not answer") + ". Press a button to try again.", true);
@@ -76,13 +76,13 @@ window.HubApprovals = (() => {
         if (done(card)) return;
         // The hub answers 202 once Hermes took the answer. The card is settled only when Hermes says so.
         card.state = "sent";
-        note(card, "Sent. Waiting for Hermes to confirm.");
+        note(card, "Sent. Waiting for the agent to confirm.");
         card.timer = setT(() => {
           card.timer = null;
           if (card.state !== "sent") return;
           card.state = "open";
           enable(true);
-          note(card, "Hermes has not confirmed this answer. Press a button to send it again.", true);
+          note(card, "The agent has not confirmed this answer. Press a button to send it again.", true);
         }, ackMs);
       };
 
@@ -139,7 +139,7 @@ window.HubApprovals = (() => {
     function settled(id) {
       const card = cards.get(id);
       if (!card || done(card)) return;
-      finish(id, card.state === "sent" || card.state === "sending" ? "Answered" : "Closed by Hermes, no answer was seen here");
+      finish(id, card.state === "sent" || card.state === "sending" ? "Answered" : "Closed by the agent, no answer was seen here");
     }
 
     // outcome is the hub's approval.outcome: what became of the approval.
@@ -154,7 +154,7 @@ window.HubApprovals = (() => {
     function lost(ids) {
       for (const id of ids || []) {
         const card = cards.get(id);
-        if (card && !done(card)) finish(id, "Closed: Hermes no longer waits for this. It was answered elsewhere, or Hermes restarted and dropped it. Nothing was sent from this page.");
+        if (card && !done(card)) finish(id, "Closed: the agent no longer waits for this. It was answered elsewhere, or the agent restarted and dropped it. Nothing was sent from this page.");
       }
     }
 

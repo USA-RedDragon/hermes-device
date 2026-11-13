@@ -69,7 +69,7 @@ const prompt = (id, cmd) => ({ kind: "approval", prompt_id: id, command: cmd, de
     shown[0].buttons()[0].onclick();
     await flush();
     assert.deepStrictEqual(log, [{ method: "POST", path: "/api/sessions/b/s/prompts/a/answer", body: { choice: "once" } }]);
-    assert.ok(shown[0].text().includes("Sent. Waiting for Hermes to confirm."));
+    assert.ok(shown[0].text().includes("Sent. Waiting for the agent to confirm."));
     tracker.settled("a");
     assert.ok(shown[0].text().includes("Answered"));
     assert.strictEqual(shown[0].buttons().length, 0);
@@ -84,7 +84,7 @@ const prompt = (id, cmd) => ({ kind: "approval", prompt_id: id, command: cmd, de
     tracker.settled("a");
     const t = shown[0].text();
     assert.ok(!t.includes("Answered"), t);
-    assert.ok(t.includes("Closed by Hermes"), t);
+    assert.ok(t.includes("Closed by the agent"), t);
   }
 
   // An answer Hermes does not confirm re-offers the buttons with a note.
@@ -98,7 +98,7 @@ const prompt = (id, cmd) => ({ kind: "approval", prompt_id: id, command: cmd, de
     assert.ok(shown[0].buttons().every((b) => b.disabled));
     timers[0].fn();
     assert.ok(shown[0].buttons().every((b) => !b.disabled));
-    assert.ok(shown[0].text().includes("Hermes has not confirmed this answer"));
+    assert.ok(shown[0].text().includes("The agent has not confirmed this answer"));
   }
 
   // A confirmation that comes in time cancels the retry offer.
@@ -134,8 +134,8 @@ const prompt = (id, cmd) => ({ kind: "approval", prompt_id: id, command: cmd, de
     const { tracker, shown } = harness();
     for (const id of ["a", "b", "c"]) tracker.offer(prompt(id, "cleanup " + id));
     tracker.lost(["a", "c"]);
-    assert.ok(shown[0].text().includes("Hermes no longer waits"));
-    assert.ok(shown[2].text().includes("Hermes no longer waits"));
+    assert.ok(shown[0].text().includes("the agent no longer waits"));
+    assert.ok(shown[2].text().includes("the agent no longer waits"));
     assert.strictEqual(shown[0].buttons().length, 0);
     assert.strictEqual(shown[1].buttons().length, 4);
     tracker.cancelled(["b"]);

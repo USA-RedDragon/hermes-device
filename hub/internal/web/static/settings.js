@@ -146,7 +146,7 @@ window.HubSettings = (ctx) => {
 
   // closeText says how a computer's latest connection to Hermes ended.
   function closeText(c) {
-    const who = { device: "The computer", backend: "Hermes", hub: "The hub" }[c.by] || "Something";
+    const who = { device: "The computer", backend: "The agent", hub: "The hub" }[c.by] || "Something";
     return "Disconnected " + when(c.at) + ". " + who + " closed the connection" +
       (c.reason ? ": " + c.reason : "") + " (code " + c.code + ").";
   }

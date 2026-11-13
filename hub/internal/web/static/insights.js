@@ -184,7 +184,7 @@ window.HubUsage = (ctx) => {
     const bar = el("div", "mem-head");
     if (backends.length > 1) {
       const sel = el("select");
-      sel.setAttribute("aria-label", "Hermes");
+      sel.setAttribute("aria-label", "Agent server");
       for (const b of backends) {
         const o = el("option", "", b.name);
         o.value = b.id;
@@ -338,7 +338,7 @@ window.HubUsage = (ctx) => {
     }
     out.push(chats);
 
-    const models = section("Models", "Tokens and API calls of each model. Cost is Hermes's estimate where it knows the price.");
+    const models = section("Models", "Tokens and API calls of each model. Cost is the agent's estimate where it knows the price.");
     if ((r.models || []).length) {
       models.append(table([{ label: "Model" }, { label: "Provider" }, { label: "Input", num: true }, { label: "Output", num: true },
         { label: "Cached", num: true }, { label: "Calls", num: true }, { label: "Cost", num: true }],
@@ -360,7 +360,7 @@ window.HubUsage = (ctx) => {
       ls.map((l) => [l.provider || "Unknown", bucket(l.requests_min), bucket(l.tokens_min), bucket(l.requests_hour),
         bucket(l.tokens_hour), hubFmt.when(l.at)])));
     } else {
-      limits.append(el("p", "none", "No limits seen yet. Hermes reads them from the x-ratelimit headers that some providers send. " +
+      limits.append(el("p", "none", "No limits seen yet. The agent reads them from the x-ratelimit headers that some providers send. " +
         "It does not read Anthropic's own rate-limit headers, and it does not record spending limits."));
     }
     limits.append(el("p", "mem-hint", "Ollama on the local GPU has no API limits."));
@@ -369,7 +369,7 @@ window.HubUsage = (ctx) => {
       const by = new Map();
       for (const c of speeds) if (!by.has(c.model)) by.set(c.model, c);
       limits.append(el("h3", "", "Speed"));
-      limits.append(el("p", "mem-hint", "Tokens per second and seconds per API call that Hermes measured in the latest chat of each model this hub saw."));
+      limits.append(el("p", "mem-hint", "Tokens per second and seconds per API call that the agent measured in the latest chat of each model this hub saw."));
       limits.append(table([{ label: "Model" }, { label: "Tokens per second", num: true }, { label: "Seconds per call", num: true }, { label: "Seen" }],
         [...by.values()].map((c) => [c.model || "Unknown", c.tokens_per_s.toFixed(1),
           c.avg_latency_s ? c.avg_latency_s.toFixed(1) : "", hubFmt.when(c.at)])));
@@ -397,7 +397,7 @@ window.HubUsage = (ctx) => {
     } else if (r.backlog_error) {
       mem.append(el("p", "err", r.backlog_error));
     } else {
-      mem.append(el("p", "none", "This Hermes does not use Honcho."));
+      mem.append(el("p", "none", "This agent server does not use learned memory (Honcho)."));
     }
     out.push(mem);
     return out;

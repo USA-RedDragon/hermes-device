@@ -21,7 +21,7 @@ window.HubMemory = (ctx) => {
     learned: "Facts Talaria picked up from your chats over time. It looks these up when they seem relevant. Delete anything wrong or out of date.",
     help: "Talaria keeps two short files that it reads at the start of every chat: its own notes and what it knows about you. It also learns facts from your chats over time and looks them up when they seem relevant. Here you can read, fix and delete all of it. Chats that are already open keep what they started with; changes apply to new chats.",
     full: "Almost full. Shorten or remove a line before Talaria needs room for a new one.",
-    off: "This file is turned off in the Hermes memory settings (memory.memory_enabled or memory.user_profile_enabled), so Talaria does not read it and it cannot be changed here.",
+    off: "This file is turned off in the agent's memory settings, so Talaria does not read it and it cannot be changed here.",
   };
 
   let backends = [];
@@ -194,7 +194,7 @@ window.HubMemory = (ctx) => {
     const head = el("div", "mem-head");
     if (backends.length > 1) {
       const sel = el("select", "mem-backend");
-      sel.setAttribute("aria-label", "Hermes");
+      sel.setAttribute("aria-label", "Agent server");
       for (const b of backends) {
         const o = el("option", "", b.name);
         o.value = b.id;
@@ -222,7 +222,7 @@ window.HubMemory = (ctx) => {
     body.setAttribute("role", "tabpanel");
     if (ui.help) body.append(el("p", "mem-hint", copy.help));
     if (!backend) {
-      body.append(el("p", "mem-hint", "None of your Hermes backends has memory the hub can show."));
+      body.append(el("p", "mem-hint", "None of your agent servers has memory the hub can show."));
     } else if (tab === "learned") {
       drawLearned(body);
     } else {

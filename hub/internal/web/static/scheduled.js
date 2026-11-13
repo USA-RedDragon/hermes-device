@@ -220,7 +220,7 @@ window.HubScheduled = (ctx) => {
     add("Results go to", j.results_text);
     b.append(kv);
     if (j.prompt) b.append(el("div", "prompt", j.prompt));
-    if (j.locked) b.append(el("p", "hint", "This job runs a script or other code on the Hermes server. Change it there; here you can pause, stop or delete it."));
+    if (j.locked) b.append(el("p", "hint", "This job runs a script or other code on the server, so whoever runs the server changes it there; here you can pause, stop or delete it."));
     const runs = el("div", "runs");
     runs.append(el("h3", "", "Recent runs"));
     if (!j.runs || !j.runs.length) runs.append(el("div", "empty", "Hasn't run yet."));
@@ -331,7 +331,7 @@ window.HubScheduled = (ctx) => {
   // the job it changes ("" for a new one).
   function startNew() {
     const b = ctx.defaultBackend() && backends.some((x) => x.id === ctx.defaultBackend()) ? ctx.defaultBackend() : (backends[0] || {}).id;
-    if (!b) { toast("You have no Hermes to schedule on"); return; }
+    if (!b) { toast("You have no agent server to schedule on"); return; }
     if (form && form.draft) discard(form);
     editing = "new";
     form = { backend: b, job: null, name: "", schedule: "", prompt: "", model: "", results: "general", draft: "", preview: null, saving: false };
@@ -402,7 +402,7 @@ window.HubScheduled = (ctx) => {
         loadOptions(f.backend);
         draw();
       };
-      fe.append(lab("Hermes", sel));
+      fe.append(lab("Agent server", sel));
     }
     const name = el("input");
     name.id = "f-name-" + id;
