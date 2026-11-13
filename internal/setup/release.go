@@ -2,6 +2,7 @@ package setup
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"compress/gzip"
@@ -121,7 +122,11 @@ func ArchiveName(version, goos, goarch, goarm string) string {
 	if goarch == "arm" {
 		arch = "armv" + goarm
 	}
-	return fmt.Sprintf("%s_%s_%s_%s.tar.gz", BinaryName, version, goos, arch)
+	ext := "tar.gz"
+	if goos == goosWindows {
+		ext = "zip"
+	}
+	return fmt.Sprintf("%s_%s_%s_%s.%s", BinaryName, version, goos, arch, ext)
 }
 
 // LegacyArchiveName is the archive name of releases from before the
@@ -158,8 +163,12 @@ func ParseChecksums(data []byte) map[string]string {
 }
 
 // ExtractBinary returns the talaria file at the top of a tar.gz release
-// archive, or the hermes-device file of a release from before the rename.
+// archive, or the hermes-device file of a release from before the rename,
+// or talaria.exe from a zip archive of a Windows release.
 func ExtractBinary(archive []byte) ([]byte, error) {
+	if bytes.HasPrefix(archive, []byte("PK\x03\x04")) {
+		return extractZip(archive)
+	}
 	gz, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return nil, err
@@ -181,6 +190,29 @@ func ExtractBinary(archive []byte) ([]byte, error) {
 			return io.ReadAll(io.LimitReader(tr, maxArchive))
 		}
 	}
+}
+
+func extractZip(archive []byte) ([]byte, error) {
+	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+	if err != nil {
+		return nil, err
+	}
+	want := ExeName(goosWindows)
+	for _, f := range zr.File {
+		if path.Clean(f.Name) != want || !f.Mode().IsRegular() {
+			continue
+		}
+		if f.UncompressedSize64 > maxArchive {
+			return nil, fmt.Errorf("%s in the archive is too large", want)
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		defer rc.Close()
+		return io.ReadAll(io.LimitReader(rc, maxArchive))
+	}
+	return nil, fmt.Errorf("the archive has no %s", want)
 }
 
 // FetchArchive downloads the release archive of tag for an OS and

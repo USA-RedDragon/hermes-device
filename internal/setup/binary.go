@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"golang.org/x/mod/semver"
@@ -22,6 +23,17 @@ const (
 	BinaryName = "talaria"
 	AliasName  = "tal"
 )
+
+// ExeName is the binary's file name on goos: talaria.exe on Windows.
+func ExeName(goos string) string {
+	if goos == goosWindows {
+		return BinaryName + ".exe"
+	}
+	return BinaryName
+}
+
+// goosWindows is GOOS on Windows.
+const goosWindows = "windows"
 
 // LegacyBinDir and LegacyBinaryName are where releases before the rename to
 // talaria installed the binary. Migrate moves it and leaves a link there.
@@ -120,7 +132,7 @@ func (s *System) InstallBinary(ctx context.Context, src, dst, version string, fo
 // InstalledPath is the binary setup installed under home: the talaria one,
 // or the one a release before the rename installed when only that exists.
 func InstalledPath(home string) string {
-	p := filepath.Join(home, BinDir, BinaryName)
+	p := filepath.Join(home, BinDir, ExeName(runtime.GOOS))
 	if _, err := os.Lstat(p); err != nil {
 		if legacy := filepath.Join(home, LegacyBinDir, LegacyBinaryName); fileExists(legacy) {
 			return legacy

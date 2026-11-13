@@ -100,7 +100,7 @@ func (s *System) BinPath(o *Options) string {
 	if dir == "" {
 		dir = filepath.Join(s.Home, BinDir)
 	}
-	return filepath.Join(dir, BinaryName)
+	return filepath.Join(dir, ExeName(s.GOOS))
 }
 
 // Setup installs talaria for the user. Every step is recorded in
@@ -161,7 +161,7 @@ func (s *System) Setup(ctx context.Context, o *Options) (*Report, error) {
 func (s *System) binaryStep(ctx context.Context, o *Options, st *State, r *Report, bin string) (bool, error) {
 	_, statErr := os.Lstat(bin)
 	wrote, err := s.InstallBinary(ctx, o.Exe, bin, o.Version, o.Force)
-	if err == nil {
+	if err == nil && s.GOOS != goosWindows {
 		if linked, lerr := LinkAlias(bin); lerr != nil {
 			r.todo("Could not link %s to %s: %v", AliasName, bin, lerr)
 		} else if linked {

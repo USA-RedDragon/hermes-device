@@ -101,7 +101,8 @@ func (s *System) Update(ctx context.Context, o *UpdateOptions) (string, error) {
 		return "", err
 	}
 	dir := filepath.Dir(o.Target)
-	tmp, err := os.CreateTemp(dir, ".talaria.new-")
+	// Windows runs only a file named .exe, for the version check below.
+	tmp, err := os.CreateTemp(dir, ".talaria.new-*"+strings.TrimPrefix(ExeName(o.GOOS), BinaryName))
 	if err != nil {
 		return "", err
 	}
@@ -130,7 +131,7 @@ func (s *System) Update(ctx context.Context, o *UpdateOptions) (string, error) {
 	if o.Check {
 		return tag, nil
 	}
-	if err := os.Rename(tmp.Name(), o.Target); err != nil {
+	if err := replaceFile(tmp.Name(), o.Target); err != nil {
 		return "", err
 	}
 	if !o.Restart {
