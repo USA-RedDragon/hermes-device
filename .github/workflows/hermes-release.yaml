@@ -50,6 +50,9 @@ jobs:
     name: Version
     needs: test
     runs-on: ubuntu-24.04
+    # contents: write is for the git tag, which is made here, before any image moves.
+    permissions:
+      contents: write
     outputs:
       release: ${{ steps.next.outputs.release }}
       tag: ${{ steps.next.outputs.tag }}
@@ -64,6 +67,8 @@ jobs:
       - name: Next release
         id: next
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
           PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
@@ -76,6 +81,22 @@ jobs:
           fi
           n=$(( ${last##*-p} + 0 ))
           tag="$upstream-p$(( n + 1 ))"
+          # The git tag comes first: if it cannot be made, nothing is pushed and the
+          # image tag never moves. GITHUB_TOKEN may only create a ref at a commit whose
+          # .github/workflows matches the tip of main (anywhere else it gets 403, as it
+          # does for a tag that would carry workflow changes), so the tag goes on the tip
+          # of main. When the tip changed the image inputs after this commit, its own run
+          # releases it and this one stops.
+          if [ "$release" = true ] && [ "$PUBLISH" = true ]; then
+            git fetch --no-tags origin main
+            tip=$(git rev-parse FETCH_HEAD)
+            if [ "$tip" != "$GITHUB_SHA" ] && ! git diff --quiet "$GITHUB_SHA" "$tip" -- Dockerfile patches scripts; then
+              release=false
+              echo "Main moved on with newer image changes ($tip); its run releases them." >> "$GITHUB_STEP_SUMMARY"
+            else
+              gh api -X POST "repos/$GH_REPO/git/refs" --field "ref=refs/tags/hermes/$tag" --field "sha=$tip" > /dev/null
+            fi
+          fi
           {
             echo "upstream=$upstream"
             echo "tag=$tag"
@@ -111,6 +132,15 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # An image tag is never overwritten: a published tag is what nodes run.
+      - name: Refuse an existing image tag
+        if: needs.version.outputs.push == 'true'
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:$TAG" > /dev/null 2>&1; then
+            echo "::error::$IMAGE:$TAG already exists; not overwriting it"
+            exit 1
+          fi
 
       # New layers are zstd. The upstream layers keep their gzip compression and
       # digests (no force-compression), so nodes reuse the upstream layers they
@@ -169,7 +199,7 @@ jobs:
   release:
     name: GitHub release
     needs: [version, image]
-    if: needs.version.outputs.push == 'true'
+    if: needs.version.outputs.push == 'true' && needs.version.outputs.release == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -178,7 +208,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Tag and release
+      - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -196,4 +226,20 @@ jobs:
             echo
             echo "Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research."
           } > "$RUNNER_TEMP/notes.md"
-          gh release create "hermes/$TAG" --target "$GITHUB_SHA" --latest=false --title "Hermes image $TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          gh release create "hermes/$TAG" --verify-tag --latest=false --title "Hermes image $TAG" --notes-file "$RUNNER_TEMP/notes.md"
+
+  # An image that failed leaves no tag behind, or the next run would see "nothing
+  # changed since" that tag and skip the change.
+  untag:
+    name: Remove the unused tag
+    needs: [version, image]
+    if: always() && needs.version.outputs.push == 'true' && needs.version.outputs.release == 'true' && needs.image.result != 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: gh api -X DELETE "repos/$GH_REPO/git/refs/tags/hermes/$TAG"
