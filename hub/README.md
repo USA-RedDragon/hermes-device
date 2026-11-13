@@ -241,7 +241,7 @@ never see these tabs, and every route checks it on the server (403 for anyone el
   check of the agent, the newest 200 lines of the agent's log (all, warnings or errors; it updates every 10 seconds
   while open) and Copy support info.
 - **Settings, Backup** (hub admins): one zip with the hub's data, its keys and the agent's data. See
-  [Upgrade and back up](../docs/deploy/upgrades.md#back-up).
+  [Upgrade and back up](https://usa-reddragon.github.io/talaria/deploy/upgrades.html#back-up).
 - **Settings, Telegram** (hub admins): the bot token, with a Test button. The hub keeps it sealed in its database
   and starts the bot at once; a token the install sets wins and shows read-only.
 - **The update banner** (hub admins only): a new hub, agent release or `talaria` for a computer, with the steps
