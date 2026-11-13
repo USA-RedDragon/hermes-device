@@ -877,11 +877,14 @@ window.HubModels = (() => {
         try {
           const r = await api("POST", path(backend, "/default"), { provider: demo.provider, model: demo.model });
           if (r && r.ok === false) throw new Error(r.message || "The demo model was not picked.");
+          // Read the default back: a chat starts only once Hermes has the demo model as its default.
+          const st = await api("GET", path(backend, "/status"));
+          if (!isDemoDefault(st, demo)) throw new Error("The demo model did not become the default.");
           ctx.connected();
           ctx.startChat();
         } catch (e) {
           b.disabled = false;
-          card.append(say("bad", "The demo model is not answering.", ["It runs only while the install has it turned on. Connect a model instead, or ask whoever runs this server to turn the demo on."]));
+          card.append(say("bad", "The demo model is not answering.", [e && e.message, "It runs only while the install has it turned on. Connect a model instead, or ask whoever runs this server to turn the demo on."].filter(Boolean)));
         }
       };
       acts.insertBefore(b, before);
@@ -937,7 +940,15 @@ window.HubModels = (() => {
     return null;
   }
 
-  return { create, findDemo, split, serverCommand, isLocal, serverVerdict, keyVerdict, signInState, minutesLeft, windowWarning, findProviders, next };
+  // isDemoDefault says whether a model status ({ ready, model, provider })
+  // has the demo model demo as the default. Hermes may name the provider
+  // with or without custom:.
+  function isDemoDefault(st, demo) {
+    const bare = (p) => String(p || "").replace(/^custom:/, "");
+    return !!(st && st.ready && demo && st.model === demo.model && bare(st.provider) === bare(demo.provider));
+  }
+
+  return { create, findDemo, isDemoDefault, split, serverCommand, isLocal, serverVerdict, keyVerdict, signInState, minutesLeft, windowWarning, findProviders, next };
 })();
 
 // HubModelSettings is Settings > Models: what Hermes has connected, with
