@@ -55,12 +55,18 @@ type live struct {
 	// for: "started", or the outcome their message.complete reported.
 	turnAdmission string
 	outcomes      map[string]string
-	seq           int64
-	snapshot      hub.Event
-	ring          []hub.Event
-	truncated     bool
-	viewers       map[*viewer]struct{}
-	idleTimer     *time.Timer
+	// late is set by the snapshot of a running turn whose events Hermes's
+	// replay ring no longer had in full (it keeps 512 events, a long reply
+	// streams thousands): the reply streaming now has lost its start, so
+	// its deltas are held back until it ends (see holdLate). lateHeld says
+	// a delta was held.
+	late, lateHeld bool
+	seq            int64
+	snapshot       hub.Event
+	ring           []hub.Event
+	truncated      bool
+	viewers        map[*viewer]struct{}
+	idleTimer      *time.Timer
 	// vision says whether the session's tools can read images, from the
 	// latest info that listed them; nil when none did.
 	vision *bool
@@ -550,8 +556,58 @@ func (ls *live) apply(ev gateway.Event) {
 	if text, ok := failedTurnText(ev); ok {
 		ls.turnFailed(text)
 	}
-	ls.emit(ev.Type, ev.Payload)
+	if !ls.holdLate(&ev) {
+		ls.emit(ev.Type, ev.Payload)
+	}
 	ls.trackOutcomes(ev)
+}
+
+// lateStatus is what a viewer sees while the hub holds back the rest of a
+// reply whose start it could not replay.
+const lateStatus = `{"kind":"late_reply","text":"Writing a reply that started before this chat was opened. It shows in full when it is done."}`
+
+// holdLate says whether ev is held back from viewers because the turn was
+// joined late (see live.late): the deltas of the reply that was streaming
+// when the hub subscribed are the rest of a reply without its start, and
+// shown as a reply they cut a fenced block in two. Its whole text comes
+// with the message.interim or message.complete that ends it; an interim
+// then reads as not streamed, so viewers show its text. The first event
+// that ends the reply, or that starts something else before any delta,
+// ends the hold. ls.mu is held.
+func (ls *live) holdLate(ev *gateway.Event) bool {
+	if !ls.late {
+		return false
+	}
+	switch ev.Type {
+	case hub.KindMessageDelta:
+		ls.lateHeld = true
+		return true
+	case hub.KindMessageInterim:
+		ls.late = false
+		if ls.lateHeld {
+			ev.Payload = notStreamed(ev.Payload)
+		}
+	case hub.KindMessageStart, hub.KindMessageComplete, hub.KindToolStart, "tool.generating":
+		ls.late = false
+	case hub.KindReasoningDelta, hub.KindToolComplete:
+		// Before any delta these start a new reply.
+		ls.late = ls.lateHeld
+	}
+	return false
+}
+
+// notStreamed sets an interim's already_streamed to false.
+func notStreamed(payload json.RawMessage) json.RawMessage {
+	var p map[string]json.RawMessage
+	if json.Unmarshal(payload, &p) != nil || p == nil {
+		return payload
+	}
+	p["already_streamed"] = json.RawMessage("false")
+	out, err := json.Marshal(p)
+	if err != nil {
+		return payload
+	}
+	return out
 }
 
 // emit records an event and sends it to viewers. ls.mu is held.

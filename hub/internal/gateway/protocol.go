@@ -375,6 +375,17 @@ type Snapshot struct {
 	Pending             []PendingAdmission `json:"pending"`
 	Info                SnapshotInfo       `json:"info"`
 	Revision            int64              `json:"revision"`
+	// InflightReply is the running reply's text so far, in its current
+	// segment, and the sequence it is current as of; nil when no reply text
+	// streams, or from a Hermes without Talaria Hermes patch 0057.
+	InflightReply *InflightReply `json:"inflight_reply,omitempty"`
+}
+
+// InflightReply is a running reply's text up to Sequence: the frames after
+// Sequence carry the rest of it.
+type InflightReply struct {
+	Text     string `json:"text"`
+	Sequence int64  `json:"sequence"`
 }
 
 // DetachParams is session.detach's params.

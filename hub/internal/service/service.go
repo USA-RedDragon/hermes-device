@@ -1323,11 +1323,15 @@ func (b *backend) reasoning(ctx context.Context, c *gateway.Client, id string) {
 func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, snap gateway.Snapshot) {
 	b.reasoning(ctx, c, snap.SessionID)
 	var tail, before []gateway.Event
+	late := false
 	if snap.Running {
 		var r gateway.EventsSinceResult
 		err := c.Call(ctx, gateway.MethodEventsSince, gateway.EventsSinceParams{SessionID: snap.SessionID, ReplayEpoch: snap.ReplayEpoch}, &r)
 		if err == nil && !r.SnapshotRequired {
 			before, tail = currentTurn(r.Events, snap.LastSequence)
+		} else {
+			// The running turn started before what Hermes can replay.
+			late = true
 		}
 	}
 	title := ""
@@ -1389,6 +1393,22 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	ls.snapshot = hub.Event{Seq: ls.seq, Kind: hub.KindSnapshot, Data: data}
 	ls.broadcast(ls.snapshot)
 	ls.replayTurn(tail, msgs)
+	ls.late, ls.lateHeld = false, false
+	switch {
+	case !late:
+	case snap.InflightReply != nil:
+		// Hermes gave the reply's text so far, current as of its sequence:
+		// show it, then only the frames after that sequence (apply drops
+		// the others), so the reply goes on without a gap or a repeat.
+		ls.gwSeq = max(ls.gwSeq, snap.InflightReply.Sequence)
+		if seed, err := json.Marshal(map[string]string{"text": snap.InflightReply.Text}); err == nil {
+			ls.emitAt(hub.KindMessageDelta, seed, 0)
+		}
+	default:
+		// An older Hermes: hold the rest of the reply back until it ends.
+		ls.late = true
+		ls.emit("status.update", json.RawMessage(lateStatus))
+	}
 	b.heldEventsLocked(ls, ls.id, snap.SessionID)
 	ls.flushEarly()
 }

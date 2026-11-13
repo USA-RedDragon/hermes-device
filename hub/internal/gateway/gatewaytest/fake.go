@@ -28,6 +28,7 @@ const (
 	kSessionID       = "session_id"
 	kPending         = "pending"
 	kRole            = "role"
+	kAssistant       = "assistant"
 	kSubmission      = "submission_id"
 	kComplete        = "complete"
 	kJSONRPC         = "jsonrpc"
@@ -132,9 +133,13 @@ type Session struct {
 	// Parent is the session this one was branched from.
 	Parent string
 
-	epoch   string
-	seq     int64
-	ring    []gateway.Event
+	epoch string
+	seq   int64
+	ring  []gateway.Event
+	// evicted is the seq of the newest event the replay ring dropped.
+	evicted int64
+	// reply is the running reply's text in its current segment.
+	reply   string
 	prompts map[string]gateway.Prompt
 	subs    map[*conn]string
 }
@@ -155,6 +160,18 @@ type Gateway struct {
 	logins   int
 	// HoldTurns stops prompt.submit from running its scripted turn.
 	HoldTurns bool
+	// ReplayMax bounds each session's replay ring as Hermes does
+	// (tui_gateway/event_replay.py _REPLAY_BUFFER_MAX, 512): older events
+	// are dropped, and session.events.since from before them answers
+	// snapshot_required. 0 keeps every event.
+	ReplayMax int
+	// InflightReply makes session.resume of a running session carry the
+	// reply's text so far, as Talaria Hermes patch 0057 does.
+	InflightReply bool
+	// ResendOnResume sends the last that many ring events again after a
+	// resume of a running session: frames the snapshot already covers, as a
+	// frame published while the subscription opens can arrive.
+	ResendOnResume int
 	// Providers is what model.options reports.
 	Providers []gateway.ModelProvider
 	// ConfirmModels need a confirmation token before session.mutate
@@ -646,9 +663,35 @@ func (g *Gateway) publishAdmissionLocked(s *Session, typ, admission string, payl
 	ev := gateway.Event{Type: typ, SessionID: s.ID, Payload: raw, ReplayEpoch: s.epoch, Seq: s.seq, ExecutionGeneration: &gen,
 		AdmissionID: admission}
 	s.ring = append(s.ring, ev)
+	var p struct {
+		Text *string `json:"text"`
+	}
+	_ = json.Unmarshal(raw, &p)
+	switch {
+	case typ == "message.delta" && p.Text != nil:
+		s.reply += *p.Text
+	case typ == "message.delta" || typ == "message.interim" || typ == "message.start" || typ == "message.complete" || typ == "tool.start":
+		s.reply = ""
+	}
+	if g.ReplayMax > 0 && len(s.ring) > g.ReplayMax {
+		drop := len(s.ring) - g.ReplayMax
+		s.evicted = s.ring[drop-1].Seq
+		s.ring = append([]gateway.Event(nil), s.ring[drop:]...)
+	}
 	for c := range s.subs {
 		c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: ev})
 	}
+}
+
+// FinishReply ends the running turn as Hermes does: the reply is stored in
+// the transcript, then message.complete carries its whole text.
+func (g *Gateway) FinishReply(sessionID, text string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	s := g.sessions[sessionID]
+	s.Running = false
+	s.Messages = append(s.Messages, map[string]any{kRole: kAssistant, kText: text})
+	g.publishLocked(s, "message.complete", map[string]any{kText: text, kStatus: kComplete})
 }
 
 func (g *Gateway) login(w http.ResponseWriter, r *http.Request) {
@@ -881,13 +924,17 @@ func (g *Gateway) snapshotLocked(c *conn, s *Session) map[string]any {
 	if s.Running && s.turn != "" {
 		pending = append([]gateway.PendingAdmission{{AdmissionID: s.turn, Status: statusStart, InputID: s.turnInput}}, pending...)
 	}
-	return map[string]any{
+	out := map[string]any{
 		kSessionID: s.ID, "stored_session_id": s.ID, "messages": msgs, "message_count": len(msgs),
 		"running": s.Running, "authority_epoch": 1, kReplayEpoch: s.epoch, kLastSequence: s.seq,
 		"subscription_id": sub, kRevision: s.Revision, kExecGen: s.Generation,
 		kPending: pending, "prompts": prompts,
 		"info": g.infoLocked(s, true),
 	}
+	if g.InflightReply && s.Running && s.reply != "" {
+		out["inflight_reply"] = map[string]any{kText: s.reply, "sequence": s.seq}
+	}
+	return out
 }
 
 // infoLocked is a session.info payload (gateway/session_local.py
@@ -1067,7 +1114,16 @@ func (g *Gateway) hSessionResume(c *conn, p map[string]any) (any, string, func()
 		return nil, gateway.ReasonNotFound, nil
 	}
 	s.Live = true
-	return g.snapshotLocked(c, s), "", nil
+	snap := g.snapshotLocked(c, s)
+	if g.ResendOnResume == 0 || !s.Running {
+		return snap, "", nil
+	}
+	again := append([]gateway.Event(nil), s.ring[max(0, len(s.ring)-g.ResendOnResume):]...)
+	return snap, "", func() {
+		for _, ev := range again {
+			c.send(map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: ev})
+		}
+	}
 }
 
 func (g *Gateway) hSessionDetach(c *conn, p map[string]any) (any, string, func()) {
@@ -1088,7 +1144,7 @@ func (g *Gateway) hEventsSince(_ *conn, p map[string]any) (any, string, func()) 
 		return nil, gateway.ReasonNotFound, nil
 	}
 	last, _ := num(p, kLastSequence)
-	if str(p, kReplayEpoch) != s.epoch || last > s.seq {
+	if str(p, kReplayEpoch) != s.epoch || last > s.seq || last < s.evicted {
 		return map[string]any{"events": []any{}, kLastSequence: s.seq, kReplayEpoch: s.epoch,
 			"snapshot_required": true, kTruncated: true}, "", nil
 	}

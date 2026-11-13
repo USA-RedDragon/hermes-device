@@ -413,7 +413,9 @@ func contract() map[string][]string {
 		"gateway/session_authority.py#exists": {"            row = self.db.get_session(ref.session_id)\n            if row is None:\n                raise RuntimeStoreError('not_found')"},
 		"gateway/run_turn_runner.py":          {`setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))`},
 		// The chat list's activity time: session.list with picker.
-		"tui_gateway/contracts/canonical_sessions.py#picker": {"    picker: bool = False", "    last_active_at: float | None = None"},
+		"tui_gateway/contracts/canonical_sessions.py#picker":   {"    picker: bool = False", "    last_active_at: float | None = None"},
+		"tui_gateway/contracts/canonical_sessions.py#inflight": {"    inflight_reply: CanonicalInflightReply | None = None", "class CanonicalInflightReply(Result):\n    text: str\n    sequence: int"},
+		"gateway/session_authority.py#inflight":                {"            live.event_stream.note_reply(generation, event_type, payload)"},
 		"gateway/session_controls.py#picker": {
 			"if (set(params) - {'limit', 'title', 'include_hidden', 'scope', 'workspace', 'picker'",
 		},
