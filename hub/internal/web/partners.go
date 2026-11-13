@@ -3,7 +3,9 @@ package web
 import (
 	"errors"
 	"net/http"
+	"strings"
 
+	"github.com/USA-RedDragon/talaria/hub/internal/agents"
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
@@ -12,6 +14,7 @@ func (s *Server) partnerRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/backends/{backend}/partners", s.api(s.handlePartners))
 	mux.Handle("POST /api/backends/{backend}/partners", s.api(s.handleAddPartner))
 	mux.Handle("DELETE /api/backends/{backend}/partners/{a}/{b}", s.api(s.handleDeletePartner))
+	mux.Handle("GET /api/backends/{backend}/agent-messages", s.api(s.handleAgentMessages))
 }
 
 // partnerOwner answers 404 when the hub keeps no pairs or the backend has
@@ -113,4 +116,70 @@ func (s *Server) partnerFail(w http.ResponseWriter, err error) {
 	}
 	s.log.Error("agent partners", "error", err.Error())
 	errorJSON(w, http.StatusInternalServerError, "Could not read or save the chats that work together. Try again")
+}
+
+// maxAgentMessageIDs is the most message ids one call looks up.
+const maxAgentMessageIDs = 50
+
+// agentMessageInfo is what the page shows on the card of an agent
+// message: its place in the chain and whether sender and receiver work
+// together.
+type agentMessageInfo struct {
+	FromSession string `json:"from_session"`
+	Hop         int    `json:"hop"`
+	MaxHop      int    `json:"max_hop"`
+	Partner     bool   `json:"partner"`
+}
+
+// handleAgentMessages answers, for the ids in ?ids= (comma separated)
+// that this backend knows, the hop and sender of each message, and with
+// ?session= (the chat that got them) whether that chat and the sender
+// work together. Only the owner of a single-user backend may ask.
+func (s *Server) handleAgentMessages(w http.ResponseWriter, r *http.Request) {
+	ps, backend, ok := s.partnerOwner(w, r)
+	if !ok {
+		return
+	}
+	if s.agentMessages == nil {
+		errorJSON(w, http.StatusNotFound, "This hub keeps no agent messages")
+		return
+	}
+	var ids []string
+	for _, id := range strings.Split(r.URL.Query().Get("ids"), ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) > maxAgentMessageIDs {
+		errorJSON(w, http.StatusBadRequest, "Ask for fewer messages at a time")
+		return
+	}
+	var pairs []hub.AgentPartner
+	session := r.URL.Query().Get("session")
+	if session != "" {
+		var err error
+		if pairs, err = ps.AgentPartners(r.Context(), userFrom(r), backend); err != nil {
+			s.partnerFail(w, err)
+			return
+		}
+	}
+	out := map[string]agentMessageInfo{}
+	for _, id := range ids {
+		m, found, err := s.agentMessages.AgentMessage(r.Context(), backend, id)
+		if err != nil {
+			s.partnerFail(w, err)
+			return
+		}
+		if !found {
+			continue
+		}
+		info := agentMessageInfo{FromSession: m.FromSession, Hop: m.Hop, MaxHop: agents.MaxHop}
+		for _, p := range pairs {
+			if m.FromRoot != session && p.Has(m.FromRoot) && p.Has(session) {
+				info.Partner, info.MaxHop = true, agents.MaxPartnerHop
+			}
+		}
+		out[id] = info
+	}
+	writeJSON(w, http.StatusOK, out)
 }

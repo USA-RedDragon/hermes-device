@@ -88,6 +88,9 @@ type Options struct {
 	Prompts hub.PromptLibrary
 	// Partners keeps each user's chat pairs that work together. Nil: none.
 	Partners hub.AgentPartners
+	// AgentMessages looks up agent messages for the hop and sender shown
+	// on their cards. Nil: the cards show neither.
+	AgentMessages hub.AgentMessageReader
 	// Version is the hub's release, shown in Settings.
 	Version string
 	// Scheduled serves the Scheduled page. Nil: no Scheduled page.
@@ -139,6 +142,8 @@ type Server struct {
 	partners     hub.AgentPartners
 	// partnerOwners maps each single-user backend to its user.
 	partnerOwners map[string]string
+	// agentMessages gives the cards of agent messages their hop. Nil: none.
+	agentMessages hub.AgentMessageReader
 	authState
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
@@ -195,7 +200,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		insights: opts.Insights, files: opts.Files,
 		notices: opts.Notices, notifier: opts.Notifier, claude: opts.Claude, scheduled: opts.Scheduled,
 		claudeCode: opts.ClaudeCode, subagents: opts.Subagents, chats: opts.Chats, prompts: opts.Prompts,
-		partners: opts.Partners, partnerOwners: owners,
+		partners: opts.Partners, agentMessages: opts.AgentMessages, partnerOwners: owners,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,

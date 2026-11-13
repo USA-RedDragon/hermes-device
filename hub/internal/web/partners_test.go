@@ -1,10 +1,12 @@
 package web_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/USA-RedDragon/talaria/hub/internal/config"
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
@@ -125,5 +127,54 @@ func TestPartnersAPIOff(t *testing.T) {
 	}
 	if code, _ := send(t, c, http.MethodGet, e.url+"/api/backends/pc/partners", "", nil); code != http.StatusNotFound {
 		t.Fatalf("partners off = %d", code)
+	}
+}
+
+func TestAgentMessagesAPI(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	e.gw.AddSession(&gatewaytest.Session{ID: "s2", Title: "Second", Live: true, StartedAt: 200})
+	c := client(t)
+	m := login(t, e, c)
+	ctx := context.Background()
+	for _, am := range []hub.AgentMessage{
+		{ID: "am_0000000000000001", BackendID: "pc", FromSession: "s2", FromRoot: "s2", ToSession: "s1", Hop: 4, CreatedAt: time.Now()},
+		{ID: "am_0000000000000002", BackendID: "pc", FromSession: "s9", FromRoot: "s9", ToSession: "s1", Hop: 2, CreatedAt: time.Now()},
+	} {
+		if err := e.store.AddAgentMessage(ctx, am); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code, _ := send(t, c, http.MethodPost, e.url+"/api/backends/pc/partners", m.CSRF, map[string]string{"a": "s1", "b": "s2"}); code != http.StatusCreated {
+		t.Fatalf("add pair = %d", code)
+	}
+	u := e.url + "/api/backends/pc/agent-messages?session=s1&ids=am_0000000000000001,am_0000000000000002,am_ffffffffffffffff"
+	code, body := send(t, c, http.MethodGet, u, "", nil)
+	var got map[string]struct {
+		FromSession string `json:"from_session"`
+		Hop         int    `json:"hop"`
+		MaxHop      int    `json:"max_hop"`
+		Partner     bool   `json:"partner"`
+	}
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &got) != nil || len(got) != 2 {
+		t.Fatalf("agent messages = %d %s", code, body)
+	}
+	if a := got["am_0000000000000001"]; a.FromSession != "s2" || a.Hop != 4 || a.MaxHop != 30 || !a.Partner {
+		t.Errorf("partner message = %+v", a)
+	}
+	if b := got["am_0000000000000002"]; b.Hop != 2 || b.MaxHop != 6 || b.Partner {
+		t.Errorf("other message = %+v", b)
+	}
+	// Without a session nothing counts as a partner.
+	_, body = send(t, c, http.MethodGet, e.url+"/api/backends/pc/agent-messages?ids=am_0000000000000001", "", nil)
+	if !strings.Contains(body, `"max_hop":6`) || !strings.Contains(body, `"partner":false`) {
+		t.Errorf("no session = %s", body)
+	}
+	if code, _ := send(t, c, http.MethodGet, e.url+"/api/backends/"+backendHome+"/agent-messages", "", nil); code != http.StatusNotFound {
+		t.Errorf("shared backend = %d", code)
+	}
+	many := strings.Repeat("am_0000000000000001,", 51)
+	if code, _ := send(t, c, http.MethodGet, e.url+"/api/backends/pc/agent-messages?ids="+many, "", nil); code != http.StatusBadRequest {
+		t.Errorf("too many ids = %d", code)
 	}
 }

@@ -93,6 +93,11 @@ type AgentStore interface {
 	AgentPartners
 }
 
+// AgentMessageReader looks up one agent message of a backend.
+type AgentMessageReader interface {
+	AgentMessage(ctx context.Context, backendID, id string) (AgentMessage, bool, error)
+}
+
 // MaxAgentPartners is the most partner pairs a user keeps per backend.
 const MaxAgentPartners = 200
 
