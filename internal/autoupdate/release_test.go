@@ -115,6 +115,41 @@ func TestLatestSharesTheCacheForMaxAge(t *testing.T) {
 	}
 }
 
+func TestOwnCacheOnlyIgnoresAnotherSourcesEntry(t *testing.T) {
+	t.Parallel()
+	f := &fakeGitHub{tag: tagNext}
+	cli := newReleases(t, f)
+	cli.Source = "cli"
+	daemon := *cli
+	daemon.Source, daemon.OwnCacheOnly = "daemon", true
+	if _, err := cli.Latest(t.Context(), 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.Latest(t.Context(), 24*time.Hour); err != nil || f.requests.Load() != 1 {
+		t.Fatalf("the cli did not reuse its own entry: %d requests, %v", f.requests.Load(), err)
+	}
+	if tag, err := daemon.Latest(t.Context(), time.Hour); err != nil || tag != tagNext {
+		t.Fatalf("Latest = %q, %v", tag, err)
+	}
+	if n := f.requests.Load(); n != 2 {
+		t.Fatalf("%d requests after the daemon's first lookup, want 2", n)
+	}
+	for range 3 {
+		if _, err := daemon.Latest(t.Context(), time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := f.requests.Load(); n != 2 {
+		t.Errorf("%d requests, want 2: the daemon reuses its own entry", n)
+	}
+	if err := os.WriteFile(daemon.Path, []byte(`{"tag":"`+tagNext+`","tried_at":"`+time.Now().Format(time.RFC3339)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := daemon.Latest(t.Context(), time.Hour); err != nil || f.requests.Load() != 3 {
+		t.Errorf("an entry with no source was trusted: %d requests, %v", f.requests.Load(), err)
+	}
+}
+
 func TestLatestRefusesPrerelease(t *testing.T) {
 	t.Parallel()
 	for name, f := range map[string]*fakeGitHub{

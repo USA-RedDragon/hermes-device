@@ -58,6 +58,7 @@ type entry struct {
 	CheckedAt time.Time `json:"checked_at"`
 	TriedAt   time.Time `json:"tried_at"`
 	NotBefore time.Time `json:"not_before"`
+	Source    string    `json:"source,omitempty"`
 }
 
 // Releases looks up the latest release on the GitHub API and caches the
@@ -73,6 +74,11 @@ type Releases struct {
 	UserAgent   string
 	// Path is the cache file; empty means no cache.
 	Path string
+	// Source names who looks up, and is written into every cache entry the lookup saves.
+	Source string
+	// OwnCacheOnly makes Latest reuse a recent cache entry only when the same Source wrote it. The daemon
+	// sets it, so that an entry that setup or a command wrote does not hold back its first check.
+	OwnCacheOnly bool
 	// Now is time.Now unless a test sets it.
 	Now func() time.Time
 }
@@ -141,6 +147,7 @@ func (r *Releases) save(e entry) {
 	if r.Path == "" {
 		return
 	}
+	e.Source = r.Source
 	data, err := json.Marshal(e)
 	if err != nil {
 		return
@@ -179,7 +186,7 @@ func (r *Releases) Cached() (string, time.Time) {
 func (r *Releases) Latest(ctx context.Context, maxAge time.Duration) (string, error) {
 	e := r.load()
 	now := r.now()
-	if !e.TriedAt.IsZero() && now.Sub(e.TriedAt) < maxAge {
+	if !e.TriedAt.IsZero() && now.Sub(e.TriedAt) < maxAge && (!r.OwnCacheOnly || e.Source == r.Source) {
 		return e.Tag, nil
 	}
 	if now.Before(e.NotBefore) {

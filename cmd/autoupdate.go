@@ -35,6 +35,12 @@ func (e *restartError) Error() string { return "stopped to restart into " + e.ta
 // unauthenticated limit, which also counts 304 answers.
 const daemonLookupMaxAge = time.Hour
 
+// Who wrote a release cache entry.
+const (
+	sourceCLI    = "cli"
+	sourceDaemon = "daemon"
+)
+
 // NoNoticeEnv, when set to anything, turns the update notice of
 // interactive commands off, for example in scripts.
 const NoNoticeEnv = config.EnvPrefix + "NO_UPDATE_NOTICE"
@@ -43,7 +49,7 @@ const NoNoticeEnv = config.EnvPrefix + "NO_UPDATE_NOTICE"
 func defaultReleaseLookup(userAgent string) *autoupdate.Releases {
 	return &autoupdate.Releases{
 		APIURL: autoupdate.DefaultAPIURL, Owner: attest.Owner, Repo: attest.Repo,
-		Client: &http.Client{Timeout: 30 * time.Second}, UserAgent: userAgent, Path: autoupdate.DefaultCachePath(),
+		Client: &http.Client{Timeout: 30 * time.Second}, UserAgent: userAgent, Path: autoupdate.DefaultCachePath(), Source: sourceCLI,
 	}
 }
 
@@ -140,7 +146,9 @@ func (b *base) daemonUpdater(cfg *config.Config) *autoupdate.Daemon {
 	if err != nil {
 		return off("run talaria update to update", "error", err)
 	}
-	rel := b.releaseLookup(b.userAgent())
+	lookup := *b.releaseLookup(b.userAgent())
+	lookup.Source, lookup.OwnCacheOnly = sourceDaemon, true
+	rel := &lookup
 	slog.Info("Auto-update is on", "interval", cfg.Update.Interval, "binary", target)
 	return &autoupdate.Daemon{
 		Version:   b.version,
