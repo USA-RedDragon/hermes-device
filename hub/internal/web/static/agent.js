@@ -381,7 +381,8 @@ window.HubAgent = (() => {
 
     function result(box, el2) {
       box.querySelector(":scope > .say")?.remove();
-      if (el2) box.append(el2);
+      // Right under the hint: a skills list is long, and a line at its end is out of sight
+      if (el2) box.querySelector(":scope > .hint").after(el2);
     }
 
     async function skillsPart(box) {
@@ -492,7 +493,7 @@ window.HubAgent = (() => {
               toolsTab = "skills";
               const pane = box.closest(".set-pane");
               await toolsPane(pane);
-              pane.append(say("good", m.name + " is added." + (a.applied_live ? " Open chats can use it from their next message." : " New chats can use it.")));
+              result(pane.querySelector(".tpart"), say("good", m.name + " is added." + (a.applied_live ? " Open chats can use it from their next message." : " New chats can use it.")));
             } catch (err) { d.append(say("bad", m.name + " was not added.", [err.message])); }
           });
           d.append(say(s.policy === "allow" ? "good" : "warn", s.policy === "allow" ? "Checked: nothing risky found." : "Checked: look at this before you add it.",
@@ -647,7 +648,7 @@ window.HubAgent = (() => {
           tok.value = "";
           const pane = box.closest(".set-pane");
           await toolsPane(pane);
-          pane.append(say("good", name.value.trim() + " is added." + (a.applied_live ? " Open chats can use it from their next message." : "")));
+          result(pane.querySelector(".tpart"), say("good", name.value.trim() + " is added." + (a.applied_live ? " Open chats can use it from their next message." : "")));
         } catch (err) { body.append(say("bad", "Could not add it.", [err.message])); save.disabled = false; }
       };
       return f;
