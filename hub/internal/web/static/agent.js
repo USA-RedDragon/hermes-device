@@ -712,7 +712,7 @@ window.HubAgent = (() => {
           if (!r.lines || !r.lines.length) { note(noLines()); return; }
           const atEnd = !logBox.scrollTop || logBox.scrollTop + logBox.clientHeight >= logBox.scrollHeight - 4 || logBox.classList.contains("note");
           logBox.className = "logbox";
-          logBox.replaceChildren(...r.lines.map((l) => el("span", logTone(l), l + "\n")));
+          logBox.replaceChildren(...r.lines.map((l) => el("span", logTone(l), l.replace(/\n$/, "") + "\n")));
           if (atEnd) logBox.scrollTop = logBox.scrollHeight;
         } catch (e) { note("Could not read the log: " + e.message, true); }
       };
