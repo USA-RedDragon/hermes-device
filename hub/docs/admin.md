@@ -1,6 +1,6 @@
 # Admin guide
 
-This page is for the person who runs the hub: adding people, connecting Hermes backends, managing computers, and keeping the hub healthy. If you have not installed the hub yet, start with [talaria-deploy](https://github.com/USA-RedDragon/talaria-deploy), which installs the hub, Hermes and a sandbox with one command.
+This page is for the person who runs the hub: adding people, connecting Hermes backends, managing computers, and keeping the hub healthy. If you have not installed the hub yet, start with the [install kit](https://github.com/USA-RedDragon/talaria/blob/main/docs/deploy/getting-started.md), which installs the hub, Hermes and a sandbox with one command.
 
 ## First start
 

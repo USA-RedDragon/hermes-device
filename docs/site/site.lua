@@ -47,6 +47,11 @@ local function blank(inlines)
 end
 
 local function out_path(p)
+  for _, t in ipairs(navlib.trees) do
+    if t.docs and p:sub(1, #t.docs + 1) == t.docs .. "/" then
+      return t.out .. "/" .. p:sub(#t.docs + 2)
+    end
+  end
   return p:match("^docs/(.*)$") or p
 end
 
@@ -161,6 +166,15 @@ function Pandoc(doc)
         return {}
       end
       local t = l.target
+      local own = t:sub(1, #repo + 1) == repo .. "/" and t:sub(#repo + 2):match("^blob/main/(.*)$")
+      if own then
+        local f, fr = own:match("^([^#]*)(#?.*)$")
+        local tp = nav.by_src[f] or (f:match("%.md$") and read_file(f) and navlib.default_out(f))
+        if tp then
+          l.target = relative(page_dir, tp) .. fr
+        end
+        return l
+      end
       if t:match("^%a[%w+.-]*:") or t:match("^#") then
         return l
       end

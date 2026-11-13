@@ -58,9 +58,27 @@ function M.dir_of(p)
   return p:match("^(.*)/[^/]*$") or ""
 end
 
+-- M.trees lists the other directories whose Markdown pages are part of the
+-- site, with where their pages go: hub/docs/admin.md becomes hub/admin.html
+-- and hub/README.md becomes hub.html.
+M.trees = {
+  { docs = "hub/docs", readme = "hub/README.md", out = "hub" },
+  { readme = "hermes/README.md", out = "hermes" },
+}
+
 function M.default_out(src)
   if src == "README.md" then
     return "index.html"
+  end
+  for _, t in ipairs(M.trees) do
+    if src == t.readme then
+      return t.out .. ".html"
+    end
+    local r = t.docs and src:sub(1, #t.docs + 1) == t.docs .. "/" and src:sub(#t.docs + 2)
+    if r then
+      local p = r:match("^(.*)%.md$")
+      return p and t.out .. "/" .. p .. ".html" or nil
+    end
   end
   local rest = src:match("^docs/(.*)$")
   if not rest then
@@ -201,7 +219,8 @@ function M.load()
   return nav
 end
 
--- extra returns the Markdown files under docs/ that nav.md does not list,
+-- extra returns the Markdown files under docs/ and the doc trees of M.trees
+-- that nav.md does not list,
 -- other than nav.md, in path order.
 function M.extra(nav)
   local out = {}
@@ -218,6 +237,11 @@ function M.extra(nav)
     end
   end
   walk("docs")
+  for _, t in ipairs(M.trees) do
+    if t.docs and M.is_dir(t.docs) then
+      walk(t.docs)
+    end
+  end
   table.sort(out)
   return out
 end

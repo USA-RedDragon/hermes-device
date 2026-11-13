@@ -1,5 +1,8 @@
 name: Docs
 
+# One site for all of Talaria: docs/ with hub/docs, hub/README.md and
+# hermes/README.md (docs/nav.md lists the pages), published to GitHub Pages.
+
 on:
   pull_request:
   push:
@@ -24,6 +27,14 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Check the generated parts of the docs
+        run: go run github.com/USA-RedDragon/docgen@v0.0.0-20261109224744-ef1962a8c996 check -diff
+      # hub/ is its own Go module with its own .docgen.yaml.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: hub/go.mod
+          cache-dependency-path: hub/go.sum
+      - name: Check the generated parts of the hub docs
+        working-directory: hub
         run: go run github.com/USA-RedDragon/docgen@v0.0.0-20261109224744-ef1962a8c996 check -diff
       - name: Install pandoc
         run: docs/site/install-pandoc.sh "$RUNNER_TEMP/pandoc" >>"$GITHUB_PATH"
