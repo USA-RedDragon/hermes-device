@@ -1,0 +1,161 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 08:22:19 -0600
+Subject: [PATCH] fix(compression): proactive prune spares the skill compaction
+ keeps
+
+With compression.keep_last_skill_chars set, the proactive tool-result prune (proactive_prune_tokens) demoted the newest skill_view body like any old tool result, so the next compaction found only a stub and fell back to a [SKILL_PRUNED] reload marker: the two settings together lost the skill that keep_last_skill_chars exists to keep. The prune now spares the newest skill's body when it is whole and within the cap. No new key; nothing changes with keep_last_skill_chars at 0.
+---
+ agent/compaction_skill_pin.py                 | 14 +++++
+ agent/context_compressor.py                   |  6 +-
+ agent/context_compressor_prune.py             |  5 ++
+ .../agent/test_compaction_skill_pin_prune.py  | 59 +++++++++++++++++++
+ .../context-compression-and-caching.md        |  2 +-
+ 5 files changed, 83 insertions(+), 3 deletions(-)
+ create mode 100644 tests/agent/test_compaction_skill_pin_prune.py
+
+diff --git a/agent/compaction_skill_pin.py b/agent/compaction_skill_pin.py
+index d81bf2fa..527038ae 100644
+--- a/agent/compaction_skill_pin.py
++++ b/agent/compaction_skill_pin.py
+@@ -155,3 +155,17 @@ def keep_last_skill(
+     if held:
+         return summary, working, None
+     return summary + _redact_compaction_text(active_skill_block(name, body)), working, name
++
++
++def keepable_newest_skill(messages: list[dict[str, Any]], max_chars: int) -> Optional[str]:
++    """Name of the newest skill load in *messages* when its body is whole and at most *max_chars* (the skill
++    ``keep_last_skill`` would carry), else ``None``; always ``None`` with ``max_chars <= 0``."""
++    if max_chars <= 0:
++        return None
++    from agent.context_compressor import _tool_calls_by_id
++
++    calls = _tool_calls_by_id(messages)
++    load = next(filter(None, (_skill_load(m, calls) for m in reversed(messages))), None)
++    if load is None or load[1] is None or len(load[1]) > max_chars:
++        return None
++    return load[0]
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+index a00ccb8a..3caee924 100644
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -3291,10 +3291,12 @@ class ContextCompressor(
+     def _prune_old_tool_results(
+         self, messages: list[dict[str, Any]], protect_tail_count: int,
+         protect_tail_tokens: int | None = None, min_prune_chars: int = _PRUNE_MIN_CHARS,
++        keep_skills: frozenset[str] = frozenset(),
+     ) -> tuple[list[dict[str, Any]], int]:
+         """Project old tool-result bodies to bounded summaries without rewriting tool-call arguments.
+         Returns ``(messages, count)``; token budget (when given) takes priority over the
+-        message-count floor."""
++        message-count floor. ``keep_skills`` names more skills whose skill_view bodies the ordinary
++        passes spare."""
+         if not messages:
+             return messages, 0
+         result = [m.copy() for m in messages]
+@@ -3310,7 +3312,7 @@ class ContextCompressor(
+         # Just-loaded / tail-referenced skills keep full skill_view bodies through the ordinary passes.
+         # Without this, a skill loaded moments before a compaction can be demoted to metadata while the
+         # model still believes its instructions are in context. See #32106.
+-        protected_skills = _collect_protected_skill_names(result, prune_boundary)
++        protected_skills = _collect_protected_skill_names(result, prune_boundary) | {s.lower() for s in keep_skills}
+         # Pass 2: summarize old tool results. Tool-call arguments are canonical execution
+         # records and are never rewritten; summary input is bounded separately by
+         # _render_tool_call_for_summary().
+diff --git a/agent/context_compressor_prune.py b/agent/context_compressor_prune.py
+index 4676b91c..caa3739a 100644
+--- a/agent/context_compressor_prune.py
++++ b/agent/context_compressor_prune.py
+@@ -72,8 +72,13 @@ class ProactivePruneMixin:
+         if session_db and session_id and not callable(getattr(session_db, "archive_and_compact", None)):
+             self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
+             return messages, 0
++        # compression.keep_last_skill_chars: the skill the next compaction would keep stays whole here too;
++        # a prune that demoted it first would leave compaction only a reload marker to carry.
++        from agent.compaction_skill_pin import keepable_newest_skill
++        _keep = keepable_newest_skill(messages, getattr(self, "keep_last_skill_chars", 0))
+         pruned_msgs, pruned_count = self._prune_old_tool_results(
+             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=None, min_prune_chars=self.proactive_prune_min_result_chars,
++            keep_skills=frozenset([_keep] if _keep else []),
+         )
+         from agent.context_compressor_tail import with_pruned_row_skill_safety_rule
+         pruned_msgs = with_pruned_row_skill_safety_rule(messages, pruned_msgs)
+diff --git a/tests/agent/test_compaction_skill_pin_prune.py b/tests/agent/test_compaction_skill_pin_prune.py
+new file mode 100644
+index 00000000..422ba86a
+--- /dev/null
++++ b/tests/agent/test_compaction_skill_pin_prune.py
+@@ -0,0 +1,59 @@
++"""``compression.keep_last_skill_chars`` with ``proactive_prune_tokens``: the proactive prune spares the skill
++compaction would keep, so the handoff can still carry its body instead of a reload marker."""
++
++import json
++
++from agent.compaction_skill_pin import keepable_newest_skill
++from tests.agent.test_compaction_skill_pin import PDF_BODY, SHEET_BODY, _compressor, _skill_view
++
++
++def _tool_round(call_id, n):
++    return [
++        {"role": "assistant", "content": "", "tool_calls": [{
++            "id": call_id, "type": "function", "function": {"name": "read_file", "arguments": json.dumps({"path": f"f{n}"})},
++        }]},
++        {"role": "tool", "tool_call_id": call_id, "content": f"file {n}\n" + "log line\n" * 2000},
++    ]
++
++
++def _session():
++    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "start"}]
++    msgs += _skill_view("s1", "sheets", SHEET_BODY) + _skill_view("s2", "pdf", PDF_BODY)
++    for n in range(12):
++        msgs += _tool_round(f"r{n}", n)
++    return msgs + [{"role": "user", "content": "go on"}, {"role": "assistant", "content": "ok"}]
++
++
++def _body(msgs, call_id):
++    row = next(m for m in msgs if m.get("tool_call_id") == call_id)
++    try:
++        return json.loads(row["content"]).get("content") or ""
++    except ValueError:
++        return ""
++
++
++def _prune(keep_chars):
++    c = _compressor(proactive_prune_tokens=1, proactive_prune_min_result_chars=1000, keep_last_skill_chars=keep_chars)
++    out, count = c.prune_tool_results_only(_session(), current_tokens=None)
++    assert count > 0
++    return out
++
++
++def test_prune_spares_the_skill_compaction_keeps():
++    out = _prune(20_000)
++    assert _body(out, "s2") == PDF_BODY
++    assert _body(out, "s1") != SHEET_BODY  # only the newest skill is spared
++    assert "log line" not in next(m for m in out if m.get("tool_call_id") == "r0")["content"]  # others still pruned
++
++
++def test_without_the_key_or_over_the_cap_the_prune_is_unchanged():
++    assert _body(_prune(0), "s2") != PDF_BODY
++    assert _body(_prune(len(PDF_BODY) - 1), "s2") != PDF_BODY
++
++
++def test_keepable_newest_skill():
++    msgs = _session()
++    assert keepable_newest_skill(msgs, 20_000) == "pdf"
++    assert keepable_newest_skill(msgs, 0) is None
++    assert keepable_newest_skill(msgs, 10) is None
++    assert keepable_newest_skill([{"role": "user", "content": "hi"}], 20_000) is None
+diff --git a/website/docs/developer-guide/context-compression-and-caching.md b/website/docs/developer-guide/context-compression-and-caching.md
+index 48b80e05..b470f8ab 100644
+--- a/website/docs/developer-guide/context-compression-and-caching.md
++++ b/website/docs/developer-guide/context-compression-and-caching.md
+@@ -319,7 +319,7 @@ auxiliary:
+ | `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
+ | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
+ | `min_tail_user_messages` | `1` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `1` = the existing single last-user anchor (behavior-preserving default). Raise to e.g. `3` to keep the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
+-| `keep_last_skill_chars` | `0` | ≥0 chars | Opt-in. When > 0, the compaction handoff carries the body of the most recently loaded skill (a `skill_view` of its `SKILL.md`, or a `/skill` turn) verbatim when it is at most this many characters, so the model does not reload it after compaction. Older skills, supporting files and bodies over the cap keep the `[SKILL_PRUNED]` reload marker. Nothing changes when the newest body is still in the kept head or tail. The kept body is sent with every request until the next compaction; keep the cap small next to the context window. `0` = off |
++| `keep_last_skill_chars` | `0` | ≥0 chars | Opt-in. When > 0, the compaction handoff carries the body of the most recently loaded skill (a `skill_view` of its `SKILL.md`, or a `/skill` turn) verbatim when it is at most this many characters, so the model does not reload it after compaction. Older skills, supporting files and bodies over the cap keep the `[SKILL_PRUNED]` reload marker. Nothing changes when the newest body is still in the kept head or tail. The kept body is sent with every request until the next compaction; keep the cap small next to the context window. The proactive tool-result prune (`proactive_prune_tokens`) spares the same skill's `skill_view` body, so compaction still has it to keep. `0` = off |
+ | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
+ | `idle_compact_after_seconds` | `0` | ≥0 seconds | Opt-in: compact up front when a session resumes after this many seconds idle (0 = disabled). Skips when context ≤ threshold × target_ratio; honors cooldown/anti-thrash/lock guards |
+ | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.4/5.5/5.6 and gpt-6 Astra on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |

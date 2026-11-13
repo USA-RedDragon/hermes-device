@@ -1,0 +1,8 @@
+# Upstream tests of the proactive prune and of patch 0015 this fix completes
+tests/agent/test_compaction_skill_pin.py
+tests/agent/test_proactive_prune_config.py
+tests/agent/test_proactive_prune_loop_wiring.py
+tests/agent/test_proactive_prune_rearm_threshold.py
+tests/agent/test_proactive_prune_restart_safety.py
+tests/agent/test_ghost_skill_pruning.py
+tests/agent/test_context_compressor.py
