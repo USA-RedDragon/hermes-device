@@ -47,12 +47,12 @@ type Source struct {
 	// Empty: Dir/.claude.json.
 	ConfigFile string
 	// Label names the account of this directory instead of its email,
-	// such as the label of a claude-accounts slot.
+	// such as the label of an account directory.
 	Label string
-	// Slot is the claude-accounts slot id of this directory, or "".
+	// Slot is the account directory id of this directory, or "".
 	Slot string
 	// OwnAccount counts the sessions without a session-owner line as the
-	// directory's signed-in account. Right for a claude-accounts slot,
+	// directory's signed-in account. Right for an account directory,
 	// whose directory only ever holds one account.
 	OwnAccount bool
 }
@@ -367,7 +367,7 @@ func (r Row) Key() RowKey {
 }
 
 // Account names an account that a source is signed in as, or a
-// claude-accounts slot that is not signed in (empty UUID).
+// account directory that is not signed in (empty UUID).
 type Account struct {
 	UUID  string `json:"account_uuid"`
 	Org   string `json:"org_uuid"`

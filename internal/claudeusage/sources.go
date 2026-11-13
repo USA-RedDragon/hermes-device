@@ -57,14 +57,14 @@ func fileExists(p string) bool {
 
 var slotID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
-// Slot is one account slot of the claude-accounts Hermes plugin.
+// Slot is one account slot of the Hermes plugin.
 type Slot struct {
 	ID    string `yaml:"id"`
 	Label string `yaml:"label"`
 }
 
-// HermesSlots reads the slots in the claude-accounts plugin's settings
-// (plugins.entries.claude-accounts.settings.accounts) of a Hermes
+// HermesSlots reads the slots in the Hermes plugin settings
+// (plugins.entries.<plugin>.settings.accounts) of a Hermes
 // config.yaml. A bad or repeated id is skipped, as the plugin does.
 func HermesSlots(configYAML string) []Slot {
 	data, err := os.ReadFile(configYAML)

@@ -84,7 +84,7 @@ func newACPHostCommand(b *base) *cobra.Command {
 }
 
 // hermesUsage returns the collector of the Hermes pod's Claude Code
-// usage: the claude-accounts slots, labeled from the plugin's settings,
+// usage: the account directories, labeled from the plugin's settings,
 // then usage.claude-dirs. Nil when usage.enabled is false.
 func hermesUsage(cfg *config.Config) *claudeusage.Collector {
 	if cfg.Usage.Enabled != nil && !*cfg.Usage.Enabled {

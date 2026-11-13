@@ -98,7 +98,7 @@ func (t *timeline) load() {
 }
 
 // observe looks at the .claude.json of every source that is not a
-// claude-accounts slot and appends an entry for each one whose signed-in
+// account directory and appends an entry for each one whose signed-in
 // account changed. The first entry of a source starts at now; later ones
 // at the file's modification time, kept between the previous entry and
 // now. An unreadable file or one without an account adds nothing.
