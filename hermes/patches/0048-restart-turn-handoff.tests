@@ -11,3 +11,4 @@ tests/gateway/test_startup_recovery_parks_profile.py
 tests/gateway/test_restart_listener_handover.py
 tests/gateway/test_restart_ticket_handover.py
 tests/tools/test_delegation_restart_handoff.py
+tests/gateway/test_restart_interrupt_notice.py

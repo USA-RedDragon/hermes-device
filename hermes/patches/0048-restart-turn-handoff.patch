@@ -8,11 +8,12 @@ gateway.restart_turn_handoff (false = off) and restart_turn_handoff_wait_seconds
 ---
  gateway/config.py                          |  10 +-
  gateway/config_loader.py                   |   2 +
- gateway/run_shutdown.py                    |  52 ++++-
+ gateway/run_shutdown.py                    |  53 +++-
  gateway/run_startup.py                     |   7 +
- gateway/turn_handoff.py                    | 177 +++++++++++++++
- tests/gateway/test_restart_turn_handoff.py | 248 +++++++++++++++++++++
- 6 files changed, 490 insertions(+), 6 deletions(-)
+ gateway/session_settlement_recovery.py     |   5 +
+ gateway/turn_handoff.py                    | 210 ++++++++++++++++
+ tests/gateway/test_restart_turn_handoff.py | 266 +++++++++++++++++++++
+ 7 files changed, 547 insertions(+), 6 deletions(-)
  create mode 100644 gateway/turn_handoff.py
  create mode 100644 tests/gateway/test_restart_turn_handoff.py
 
@@ -65,7 +66,7 @@ index 9011be6719..e545fd2171 100644
      *_presence(
          "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
 diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
-index 0c6e522aae..4ca0660ccf 100644
+index 0c6e522aae..1c5b36d56b 100644
 --- a/gateway/run_shutdown.py
 +++ b/gateway/run_shutdown.py
 @@ -1637,7 +1637,18 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
@@ -146,15 +147,7 @@ index 0c6e522aae..4ca0660ccf 100644
      async def _stop_interrupt_remaining_work(self, ctx: GatewayShutdownMixin._StopContext) -> None:
          """Drain timed out: mark resume_pending, interrupt, settle, kill tool subprocesses, notify cron."""
          from gateway.run import GatewayRunner
-@@ -2124,6 +2159,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
-         # Mark resume_pending BEFORE interrupting so the next message auto-resumes (stuck sessions
-         # still escalate via .restart_failure_counts). CURRENT _running_agents, not the drain snapshot.
-         await GatewayRunner._mark_running_sessions_resume_pending(self, "mark_resume_pending")
-+        GatewayShutdownMixin._export_handed_off_turns(self)
-         reason = GatewayRunner._shutdown_interrupt_reason(self)
-         self._interrupt_running_agents(reason)
-         interrupt_grace_timeout = GatewayRunner._post_interrupt_grace_timeout(self)
-@@ -2442,7 +2478,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -2442,7 +2477,15 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                      timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
                  )
              _mark("stop: drain_active_work")
@@ -162,7 +155,9 @@ index 0c6e522aae..4ca0660ccf 100644
 +            from gateway import turn_handoff
 +            if turn_handoff.enabled(self):
 +                # The restart wait already ended for the handoff: chat turns are stopped now, not drained; cron
-+                # and API runs keep their own drain floor.
++                # and API runs keep their own drain floor. The turns are named for the next gateway first; one that
++                #   still completes on its own here is skipped there.
++                GatewayShutdownMixin._export_handed_off_turns(self)
 +                await GatewayRunner._stop_drain_active_work(self, timeout, ctx, agent_timeout=0.0)
 +            else:
 +                await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
@@ -187,12 +182,28 @@ index 1c6b6f9e86..7e79e16a41 100644
          # Surface state.db init failures to messaging platforms before the user loses data.
          # See #88235.
          await self._send_session_db_warning_notifications()
+diff --git a/gateway/session_settlement_recovery.py b/gateway/session_settlement_recovery.py
+index 24004e6288..a204c4d797 100644
+--- a/gateway/session_settlement_recovery.py
++++ b/gateway/session_settlement_recovery.py
+@@ -141,6 +141,11 @@ def owner_stop_notice(captured, outcome, row=None):
+     cause = ((captured or {}).get('result') or {}).get('interrupt_message') if outcome == 'interrupted' else None
+     notice = {_INTERRUPT_REASON_GATEWAY_RESTART: RESTART_INTERRUPT_NOTICE,
+               _INTERRUPT_REASON_GATEWAY_SHUTDOWN: SHUTDOWN_INTERRUPT_NOTICE}.get(cause)
++    if notice is RESTART_INTERRUPT_NOTICE:
++        from gateway import turn_handoff
++        if turn_handoff.handing_off():
++            # gateway.restart_turn_handoff: the next gateway continues it; nobody has to resend anything.
++            notice = turn_handoff.HANDOFF_NOTICE
+     if notice is not None and row is not None:
+         from gateway.session_unattended_unknown import is_unattended
+         if is_unattended(row):
 diff --git a/gateway/turn_handoff.py b/gateway/turn_handoff.py
 new file mode 100644
-index 0000000000..a5c31c51f2
+index 0000000000..d8222ee597
 --- /dev/null
 +++ b/gateway/turn_handoff.py
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,210 @@
 +"""``gateway.restart_turn_handoff`` (false = off): a restart hands running turns to the next gateway.
 +
 +Without the key a graceful restart (SIGUSR1, ``/restart``, a supervisor's SIGTERM with
@@ -233,6 +244,16 @@ index 0000000000..a5c31c51f2
 +    "and background subagents carry on. Continue the task from where it stopped; do not redo finished "
 +    "steps. If a later message from the user changed the task, follow that instead.]"
 +)
++
++
++HANDOFF_NOTICE = ("Gateway restarting: this turn was stopped and is handed to the restarted Hermes, which "
++                  "continues it. Nothing needs to be sent again.")
++_handing_off = False
++
++
++def handing_off() -> bool:
++    """This process is stopping for a restart that hands its running turns to the next gateway."""
++    return _handing_off
 +
 +
 +def _config(runner) -> Any:
@@ -276,6 +297,8 @@ index 0000000000..a5c31c51f2
 +
 +def export_turns(runner, home) -> int:
 +    """Write the running canonical turns for the next gateway; returns how many."""
++    global _handing_off
++    _handing_off = True
 +    turns = running_turns(runner)
 +    if not turns:
 +        return 0
@@ -334,7 +357,11 @@ index 0000000000..a5c31c51f2
 +    live = authority.sessions.get(session_id)
 +    if live is None or getattr(live, "source", None) is None:
 +        return "no live session"
-+    adapter = runner._delivery_adapter_for(live.source)
++    # The adapter that owns the session's source: a local automation is refused for any other.
++    adapter_for = getattr(runner, "_adapter_for_source", None) or runner._delivery_adapter_for
++    adapter = adapter_for(live.source)
++    if adapter is None:
++        return "no adapter"
 +    queued = await admit_route_wake(runner, adapter, live.source, CONTINUATION_TEXT, PRODUCER,
 +                                    {"restart_turn_handoff": True})
 +    return "continued" if queued else "not queued"
@@ -354,28 +381,45 @@ index 0000000000..a5c31c51f2
 +        return 0
 +    from gateway.session_authorities import active_authority
 +    authority = active_authority(runner)
-+    queued = 0
++    queued, results = 0, []
 +    for turn in turns:
 +        if authority is None or turn.get("profile_id") not in (None, getattr(authority, "profile_id", None)):
 +            logger.warning("Handed-off turn of %s left alone: profile %s is not served here",
 +                           turn["session_id"], turn.get("profile_id"))
++            results.append({"session_id": turn["session_id"], "result": "profile not served"})
 +            continue
 +        try:
 +            result = await _continue_one(runner, authority, turn)
-+        except Exception:
++        except Exception as exc:
 +            logger.warning("Could not continue the handed-off turn of %s", turn["session_id"], exc_info=True)
-+            continue
++            result = f"failed: {type(exc).__name__}: {exc}"[:300]
 +        queued += result == "continued"
++        results.append({"session_id": turn["session_id"], "result": result})
 +        logger.info("Handed-off turn of %s: %s", turn["session_id"], result)
 +    if queued:
 +        logger.info("Queued %d continuation turn(s) the previous gateway handed over", queued)
++    _record(home, results)
 +    return queued
++
++
++RESULT_FILE_NAME = ".turn-handoff.last.json"
++
++
++def _record(home, results) -> None:
++    """What the last takeover did with each handed-off turn (0600), for an operator who has no log access."""
++    path = Path(home) / RESULT_FILE_NAME
++    try:
++        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
++        with os.fdopen(fd, "w", encoding="utf-8") as fh:
++            json.dump({"taken_at": time.time(), "turns": results}, fh)
++    except OSError:
++        logger.debug("Could not record the handed-off turns", exc_info=True)
 diff --git a/tests/gateway/test_restart_turn_handoff.py b/tests/gateway/test_restart_turn_handoff.py
 new file mode 100644
-index 0000000000..c28a82888d
+index 0000000000..3151372697
 --- /dev/null
 +++ b/tests/gateway/test_restart_turn_handoff.py
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,266 @@
 +"""gateway.restart_turn_handoff: a restart hands running turns to the next gateway instead of waiting."""
 +import asyncio
 +import json
@@ -390,6 +434,20 @@ index 0000000000..c28a82888d
 +from gateway.config import GatewayConfig, load_gateway_config
 +from gateway.run import GatewayRunner
 +from tests.gateway.restart_test_helpers import make_restart_runner
++
++
++@pytest.fixture(autouse=True)
++def _not_handing_off(monkeypatch):
++    monkeypatch.setattr(turn_handoff, "_handing_off", False)
++
++
++def test_restart_notice_says_the_turn_continues_while_handing_off():
++    from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART
++    from gateway.session_settlement_recovery import RESTART_INTERRUPT_NOTICE, owner_stop_notice
++    captured = {"result": {"interrupt_message": _INTERRUPT_REASON_GATEWAY_RESTART}}
++    assert owner_stop_notice(captured, "interrupted") == RESTART_INTERRUPT_NOTICE
++    turn_handoff._handing_off = True
++    assert owner_stop_notice(captured, "interrupted") == turn_handoff.HANDOFF_NOTICE
 +
 +
 +def test_off_by_default():
@@ -577,13 +635,15 @@ index 0000000000..c28a82888d
 +    live = {sid: SimpleNamespace(source=source, route=f"agent:main:local:dm:{sid}") for sid in ("s1", "s2", "s3")}
 +    authority = _FakeAuthority(rows, live)
 +    runner = SimpleNamespace(config=GatewayConfig(restart_turn_handoff=True), session_authorities=None,
-+                             session_authority=authority, _delivery_adapter_for=lambda src: "adapter")
++                             session_authority=authority, _adapter_for_source=lambda src: "adapter",
++                             _delivery_adapter_for=lambda src: "not the owner")
 +    monkeypatch.setattr("hermes_state_runtime.get_session_admission",
 +                        lambda db, *, admission_id: rows.get(admission_id))
 +    monkeypatch.setattr("gateway.session_local_recovery.restore_completion_route", lambda runner, key: None)
 +    wakes = []
 +
 +    async def wake(runner, adapter, src, text, producer, metadata=None):
++        assert adapter == "adapter"
 +        wakes.append((src, text, producer, metadata))
 +        return True
 +
@@ -597,6 +657,8 @@ index 0000000000..c28a82888d
 +    assert len(wakes) == 2 and all(w[2] == turn_handoff.PRODUCER for w in wakes)
 +    assert wakes[0][1] == turn_handoff.CONTINUATION_TEXT
 +    assert not (tmp_path / turn_handoff.FILE_NAME).exists()
++    record = json.loads((tmp_path / turn_handoff.RESULT_FILE_NAME).read_text(encoding="utf-8"))
++    assert [t["result"] for t in record["turns"]] == ["continued", "continued", "finished"]
 +
 +
 +@pytest.mark.asyncio
