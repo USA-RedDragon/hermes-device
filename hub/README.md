@@ -4,6 +4,8 @@
 
 The hub of Talaria: one web front end, behind OpenID Connect login, for many [Hermes Agent](https://github.com/NousResearch/hermes-agent) gateways. It is made for a phone first.
 
+Guides: the [API overview](docs/api.md). To install the hub with Hermes and a sandbox in one step, use [talaria-deploy](https://github.com/USA-RedDragon/talaria-deploy). `docs/site/build.sh` builds the pages in `docs/` into a static site with pandoc.
+
 - One list of the sessions on every Hermes backend that you may use, live and stored.
 - Open a session and continue it, also a live session that VS Code or the CLI started. The gateway keeps ownership of the session, so you can go back to VS Code at any time.
 - Reasoning, tool calls (arguments, progress, result) and the reply stream live, with no refresh.
