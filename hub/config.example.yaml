@@ -20,21 +20,33 @@ http:
     # Metrics server port
     port: 8081
 oidc:
-  # OIDC issuer URL, such as https://auth.example.com/application/o/talaria-hub/
+  # OIDC issuer URL, such as https://auth.example.com/realms/home. Required in auth.mode oidc; setting it makes oidc the default mode
   # issuer_url: ""
-  # OIDC client ID
+  # OIDC client ID. Required in auth.mode oidc
   # client_id: ""
-  # OIDC client secret
+  # OIDC client secret. Required in auth.mode oidc unless client_secret_file is set
   # client_secret: "(secret)"
-  # Scopes to request. Authentik's profile scope carries preferred_username and groups
+  # File that holds oidc.client_secret. Wins over client_secret
+  # client_secret_file: ""
+  # Scopes to request. Add the scope that carries groups_claim if the provider needs one (such as groups)
   scopes: ["openid", "profile", "email"]
   # ID token claim shown as the user's name. Display only: identity is always the sub claim
   display_claim: "preferred_username"
-  # ID token claim that holds the group names that backends[].groups lists
+  # ID token claim that holds the group names that backends[].groups and oidc.allowed_groups list
   groups_claim: "groups"
+  # ID token claim with the user's email address, for oidc.allowed_domains and accounts an admin made by email. Used only when email_verified is true
+  email_claim: "email"
+  # Make an account at the first login of a sub that is not in users[], when its verified email is in allowed_domains or it is in one of allowed_groups. Off: only subs in users[] and accounts an admin made log in
+  auto_create: false
+  # With auto_create: email domains whose verified addresses get an account, such as example.com. * allows any verified email
+  # allowed_domains: []
+  # With auto_create: groups (groups_claim) whose members get an account
+  # allowed_groups: []
 session:
-  # Key for the session and login cookies. At least 32 characters
+  # Key for the session and login cookies, at least 32 characters. Empty with no secret_file: the hub makes one and keeps it in its database
   # secret: "(secret)"
+  # File that holds session.secret. Wins over secret
+  # secret_file: ""
   # How long a login lasts
   ttl: "168h"
 ui:
@@ -49,6 +61,8 @@ store:
   path: "/data/hermes-hub.db"
   # PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session
   # dsn: "(secret)"
+  # File that holds store.dsn. Wins over dsn
+  # dsn_file: ""
   # With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped
   # import_path: ""
 shutdown:
@@ -62,11 +76,72 @@ hold:
 usage:
   # Base URL of a Prometheus query API, such as http://prometheus:9090, that scrapes the metrics of ollama-priority-proxy in front of the local GPU's Ollama. The Usage page then shows how long the GPU was busy. Empty: it does not
   # prometheus_url: ""
-# Who may log in: each OIDC sub and its hub user name. A login with any other sub is refused. Only settable in the config file
+auth:
+  # How people log in: local (accounts in the hub's database, with a setup page that makes the first one), proxy (a reverse proxy in front of the hub tells it who the user is) or oidc (an OpenID Connect provider). Default: oidc when oidc.issuer_url is set, else local
+  # mode: ""
+  # Hub user names that may manage people in Settings > Users, besides accounts marked admin there. The first local account is an admin
+  # admins: []
+  # CIDRs or addresses of the reverse proxies in front of the hub, such as 10.0.0.0/8 or 127.0.0.1. In proxy mode the hub reads the user header only on requests from them. In every mode the hub takes the client address for login limits from their X-Forwarded-For
+  # trusted_proxies: []
+  local:
+    # Token the first-user setup page asks for, at least 16 characters. Empty: while the hub has no account it makes one at start and prints it to its log
+    # setup_token: "(secret)"
+    # File that holds auth.local.setup_token. Wins over setup_token
+    # setup_token_file: ""
+    # Wrong passwords in a row that lock an account. 0 is the default
+    max_failures: 5
+    # How long a locked account stays locked. An admin can unlock it sooner by setting a new password. 0 is the default
+    lockout: "15m"
+  proxy:
+    # Header that holds the user's identity: Remote-User (Authelia, Authentik), X-Auth-Request-User or X-Forwarded-User (oauth2-proxy), Tailscale-User-Login (tailscale serve). Not used with proxy.jwt.jwks_url
+    user_header: "Remote-User"
+    # Header with the user's display name. Not used with proxy.jwt.jwks_url
+    name_header: "Remote-Name"
+    # Header with the user's email address. Not used with proxy.jwt.jwks_url
+    email_header: "Remote-Email"
+    # Header with the user's groups, separated by commas or |, for backends[].groups. Not used with proxy.jwt.jwks_url
+    groups_header: "Remote-Groups"
+    # Make an account for each new identity the proxy sends. Off: only identities in users[] and accounts an admin made log in
+    auto_create: false
+    # Where Log out sends the browser after the hub's own logout, such as the proxy's logout page. Empty: the hub's start page
+    # logout_url: ""
+    jwt:
+      # URL of the JSON Web Key Set that signs the proxy's tokens, such as https://<team>.cloudflareaccess.com/cdn-cgi/access/certs or the jwks_uri of the identity provider. Set: the hub reads the user from a verified token instead of user_header
+      # jwks_url: ""
+      # Header that holds the token: Authorization (Bearer), Cf-Access-Jwt-Assertion (Cloudflare Access) or the header an Envoy Gateway SecurityPolicy forwards the ID token in. Default Authorization when cookie is empty
+      # header: ""
+      # Cookie that holds the token, such as CF_Authorization. Read when header has none
+      # cookie: ""
+      # Token issuer (iss) to require. Required with jwks_url
+      # issuer: ""
+      # Audiences (aud) the hub accepts: the OIDC client ID, or the application AUD tag of Cloudflare Access. Empty: any audience
+      # audiences: []
+      # Claim that holds the user's identity, such as sub or email
+      user_claim: "sub"
+      # Claim with the user's display name
+      name_claim: "preferred_username"
+      # Claim with the user's email address
+      email_claim: "email"
+      # Claim with the user's groups, for backends[].groups
+      groups_claim: "groups"
+# Identities from the identity provider or proxy and their hub user names: each OIDC sub (auth.mode oidc) or proxy identity (auth.mode proxy). Not used in auth.mode local, whose accounts live in the database. Only settable in the config file
 # users:
 #   - sub: ""
 #     name: ""
-# Hermes backends and who may use them. Only settable in the config file
+hermes:
+  # Base URL of a Hermes Webapp listener, such as http://hermes:9120. Set: the hub adds a backend with id hermes that every hub user may use, in front of backends[]
+  # url: ""
+  # Display name of that backend
+  name: "Hermes"
+  # Hermes dashboard user name of that backend. Required with url
+  # username: ""
+  # Hermes dashboard password of that backend. Required with url unless password_file is set
+  # password: "(secret)"
+  # File that holds hermes.password. Wins over password
+  # password_file: ""
+  # Let users pair talaria computers with that backend, as backends[].devices
+  devices: false
+# Hermes backends and who may use them. Only settable in the config file; for one backend, hermes.* works from environment variables too
 # backends:
 #   - id: ""
 #     name: ""
@@ -74,8 +149,10 @@ usage:
 #     provider: ""
 #     username: ""
 #     password: "(secret)"
+#     password_file: ""
 #     users: []
 #     groups: []
+#     everyone: false
 #     cwd: ""
 #     show_reasoning: false
 #     devices: false
@@ -85,6 +162,7 @@ usage:
 #       - id: ""
 #         name: ""
 #         token: "(secret)"
+#         token_file: ""
 #     honcho:
 #       url: ""
 #       workspace: ""
@@ -97,8 +175,10 @@ usage:
 telegram:
   # Run the Telegram bot
   enabled: false
-  # Telegram bot token from BotFather
+  # Telegram bot token from BotFather. Required with enabled unless token_file is set
   # token: "(secret)"
+  # File that holds telegram.token. Wins over token
+  # token_file: ""
   # Telegram Bot API base URL
   api_url: "https://api.telegram.org"
   # Default backend per hub user, as user=backend pairs. A user without one gets their first backend

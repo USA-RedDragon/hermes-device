@@ -32,20 +32,26 @@ type HTTP struct {
 	Metrics   Metrics `name:"metrics"`
 }
 
-// OIDC configures login through the OpenID Connect provider (Authentik).
+// OIDC configures login through an OpenID Connect provider (auth.mode oidc).
 type OIDC struct {
-	IssuerURL    string   `name:"issuer_url" required:"true" description:"OIDC issuer URL, such as https://auth.example.com/application/o/talaria-hub/"`
-	ClientID     string   `name:"client_id" required:"true" description:"OIDC client ID"`
-	ClientSecret string   `name:"client_secret" required:"true" secret:"true" description:"OIDC client secret"`
-	Scopes       []string `name:"scopes" default:"openid,profile,email" description:"Scopes to request. Authentik's profile scope carries preferred_username and groups"`
-	DisplayClaim string   `name:"display_claim" default:"preferred_username" description:"ID token claim shown as the user's name. Display only: identity is always the sub claim"`
-	GroupsClaim  string   `name:"groups_claim" default:"groups" description:"ID token claim that holds the group names that backends[].groups lists"`
+	IssuerURL        string   `name:"issuer_url" description:"OIDC issuer URL, such as https://auth.example.com/realms/home. Required in auth.mode oidc; setting it makes oidc the default mode"`
+	ClientID         string   `name:"client_id" description:"OIDC client ID. Required in auth.mode oidc"`
+	ClientSecret     string   `name:"client_secret" secret:"true" description:"OIDC client secret. Required in auth.mode oidc unless client_secret_file is set"`
+	ClientSecretFile string   `name:"client_secret_file" description:"File that holds oidc.client_secret. Wins over client_secret"`
+	Scopes           []string `name:"scopes" default:"openid,profile,email" description:"Scopes to request. Add the scope that carries groups_claim if the provider needs one (such as groups)"`
+	DisplayClaim     string   `name:"display_claim" default:"preferred_username" description:"ID token claim shown as the user's name. Display only: identity is always the sub claim"`
+	GroupsClaim      string   `name:"groups_claim" default:"groups" description:"ID token claim that holds the group names that backends[].groups and oidc.allowed_groups list"`
+	EmailClaim       string   `name:"email_claim" default:"email" description:"ID token claim with the user's email address, for oidc.allowed_domains and accounts an admin made by email. Used only when email_verified is true"`
+	AutoCreate       bool     `name:"auto_create" default:"false" description:"Make an account at the first login of a sub that is not in users[], when its verified email is in allowed_domains or it is in one of allowed_groups. Off: only subs in users[] and accounts an admin made log in"`
+	AllowedDomains   []string `name:"allowed_domains" description:"With auto_create: email domains whose verified addresses get an account, such as example.com. * allows any verified email"`
+	AllowedGroups    []string `name:"allowed_groups" description:"With auto_create: groups (groups_claim) whose members get an account"`
 }
 
 // Session configures the login cookie.
 type Session struct {
-	Secret string        `name:"secret" required:"true" secret:"true" description:"Key for the session and login cookies. At least 32 characters"`
-	TTL    time.Duration `name:"ttl" default:"168h" description:"How long a login lasts"`
+	Secret     string        `name:"secret" secret:"true" description:"Key for the session and login cookies, at least 32 characters. Empty with no secret_file: the hub makes one and keeps it in its database"`
+	SecretFile string        `name:"secret_file" description:"File that holds session.secret. Wins over secret"`
+	TTL        time.Duration `name:"ttl" default:"168h" description:"How long a login lasts"`
 }
 
 // Store drivers.
@@ -59,6 +65,7 @@ type Store struct {
 	Driver     string `name:"driver" default:"sqlite" description:"Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices"`
 	Path       string `name:"path" default:"/data/hermes-hub.db" description:"Path of the SQLite database (store.driver sqlite)"`
 	DSN        string `name:"dsn" secret:"true" description:"PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session"`
+	DSNFile    string `name:"dsn_file" description:"File that holds store.dsn. Wins over dsn"`
 	ImportPath string `name:"import_path" description:"With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped"`
 }
 
@@ -127,9 +134,11 @@ type Backend struct {
 	URL            string          `name:"url" description:"Base URL of the Hermes Webapp listener, such as http://desktop:9120"`
 	Provider       string          `name:"provider" description:"Hermes dashboard password provider. Default basic"`
 	Username       string          `name:"username" description:"Hermes dashboard user name"`
-	Password       string          `name:"password" secret:"true" description:"Hermes dashboard password"`
+	Password       string          `name:"password" secret:"true" description:"Hermes dashboard password. Required unless password_file is set"`
+	PasswordFile   string          `name:"password_file" description:"File that holds the Hermes dashboard password. Wins over password"`
 	Users          []string        `name:"users" description:"Hub user names that may use this backend"`
 	Groups         []string        `name:"groups" description:"Hub groups whose members may use this backend"`
+	Everyone       bool            `name:"everyone" description:"Every hub user may use this backend. Default false"`
 	CWD            string          `name:"cwd" description:"Working directory for new sessions. Default: the gateway's own"`
 	ShowReasoning  *bool           `name:"show_reasoning" description:"Turn on reasoning streaming for each session the hub attaches to. Default true"`
 	Devices        bool            `name:"devices" description:"Let users pair talaria computers with this backend. Its Hermes needs the talaria device plugin, with plugin setting backend_id equal to this backend's id and the hub's public key. Default false"`
@@ -138,6 +147,29 @@ type Backend struct {
 	ServiceDevices []ServiceDevice `name:"service_devices" description:"Devices the hub knows from this list instead of pairing, such as each user's sandbox pod that runs talaria run. They may use only the exec leg"`
 	Honcho         Honcho          `name:"honcho"`
 	AgentMessages  *bool           `name:"agent_messages" description:"Let the agents of this backend message each other through the hub with the talaria device plugin's device-agents tools (needs devices). Default: on when users names exactly one user and groups is empty; a backend shared by several people needs true, and then all its chats count as one person's"`
+}
+
+// HermesBackendID is the id of the backend that hermes.url adds.
+const HermesBackendID = "hermes"
+
+// Hermes is a shortcut for one backend that every hub user may use, so a
+// one-person install needs no backends[] list.
+type Hermes struct {
+	URL          string `name:"url" description:"Base URL of a Hermes Webapp listener, such as http://hermes:9120. Set: the hub adds a backend with id hermes that every hub user may use, in front of backends[]"`
+	Name         string `name:"name" default:"Hermes" description:"Display name of that backend"`
+	Username     string `name:"username" description:"Hermes dashboard user name of that backend. Required with url"`
+	Password     string `name:"password" secret:"true" description:"Hermes dashboard password of that backend. Required with url unless password_file is set"`
+	PasswordFile string `name:"password_file" description:"File that holds hermes.password. Wins over password"`
+	Devices      bool   `name:"devices" default:"false" description:"Let users pair talaria computers with that backend, as backends[].devices"`
+}
+
+// backend is the backend Hermes describes, or false when url is empty.
+func (h Hermes) backend() (Backend, bool) {
+	if h.URL == "" {
+		return Backend{}, false
+	}
+	return Backend{ID: HermesBackendID, Name: h.Name, URL: h.URL, Username: h.Username, Password: h.Password,
+		Everyone: true, Devices: h.Devices}, true
 }
 
 // Honcho is where a backend's Hermes keeps what it learned about its user,
@@ -178,7 +210,7 @@ func (c Claude) Location() *time.Location {
 	return location(c.TimeZone)
 }
 
-func (c *Config) validateClaude(names map[string]bool) error {
+func (c *Config) validateClaude(known userNames) error {
 	admins, err := c.Claude.AdminMap()
 	if err != nil {
 		return err
@@ -192,7 +224,7 @@ func (c *Config) validateClaude(names map[string]bool) error {
 			return fmt.Errorf("%w: claude.admins names unknown backend %q", ErrClaudeAdmin, backend)
 		}
 		for _, u := range users {
-			if !names[u] {
+			if !known.known(u) {
 				return fmt.Errorf("%w: claude.admins names unknown user %q", ErrUser, u)
 			}
 		}
@@ -220,9 +252,10 @@ type Device struct {
 
 // ServiceDevice is a device defined in the config, pinned to its backend.
 type ServiceDevice struct {
-	ID    string `name:"id" description:"Device id the backend sees: letters, digits, _ and -, at most 64, not starting with d_ (paired devices use that)"`
-	Name  string `name:"name" description:"Name shown for the device. Default: the id"`
-	Token string `name:"token" secret:"true" description:"The device's token, as talaria stores it: hdt_ and at least 32 more characters. The hub keeps only its SHA-256"`
+	ID        string `name:"id" description:"Device id the backend sees: letters, digits, _ and -, at most 64, not starting with d_ (paired devices use that)"`
+	Name      string `name:"name" description:"Name shown for the device. Default: the id"`
+	Token     string `name:"token" secret:"true" description:"The device's token, as talaria stores it: hdt_ and at least 32 more characters. The hub keeps only its SHA-256. Required unless token_file is set"`
+	TokenFile string `name:"token_file" description:"File that holds the device's token. Wins over token"`
 }
 
 // Telegram is telegram.Config under its own name: configulator names its
@@ -241,8 +274,10 @@ type Config struct {
 	Shutdown Shutdown  `name:"shutdown"`
 	Hold     Hold      `name:"hold"`
 	Usage    Usage     `name:"usage"`
-	Users    []User    `name:"users" description:"Who may log in: each OIDC sub and its hub user name. A login with any other sub is refused. Only settable in the config file"`
-	Backends []Backend `name:"backends" description:"Hermes backends and who may use them. Only settable in the config file"`
+	Auth     Auth      `name:"auth"`
+	Users    []User    `name:"users" description:"Identities from the identity provider or proxy and their hub user names: each OIDC sub (auth.mode oidc) or proxy identity (auth.mode proxy). Not used in auth.mode local, whose accounts live in the database. Only settable in the config file"`
+	Hermes   Hermes    `name:"hermes"`
+	Backends []Backend `name:"backends" description:"Hermes backends and who may use them. Only settable in the config file; for one backend, hermes.* works from environment variables too"`
 	Telegram Telegram  `name:"telegram"`
 	Device   Device    `name:"device"`
 	Notify   Notify    `name:"notify"`
@@ -287,6 +322,21 @@ func (c *Config) UserMap() map[string]string {
 	return out
 }
 
+// userNames checks the hub user names that settings name. With a fixed
+// users[] list (and no accounts made at login) each must be in it; else
+// accounts in the database may hold them, so only their form is checked.
+type userNames struct {
+	fixed bool
+	names map[string]bool
+}
+
+func (n userNames) known(name string) bool {
+	if n.fixed {
+		return n.names[name]
+	}
+	return name != "" && !strings.ContainsAny(name, "=, ")
+}
+
 func (c *Config) validateUsers() error {
 	subs, names := map[string]bool{}, map[string]bool{}
 	for i, u := range c.Users {
@@ -298,20 +348,27 @@ func (c *Config) validateUsers() error {
 		}
 		subs[u.Sub], names[u.Name] = true, true
 	}
+	known := userNames{names: names,
+		fixed: c.Auth.Mode == AuthOIDC && !c.OIDC.AutoCreate || c.Auth.Mode == AuthProxy && !c.Auth.Proxy.AutoCreate && len(c.Users) > 0}
 	defaults, err := c.UI.DefaultBackendMap()
 	if err != nil {
 		return err
 	}
 	for user := range defaults {
-		if !names[user] {
+		if !known.known(user) {
 			return fmt.Errorf("%w: ui.default_backends names unknown user %q", ErrUser, user)
 		}
 	}
 	for i, b := range c.Backends {
 		for _, user := range b.Users {
-			if !names[user] {
+			if !known.known(user) {
 				return fmt.Errorf("%w: backends[%d].users names unknown user %q", ErrUser, i, user)
 			}
+		}
+	}
+	for _, user := range c.Auth.Admins {
+		if !known.known(user) {
+			return fmt.Errorf("%w: auth.admins names unknown user %q", ErrUser, user)
 		}
 	}
 	if c.UI.TimeZone == "" {
@@ -320,7 +377,7 @@ func (c *Config) validateUsers() error {
 	if _, err := time.LoadLocation(c.UI.TimeZone); err != nil {
 		return fmt.Errorf("%w: %q", ErrUITimeZone, c.UI.TimeZone)
 	}
-	return c.validateClaude(names)
+	return c.validateClaude(known)
 }
 
 func (c *Config) validateStore() error {
@@ -348,6 +405,15 @@ func (c *Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return ErrInvalidLogLevel
+	}
+	if err := c.readSecretFiles(); err != nil {
+		return err
+	}
+	if err := c.validateAuth(); err != nil {
+		return err
+	}
+	if err := c.addHermes(); err != nil {
+		return err
 	}
 	if err := c.validateUsers(); err != nil {
 		return err
@@ -387,6 +453,24 @@ func (c *Config) Validate() error {
 		return err
 	}
 	return c.validateDevices()
+}
+
+// addHermes puts the backend of hermes.url in front of backends[].
+func (c *Config) addHermes() error {
+	b, ok := c.Hermes.backend()
+	if !ok {
+		return nil
+	}
+	for _, other := range c.Backends {
+		if other.ID == HermesBackendID {
+			return fmt.Errorf("%w: hermes.url adds backend id %s, which backends[] already has", ErrBackend, HermesBackendID)
+		}
+	}
+	if b.Username == "" || b.Password == "" {
+		return fmt.Errorf("%w: hermes.url needs hermes.username and hermes.password (or password_file)", ErrBackend)
+	}
+	c.Backends = append([]Backend{b}, c.Backends...)
+	return nil
 }
 
 func (c *Config) validateBackends() error {

@@ -10,7 +10,8 @@ import (
 // Config is the Telegram bot configuration. Nest it in the app config.
 type Config struct {
 	Enabled         bool          `name:"enabled" default:"false" description:"Run the Telegram bot"`
-	Token           string        `name:"token" secret:"true" description:"Telegram bot token from BotFather"`
+	Token           string        `name:"token" secret:"true" description:"Telegram bot token from BotFather. Required with enabled unless token_file is set"`
+	TokenFile       string        `name:"token_file" description:"File that holds telegram.token. Wins over token"`
 	APIURL          string        `name:"api_url" default:"https://api.telegram.org" description:"Telegram Bot API base URL"`
 	DefaultBackends []string      `name:"default_backends" description:"Default backend per hub user, as user=backend pairs. A user without one gets their first backend"`
 	AllowedGroups   []int64       `name:"allowed_groups" description:"Group chat IDs the bot answers in. The bot ignores every other group"`

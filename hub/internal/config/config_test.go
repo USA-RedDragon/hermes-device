@@ -133,9 +133,12 @@ func TestLoadPostgres(t *testing.T) {
 
 func TestLoadErrors(t *testing.T) {
 	t.Parallel()
-	var req *configulator.RequiredError
-	if _, err := load(t, map[string]string{}, file); !errors.As(err, &req) {
+	if _, err := load(t, map[string]string{}, file); !errors.Is(err, config.ErrOIDC) {
 		t.Fatalf("missing secrets: %v", err)
+	}
+	var req *configulator.RequiredError
+	if _, err := load(t, secrets(), "users: []\n"); !errors.As(err, &req) {
+		t.Fatalf("missing public_url: %v", err)
 	}
 	short := map[string]string{envClientSecret: "cs", envSessionSecret: "short"}
 	if _, err := load(t, short, file); !errors.Is(err, config.ErrShortSecret) {
@@ -176,7 +179,7 @@ func TestDeviceSettings(t *testing.T) {
 	t.Parallel()
 	env := secrets()
 	env[envDeviceEnabled] = valTrue
-	env["HUB_DEVICE_SIGNING_KEY"] = testKey
+	env[envSigningKey] = testKey
 	env["HUB_DEVICE_TRUSTED_PROXIES"] = "10.0.0.0/8,192.0.2.1"
 	body := file + `    devices: true
     acp_url: http://hermes.hermes.svc:9130/
@@ -219,8 +222,8 @@ func TestDeviceSettings(t *testing.T) {
 	}
 	for _, bad := range []map[string]string{
 		{envDeviceEnabled: valTrue},
-		{envDeviceEnabled: valTrue, "HUB_DEVICE_SIGNING_KEY": testPub},
-		{envDeviceEnabled: valTrue, "HUB_DEVICE_SIGNING_KEY": "c2hvcnQ="},
+		{envDeviceEnabled: valTrue, envSigningKey: testPub},
+		{envDeviceEnabled: valTrue, envSigningKey: "c2hvcnQ="},
 		{"HUB_DEVICE_TRUSTED_PROXIES": "not-a-cidr"},
 	} {
 		env := secrets()
