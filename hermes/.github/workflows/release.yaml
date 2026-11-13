@@ -3,6 +3,9 @@ name: Release
 # Each change to the Dockerfile or the patches on main, after the tests pass,
 # becomes release v<upstream>-p<n>: v0.23.1-p1, v0.23.1-p2, then v0.24.0-p1
 # after Renovate moves the base. Run it by hand to release HEAD again.
+# One build goes to two names: ghcr.io/usa-reddragon/hermes-patches (the name
+# existing deployments pull) and the public ghcr.io/usa-reddragon/talaria-hermes,
+# which also gets latest-stable.
 
 on:
   push:
@@ -25,6 +28,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/usa-reddragon/hermes-patches
+  PUBLIC_IMAGE: ghcr.io/usa-reddragon/talaria-hermes
 
 jobs:
   test:
@@ -104,14 +108,26 @@ jobs:
           pull: true
           provenance: mode=max
           sbom: true
-          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          tags: |
+            ${{ env.IMAGE }}:${{ env.TAG }}
+            ${{ env.PUBLIC_IMAGE }}:${{ env.TAG }}
+            ${{ env.PUBLIC_IMAGE }}:latest-stable
           labels: |
-            org.opencontainers.image.title=hermes-patches
-            org.opencontainers.image.description=Hermes Agent ${{ env.UPSTREAM }} with the patches in this repository
+            org.opencontainers.image.title=Talaria Hermes
+            org.opencontainers.image.description=Hermes Agent with the Talaria patches. Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research.
             org.opencontainers.image.version=${{ env.TAG }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.vendor=USA-RedDragon
             org.opencontainers.image.base.name=docker.io/nousresearch/hermes-agent:${{ env.UPSTREAM }}
+          # ghcr shows the index annotations on the package page of a multi-arch image.
+          annotations: |
+            index:org.opencontainers.image.title=Talaria Hermes
+            index:org.opencontainers.image.description=Hermes Agent with the Talaria patches. Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research.
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.licenses=MIT
+            index:org.opencontainers.image.vendor=USA-RedDragon
           outputs: type=image,push=true,oci-mediatypes=true,compression=zstd,compression-level=19
 
       # GitHub artifact attestations are not available for private repositories of a
@@ -119,15 +135,22 @@ jobs:
       # next to BuildKit's in-image provenance and SBOM.
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
+      # A signature lives in the repository of the name it signs, so sign both names.
       - name: Sign the image
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-        run: cosign sign --yes "$IMAGE@$DIGEST"
+        run: |
+          cosign sign --yes "$IMAGE@$DIGEST"
+          cosign sign --yes "$PUBLIC_IMAGE@$DIGEST"
 
       - name: Summary
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-        run: echo "$IMAGE:$TAG@$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          {
+            echo "$PUBLIC_IMAGE:$TAG@$DIGEST"
+            echo "$IMAGE:$TAG@$DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: GitHub release
@@ -154,6 +177,8 @@ jobs:
               echo "- $(basename "$p" .patch): $(sed -n 's/^Subject: \(\[PATCH[^]]*\] \)\{0,1\}//p' "$p" | head -n1)"
             done
             echo
-            echo "Image: \`$IMAGE:$TAG\`"
+            echo "Image: \`$PUBLIC_IMAGE:$TAG\` (also \`$IMAGE:$TAG\`)"
+            echo
+            echo "Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research."
           } > "$RUNNER_TEMP/notes.md"
           gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
