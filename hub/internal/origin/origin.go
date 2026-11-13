@@ -131,6 +131,9 @@ func Classify(r Row) View {
 	case kind == "hidden":
 		return View{Show: ShowHidden, Why: whyKind}
 	case typedKind(kind):
+		if n := steeredAgent(r.Text); n != nil && kind == "steer" {
+			return View{Show: ShowCard, Notice: n, Why: whyKind}
+		}
 		return typed(r, whyKind)
 	case kind != "":
 		return View{Show: ShowCard, Notice: kindNotice(kind, r), Why: whyKind}
@@ -143,6 +146,9 @@ func Classify(r Row) View {
 			return View{Show: ShowCard, Notice: producerNotice(p, r.Text), Why: whySubmission}
 		}
 		return typed(r, whySubmission)
+	}
+	if n := steeredAgent(r.Text); n != nil {
+		return View{Show: ShowCard, Notice: n, Why: whyText}
 	}
 	if inner, ok := UnwrapSteer(r.Text); ok {
 		return typed(Row{Text: inner, TypedAsk: r.TypedAsk}, whyText)
@@ -193,6 +199,21 @@ func UnwrapSteer(text string) (string, bool) {
 		return text, false
 	}
 	return strings.TrimSpace(inner), true
+}
+
+// steeredAgent reads an agent message that the hub handed to a running
+// turn as a steer: Hermes wrapped it in the steer marker, so the row is
+// the marker around the message's own header. It returns its card, or nil
+// for any other text.
+func steeredAgent(text string) *notice.Notice {
+	inner, ok := UnwrapSteer(text)
+	if !ok {
+		return nil
+	}
+	if n := parse(inner); n != nil && n.Kind == notice.KindAgent {
+		return n
+	}
+	return nil
 }
 
 // foldedSummary reads a typed message that Hermes put a compaction handoff

@@ -89,7 +89,7 @@ const (
 // *service.Service is one.
 type Sessions interface {
 	SessionsOf(ctx context.Context, backendID string) ([]hub.Session, error)
-	SubmitAgent(ctx context.Context, backendID, sessionID, id, text string) error
+	SubmitAgent(ctx context.Context, backendID, sessionID, id, text string, steer bool) (string, error)
 }
 
 // Places says where sessions run. *device.Server is one.
@@ -960,7 +960,13 @@ func (r *Router) deliver(ctx context.Context, b config.Backend, p Plugin, m hub.
 			return mode, hub.AgentStatusNotDelivered, "", refuse("gone", "%s is no longer running", t.label)
 		}
 	}
-	if err := r.opts.Sessions.SubmitAgent(ctx, b.ID, t.session, InputPrefix+m.ID, m.Text); err != nil {
+	// A chat whose turn runs takes the message as a steer, as it would a
+	// user's text typed mid-turn: it arrives with the turn's next tool
+	// result, under the same header as a queued input. Hermes refuses a
+	// steer when the turn is ending or has no agent yet; the message then
+	// stays the chat's next input.
+	out, err := r.opts.Sessions.SubmitAgent(ctx, b.ID, t.session, InputPrefix+m.ID, m.Text, true)
+	if err != nil {
 		if errors.Is(err, service.ErrAgentYolo) {
 			return hub.AgentModeInput, hub.AgentStatusNotDelivered, "", refuse("yolo", "%s runs without approvals (yolo), "+
 				"so it takes no messages from agents", t.label)
@@ -969,8 +975,15 @@ func (r *Router) deliver(ctx context.Context, b config.Backend, p Plugin, m hub.
 		return hub.AgentModeInput, hub.AgentStatusNotDelivered, "", refuse("not_delivered", "could not deliver to %s now; "+
 			"try again later", t.label)
 	}
+	switch out {
+	case hub.AgentSubmitSteered:
+		return hub.AgentModeSteer, hub.AgentStatusDelivered,
+			"steered into its running turn: it reads it with its next tool result", nil
+	case hub.AgentSubmitStarted:
+		return hub.AgentModeInput, hub.AgentStatusDelivered, "started a turn: the chat was idle", nil
+	}
 	return hub.AgentModeInput, hub.AgentStatusDelivered,
-		"a new input of the chat: it starts a turn if the chat is idle, else it waits for the current turn", nil
+		"queued for when its turn ends: the chat is busy and could not take it mid-turn", nil
 }
 
 // undelivered handles an inbox message the target never read: a chat
@@ -989,7 +1002,7 @@ func (r *Router) undelivered(ctx context.Context, b config.Backend, raw json.Raw
 	}
 	status, mode := hub.AgentStatusNotDelivered, hub.AgentModeInbox
 	if m.ToSubagent == "" {
-		if err := r.opts.Sessions.SubmitAgent(ctx, b.ID, m.ToSession, InputPrefix+m.ID, m.Text); err != nil {
+		if _, err := r.opts.Sessions.SubmitAgent(ctx, b.ID, m.ToSession, InputPrefix+m.ID, m.Text, false); err != nil {
 			r.log.Warn("deliver an unread agent message as an input", "backend", b.ID, "id", m.ID, "error", err.Error())
 		} else {
 			status, mode = hub.AgentStatusDelivered, hub.AgentModeInput

@@ -80,7 +80,7 @@ func TestTypedNeverLost(t *testing.T) {
 		if c.Want.TypedText != nil {
 			want = *c.Want.TypedText
 		}
-		if _, wrapped := origin.UnwrapSteer(r.Text); wrapped {
+		if _, wrapped := origin.UnwrapSteer(r.Text); wrapped && c.Want.TypedText == nil {
 			want = c.Want.Text
 		}
 		if got.Show != origin.ShowUser || got.Text != want {

@@ -101,11 +101,23 @@ window.HubOrigin = (() => {
     return v;
   }
 
+  // steeredAgent is the card of an agent message that the hub handed to a running turn as a steer (the
+  // steer marker around the message's own header), or null.
+  function steeredAgent(text) {
+    const inner = unwrapSteer(text);
+    if (inner === text) return null;
+    const n = parse(inner);
+    return n && n.kind === "agent" ? n : null;
+  }
+
   function classify(m) {
     const r = row(m);
     const kind = r.display_kind.trim();
     if (kind === "hidden") return { show: "hidden", why: "kind" };
-    if (typedKinds.has(kind)) return typed(r, "kind");
+    if (typedKinds.has(kind)) {
+      const a = kind === "steer" ? steeredAgent(r.text) : null;
+      return a ? { show: "card", notice: a, why: "kind" } : typed(r, "kind");
+    }
     if (kind) return { show: "card", notice: kindNotice(kind, r), why: "kind" };
     const id = r.submission_id.trim();
     if (id) {
@@ -117,6 +129,8 @@ window.HubOrigin = (() => {
       if (p) return { show: "card", notice: parse(r.text) || card(p === "cron" ? "Scheduled job result" : "Result from " + p, r.text), why: "submission" };
       return typed(r, "submission");
     }
+    const sa = steeredAgent(r.text);
+    if (sa) return { show: "card", notice: sa, why: "text" };
     const inner = unwrapSteer(r.text);
     if (inner !== r.text) return typed({ text: inner, typed_ask: r.typed_ask }, "text");
     const n = parse(r.text);

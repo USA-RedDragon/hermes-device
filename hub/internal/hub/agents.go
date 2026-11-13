@@ -50,9 +50,22 @@ const (
 	AgentModeInput = "input"
 	// AgentModeInbox rides on the target agent's next tool result.
 	AgentModeInbox = "inbox"
-	// AgentModeSteer is Hermes's steer of a running subagent, from its
-	// parent.
+	// AgentModeSteer is Hermes's steer of a running turn: of a subagent,
+	// from its parent, or of a chat, from a peer (the input that the
+	// running turn took, prompt.steer_queued).
 	AgentModeSteer = "steer"
+)
+
+// What SubmitAgent did with an agent message for a chat.
+const (
+	// AgentSubmitStarted: the chat was idle and started a turn with it.
+	AgentSubmitStarted = "started"
+	// AgentSubmitSteered: the chat's running turn took it as a steer, to
+	// read it with its next tool result.
+	AgentSubmitSteered = "steered"
+	// AgentSubmitQueued: it waits as the chat's next input, behind the
+	// running turn.
+	AgentSubmitQueued = "queued"
 )
 
 // Agent message statuses.
