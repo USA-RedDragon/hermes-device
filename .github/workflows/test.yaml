@@ -72,6 +72,69 @@ jobs:
         run: |
           go test ./...
 
+  # Job Objects, the scheduled task, Git Bash, PowerShell and the Windows
+  # paths of the device only show up on Windows. Tests that need a POSIX
+  # system carry a unix build constraint.
+  backend-tests-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - run: go generate ./...
+
+      - name: Tests
+        run: go test ./...
+
+      - name: Build and vet for Windows on arm64
+        env:
+          GOARCH: arm64
+        run: |
+          go build ./...
+          go vet ./...
+
+  # The Windows build from Linux, as goreleaser makes it.
+  windows-cross-build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - run: go generate ./...
+
+      - name: Build and vet for Windows
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+        run: |
+          for arch in amd64 arm64; do
+            GOARCH=$arch go build -trimpath -o "$RUNNER_TEMP/talaria-$arch.exe" .
+            GOARCH=$arch go vet ./...
+          done
+
   backend-unit-tests:
     runs-on: ubuntu-24.04
     permissions:
