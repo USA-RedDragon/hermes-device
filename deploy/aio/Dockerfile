@@ -6,7 +6,7 @@
 # Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research.
 
 ARG HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a
-ARG HUB_IMAGE=ghcr.io/usa-reddragon/talaria-hub:v0.26.53@sha256:8e7f087e2636b62f0fdc4a6ff2c773282366c76b734f89f92a0730a9ae03caca
+ARG HUB_IMAGE=ghcr.io/usa-reddragon/talaria-hub:v0.26.54@sha256:832bd2db5b0aa144c28687990aca006cfda1a89268a73c1179b68e6fb4ea5504
 ARG DEVICE_IMAGE=ghcr.io/usa-reddragon/hermes-device:v0.25.3@sha256:c19e36561ac6b34798eea6464dfbf5f974b44102d30c1e1f789abc88c3a7eeb0
 ARG CADDY_IMAGE=docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 

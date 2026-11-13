@@ -4,7 +4,7 @@ description: Talaria, a web and Telegram front end for Hermes Agent with paired 
 type: application
 version: 0.1.0
 # The talaria-hub release this chart was tested with
-appVersion: "0.26.45"
+appVersion: "0.26.54"
 home: https://github.com/USA-RedDragon/talaria
 sources:
   - https://github.com/USA-RedDragon/talaria-hub

@@ -13,7 +13,7 @@ ghcr.io/plastic-labs/honcho:v3.6.0
 ghcr.io/usa-reddragon/hermes-device-sandbox:v0.25.3
 ghcr.io/usa-reddragon/hermes-device:v0.25.3
 ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30
-ghcr.io/usa-reddragon/talaria-hub:v0.26.53
+ghcr.io/usa-reddragon/talaria-hub:v0.26.54
 ```
 <!-- /docgen:output -->
 

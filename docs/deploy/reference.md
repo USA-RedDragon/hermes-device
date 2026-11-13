@@ -111,7 +111,7 @@ description: Talaria, a web and Telegram front end for Hermes Agent with paired 
 type: application
 version: 0.1.0
 # The talaria-hub release this chart was tested with
-appVersion: "0.26.45"
+appVersion: "0.26.54"
 home: https://github.com/USA-RedDragon/talaria
 sources:
   - https://github.com/USA-RedDragon/talaria-hub
@@ -188,7 +188,7 @@ telegram:
   existingSecret: ""
 
 images:
-  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.53@sha256:8e7f087e2636b62f0fdc4a6ff2c773282366c76b734f89f92a0730a9ae03caca
+  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.54@sha256:832bd2db5b0aa144c28687990aca006cfda1a89268a73c1179b68e6fb4ea5504
   # -- Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
   hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a
   device: ghcr.io/usa-reddragon/hermes-device:v0.25.3@sha256:c19e36561ac6b34798eea6464dfbf5f974b44102d30c1e1f789abc88c3a7eeb0
@@ -290,6 +290,6 @@ ghcr.io/plastic-labs/honcho:v3.6.0
 ghcr.io/usa-reddragon/hermes-device-sandbox:v0.25.3
 ghcr.io/usa-reddragon/hermes-device:v0.25.3
 ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30
-ghcr.io/usa-reddragon/talaria-hub:v0.26.53
+ghcr.io/usa-reddragon/talaria-hub:v0.26.54
 ```
 <!-- /docgen:output -->
