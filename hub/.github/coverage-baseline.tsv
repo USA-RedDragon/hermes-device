@@ -11,7 +11,7 @@ internal/claude/claudetest/claudetest.go	159	146
 internal/claude/client.go	55	50
 internal/claude/models.go	31	30
 internal/claude/pool.go	30	30
-internal/claude/service.go	313	289
+internal/claude/service.go	327	304
 internal/claudecode/claudecode.go	261	224
 internal/claudecode/pricing.go	31	25
 internal/config/auth.go	62	56
@@ -42,7 +42,7 @@ internal/device/views.go	17	17
 internal/gateway/client.go	252	206
 internal/gateway/gatewaytest/activity.go	106	86
 internal/gateway/gatewaytest/compose.go	180	156
-internal/gateway/gatewaytest/fake.go	642	586
+internal/gateway/gatewaytest/fake.go	649	593
 internal/gateway/gatewaytest/files.go	40	35
 internal/gateway/gatewaytest/mutate.go	137	120
 internal/gateway/gatewaytest/runtime.go	22	19
@@ -78,7 +78,7 @@ internal/notify/jobs.go	55	43
 internal/notify/notify.go	307	195
 internal/origin/fallback.go	73	71
 internal/origin/origin.go	117	102
-internal/pdf/pdf.go	180	160
+internal/pdf/pdf.go	180	159
 internal/pdf/pdftest/pdftest.go	32	32
 internal/scheduled/client.go	110	88
 internal/scheduled/clock.go	75	66
@@ -99,7 +99,7 @@ internal/service/outcome.go	92	88
 internal/service/page.go	51	47
 internal/service/pdf.go	71	55
 internal/service/rows.go	22	21
-internal/service/service.go	785	718
+internal/service/service.go	788	721
 internal/service/stopsend.go	93	77
 internal/service/turn.go	78	71
 internal/store/accounts.go	187	156
@@ -140,10 +140,10 @@ internal/telegram/todo.go	58	51
 internal/telegram/topics.go	521	379
 internal/web/accounts.go	255	192
 internal/web/activity.go	119	79
-internal/web/api.go	252	184
+internal/web/api.go	252	186
 internal/web/auth.go	134	101
 internal/web/authpages.go	39	37
-internal/web/claude.go	79	54
+internal/web/claude.go	83	58
 internal/web/claudecode.go	30	19
 internal/web/compose.go	196	153
 internal/web/computers.go	85	58
@@ -162,7 +162,7 @@ internal/web/scheduled.go	99	57
 internal/web/stream.go	32	30
 internal/web/subagents.go	16	14
 internal/web/users.go	182	113
-internal/web/web.go	199	175
+internal/web/web.go	200	176
 internal/webpush/encrypt.go	40	32
 internal/webpush/key.go	49	42
 internal/webpush/send.go	80	68
