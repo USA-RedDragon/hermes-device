@@ -64,7 +64,7 @@ func (s *Server) handleLoginPage(static fs.FS) http.HandlerFunc {
 			http.Redirect(w, r, "/setup", http.StatusFound)
 		default:
 			if _, ok := s.session(r); ok {
-				http.Redirect(w, r, next, http.StatusFound) //nolint:gosec // safeNext keeps only same-origin paths
+				redirectNext(w, r, next)
 				return
 			}
 			serveAuthPage(w, r, static, "login.html")

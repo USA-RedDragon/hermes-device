@@ -59,7 +59,7 @@ func (o *oidcClient) get(ctx context.Context) (*oidc.Provider, *oauth2.Config, e
 
 // safeNext keeps only same-origin absolute paths.
 func safeNext(next string) string {
-	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, "/\\") {
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, "/\\") {
 		return "/"
 	}
 	u, err := url.Parse(next)
@@ -67,6 +67,17 @@ func safeNext(next string) string {
 		return "/"
 	}
 	return next
+}
+
+// redirectNext sends the client to next, kept to a same-origin absolute
+// path: the target is built from the path and query of its parse, never from
+// the text.
+func redirectNext(w http.ResponseWriter, r *http.Request, next string) {
+	target := &url.URL{Path: "/"}
+	if u, err := url.Parse(safeNext(next)); err == nil {
+		target.Path, target.RawPath, target.RawQuery = u.Path, u.RawPath, u.RawQuery
+	}
+	http.Redirect(w, r, target.String(), http.StatusFound)
 }
 
 // handleLogin starts a login: the OIDC redirect, the proxy's identity, or
@@ -189,7 +200,7 @@ func (s *Server) handleProxyLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.finishIdentity(w, r, config.AuthProxy, id, s.proxyAuto) {
 		return
 	}
-	http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusFound) //nolint:gosec // safeNext keeps only same-origin paths
+	redirectNext(w, r, r.URL.Query().Get("next"))
 }
 
 // finishLogin checks the callback against the login cookie, exchanges the
