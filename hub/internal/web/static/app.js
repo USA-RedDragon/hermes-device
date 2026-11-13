@@ -2083,8 +2083,9 @@
       note.setAttribute("role", "status");
       box.append(bar, note, frame);
       const cur = { chat, ref, box, frame, port: null, blob: save.href.startsWith("blob:") ? save.href : "", status, note, timer: 0 };
-      cur.sender = window.HubPageSend.sender({
+      const sender = () => window.HubPageSend.sender({
         title: () => (pageInfo.get(ref) || {}).title || title.textContent,
+        ask: (text) => this.ask(cur, text),
         deliver: (text) => {
           if (view !== chat) throw new Error("The chat is not open");
           return deliver(chat, text, [], undefined, true);
@@ -2092,6 +2093,7 @@
         state: (st) => this.sendState(cur, st),
         reply: (id, r) => { if (id && cur.port) cur.port.postMessage({ type: "result", id, ok: r.ok, error: r.error || "" }); },
       });
+      cur.sender = sender();
       this.cur = cur;
       let loads = 0;
       frame.addEventListener("load", () => {
@@ -2107,7 +2109,7 @@
         frame.contentWindow.postMessage({ type: "hermes-page:init" }, "*", [ch.port2]);
       });
       back.onclick = () => this.back();
-      reload.onclick = () => { loads = 0; this.say(cur, ""); frame.src = src; };
+      reload.onclick = () => { loads = 0; this.say(cur, ""); this.unask(cur); cur.sender = sender(); frame.src = src; };
       box.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); this.back(); } });
       frame.src = src;
       document.body.append(box);
@@ -2136,6 +2138,42 @@
       grow();
       focusInput();
       banner("The page put text in the message box. Edit it, then send it.");
+    },
+
+    // ask shows the text a page wants to send in the line under the bar and
+    // resolves true when the user picks Send there. The line is the hub's, so
+    // the page's script cannot press it.
+    ask(cur, text) {
+      this.unask(cur);
+      return new Promise((resolve) => {
+        const n = cur.note;
+        clearTimeout(cur.noteTimer);
+        n.replaceChildren();
+        n.classList.remove("bad");
+        n.hidden = false;
+        const shown = text.length > 300 ? text.slice(0, 300) + "\u2026" : text;
+        const q = el("span", "ask", "Send this from the page? ");
+        const quote = el("q", "", shown);
+        const yes = el("button", "", "Send");
+        yes.type = "button";
+        const no = el("button", "", "Don't send");
+        no.type = "button";
+        const done = (v) => {
+          if (cur.asking !== done) return;
+          cur.asking = null;
+          n.replaceChildren();
+          n.hidden = true;
+          resolve(v);
+        };
+        cur.asking = done;
+        yes.onclick = () => done(true);
+        no.onclick = () => done(false);
+        n.append(q, quote, yes, no);
+      });
+    },
+
+    unask(cur) {
+      if (cur.asking) cur.asking(false);
     },
 
     // sendState shows the result of a page's send in a line under the bar:
