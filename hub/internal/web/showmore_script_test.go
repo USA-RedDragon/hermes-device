@@ -26,7 +26,7 @@ func TestQuickPanelShowMoreKeepsPanelOpen(t *testing.T) {
 		e.pc.Toolsets = append(e.pc.Toolsets, toolset("extra_tool_"+strconv.Itoa(i), fmt.Sprintf("Extra tool %d", i), "does a thing"))
 	}
 	for i := range 70 {
-		e.pc.Skills = append(e.pc.Skills, map[string]any{fieldName: fmt.Sprintf("extra_skill_%d", i), "description": "a skill", keyEnabled: true, "provenance": "hub"})
+		e.pc.Skills = append(e.pc.Skills, map[string]any{fieldName: fmt.Sprintf("extra_skill_%d", i), keyDesc: "a skill", keyEnabled: true, "provenance": "hub"})
 	}
 	prof, err := os.MkdirTemp("", "showmore-profile-")
 	if err != nil {
@@ -38,3 +38,5 @@ func TestQuickPanelShowMoreKeepsPanelOpen(t *testing.T) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 }
+
+const keyDesc = "description"
