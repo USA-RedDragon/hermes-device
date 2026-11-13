@@ -43,7 +43,7 @@ internal/browser/bidi/bidi.go	51	0
 internal/browser/broker/broker.go	174	137
 internal/browser/broker/peercred_linux.go	13	9
 internal/browser/headless/group_unix.go	6	5
-internal/browser/headless/headless.go	70	55
+internal/browser/headless/headless.go	72	57
 internal/browser/host/host.go	47	30
 internal/browser/launch/detach_unix.go	1	0
 internal/browser/launch/launch.go	132	98
@@ -97,10 +97,10 @@ internal/setup/system.go	52	7
 internal/setup/task.go	67	54
 internal/setup/update.go	82	71
 internal/setup/windows.go	76	63
-internal/splice/conn.go	306	265
+internal/splice/conn.go	306	264
 internal/splice/resolve.go	127	111
 internal/splice/rpc.go	97	83
-internal/splice/splice.go	225	201
+internal/splice/splice.go	225	204
 internal/tokenstore/tokenstore.go	104	72
 internal/userdir/userdir.go	3	2
 internal/winshell/winshell.go	52	42
