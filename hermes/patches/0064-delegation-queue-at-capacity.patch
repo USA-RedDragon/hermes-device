@@ -3,42 +3,58 @@ From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
 Date: Fri, 13 Nov 2026 03:34:23 -0600
 Subject: [PATCH] feat(delegation): queue background calls over a per-chat cap
 
-delegation.at_capacity (sync = off, queue): a background delegate_task that finds the async pool full was run synchronously in the parent's turn, so the chat could not answer or take steers until it ended, and the pool was shared by every chat of the process. With queue, delegation.max_concurrent_children caps each chat's own background units (delegation.max_concurrent_children_total, 0 = none, caps the process), and a call over a cap returns at once with status queued and starts when its chat (or the process) frees a slot, oldest first. Queued units are listed (queue_position) and their children are in the subagent registry as queued: a steer joins the goal when the child starts, a stop settles it as interrupted without running. A graceful restart hands a queued unit off whole, and the next gateway queues it again.
+delegation.at_capacity (queue by default, sync = upstream's behavior): a background delegate_task that found the async pool full was run synchronously in the parent's turn, so the chat could not answer or take steers until it ended, and the pool was shared by every chat of the process. With queue, delegation.max_concurrent_children caps each chat's own background units (delegation.max_concurrent_children_total, 0 = none, caps the process), and a call over a cap returns at once with status queued and starts when its chat (or the process) frees a slot, oldest first. Queued units are listed (queue_position) and their children are in the subagent registry as queued: a steer joins the goal when the child starts, a stop settles it as interrupted without running. A graceful restart hands a queued unit off whole, and the next gateway queues it again. Set at_capacity: sync for upstream's process-wide count and in-turn run.
 ---
- hermes_cli/config_defaults.py                 |   6 +
- tests/tools/test_delegate_capacity_queue.py   | 271 ++++++++++++++++++
+ hermes_cli/config_defaults.py                 |   7 +
+ .../tools/test_delegate_capacity_interrupt.py |   3 +-
+ tests/tools/test_delegate_capacity_queue.py   | 284 ++++++++++++++++++
  .../tools/test_delegation_restart_handoff.py  |  47 +++
- tools/async_delegation.py                     | 226 ++++++++++++++-
+ tools/async_delegation.py                     | 233 ++++++++++++--
  tools/delegate_tool_child_run.py              |  20 +-
- tools/delegate_tool_config.py                 |  14 +
- tools/delegate_tool_dispatch.py               |  73 ++++-
+ tools/delegate_tool_config.py                 |  20 +-
+ tools/delegate_tool_dispatch.py               |  79 ++++-
  tools/delegate_tool_registry.py               |  43 ++-
- 8 files changed, 675 insertions(+), 25 deletions(-)
+ 9 files changed, 701 insertions(+), 35 deletions(-)
  create mode 100644 tests/tools/test_delegate_capacity_queue.py
 
 diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
-index 24477e1c..b3edc8ae 100644
+index 24477e1c..a62ec317 100644
 --- a/hermes_cli/config_defaults.py
 +++ b/hermes_cli/config_defaults.py
-@@ -1387,6 +1387,12 @@ DEFAULT_CONFIG = {
+@@ -1387,6 +1387,13 @@ DEFAULT_CONFIG = {
          "reasoning_effort": "",
          # Max parallel children per batch AND concurrent background units (async beyond it runs sync). Floor 1.
          "max_concurrent_children": 10,
-+        # A background call that finds the pool full: "sync" runs it in the turn (the chat waits for it); "queue"
-+        # makes max_concurrent_children a per-chat cap and returns at once, starting the call when its chat frees
-+        # a slot (FIFO), listed as queued, steerable and stoppable.
-+        "at_capacity": "sync",
++        # A background call that finds the pool full: "queue" (default) makes max_concurrent_children a per-chat cap
++        # and returns at once, starting the call when its chat frees a slot (FIFO), listed as queued, steerable and
++        # stoppable; "sync" (upstream's behavior) counts it over the whole process and runs the call in the turn
++        # (the chat waits for it, with no card).
++        "at_capacity": "queue",
 +        # With at_capacity: queue, the most background units the whole process runs over every chat (0 = no cap).
 +        "max_concurrent_children_total": 0,
          "prefix_stagger_seconds": 0,  # max s siblings wait for the 1st child's 1st chunk (not a stagger); 0 = off
          # Background fan-outs return as ONE message when the whole call finishes. true = each task
          # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
+diff --git a/tests/tools/test_delegate_capacity_interrupt.py b/tests/tools/test_delegate_capacity_interrupt.py
+index 8f847bc5..cc204200 100644
+--- a/tests/tools/test_delegate_capacity_interrupt.py
++++ b/tests/tools/test_delegate_capacity_interrupt.py
+@@ -110,7 +110,8 @@ def registry_state(tmp_path, monkeypatch):
+     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+     monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
+     (tmp_path / "config.yaml").write_text(
+-        "delegation:\n  max_concurrent_children: 1\n  worktree_isolation: false\n",
++        # The rejected-call fallback is the sync mode (the default queues such a call).
++        "delegation:\n  max_concurrent_children: 1\n  worktree_isolation: false\n  at_capacity: sync\n",
+         encoding="utf-8",
+     )
+     async_delegation._reset_for_tests()
 diff --git a/tests/tools/test_delegate_capacity_queue.py b/tests/tools/test_delegate_capacity_queue.py
 new file mode 100644
-index 00000000..d7c19dc4
+index 00000000..ab760f08
 --- /dev/null
 +++ b/tests/tools/test_delegate_capacity_queue.py
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,284 @@
 +"""delegation.at_capacity: queue -- a background call the full pool cannot take is queued, not run in the turn."""
 +
 +from __future__ import annotations
@@ -238,14 +254,27 @@ index 00000000..d7c19dc4
 +    assert order == ["sa-queued-5", "sa-queued-6"]
 +
 +
-+@pytest.mark.parametrize("at_capacity", [None, "sync"])
-+def test_default_still_runs_the_call_in_the_turn(full_pool, at_capacity):
-+    home, *_ = full_pool
-+    _config(home, at_capacity)
++def test_default_queues_without_any_at_capacity_setting(full_pool):
++    home, release, completions, _ = full_pool
++    _config(home, None)  # no delegation.at_capacity: the default is queue, counted per chat
 +    parent, child = _Parent(), _Child(7)
++    started = time.monotonic()
++    result = json.loads(_dispatch_background(_batch(parent, child)))
++    assert time.monotonic() - started < 5
++    assert result["status"] == "queued"
++    assert "SYNCHRONOUSLY" not in result["note"] and "per chat" in result["note"]
++    assert not child.started.is_set()
++    release.set()
++    assert _completion_for(completions, result["delegation_id"])["results"][0]["status"] == "completed"
++
++
++def test_explicit_sync_still_runs_the_call_in_the_turn(full_pool):
++    home, *_ = full_pool
++    _config(home, "sync")
++    parent, child = _Parent(), _Child(12)
 +    result = json.loads(_dispatch_background(_batch(parent, child)))
 +    assert child.started.is_set()
-+    assert "SYNCHRONOUSLY" in result["note"]
++    assert "SYNCHRONOUSLY" in result["note"] and "delegation.at_capacity" in result["note"]
 +    assert result["results"][0]["status"] == "completed"
 +
 +
@@ -366,7 +395,7 @@ index 5ea16078..8ccd59fd 100644
 +    assert [(r["task_index"], r["summary"]) for r in event["results"]] == [
 +        (0, "resumed 0"), (1, "resumed 1"), (2, "resumed 2")]
 diff --git a/tools/async_delegation.py b/tools/async_delegation.py
-index 9abafa80..7db60ae1 100644
+index 9abafa80..80c6171e 100644
 --- a/tools/async_delegation.py
 +++ b/tools/async_delegation.py
 @@ -11,6 +11,7 @@ from __future__ import annotations
@@ -563,7 +592,17 @@ index 9abafa80..7db60ae1 100644
  def dispatch_async_delegation(
      *, goal: str, context: Optional[str], toolsets: Optional[list[str]], role: str, model: Optional[str],
      session_key: str, parent_session_id: Optional[str] = None, runner: Callable[[], dict[str, Any]],
-@@ -1060,6 +1186,8 @@ def dispatch_async_delegation_batch(
+@@ -1044,7 +1170,8 @@ def dispatch_async_delegation(
+         capacity_error=(
+             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
+             "(its result will re-enter the chat), or run this task synchronously (background=false). "
+-            "Raise delegation.max_concurrent_children in config.yaml to allow more concurrent background subagents."))
++            "This cap counts every chat because delegation.at_capacity is 'sync'; 'queue' counts it per chat and "
++            "queues the call."))
+     if handle["status"] == "dispatched":
+         logger.info("Dispatched async delegation %s (session_key=%s): %s",
+                     delegation_id, session_key or "<cli>", (goal or "")[:80])
+@@ -1060,6 +1187,8 @@ def dispatch_async_delegation_batch(
      task_indexes: Optional[list[int]] = None,
      task_transcripts: Optional[dict[str, str]] = None,
      handoff: Optional[dict[str, Any]] = None, handoff_fn: Optional[Callable[[float, dict], None]] = None,
@@ -572,15 +611,17 @@ index 9abafa80..7db60ae1 100644
  ) -> dict[str, Any]:
      """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
      background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
-@@ -1079,6 +1207,7 @@ def dispatch_async_delegation_batch(
+@@ -1079,13 +1208,17 @@ def dispatch_async_delegation_batch(
          origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
          interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
          task_indexes=task_indexes, task_transcripts=task_transcripts, handoff=handoff, handoff_fn=handoff_fn,
 +        queue_at_capacity=queue_at_capacity, on_queued=on_queued, release_fn=release_fn, max_total=max_total,
          capacity_error=(
              f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
-             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
-@@ -1086,6 +1215,9 @@ def dispatch_async_delegation_batch(
+-            "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
+-            "config.yaml to allow more concurrent background units."))
++            "(its result will re-enter the chat). This cap counts every chat because "
++            "delegation.at_capacity is 'sync'; 'queue' counts it per chat and queues the call."))
      if handle["status"] == "dispatched":
          logger.info("Dispatched async delegation batch %s (%d task(s), session_key=%s)",
                      delegation_id, n, session_key or "<cli>")
@@ -590,7 +631,7 @@ index 9abafa80..7db60ae1 100644
      return handle
  
  
-@@ -1130,6 +1262,7 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
+@@ -1130,6 +1263,7 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
              _records[delegation_id].pop("_context", None)
              _records[delegation_id].pop("_finished_children", None)
          _prune_completed_locked()
@@ -598,7 +639,7 @@ index 9abafa80..7db60ae1 100644
  
  
  def _push_completion_event(record: dict[str, Any], result: dict[str, Any], status: str) -> None:
-@@ -1246,8 +1379,16 @@ def hand_off_for_restart(grace_seconds: float, timeout_seconds: float) -> int:
+@@ -1246,8 +1380,16 @@ def hand_off_for_restart(grace_seconds: float, timeout_seconds: float) -> int:
          for record in targets:
              record.update(_handoff=True, _handoff_state={},
                            _handoff_finished=frozenset(record.get("_finished_children") or ()))
@@ -616,7 +657,7 @@ index 9abafa80..7db60ae1 100644
      ids = [r["delegation_id"] for r in targets]
      now = time.time()
      with _DB_LOCK, _transaction() as conn:
-@@ -1272,6 +1413,31 @@ def hand_off_for_restart(grace_seconds: float, timeout_seconds: float) -> int:
+@@ -1272,6 +1414,31 @@ def hand_off_for_restart(grace_seconds: float, timeout_seconds: float) -> int:
                         "resumes them from their stored transcripts", unsettled)
      if handed:
          logger.info("Handed %d background delegation(s) to the next gateway", handed)
@@ -648,7 +689,7 @@ index 9abafa80..7db60ae1 100644
      return handed
  
  
-@@ -1312,8 +1478,10 @@ def _hand_off_unit(record: dict[str, Any], result: dict[str, Any]) -> bool:
+@@ -1312,8 +1479,10 @@ def _hand_off_unit(record: dict[str, Any], result: dict[str, Any]) -> bool:
      return True
  
  
@@ -661,7 +702,7 @@ index 9abafa80..7db60ae1 100644
      now = time.time()
      with _DB_LOCK, _transaction() as conn:
          row = conn.execute("SELECT task_json FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()
-@@ -1325,7 +1493,12 @@ def _persist_handoff(delegation_id: str, kept: list, resume: list, state: dict)
+@@ -1325,7 +1494,12 @@ def _persist_handoff(delegation_id: str, kept: list, resume: list, state: dict)
          for key, extra in state.items():
              if isinstance(children.get(key), dict) and isinstance(extra, dict):
                  children[key].update(extra)
@@ -675,7 +716,7 @@ index 9abafa80..7db60ae1 100644
          return bool(conn.execute("""UPDATE async_delegations SET state='handed_off', updated_at=?, task_json=?,
                        result_json=?
                 WHERE delegation_id=? AND state IN ('running','finalizing','handed_off') AND owner_pid=?""",
-@@ -1390,6 +1563,16 @@ def adopt_handed_off_delegations(make_runner: Callable[[dict], tuple]) -> int:
+@@ -1390,6 +1564,16 @@ def adopt_handed_off_delegations(make_runner: Callable[[dict], tuple]) -> int:
              runner, interrupt_fn, progress_fn, handoff_fn = (lambda f=fallback: f), None, None, None
          record.update(interrupt_fn=interrupt_fn, progress_fn=progress_fn,
                        **({"handoff_fn": handoff_fn} if callable(handoff_fn) else {}))
@@ -692,7 +733,7 @@ index 9abafa80..7db60ae1 100644
          with _records_lock:
              _records[delegation_id] = record
              live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
-@@ -1403,6 +1586,7 @@ def adopt_handed_off_delegations(make_runner: Callable[[dict], tuple]) -> int:
+@@ -1403,6 +1587,7 @@ def adopt_handed_off_delegations(make_runner: Callable[[dict], tuple]) -> int:
          if progress_fn is not None:
              _ensure_stale_monitor()
          logger.info("Adopted background delegation %s from the previous gateway", delegation_id)
@@ -700,7 +741,7 @@ index 9abafa80..7db60ae1 100644
      return len(claimed)
  
  
-@@ -1558,10 +1742,15 @@ def list_async_delegations() -> list[dict[str, Any]]:
+@@ -1558,10 +1743,15 @@ def list_async_delegations() -> list[dict[str, Any]]:
      samplers: dict[str, Callable] = {}
      with _records_lock:
          items = []
@@ -716,7 +757,7 @@ index 9abafa80..7db60ae1 100644
              if status in _ACTIVE_STATES:
                  if r.get("_progress_ts"):
                      item["seconds_since_progress"] = round(now - r["_progress_ts"], 1)
-@@ -1604,8 +1793,17 @@ def interrupt_all(reason: str = "shutdown") -> int:
+@@ -1604,8 +1794,17 @@ def interrupt_all(reason: str = "shutdown") -> int:
      many. The child still emits a completion event (status='interrupted') via the
      normal finalize path."""
      with _records_lock:
@@ -736,7 +777,7 @@ index 9abafa80..7db60ae1 100644
  
  
  def interrupt_for_session(
-@@ -1613,8 +1811,8 @@ def interrupt_for_session(
+@@ -1613,8 +1812,8 @@ def interrupt_for_session(
  ) -> int:
      """Signal running async delegations owned by ONE ending session to stop (any
      selector matches, see ``_session_records``). Returns how many."""
@@ -799,7 +840,7 @@ index 92241593..35fd6e98 100644
  def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str]):
      """Opt-in worktree isolation: own git worktree off the parent's HEAD (the
 diff --git a/tools/delegate_tool_config.py b/tools/delegate_tool_config.py
-index 064f250e..cd205719 100644
+index 064f250e..dd339f4f 100644
 --- a/tools/delegate_tool_config.py
 +++ b/tools/delegate_tool_config.py
 @@ -118,6 +118,20 @@ def _get_max_concurrent_children() -> int:
@@ -807,10 +848,10 @@ index 064f250e..cd205719 100644
      return result
  
 +def _get_queue_at_capacity() -> bool:
-+    """delegation.at_capacity: "queue" counts ``max_concurrent_children`` per chat and queues a background call over
-+    it (it starts when the chat frees a slot); anything else ("sync", the default) keeps the process-wide count and
-+    runs a call the full pool rejects synchronously in the turn, as before."""
-+    return str(_cfg().get("at_capacity") or "sync").strip().lower() == "queue"
++    """delegation.at_capacity: "queue" (the default) counts ``max_concurrent_children`` per chat and queues a
++    background call over it (it starts when the chat frees a slot); "sync" opts back into upstream's process-wide
++    count, where a call the full pool rejects runs synchronously in the turn."""
++    return str(_cfg().get("at_capacity") or "queue").strip().lower() != "sync"
 +
 +def _get_max_concurrent_children_total() -> int:
 +    """delegation.max_concurrent_children_total (default 0 = none): with ``at_capacity: queue``, the most background
@@ -823,8 +864,21 @@ index 064f250e..cd205719 100644
  def _get_independent_completions() -> bool:
      """delegation.independent_completions (bool, default False): split a background call into per-task / per-group
      completion messages that land as each finishes. Off = one consolidated message when the whole call is done."""
+@@ -198,9 +212,9 @@ def _get_restart_handoff_grace_seconds() -> float:
+     )
+ 
+ def _get_max_async_children() -> int:
+-    """Concurrency cap for background delegations == delegation.max_concurrent_children. At capacity a new async
+-    dispatch is REJECTED (not queued) so a runaway model can't pile up unbounded background work; the caller then
+-    runs synchronously. A leftover ``delegation.max_async_children`` key is ignored with a one-time warning."""
++    """Concurrency cap for background delegations == delegation.max_concurrent_children. Per chat with
++    ``delegation.at_capacity: queue`` (the default; a call over it is queued); with ``sync`` it is counted over the
++    whole process and a new async dispatch is REJECTED, so the caller runs it synchronously. A leftover ``delegation.max_async_children`` key is ignored with a one-time warning."""
+     from tools.delegate_tool import _get_max_concurrent_children
+     if _cfg().get("max_async_children") is not None:
+         _warn_once(
 diff --git a/tools/delegate_tool_dispatch.py b/tools/delegate_tool_dispatch.py
-index 300ff096..bdd3bcde 100644
+index 300ff096..08d35811 100644
 --- a/tools/delegate_tool_dispatch.py
 +++ b/tools/delegate_tool_dispatch.py
 @@ -66,7 +66,12 @@ class _Batch:
@@ -841,6 +895,19 @@ index 300ff096..bdd3bcde 100644
  
  
  def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) -> None:
+@@ -263,9 +268,9 @@ _SYNC_FALLBACK_NOTES = {
+         "job, a Kanban worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
+     ),
+     "at_capacity": (
+-        "The background delegation pool was at capacity (delegation.max_concurrent_children), so the subagent(s) ran "
+-        "SYNCHRONOUSLY and the result is included above. Raise "
+-        "delegation.max_concurrent_children in config.yaml to allow more concurrent background delegations."
++        "The background delegation pool was at capacity (delegation.max_concurrent_children, counted over every chat "
++        "because delegation.at_capacity is 'sync'), so the subagent(s) ran SYNCHRONOUSLY and the result is included "
++        "above. delegation.at_capacity: queue counts it per chat and queues the call instead."
+     ),
+ }
+ 
 @@ -374,6 +379,15 @@ _BACKGROUND_NOTES = {
          "after you END YOUR TURN: do anything that does not depend on them, then stop with a one-line status. Do not "
          "poll transcripts or artifacts to wait for them."
