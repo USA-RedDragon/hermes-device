@@ -1,0 +1,243 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 00:05:40 -0600
+Subject: [PATCH] fix(model): detect the context window Ollama serves
+
+A local Ollama model's context length was its trained maximum (/api/show model_info) unless the Modelfile set num_ctx, so a server started with OLLAMA_CONTEXT_LENGTH=65536 showed 131K and compression started too late while Ollama truncated past 64K. The probe now prefers /api/ps context_length of the loaded model, then the model's num_ctx parameter, then the window a load gives (an empty-prompt generate, then /api/ps), then Ollama's 4096 default; model_info only bounds the answer.
+---
+ agent/model_metadata.py                      |  55 +++++++-
+ tests/agent/test_model_metadata_local_ctx.py |   4 +-
+ tests/agent/test_ollama_served_context.py    | 128 +++++++++++++++++++
+ 3 files changed, 182 insertions(+), 5 deletions(-)
+ create mode 100644 tests/agent/test_ollama_served_context.py
+
+diff --git a/agent/model_metadata.py b/agent/model_metadata.py
+index 65e64eca52..e0f02fd01b 100644
+--- a/agent/model_metadata.py
++++ b/agent/model_metadata.py
+@@ -593,6 +593,55 @@ def _ollama_show_context(data: dict[str, Any], *, gguf_first: bool, minimum: Opt
+     return None
+ 
+ 
++#: What Ollama serves when neither the server (``OLLAMA_CONTEXT_LENGTH``) nor the model (Modelfile
++#: ``num_ctx``) says: 4096 on a GPU with under 24 GiB (32K from 24 GiB, 256K from 48 GiB; the VRAM
++#: tier is not visible over HTTP, so the floor is used). Never the model's trained maximum.
++OLLAMA_DEFAULT_NUM_CTX = 4096
++
++
++def _ollama_model_key(name: Any) -> str:
++    name = str(name or "").strip()
++    return name if ":" in name else f"{name}:latest"
++
++
++def _ollama_loaded_context(client, server_url: str, bare_model: str) -> Optional[int]:
++    """``context_length`` that ``/api/ps`` reports for *bare_model* while it is loaded: the window
++    Ollama allocated (``ollama ps`` CONTEXT column), whatever set it. None when it is not loaded."""
++    resp = client.get(f"{server_url}/api/ps")
++    if resp.status_code != 200:
++        return None
++    want = _ollama_model_key(bare_model)
++    for entry in resp.json().get("models") or []:
++        if isinstance(entry, dict) and want in (_ollama_model_key(entry.get("name")), _ollama_model_key(entry.get("model"))):
++            ctx = entry.get("context_length")
++            if isinstance(ctx, (int, float)) and not isinstance(ctx, bool) and ctx > 0:
++                return int(ctx)
++    return None
++
++
++def _ollama_served_context(client, server_url: str, bare_model: str, show: dict[str, Any]) -> int:
++    """The window Ollama will serve *bare_model* with, not its trained maximum.
++
++    In order: ``/api/ps`` ``context_length`` of the loaded model; the model's ``num_ctx`` parameter
++    (``/api/show`` ``parameters``); else a load with an empty prompt, so ``/api/ps`` can say what the
++    server's own default (``OLLAMA_CONTEXT_LENGTH``) gave it; else Ollama's default. The model's
++    ``model_info`` maximum only bounds the answer: Ollama never serves more than the model has.
++    """
++    maximum = _ollama_show_context({"model_info": show.get("model_info") or {}}, gguf_first=True)
++    served = _ollama_loaded_context(client, server_url, bare_model)
++    if served is None:
++        served = _ollama_show_context({"parameters": show.get("parameters") or ""}, gguf_first=False)
++    if served is None:
++        try:  # a load with no prompt runs nothing; the server picks the window and /api/ps reports it
++            client.post(f"{server_url}/api/generate", json={"model": bare_model, "prompt": "", "stream": False}, timeout=30.0)
++            served = _ollama_loaded_context(client, server_url, bare_model)
++        except Exception:
++            served = None
++    if served is None:
++        served = OLLAMA_DEFAULT_NUM_CTX
++    return min(served, maximum) if maximum else served
++
++
+ # (host, canonical paths, model ids, context) — see _endpoint_scoped_context_length.
+ _ENDPOINT_SCOPED_CONTEXT = (
+     ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "kimi-k3", "kimi-k3-cot"}, 1_048_576),
+@@ -1598,10 +1647,10 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
+     except Exception:
+         server_type = None
+     def _ollama_ctx(client) -> Optional[int]:
+-        # Ollama: num_ctx (runtime window) before the GGUF training max, or conversations
+-        # grow past what Ollama allocated and silently truncate. Matches query_ollama_num_ctx().
++        # Ollama: the window it serves (loaded context, Modelfile num_ctx, server default), never the
++        # GGUF training max, or conversations grow past what Ollama allocated and silently truncate.
+         resp = client.post(f"{server_url}/api/show", json={"name": model})
+-        return _ollama_show_context(resp.json(), gguf_first=False) if resp.status_code == 200 else None
++        return _ollama_served_context(client, server_url, model, resp.json()) if resp.status_code == 200 else None
+     def _model_detail_ctx(client) -> Optional[int]:
+         # LM Studio / vLLM / llama.cpp / Anthropic-compat proxies: /v1/models/{model}.
+         # Skipped for unrecognised servers (server_type None, e.g. LiteLLM proxies): they commonly
+diff --git a/tests/agent/test_model_metadata_local_ctx.py b/tests/agent/test_model_metadata_local_ctx.py
+index 23fe388856..6842b8e188 100644
+--- a/tests/agent/test_model_metadata_local_ctx.py
++++ b/tests/agent/test_model_metadata_local_ctx.py
+@@ -840,7 +840,7 @@ class TestLocalContextProbeTTLCache:
+     def test_second_call_within_ttl_does_not_reprobe(self):
+         from agent.model_metadata import _query_local_context_length
+ 
+-        show_resp = self._make_resp(200, {"model_info": {"llama.context_length": 32768}})
++        show_resp = self._make_resp(200, {"parameters": "num_ctx 32768", "model_info": {"llama.context_length": 32768}})
+         models_resp = self._make_resp(404, {})
+         client_mock = MagicMock()
+         client_mock.__enter__ = lambda s: client_mock
+@@ -861,7 +861,7 @@ class TestLocalContextProbeTTLCache:
+     def test_different_key_still_probes(self):
+         from agent.model_metadata import _query_local_context_length
+ 
+-        show_resp = self._make_resp(200, {"model_info": {"llama.context_length": 32768}})
++        show_resp = self._make_resp(200, {"parameters": "num_ctx 32768", "model_info": {"llama.context_length": 32768}})
+         models_resp = self._make_resp(404, {})
+         client_mock = MagicMock()
+         client_mock.__enter__ = lambda s: client_mock
+diff --git a/tests/agent/test_ollama_served_context.py b/tests/agent/test_ollama_served_context.py
+new file mode 100644
+index 0000000000..8c018a66d9
+--- /dev/null
++++ b/tests/agent/test_ollama_served_context.py
+@@ -0,0 +1,128 @@
++"""Context length of an Ollama model is the window Ollama serves, not the model's trained maximum.
++
++A fake Ollama HTTP server answers ``/api/tags``, ``/api/show``, ``/api/ps`` and ``/api/generate``.
++Order: ``/api/ps`` ``context_length`` of the loaded model, the Modelfile ``num_ctx``, the window a load
++gives (``OLLAMA_CONTEXT_LENGTH``), Ollama's default; ``model_info`` only bounds it.
++"""
++import json
++import threading
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++
++import pytest
++
++from agent import model_metadata as mm
++
++MODEL = "llama3.2:3b"
++TRAINED = 131072
++
++
++class _Ollama:
++    def __init__(self, *, loaded=None, parameters="", server_default=65536, trained=TRAINED, load_works=True):
++        self.loaded, self.parameters, self.server_default = loaded, parameters, server_default
++        self.trained, self.load_works = trained, load_works
++        self.calls = []
++
++
++def _handler(state):
++    class Handler(BaseHTTPRequestHandler):
++        def log_message(self, *args):
++            pass
++
++        def _send(self, code, body):
++            data = json.dumps(body).encode()
++            self.send_response(code)
++            self.send_header("Content-Type", "application/json")
++            self.send_header("Content-Length", str(len(data)))
++            self.end_headers()
++            self.wfile.write(data)
++
++        def do_GET(self):
++            state.calls.append(("GET", self.path))
++            if self.path == "/api/tags":
++                self._send(200, {"models": [{"name": MODEL}]})
++            elif self.path == "/api/ps":
++                models = [] if state.loaded is None else [
++                    {"name": MODEL, "model": MODEL, "context_length": state.loaded}]
++                self._send(200, {"models": models})
++            else:
++                self._send(404, {"error": "not found"})
++
++        def do_POST(self):
++            length = int(self.headers.get("Content-Length") or 0)
++            body = json.loads(self.rfile.read(length) or b"{}")
++            state.calls.append(("POST", self.path))
++            if self.path == "/api/show":
++                self._send(200, {"parameters": state.parameters,
++                                 "model_info": {"llama.context_length": state.trained}})
++            elif self.path == "/api/generate":
++                assert body["model"] == MODEL and body["prompt"] == ""
++                if state.load_works:
++                    state.loaded = min(state.server_default, state.trained)
++                self._send(200, {"done": True})
++            else:
++                self._send(404, {"error": "not found"})
++    return Handler
++
++
++@pytest.fixture
++def ollama(monkeypatch):
++    servers = []
++
++    def start(**kwargs):
++        state = _Ollama(**kwargs)
++        server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(state))
++        threading.Thread(target=server.serve_forever, daemon=True).start()
++        servers.append(server)
++        state.url = f"http://127.0.0.1:{server.server_address[1]}"
++        return state
++
++    monkeypatch.setattr(mm, "_endpoint_probe_path_cache", {})
++    monkeypatch.setattr(mm, "_LOCAL_CTX_PROBE_CACHE", {})
++    yield start
++    for server in servers:
++        server.shutdown()
++        server.server_close()
++
++
++def _detect(state):
++    return mm._query_local_context_length_uncached(MODEL, state.url + "/v1")
++
++
++def test_loaded_model_reports_the_served_window(ollama):
++    state = ollama(loaded=65536)  # OLLAMA_CONTEXT_LENGTH=65536; the model's maximum is 131072
++    assert _detect(state) == 65536
++    assert ("POST", "/api/generate") not in state.calls
++
++
++def test_loaded_window_beats_a_modelfile_num_ctx(ollama):
++    state = ollama(loaded=32768, parameters="num_ctx                        16384\nstop \"<|eot_id|>\"")
++    assert _detect(state) == 32768
++
++
++def test_modelfile_num_ctx_when_not_loaded(ollama):
++    state = ollama(parameters="num_ctx                        16384\n")
++    assert _detect(state) == 16384
++    assert ("POST", "/api/generate") not in state.calls
++
++
++def test_unloaded_model_is_loaded_to_read_the_server_default(ollama):
++    state = ollama(server_default=65536)
++    assert _detect(state) == 65536
++    assert ("POST", "/api/generate") in state.calls
++
++
++def test_ollama_default_when_nothing_says(ollama):
++    state = ollama(load_works=False)
++    assert _detect(state) == mm.OLLAMA_DEFAULT_NUM_CTX == 4096
++
++
++def test_trained_maximum_is_only_an_upper_bound(ollama):
++    assert _detect(ollama(loaded=262144, trained=TRAINED)) == TRAINED
++    assert _detect(ollama(parameters="num_ctx 999999\n", trained=8192)) == 8192
++    assert _detect(ollama(load_works=False, trained=2048)) == 2048
++
++
++def test_model_name_without_a_tag_matches_latest(ollama, monkeypatch):
++    state = ollama(loaded=65536)
++    monkeypatch.setattr(f"{__name__}.MODEL", "llama3.2:latest")
++    assert mm._query_local_context_length_uncached("llama3.2", state.url + "/v1") == 65536
