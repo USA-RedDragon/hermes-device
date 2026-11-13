@@ -117,7 +117,7 @@ auth:
 
 ### Kubernetes Gateway API with Envoy Gateway
 
-An Envoy Gateway `SecurityPolicy` can log people in with OIDC in front of the hub. With Envoy Gateway v1.8 or later, forward the ID token and let the hub check it against the provider's keys, so it does not have to trust a plain header:
+An Envoy Gateway `SecurityPolicy` can log people in with OIDC in front of the hub. With Envoy Gateway v1.10 or later, forward the ID token and let the hub check it against the provider's keys, so it does not have to trust a plain header:
 
 ```yaml
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -178,7 +178,7 @@ Notes:
 
 - The talaria device API (`/api/device/`) must reach the hub without the proxy's login: devices log in with their own tokens. Give `/api/device/` its own HTTPRoute rule without the SecurityPolicy (a policy that targets the route covers all its rules, so put that rule in a second HTTPRoute).
 - `timeouts.request: 0s` keeps the event streams open.
-- Before v1.8, Envoy Gateway has no `forwardIDToken`. Then use `forwardAccessToken: true` with `header: Authorization` on the hub, when the provider's access tokens are JWTs (Keycloak's are; set `audiences` to what the provider puts in them), or a JWT provider in the SecurityPolicy with `claimToHeaders` (such as `sub` to `X-Auth-User`) and `auth.proxy.user_header: X-Auth-User` with `auth.trusted_proxies` set to the Envoy pods' addresses.
+- Before v1.10, Envoy Gateway does not send the ID token to the hub (on v1.8 no `X-Id-Token` header arrives). Then use `forwardAccessToken: true` with `header: Authorization` on the hub, when the provider's access tokens are JWTs (Keycloak's are; set `audiences` to what the provider puts in them), or a JWT provider in the SecurityPolicy with `claimToHeaders` (such as `sub` to `X-Auth-User`) and `auth.proxy.user_header: X-Auth-User` with `auth.trusted_proxies` set to the Envoy pods' addresses.
 
 These recipes follow the Envoy Gateway API reference; they have not been run against a live Envoy Gateway yet.
 
