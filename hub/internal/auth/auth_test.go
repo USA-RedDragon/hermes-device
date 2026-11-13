@@ -32,12 +32,10 @@ const (
 	claimEmail  = "email"
 )
 
-var fastParams = auth.Params{Memory: 64, Time: 1, Threads: 1} //nolint:gochecknoglobals // test costs
-
 func TestPasswordHash(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	h := auth.NewHasher(fastParams, 2)
+	h := auth.NewHasher(auth.Params{Memory: 64, Time: 1, Threads: 1}, 2)
 	enc, err := h.Hash(ctx, "correct horse battery")
 	if err != nil || !strings.HasPrefix(enc, "$argon2id$v=19$m=64,t=1,p=1$") {
 		t.Fatalf("hash = %q %v", enc, err)

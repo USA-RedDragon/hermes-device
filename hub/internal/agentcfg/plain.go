@@ -51,7 +51,7 @@ func plainToolsets() map[string][2]string {
 	}
 }
 
-var idToken = regexp.MustCompile(`[A-Za-z0-9]+(?:[_.][A-Za-z0-9]+)+`) //nolint:gochecknoglobals // a compiled pattern
+var idToken = regexp.MustCompile(`[A-Za-z0-9]+(?:[_.][A-Za-z0-9]+)+`)
 
 func acronym() map[string]string {
 	return map[string]string{"api": "API", "mcp": "MCP", "url": "URL", "oauth": "OAuth", "ssh": "SSH", "ai": "AI", "ascii": "ASCII", "svg": "SVG", "html": "HTML", "pcb": "PCB", "rf": "RF", "id": "ID", "tts": "TTS", "stt": "STT", "pdf": "PDF", "ui": "UI", "cli": "CLI", "gpt": "GPT", "llm": "LLM", "sql": "SQL", "kicad": "KiCad", "github": "GitHub", "openai": "OpenAI", "ios": "iOS", "macos": "macOS"}

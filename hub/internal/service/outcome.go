@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"slices"
 	"strings"
 	"time"
 
@@ -21,15 +20,19 @@ import (
 // approval answered where the hub could not see the choice from how that
 // call ends.
 
-// gatedTools are the tools that ask for approval while they run and end
-// with the block when it is denied. Other approvals come before their call
-// starts (plugin rules) or from inside tools whose results the hub cannot
-// read: execute_code runs terminal and file calls of its own with no
-// tool.start (tools/code_execution_rpc.py) and returns their blocks to the
-// script, and MCP tools ask for elicitations.
-//
-//nolint:gochecknoglobals // a fixed list
-var gatedTools = []string{"terminal", "write_file", "patch", "computer_use"}
+// gatedTool reports whether name is a tool that asks for approval while it
+// runs and ends with the block when it is denied. Other approvals come
+// before their call starts (plugin rules) or from inside tools whose
+// results the hub cannot read: execute_code runs terminal and file calls of
+// its own with no tool.start (tools/code_execution_rpc.py) and returns their
+// blocks to the script, and MCP tools ask for elicitations.
+func gatedTool(name string) bool {
+	switch name {
+	case "terminal", "write_file", "patch", "computer_use":
+		return true
+	}
+	return false
+}
 
 // pluginRule ends the command of an approval that a plugin's pre_tool_call
 // rule asks for before its call starts (tools/approval.py
@@ -140,7 +143,7 @@ func (ls *live) gateApproval(p gateway.Prompt) {
 	}
 	if len(match) == 0 && len(ls.subagents) == 0 && len(ls.running) == 1 && !strings.HasSuffix(cmd, pluginRule) {
 		for id, t := range ls.running {
-			if slices.Contains(gatedTools, t.name) {
+			if gatedTool(t.name) {
 				match = append(match, id)
 			}
 		}

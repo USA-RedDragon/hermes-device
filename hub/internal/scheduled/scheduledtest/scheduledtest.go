@@ -222,7 +222,7 @@ func parse(s string, now time.Time) (map[string]any, error) {
 			return map[string]any{kKind: kindCron, kExpr: s, kDisplay: s}, nil
 		}
 	}
-	return nil, errors.New("Invalid schedule '" + s + "'. Use:\n  - Interval: '30m', 'every 30m', 'every 2h' (recurring)") //nolint:staticcheck // Hermes's own words
+	return nil, errors.New("Invalid schedule '" + s + "'. Use:\n  - Interval: '30m', 'every 30m', 'every 2h' (recurring)")
 }
 
 func (d *Dash) create(w http.ResponseWriter, r *http.Request) {

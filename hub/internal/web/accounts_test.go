@@ -24,7 +24,10 @@ const (
 	fieldPassword = "password"
 )
 
-var testHasher = auth.NewHasher(auth.Params{Memory: 64, Time: 1, Threads: 1}, 4) //nolint:gochecknoglobals // shared cheap hasher
+// testHasher is a cheap hasher for tests.
+func testHasher() *auth.Hasher {
+	return auth.NewHasher(auth.Params{Memory: 64, Time: 1, Threads: 1}, 4)
+}
 
 // setupLocal is a hub in auth.mode local with no accounts yet.
 func setupLocal(t *testing.T) *hubEnv {
@@ -33,7 +36,7 @@ func setupLocal(t *testing.T) *hubEnv {
 		cfg.Auth = config.Auth{Mode: config.AuthLocal, Local: config.Local{MaxFailures: 3}}
 		cfg.OIDC, cfg.Users, cfg.UI.DefaultBackends = config.OIDC{}, nil, nil
 		cfg.Backends[0].Users = nil
-		opts.Accounts, opts.Hasher = st, testHasher
+		opts.Accounts, opts.Hasher = st, testHasher()
 	})
 }
 
@@ -132,7 +135,7 @@ func TestLocalLockout(t *testing.T) {
 	t.Parallel()
 	e := setupLocal(t)
 	ctx := context.Background()
-	hash, _ := testHasher.Hash(ctx, alicePhrase)
+	hash, _ := testHasher().Hash(ctx, alicePhrase)
 	if err := e.store.CreateAccount(ctx, store.Account{Name: userAlice, PasswordHash: hash, Admin: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +160,7 @@ func TestPasswordChangeEndsOtherSessions(t *testing.T) {
 	t.Parallel()
 	e := setupLocal(t)
 	ctx := context.Background()
-	hash, _ := testHasher.Hash(ctx, alicePhrase)
+	hash, _ := testHasher().Hash(ctx, alicePhrase)
 	if err := e.store.CreateAccount(ctx, store.Account{Name: userAlice, PasswordHash: hash, Admin: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +192,7 @@ func TestAdminManagesUsers(t *testing.T) {
 	t.Parallel()
 	e := setupLocal(t)
 	ctx := context.Background()
-	hash, _ := testHasher.Hash(ctx, alicePhrase)
+	hash, _ := testHasher().Hash(ctx, alicePhrase)
 	if err := e.store.CreateAccount(ctx, store.Account{Name: userAlice, PasswordHash: hash, Admin: true, Backends: []string{"pc"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +305,7 @@ func setupProxy(t *testing.T, fn func(cfg *config.Config)) *hubEnv {
 			Proxy: config.Proxy{UserHeader: headerUser, NameHeader: "Remote-Name", EmailHeader: "Remote-Email", GroupsHeader: "Remote-Groups"}}
 		cfg.OIDC = config.OIDC{}
 		cfg.Users = []config.User{{Sub: aliceIdentity, Name: userAlice}, {Sub: "bob@example.test", Name: userBob}}
-		opts.Accounts, opts.Hasher = st, testHasher
+		opts.Accounts, opts.Hasher = st, testHasher()
 		if fn != nil {
 			fn(cfg)
 		}
@@ -376,7 +379,7 @@ func TestOIDCAutoCreateAndPreparedAccounts(t *testing.T) {
 	e := setupWith(t, func(cfg *config.Config, opts *web.Options, st *store.Store) {
 		cfg.OIDC.AutoCreate, cfg.OIDC.AllowedDomains, cfg.OIDC.EmailClaim = true, []string{"example.test"}, "email"
 		cfg.Auth.Admins = []string{userAlice}
-		opts.Accounts, opts.Hasher = st, testHasher
+		opts.Accounts, opts.Hasher = st, testHasher()
 	})
 	ctx := context.Background()
 	if err := e.store.CreateAccount(ctx, store.Account{Name: "erin", Email: "erin@elsewhere.test", Backends: []string{"pc"}}); err != nil {
@@ -427,7 +430,7 @@ func TestOIDCAutoCreateAndPreparedAccounts(t *testing.T) {
 func TestOIDCFirstConfigUserIsAdminWithoutAuthAdmins(t *testing.T) {
 	t.Parallel()
 	e := setupWith(t, func(_ *config.Config, opts *web.Options, st *store.Store) {
-		opts.Accounts, opts.Hasher = st, testHasher
+		opts.Accounts, opts.Hasher = st, testHasher()
 	})
 	alice := client(t)
 	login(t, e, alice)

@@ -15,14 +15,6 @@ const (
 	compactionHistory  = "Historical only; newer protected-tail messages after this summary win."
 )
 
-// compactionModelOnly are the sections of a summary that Hermes writes for
-// the model: the user's words quoted again, and how to look the messages up.
-// Hermes leaves them out of what it shows.
-//
-//nolint:gochecknoglobals // fixed text
-var compactionModelOnly = [...]string{"## User Messages (verbatim, newest first)", "## Context Recovery"}
-
-//nolint:gochecknoglobals // fixed patterns
 var (
 	compactionCount = regexp.MustCompile(`The (\d+) compacted message\(s\) remain fully preserved`)
 	compactionBlank = regexp.MustCompile(`\n{3,}`)
@@ -59,7 +51,10 @@ func CompactionSummary(text string) (summary string, count int, ok bool) {
 
 func cutModelOnly(body string) (string, int) {
 	count := 0
-	for _, heading := range compactionModelOnly {
+	// These sections of a summary are written for the model: the user's words
+	// quoted again, and how to look the messages up. Hermes leaves them out
+	// of what it shows.
+	for _, heading := range [...]string{"## User Messages (verbatim, newest first)", "## Context Recovery"} {
 		start := strings.Index(body, heading)
 		if start < 0 {
 			continue

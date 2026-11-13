@@ -299,7 +299,7 @@ func newAuthState(cfg *config.Config, opts Options) (authState, error) {
 		s.mode = config.AuthOIDC
 	}
 	if s.hasher == nil {
-		s.hasher = auth.NewHasher(auth.DefaultParams, 4)
+		s.hasher = auth.NewHasher(auth.DefaultParams(), 4)
 	}
 	for _, name := range a.Admins {
 		s.admins[name] = true

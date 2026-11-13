@@ -10,19 +10,6 @@ import (
 	"time"
 )
 
-// lockSettings make PostgreSQL notice a lock holder that vanished without
-// closing its connection (a lost node) within about 15 seconds, so its
-// lock frees. They are per session; a server that refuses one keeps its
-// default.
-//
-//nolint:gochecknoglobals // a fixed list
-var lockSettings = []string{
-	"SET tcp_keepalives_idle = 5",
-	"SET tcp_keepalives_interval = 2",
-	"SET tcp_keepalives_count = 3",
-	"SET tcp_user_timeout = 10000",
-}
-
 // Lock is a held session advisory lock on a connection of its own.
 type Lock struct {
 	conn  *sql.Conn
@@ -49,7 +36,16 @@ func (s *Store) TryLock(ctx context.Context, key int64, check time.Duration) (*L
 	if err != nil {
 		return nil, false, fmt.Errorf("lock: %w", err)
 	}
-	for _, set := range lockSettings {
+	// These make PostgreSQL notice a lock holder that vanished without
+	// closing its connection (a lost node) within about 15 seconds, so its
+	// lock frees. They are per session; a server that refuses one keeps its
+	// default.
+	for _, set := range []string{
+		"SET tcp_keepalives_idle = 5",
+		"SET tcp_keepalives_interval = 2",
+		"SET tcp_keepalives_count = 3",
+		"SET tcp_user_timeout = 10000",
+	} {
 		_, _ = conn.ExecContext(ctx, set)
 	}
 	var ok bool

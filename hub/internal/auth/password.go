@@ -52,7 +52,7 @@ type Params struct {
 
 // DefaultParams follow OWASP's argon2id baseline: 19 MiB, 2 passes, one
 // thread.
-var DefaultParams = Params{Memory: 19 * 1024, Time: 2, Threads: 1} //nolint:gochecknoglobals // fixed costs
+func DefaultParams() Params { return Params{Memory: 19 * 1024, Time: 2, Threads: 1} }
 
 const (
 	saltLen = 16
