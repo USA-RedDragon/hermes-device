@@ -23,6 +23,9 @@ const (
 	statusSent = "sent"
 )
 
+// keyPinned is the pin request's body key.
+const keyPinned = "pinned"
+
 func putJSON(t *testing.T, c *http.Client, u, csrf string, body any) int {
 	t.Helper()
 	b, err := json.Marshal(body)
@@ -111,7 +114,7 @@ func TestPinsAndReadState(t *testing.T) {
 	if got["s1"].Unread || got["s1"].Pinned || !got["s-new"].Unread {
 		t.Fatalf("first list = %+v", got)
 	}
-	if s := apiJSON(t, c, http.MethodPost, e.url+pathS1+"/pin", m.CSRF, map[string]bool{"pinned": true}, nil); s != http.StatusNoContent {
+	if s := apiJSON(t, c, http.MethodPost, e.url+pathS1+"/pin", m.CSRF, map[string]bool{keyPinned: true}, nil); s != http.StatusNoContent {
 		t.Fatalf("pin = %d", s)
 	}
 	if s := apiJSON(t, c, http.MethodPost, e.url+pathS1+"/read", m.CSRF, map[string]bool{"unread": true}, nil); s != http.StatusNoContent {
@@ -326,7 +329,7 @@ func pinnedIDs(t *testing.T, e *hubEnv, c *http.Client) string {
 
 func pinChat(t *testing.T, e *hubEnv, c *http.Client, csrf, backend, id string, pinned bool) {
 	t.Helper()
-	if s := apiJSON(t, c, http.MethodPost, e.url+"/api/sessions/"+backend+"/"+id+"/pin", csrf, map[string]bool{"pinned": pinned}, nil); s != http.StatusNoContent {
+	if s := apiJSON(t, c, http.MethodPost, e.url+"/api/sessions/"+backend+"/"+id+"/pin", csrf, map[string]bool{keyPinned: pinned}, nil); s != http.StatusNoContent {
 		t.Fatalf("pin %s = %d", id, s)
 	}
 }
@@ -503,7 +506,7 @@ func TestListDropsMarksOfDeletedChats(t *testing.T) {
 	c := client(t)
 	m := login(t, e, c)
 	for _, id := range []string{"s1", "ghost"} {
-		if s := apiJSON(t, c, http.MethodPost, e.url+"/api/sessions/pc/"+id+"/pin", m.CSRF, map[string]bool{"pinned": true}, nil); s != http.StatusNoContent {
+		if s := apiJSON(t, c, http.MethodPost, e.url+"/api/sessions/pc/"+id+"/pin", m.CSRF, map[string]bool{keyPinned: true}, nil); s != http.StatusNoContent {
 			t.Fatalf("pin %s = %d", id, s)
 		}
 	}
