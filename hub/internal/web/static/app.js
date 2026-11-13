@@ -596,7 +596,7 @@
     log.addEventListener("click", (e) => ui.record(e), true);
     log.addEventListener("load", soon, true);
     log.addEventListener("click", (e) => {
-      if (!ui.busy() && e.target.closest && e.target.closest("summary, [aria-expanded], .notice-more")) s.release();
+      if (!ui.busy() && s.pinned() && e.target.closest && e.target.closest("summary, [aria-expanded], .notice-more")) s.release();
       soon();
     }, true);
     log.addEventListener("toggle", soon, true);
