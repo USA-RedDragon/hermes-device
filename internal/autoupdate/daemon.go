@@ -2,8 +2,9 @@ package autoupdate
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"log/slog"
-	"math/rand/v2"
 	"time"
 )
 
@@ -52,7 +53,11 @@ func (d *Daemon) rand() float64 {
 	if d.Rand != nil {
 		return d.Rand()
 	}
-	return rand.Float64() //nolint:gosec // jitter, not a secret
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0.5
+	}
+	return float64(binary.BigEndian.Uint64(b[:])>>11) / (1 << 53)
 }
 
 func (d *Daemon) sleep(ctx context.Context, dur time.Duration) bool {
