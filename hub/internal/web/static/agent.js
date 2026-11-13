@@ -451,7 +451,9 @@ window.HubAgent = (() => {
       row.append(q, btn("primary", "Search", null));
       row.lastChild.type = "submit";
       const out = el("div", "lst");
-      body.append(el("p", "", el("b", "", "Add a skill")), row, out);
+      const head = el("p");
+      head.append(el("b", "", "Add a skill"));
+      body.append(head, row, out);
       f.append(body);
       f.onsubmit = async (e) => {
         e.preventDefault();
@@ -632,7 +634,9 @@ window.HubAgent = (() => {
       const lab = (t, i, s) => { const l = el("label", "field"); l.append(el("span", "", t), i); if (s) l.append(el("small", "", s)); return l; };
       const save = btn("primary", "Add", null);
       save.type = "submit";
-      body.append(el("p", "", el("b", "", "Add a connection")), lab("Name", name), lab("Address", url), lab("Token (optional)", tok, "Only if the service gave you one. Kept by the agent on the server."), save);
+      const head = el("p");
+      head.append(el("b", "", "Add a connection"));
+      body.append(head, lab("Name", name), lab("Address", url), lab("Token (optional)", tok, "Only if the service gave you one. Kept by the agent on the server."), save);
       f.append(body);
       f.onsubmit = async (e) => {
         e.preventDefault();
