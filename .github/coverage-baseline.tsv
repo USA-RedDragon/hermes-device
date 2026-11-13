@@ -82,7 +82,7 @@ internal/setup/update.go	79	68
 internal/splice/conn.go	306	264
 internal/splice/resolve.go	127	111
 internal/splice/rpc.go	97	83
-internal/splice/splice.go	225	204
+internal/splice/splice.go	225	201
 internal/tokenstore/tokenstore.go	93	61
 main.go	9	0
 plugin/embed.go	4	3
