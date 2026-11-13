@@ -1,16 +1,16 @@
-name: Hermes compatibility
+name: Hub Hermes compatibility
 
 # Runs the contract tests against the Hermes release in HERMES_VERSION. Renovate
 # opens a PR here for each new Hermes release, so the check on that PR says whether
-# the hub still works with it. See docs/hermes-upgrade.md.
+# the hub still works with it. See hub/docs/hermes-upgrade.md.
 
 on:
   pull_request:
     paths:
-      - .github/workflows/hermes-compat.yaml
-      - internal/gateway/contract_test.go
-      - internal/gateway/gatewaytest/source.go
-      - internal/device/inventory_test.go
+      - .github/workflows/hub-hermes-compat.yaml
+      - hub/internal/gateway/contract_test.go
+      - hub/internal/gateway/gatewaytest/source.go
+      - hub/internal/device/inventory_test.go
   workflow_dispatch:
     inputs:
       version:
@@ -28,6 +28,10 @@ env:
   # renovate: datasource=github-releases depName=NousResearch/hermes-agent
   HERMES_VERSION: v0.23.1
 
+defaults:
+  run:
+    working-directory: hub
+
 jobs:
   contract:
     name: Hermes contract
@@ -39,7 +43,8 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version-file: hub/go.mod
+          cache-dependency-path: hub/go.sum
 
       - name: Check out Hermes
         env:

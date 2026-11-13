@@ -1,6 +1,6 @@
-name: Update prices
+name: Hub Update prices
 
-# Refreshes internal/claudecode/prices.json, the Claude part of LiteLLM's
+# Refreshes hub/internal/claudecode/prices.json, the Claude part of LiteLLM's
 # model price list that ccusage also uses, so that the hub never fetches it
 # at run time. The job runs no repository code: it fetches the list, keeps
 # the Claude entries and their five token prices with jq, and commits the
@@ -23,7 +23,7 @@ jobs:
     permissions: {}
     env:
       URL: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
-      FILE: internal/claudecode/prices.json
+      FILE: hub/internal/claudecode/prices.json
     steps:
       - id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -64,7 +64,7 @@ jobs:
           git config user.name "$name"
           git config user.email "$(gh api "users/${APP_SLUG}%5Bbot%5D" --jq .id)+${name}@users.noreply.github.com"
           git add -- "$FILE"
-          git commit -m "claudecode: update the LiteLLM price list"
+          git commit -m "hub: claudecode: update the LiteLLM price list"
           for attempt in 1 2 3; do
             git push origin "HEAD:${BRANCH}" && exit 0
             git pull --rebase --quiet origin "$BRANCH"

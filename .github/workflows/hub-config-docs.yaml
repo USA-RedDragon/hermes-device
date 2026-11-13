@@ -1,10 +1,16 @@
-name: Config docs
+name: Hub Config docs
 
 on:
   pull_request:
+    paths:
+      - hub/**
+      - .github/workflows/hub-config-docs.yaml
   push:
     branches:
       - main
+    paths:
+      - hub/**
+      - .github/workflows/hub-config-docs.yaml
 
 permissions: {}
 
@@ -21,6 +27,8 @@ jobs:
       dir: internal/config
       type: Config
       env-prefix: HUB_
+      working-directory: hub
+      go-version-file: hub/go.mod
       app-id: ${{ vars.AUTO_COMMIT_APP_ID }}
     secrets:
       app-key: ${{ secrets.AUTO_COMMIT_APP_KEY }}

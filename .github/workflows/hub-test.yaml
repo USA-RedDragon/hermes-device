@@ -1,14 +1,24 @@
-name: Tests
+name: Hub Tests
 
 on:
   pull_request:
+    paths:
+      - hub/**
+      - .github/workflows/hub-test.yaml
   push:
     branches:
       - main
+    paths:
+      - hub/**
+      - .github/workflows/hub-test.yaml
 
 concurrency:
   group: "${{ github.workflow }} @ ${{ github.ref }}"
   cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: hub
 
 jobs:
   backend-race-tests:
@@ -40,7 +50,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version-file: hub/go.mod
+          cache-dependency-path: hub/go.sum
 
       - run: go generate ./...
 
@@ -64,7 +75,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version-file: hub/go.mod
+          cache-dependency-path: hub/go.sum
 
       - run: go generate ./...
 
@@ -84,19 +96,19 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@6ef3fdcfcd5f0b5d14df3e659ef19b8c6820f93d # v6.6.1
         with:
-          report_paths: "report.xml"
+          report_paths: "hub/report.xml"
           require_tests: true
           check_retries: true
           detailed_summary: true
           fail_on_failure: true
           token: ${{ secrets.GITHUB_TOKEN }}
-          check_name: Backend Unit Tests
+          check_name: Hub Backend Unit Tests
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: backend-test-report-xml
-          path: report.xml
+          path: hub/report.xml
           if-no-files-found: error
           retention-days: 30
 
@@ -104,7 +116,7 @@ jobs:
         if: always()
         with:
           name: backend-test-report-html
-          path: report.html
+          path: hub/report.html
           if-no-files-found: error
           retention-days: 30
 
@@ -139,7 +151,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version-file: hub/go.mod
+          cache-dependency-path: hub/go.sum
 
       - run: go generate ./...
 
@@ -155,7 +168,7 @@ jobs:
         if: always()
         with:
           name: backend-coverage
-          path: coverage.out
+          path: hub/coverage.out
           if-no-files-found: error
           retention-days: 30
 
@@ -168,6 +181,8 @@ jobs:
     with:
       artifact: backend-coverage
       file: coverage.out
+      working-directory: hub
+      strip-prefix: github.com/USA-RedDragon/talaria/hub/
       app-id: ${{ vars.AUTO_COMMIT_APP_ID }}
     secrets:
       app-key: ${{ secrets.AUTO_COMMIT_APP_KEY }}
