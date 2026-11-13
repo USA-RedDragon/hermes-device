@@ -1185,11 +1185,26 @@ def _native_vision() -> bool:
     return bool(_should_use_native_vision_fast_path())
 
 
+def _embed_max_dimension() -> int:
+    """vision.embed_max_dimension, which patched Hermes reads (Talaria Hermes 0061); 1568 on a Hermes without it."""
+    from tools import vision_tools, vision_tools_history_budget as budget
+    read = getattr(budget, "resolve_embed_max_dimension", None)
+    return int(read()) if read else int(vision_tools._EMBED_MAX_DIMENSION)
+
+
+def _fit_mode() -> bool:
+    """True when vision.resize_mode is fit (patched Hermes): keep the screenshot lossless until the resizer."""
+    from tools import vision_tools_history_budget as budget
+    read = getattr(budget, "resolve_resize_mode", None)
+    return bool(read) and read() == "fit"
+
+
 def _resize(path: Path, mime: str) -> str:
-    from tools.vision_tools import _EMBED_MAX_DIMENSION, _resize_image_for_vision
+    # The same cap and byte budget as browser_exec and vision_analyze; the resize mode is read by the resizer
+    from tools.vision_tools import _resize_image_for_vision
     from tools.vision_tools_history_budget import resolve_embed_target_bytes
     return _resize_image_for_vision(path, mime_type=mime, max_base64_bytes=resolve_embed_target_bytes(),
-                                    max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
+                                    max_dimension=_embed_max_dimension(), force_jpeg=True)
 
 
 # --- handlers ----------------------------------------------------------------------------------
@@ -1858,8 +1873,8 @@ def _check(args: dict, conn: Any, _sid: str) -> str:
     return _ok(res if isinstance(res, dict) else {})
 
 
-def _shot(conn: Any, args: dict, tab: int) -> dict:
-    req: dict = {"tab_id": tab, "format": "jpeg", "quality": 85}
+def _shot(conn: Any, args: dict, tab: int, lossless: bool = False) -> dict:
+    req: dict = {"tab_id": tab, "format": "png"} if lossless else {"tab_id": tab, "format": "jpeg", "quality": 85}
     if args.get("full_page"):
         req["full_page"] = True
     shot = call(conn, "screenshot", req)
@@ -1868,7 +1883,8 @@ def _shot(conn: Any, args: dict, tab: int) -> dict:
 
 def _vision(args: dict, conn: Any, _sid: str) -> Any:
     tab = _need_tab(args)
-    shot = _shot(conn, args, tab)
+    # vision.resize_mode fit keeps PNG, so ask the browser for one; JPEG q85 would already blur small text
+    shot = _shot(conn, args, tab, lossless=_fit_mode())
     return vision_result(_page(shot) or {"tab_id": tab}, str(shot.get("data_url") or ""),
                          str(args.get("question") or "").strip(), native=_native_vision, resize=_resize)
 

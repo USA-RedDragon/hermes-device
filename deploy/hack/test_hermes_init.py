@@ -70,5 +70,44 @@ class Defaults(unittest.TestCase):
         self.assertEqual(self.run_init(extra={"gateway": {"replay_buffer_events": 512}})["replay_buffer_events"], 512)
 
 
+class VisionDefaults(unittest.TestCase):
+    """Images reach the model at Claude Code's size: 2000 px, 512 KB, scaled once (patched Hermes 0061)."""
+
+    def vision(self, existing=None, extra=None):
+        with tempfile.TemporaryDirectory() as home:
+            m = load(home)
+            path = os.path.join(home, "config.yaml")
+            if existing is not None:
+                with open(path, "w") as f:
+                    json.dump(existing, f)
+            env = {}
+            if extra is not None:
+                env["TALARIA_EXTRA_CONFIG"] = os.path.join(home, "extra.yaml")
+                with open(env["TALARIA_EXTRA_CONFIG"], "w") as f:
+                    json.dump(extra, f)
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.object(m, "install_plugin"), \
+                    mock.patch.object(m, "write_public_key", return_value="/k"), \
+                    mock.patch.object(m, "talaria_config", return_value={}), \
+                    mock.patch.object(m, "setup_honcho"), \
+                    mock.patch.object(m, "demo_provider"), \
+                    mock.patch.object(m.subprocess, "run"):
+                m.main()
+            with open(path) as f:
+                return json.load(f)["vision"]
+
+    def test_unset_gets_claude_code_sizes(self):
+        want = {"embed_max_dimension": 2000, "embed_target_bytes": 524288, "resize_mode": "fit"}
+        self.assertEqual(self.vision(), want)
+        self.assertEqual(self.vision({"vision": {"max_calls_per_image": 2}}), dict(want, max_calls_per_image=2))
+
+    def test_explicit_values_win(self):
+        got = self.vision({"vision": {"embed_max_dimension": 1568, "resize_mode": "halve"}})
+        self.assertEqual(got, {"embed_max_dimension": 1568, "resize_mode": "halve", "embed_target_bytes": 524288})
+        got = self.vision(extra={"vision": {"embed_target_bytes": 262144}})
+        self.assertEqual(got["embed_target_bytes"], 262144)
+        self.assertEqual(got["resize_mode"], "fit")
+
+
 if __name__ == "__main__":
     unittest.main()

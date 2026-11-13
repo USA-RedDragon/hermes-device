@@ -9,6 +9,7 @@ import inspect
 import json
 import re
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -907,6 +908,37 @@ class ToolTests(BrowserBase):
         self.assertIn("Where is the login button?", out["content"][0]["text"])
         self.assertEqual(json.loads(out["text_summary"])["title"], "Example Domain")
         self.assertEqual(self.last("screenshot")["args"], {"tab_id": 7, "format": "jpeg", "quality": 85})
+
+    def test_vision_asks_for_png_in_fit_mode(self):
+        with mock.patch.object(browser, "_native_vision", lambda: True), \
+                mock.patch.object(browser, "_fit_mode", lambda: True), \
+                mock.patch.object(browser, "_resize", lambda path, mime: "data:image/jpeg;base64,c21hbGw="):
+            self.run_tool("browser_vision", tab_id=7)
+        self.assertEqual(self.last("screenshot")["args"], {"tab_id": 7, "format": "png"})
+
+    def test_resize_follows_the_vision_settings(self):
+        """The plugin's resize applies vision.embed_max_dimension and vision.resize_mode like browser_exec does
+        (Talaria Hermes 0061); a Hermes without them keeps the fixed 1568 px cap and halving."""
+        from PIL import Image
+        import io
+        from tools import vision_tools_history_budget as budget
+        if not hasattr(budget, "resolve_resize_mode"):
+            self.skipTest("this Hermes has no vision.resize_mode")
+        img = Image.new("RGB", (2560, 1440), (250, 250, 250))
+        for x in range(0, 2560, 40):
+            img.putpixel((x, 700), (0, 0, 0))
+        path = Path(tempfile.mkdtemp()) / "shot.png"
+        self.addCleanup(shutil.rmtree, path.parent, True)
+        img.save(path, "PNG")
+
+        def sized(**vision):
+            with mock.patch.object(budget, "_cfg_vision", lambda key, default=None: vision.get(key, default)):
+                url = browser._resize(path, "image/png")
+            head, b64 = url.split(",", 1)
+            return head, Image.open(io.BytesIO(base64.b64decode(b64))).size
+        self.assertEqual(sized(), ("data:image/jpeg;base64", (1280, 720)))
+        self.assertEqual(sized(resize_mode="fit", embed_max_dimension=2000, embed_target_bytes=524288),
+                         ("data:image/png;base64", (2000, 1125)))
 
     def test_vision_text_fallback(self):
         with mock.patch.object(browser, "_native_vision", lambda: False):

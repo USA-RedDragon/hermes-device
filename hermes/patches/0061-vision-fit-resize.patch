@@ -1,0 +1,436 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 08:58:59 +0000
+Subject: [PATCH] feat(vision): fit resize mode, image size keys
+
+Native images (vision_analyze, browser screenshots, MCP images) were halved to JPEG when over 1568 px or 256 KB, so a 1920x1080 screenshot reached the model at 960x540 and 10 px text was unreadable. vision.resize_mode: fit scales once to vision.embed_max_dimension, keeps PNG while it fits vision.embed_target_bytes, then tries JPEG quality steps at that size and only then halves. vision.embed_max_dimension (default 1568, 256..8000) replaces the fixed cap in every image path, including the device plugin's browser images. Defaults (halve, 1568, 256 KB) keep upstream's behavior.
+---
+ hermes_cli/config_defaults.py         |   6 +
+ tests/tools/test_vision_resize_fit.py | 181 ++++++++++++++++++++++++++
+ tools/browser_use_cli.py              |   7 +-
+ tools/mcp_tool_content.py             |  14 +-
+ tools/vision_tools.py                 |  49 ++++++-
+ tools/vision_tools_history_budget.py  |  24 ++++
+ 6 files changed, 264 insertions(+), 17 deletions(-)
+ create mode 100644 tests/tools/test_vision_resize_fit.py
+
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index b5d9c395..fc3a88a9 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1249,6 +1249,12 @@ DEFAULT_CONFIG = {
+         # Byte budget for one embedded image (clamped 64 KiB..4 MiB). Raise it for dense phone
+         # screenshots of tables the model calls "unreadable" at 256 KB.
+         "embed_target_bytes": 256 * 1024,
++        # Long edge of one embedded image in px (clamped 256..8000). Current Claude models read 2000 px.
++        "embed_max_dimension": 1568,
++        # "halve": scale an oversized image down by halves and re-encode it as JPEG. "fit": scale once to
++        # embed_max_dimension and keep the original format (PNG stays PNG) while it fits embed_target_bytes,
++        # then fall back to JPEG quality steps and halving, so small text stays readable.
++        "resize_mode": "halve",
+         # How often vision_analyze may embed the SAME image (region crops included) per session.
+         # null = 3 inside delegated subagents (they run unattended), unlimited for the main agent;
+         # an explicit number applies everywhere; 0 = unlimited.
+diff --git a/tests/tools/test_vision_resize_fit.py b/tests/tools/test_vision_resize_fit.py
+new file mode 100644
+index 00000000..dfb74571
+--- /dev/null
++++ b/tests/tools/test_vision_resize_fit.py
+@@ -0,0 +1,181 @@
++"""``vision.resize_mode: fit`` with ``vision.embed_max_dimension`` and ``vision.embed_target_bytes``.
++
++Fit scales an oversized image once to the long-edge cap and keeps PNG while it fits the byte budget; the
++default (halve) keeps the older behavior. Every native image path reads the same settings.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import base64
++import io
++import random
++
++import pytest
++
++try:
++    from PIL import Image, ImageDraw
++except ImportError:  # pragma: no cover
++    Image = None
++
++pytestmark = pytest.mark.skipif(Image is None, reason="Pillow not installed")
++
++from tools import vision_tools, vision_tools_history_budget as budget  # noqa: E402
++
++
++def _screenshot(path, size=(1920, 1080)):
++    """Flat background with small text, like a screenshot (compresses well as PNG)."""
++    img = Image.new("RGB", size, (250, 250, 250))
++    draw = ImageDraw.Draw(img)
++    for y in range(20, size[1] - 20, 30):
++        draw.text((20, y), "M49J-XC7T  small text line %d" % y, fill=(10, 10, 10))
++    img.save(path, format="PNG")
++    return path
++
++
++def _noise(path, size=(1920, 1080)):
++    rng = random.Random(1)
++    img = Image.frombytes("RGB", size, bytes(rng.getrandbits(8) for _ in range(size[0] * size[1] * 3)))
++    img.save(path, format="PNG")
++    return path
++
++
++def _decode(url):
++    head, b64 = url.split(",", 1)
++    with Image.open(io.BytesIO(base64.b64decode(b64))) as img:
++        return head, img.size
++
++
++def _config(monkeypatch, **vision):
++    monkeypatch.setattr(budget, "_cfg_vision", lambda key, default=None: vision.get(key, default))
++
++
++class TestResolvers:
++    def test_defaults_are_upstream(self, monkeypatch):
++        _config(monkeypatch)
++        assert budget.resolve_embed_max_dimension() == 1568
++        assert budget.resolve_resize_mode() == "halve"
++
++    def test_values_are_read_and_clamped(self, monkeypatch):
++        _config(monkeypatch, embed_max_dimension=2000, resize_mode="Fit")
++        assert budget.resolve_embed_max_dimension() == 2000
++        assert budget.resolve_resize_mode() == "fit"
++        _config(monkeypatch, embed_max_dimension=99999)
++        assert budget.resolve_embed_max_dimension() == 8000
++        _config(monkeypatch, embed_max_dimension=10)
++        assert budget.resolve_embed_max_dimension() == 256
++
++    @pytest.mark.parametrize("bad", ["wide", None, True, [1]])
++    def test_bad_values_fall_back(self, monkeypatch, bad):
++        _config(monkeypatch, embed_max_dimension=bad, resize_mode=bad)
++        assert budget.resolve_embed_max_dimension() == 1568
++        assert budget.resolve_resize_mode() == "halve"
++
++
++class TestResizeFit:
++    def test_halve_is_the_default(self, tmp_path, monkeypatch):
++        _config(monkeypatch)
++        src = _screenshot(tmp_path / "a.png")
++        url = vision_tools._resize_image_for_vision(src, mime_type="image/png", max_base64_bytes=1 << 20,
++                                                    max_dimension=1568, force_jpeg=True)
++        assert _decode(url) == ("data:image/jpeg;base64", (960, 540))
++
++    def test_fit_scales_once_and_keeps_png(self, tmp_path):
++        src = _screenshot(tmp_path / "a.png")
++        scale = {}
++        url = vision_tools._resize_image_for_vision(src, mime_type="image/png", max_base64_bytes=1 << 20,
++                                                    max_dimension=1568, force_jpeg=True, scale_out=scale,
++                                                    mode="fit")
++        assert _decode(url) == ("data:image/png;base64", (1568, 882))
++        assert scale == {"orig_width": 1920, "orig_height": 1080, "new_width": 1568, "new_height": 882}
++
++    def test_fit_reads_the_config_when_mode_is_unset(self, tmp_path, monkeypatch):
++        _config(monkeypatch, resize_mode="fit")
++        src = _screenshot(tmp_path / "a.png")
++        url = vision_tools._resize_image_for_vision(src, mime_type="image/png", max_base64_bytes=1 << 20,
++                                                    max_dimension=2000, force_jpeg=True)
++        # Under the cap and under the budget: returned unchanged
++        assert _decode(url) == ("data:image/png;base64", (1920, 1080))
++
++    def test_fit_falls_back_to_jpeg_at_the_fitted_size(self, tmp_path):
++        src = _noise(tmp_path / "n.png")
++        url = vision_tools._resize_image_for_vision(src, mime_type="image/png", max_base64_bytes=600_000,
++                                                    max_dimension=1568, force_jpeg=True, mode="fit")
++        head, size = _decode(url)
++        assert head == "data:image/jpeg;base64" and size == (1568, 882) and len(url) <= 600_000
++
++    def test_fit_halves_only_when_jpeg_at_the_fitted_size_is_too_big(self, tmp_path):
++        src = _noise(tmp_path / "n.png")
++        url = vision_tools._resize_image_for_vision(src, mime_type="image/png", max_base64_bytes=100_000,
++                                                    max_dimension=1568, force_jpeg=True, mode="fit")
++        head, size = _decode(url)
++        assert head == "data:image/jpeg;base64" and size == (784, 441) and len(url) <= 100_000
++
++    def test_fit_keeps_the_aspect_of_a_tall_image(self, tmp_path):
++        src = _screenshot(tmp_path / "t.png", size=(1080, 2370))
++        url = vision_tools._resize_image_for_vision(src, mime_type="image/png", max_base64_bytes=1 << 20,
++                                                    max_dimension=2000, force_jpeg=True, mode="fit")
++        assert _decode(url) == ("data:image/png;base64", (911, 2000))
++
++    def test_fit_converts_palette_images_before_scaling(self, tmp_path):
++        src = tmp_path / "p.png"
++        Image.new("P", (3000, 1000), 3).save(src, format="PNG")
++        url = vision_tools._resize_image_for_vision(src, mime_type="image/png", max_base64_bytes=1 << 20,
++                                                    max_dimension=2000, force_jpeg=True, mode="fit")
++        assert _decode(url)[1] == (2000, 667)
++
++    def test_fit_keeps_alpha_in_png(self, tmp_path):
++        src = tmp_path / "a.png"
++        Image.new("RGBA", (2400, 1200), (0, 0, 0, 0)).save(src, format="PNG")
++        url = vision_tools._resize_image_for_vision(src, mime_type="image/png", max_base64_bytes=1 << 20,
++                                                    max_dimension=2000, force_jpeg=True, mode="fit")
++        b64 = url.split(",", 1)[1]
++        with Image.open(io.BytesIO(base64.b64decode(b64))) as img:
++            assert img.mode == "RGBA" and img.size == (2000, 1000)
++
++    def test_fit_jpeg_source_stays_jpeg(self, tmp_path):
++        src = tmp_path / "j.jpg"
++        Image.new("RGB", (3000, 2000), (90, 120, 160)).save(src, format="JPEG")
++        url = vision_tools._resize_image_for_vision(src, mime_type="image/jpeg", max_base64_bytes=1 << 20,
++                                                    max_dimension=2000, force_jpeg=True, mode="fit")
++        assert _decode(url) == ("data:image/jpeg;base64", (2000, 1333))
++
++
++class TestEveryImagePath:
++    """Each native image path applies the configured cap and mode."""
++
++    def test_vision_analyze(self, tmp_path, monkeypatch):
++        _config(monkeypatch, resize_mode="fit", embed_max_dimension=2000, embed_target_bytes=524288)
++        src = _screenshot(tmp_path / "va.png", size=(2560, 1440))
++        out = asyncio.run(vision_tools._vision_analyze_native(str(src), "read it"))
++        url = next(p["image_url"]["url"] for p in out["content"] if p.get("type") == "image_url")
++        assert _decode(url) == ("data:image/png;base64", (2000, 1125))
++
++    def test_vision_analyze_default_still_halves(self, tmp_path, monkeypatch):
++        _config(monkeypatch)
++        src = _screenshot(tmp_path / "vb.png")
++        out = asyncio.run(vision_tools._vision_analyze_native(str(src), "read it"))
++        url = next(p["image_url"]["url"] for p in out["content"] if p.get("type") == "image_url")
++        assert _decode(url) == ("data:image/jpeg;base64", (960, 540))
++
++    def test_browser_use_cli_screenshot(self, tmp_path, monkeypatch):
++        from tools import browser_use_cli
++        _config(monkeypatch, resize_mode="fit", embed_max_dimension=2000, embed_target_bytes=524288)
++        monkeypatch.setattr(vision_tools, "_should_use_native_vision_fast_path", lambda: True)
++        src = _screenshot(tmp_path / "bu.png", size=(2560, 1440))
++        out = browser_use_cli._native_screenshot_result({"ok": True}, str(src))
++        assert _decode(out["content"][1]["image_url"]["url"]) == ("data:image/png;base64", (2000, 1125))
++
++    def test_mcp_image(self, tmp_path, monkeypatch):
++        from tools import mcp_tool_content
++        _config(monkeypatch, resize_mode="fit", embed_max_dimension=2000, embed_target_bytes=524288)
++        src = _screenshot(tmp_path / "mcp.png", size=(2560, 1440))
++        part, _note = mcp_tool_content._mcp_native_image_part(str(src))
++        assert _decode(part["image_url"]["url"]) == ("data:image/png;base64", (2000, 1125))
++
++    def test_mcp_image_default_halves(self, tmp_path, monkeypatch):
++        from tools import mcp_tool_content
++        _config(monkeypatch)
++        src = _screenshot(tmp_path / "mcp2.png", size=(2560, 1440))
++        part, _note = mcp_tool_content._mcp_native_image_part(str(src))
++        assert _decode(part["image_url"]["url"])[1] == (1280, 720)
+diff --git a/tools/browser_use_cli.py b/tools/browser_use_cli.py
+index ff9b9cd7..ad39d3f8 100644
+--- a/tools/browser_use_cli.py
++++ b/tools/browser_use_cli.py
+@@ -306,16 +306,15 @@ def _find_screenshot(stdout: str, since: float) -> Optional[str]:
+ def _native_screenshot_result(result: dict[str, Any], path: str) -> Optional[dict[str, Any]]:
+     """Build a multimodal tool result attaching path for vision models"""
+     try:
+-        from tools.vision_tools import (_EMBED_MAX_DIMENSION,
+-                                        _resize_image_for_vision, _should_use_native_vision_fast_path)
+-        from tools.vision_tools_history_budget import resolve_embed_target_bytes
++        from tools.vision_tools import _resize_image_for_vision, _should_use_native_vision_fast_path
++        from tools.vision_tools_history_budget import resolve_embed_max_dimension, resolve_embed_target_bytes
+         if not _should_use_native_vision_fast_path():
+             return None
+         # History-reuse cap: this data URL bakes into the tool result and is re-sent every later turn —
+         # same policy as the vision_analyze native embed.
+         data_url = _resize_image_for_vision(Path(path), mime_type="image/png",
+                                             max_base64_bytes=resolve_embed_target_bytes(),
+-                                            max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
++                                            max_dimension=resolve_embed_max_dimension(), force_jpeg=True)
+         text = json.dumps(result, ensure_ascii=False)
+         attached = text + "\n\nThe screenshot from this call is attached — inspect it with your native vision."
+         return {"_multimodal": True, "text_summary": text, "meta": {"screenshot_path": path, "native_vision": True},
+diff --git a/tools/mcp_tool_content.py b/tools/mcp_tool_content.py
+index b552c781..264a77b5 100644
+--- a/tools/mcp_tool_content.py
++++ b/tools/mcp_tool_content.py
+@@ -132,14 +132,13 @@ _MCP_NATIVE_IMAGE_CANDIDATES = 16  # images prepared at most per result: skips r
+ 
+ def _mcp_native_image_part(path: str) -> Optional[tuple[dict[str, Any], Optional[str]]]:
+     """``(image_url part, scale note)`` for one cached MCP image, sized like every other native embed (the
+-    result is re-sent each later turn: ``vision.embed_target_bytes``, 1568 px long edge, JPEG) and normalized
+-    to a provider-accepted format (BMP and friends → PNG). None when the file cannot be embedded safely. The
++    result is re-sent each later turn: ``vision.embed_target_bytes``, ``vision.embed_max_dimension``, 1568 px by
++    default) and normalized to a provider-accepted format (BMP and friends → PNG). None when the file cannot be embedded safely. The
+     note maps embedded coordinates back to the original image (a screenshot's pixels are the screen's)."""
+     from pathlib import Path
+     from PIL import Image
+-    from tools.vision_tools import (_EMBED_MAX_DIMENSION, _MAX_BASE64_BYTES, _build_scale_note,
+-                                    _resize_image_for_vision)
+-    from tools.vision_tools_history_budget import resolve_embed_target_bytes
++    from tools.vision_tools import _MAX_BASE64_BYTES, _build_scale_note, _resize_image_for_vision
++    from tools.vision_tools_history_budget import resolve_embed_max_dimension, resolve_embed_target_bytes
+     from tools.vision_tools_image_prep import (_detect_image_mime_type_from_bytes, _normalize_to_supported_image,
+                                                _validate_raster_image_decodable)
+     src = Path(path)
+@@ -151,6 +150,7 @@ def _mcp_native_image_part(path: str) -> Optional[tuple[dict[str, Any], Optional
+         return None
+     scale: dict[str, int] = {}
+     target = min(resolve_embed_target_bytes(), _MAX_BASE64_BYTES)
++    max_dimension = resolve_embed_max_dimension()
+     try:
+         # A valid header over a truncated pixel stream passes the sniff and the cache; one undecodable
+         # part makes the provider reject the whole request, so decode every frame first (as vision_analyze).
+@@ -159,14 +159,14 @@ def _mcp_native_image_part(path: str) -> Optional[tuple[dict[str, Any], Optional
+         with Image.open(normalized) as image:
+             dims = image.size
+         url = _resize_image_for_vision(normalized, mime_type=mime, max_base64_bytes=target,
+-                                       max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True, scale_out=scale)
++                                       max_dimension=max_dimension, force_jpeg=True, scale_out=scale)
+     finally:
+         if normalized != src:
+             normalized.unlink(missing_ok=True)
+     # The resizer is best-effort on both caps (a 64 px short-edge floor keeps a 60000x64 strip at 60000 px; the
+     # quality ladder can bottom out above a low vision.embed_target_bytes). The part is re-sent every later turn,
+     # so attach only what fits both; the MEDIA: path still carries the rest (vision_analyze can read it).
+-    if max(scale.get("new_width", dims[0]), scale.get("new_height", dims[1])) > _EMBED_MAX_DIMENSION:
++    if max(scale.get("new_width", dims[0]), scale.get("new_height", dims[1])) > max_dimension:
+         return None
+     if len(url) > target:
+         return None
+diff --git a/tools/vision_tools.py b/tools/vision_tools.py
+index 78d8a431..2914fbeb 100644
+--- a/tools/vision_tools.py
++++ b/tools/vision_tools.py
+@@ -44,6 +44,8 @@ from tools.vision_tools_history_budget import (
+     repeat_refusal as _repeat_refusal,
+     resolve_repeat_cap as _resolve_repeat_cap,
+     resolve_embed_target_bytes as _resolve_embed_target_bytes,
++    resolve_embed_max_dimension as _resolve_embed_max_dimension,
++    resolve_resize_mode as _resolve_resize_mode,
+ )
+ from tools.vision_tools_image_prep import (
+     _VISION_MAX_VALIDATED_AGGREGATE_PIXELS,
+@@ -424,7 +426,8 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
+                               max_base64_bytes: int = _RESIZE_TARGET_BYTES,
+                               max_dimension: Optional[int] = None,
+                               scale_out: Optional[dict] = None,
+-                              force_jpeg: bool = False) -> str:
++                              force_jpeg: bool = False,
++                              mode: Optional[str] = None) -> str:
+     """Base64 data URL, progressively downscaled with Pillow while over budget.
+ 
+     Halves dimensions (aspect-preserving, 64px floor) up to 4 times; JPEG also walks a
+@@ -439,6 +442,9 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
+     MB byte cap. force_jpeg: Re-encode as JPEG even for PNG input when a resize is needed. History-reuse
+     embeds (#92699) opt in so a text-heavy screenshot keeps its readable resolution and shrinks via JPEG
+     quality instead. Images already under both caps are returned unchanged (still PNG).
++    ``mode``: ``fit`` or ``halve``; None reads ``vision.resize_mode`` (default ``halve``). ``fit`` scales once to
++    fit ``max_dimension``, keeps PNG (ignoring ``force_jpeg``) while it fits the byte budget, then tries the JPEG
++    quality ladder at that size, and only then halves.
+     """
+     file_size = image_path.stat().st_size
+     estimated_b64 = (file_size * 4) // 3 + 100  # base64 ~4/3 + data URL header
+@@ -459,8 +465,9 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
+     logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB, max_dimension=%s), auto-resizing...",
+                 file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
+                 max_base64_bytes / (1024 * 1024), max_dimension)
+-    # JPEG for photos (smaller), PNG for transparency — unless force_jpeg.
+-    is_png = (mime_type or _determine_mime_type(image_path)) == "image/png" and not force_jpeg
++    fit = (mode or _resolve_resize_mode()) == "fit"
++    # JPEG for photos (smaller), PNG for transparency — unless force_jpeg (fit keeps PNG: it is lossless).
++    is_png = (mime_type or _determine_mime_type(image_path)) == "image/png" and (fit or not force_jpeg)
+     pil_format, out_mime = ("PNG", "image/png") if is_png else ("JPEG", "image/jpeg")
+     try:
+         img = Image.open(image_path)
+@@ -478,7 +485,36 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
+     def _record_scale(w: int, h: int) -> None:
+         if scale_out is not None and (w, h) != orig_dims:
+             scale_out.update(orig_width=orig_dims[0], orig_height=orig_dims[1], new_width=w, new_height=h)
+-    for attempt in range(5):
++    first_attempt = 0
++    if fit:
++        # One scale to the long-edge cap, then the original format, then JPEG quality steps at that size.
++        longest = max(img.width, img.height)
++        if max_dimension is not None and longest > max_dimension:
++            if img.mode not in {"RGB", "RGBA", "L", "LA"}:
++                img = img.convert("RGBA" if "transparency" in img.info or "A" in img.mode else "RGB")
++            ratio = max_dimension / longest
++            img = img.resize((max(int(round(img.width * ratio)), 1), max(int(round(img.height * ratio)), 1)),
++                             Image.LANCZOS)
++            prev_dims = (img.width, img.height)
++            logger.info("Scaled to fit %dx%d (max_dimension=%d)", img.width, img.height, max_dimension)
++        stages = [("PNG", "image/png", None)] if is_png else []
++        stages += [("JPEG", "image/jpeg", q) for q in (85, 70, 50)]
++        for fmt, stage_mime, q in stages:
++            frame = img if fmt == "PNG" or img.mode in {"RGB", "L"} else img.convert("RGB")
++            buf = BytesIO()
++            frame.save(buf, format=fmt, **({} if q is None else {"quality": q}))
++            candidate = f"data:{stage_mime};base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
++            if len(candidate) <= max_base64_bytes:
++                logger.info("Fit-resized image fits: %.1f MB (%s, quality=%s, %dx%d)",
++                            len(candidate) / (1024 * 1024), fmt, q, img.width, img.height)
++                _record_scale(img.width, img.height)
++                return candidate
++        # Still over budget: halve from the fitted size with JPEG, as the halve mode does.
++        is_png, pil_format, out_mime, quality_steps = False, "JPEG", "image/jpeg", (85, 70, 50)
++        if img.mode not in {"RGB", "L"}:
++            img = img.convert("RGB")
++        first_attempt = 1
++    for attempt in range(first_attempt, 5):
+         if attempt > 0:
+             # Halve, then re-derive from whichever axis hit the 64px floor so both shrink equally.
+             new_w, new_h = max(int(img.width * 0.5), 64), max(int(img.height * 0.5), 64)
+@@ -726,12 +762,13 @@ async def _vision_analyze_native(
+         # limits — history embeds are sized smaller so repeated vision_analyze turns don't blow the context
+         # (#92699).
+         embed_target_bytes = _resolve_embed_target_bytes()
++        embed_max_dimension = _resolve_embed_max_dimension()
+         _over_dims = await _run_encode_on_cpu_executor(
+-            _image_exceeds_dimension, prepared.path, _EMBED_MAX_DIMENSION)
++            _image_exceeds_dimension, prepared.path, embed_max_dimension)
+         if len(image_data_url) > embed_target_bytes or _over_dims:
+             image_data_url = await _resize_prepared(
+                 prepared, _scale_info,
+-                max_base64_bytes=embed_target_bytes, max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
++                max_base64_bytes=embed_target_bytes, max_dimension=embed_max_dimension, force_jpeg=True)
+             # Reject rather than embed a session-wedging payload.
+             if len(image_data_url) > _MAX_BASE64_BYTES:
+                 return tool_error(_too_large_message(image_data_url), success=False)
+diff --git a/tools/vision_tools_history_budget.py b/tools/vision_tools_history_budget.py
+index 564ed530..29367109 100644
+--- a/tools/vision_tools_history_budget.py
++++ b/tools/vision_tools_history_budget.py
+@@ -26,6 +26,11 @@ _DEFAULT_EMBED_TARGET_BYTES = 256 * 1024
+ _MIN_EMBED_TARGET_BYTES = 64 * 1024
+ _MAX_EMBED_TARGET_BYTES = 4 * 1024 * 1024
+ 
++# Long-edge cap of one embedded image (``vision.embed_max_dimension``). Anthropic rejects more than 8000 px.
++_DEFAULT_EMBED_MAX_DIMENSION = 1568
++_MIN_EMBED_MAX_DIMENSION = 256
++_MAX_EMBED_MAX_DIMENSION = 8000
++
+ # Delegated subagents run unattended and cannot be steered mid-loop from the CLI, so they get a
+ # cap by default; the main agent stays unlimited unless the user sets ``vision.max_calls_per_image``.
+ _SUBAGENT_REPEAT_CAP = 3
+@@ -56,6 +61,25 @@ def resolve_embed_target_bytes() -> int:
+     return min(max(target, _MIN_EMBED_TARGET_BYTES), _MAX_EMBED_TARGET_BYTES)
+ 
+ 
++def resolve_embed_max_dimension() -> int:
++    """``vision.embed_max_dimension`` (long edge in px) clamped to 256..8000; the 1568 default on a bad value."""
++    raw = _cfg_vision("embed_max_dimension", default=_DEFAULT_EMBED_MAX_DIMENSION)
++    try:
++        if isinstance(raw, bool):
++            raise ValueError("boolean is not a dimension")
++        value = int(raw)
++    except (TypeError, ValueError, OverflowError):
++        return _DEFAULT_EMBED_MAX_DIMENSION
++    return min(max(value, _MIN_EMBED_MAX_DIMENSION), _MAX_EMBED_MAX_DIMENSION)
++
++
++def resolve_resize_mode() -> str:
++    """``vision.resize_mode``: ``fit`` scales once to the long-edge cap and keeps PNG when it fits the byte
++    budget; ``halve`` (default, and for any other value) is the older step-wise halving to JPEG."""
++    raw = _cfg_vision("resize_mode", default="halve")
++    return "fit" if isinstance(raw, str) and raw.strip().lower() == "fit" else "halve"
++
++
+ def resolve_repeat_cap() -> int:
+     """Per-image embed cap for this session; 0 = unlimited.
+ 
+-- 
+2.56.0
+

@@ -1,0 +1,9 @@
+# Upstream tests of the image paths this patch changes
+tests/tools/test_vision_tools.py
+tests/tools/test_vision_history_budget.py
+tests/tools/test_vision_native_fast_path.py
+tests/tools/test_vision_region.py
+tests/tools/test_vision_scale_disclosure.py
+tests/tools/test_browser_use_cli.py
+tests/tools/test_mcp_image_content.py
+tests/agent/test_image_shrink_recovery.py

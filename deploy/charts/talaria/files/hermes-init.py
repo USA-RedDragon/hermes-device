@@ -177,6 +177,9 @@ DEFAULTS = {
     # events, a few KB of a streaming reply, and the hub then cannot show the reply's start). The replay stays
     # bounded by bytes.
     "gateway": {"replay_buffer_events": 0},
+    # Images reach the model the way Claude Code sends them (patched Hermes 0061): scaled once to 2000 px, PNG kept
+    # up to 512 KB. Upstream halves anything over 1568 px or 256 KB to a JPEG, so 10 px text is unreadable.
+    "vision": {"embed_max_dimension": 2000, "embed_target_bytes": 524288, "resize_mode": "fit"},
 }
 
 
