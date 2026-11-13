@@ -7,6 +7,8 @@ reply that quotes the last user message. Two words show more of Talaria:
   page:            answers with a small interactive page
   remember: <fact> saves the fact with the memory tool (Notes > About you on the Memory page)
   recall: <word>   quotes what Talaria's memory gave the model about the word, in any chat
+  search: <words>  searches the web with the web_search tool (Talaria's SearXNG, or the search you set up)
+  tools:           lists the tools the agent offered the model for this message
 
 Use a real model for real work.
 """
@@ -41,6 +43,9 @@ def tool_call_for(body):
     if text.lower().startswith("run:") and "terminal" in names:
         return {"index": 0, "id": "call_demo_%d" % time.time_ns(), "type": "function",
                 "function": {"name": "terminal", "arguments": json.dumps({"command": text[4:].strip()})}}
+    if text.lower().startswith("search:") and "web_search" in names:
+        return {"index": 0, "id": "call_demo_%d" % time.time_ns(), "type": "function",
+                "function": {"name": "web_search", "arguments": json.dumps({"query": text[7:].strip()})}}
     if text.lower().startswith("remember:") and "memory" in names:
         args = {"target": "user", "operations": [{"action": "add", "content": text[9:].strip()}]}
         return {"index": 0, "id": "call_demo_%d" % time.time_ns(), "type": "function",
@@ -99,6 +104,9 @@ def reply_for(body):
         return "(The demo model cannot see images. With a real model, a description of the image goes here.)"
     if msgs and msgs[-1].get("role") == "user" and last_user_text(msgs).lower().startswith("page:"):
         return PAGE
+    if msgs and msgs[-1].get("role") == "user" and last_user_text(msgs).lower().startswith("tools:"):
+        names = sorted({t.get("function", {}).get("name") or "" for t in body.get("tools") or []} - {""})
+        return "Tools I was given for this message (%d): %s" % (len(names), ", ".join(names) or "none")
     if msgs and msgs[-1].get("role") == "user" and last_user_text(msgs).lower().startswith("recall:"):
         return recall(body, last_user_text(msgs)[7:].strip().split("\n")[0].strip())
     if msgs and msgs[-1].get("role") == "tool":
@@ -110,7 +118,8 @@ def reply_for(body):
         if calls and calls[-1].get("function", {}).get("name") == "memory":
             return ("Saved to memory. Start a new chat and send recall: <a word of it> to see it come back. "
                     "The memory tool said: " + out[:300])
-        return "The command ran. Its result: " + (out if len(out) <= 500 else out[:500] + "...")
+        what = "The search ran" if calls and calls[-1].get("function", {}).get("name") == "web_search" else "The command ran"
+        return what + ". Its result: " + (out if len(out) <= 500 else out[:500] + "...")
     text = last_user_text(msgs)
     # Hermes adds notes in brackets about attachments; name the files instead of quoting the notes
     files = re.findall(r"\[The user attached a file: (.+?)\. It is saved at", text)

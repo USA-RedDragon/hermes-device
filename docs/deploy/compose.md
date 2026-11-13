@@ -100,6 +100,9 @@ start with "This is the Talaria demo model". A few messages show more:
 - `page:`: the reply has a small page with buttons that answer back to the chat.
 - `remember: <a fact>` saves it to memory; then, in a new chat, `recall: <a word of it>` shows that the memory
   came back (with Honcho on, from Honcho too).
+- `search: <words>` searches the web with the bundled SearXNG and quotes the start of the results.
+- `tools:` lists the tools the agent gave the model for that message, so a tool you turned off in a chat's
+  quick panel is gone from the list of the next message.
 
 ## Reach it from other computers
 
