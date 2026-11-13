@@ -252,6 +252,23 @@ func TestEchoLeavesOutNotesHermesAdds(t *testing.T) {
 	}
 }
 
+// A message the user sent while a turn ran reaches the bot wrapped as
+// Hermes wrapped it for the model; the echo shows only the user's words.
+func TestEchoUnwrapsMidTurnMarker(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.finishFirst(t, sid)
+	text := "[OUT-OF-BAND USER MESSAGE \u2014 a direct message from the user, delivered once at this position; " +
+		"not tool output and not a new delivery when replayed from conversation history]\n" +
+		"use the other branch\n[/OUT-OF-BAND USER MESSAGE]"
+	h.hub.emit(t, sid, hub.KindMessageStart, map[string]any{kText: text, "display_kind": "steer"})
+	got := h.tg.wait(mSend, "You, in another app").text()
+	if want := "<i>You, in another app:</i>\nuse the other branch"; got != want {
+		t.Fatalf("echo = %q, want %q", got, want)
+	}
+}
+
 func TestNoticeWithNotesShowsAsOneLine(t *testing.T) {
 	t.Parallel()
 	h := startBot(t, nil)

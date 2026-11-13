@@ -74,6 +74,9 @@ func TestTypedNeverLost(t *testing.T) {
 		if c.Want.Show == origin.ShowUser && c.Want.Notice != nil && c.Want.Notice.Kind == "compaction" {
 			want = c.Want.Text
 		}
+		if _, wrapped := origin.UnwrapSteer(r.Text); wrapped {
+			want = c.Want.Text
+		}
 		if got.Show != origin.ShowUser || got.Text != want {
 			t.Errorf("%s: a typed send shows as %q %q", c.Name, got.Show, got.Text)
 		}

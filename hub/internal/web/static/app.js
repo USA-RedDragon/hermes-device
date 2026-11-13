@@ -1142,7 +1142,7 @@
       if (this.originCard(v, text)) return;
       let i = id || admission ? this.pending.findIndex((x) => (x.id && (x.id === id || x.id === admission)) || (x.adm && x.adm === admission)) : 0;
       if (i < 0 && text) {
-        const typed = splitAttachments(text).text;
+        const typed = splitAttachments(v.text != null ? v.text : text).text;
         // A stopped steer sent again starts under a new ID, maybe before the page learns it.
         i = this.pending.findIndex((x) => (!x.id || x.now) && sameText(x.text, typed));
       }

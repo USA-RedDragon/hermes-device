@@ -79,8 +79,20 @@ window.HubOrigin = (() => {
     return card(kindTitles[kind] || firstLine(text) || "Note from Hermes", text);
   }
 
+  // The marker Hermes wraps a mid-turn message of the user in for the model
+  // (origin.go UnwrapSteer): the bubble shows only the words inside.
+  const steerOpen = "[OUT-OF-BAND USER MESSAGE \u2014 a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]";
+  const steerClose = "[/OUT-OF-BAND USER MESSAGE]";
+  function unwrapSteer(text) {
+    const t = String(text == null ? "" : text).trim();
+    if (!t.startsWith(steerOpen + "\n") || !t.endsWith("\n" + steerClose)) return text;
+    const inner = t.slice(steerOpen.length + 1, t.length - steerClose.length - 1);
+    if (inner.includes(steerOpen) || inner.includes(steerClose)) return text;
+    return inner.trim();
+  }
+
   function typed(r, why) {
-    const text = r.typed_ask.trim() ? r.typed_ask : r.text;
+    const text = unwrapSteer(r.typed_ask.trim() ? r.typed_ask : r.text);
     const f = window.HubNotice.folded(text);
     if (f) return { show: "user", text: f.tail, notice: f.notice, why };
     return { show: "user", text, why };
@@ -102,6 +114,8 @@ window.HubOrigin = (() => {
       if (p) return { show: "card", notice: parse(r.text) || card(p === "cron" ? "Scheduled job result" : "Result from " + p, r.text), why: "submission" };
       return typed(r, "submission");
     }
+    const inner = unwrapSteer(r.text);
+    if (inner !== r.text) return typed({ text: inner, typed_ask: r.typed_ask }, "text");
     const n = parse(r.text);
     if (n) return { show: "card", notice: n, why: "text" };
     return fallback(r);
@@ -207,5 +221,5 @@ window.HubOrigin = (() => {
     return n.kind === "agent" || !meta.length ? n.title : n.title + " (" + meta.join(", ") + ")";
   }
 
-  return { classify, row, line };
+  return { classify, row, line, unwrapSteer };
 })();

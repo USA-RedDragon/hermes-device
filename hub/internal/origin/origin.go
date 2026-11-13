@@ -136,6 +136,9 @@ func Classify(r Row) View {
 		}
 		return typed(r, whySubmission)
 	}
+	if inner, ok := UnwrapSteer(r.Text); ok {
+		return typed(Row{Text: inner, TypedAsk: r.TypedAsk}, whyText)
+	}
 	if n := parse(r.Text); n != nil {
 		return View{Show: ShowCard, Notice: n, Why: whyText}
 	}
@@ -149,10 +152,34 @@ func typed(r Row, why string) View {
 	if strings.TrimSpace(r.TypedAsk) != "" {
 		text = r.TypedAsk
 	}
+	text, _ = UnwrapSteer(text)
 	if n, tail, ok := foldedSummary(text); ok {
 		return View{Show: ShowUser, Text: tail, Notice: n, Why: why}
 	}
 	return View{Show: ShowUser, Text: text, Why: why}
+}
+
+// The marker Hermes wraps a mid-turn message of the user in for the model
+// (agent/prompt_builder.py STEER_MARKER_OPEN and STEER_MARKER_CLOSE). The
+// row keeps the wrapped text; the user's bubble shows only what is inside.
+const (
+	steerOpen  = "[OUT-OF-BAND USER MESSAGE \u2014 a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]"
+	steerClose = "[/OUT-OF-BAND USER MESSAGE]"
+)
+
+// UnwrapSteer returns the user's words of a text that is exactly one
+// steer marker around them (the marker's lines first and last, nothing
+// before or after), and true. Any other text comes back as it is.
+func UnwrapSteer(text string) (string, bool) {
+	t := strings.TrimSpace(text)
+	if !strings.HasPrefix(t, steerOpen+"\n") || !strings.HasSuffix(t, "\n"+steerClose) {
+		return text, false
+	}
+	inner := t[len(steerOpen)+1 : len(t)-len(steerClose)-1]
+	if strings.Contains(inner, steerOpen) || strings.Contains(inner, steerClose) {
+		return text, false
+	}
+	return strings.TrimSpace(inner), true
 }
 
 // foldedSummary reads a typed message that Hermes put a compaction handoff
