@@ -9,9 +9,12 @@ import (
 
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
 const (
+	kCallID   = "tool_call_id"
+	kCalls    = "tool_calls"
 	longToken = "AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLL"
 	longURL   = "https://example.com/a/very/long/path/with/no/spaces/at/all/" + longToken + "?query=" + longToken + "&other=" + longToken
 	// The script of the approval Jacob saw overflow on his phone.
@@ -34,17 +37,17 @@ func TestNoCardOverflowsTheStream(t *testing.T) {
 	chrome := chromePath(t)
 	e := setup(t)
 	call := func(id, name, args string) map[string]any {
-		return map[string]any{"id": id, "function": map[string]any{"name": name, "arguments": args}}
+		return map[string]any{"id": id, "function": map[string]any{fieldName: name, "arguments": args}}
 	}
 	table := "| a | b | c | d |\n|---|---|---|---|\n| " + longToken + " | " + longURL + " | " + longToken + " | x |\n"
 	code := "```go\nfunc main() { fmt." + longToken + "(\"" + longToken + longToken + "\") }\n```\n"
 	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Work", Live: true, StartedAt: 900,
 		Prompts: []gateway.Prompt{
-			{Kind: gateway.PromptApproval, PromptID: "p-shell", Choices: []string{"once", "session", "deny"},
+			{Kind: gateway.PromptApproval, PromptID: "p-shell", Choices: []string{gateway.ChoiceOnce, hub.ChoiceSession, gateway.ChoiceDeny},
 				Command: optr("delete " + longToken + longToken + " && curl " + longURL), Description: optr("dangerous command " + longToken)},
-			{Kind: gateway.PromptApproval, PromptID: "p-eval", Choices: []string{"once", "session", "always", "deny"},
+			{Kind: gateway.PromptApproval, PromptID: "p-eval", Choices: []string{gateway.ChoiceOnce, hub.ChoiceSession, hub.ChoiceAlways, gateway.ChoiceDeny},
 				Command: optr("<browser_eval> (plugin approval rule)"), Description: optr(evalNote + evalScript)},
-			{Kind: gateway.PromptApproval, PromptID: "p-nav", Choices: []string{"once", "session", "always", "deny"},
+			{Kind: gateway.PromptApproval, PromptID: "p-nav", Choices: []string{gateway.ChoiceOnce, hub.ChoiceSession, hub.ChoiceAlways, gateway.ChoiceDeny},
 				Command: optr("<browser_navigate> (plugin approval rule)"), Description: optr("Open " + longURL + " in the Firefox on device " + longToken + " with the user's logins.")},
 			{Kind: gateway.PromptApproval, PromptID: "p-gen", Description: optr(longToken + longToken)},
 			{Kind: gateway.PromptClarify, PromptID: "p-ask", Question: optr("Which? " + longToken + longToken), Choices: []string{longToken, "b"}},
@@ -52,17 +55,17 @@ func TestNoCardOverflowsTheStream(t *testing.T) {
 		Messages: []map[string]any{
 			{kRole: roleUser, kText: "hello " + longToken + longToken + " " + longURL},
 			{kRole: roleAssistant, kText: "Long url " + longURL + "\n\nLong token " + longToken + longToken + "\n\n" + table + "\n" + code + "\n`" + longToken + longToken + "`\n\n- item " + longURL + "\n\n> quote " + longToken + longToken,
-				"tool_calls": []any{
+				kCalls: []any{
 					call("c1", "terminal", `{"command":"echo `+longToken+longToken+` && curl `+longURL+`"}`),
 					call("c2", "browser_eval", `{"script":"`+longToken+longToken+`"}`),
 					call("c3", "read_file", `{"path":"/a/`+longToken+longToken+`/b.go"}`),
 					call("c4", "patch", `{"path":"/a/`+longToken+`/b.go"}`),
 					call("c5", "web_search", `{"query":"`+longToken+longToken+`"}`)}},
-			{kRole: "tool", "tool_call_id": "c1", "name": "terminal", kText: longToken + longToken + "\n" + longURL},
-			{kRole: "tool", "tool_call_id": "c2", "name": "browser_eval", kText: `{"value":"` + longToken + longToken + `"}`},
-			{kRole: "tool", "tool_call_id": "c3", "name": "read_file", kText: `{"content":"` + longToken + longToken + `"}`},
-			{kRole: "tool", "tool_call_id": "c4", "name": "patch", kText: `{"success":true,"diff":"--- a\n+++ b\n@@ -1 +1 @@\n-` + longToken + longToken + `\n+` + longToken + `x"}`},
-			{kRole: "tool", "tool_call_id": "c5", "name": "web_search", kText: longURL + longToken},
+			{kRole: stepTool, kCallID: "c1", fieldName: "terminal", kText: longToken + longToken + "\n" + longURL},
+			{kRole: stepTool, kCallID: "c2", fieldName: "browser_eval", kText: `{"value":"` + longToken + longToken + `"}`},
+			{kRole: stepTool, kCallID: "c3", fieldName: "read_file", kText: `{"content":"` + longToken + longToken + `"}`},
+			{kRole: stepTool, kCallID: "c4", fieldName: "patch", kText: `{"success":true,"diff":"--- a\n+++ b\n@@ -1 +1 @@\n-` + longToken + longToken + `\n+` + longToken + `x"}`},
+			{kRole: stepTool, kCallID: "c5", fieldName: "web_search", kText: longURL + longToken},
 			{kRole: roleAssistant, kText: "[CONTEXT SUMMARY]: " + longToken + longToken + " " + longURL, "archived": true},
 			{kRole: roleAssistant, kText: "```page\n<!doctype html><title>" + longToken + longToken + "</title><p>x</p>\n```\nafter"},
 			{kRole: roleUser, kText: "[ASYNC DELEGATION TASK FAILED — " + longToken + "]\nTask: " + longToken + longToken + "\nStatus: failed   Duration: 3.0s\nError: " + longToken + longToken + " " + longURL + "\n"},
@@ -70,7 +73,7 @@ func TestNoCardOverflowsTheStream(t *testing.T) {
 			{kRole: roleUser, kText: "[IMPORTANT: Background process proc_1 `" + longToken + longToken + "` (exit code 1).\nlog " + longToken + longToken},
 			{kRole: roleAssistant, kText: "done"},
 		},
-		Subagents: []gateway.SubagentRow{{SubagentID: "sa-0-a", Goal: longToken + longToken + " " + longURL, Status: optr(statusRunning), AcceptingSteer: optr(true)}},
+		Subagents: []gateway.SubagentRow{{SubagentID: "sa-0-o", Goal: longToken + longToken + " " + longURL, Status: optr(statusRunning), AcceptingSteer: optr(true)}},
 	})
 	prof, err := os.MkdirTemp("", "overflow-profile-")
 	if err != nil {
