@@ -84,6 +84,11 @@ jobs:
         shell: bash
 
     steps:
+      # Tests hash or parse files of the repository (trusted_root.json,
+      # core.py), so the checkout keeps their LF line endings.
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
