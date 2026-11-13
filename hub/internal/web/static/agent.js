@@ -47,7 +47,7 @@ window.HubAgent = (() => {
       else if (/^(✗|✘|⚠|!|\[warn|\[fail|\[error|WARN|FAIL|ERROR)/i.test(l)) {
         const text = l.replace(/^(✗|✘|⚠|!)\s*/, "");
         if (optionalLine.some((re) => re.test(text))) optional++;
-        else look.push(quiet(text));
+        else look.push(quiet(text).replace(/\b[a-z]+(?:_[a-z]+)+\b/g, (w) => w.replace(/_/g, " ")));
       }
     }
     return { passed, look, optional };
@@ -143,7 +143,7 @@ window.HubAgent = (() => {
   function splitSkills(skills, filter) {
     const f = String(filter || "").toLowerCase();
     return (skills || []).filter((s) => !f || s.name.toLowerCase().includes(f) || String(s.description || "").toLowerCase().includes(f))
-      .sort((a, b) => (b.enabled - a.enabled) || a.name.localeCompare(b.name));
+      .sort((a, b) => (b.enabled - a.enabled) || (a.label || a.name).localeCompare(b.label || b.name));
   }
 
   const origin = { bundled: "Came with Talaria", hub: "Added from the catalog", agent: "Made by the agent", external: "From a shared folder" };
@@ -405,30 +405,31 @@ window.HubAgent = (() => {
         list.replaceChildren();
         for (const s of splitSkills(skills, filter.value)) {
           const r = el("div", "");
+          const sn = s.label || s.name;
           const tx = el("span", "tx");
-          tx.append(el("b", "", s.name), el("span", "", (s.description || "") + (origin[s.provenance] ? " · " + origin[s.provenance] : "")));
-          const t = toggle(s.enabled, false, s.name);
+          tx.append(el("b", "", sn), el("span", "", (s.description || "") + (origin[s.provenance] ? " · " + origin[s.provenance] : "")));
+          const t = toggle(s.enabled, false, sn);
           t.onchange = async () => {
             t.disabled = true;
             try {
               const a = await api("PUT", base() + "/skills/" + enc(s.name), { enabled: t.checked });
               s.enabled = t.checked;
-              result(box, say("good", liveLine(s.name, t.checked, a.applied_live)));
-            } catch (e) { t.checked = !t.checked; result(box, say("bad", s.name + " was not changed.", [e.message])); }
+              result(box, say("good", liveLine(sn, t.checked, a.applied_live)));
+            } catch (e) { t.checked = !t.checked; result(box, say("bad", sn + " was not changed.", [e.message])); }
             t.disabled = false;
           };
           r.append(tx);
           if (s.provenance === "hub") r.append(btn("ghost ib", "", async () => {
-            result(box, say("warn", "Removing " + s.name + "...", []));
+            result(box, say("warn", "Removing " + sn + "...", []));
             try {
               const a = await api("DELETE", base() + "/skills/" + enc(s.name));
               if (!a.ok) throw new Error((a.lines || []).slice(-1)[0] || "The agent could not remove it.");
               skills = skills.filter((x) => x !== s);
               draw();
-              result(box, say("good", s.name + " is removed." + (a.applied_live ? " Open chats lose it from their next message." : "")));
-            } catch (e) { result(box, say("bad", s.name + " was not removed.", [e.message])); }
+              result(box, say("good", sn + " is removed." + (a.applied_live ? " Open chats lose it from their next message." : "")));
+            } catch (e) { result(box, say("bad", sn + " was not removed.", [e.message])); }
           }, "trash"));
-          r.lastChild.setAttribute?.("aria-label", "Remove " + s.name);
+          r.lastChild.setAttribute?.("aria-label", "Remove " + sn);
           r.append(t);
           list.append(r);
         }
@@ -584,16 +585,17 @@ window.HubAgent = (() => {
         const dot = el("span", "dot " + (c.enabled ? "" : "off"));
         const tx = el("span", "tx");
         const sub = el("span", "", c.enabled ? (c.url || c.command || "") : "Off");
-        tx.append(el("b", "", c.name), sub);
-        const tg = toggle(c.enabled, c.plugin, c.name);
+        const cn = c.label || c.name;
+        tx.append(el("b", "", cn), sub);
+        const tg = toggle(c.enabled, c.plugin, cn);
         tg.onchange = async () => {
           tg.disabled = true;
-          result(box, say("warn", (tg.checked ? "Connecting " : "Disconnecting ") + c.name + "...", []));
+          result(box, say("warn", (tg.checked ? "Connecting " : "Disconnecting ") + cn + "...", []));
           try {
             const a = await api("PUT", base() + "/connections/" + enc(c.name), { enabled: tg.checked });
             dot.className = "dot " + (tg.checked ? "" : "off");
-            result(box, say("good", liveLine(c.name, tg.checked, a.applied_live)));
-          } catch (e) { tg.checked = !tg.checked; result(box, say("bad", c.name + " was not changed.", [e.message])); }
+            result(box, say("good", liveLine(cn, tg.checked, a.applied_live)));
+          } catch (e) { tg.checked = !tg.checked; result(box, say("bad", cn + " was not changed.", [e.message])); }
           tg.disabled = false;
         };
         r.append(dot, tx, btn("", "Test", async () => {
@@ -607,10 +609,10 @@ window.HubAgent = (() => {
           try {
             const a = await api("DELETE", base() + "/connections/" + enc(c.name));
             r.remove();
-            result(box, say("good", c.name + " is removed." + (a.applied_live ? " Open chats lose its tools from their next message." : "")));
-          } catch (e) { result(box, say("bad", c.name + " was not removed.", [e.message])); }
+            result(box, say("good", cn + " is removed." + (a.applied_live ? " Open chats lose its tools from their next message." : "")));
+          } catch (e) { result(box, say("bad", cn + " was not removed.", [e.message])); }
         }, "trash"));
-        r.lastChild.setAttribute("aria-label", "Remove " + c.name);
+        r.lastChild.setAttribute("aria-label", "Remove " + cn);
         r.append(tg);
         list.append(r);
       }
@@ -916,9 +918,9 @@ window.HubAgent = (() => {
         const s = sec("", "On for every chat");
         const names = (xs, f) => xs.map(f).join(", ");
         s.append(el("p", "qnote", "Tools: " + (names(sum.tools, (t) => t.label || t.name) || "none") + "."));
-        const sk = sum.skills.map((x) => x.name);
+        const sk = sum.skills.map((x) => x.label || x.name);
         s.append(el("p", "qnote", "Skills: " + (sk.length > 3 ? sk.slice(0, 3).join(", ") + " and " + (sk.length - 3) + " more" : sk.join(", ") || "none") + "."));
-        s.append(el("p", "qnote", "Connections: " + (names(sum.connections, (c) => c.name) || "none") + "."));
+        s.append(el("p", "qnote", "Connections: " + (names(sum.connections, (c) => c.label || c.name) || "none") + "."));
         s.append(el("p", "qnote", "An admin of this server turns these on and off."));
         return;
       }
@@ -965,9 +967,9 @@ window.HubAgent = (() => {
       find.setAttribute("aria-label", "Find a skill");
       ss.append(find);
       const skillRows = splitSkills(sum.skills).map((k) => {
-        const sw = switchRow(k.name, k.description || "", k.enabled, { disabled: locked("skills." + k.name) });
-        sw.row.dataset.name = (k.name + " " + (k.description || "")).toLowerCase();
-        sw.t.onchange = () => change(ss, sw.row, sw.t, b + "/skills/" + enc(k.name), k.name);
+        const sw = switchRow(k.label || k.name, k.description || "", k.enabled, { disabled: locked("skills." + k.name) });
+        sw.row.dataset.name = ((k.label || "") + " " + k.name + " " + (k.description || "")).toLowerCase();
+        sw.t.onchange = () => change(ss, sw.row, sw.t, b + "/skills/" + enc(k.name), k.label || k.name);
         return sw.row;
       });
       limited(ss, skillRows, 5, (_, all) => "Show all " + all);
@@ -981,8 +983,8 @@ window.HubAgent = (() => {
       const cs = sec("", "Connections", sum.connections.length ? " " : "");
       if (!sum.connections.length) cs.append(el("p", "qnote", "None yet."));
       for (const c of sum.connections) {
-        const sw = switchRow(c.name, c.enabled ? c.url || "On" : "Off", c.enabled, { dot: c.enabled ? "" : "off", disabled: c.plugin || locked("mcp_servers." + c.name) });
-        sw.t.onchange = () => change(cs, sw.row, sw.t, b + "/connections/" + enc(c.name), c.name, "conn");
+        const sw = switchRow(c.label || c.name, c.enabled ? c.url || "On" : "Off", c.enabled, { dot: c.enabled ? "" : "off", disabled: c.plugin || locked("mcp_servers." + c.name) });
+        sw.t.onchange = () => change(cs, sw.row, sw.t, b + "/connections/" + enc(c.name), c.label || c.name, "conn");
         cs.append(sw.row);
       }
       count(cs);

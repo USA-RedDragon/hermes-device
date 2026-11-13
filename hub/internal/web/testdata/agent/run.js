@@ -69,3 +69,6 @@ eq(A.splitSkills([{ name: "b", enabled: false }, { name: "z", enabled: true, des
 assert.strictEqual(A.modeLabel("smart", true), "Ask when risky");
 assert.strictEqual(A.modeLabel("manual"), "Ask every time");
 console.log("ok");
+
+// Ids in a line to look at show as words.
+eq(A.doctorSummary(["⚠ image_gen provider failed"]).look, ["image gen provider failed"]);

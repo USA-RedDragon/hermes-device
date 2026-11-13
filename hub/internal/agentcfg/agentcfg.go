@@ -436,6 +436,7 @@ func (s *Service) Toolsets(ctx context.Context, user, backendID string) ([]Tools
 		if talariaOwned(t.Name) {
 			continue
 		}
+		t = plainToolset(t)
 		t.Always = alwaysOn(t.Name)
 		if t.Always {
 			t.Enabled = true
@@ -523,7 +524,9 @@ func (s *Service) ToolsetKeys(ctx context.Context, user, backendID, name string)
 
 // Skill is one skill of the agent.
 type Skill struct {
-	Name        string `json:"name"`
+	Name string `json:"name"`
+	// Label is the name in words, for display; Name stays the id.
+	Label       string `json:"label,omitempty"`
 	Description string `json:"description"`
 	Category    string `json:"category,omitempty"`
 	Enabled     bool   `json:"enabled"`
@@ -539,6 +542,9 @@ func (s *Service) Skills(ctx context.Context, user, backendID string) ([]Skill, 
 	rows, err := decode[[]Skill](Call(ctx, r, false, http.MethodGet, "/api/skills", nil))
 	if rows == nil && err == nil {
 		rows = []Skill{}
+	}
+	for i := range rows {
+		rows[i].Label = Humanize(rows[i].Name)
 	}
 	return rows, err
 }
@@ -691,7 +697,9 @@ func (s *Service) RemoveSkill(ctx context.Context, user, backendID, name string)
 
 // Connection is one MCP server.
 type Connection struct {
-	Name      string `json:"name"`
+	Name string `json:"name"`
+	// Label is the name in words, for display; Name stays the id.
+	Label     string `json:"label,omitempty"`
 	Transport string `json:"transport"`
 	URL       string `json:"url,omitempty"`
 	Command   string `json:"command,omitempty"`
@@ -724,6 +732,7 @@ func (s *Service) Connections(ctx context.Context, user, backendID string) ([]Co
 	out := make([]Connection, 0, len(got.Servers))
 	for _, x := range got.Servers {
 		c := x.Connection
+		c.Label = Humanize(c.Name)
 		c.Plugin = x.Source == "plugin"
 		if x.URL != nil {
 			c.URL = *x.URL

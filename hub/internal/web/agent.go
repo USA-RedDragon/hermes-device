@@ -173,12 +173,12 @@ func (s *Server) handleAgentSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, k := range skills {
 		if k.Enabled {
-			ss = append(ss, summaryItem{Name: k.Name, Enabled: true})
+			ss = append(ss, summaryItem{Name: k.Name, Label: k.Label, Enabled: true})
 		}
 	}
 	for _, c := range conns {
 		if c.Enabled {
-			cs = append(cs, summaryItem{Name: c.Name, Enabled: true})
+			cs = append(cs, summaryItem{Name: c.Name, Label: c.Label, Enabled: true})
 		}
 	}
 	out["tools"], out["skills"], out["connections"] = ts, ss, cs
