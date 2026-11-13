@@ -31,7 +31,7 @@ internal/device/rpc.go	214	199
 internal/device/sessioncheck.go	23	22
 internal/device/usage.go	50	40
 internal/device/views.go	17	17
-internal/gateway/client.go	252	213
+internal/gateway/client.go	252	207
 internal/gateway/gatewaytest/activity.go	106	86
 internal/gateway/gatewaytest/compose.go	180	156
 internal/gateway/gatewaytest/fake.go	642	586
@@ -69,7 +69,7 @@ internal/notify/jobs.go	55	43
 internal/notify/notify.go	296	193
 internal/origin/fallback.go	73	71
 internal/origin/origin.go	117	102
-internal/pdf/pdf.go	180	159
+internal/pdf/pdf.go	180	160
 internal/pdf/pdftest/pdftest.go	32	32
 internal/scheduled/client.go	110	88
 internal/scheduled/clock.go	75	66
@@ -84,7 +84,7 @@ internal/service/compose.go	251	209
 internal/service/hold.go	233	202
 internal/service/live.go	325	280
 internal/service/manage.go	148	139
-internal/service/media.go	128	105
+internal/service/media.go	128	106
 internal/service/observe.go	61	50
 internal/service/outcome.go	92	88
 internal/service/page.go	51	47
