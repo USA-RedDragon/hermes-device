@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -28,7 +29,7 @@ func TestCopySelf(t *testing.T) {
 	if err != nil || string(got) != "binary" {
 		t.Fatalf("dst = %q, %v", got, err)
 	}
-	if fi, _ := os.Stat(dst); fi.Mode().Perm() != 0o755 {
+	if fi, _ := os.Stat(dst); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o755 {
 		t.Errorf("mode = %v", fi.Mode())
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 2 {
