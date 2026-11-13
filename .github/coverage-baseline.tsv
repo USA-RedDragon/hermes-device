@@ -24,7 +24,7 @@ extension/firefox/embed.go	45	39
 internal/acpbridge/acpbridge.go	489	427
 internal/acpbridge/inline.go	38	35
 internal/acpbridge/place.go	160	146
-internal/acphost/acphost.go	291	232
+internal/acphost/acphost.go	291	233
 internal/acphost/proc_unix.go	3	1
 internal/acphost/rewrite.go	260	237
 internal/acphost/sweep.go	30	28
@@ -58,7 +58,7 @@ internal/claudeusage/timeline.go	96	86
 internal/config/config.go	87	77
 internal/config/load.go	18	17
 internal/daemonstate/daemonstate.go	17	13
-internal/device/device.go	710	628
+internal/device/device.go	710	627
 internal/device/mcp.go	69	60
 internal/device/signal_unix.go	1	1
 internal/diskfree/diskfree_linux.go	7	5
