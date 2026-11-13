@@ -555,7 +555,9 @@ func (s *Service) JobOptions(ctx context.Context, user, backendID string) (hub.J
 	opts, err := b.c.models(cctx)
 	cancel()
 	if err != nil {
-		return out, nil //nolint:nilerr // the form still works with the chat model
+		// The form still works with the chat model.
+		s.log.Warn("list models for the job form", "backend", backendID, "error", err.Error())
+		return out, nil
 	}
 	for _, p := range opts.Providers {
 		if p.Authenticated != nil && !*p.Authenticated {
@@ -659,8 +661,11 @@ func (s *Service) PreviewSchedule(ctx context.Context, user, backendID, text, dr
 		return hub.SchedulePreview{}, err
 	}
 	sched, err := clean(&text, "the schedule", maxSchedule, true)
+	if errors.Is(err, hub.ErrBadValue) {
+		return hub.SchedulePreview{OK: false, Error: "Type when the job should run.", Draft: draft}, nil
+	}
 	if err != nil {
-		return hub.SchedulePreview{OK: false, Error: "Type when the job should run.", Draft: draft}, nil //nolint:nilerr // the page shows it
+		return hub.SchedulePreview{}, err
 	}
 	var j rawJob
 	if s.isDraftOf(ctx, user, b, draft) {

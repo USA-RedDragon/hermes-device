@@ -50,7 +50,8 @@ func userTexts(t *testing.T, e *env) []string {
 	var out []string
 	for _, m := range s.Messages {
 		if m["role"] == roleUser {
-			out = append(out, m["text"].(string)) //nolint:forcetypeassert // the fake writes strings
+			text, _ := m["text"].(string)
+			out = append(out, text)
 		}
 	}
 	return out

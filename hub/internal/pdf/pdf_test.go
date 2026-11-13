@@ -327,4 +327,3 @@ func TestRemovesStaleWork(t *testing.T) {
 		t.Fatal("fresh work directory removed")
 	}
 }
-
