@@ -43,7 +43,7 @@ replies can finish.
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/deploy/aio/unraid/talaria.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/USA-RedDragon/talaria-hub/main/internal/web/static/icon-512.png</Icon>
+  <Icon>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/hub/internal/web/static/icon-512.png</Icon>
   <ExtraParams>--stop-timeout 120</ExtraParams>
   <DonateText/>
   <DonateLink/>

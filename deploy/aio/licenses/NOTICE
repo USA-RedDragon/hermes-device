@@ -13,7 +13,7 @@ only. The image contains:
   The Talaria patches use the same terms; their own notice is in
   /usr/share/doc/talaria-hermes/.
 - talaria-hub (/usr/local/bin/talaria-hub), MIT License:
-  https://github.com/USA-RedDragon/talaria-hub/blob/main/LICENSE
+  https://github.com/USA-RedDragon/talaria/blob/main/LICENSE
 - talaria (/usr/local/bin/hermes-device), MIT License:
   https://github.com/USA-RedDragon/talaria/blob/main/LICENSE
 - Caddy (/usr/local/bin/caddy), https://github.com/caddyserver/caddy
