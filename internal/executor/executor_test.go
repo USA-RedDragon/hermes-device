@@ -53,8 +53,10 @@ func TestCwdOutputAndExitCode(t *testing.T) {
 	if res.Code != 7 {
 		t.Errorf("code = %d, want 7", res.Code)
 	}
+	// pwd may print the path as given or with its symlinks resolved (on
+	// macOS the temporary directory is under /var, a link to /private/var)
 	resolved, _ := filepath.EvalSymlinks(dir)
-	if !strings.Contains(out, resolved) || !strings.Contains(out, "err") {
+	if !strings.Contains(out, resolved) && !strings.Contains(out, dir) || !strings.Contains(out, "err") {
 		t.Errorf("output = %q", out)
 	}
 }

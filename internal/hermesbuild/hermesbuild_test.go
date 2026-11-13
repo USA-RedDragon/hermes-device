@@ -78,7 +78,9 @@ func TestEnsureRelocatesAndRuns(t *testing.T) {
 		t.Errorf("python link = %q, %v", link, err)
 	}
 	resolved, err := filepath.EvalSymlinks(filepath.Join(b.Dir, "opt/hermes/.venv/bin/python"))
-	if err != nil || resolved != filepath.Join(b.Dir, "opt/hermes/tools/py/bin/python3") {
+	// b.Dir may itself be under a symlink (on macOS, /var is /private/var)
+	want, _ := filepath.EvalSymlinks(filepath.Join(b.Dir, "opt/hermes/tools/py/bin/python3"))
+	if err != nil || resolved != want {
 		t.Errorf("python resolves to %q, %v", resolved, err)
 	}
 	cfg, err := os.ReadFile(filepath.Join(b.Dir, "opt/hermes/.venv/pyvenv.cfg"))

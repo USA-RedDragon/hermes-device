@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -679,6 +680,10 @@ func gone(pid int) bool {
 	if errors.Is(err, syscall.ESRCH) {
 		return true
 	}
+	if runtime.GOOS != "linux" {
+		// No /proc to tell a zombie: Kill found the process
+		return false
+	}
 	data, rerr := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if rerr != nil {
 		return true
@@ -920,6 +925,9 @@ func TestGatewayHealthGate(t *testing.T) {
 
 func TestSweepStopsDetached(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("the sweep of detached processes needs Linux: a subreaper and /proc")
+	}
 	h := newHarness(t, func(o *acphost.Options) { o.SweepInterval = 50 * time.Millisecond })
 	conn := h.dial()
 	send(t, conn, `{"jsonrpc":"2.0","id":1,"method":"test/detach"}`)
