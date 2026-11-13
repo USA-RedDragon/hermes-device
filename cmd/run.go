@@ -169,6 +169,9 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 		MinBackoff: cfg.Reconnect.MinBackoff, MaxBackoff: cfg.Reconnect.MaxBackoff, PingInterval: cfg.PingInterval,
 		ResumeBuffer: cfg.Device.ResumeBuffer, MaxGrace: cfg.Device.MaxGrace,
 	}
+	if opts.WinShell, err = windowsShell(ctx, cfg); err != nil {
+		return err
+	}
 	opts.Scope = commandScope(ctx, cfg, opts.Env)
 	var br *broker.Broker
 	if cfg.Browser.Enabled {

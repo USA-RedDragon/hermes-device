@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/USA-RedDragon/talaria/internal/userdir"
 	"golang.org/x/term"
 )
 
@@ -95,7 +96,7 @@ func LocalSystem(goos string) (*System, error) {
 	if err != nil || home == "" || home == "/" {
 		return nil, ErrNoHome
 	}
-	cfg, err := os.UserConfigDir()
+	cfg, err := userdir.Config()
 	if err != nil {
 		return nil, err
 	}

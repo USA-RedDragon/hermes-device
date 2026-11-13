@@ -3,7 +3,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,11 +17,9 @@ import (
 	"github.com/USA-RedDragon/talaria/internal/config"
 	"github.com/USA-RedDragon/talaria/internal/legacy"
 	"github.com/USA-RedDragon/talaria/internal/setup"
+	"github.com/USA-RedDragon/talaria/internal/userdir"
 	"github.com/spf13/cobra"
 )
-
-// ErrWindows is returned on Windows, which talaria does not support.
-var ErrWindows = errors.New("talaria does not support Windows: device paths must be POSIX")
 
 // Option changes how NewCommand builds the command.
 type Option func(*base)
@@ -64,9 +61,6 @@ func NewCommand(version, commit string, opts ...Option) *cobra.Command {
 		o(b)
 	}
 	root.PersistentPreRunE = func(c *cobra.Command, _ []string) error {
-		if runtime.GOOS == "windows" {
-			return ErrWindows
-		}
 		b.migrateOnStart(c)
 		return nil
 	}
@@ -140,7 +134,7 @@ func (b *base) userAgent() string {
 // defaultConfigFiles is only the user config file: talaria runs from
 // any directory, and a config.yaml of another tool there must not win.
 func defaultConfigFiles() []string {
-	dir, err := os.UserConfigDir()
+	dir, err := userdir.Config()
 	if err != nil {
 		return nil
 	}

@@ -35,7 +35,8 @@ type Store struct {
 type Device struct {
 	Roots        []string      `name:"roots" description:"Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Defaults to the home directory"`
 	TempDir      string        `name:"tmp-dir" description:"Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory"`
-	Shell        string        `name:"shell" default:"bash" description:"Shell used to run commands"`
+	Shell        string        `name:"shell" default:"bash" description:"Shell used to run commands. On Windows: git-bash (Git for Windows' bash), powershell (pwsh when installed, else Windows PowerShell; needs Git Bash too, for the file tools) or wsl (bash in a WSL distribution); bash there picks Git Bash, else WSL"`
+	WSLDistro    string        `name:"wsl-distro" description:"WSL distribution for device.shell wsl on Windows. Defaults to WSL's default distribution"`
 	ResumeBuffer int           `name:"resume-buffer" default:"1048576" description:"Most output bytes per command that run keeps for a resume of the exec leg until the plugin confirms them. Older output of a command is dropped, and the plugin shows the gap"`
 	MaxGrace     time.Duration `name:"max-grace" default:"10m" description:"Longest time run keeps commands running after the exec leg drops, waiting for a resume. The plugin's grace_seconds applies when it is shorter"`
 	// CommandMemoryMax is parsed by CommandMemory.

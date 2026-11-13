@@ -13,6 +13,7 @@ import (
 	"runtime"
 
 	"github.com/USA-RedDragon/talaria/internal/legacy"
+	"github.com/USA-RedDragon/talaria/internal/userdir"
 	"github.com/zalando/go-keyring"
 )
 
@@ -79,7 +80,7 @@ func New(useKeyring bool, file string) *Store {
 // hermes-device one of a release before the rename until the migration
 // moves it.
 func DefaultStateDir() (string, error) {
-	dir, err := os.UserConfigDir()
+	dir, err := userdir.Config()
 	if err != nil {
 		return "", err
 	}

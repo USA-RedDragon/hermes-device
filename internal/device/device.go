@@ -22,6 +22,7 @@ import (
 	"github.com/USA-RedDragon/talaria/internal/browser/broker"
 	"github.com/USA-RedDragon/talaria/internal/executor"
 	"github.com/USA-RedDragon/talaria/internal/hubapi"
+	"github.com/USA-RedDragon/talaria/internal/winshell"
 	"github.com/USA-RedDragon/talaria/protocol"
 	"github.com/coder/websocket"
 )
@@ -30,7 +31,7 @@ import (
 var (
 	ErrReplaced           = errors.New("another talaria run with the same token took over this device (close 4409); stop the other daemon or run login again on one of them")
 	ErrUnsupportedVersion = errors.New("the Hermes device plugin and this talaria share no protocol version (close 4426); upgrade talaria and the plugin together")
-	ErrWindows            = errors.New("talaria does not support Windows: device paths must be POSIX")
+	ErrWindows            = errors.New("on Windows, talaria needs a shell: set device.shell to git-bash, powershell or wsl")
 	ErrUnsupportedOS      = errors.New("the Hermes device plugin does not serve this device's operating system (close 4427)")
 	ErrNoWelcome          = errors.New("no welcome from the device plugin")
 	ErrNoResume           = errors.New("no resume from the device plugin after a version 3 welcome")
@@ -94,6 +95,10 @@ type Options struct {
 	StartBrowser func(ctx context.Context) error
 	// Shell runs each command as <shell> -c <cmd>.
 	Shell string
+	// WinShell, on Windows, runs each command instead of Shell. Hello
+	// then names its kind as the shell, and the paths in hello and in
+	// exec requests are those of its bash (internal/winshell).
+	WinShell *winshell.Shell
 	// Scope, when set, runs each command in a systemd scope of its own
 	// with a memory cap.
 	Scope *executor.Scope
@@ -206,7 +211,7 @@ func (c *Client) endCall() { c.calls.Add(-1) }
 
 // New returns a client. It refuses to run on Windows.
 func New(opts Options) (*Client, error) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && opts.WinShell == nil {
 		return nil, ErrWindows
 	}
 	if opts.Hub == nil || opts.Allow == nil {
@@ -220,6 +225,9 @@ func New(opts Options) (*Client, error) {
 	}
 	if opts.Home == "" {
 		opts.Home = os.Getenv("HOME")
+		if runtime.GOOS == "windows" {
+			opts.Home, _ = os.UserHomeDir()
+		}
 	}
 	if opts.Hostname == "" {
 		opts.Hostname, _ = os.Hostname()
@@ -259,6 +267,13 @@ func (c *Client) Hello() protocol.Hello {
 		TempDir: c.opts.TempDir, Home: c.opts.Home, Hostname: c.opts.Hostname, OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Shell: c.opts.Shell, ClientVersion: c.opts.ClientVersion,
 		Capabilities: []string{protocol.CapabilityDetach},
+	}
+	if ws := c.opts.WinShell; ws != nil {
+		h.Shell, h.TempDir, h.Home = ws.Kind, ws.ToWire(h.TempDir), ws.ToWire(h.Home)
+		h.Roots = make([]string, 0, len(c.opts.Allow.Roots()))
+		for _, r := range c.opts.Allow.Roots() {
+			h.Roots = append(h.Roots, ws.ToWire(r))
+		}
 	}
 	if c.opts.Browser != nil {
 		h.Capabilities = append(h.Capabilities, protocol.CapabilityBrowser)
@@ -1136,16 +1151,20 @@ func (c *Client) exec(ctx context.Context, s *session, req protocol.Exec) {
 	refuse := func(msg string) {
 		c.finished(cmd, protocol.Exit{Type: protocol.TypeExit, ID: req.ID, Code: protocol.ExitRefused, Error: msg})
 	}
-	cwd, err := c.opts.Allow.Check(req.Cwd)
+	cwd, err := c.checkCwd(req.Cwd)
 	if err != nil {
 		slog.Warn("Refusing command", "id", req.ID, "cwd", req.Cwd, "error", err)
 		refuse(fmt.Sprintf("device %s refused: working directory %s", s.name, err))
 		return
 	}
 	timeout := time.Duration(req.Timeout * float64(time.Second))
-	p, err := executor.Start(c.opts.Shell, executor.Request{ //nolint:contextcheck // a command outlives the request; its scope check has its own timeout
+	ereq := executor.Request{
 		Cmd: req.Cmd, Cwd: cwd, Login: req.Login, Timeout: timeout, Stdin: req.Stdin, Env: c.opts.Env, Scope: c.opts.Scope,
-	}, cmd.onOutput)
+	}
+	if ws := c.opts.WinShell; ws != nil {
+		ereq.Argv, ereq.Env = ws.Argv, append(append([]string(nil), c.opts.Env...), ws.Env()...)
+	}
+	p, err := executor.Start(c.opts.Shell, ereq, cmd.onOutput) //nolint:contextcheck // a command outlives the request; its scope check has its own timeout
 	if err != nil {
 		refuse(fmt.Sprintf("device %s could not start the command: %s", s.name, err))
 		return
@@ -1162,6 +1181,19 @@ func (c *Client) exec(ctx context.Context, s *session, req protocol.Exec) {
 		}
 		slog.Debug("Command ended", "id", req.ID, "code", res.Code, "killed", res.Killed, "signal", res.Signal)
 	})
+}
+
+// checkCwd turns the working directory of an exec request into a local
+// path inside the roots: on Windows, from the shell's bash path.
+func (c *Client) checkCwd(dir string) (string, error) {
+	if ws := c.opts.WinShell; ws != nil {
+		local, err := ws.FromWire(dir)
+		if err != nil {
+			return "", err
+		}
+		dir = local
+	}
+	return c.opts.Allow.Check(dir)
 }
 
 // exitMessage is the exit message of command id that ended with res.

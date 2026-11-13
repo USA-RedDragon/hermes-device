@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -61,6 +62,10 @@ func (l *List) Check(dir string) (string, error) {
 }
 
 func within(root, path string) bool {
+	if runtime.GOOS == "windows" {
+		// Windows paths ignore case.
+		root, path = strings.ToLower(root), strings.ToLower(path)
+	}
 	if path == root {
 		return true
 	}
