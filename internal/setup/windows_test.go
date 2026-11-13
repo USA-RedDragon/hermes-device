@@ -88,7 +88,7 @@ func TestTaskService(t *testing.T) {
 	if err := svc.Restart(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !r.has("taskkill.exe /PID 4242 /F") || r.has("schtasks.exe /Run") {
+	if !r.has(ps+" -NoProfile -NonInteractive -Command Stop-Process -Force -Id 4242") || r.has("schtasks.exe /Run") {
 		t.Errorf("Restart with a supervisor ran %q", r.Calls())
 	}
 	r.Reset()

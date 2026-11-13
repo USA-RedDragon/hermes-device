@@ -192,7 +192,7 @@ func (t *taskService) Start(ctx context.Context) error {
 }
 
 // Restart stops the daemon that the task's supervisor runs; the supervisor
-// starts the binary again at once. This also works from a command that
+// starts the binary again after its crash delay (5 s). This also works from a command that
 // runs inside the service, such as talaria update run by the agent, where
 // ending the task would end the caller too. Without a running supervisor
 // it starts the task.
@@ -202,8 +202,13 @@ func (t *taskService) Restart(ctx context.Context) error {
 	if err != nil || perr != nil || pid <= 0 || !t.Active(ctx) {
 		return t.Start(ctx)
 	}
-	_, err = t.s.Run.Output(ctx, nil, "taskkill.exe", "/PID", strconv.Itoa(pid), "/F")
-	return err
+	// Not taskkill: it gets "Access denied" for a daemon that runs in the
+	// desktop session when update runs over SSH; Stop-Process does not.
+	if _, err := t.s.Run.Output(ctx, nil, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+		"Stop-Process -Force -Id "+strconv.Itoa(pid)); err != nil {
+		return fmt.Errorf("stop the daemon (pid %d): %w", pid, err)
+	}
+	return nil
 }
 
 func (t *taskService) Remove(ctx context.Context) error {
