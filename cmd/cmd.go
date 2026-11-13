@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/USA-RedDragon/configulator/v2"
@@ -48,7 +49,11 @@ func NewCommand(version, commit string, opts ...Option) *cobra.Command {
 		loader:  config.NewLoader(root.PersistentFlags(), defaultConfigFiles()),
 		system:  func() (*setup.System, error) { return setup.LocalSystem(runtime.GOOS) },
 		releases: func() *setup.Releases {
-			return &setup.Releases{BaseURL: setup.DefaultReleasesURL, Client: &http.Client{Timeout: 10 * time.Minute}}
+			base := setup.DefaultReleasesURL
+			if u := os.Getenv(setup.ReleasesURLEnv); u != "" {
+				base = strings.TrimSuffix(u, "/")
+			}
+			return &setup.Releases{BaseURL: base, Client: &http.Client{Timeout: 10 * time.Minute}}
 		},
 		releaseLookup: defaultReleaseLookup,
 		executable:    os.Executable,

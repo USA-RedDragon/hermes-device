@@ -22,6 +22,12 @@ import (
 // DefaultReleasesURL is the repository's releases page.
 const DefaultReleasesURL = "https://github.com/USA-RedDragon/talaria/releases"
 
+// ReleasesURLEnv names an environment variable that replaces
+// DefaultReleasesURL for setup and update. It is for testing a release
+// that is not on GitHub: such a release has no attestation, so update also
+// needs --insecure-skip-attestation.
+const ReleasesURLEnv = "TALARIA_TEST_RELEASES_URL"
+
 // Download limits.
 const (
 	maxArchive   = 256 << 20

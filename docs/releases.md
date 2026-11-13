@@ -66,6 +66,8 @@ The GitHub API allows 60 requests per hour without a token per IP address. `upda
 
 `talaria update --insecure-skip-attestation` installs without step 2 to 5. Then only the checksum file, which comes from the same place as the archive, vouches for the archive. Use it only in an emergency, for example when the GitHub attestations API is down, or to install a release before v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false -->0.13.0<!-- /docgen:const -->. `update` prints a warning when you use it.
 
+For tests only, the environment variable <!-- docgen:const pkg=internal/setup name=ReleasesURLEnv code=false -->TALARIA_TEST_RELEASES_URL<!-- /docgen:const --> replaces `https://github.com/USA-RedDragon/talaria/releases` for `setup` and `update`, so a test can serve a build that is not on GitHub from its own web server (`<url>/download/<tag>/<file>`). Such a build has no attestation, so `update` also needs `--insecure-skip-attestation`. Never set it on a computer you use.
+
 ## 5. Verify by hand
 
 With the GitHub CLI:
