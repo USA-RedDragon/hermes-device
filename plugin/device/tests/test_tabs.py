@@ -137,14 +137,15 @@ class TurnEndTests(TabBase):
         self.clock.advance(21)
         self.assertEqual(self.sweep(), 1)
 
-    def test_next_turn_holds_the_tab_again(self):
+    def test_next_turn_holds_the_tab_only_while_it_uses_it(self):
         self.turn()
         a = self.open()
         self.end()
         self.clock.advance(60)
         self.turn(turn="t2")
+        self.run_tool("browser_snapshot", tab_id=a)
         self.clock.advance(600)
-        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(self.sweep(), 0, "t2 is still running and used the tab")
         self.assertIn(a, self.fake.tabs)
 
     def test_idle_chat_loses_every_unkept_tab_even_when_the_turn_never_ended(self):
@@ -199,6 +200,94 @@ class HookTests(TabBase):
             browser.register(Ctx(), core)
         self.assertEqual([h for h in hooks if h not in ("pre_tool_call", "on_session_delete")],
                          ["agent_turn_start", "agent_turn_end", "pre_llm_call", "subagent_stop"])
+
+
+class DispatchTests(TabBase):
+    """The turn hooks reach the ledger through Hermes's real hook dispatch (hermes_cli.plugins
+    PluginManager.invoke_hook) and the real agent.turn_lifecycle_events brackets, as in a gateway
+    chat that runs one turn after another. Calling on_turn_start/on_turn_end by hand (as the rest of
+    this file does) cannot show what a busy chat does to a tab an earlier turn left behind."""
+
+    def setUp(self):
+        super().setUp()
+        import hermes_cli.plugins as plugins
+        self.mgr = plugins.PluginManager()
+        mgr = self.mgr
+
+        class Ctx:
+            def register_tool(self, *a, **k):
+                pass
+
+            def register_hook(self, name, cb):
+                mgr._hooks.setdefault(name, []).append(cb)
+
+        with mock.patch.object(core, "valid_hooks", lambda: frozenset(plugins.VALID_HOOKS)):
+            browser.register(Ctx(), core)
+        p = mock.patch("hermes_cli.lifecycle.invoke_hook", self.mgr.invoke_hook)
+        p.start()
+        self.addCleanup(p.stop)
+        self.agent = mock.Mock(session_id=self.session, platform="gateway", model="m", _persist_disabled=False)
+
+    def run_turn(self, turn, body=None):
+        """One gateway turn: agent_turn_start, pre_llm_call, body, post_llm_call, on_session_end,
+        agent_turn_end, with the kwargs Hermes passes (agent/turn_context.py, turn_finalizer.py)."""
+        from agent.turn_lifecycle_events import fire_turn_end, fire_turn_start
+        started = fire_turn_start(self.agent, turn_id=turn, task_id="t")
+        self.mgr.invoke_hook("pre_llm_call", session_id=self.session, task_id="t", turn_id=turn, user_message="u",
+                             conversation_history=[], is_first_turn=False, model="m", platform="gateway",
+                             parent_session_id="", sender_id="")
+        out = body() if body else None
+        self.mgr.invoke_hook("post_llm_call", session_id=self.session, task_id="t", turn_id=turn, user_message="u",
+                             assistant_response="r", conversation_history=[], model="m", platform="gateway")
+        self.mgr.invoke_hook("on_session_end", session_id=self.session, task_id="t", turn_id=turn, completed=True,
+                             failed=False, interrupted=False, model="m", platform="gateway")
+        fire_turn_end(started, outcome="success")
+        return out
+
+    def test_one_turn_closes_the_tab_after_the_grace(self):
+        a = self.run_turn("t1", self.open)
+        self.clock.advance(119)
+        self.assertEqual(self.sweep(), 0)
+        self.clock.advance(2)
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.fake.closed, [a])
+
+    def test_a_later_turn_does_not_hold_a_tab_of_an_earlier_turn(self):
+        a = self.run_turn("t1", self.open)
+        for n in range(2, 8):
+            self.clock.advance(50)
+            self.run_turn(f"t{n}")
+        # 300 s after the turn that opened it, six turns later: nothing used the tab.
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.fake.closed, [a])
+
+    def test_a_tab_closes_during_a_running_turn_when_its_own_turn_ended_long_ago(self):
+        a = self.run_turn("t1", self.open)
+        self.clock.advance(60)
+        browser.on_turn_start(session_id=self.session, turn_id="t2")
+        self.clock.advance(70)
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.fake.closed, [a])
+
+    def test_using_the_tab_in_a_later_turn_adopts_it(self):
+        a = self.run_turn("t1", self.open)
+        self.clock.advance(60)
+        self.run_turn("t2", lambda: self.run_tool("browser_snapshot", tab_id=a))
+        self.clock.advance(119)
+        self.assertEqual(self.sweep(), 0, "the grace runs from the end of t2, the turn that used it")
+        self.clock.advance(2)
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.fake.closed, [a])
+
+    def test_a_late_end_of_an_older_turn_does_not_end_the_running_one(self):
+        a = self.run_turn("t1", self.open)
+        browser.on_turn_start(session_id=self.session, turn_id="t2")
+        b = self.run_tool("browser_tabs", action="open", url="https://example.com/b")["tab_id"]
+        browser.on_turn_end(session_id=self.session, turn_id="t1")
+        self.clock.advance(500)
+        self.assertEqual(self.sweep(), 1, "only the tab of t1 closes while t2 runs")
+        self.assertEqual(self.fake.closed, [a])
+        self.assertIn(b, self.fake.tabs)
 
 
 class KeepTests(TabBase):

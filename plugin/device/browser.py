@@ -395,10 +395,10 @@ def on_turn_start(session_id: str = "", turn_id: str = "", **_kwargs) -> None:
         _core().logger.debug("device-browser: turn start not recorded", exc_info=True)
 
 
-def on_turn_end(session_id: str = "", **_kwargs) -> None:
-    """post_llm_call and on_session_end: the turn ended, the grace of its tabs starts."""
+def on_turn_end(session_id: str = "", turn_id: str = "", **_kwargs) -> None:
+    """agent_turn_end, post_llm_call and on_session_end: the turn ended, the grace of its tabs starts."""
     try:
-        ledger().turn_end(session_id)
+        ledger().turn_end(session_id, str(turn_id or ""))
     except Exception:
         _core().logger.debug("device-browser: turn end not recorded", exc_info=True)
 

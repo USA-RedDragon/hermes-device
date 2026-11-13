@@ -194,7 +194,7 @@ The plugin keeps a ledger (`tabs.py`) in memory and in `$HERMES_HOME/device/tabs
 
 | Rule | Behavior |
 |---|---|
-| Turn end | `pre_llm_call` marks the chat's turn as running, `post_llm_call` and `on_session_end` mark it ended. A tab that is not kept closes `tab_grace_seconds` (default 120) after its chat's turn ended, and after the tab's last use: any tool call on it resets the grace. A tab does not close while its chat's turn runs. |
+| Turn end | `pre_llm_call` marks the chat's turn as running, `post_llm_call` and `on_session_end` mark it ended. A tab that is not kept closes `tab_grace_seconds` (default 120) after its chat's turn ended, and after the tab's last use: any tool call on it resets the grace. A tab does not close while its chat's turn runs. Ending a later turn only starts the grace for tabs opened in that turn; tabs from earlier turns keep their own timers. |
 | Idle chat | A chat with no activity for `tab_idle_minutes` (default 30) loses every tab that is not kept, even when no turn end was seen. |
 | Deleted chat | `on_session_delete` (delete or archive) closes all the chat's tabs, kept ones too, at the next sweep. |
 | Keep | A tab that the user should see or that waits on the user stays until the user closes it, the agent releases it, the chat is deleted, or the chat was idle for `tab_keep_hours` (default 24; 0: never). `keep: true` on `browser_navigate` and `browser_tabs` `open`, and `browser_tabs` with `action` `keep` or `release`, set it. `browser_screenshot` keeps its tab (the user was shown it), and `browser_login` keeps the tab when it did not sign in (the user must). `browser_tabs` `list` shows `mine` and `keep` for the tabs the ledger knows. |

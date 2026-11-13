@@ -3,8 +3,10 @@
 The model does not have to remember to close tabs. The plugin records which chat (session) and
 turn opened each agent tab, and a reaper closes them:
 
-* a tab that is not kept closes ``grace`` seconds after its chat's turn ended, and after the last
-  time any tool used it (any use resets the grace);
+* a tab that is not kept closes ``grace`` seconds after the turn that opened it ended, and after
+  the last time any tool used it (any use resets the grace and moves the tab to the turn that used
+  it). A later turn of the same chat, running or ended, does not hold a tab it never used: a chat
+  that takes one turn after another would otherwise keep every tab until it went quiet;
 * a chat that was idle for ``idle`` seconds loses every tab that is not kept; a deleted or
   archived chat loses all of them, kept ones too;
 * a kept tab (the agent showed it to the user, it waits on the user, or the agent asked for it)
@@ -81,7 +83,8 @@ class Ledger:
             sess["seen"] = now
             self._tabs[(device, tab)] = {
                 "session": sid, "turn": turn or sess.get("turn", ""), "opened": now, "used": now,
-                "keep": bool(keep), "reason": reason if keep else "", "expire": False, "fails": 0, "pid": self._pid}
+                "keep": bool(keep), "reason": reason if keep else "", "expire": False, "fails": 0, "pid": self._pid,
+                "done": False}
             self.save()
 
     def get(self, device: str, tab: int) -> Optional[dict]:
@@ -101,6 +104,10 @@ class Ledger:
             rec = self._tabs.get((device, tab)) if tab is not None else None
             if rec is not None and rec["session"] == sid:
                 rec["used"] = now
+                if sid and not rec["keep"]:
+                    # Used: the tab belongs to the turn that is running now, and waits for its end.
+                    sess = self._session(sid)
+                    rec["turn"], rec["done"] = sess.get("turn", ""), sess.get("active") is False
 
     def keep(self, sid: str, device: str, tab: int, reason: str = "keep") -> bool:
         with self._lock:
@@ -163,17 +170,22 @@ class Ledger:
             sess = self._session(sid)
             sess.update(turn=turn, active=True, seen=self._clock())
 
-    def turn_end(self, sid: str) -> None:
-        """The chat's turn ended: the grace of its tabs starts now."""
+    def turn_end(self, sid: str, turn: str = "") -> None:
+        """A turn of the chat ended: the grace of the tabs that belong to it starts now. The tabs
+        of an earlier turn are not touched again, and an end that names an older turn than the one
+        running does not end the running one. Without a turn id every tab of the chat is the turn's."""
         if not sid:
             return
         now = self._clock()
         with self._lock:
             sess = self._session(sid)
-            sess.update(active=False, seen=now)
+            current = sess.get("turn", "")
+            sess["seen"] = now
+            if not turn or not current or turn == current:
+                sess["active"] = False
             for rec in self._tabs.values():
-                if rec["session"] == sid and not rec["keep"]:
-                    rec["used"] = max(rec["used"], now)
+                if rec["session"] == sid and not rec["keep"] and (not turn or not rec["turn"] or rec["turn"] == turn):
+                    rec["used"], rec["done"] = max(rec["used"], now), True
 
     def session_gone(self, sids: Any) -> int:
         """Deleted or archived chats: all their tabs, kept ones too, close at the next sweep."""
@@ -230,7 +242,7 @@ class Ledger:
                     continue
                 if quiet >= idle:
                     out.append((device, tab, "chat idle"))
-                elif sess["active"] is False and now - rec["used"] >= grace:
+                elif (sess["active"] is False or rec.get("done")) and now - rec["used"] >= grace:
                     out.append((device, tab, "turn ended"))
         return out
 
@@ -310,7 +322,8 @@ class Ledger:
                             self._tabs[key] = {
                                 "session": str(t.get("session") or ""), "turn": str(t.get("turn") or ""),
                                 "opened": float(t.get("opened") or now), "used": now, "keep": bool(t.get("keep")),
-                                "reason": str(t.get("reason") or ""), "expire": False, "fails": 0, "pid": self._pid}
+                                "reason": str(t.get("reason") or ""), "expire": False, "fails": 0, "pid": self._pid,
+                                "done": not t.get("keep")}
                             n += 1
                 with self._lock:
                     mine = [dict(rec, device=d, tab=t) for (d, t), rec in sorted(self._tabs.items())]
