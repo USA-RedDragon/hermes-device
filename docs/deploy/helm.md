@@ -10,22 +10,36 @@ The chart in `deploy/charts/talaria` runs the same parts as the compose install:
 
 ## Quick start (try it, with port-forward)
 
-```bash
-curl -fsSL https://github.com/USA-RedDragon/talaria/archive/refs/heads/main.tar.gz \
-  | tar -xz --strip-components=3 talaria-main/deploy/charts
-helm install talaria ./talaria --namespace talaria --create-namespace \
-  --set publicUrl=http://localhost:8080 --set demo.enabled=true
-kubectl -n talaria rollout status deploy/talaria-hermes --timeout=10m
-kubectl -n talaria port-forward svc/talaria 8080:8080
-```
+1. Install the chart and open a port to it:
 
-Open http://localhost:8080 right away: the setup page makes the first account, an admin. The first person who
-opens it gets that account, so do it before the hub is reachable from anywhere else. Add other people under
-Settings, Users ([Set up logins](auth.md)). Then pick a model in Hermes, `talaria-demo` to look around:
+   ```bash
+   curl -fsSL https://github.com/USA-RedDragon/talaria/archive/refs/heads/main.tar.gz \
+     | tar -xz --strip-components=3 talaria-main/deploy/charts
+   helm install talaria ./talaria --namespace talaria --create-namespace \
+     --set publicUrl=http://localhost:8080 --set demo.enabled=true
+   kubectl -n talaria rollout status deploy/talaria-hermes --timeout=10m
+   kubectl -n talaria port-forward svc/talaria 8080:8080
+   ```
 
-```bash
-kubectl -n talaria exec -it deploy/talaria-hermes -c gateway -- hermes model
-```
+2. Open http://localhost:8080 right away: the setup page makes the first account, an admin. The first person who
+   opens it gets that account, so do it before the hub is reachable from anywhere else. Add other people under
+   Settings, Users ([Set up logins](auth.md)).
+3. **Connect a model.** This step is required: until you do it, a chat says Hermes is not connected to any AI
+   provider. Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate
+   Hermes, and an existing one is not used. Run Hermes's own setup command in the Hermes pod (the Deployment is
+   named `<release>-hermes`, and its container `gateway`; here the release is `talaria`):
+
+   ```bash
+   kubectl -n talaria exec -it deploy/talaria-hermes -c gateway -- hermes model
+   ```
+
+   You will see a list of providers; move with the arrow keys. Pick one and give it what it asks for (an API
+   key, a sign-in, or an address), or `talaria-demo` to look around (the `demo.enabled=true` above). For Ollama,
+   LM Studio or vLLM, pick **Custom endpoint**, the last entry. Hermes asks for a display name at the end: it
+   becomes the group your models show under in the chat's model menu.
+
+   Then open a new chat (or reload the page) and pick the model in the chat's model menu. No restart is needed,
+   and models you pull into Ollama later appear on their own. Details: [Choosing models and providers](models.md).
 
 ## With a host name
 
@@ -35,8 +49,7 @@ helm upgrade --install talaria ./talaria --namespace talaria --create-namespace 
   --set ingress.enabled=true --set ingress.className=nginx --set ingress.tlsSecret=talaria-tls \
 ```
 
-Then pick the model in Hermes: `kubectl -n talaria exec -it deploy/talaria-hermes -c gateway -- hermes model` ([Choosing
-models and providers](models.md)). For Gateway
+Then make your account and connect a model, as in steps 2 and 3 of the quick start. For Gateway
 API, use `httpRoute.enabled=true` and `httpRoute.parentRefs` instead of the Ingress. The chart makes two routes:
 `<release>-device` for `/api/device/` (device WebSockets, no request timeout) and `<release>` for the rest (24
 hours, for server-sent events). An authenticating policy belongs on `<release>` only ([Login](auth.md)).

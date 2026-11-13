@@ -62,21 +62,28 @@ right away, before Talaria is reachable from other machines. There is no passwor
 ![The setup page](images/setup.png)
 
 Add other people later under Settings, Users (see [Set up logins](auth.md)). Before the first chat, Hermes needs a
-model (step 4): until then, a new chat stops with "Could not start a chat".
+model: do step 4 next.
 
 To open Talaria from another computer, see [Reach it from other computers](#reach-it-from-other-computers).
 
-## Step 4: Pick a model in Hermes
+## Step 4: Connect a model
 
-The model and provider are Hermes settings. Run Hermes's setup wizard in its container:
+This step is required: until you do it, a chat says Hermes is not connected to any AI provider. Talaria includes
+its own Hermes, the agent that talks to models, so you do not need a separate Hermes, and an existing one is not
+used. Run Hermes's own setup command in its container, from the folder with `compose.yaml`:
 
 ```bash
 docker compose exec -u hermes hermes hermes model
 ```
 
-Pick a provider with the arrow keys, give it what it asks for (an API key, a sign-in, or an address), then the
-model. At the last question, the reasoning effort, Enter keeps the default. New chats use it at once.
-[Choosing models and providers](models.md) has the details, Ollama on this host or on another machine included.
+You will see a list of providers; move with the arrow keys. Pick one and give it what it asks for (an API key, a
+sign-in, or an address), then the model. For Ollama, LM Studio or vLLM, pick **Custom endpoint**, the last entry.
+Hermes asks for a display name at the end: it becomes the group your models show under in the chat's model menu.
+At the last question, the reasoning effort, Enter keeps the default.
+
+Then open a new chat (or reload the page) and pick the model in the chat's model menu. No restart is needed, and
+models you pull into Ollama later appear on their own. [Choosing models and providers](models.md) has the
+details, Ollama on this host or on another machine included.
 
 To look around without any provider first, start the demo model (`COMPOSE_PROFILES=demo` in `.env`, then
 `docker compose up -d --wait`) and pick `talaria-demo` in `hermes model` (near the end of the list). Its replies

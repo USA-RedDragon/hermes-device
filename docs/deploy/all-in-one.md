@@ -12,6 +12,25 @@ docker run -d --name talaria -p 8080:8080 \
 docker logs talaria 2>&1 | grep -A3 Open:
 ```
 
+Then:
+
+1. Open the address it prints, right away, and make your account: the first visitor becomes the admin.
+2. **Connect a model.** This step is required: until you do it, a chat says Hermes is not connected to any AI
+   provider. Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate
+   Hermes, and an existing one is not used. Run Hermes's own setup command in the container:
+
+   ```bash
+   docker exec -it -u hermes talaria hermes model
+   ```
+
+   You will see a list of providers; move with the arrow keys. Pick one and give it what it asks for (an API
+   key, a sign-in, or an address), or `talaria-demo`, which the `TALARIA_DEMO=true` above turned on. For Ollama,
+   LM Studio or vLLM, pick **Custom endpoint**, the last entry. Hermes asks for a display name at the end: it
+   becomes the group your models show under in the chat's model menu.
+
+   Then open a new chat (or reload the page) and pick the model in the chat's model menu. No restart is needed,
+   and models you pull into Ollama later appear on their own. Details: [Choosing models and providers](models.md).
+
 The image is built from `deploy/aio/Dockerfile` for amd64 and arm64 and published on each release (see
 [Images](images.md)). To build it yourself from a checkout: `docker build -f aio/Dockerfile -t talaria-aio .`.
 

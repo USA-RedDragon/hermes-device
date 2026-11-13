@@ -26,23 +26,27 @@ YAML, with the all-in-one image ([design](all-in-one.md)). Tested on TrueNAS SCA
 
    ![The Talaria setup page with the user name alice and a display name filled in](images/truenas/setup.png)
 
-## Pick a model in Hermes
+6. **Connect a model.** This step is required: until you do it, a chat says Hermes is not connected to any AI
+   provider. Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate
+   Hermes, and an existing one is not used. Open a shell in the container: **Apps**, **Installed**, `talaria`,
+   then under **Workloads**, **Containers**, the shell icon (the first icon next to `talaria – Running`). That
+   shell runs as root; run Hermes's own setup command as its own user:
 
-The model is Hermes's own setting; until you pick one, a chat answers that Hermes is not connected to any AI
-provider. Open a shell in the container: **Apps**, **Installed**, `talaria`, then under **Workloads**,
-**Containers**, the shell icon (the first icon next to `talaria – Running`). That shell runs as root; run Hermes as
-its own user:
+   ```bash
+   runuser -u hermes -- hermes model
+   ```
 
-```bash
-runuser -u hermes -- hermes model
-```
+   From **System, Shell** or SSH instead:
+   `sudo docker exec -it -u hermes $(sudo docker ps -qf name=talaria) hermes model`.
 
-From **System, Shell** or SSH instead:
-`sudo docker exec -it -u hermes $(sudo docker ps -qf name=talaria) hermes model`.
+   You will see a list of providers; move with the arrow keys. Pick one and give it what it asks for (an API
+   key, a sign-in, or an address). With `TALARIA_DEMO` on, `talaria-demo` is near the end of the list (Enter,
+   then Enter for its one model). For Ollama, LM Studio or vLLM, pick **Custom endpoint** (see
+   [Ollama as a TrueNAS app](#ollama-as-a-truenas-app)). Hermes asks for a display name at the end: it becomes
+   the group your models show under in the chat's model menu.
 
-Pick a provider and give it what it asks for. With `TALARIA_DEMO` on, `talaria-demo` is near the end of the list
-(arrow keys, Enter, then Enter for its one model). For Ollama, see [Ollama as a TrueNAS app](#ollama-as-a-truenas-app).
-The next new chat uses the model; no restart needed.
+   Then open a new chat (or reload the page) and pick the model in the chat's model menu. No restart is needed,
+   and models you pull into Ollama later appear on their own. Details: [Choosing models and providers](models.md).
 
 ![hermes model in the TrueNAS container shell, with talaria-demo selected near the end of the provider list](images/truenas/hermes-model-demo.png)
 

@@ -20,14 +20,25 @@ Talaria on Unraid is one container from the all-in-one image ([design](all-in-on
 5. Right after the start, open **WebUI** in the container's menu (or `http://192.168.1.10:8080`). The setup page
    makes the first account, an admin: the first person who opens it gets that account, so do it before the port
    is reachable from outside your network. Add other people under Settings, Users.
-6. Pick a model in Hermes (Hermes's own setting). In the Unraid terminal (the **>_** icon at the top right):
+6. Connect a model. This step is required: until you do it, a chat says Hermes is not connected to any AI
+   provider. Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate
+   Hermes, and an existing one is not used. In the Unraid terminal (the **>_** icon at the top right), run
+   Hermes's own setup command in the container:
 
    ```bash
    docker exec -it -u hermes Talaria hermes model
    ```
 
-   Pick a provider with the arrow keys and give it what it asks for, or `talaria-demo` with the demo model on. For
-   Ollama, see [Ollama on the same server](#ollama-on-the-same-server).
+   Or open the container's **Console** (its menu on the **Docker** tab); that shell is root, so run
+   `runuser -u hermes -- hermes model` there.
+
+   You will see a list of providers; move with the arrow keys. Pick one and give it what it asks for (an API
+   key, a sign-in, or an address), or `talaria-demo` with the demo model on. For Ollama, LM Studio or vLLM, pick
+   **Custom endpoint**, the last entry (see [Ollama on the same server](#ollama-on-the-same-server)). Hermes
+   asks for a display name at the end: it becomes the group your models show under in the chat's model menu.
+
+   Then open a new chat (or reload the page) and pick the model in the chat's model menu. No restart is needed,
+   and models you pull into Ollama later appear on their own. Details: [Choosing models and providers](models.md).
 
 Data is in `/mnt/user/appdata/talaria`: `hermes` (chats, memory) and `talaria` (hub database, keys, the
 sandbox's files). Back up both.
