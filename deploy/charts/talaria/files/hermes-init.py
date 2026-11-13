@@ -120,9 +120,11 @@ def talaria_config(pubkey_path):
         "webapp": {"enabled": True, "host": "0.0.0.0", "port": 9120},
         # detach_removed_default: removing the default model's provider in Settings > Models also drops the default
         # managed_read_only: models and keys the deployment sets (its environment, a managed config) are read-only there
+        # apply_to_live_chats: tools, skills, connections and the personality changed in Settings apply to open chats
+        # from their next message (patched Hermes)
         "dashboard": {"basic_auth": {"username": "hub", "password_hash": password_hash(),
                                      "secret": secret("session-secret")}, "detach_removed_default": True,
-                      "managed_read_only": True},
+                      "managed_read_only": True, "apply_to_live_chats": True},
         "terminal": {"backend": "device", "cwd": os.path.join(HOME, "empty-cwd")},
         "security": {"image_render_paths": "media"},
         "updates": {"check": False},
@@ -145,9 +147,6 @@ def talaria_config(pubkey_path):
             },
         }}},
     }
-    tz = env("TZ")
-    if tz:
-        cfg["timezone"] = tz
     # The model and provider are Hermes's own settings (hermes model, hermes setup); Talaria does not set them
     if env("TALARIA_ROLLING"):
         merge(cfg, ROLLING)
@@ -230,6 +229,7 @@ def main():
         # Your own Hermes settings (Helm value hermes.config), merged last
         with open(extra) as f:
             merge(config, safe_load(f) or {})
+    time_zone(config)
     demo_provider(config)
     web_search(config)
     with open(path + ".tmp", "w") as f:
@@ -239,6 +239,40 @@ def main():
     subprocess.run([HERMES, "plugins", "enable", "device"], check=False)
     setup_honcho()
     print("hermes-init: done")
+
+
+def time_zone(config):
+    """The agent's time zone (timezone) from TZ, while it is still the one this step wrote.
+
+    What it wrote is remembered in talaria/init-state.json. Once the time zone differs from that, someone picked
+    another one (in Talaria's Settings, Agent), and from then on that choice wins: this step leaves timezone alone
+    for good, also when TZ changes later. Without TZ, a time zone this step wrote is taken back.
+    """
+    state_path = os.path.join(HOME, "talaria", "init-state.json")
+    state = {}
+    if os.path.exists(state_path):
+        with open(state_path) as f:
+            state = json.load(f)
+    new = dict(state)
+    tz, current, written = env("TZ"), config.get("timezone"), state.get("timezone")
+    if not state and current == tz:
+        # Written by this step before it kept a record
+        written = current
+    if current and current != written:
+        new["timezone_owner"] = "settings"
+    if new.get("timezone_owner") == "settings":
+        new.pop("timezone", None)
+    elif tz:
+        config["timezone"] = new["timezone"] = tz
+    else:
+        if current and current == written:
+            config.pop("timezone", None)
+        new.pop("timezone", None)
+    if new != state:
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with open(state_path + ".tmp", "w") as f:
+            json.dump(new, f)
+        os.replace(state_path + ".tmp", state_path)
 
 
 DEMO = "talaria-demo"

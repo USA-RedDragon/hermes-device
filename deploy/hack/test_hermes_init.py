@@ -35,6 +35,60 @@ def load(home):
     return module
 
 
+class TimeZone(unittest.TestCase):
+    """TZ sets the agent's time zone until someone picks another one in Settings, Agent."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = self.tmp.name
+        self.m = load(self.home)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_tz(self, config, tz):
+        env = {"TZ": tz} if tz else {}
+        with mock.patch.dict(os.environ, env, clear=False):
+            if not tz:
+                os.environ.pop("TZ", None)
+            self.m.time_zone(config)
+        return config
+
+    def test_tz_sets_it_and_follows_changes(self):
+        self.assertEqual(self.run_tz({}, "America/Chicago")["timezone"], "America/Chicago")
+        self.assertEqual(self.run_tz({"timezone": "America/Chicago"}, "Europe/Berlin")["timezone"], "Europe/Berlin")
+
+    def test_a_zone_picked_in_settings_wins_for_good(self):
+        self.run_tz({}, "America/Chicago")
+        picked = self.run_tz({"timezone": "Asia/Tokyo"}, "America/Chicago")
+        self.assertEqual(picked["timezone"], "Asia/Tokyo")
+        self.assertEqual(self.run_tz({"timezone": "Asia/Tokyo"}, "Europe/Berlin")["timezone"], "Asia/Tokyo")
+        # Even when the picked zone later equals TZ, a TZ change does not take it back
+        self.assertEqual(self.run_tz({"timezone": "Europe/Berlin"}, "Europe/Berlin")["timezone"], "Europe/Berlin")
+        self.assertEqual(self.run_tz({"timezone": "Europe/Berlin"}, "UTC")["timezone"], "Europe/Berlin")
+        with open(os.path.join(self.home, "talaria", "init-state.json")) as f:
+            self.assertEqual(json.load(f), {"timezone_owner": "settings"})
+
+    def test_existing_zone_before_this_step_is_kept(self):
+        self.assertEqual(self.run_tz({"timezone": "Asia/Tokyo"}, "America/Chicago")["timezone"], "Asia/Tokyo")
+
+    def test_without_tz_its_own_zone_goes(self):
+        self.run_tz({}, "America/Chicago")
+        self.assertNotIn("timezone", self.run_tz({"timezone": "America/Chicago"}, ""))
+        self.assertNotIn("timezone", self.run_tz({}, ""))
+
+    def test_zone_from_before_the_record_still_follows_tz(self):
+        self.assertEqual(self.run_tz({"timezone": "America/Chicago"}, "America/Chicago")["timezone"], "America/Chicago")
+        self.assertEqual(self.run_tz({"timezone": "America/Chicago"}, "Europe/Berlin")["timezone"], "Europe/Berlin")
+
+    def test_live_apply_is_on(self):
+        with mock.patch.object(self.m, "password_hash", return_value="h"), \
+                mock.patch.object(self.m, "secret", return_value="s"):
+            cfg = self.m.talaria_config("/k")
+        self.assertIs(cfg["dashboard"]["apply_to_live_chats"], True)
+        self.assertNotIn("timezone", cfg)
+
+
 class Defaults(unittest.TestCase):
     def run_init(self, existing=None, extra=None):
         with tempfile.TemporaryDirectory() as home:
