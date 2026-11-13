@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 23:07:18 -0600
+Subject: [PATCH] fix(gateway): refuse session.create with no model plainly
+
+A profile with no model in config.yaml and no welcome trial froze a launch policy with no model. restore_policy refuses such a policy, so the create failed as storage_unavailable (invalid policy), which reads as a broken store. The create is now refused up front with the reason no_model_configured and a plain detail. Profiles that name a model are unchanged.
+---
+ gateway/session_local.py                      |  6 +++
+ tests/gateway/test_session_create_no_model.py | 40 +++++++++++++++++++
+ 2 files changed, 46 insertions(+)
+ create mode 100644 tests/gateway/test_session_create_no_model.py
+
+diff --git a/gateway/session_local.py b/gateway/session_local.py
+index 4054cd0c50..88041f03fe 100644
+--- a/gateway/session_local.py
++++ b/gateway/session_local.py
+@@ -316,6 +316,12 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
+         if policy.model is None:
+             from hermes_cli.anon_auth import GUEST_MODEL
+             policy = replace(policy, model=_resolve_gateway_model(policy.config()) or None)
++            if policy.model is None:
++                # No model named, none in config.yaml, no welcome trial: a policy with no model is refused
++                # by ``restore_policy`` as ``storage_unavailable``, which reads as a broken store.
++                raise RuntimeStoreError(
++                    'no_model_configured', field='model',
++                    detail='No model is configured. Choose one with `hermes model`, then start the chat again.')
+             if policy.model == GUEST_MODEL:
+                 # Follows its profile, so the provider the user connects later replaces the trial model.
+                 marks[FOLLOW_ADOPTED] = True
+diff --git a/tests/gateway/test_session_create_no_model.py b/tests/gateway/test_session_create_no_model.py
+new file mode 100644
+index 0000000000..578712b9e5
+--- /dev/null
++++ b/tests/gateway/test_session_create_no_model.py
+@@ -0,0 +1,40 @@
++"""``session.create`` on a profile with no model configured.
++
++The launch policy has no model, and ``restore_policy`` refuses such a policy as ``storage_unavailable``,
++which reads as a broken store. The create is refused up front with ``no_model_configured`` instead, and
++a profile that names a model is not affected.
++"""
++import pytest
++
++from tests.gateway.test_local_desktop_identity import _connect, _request
++
++
++async def _create(tmp_path, monkeypatch, config=None):
++    conn = await _connect(tmp_path, monkeypatch, config=config)
++    try:
++        await _request(conn, 1, "client.capabilities", {})
++        return await _request(conn, 2, "session.create", {"source": "gui", "request_id": "a"})
++    finally:
++        await conn.connection.close()
++
++
++@pytest.mark.asyncio
++async def test_no_model_is_its_own_refusal(tmp_path, monkeypatch):
++    reply = await _create(tmp_path, monkeypatch)
++    error = reply["error"]
++    assert error["message"] == "no_model_configured"
++    assert error["data"]["reason"] == "no_model_configured"
++    assert "hermes model" in error["data"]["detail"]
++    assert "storage_unavailable" not in str(reply)
++
++
++@pytest.mark.asyncio
++async def test_an_empty_model_block_is_no_model(tmp_path, monkeypatch):
++    reply = await _create(tmp_path, monkeypatch, config="model: {provider: custom}\n")
++    assert reply["error"]["data"]["reason"] == "no_model_configured"
++
++
++@pytest.mark.asyncio
++async def test_a_configured_model_still_creates(tmp_path, monkeypatch):
++    reply = await _create(tmp_path, monkeypatch, config="model: {provider: custom, default: m, base_url: http://x.invalid/v1}\n")
++    assert "result" in reply, reply
