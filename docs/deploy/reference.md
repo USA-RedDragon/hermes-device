@@ -51,6 +51,11 @@ OLLAMA_CONTEXT_LENGTH=65536
 # With profile ollama: a model to download on start, such as llama3.1:8b (it needs tool calls and a 64K window)
 TALARIA_OLLAMA_PULL=
 
+# --- Web search ---
+# The agent searches the web through its own SearXNG, which runs next to it and is not reachable from outside.
+# 1: on (the default). 0: off; then the agent uses whatever web search you set up in it, if any
+TALARIA_SEARXNG=1
+
 # --- Images ---
 # Another agent image, such as one you built or loaded (the default is pinned by digest)
 # TALARIA_HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p33
@@ -88,6 +93,7 @@ acp-host
 front
 hub
 sandbox
+searxng
 demo-llm
 ollama
 ollama-pull
@@ -279,6 +285,7 @@ TALARIA_PUBLIC_URL       (empty)                            Public URL
 /opt/data                /mnt/user/appdata/talaria/hermes   Hermes data
 /talaria                 /mnt/user/appdata/talaria/talaria  Talaria data
 TALARIA_DEMO             false                              Demo model
+TALARIA_SEARXNG          true                               Web search
 TALARIA_USER             (empty)                            Your hub user
 TALARIA_TELEGRAM_TOKEN   (empty)                            Telegram bot token
 PUID                     99                                 PUID
@@ -314,6 +321,7 @@ Every install pulls these, pinned by digest. [Images](images.md) says what each 
 docker.io/library/caddy:2.10-alpine
 docker.io/ollama/ollama:0.40.16
 docker.io/pgvector/pgvector:0.8.1-pg17
+docker.io/searxng/searxng:2026.11.13-8a53a6aa5
 ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
 ghcr.io/plastic-labs/honcho:v3.6.0
 ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p33
