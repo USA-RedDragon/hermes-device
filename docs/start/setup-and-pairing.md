@@ -18,7 +18,11 @@ The hub address is required. A release does not know any hub by itself, so witho
    sign in, enter the code BCDF-GHJK and confirm this device.
    ```
 
-   Sign in to the hub as yourself, check that the code is the one in your terminal, name the computer and confirm. Setup then prints `Paired as <name> (<id>) with backend <backend>`. The code expires after 10 minutes by default. If it does, run `talaria login` again.
+   Sign in to the hub as yourself and type the code. The hub then shows what is asking to connect: the computer's name, its system, its address and the time. Check that they match, name the computer and choose "Connect this computer".
+
+   ![The "Connect a computer" page on the hub: the computer's name, system, address and time, a name field and a Connect this computer button](../images/pair-confirm.png)
+
+   Setup then prints `Paired as <name> (<id>) with backend <backend>`. The code expires after 10 minutes by default. If it does, run `talaria login` again.
 3. **Config.** It writes `~/.config/talaria/config.yaml` when that file does not exist, with your hub address and `device.roots` set to your home directory. An existing file is never changed unless you pass `--overwrite-config`, and then the old one is saved first.
 4. **Firefox.** When it finds Firefox, it turns browser control on and registers the native messaging host. See [Let the agent use Firefox](../guides/browser-extension.md).
 5. **PATH.** It checks that `~/.talaria/bin` is on your `PATH`, also for `bash -l`, because the agent runs commands with a login shell. It asks before it changes any of your shell files, and it saves a backup of each one first.
@@ -49,7 +53,9 @@ Then restart the service: `systemctl --user restart talaria` on Linux, or run `t
 
 ## Check the connection
 
-Open the hub, go to Settings, then Computers. The new computer shows as online while the service runs. On the computer itself:
+Open the hub, go to Settings, then Computers. The new computer shows as online while the service runs.
+
+![Settings, Computers on the hub: the paired computer and the sandbox, both online](../images/settings-computers.png) On the computer itself:
 
 ```sh
 systemctl --user status talaria      # Linux
