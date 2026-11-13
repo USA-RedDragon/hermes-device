@@ -103,18 +103,24 @@ func (s *Server) cookieName(bare string) string {
 	return bare
 }
 
+// cookie is a login cookie: Secure, HttpOnly and SameSite=Lax. Only a
+// plain-http http.public_url lowers Secure, because browsers drop Secure
+// cookies on plain http and such an install could not log in.
+func (s *Server) cookie(bare, value string, maxAge int) *http.Cookie {
+	c := &http.Cookie{
+		Name: s.cookieName(bare), Value: value, Path: "/", MaxAge: maxAge,
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
+	}
+	c.Secure = s.secure
+	return c
+}
+
 func (s *Server) setCookie(w http.ResponseWriter, bare, value string, maxAge time.Duration) {
-	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure follows http.public_url; only a plain-http public URL turns it off
-		Name: s.cookieName(bare), Value: value, Path: "/", MaxAge: int(maxAge.Seconds()),
-		HttpOnly: true, Secure: s.secure, SameSite: http.SameSiteLaxMode,
-	})
+	http.SetCookie(w, s.cookie(bare, value, int(maxAge.Seconds())))
 }
 
 func (s *Server) clearCookie(w http.ResponseWriter, bare string) {
-	http.SetCookie(w, &http.Cookie{ //nolint:gosec // as in setCookie
-		Name: s.cookieName(bare), Value: "", Path: "/", MaxAge: -1,
-		HttpOnly: true, Secure: s.secure, SameSite: http.SameSiteLaxMode,
-	})
+	http.SetCookie(w, s.cookie(bare, "", -1))
 }
 
 func (s *Server) session(r *http.Request) (*session, bool) {
