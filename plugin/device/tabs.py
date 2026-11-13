@@ -66,7 +66,9 @@ class Ledger:
     # --- recording ------------------------------------------------------------------------------
 
     def _session(self, sid: str) -> dict:
-        return self._sessions.setdefault(sid, {"turn": "", "active": False, "seen": self._clock()})
+        # active: None until a turn start or end is seen for the chat. A chat the hooks never named
+        # (an older Hermes, or a session id that changed mid-turn) counts as running until idle.
+        return self._sessions.setdefault(sid, {"turn": "", "active": None, "seen": self._clock()})
 
     def opened(self, sid: str, device: str, tab: int, turn: str = "", keep: bool = False, reason: str = "") -> None:
         """An agent tool opened this tab for the chat. A record of the same id is stale (Firefox
@@ -220,7 +222,7 @@ class Ledger:
                 if rec["expire"]:
                     out.append((device, tab, "chat deleted or subagent ended"))
                     continue
-                sess = self._sessions.get(sid) or {"active": False, "seen": rec["used"]}
+                sess = self._sessions.get(sid) or {"active": None, "seen": rec["used"]}
                 quiet = now - max(sess["seen"], rec["used"])
                 if rec["keep"]:
                     if keep > 0 and quiet >= keep:
@@ -228,7 +230,7 @@ class Ledger:
                     continue
                 if quiet >= idle:
                     out.append((device, tab, "chat idle"))
-                elif not sess["active"] and now - rec["used"] >= grace:
+                elif sess["active"] is False and now - rec["used"] >= grace:
                     out.append((device, tab, "turn ended"))
         return out
 

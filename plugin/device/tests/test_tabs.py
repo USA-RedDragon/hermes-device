@@ -174,6 +174,33 @@ class TurnEndTests(TabBase):
         self.assertIn(a, self.fake.tabs)
 
 
+    def test_a_chat_the_hooks_never_named_keeps_its_tabs_until_idle(self):
+        a = self.open()
+        self.clock.advance(1000)
+        self.assertEqual(self.sweep(), 0)
+        self.assertIn(a, self.fake.tabs)
+        self.clock.advance(801)
+        self.assertEqual(self.sweep(), 1)
+
+
+class HookTests(TabBase):
+    def test_turn_hooks_are_registered_where_the_hermes_has_them(self):
+        hooks = []
+
+        class Ctx:
+            def register_tool(self, *a, **k):
+                pass
+
+            def register_hook(self, name, cb):
+                hooks.append(name)
+
+        with mock.patch.object(core, "valid_hooks", lambda: frozenset(
+                {"agent_turn_start", "agent_turn_end", "pre_llm_call", "subagent_stop"})):
+            browser.register(Ctx(), core)
+        self.assertEqual([h for h in hooks if h not in ("pre_tool_call", "on_session_delete")],
+                         ["agent_turn_start", "agent_turn_end", "pre_llm_call", "subagent_stop"])
+
+
 class KeepTests(TabBase):
     def test_c_keep_flag_on_navigate_and_open(self):
         self.turn()

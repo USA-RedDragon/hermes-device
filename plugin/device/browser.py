@@ -2327,7 +2327,10 @@ def register(ctx: Any, core: Any) -> None:
     ctx.register_hook("pre_tool_call", pre_tool_call)
     ctx.register_hook("on_session_delete", on_session_delete)
     known = core.valid_hooks()
-    for hook, fn in (("pre_llm_call", on_turn_start), ("post_llm_call", on_turn_end),
+    # agent_turn_start and agent_turn_end come from Talaria Hermes (patch 0005) and also fire for
+    # turns that fail or are cancelled; the others cover a Hermes without it.
+    for hook, fn in (("agent_turn_start", on_turn_start), ("agent_turn_end", on_turn_end),
+                     ("pre_llm_call", on_turn_start), ("post_llm_call", on_turn_end),
                      ("on_session_end", on_turn_end), ("subagent_stop", on_subagent_stop)):
         if hook in known:
             ctx.register_hook(hook, fn)

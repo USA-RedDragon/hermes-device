@@ -112,6 +112,7 @@ class PluginEndToEnd(unittest.TestCase):
         status = self.tool("browser_status")
         self.assertTrue(status["available"])
         self.assertTrue(status["browser"].startswith("Firefox"))
+        self.tab_cleanup()
 
         page = self.tool("browser_navigate", "browser:visit:example.com", url="https://example.com/")
         self.assertEqual(page["title"], "Example Domain")
@@ -154,6 +155,44 @@ class PluginEndToEnd(unittest.TestCase):
 
         self.frames_and_scripts(tab)
         self.assertIn("closed", self.tool("browser_tabs", action="close", tab_id=tab))
+
+    def listed(self) -> dict[int, dict]:
+        return {t["tab_id"]: t for t in self.tool("browser_tabs", action="list")["tabs"]}
+
+    def tab_cleanup(self):
+        """docs/browser.md section 3.4 in a real Firefox: tabs opened in a turn close after the grace
+        that follows the turn, a kept tab stays until released, and reuse does not open a tab."""
+        self.cfg.update(tab_grace_seconds=1, tab_idle_minutes=30, tab_keep_hours=24)
+        before = set(self.listed())
+        browser.on_turn_start(session_id="e2e", turn_id="e2e-turn")
+        first = self.tool("browser_navigate", "", url=FORM + "/")["tab_id"]
+        again = self.tool("browser_navigate", "", url=FORM + "/login")
+        self.assertEqual(again["tab_id"], first, "navigate without tab_id reuses the chat's idle tab")
+        self.assertTrue(again["reused_tab"])
+        other = self.tool("browser_navigate", "", url=PAGES + "/frames", new_tab=True)["tab_id"]
+        kept = self.tool("browser_navigate", "", url=FORM + "/", new_tab=True, keep=True)["tab_id"]
+        self.assertEqual(len({first, other, kept}), 3)
+        tabs = self.listed()
+        self.assertEqual({first, other, kept} - set(tabs), set())
+        self.assertTrue(tabs[kept]["keep"])
+        self.assertTrue(tabs[first]["mine"])
+        self.assertEqual(browser.sweep_tabs(browser.ledger()), 0, "nothing closes while the turn runs")
+        threading.Event().wait(1.5)
+        self.assertEqual(browser.sweep_tabs(browser.ledger()), 0, "nothing closes while the turn runs")
+        browser.on_turn_end(session_id="e2e")
+        self.assertEqual(browser.sweep_tabs(browser.ledger()), 0, "the grace starts at the turn end")
+        threading.Event().wait(1.5)
+        self.assertEqual(browser.sweep_tabs(browser.ledger()), 2)
+        left = self.listed()
+        print(f"tabs before {sorted(before)}, opened {[first, other, kept]}, after the sweep {sorted(left)}")
+        self.assertNotIn(first, left)
+        self.assertNotIn(other, left)
+        self.assertIn(kept, left)
+        self.assertTrue(before <= set(left), "tabs that were there before are untouched")
+        self.tool("browser_tabs", action="release", tab_id=kept)
+        threading.Event().wait(1.5)
+        self.assertEqual(browser.sweep_tabs(browser.ledger()), 1)
+        self.assertNotIn(kept, self.listed())
 
     def frames_and_scripts(self, tab: int):
         """Frames, keys, scrolling and scripts through the tools, with the approval rules for
