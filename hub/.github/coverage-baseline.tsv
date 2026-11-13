@@ -1,7 +1,7 @@
 cmd/auth.go	15	0
 cmd/cmd.go	242	0
-internal/agents/agents.go	447	361
-internal/agents/format.go	26	26
+internal/agents/agents.go	473	385
+internal/agents/format.go	29	29
 internal/auth/limit.go	45	40
 internal/auth/names.go	17	16
 internal/auth/password.go	48	41
@@ -40,7 +40,7 @@ internal/device/sessioncheck.go	23	22
 internal/device/usage.go	50	40
 internal/device/views.go	17	17
 internal/gateway/client.go	264	224
-internal/gateway/gatewaytest/activity.go	106	86
+internal/gateway/gatewaytest/activity.go	106	88
 internal/gateway/gatewaytest/compose.go	184	159
 internal/gateway/gatewaytest/fake.go	692	635
 internal/gateway/gatewaytest/files.go	40	35
@@ -95,7 +95,7 @@ internal/service/agents.go	21	17
 internal/service/attach.go	91	78
 internal/service/claude.go	41	33
 internal/service/compose.go	251	209
-internal/service/hold.go	233	205
+internal/service/hold.go	233	202
 internal/service/live.go	345	303
 internal/service/manage.go	150	140
 internal/service/media.go	128	106
@@ -132,7 +132,7 @@ internal/telegram/claude.go	106	88
 internal/telegram/commands.go	245	203
 internal/telegram/computers.go	186	146
 internal/telegram/config.go	18	18
-internal/telegram/dmtopics.go	105	86
+internal/telegram/dmtopics.go	105	88
 internal/telegram/draft.go	78	63
 internal/telegram/echo.go	133	112
 internal/telegram/format.go	114	111
@@ -144,10 +144,10 @@ internal/telegram/render.go	498	450
 internal/telegram/replymedia.go	102	87
 internal/telegram/status.go	59	53
 internal/telegram/todo.go	58	51
-internal/telegram/topics.go	521	379
+internal/telegram/topics.go	521	380
 internal/web/accounts.go	255	192
 internal/web/activity.go	135	93
-internal/web/api.go	273	207
+internal/web/api.go	273	206
 internal/web/auth.go	134	101
 internal/web/authpages.go	39	37
 internal/web/claude.go	83	58
@@ -160,7 +160,7 @@ internal/web/insights.go	84	55
 internal/web/link.go	35	26
 internal/web/media.go	32	29
 internal/web/memory.go	148	105
-internal/web/models.go	56	53
+internal/web/models.go	56	55
 internal/web/notify.go	137	97
 internal/web/page.go	79	72
 internal/web/pagechat.go	50	40
