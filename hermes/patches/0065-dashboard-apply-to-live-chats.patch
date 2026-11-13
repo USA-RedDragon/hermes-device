@@ -4,20 +4,40 @@ Date: Fri, 13 Nov 2026 03:56:23 -0600
 Subject: [PATCH] feat(dashboard): apply tool, MCP, skill and SOUL.md changes
  to open chats
 
-An open chat's agent keeps the tool list and system prompt it was built with, so a toolset, MCP server, skill or SOUL.md change saved through the dashboard reached only chats started after it, a /reload-mcp, `hermes sessions refresh-prompts`, or a restart. dashboard.apply_to_live_chats (false = off) applies them before the route answers: a toolset change re-resolves every live gateway chat's toolsets, an MCP server change reconnects the servers and refreshes the chats (the gateway's reload.mcp with consent), and a skill or SOUL.md change records a profile-wide prompt refresh, so each chat rebuilds its system prompt once on its next turn. Answers then carry applied_live. POST /api/dashboard/apply-live applies on demand after a background action (skill install or uninstall). Off, every answer is unchanged.
+An open chat's agent keeps the tool list and system prompt it was built with, and a local session (one a client created over the gateway socket) froze its toolsets at creation, so a toolset, MCP server, skill or SOUL.md change saved through the dashboard reached only chats started after it, a /reload-mcp, `hermes sessions refresh-prompts`, or a restart. dashboard.apply_to_live_chats (false = off) applies them before the route answers: a toolset change re-resolves every live chat's toolsets (a local session without a toolset pick of its own runs the profile's current toolsets on each turn, so its cached agent is rebuilt with them), an MCP server change reconnects the servers and refreshes the chats (the gateway's reload.mcp with consent), and a skill or SOUL.md change records a profile-wide prompt refresh, so each chat rebuilds its system prompt once on its next turn. Answers then carry applied_live. POST /api/dashboard/apply-live applies on demand after a background action (skill install or uninstall). Off, every answer and every turn is unchanged.
 ---
+ gateway/session_policy.py                     |   6 +-
  hermes_cli/config_defaults.py                 |   4 +
- hermes_cli/dashboard_live.py                  | 121 +++++++++++
+ hermes_cli/dashboard_live.py                  | 150 +++++++++++
  hermes_cli/web_models.py                      |   3 +
  hermes_cli/web_routers/mcp.py                 |  11 +-
  hermes_cli/web_routers/profiles.py            |   4 +-
  hermes_cli/web_routers/skills.py              |   7 +-
  hermes_cli/web_routers/tools.py               |  23 +-
- .../test_dashboard_apply_to_live_chats.py     | 199 ++++++++++++++++++
- 8 files changed, 359 insertions(+), 13 deletions(-)
+ owned/SOUL.md                                 |   1 +
+ .../test_dashboard_apply_to_live_chats.py     | 237 ++++++++++++++++++
+ 10 files changed, 432 insertions(+), 14 deletions(-)
  create mode 100644 hermes_cli/dashboard_live.py
+ create mode 100644 owned/SOUL.md
  create mode 100644 tests/hermes_cli/test_dashboard_apply_to_live_chats.py
 
+diff --git a/gateway/session_policy.py b/gateway/session_policy.py
+index 502eed0642..a344fa6982 100644
+--- a/gateway/session_policy.py
++++ b/gateway/session_policy.py
+@@ -1035,7 +1035,11 @@ def policy_turn_toolsets(authority, policy, config, session_id):
+     """A local turn's toolsets: the policy's current set, plus ``onboarding`` for an onboarding chat
+     (``agent.onboarding_session.onboarding_chat_toolsets``)."""
+     from agent.onboarding_session import onboarding_chat_toolsets
+-    return onboarding_chat_toolsets(list(policy.current_toolsets(config)), getattr(authority, 'db', None), session_id)
++    from hermes_cli.dashboard_live import session_toolsets
++    toolsets = session_toolsets(authority, policy)
++    if toolsets is None:
++        toolsets = policy.current_toolsets(config)
++    return onboarding_chat_toolsets(list(toolsets), getattr(authority, 'db', None), session_id)
+ 
+ 
+ def local_desktop_turn(runner, source, scope):
 diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
 index 24477e1c50..8c183c5b05 100644
 --- a/hermes_cli/config_defaults.py
@@ -35,10 +55,10 @@ index 24477e1c50..8c183c5b05 100644
          "trusted_proxies": [],
 diff --git a/hermes_cli/dashboard_live.py b/hermes_cli/dashboard_live.py
 new file mode 100644
-index 0000000000..de4b76adab
+index 0000000000..385e637c07
 --- /dev/null
 +++ b/hermes_cli/dashboard_live.py
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,150 @@
 +"""``dashboard.apply_to_live_chats``: dashboard changes reach open chats on their next message.
 +
 +The agent of an open chat keeps the tool list and the system prompt it was built with, so a toolset,
@@ -47,7 +67,10 @@ index 0000000000..de4b76adab
 +save those changes apply them before they answer:
 +
 +- ``tools``: tool availability is probed again and every live gateway chat re-resolves its toolsets
-+  from config, as ``/reload-mcp`` does, without reconnecting MCP servers.
++  from config, as ``/reload-mcp`` does, without reconnecting MCP servers. A local session (one a
++  client created over the gateway socket) froze its toolsets at creation; with the key on, one that
++  made no toolset pick of its own runs the profile's current toolsets on each turn instead
++  (``session_toolsets``), so its cached agent is rebuilt with them on its next message.
 +- ``mcp``: MCP servers are reconnected from config, then every live gateway chat is refreshed
 +  (the gateway's own ``reload.mcp`` with consent given).
 +- ``prompt``: a profile-wide prompt refresh is recorded (``hermes sessions refresh-prompts``), so each
@@ -121,6 +144,32 @@ index 0000000000..de4b76adab
 +        if callable(close):
 +            close()
 +    return True
++
++
++def session_toolsets(authority, policy):
++    """The toolsets a local session's next turn runs with the key on: the profile's current ones for a
++    session that froze them at creation without a pick of its own, else None (its own set stays).
++
++    Sessions that follow their profile already re-read them; an explicit toolset pick, an editor's MCP
++    set, safe mode and a launch that ignores the user's config keep their frozen set."""
++    try:
++        import json
++
++        from gateway.session_policy import SURFACES, _resolve_toolsets, profile_config
++
++        if authority is None or getattr(authority, "db", None) is None or policy.follows_profile:
++            return None
++        if policy.safe_mode or policy.ignore_user_config or policy.editor_mcp_json is not None:
++            return None
++        if policy.source not in SURFACES or "toolsets" in json.loads(policy.request_json):
++            return None
++        live = profile_config(authority)
++        if not enabled(live):
++            return None
++        return tuple(sorted(_resolve_toolsets({}, live, policy.source, policy.safe_mode, policy.coding_posture)))
++    except Exception:
++        logger.debug("Could not read the profile's toolsets for a local session", exc_info=True)
++        return None
 +
 +
 +_APPLY = {"tools": _refresh_tools, "mcp": _reload_mcp, "prompt": _refresh_prompts}
@@ -336,12 +385,20 @@ index cb01e4c201..aa45c7c56c 100644
  
  
  @router.post("/api/tools/toolsets/{name}/post-setup")
+diff --git a/owned/SOUL.md b/owned/SOUL.md
+new file mode 100644
+index 0000000000..de81136d43
+--- /dev/null
++++ b/owned/SOUL.md
+@@ -0,0 +1 @@
++You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of the ask — a one-line question gets a one-line answer, and finished work gets a short report of what changed, what's verified, and what's left, never a replay of the process. No filler ("Great question," "I'd be happy to"), no restating the request back, no re-summarizing what you already said, no narrating tool calls the user can see. Plain claims over adjectives; when unsure, say so plainly. Agree because it's right, not because the user said it. Depth is earned — give it when the user asks for detail, teaches, or the stakes demand it, not by default.
+\ No newline at end of file
 diff --git a/tests/hermes_cli/test_dashboard_apply_to_live_chats.py b/tests/hermes_cli/test_dashboard_apply_to_live_chats.py
 new file mode 100644
-index 0000000000..1e1fde3ca9
+index 0000000000..dbab07355a
 --- /dev/null
 +++ b/tests/hermes_cli/test_dashboard_apply_to_live_chats.py
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,237 @@
 +"""``dashboard.apply_to_live_chats``: dashboard changes reach open chats on their next message.
 +
 +Without the key a toolset, MCP server, skill or SOUL.md change saved through the dashboard reached only
@@ -541,3 +598,41 @@ index 0000000000..1e1fde3ca9
 +    assert dashboard_live.apply("tools") is True
 +    assert [s[0] for s in seen] == [agent]
 +    assert seen[0][1] is not None and seen[0][2] is False
++
++
++def _policy(**kw):
++    import json as _json
++
++    base = dict(follows_profile=False, safe_mode=False, ignore_user_config=False, editor_mcp_json=None, source="gui",
++                request_json=_json.dumps({"source": "gui"}), coding_posture=False, toolsets=("memory", "terminal", "web"))
++    base.update(kw)
++    p = types.SimpleNamespace(**base)
++    p.current_toolsets = lambda config: p.toolsets
++    return p
++
++
++def test_frozen_local_session_runs_the_profiles_current_toolsets(monkeypatch, tmp_path):
++    """A gateway-socket session froze its toolsets at creation; with the key on, its next turn runs the
++    profile's current ones, so a toolset turned off in the dashboard is gone from its next message."""
++    import gateway.session_policy as sp
++
++    live = {"dashboard": {"apply_to_live_chats": True}}
++    monkeypatch.setattr(sp, "profile_config", lambda authority: live)
++    monkeypatch.setattr(sp, "_resolve_toolsets", lambda params, config, source, safe, posture: {"terminal", "web"})
++    import agent.onboarding_session as onboarding
++    monkeypatch.setattr(onboarding, "onboarding_chat_toolsets", lambda enabled, db, session_id: enabled)
++    authority = types.SimpleNamespace(db=types.SimpleNamespace(db_path=str(tmp_path / "state.db")))
++    assert sp.policy_turn_toolsets(authority, _policy(), {}, "sid") == ["terminal", "web"]
++
++    # Off: the frozen set, as upstream.
++    live["dashboard"]["apply_to_live_chats"] = False
++    assert sp.policy_turn_toolsets(authority, _policy(), {}, "sid") == ["memory", "terminal", "web"]
++    live["dashboard"]["apply_to_live_chats"] = True
++    # A session's own toolset pick, an editor's MCP set, safe mode and following sessions keep their own way.
++    import json as _json
++    for p in (_policy(request_json=_json.dumps({"toolsets": ["memory"]})), _policy(editor_mcp_json="{}"),
++              _policy(safe_mode=True), _policy(ignore_user_config=True), _policy(source="api")):
++        assert sp.policy_turn_toolsets(authority, p, {}, "sid") == ["memory", "terminal", "web"]
++    following = _policy(follows_profile=True)
++    following.current_toolsets = lambda config: ("web",)
++    assert sp.policy_turn_toolsets(authority, following, {}, "sid") == ["web"]

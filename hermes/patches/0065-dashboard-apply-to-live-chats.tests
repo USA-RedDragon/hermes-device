@@ -6,3 +6,6 @@ tests/hermes_cli/test_web_profile_soul_writes.py
 tests/hermes_cli/test_web_toolset_profile_scope.py
 tests/hermes_cli/test_mcp_probe_redaction.py
 tests/hermes_cli/test_mcp_dashboard_oauth.py
+tests/gateway/test_follow_profile_followups.py
+tests/gateway/test_session_policy_coding_posture.py
+tests/hermes_cli/test_cli_profile_toolsets.py
