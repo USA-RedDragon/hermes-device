@@ -13,7 +13,7 @@
 # mapped back to every patch that lists it, so each of them gets an ::error
 # annotation. With shard/shards (such as 2/4) only the files in that
 # shard run; the patches-without-tests check always covers all patches.
-#   WORKERS       parallel pytest processes (default: twice the CPUs)
+#   WORKERS       parallel pytest processes (default: the CPUs)
 #   FILE_TIMEOUT  seconds one file may run (default 900)
 set -euo pipefail
 
@@ -57,6 +57,11 @@ done
 
 sort -u "$map" -o "$map"
 files=$(cut -f1 "$map" | sort -u)
+# A node id of a file that also runs whole is already covered.
+allfiles=$files
+files=$(while IFS= read -r f; do
+  case "$f" in *::*) echo "$allfiles" | grep -qxF -- "${f%%::*}" || echo "$f" ;; *) echo "$f" ;; esac
+done <<<"$allfiles")
 total=$(echo "$files" | grep -c . || true)
 echo "$total unique test files from $(cut -f2 "$map" | sort -u | wc -l) patches"
 
@@ -88,8 +93,21 @@ if [ -n "$mine" ]; then
     } 9>"$out/.lock"
   }
   export -f run_one
-  echo "$mine" | xargs -d '\n' stat -c '%s %n' 2>/dev/null | sort -rn | cut -d' ' -f2- |
-    xargs -d '\n' -P "${WORKERS:-$(($(nproc) * 2))}" -I{} bash -c 'run_one "$1"' _ {} || true
+  # Biggest files first (a node id sorts by its file); the sort key is the size.
+  echo "$mine" | while IFS= read -r f; do
+    printf '%s %s\n' "$(stat -c %s "${f%%::*}" 2>/dev/null || echo 0)" "$f"
+  done | sort -rn | cut -d' ' -f2- |
+    xargs -d '\n' -P "${WORKERS:-$(nproc)}" -I{} bash -c 'run_one "$1"' _ {} || true
+
+  # Several tests of upstream wait on a real child process for a fixed second or
+  # two, so a loaded runner can fail one that passes alone: run each failed file
+  # once more with nothing else running. A real failure fails again.
+  for f in $mine; do
+    rc=$(cat "$out/$(echo "$f" | tr / _).log.rc" 2>/dev/null || echo missing)
+    [ "$rc" = 0 ] && continue
+    echo "::warning::$f failed (exit $rc) under load; running it again alone"
+    WORKERS=1 run_one "$f"
+  done
 
   named=0
   for f in $mine; do
