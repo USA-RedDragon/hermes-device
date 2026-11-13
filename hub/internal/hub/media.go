@@ -195,6 +195,38 @@ func MarkdownMediaText(text string) string {
 	return b.String()
 }
 
+// MarkdownMediaTextDropImages is MarkdownMediaText for a client that sends
+// the images apart from the text: a line that holds only a local image
+// goes, and an image inside a line leaves its alt text.
+func MarkdownMediaTextDropImages(text string) string {
+	refs := markdownRefs(text)
+	if len(refs) == 0 {
+		return text
+	}
+	var b strings.Builder
+	last := 0
+	for _, r := range refs {
+		start, end, label := r.start, r.end, r.label
+		if text[start] == '!' {
+			ls := strings.LastIndexByte(text[:start], '\n') + 1
+			le := len(text)
+			if i := strings.IndexByte(text[end:], '\n'); i >= 0 {
+				le = end + i + 1
+			}
+			if ls >= last && strings.TrimSpace(text[ls:start]) == "" && strings.TrimSpace(text[end:le]) == "" {
+				b.WriteString(text[last:ls])
+				last = le
+				continue
+			}
+		}
+		b.WriteString(text[last:start])
+		b.WriteString(label)
+		last = end
+	}
+	b.WriteString(text[last:])
+	return strings.TrimSpace(manyBlank.ReplaceAllString(b.String(), "\n\n"))
+}
+
 type mdRef struct {
 	start, end int
 	label      string

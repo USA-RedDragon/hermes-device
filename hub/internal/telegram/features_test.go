@@ -749,3 +749,102 @@ func TestModelCommandSubagents(t *testing.T) {
 		t.Fatalf("sets = %q", subs.sets)
 	}
 }
+
+// sentTexts are the texts of the messages the bot sent, in order.
+func sentTexts(h *harness) []string {
+	var out []string
+	for _, c := range h.tg.snapshot() {
+		if c.Method == mSend {
+			out = append(out, c.text())
+		}
+	}
+	return out
+}
+
+func TestTextBeforeToolCallsIsItsOwnMessage(t *testing.T) {
+	t.Parallel()
+	for name, mutate := range map[string]func(*telegram.Config){"drafts": withDrafts, "edits": nil} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := startBot(t, mutate)
+			sid := h.startTurn(t)
+			h.ownTurn(t, sid)
+			h.hub.emit(t, sid, hub.KindMessageDelta, map[string]any{kText: "Let me look first."})
+			h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t1", kName: toolTerminal, kContext: "ls"})
+			h.tg.wait(mSend, "Let me look first.")
+			h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{kToolID: "t1", kName: toolTerminal})
+			h.hub.emit(t, sid, hub.KindMessageDelta, map[string]any{kText: "All done."})
+			// Hermes ends the turn with the last segment only.
+			h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "All done.", kStatus: statusComplete})
+			h.tg.wait(mSend, "All done.")
+			h.tg.wait(mEdit, "Worked for")
+			var before, after int
+			for _, s := range sentTexts(h) {
+				if strings.Contains(s, "Let me look first.") {
+					before++
+					if strings.Contains(s, "All done.") {
+						t.Fatalf("one message holds both segments: %q", s)
+					}
+				}
+				if strings.Contains(s, "All done.") {
+					after++
+				}
+			}
+			if before != 1 || after != 1 {
+				t.Fatalf("sent %d copies of the first segment and %d of the last: %q", before, after, sentTexts(h))
+			}
+			// No draft frame after the last message shows the earlier text.
+			calls := h.tg.snapshot()
+			last := -1
+			for i, c := range calls {
+				if c.Method == mSend && strings.Contains(c.text(), "All done.") {
+					last = i
+				}
+			}
+			for _, c := range calls[last+1:] {
+				if c.Method == mDraft {
+					t.Fatalf("a draft followed the final message: %q", c.text())
+				}
+			}
+		})
+	}
+}
+
+func TestWholeReplyAtTheEndDoesNotRepeatSegments(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, withDrafts)
+	sid := h.startTurn(t)
+	h.ownTurn(t, sid)
+	h.hub.emit(t, sid, hub.KindMessageDelta, map[string]any{kText: "First part."})
+	h.hub.emit(t, sid, hub.KindMessageInterim, map[string]any{kText: "First part.", "already_streamed": true})
+	h.hub.emit(t, sid, hub.KindToolStart, map[string]any{kToolID: "t1", kName: toolTerminal})
+	h.hub.emit(t, sid, hub.KindToolComplete, map[string]any{kToolID: "t1", kName: toolTerminal})
+	h.hub.emit(t, sid, hub.KindMessageDelta, map[string]any{kText: "Second part."})
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "First part.\n\nSecond part.", kStatus: statusComplete})
+	h.tg.wait(mSend, "Second part.")
+	h.tg.wait(mEdit, "Worked for")
+	got := sentTexts(h)
+	n := 0
+	for _, s := range got {
+		if strings.Contains(s, "First part.") {
+			n++
+		}
+		if strings.Contains(s, "First part.") && strings.Contains(s, "Second part.") {
+			t.Fatalf("one message holds both segments: %q", got)
+		}
+	}
+	if n != 1 {
+		t.Fatalf("first segment sent %d times: %q", n, got)
+	}
+}
+
+func TestInterimTextThatWasNotStreamedIsSent(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	sid := h.startTurn(t)
+	h.ownTurn(t, sid)
+	h.hub.emit(t, sid, hub.KindMessageInterim, map[string]any{kText: "Checking now."})
+	h.tg.wait(mSend, "Checking now.")
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "Fine.", kStatus: statusComplete})
+	h.tg.wait(mSend, "Fine.")
+}

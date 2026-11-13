@@ -194,6 +194,9 @@ type renderer struct {
 
 	turn   *turnStatus
 	answer strings.Builder
+	// committed is the text of the turn's earlier segments, already sent
+	// as messages of their own: the reply text before a tool call.
+	committed []string
 	// open is the prompt of the turn a snapshot found running, until the
 	// turn's message.start or first step shows it; startedAt is when the
 	// hub saw the running turn start, zero when it did not say; echoed is
@@ -235,6 +238,8 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 		r.toolComplete(ctx, ev)
 	case hub.KindMessageDelta:
 		r.delta(ctx, ev)
+	case hub.KindMessageInterim:
+		r.interim(ctx, ev)
 	case hub.KindMessageStart:
 		r.turnStart(ctx, ev)
 	case hub.KindMessageComplete:
@@ -866,6 +871,45 @@ func (r *renderer) toolStart(ctx context.Context, ev hub.Event) {
 	}
 	t.tools[p.ToolID] = toolHead(p)
 	r.refresh(ctx)
+	// The text before a tool call is a segment of its own, as in the web
+	// chat. Sent now, it keeps the draft from holding text that the final
+	// message no longer has.
+	r.commitText(ctx)
+}
+
+// commitText sends the reply text streamed so far as a message and starts
+// the next segment.
+func (r *renderer) commitText(ctx context.Context) {
+	text := r.answer.String()
+	r.answer.Reset()
+	r.deliverText(ctx, text)
+}
+
+// deliverText sends one segment of a reply as messages, then the pages
+// and files it names, and remembers it as sent.
+func (r *renderer) deliverText(ctx context.Context, text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	r.committed = append(r.committed, strings.TrimSpace(text))
+	r.deliver(ctx, text)
+}
+
+// interim shows the text of a message.interim event: a reply segment that
+// Hermes ends before a tool call. Streamed text is committed; text that
+// was not streamed is sent whole.
+func (r *renderer) interim(ctx context.Context, ev hub.Event) {
+	var p struct {
+		Text            string `json:"text"`
+		AlreadyStreamed bool   `json:"already_streamed"`
+	}
+	if !r.decode(ev, &p) {
+		return
+	}
+	r.commitText(ctx)
+	if !p.AlreadyStreamed {
+		r.deliverText(ctx, p.Text)
+	}
 }
 
 func (r *renderer) toolProgress(ctx context.Context, ev hub.Event) {
@@ -1026,14 +1070,16 @@ func (r *renderer) complete(ctx context.Context, ev hub.Event) {
 		text = s
 	}
 	r.answer.Reset()
-	pages, text := hub.PageBlocks(text)
-	paths, text := hub.MediaDirectives(text)
-	for _, x := range hub.MarkdownMedia(text) {
-		if !slices.Contains(paths, x) {
-			paths = append(paths, x)
+	// Hermes may end the turn with the whole reply, which holds the
+	// segments sent already.
+	for _, c := range r.committed {
+		t := strings.TrimSpace(text)
+		if !strings.HasPrefix(t, c) {
+			break
 		}
+		text = strings.TrimSpace(strings.TrimPrefix(t, c))
 	}
-	text = hub.MarkdownMediaText(text)
+	r.committed = nil
 	switch p.Status {
 	case "interrupted":
 		text += "\n\n**Interrupted.**"
@@ -1042,6 +1088,19 @@ func (r *renderer) complete(ctx context.Context, ev hub.Event) {
 			text += "\n\nError: " + p.Error
 		}
 	}
+	r.deliver(ctx, text)
+}
+
+// deliver sends a reply text, the pages it holds and the files it names.
+func (r *renderer) deliver(ctx context.Context, text string) {
+	pages, text := hub.PageBlocks(text)
+	paths, text := hub.MediaDirectives(text)
+	for _, x := range hub.MarkdownMedia(text) {
+		if !slices.Contains(paths, x) {
+			paths = append(paths, x)
+		}
+	}
+	text = hub.MarkdownMediaTextDropImages(text)
 	if strings.TrimSpace(text) != "" {
 		for _, chunk := range RenderMarkdown(text, MaxMessageLen) {
 			if r.send(ctx, chunk, nil) == 0 {

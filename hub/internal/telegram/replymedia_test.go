@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/telegram"
 )
 
 const (
@@ -153,6 +154,38 @@ func TestMarkdownReplyMediaIsSent(t *testing.T) {
 	}
 	doc := h.tg.wait(mDocument, "")
 	if doc.Params["name"] != "my report.pdf" || doc.Params["data"] != pdfData {
+		t.Fatalf("document = %+v", doc.Params)
+	}
+}
+
+func TestStandaloneImageLineLeavesNoCaptionInTheText(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	h.hub.mu.Lock()
+	h.hub.media = map[string]fakeFile{shotPath: {mime: hub.MIMEJPEG, data: jpegData}}
+	h.hub.mu.Unlock()
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "Checked it:\n\n![Message buttons, desktop, dark](" + shotPath +
+		")\n\nLooks right.", kStatus: statusComplete})
+	text := h.tg.wait(mSend, "Checked it")
+	if strings.Contains(text.text(), "Message buttons") || !strings.Contains(text.text(), "Looks right.") {
+		t.Fatalf("text = %q", text.text())
+	}
+	h.tg.wait(mPhoto, "")
+}
+
+func TestTooLargeImageGoesAsADocument(t *testing.T) {
+	t.Parallel()
+	h := startBot(t, nil)
+	big := jpegData + strings.Repeat("x", telegram.MaxPhotoUpload)
+	h.hub.mu.Lock()
+	h.hub.media = map[string]fakeFile{shotPath: {mime: hub.MIMEJPEG, data: big}}
+	h.hub.mu.Unlock()
+	sid := h.startTurn(t)
+	h.hub.emit(t, sid, hub.KindMessageComplete, map[string]any{kText: "Big: ![shot](" + shotPath + ")", kStatus: statusComplete})
+	h.tg.wait(mSend, "Big:")
+	doc := h.tg.wait(mDocument, "")
+	if doc.Params["name"] != "shot.jpg" || len(h.tg.find(mPhoto, "")) != 0 {
 		t.Fatalf("document = %+v", doc.Params)
 	}
 }

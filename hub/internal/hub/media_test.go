@@ -122,3 +122,12 @@ func TestMarkdownMedia(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkdownMediaTextDropImages(t *testing.T) {
+	t.Parallel()
+	in := "Look:\n\n![the plot](/a/p.png)\n\nInline ![alt](/a/q.png) here and [doc](/a/r.pdf)."
+	want := "Look:\n\nInline alt here and doc."
+	if got := hub.MarkdownMediaTextDropImages(in); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
