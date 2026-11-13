@@ -127,9 +127,7 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	if devices != nil {
 		svc.SetFiles(devices)
 		webOpts.Devices, webOpts.DeviceAPI, webOpts.OnRevoke = st, devices.Handler(), devices.CloseDevice
-		webOpts.Sandboxes, webOpts.Computers = devices.Sandboxes, devices
-	}
-	if devices != nil {
+		webOpts.Sandboxes, webOpts.Computers, webOpts.Files = devices.Sandboxes, devices, devices
 		router := agents.New(agents.Options{Backends: cfg.Backends, Sessions: svc, Places: devices, Store: st,
 			Plugin: func(id string) agents.Plugin {
 				if p := devices.Plugin(id); p != nil {
@@ -138,8 +136,6 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 				return nil
 			}})
 		go router.Run(ctx)
-	}
-	if devices != nil {
 		cc, err := newClaudeCode(cfg, st, svc, devices)
 		if err != nil {
 			return err
@@ -152,9 +148,6 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 		if webOpts.Memory, err = newMemory(cfg, svc, dialers); err != nil {
 			return err
 		}
-	}
-	if devices != nil {
-		webOpts.Files = devices
 	}
 	cs := newClaude(cfg, svc, notifier, dialers)
 	webOpts.Models = newModels(cfg, svc, cs, dialers)

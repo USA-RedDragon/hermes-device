@@ -170,7 +170,7 @@ func TestReadCancelled(t *testing.T) {
 
 func TestUnavailable(t *testing.T) {
 	t.Parallel()
-	r := pdf.NewWithPath(t.TempDir(), 0, t.TempDir())
+	r := pdf.NewWithTools(t.TempDir(), 0, nil)
 	if _, err := r.Read(context.Background(), pdf.Request{Data: pdftest.Make("x")}); !errors.Is(err, pdf.ErrUnavailable) {
 		t.Fatalf("err = %v", err)
 	}
@@ -178,6 +178,15 @@ func TestUnavailable(t *testing.T) {
 
 // fakeTools writes scripts named after the poppler programs into a new
 // directory and returns it.
+// tools names the fake programs in bin, with the sh they run under.
+func tools(bin string) map[string]string {
+	out := map[string]string{}
+	for _, n := range []string{"sh", "pdfinfo", "pdftotext", "pdftoppm"} {
+		out[n] = filepath.Join(bin, n)
+	}
+	return out
+}
+
 func fakeTools(t *testing.T, info, text string) string {
 	t.Helper()
 	bin := t.TempDir()
@@ -203,7 +212,7 @@ func fakeTools(t *testing.T, info, text string) string {
 func TestToolLimits(t *testing.T) {
 	t.Parallel()
 	bin := fakeTools(t, `echo "Pages: $(ulimit -v)"`, `printf 'cpu %s files %s env %s\f' "$(ulimit -t)" "$(ulimit -c)" "$(env | sort | tr '\n' ' ')"`)
-	r := pdf.NewWithPath(t.TempDir(), 0, bin)
+	r := pdf.NewWithTools(t.TempDir(), 0, tools(bin))
 	d, err := r.Read(context.Background(), pdf.Request{Data: []byte("%PDF-1.4"), MaxText: 10000})
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +228,7 @@ func TestToolLimits(t *testing.T) {
 func TestToolKilledOnTimeout(t *testing.T) {
 	t.Parallel()
 	bin := fakeTools(t, `echo "Pages: 1"`, `sleep 30 & sleep 30`)
-	r := pdf.NewWithPath(t.TempDir(), 300*time.Millisecond, bin)
+	r := pdf.NewWithTools(t.TempDir(), 300*time.Millisecond, tools(bin))
 	start := time.Now()
 	_, err := r.Read(context.Background(), pdf.Request{Data: []byte("%PDF-1.4"), MaxText: 100})
 	if !errors.Is(err, pdf.ErrTooHeavy) || time.Since(start) > 10*time.Second {
@@ -230,7 +239,7 @@ func TestToolKilledOnTimeout(t *testing.T) {
 func TestToolStoppedWhenTextIsEnough(t *testing.T) {
 	t.Parallel()
 	bin := fakeTools(t, `echo "Pages: 1"`, `yes "a line of text"`)
-	r := pdf.NewWithPath(t.TempDir(), 20*time.Second, bin)
+	r := pdf.NewWithTools(t.TempDir(), 20*time.Second, tools(bin))
 	d, err := r.Read(context.Background(), pdf.Request{Data: []byte("%PDF-1.4"), MaxText: 1000})
 	if err != nil || !d.Truncated || len(d.Text) > 1000 {
 		t.Fatalf("Read = %+v, %v", d, err)
@@ -282,7 +291,7 @@ func TestRenderStopKeepsText(t *testing.T) {
 	if err := os.Chmod(pdftoppm, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	r := pdf.NewWithPath(t.TempDir(), time.Second, bin)
+	r := pdf.NewWithTools(t.TempDir(), time.Second, tools(bin))
 	d, err := r.Read(context.Background(), pdf.Request{Data: []byte("%PDF-1.4"), Images: 3, MaxText: 1000})
 	if err != nil || !d.RenderStopped || len(d.Images) != 0 || d.Text != "[page 1]\nsome text" {
 		t.Fatalf("Read = %+v, %v", d, err)
@@ -292,7 +301,7 @@ func TestRenderStopKeepsText(t *testing.T) {
 func TestReadBusy(t *testing.T) {
 	t.Parallel()
 	bin := fakeTools(t, `sleep 2; echo "Pages: 1"`, `printf 'x\f'`)
-	r := pdf.NewWithPath(t.TempDir(), 0, bin)
+	r := pdf.NewWithTools(t.TempDir(), 0, tools(bin))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
