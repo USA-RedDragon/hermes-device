@@ -2235,7 +2235,7 @@ def _clean_device_path(path: Any) -> Optional[str]:
     return path if posixpath.basename(path) not in ("", ".", "..") else None
 
 
-def get_session_file(session_id: str, path: Any) -> tuple[str, bytes]:
+def get_session_file(session_id: str, path: Any, *, max_bytes: Optional[int] = None) -> tuple[str, bytes]:
     """Read a file of the device that serves a session, for the hub to show the user, and return
     ``(name, bytes)``. The session resolves as for uploads: its own binding, an ancestor's, or the
     sandbox. The path and its real path on the device must pass :func:`device_read_denial`. The
@@ -2244,6 +2244,7 @@ def get_session_file(session_id: str, path: Any) -> tuple[str, bytes]:
     file's contents, or the real path. Raises :class:`BindError`."""
     import binascii
 
+    max_bytes = MAX_FILE_READ_BYTES if max_bytes is None else max_bytes
     clean = _clean_device_path(path)
     if clean is None:
         raise BindError(400, "bad_path", "path must be an absolute, clean device path of a file")
@@ -2256,7 +2257,7 @@ def get_session_file(session_id: str, path: Any) -> tuple[str, bytes]:
     if why:
         raise BindError(422, "read_refused", why)
     folder, name = posixpath.split(clean)
-    code, body, err = run_script(b.device_id, _FILE_READ_SCRIPT, [folder, name, str(MAX_FILE_READ_BYTES)],
+    code, body, err = run_script(b.device_id, _FILE_READ_SCRIPT, [folder, name, str(max_bytes)],
                                  cwd=b.dir, timeout=FILE_READ_TIMEOUT_S, output_in_error=False)
     if code == EXIT_LOST:
         raise BindError(409, "device_offline", err or f"device {b.device_id} is not connected")
@@ -2276,7 +2277,7 @@ def get_session_file(session_id: str, path: Any) -> tuple[str, bytes]:
     if status in _FILE_READ_REFUSALS:
         raise BindError(422, "read_refused", f"{clean} {_FILE_READ_REFUSALS[status]}")
     if status.startswith("B "):
-        raise BindError(413, "too_large", f"{clean} is larger than {MAX_FILE_READ_BYTES // (1024 * 1024)} MB")
+        raise BindError(413, "too_large", f"{clean} is larger than {max_bytes // (1024 * 1024)} MB")
     if not status.startswith("F ") or not status[2:].isdigit():
         raise BindError(422, "read_failed", f"device {conn.name} sent an unreadable answer for {clean}")
     size = int(status[2:])
