@@ -344,7 +344,8 @@ button.danger-text { color: var(--bad); }
 .set-row .pill.quiet { color: var(--muted); }
 .set-row .pill.bad { color: var(--bad); }
 .set-top .nm small { font-weight: 400; color: var(--muted); }
-.set-row .meta { display: flex; flex-wrap: wrap; gap: .1rem .9rem; padding-left: 1.2rem; color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+.set-row .meta > span { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.set-row .meta { min-width: 0; display: flex; flex-wrap: wrap; gap: .1rem .9rem; padding-left: 1.2rem; color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
 .set-detail { display: flex; flex-direction: column; gap: .6rem; padding: .2rem .8rem .8rem 2rem; font-size: .9rem; }
 .set-alert { display: flex; flex-direction: column; gap: .5rem; border: 1px solid var(--warn); border-radius: 8px; padding: .55rem .7rem; overflow-wrap: anywhere; }
 .prompt-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .1rem 1rem; align-items: center; padding: .55rem .8rem; }

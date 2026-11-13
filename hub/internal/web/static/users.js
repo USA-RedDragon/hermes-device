@@ -218,11 +218,16 @@ window.HubUsers = (ctx) => {
     st.setAttribute("aria-hidden", "true");
     const top = el("span", "set-top");
     const nm = el("span", "nm", u.name + " ");
+    nm.title = u.name;
     if (r.display) nm.append(el("small", "", r.display));
     top.append(st, nm);
     for (const [cls, text] of r.pills) top.append(el("span", "pill " + (cls || "quiet"), text));
     const meta = el("span", "meta");
-    for (const m of r.meta) meta.append(el("span", "", m));
+    for (const m of r.meta) {
+      const s = el("span", "", m);
+      s.title = m;
+      meta.append(s);
+    }
     head.append(top, meta);
     head.onclick = () => { open[u.name] = !open[u.name]; if (!open[u.name] && confirming === u.name) confirming = ""; focus = "urow-" + u.name; draw(); };
     row.append(head);
