@@ -132,5 +132,90 @@ class VisionDefaults(unittest.TestCase):
         self.assertEqual(got["resize_mode"], "fit")
 
 
+class WebSearch(unittest.TestCase):
+    """The install's SearXNG is the web search backend unless the user chose another (web_search)."""
+
+    URL = "http://searxng:8080"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = self.tmp.name
+        self.m = load(self.home)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_init(self, config, **env):
+        env.setdefault("TALARIA_SEARXNG_URL", self.URL)
+        with mock.patch.dict(os.environ, env), mock.patch.object(self.m, "HOME", self.home):
+            self.m.web_search(config)
+        return config
+
+    def dotenv(self):
+        path = os.path.join(self.home, ".env")
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return f.read().splitlines()
+
+    def write_dotenv(self, *lines):
+        with open(os.path.join(self.home, ".env"), "w") as f:
+            f.write("".join(line + "\n" for line in lines))
+
+    def test_on_by_default(self):
+        got = self.run_init({"model": {"default": "m"}})
+        self.assertEqual(got["web"], {"search_backend": "searxng"})
+        self.assertIn("SEARXNG_URL=" + self.URL, self.dotenv())
+        # Again: nothing doubles
+        self.run_init(got)
+        self.assertEqual(self.dotenv().count("SEARXNG_URL=" + self.URL), 1)
+        self.assertEqual(got["web"], {"search_backend": "searxng"})
+
+    def test_no_searxng_in_the_install(self):
+        got = self.run_init({}, TALARIA_SEARXNG_URL="")
+        self.assertNotIn("web", got)
+        self.assertEqual(self.dotenv(), [])
+
+    def test_backend_the_user_set_wins(self):
+        for web in ({"search_backend": "tavily"}, {"backend": "exa"}, {"backend": "firecrawl", "extract_char_limit": 9}):
+            got = self.run_init({"web": dict(web)})
+            self.assertEqual(got["web"], web)
+
+    def test_later_choice_takes_the_pin_back(self):
+        got = self.run_init({})
+        got["web"]["backend"] = "tavily"
+        self.run_init(got)
+        self.assertEqual(got["web"], {"backend": "tavily"})
+        # And it stays theirs
+        self.run_init(got)
+        self.assertEqual(got["web"], {"backend": "tavily"})
+        got = self.run_init({"web": {"search_backend": "exa"}})
+        self.assertEqual(got["web"], {"search_backend": "exa"})
+
+    def test_turned_off(self):
+        self.write_dotenv("OPENROUTER_API_KEY=k")
+        got = self.run_init({})
+        for off in ("0", "false", "off"):
+            got = self.run_init(got, TALARIA_SEARXNG=off)
+            self.assertNotIn("web", got)
+            self.assertEqual(self.dotenv(), ["OPENROUTER_API_KEY=k"])
+            got = self.run_init(got)
+            self.assertEqual(got["web"], {"search_backend": "searxng"})
+
+    def test_own_searxng_url_stays(self):
+        self.write_dotenv("SEARXNG_URL=https://search.example.com")
+        got = self.run_init({})
+        self.assertEqual(self.dotenv(), ["SEARXNG_URL=https://search.example.com"])
+        self.assertEqual(got["web"], {"search_backend": "searxng"})
+        self.run_init(got, TALARIA_SEARXNG="0")
+        self.assertEqual(self.dotenv(), ["SEARXNG_URL=https://search.example.com"])
+
+    def test_address_change_moves_the_line(self):
+        self.run_init({})
+        self.run_init({}, TALARIA_SEARXNG_URL="http://127.0.0.1:8888")
+        self.assertEqual([line for line in self.dotenv() if line.startswith("SEARXNG_URL")],
+                         ["SEARXNG_URL=http://127.0.0.1:8888"])
+
+
 if __name__ == "__main__":
     unittest.main()

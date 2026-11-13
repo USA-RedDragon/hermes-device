@@ -231,6 +231,7 @@ def main():
         with open(extra) as f:
             merge(config, safe_load(f) or {})
     demo_provider(config)
+    web_search(config)
     with open(path + ".tmp", "w") as f:
         safe_dump(config, f, sort_keys=False)
     os.chmod(path + ".tmp", 0o600)
@@ -273,6 +274,86 @@ def demo_provider(config):
         config["providers"] = providers
     else:
         config.pop("providers", None)
+
+
+def searxng_url():
+    """Address of the SearXNG that the install runs (TALARIA_SEARXNG_URL), or "" when there is none or
+    TALARIA_SEARXNG turns it off."""
+    if env("TALARIA_SEARXNG", "1").lower() in ("0", "false", "no", "off"):
+        return ""
+    return env("TALARIA_SEARXNG_URL")
+
+
+SEARXNG_ENV_NOTE = "# Set by Talaria: its own SearXNG (TALARIA_SEARXNG=0 turns it off)"
+
+
+def web_search(config):
+    """Web search through the install's SearXNG, unless you chose another way.
+
+    Hermes reads the SearXNG address from SEARXNG_URL (its environment, then its .env file), and the backend
+    from web.search_backend. This writes SEARXNG_URL into the Hermes .env and sets web.search_backend to
+    searxng while neither web.backend nor web.search_backend is set. What it wrote is remembered in
+    talaria/web-search.json, so it takes back only its own settings: when SearXNG is turned off, when you set
+    SEARXNG_URL yourself, or when you later pick another backend in web.backend or web.search_backend.
+    """
+    url = searxng_url()
+    state_path = os.path.join(HOME, "talaria", "web-search.json")
+    state = {}
+    if os.path.exists(state_path):
+        with open(state_path) as f:
+            state = json.load(f)
+    new = {"env_url": searxng_env(url, state.get("env_url") or ""), "pinned": False}
+    web = config.get("web")
+    if url and not isinstance(web, dict):
+        web = config["web"] = {}
+    if isinstance(web, dict):
+        backend, search = (str(web.get(k) or "").strip().lower() for k in ("backend", "search_backend"))
+        ours = state.get("pinned") and search == "searxng"
+        if url and not backend and (not search or ours):
+            web["search_backend"] = "searxng"
+            new["pinned"] = True
+        elif ours:
+            # SearXNG is off, or you picked another backend since: take the pin back
+            web.pop("search_backend", None)
+        if not web:
+            config.pop("web", None)
+    if new != state and (state or url):
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with open(state_path + ".tmp", "w") as f:
+            json.dump(new, f)
+        os.replace(state_path + ".tmp", state_path)
+    if new["pinned"]:
+        print("hermes-init: web search through SearXNG at", url)
+
+
+def searxng_env(url, written):
+    """Puts SEARXNG_URL=url in the Hermes .env, or takes out the line written before (written) when url is
+    "". A SEARXNG_URL line with any other value is yours and stays. Returns what the .env now holds from us."""
+    path = os.path.join(HOME, ".env")
+    lines = []
+    if os.path.exists(path):
+        with open(path) as f:
+            lines = f.read().splitlines()
+    keep, theirs = [], False
+    for line in lines:
+        if line == SEARXNG_ENV_NOTE:
+            continue
+        name, _, value = line.strip().removeprefix("export ").partition("=")
+        if name.strip() == "SEARXNG_URL":
+            value = value.strip().strip("\"'")
+            if not written or value != written:
+                theirs = True
+            else:
+                continue
+        keep.append(line)
+    if url and not theirs:
+        keep += [SEARXNG_ENV_NOTE, "SEARXNG_URL=" + url]
+    if keep != lines:
+        with open(path + ".tmp", "w") as f:
+            f.write("".join(line + "\n" for line in keep))
+        os.chmod(path + ".tmp", 0o600)
+        os.replace(path + ".tmp", path)
+    return url if url and not theirs else ""
 
 
 def setup_honcho():
