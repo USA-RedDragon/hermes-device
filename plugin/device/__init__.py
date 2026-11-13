@@ -1,5 +1,5 @@
 """Hermes device plugin: a terminal backend that runs a session's commands and file operations
-on the user's own device, which dials in through hermes-hub.
+on the user's own device, which dials in through the Talaria hub.
 
 Registers the ``device`` terminal environment provider, the ``pre_tool_call`` guard, the
 ``/device`` command, the ``@device:`` context reference and the ``device-browser``,
@@ -48,7 +48,7 @@ def make_provider(core):
 
         @property
         def env_description(self) -> str:
-            return "the user's own device (Linux or macOS shell), reached through hermes-hub"
+            return "the user's own device (Linux or macOS shell), reached through the Talaria hub"
 
         def is_available(self) -> bool:
             return True

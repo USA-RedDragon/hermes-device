@@ -302,7 +302,7 @@ func (h *fakeHub) gateway(w http.ResponseWriter, r *http.Request) {
 			}
 			answer(m.ID, res)
 		case "session.resume":
-			// hermes-hub v0.5.0 refuses a resume by title or latest, or
+			// talaria-hub v0.5.0 refuses a resume by title or latest, or
 			// without a session_id.
 			sid, _ := p[keySessionID].(string)
 			_, title := p[keyTitle]

@@ -680,7 +680,7 @@ class BackgroundHandoffTests(Base):
         import inspect
         from tools.environments.base import BaseEnvironment
         if "yield_after" not in inspect.signature(BaseEnvironment.execute).parameters:
-            self.skipTest("this Hermes has no terminal.auto_background_seconds (hermes-patches 0002)")
+            self.skipTest("this Hermes has no terminal.auto_background_seconds (Talaria Hermes patch 0002)")
         command = "echo started; sleep 2; echo done"
         env = self.env()
         self.addCleanup(env.cleanup)

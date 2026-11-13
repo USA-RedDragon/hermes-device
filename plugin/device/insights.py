@@ -76,7 +76,7 @@ class _Tips:
         return self.memo[sid]
 
 
-# Which user rows the user typed, as the hub decides it (hermes-hub internal/origin): the marks Hermes
+# Which user rows the user typed, as the hub decides it (hub/internal/origin): the marks Hermes
 # stores first, the text only for rows without them. A search hit on any other user row (a notice, a
 # compaction handoff, a cron prompt, an agent message, an imported Claude Code block) would show text
 # the user never wrote as theirs.

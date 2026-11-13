@@ -242,7 +242,7 @@ func TestReopenKeepsDataAndSchema(t *testing.T) {
 	})
 }
 
-// legacySQLite writes a database the way hermes-hub v0.1.6 did: the three
+// legacySQLite writes a database the way talaria-hub v0.1.6 did: the three
 // tables and no schema_migrations.
 func legacySQLite(t *testing.T) string {
 	t.Helper()

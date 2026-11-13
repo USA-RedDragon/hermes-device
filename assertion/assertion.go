@@ -1,5 +1,5 @@
 // Package assertion signs and verifies the hub assertion: a short-lived
-// Ed25519-signed statement from hermes-hub that one WebSocket upgrade to a
+// Ed25519-signed statement from the Talaria hub that one WebSocket upgrade to a
 // user's Hermes backend comes from one paired device.
 //
 // The hub holds the private key. The Hermes pod (the device plugin and

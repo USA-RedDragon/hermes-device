@@ -19,7 +19,7 @@ import (
 
 // Hub is where the device connects.
 type Hub struct {
-	URL       string `name:"url" description:"Base URL of hermes-hub, for example https://hub.example.com. Needed by login, run, chat and acp"`
+	URL       string `name:"url" description:"Base URL of the Talaria hub, for example https://hub.example.com. Needed by login, run, chat and acp"`
 	Token     string `name:"token" secret:"true" description:"Device token for run, instead of the one login stored, for a service device such as the sandbox pod. Wins over hub.token-file and the token store"`
 	TokenFile string `name:"token-file" description:"File holding only the device token for run, for example a mounted Kubernetes secret. Must not be readable by others. Wins over the token store"`
 }
@@ -58,7 +58,7 @@ type Chat struct {
 
 // ACPHost is the in-pod ACP process host.
 type ACPHost struct {
-	Listen           string `name:"listen" default:":9130" description:"Address the ACP host listens on. Only hermes-hub may reach it"`
+	Listen           string `name:"listen" default:":9130" description:"Address the ACP host listens on. Only the Talaria hub may reach it"`
 	BackendID        string `name:"backend-id" description:"This backend's id, the aud the hub puts in its assertions. Needed by acp-host"`
 	HubPublicKey     string `name:"hub-public-key" description:"Hub Ed25519 public keys: PEM PUBLIC KEY blocks or base64 lines of the raw 32 bytes"`
 	HubPublicKeyFile string `name:"hub-public-key-file" description:"File holding the hub public keys, in the same format as hub-public-key"`

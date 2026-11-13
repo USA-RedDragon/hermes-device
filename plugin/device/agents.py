@@ -1,5 +1,5 @@
 """Agent messages: the ``device-agents`` toolset lets a chat or a subagent list its peers and send
-one of them a message through hermes-hub (docs/protocol.md section 12).
+one of them a message through the Talaria hub (docs/protocol.md section 12).
 
 The tools never reach another session themselves. A tool call becomes a request on an in-process
 bus; the hub takes requests with a long poll on ``GET /agents/requests`` (behind dashboard
@@ -81,13 +81,13 @@ class Bus:
         sid = req["caller"].get("session_id")
         if len(self._queue) >= MAX_QUEUE or sum(1 for r in self._queue if r["caller"].get("session_id") == sid) \
                 >= MAX_PER_SESSION:
-            raise HubUnavailable("too many agent message requests are waiting for hermes-hub")
+            raise HubUnavailable("too many agent message requests are waiting for the Talaria hub")
         self._queue.append(req)
         self._cond.notify_all()
 
     def call(self, op: str, caller: dict, args: dict, timeout: float = ANSWER_TIMEOUT_S) -> Any:
         if not self.connected():
-            raise HubUnavailable("hermes-hub is not connected to this Hermes, so agent messages are unavailable")
+            raise HubUnavailable("the Talaria hub is not connected to this Hermes, so agent messages are unavailable")
         rid = "ar_" + secrets.token_hex(12)
         slot = {"event": threading.Event(), "answer": None}
         with self._cond:
@@ -106,7 +106,7 @@ class Bus:
                         del self._queue[i]
                         break
         if not got:
-            raise HubUnavailable("hermes-hub did not answer in time")
+            raise HubUnavailable("the Talaria hub did not answer in time")
         answer = slot["answer"] or {}
         err = answer.get("error")
         if isinstance(err, dict):
@@ -117,7 +117,7 @@ class Bus:
         """A request that no tool call waits for. The oldest is dropped past MAX_NOTICES."""
         with self._cond:
             if len(self._notices) == MAX_NOTICES:
-                logger.warning("device: an agent message notice was dropped: too many are waiting for hermes-hub")
+                logger.warning("device: an agent message notice was dropped: too many are waiting for the Talaria hub")
             self._notices.append({"id": "ar_" + secrets.token_hex(12), "op": op, "caller": caller, "args": args})
             self._cond.notify_all()
 
@@ -220,7 +220,7 @@ INBOX = Inbox(BUS)
 # --- the calling agent and its subagent tree ------------------------------------------------------
 
 # Hermes's SubagentLifecycleService (PluginContext.subagent_lifecycle), when it has list_active and
-# steer_active (hermes-patches 0005). Without them the plugin reads tools.delegate_tool_registry.
+# steer_active (Talaria Hermes patch 0005). Without them the plugin reads tools.delegate_tool_registry.
 _LIFECYCLE: Any = None
 
 
@@ -366,7 +366,7 @@ SCHEMAS = {
         "description": (
             "List the other agents you can message with agent_send: the user's other chats on this Hermes "
             "(name, title, computer and folder, and whether each is working now) and the subagents of your own "
-            "delegation tree (your parent, children and siblings). Messages go through hermes-hub, so it does not "
+            "delegation tree (your parent, children and siblings). Messages go through the Talaria hub, so it does not "
             "matter which computer a chat runs its commands on."),
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     },
@@ -465,7 +465,7 @@ def deliver(body: dict) -> dict:
     return {"status": INBOX.put(sid, mid, text, running_only=not sub)}
 
 
-# Hooks that bracket every turn, also one that fails or is stopped (hermes-patches 0005).
+# Hooks that bracket every turn, also one that fails or is stopped (Talaria Hermes patch 0005).
 TURN_HOOKS = ("agent_turn_start", "agent_turn_end")
 # The fallback: post_llm_call does not fire when a turn fails or is stopped.
 LLM_CALL_HOOKS = ("pre_llm_call", "post_llm_call")

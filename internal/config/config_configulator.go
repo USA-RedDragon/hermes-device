@@ -856,7 +856,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	}
 	fs.String(names[0], "info", "Log level: debug, info, warn or error")
 	fs.Duration(names[1], time.Duration(int64(25000000000)), "Interval of WebSocket pings on every leg. Must be from 5s to 30s")
-	fs.String(names[2], "", "Base URL of hermes-hub, for example https://hub.example.com. Needed by login, run, chat and acp")
+	fs.String(names[2], "", "Base URL of the Talaria hub, for example https://hub.example.com. Needed by login, run, chat and acp")
 	fs.String(names[3], "", "Device token for run, instead of the one login stored, for a service device such as the sandbox pod. Wins over hub.token-file and the token store")
 	fs.String(names[4], "", "File holding only the device token for run, for example a mounted Kubernetes secret. Must not be readable by others. Wins over the token store")
 	fs.Bool(names[5], true, "Keep the device token in the OS keyring when one is available")
@@ -873,7 +873,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Bool(names[16], true, "On Linux, run the exact Hermes build the server runs: run fetches it from the server's container image by digest when the server reports one, verifies it and keeps it in chat.managed-dir. false, or no image from the server, runs chat.hermes instead")
 	fs.String(names[17], "", "Directory for the managed Hermes builds and their own Hermes home. Defaults to talaria/hermes in the user cache directory")
 	fs.String(names[18], "hermes", "Local Hermes launcher when chat.managed is off or the server reports no image. It must be the same release as the server's Hermes")
-	fs.String(names[19], ":9130", "Address the ACP host listens on. Only hermes-hub may reach it")
+	fs.String(names[19], ":9130", "Address the ACP host listens on. Only the Talaria hub may reach it")
 	fs.String(names[20], "", "This backend's id, the aud the hub puts in its assertions. Needed by acp-host")
 	fs.String(names[21], "", "Hub Ed25519 public keys: PEM PUBLIC KEY blocks or base64 lines of the raw 32 bytes")
 	fs.String(names[22], "", "File holding the hub public keys, in the same format as hub-public-key")

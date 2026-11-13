@@ -1,5 +1,5 @@
 // Package protocol defines the wire names shared by the device client,
-// hermes-hub and the Hermes device plugin. docs/protocol.md is the
+// the Talaria hub and the Hermes device plugin. docs/protocol.md is the
 // normative description; this package and plugin/device/core.py must agree
 // with it, and the contract tests check that they do.
 package protocol

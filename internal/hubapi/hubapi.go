@@ -1,4 +1,4 @@
-// Package hubapi is the device side of the hermes-hub device API described
+// Package hubapi is the device side of the Talaria hub device API described
 // in docs/protocol.md: pairing, whoami, session bindings and the three
 // WebSocket legs.
 package hubapi

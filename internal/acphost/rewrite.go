@@ -394,7 +394,7 @@ func flagForm(arg string) string {
 }
 
 // checkSlash refuses a prompt that would run a slash command outside
-// slashCommands, with the hub's rules (hermes-hub internal/device/rpc.go
+// slashCommands, with the hub's rules (hub/internal/device/rpc.go
 // textAllowed). hermes acp runs a prompt whose text starts with a
 // registered command as that command, and sends the ones it does not
 // answer itself to the gateway's slash.exec (acp_adapter/gateway_server.py

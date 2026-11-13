@@ -4,7 +4,7 @@
 // plugin exec route, served by uvicorn in the Hermes runtime, and the
 // plugin's device-mcp tools drive the server
 // (plugin/device/tests/test_mcp_e2e.py). The test signs a hub assertion
-// for each upgrade, as hermes-hub does. It runs only with HERMES_MCP_E2E=1
+// for each upgrade, as the Talaria hub does. It runs only with HERMES_MCP_E2E=1
 // and hermes on PATH.
 package mcpe2e_test
 

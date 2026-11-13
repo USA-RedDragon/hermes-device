@@ -37,7 +37,7 @@ Pair this computer with the hub and store its token. `setup` does this for you.
 
 <!-- docgen:output exec="scripts/cli-usage.sh login" -->
 ```text
-Pair this device with hermes-hub and store its token
+Pair this device with the Talaria hub and store its token
 
 Usage:
   talaria login [flags]
@@ -91,7 +91,7 @@ Bridge an editor's ACP over standard input and output. See [Use Talaria in an ed
 
 <!-- docgen:output exec="scripts/cli-usage.sh acp" -->
 ```text
-acp speaks the Agent Client Protocol with an editor on stdin and stdout and relays it to the server's Hermes through hermes-hub. Point the editor's agent command at `talaria acp`. Logs go to stderr.
+acp speaks the Agent Client Protocol with an editor on stdin and stdout and relays it to the server's Hermes through the Talaria hub. Point the editor's agent command at `talaria acp`. Logs go to stderr.
 
 Usage:
   talaria acp [flags]

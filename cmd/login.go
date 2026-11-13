@@ -19,7 +19,7 @@ func newLoginCommand(b *base) *cobra.Command {
 	var name string
 	c := &cobra.Command{
 		Use:   "login",
-		Short: "Pair this device with hermes-hub and store its token",
+		Short: "Pair this device with the Talaria hub and store its token",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := b.load()

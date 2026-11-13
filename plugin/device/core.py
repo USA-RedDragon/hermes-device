@@ -1698,12 +1698,12 @@ def valid_hooks() -> frozenset[str]:
     return frozenset(VALID_HOOKS)
 
 
-# The session.list audience of one device: hermes-hub sends it on the device's gateway leg.
+# The session.list audience of one device: the Talaria hub sends it on the device's gateway leg.
 LIST_AUDIENCE_PREFIX = "hermes-device:"
 
 
 def filter_session_list(audience: Any = None, session_ids: Any = None, **_kwargs) -> Optional[list[str]]:
-    """The ``filter_session_list`` hook (hermes-patches 0004): for audience ``hermes-device:<id>``,
+    """The ``filter_session_list`` hook (Talaria Hermes patch 0004): for audience ``hermes-device:<id>``,
     the ids among ``session_ids`` whose lineage is bound to device ``<id>``. None for any other
     audience, which this plugin does not judge. A session that cannot be resolved is left out."""
     if not isinstance(audience, str) or not audience.startswith(LIST_AUDIENCE_PREFIX):

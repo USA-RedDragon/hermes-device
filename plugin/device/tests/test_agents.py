@@ -212,7 +212,7 @@ class TreeTest(unittest.TestCase):
 
 
 def snapshot(sid, session, parent="", owner="s1", depth=0, goal="g", steerable=True):
-    """An ActiveSubagent of hermes-patches 0005."""
+    """An ActiveSubagent of Talaria Hermes patch 0005."""
     return types.SimpleNamespace(subagent_id=sid, session_id=session, parent_subagent_id=parent or None,
                                  parent_session_id=owner or None, depth=depth, goal=goal, model="m",
                                  status="running", started_at=1.0, steerable=steerable)
@@ -336,7 +336,7 @@ class TurnHookTest(unittest.TestCase):
             self.assertEqual(self.inbox.take("s1"), [])
 
     def test_hermes_turn_events_reach_the_hooks(self):
-        """In a Hermes with hermes-patches 0005, a failed turn's real agent_turn_end clears the state."""
+        """In a Hermes with Talaria Hermes patch 0005, a failed turn's real agent_turn_end clears the state."""
         try:
             from agent.turn_lifecycle_events import fire_turn_end, fire_turn_start
             from hermes_cli import plugins

@@ -268,7 +268,7 @@ func (r *Router) handle(ctx context.Context, b config.Backend, p Plugin, req dev
 			code, msg = rf.code, rf.message
 		} else {
 			r.log.Warn("agent message request failed", "backend", b.ID, "op", req.Op, "error", err.Error())
-			code, msg = "failed", "hermes-hub could not do this right now"
+			code, msg = "failed", "the Talaria hub could not do this right now"
 		}
 		result = nil
 	}

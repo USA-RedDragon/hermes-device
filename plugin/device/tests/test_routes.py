@@ -163,7 +163,7 @@ class RouteTests(unittest.TestCase):
         self.assertNotIn("hermes_base_image", welcome)
 
     def test_welcome_reports_the_base_image(self):
-        image = "registry.example.com/hermes-patches:v0.23.1-p1@sha256:" + "a" * 64
+        image = "registry.example.com/talaria-hermes:v0.23.1-p1@sha256:" + "a" * 64
         base_image = "registry.example.com/hermes-agent:v0.23.1@sha256:" + "b" * 64
         with mock.patch.object(core, "hermes_image", lambda: image), \
                 mock.patch.object(core, "hermes_base_image", lambda: base_image):

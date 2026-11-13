@@ -3,7 +3,7 @@ name: Hermes compatibility
 # Runs the device plugin tests, contract tests included, inside the Hermes image of
 # the release in HERMES_VERSION. Renovate opens a PR here for each new Hermes
 # release, so the check on that PR says whether the plugin still works with it.
-# See docs/hermes-upgrade.md in hermes-hub.
+# See hub/docs/hermes-upgrade.md.
 
 on:
   pull_request:

@@ -583,7 +583,7 @@ var scopedListParams = map[string]string{
 }
 
 // keyAudience is the session.list param that limits the list to the
-// sessions the device plugin keeps for one device (hermes-patches 0004).
+// sessions the device plugin keeps for one device (Talaria Hermes patch 0004).
 const keyAudience = "audience"
 
 // capListAudience is the runtime.describe capability of a Hermes whose
@@ -681,7 +681,7 @@ var imageRenderParams = []string{"path", keyCols, keyRows, "graphics", "terminal
 
 // capImageRenderConfined is the runtime.describe capability of a Hermes
 // whose image.render reads only images it stored
-// (security.image_render_paths, hermes-patches 0003).
+// (security.image_render_paths, Talaria Hermes patch 0003).
 const capImageRenderConfined = "image-render-confined-v1"
 
 // whyImageRender is why image.render is refused by a Hermes that does not

@@ -4,7 +4,7 @@ log-level: "info"
 # Interval of WebSocket pings on every leg. Must be from 5s to 30s
 ping-interval: "25s"
 hub:
-  # Base URL of hermes-hub, for example https://hub.example.com. Needed by login, run, chat and acp
+  # Base URL of the Talaria hub, for example https://hub.example.com. Needed by login, run, chat and acp
   # url: ""
   # Device token for run, instead of the one login stored, for a service device such as the sandbox pod. Wins over hub.token-file and the token store
   # token: "(secret)"
@@ -43,7 +43,7 @@ chat:
   # Local Hermes launcher when chat.managed is off or the server reports no image. It must be the same release as the server's Hermes
   hermes: "hermes"
 acp-host:
-  # Address the ACP host listens on. Only hermes-hub may reach it
+  # Address the ACP host listens on. Only the Talaria hub may reach it
   listen: ":9130"
   # This backend's id, the aud the hub puts in its assertions. Needed by acp-host
   # backend-id: ""
