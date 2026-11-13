@@ -8,21 +8,45 @@
 ARG HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p33@sha256:29e36b1cd8e846dc60b6697b599c7e010b64972e2a5f4b9334642f4535defe9f
 ARG HUB_IMAGE=ghcr.io/usa-reddragon/talaria-hub:v0.26.65@sha256:d03d66c4559cc370f7919e807113660c20cc8bfad6fb31257f4359f95d9c1e18
 ARG DEVICE_IMAGE=ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
+# SearXNG, the agent's web search: its code and package versions come from this image
+ARG SEARXNG_IMAGE=docker.io/searxng/searxng:2026.11.13-8a53a6aa5@sha256:82b222dd1854c43241874874fbc985006556230804dc819ef2a639eeb574d0e2
 ARG CADDY_IMAGE=docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 
 FROM ${HUB_IMAGE} AS hub
 FROM ${DEVICE_IMAGE} AS device
 FROM ${CADDY_IMAGE} AS caddy
+FROM ${SEARXNG_IMAGE} AS searxng-upstream
+
+# SearXNG's Python packages, the exact set and versions of the upstream image (which is built on musl), installed
+# for this image's Python into a venv of their own
+FROM ${HERMES_IMAGE} AS searxng
+USER root
+COPY --from=searxng-upstream /usr/local/searxng/.venv/lib/ /tmp/upstream-lib/
+RUN set -eu; \
+    find /tmp/upstream-lib -maxdepth 3 -name '*.dist-info' -printf '%f\n' \
+      | sed -E 's/\.dist-info$//; s/-([^-]+)$/==\1/' | sort > /tmp/requirements.txt; \
+    python3 -m venv /opt/searxng/.venv; \
+    /opt/searxng/.venv/bin/pip install --no-cache-dir --disable-pip-version-check --no-deps --only-binary=:all: \
+      -r /tmp/requirements.txt; \
+    /opt/searxng/.venv/bin/pip uninstall -y -q pip; \
+    find /opt/searxng/.venv/lib -type f -name '*.so*' -exec strip --strip-unneeded {} +; \
+    find /opt/searxng/.venv -type d -name __pycache__ -prune -exec rm -rf {} +; \
+    python3 -m compileall -q -j 0 --invalidation-mode=unchecked-hash /opt/searxng/.venv/lib
 
 FROM ${HERMES_IMAGE}
 # poppler-utils reads attached PDFs for the hub; agent is the sandbox's user
 RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils \
  && rm -rf /var/lib/apt/lists/* \
- && groupadd -g 2568 agent && useradd -u 2568 -g 2568 -d /talaria/work -s /bin/bash -M agent
-# All three are static binaries
+ && groupadd -g 2568 agent && useradd -u 2568 -g 2568 -d /talaria/work -s /bin/bash -M agent \
+ && groupadd -g 977 searxng && useradd -u 977 -g 977 -d /opt/searxng -s /usr/sbin/nologin -M searxng
+# The three binaries are static
 COPY --from=hub /talaria-hub /usr/local/bin/talaria-hub
 COPY --from=device /talaria /usr/local/bin/talaria
 COPY --from=caddy /usr/bin/caddy /usr/local/bin/caddy
+# SearXNG: its venv and code, and Talaria's settings for it (deploy/searxng)
+COPY --from=searxng /opt/searxng/.venv /opt/searxng/.venv
+COPY --from=searxng-upstream /usr/local/searxng/searx /opt/searxng/searx
+COPY searxng/settings.yml /etc/searxng/settings.yml
 COPY compose/files/init.sh compose/files/hermes-init.py compose/files/demo-llm.py /usr/share/talaria/
 COPY aio/rootfs/ /
 # Licenses and the "built on Hermes Agent" notice

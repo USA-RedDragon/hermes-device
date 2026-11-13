@@ -7,11 +7,11 @@ mkdir -p "$T" /run/talaria
 chmod 755 "$T"
 export TALARIA_SECRETS="$T/secrets" TALARIA_HUB_DATA="$T/hub" TALARIA_WORK="$T/work"
 export TALARIA_HERMES_URL=http://127.0.0.1:9120 TALARIA_ACP_URL=http://127.0.0.1:9130 TALARIA_HERMES_DATA=
-export TALARIA_HUB_UID=65534 TALARIA_SANDBOX_UID=2568
+export TALARIA_HUB_UID=65534 TALARIA_SANDBOX_UID=2568 TALARIA_SEARXNG_UID=977
 TALARIA_HERMES_UID="$(id -u hermes)"
 export TALARIA_HERMES_UID
-if [ "$TALARIA_HERMES_UID" = 2568 ] || [ "$TALARIA_HERMES_UID" = 65534 ]; then
-  echo "talaria: PUID $TALARIA_HERMES_UID is taken by the sandbox or the hub; pick another" >&2
+if [ "$TALARIA_HERMES_UID" = 2568 ] || [ "$TALARIA_HERMES_UID" = 65534 ] || [ "$TALARIA_HERMES_UID" = 977 ]; then
+  echo "talaria: PUID $TALARIA_HERMES_UID is taken by the sandbox, the hub or SearXNG; pick another" >&2
   exit 1
 fi
 export TALARIA_SHOW_AGAIN="docker logs <container> 2>&1 | grep -A3 Open:"
@@ -26,6 +26,9 @@ chmod -R a+rX /run/talaria
 case "${TALARIA_DEMO:-}" in
   1|true|TRUE|True|yes|YES|Yes) export TALARIA_DEMO_URL=http://127.0.0.1:8000/v1 ;;
 esac
+
+# Web search through the SearXNG in this image (service talaria-searxng), unless TALARIA_SEARXNG=false
+export TALARIA_SEARXNG_URL=http://127.0.0.1:8888
 
 # The Hermes home, as the hermes user
 cd /opt/data

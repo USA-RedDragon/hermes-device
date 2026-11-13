@@ -1,0 +1,6 @@
+#!/command/with-contenv sh
+# Turned off: tell s6 not to start it again
+case "${TALARIA_SEARXNG:-}" in
+  0|false|FALSE|False|no|NO|No|off|OFF|Off) exit 125 ;;
+esac
+exit 0

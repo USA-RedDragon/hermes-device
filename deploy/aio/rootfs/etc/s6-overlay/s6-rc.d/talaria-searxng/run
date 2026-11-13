@@ -1,0 +1,18 @@
+#!/command/with-contenv sh
+# The agent's web search (SearXNG), on the loopback address only. On unless TALARIA_SEARXNG=false
+case "${TALARIA_SEARXNG:-}" in
+  0|false|FALSE|False|no|NO|No|off|OFF|Off) exit 0 ;;
+esac
+# The key init.sh made on the first start; s6 runs this again after a failed start
+[ -s /talaria/secrets/searxng/secret ] || { s6-sleep 2; exit 1; }
+SEARXNG_SECRET="$(cat /talaria/secrets/searxng/secret)"
+export SEARXNG_SECRET SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml PYTHONPATH=/opt/searxng
+export GRANIAN_INTERFACE=wsgi GRANIAN_HOST=127.0.0.1 GRANIAN_PORT=8888 GRANIAN_WEBSOCKETS=false
+export GRANIAN_BLOCKING_THREADS=4 GRANIAN_PROCESS_NAME=searxng
+# Its caches (SQLite files in TMPDIR), apart from the other services
+export TMPDIR=/run/searxng
+mkdir -p "$TMPDIR"
+chown searxng:searxng "$TMPDIR"
+chmod 700 "$TMPDIR"
+cd /opt/searxng || exit 1
+exec s6-setuidgid searxng /opt/searxng/.venv/bin/granian searx.webapp:app
