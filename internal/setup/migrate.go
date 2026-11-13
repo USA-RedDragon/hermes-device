@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+
+	"github.com/USA-RedDragon/talaria/internal/filelock"
 )
 
 // Legacy names of the native messaging host, the config directory and the
@@ -174,12 +176,12 @@ func (s *System) migrateLock() (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := filelock.Lock(f, filelock.Exclusive); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
 	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = filelock.Unlock(f)
 		_ = f.Close()
 	}, nil
 }

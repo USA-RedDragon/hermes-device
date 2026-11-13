@@ -24,7 +24,6 @@ import (
 	"github.com/USA-RedDragon/talaria/internal/hubapi"
 	"github.com/USA-RedDragon/talaria/protocol"
 	"github.com/coder/websocket"
-	"golang.org/x/sys/unix"
 )
 
 // Errors that stop Run. hubapi.ErrUnauthorized also stops it.
@@ -1169,7 +1168,7 @@ func (c *Client) exec(ctx context.Context, s *session, req protocol.Exec) {
 func exitMessage(id string, res executor.Result) protocol.Exit {
 	e := protocol.Exit{Type: protocol.TypeExit, ID: id, Code: res.Code, Killed: res.Killed}
 	if res.Signal != 0 {
-		e.Signal = unix.SignalName(res.Signal)
+		e.Signal = signalName(res.Signal)
 	}
 	if res.OOM {
 		e.Reason, e.MemoryMax = protocol.ExitReasonOOM, res.MemoryMax

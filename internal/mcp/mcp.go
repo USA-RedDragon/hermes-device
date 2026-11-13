@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/USA-RedDragon/talaria/internal/proctree"
 	"github.com/USA-RedDragon/talaria/protocol"
 )
 
@@ -544,6 +545,7 @@ func ctxError(ctx context.Context, name string) *Error {
 type proc struct {
 	s          *server
 	cmd        *exec.Cmd
+	tree       *proctree.Tree
 	stdin      *os.File
 	out        chan outMsg
 	gmu        sync.Mutex
@@ -601,7 +603,7 @@ func (s *server) start() (*proc, error) {
 	if cmd.Dir == "" {
 		cmd.Dir = s.m.opts.Dir
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proctree.Prepare(cmd)
 	inR, inW, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -624,13 +626,19 @@ func (s *server) start() (*proc, error) {
 	_ = inR.Close()
 	_ = outW.Close()
 	_ = errW.Close()
+	var tree *proctree.Tree
+	if err == nil {
+		if tree, err = proctree.Attach(cmd); err != nil {
+			_ = cmd.Wait()
+		}
+	}
 	if err != nil {
 		_ = inW.Close()
 		_ = outR.Close()
 		_ = errR.Close()
 		return nil, err
 	}
-	p := &proc{s: s, cmd: cmd, stdin: inW, out: make(chan outMsg, writeQueue), pending: map[int64]chan rpcMessage{},
+	p := &proc{s: s, cmd: cmd, tree: tree, stdin: inW, out: make(chan outMsg, writeQueue), pending: map[int64]chan rpcMessage{},
 		done: make(chan struct{}), started: time.Now()}
 	slog.Info("Started MCP server", "server", s.name, "pid", cmd.Process.Pid)
 	go p.writer()
@@ -642,7 +650,8 @@ func (s *server) start() (*proc, error) {
 		// The group may hold children that keep the pipes open. After this
 		// the group id may be reused, so nothing signals it again.
 		p.gmu.Lock()
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = tree.Kill()
+		tree.Release()
 		p.reaped = true
 		p.gmu.Unlock()
 		for range 2 {
@@ -733,13 +742,18 @@ func (p *proc) stop() {
 	<-p.done
 }
 
-// signal sends sig to the server's process group while its leader has not
-// been reaped.
+// signal sends sig (SIGTERM or SIGKILL) to the server's process tree while
+// its leader has not been reaped. On Windows both end the tree.
 func (p *proc) signal(sig syscall.Signal) {
 	p.gmu.Lock()
 	defer p.gmu.Unlock()
-	if !p.reaped {
-		_ = syscall.Kill(-p.cmd.Process.Pid, sig)
+	if p.reaped {
+		return
+	}
+	if sig == syscall.SIGKILL {
+		_ = p.tree.Kill()
+	} else {
+		_ = p.tree.Terminate()
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 
 	"github.com/USA-RedDragon/talaria/assertion"
 	"github.com/USA-RedDragon/talaria/internal/claudeusage"
+	"github.com/USA-RedDragon/talaria/internal/proctree"
 	"github.com/USA-RedDragon/talaria/protocol"
 	"github.com/coder/websocket"
 )
@@ -344,11 +345,17 @@ func (c *connection) start() (*exec.Cmd, *os.File, *os.File, *os.File, error) {
 	// period, which a context kill would cut short.
 	cmd := &exec.Cmd{Path: path, Args: []string{c.srv.opts.Hermes, "acp"}}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, errW
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proctree.Prepare(cmd)
 	c.srv.mu.Lock()
 	err = cmd.Start()
 	if err == nil {
-		c.srv.children[cmd.Process.Pid] = true
+		var tree *proctree.Tree
+		if tree, err = proctree.Attach(cmd); err != nil {
+			_ = cmd.Wait()
+		} else {
+			c.srv.children[cmd.Process.Pid] = true
+			trees.Store(cmd, tree)
+		}
 	}
 	c.srv.mu.Unlock()
 	closeAll(inR, outW, errW)
@@ -386,8 +393,26 @@ func (c *connection) stop(cmd *exec.Cmd, stdin *os.File, exited <-chan struct{})
 	<-exited
 }
 
+// trees holds the process tree of each running hermes acp command.
+//
+//nolint:gochecknoglobals // keyed by the command, so no state is shared between servers
+var trees sync.Map
+
+// killGroup sends sig (SIGTERM or SIGKILL) to cmd's process tree. On
+// Windows both end the tree. SIGKILL also forgets the tree.
 func killGroup(cmd *exec.Cmd, sig syscall.Signal) {
-	_ = syscall.Kill(-cmd.Process.Pid, sig)
+	v, ok := trees.Load(cmd)
+	if !ok {
+		return
+	}
+	tree, _ := v.(*proctree.Tree)
+	if sig != syscall.SIGKILL {
+		_ = tree.Terminate()
+		return
+	}
+	_ = tree.Kill()
+	tree.Release()
+	trees.Delete(cmd)
 }
 
 func exitStatus(err error) string {

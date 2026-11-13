@@ -1,5 +1,6 @@
 // Package executor runs one bash command per request in its own process
-// group, streams merged stdout and stderr, and kills the group on request.
+// tree (a process group, or a Job Object on Windows), streams merged stdout
+// and stderr, and kills the tree on request.
 package executor
 
 import (
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/USA-RedDragon/talaria/internal/proctree"
 	"github.com/USA-RedDragon/talaria/protocol"
 )
 
@@ -36,6 +38,9 @@ type Request struct {
 	Timeout time.Duration
 	Stdin   *string
 	Env     []string
+	// Argv, when set, builds the command line instead of <shell> [-l] -c
+	// <cmd>, as for a Windows shell (internal/winshell).
+	Argv func(cmd string, login bool, cwd string) []string
 	// Scope, when set, runs the command in a systemd scope of its own.
 	Scope *Scope
 }
@@ -64,6 +69,8 @@ type Process struct {
 	// timer kills the command at its timeout plus TimeoutGrace; nil
 	// without a timeout or after Detach.
 	timer *time.Timer
+	// tree is the command's process tree.
+	tree *proctree.Tree
 	// scope and unit are the systemd scope the command runs in, if any.
 	scope *Scope
 	unit  string
@@ -81,6 +88,9 @@ func start(shell string, req Request, out func([]byte), grace time.Duration) (*P
 		argv = append(argv, "-l")
 	}
 	argv = append(argv, "-c", req.Cmd)
+	if req.Argv != nil {
+		argv = req.Argv(req.Cmd, req.Login, req.Cwd)
+	}
 	unit := ""
 	if req.Scope != nil {
 		unit = scopeUnit()
@@ -94,7 +104,7 @@ func start(shell string, req Request, out func([]byte), grace time.Duration) (*P
 	cmd := &exec.Cmd{Path: path, Args: argv}
 	cmd.Dir = req.Cwd
 	cmd.Env = req.Env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proctree.Prepare(cmd)
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -111,8 +121,14 @@ func start(shell string, req Request, out func([]byte), grace time.Duration) (*P
 		return nil, err
 	}
 	_ = pw.Close()
+	tree, err := proctree.Attach(cmd)
+	if err != nil {
+		_ = cmd.Wait()
+		_ = pr.Close()
+		return nil, err
+	}
 
-	p := &Process{cmd: cmd, done: make(chan struct{}), scope: req.Scope, unit: unit}
+	p := &Process{cmd: cmd, tree: tree, done: make(chan struct{}), scope: req.Scope, unit: unit}
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
@@ -137,6 +153,14 @@ func start(shell string, req Request, out func([]byte), grace time.Duration) (*P
 	go func() {
 		err := cmd.Wait()
 		p.Detach()
+		p.mu.Lock()
+		killed := p.killed
+		p.mu.Unlock()
+		if !killed {
+			// Processes the command left running keep running, as a
+			// process group's members outlive its leader.
+			p.tree.Release()
+		}
 		// Background children may keep the pipe open; do not wait for them
 		// longer than a moment once bash itself has exited.
 		select {
@@ -149,7 +173,7 @@ func start(shell string, req Request, out func([]byte), grace time.Duration) (*P
 		p.mu.Lock()
 		res := Result{Code: exitCode(err), Signal: signalOf(err)}
 		// A kill that lost the race to a natural exit keeps the real exit code.
-		res.Killed = p.killed && signaled(err)
+		res.Killed = p.killed && proctree.Killed(err)
 		p.mu.Unlock()
 		if res.Killed {
 			res.Code = ExitKilled
@@ -188,31 +212,21 @@ func signalOf(err error) syscall.Signal {
 	return 0
 }
 
-func signaled(err error) bool {
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
-			return ws.Signaled() || ws.ExitStatus() == 128+int(syscall.SIGTERM)
-		}
-	}
-	return false
-}
-
-// Kill sends SIGTERM to the process group, then SIGKILL after KillGrace.
+// Kill sends SIGTERM to the process tree, then SIGKILL after KillGrace. On
+// Windows both end the whole tree at once.
 func (p *Process) Kill() {
 	p.killOnce.Do(func() {
 		p.mu.Lock()
 		p.killed = true
 		p.mu.Unlock()
-		pgid := p.cmd.Process.Pid
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
+		_ = p.tree.Terminate()
 		go func() {
 			select {
 			case <-p.done:
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
 			case <-time.After(KillGrace):
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
 			}
+			_ = p.tree.Kill()
+			p.tree.Release()
 		}()
 	})
 }
@@ -228,7 +242,7 @@ func (p *Process) Detach() {
 	}
 }
 
-// Pid returns the process id, which is also the process group id.
+// Pid returns the process id, which is also the process group id on Unix.
 func (p *Process) Pid() int {
 	return p.cmd.Process.Pid
 }

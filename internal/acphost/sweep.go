@@ -1,6 +1,7 @@
 package acphost
 
 import (
+	"os"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,11 +32,10 @@ func (s *Server) sweepLoop() {
 // that were reparented to the host.
 func (s *Server) sweep() {
 	s.mu.Lock()
-	strays, zombies := findStrays(syscall.Getpid(), s.children, s.orphans.Load())
+	strays, zombies := findStrays(os.Getpid(), s.children, s.orphans.Load())
 	s.mu.Unlock()
 	for _, pid := range zombies {
-		var ws syscall.WaitStatus
-		_, _ = syscall.Wait4(pid, &ws, syscall.WNOHANG, nil)
+		reap(pid)
 	}
 	for _, pid := range strays {
 		s.mu.Lock()
@@ -56,9 +56,9 @@ func (s *Server) stopStray(pid int) {
 		delete(s.killing, pid)
 		s.mu.Unlock()
 	}()
-	_ = syscall.Kill(pid, syscall.SIGTERM)
+	_ = signalPid(pid, syscall.SIGTERM)
 	time.Sleep(s.opts.KillGrace)
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	_ = signalPid(pid, syscall.SIGKILL)
 }
 
 type procInfo struct {

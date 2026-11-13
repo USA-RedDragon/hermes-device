@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -244,7 +243,7 @@ func (l *Launcher) Launch(ctx context.Context) error {
 	cmd.Env = env
 	// Standard streams stay on /dev/null: a pipe would break when the
 	// daemon exits while Firefox runs on.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detached()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", argv[0], err)
 	}

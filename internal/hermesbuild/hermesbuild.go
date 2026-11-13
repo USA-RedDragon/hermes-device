@@ -22,9 +22,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/USA-RedDragon/talaria/internal/diskfree"
+	"github.com/USA-RedDragon/talaria/internal/filelock"
 	"github.com/USA-RedDragon/talaria/internal/oci"
 )
 
@@ -68,13 +69,7 @@ var (
 const MinFree = 4 << 30
 
 // freeSpace returns the bytes available to this user in dir's file system.
-func freeSpace(dir string) (uint64, error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
-		return 0, err
-	}
-	return st.Bavail * uint64(max(st.Bsize, 0)), nil
-}
+func freeSpace(dir string) (uint64, error) { return diskfree.Available(dir) }
 
 // DefaultDir is hermes in this tool's directory of the user cache
 // directory.
@@ -202,7 +197,7 @@ func (s *Store) Ensure(ctx context.Context, image string) (*Build, error) {
 	if b, err := s.open(hex); !errors.Is(err, ErrNotPulled) {
 		return b, err
 	}
-	lock, err := s.waitLock(ctx, hex, syscall.LOCK_EX)
+	lock, err := s.waitLock(ctx, hex, filelock.Exclusive)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +278,7 @@ func (s *Store) pull(ctx context.Context, image string, ref oci.Reference) error
 	}
 	// The tree must be on disk before it shows up under builds/: after a
 	// power loss, a build there whose files were lost would run unchecked.
-	syscall.Sync()
+	diskfree.Sync()
 	if err := s.publish(staging, final, hex); err != nil {
 		return err
 	}
@@ -323,17 +318,17 @@ func (s *Store) openLock(hex string) (*os.File, error) {
 	return os.OpenFile(filepath.Join(s.Dir, locksDir, hex+".lock"), os.O_RDWR|os.O_CREATE, 0o600)
 }
 
-func flock(f *os.File, how int) error {
-	err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB)
-	if errors.Is(err, syscall.EWOULDBLOCK) {
+func flock(f *os.File, how filelock.Mode) error {
+	err := filelock.TryLock(f, how)
+	if errors.Is(err, filelock.ErrLocked) {
 		return errBusy
 	}
 	return err
 }
 
-// waitLock takes an flock of kind how on hex's lock file, waiting until
+// waitLock takes a lock of mode how on hex's lock file, waiting until
 // ctx ends. Closing the file releases it.
-func (s *Store) waitLock(ctx context.Context, hex string, how int) (*os.File, error) {
+func (s *Store) waitLock(ctx context.Context, hex string, how filelock.Mode) (*os.File, error) {
 	f, err := s.openLock(hex)
 	if err != nil {
 		return nil, err
@@ -356,7 +351,7 @@ func (s *Store) waitLock(ctx context.Context, hex string, how int) (*os.File, er
 	}
 }
 
-// tryLock takes the exclusive flock on hex's lock file, or fails with
+// tryLock takes the exclusive lock on hex's lock file, or fails with
 // errBusy at once.
 func (s *Store) tryLock(hex string) (unlock func(), err error) {
 	f, err := s.openLock(hex)
@@ -368,7 +363,7 @@ func (s *Store) tryLock(hex string) (unlock func(), err error) {
 	// moment; only a lock held past tryLockGrace counts as busy.
 	deadline := time.Now().Add(tryLockGrace)
 	for {
-		err := flock(f, syscall.LOCK_EX)
+		err := flock(f, filelock.Exclusive)
 		if err == nil {
 			return func() { _ = f.Close() }, nil
 		}
@@ -392,7 +387,7 @@ const (
 // (exec.Cmd.ExtraFiles) so the mark lasts as long as the TUI.
 func (s *Store) Use(ctx context.Context, b *Build) (*os.File, error) {
 	hex := strings.TrimPrefix(b.Digest, "sha256:")
-	f, err := s.waitLock(ctx, hex, syscall.LOCK_SH)
+	f, err := s.waitLock(ctx, hex, filelock.Shared)
 	if err != nil {
 		return nil, err
 	}

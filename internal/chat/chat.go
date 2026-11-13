@@ -75,7 +75,7 @@ func ReadState(dir, hub string) (*daemonstate.State, error) {
 	if err != nil {
 		return nil, err
 	}
-	if st.PID <= 0 || errors.Is(syscall.Kill(st.PID, 0), syscall.ESRCH) {
+	if st.PID <= 0 || !processAlive(st.PID) {
 		return nil, fmt.Errorf("%w (stale %s from pid %d)", ErrNotRunning, daemonstate.FileName, st.PID)
 	}
 	if st.Splice == "" || st.ControlSecret == "" {
