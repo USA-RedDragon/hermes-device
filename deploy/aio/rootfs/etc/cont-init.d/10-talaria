@@ -19,7 +19,7 @@ sh /usr/share/talaria/init.sh
 
 # The device plugin, from the talaria binary in this image
 rm -rf /run/talaria/plugin-src
-/usr/local/bin/hermes-device plugin install --dest /run/talaria/plugin-src/device >/dev/null
+/usr/local/bin/talaria plugin install --dest /run/talaria/plugin-src/device >/dev/null
 chmod -R a+rX /run/talaria
 
 # With the demo model on, Hermes offers it as the provider talaria-demo (pick it with: hermes model)

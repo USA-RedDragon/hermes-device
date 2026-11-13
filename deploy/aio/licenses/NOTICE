@@ -14,7 +14,7 @@ only. The image contains:
   /usr/share/doc/talaria-hermes/.
 - talaria-hub (/usr/local/bin/talaria-hub), MIT License:
   https://github.com/USA-RedDragon/talaria/blob/main/LICENSE
-- talaria (/usr/local/bin/hermes-device), MIT License:
+- talaria (/usr/local/bin/talaria), MIT License:
   https://github.com/USA-RedDragon/talaria/blob/main/LICENSE
 - Caddy (/usr/local/bin/caddy), https://github.com/caddyserver/caddy
   Apache License 2.0: LICENSE.apache-2.0

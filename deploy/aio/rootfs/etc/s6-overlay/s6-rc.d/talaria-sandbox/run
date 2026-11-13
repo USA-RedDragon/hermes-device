@@ -11,4 +11,4 @@ export TALARIA_HUB_URL=http://127.0.0.1:8081 TALARIA_HUB_TOKEN_FILE=/talaria/sec
 curl -fsS -m 5 -o /dev/null http://127.0.0.1:8081/healthz || { s6-sleep 2; exit 1; }
 s6-setuidgid agent mkdir -p "$TMPDIR"
 cd "$W"
-exec s6-setuidgid agent hermes-device run
+exec s6-setuidgid agent talaria run

@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils \
  && groupadd -g 2568 agent && useradd -u 2568 -g 2568 -d /talaria/work -s /bin/bash -M agent
 # All three are static binaries
 COPY --from=hub /talaria-hub /usr/local/bin/talaria-hub
-COPY --from=device /hermes-device /usr/local/bin/hermes-device
+COPY --from=device /hermes-device /usr/local/bin/talaria
 COPY --from=caddy /usr/bin/caddy /usr/local/bin/caddy
 COPY compose/files/init.sh compose/files/hermes-init.py compose/files/demo-llm.py /usr/share/talaria/
 COPY aio/rootfs/ /
