@@ -1927,8 +1927,8 @@
   // sandboxed into an opaque origin of its own (allow-same-origin is not
   // set), so it cannot reach the hub or other pages. The page talks back
   // only over the MessagePort sent on its first load; a later load means the
-  // frame left the page, so the port closes. Closing hides the frame and
-  // keeps its state until another page or chat opens.
+  // frame left the page, so the port closes. Leaving the page drops the frame,
+  // so opening the page again starts it afresh.
   const pageSandbox = "allow-scripts allow-forms allow-modals allow-popups";
   const maxPageText = 200000;
   const pagesView = {
@@ -2078,8 +2078,12 @@
       }
     },
 
+    // hide leaves the page for good: the frame goes out of the document. A
+    // frame that is only hidden keeps its own process alive, and on Android
+    // Chrome its stale touch area can cover the chat and swallow every tap.
+    // Back, the Close button and any other exit end here through route.
     hide() {
-      if (this.cur) this.cur.box.hidden = true;
+      this.destroy();
     },
 
     destroy() {
