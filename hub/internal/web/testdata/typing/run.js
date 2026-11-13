@@ -36,7 +36,15 @@ async function connect() {
   return { send, ev, close: () => { sock.close(); proc.kill(); } };
 }
 
-const openChat = (ev, title) => ev(`(() => { const e = [...document.querySelectorAll("a,button,li,div")].filter((x) => x.children.length < 4 && x.textContent.trim().startsWith(${JSON.stringify(title)})).pop(); if (!e) return false; e.click(); return true; })()`);
+const rowFor = (title) => `[...document.querySelectorAll("a,button,li,div")].filter((x) => x.children.length < 4 && x.textContent.trim().startsWith(${JSON.stringify(title)})).pop()`;
+// Polls until the chat is listed, so a slow render does not race the click.
+const openChat = async (ev, title) => {
+  for (let i = 0; i < 400; i++) {
+    if (await ev(`!!(${rowFor(title)})`)) break;
+    await sleep(50);
+  }
+  return ev(`(() => { const e = ${rowFor(title)}; if (!e) return false; e.click(); return true; })()`);
+};
 
 async function device(c, touch, w, h) {
   await c.send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 1, mobile: touch });

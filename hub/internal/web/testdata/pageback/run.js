@@ -12,6 +12,16 @@ const [bin, url, dir] = process.argv.slice(2);
 
 const proc = spawn(bin, ["--headless=new", "--no-sandbox", "--disable-gpu", "--remote-debugging-port=0", "--user-data-dir=" + dir, "--hide-scrollbars", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Polls until expr is truthy in the page, so a slow machine waits for the
+// render instead of racing a fixed sleep.
+const until = async (ev, expr, what) => {
+  for (let i = 0; i < 400; i++) {
+    if (await ev(expr)) return;
+    await sleep(50);
+  }
+  throw new Error("timed out waiting for " + what);
+};
+
 
 async function connect() {
   const ws = await new Promise((res, rej) => {
@@ -135,7 +145,7 @@ async function check(c, how, leave) {
   await device(c, 412, 915);
   const open = async () => {
     await c.send("Page.navigate", { url: url + "/auth/login?next=/" });
-    await sleep(1500);
+    await until(ev, `[...document.querySelectorAll("#sessions *")].some((x) => x.children.length < 4 && x.textContent.trim().startsWith("Pages"))`, "the Pages session is listed");
     await ev(`(() => { const e = [...document.querySelectorAll("#sessions *")].filter((x) => x.children.length < 4 && x.textContent.trim().startsWith("Pages")).pop(); e.click(); })()`);
     await sleep(1200);
   };

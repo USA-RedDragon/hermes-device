@@ -11,6 +11,16 @@ const [bin, url, dir] = process.argv.slice(2);
 
 const proc = spawn(bin, ["--headless=new", "--no-sandbox", "--disable-gpu", "--remote-debugging-port=0", "--user-data-dir=" + dir, "--hide-scrollbars", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Polls until expr is truthy in the page, so a slow machine waits for the
+// render instead of racing a fixed sleep.
+const until = async (ev, expr, what) => {
+  for (let i = 0; i < 400; i++) {
+    if (await ev(expr)) return;
+    await sleep(50);
+  }
+  throw new Error("timed out waiting for " + what);
+};
+
 
 async function connect() {
   const ws = await new Promise((res, rej) => {
@@ -46,9 +56,9 @@ async function run(c, w, touch, dark) {
   await c.send("Emulation.setTouchEmulationEnabled", { enabled: touch, maxTouchPoints: 5 });
   await c.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: dark ? "dark" : "light" }] });
   await c.send("Page.navigate", { url: url + "/auth/login?next=/" });
-  await sleep(1500);
+  await until(ev, `[...document.querySelectorAll("#sessions *")].some((x) => x.children.length < 4 && x.textContent.trim().startsWith("Work"))`, tag + ": the Work session is listed");
   await ev(`(() => { const e = [...document.querySelectorAll("#sessions *")].filter((x) => x.children.length < 4 && x.textContent.trim().startsWith("Work")).pop(); e.click(); })()`);
-  await sleep(1500);
+  await until(ev, `document.querySelectorAll("#log .approval").length >= 5 && document.querySelectorAll("#log .msg").length >= 2`, tag + ": the chat is drawn");
   // The card types the page must have drawn, so the test cannot pass on an empty stream.
   const kinds = await ev(`({ approvals: document.querySelectorAll("#log .approval").length, tools: document.querySelectorAll("#log .tool, #log details.toolgroup").length,
     notices: document.querySelectorAll("#log .notice").length, table: document.querySelectorAll("#log .md table").length,
