@@ -137,8 +137,14 @@ func passwdShell(passwd string, uid int) string {
 }
 
 // hasDesktop reports whether programs setup starts can open windows.
-func (s *System) hasDesktop() bool {
-	return s.GOOS == darwin || s.Getenv("DISPLAY") != "" || s.Getenv("WAYLAND_DISPLAY") != ""
+// HasDesktop reports whether a program that setup starts shows up in front
+// of the person who runs it. On macOS over SSH it does not: Firefox or a page
+// would open on the screen of whoever sits at the Mac.
+func (s *System) HasDesktop() bool {
+	if s.GOOS == darwin {
+		return s.Getenv("SSH_CONNECTION") == "" && s.Getenv("SSH_TTY") == ""
+	}
+	return s.Getenv("DISPLAY") != "" || s.Getenv("WAYLAND_DISPLAY") != ""
 }
 
 func exists(path string) bool {

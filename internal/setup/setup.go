@@ -498,7 +498,7 @@ func (s *System) firefoxStep(ctx context.Context, o *Options, ff *Firefox, r *Re
 		switch {
 		case err != nil:
 			r.todo("Install the Hermes Firefox extension: download talaria-firefox-<version>.xpi from %s/latest, then in Firefox open about:addons, choose the gear menu, \"Install Add-on From File...\" and pick the file (setup could not find it: %v)", o.Releases.BaseURL, err)
-		case len(ff.Command) == 0 || !s.hasDesktop():
+		case len(ff.Command) == 0 || !s.HasDesktop():
 			r.todo("Open %s in Firefox and choose \"Continue to Installation\", then \"Add\"", u)
 		default:
 			if err := s.Open(ctx, ff, u); err != nil {
