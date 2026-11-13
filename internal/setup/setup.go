@@ -758,6 +758,19 @@ func (s *System) uninstallCache(r *Report) error {
 		return nil
 	}
 	dir := filepath.Join(s.CacheDir, dirName)
+	if s.CacheDir == s.ConfigDir {
+		// Windows keeps the config, the token and setup's state there too
+		// (userdir.Config), so only the release lookup cache goes.
+		f := filepath.Join(dir, "release.json")
+		if err := os.Remove(f); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		r.done("Removed the cache %s", f)
+		return nil
+	}
 	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
