@@ -1,11 +1,10 @@
 name: Hermes release
 
 # Each change to hermes/Dockerfile, hermes/patches or hermes/scripts on main,
-# after the tests pass, becomes image tag v<upstream>-p<n> (v0.23.1-p31,
+# after the tests pass, is released from the tip of main as image tag v<upstream>-p<n> (v0.23.1-p31,
 # v0.23.1-p32, then v0.24.0-p1 after Renovate moves the base), with the git tag
 # and GitHub release hermes/v<upstream>-p<n> (never marked latest: the latest
 # release is the talaria daemon's, which auto-update reads).
-# Runs queue and each releases the commit it tested, so a busy main still ships.
 # Run it by hand with publish off (the default) for a dry run: it prints the
 # next tag and builds both platforms without pushing. With publish on it
 # releases HEAD again.
@@ -59,6 +58,7 @@ jobs:
       tag: ${{ steps.next.outputs.tag }}
       upstream: ${{ steps.next.outputs.upstream }}
       push: ${{ steps.next.outputs.push }}
+      sha: ${{ steps.next.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,48 +73,37 @@ jobs:
           MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
           PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
-          upstream=$(scripts/base-version.sh)
-          last=$(git tag -l "hermes/$upstream-p*" | grep -E "^hermes/$upstream-p[0-9]+$" | sort -V | tail -n1 || true)
-          release=true
-          if [ -n "$last" ] && [ "$MANUAL" != true ] && git diff --quiet "$last" HEAD -- Dockerfile patches scripts; then
-            release=false
+          # Release the tip of main, not the commit that started this run. Runs queue
+          # behind each other and take a while, so by the time one gets here main has
+          # usually moved; skipping to "the newest run" never ends while main keeps
+          # moving, because that run is overtaken too. The tip carries every earlier
+          # change, and the run for a later commit that did not touch the image inputs
+          # then finds nothing changed since the new tag. GITHUB_TOKEN may only create
+          # a ref at a commit whose .github/workflows matches the tip of main (anywhere
+          # else it gets 403), which the tip does by definition.
+          target=$GITHUB_SHA
+          if [ "$PUBLISH" = true ]; then
+            git fetch --no-tags origin main
+            target=$(git rev-parse FETCH_HEAD)
+          fi
+          plan=$(scripts/next-release.sh "$target" "$MANUAL")
+          echo "$plan" >> "$GITHUB_OUTPUT"
+          echo "push=$PUBLISH" >> "$GITHUB_OUTPUT"
+          release=$(sed -n 's/^release=//p' <<< "$plan")
+          tag=$(sed -n 's/^tag=//p' <<< "$plan")
+          last=$(sed -n 's/^last=//p' <<< "$plan")
+          upstream=$(sed -n 's/^upstream=//p' <<< "$plan")
+          # The git tag comes first: if it cannot be made, nothing is pushed and the
+          # image tag never moves. Runs are serialized by the concurrency group and the
+          # next number is read after the lock, so two runs never take the same one.
+          if [ "$release" = true ] && [ "$PUBLISH" = true ]; then
+            gh api -X POST "repos/$GH_REPO/git/refs" --field "ref=refs/tags/hermes/$tag" --field "sha=$target" > /dev/null
+          fi
+          if [ "$release" = true ]; then
+            echo "Release $tag on Hermes $upstream at $target (last: $last, publish: $PUBLISH)" >> "$GITHUB_STEP_SUMMARY"
+          else
             echo "Nothing changed since $last" >> "$GITHUB_STEP_SUMMARY"
           fi
-          n=$(( ${last##*-p} + 0 ))
-          tag="$upstream-p$(( n + 1 ))"
-          # A run releases the commit it tested, so a busy main still releases: runs are
-          # queued (one at a time, never cancelled mid-run) and each one with image
-          # changes since the last release makes the next pN at its own commit. A run
-          # never releases a commit that is not a descendant of the last release, so a
-          # newer release is never followed by an older one, and the diff above keeps two
-          # pN from carrying the same content.
-          # The git tag comes first: if it cannot be made, nothing is pushed and the
-          # image tag never moves. GITHUB_TOKEN may only create a ref at a commit whose
-          # .github/workflows matches the tip of main (anywhere else it gets 403), so
-          # when this commit's workflows differ from the tip's, the run stops and the
-          # run of a later commit, which has the tip's workflows, releases it.
-          if [ "$release" = true ] && [ -n "$last" ] && [ "$MANUAL" != true ] && ! git merge-base --is-ancestor "$last" "$GITHUB_SHA"; then
-            release=false
-            echo "$last is not an ancestor of $GITHUB_SHA: a newer commit is already released." >> "$GITHUB_STEP_SUMMARY"
-          fi
-          if [ "$release" = true ] && [ "$PUBLISH" = true ]; then
-            git fetch --no-tags origin main
-            tip=$(git rev-parse FETCH_HEAD)
-            if ! git diff --quiet "$GITHUB_SHA" "$tip" -- ../.github/workflows; then
-              release=false
-              echo "Workflows at $GITHUB_SHA differ from main's tip ($tip); a later run releases." >> "$GITHUB_STEP_SUMMARY"
-            else
-              gh api -X POST "repos/$GH_REPO/git/refs" --field "ref=refs/tags/hermes/$tag" --field "sha=$GITHUB_SHA" > /dev/null
-            fi
-          fi
-          {
-            echo "upstream=$upstream"
-            echo "tag=$tag"
-            echo "release=$release"
-            echo "push=$PUBLISH"
-          } >> "$GITHUB_OUTPUT"
-          echo "Last release: ${last:-none}. Next: image tag $tag, git tag hermes/$tag (publish: $PUBLISH)" >> "$GITHUB_STEP_SUMMARY"
-          [ "$release" = true ] && echo "Release $tag on Hermes $upstream" >> "$GITHUB_STEP_SUMMARY" || true
 
   image:
     name: Image
@@ -132,6 +121,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.version.outputs.sha }}
           persist-credentials: false
 
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -171,7 +161,7 @@ jobs:
             org.opencontainers.image.title=Talaria Hermes
             org.opencontainers.image.description=Hermes Agent with the Talaria patches. Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research.
             org.opencontainers.image.version=${{ env.TAG }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ needs.version.outputs.sha }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.licenses=MIT
             org.opencontainers.image.vendor=USA-RedDragon
@@ -216,6 +206,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.version.outputs.sha }}
           persist-credentials: false
 
       - name: Release
