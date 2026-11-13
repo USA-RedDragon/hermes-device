@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/USA-RedDragon/hermes-hub/internal/gateway"
 	"github.com/USA-RedDragon/hermes-hub/internal/hub"
@@ -39,6 +40,27 @@ func imageExt(mime string) string {
 		return ".webp"
 	}
 	return ".png"
+}
+
+// stageWaiting is stage, tried again while the backend restarts, up to
+// readRestartWait: a Hermes gateway that hands its turns to the next one
+// during a rollout refuses or drops the staging calls for a few seconds, and
+// a prompt with attachments waits that out instead of being refused.
+func (b *backend) stageWaiting(ctx context.Context, user, sessionID, text string, files []hub.Attachment) (string, []gateway.Attachment, string, error) {
+	deadline := time.Now().Add(readRestartWait)
+	delay := 250 * time.Millisecond
+	for {
+		staged, atts, notice, err := b.stage(ctx, user, sessionID, text, files)
+		if !errors.Is(err, errAway) || ctx.Err() != nil || !time.Now().Add(delay).Before(deadline) {
+			return staged, atts, notice, err
+		}
+		select {
+		case <-ctx.Done():
+			return staged, atts, notice, err
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, 2*time.Second)
+	}
 }
 
 // stage hands a prompt's attachments to the backend. Images are staged

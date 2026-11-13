@@ -64,6 +64,22 @@ func TestPromptStagesImages(t *testing.T) {
 	}
 }
 
+func TestPromptStagesImagesThroughARestart(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	ctx := context.Background()
+	// A gateway handing its turns to the next one refuses the staging call for a moment.
+	e.gw.RefuseWhileDraining(gateway.MethodAttachBytes, 2)
+	res, err := e.svc.Prompt(ctx, userAlice, backendPC, sLive, "after the restart",
+		hub.Attachment{Name: aPNG, Data: []byte(pngHead)})
+	if err != nil || res.Held {
+		t.Fatalf("Prompt = %+v, %v", res, err)
+	}
+	if text, atts := lastSubmit(t, e.gw); text != "after the restart" || len(atts) != 1 {
+		t.Fatalf("submit = %q %+v", text, atts)
+	}
+}
+
 func TestPromptPlacesFiles(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})

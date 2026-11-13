@@ -381,7 +381,7 @@ func (s *Service) promptLocked(ctx context.Context, b *backend, user, sessionID,
 		err    error
 	)
 	if len(files) > 0 {
-		text, atts, notice, err = b.stage(ctx, user, sessionID, text, files)
+		text, atts, notice, err = b.stageWaiting(ctx, user, sessionID, text, files)
 		if err != nil {
 			return hub.PromptResult{}, gateway.Receipt{}, err
 		}
