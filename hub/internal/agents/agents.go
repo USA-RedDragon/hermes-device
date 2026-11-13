@@ -79,6 +79,10 @@ const (
 	maxPeerChats = 30
 	peerAge      = 7 * 24 * time.Hour
 	maxLabel     = 80
+
+	// cronRoot prefixes the sender identity of a scheduled job's runs in the
+	// message log and the limits: "cron:<job id>".
+	cronRoot = "cron:"
 )
 
 // Sessions lists and feeds a backend's sessions for the hub itself.
@@ -240,6 +244,13 @@ func (r *Router) handle(ctx context.Context, b config.Backend, p Plugin, req dev
 	if c.RootSessionID == "" {
 		c.RootSessionID = c.SessionID
 	}
+	if job := CronJobOf(c); job != nil {
+		c.CronJob = job
+		// One scheduled job is one sender for the limits, whatever run it is:
+		// every run starts a new session, so counting by session would let a
+		// job that fires often send without end.
+		c.RootSessionID = cronRoot + job.ID
+	}
 	var (
 		result any
 		err    error
@@ -295,6 +306,36 @@ type peerSubagent struct {
 	SubagentID string `json:"subagent_id"`
 	Relation   string `json:"relation"`
 	Goal       string `json:"goal"`
+}
+
+// cronSessionRE is the session id of a scheduled run: cron_<job id>_<date>_<time>.
+var cronSessionRE = regexp.MustCompile(`^cron_([0-9a-f]{6,64})_\d{8}_\d{6}`)
+
+// CronJobOf says which scheduled job a caller's run belongs to, or nil for a
+// chat or a subagent of one. A plugin that knows the job sends it in
+// cron_job; for an older plugin the job id is in the run's session id (the
+// name is then unknown). The id is cleaned either way, since it ends up in
+// a message header and the limits.
+func CronJobOf(c device.AgentCaller) *device.AgentCronJob {
+	id, name := "", ""
+	if c.CronJob != nil {
+		id, name = c.CronJob.ID, c.CronJob.Name
+	}
+	if id == "" {
+		if m := cronSessionRE.FindStringSubmatch(c.RootSessionID); m != nil {
+			id = m[1]
+		} else if m := cronSessionRE.FindStringSubmatch(c.SessionID); m != nil {
+			id = m[1]
+		}
+	}
+	if id == "" {
+		return nil
+	}
+	id = label(id)
+	if len(id) > 64 || strings.ContainsAny(id, " :'") {
+		return nil
+	}
+	return &device.AgentCronJob{ID: id, Name: label(name)}
 }
 
 func owner(b config.Backend) string {
@@ -369,6 +410,9 @@ func (r *Router) peers(ctx context.Context, b config.Backend, c device.AgentCall
 	}
 	if you == nil {
 		you = map[string]any{keySessionID: c.RootSessionID}
+		if c.CronJob != nil {
+			you = map[string]any{keySessionID: c.SessionID, "title": cronLabel(c.CronJob)}
+		}
 	}
 	if c.SubagentID != "" {
 		you["subagent_id"] = c.SubagentID
@@ -638,6 +682,13 @@ func newID() string {
 	return "am_" + hex.EncodeToString(b)
 }
 
+func cronLabel(j *device.AgentCronJob) string {
+	if j.Name != "" {
+		return fmt.Sprintf("cron job '%s' (id %s)", j.Name, j.ID)
+	}
+	return fmt.Sprintf("cron job %s", j.ID)
+}
+
 func (r *Router) sender(ctx context.Context, b config.Backend, c device.AgentCaller) (string, string, error) {
 	sessions, err := r.opts.Sessions.SessionsOf(ctx, b.ID)
 	if err != nil {
@@ -654,6 +705,9 @@ func (r *Router) sender(ctx context.Context, b config.Backend, c device.AgentCal
 		}
 	}
 	chat := chatLabel(c.RootSessionID, names[c.RootSessionID], title)
+	if c.CronJob != nil {
+		chat = cronLabel(c.CronJob)
+	}
 	if c.SubagentID == "" {
 		return chat, names[c.RootSessionID], nil
 	}
@@ -769,6 +823,9 @@ func inTree(c device.AgentCaller, id, session string) bool {
 }
 
 func replyHint(c device.AgentCaller, t target) string {
+	if c.CronJob != nil && c.SubagentID == "" {
+		return "" // a scheduled run ends when it ends: nobody can answer it
+	}
 	if c.SubagentID == "" {
 		return c.RootSessionID
 	}

@@ -705,3 +705,95 @@ func TestPeersFlagsPartners(t *testing.T) {
 		t.Fatalf("partner flags %v", flags)
 	}
 }
+
+func cron(job, name string) device.AgentCaller {
+	sid := "cron_" + job + "_20261113_020000"
+	return device.AgentCaller{SessionID: sid, RootSessionID: sid, CronJob: &device.AgentCronJob{ID: job, Name: name}}
+}
+
+func TestCronJobSendsAsItself(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	a := e.do("send", cron("faab67fa8abd", "re-zero chapter check"), map[string]string{"to": research, keyText: "Chapter 12 is out"})
+	if a.code != "" {
+		t.Fatalf("refused: %s %s", a.code, a.msg)
+	}
+	if len(e.sessions.submitted) != 1 || e.sessions.submitted[0].session != "s2" {
+		t.Fatalf("submitted %+v", e.sessions.submitted)
+	}
+	text := e.sessions.submitted[0].text
+	m := hub.AgentHeaderRE.FindStringSubmatch(text)
+	if m == nil || m[2] != "cron job 're-zero chapter check' (id faab67fa8abd)" {
+		t.Fatalf("header: %q", text)
+	}
+	if strings.Contains(text, "call agent_send") || !strings.Contains(text, "cannot read an answer") ||
+		!strings.Contains(text, "The user did not write it") {
+		t.Fatalf("frame: %q", text)
+	}
+	res, _ := a.result.(map[string]any)
+	id, _ := res["message_id"].(string)
+	got, ok, err := e.store.AgentMessage(context.Background(), "b1", id)
+	if err != nil || !ok || got.Mode != hub.AgentModeInput || got.Status != hub.AgentStatusDelivered ||
+		got.Hop != 1 || got.FromRoot != "cron:faab67fa8abd" || got.FromSession != "cron_faab67fa8abd_20261113_020000" {
+		t.Fatalf("record = %+v %v %v", got, ok, err)
+	}
+	if how, _ := res["delivery"].(string); !strings.Contains(how, "starts a turn if the chat is idle") {
+		t.Fatalf("delivery = %v", res["delivery"])
+	}
+}
+
+func TestCronJobWithoutNameOrPlugin(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	// An older plugin sends no cron_job: the id comes from the session id.
+	c := device.AgentCaller{SessionID: "cron_0123456789ab_20261113_020000", RootSessionID: "cron_0123456789ab_20261113_020000"}
+	if a := e.do("send", c, map[string]string{"to": research, keyText: "hi"}); a.code != "" {
+		t.Fatalf("refused: %s %s", a.code, a.msg)
+	}
+	m := hub.AgentHeaderRE.FindStringSubmatch(e.sessions.submitted[0].text)
+	if m == nil || m[2] != "cron job 0123456789ab" {
+		t.Fatalf("header: %q", e.sessions.submitted[0].text)
+	}
+	if agents.CronJobOf(chat("s1")) != nil || agents.CronJobOf(chat("cron_notajob")) != nil {
+		t.Fatal("a chat is not a cron job")
+	}
+	bad := device.AgentCaller{SessionID: "x", RootSessionID: "x", CronJob: &device.AgentCronJob{ID: "a b:c", Name: "n"}}
+	if agents.CronJobOf(bad) != nil {
+		t.Fatal("an id with spaces or colons is refused")
+	}
+}
+
+func TestCronRunsShareTheLimits(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	sent := 0
+	for i := 0; i < 20; i++ {
+		// Each run is a new session of the same job.
+		sid := fmt.Sprintf("cron_faab67fa8abd_20261113_0200%02d", i)
+		c := device.AgentCaller{SessionID: sid, RootSessionID: sid, CronJob: &device.AgentCronJob{ID: "faab67fa8abd", Name: "j"}}
+		a := e.do("send", c, map[string]string{"to": research, keyText: fmt.Sprint("m", i)})
+		if a.code == codeRate {
+			break
+		}
+		if a.code != "" {
+			t.Fatalf("refused: %s %s", a.code, a.msg)
+		}
+		sent++
+	}
+	if sent == 0 || sent >= 20 {
+		t.Fatalf("sent %d: the job's runs must share one limit", sent)
+	}
+	// Another job is counted on its own.
+	if a := e.do("send", cron("0123456789ab", "other"), map[string]string{"to": research, keyText: "x"}); a.code != "" {
+		t.Fatalf("other job refused: %s", a.code)
+	}
+}
+
+func TestCronCannotBeMessaged(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	a := e.do("send", chat("s1"), map[string]string{"to": "cron_faab67fa8abd_20261113_020000", keyText: "hi"})
+	if a.code != unknownPeer {
+		t.Fatalf("code = %q", a.code)
+	}
+}

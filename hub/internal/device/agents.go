@@ -28,6 +28,16 @@ type AgentCaller struct {
 	ParentSessionID  string          `json:"parent_session_id"`
 	ParentSubagentID string          `json:"parent_subagent_id"`
 	Tree             []AgentSubagent `json:"tree"`
+	// CronJob is set when the caller runs for a scheduled job. An older
+	// plugin leaves it out, and the hub reads the job id from the cron
+	// session id instead (see agents.CronJobOf).
+	CronJob *AgentCronJob `json:"cron_job,omitempty"`
+}
+
+// AgentCronJob names the scheduled job whose run made a request.
+type AgentCronJob struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // AgentSubagent is one live subagent of a delegation tree.
