@@ -20,7 +20,7 @@ A person is a hub user name. A user may use a backend when any of these holds:
 - `backends[].users` names them, or `backends[].groups` names one of their groups (from the login),
 - an admin gave them the backend in Settings > Users.
 
-Admins are the accounts marked admin in Settings > Users and the names in `auth.admins`. Admins add, change, disable and delete accounts and pick each one's backends. An admin cannot disable, demote or delete themselves, and the hub keeps at least one admin. Disabling an account, a new password and deleting it end its sessions on every replica within <!-- docgen:const pkg=internal/web name=accountCheckTTL -->`5s`<!-- /docgen:const -->.
+Admins are the accounts marked admin in Settings > Users and the names in `auth.admins`. With `auth.mode: oidc` and an empty `auth.admins`, the first entry of `users[]` is an admin, so a config from before `auth.admins` keeps a way into Settings > Users. Admins add, change, disable and delete accounts and pick each one's backends. An admin cannot disable, demote or delete themselves, and the hub keeps at least one admin. Disabling an account, a new password and deleting it end its sessions on every replica within <!-- docgen:const pkg=internal/web name=accountCheckTTL -->`5s`<!-- /docgen:const -->.
 
 For one person with one Hermes, no `backends[]` list is needed:
 

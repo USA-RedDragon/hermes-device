@@ -252,6 +252,11 @@ func newAuthState(cfg *config.Config, opts Options) (authState, error) {
 	for _, u := range cfg.Users {
 		s.configNames[u.Name] = true
 	}
+	// A config written before auth.admins has no admin and no database
+	// account to make one in, so its first user is the admin.
+	if s.mode == config.AuthOIDC && len(s.admins) == 0 && len(cfg.Users) > 0 {
+		s.admins[cfg.Users[0].Name] = true
+	}
 	for _, b := range cfg.Backends {
 		s.backendIDs = append(s.backendIDs, b.ID)
 		s.backendViews = append(s.backendViews, backendView{ID: b.ID, Name: b.Name, Everyone: b.Everyone,

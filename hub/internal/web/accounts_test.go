@@ -421,3 +421,17 @@ func TestOIDCAutoCreateAndPreparedAccounts(t *testing.T) {
 		t.Fatalf("other domain = %d", resp.StatusCode)
 	}
 }
+
+// A config from before auth.admins names no admin; its first user is one, so
+// Settings > Users works after the upgrade with no new setting.
+func TestOIDCFirstConfigUserIsAdminWithoutAuthAdmins(t *testing.T) {
+	t.Parallel()
+	e := setupWith(t, func(_ *config.Config, opts *web.Options, st *store.Store) {
+		opts.Accounts, opts.Hasher = st, testHasher
+	})
+	alice := client(t)
+	login(t, e, alice)
+	if m, _ := meOf(t, e, alice); !m.Admin {
+		t.Fatal("the first users[] entry is not an admin when auth.admins is empty")
+	}
+}
