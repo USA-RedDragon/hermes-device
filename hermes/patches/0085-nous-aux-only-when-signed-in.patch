@@ -1,0 +1,222 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 17:05:00 -0600
+Subject: [PATCH] fix(auxiliary): the auto chains try Nous Portal only when
+ signed in
+
+The text discovery chain and the vision auto order listed Nous Portal
+unconditionally, so an install that never chose Nous logged five WARNINGs at
+boot (the vision gate walks both) and tried the lane on every pass. A
+missing-login error carrying its code nous_auth_missing also counted as a
+credential that failed, so it logged at WARNING. Nous is now a lane only with a
+Nous login, and a missing login is DEBUG unless login state is stored.
+---
+ agent/auxiliary_client.py                          | 19 ++++-
+ agent/auxiliary_unavailable.py                     |  5 +-
+ .../test_auxiliary_auto_never_guesses_provider.py  |  1 +
+ tests/agent/test_auxiliary_client.py               |  2 +
+ tests/agent/test_nous_not_signed_in_is_quiet.py    | 96 ++++++++++++++++++++++
+ 5 files changed, 121 insertions(+), 2 deletions(-)
+
+diff --git a/agent/auxiliary_client.py b/agent/auxiliary_client.py
+index 98bf6257..43e62e13 100644
+--- a/agent/auxiliary_client.py
++++ b/agent/auxiliary_client.py
+@@ -3131,15 +3131,28 @@ def _normalize_main_runtime(main_runtime: Optional[dict[str, Any]]) -> dict[str,
+     return normalized
+ 
+ 
++def _nous_signed_in() -> bool:
++    """True when Hermes holds any Nous Portal login (pool entry or stored auth state). The auto chains
++    only try Nous then: an install that never chose Nous would fail the lane on every pass, and log it."""
++    if _read_nous_auth():
++        return True
++    with contextlib.suppress(Exception):
++        from hermes_cli.auth import get_provider_auth_state
++        return bool(get_provider_auth_state("nous"))
++    return False
++
++
+ def _get_provider_chain() -> list[tuple]:
+     """Ordered provider detection chain, built at call time so ``_try_*`` patches are picked up.
+ 
+     ``openai-codex`` is deliberately absent (shifting allow-list breaks guessed-model fallback).
++    Nous is in it only for an install that signed in to Nous Portal.
+     """
+-    return [
++    chain = [
+         ("openrouter", _try_openrouter), ("nous", _try_nous),
+         ("local/custom", _try_custom_endpoint), ("api-key", _resolve_api_key_provider),
+     ]
++    return chain if _nous_signed_in() else [step for step in chain if step[0] != "nous"]
+ 
+ 
+ # "Recently 402'd" unhealthy-provider cache: a depleted provider stays so for hours, so hiding it
+@@ -5420,6 +5433,8 @@ def get_available_vision_backends() -> list[str]:
+         if main_ok:
+             available.append(main_provider)
+     for p in _VISION_AUTO_PROVIDER_ORDER:  # skip if already covered by main provider
++        if p == "nous" and not _nous_signed_in():
++            continue
+         if p not in available and _resolve_strict_vision_backend(p)[0] is not None:
+             available.append(p)
+     return available
+@@ -5509,6 +5524,8 @@ def _vision_auto_route(
+     for candidate in _VISION_AUTO_PROVIDER_ORDER:
+         if candidate == main_provider:
+             continue  # already tried above
++        if candidate == "nous" and not _nous_signed_in():
++            continue
+         sync_client, default_model = _resolve_strict_vision_backend(candidate)
+         if sync_client is not None:
+             return _finalize_vision_client(candidate, sync_client, default_model, resolved_model, async_mode)
+diff --git a/agent/auxiliary_unavailable.py b/agent/auxiliary_unavailable.py
+index 639ace1c..a40a5de2 100644
+--- a/agent/auxiliary_unavailable.py
++++ b/agent/auxiliary_unavailable.py
+@@ -228,7 +228,10 @@ def _nous_credential_present(exc: BaseException) -> bool:
+     with no stored state is the normal condition for users who never chose Nous; the auto-route walk
+     hits it on every discovery pass and must not warn (the ladder already logs its own summary).
+     """
+-    if getattr(exc, "code", None):
++    from hermes_cli.auth import _NOUS_AUTH_MISSING_CODES
++
++    code = getattr(exc, "code", None)
++    if code and code not in _NOUS_AUTH_MISSING_CODES:
+         return True
+     from hermes_cli.auth import get_provider_auth_state
+ 
+diff --git a/tests/agent/test_auxiliary_auto_never_guesses_provider.py b/tests/agent/test_auxiliary_auto_never_guesses_provider.py
+index f20d73c9..b6535e27 100644
+--- a/tests/agent/test_auxiliary_auto_never_guesses_provider.py
++++ b/tests/agent/test_auxiliary_auto_never_guesses_provider.py
+@@ -24,6 +24,7 @@ def nous_is_the_only_working_provider():
+          patch.object(aux, "_try_configured_fallback_chain", return_value=(None, None, "")), \
+          patch.object(aux, "_try_main_fallback_chain", return_value=(None, None, "")), \
+          patch.object(aux, "_try_openrouter", return_value=(None, None)), \
++         patch.object(aux, "_nous_signed_in", return_value=True), \
+          patch.object(aux, "_try_nous", return_value=(MagicMock(name="nous"), "nous-model")):
+         yield
+ 
+diff --git a/tests/agent/test_auxiliary_client.py b/tests/agent/test_auxiliary_client.py
+index 1b1e241d..62371d95 100644
+--- a/tests/agent/test_auxiliary_client.py
++++ b/tests/agent/test_auxiliary_client.py
+@@ -1400,6 +1400,7 @@ class TestTryPaymentFallback:
+         mock_client = MagicMock()
+         with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+              patch("agent.auxiliary_client._try_nous", return_value=(mock_client, "nous-model")), \
++             patch("agent.auxiliary_client._nous_signed_in", return_value=True), \
+              patch("agent.auxiliary_client._read_main_provider", return_value="auto"):
+             client, model, label = _try_payment_fallback("openrouter", task="compression")
+         assert client is mock_client
+@@ -4249,6 +4250,7 @@ class TestAuxUnhealthyCache:
+         with patch("agent.auxiliary_client._read_main_provider", return_value="auto"), \
+              patch("agent.auxiliary_client._try_openrouter") as or_try, \
+              patch("agent.auxiliary_client._try_nous", return_value=(nous_client, "n-model")), \
++             patch("agent.auxiliary_client._nous_signed_in", return_value=True), \
+              patch("agent.auxiliary_client._try_custom_endpoint") as custom_try, \
+              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
+             client, _model, label = _try_payment_fallback("openrouter", task="compression")
+diff --git a/tests/agent/test_nous_not_signed_in_is_quiet.py b/tests/agent/test_nous_not_signed_in_is_quiet.py
+new file mode 100644
+index 00000000..44a815ce
+--- /dev/null
++++ b/tests/agent/test_nous_not_signed_in_is_quiet.py
+@@ -0,0 +1,96 @@
++"""An install that never signed in to Nous Portal does not try, or warn about, Nous in the auto chains.
++
++The text discovery chain and the vision auto order listed Nous unconditionally, so a fresh install with no main
++model logged five WARNINGs at boot (the vision gate walks both). The resolver's own error carries the code
++``nous_auth_missing``, which ``_nous_credential_present`` read as "a credential exists that failed".
++"""
++import logging
++
++import pytest
++
++import agent.auxiliary_client as aux
++import agent.auxiliary_unavailable as unavailable
++from hermes_cli.auth_constants import AuthError
++
++
++@pytest.fixture(autouse=True)
++def _no_nous(monkeypatch, tmp_path):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.setattr(unavailable, "_last_nous_detail", None)
++    monkeypatch.setattr(unavailable, "_warned_nous_details", set())
++    monkeypatch.setattr(aux, "_read_nous_auth", lambda: None)
++    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: None)
++
++
++def _labels():
++    return [label for label, _ in aux._get_provider_chain()]
++
++
++def test_chain_skips_nous_without_a_login():
++    assert _labels() == ["openrouter", "local/custom", "api-key"]
++
++
++def test_chain_keeps_nous_with_a_login(monkeypatch):
++    monkeypatch.setattr(aux, "_read_nous_auth", lambda: {"access_token": "t"})
++    assert _labels() == ["openrouter", "nous", "local/custom", "api-key"]
++
++
++def test_chain_keeps_nous_with_stored_state_only(monkeypatch):
++    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: {"refresh_token": "r"})
++    assert "nous" in _labels()
++
++
++def test_discovery_never_calls_nous_without_a_login(monkeypatch, caplog):
++    def boom(*a, **k):
++        raise AssertionError("Nous was tried")
++
++    monkeypatch.setattr(aux, "_try_nous", boom)
++    monkeypatch.setattr(aux, "_try_openrouter", lambda *a, **k: (None, None))
++    monkeypatch.setattr(aux, "_try_custom_endpoint", lambda *a, **k: (None, None))
++    monkeypatch.setattr(aux, "_resolve_api_key_provider", lambda *a, **k: (None, None))
++    with caplog.at_level(logging.DEBUG):
++        assert aux._try_discovery_chain() == (None, None, "")
++    assert not [r for r in caplog.records if "nous" in r.getMessage().lower()]
++
++
++def test_vision_order_skips_nous_without_a_login(monkeypatch):
++    tried = []
++    monkeypatch.setattr(aux, "_read_main_provider", lambda: "")
++    monkeypatch.setattr(aux, "_resolve_strict_vision_backend", lambda p, model=None: (tried.append(p), (None, None))[1])
++    assert aux.get_available_vision_backends() == []
++    assert tried == ["openrouter", "deepinfra"]
++    assert aux._vision_auto_route({"provider": "", "model": ""}, None, None, False) == (None, None, None)
++    assert tried == ["openrouter", "deepinfra"] * 2
++
++
++def test_vision_order_tries_nous_with_a_login(monkeypatch):
++    monkeypatch.setattr(aux, "_read_nous_auth", lambda: {"access_token": "t"})
++    tried = []
++    monkeypatch.setattr(aux, "_read_main_provider", lambda: "")
++    monkeypatch.setattr(aux, "_resolve_strict_vision_backend", lambda p, model=None: (tried.append(p), (None, None))[1])
++    aux.get_available_vision_backends()
++    assert tried == ["openrouter", "nous", "deepinfra"]
++
++
++def test_missing_login_error_with_its_code_is_debug(caplog):
++    gone = AuthError("Hermes is not logged into Nous Portal.", provider="nous", code="nous_auth_missing",
++                     relogin_required=True)
++    with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_unavailable"):
++        unavailable.record_nous_credential_failure(gone)
++    assert {r.levelno for r in caplog.records} == {logging.DEBUG}
++
++
++def test_dead_credential_still_warns(caplog):
++    dead = AuthError("Invalid refresh token", provider="nous", code="invalid_grant", relogin_required=True)
++    with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_unavailable"):
++        unavailable.record_nous_credential_failure(dead)
++    assert {r.levelno for r in caplog.records} == {logging.WARNING}
++
++
++def test_missing_login_code_warns_when_state_is_stored(caplog, monkeypatch):
++    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: {"refresh_token": "r"})
++    gone = AuthError("No access token found for Nous Portal login.", provider="nous",
++                     code="nous_auth_missing_access_token", relogin_required=True)
++    with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_unavailable"):
++        unavailable.record_nous_credential_failure(gone)
++    assert {r.levelno for r in caplog.records} == {logging.WARNING}

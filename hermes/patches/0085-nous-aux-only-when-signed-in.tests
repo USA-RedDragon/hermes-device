@@ -1,0 +1,8 @@
+# Existing upstream tests of the auxiliary router and the Nous lane this patch sits beside.
+tests/agent/test_auxiliary_client.py
+tests/agent/test_auxiliary_main_first.py
+tests/agent/test_auxiliary_auto_never_guesses_provider.py
+tests/agent/test_auxiliary_unavailable_nous_reason.py
+tests/agent/test_nous_welcome_client_contract.py
+tests/agent/test_auxiliary_error_policy.py
+tests/tools/test_vision_tools.py
