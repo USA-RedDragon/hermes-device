@@ -33,8 +33,8 @@ account:
 
    ![The setup page](images/setup.png)
 
-   **There is no setup token.** Whoever opens the page first gets the admin account, so do it right after the
-   first start, before Talaria is reachable from the internet. After that the page only says the hub is set up.
+   The first account is the admin. Make it right after the first start, before Talaria is reachable from the
+   internet.
 3. Later visits show the login page.
 
    ![The login page](images/login.png)

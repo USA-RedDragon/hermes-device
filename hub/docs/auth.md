@@ -51,7 +51,7 @@ This adds a backend with id `hermes` that every hub user may use.
    level=WARN msg="Setup is not finished. The first visitor of the setup page becomes the admin, so finish setup before the hub is open to the internet" url=https://hub.example.com/setup
    ```
 
-   There is no setup token. Whoever opens the setup page first gets the admin account, so open it yourself before you expose the hub. Opening the hub's root address with no account redirects to the setup page.
+   The first account is the admin, so make it before you expose the hub. Opening the hub's root address with no account redirects to the setup page.
 2. Open the setup page and give a name and a password. That makes the first account, an admin, with every backend. The setup page works only while the hub has no account, also with several replicas: the database lets exactly one first account in. After that the page says the hub is already set up.
 3. Add the other people in Settings > Users.
 

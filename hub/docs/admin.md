@@ -5,7 +5,7 @@ This page is for the person who runs the hub: adding people, connecting Hermes b
 ## First start
 
 1. Start the hub. With the default `auth.mode: local` and no account, it logs a warning with the setup address, `<public URL>/setup`.
-2. Open that address, give a name and a password. The first account is an admin with every backend. There is no setup token, so open the page yourself before you expose the hub to the internet.
+2. Open that address, give a name and a password. The first account is an admin with every backend. Do this before you expose the hub to the internet.
 3. Add the other people under Settings, then Users.
 
 [Login settings reference](auth.md) describes the other login modes: a reverse-proxy header and OpenID Connect.
