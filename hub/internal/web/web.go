@@ -90,6 +90,10 @@ type Options struct {
 	Subagents hub.SubagentRoutes
 	// Chats keeps each user's drafts, pins and read state. Nil: none.
 	Chats hub.ChatStore
+	// MarksKeep is how long a chat can be missing from every list before
+	// its pin and read state go. Default 8 days: Hermes's trash holds a
+	// deleted chat for 7, and a restore brings its pin back.
+	MarksKeep time.Duration
 	// Prompts keeps each user's saved prompts. Nil: none.
 	Prompts hub.PromptLibrary
 	// Partners keeps each user's chat pairs that work together. Nil: none.
@@ -163,8 +167,11 @@ type Server struct {
 	chats        hub.ChatStore
 	pruneMu      sync.Mutex
 	pruned       map[string]time.Time
-	prompts      hub.PromptLibrary
-	partners     hub.AgentPartners
+	// missing is when each marked chat was first absent from a fresh list.
+	missing   map[hub.SessionRef]time.Time
+	marksKeep time.Duration
+	prompts   hub.PromptLibrary
+	partners  hub.AgentPartners
 	// partnerOwners maps each single-user backend to its user.
 	partnerOwners map[string]string
 	// agentMessages gives the cards of agent messages their hop. Nil: none.
@@ -239,7 +246,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		devices:   opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory, models: opts.Models,
 		insights: opts.Insights, files: opts.Files,
 		notices: opts.Notices, notifier: opts.Notifier, claude: opts.Claude, scheduled: opts.Scheduled,
-		claudeCode: opts.ClaudeCode, subagents: opts.Subagents, chats: opts.Chats, prompts: opts.Prompts,
+		claudeCode: opts.ClaudeCode, subagents: opts.Subagents, chats: opts.Chats, marksKeep: opts.MarksKeep, prompts: opts.Prompts,
 		partners: opts.Partners, agentMessages: opts.AgentMessages, partnerOwners: owners,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,

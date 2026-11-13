@@ -204,46 +204,76 @@ type markPruner interface {
 // pruneEvery is how soon the marks of one user are swept again.
 const pruneEvery = 5 * time.Minute
 
+// marksKeep is how long a chat may be missing from every list before its
+// marks go. Hermes keeps a deleted chat in its trash for 7 days
+// (sessions.trash_days) and hides it from the lists; a restore brings it
+// back, so its pin must still be there.
+const marksKeep = 8 * 24 * time.Hour
+
 // pruneMarks drops user's pins and other marks of chats that the backends
 // no longer list, so a deleted chat does not stay pinned for ever. It
 // takes only a complete, fresh list as the truth: callers pass it for an
 // answer where every backend replied. A backend that listed no chat at
 // all is left alone, since an empty list is more often a fault than the
-// end of every chat.
+// end of every chat. A chat's marks go only after it has been missing for
+// marksKeep, so a chat in Hermes's trash keeps its pin until it is purged.
 func (s *Server) pruneMarks(ctx context.Context, user string, ss []hub.Session, marks map[hub.SessionRef]hub.ChatMark) {
 	mp, ok := s.chats.(markPruner)
 	if !ok || len(marks) == 0 || len(ss) == 0 {
 		return
 	}
-	s.pruneMu.Lock()
-	if s.pruned == nil {
-		s.pruned = map[string]time.Time{}
-	}
-	if last, ok := s.pruned[user]; ok && time.Since(last) < pruneEvery {
-		s.pruneMu.Unlock()
-		return
-	}
-	s.pruned[user] = time.Now()
-	s.pruneMu.Unlock()
 	listed := map[string]bool{}
 	have := make(map[hub.SessionRef]bool, len(ss))
 	for _, x := range ss {
 		listed[x.BackendID] = true
 		have[hub.SessionRef{BackendID: x.BackendID, SessionID: x.ID}] = true
 	}
+	keep := s.marksKeep
+	if keep <= 0 {
+		keep = marksKeep
+	}
+	now := time.Now()
 	var gone []hub.SessionRef
+	s.pruneMu.Lock()
+	if s.missing == nil {
+		s.missing = map[hub.SessionRef]time.Time{}
+	}
+	for ref := range s.missing {
+		if have[ref] {
+			delete(s.missing, ref) // listed again: restored from the trash
+		}
+	}
 	for ref := range marks {
-		if listed[ref.BackendID] && !have[ref] {
+		if !listed[ref.BackendID] || have[ref] {
+			continue
+		}
+		since, ok := s.missing[ref]
+		if !ok {
+			s.missing[ref] = now
+			continue
+		}
+		if now.Sub(since) >= keep {
 			gone = append(gone, ref)
 		}
 	}
-	if len(gone) == 0 {
+	if s.pruned == nil {
+		s.pruned = map[string]time.Time{}
+	}
+	if last, ok := s.pruned[user]; len(gone) == 0 || (ok && time.Since(last) < pruneEvery) {
+		s.pruneMu.Unlock()
 		return
 	}
+	s.pruned[user] = now
+	s.pruneMu.Unlock()
 	if err := mp.DeleteMarks(ctx, user, gone); err != nil {
 		s.log.Warn("drop marks of deleted chats", "error", err.Error())
 		return
 	}
+	s.pruneMu.Lock()
+	for _, ref := range gone {
+		delete(s.missing, ref)
+	}
+	s.pruneMu.Unlock()
 	s.log.Info("Dropped the marks of chats Hermes no longer has", "user", user, "chats", len(gone))
 }
 

@@ -10,9 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/hub/internal/store"
+	"github.com/USA-RedDragon/talaria/hub/internal/web"
 )
 
 const (
@@ -500,28 +503,39 @@ func TestPromptIDRunsOnce(t *testing.T) {
 	}
 }
 
-func TestListDropsMarksOfDeletedChats(t *testing.T) {
+func TestListKeepsMarksOfMissingChatsUntilTheTrashExpires(t *testing.T) {
 	t.Parallel()
-	e := setup(t)
+	e := setupWith(t, func(_ *config.Config, o *web.Options, _ *store.Store) { o.MarksKeep = 150 * time.Millisecond })
 	c := client(t)
 	m := login(t, e, c)
+	ghost := hub.SessionRef{BackendID: "pc", SessionID: "ghost"}
 	for _, id := range []string{"s1", "ghost"} {
 		if s := apiJSON(t, c, http.MethodPost, e.url+"/api/sessions/pc/"+id+"/pin", m.CSRF, map[string]bool{keyPinned: true}, nil); s != http.StatusNoContent {
 			t.Fatalf("pin %s = %d", id, s)
 		}
 	}
-	got := listed(t, e, c)
-	if !got["s1"].Pinned {
+	marks := func() map[hub.SessionRef]hub.ChatMark {
+		t.Helper()
+		got, _, err := e.store.ChatMarks(context.Background(), userAlice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	// Hermes does not list ghost, as for a chat in its trash: the pin stays.
+	if got := listed(t, e, c); !got["s1"].Pinned {
 		t.Fatalf("s1 lost its pin: %+v", got["s1"])
 	}
-	marks, _, err := e.store.ChatMarks(context.Background(), userAlice)
-	if err != nil {
-		t.Fatal(err)
+	if !marks()[ghost].Pinned {
+		t.Fatalf("the pin of a missing chat went at once: %+v", marks())
 	}
-	if _, ok := marks[hub.SessionRef{BackendID: "pc", SessionID: "ghost"}]; ok {
-		t.Fatalf("the pin of a chat Hermes no longer has stayed: %+v", marks)
+	// After the keep time with the chat still missing, it is purged: the pin goes.
+	time.Sleep(200 * time.Millisecond)
+	listed(t, e, c)
+	if _, ok := marks()[ghost]; ok {
+		t.Fatalf("the pin of a chat Hermes no longer has stayed: %+v", marks())
 	}
-	if !marks[hub.SessionRef{BackendID: "pc", SessionID: "s1"}].Pinned {
-		t.Fatalf("a listed chat lost its pin: %+v", marks)
+	if !marks()[hub.SessionRef{BackendID: "pc", SessionID: "s1"}].Pinned {
+		t.Fatalf("a listed chat lost its pin: %+v", marks())
 	}
 }
