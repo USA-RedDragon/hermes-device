@@ -90,8 +90,11 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	for _, b := range cfg.Backends {
 		dialers[b.ID] = gateway.NewDialer(gateway.Credentials{BaseURL: b.URL, Provider: b.Provider, Username: b.Username, Password: b.Password})
 	}
+	if err := prepareAuth(ctx, cfg, st); err != nil {
+		return err
+	}
 	opts := service.Options{HoldTimeout: cfg.Hold.Timeout, Dialer: func(b config.Backend) service.Dialer { return dialers[b.ID] },
-		Answers: st}
+		Answers: st, Grants: st}
 	if st.Postgres() {
 		opts.Relay = st
 	}
@@ -108,7 +111,7 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 		return err
 	}
 	svc.SetNotify(notifier.Notify)
-	webOpts := web.Options{Service: svc, Links: st, Tokens: st, Groups: st, Notices: st, Notifier: notifier, Chats: st, Prompts: st,
+	webOpts := web.Options{Service: svc, Links: st, Tokens: st, Groups: st, Notices: st, Notifier: notifier, Chats: st, Prompts: st, Accounts: st,
 		Version: cmd.Annotations["version"]}
 	devices, err := newDevices(cfg, st, svc, dialers)
 	if err != nil {
@@ -227,7 +230,8 @@ func newNotifier(cfg *config.Config, st *store.Store, svc *service.Service, dial
 		jobs[b.ID] = dialers[b.ID]
 	}
 	opts := notify.Options{Store: st, Access: svc, Prompts: svc, Users: users, Backends: names, Jobs: jobs,
-		PublicURL: cfg.HTTP.PublicURL, PushSubject: cfg.Notify.VAPIDSubject, Remind: cfg.Notify.RemindAfter, JobPoll: cfg.Notify.JobInterval}
+		PublicURL: cfg.HTTP.PublicURL, PushSubject: cfg.Notify.VAPIDSubject, Remind: cfg.Notify.RemindAfter, JobPoll: cfg.Notify.JobInterval,
+		Accounts: st.AccountNames}
 	if key != nil && cfg.Notify.VAPIDSubject == "" {
 		slog.Warn("Web Push disabled: set notify.vapid_subject to a mailto: or https: URL, or use an https http.public_url")
 	} else if key != nil {
