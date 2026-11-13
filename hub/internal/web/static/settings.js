@@ -16,11 +16,16 @@ window.HubSettings = (ctx) => {
   const phone = matchMedia("(max-width: 700px)");
   const people = window.HubUsers({ api, el, me: ctx.me });
   const account = window.HubAccount({ api, el, logout: ctx.logout, refreshMe: ctx.refreshMe });
+  const agent = ctx.agent;
   const tabs = [
     ["computers", "Computers", (me) => me.devices],
     ["models", "Models", (me) => !!me.models_admin && !!ctx.models],
+    ["agent", "Agent", (me) => !!me.agent_admin && !!agent],
+    ["tools", "Skills and tools", (me) => !!me.agent_admin && !!agent],
     ["notifications", "Notifications", (me) => me.notify],
-    ["telegram", "Telegram", (me) => !!me.telegram_steps],
+    ["telegram", "Telegram", (me) => !!me.telegram_steps || !!me.telegram_admin],
+    ["diagnostics", "Diagnostics", (me) => !!me.agent_admin && !!agent],
+    ["backup", "Backup", (me) => !!me.admin && !!me.agent_admin && !!agent],
     ["claude", "Claude accounts", (me) => me.claude],
     ["prompts", "Prompts", (me) => me.prompts],
     ["users", "Users", (me) => me.admin],
@@ -125,6 +130,10 @@ window.HubSettings = (ctx) => {
     if (k === "prompts") { drawPrompts(); loadPrompts(); }
     if (k === "users") people.load();
     if (k === "models") modelsPane().load();
+    if (k === "agent") agent.agentPane(document.getElementById("set-agent"));
+    if (k === "tools") agent.toolsPane(document.getElementById("set-tools"));
+    if (k === "diagnostics") agent.diagnosticsPane(document.getElementById("set-diagnostics"));
+    if (k === "backup") agent.backupPane(document.getElementById("set-backup"));
     if (k === "account") drawAccount();
   }
 
@@ -293,6 +302,8 @@ window.HubSettings = (ctx) => {
   async function drawTelegram() {
     const me = ctx.me();
     const p = pane("telegram", "Telegram", "The hub's Telegram bot shows your chats, with the same assistants and permissions as this page.");
+    if (me.telegram_admin && agent) await agent.telegramAdmin(p);
+    if (!me.telegram_steps) return;
     const dl = el("dl", "kv");
     const linked = el("dd", "", me.notify ? "Checking" : "Send the bot a message to link your Telegram account.");
     dl.append(el("dt", "", "Account"), linked);

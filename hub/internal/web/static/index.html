@@ -37,6 +37,7 @@
 <script src="/static/authrules.js" defer></script>
 <script src="/static/users.js" defer></script>
 <script src="/static/account.js" defer></script>
+<script src="/static/agent.js" defer></script>
 <script src="/static/settings.js" defer></script>
 <script src="/static/scheduled.js" defer></script>
 <script src="/static/composer.js" defer></script>
@@ -81,6 +82,7 @@
       <div id="tok" class="tok" title="Tokens of this chat's own turns. Subagents and background prompts count apart, in Activity." hidden><span id="tokturn"></span><span id="toksub" class="tsub"></span></div>
       <button id="filesbtn" class="ghost ib" type="button" hidden title="Files: this chat's folder and what Talaria changed" aria-label="Files"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
       <button id="exportbtn" class="ghost ib" type="button" hidden title="Export as Markdown (Ctrl+Shift+E)" aria-label="Export as Markdown"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></button>
+      <button id="qpbtn" class="ghost ib" type="button" hidden title="Tools, skills and safety" aria-label="Tools, skills and safety" aria-haspopup="dialog" aria-expanded="false" aria-controls="qpanel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M16 6a2 2 0 1 0 0 .01M10 12a2 2 0 1 0 0 .01M18 18a2 2 0 1 0 0 .01"/></svg></button>
       <button id="actbtn" class="ghost ib actbtn" type="button" aria-expanded="false" aria-controls="act" aria-label="Activity" title="Activity: subagents and background tasks (Ctrl+.)" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span id="actcount" class="count" hidden>0</span></button>
     </header>
     <details id="info" class="info" hidden>
@@ -94,6 +96,7 @@
         <div id="settings-note" class="status" aria-live="polite"></div>
       </div>
     </details>
+    <div id="updbanner" class="banner upd" role="status" hidden></div>
     <div id="banner" class="banner" hidden></div>
     <div id="placenote" class="placenote" hidden></div>
     <div id="claudenote" class="placenote" aria-live="polite" hidden></div>
@@ -105,6 +108,8 @@
     <div id="scheduled" class="sched" hidden></div>
     <div id="log" class="log" aria-live="polite" hidden></div>
     <div class="tbhold"><button id="tobottom" class="tobottom" type="button" title="Jump to latest" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"/></svg><span class="lbl">Jump to latest</span></button></div>
+    <div id="qpscrim" class="qpscrim" hidden></div>
+    <div id="qpanel" class="qpanel" role="dialog" aria-labelledby="qp-title" hidden></div>
     <form id="composer" class="composer" hidden>
       <div id="pop" class="pop" role="listbox" aria-label="Suggestions" hidden></div>
       <div id="chips" class="chips" aria-label="Attachments" hidden></div>
@@ -159,6 +164,10 @@
       <div id="devices" aria-live="polite"></div>
     </section>
     <section id="set-models" class="set-pane" role="tabpanel" aria-live="polite" hidden></section>
+    <section id="set-agent" class="set-pane" role="tabpanel" hidden></section>
+    <section id="set-tools" class="set-pane" role="tabpanel" hidden></section>
+    <section id="set-diagnostics" class="set-pane" role="tabpanel" hidden></section>
+    <section id="set-backup" class="set-pane" role="tabpanel" hidden></section>
     <section id="set-notifications" class="set-pane" role="tabpanel" hidden><div id="notify-prefs" class="notify-prefs" aria-live="polite"></div></section>
     <section id="set-telegram" class="set-pane" role="tabpanel" hidden></section>
     <section id="set-claude" class="set-pane" role="tabpanel" hidden></section>

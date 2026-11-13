@@ -2599,7 +2599,20 @@
     mt.id = "mtok";
     line.append(mt, el("span", "break"));
     line.append(...lim.parts);
-    line.append(el("span", "grow"), el("span", "who2", me.display || me.user || ""));
+    line.append(el("span", "grow"));
+    if (view && me.agent) {
+      const chip = el("span", "qp", "");
+      chip.setAttribute("role", "button");
+      chip.tabIndex = 0;
+      chip.title = "Tools, skills and safety";
+      chip.append(window.HubIcons.icon("sliders"), "Tools and skills");
+      const go = (e) => { e.preventDefault(); e.stopPropagation(); quickPanel(true); };
+      chip.onclick = go;
+      chip.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") go(e); };
+      line.append(chip);
+    }
+    line.append(el("span", "who2", me.display || me.user || ""));
+    $("qpbtn").hidden = !(view && me.agent);
     mirrorTokens();
     const p = view ? view.place : null;
     let cwd = info.cwd;
@@ -3075,6 +3088,8 @@
     scheduled.hide();
     files.close();
     $("filesbtn").hidden = true;
+    quickPanel(false);
+    $("qpbtn").hidden = true;
     closeStream();
     attachments.clear();
     view = null;
@@ -3131,6 +3146,8 @@
     scheduled.hide();
     files.close();
     $("filesbtn").hidden = true;
+    quickPanel(false);
+    $("qpbtn").hidden = true;
     closeStream();
     attachments.clear();
     current = { b: backend, s: session };
@@ -3203,6 +3220,8 @@
     scheduled.hide();
     files.close();
     $("filesbtn").hidden = true;
+    quickPanel(false);
+    $("qpbtn").hidden = true;
     closeStream();
     attachments.clear();
     view = null;
@@ -3840,8 +3859,33 @@
   const modelsUI = window.HubModels.create({ api, el, me: () => me, toast,
     backend: () => (view && view.backend) || me.default_backend || (lastList && lastList.backends && lastList.backends[0] ? lastList.backends[0].id : ""),
     connected: () => modelsChanged(), startChat: () => newChat() });
-  const prefs = window.HubSettings({ api, el, me: () => me, computers: () => computers, notices, logout, refreshMe, models: modelsUI,
+  const agentUI = window.HubAgent.create({ api, el, me: () => me, refreshMe: async () => { await refreshMe(); },
+    openSettings: (k) => prefs.open(k, true) });
+  const prefs = window.HubSettings({ api, el, me: () => me, computers: () => computers, notices, logout, refreshMe, models: modelsUI, agent: agentUI,
     closeSide: () => openSide(false), promptsChanged: () => composer.promptsChanged() });
+
+  // quickPanel opens or closes the chat's panel of tools, skills,
+  // connections and safety. A narrow window gets it as a sheet from the
+  // bottom; Esc or a click outside closes it.
+  let qpFor = "";
+  function quickPanel(on) {
+    const box = $("qpanel");
+    if (!box) return;
+    const open = !!on && !!view;
+    box.hidden = !open;
+    $("qpscrim").hidden = !open;
+    $("qpbtn").setAttribute("aria-expanded", String(open));
+    $("qpbtn").classList.toggle("on", open);
+    if (!open) {
+      if (qpFor) $("qpbtn").focus({ preventScroll: true });
+      qpFor = "";
+      return;
+    }
+    qpFor = view.backend + "/" + view.session;
+    agentUI.quick(box, { backend: view.backend, session: view.session }, () => quickPanel(false)).then(() => {
+      box.querySelector("input, button:not(.ib)")?.focus({ preventScroll: true });
+    });
+  }
 
   // refreshMe reads /api/me again: a new password gives this browser a new session and CSRF token.
   async function refreshMe() {
@@ -3875,6 +3919,14 @@
       $("who").textContent = me.display || me.user || "";
     } catch (_) { return; }
     $("menu").onclick = () => openSide(true);
+    $("qpbtn").onclick = () => quickPanel($("qpanel").hidden);
+    $("qpscrim").onclick = () => quickPanel(false);
+    $("qpanel").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); quickPanel(false); } });
+    document.addEventListener("click", (e) => {
+      const box = $("qpanel");
+      if (!box.hidden && !box.contains(e.target) && !e.target.closest("#qpbtn, .qp")) quickPanel(false);
+    });
+    agentUI.updateBanner($("updbanner"));
     $("scrim").onclick = () => openSide(false);
     $("newchat").onclick = () => newChat();
     $("place").onclick = () => {
