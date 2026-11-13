@@ -139,6 +139,13 @@ class BrowserBase(Base):
             p = mock.patch.object(browser, name, {})
             p.start()
             self.addCleanup(p.stop)
+        for name in ("_LEDGER", "_REAPER"):
+            p = mock.patch.object(browser, name, None)
+            p.start()
+            self.addCleanup(p.stop)
+        p = mock.patch.object(browser, "start_reaper")
+        p.start()
+        self.addCleanup(p.stop)
         self.registry = self.registered()
         self.confirm = mock.patch.object(browser, "_confirm", return_value=True)
         self.confirmed = self.confirm.start()
@@ -161,7 +168,11 @@ class BrowserBase(Base):
 
         browser.register(Ctx(), core)
         self.assertEqual(hooks, [("pre_tool_call", browser.pre_tool_call),
-                                 ("on_session_delete", browser.on_session_delete)])
+                                 ("on_session_delete", browser.on_session_delete),
+                                 ("pre_llm_call", browser.on_turn_start),
+                                 ("post_llm_call", browser.on_turn_end),
+                                 ("on_session_end", browser.on_turn_end),
+                                 ("subagent_stop", browser.on_subagent_stop)])
         import cron.scheduler
         self.assertIsNotNone(getattr(cron.scheduler.create_job_with_scheduler_registration,
                                      core._WRAPPED_MARK, None))
@@ -897,7 +908,7 @@ class ToolTests(BrowserBase):
             self.assertLessEqual(set(example), set(schema["parameters"]["properties"]), name)
             self.assertLessEqual(set(schema["parameters"]["required"]), set(example) | {"device"}, name)
             total += len(json.dumps({"type": "function", "function": schema}, ensure_ascii=False))
-        self.assertLess(total, 10000, "the eager toolset's schemas cost about chars/4 tokens on every turn")
+        self.assertLess(total, 10500, "the eager toolset's schemas cost about chars/4 tokens on every turn")
 
     def test_vision_multimodal(self):
         with mock.patch.object(browser, "_native_vision", lambda: True), \

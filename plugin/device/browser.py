@@ -286,6 +286,132 @@ def choices() -> Choices:
         return _CHOICES
 
 
+# --- automatic tab cleanup (docs/browser.md section 3.4) ----------------------------------------
+
+_LEDGER: Optional[Any] = None
+_REAPER: Optional[Any] = None
+_LEDGER_LOCK = threading.Lock()
+
+
+def _tabmod():
+    return _core()._load_sibling("hermes_device_tabs", "tabs.py")
+
+
+def tab_limits() -> tuple[float, float, float]:
+    """``(grace, idle, keep)`` in seconds from the plugin settings tab_grace_seconds (default 120),
+    tab_idle_minutes (30) and tab_keep_hours (24; 0 keeps a kept tab until it is released)."""
+    mod = _tabmod()
+    cfg = _core().settings()
+
+    def num(key: str, default: float, scale: float) -> float:
+        value = cfg.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            return default
+        return float(value) * scale
+    return (num("tab_grace_seconds", mod.GRACE_S, 1), num("tab_idle_minutes", mod.IDLE_S, 60),
+            num("tab_keep_hours", mod.KEEP_S, 3600))
+
+
+def cleanup_enabled() -> bool:
+    return _core().settings().get("tab_cleanup", True) is not False
+
+
+def ledger() -> Any:
+    global _LEDGER, _REAPER
+    with _LEDGER_LOCK:
+        if _LEDGER is None:
+            mod = _tabmod()
+            _LEDGER = mod.Ledger(_core().hermes_home() / "device" / "tabs.json", limits=tab_limits)
+            _REAPER = mod.Reaper(_LEDGER, sweep_tabs)
+        return _LEDGER
+
+
+def start_reaper() -> None:
+    led = ledger()
+    if cleanup_enabled():
+        try:
+            led.adopt()
+        except Exception:
+            _core().logger.warning("device-browser: could not adopt tabs of a dead process", exc_info=True)
+        _REAPER.start()
+
+
+def sweep_tabs(led: Any) -> int:
+    """Close the tabs that are due. Only tabs that the ledger recorded are closed, and only ones
+    that Firefox still lists in the agent tab group; a tab that is gone is just forgotten."""
+    if not cleanup_enabled():
+        return 0
+    core = _core()
+    due = led.due()
+    by_device: dict[str, list[tuple[int, str]]] = {}
+    for device, tab, why in due:
+        by_device.setdefault(device, []).append((tab, why))
+    closed = 0
+    for device, items in by_device.items():
+        conn = core.hub().device(device)
+        if conn is None or not conn.browser.get("connected"):
+            continue
+        try:
+            listed = {int(t.get("tab_id")) for t in (call(conn, "tabs_list", {}) or {}).get("tabs", [])}
+        except Exception:
+            continue
+        for tab, why in items:
+            if tab not in listed:
+                led.forget(device, tab)
+                continue
+            if (device, tab) not in {(d, t) for d, t, _ in led.due()}:
+                continue
+            try:
+                call(conn, "tab_close", {"tab_id": tab})
+            except core.BrowserError as exc:
+                if any(m in str(exc).lower() for m in ("not in the hermes tab group", "no tab with id", "invalid tab id")):
+                    led.forget(device, tab)
+                else:
+                    led.failed(device, tab)
+                continue
+            except Exception:
+                led.failed(device, tab)
+                continue
+            core.logger.info("device-browser: closed tab %s on %s (%s)", tab, device, why)
+            _forget_last(device, tab)
+            led.closed(device, tab)
+            closed += 1
+    return closed
+
+
+def _forget_last(device: str, tab: int) -> None:
+    with _LAST_TAB_LOCK:
+        for sid, (dev, t) in list(_LAST_TAB.items()):
+            if dev == device and t == tab:
+                del _LAST_TAB[sid]
+    forget_snapshot(device, tab)
+
+
+def on_turn_start(session_id: str = "", turn_id: str = "", **_kwargs) -> None:
+    """pre_llm_call: the chat's turn begins, its tabs stay while it runs."""
+    try:
+        ledger().turn_start(session_id, str(turn_id or ""))
+    except Exception:
+        _core().logger.debug("device-browser: turn start not recorded", exc_info=True)
+
+
+def on_turn_end(session_id: str = "", **_kwargs) -> None:
+    """post_llm_call and on_session_end: the turn ended, the grace of its tabs starts."""
+    try:
+        ledger().turn_end(session_id)
+    except Exception:
+        _core().logger.debug("device-browser: turn end not recorded", exc_info=True)
+
+
+def on_subagent_stop(parent_session_id: str = "", child_session_id: str = "", **_kwargs) -> None:
+    """subagent_stop: the subagent's tabs close at the next sweep; kept ones go to the parent."""
+    try:
+        if child_session_id:
+            ledger().child_done(str(child_session_id), str(parent_session_id or ""))
+    except Exception:
+        _core().logger.debug("device-browser: subagent end not recorded", exc_info=True)
+
+
 def browser_devices(user: Optional[str] = None) -> list[Any]:
     """Connected devices that offer browser control and belong to a hub user (not a service
     device such as the sandbox), by name; with ``user``, only that user's."""
@@ -1123,9 +1249,14 @@ def on_session_delete(session_id: str = "", reason: str = "", deleted_ids: Any =
     """Hermes's on_session_delete hook: drop the screenshots of deleted sessions. An archived
     session keeps them, since it can come back, and so does one that moved to another profile
     (``profile_repair``); the age limit removes them later."""
+    ids = [session_id, *(deleted_ids or ())]
+    if reason != "profile_repair":
+        try:
+            ledger().session_gone([str(i) for i in ids if i])
+        except Exception:
+            _core().logger.warning("device: could not queue the tabs of deleted sessions for closing", exc_info=True)
     if reason in ("archive", "profile_repair"):
         return
-    ids = [session_id, *(deleted_ids or ())]
     try:
         remove_session_shots(ids)
     except Exception:
@@ -1294,22 +1425,79 @@ _CHANGES_PAGE = frozenset({"browser_tabs", "browser_navigate", "browser_back", "
                            "browser_press", "browser_hover", "browser_scroll", "browser_eval", "browser_login"})
 
 
+def _parsed(result: Any) -> Optional[dict]:
+    if isinstance(result, str) and len(result) < 1_000_000:
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return None
+    return result if isinstance(result, dict) else None
+
+
+def _opened_new_tab(name: str, args: dict, out: Optional[dict]) -> bool:
+    if not out or "error" in out or _tab_id(out) is None:
+        return False
+    if name == "browser_tabs":
+        return args.get("action") == "open"
+    if name == "browser_navigate":
+        return _tab_id(args) is None and not out.get("reused_tab")
+    if name == "browser_login":
+        return _tab_id(args) is None
+    return False
+
+
+def _wants_keep(args: dict) -> bool:
+    value = args.get("keep")
+    return value is True or (isinstance(value, str) and value.strip().lower() in ("true", "1", "yes"))
+
+
+def _record_tabs(name: str, args: dict, out: Optional[dict], sid: str, device: str) -> None:
+    """After a tool call: record a tab it opened, keep one that waits on the user, count a use."""
+    led = ledger()
+    used = _tab_id(out) if out and "error" not in out else None
+    if _opened_new_tab(name, args, out):
+        led.opened(sid, device, used, keep=_wants_keep(args), reason="requested" if _wants_keep(args) else "")
+    elif used is not None:
+        led.touch(sid, device, used)
+        if name == "browser_navigate" and _wants_keep(args):
+            led.keep(sid, device, used, "requested")
+    if used is None:
+        return
+    if name == "browser_screenshot":
+        led.keep(sid, device, used, "shown to the user")
+    elif name == "browser_login" and out and not out.get("submitted"):
+        led.keep(sid, device, used, "waits on the user to sign in")
+
+
 def _tool(fn: Callable[[dict, Any, str], Any], name: str) -> Callable[..., Any]:
     def handler(args: dict, task_id: str = "", session_id: str = "", **_kwargs) -> Any:
         args = args if isinstance(args, dict) else {}
         tab = _tab_id(args)
+        sid = _session(session_id)
+        device = ""
+        counted = False
         try:
             _, conn = target(session_id)
+            device = conn.device_id
             args = with_default_tab(name, args, session_id, conn)
             tab = _tab_id(args)
+            if cleanup_enabled():
+                ledger().begin_call(sid, device, tab)
+                counted = True
             result = fn(args, conn, session_id)
+            out = _parsed(result)
             if name == "browser_tabs" and args.get("action") == "close":
                 if last_tab(session_id, conn.device_id) == tab:
                     _remember_tab(session_id, conn.device_id, None)
+                if cleanup_enabled() and tab is not None and not (out and "error" in out):
+                    ledger().forget(device, tab)
             else:
                 used = _result_tab(result)
                 if used is not None:
                     _remember_tab(session_id, conn.device_id, used)
+                if cleanup_enabled():
+                    _record_tabs(name, args, out, sid, device)
+                    start_reaper()
             if name in _CHANGES_PAGE and tab is not None:
                 forget_snapshot(conn.device_id, tab)
             return result
@@ -1321,6 +1509,9 @@ def _tool(fn: Callable[[dict, Any, str], Any], name: str) -> Callable[..., Any]:
             return _fail(name, f"browser: {exc}", exc.code, tab)
         except ValueError as exc:
             return _fail(name, str(exc), "bad_arguments", tab)
+        finally:
+            if counted:
+                ledger().end_call(sid, device, tab)
     handler.__name__ = fn.__name__
     return handler
 
@@ -1561,10 +1752,22 @@ def _visit_guard(tool: str, args: dict, sid: str) -> dict:
     return {"visit_hosts": grant.get("visit_hosts") or []}
 
 
+def _decorate(result: Any, sid: str, device: str) -> Any:
+    """Tab list entries get ``mine`` (this chat opened it) and ``keep`` (it is not closed automatically)."""
+    led = ledger()
+    if isinstance(result, dict):
+        for tab in result.get("tabs") or []:
+            rec = led.get(device, tab.get("tab_id")) if isinstance(tab, dict) else None
+            if rec:
+                tab["mine"] = rec["session"] == _session(sid)
+                tab["keep"] = rec["keep"]
+    return result
+
+
 def _tabs(args: dict, conn: Any, sid: str) -> str:
     action = args.get("action") or "list"
     if action == "list":
-        return _ok(call(conn, "tabs_list", {}))
+        return _ok(_decorate(call(conn, "tabs_list", {}), sid, conn.device_id))
     if action == "open":
         url = str(args.get("url") or "").strip()
         if not url:
@@ -1574,7 +1777,19 @@ def _tabs(args: dict, conn: Any, sid: str) -> str:
         if _tab_id(args) is None:
             raise ValueError("tab_id is required to close a tab; browser_tabs with action list shows the tab ids")
         return _ok(call(conn, "tab_close", {"tab_id": _need_tab(args)}))
-    raise ValueError("action must be list, open or close, such as {\"action\": \"list\"}")
+    if action in ("keep", "release"):
+        tab = _need_tab(args)
+        led = ledger()
+        done = (led.keep(_session(sid), conn.device_id, tab, "requested") if action == "keep"
+                else led.release(_session(sid), conn.device_id, tab))
+        if not done:
+            raise ValueError(f"tab {tab} was not opened by this chat, so it is not closed automatically and "
+                             f"there is nothing to {action}")
+        return _ok({"tab_id": tab, "keep": action == "keep"})
+    raise ValueError("action must be list, open, close, keep or release, such as {\"action\": \"list\"}")
+
+
+_TAB_GONE = ("not in the hermes tab group", "no tab with id", "invalid tab id")
 
 
 def _navigate(args: dict, conn: Any, sid: str) -> str:
@@ -1583,9 +1798,42 @@ def _navigate(args: dict, conn: Any, sid: str) -> str:
         raise ValueError("url is required")
     guard = _visit_guard("browser_navigate", args, sid)
     tab = _tab_id(args)
+    core = _core()
+    if tab is None and not _wants_new_tab(args) and cleanup_enabled():
+        reuse = reusable_tab(sid, conn.device_id)
+        if reuse is not None:
+            try:
+                page = _page(call(conn, "navigate", {"tab_id": reuse, "url": url, "guard": guard}))
+            except core.BrowserError as exc:
+                if not any(m in str(exc).lower() for m in _TAB_GONE):
+                    raise
+                ledger().forget(conn.device_id, reuse)
+            else:
+                page = dict(page) if isinstance(page, dict) else page
+                if isinstance(page, dict):
+                    page["reused_tab"] = True
+                    page["note"] = ("This chat's idle agent tab was reused. Pass new_tab=true to keep the old page "
+                                    "and open another tab.")
+                forget_snapshot(conn.device_id, reuse)
+                return _ok(page)
     if tab is None:
         return _ok(_page(call(conn, "tab_open", {"url": url, "guard": guard})))
     return _ok(_page(call(conn, "navigate", {"tab_id": tab, "url": url, "guard": guard})))
+
+
+def _wants_new_tab(args: dict) -> bool:
+    value = args.get("new_tab")
+    return value is True or (isinstance(value, str) and value.strip().lower() in ("true", "1", "yes"))
+
+
+def reusable_tab(sid: str, device: str) -> Optional[int]:
+    """The chat's last agent tab, when this chat opened it and it is not kept: browser_navigate
+    without tab_id loads the page there instead of piling up a new tab."""
+    tab = last_tab(sid, device)
+    if tab is None:
+        return None
+    rec = ledger().get(device, tab)
+    return tab if rec and rec["session"] == _session(sid) and not rec["keep"] and not rec["expire"] else None
 
 
 def _back(args: dict, conn: Any, _sid: str) -> str:
@@ -1929,16 +2177,22 @@ SCHEMAS = {
          "job_id": {"type": "string", "description": "Scheduled job id"}},
         ["device"]),
     "browser_tabs": _schema(
-        "browser_tabs", "List, open or close the agent's tabs (the \"Hermes\" tab group) in the user's Firefox. "
-        "Example: {\"action\": \"close\", \"tab_id\": 12}",
-        {"action": {"type": "string", "enum": ["list", "open", "close"], "description": "Default list"},
+        "browser_tabs", "List, open, close, keep or release the agent's tabs (the \"Hermes\" group) in the user's "
+        "Firefox. Your tabs close by themselves after your turn ends; keep one the user must see or act on. Example: "
+        "{\"action\": \"close\", \"tab_id\": 12}",
+        {"action": {"type": "string", "enum": ["list", "open", "close", "keep", "release"],
+                    "description": "Default list"},
          "url": {"type": "string", "description": "URL to open (open)"},
-         "tab_id": {"type": "integer", "description": "Tab to close (close)"}}, []),
+         "keep": {"type": "boolean", "description": "Keep open"},
+         "tab_id": {"type": "integer", "description": "Tab to close, keep, release"}}, []),
     "browser_navigate": _schema(
-        "browser_navigate", "Open a URL in the user's Firefox, with the user's logins. Without tab_id it opens a "
-        "new agent tab. The user approves the first visit to each site. Example: {\"url\": \"https://example.com\"}",
+        "browser_navigate", "Open a URL in the user's Firefox, with the user's logins. Without tab_id it reuses this "
+        "chat's idle tab or opens one. The user approves the first visit to each site. Example: "
+        "{\"url\": \"https://example.com\"}",
         {"url": {"type": "string", "description": "http or https URL"},
-         "tab_id": {"type": "integer", "description": "Agent tab to load it in; omit for a new tab"}}, ["url"]),
+         "tab_id": {"type": "integer", "description": "Omit to reuse or open"},
+         "new_tab": {"type": "boolean", "description": "Skip tab reuse"},
+         "keep": {"type": "boolean", "description": "Keep open"}}, ["url"]),
     "browser_back": _schema("browser_back", "Go back one page. Example: {\"tab_id\": 12}", {"tab_id": _TAB}, []),
     "browser_snapshot": _schema(
         "browser_snapshot", "Read a tab as an outline with refs (e1, f1e3) for click, type, press, hover and scroll. "
@@ -2015,7 +2269,7 @@ SCHEMAS = {
         "lock). Example: {}",
         {"tab_id": {"type": "integer", "description": "Agent tab; omit for any"}}, []),
     "browser_screenshot": _schema(
-        "browser_screenshot", "Save a screenshot to show the user: put the returned show_user line in your reply; it is a Markdown image, "
+        "browser_screenshot", "Save a screenshot to show the user (the tab is kept): put the returned show_user line in your reply; it is a Markdown image, "
         "![description](/absolute/path.png). "
         "You do not see it; use browser_vision to look. Example: {\"tab_id\": 12}",
         {"tab_id": _TAB, "full_page": _FULL}, []),
@@ -2072,6 +2326,11 @@ def register(ctx: Any, core: Any) -> None:
                           description=schema["description"], emoji=EMOJI)
     ctx.register_hook("pre_tool_call", pre_tool_call)
     ctx.register_hook("on_session_delete", on_session_delete)
+    known = core.valid_hooks()
+    for hook, fn in (("pre_llm_call", on_turn_start), ("post_llm_call", on_turn_end),
+                     ("on_session_end", on_turn_end), ("subagent_stop", on_subagent_stop)):
+        if hook in known:
+            ctx.register_hook(hook, fn)
     install_cron_hook()
 
 

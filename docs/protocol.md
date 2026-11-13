@@ -756,6 +756,10 @@ The plugin is a Hermes user plugin named `device`, installed into `$HERMES_HOME/
 | `fallback_root` | `/work` | `fallback: device` only: absolute directory on the sandbox device that holds one working directory per session lineage. Must be inside the sandbox's roots |
 | `user` | none | The hub user name of the one person who uses this backend. Sessions that no computer serves act for this user when they pick a browser device (docs/browser.md section 3.2). Leave it unset on a backend that more than one hub user may use |
 | `browser` | `true` | `false` hides the `device-browser` toolset (docs/browser.md section 3) |
+| `tab_cleanup` | `true` | `false` turns off the automatic closing of agent tabs (docs/browser.md section 3.4) |
+| `tab_grace_seconds` | `120` | Seconds after a chat's turn ended, and after the tab's last use, before the tab closes |
+| `tab_idle_minutes` | `30` | Minutes of chat inactivity after which all its tabs that are not kept close |
+| `tab_keep_hours` | `24` | Hours of chat inactivity after which a kept tab closes. `0` keeps it until it is released or the chat is deleted |
 | `mcp` | `true` | `false` hides the `device-mcp` toolset and turns its tools off (section 8.11) |
 | `mcp_approval` | `write` | When `mcp_device_call` asks the user first: `write` for tools whose server does not mark them `readOnlyHint: true`, `always` for every tool, `never` |
 | `agent_messages` | `true` | `false` hides the `device-agents` toolset (section 12) |
