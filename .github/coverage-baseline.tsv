@@ -19,7 +19,7 @@ extension/firefox/embed.go	45	39
 internal/acpbridge/acpbridge.go	487	425
 internal/acpbridge/inline.go	38	35
 internal/acpbridge/place.go	155	141
-internal/acphost/acphost.go	275	218
+internal/acphost/acphost.go	275	219
 internal/acphost/rewrite.go	260	237
 internal/acphost/sweep.go	42	36
 internal/acphost/sweep_linux.go	38	28
@@ -50,7 +50,7 @@ internal/claudeusage/timeline.go	96	86
 internal/config/config.go	87	77
 internal/config/load.go	18	17
 internal/daemonstate/daemonstate.go	17	13
-internal/device/device.go	691	617
+internal/device/device.go	691	618
 internal/device/mcp.go	69	60
 internal/executor/executor.go	118	108
 internal/executor/scope.go	90	81
@@ -59,7 +59,7 @@ internal/hermesbuild/launch.go	65	62
 internal/hermesbuild/relocate.go	38	31
 internal/hubapi/hubapi.go	78	69
 internal/legacy/legacy.go	8	8
-internal/mcp/mcp.go	507	447
+internal/mcp/mcp.go	507	446
 internal/mcp/mcptest/fake.go	136	113
 internal/oci/extract.go	130	106
 internal/oci/ocitest/ocitest.go	127	118
