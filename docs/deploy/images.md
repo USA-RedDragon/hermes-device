@@ -12,7 +12,7 @@ docker.io/pgvector/pgvector:0.8.1-pg17
 docker.io/searxng/searxng:2026.11.13-8a53a6aa5
 ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
 ghcr.io/plastic-labs/honcho:v3.6.0
-ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p41
+ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p44
 ghcr.io/usa-reddragon/talaria-hub:v0.26.86
 ghcr.io/usa-reddragon/talaria-sandbox:v0.26.0
 ghcr.io/usa-reddragon/talaria:v0.26.0
