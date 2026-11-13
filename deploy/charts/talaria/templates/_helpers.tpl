@@ -6,21 +6,6 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "talaria.labels" -}}
-app.kubernetes.io/name: talaria
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
-{{- end -}}
-
-{{/* talaria.selector: pass (list $ "component") */}}
-{{- define "talaria.selector" -}}
-app.kubernetes.io/name: talaria
-app.kubernetes.io/instance: {{ (index . 0).Release.Name }}
-app.kubernetes.io/component: {{ index . 1 }}
-{{- end -}}
-
 {{- define "talaria.publicUrl" -}}
 {{- required "publicUrl is required, such as https://talaria.example.com or http://localhost:8080" .Values.publicUrl | trimSuffix "/" -}}
 {{- end -}}
@@ -29,10 +14,33 @@ app.kubernetes.io/component: {{ index . 1 }}
 {{- (urlParse (include "talaria.publicUrl" .)).host | splitList ":" | first -}}
 {{- end -}}
 
-{{- define "talaria.pullSecrets" -}}
-{{- with .Values.imagePullSecrets }}
-imagePullSecrets:
-{{- toYaml . | nindent 2 }}
-{{- end }}
+{{/* talaria.image: an image reference such as repo:tag@sha256:... as the common library's {repository, tag, digest} */}}
+{{- define "talaria.image" -}}
+{{- $ref := index . 0 -}}
+{{- $pull := index . 1 -}}
+{{- $digest := "" -}}
+{{- if contains "@" $ref -}}
+{{- $digest = splitList "@" $ref | last -}}
+{{- $ref = splitList "@" $ref | first -}}
+{{- end -}}
+{{- $tag := "" -}}
+{{- $last := splitList "/" $ref | last -}}
+{{- if contains ":" $last -}}
+{{- $tag = splitList ":" $last | last -}}
+{{- $ref = trimSuffix (printf ":%s" $tag) $ref -}}
+{{- end -}}
+{{- dict "repository" $ref "tag" $tag "digest" $digest "pullPolicy" $pull | toYaml -}}
 {{- end -}}
 
+{{/* talaria.binaryMode: how acp-host gets the talaria binary, "image" or "copy" */}}
+{{- define "talaria.binaryMode" -}}
+{{- $mode := .Values.hermes.editorBridge.binary -}}
+{{- if not (has $mode (list "auto" "image" "copy")) -}}
+{{- fail "hermes.editorBridge.binary must be auto, image or copy" -}}
+{{- end -}}
+{{- if eq $mode "auto" -}}
+{{- /* Image volumes work without a feature gate from Kubernetes 1.35; older clusters get an init container that copies the binary */ -}}
+{{- $mode = ternary "image" "copy" (semverCompare ">=1.35-0" .Capabilities.KubeVersion.Version) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end -}}

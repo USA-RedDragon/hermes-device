@@ -8,4 +8,6 @@ for f in hermes-init.py demo-llm.py; do
 done
 # The SearXNG settings: compose/files carries a copy, as compose users download only that folder
 cmp -s searxng/settings.yml compose/files/searxng/settings.yml || { echo "compose/files/searxng/settings.yml differs from searxng/settings.yml"; rc=1; }
+# The chart carries one too, as files outside the chart directory are not part of a Helm chart
+cmp -s searxng/settings.yml charts/talaria/files/searxng-settings.yml || { echo "charts/talaria/files/searxng-settings.yml differs from searxng/settings.yml"; rc=1; }
 exit $rc

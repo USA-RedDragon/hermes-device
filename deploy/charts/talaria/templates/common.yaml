@@ -1,0 +1,18 @@
+{{- /*
+Talaria's values, mapped onto the bjw-s common library (talaria.common in _common.tpl), rendered by the library in
+a context of its own, so the rest of the chart (NOTES.txt) still sees Talaria's values. Talaria's own keys service
+and ingress share a name with the library's; the mapped values replace them there.
+*/ -}}
+{{- $mapped := include "talaria.common" . | fromYaml -}}
+{{- if hasKey $mapped "Error" }}{{ fail (printf "talaria.common: %s" $mapped.Error) }}{{ end -}}
+{{- $values := deepCopy .Values -}}
+{{- range $key, $value := $mapped }}
+{{- if has $key (list "global" "defaultPodOptions") }}
+{{- $_ := set $values $key (mergeOverwrite (get $values $key | default dict) $value) -}}
+{{- else }}
+{{- $_ := set $values $key $value -}}
+{{- end }}
+{{- end }}
+{{- $ctx := dict "Values" $values "Release" .Release "Chart" .Chart "Capabilities" .Capabilities "Template" .Template "Files" .Files -}}
+{{- include "bjw-s.common.loader.init" $ctx -}}
+{{ include "bjw-s.common.loader.generate" $ctx }}

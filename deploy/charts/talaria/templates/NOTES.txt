@@ -18,3 +18,8 @@ Then click Connect a model in Talaria. Or use the agent's own setup command:
 {{- if .Values.demo.enabled }}
 To try it without a provider, pick talaria-demo there.
 {{- end }}
+{{- if and .Values.searxng .Values.searxng.enabled }}
+
+Web search works without a key: the agent uses SearXNG ({{ include "talaria.fullname" . }}-searxng) while no other
+search provider is chosen in it.
+{{- end }}

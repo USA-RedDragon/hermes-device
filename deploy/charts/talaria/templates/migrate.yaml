@@ -1,0 +1,100 @@
+{{- /*
+Upgrade from chart 0.1.x: its Deployments have a pod selector without app.kubernetes.io/controller, and a selector
+cannot change. Only then, a pre-upgrade hook deletes them (files/migrate-selectors.py) and Helm makes them again.
+Volumes, Secrets and Services stay. helm template and a first install render nothing here.
+*/ -}}
+{{- $full := include "talaria.fullname" . -}}
+{{- $names := list (printf "%s-hub" $full) (printf "%s-hermes" $full) (printf "%s-sandbox" $full) (printf "%s-demo-llm" $full) -}}
+{{- $old := list -}}
+{{- range $names }}
+{{- with lookup "apps/v1" "Deployment" $.Release.Namespace . }}
+{{- if not (hasKey (.spec.selector.matchLabels | default dict) "app.kubernetes.io/controller") }}
+{{- $old = append $old .metadata.name }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and .Release.IsUpgrade $old }}
+{{- $wait := list (printf "%s-hub" $full) (printf "%s-sandbox" $full) -}}
+{{- if not .Values.hermes.rolling.enabled }}{{ $wait = append $wait (printf "%s-hermes" $full) }}{{ end -}}
+{{- $hook := dict "helm.sh/hook" "pre-upgrade" "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded" -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $full }}-migrate
+  annotations: {{- toYaml (merge (dict "helm.sh/hook-weight" "-10") $hook) | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $full }}-migrate
+  annotations: {{- toYaml (merge (dict "helm.sh/hook-weight" "-10") $hook) | nindent 4 }}
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: {{ toJson $names }}
+    verbs: [get, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $full }}-migrate
+  annotations: {{- toYaml (merge (dict "helm.sh/hook-weight" "-10") $hook) | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $full }}-migrate
+subjects:
+  - kind: ServiceAccount
+    name: {{ $full }}-migrate
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $full }}-migrate
+  annotations: {{- toYaml (merge (dict "helm.sh/hook-weight" "-10") $hook) | nindent 4 }}
+data:
+  migrate-selectors.py: |
+    {{- .Files.Get "files/migrate-selectors.py" | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $full }}-migrate
+  annotations: {{- toYaml (merge (dict "helm.sh/hook-weight" "0") $hook) | nindent 4 }}
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 280
+  template:
+    spec:
+      serviceAccountName: {{ $full }}-migrate
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: migrate
+          image: {{ .Values.images.hermes }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          command: ["/opt/hermes/.venv/bin/python", "-I", "/migrate/migrate-selectors.py", {{ range $old }}{{ . | quote }}, {{ end }}"--wait"{{ range $wait }}, {{ . | quote }}{{ end }}]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: script, mountPath: /migrate, readOnly: true}
+      volumes:
+        - name: script
+          configMap: {name: {{ $full }}-migrate}
+{{- end }}

@@ -59,6 +59,8 @@ images:
   deviceBinary: talaria
   sandbox: ghcr.io/usa-reddragon/talaria-sandbox:v0.26.0@sha256:95c0ad9f33ab6bb5f19064c4c9cca23b05b5b635b6fb10999d1895d843b81090
   caddy: docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+  # -- SearXNG, the agent's web search (searxng below)
+  searxng: docker.io/searxng/searxng:2026.11.13-8a53a6aa5@sha256:82b222dd1854c43241874874fbc985006556230804dc819ef2a639eeb574d0e2
   pullPolicy: IfNotPresent
 # -- Secrets for private images, such as [{name: ghcr}]
 imagePullSecrets: []
@@ -119,6 +121,14 @@ sandbox:
   resources:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 8Gi}
+
+searxng:
+  # -- SearXNG, a metasearch engine in its own pod, for the agent's web_search with no API key. Only the agent
+  # reaches it (Service <release>-searxng). Hermes uses it unless you set another search provider
+  enabled: true
+  resources:
+    requests: {cpu: 10m, memory: 128Mi}
+    limits: {memory: 512Mi}
 
 service:
   type: ClusterIP

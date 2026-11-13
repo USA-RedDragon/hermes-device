@@ -7,3 +7,5 @@ config.yaml
 /artifacts/
 /deploy/compose/.env
 *.tgz
+# The Helm chart carries the common library it is built on, so a plain checkout installs
+!/deploy/charts/talaria/charts/*.tgz

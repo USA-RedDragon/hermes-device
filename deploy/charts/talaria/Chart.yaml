@@ -2,10 +2,16 @@ apiVersion: v2
 name: talaria
 description: Talaria, a web and Telegram front end for Hermes Agent with paired computers and a sandbox
 type: application
-version: 0.1.0
+version: 0.2.0
 # The talaria-hub release this chart was tested with
 appVersion: "0.26.54"
 home: https://github.com/USA-RedDragon/talaria
 sources:
   - https://github.com/USA-RedDragon/talaria
 kubeVersion: ">=1.29.0-0"
+dependencies:
+  # The bjw-s common library renders the objects; charts/ carries the packaged copy, so the chart installs
+  # from a plain checkout
+  - name: common
+    repository: oci://ghcr.io/bjw-s-labs/helm
+    version: 5.3.0
