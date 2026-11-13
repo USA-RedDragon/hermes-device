@@ -46,6 +46,22 @@ sandbox's files). Back up both.
 The container is stopped with a 120 second timeout (`--stop-timeout 120` in **Extra Parameters**), so running
 replies can finish.
 
+## Update and change settings
+
+The template pulls `talaria-aio:latest`, so Unraid's own update check covers it:
+
+- **Update:** on the **Docker** tab, click **Check for Updates** at the bottom. When the Talaria row says
+  **update ready**, click it and pick **Apply Update**. Unraid pulls the new image and recreates the container
+  with the same settings; chats, memory, accounts and the model setup stay, because they live in
+  `/mnt/user/appdata/talaria`.
+- **Change a setting** (Public URL, Telegram token, time zone): click the Talaria icon on the **Docker** tab,
+  pick **Edit**, change it, **Apply**.
+
+Both need the container to be made from the template. A container started by hand with `docker run` in the
+terminal shows no **Edit** and no update check (Unraid lists it as not managed by it). To move such a container
+onto the template, stop and remove it (`docker rm -f <name>`), then add the template with the same two data paths;
+nothing in `/mnt/user/appdata/talaria` is lost.
+
 ## Ollama on the same server
 
 Ollama is its own container; Hermes reaches it by the server's address.
