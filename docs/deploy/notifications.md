@@ -34,7 +34,7 @@ By device:
 - **iPhone and iPad:** Safari shows Web Push only for a web app on the Home Screen, on iOS 16.4 or later. Open the hub in Safari, tap Share, then Add to Home Screen, open it from there, and turn notifications on in Settings.
 - **Desktop browsers** work too.
 
-A push message carries only the kind of event, a fixed title such as "Hermes needs your approval", the backend's name and the address of the chat. It never carries the chat's title, a command or a question.
+A push message carries only the kind of event, a fixed title such as "Talaria needs your approval", the name of the agent server and the address of the chat. It never carries the chat's title, a command or a question.
 
 The server needs outbound HTTPS to the browsers' push services: `fcm.googleapis.com`, `updates.push.services.mozilla.com`, `web.push.apple.com`, `*.push.apple.com` and `*.notify.windows.com`. If you limit what the server can reach, allow those.
 
