@@ -1,8 +1,8 @@
 name: Hub release
 
 # A tag hub/vX.Y.Z releases the hub in hub/: goreleaser builds the binaries
-# and pushes ghcr.io/usa-reddragon/talaria-hub and hermes-hub with the tags
-# vX.Y.Z, vX, vX.Y and latest, then this workflow makes the GitHub release
+# and pushes ghcr.io/usa-reddragon/talaria-hub with the tags vX.Y.Z, vX,
+# vX.Y and latest, then this workflow makes the GitHub release
 # hub/vX.Y.Z (never marked latest: the latest release is the talaria daemon's,
 # which auto-update reads).
 #
@@ -94,7 +94,7 @@ jobs:
         run: |
           {
             echo '```'
-            docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep -E 'usa-reddragon/(talaria-hub|hermes-hub)' || true
+            docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep -E 'usa-reddragon/talaria-hub' || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -107,7 +107,7 @@ jobs:
           {
             echo "Hub $GORELEASER_CURRENT_TAG."
             echo
-            echo "Images: \`ghcr.io/usa-reddragon/talaria-hub:$GORELEASER_CURRENT_TAG\` and \`ghcr.io/usa-reddragon/hermes-hub:$GORELEASER_CURRENT_TAG\`"
+            echo "Image: \`ghcr.io/usa-reddragon/talaria-hub:$GORELEASER_CURRENT_TAG\`"
           } > "$RUNNER_TEMP/notes.md"
           files=(hub/dist/*.tar.gz hub/dist/*checksums.txt hub/LICENSE)
           args=(--verify-tag --latest=false --title "Hub $GORELEASER_CURRENT_TAG" --notes-file "$RUNNER_TEMP/notes.md")
