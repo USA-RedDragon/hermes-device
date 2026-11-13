@@ -1,0 +1,257 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 01:10:43 -0600
+Subject: [PATCH] fix(dashboard): drop the default model with its removed
+ provider
+
+Removing an API key or a sign-in left model.provider and model.default naming a provider with no credential, so every new chat failed on authentication; removing a custom endpoint dropped its provider but kept model.default. dashboard.detach_removed_default (false = off) drops the main model together with its provider, so session.create refuses plainly as no_model_configured until another model is chosen. A provider that still holds a key elsewhere (another of its variables, or the environment) keeps its default.
+---
+ hermes_cli/config_defaults.py                 |  4 +
+ hermes_cli/web_routers/config_env.py          | 64 +++++++++++-
+ hermes_cli/web_routers/oauth.py               |  9 ++
+ .../hermes_cli/test_detach_removed_default.py | 98 +++++++++++++++++++
+ 4 files changed, 172 insertions(+), 3 deletions(-)
+ create mode 100644 tests/hermes_cli/test_detach_removed_default.py
+
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 5d5a303712..b5d9c395d2 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1004,6 +1004,10 @@ DEFAULT_CONFIG = {
+         # auxiliary calls, retries, fallbacks and cache writes are missed, so the total can be
+         # 10x-100x under the provider bill.
+         "show_token_analytics": False,
++        # Removing the main model's provider here (an API key, a sign-in, a custom endpoint) also drops
++        # model.default and model.provider, so new chats are refused as no_model_configured instead of
++        # failing on authentication against a provider that has no credential.
++        "detach_removed_default": False,
+         # IPs / bounded CIDRs of reverse proxies trusted to supply X-Forwarded-Proto/-For. Loopback
+         # always trusted; wildcards and /0 rejected (spoofing guard).
+         "trusted_proxies": [],
+diff --git a/hermes_cli/web_routers/config_env.py b/hermes_cli/web_routers/config_env.py
+index 2ac4699052..8f68e14043 100644
+--- a/hermes_cli/web_routers/config_env.py
++++ b/hermes_cli/web_routers/config_env.py
+@@ -575,6 +575,56 @@ def _detach_main_model_from_provider(cfg: dict[str, Any], provider_key: str, ent
+     cfg["model"] = model_cfg
+ 
+ 
++def _detach_removed_default_enabled(cfg: dict[str, Any]) -> bool:
++    """``dashboard.detach_removed_default`` (false = off)."""
++    dashboard = cfg.get("dashboard")
++    return isinstance(dashboard, dict) and bool(dashboard.get("detach_removed_default"))
++
++
++def _drop_default_model(model_cfg: dict[str, Any]) -> None:
++    for field in ("default", "name", "provider", "base_url", "api_key", "key_env", "api_mode"):
++        model_cfg.pop(field, None)
++
++
++def detach_removed_default(providers: List[str]) -> bool:
++    """With ``dashboard.detach_removed_default``, drop the main model when its provider was removed.
++
++    A removed API key or sign-in left ``model.provider`` and ``model.default`` naming a provider with no
++    credential, so every new chat failed on authentication instead of being refused as having no model.
++    Runs in the caller's profile scope; returns whether config.yaml changed.
++    """
++    wanted = {str(p).strip().lower() for p in providers if str(p).strip()}
++    if not wanted:
++        return False
++    with _CONFIG_MUTATION_LOCK:
++        cfg = load_config()
++        model_cfg = cfg.get("model")
++        if not _detach_removed_default_enabled(cfg) or not isinstance(model_cfg, dict):
++            return False
++        current = str(model_cfg.get("provider") or "").strip().lower().removeprefix("custom:")
++        if current not in wanted:
++            return False
++        _drop_default_model(model_cfg)
++        cfg["model"] = model_cfg
++        save_config(cfg)
++        return True
++
++
++def _providers_left_without_key(env_var: str, providers: List[str]) -> List[str]:
++    """The providers ``env_var`` served (``providers`` plus the catalog's) that no longer hold any of their API
++    keys in ``.env`` or the environment."""
++    import os
++
++    try:
++        from hermes_cli.provider_catalog import provider_catalog
++        keys = {d.slug: tuple(d.api_key_env_vars or ()) for d in provider_catalog()}
++    except Exception:
++        keys = {}
++    served = set(providers) | {slug for slug, names in keys.items() if env_var in names}
++    env = load_env()
++    return sorted(p for p in served if not any(env.get(n) or os.environ.get(n) for n in keys.get(p, (env_var,))))
++
++
+ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> tuple[str, dict[str, Any]]:
+     name = (body.name or "").strip()
+     base_url = (body.base_url or "").strip().rstrip("/")
+@@ -854,6 +904,10 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
+                 provider_key = _custom_endpoint_id(endpoint_id)
+                 if _pop_legacy_custom_provider(cfg, provider_key) is None:
+                     raise HTTPException(status_code=404, detail="custom endpoint not found")
++            model_cfg = cfg.get("model")
++            if (_detach_removed_default_enabled(cfg) and isinstance(model_cfg, dict)
++                    and _model_names_provider(model_cfg, provider_key, entry)):
++                _drop_default_model(model_cfg)
+             _detach_main_model_from_provider(cfg, provider_key, entry)
+             remove_env_value(custom_endpoint_key_env(provider_key))
+             save_config(cfg)
+@@ -1087,9 +1141,13 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
+     with _env_write_errors("DELETE /api/env failed"):
+         from hermes_cli.credential_lifecycle import remove_provider_env_credential
+ 
+-        result = await scoped_to_thread(
+-            body.profile or profile, lambda: remove_provider_env_credential(body.key)
+-        )
++        def _remove() -> dict:
++            removed = remove_provider_env_credential(body.key)
++            if removed.get("found"):
++                detach_removed_default(_providers_left_without_key(body.key, list(removed.get("providers") or [])))
++            return removed
++
++        result = await scoped_to_thread(body.profile or profile, _remove)
+         if not result.get("found"):
+             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
+         return result
+diff --git a/hermes_cli/web_routers/oauth.py b/hermes_cli/web_routers/oauth.py
+index 220ee93f55..ee60bd305b 100644
+--- a/hermes_cli/web_routers/oauth.py
++++ b/hermes_cli/web_routers/oauth.py
+@@ -796,6 +796,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request, profile:
+             if not cleared:
+                 raise _disconnect_http_error(409, provider["name"])
+             _log.info("oauth/disconnect: %s", provider_id)
++            _detach_removed_default([provider_id])
+             return {"ok": True, "provider": provider_id}
+         try:
+             from hermes_cli.auth import clear_provider_auth, invalidate_nous_auth_status_cache
+@@ -805,6 +806,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request, profile:
+             if not cleared:
+                 raise _disconnect_http_error(409, provider["name"])
+             _log.info("oauth/disconnect: %s (cleared=%s)", provider_id, cleared)
++            _detach_removed_default([provider_id])
+             return {"ok": True, "provider": provider_id}
+         except HTTPException:
+             raise
+@@ -815,6 +817,13 @@ async def disconnect_oauth_provider(provider_id: str, request: Request, profile:
+     return await scoped_to_thread(profile, _run)
+ 
+ 
++def _detach_removed_default(providers: list) -> None:
++    """``dashboard.detach_removed_default``: a disconnect that removed the default model's provider also drops
++    the default, so new chats are refused as having no model instead of failing on authentication."""
++    from hermes_cli.web_routers.config_env import detach_removed_default
++    detach_removed_default(providers)
++
++
+ # In-browser device-code sessions: /start spawns a poller thread and returns the
+ # display fields; the UI polls .../poll/{session_id} until status != "pending" (on
+ # "approved" the poller has already saved creds). Anthropic has NO dashboard PKCE
+diff --git a/tests/hermes_cli/test_detach_removed_default.py b/tests/hermes_cli/test_detach_removed_default.py
+new file mode 100644
+index 0000000000..1ddb5f5f1e
+--- /dev/null
++++ b/tests/hermes_cli/test_detach_removed_default.py
+@@ -0,0 +1,98 @@
++"""``dashboard.detach_removed_default``: removing the main model's provider drops the main model.
++
++Removing an API key or a sign-in left ``model.provider`` and ``model.default`` naming a provider with no
++credential, so every new chat failed on authentication; removing a custom endpoint dropped its provider but
++kept ``model.default``. With the key on, the main model goes with its provider, and ``session.create`` then
++refuses plainly as ``no_model_configured``. Off (the default) keeps upstream's behavior.
++"""
++import pytest
++
++
++@pytest.fixture
++def client(monkeypatch, _isolate_hermes_home):
++    try:
++        from starlette.testclient import TestClient
++    except ImportError:
++        pytest.skip("fastapi/starlette not installed")
++    import hermes_state
++    from hermes_constants import get_hermes_home
++    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
++
++    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
++    for name in ("OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"):
++        monkeypatch.delenv(name, raising=False)
++    c = TestClient(app)
++    c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
++    return c
++
++
++def _setup(detach, provider="openrouter", model="openai/gpt-5"):
++    from hermes_cli.config import load_config, save_config
++    cfg = load_config()
++    cfg.setdefault("dashboard", {})["detach_removed_default"] = detach
++    cfg["model"] = {"provider": provider, "default": model}
++    save_config(cfg)
++
++
++def _model():
++    from hermes_cli.config import load_config
++    return load_config().get("model") or {}
++
++
++@pytest.mark.parametrize("detach", [True, False])
++def test_removing_the_default_providers_key(client, detach):
++    from hermes_cli.config import save_env_value
++    save_env_value("OPENROUTER_API_KEY", "sk-or-v1-test")
++    _setup(detach)
++    assert client.request("DELETE", "/api/env", json={"key": "OPENROUTER_API_KEY"}).status_code == 200
++    m = _model()
++    if detach:
++        assert not m.get("default") and not m.get("provider")
++    else:
++        assert m.get("default") == "openai/gpt-5" and m.get("provider") == "openrouter"
++
++
++def test_removing_another_providers_key_keeps_the_default(client):
++    from hermes_cli.config import save_env_value
++    save_env_value("DEEPSEEK_API_KEY", "sk-test")
++    _setup(True)
++    assert client.request("DELETE", "/api/env", json={"key": "DEEPSEEK_API_KEY"}).status_code == 200
++    assert _model().get("default") == "openai/gpt-5"
++
++
++def test_a_key_left_in_the_environment_keeps_the_default(client, monkeypatch):
++    from hermes_cli.config import save_env_value
++    save_env_value("OPENROUTER_API_KEY", "sk-or-v1-test")
++    _setup(True)
++    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-from-the-deployment")
++    from hermes_cli.web_routers import config_env
++    monkeypatch.setattr(config_env, "load_env", lambda: {})
++    assert config_env._providers_left_without_key("OPENROUTER_API_KEY", []) == []
++    monkeypatch.delenv("OPENROUTER_API_KEY")
++    assert config_env._providers_left_without_key("OPENROUTER_API_KEY", []) == ["openrouter"]
++
++
++@pytest.mark.parametrize("detach", [True, False])
++def test_removing_the_default_custom_endpoint(client, detach):
++    assert client.post("/api/providers/custom-endpoints", json={
++        "id": "ollama", "name": "Ollama", "base_url": "http://ollama:11434/v1", "model": "qwen2.5:0.5b", "make_default": True,
++    }).status_code == 200
++    from hermes_cli.config import load_config, save_config
++    cfg = load_config()
++    cfg.setdefault("dashboard", {})["detach_removed_default"] = detach
++    save_config(cfg)
++    assert _model().get("default") == "qwen2.5:0.5b"
++    assert client.request("DELETE", "/api/providers/custom-endpoints/ollama").status_code == 200
++    m = _model()
++    assert not m.get("provider")
++    assert bool(m.get("default")) is not detach
++
++
++def test_signing_out_of_the_default_provider(client, monkeypatch):
++    _setup(True, provider="nous", model="Hermes-4-405B")
++    import hermes_cli.auth as auth
++    monkeypatch.setattr(auth, "clear_provider_auth", lambda provider_id: True)
++    from hermes_cli.web_routers import oauth
++    monkeypatch.setattr(oauth, "_resolve_provider_status", lambda *a, **k: {"logged_in": True})
++    assert client.request("DELETE", "/api/providers/oauth/nous").status_code == 200
++    assert not _model().get("default")

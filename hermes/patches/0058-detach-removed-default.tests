@@ -1,0 +1,4 @@
+# Upstream tests of the removal routes this patch changes
+tests/hermes_cli/test_web_server.py::TestWebServerEndpoints::test_deleting_the_active_custom_endpoint_clears_its_model_mirror
+tests/hermes_cli/test_credential_lifecycle.py
+tests/hermes_cli/test_dashboard_oauth_endpoints_server_gate.py
