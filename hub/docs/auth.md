@@ -12,6 +12,15 @@ When `auth.mode` is not set, a hub with `oidc.issuer_url` uses `oidc` (so a conf
 
 Every mode ends in the same session cookie (`session.ttl`, default a week). `session.secret` may stay empty: the hub then makes a key and keeps it in its database, so every replica shares it and a restart keeps people logged in.
 
+## Which mode should I use
+
+- **Just you, or a family, and nothing else to run:** `local`. It needs no identity provider. This is the default.
+- **You already log in to your other services through one proxy** (Authelia, an Authentik outpost, oauth2-proxy, Tailscale Serve, Cloudflare Access, Envoy Gateway): `proxy`. The proxy says who people are, so there is one login for everything.
+- **You run an identity provider and want people to log in to Talaria with it** (Keycloak, Authentik, Authelia, Pocket ID, Google): `oidc`.
+- **More than one hub replica:** `oidc` or `proxy`, with PostgreSQL. `local` works with several replicas too, because the accounts are in the database, but the database must then be PostgreSQL.
+
+You can change the mode later. Accounts stay in the database, and a person who logs in through a new mode is matched to their account by name or email: see [Behind a proxy](#behind-a-proxy-authmode-proxy).
+
 ## Accounts and backends
 
 A person is a hub user name. A user may use a backend when any of these holds:
@@ -34,6 +43,8 @@ This adds a backend with id `hermes` that every hub user may use.
 
 ## Local accounts (`auth.mode: local`)
 
+![The login page of the hub: a name, a password and a Log in button](images/login.png)
+
 1. Start the hub. While it has no account, it logs a warning with the setup URL (the public URL plus `/setup`):
 
    ```text
@@ -43,6 +54,12 @@ This adds a backend with id `hermes` that every hub user may use.
    There is no setup token. Whoever opens the setup page first gets the admin account, so open it yourself before you expose the hub. Opening the hub's root address with no account redirects to the setup page.
 2. Open the setup page and give a name and a password. That makes the first account, an admin, with every backend. The setup page works only while the hub has no account, also with several replicas: the database lets exactly one first account in. After that the page says the hub is already set up.
 3. Add the other people in Settings > Users.
+
+![The setup page: your name, a display name, a password twice and a Make the account button](images/setup.png)
+
+![Settings, Users: the list of people with each person's backends and an Admin switch](images/users.png)
+
+![Adding a person: a name, an optional display name and a first password](images/users-add.png)
 
 Passwords:
 
@@ -56,6 +73,8 @@ Passwords:
 Not built yet: two-factor codes (TOTP) and a command to reset a password from the shell.
 
 ## Behind a proxy (`auth.mode: proxy`)
+
+![Settings, Users in proxy mode: a notice names the header the hub trusts, and a person who has not logged in yet waits for a matching name or email](images/users-proxy.png)
 
 The proxy logs the person in and sends who they are. The hub trusts it only from `auth.trusted_proxies`, or, with `auth.proxy.jwt.jwks_url`, only when the proxy's signed token checks out. Make sure the proxy removes these headers from what clients send.
 
@@ -183,3 +202,34 @@ People log in when:
 ### Keycloak
 
 Create an OpenID Connect client with client authentication on and the redirect URI above. The issuer is `https://<keycloak host>/realms/<realm>`. For groups, add a "Group Membership" mapper with token claim name `groups` and "Full group path" off.
+
+### Authelia
+
+Add a client to Authelia's `identity_providers.oidc.clients`, with the redirect URI above and the `groups` scope so that Authelia sends the groups claim:
+
+```yaml
+- client_id: talaria-hub
+  client_secret: '$pbkdf2-sha512$...'   # the hash of the secret you give the hub
+  authorization_policy: one_factor
+  redirect_uris:
+    - https://hub.example.com/auth/callback
+  scopes: [openid, profile, email, groups]
+```
+
+The issuer is Authelia's own address, such as `https://auth.example.com`. These notes follow Authelia's documentation and have not been run against a live Authelia.
+
+## When a login does not work
+
+| You see | Why | What to do |
+|---|---|---|
+| The login page says the name or password is wrong | A wrong name, a wrong password or a locked account all give the same answer | Check the name, wait out the lockout (15 minutes by default) or ask an admin for a new password |
+| **Not set up**, "this hub has no account for you" | A proxy or OIDC login worked, but no account matches it | Ask an admin to add you under Settings, Users with this name or email, or turn on `auth.proxy.auto_create` or `oidc.auto_create` |
+| **The proxy did not say who you are** | The request reached the hub with no user header, or from an address the hub does not trust | Add the proxy's address to `auth.trusted_proxies` (the hub log shows the address it saw), check `auth.proxy.user_header`, and for signed tokens check the issuer, audience and keys |
+| A redirect loop or a wrong host after login | `http.public_url` is not the address people open | Set it to exactly that address, with `https` when it is `https` |
+| Everyone is logged out after a restart | `session.secret` changed | Leave it empty so the hub keeps its own key in the database, or keep the same secret on every replica |
+| Too many logins or setups | The limit per client address was reached | Wait a minute. Behind a proxy, set `auth.trusted_proxies` so the hub counts each client, not the proxy |
+
+![The Not set up page, which says the login worked but the hub has no account for it](images/not-set-up.png)
+
+![The proxy error page, with the three things to check](images/proxy-error.png)
+
