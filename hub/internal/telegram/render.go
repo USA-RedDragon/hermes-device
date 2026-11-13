@@ -238,8 +238,6 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 		r.toolComplete(ctx, ev)
 	case hub.KindMessageDelta:
 		r.delta(ctx, ev)
-	case hub.KindMessageInterim:
-		r.interim(ctx, ev)
 	case hub.KindMessageStart:
 		r.turnStart(ctx, ev)
 	case hub.KindMessageComplete:
@@ -302,6 +300,8 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 // the to-do list and the answers of /bg prompts.
 func (r *renderer) handleMore(ctx context.Context, ev hub.Event) {
 	switch ev.Kind {
+	case hub.KindMessageInterim:
+		r.interim(ctx, ev)
 	case todoEvent:
 		var p todoPayload
 		if r.decode(ev, &p) {
