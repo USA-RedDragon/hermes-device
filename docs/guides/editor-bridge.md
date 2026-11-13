@@ -25,4 +25,5 @@ Each open editor window costs one `hermes acp` process on the server.
 
 - The editor says the agent failed to start: run `talaria acp` in a terminal. It prints logs on standard error, and it waits for ACP messages on standard input.
 - `give the hub URL`: the computer is not paired, or its config has no `hub.url`. Run `talaria setup https://hub.example.com`.
+- `talaria acp: this hub has no editor bridge ...`: the hub has no `acp-host` for your Hermes, so its backend has no `acp_url`. The compose, all-in-one and Helm installs set it up; on another install, run `talaria acp-host` next to Hermes and set `backends[].acp_url` in the hub config.
 - More help: [Troubleshooting](troubleshooting.md).

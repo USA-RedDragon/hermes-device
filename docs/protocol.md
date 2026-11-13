@@ -69,7 +69,7 @@ The hub relays the backend's close code and reason to the device unchanged. Code
 | `1002` | protocol error | plugin (no hello in time), device (no resume in time) | reconnect with backoff |
 | <!-- docgen:const pkg=protocol name=CloseServiceRestart code=false -->1012<!-- /docgen:const --> | service restart | plugin (uvicorn, when the gateway stops) | reconnect with backoff; on the exec leg the device kills its commands at once (section 4.7) |
 
-The hub accepts the device's upgrade only after its own upgrade to the backend succeeded. When the backend refuses or cannot be reached (an HTTP error, a refused connection, a timeout), the hub answers the device's upgrade with HTTP `502` and `{"error": "backend_unavailable"}`, and the client reconnects with backoff. Any HTTP answer other than `401` to an upgrade means reconnect with backoff.
+The hub accepts the device's upgrade only after its own upgrade to the backend succeeded. When the backend refuses or cannot be reached (an HTTP error, a refused connection, a timeout), the hub answers the device's upgrade with HTTP `502` and `{"error": "backend_unavailable"}`, and the client reconnects with backoff. Any HTTP answer other than `401` to an upgrade means reconnect with backoff, except `501` `{"error": "no_editor_bridge"}` on the ACP leg: the backend has no `acp_url`, and `talaria acp` prints the message and stops.
 
 Backoff: start at `reconnect.min-backoff` (default 1s), double after each failed attempt up to `reconnect.max-backoff` (default 30s), reset after a connection that stayed up 30s. For 60s after such a stable exec leg drops, the device retries every `reconnect.min-backoff` without doubling, so it is back within about a second of a gateway handoff or a hub restart ending (section 4.7).
 
