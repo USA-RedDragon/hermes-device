@@ -683,7 +683,7 @@ window.HubAgent = (() => {
       const acts = el("div", "acts");
       acts.append(go);
       const docs = el("a", "", "How to restore");
-      docs.href = "https://usa-reddragon.github.io/talaria/deploy/upgrades.html#backups";
+      docs.href = "https://usa-reddragon.github.io/talaria/deploy/upgrades.html#back-up";
       docs.target = "_blank";
       docs.rel = "noopener";
       acts.append(docs);
