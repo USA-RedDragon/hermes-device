@@ -726,7 +726,9 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 				go after()
 			}
 			if crash {
-				go g.Stop()
+				// Down before the client sees the connection close, or a
+				// retry can reach the gateway that has not stopped yet.
+				g.Stop()
 			}
 			_ = ws.CloseNow()
 			return
