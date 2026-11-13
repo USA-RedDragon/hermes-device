@@ -133,8 +133,8 @@ func TestFormPromptSteersWithFiles(t *testing.T) {
 	e.gw.QueueWhileRunning = true
 	e.gw.StartElsewhere("s1", "tui-1", "work", false, true)
 	u := e.url + "/api/sessions/pc/s1/prompt"
-	resp, body := postForm(t, c, u, m.CSRF, e.url, part{field: kText, data: []byte("see this")}, part{field: "steer", data: []byte("true")},
-		part{field: fieldFile, name: "shot.png", data: []byte("\x89PNG\r\n\x1a\nxx")})
+	resp, body := postForm(t, c, u, m.CSRF, e.url, part{field: kText, data: []byte("see this")}, part{field: stepSteer, data: []byte("true")},
+		part{field: fieldFile, name: "pic.png", data: []byte("\x89PNG\r\n\x1a\nxx")})
 	if resp.StatusCode != http.StatusAccepted || !strings.Contains(body, `"steered":true`) {
 		t.Fatalf("steer with a file = %d %s", resp.StatusCode, body)
 	}

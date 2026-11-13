@@ -145,7 +145,7 @@ func TestPromptSteerAndCommands(t *testing.T) {
 	e.gw.QueueWhileRunning = true
 	e.gw.StartElsewhere("s1", "tui-1", "work", false, true)
 	var out map[string]any
-	if s := apiJSON(t, c, http.MethodPost, e.url+pathS1+"/prompt", m.CSRF, map[string]any{keyText: "and the docs", "steer": true}, &out); s != http.StatusAccepted ||
+	if s := apiJSON(t, c, http.MethodPost, e.url+pathS1+"/prompt", m.CSRF, map[string]any{keyText: "and the docs", stepSteer: true}, &out); s != http.StatusAccepted ||
 		out["steered"] != true || out[keyStatus] != statusSent {
 		t.Fatalf("steer = %d %v", s, out)
 	}
