@@ -1390,6 +1390,9 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	ls.setPrompts(snap.Prompts, false)
 	ls.setInputs(snap.Pending)
 	ls.turnAdmission = ""
+	if !snap.Running {
+		ls.steered = nil
+	}
 	if snap.Running {
 		ls.turnAdmission = runningAdmission(snap.Pending, "")
 	}

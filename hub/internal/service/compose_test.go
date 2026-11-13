@@ -463,3 +463,31 @@ func TestTranscriptWaitsOutARestart(t *testing.T) {
 		t.Fatalf("transcript during a restart = %d %v", len(tr.Messages), err)
 	}
 }
+
+// A prompt that finds the session idle starts its own turn and is answered
+// "started" before the hub has the turn's start event. The hub still sees
+// the previous turn as running, and must not report the prompt as a steer.
+func TestStartedPromptBehindAStaleTurnIsNotASteer(t *testing.T) {
+	t.Parallel()
+	e := setup(t, fastSteer())
+	ch, stop, err := e.svc.Attach(context.Background(), userAlice, backendPC, sLive, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	running(t, e)
+	for ev := range ch {
+		if ev.Kind == hub.KindMessageStart {
+			break
+		}
+	}
+	e.gw.SetRunning(sLive, false)
+	e.gw.HoldTurns = true
+	res, err := e.svc.Prompt(hub.WithSteer(context.Background()), userAlice, backendPC, sLive, textSteer)
+	if err != nil || res.Steered || res.Held || res.ID == "" {
+		t.Fatalf("prompt = %+v %v", res, err)
+	}
+	if len(e.gw.Steered()) != 0 {
+		t.Fatalf("steered = %v", e.gw.Steered())
+	}
+}

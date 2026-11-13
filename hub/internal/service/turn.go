@@ -128,6 +128,7 @@ func (ls *live) trackTurn(ev gateway.Event) json.RawMessage {
 	case hub.KindMessageComplete:
 		if ev.AdmissionID == "" || ev.AdmissionID == ls.turnAdmission {
 			ls.turnAdmission = ""
+			ls.steered = nil
 		}
 		var u usageCounters
 		if json.Unmarshal(ev.Payload, &u) == nil {

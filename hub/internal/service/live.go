@@ -54,7 +54,12 @@ type live struct {
 	// known; outcomes is what became of the admissions StopAndSend waits
 	// for: "started", or the outcome their message.complete reported.
 	turnAdmission string
-	outcomes      map[string]string
+	// steered holds the admissions the hub handed to the running turn
+	// with prompt.steer_queued. A prompt sent again under the same ID
+	// comes back as started, and this tells its steer from a turn of its
+	// own. It is cleared when the turn ends: Hermes ends a steer with it.
+	steered  map[string]bool
+	outcomes map[string]string
 	// late is set by the snapshot of a running turn whose events Hermes's
 	// replay ring no longer had in full (it keeps 512 events, a long reply
 	// streams thousands): the reply streaming now has lost its start, so

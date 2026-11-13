@@ -88,6 +88,14 @@ func (b *backend) steer(ctx context.Context, sessionID, admissionID string) bool
 			return false
 		}
 		err = b.call(ctx, ls, gateway.MethodSteerQueued, gateway.SteerQueuedParams{SessionID: ls.id, AdmissionID: admissionID}, nil)
+		if err == nil {
+			ls.mu.Lock()
+			if ls.steered == nil {
+				ls.steered = map[string]bool{}
+			}
+			ls.steered[admissionID] = true
+			ls.mu.Unlock()
+		}
 		ls.unpin()
 		if err == nil {
 			return true
@@ -108,8 +116,11 @@ func (b *backend) steer(ctx context.Context, sessionID, admissionID string) bool
 }
 
 // steerOrFind hands a queued admission to the running turn. An admission
-// that already started answers a prompt sent again under the same ID: it
-// is a steer when it is not the running turn's own.
+// that already started answers a prompt sent again under the same ID, or a
+// prompt that found the session idle and started its own turn. It is a
+// steer only when the hub handed it to a turn itself: the hub's view of
+// the running turn comes from the event stream, which can be behind this
+// answer, so it cannot tell a steer from a turn that just began.
 func (b *backend) steerOrFind(ctx context.Context, sessionID string, r gateway.Receipt) bool {
 	if r.Status == gateway.AdmissionQueued {
 		return b.steer(ctx, sessionID, r.AdmissionID)
@@ -121,7 +132,7 @@ func (b *backend) steerOrFind(ctx context.Context, sessionID string, r gateway.R
 	defer ls.unpin()
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	return ls.turnAdmission != "" && ls.turnAdmission != r.AdmissionID
+	return ls.steered[r.AdmissionID]
 }
 
 // busy reports whether the session runs a turn or has inputs waiting, as
