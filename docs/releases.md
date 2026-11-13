@@ -6,6 +6,7 @@ From v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false 
 
 `.github/workflows/release.yaml` runs on a push of a `v*` tag. After the shared GoReleaser workflow has built and uploaded the release, and the `firefox-extension` job has uploaded the signed `.xpi`:
 
+0. Before the build, `scripts/check-plugin-version.sh` fails the release when `PLUGIN_VERSION` in `plugin/device/core.py` or the version in `plugin/device/plugin.yaml` is not the tag's version, so the plugin in the image and in the binary reports the release it ships in. Commit `plugin: report version X.Y.Z` before tagging `vX.Y.Z`. Pre-release tags are not checked.
 1. The `attest-files` job downloads the release's `.tar.gz` archives, its checksum file and the `.xpi`, checks the archives against the checksum file, and attests all of them with `actions/attest-build-provenance`. That is one SLSA build provenance v1 statement with one subject per file.
 2. The `attest-images` job finds the digest of the image index of `ghcr.io/usa-reddragon/hermes-device:<tag>` and `ghcr.io/usa-reddragon/hermes-device-sandbox:<tag>` and attests each digest. It also pushes the attestation to GHCR next to the image.
 

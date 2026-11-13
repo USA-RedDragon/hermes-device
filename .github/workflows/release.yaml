@@ -20,8 +20,11 @@ jobs:
       # The default hub of talaria setup, as for the Firefox extension below.
       # The other parts of this repository have their own tag prefixes (hub/,
       # hermes/, aio/), so goreleaser gets this tag and the previous v* tag
-      # instead of finding them itself.
+      # instead of finding them itself. The plugin must report the tag's version
+      # (v0.25.3 once shipped one that reported 0.25.2); the check fails the
+      # release before anything is built.
       run-before: |
+        scripts/check-plugin-version.sh "$GITHUB_REF_NAME"
         printf 'HUB_DEFAULT_URL=%s\n' "${{ vars.HUB_DEFAULT_URL }}" >> "$GITHUB_ENV"
         printf 'GORELEASER_CURRENT_TAG=%s\n' "$GITHUB_REF_NAME" >> "$GITHUB_ENV"
         printf 'GORELEASER_PREVIOUS_TAG=%s\n' "$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$GITHUB_REF_NAME^")" >> "$GITHUB_ENV"
