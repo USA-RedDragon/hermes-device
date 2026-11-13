@@ -70,6 +70,10 @@ for (const bad of [0, -1, NaN, undefined, null, "x"]) {
 
 assert.strictEqual(T.span(0.329), "329 ms");
 assert.strictEqual(T.span(0.0001), "1 ms");
+// A call with no measured time shows none, not "1 ms".
+assert.strictEqual(T.span(0), "");
+assert.strictEqual(T.span(undefined), "");
+assert.strictEqual(T.span(NaN), "");
 assert.strictEqual(T.span(3.24), "3.2 s");
 assert.strictEqual(T.span(12.4), "12 s");
 assert.strictEqual(T.span(240), "4 min");

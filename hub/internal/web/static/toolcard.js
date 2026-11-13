@@ -83,6 +83,32 @@ window.HubToolCard = (() => {
     return args.calls.filter((x) => isObj(x) && typeof x.name === "string").map((x) => ({ name: x.name, args: x.arguments }));
   }
 
+  // calls lists the cards a live tool_call draws: one for each call it
+  // carries, keyed by the wrapper's id and the call's place, with the id
+  // that tells the fold the calls ran together (none when there is one).
+  // It is null for any other call.
+  function calls(id, name, args) {
+    const list = wrapped(name, args);
+    if (!list || !list.length) return null;
+    return list.map((x, i) => ({ key: id + ":" + i, name: x.name, args: x.args, batch: list.length > 1 ? id : "" }));
+  }
+
+  // split divides the one result Hermes ends a live tool_call with into a
+  // result for each of its n calls, when it is a list of that length (or an
+  // object with a results list of that length). Else it is null.
+  function split(result, n) {
+    let r = result;
+    if (typeof r === "string" && (r[0] === "[" || r[0] === "{")) {
+      try {
+        r = JSON.parse(r);
+      } catch (_) {
+        return null;
+      }
+    }
+    const list = Array.isArray(r) ? r : isObj(r) && Array.isArray(r.results) ? r.results : null;
+    return list && list.length === n ? list : null;
+  }
+
   function take(list, name) {
     const i = list.findIndex((x) => x.name === name);
     return i < 0 ? null : list.splice(i, 1)[0];
@@ -347,16 +373,152 @@ window.HubToolCard = (() => {
     return out;
   }
 
+  // Hermes asks before it saves some notes. A result that says so, or a
+  // call the page marked pending, is waiting for the user.
+  const pendingWords = new Set(["pending", "pending_approval", "awaiting_approval", "approval_required", "needs_approval", "waiting_for_approval"]);
+  function waiting(c) {
+    if (c.pending) return true;
+    const res = isObj(c.res) ? c.res : {};
+    return pendingWords.has(str(res.status)) || res.pending_approval === true || res.approval_pending === true || res.requires_approval === true;
+  }
+
+  function noteBlocks(ops) {
+    const blocks = [];
+    for (const o of ops) {
+      const act = str(o.action);
+      if (act === "add") blocks.push({ label: "Added note", text: str(o.content), pre: true });
+      else if (act === "remove") blocks.push({ label: "Removed note", text: str(o.old_text) || str(o.content), pre: true });
+      else if (act === "replace" || act === "patch") {
+        blocks.push({ label: "Edited note", text: str(o.content), pre: true });
+        if (o.old_text) blocks.push({ label: act === "patch" ? "Text that changed" : "Note it replaced", text: str(o.old_text), pre: true });
+      }
+    }
+    return blocks;
+  }
+
+  const noteWord = (n) => (n === 1 ? "a project note" : n + " project notes");
+
+  function projectMemory(c) {
+    const a = isObj(c.args) ? c.args : {};
+    const res = isObj(c.res) ? c.res : {};
+    let ops = Array.isArray(a.operations) ? a.operations.filter(isObj) : [];
+    if (!ops.length && ["add", "patch", "replace", "remove"].includes(str(a.action))) ops = [a];
+    const out = { icon: "database", blocks: [] };
+    const name = short(str(res.project) || str(res.project_name) || str(res.name) || base(str(res.folder) || str(res.path) || str(res.project_path) || str(res.root)) || str(c.project));
+    const count = (...k) => ops.filter((o) => k.includes(str(o.action))).length;
+    const added = count("add");
+    const edited = count("replace", "patch");
+    const removed = count("remove");
+    const kinds = [added, edited, removed].filter(Boolean).length;
+    if (!ops.length) {
+      out.title = verb(c, "Read", "Reading") + " the notes of " + (name || "this project");
+      const list = Array.isArray(res.entries) ? res.entries : Array.isArray(res.notes) ? res.notes : null;
+      out.status = list ? plural(list.length, "note") : "Done";
+    } else {
+      let head;
+      if (kinds > 1) head = verb(c, "Changed ", "Changing ") + noteWord(ops.length) + (name ? " in " + name : "");
+      else if (added) head = verb(c, "Added ", "Adding ") + noteWord(added) + (name ? " to " + name : "");
+      else if (edited) head = verb(c, "Edited ", "Editing ") + noteWord(edited) + (name ? " in " + name : "");
+      else head = verb(c, "Removed ", "Removing ") + noteWord(removed) + (name ? " from " + name : "");
+      out.title = head;
+      out.status = "Saved";
+      out.blocks.push(...noteBlocks(ops));
+    }
+    if (waiting(c)) {
+      out.status = "Waiting for approval";
+      out.waiting = true;
+    }
+    if (c.out && (waiting(c) || c.failed || !ops.length)) out.blocks.push({ label: "Output", text: c.out, pre: true });
+    return out;
+  }
+
   function memoryTool(c) {
     const a = isObj(c.args) ? c.args : {};
     const act = str(a.action);
     const user = str(a.target) === "user";
     const what = user ? "your profile" : "memory";
     const out = { icon: "database", blocks: [] };
-    if (act === "add") out.title = verb(c, "Saved to ", "Saving to ") + what;
-    else if (act === "remove") out.title = verb(c, "Removed from ", "Removing from ") + what;
-    else if (act === "replace") out.title = verb(c, "Updated ", "Updating ") + what;
+    if (act === "add") out.title = verb(c, "Saved a note to ", "Saving a note to ") + what;
+    else if (act === "remove") out.title = verb(c, "Removed a note from ", "Removing a note from ") + what;
+    else if (act === "replace") out.title = verb(c, "Updated a note in ", "Updating a note in ") + what;
     else out.title = verb(c, "Used ", "Using ") + what;
+    out.status = act === "add" || act === "remove" || act === "replace" ? "Saved" : "Done";
+    out.blocks.push(...noteBlocks(act ? [a] : []));
+    if (waiting(c)) {
+      out.status = "Waiting for approval";
+      out.waiting = true;
+    }
+    if (!out.blocks.length && Object.keys(a).length) out.blocks.push({ label: "Call", text: JSON.stringify(a, null, 2), pre: true });
+    if (c.out && (waiting(c) || c.failed || !out.blocks.length)) out.blocks.push({ label: "Output", text: c.out, pre: true });
+    return out;
+  }
+
+  function sessionSearch(c) {
+    const a = isObj(c.args) ? c.args : {};
+    const res = isObj(c.res) ? c.res : {};
+    const out = { icon: "search", blocks: [] };
+    const q = short(str(a.query));
+    out.title = q ? verb(c, "Searched", "Searching") + " past chats for " + q : verb(c, "Looked through", "Looking through") + " recent chats";
+    const list = Array.isArray(res.results) ? res.results : Array.isArray(res.sessions) ? res.sessions : Array.isArray(res.matches) ? res.matches : null;
+    out.status = list ? plural(list.length, "session") : "Done";
+    if (Object.keys(a).length) out.blocks.push({ label: "Call", text: JSON.stringify(a, null, 2), pre: true });
+    if (c.out) out.blocks.push({ label: "Output", text: c.out, pre: true });
+    return out;
+  }
+
+  const secretKey = /pass|secret|token|code|cvc|card|number|otp|key/i;
+  function scrub(v) {
+    if (Array.isArray(v)) return v.map(scrub);
+    if (!isObj(v)) return v;
+    const o = {};
+    for (const [k, x] of Object.entries(v)) o[k] = secretKey.test(k) && typeof x !== "boolean" ? "(hidden)" : scrub(x);
+    return o;
+  }
+
+  function vault(c) {
+    const a = isObj(c.args) ? c.args : {};
+    const res = isObj(c.res) ? c.res : {};
+    const out = { icon: "key", blocks: [] };
+    const where = host(str(a.url) || str(a.host) || str(a.domain) || str(res.host) || str(res.url));
+    const looking = !str(a.action) || str(a.action) === "list";
+    out.title = (looking ? verb(c, "Looked for", "Looking for") : verb(c, "Used", "Using")) + " a saved login" + (where ? " on " + where : "");
+    const list = Array.isArray(res.logins) ? res.logins : Array.isArray(res.entries) ? res.entries : Array.isArray(res.items) ? res.items : null;
+    out.status = list ? plural(list.length, "login") : "Done";
+    // Never show what the vault returned: it may hold a secret.
+    if (Object.keys(a).length) out.blocks.push({ label: "Call", text: JSON.stringify(scrub(a), null, 2), pre: true });
+    return out;
+  }
+
+  function mcpCall(c) {
+    const a = isObj(c.args) ? c.args : {};
+    const out = { icon: "plug", blocks: [] };
+    const tool = [str(a.server), str(a.tool)].filter(Boolean).join(".") || str(a.name);
+    if (c.name === "mcp_device_call") out.title = verb(c, "Called ", "Calling ") + (short(tool) || "a tool") + " on your computer";
+    else if (c.name === "mcp_device_tools") out.title = verb(c, "Looked up", "Looking up") + " the tools of " + (short(str(a.server)) || "a server") + " on your computer";
+    else out.title = verb(c, "Looked up", "Looking up") + " the servers on your computer";
+    out.status = "Done";
+    if (Object.keys(a).length) out.blocks.push({ label: "Call", text: JSON.stringify(a, null, 2), pre: true });
+    if (c.out) out.blocks.push({ label: "Output", text: c.out, pre: true });
+    return out;
+  }
+
+  function toolLookup(c) {
+    const a = isObj(c.args) ? c.args : {};
+    const res = isObj(c.res) ? c.res : {};
+    const out = { icon: "search", blocks: [] };
+    out.title = verb(c, "Looked up", "Looking up") + " a tool";
+    const list = Array.isArray(res.tools) ? res.tools : Array.isArray(res.matches) ? res.matches : Array.isArray(res.results) ? res.results : null;
+    out.status = list ? plural(list.length, "match", "matches") : "Done";
+    if (Object.keys(a).length) out.blocks.push({ label: "Call", text: JSON.stringify(a, null, 2), pre: true });
+    if (c.out) out.blocks.push({ label: "Output", text: c.out, pre: true });
+    return out;
+  }
+
+  function wrapper(c) {
+    const a = isObj(c.args) ? c.args : {};
+    const list = wrapped(c.name, a);
+    const out = { icon: "tool", blocks: [] };
+    out.title = list && list.length ? verb(c, "Ran ", "Running ") + plural(list.length, "tool") + " in one call" : verb(c, "Used", "Using") + " a deferred tool";
     out.status = "Done";
     if (Object.keys(a).length) out.blocks.push({ label: "Call", text: JSON.stringify(a, null, 2), pre: true });
     if (c.out) out.blocks.push({ label: "Output", text: c.out, pre: true });
@@ -397,7 +559,9 @@ window.HubToolCard = (() => {
   const handlers = {
     terminal, process_manage: pm, delegate_task: delegate, agent_send: send, search_files: search,
     read_file: read, write_file: edit, patch: edit, web_search: web, web_extract: web,
-    memory: memoryTool, skills_list: skill, skill_view: skill, skill_manage: skill,
+    memory: memoryTool, project_memory: projectMemory, skills_list: skill, skill_view: skill, skill_manage: skill,
+    session_search: sessionSearch, browser_vault: vault, mcp_device_call: mcpCall, mcp_device_servers: mcpCall, mcp_device_tools: mcpCall,
+    tool_search: toolLookup, tool_describe: toolLookup, tool_call: wrapper,
   };
 
   function todo(c) {
@@ -418,15 +582,70 @@ window.HubToolCard = (() => {
     let d;
     if (handlers[name]) d = handlers[name](c);
     else if (name.startsWith("browser_")) d = browser(c);
-    else if (name === "todo") d = todo(c);
+    else if (name === "todo" || name === "todo_list") d = todo(c);
     else d = generic(c);
     d.state = !c.done ? "run" : c.failed ? "bad" : "ok";
     const code = exitCode(isObj(c.res) ? c.res : null);
     if (c.failed && !(name === "terminal" && code !== null && code !== 0)) d.status = failure(c);
-    if (!c.done) d.status = "";
+    if (!c.done) d.status = d.waiting ? "Waiting for approval" : "";
     d.blocks = d.blocks.filter((b) => b.text);
     for (const b of d.blocks) if (b.text.length > outLen) b.text = b.text.slice(0, outLen) + "\n...";
     return d;
+  }
+
+  // statusLine turns what Hermes says a subagent is doing now (the tool name
+  // and a short preview, which is a string and not the call's arguments)
+  // into one plain sentence and an icon. A background command is named from
+  // earlier calls through mem. A tool it does not know is "Using <name>",
+  // never the raw text.
+  const pmWords = {
+    wait: ["clock", "Waiting on"], poll: ["activity", "Checking"], log: ["list", "Reading the output of"], kill: ["stop", "Stopping"],
+    write: ["send", "Sending input to"], submit: ["send", "Sending input to"], close: ["activity", "Closing the input of"], handoff: ["send", "Handing off"],
+  };
+  const lineWords = {
+    todo: ["checkcircle", "Updating the to-do list"], todo_list: ["checkcircle", "Updating the to-do list"],
+    memory: ["database", "Saving to memory"], project_memory: ["database", "Updating the project notes"],
+    delegate_task: ["bot", "Starting a subagent"], agent_send: ["mail", "Sending a message"],
+    skills_list: ["book", "Looking at skills"], skill_view: ["book", "Reading a skill"], skill_manage: ["book", "Editing a skill"],
+    tool_search: ["search", "Looking up a tool"], tool_describe: ["search", "Looking up a tool"],
+    mcp_device_servers: ["plug", "Looking up the servers on your computer"], mcp_device_tools: ["plug", "Looking up tools on your computer"],
+  };
+
+  function statusLine(name, preview, mem) {
+    name = str(name).trim();
+    const p = squash(preview);
+    const arg = (p.split(" ")[0] || "");
+    const tail = (t) => (t ? " " + short(t) : "");
+    if (!name) return { icon: "tool", text: "Working" };
+    if (name === "process_manage") {
+      const w = p.split(" ");
+      const act = pmWords[w[0]] ? w[0] : w[0] === "list" || !w[0] ? "list" : "";
+      const id = /^(proc_)?[0-9a-f]{4,}$/i.test(w[1] || "") ? w[1] : /^proc_/.test(w[0] || "") ? w[0] : "";
+      const cmd = id && mem ? mem.proc(id) : "";
+      if (act === "list" || !act) return { icon: "list", text: "Listing background commands" };
+      const [icon, word] = pmWords[act];
+      return { icon, text: word + (cmd ? " background command " + short(cmd) : " a background command") };
+    }
+    if (name === "terminal") return { icon: "terminal", text: p ? "Running " + short(p) : "Running a command" };
+    if (name === "read_file") return { icon: "file", text: "Reading " + (base(arg) || "a file") };
+    if (name === "write_file" || name === "patch") return { icon: name === "write_file" ? "filenew" : "edit", text: (name === "write_file" ? "Writing " : "Editing ") + (base(arg) || "a file") };
+    if (name === "search_files") return { icon: "search", text: "Searching files" + (p ? " for " + short(p) : "") };
+    if (name === "web_search") return { icon: "globe", text: "Searching the web" + (p ? " for " + short(p) : "") };
+    if (name === "web_extract") return { icon: "globe", text: "Reading " + (arg ? host(arg) : "a web page") };
+    if (name === "session_search") return { icon: "search", text: "Searching past chats" + (p ? " for " + short(p) : "") };
+    if (name === "browser_vault") return { icon: "key", text: /^(fill|use|login)\b/.test(p) ? "Using a saved login" : "Looking for a saved login" };
+    if (name === "mcp_device_call") return { icon: "plug", text: "Calling " + (arg ? short(arg) : "a tool") + " on your computer" };
+    if (name === "tool_call") {
+      const m = /(\d+)\s+calls?/.exec(p);
+      return { icon: "tool", text: m && +m[1] !== 1 ? "Running " + m[1] + " tools" : "Running a tool" };
+    }
+    if (lineWords[name]) return { icon: lineWords[name][0], text: lineWords[name][1] };
+    if (browserWords[name]) {
+      const w = browserWords[name];
+      return { icon: w[0], text: w[2] + tail(w[3]({ url: arg, ref: arg, key: arg })) };
+    }
+    if (name.startsWith("browser_")) return { icon: "globe", text: "Using the browser" };
+    return { icon: "tool", text: "Using " + name };
   }
 
   function parse(r) {
@@ -520,14 +739,14 @@ window.HubToolCard = (() => {
     function drawMeta(d, c) {
       meta.replaceChildren();
       if (d.state === "run") {
-        const lead = el("span", "notice-run", "Running");
+        const lead = el("span", d.waiting ? "notice-wait" : "notice-run", d.status || "Running");
         meta.append(lead);
         if (T && T.valid(c.startedAt)) {
           meta.append(" · started ", T.stamp(el("span"), c.startedAt), " · ", T.ticking(el("span"), c.startedAt));
         }
         return;
       }
-      const lead = d.status ? el("span", "notice-" + d.state, d.status) : null;
+      const lead = d.status ? el("span", "notice-" + (d.waiting ? "wait" : d.state), d.status) : null;
       if (T) {
         T.finished(meta, c.endedAt, c.duration, lead || undefined);
       } else if (lead) {
@@ -551,5 +770,5 @@ window.HubToolCard = (() => {
     return view;
   }
 
-  return { derive, memory, create, wrapped, take, parse, outcome };
+  return { derive, memory, create, wrapped, take, calls, split, parse, outcome, statusLine };
 })();

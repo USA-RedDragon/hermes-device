@@ -25,7 +25,7 @@ window.HubActivity = (ctx) => {
   function fresh(chat) {
     return { chat, subs: new Map(), bgs: new Map(), open: new Set(), tab: "sub", paused: false, turn: null,
       usage: null, running: false, error: "", failingSince: 0, loaded: false, polled: 0, timer: 0, tick: 0,
-      approvals: new Map(), asked: new Set(), minis: new Map() };
+      approvals: new Map(), asked: new Set(), minis: new Map(), raw: new Set() };
   }
 
   // k writes a token count: 812, 1.3k, 41k, 1.2M.
@@ -80,7 +80,7 @@ window.HubActivity = (ctx) => {
     let r = S.subs.get(id);
     if (!r) {
       r = { id, kind: "sub", goal: "", model: "", state: "queued", startedAt: Date.now(), endedAt: 0, tools: 0,
-        tin: null, tout: null, now: "", tail: [], result: "", parentId: "", delegation: "", child: "", steer: true };
+        tin: null, tout: null, now: "", tool: null, missed: 0, tail: [], result: "", parentId: "", delegation: "", child: "", steer: true };
       S.subs.set(id, r);
     }
     if (p) {
@@ -169,13 +169,14 @@ window.HubActivity = (ctx) => {
         r.now = r.now || "Started";
         break;
       case "subagent.thinking":
-        if (text) { push(r, "think", text); r.now = text; }
+        if (text) { push(r, "think", text); r.now = text; r.tool = null; }
         if (r.state === "queued") r.state = "run";
         break;
       case "subagent.tool": {
         const line = ((p.tool_name || "tool") + "  " + (p.tool_preview || text)).trim();
         push(r, "t", line);
         r.now = line;
+        r.tool = { name: p.tool_name || "tool", preview: String(p.tool_preview || text || ""), at: Date.now() };
         r.lastTool = p.tool_name || "";
         r.lastPreview = p.tool_preview || text;
         if (typeof p.tool_count !== "number") r.tools++;
@@ -183,7 +184,7 @@ window.HubActivity = (ctx) => {
         break;
       }
       case "subagent.progress":
-        if (text) { push(r, "k", text); r.now = text; }
+        if (text) { push(r, "k", text); r.now = text; r.tool = null; }
         break;
       case "subagent.complete":
         r.state = subState(p.status || "completed");
@@ -194,6 +195,9 @@ window.HubActivity = (ctx) => {
         r.result = String(p.summary || p.text || "");
         for (const o of p.output_tail || []) push(r, o.is_error ? "e" : "t", (o.tool || "") + "  " + firstLine(o.preview));
         r.now = firstLine(r.result) || stateWord[r.state];
+        r.tool = null;
+        r.byMiss = false;
+        r.final = true;
         for (const [id, a] of S.approvals) if (a.sub === r.id) S.approvals.delete(id);
         break;
     }
@@ -270,15 +274,31 @@ window.HubActivity = (ctx) => {
         tool_count: s.tool_count });
       if (s.started_at) r.startedAt = s.started_at * 1000;
       r.steer = s.accepting_steer !== false;
-      if (live.has(r.state) && r.state !== "wait") r.state = s.status === "queued" ? "queued" : "run";
-      if (!r.now && s.last_tool) r.now = s.last_tool;
-    }
-    for (const r of S.subs.values()) {
-      if (!seen.has(r.id) && live.has(r.state) && Date.now() - r.startedAt > 5000) {
-        r.state = "ok";
-        r.endedAt = r.endedAt || Date.now();
-        r.now = r.now || "Finished";
+      r.missed = 0;
+      // The status Hermes lists is the truth, a subagent.complete event too:
+      // a subagent is finished when one of them says so, and not because it
+      // is missing from one answer.
+      const want = subState(s.status);
+      if (r.byMiss && (want === "run" || want === "queued")) {
+        r.byMiss = false;
+        r.endedAt = 0;
+        r.state = want;
+      } else if (live.has(r.state)) {
+        if (want === "run" || want === "queued") {
+          if (r.state !== "wait") r.state = want;
+        } else {
+          r.state = want;
+          r.endedAt = r.endedAt || Date.now();
+          r.tool = null;
+          r.now = r.now || stateWord[want];
+        }
       }
+      if (!r.now && !r.tool && s.last_tool) r.tool = { name: s.last_tool, preview: "", at: 0 };
+    }
+    // One answer without a subagent proves nothing. After two, verify() asks
+    // Hermes whether it still runs before the row says it ended.
+    for (const r of S.subs.values()) {
+      if (!seen.has(r.id) && live.has(r.state) && Date.now() - r.startedAt > 5000) r.missed = (r.missed || 0) + 1;
     }
     const procs = new Set();
     for (const p of st.processes || []) {
@@ -331,6 +351,7 @@ window.HubActivity = (ctx) => {
         if (!S.loaded || Date.now() - S.failingSince >= ACTIVITY_GAP_MS) S.error = e.message;
       }
       S.polled = Date.now();
+      await verify();
       await refreshMinis();
       if (chat !== S.chat) return;
       draw();
@@ -356,6 +377,32 @@ window.HubActivity = (ctx) => {
     if (!S.chat) return;
     clearTimeout(S.timer);
     S.timer = setTimeout(poll, 400);
+  }
+
+  // verify asks the hub, which asks Hermes, about each running subagent the
+  // list no longer shows. Only an answer that comes from Hermes and says it
+  // does not run ends the row; no answer, or "runs", keeps it as it is.
+  async function verify() {
+    const chat = S.chat;
+    const gone = [...S.subs.values()].filter((r) => live.has(r.state) && r.missed >= 2 && !r.verifying && Date.now() - (r.checkedAt || 0) > 8000);
+    await Promise.all(gone.map(async (r) => {
+      r.verifying = true;
+      r.checkedAt = Date.now();
+      try {
+        const got = await api("GET", chat.base + "/subagents/" + encodeURIComponent(r.id) + "/events?after=999999999999999");
+        if (chat !== S.chat) return;
+        if (got.running) r.missed = 0;
+        else if (got.live && live.has(r.state)) {
+          r.state = "ok";
+          r.byMiss = true;
+          r.endedAt = r.endedAt || Date.now();
+          r.tool = null;
+          r.now = r.now || "Finished";
+        }
+      } catch (_) { /* no answer: the row stays as it is */ } finally {
+        r.verifying = false;
+      }
+    }));
   }
 
   // mini is the small chat of a subagent's steps, kept across draws so it
@@ -536,6 +583,64 @@ window.HubActivity = (ctx) => {
     }
   }
 
+  // ago writes how long ago a step began: 8 s, 3 min, 2 h.
+  function ago(s) {
+    s = Math.floor(s);
+    if (s < 1) return "";
+    if (s < 60) return s + " s";
+    if (s < 3600) return Math.round(s / 60) + " min";
+    return Math.floor(s / 3600) + " h";
+  }
+
+  // nowLine is the line under a running subagent's row. A tool it runs is a
+  // plain sentence with an icon and how long it has gone on; the line is a
+  // button that opens the raw text Hermes sent, with a copy button. Anything
+  // else is the subagent's own words.
+  function nowLine(r) {
+    if (!(r.kind === "sub" && r.tool && live.has(r.state) && r.state !== "wait")) return [el("div", "now", r.now || "")];
+    const m = S.minis.get(r.id);
+    const line = window.HubToolCard.statusLine(r.tool.name, r.tool.preview, m ? m.view.memory() : null);
+    const raw = (r.tool.name + "  " + r.tool.preview).trim();
+    const open = S.raw.has(r.id);
+    const b = el("button", "now2");
+    b.type = "button";
+    b.setAttribute("aria-expanded", String(open));
+    b.title = "Show the raw text";
+    const when = r.tool.at ? ago((Date.now() - r.tool.at) / 1000) : "";
+    b.append(window.HubIcons.icon(line.icon), el("span", "lbl", line.text));
+    if (when) b.append(el("span", "ago", when));
+    const chev = window.HubIcons.icon("chev");
+    chev.classList.add("chev");
+    b.append(chev);
+    const stop = (e) => e.stopPropagation();
+    b.onclick = (e) => {
+      e.stopPropagation();
+      if (S.raw.has(r.id)) S.raw.delete(r.id); else S.raw.add(r.id);
+      draw();
+    };
+    b.onkeydown = stop;
+    const out = [b];
+    if (open) {
+      const box = el("div", "rawbox");
+      const code = el("code", "", raw);
+      const cp = window.HubIcons.button("copy", "Copy", "ghost ib");
+      cp.onclick = async (e) => {
+        e.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(raw);
+          toast("Copied");
+        } catch (_) {
+          toast("The browser did not allow copying");
+        }
+      };
+      cp.onkeydown = stop;
+      box.onclick = stop;
+      box.append(code, cp);
+      out.push(box);
+    }
+    return out;
+  }
+
   function row(r, child) {
     const box = el("div", "row" + (S.open.has(r.id) ? " open" : "") + (child ? " child" : ""));
     box.dataset.act = r.id;
@@ -560,7 +665,8 @@ window.HubActivity = (ctx) => {
       meta.append(el("span", "", r.kind === "prompt" ? "Prompt" : "Command"));
     }
     if (r.tin !== null || r.tout !== null) meta.append(el("span", "", k(r.tin) + " in · " + k(r.tout) + " out"));
-    head.append(meta, el("div", "now", r.now || ""));
+    head.append(meta);
+    head.append(...nowLine(r));
     const flip = () => {
       if (S.open.has(r.id)) S.open.delete(r.id); else S.open.add(r.id);
       draw();
@@ -741,6 +847,14 @@ window.HubActivity = (ctx) => {
     return { i, o, known };
   }
 
+  // tokenText says what the subagents used. Tokens come when a subagent
+  // finishes, so with none counted yet it says so and does not claim 0.
+  function tokenText(t, running, finished) {
+    const state = running || finished ? " · " + running + " running, " + finished + " finished" : "";
+    if (!t.known) return [el("b", "", "tokens appear when each finishes"), state];
+    return [el("b", "", k(t.i)), " in · ", el("b", "", k(t.o)), " out", running ? " so far" + state : ""];
+  }
+
   // draw paints the top bar's count and tokens, and the sidebar.
   function draw() {
     if (!S.chat) return;
@@ -762,7 +876,7 @@ window.HubActivity = (ctx) => {
     sum.replaceChildren();
     if (S.tab === "sub") {
       const t = totals(subs);
-      sum.append("Subagents in this chat: ", el("b", "", k(t.i)), " in · ", el("b", "", k(t.o)), " out");
+      sum.append("Subagents in this chat: ", ...tokenText(t, liveSub, subs.length - liveSub));
       if (S.paused) sum.append(el("div", "warn", "New subagents are paused on this backend."));
     } else {
       const t = totals(bgs.filter((r) => r.kind === "prompt"));

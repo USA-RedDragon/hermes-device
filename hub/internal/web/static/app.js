@@ -763,6 +763,7 @@
       this.sink = null;
       this.turn = null;
       this.tools = new Map();
+      this.wraps = new Map();
       if (this.cards) this.cards.dispose();
       this.cards = window.HubApprovals.create({ el, api, base: this.base, words: t, banner, add: (box) => this.add(box) });
       this.pending = [];
@@ -1190,6 +1191,57 @@
       return card;
     }
 
+    // waitingNotes marks the memory cards that still run as waiting for the
+    // user's approval while Hermes asks, and clears it when the question is
+    // answered. Only a question that is about notes or memory marks them.
+    waitingNotes(p, on) {
+      if (on && !/memory|note/i.test(String(p.description || "") + " " + String(p.command || "") + " " + String(p.tool || p.tool_name || ""))) return;
+      for (const card of this.tools.values()) {
+        if (card.finished || (card.toolName !== "memory" && card.toolName !== "project_memory") || !!card.call.pending === on) continue;
+        card.call.pending = on;
+        card.view.update(card.call);
+      }
+    }
+
+    tagBatch(card, id) {
+      card.batch = id;
+      card.call.batch = id;
+    }
+
+    // toolCards draws the card of a live tool call. A tool_call of Hermes
+    // carries several calls: each gets its own card, as when saved rows
+    // load, and they fold with the cards around them.
+    toolCards(id, name, args) {
+      const w = this.wraps.get(id);
+      if (w) return w.cards;
+      const list = window.HubToolCard.calls(id, name, args);
+      if (!list) return [this.toolCard(id, name, args)];
+      const cards = list.map((x) => {
+        const c = this.toolCard(x.key, x.name, x.args);
+        if (x.batch) this.tagBatch(c, x.batch);
+        return c;
+      });
+      this.wraps.set(id, { cards });
+      return cards;
+    }
+
+    // toolsDone finishes the card or cards of a live call. Hermes ends a
+    // tool_call with one event; when its result is a list with a result
+    // for each call, each card gets its own, else each shows the result.
+    toolsDone(p) {
+      const cards = this.toolCards(p.tool_id, p.name, p.args);
+      if (!this.wraps.has(p.tool_id)) {
+        this.toolDone(cards[0], p);
+        return;
+      }
+      const parts = window.HubToolCard.split(p.result, cards.length);
+      cards.forEach((card, i) => {
+        const own = parts && parts.length === cards.length ? parts[i] : undefined;
+        const one = own === undefined ? p : Object.assign({}, p, { result: own, result_text: undefined });
+        this.toolDone(card, one);
+      });
+    }
+
     // backgroundActs is the Run in background button of a running terminal
     // card: Hermes moves the command to its background commands and the
     // turn goes on.
@@ -1504,7 +1556,10 @@
           }
           const call = { name: fn.name, args };
           const inner = window.HubToolCard.wrapped(fn.name, args);
-          if (inner) call.inner = inner;
+          if (inner) {
+            call.inner = inner;
+            call.batchSize = inner.length;
+          }
           if (c.id) this.calls.set(c.id, call);
           if (c.call_id) this.calls.set(c.call_id, call);
         }
@@ -1523,11 +1578,12 @@
         let call = (this.calls && this.calls.get(m.tool_call_id)) || {};
         if (call.inner) {
           const one = window.HubToolCard.take(call.inner, m.name || m.tool_name);
-          if (one) call = Object.assign(one, { unwrapped: true });
+          if (one) call = Object.assign(one, { unwrapped: true, batch: call.batchSize > 1 ? m.tool_call_id || "" : "" });
         }
         const at = this.at;
         this.at = 0;
         const card = this.toolCard(m.tool_call_id && !call.unwrapped ? m.tool_call_id : "row" + m.row_id, m.name || m.tool_name || call.name, m.args || call.args);
+        if (call.batch) this.tagBatch(card, call.batch);
         this.at = at;
         this.toolDone(card, { result: m.content != null ? m.content : text });
         return;
@@ -1570,9 +1626,9 @@
           else if (p.text) this.setStatus(p.text);
           break;
         case "tool.generating": this.setStatus("Preparing " + (p.name || "a tool") + "..."); break;
-        case "tool.start": this.setStatus(""); this.toolCard(p.tool_id, p.name, p.args); break;
+        case "tool.start": this.setStatus(""); this.toolCards(p.tool_id, p.name, p.args); break;
         case "tool.progress": {
-          const card = this.toolCard(p.tool_id, p.name);
+          const card = this.toolCards(p.tool_id, p.name)[0];
           const live = card.view.live;
           let bar = live.querySelector("progress");
           if (!bar && p.total) { bar = el("progress"); live.append(bar); }
@@ -1584,7 +1640,7 @@
           }
           break;
         }
-        case "tool.complete": this.toolDone(this.toolCard(p.tool_id, p.name, p.args), p); break;
+        case "tool.complete": this.toolsDone(p); break;
         case "message.delta": this.setStatus(""); if (typeof p.text === "string" && p.text) this.assistantText(p.text, true); break;
         case "message.interim":
           if (p.text && !p.already_streamed) {
@@ -1628,11 +1684,11 @@
         case "input.held": this.heldEvent(p); break;
         case "input.sent": this.sentEvent(p); break;
         case "input.not_sent": this.notSentEvent(p); break;
-        case "approval.request": case "clarify.request": this.approval(p); break;
-        case "approval.settled": case "clarify.settled": this.cards.settled(p.prompt_id); break;
+        case "approval.request": case "clarify.request": this.approval(p); if (kind === "approval.request") this.waitingNotes(p, true); break;
+        case "approval.settled": case "clarify.settled": this.cards.settled(p.prompt_id); this.waitingNotes(p, false); break;
         case "approval.outcome": this.cards.outcome(p.prompt_id, outcomeText(p)); break;
-        case "approval.cancelled": this.cards.cancelled(p.request_ids); break;
-        case "prompt.lost": this.cards.lost(p.prompt_ids); break;
+        case "approval.cancelled": this.cards.cancelled(p.request_ids); this.waitingNotes(p, false); break;
+        case "prompt.lost": this.cards.lost(p.prompt_ids); this.waitingNotes(p, false); break;
         case "error": this.add(el("div", "note bad", p.message || "Error")); break;
         case "claude.signin": this.add(claude.chatNotice(this.backend, p)); break;
         default: break;

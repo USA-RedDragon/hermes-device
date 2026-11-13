@@ -15,7 +15,12 @@ window.HubMiniChat = (() => {
   const noteLen = 160;
   const endLen = 600;
 
-  const ms = (ts) => (typeof ts === "number" ? ts : Date.parse(ts) || 0);
+  // ms reads a step's time. A step Hermes gave no time has none (0): the
+  // hub sends year 1 for it.
+  const ms = (ts) => {
+    const v = typeof ts === "number" ? ts : Date.parse(ts) || 0;
+    return v > 0 ? v : 0;
+  };
   const cut = (s, n) => {
     const r = Array.from(String(s || "").trim());
     return r.length <= n ? r.join("") : r.slice(0, n).join("").trim() + "…";
@@ -25,9 +30,18 @@ window.HubMiniChat = (() => {
   const near = (m) => m.scrollHeight - m.scrollTop - m.clientHeight < nearPx;
   const pill = (n) => n + (n === 1 ? " new step" : " new steps");
 
-  // order sorts events for drawing from scratch: by time, then seq.
+  // order sorts events for drawing from scratch: by time, then seq. A step
+  // with no time of its own takes the time of the step before it, so it stays
+  // in its place.
   function order(events) {
-    return events.slice().sort((a, b) => ms(a.ts) - ms(b.ts) || a.seq - b.seq);
+    const rows = events.map((e) => ({ e })).sort((a, b) => a.e.seq - b.e.seq);
+    let last = 0;
+    for (const r of rows) {
+      const t = ms(r.e.ts);
+      if (t) last = t;
+      r.t = t || last;
+    }
+    return rows.sort((a, b) => a.t - b.t || a.e.seq - b.e.seq).map((r) => r.e);
   }
 
   // steerState says what became of a message to the subagent. Hermes hands
@@ -36,7 +50,7 @@ window.HubMiniChat = (() => {
   // when the subagent ended first.
   function steerState(steer, events, ended) {
     const at = ms(steer.ts);
-    if (events.some((e) => e.type === "tool_end" && ms(e.ts) >= at)) return "read";
+    if (events.some((e) => e.type === "tool_end" && (ms(e.ts) ? ms(e.ts) >= at : e.seq > steer.seq))) return "read";
     return ended ? "missed" : "waits";
   }
 
@@ -83,7 +97,9 @@ window.HubMiniChat = (() => {
     jump.append(window.HubIcons.icon("chev"), el("span"));
     box.append(jump);
     const st = { events: [], calls: new Map(), steers: [], unseen: 0, ended: false, info: {}, endNode: null, known: null };
-    const view = { node: box, events: () => st.events.slice() };
+    // memory is what the steps taught so far: a background command by its
+    // session id, for naming it in the row's status line.
+    const view = { node: box, events: () => st.events.slice(), memory: () => st.known };
 
     const put = (node) => box.insertBefore(node, jump);
     const stamp = (at) => T.stamp(el("span", "ts"), ms(at));
@@ -105,19 +121,24 @@ window.HubMiniChat = (() => {
       }
     });
 
-    function card(e) {
+    // card draws one tool card. o.key names it when it is one of the calls
+    // a tool_call carries, which all share the wrapper's call id; o.batch
+    // is that id, so the fold knows these calls ran together.
+    function card(e, o) {
+      o = o || {};
       if (!st.known) st.known = window.HubToolCard.memory();
       const call = { name: e.name || "tool", args: e.args || null, res: null, out: "", done: false, failed: false,
-        startedAt: ms(e.ts), endedAt: 0, duration: undefined, mem: st.known };
+        startedAt: ms(e.ts), endedAt: 0, duration: undefined, mem: st.known, batch: o.batch || "" };
       const v = window.HubToolCard.create({ el, toast: ctx.toast || (() => {}), highlight: ctx.highlight, diff: ctx.diff || ((t) => el("pre", "", t)) }, call);
       const node = v.node;
       node.view = v;
       node.call = call;
       node.toolName = call.name;
-      node.dataset.ukey = "t:" + (e.call_id || "s" + e.seq);
+      node.dataset.ukey = "t:" + (o.key || e.call_id || "s" + e.seq);
+      node.batch = o.batch || "";
       node.classList.add("running");
       const c = { node, call };
-      if (e.call_id) st.calls.set(e.call_id, c);
+      if (e.call_id && !o.key) st.calls.set(e.call_id, c);
       put(node);
       return c;
     }
@@ -131,7 +152,10 @@ window.HubMiniChat = (() => {
       call.failed = failed;
       call.out = out + (e.result_size > (e.result || "").length ? "\n… (" + e.result_size + " characters in all)" : "");
       call.endedAt = ms(e.ts);
-      const sec = typeof e.duration_ms === "number" ? e.duration_ms / 1000 : call.startedAt && call.endedAt >= call.startedAt ? (call.endedAt - call.startedAt) / 1000 : undefined;
+      // No time is shown when it is not known or 0.
+      let sec;
+      if (typeof e.duration_ms === "number" && e.duration_ms > 0) sec = e.duration_ms / 1000;
+      else if (!(typeof e.duration_ms === "number") && call.startedAt && call.endedAt > call.startedAt) sec = (call.endedAt - call.startedAt) / 1000;
       call.duration = sec;
       node.duration = sec;
       node.failed = failed;
@@ -140,6 +164,27 @@ window.HubMiniChat = (() => {
       node.classList.toggle("failed", failed);
       st.known.learn(call.name, call.args, res);
       node.view.update(call);
+    }
+
+    // open draws the calls a tool_call carries as the cards of the tools
+    // inside it, so they fold with their neighbors like any other. Hermes
+    // saves one result per inner call under the wrapper's call id; each
+    // result goes to the next call of its tool that has none yet.
+    function open(e, list) {
+      const w = { inner: [], batch: e.call_id || "s" + e.seq };
+      for (const x of window.HubToolCard.calls(w.batch, e.name, e.args)) {
+        w.inner.push({ name: x.name, c: card({ ...e, name: x.name, args: x.args || null }, { key: x.key, batch: x.batch }), done: false });
+      }
+      if (e.call_id) st.calls.set(e.call_id, { wrapper: w });
+      return w;
+    }
+
+    function close(w, e) {
+      const free = w.inner.filter((x) => !x.done);
+      const hit = free.find((x) => x.name === e.name) || (!e.name || e.name === "tool_call" ? free[0] : null);
+      if (!hit) return;
+      hit.done = true;
+      finish(hit.c, { ...e, name: hit.name });
     }
 
     function steer(e) {
@@ -192,12 +237,22 @@ window.HubMiniChat = (() => {
           put(m);
           break;
         }
-        case "tool_start":
-          if (!st.calls.has(e.call_id)) card(e);
+        case "tool_start": {
+          if (st.calls.has(e.call_id)) break;
+          const list = window.HubToolCard.wrapped(e.name, e.args);
+          if (list && list.length) open(e, list);
+          else card(e);
           break;
+        }
         case "tool_end": {
-          const c = (e.call_id && st.calls.get(e.call_id)) || card(e);
-          finish(c, e);
+          let c = e.call_id && st.calls.get(e.call_id);
+          if (!c) {
+            // A result whose call this view never saw: a wrapper's result still draws its inner tool.
+            const list = window.HubToolCard.wrapped(e.name, e.args);
+            if (list && list.length) c = { wrapper: open(e, list) };
+          }
+          if (c && c.wrapper) close(c.wrapper, e);
+          else finish(c || card(e), e);
           break;
         }
         case "steer":

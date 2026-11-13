@@ -1,0 +1,170 @@
+"use strict";
+// The Activity sidebar's subagent rows: the status line under a running
+// subagent (a sentence, the raw text one tap away), the token line of the
+// header, and when a row counts as running or finished (only on what Hermes
+// says, never on one missing list answer).
+const fs = require("fs");
+const vm = require("vm");
+const assert = require("assert");
+const { el, document, El } = require("../fakedom.js");
+
+let now = 1_800_000_000_000;
+class D extends Date {
+  static now() { return now; }
+}
+const timers = new Map();
+let tid = 0;
+const ids = {};
+for (const id of ["actbody", "actbtn", "actclose", "actcount", "actsum", "app", "c-bg", "c-sub", "tab-bg", "tab-sub", "toast", "tok", "toksub", "tokturn"]) ids[id] = new El("div");
+const doc = Object.assign({}, document, { getElementById: (id) => ids[id], hidden: false, activeElement: null, addEventListener: () => {}, querySelector: () => null, body: new El("body") });
+const copied = [];
+const sandbox = {
+  window: {}, document: doc, Date: D, Math, JSON, Intl, Promise, Array, Set, Map,
+  setTimeout: (fn, ms) => { const id = ++tid; timers.set(id, fn); return id; },
+  clearTimeout: (id) => { timers.delete(id); },
+  setInterval: () => 1, clearInterval: () => {},
+  matchMedia: () => ({ matches: false }), localStorage: { getItem: () => null, setItem: () => {} },
+  requestAnimationFrame: (fn) => fn(), CSS: { escape: (s) => s },
+  location: { hash: "" }, navigator: { clipboard: { writeText: async (t) => { copied.push(t); } } },
+};
+sandbox.window = sandbox;
+sandbox.window.HubBackoff = () => ({ next: () => 3000, reset: () => {} });
+sandbox.window.HubIcons = { icon: (name) => el("svg", "ico i-" + name), button: (name, label, cls) => { const b = el("button", cls); b.title = label; return b; } };
+vm.createContext(sandbox);
+const dir = process.argv[2];
+for (const f of ["times.js", "toolcard.js", "toolgroup.js", "minichat.js", "activity.js"]) vm.runInContext(fs.readFileSync(dir + "/" + f, "utf8"), sandbox);
+
+// What the hub answers to the sidebar's reads.
+let list = [];
+let verdict = { live: true, running: true };
+let verdictFails = false;
+const reads = [];
+async function api(method, path) {
+  reads.push(path);
+  if (path.endsWith("/activity")) return { subagents: list, processes: [] };
+  if (/\/subagents\/[^/]+\/events/.test(path)) {
+    if (verdictFails) throw new Error("no answer");
+    return Object.assign({ events: [], epoch: 1, more: false }, verdict);
+  }
+  return {};
+}
+const act = sandbox.window.HubActivity({ api, el, banner: () => {}, showText: () => {} });
+
+(async () => {
+const chat = { base: "/api/sessions/b/s", backend: "b" };
+act.show(chat);
+// Runs what the page would run after its timers, until nothing is left.
+async function settle() {
+  for (let i = 0; i < 5 && timers.size; i++) {
+    const fns = [...timers.values()];
+    timers.clear();
+    for (const fn of fns) await fn();
+  }
+}
+async function round() {
+  const fns = [...timers.values()];
+  timers.clear();
+  for (const fn of fns) await fn();
+}
+const body = () => ids.actbody;
+const text = () => body().textContent;
+const sumText = () => ids.actsum.textContent;
+
+// A subagent starts and runs a tool: the line is a sentence, not the raw text.
+act.event("subagent.start", { subagent_id: "sa-1", goal: "Check the cluster alerts", model: "m" });
+act.event("subagent.tool", { subagent_id: "sa-1", tool_name: "process_manage", tool_preview: "wait proc_283637f9d51 180s" });
+let line = body().querySelector("button.now2");
+assert.ok(line, "the status line is a button");
+assert.match(line.textContent, /^Waiting on a background command/);
+assert.ok(!text().includes("process_manage"), "the raw text is not shown closed: " + text());
+assert.ok(!text().includes("proc_283637f9d51"));
+assert.strictEqual(line.getAttribute("aria-expanded"), "false");
+assert.ok(line.querySelector("svg.i-clock"), "the icon fits the sentence");
+// An elapsed time follows the sentence.
+now += 185000;
+act.event("subagent.progress", { subagent_id: "sa-1", text: "" });
+now += 0;
+act.event("subagent.tool", { subagent_id: "sa-1", tool_name: "process_manage", tool_preview: "wait proc_283637f9d51 180s" });
+now += 185000;
+act.event("subagent.progress", { subagent_id: "sa-1", text: "" });
+// Tapping the line opens the raw text with a copy button, and not the row.
+const stops = [];
+let tap = { stopPropagation: () => stops.push(1) };
+body().querySelector("button.now2").onclick(tap);
+assert.ok(stops.length, "the tap stays on the line");
+assert.ok(!body().querySelector(".row.open"), "the row did not open");
+line = body().querySelector("button.now2");
+assert.strictEqual(line.getAttribute("aria-expanded"), "true");
+const raw = body().querySelector(".rawbox");
+assert.ok(raw && raw.textContent === "process_manage  wait proc_283637f9d51 180s", raw && raw.textContent);
+raw.querySelector("button").onclick(tap);
+assert.deepStrictEqual(copied, ["process_manage  wait proc_283637f9d51 180s"]);
+// It stays open through the redraw every second, and a tap closes it.
+act.event("subagent.progress", { subagent_id: "sa-1", text: "" });
+assert.ok(body().querySelector(".rawbox"));
+body().querySelector("button.now2").onclick(tap);
+assert.ok(!body().querySelector(".rawbox"));
+// The rest of the row still opens the small chat.
+body().querySelector(".row-head").onclick();
+assert.ok(body().querySelector(".row.open"));
+body().querySelector(".row-head").onclick();
+// A subagent's own words stay plain text, and a tool it does not know is "Using ...".
+act.event("subagent.thinking", { subagent_id: "sa-1", text: "Looking at the flux drift" });
+assert.ok(!body().querySelector("button.now2"));
+assert.ok(text().includes("Looking at the flux drift"));
+act.event("subagent.tool", { subagent_id: "sa-1", tool_name: "some_new_tool", tool_preview: "{...}" });
+assert.match(body().querySelector("button.now2").textContent, /^Using some_new_tool/);
+assert.ok(!text().includes("{...}"));
+
+// The header does not claim 0 tokens when none are counted yet.
+assert.match(sumText(), /Subagents in this chat: tokens appear when each finishes · 1 running, 0 finished/, sumText());
+act.event("subagent.complete", { subagent_id: "sa-1", status: "completed", summary: "Fixed it.", input_tokens: 3100, output_tokens: 920, duration_seconds: 400 });
+assert.match(sumText(), /Subagents in this chat: 3\.1k in · 920 out$/, sumText());
+assert.ok(!sumText().includes("0 in"));
+
+// Running or finished comes from Hermes. One list without the subagent says nothing.
+const chat2 = { base: "/api/sessions/b/s2", backend: "b" };
+act.show(chat2);
+act.event("subagent.start", { subagent_id: "sa-2", goal: "Second", model: "m" });
+act.event("subagent.start", { subagent_id: "sa-3", goal: "Third", model: "m" });
+const rowState = (id) => { const r = body().querySelectorAll(".row").find((x) => x.dataset.act === id); return r ? r.querySelector(".meta").children[0].textContent : "none"; };
+now += 60000;
+list = [{ id: "sa-2", goal: "Second", status: "running" }, { id: "sa-3", goal: "Third", status: "running" }];
+await round();
+assert.strictEqual(rowState("sa-2"), "Running");
+// sa-2 leaves the list for a long while (a slow or failed read, a restart): still running.
+list = [{ id: "sa-3", goal: "Third", status: "running" }];
+for (let i = 0; i < 4; i++) { now += 9000; await round(); }
+assert.strictEqual(rowState("sa-2"), "Running", "Hermes said it still runs");
+assert.ok(reads.some((p) => /subagents\/sa-2\/events/.test(p)), "it asked before it decided");
+// No answer from Hermes: it stays as it is.
+verdictFails = true;
+for (let i = 0; i < 4; i++) { now += 9000; await round(); }
+assert.strictEqual(rowState("sa-2"), "Running");
+// Only Hermes saying it does not run ends the row.
+verdictFails = false;
+verdict = { live: true, running: false };
+for (let i = 0; i < 4; i++) { now += 9000; await round(); }
+assert.strictEqual(rowState("sa-2"), "Done");
+assert.strictEqual(rowState("sa-3"), "Running");
+// A stored copy without a live Hermes answer is no proof either.
+act.event("subagent.start", { subagent_id: "sa-4", goal: "Fourth", model: "m" });
+verdict = { live: false, running: false };
+for (let i = 0; i < 4; i++) { now += 9000; await round(); }
+assert.strictEqual(rowState("sa-4"), "Running");
+// The list says what became of a subagent: a status it gives wins.
+list = [{ id: "sa-3", goal: "Third", status: "completed" }, { id: "sa-4", goal: "Fourth", status: "running" }];
+await round();
+assert.strictEqual(rowState("sa-3"), "Done");
+assert.strictEqual(rowState("sa-4"), "Running");
+list = [{ id: "sa-4", goal: "Fourth", status: "failed" }];
+await round();
+assert.strictEqual(rowState("sa-4"), "Failed");
+// A row the complete event ended stays ended even when a stale list shows it running.
+act.event("subagent.start", { subagent_id: "sa-5", goal: "Fifth", model: "m" });
+act.event("subagent.complete", { subagent_id: "sa-5", status: "interrupted" });
+list = [{ id: "sa-5", goal: "Fifth", status: "running" }];
+await round();
+assert.strictEqual(rowState("sa-5"), "Stopped");
+console.log("ok");
+})().catch((e) => { console.error(e); process.exit(1); });

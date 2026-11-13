@@ -79,9 +79,11 @@ window.HubTimes = (() => {
   }
 
   // span writes a run length given in seconds: 329 ms, 3.2 s, 12 s, 4 min,
-  // 4 min 5 s, 1 h 3 min.
+  // 4 min 5 s, 1 h 3 min. A length that is not known or is 0 is "": a call
+  // that took no time to measure shows no time, not "1 ms".
   function span(sec) {
     if (typeof sec !== "number" || !isFinite(sec) || sec < 0) return "";
+    if (sec <= 0) return "";
     if (sec < 1) return Math.max(1, Math.round(sec * 1000)) + " ms";
     if (sec < 10) return sec.toFixed(1) + " s";
     if (sec < 60) return Math.round(sec) + " s";

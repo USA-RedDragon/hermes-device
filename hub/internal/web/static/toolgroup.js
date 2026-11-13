@@ -22,6 +22,16 @@ window.HubToolGroup = (() => {
     delegate_task: ["used a subagent", "used subagents %d times"],
     agent_send: ["sent a message", "sent %d messages"],
     memory: ["used memory", "used memory %d times"],
+    project_memory: ["used the project notes", "used the project notes %d times"],
+    todo_list: ["updated the to-do list", "updated the to-do list %d times"],
+    session_search: ["searched past chats", "searched past chats %d times"],
+    browser_vault: ["used a saved login", "used saved logins %d times"],
+    mcp_device_call: ["called a tool on your computer", "called tools on your computer %d times"],
+    mcp_device_servers: ["looked up your computer's servers", "looked up your computer's servers %d times"],
+    mcp_device_tools: ["looked up tools on your computer", "looked up tools on your computer %d times"],
+    tool_search: ["looked up a tool", "looked up %d tools"],
+    tool_describe: ["looked up a tool", "looked up %d tools"],
+    tool_call: ["ran a tool", "ran %d tools"],
     skill_view: ["used a skill", "used skills %d times"],
     skill_manage: ["used a skill", "used skills %d times"],
     skills_list: ["used a skill", "used skills %d times"],
@@ -30,12 +40,17 @@ window.HubToolGroup = (() => {
   const word = (name) => words[name] || (String(name).startsWith("browser_") ? ["used the browser", "used the browser %d times"] : ["used " + name, "used " + name + " %d times"]);
 
   // summary is the group's line: what the cards did, their total time and
-  // the span of time they ran, and how many failed.
+  // the span of time they ran, and how many failed. Calls that overlapped
+  // (the calls of one tool_call run together, or their times cross) have no
+  // total: their times would add up to more than passed. The line then shows
+  // the real time from the first start to the last end, when that is known.
   function summary(cards) {
     const T = window.HubTimes;
     const counts = new Map();
     let total = 0;
     let failed = 0;
+    const batches = new Map();
+    const spans = [];
     let from = 0;
     let to = 0;
     for (const c of cards) {
@@ -43,17 +58,25 @@ window.HubToolGroup = (() => {
       const key = w[0];
       counts.set(key, { w, n: (counts.get(key)?.n || 0) + 1 });
       if (typeof c.duration === "number") total += c.duration;
+      if (c.batch) batches.set(c.batch, (batches.get(c.batch) || 0) + 1);
       if (c.failed) failed++;
       const at = c.call || {};
       const end = at.endedAt || at.startedAt || 0;
       const begin = at.startedAt || (end && typeof at.duration === "number" ? end - at.duration * 1000 : end);
+      if (T.valid(begin) && T.valid(end)) spans.push([begin, end]);
       if (T.valid(begin)) from = from ? Math.min(from, begin) : begin;
       if (T.valid(end)) to = Math.max(to, end);
     }
     const parts = Array.from(counts.values()).map(({ w, n }) => (n === 1 ? w[0] : w[1].replace("%d", n)));
     let text = parts.join(", ");
     text = text[0].toUpperCase() + text.slice(1);
-    if (total) text += " (" + T.span(total) + ")";
+    spans.sort((x, y) => x[0] - y[0]);
+    const crossed = spans.some((x, i) => i && x[0] < Math.max(...spans.slice(0, i).map((y) => y[1])));
+    const together = crossed || [...batches.values()].some((n) => n > 1);
+    if (together) {
+      const wall = from && to ? T.span((to - from) / 1000) : "";
+      if (wall) text += " (" + wall + ")";
+    } else if (total && T.span(total)) text += " (" + T.span(total) + ")";
     const span = T.range(from, to || from);
     if (span) text += " \u00B7 " + span;
     return { text, failed };

@@ -7,101 +7,7 @@ const fs = require("fs");
 const vm = require("vm");
 const assert = require("assert");
 
-// A small DOM: elements with classes, attributes, children and text, and a
-// scroll box whose content is 50 px per child.
-class Text {
-  constructor(t) { this.data = String(t); this.parentNode = null; }
-  get textContent() { return this.data; }
-  remove() { if (this.parentNode) this.parentNode._drop(this); }
-}
-class El {
-  constructor(tag) {
-    this.tagName = tag.toUpperCase();
-    this.childNodes = [];
-    this.parentNode = null;
-    this.className = "";
-    this.dataset = {};
-    this.attrs = {};
-    this.hidden = false;
-    this.open = false;
-    this.listeners = {};
-    this.style = {};
-    this._top = 0;
-    this.clientHeight = 200;
-    const self = this;
-    this.classList = {
-      add: (...c) => { for (const x of c) if (!self._cls().includes(x)) self.className = (self.className + " " + x).trim(); },
-      remove: (...c) => { self.className = self._cls().filter((x) => !c.includes(x)).join(" "); },
-      contains: (c) => self._cls().includes(c),
-      toggle: (c, on) => { if (on === undefined) on = !self._cls().includes(c); if (on) self.classList.add(c); else self.classList.remove(c); return on; },
-    };
-  }
-  _cls() { return this.className.split(/\s+/).filter(Boolean); }
-  _drop(n) { this.childNodes = this.childNodes.filter((x) => x !== n); n.parentNode = null; }
-  _adopt(n) { if (typeof n === "string" || typeof n === "number") n = new Text(n); if (n.parentNode) n.parentNode._drop(n); n.parentNode = this; return n; }
-  get children() { return this.childNodes.filter((n) => n instanceof El); }
-  get firstChild() { return this.childNodes[0] || null; }
-  get lastChild() { return this.childNodes[this.childNodes.length - 1] || null; }
-  get previousElementSibling() {
-    if (!this.parentNode) return null;
-    const k = this.parentNode.children;
-    return k[k.indexOf(this) - 1] || null;
-  }
-  get isConnected() { return true; }
-  get textContent() { return this.childNodes.map((n) => n.textContent).join(""); }
-  set textContent(v) { this.childNodes = []; if (v !== "" && v !== undefined && v !== null) this.append(String(v)); }
-  append(...k) { for (const n of k) this.childNodes.push(this._adopt(n)); }
-  insertBefore(n, ref) { n = this._adopt(n); const i = ref ? this.childNodes.indexOf(ref) : -1; if (i < 0) this.childNodes.push(n); else this.childNodes.splice(i, 0, n); return n; }
-  replaceChildren(...k) { for (const n of this.childNodes) n.parentNode = null; this.childNodes = []; this.append(...k); }
-  replaceWith(n) { const p = this.parentNode; p.insertBefore(n, this); p._drop(this); }
-  remove() { if (this.parentNode) this.parentNode._drop(this); }
-  setAttribute(k, v) { this.attrs[k] = String(v); }
-  getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
-  removeAttribute(k) { delete this.attrs[k]; }
-  addEventListener(t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); }
-  dispatch(t) { for (const fn of this.listeners[t] || []) fn({}); }
-  _match(part) {
-    const m = part.match(/^([a-z]*)((?:\.[\w-]+)*)((?:\[[^\]]+\])*)$/i);
-    if (!m) throw new Error("selector " + part);
-    if (m[1] && this.tagName !== m[1].toUpperCase()) return false;
-    for (const c of m[2].split(".").filter(Boolean)) if (!this._cls().includes(c)) return false;
-    for (const a of m[3].match(/\[[^\]]+\]/g) || []) {
-      const [, k, v] = a.match(/\[([\w-]+)="?([^"\]]*)"?\]/);
-      if (this.getAttribute(k) !== v) return false;
-    }
-    return true;
-  }
-  matches(sel) { return this._match(sel); }
-  querySelectorAll(sel) {
-    const parts = sel.trim().split(/\s+/);
-    const out = [];
-    const walk = (n, ancestors) => {
-      for (const c of n.children) {
-        const chain = [...ancestors, c];
-        if (c._match(parts[parts.length - 1])) {
-          let i = parts.length - 2;
-          for (let j = chain.length - 2; j >= 0 && i >= 0; j--) if (chain[j]._match(parts[i])) i--;
-          if (i < 0) out.push(c);
-        }
-        walk(c, chain);
-      }
-    };
-    walk(this, []);
-    return out;
-  }
-  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
-  get scrollHeight() { return Math.max(this.clientHeight, this.children.length * 50); }
-  get scrollTop() { return this._top; }
-  set scrollTop(v) { this._top = Math.max(0, Math.min(v, this.scrollHeight - this.clientHeight)); }
-}
-const el = (tag, cls, text) => {
-  const n = new El(tag);
-  if (cls) n.className = cls;
-  if (text !== undefined && text !== null && text !== "") n.append(String(text));
-  return n;
-};
-const document = { createElement: (t) => new El(t), createDocumentFragment: () => new El("fragment") };
-
+const { el, document } = require("../fakedom.js");
 const sandbox = { window: {}, document, setInterval: () => 1, clearInterval: () => {}, Date, Math, JSON, Intl };
 sandbox.window.HubIcons = { icon: (name) => el("svg", "ico i-" + name), button: (name, label, cls) => el("button", cls) };
 vm.createContext(sandbox);
@@ -243,4 +149,109 @@ assert.match(box.querySelector(".mc-end").textContent, /^Failed after 12 min 3 s
 // Reset clears it all for a transcript Hermes rewrote.
 v.reset();
 assert.deepStrictEqual(kids(), ["jump"]);
+
+// A tool_call carries several calls. The small chat draws each as the card of
+// its tool (not one wrench), keys each result to its own call (the results all
+// carry the wrapper's call id and must not overwrite one another), and the
+// cards fold with their neighbors like any others.
+{
+  const w = M.create({ el, toast: () => {} });
+  const b = w.node;
+  const titles = () => b.querySelectorAll(".notice-title").map((n) => n.textContent);
+  const wrapperArgs = { calls: [
+    { name: "process_manage", arguments: { action: "wait", session_id: "proc_283637f9d51", timeout: 180 } },
+    { name: "session_search", arguments: { query: "dns split horizon" } },
+    { name: "browser_vault", arguments: { action: "list", url: "https://github.com" } },
+  ] };
+  w.set({ model: "m" });
+  w.add([ev({ type: "tool_start", call_id: "w1", name: "tool_call", args: wrapperArgs, at: 10 })]);
+  assert.deepStrictEqual(titles(), ["Waiting for background command proc_283637f9d51", "Searching past chats for dns split horizon", "Looking for a saved login on github.com"]);
+  assert.strictEqual(b.querySelectorAll(".tool").length, 3);
+  assert.ok(b.querySelectorAll(".tool").every((c) => c.classList.contains("running")));
+  // One result row per inner call, all under the wrapper's id, out of order.
+  w.add([ev({ type: "tool_end", call_id: "w1", name: "session_search", result: '{"results": [1, 2, 3, 4]}', duration_ms: 320, at: 11 })]);
+  assert.strictEqual(b.querySelectorAll(".tool").filter((c) => c.classList.contains("running")).length, 2);
+  w.add([ev({ type: "tool_end", call_id: "w1", name: "process_manage", result: '{"status": "running"}', duration_ms: 180000, at: 190 }),
+    ev({ type: "tool_end", call_id: "w1", name: "browser_vault", result: '{"logins": [{}]}', duration_ms: 88, at: 190 })]);
+  const cards = b.querySelectorAll(".tool");
+  assert.ok(cards.every((c) => !c.classList.contains("running") && c.finished), "every inner call finished");
+  assert.deepStrictEqual(cards.map((c) => c.call.res && Object.keys(c.call.res)[0]), ["status", "results", "logins"]);
+  assert.deepStrictEqual(titles(), ["Waited for background command proc_283637f9d51", "Searched past chats for dns split horizon", "Looked for a saved login on github.com"]);
+  assert.deepStrictEqual(cards.map((c) => c.dataset.ukey), ["t:w1:0", "t:w1:1", "t:w1:2"]);
+  // The batch ran together: the fold shows the real time from the first
+  // start to the last end, not the 3 min 0.4 s the three times add up to.
+  w.set({ model: "m", end: { state: "ok", durationS: 190, result: "Done." } });
+  const g = b.querySelectorAll("details.toolgroup");
+  assert.strictEqual(g.length, 1, "the calls fold into one group");
+  const line = g[0].firstChild.textContent.split(" \u00B7 ")[0];
+  assert.match(line, /^Managed a background command, searched past chats, used a saved login \(3 min\)$/, line);
+
+  // A result that names no tool goes to the first call that has none.
+  const w2 = M.create({ el, toast: () => {} });
+  w2.add([ev({ type: "tool_start", call_id: "w2", name: "tool_call", args: { calls: [{ name: "terminal", arguments: { command: "a" } }, { name: "terminal", arguments: { command: "b" } }] }, at: 1 }),
+    ev({ type: "tool_end", call_id: "w2", name: "tool_call", result: '{"output": "A", "exit_code": 0}', at: 2 }),
+    ev({ type: "tool_end", call_id: "w2", name: "terminal", result: '{"output": "B", "exit_code": 0}', at: 3 })]);
+  assert.deepStrictEqual(w2.node.querySelectorAll(".tool").map((c) => c.call.out), ["A", "B"]);
+  // The same results again change nothing.
+  w2.add([ev({ type: "tool_end", call_id: "w2", name: "terminal", result: '{"output": "C", "exit_code": 0}', at: 4 })]);
+  assert.deepStrictEqual(w2.node.querySelectorAll(".tool").map((c) => c.call.out), ["A", "B"]);
+
+  // One call in the wrapper is a plain card, no batch.
+  const w3 = M.create({ el, toast: () => {} });
+  w3.add([ev({ type: "tool_start", call_id: "w3", name: "tool_call", args: { calls: [{ name: "terminal", arguments: { command: "ls" } }] }, at: 1 }),
+    ev({ type: "tool_end", call_id: "w3", name: "terminal", result: '{"output": "", "exit_code": 0}', duration_ms: 1500, at: 3 })]);
+  assert.strictEqual(w3.node.querySelectorAll(".tool").length, 1);
+  assert.strictEqual(w3.node.querySelector(".tool").batch, "");
+  assert.deepStrictEqual(w3.node.querySelectorAll(".notice-title").map((n) => n.textContent), ["Ran ls"]);
+  w3.set({ end: { state: "ok" } });
+  assert.match(w3.node.querySelector("details.toolgroup").firstChild.textContent, /^Ran a command \(1\.5 s\)/);
+}
+
+// Times that are not known are not shown: no "1 ms" for a call of 0 ms, no
+// time for a step Hermes gave none (the hub sends year 1 or leaves it out),
+// and such steps keep their order.
+{
+  const w = M.create({ el, toast: () => {} });
+  const none = (o) => Object.assign(ev(Object.assign({ at: 0 }, o)), { ts: o.ts });
+  w.add([none({ type: "tool_start", call_id: "z1", name: "terminal", args: { command: "ls" }, ts: "0001-01-01T00:00:00Z" }),
+    none({ type: "tool_end", call_id: "z1", name: "terminal", result: '{"output": "", "exit_code": 0}', duration_ms: 0, ts: "0001-01-01T00:00:00Z" }),
+    none({ type: "tool_start", call_id: "z2", name: "terminal", args: { command: "pwd" } }),
+    none({ type: "tool_end", call_id: "z2", name: "terminal", result: '{"output": "", "exit_code": 0}' })]);
+  const cs = w.node.querySelectorAll(".tool");
+  assert.strictEqual(cs.length, 2);
+  for (const c of cs) {
+    assert.strictEqual(c.call.startedAt, 0);
+    assert.strictEqual(c.call.endedAt, 0);
+    assert.strictEqual(c.call.duration, undefined);
+    assert.ok(!/\bms\b/.test(c.textContent), c.textContent);
+  }
+  assert.deepStrictEqual(w.node.querySelectorAll(".notice-title").map((n) => n.textContent), ["Ran ls", "Ran pwd"]);
+  // order keeps a step with no time next to the step before it.
+  const a = ev({ type: "message", at: 5 });
+  const u = Object.assign(ev({ type: "message", at: 0 }), { ts: undefined });
+  const c2 = ev({ type: "message", at: 7 });
+  assert.deepStrictEqual(M.order([c2, u, a]).map((e) => e.seq), [a.seq, u.seq, c2.seq]);
+  // A message the user sent before a result with no time of its own counts as read.
+  const steer = ev({ type: "steer", at: 10 });
+  const later = Object.assign(ev({ type: "tool_end", at: 0 }), { ts: undefined });
+  assert.strictEqual(M.steerState(steer, [steer, later], false), "read");
+}
+
+// The group line: calls that ran together show no sum.
+{
+  const T = sandbox.window.HubTimes;
+  const call = (s, e, d) => ({ toolName: "terminal", duration: d, failed: false, batch: "", call: { startedAt: T0 + s * 1000, endedAt: T0 + e * 1000, duration: d } });
+  // Crossing times: 100 s and 100 s inside 110 s of real time.
+  const x = G.summary([call(0, 100, 100), call(10, 110, 100)]).text;
+  assert.match(x, /^Ran 2 commands \(1 min 50 s\)/, x);
+  // One after the other: the sum stands.
+  const y = G.summary([call(0, 10, 10), call(10, 25, 15)]).text;
+  assert.match(y, /^Ran 2 commands \(25 s\)/, y);
+  // One batch with no times: nothing is summed.
+  const z = G.summary([{ toolName: "terminal", duration: 5, batch: "w", call: {} }, { toolName: "terminal", duration: 5, batch: "w", call: {} }]).text;
+  assert.strictEqual(z, "Ran 2 commands");
+  // The deferred tools have words, not "used session_search".
+  assert.strictEqual(G.summary([{ toolName: "session_search", call: {} }, { toolName: "browser_vault", call: {} }, { toolName: "mcp_device_call", call: {} }, { toolName: "tool_search", call: {} }, { toolName: "project_memory", call: {} }]).text,
+    "Searched past chats, used a saved login, called a tool on your computer, looked up a tool, used the project notes");
+}
 console.log("ok");
