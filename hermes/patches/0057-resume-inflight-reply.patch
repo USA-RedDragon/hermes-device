@@ -1,0 +1,335 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 01:09:57 -0600
+Subject: [PATCH] feat(gateway): session.resume hands the running reply's
+ text so far
+
+A viewer that resumed a session mid-reply got the transcript, which does not hold the reply yet, and the frames after the subscription: the reply's start was gone unless the replay ring still held its deltas. The session's event stream now records the running execution's reply text in its current segment under the lock that publishes each frame, and session.resume returns it as inflight_reply {text, sequence}, read under the same lock as last_sequence: the text holds every delta up to sequence and none after, so a viewer shows it and applies only frames after sequence. Absent when no reply text streams.
+---
+ apps/shared/src/gateway-contract.generated.ts |   5 +
+ apps/shared/src/gateway-contract.openrpc.json |  30 +++++
+ fixture/SOUL.md                               |   1 +
+ gateway/session_authority.py                  |   6 +-
+ gateway/session_contract.py                   |   3 +
+ gateway/session_controls.py                   |   1 +
+ gateway/session_events.py                     |  22 ++++
+ tests/gateway/test_resume_inflight_reply.py   | 114 ++++++++++++++++++
+ tui_gateway/contracts/canonical_sessions.py   |   8 ++
+ 9 files changed, 189 insertions(+), 1 deletion(-)
+ create mode 100644 fixture/SOUL.md
+ create mode 100644 tests/gateway/test_resume_inflight_reply.py
+
+diff --git a/apps/shared/src/gateway-contract.generated.ts b/apps/shared/src/gateway-contract.generated.ts
+index fb56bbf1..d5b9386c 100644
+--- a/apps/shared/src/gateway-contract.generated.ts
++++ b/apps/shared/src/gateway-contract.generated.ts
+@@ -5163,6 +5163,7 @@ export interface CanonicalSnapshot {
+   pending_connection?: ConnectionRequestPayload | null
+   todo_state?: TodoState | null
+   open_requests?: OpenRequestEntry[] | null
++  inflight_reply?: CanonicalInflightReply | null
+ }
+ export interface CanonicalPendingAdmission {
+   admission_id: string
+@@ -5231,6 +5232,10 @@ export interface CanonicalSnapshotInfo {
+   credential_hint?: string | null
+   config_warning?: string | null
+ }
++export interface CanonicalInflightReply {
++  text: string
++  sequence: number
++}
+ export interface CanonicalResumeParams {
+   profile?: string | null
+   session_id?: string
+diff --git a/apps/shared/src/gateway-contract.openrpc.json b/apps/shared/src/gateway-contract.openrpc.json
+index 6dcfb3d5..511163d7 100644
+--- a/apps/shared/src/gateway-contract.openrpc.json
++++ b/apps/shared/src/gateway-contract.openrpc.json
+@@ -9260,6 +9260,25 @@
+         "title": "CanonicalGroupsPeerRevokeParams",
+         "type": "object"
+       },
++      "CanonicalInflightReply": {
++        "additionalProperties": false,
++        "properties": {
++          "text": {
++            "title": "Text",
++            "type": "string"
++          },
++          "sequence": {
++            "title": "Sequence",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "text",
++          "sequence"
++        ],
++        "title": "CanonicalInflightReply",
++        "type": "object"
++      },
+       "CanonicalListParams": {
+         "additionalProperties": false,
+         "properties": {
+@@ -11109,6 +11128,17 @@
+             ],
+             "default": null,
+             "title": "Open Requests"
++          },
++          "inflight_reply": {
++            "anyOf": [
++              {
++                "$ref": "#/components/schemas/CanonicalInflightReply"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null
+           }
+         },
+         "required": [
+diff --git a/fixture/SOUL.md b/fixture/SOUL.md
+new file mode 100644
+index 00000000..de81136d
+--- /dev/null
++++ b/fixture/SOUL.md
+@@ -0,0 +1 @@
++You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of the ask — a one-line question gets a one-line answer, and finished work gets a short report of what changed, what's verified, and what's left, never a replay of the process. No filler ("Great question," "I'd be happy to"), no restating the request back, no re-summarizing what you already said, no narrating tool calls the user can see. Plain claims over adjectives; when unsure, say so plainly. Agree because it's right, not because the user said it. Depth is earned — give it when the user asks for detail, teaches, or the stakes demand it, not by default.
+\ No newline at end of file
+diff --git a/gateway/session_authority.py b/gateway/session_authority.py
+index 6db6dd31..8db14649 100644
+--- a/gateway/session_authority.py
++++ b/gateway/session_authority.py
+@@ -399,13 +399,16 @@ class SessionAuthority:
+             active_generation = handle.execution_generation if handle.execution_state == "running" else None
+             prompts = live.controls.snapshot(ref.session_id, active_generation)
+             epoch, sequence = live.event_stream.watermark()
++            # Read under the same lock as the sequence: the text holds every delta up to it and none after.
++            reply = live.event_stream.reply_for(active_generation) if active_generation is not None else ''
++            inflight = {'text': reply, 'sequence': sequence} if reply else None
+             if history:
+                 history, target = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared))), None
+             else:
+                 history, target = (), self.unless_deleted(ref, lambda: transcript_target(self, ref))
+             snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
+                                         tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts,
+-                                        transcript_target=target)
++                                        transcript_target=target, inflight_reply=inflight)
+         from gateway.session_viewer_close import cancel_persisted_close
+         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
+         from gateway.session_deferred_pick import reask_on_attach
+@@ -1054,6 +1057,7 @@ class SessionAuthority:
+                 return False
+             live.event_stream.note_progress(generation, event_type, payload)
+             delivered = live.event_stream.publish(session_id, payload, event_type=event_type)
++            live.event_stream.note_reply(generation, event_type, payload)
+             from gateway.session_api_turn import publish_api_event
+             observed = publish_api_event(self, session_id, event_type, payload)
+             return bool(delivered or observed)
+diff --git a/gateway/session_contract.py b/gateway/session_contract.py
+index accd1d9e..77f12d40 100644
+--- a/gateway/session_contract.py
++++ b/gateway/session_contract.py
+@@ -82,6 +82,9 @@ class SubscriptionSnapshot:
+     prompts: tuple[JsonObject, ...]
+     # The physical transcript a history-less attach resolved under the stream lock (``history=False``).
+     transcript_target: str | None = None
++    # The running reply's text so far in its current segment and the stream sequence it is current as of
++    # (``{"text", "sequence"}``), None when no reply text streams. Frames after ``sequence`` carry the rest.
++    inflight_reply: JsonObject | None = None
+ 
+ 
+ class SessionAuthority(Protocol):
+diff --git a/gateway/session_controls.py b/gateway/session_controls.py
+index aec4958e..872984e8 100644
+--- a/gateway/session_controls.py
++++ b/gateway/session_controls.py
+@@ -759,6 +759,7 @@ class AuthorityConnection:
+                 'execution_generation': snapshot.handle.execution_generation,
+                 'pending': [asdict(r) for r in snapshot.pending],
+                 'prompts': list(snapshot.prompts), 'info': info,
++                **({'inflight_reply': dict(snapshot.inflight_reply)} if snapshot.inflight_reply else {}),
+                 'pending_connection': pending_connection(self.authority, ref.session_id),
+                 # Still-waiting server→client requests: the event ring cannot say "still open".
+                 'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
+diff --git a/gateway/session_events.py b/gateway/session_events.py
+index 5aa86360..0ab5c973 100644
+--- a/gateway/session_events.py
++++ b/gateway/session_events.py
+@@ -33,6 +33,28 @@ class SessionEvents:
+         # The running execution's open tool calls and its last frame time; a hosted room's info
+         # poll reports them so the room shows which tool a member is in (``progress_for``).
+         self._progress = None
++        # The running execution's reply text so far, in its current segment (``note_reply``); a resume
++        # hands it with the snapshot so a viewer that joins mid-reply needs no replay of its deltas.
++        self._reply = None
++
++    def note_reply(self, generation, event_type, payload):
++        """Record one execution frame's effect on the reply text (the caller holds ``lock`` across the
++        frame's ``publish`` and this, so the text matches the stream's sequence at every point)."""
++        reply = self._reply
++        if reply is None or reply['generation'] != generation:
++            reply = self._reply = {'generation': generation, 'text': ''}
++        text = payload.get('text') if isinstance(payload, dict) else None
++        if event_type == 'message.delta' and isinstance(text, str):
++            reply['text'] += text
++        elif event_type in ('message.delta', 'message.interim', 'message.start', 'message.complete',
++                            'tool.start', 'tool.generating'):
++            # A segment boundary: the next text is a new reply box.
++            reply['text'] = ''
++
++    def reply_for(self, generation):
++        """The reply text *generation* has streamed in its current segment, '' when none (caller holds ``lock``)."""
++        reply = self._reply
++        return reply['text'] if reply is not None and reply['generation'] == generation else ''
+ 
+     def note_progress(self, generation, event_type, payload):
+         """Record one execution frame (the caller holds ``lock`` and passed the generation fence)."""
+diff --git a/tests/gateway/test_resume_inflight_reply.py b/tests/gateway/test_resume_inflight_reply.py
+new file mode 100644
+index 00000000..c0481215
+--- /dev/null
++++ b/tests/gateway/test_resume_inflight_reply.py
+@@ -0,0 +1,114 @@
++"""session.resume hands a running reply's text so far with the sequence it is current as of, so a viewer
++that joins mid-reply shows the reply from its start and applies only the frames after that sequence."""
++import asyncio
++import queue
++import threading
++from types import SimpleNamespace
++
++import pytest
++
++from gateway.session_events import SessionEvents
++
++
++def test_reply_text_follows_segments():
++    events = SessionEvents()
++    with events.lock:
++        for kind, text in (('message.delta', 'a'), ('message.delta', 'b')):
++            events.note_reply(1, kind, {'text': text})
++        assert events.reply_for(1) == 'ab'
++        assert events.reply_for(2) == ''
++        events.note_reply(1, 'tool.start', {'tool_id': 't'})
++        assert events.reply_for(1) == ''
++        events.note_reply(1, 'tool.complete', {'tool_id': 't'})
++        events.note_reply(1, 'message.delta', {'text': 'c'})
++        events.note_reply(1, 'reasoning.delta', {'text': 'x'})
++        assert events.reply_for(1) == 'c'
++        events.note_reply(1, 'message.delta', {'text': None})
++        assert events.reply_for(1) == ''
++        events.note_reply(2, 'message.delta', {'text': 'new turn'})
++        assert events.reply_for(1) == '' and events.reply_for(2) == 'new turn'
++
++
++@pytest.mark.asyncio
++async def test_resume_mid_reply_never_doubles_or_drops_text(tmp_path, monkeypatch):
++    from gateway.config import GatewayConfig, Platform
++    from gateway.session import SessionSource, SessionStore
++    from gateway.session_authority import LiveSession, initialize_session_authority
++    from gateway.session_contract import SessionRef, Submission
++    from gateway.session_controls import AuthorityConnection
++    from tui_gateway import event_replay
++
++    # The replay ring holds almost nothing, as for a long reply: only the inflight text can rebuild it.
++    monkeypatch.setattr(event_replay, '_REPLAY_BUFFER_MAX', 4)
++    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
++    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
++    db = store._db
++    deltas = [f'chunk {i:04d} ' for i in range(3000)]
++    halfway, release = threading.Event(), threading.Event()
++    holder = {}
++
++    def stream():
++        authority, sid = holder['authority'], 'chat'
++        generation = authority.executing[sid]
++        for i, text in enumerate(deltas):
++            authority.publish_execution(sid, generation, 'message.delta', {'text': text})
++            if i == 100:
++                halfway.set()
++        release.wait(10)
++
++    async def answer(event):
++        await asyncio.to_thread(stream)
++        return ''.join(deltas)
++
++    runner = SimpleNamespace(_session_db=db, session_store=store, _draining=False,
++                             _handle_message=answer, _adapter_for_source=lambda source: None)
++    authority = holder['authority'] = await initialize_session_authority(runner, profile_id='p', instance_id='owner')
++    ref = SessionRef('p', 'chat')
++    source = SessionSource(platform=Platform.TELEGRAM, chat_id='chat')
++    db.create_session('chat', source='telegram')
++    authority.sessions['chat'] = LiveSession(source, 'chat')
++
++    class Peer:
++        def __init__(self):
++            self.frames = queue.Queue()
++
++        def write(self, frame):
++            self.frames.put(frame)
++            return True
++
++    starter = AuthorityConnection(authority, Peer(), {'user_id': 'viewer'})
++    await starter.resume(ref, {})
++    await authority.submit(starter.actor, Submission('1', ref, {'text': 'go'}, 'queue'))
++    await asyncio.to_thread(halfway.wait, 10)
++    # Viewers join while deltas keep coming from the agent thread.
++    joined = []
++    for _ in range(5):
++        peer = Peer()
++        conn = AuthorityConnection(authority, peer, {'user_id': 'viewer'})
++        snap = await conn.resume(ref, {})
++        joined.append((peer, conn, snap))
++        await asyncio.sleep(0)
++    release.set()
++    await authority.sessions['chat'].task
++    whole = ''.join(deltas)
++    try:
++        seeded = 0
++        for peer, _, snap in joined:
++            inflight = snap.get('inflight_reply')
++            text = inflight['text'] if inflight else ''
++            if inflight:
++                seeded += 1
++                assert inflight['sequence'] == snap['last_sequence']
++            while True:
++                frame = (await asyncio.to_thread(peer.frames.get, True, 5))['params']
++                if frame['type'] == 'message.complete':
++                    break
++                if frame['type'] == 'message.delta' and frame['seq'] > snap['last_sequence']:
++                    text += frame['payload']['text'] or ''
++            assert text == whole, f'joined at {snap["last_sequence"]}: {len(text)} of {len(whole)} chars'
++        assert seeded, 'no viewer joined while the reply streamed'
++    finally:
++        for _, conn, _ in joined:
++            await conn.close()
++        await starter.close()
++        store.close_all_db_handles()
+diff --git a/tui_gateway/contracts/canonical_sessions.py b/tui_gateway/contracts/canonical_sessions.py
+index 90e8ac65..4e00667d 100644
+--- a/tui_gateway/contracts/canonical_sessions.py
++++ b/tui_gateway/contracts/canonical_sessions.py
+@@ -149,6 +149,11 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
+     config_warning: str | None = None
+ 
+ 
++class CanonicalInflightReply(Result):
++    text: str
++    sequence: int
++
++
+ class CanonicalSnapshot(Result):
+     session_id: str
+     stored_session_id: str
+@@ -174,6 +179,9 @@ class CanonicalSnapshot(Result):
+     todo_state: TodoState | None = None
+     # The owner's server→client requests still unanswered (``session_server_requests.open_requests``).
+     open_requests: list[OpenRequestEntry] | None = None
++    # A running reply's text so far (its current segment) and the event sequence it is current as of:
++    # a viewer shows it, then applies only frames after ``sequence``. Absent when no reply text streams.
++    inflight_reply: CanonicalInflightReply | None = None
+ 
+ 
+ class CanonicalListParams(ProfileParams):

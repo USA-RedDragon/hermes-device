@@ -1,0 +1,5 @@
+tests/tui_gateway/contracts/test_generated.py
+tests/gateway/test_resume_omit_messages.py
+tests/gateway/test_authority_events.py
+tests/gateway/test_local_viewer_events_turn.py
+tests/gateway/test_hosted_room_member_tool_progress.py

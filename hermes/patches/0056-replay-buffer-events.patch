@@ -1,0 +1,192 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 01:09:57 -0600
+Subject: [PATCH] feat(gateway): gateway.replay_buffer_events bounds the
+ replay ring
+
+The replay ring kept 512 events per session. A long reply streams thousands of small deltas, so a client that resumed mid-reply (session.events.since) found the reply's start evicted and got snapshot_required, while the 4 MiB byte cap was far from reached. gateway.replay_buffer_events (default 512, upstream's) sets the count cap; 0 bounds the ring by its byte caps alone.
+---
+ cli-config.yaml.example                       |  6 ++
+ .../test_event_replay_events_cap.py           | 91 +++++++++++++++++++
+ tui_gateway/event_replay.py                   | 32 ++++++-
+ 3 files changed, 127 insertions(+), 2 deletions(-)
+ create mode 100644 tests/tui_gateway/test_event_replay_events_cap.py
+
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index 88b4459b..2559bded 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -1505,6 +1505,12 @@ gateway:
+   # 0 keeps the immediate exit.
+   # runtime_lock_wait_seconds: 0
+ 
++  # Most events each chat keeps for clients that reconnect (session.events.since).
++  # A long reply streams thousands of small deltas, so 512 hold only its last few
++  # KB and a client that reattaches mid-reply cannot replay its start. 0 bounds
++  # the replay by its byte caps alone (4 MiB per chat, 64 MiB in all).
++  # replay_buffer_events: 512
++
+   # Treat a supervisor's SIGTERM (Kubernetes, docker stop) like SIGUSR1: a
+   # graceful restart that lets active turns finish (agent.restart_after_turn_timeout)
+   # while clients can still answer approvals and clarify questions, and new
+diff --git a/tests/tui_gateway/test_event_replay_events_cap.py b/tests/tui_gateway/test_event_replay_events_cap.py
+new file mode 100644
+index 00000000..502d1e2b
+--- /dev/null
++++ b/tests/tui_gateway/test_event_replay_events_cap.py
+@@ -0,0 +1,91 @@
++"""gateway.replay_buffer_events: the replay ring's event count cap per session."""
++
++import pytest
++
++from tui_gateway import event_replay
++from tui_gateway.event_replay import events_since, is_truncated, reset_replay_state
++
++
++@pytest.fixture(autouse=True)
++def _clean():
++    reset_replay_state()
++    yield
++    reset_replay_state()
++
++
++def _config(monkeypatch, cfg):
++    import hermes_cli.config
++
++    monkeypatch.setattr(hermes_cli.config, "load_config", lambda: cfg)
++
++
++def _reply(sid, deltas):
++    for i in range(deltas):
++        event_replay._stamp_event({"jsonrpc": "2.0", "method": "event", "params": {
++            "type": "message.delta", "session_id": sid, "payload": {"text": f"chunk {i:05d} "}}})
++
++
++def test_default_keeps_upstreams_count_cap(monkeypatch):
++    _config(monkeypatch, {})
++    _reply("s1", 5000)
++    assert len(events_since("s1", 0)) == event_replay._REPLAY_BUFFER_MAX
++    assert is_truncated("s1", 0)
++
++
++def test_zero_replays_a_long_reply_from_its_start(monkeypatch):
++    # A 60 KB reply is about 5000 deltas: far under the byte cap, far over 512 events.
++    _config(monkeypatch, {"gateway": {"replay_buffer_events": 0}})
++    _reply("s1", 5000)
++    events = events_since("s1", 0)
++    assert len(events) == 5000
++    assert events[0]["payload"]["text"] == "chunk 00000 "
++    assert not is_truncated("s1", 0)
++
++
++def test_zero_still_bounded_by_bytes(monkeypatch):
++    _config(monkeypatch, {"gateway": {"replay_buffer_events": 0}})
++    monkeypatch.setattr(event_replay, "_REPLAY_BUFFER_BYTES_MAX", 4096)
++    _reply("s1", 1000)
++    events = events_since("s1", 0)
++    assert 0 < len(events) < 1000
++    assert is_truncated("s1", 0)
++
++
++def test_a_larger_count_cap(monkeypatch):
++    _config(monkeypatch, {"gateway": {"replay_buffer_events": 2000}})
++    _reply("s1", 3000)
++    events = events_since("s1", 0)
++    assert len(events) == 2000
++    assert events[0]["payload"]["text"] == "chunk 01000 "
++
++
++@pytest.mark.parametrize("bad", [-1, "many", True, None])
++def test_bad_values_keep_the_default(monkeypatch, bad):
++    _config(monkeypatch, {"gateway": {"replay_buffer_events": bad}})
++    _reply("s1", 600)
++    assert len(events_since("s1", 0)) == event_replay._REPLAY_BUFFER_MAX
++
++
++def test_unreadable_config_keeps_the_default(monkeypatch):
++    import hermes_cli.config
++
++    def boom():
++        raise OSError("no config")
++
++    monkeypatch.setattr(hermes_cli.config, "load_config", boom)
++    _reply("s1", 600)
++    assert len(events_since("s1", 0)) == event_replay._REPLAY_BUFFER_MAX
++
++
++def test_config_is_read_once(monkeypatch):
++    reads = []
++
++    def load():
++        reads.append(1)
++        return {"gateway": {"replay_buffer_events": 0}}
++
++    import hermes_cli.config
++
++    monkeypatch.setattr(hermes_cli.config, "load_config", load)
++    _reply("s1", 50)
++    assert len(reads) == 1
+diff --git a/tui_gateway/event_replay.py b/tui_gateway/event_replay.py
+index 20298bd2..700a082a 100644
+--- a/tui_gateway/event_replay.py
++++ b/tui_gateway/event_replay.py
+@@ -35,6 +35,32 @@ _REPLAY_SESSIONS_MAX = 64
+ _REPLAY_BUFFER_BYTES_MAX = 4 * 1024 * 1024
+ _REPLAY_PROCESS_BYTES_MAX = 64 * 1024 * 1024
+ 
++# gateway.replay_buffer_events: the event count cap per session, read once per process. A long
++# reply streams thousands of small deltas, so 512 events hold only its last few KB and a client
++# that resumes mid-reply cannot replay its start. 0 drops the count cap: the byte caps above still
++# bound memory. _UNREAD until read; None when config.yaml does not set it (upstream's cap applies).
++_UNREAD = object()
++_replay_events_config: object = _UNREAD
++
++
++def _events_cap() -> int:
++    """The per-session event count cap; 0 is none. Unset, bad or unreadable config keeps _REPLAY_BUFFER_MAX."""
++    global _replay_events_config
++    if _replay_events_config is _UNREAD:
++        value = None
++        try:
++            from hermes_cli.config import load_config
++
++            cfg = load_config() or {}
++            gateway = cfg.get("gateway") if isinstance(cfg, dict) else None
++            raw = gateway.get("replay_buffer_events") if isinstance(gateway, dict) else None
++            if raw is not None and not isinstance(raw, bool) and int(raw) >= 0:
++                value = int(raw)
++        except Exception:
++            value = None
++        _replay_events_config = value
++    return _REPLAY_BUFFER_MAX if _replay_events_config is None else _replay_events_config
++
+ _replay_lock = threading.Lock()
+ # sid -> deque of (seq, frozen params JSON bytes without the server-owned seq, retained bytes).
+ # Bytes detach the replay ring from the live event object: later caller mutation cannot grow or
+@@ -85,6 +111,7 @@ def _stamp_event(obj: dict) -> None:
+     # be serialized before sequence assignment without retaining the mutable params dict.
+     payload = _freeze_params(params)
+     size = len(payload)
++    cap = _events_cap()  # outside the lock: the first call reads config.yaml
+     with _replay_lock:
+         global _replay_total_bytes
+         _drain_released_locked()
+@@ -106,7 +133,7 @@ def _stamp_event(obj: dict) -> None:
+         buf.append((seq, payload, size))
+         _replay_buffer_bytes[sid] += size
+         _replay_total_bytes += size
+-        while len(buf) > _REPLAY_BUFFER_MAX or _replay_buffer_bytes[sid] > _REPLAY_BUFFER_BYTES_MAX:
++        while (cap and len(buf) > cap) or _replay_buffer_bytes[sid] > _REPLAY_BUFFER_BYTES_MAX:
+             evicted_seq, _event, evicted_size = buf.popleft()
+             _replay_buffer_bytes[sid] -= evicted_size
+             _replay_total_bytes -= evicted_size
+@@ -215,7 +242,8 @@ def latest_seq(sid: str) -> int:
+ def reset_replay_state() -> None:
+     """Test hook."""
+     with _replay_lock:
+-        global _replay_total_bytes
++        global _replay_total_bytes, _replay_events_config
++        _replay_events_config = _UNREAD
+         _replay_buffers.clear()
+         _replay_buffer_bytes.clear()
+         _replay_evicted_through.clear()
