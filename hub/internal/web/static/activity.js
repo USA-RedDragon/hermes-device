@@ -196,7 +196,7 @@ window.HubActivity = (ctx) => {
       case "subagent.complete":
         r.state = subState(p.status || "completed");
         r.endedAt = Date.now();
-        if (typeof p.duration_seconds === "number") r.startedAt = r.endedAt - p.duration_seconds * 1000;
+        if (typeof p.duration_seconds === "number") r.startedAt = Math.min(r.startedAt, r.endedAt - p.duration_seconds * 1000);
         if (typeof p.input_tokens === "number") r.tin = p.input_tokens;
         if (typeof p.output_tokens === "number") r.tout = p.output_tokens;
         r.result = String(p.summary || p.text || "");
@@ -279,7 +279,8 @@ window.HubActivity = (ctx) => {
       seen.add(s.id);
       const r = sub(s.id, { goal: s.goal, model: s.model, parent_id: s.parent_id, child_session_id: s.child_session_id,
         tool_count: s.tool_count });
-      if (s.started_at) r.startedAt = s.started_at * 1000;
+      // A start never moves later: a restart may hand the subagent to a Hermes that lists its own start.
+      if (s.started_at) r.startedAt = Math.min(r.startedAt, s.started_at * 1000);
       r.steer = s.accepting_steer !== false;
       r.missed = 0;
       // The status Hermes lists is the truth, a subagent.complete event too:

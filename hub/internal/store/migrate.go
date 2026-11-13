@@ -343,6 +343,17 @@ var migrations = []migration{
 		postgres: []string{`CREATE TABLE view_cache (backend_id TEXT NOT NULL, key TEXT NOT NULL, data TEXT NOT NULL,
 			updated_at BIGINT NOT NULL, PRIMARY KEY (backend_id, key))`},
 	},
+	{
+		version: 24,
+		sqlite: []string{`CREATE TABLE subagent_progress ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL,
+			subagent_id TEXT NOT NULL, started_at REAL NOT NULL, tool_count INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+			PRIMARY KEY ("user", backend_id, session_id, subagent_id))`,
+			`CREATE INDEX subagent_progress_updated ON subagent_progress (updated_at)`},
+		postgres: []string{`CREATE TABLE subagent_progress ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL,
+			subagent_id TEXT NOT NULL, started_at DOUBLE PRECISION NOT NULL, tool_count BIGINT NOT NULL, updated_at BIGINT NOT NULL,
+			PRIMARY KEY ("user", backend_id, session_id, subagent_id))`,
+			`CREATE INDEX subagent_progress_updated ON subagent_progress (updated_at)`},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas

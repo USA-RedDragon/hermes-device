@@ -181,5 +181,40 @@ func (s *Store) PruneSubagentLogs(ctx context.Context, t time.Time) error {
 	if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM subagent_logs WHERE updated_at < ?`), t.Unix()); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM subagent_progress WHERE updated_at < ?`), t.Unix()); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+// KeepSubagentProgress keeps the earliest nonzero start and the highest tool
+// count seen for the subagent and returns them.
+func (s *Store) KeepSubagentProgress(ctx context.Context, k hub.SubagentKey, startedAt float64, tools int) (float64, int, error) {
+	if startedAt < 0 {
+		startedAt = 0
+	}
+	if tools < 0 {
+		tools = 0
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	args := append(keyArgs(k), startedAt, tools, s.now().Unix())
+	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO subagent_progress ("user", backend_id, session_id, subagent_id, started_at, tool_count, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT ("user", backend_id, session_id, subagent_id) DO UPDATE SET
+		started_at = CASE WHEN excluded.started_at > 0 AND (subagent_progress.started_at <= 0 OR excluded.started_at < subagent_progress.started_at)
+			THEN excluded.started_at ELSE subagent_progress.started_at END,
+		tool_count = CASE WHEN excluded.tool_count > subagent_progress.tool_count THEN excluded.tool_count ELSE subagent_progress.tool_count END,
+		updated_at = excluded.updated_at`), args...); err != nil {
+		return 0, 0, err
+	}
+	var started float64
+	var count int
+	if err := tx.QueryRowContext(ctx, s.q(`SELECT started_at, tool_count FROM subagent_progress WHERE `+subagentKeyWhere), keyArgs(k)...).
+		Scan(&started, &count); err != nil {
+		return 0, 0, err
+	}
+	return started, count, tx.Commit()
 }

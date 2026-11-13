@@ -37,7 +37,9 @@ func (s *Service) Activity(ctx context.Context, user, backendID, sessionID strin
 			return err
 		}
 		for _, r := range subs {
-			out.Subagents = append(out.Subagents, subagent(r))
+			sa := subagent(r)
+			s.keepProgress(ctx, hub.SubagentKey{User: user, BackendID: backendID, SessionID: sessionID, SubagentID: sa.ID}, &sa)
+			out.Subagents = append(out.Subagents, sa)
 		}
 		var procs gateway.ProcessList
 		if err := b.read(ctx, ls, gateway.MethodProcessList, gateway.SessionParams{SessionID: ls.id}, &procs); err != nil {
@@ -54,6 +56,41 @@ func (s *Service) Activity(ctx context.Context, user, backendID, sessionID strin
 		return nil
 	})
 	return out, err
+}
+
+// keepProgress keeps a listed subagent's start and tool count from moving
+// backward. A restart hands a running subagent to a new Hermes process that
+// may list a later start and a lower count; the hub shows the earliest start
+// and the highest count it ever saw, stored so a hub restart keeps them.
+func (s *Service) keepProgress(ctx context.Context, k hub.SubagentKey, sa *hub.Subagent) {
+	if k.SubagentID == "" {
+		return
+	}
+	if log := s.opts.SubagentLog; log != nil {
+		started, tools, err := log.KeepSubagentProgress(ctx, k, sa.StartedAt, sa.ToolCount)
+		if err == nil {
+			sa.StartedAt, sa.ToolCount = started, tools
+			return
+		}
+		s.log.Debug("subagent progress", "error", err.Error())
+	}
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
+	if s.progress == nil {
+		s.progress = map[hub.SubagentKey]subagentProgress{}
+	}
+	p := s.progress[k]
+	if sa.StartedAt > 0 && (p.started <= 0 || sa.StartedAt < p.started) {
+		p.started = sa.StartedAt
+	}
+	p.tools = max(p.tools, sa.ToolCount)
+	s.progress[k] = p
+	sa.StartedAt, sa.ToolCount = p.started, p.tools
+}
+
+type subagentProgress struct {
+	started float64
+	tools   int
 }
 
 func (b *backend) subagents(ctx context.Context, ls *live) ([]gateway.SubagentRow, error) {

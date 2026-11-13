@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 	"github.com/USA-RedDragon/talaria/hub/internal/service"
+	"github.com/USA-RedDragon/talaria/hub/internal/store"
 )
 
 const (
@@ -354,5 +356,46 @@ func TestActivityStillFailsOnARealRefusal(t *testing.T) {
 	defer cancel()
 	if _, err := e.svc.Activity(ctx, userAlice, backendPC, "s-missing"); err == nil {
 		t.Fatal("an unknown session must still fail")
+	}
+}
+
+// A restart hands a running subagent to a new Hermes process, which lists a
+// later start and a fresh tool count. The hub keeps the earliest start and the
+// highest count, also after the hub itself restarted.
+func TestActivityKeepsStartAndToolsAcrossARestart(t *testing.T) {
+	t.Parallel()
+	st, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	e := setup(t, service.Options{SubagentLog: st})
+	list := func(svc *service.Service, started float64, tools int) hub.Subagent {
+		t.Helper()
+		e.gw.AddSession(&gatewaytest.Session{ID: sLive, Title: liveTitle, Live: true, StartedAt: 2000,
+			Subagents: []gateway.SubagentRow{{SubagentID: subMine, Goal: "g", Status: ptr(statusRunning), ToolCount: ptr(tools),
+				AcceptingSteer: ptr(true), StartedAt: ptr(started)}}})
+		got, err := svc.Activity(t.Context(), userAlice, backendPC, sLive)
+		if err != nil || len(got.Subagents) != 1 {
+			t.Fatalf("activity = %+v %v", got, err)
+		}
+		return got.Subagents[0]
+	}
+	real := 1_800_000_000.0
+	if s := list(e.svc, real, 41); s.StartedAt != real || s.ToolCount != 41 {
+		t.Fatalf("before = %v %d", s.StartedAt, s.ToolCount)
+	}
+	// Hermes restarted: start now, 0 tools.
+	if s := list(e.svc, real+1000, 0); s.StartedAt != real || s.ToolCount != 41 {
+		t.Fatalf("after the Hermes restart = %v %d", s.StartedAt, s.ToolCount)
+	}
+	// The hub restarted too: a new service over the same store.
+	e2 := setup(t, service.Options{SubagentLog: st})
+	e.gw, e.svc = e2.gw, e2.svc
+	if s := list(e2.svc, real+2000, 2); s.StartedAt != real || s.ToolCount != 41 {
+		t.Fatalf("after the hub restart = %v %d", s.StartedAt, s.ToolCount)
+	}
+	if s := list(e2.svc, real+2000, 50); s.ToolCount != 50 {
+		t.Fatalf("a higher count = %d", s.ToolCount)
 	}
 }

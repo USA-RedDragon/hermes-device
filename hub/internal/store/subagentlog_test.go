@@ -97,3 +97,39 @@ func TestSubagentLogKeepsUnknownTimeUnset(t *testing.T) {
 		}
 	})
 }
+
+func TestSubagentProgressNeverMovesBackward(t *testing.T) {
+	t.Parallel()
+	backends(t, func(t *testing.T, s *store.Store) {
+		ctx := context.Background()
+		k := hub.SubagentKey{User: userAlice, BackendID: "b1", SessionID: "s1", SubagentID: "sa-0-a"}
+		keep := func(k hub.SubagentKey, at float64, tools int) (float64, int) {
+			t.Helper()
+			started, n, err := s.KeepSubagentProgress(ctx, k, at, tools)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return started, n
+		}
+		if at, n := keep(k, 1_800_000_000.5, 41); at != 1_800_000_000.5 || n != 41 {
+			t.Fatalf("first = %v %d", at, n)
+		}
+		// A restart: the new Hermes lists a later start and a fresh count.
+		if at, n := keep(k, 1_800_001_000, 0); at != 1_800_000_000.5 || n != 41 {
+			t.Fatalf("after a restart = %v %d", at, n)
+		}
+		// An unknown start (0) keeps the stored one; a higher count wins; an earlier start wins.
+		if at, n := keep(k, 0, 45); at != 1_800_000_000.5 || n != 45 {
+			t.Fatalf("unknown start = %v %d", at, n)
+		}
+		if at, _ := keep(k, 1_799_999_000, 3); at != 1_799_999_000 {
+			t.Fatalf("earlier start = %v", at)
+		}
+		// Another user's subagent of the same id is its own row.
+		other := k
+		other.User = userBob
+		if at, n := keep(other, 1_800_002_000, 2); at != 1_800_002_000 || n != 2 {
+			t.Fatalf("other = %v %d", at, n)
+		}
+	})
+}

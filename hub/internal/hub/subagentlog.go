@@ -98,6 +98,12 @@ type SubagentLog interface {
 	SubagentEvents(ctx context.Context, k SubagentKey, after int64, limit int) ([]SubagentEvent, error)
 	// AddSubagentSteer stores a message the user sent the subagent.
 	AddSubagentSteer(ctx context.Context, k SubagentKey, text string, at time.Time) (SubagentEvent, error)
+	// KeepSubagentProgress folds what subagent.list shows now into what the
+	// hub saw before and returns the result: the earliest nonzero start
+	// (Unix seconds) and the highest tool count. A subagent a restart handed
+	// to a new Hermes process may list a later start or a lower count; the
+	// row never moves backward, also across hub restarts.
+	KeepSubagentProgress(ctx context.Context, k SubagentKey, startedAt float64, tools int) (float64, int, error)
 	// PruneSubagentLogs drops the logs not written since t.
 	PruneSubagentLogs(ctx context.Context, t time.Time) error
 }

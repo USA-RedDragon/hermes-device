@@ -130,6 +130,10 @@ type Service struct {
 	turnErrors atomic.Pointer[func(TurnError)]
 	// subagentLocks orders the reads of each subagent's transcript.
 	subagentLocks subagentLocks
+	// progress keeps listed subagents' start and tool count in memory when
+	// there is no SubagentLog.
+	progressMu sync.Mutex
+	progress   map[hub.SubagentKey]subagentProgress
 }
 
 // SetNotify makes the service hand each notice to f. f must not block: it

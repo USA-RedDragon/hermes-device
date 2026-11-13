@@ -193,5 +193,20 @@ act.event("subagent.complete", { subagent_id: "sa-5", status: "interrupted" });
 list = [{ id: "sa-5", goal: "Fifth", status: "running" }];
 await round();
 assert.strictEqual(rowState("sa-5"), "Stopped");
+// A restart hands a running subagent to a new Hermes that lists its own start and a fresh tool count: the row
+// keeps its earliest start and its highest count, and its timer keeps counting from the real start.
+const rowTime = (id) => { const r = body().querySelectorAll(".row").find((x) => x.dataset.act === id); return r.querySelector(".time").textContent; };
+const rowTools = (id) => { const r = body().querySelectorAll(".row").find((x) => x.dataset.act === id); return r.querySelector(".meta").textContent; };
+const realStart = now - 17 * 60 * 1000;
+act.event("subagent.start", { subagent_id: "sa-6", goal: "Sixth", model: "m" });
+list = [{ id: "sa-6", goal: "Sixth", status: "running", started_at: realStart / 1000, tool_count: 41 }];
+await round();
+assert.strictEqual(rowTime("sa-6"), "17:00");
+assert.ok(rowTools("sa-6").includes("41 tools"), rowTools("sa-6"));
+now += 60 * 1000;
+list = [{ id: "sa-6", goal: "Sixth", status: "running", started_at: (now - 5000) / 1000, tool_count: 0 }];
+await round();
+assert.strictEqual(rowTime("sa-6"), "18:00");
+assert.ok(rowTools("sa-6").includes("41 tools"), rowTools("sa-6"));
 console.log("ok");
 })().catch((e) => { console.error(e); process.exit(1); });
