@@ -76,7 +76,8 @@ func (b *Bot) sendClaudeSignIn(ctx context.Context, chatID int64, m notify.Messa
 	b.mu.Unlock()
 	if !si.ExpiresAt.IsZero() {
 		left := si.ExpiresAt.Sub(b.now())
-		time.AfterFunc(max(left+slack(left), 0), func() { b.expireClaude(msgKey{chatID, id}) })
+		bg := context.WithoutCancel(ctx)
+		time.AfterFunc(max(left+slack(left), 0), func() { b.expireClaude(bg, msgKey{chatID, id}) })
 	}
 	return id, true
 }
@@ -188,17 +189,16 @@ func (b *Bot) claudeOutcome(ctx context.Context, to dest, k msgKey, cp claudePro
 }
 
 // expireClaude shows a sign-in whose link expired as expired, unless it
-// ended otherwise. It runs from a timer, with no request behind it.
-//
-//nolint:contextcheck // see above
-func (b *Bot) expireClaude(k msgKey) {
+// ended otherwise. It runs from a timer, so ctx is the one of the request
+// that sent the sign-in, without its cancellation.
+func (b *Bot) expireClaude(ctx context.Context, k msgKey) {
 	b.mu.Lock()
 	cp, ok := b.claudes[k]
 	b.mu.Unlock()
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	si, err := b.claude.SignInState(ctx, cp.user, cp.backendID, cp.account)
 	if err == nil && (si.State == hub.SignInWaiting || si.State == hub.SignInStarting) {

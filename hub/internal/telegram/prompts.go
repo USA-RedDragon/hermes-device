@@ -363,17 +363,17 @@ func (b *Bot) SendNotice(ctx context.Context, chatID int64, m notify.Message) (i
 		if !rec.CreatedAt.IsZero() {
 			wait -= b.now().Sub(rec.CreatedAt)
 		}
-		time.AfterFunc(max(wait, 0), func() { b.expireNotice(chatID, id, rec) })
+		bg := context.WithoutCancel(ctx)
+		time.AfterFunc(max(wait, 0), func() { b.expireNotice(bg, chatID, id, rec) })
 	}
 	return id, nil
 }
 
 // expireNotice shows a notice's prompt as expired when nobody answered it
-// in its time. It runs from a timer, with no request behind it.
-//
-//nolint:contextcheck // see above
-func (b *Bot) expireNotice(chatID, msgID int64, rec hub.NoticeRecord) {
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+// in its time. It runs from a timer, so ctx is the one of the request that
+// sent the notice, without its cancellation.
+func (b *Bot) expireNotice(ctx context.Context, chatID, msgID int64, rec hub.NoticeRecord) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	if b.notices != nil {
 		if cur, ok, err := b.notices.Notice(ctx, rec.ID); err != nil || ok && !cur.SettledAt.IsZero() {
