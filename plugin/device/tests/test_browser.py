@@ -166,9 +166,14 @@ class BrowserBase(Base):
             def register_hook(self, name, cb):
                 hooks.append((name, cb))
 
-        browser.register(Ctx(), core)
+        with mock.patch.object(core, "valid_hooks", lambda: frozenset(
+                {"agent_turn_start", "agent_turn_end", "pre_llm_call", "post_llm_call", "on_session_end",
+                 "subagent_stop"})):
+            browser.register(Ctx(), core)
         self.assertEqual(hooks, [("pre_tool_call", browser.pre_tool_call),
                                  ("on_session_delete", browser.on_session_delete),
+                                 ("agent_turn_start", browser.on_turn_start),
+                                 ("agent_turn_end", browser.on_turn_end),
                                  ("pre_llm_call", browser.on_turn_start),
                                  ("post_llm_call", browser.on_turn_end),
                                  ("on_session_end", browser.on_turn_end),
