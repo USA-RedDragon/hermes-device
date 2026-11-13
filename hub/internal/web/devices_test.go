@@ -20,6 +20,7 @@ func setupDevices(t *testing.T, revoked *[]string) *hubEnv {
 	t.Helper()
 	return setupWith(t, func(cfg *config.Config, opts *web.Options, st *store.Store) {
 		cfg.Backends[0].Devices = true
+		cfg.Backends[0].Name = "Talaria"
 		opts.Devices = st
 		opts.OnRevoke = func(id string) { *revoked = append(*revoked, id) }
 		on := true
@@ -84,7 +85,7 @@ func pairApprove(t *testing.T, e *hubEnv, c *http.Client, csrf, code, user strin
 	}
 	resp, body = form(t, c, e.url+"/device/pair", e.url, url.Values{fieldCSRF: {csrf}, fieldCode: {strings.ToLower(user)}, fieldAction: {"lookup"}})
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "192.0.2.7") || !strings.Contains(body, "desktop.example.com") ||
-		!strings.Contains(body, "Connect this computer") {
+		!strings.Contains(body, "Connect this computer") || !strings.Contains(body, "connect to Talaria as") || strings.Contains(body, "to Hermes") {
 		t.Fatalf("confirm = %d %s", resp.StatusCode, body)
 	}
 	resp, body = form(t, c, e.url+"/device/pair", e.url, url.Values{fieldCSRF: {csrf}, fieldCode: {user}, fieldAction: {actionApprove},

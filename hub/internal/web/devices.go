@@ -30,7 +30,7 @@ const pairHTML = `<!doctype html>
 {{if .Done}}<p><b>{{.Name}}</b> is now connected to {{.BackendName}}. Go back to the computer: it finishes on its own in a few seconds.</p>
 <p>You can remove it at any time under Settings on the <a href="/">chat page</a>.</p>
 {{else if .Declined}}<p>The computer was not connected. You can close this page.</p>
-{{else if .Pairing}}<p>A computer asks to connect to Hermes as <b>{{.User}}</b>. Hermes can then run commands and change files on it, in the folders it allows.</p>
+{{else if .Pairing}}<p>A computer asks to connect to {{if .BackendName}}{{.BackendName}}{{else}}your assistant{{end}} as <b>{{.User}}</b>. {{if .BackendName}}It{{else}}The one you pick below{{end}} can then run commands and change files on it, in the folders it allows.</p>
 <p>Only continue if you started this yourself on that computer just now, and the details below match it.</p>
 <dl class="facts">
 <dt>Computer</dt><dd>{{.Pairing.Hostname}}</dd>
@@ -171,6 +171,9 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v.Pairing, v.Backends, v.Name = &p, backends, p.Name
+	if len(backends) == 1 {
+		v.BackendName = backends[0].Name
+	}
 	v.Asked = p.CreatedAt.UTC().Format("2006-01-02 15:04 UTC")
 	v.Backend = s.defaults[sess.User]
 	switch r.PostFormValue("action") {
