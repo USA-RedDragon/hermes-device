@@ -1,0 +1,10 @@
+# The provenance review, and the approval, file-write and tool-dispatch tests around the hooks it adds
+tests/tools/test_smart_provenance.py
+tests/tools/test_approval.py
+tests/tools/test_smart_approval_policy.py
+tests/tools/test_approval_mode_parity.py
+tests/tools/test_approval_outcome_parity.py
+tests/tools/test_approval_unattended_presence.py
+tests/tools/test_approval_plugin_hooks.py
+tests/tools/test_execute_code_approval_cluster.py
+tests/agent/test_terminal_approval_batch.py
