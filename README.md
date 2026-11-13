@@ -230,10 +230,10 @@ In the Hermes pod, `acp-host` counts the same way in each per-account directory 
 
 ### Renamed from hermes-device
 
-Release 0.19.0 renamed the program from `hermes-device` to `talaria`, and the repository was renamed to `USA-RedDragon/talaria` after 0.19.1. The first release after 0.25.3 renames the rest:
+Release 0.19.0 renamed the program from `hermes-device` to `talaria`, and the repository was renamed to `USA-RedDragon/talaria` after 0.19.1. The first release after 0.25.4 renames the rest:
 
 - The Go module is `github.com/USA-RedDragon/talaria` (it was `github.com/USA-RedDragon/hermes-device`).
-- The container images are `ghcr.io/usa-reddragon/talaria` and `ghcr.io/usa-reddragon/talaria-sandbox`, with the binary as `/talaria` and `/usr/local/bin/talaria` (the sandbox keeps a `hermes-device` link to it). Releases up to 0.25.3 stay at `ghcr.io/usa-reddragon/hermes-device` and `hermes-device-sandbox`; later releases are not published there, so move image references to the new names.
+- The container images are `ghcr.io/usa-reddragon/talaria` and `ghcr.io/usa-reddragon/talaria-sandbox`, with the binary as `/talaria` and `/usr/local/bin/talaria` (the sandbox keeps a `hermes-device` link to it). Releases up to 0.25.4 stay at `ghcr.io/usa-reddragon/hermes-device` and `hermes-device-sandbox`; later releases are not published there, so move image references to the new names.
 - The blocks that `setup` writes to shell files are marked `talaria setup`. Blocks marked `hermes-device setup` that older releases wrote stay in place, count as the same block, and `setup --uninstall` removes them.
 - The plugin reads the hub public keys from `TALARIA_HUB_PUBLIC_KEY`; when it is unset, from `HERMES_DEVICE_HUB_PUBLIC_KEY`, with a deprecation warning. Its messages start with `talaria:`.
 
