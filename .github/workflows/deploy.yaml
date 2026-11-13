@@ -1,0 +1,57 @@
+name: Deploy kit
+
+# Checks the install kit in deploy/: the compose file, the Helm chart, the
+# Unraid template and the setup scripts.
+
+on:
+  pull_request:
+    paths:
+      - deploy/**
+      - .github/workflows/deploy.yaml
+  push:
+    branches:
+      - main
+    paths:
+      - deploy/**
+      - .github/workflows/deploy.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }} @ ${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint the install files
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: deploy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Copies of the setup scripts match
+        run: hack/check-sync.sh
+      - name: Shell scripts
+        run: shellcheck -s sh compose/files/init.sh aio/rootfs/etc/cont-init.d/10-talaria hack/check-sync.sh
+      - name: Compose file
+        run: |
+          cp compose/.env.example compose/.env
+          docker compose -f compose/compose.yaml config -q
+          COMPOSE_PROFILES=demo,ollama,honcho,honcho-embeddings docker compose -f compose/compose.yaml config -q
+      - name: Helm chart
+        run: |
+          helm lint charts/talaria --set publicUrl=http://localhost:8080 --set demo.enabled=true
+          helm template t charts/talaria --set publicUrl=https://talaria.example.com --set ingress.enabled=true \
+            --set httpRoute.enabled=true --set 'httpRoute.parentRefs[0].name=gw' > /dev/null
+          helm template t charts/talaria --set publicUrl=https://talaria.example.com --set auth.mode=oidc \
+            --set auth.oidc.issuerUrl=https://id.example.com --set auth.oidc.clientId=c \
+            --set 'auth.oidc.users[0].sub=s' --set 'auth.oidc.users[0].name=admin' \
+            --set hub.store.driver=postgres --set hub.store.existingSecret=db --set hub.replicas=2 > /dev/null
+      - name: Unraid template
+        run: |
+          sudo apt-get install -y --no-install-recommends libxml2-utils
+          xmllint --noout aio/unraid/talaria.xml
