@@ -77,6 +77,8 @@ type browserShadow struct {
 	ConfirmHosts   *[]string `json:"confirm-hosts"   toml:"confirm-hosts"   yaml:"confirm-hosts"`
 	AutologinHosts *[]string `json:"autologin-hosts" toml:"autologin-hosts" yaml:"autologin-hosts"`
 	StartFirefox   *bool     `json:"start-firefox"   toml:"start-firefox"   yaml:"start-firefox"`
+	Headless       *bool     `json:"headless"        toml:"headless"        yaml:"headless"`
+	ProfileDir     *string   `json:"profile-dir"     toml:"profile-dir"     yaml:"profile-dir"`
 	FirefoxCommand *string   `json:"firefox-command" toml:"firefox-command" yaml:"firefox-command"`
 }
 
@@ -169,6 +171,8 @@ func configApplyDefaults(cfg *Config, _ string, set configulator.SetOrigin) erro
 	set("browser.enabled", configulator.LayerDefault, "default tag")
 	cfg.Browser.StartFirefox = true
 	set("browser.start-firefox", configulator.LayerDefault, "default tag")
+	cfg.Browser.Headless = false
+	set("browser.headless", configulator.LayerDefault, "default tag")
 	cfg.Browser.FirefoxCommand = "firefox"
 	set("browser.firefox-command", configulator.LayerDefault, "default tag")
 	cfg.MCP.IdleTimeout = time.Duration(int64(3600000000000))
@@ -378,6 +382,14 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		if s.Browser.StartFirefox != nil {
 			cfg.Browser.StartFirefox = *s.Browser.StartFirefox
 			set("browser.start-firefox", configulator.LayerFile, file)
+		}
+		if s.Browser.Headless != nil {
+			cfg.Browser.Headless = *s.Browser.Headless
+			set("browser.headless", configulator.LayerFile, file)
+		}
+		if s.Browser.ProfileDir != nil {
+			cfg.Browser.ProfileDir = *s.Browser.ProfileDir
+			set("browser.profile-dir", configulator.LayerFile, file)
 		}
 		if s.Browser.FirefoxCommand != nil {
 			cfg.Browser.FirefoxCommand = *s.Browser.FirefoxCommand
@@ -722,6 +734,23 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Browser.StartFirefox = p
 		set("browser.start-firefox", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "browser", "headless"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "browser.headless",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Browser.Headless = p
+		set("browser.headless", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "browser", "profile-dir"); ok {
+		cfg.Browser.ProfileDir = v
+		set("browser.profile-dir", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "browser", "firefox-command"); ok {
 		cfg.Browser.FirefoxCommand = v
 		set("browser.firefox-command", configulator.LayerEnv, n)
@@ -841,6 +870,8 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"browser" + o.Separator + "confirm-hosts",
 		"browser" + o.Separator + "autologin-hosts",
 		"browser" + o.Separator + "start-firefox",
+		"browser" + o.Separator + "headless",
+		"browser" + o.Separator + "profile-dir",
 		"browser" + o.Separator + "firefox-command",
 		"mcp" + o.Separator + "idle-timeout",
 		"update" + o.Separator + "auto",
@@ -899,15 +930,17 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.StringSlice(names[32], nil, "Loopback or private network host names the agent may open. All other loopback, private, link-local and CGNAT addresses are blocked in agent tabs")
 	fs.StringSlice(names[33], nil, "Sites where every click and every Enter or Space key press asks the user each time and scripts may only read. Host names; each covers its subdomains. The plugin cannot change this list")
 	fs.StringSlice(names[34], nil, "Exact host names where browser_login may submit the login form that Firefox fills from its own saved login, so a scheduled job can sign in without the agent seeing the password. Only https pages whose top-level host is listed; no subdomains. Scripts are refused there, and clicks, typing, key presses and screenshots on its login pages. Example: login.w3.ibm.com. The plugin cannot change this list")
-	fs.Bool(names[35], true, "Let the agent start Firefox, with the user's default profile, in the user's graphical session when the extension is not connected, so a scheduled job works after Firefox was closed. The sandbox image turns it off")
-	fs.String(names[36], "firefox", "Command that starts Firefox for start-firefox: a name on PATH or an absolute path")
-	fs.Duration(names[37], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
-	fs.Bool(names[38], true, "Let run install new releases by itself: it checks GitHub, verifies the release like talaria update, waits until no command, browser operation, MCP call or chat runs, and exits so the service restarts it. Only when the talaria service runs it and the device token comes from login, so never on a service device that uses hub.token or hub.token-file. The sandbox and device images turn it off")
-	fs.Duration(names[39], time.Duration(int64(21600000000000)), "Time between release checks of run, with up to 10% jitter. At least 1h")
-	fs.Bool(names[40], false, "Count the tokens Claude Code used here and send the counts to the hub: only token counts, model names, account ids, the signed-in account's email and project folder names, never what was said. Unset: on for run, except in a container, and on for acp-host")
-	fs.StringSlice(names[41], nil, "More Claude Code config directories (CLAUDE_CONFIG_DIR values) to count, besides $CLAUDE_CONFIG_DIR or ~/.claude")
-	fs.String(names[42], "", "acp-host: directory of the per-account Claude Code directories. Defaults to $CLAUDE_ACCOUNTS_ROOT, else claude in $HERMES_HOME")
-	fs.String(names[43], "", "File that keeps what was counted across restarts. Defaults to claude-usage.gob in the state directory for run, and device/claude-usage.gob in $HERMES_HOME for acp-host")
+	fs.Bool(names[35], true, "Let the agent start Firefox, with the user's default profile, in the user's graphical session when the extension is not connected, so a scheduled job works after Firefox was closed. Not used with headless")
+	fs.Bool(names[36], false, "Run a Firefox of the daemon's own with no display, on a profile of its own, with the Talaria extension installed in it, and keep it running (docs/browser.md section 5.2). For a device that has no desktop, such as the sandbox image, which turns it on. Needs browser.enabled. It replaces start-firefox, and the profile holds only the logins of that device")
+	fs.String(names[37], "", "Where the headless Firefox keeps its profile, so cookies and logins survive restarts. Default: firefox-profile in the state directory")
+	fs.String(names[38], "firefox", "Command that starts Firefox for start-firefox: a name on PATH or an absolute path")
+	fs.Duration(names[39], time.Duration(int64(3600000000000)), "Stop an MCP server after this long without a request. It starts again on the next request, without its earlier state. 0 keeps it running until run stops")
+	fs.Bool(names[40], true, "Let run install new releases by itself: it checks GitHub, verifies the release like talaria update, waits until no command, browser operation, MCP call or chat runs, and exits so the service restarts it. Only when the talaria service runs it and the device token comes from login, so never on a service device that uses hub.token or hub.token-file. The sandbox and device images turn it off")
+	fs.Duration(names[41], time.Duration(int64(21600000000000)), "Time between release checks of run, with up to 10% jitter. At least 1h")
+	fs.Bool(names[42], false, "Count the tokens Claude Code used here and send the counts to the hub: only token counts, model names, account ids, the signed-in account's email and project folder names, never what was said. Unset: on for run, except in a container, and on for acp-host")
+	fs.StringSlice(names[43], nil, "More Claude Code config directories (CLAUDE_CONFIG_DIR values) to count, besides $CLAUDE_CONFIG_DIR or ~/.claude")
+	fs.String(names[44], "", "acp-host: directory of the per-account Claude Code directories. Defaults to $CLAUDE_ACCOUNTS_ROOT, else claude in $HERMES_HOME")
+	fs.String(names[45], "", "File that keeps what was counted across restarts. Defaults to claude-usage.gob in the state directory for run, and device/claude-usage.gob in $HERMES_HOME for acp-host")
 	return nil
 }
 
@@ -1343,6 +1376,30 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Browser.StartFirefox = v
 		set("browser.start-firefox", configulator.LayerCLI, "--"+n)
+	}
+	if n := "browser" + o.Separator + "headless"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "browser.headless",
+				Source: "--" + n,
+			}
+		}
+		cfg.Browser.Headless = v
+		set("browser.headless", configulator.LayerCLI, "--"+n)
+	}
+	if n := "browser" + o.Separator + "profile-dir"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "browser.profile-dir",
+				Source: "--" + n,
+			}
+		}
+		cfg.Browser.ProfileDir = v
+		set("browser.profile-dir", configulator.LayerCLI, "--"+n)
 	}
 	if n := "browser" + o.Separator + "firefox-command"; fs.Changed(n) {
 		v, err := fs.GetString(n)
@@ -2427,6 +2484,32 @@ func (s *browserShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			default:
 				return configJSONError(path+".start-firefox", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
 			}
+		case "headless":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Headless = &b
+			default:
+				return configJSONError(path+".headless", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "profile-dir":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.ProfileDir = &str
+			default:
+				return configJSONError(path+".profile-dir", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
 		case "firefox-command":
 			v, err := dec.ReadToken()
 			if err != nil {
@@ -2862,6 +2945,8 @@ func (c Config) PrintConfig() string {
 	fmt.Fprintf(&b, "browser.confirm-hosts = %v\n", c.Browser.ConfirmHosts)
 	fmt.Fprintf(&b, "browser.autologin-hosts = %v\n", c.Browser.AutologinHosts)
 	fmt.Fprintf(&b, "browser.start-firefox = %v\n", c.Browser.StartFirefox)
+	fmt.Fprintf(&b, "browser.headless = %v\n", c.Browser.Headless)
+	fmt.Fprintf(&b, "browser.profile-dir = %v\n", c.Browser.ProfileDir)
 	fmt.Fprintf(&b, "browser.firefox-command = %v\n", c.Browser.FirefoxCommand)
 	b.WriteString("mcp.servers = (redacted)\n")
 	fmt.Fprintf(&b, "mcp.idle-timeout = %v\n", c.MCP.IdleTimeout)

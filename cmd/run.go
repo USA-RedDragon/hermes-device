@@ -192,16 +192,11 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 		return err
 	}
 	opts.Scope = commandScope(ctx, cfg, opts.Env)
-	var br *broker.Broker
-	if cfg.Browser.Enabled {
-		if br, err = startBroker(ctx, cfg); err != nil {
-			return err
-		}
-		opts.Browser = lockReporter{br}
-		if cfg.Browser.StartFirefox {
-			opts.StartBrowser = launch.New(cfg.Browser.FirefoxCommand).Launch
-		}
+	br, stopBrowser, err := setupBrowser(ctx, cfg, version, &opts)
+	if err != nil {
+		return err
 	}
+	defer stopBrowser()
 	if len(cfg.MCP.Servers) > 0 {
 		mgr := newMCP(cfg, version)
 		defer mgr.Close()
@@ -468,4 +463,32 @@ func commandScope(ctx context.Context, cfg *config.Config, env []string) *execut
 	}
 	slog.Info("Each command runs in a systemd scope of its own", "memory_max", scope.MemoryMax, "tasks_max", scope.TasksMax, "part_of", scope.PartOf)
 	return scope
+}
+
+// setupBrowser turns browser control on in opts when browser.enabled is set:
+// the broker the extension talks to and the way the agent starts Firefox, a
+// desktop Firefox or, with browser.headless, a supervised one of the daemon's
+// own (docs/browser.md section 5). The returned function waits until a
+// headless Firefox has stopped, after ctx ended.
+func setupBrowser(ctx context.Context, cfg *config.Config, version string, opts *device.Options) (*broker.Broker, func(), error) {
+	if !cfg.Browser.Enabled {
+		return nil, func() {}, nil
+	}
+	br, err := startBroker(ctx, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	opts.Browser = lockReporter{br}
+	switch {
+	case cfg.Browser.Headless:
+		sup, err := startHeadless(ctx, cfg, version, opts.Env)
+		if err != nil {
+			return nil, nil, err
+		}
+		opts.StartBrowser = sup.Launch
+		return br, sup.wait, nil
+	case cfg.Browser.StartFirefox:
+		opts.StartBrowser = launch.New(cfg.Browser.FirefoxCommand).Launch
+	}
+	return br, func() {}, nil
 }

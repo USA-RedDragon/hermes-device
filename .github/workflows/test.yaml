@@ -50,6 +50,34 @@ jobs:
         run: |
           go test ./... -race
 
+  # The sandbox image has a Firefox of its own (docs/browser.md section 5.2):
+  # start the image and use its browser over the exec leg
+  sandbox-browser:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - run: go generate ./...
+
+      - name: Build the sandbox image
+        run: |
+          mkdir -p linux/amd64
+          CGO_ENABLED=0 go build -o linux/amd64/talaria .
+          docker build --build-arg TARGETPLATFORM=linux/amd64 -f Dockerfile.sandbox -t talaria-sandbox:test .
+
+      - name: Open a page in the sandbox's browser
+        run: |
+          TALARIA_SANDBOX_IMAGE=talaria-sandbox:test go test ./internal/browser/sandboxtest/ -count=1 -v
+
   # The launchd agent, the keychain, Firefox's paths under ~/Library and
   # /var being a symlink only show up on a Mac
   backend-tests-macos:
