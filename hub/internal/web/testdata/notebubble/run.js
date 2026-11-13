@@ -11,21 +11,19 @@ const [bin, url, dir] = process.argv.slice(2);
 const shot = process.env.SHOT_PREFIX;
 
 const { proc, connect } = require("../cdp.js").launch(bin, dir);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
   const c = await connect();
   const { ev, send } = c;
   await send("Page.enable");
-  await send("Page.navigate", { url: url + "/auth/login?next=/" });
-  await sleep(1500);
+  await c.load(url + "/auth/login?next=/", `document.getElementById("sessions").children.length > 0`, "the chat list");
   await ev(`location.hash = "#/s/pc/s9"; 1`);
-  for (let i = 0; i < 50 && !(await ev(`document.querySelectorAll("#log .msg.user").length`)); i++) await sleep(100);
+  await c.until(`document.querySelectorAll("#log .msg.user").length >= 2 && document.querySelectorAll("#log .notice").length >= 1`, "the chat to be drawn");
   for (const [name, w, h, mobile] of [["412", 412, 915, true], ["desktop", 1280, 800, false]]) {
     for (const scheme of ["light", "dark"]) {
       await send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: mobile ? 2.625 : 1, mobile });
       await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] });
-      await sleep(400);
+      await c.until(`innerWidth === ${w} && matchMedia("(prefers-color-scheme: dark)").matches === ${scheme === "dark"}`, "the size and scheme to apply");
       const texts = await ev(`Array.from(document.querySelectorAll("#log .msg.user")).map((n) => n.innerText.trim())`);
       assert.deepStrictEqual(texts, ["is this a bug?", "ping"], name + " " + scheme + ": user bubbles");
       const cards = await ev(`document.querySelectorAll("#log .notice").length`);

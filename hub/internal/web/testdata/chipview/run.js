@@ -12,15 +12,10 @@ const [bin, url, dir] = process.argv.slice(2);
 
 const { proc, connect } = require("../cdp.js").launch(bin, dir);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// Polls until expr is truthy in the page, so a slow machine waits for the
-// render instead of racing a fixed sleep.
-const until = async (ev, expr, what) => {
-  for (let i = 0; i < 400; i++) {
-    if (await ev(expr)) return;
-    await sleep(50);
-  }
-  throw new Error("timed out waiting for " + what);
-};
+const { until } = require("../cdp.js");
+// The viewer is up with an image, or gone with nothing left of it.
+const shown = (ev) => until(ev, `!!document.querySelector(".lightbox img") && document.querySelector(".lightbox img").src`, "the viewer to open");
+const gone = (ev, how) => until(ev, `document.querySelectorAll(".lightbox").length === 0`, how + ": the viewer to close");
 
 
 
@@ -32,11 +27,11 @@ async function device(c, w, h) {
 
 // tap sends a real touch at the center of the element the selector finds.
 async function tap(c, sel) {
+  await c.steady(`document.querySelector(${JSON.stringify(sel)})`, sel + " to hold still");
   const r = await c.ev(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const b = e.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
   assert.ok(r, "no element for " + sel);
   await c.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: r.x, y: r.y }] });
   await c.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await sleep(250);
   return r;
 }
 
@@ -44,15 +39,15 @@ async function swipe(c, x0, y0, x1, y1) {
   await c.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: x0, y: y0 }] });
   for (let i = 1; i <= 8; i++) {
     await c.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x0 + (x1 - x0) * i / 8, y: y0 + (y1 - y0) * i / 8 }] });
-    await sleep(16);
+    await c.frames(1); // one frame between moves: the finger's pace
   }
   await c.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await sleep(300);
+  await c.frames(2);
 }
 async function tapAt(c, x, y) {
   await c.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
   await c.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await sleep(250);
+  await c.frames(2);
 }
 
 
@@ -91,35 +86,35 @@ async function run(c, w, h, touch, dark) {
   await c.send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 1, mobile: touch });
   await c.send("Emulation.setTouchEmulationEnabled", { enabled: touch, maxTouchPoints: 5 });
   await c.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: dark ? "dark" : "light" }] });
-  await c.send("Page.navigate", { url: url + "/auth/login?next=/" });
-  await until(ev, `[...document.querySelectorAll("#sessions *")].some((x) => x.children.length < 4 && x.textContent.trim().startsWith("Work"))`, "the Work session is listed");
+  await c.load(url + "/auth/login?next=/", `[...document.querySelectorAll("#sessions *")].some((x) => x.children.length < 4 && x.textContent.trim().startsWith("Work"))`, "the Work session is listed");
   await ev(`(() => { const e = [...document.querySelectorAll("#sessions *")].filter((x) => x.children.length < 4 && x.textContent.trim().startsWith("Work")).pop(); e.click(); })()`);
-  await sleep(1200);
+  await until(ev, `/Waiting to run/.test(document.querySelector("#log").innerText) && !!document.querySelector(".msg.user.pending .att img")`, "the chat to open with its waiting message");
   const press = async (sel) => {
+    await c.steady(`document.querySelector(${JSON.stringify(sel)})`, sel + " to hold still");
     if (touch) return tap(c, sel);
     const r = await ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
     for (const type of ["mousePressed", "mouseReleased"]) await c.send("Input.dispatchMouseEvent", { type, x: r.x, y: r.y, button: "left", clickCount: 1 });
-    await sleep(250);
+    await c.frames(2);
   };
   const key = async (k, code) => {
     await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, text: k === "Enter" ? "\r" : k === " " ? " " : undefined });
     await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code });
-    await sleep(250);
+    await c.frames(2);
   };
-  const shown = () => ev(`!!document.querySelector(".lightbox img") && document.querySelector(".lightbox img").src`);
 
   // The image in a message that waits to run opens the viewer.
   assert.ok(/Waiting to run/.test(await ev(`document.querySelector("#log").innerText`)), tag + ": a message waits to run");
   await ev(`document.querySelector(".msg.user.pending .att img").scrollIntoView()`);
   await press(".msg.user.pending .att img");
-  assert.ok(await shown(), tag + ": the waiting message's image opens the viewer");
+  assert.ok(await shown(ev), tag + ": the waiting message's image opens the viewer");
   await shot(c, tag + "-waiting");
   await key("Escape", "Escape");
+  await gone(ev, tag + ": Escape on the waiting message's viewer");
   assert.strictEqual(await ev(`document.querySelectorAll(".lightbox").length`), 0, tag + ": waiting viewer closes");
   await ev(`document.getElementById("input").focus()`);
 
   await addFile(ev, "Screenshot_20261113_030545_Chrome.png");
-  await sleep(300);
+  await until(ev, `document.querySelectorAll("#chips .chip").length === 1 && document.querySelector("#chips .chip img").src.startsWith("blob:")`, "the chip to show");
   assert.strictEqual(await ev(`document.querySelectorAll("#chips .chip").length`), 1, tag + ": one chip");
   const blob = await ev(`document.querySelector("#chips .chip img").src`);
   assert.ok(blob.startsWith("blob:"), tag + ": the chip shows a local image");
@@ -128,10 +123,11 @@ async function run(c, w, h, touch, dark) {
 
   for (const [how, sel] of [["thumbnail", "#chips .chip img"], ["name", "#chips .chip .name"]]) {
     await press(sel);
-    assert.ok(await shown(), `${tag}: ${how} opens the viewer`);
+    assert.ok(await shown(ev), `${tag}: ${how} opens the viewer`);
     assert.strictEqual(await ev(`document.querySelector(".lightbox img").src`), blob, tag + ": the viewer shows the local image");
     if (how === "thumbnail") await shot(c, tag + "-viewer");
     await key("Escape", "Escape");
+    await gone(ev, `${tag}: Escape after ${how}`);
     await clean(c, `${tag}: Escape after ${how}`);
     assert.strictEqual(await ev(`document.querySelectorAll("#chips .chip").length`), 1, tag + ": opening does not remove");
   }
@@ -140,44 +136,49 @@ async function run(c, w, h, touch, dark) {
   for (const [k, code] of [["Enter", "Enter"], [" ", "Space"]]) {
     await ev(`document.querySelector("#chips .chip .open").focus()`);
     await key(k, code);
-    assert.ok(await shown(), `${tag}: ${code} opens the viewer`);
+    assert.ok(await shown(ev), `${tag}: ${code} opens the viewer`);
     await key("Escape", "Escape");
+    await gone(ev, `${tag}: Escape after ${code}`);
     await clean(c, `${tag}: Escape after ${code}`);
   }
 
   // Back closes the viewer, stays in the chat and leaves taps working.
   const hash = await ev(`location.hash`);
   await press("#chips .chip img");
-  assert.ok(await shown(), tag + ": opens before Back");
+  assert.ok(await shown(ev), tag + ": opens before Back");
   await ev(`history.back()`);
-  await sleep(300);
+  await gone(ev, tag + ": Back");
   await clean(c, tag + ": Back");
   assert.strictEqual(await ev(`location.hash`), hash, tag + ": Back stays in the chat");
   assert.strictEqual(await ev(`document.querySelectorAll("#chips .chip").length`), 1, tag + ": Back keeps the attachment");
   // Closing by a tap on the viewer pops its history entry too.
   const depth = await ev(`history.length`);
   await press("#chips .chip img");
+  await shown(ev);
   await press(".lightbox img");
-  await sleep(300);
+  await gone(ev, tag + ": a tap");
   assert.strictEqual(await ev(`document.querySelectorAll(".lightbox").length`), 0, tag + ": a tap closes the viewer");
   assert.strictEqual(await ev(`location.hash`), hash, tag + ": a tap close stays in the chat");
   assert.ok(await ev(`history.length`) <= depth + 1, tag + ": history does not pile up");
 
   // The x only removes.
   await press("#chips .chip > button:not(.open)");
+  await until(ev, `document.querySelectorAll("#chips .chip").length === 0`, tag + ": the x to remove the chip");
   assert.strictEqual(await ev(`document.querySelectorAll(".lightbox").length`), 0, tag + ": x does not open the viewer");
   assert.strictEqual(await ev(`document.querySelectorAll("#chips .chip").length`), 0, tag + ": x removes the chip");
 
   // An image in a queued message opens the viewer.
   await addFile(ev, "queued.png");
+  await until(ev, `document.querySelectorAll("#chips .chip").length === 1`, tag + ": the second chip to show");
   await ev(`(() => { const i = document.getElementById("input"); i.value = "look at this"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
   await press("#send");
-  await sleep(1500);
+  await until(ev, `!!document.querySelector(".msg.user .att.image img")`, tag + ": the sent message to show its image");
   assert.ok(await ev(`!!document.querySelector(".msg.user .att.image img")`), tag + ": the sent message shows its image");
   await shot(c, tag + "-queued");
   await press(".msg.user .att.image img");
-  assert.ok(await shown(), tag + ": the queued message's image opens the viewer");
+  assert.ok(await shown(ev), tag + ": the queued message's image opens the viewer");
   await key("Escape", "Escape");
+  await gone(ev, tag + ": Escape on the queued message's viewer");
   assert.strictEqual(await ev(`document.querySelectorAll(".lightbox").length`), 0, tag + ": queued viewer closes");
 }
 

@@ -10,16 +10,7 @@ const fs = require("fs");
 const [bin, url, dir] = process.argv.slice(2);
 
 const { proc, connect } = require("../cdp.js").launch(bin, dir);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// Polls until expr is truthy in the page, so a slow machine waits for the
-// render instead of racing a fixed sleep.
-const until = async (ev, expr, what) => {
-  for (let i = 0; i < 400; i++) {
-    if (await ev(expr)) return;
-    await sleep(50);
-  }
-  throw new Error("timed out waiting for " + what);
-};
+const { until } = require("../cdp.js");
 
 
 
@@ -31,11 +22,11 @@ async function device(c, w, h) {
 
 // tap sends a real touch at the center of the element the selector finds.
 async function tap(c, sel) {
+  await c.steady(`document.querySelector(${JSON.stringify(sel)})`, sel + " to hold still");
   const r = await c.ev(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const b = e.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
   assert.ok(r, "no element for " + sel);
   await c.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: r.x, y: r.y }] });
   await c.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await sleep(250);
   return r;
 }
 
@@ -43,15 +34,15 @@ async function swipe(c, x0, y0, x1, y1) {
   await c.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: x0, y: y0 }] });
   for (let i = 1; i <= 8; i++) {
     await c.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x0 + (x1 - x0) * i / 8, y: y0 + (y1 - y0) * i / 8 }] });
-    await sleep(16);
+    await c.frames(1); // one frame between moves: the finger's pace
   }
   await c.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await sleep(300);
+  await c.frames(2);
 }
 async function tapAt(c, x, y) {
   await c.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
   await c.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await sleep(250);
+  await c.frames(2);
 }
 
 // state reports what could swallow a tap.
@@ -70,7 +61,7 @@ async function check(c, how, leave) {
   const { ev } = c;
   await ev(`window.__clicks = []; document.addEventListener("click", (e) => window.__clicks.push(e.target.id || e.target.className || e.target.tagName), true)`);
   await tap(c, ".page-card button");
-  await sleep(800);
+  await c.until(`/^#\\/page\\//.test(location.hash) && !!document.querySelector(".pageview:not([hidden])")`, how + ": the page to open");
   assert.ok(/^#\/page\//.test(await ev(`location.hash`)), how + ": the page opened");
   assert.ok(await ev(`!!document.querySelector(".pageview:not([hidden])")`), how + ": the page view is shown");
   // The reader scrolls the page with a finger before leaving it.
@@ -80,12 +71,14 @@ async function check(c, how, leave) {
   await c.send("Input.synthesizeScrollGesture", { x: 206, y: 700, yDistance: -600, speed: 4000, gestureSourceType: "touch" });
   await tapAt(c, 206, 500);
   await leave();
-  await sleep(100);
+  await c.until(`!document.querySelector(".pageview") && !location.hash.startsWith("#/page/")`, how + ": the page view to go");
   for (const sel of ["#input", ".page-card button"]) {
     const s = await state(ev, sel);
     assert.ok(s.hit, `${how}: ${sel} is under its own center after leaving the page: ${JSON.stringify(s)}`);
     assert.strictEqual(s.pageview, null, `${how}: the page view is still in the document: ${JSON.stringify(s)}`);
     assert.strictEqual(await ev(`document.querySelectorAll("iframe").length`), 0, how + ": a frame is left in the document");
+    // Chrome drops a frame's process a moment after the frame leaves the document.
+    await c.poll(async () => (await c.send("Target.getTargets")).targetInfos.every((x) => x.type !== "iframe"), how + ": the page's frame process to end");
     const frames = (await c.send("Target.getTargets")).targetInfos.filter((x) => x.type === "iframe");
     assert.strictEqual(frames.length, 0, how + ": the page's frame process is still alive: " + JSON.stringify(frames.map((x) => x.url)));
     assert.strictEqual(s.inert, 0, how + ": inert left behind");
@@ -96,20 +89,22 @@ async function check(c, how, leave) {
   }
   await ev(`window.__clicks.length = 0`);
   await tap(c, "#input");
+  await c.until(`document.activeElement && document.activeElement.id === "input"`, how + ": the message box to take focus");
   assert.strictEqual(await ev(`document.activeElement && document.activeElement.id`), "input", how + ": a tap on the message box focuses it");
   await ev(`document.activeElement.blur()`);
   await tap(c, ".page-card button");
-  await sleep(600);
+  await c.until(`/^#\\/page\\//.test(location.hash) && !!document.querySelector(".pageview:not([hidden])")`, how + ": the page to open again");
   assert.ok(/^#\/page\//.test(await ev(`location.hash`)), how + ": a tap on Open opens the page again");
   await leave();
-  await sleep(600);
+  await c.until(`!document.querySelector(".pageview") && !location.hash.startsWith("#/page/")`, how + ": the page view to go again");
   // The sidebar: a tap on a chat in the list switches chats.
   await ev(`document.getElementById("menu") && document.getElementById("menu").click()`);
-  await sleep(400);
+  // The sidebar has slid in (its transition is done), so the tap lands on the row.
+  await c.until(`document.getElementById("side").classList.contains("open") && document.getElementById("side").getAnimations().length === 0`, how + ": the sidebar to open");
   const row = await ev(`(() => { const e = [...document.querySelectorAll("#sessions li, #sessions a, #sessions button")].find((x) => x.textContent.includes("Second") && x.getBoundingClientRect().width > 0); if (!e) return null; e.setAttribute("data-t", "1"); return true; })()`);
   assert.ok(row, how + ": the Second chat is listed");
   await tap(c, "[data-t]");
-  await sleep(800);
+  await c.until(`/Second/.test(document.getElementById("title").textContent)`, how + ": the Second chat to open");
   assert.ok(/Second/.test(await ev(`document.getElementById("title").textContent`)), how + ": a tap on a chat in the list opens it");
   await ev(`location.hash = ""`);
 }
@@ -123,7 +118,7 @@ async function check(c, how, leave) {
     await c.send("Page.navigate", { url: url + "/auth/login?next=/" });
     await until(ev, `[...document.querySelectorAll("#sessions *")].some((x) => x.children.length < 4 && x.textContent.trim().startsWith("Pages"))`, "the Pages session is listed");
     await ev(`(() => { const e = [...document.querySelectorAll("#sessions *")].filter((x) => x.children.length < 4 && x.textContent.trim().startsWith("Pages")).pop(); e.click(); })()`);
-    await sleep(1200);
+    await until(ev, `!!document.querySelector(".page-card button")`, "the chat with its page card to open");
   };
   await open();
   await check(c, "Back button", () => ev(`history.back()`));

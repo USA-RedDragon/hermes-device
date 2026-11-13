@@ -10,8 +10,6 @@ const assert = require("assert");
 const [bin, url, dir] = process.argv.slice(2);
 
 const { proc, connect } = require("../cdp.js").launch(bin, dir);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 
 (async () => {
   const c = await connect();
@@ -19,18 +17,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await send("Page.enable");
   await send("Emulation.setDeviceMetricsOverride", { width: 412, height: 915, deviceScaleFactor: 2.625, mobile: true });
   await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-  await send("Page.navigate", { url: url + "/auth/login?next=/" });
-  await sleep(1500);
+  await c.load(url + "/auth/login?next=/", `document.getElementById("sessions").children.length > 0`, "the chat list");
 
   const box = async (sel) => ev(`(() => { const n = document.querySelector(${JSON.stringify(sel)}); if (!n) return null; const r = n.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width }; })()`);
+  // A press of holdMs is the input under test (a long press), not a wait.
+  const hold = (ms) => new Promise((r) => setTimeout(r, ms));
   const touch = async (x, y, holdMs, jitter) => {
     await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
     // A finger never holds still: it drifts a few pixels, a pixel a frame.
-    for (let k = 1; k <= jitter; k++) { await sleep(16); await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x + k / 2, y: y - k }] }); }
-    await sleep(holdMs);
+    for (let k = 1; k <= jitter; k++) { await c.frames(1); await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x + k / 2, y: y - k }] }); }
+    await hold(holdMs);
     await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   };
   const tap = async (sel, holdMs = 60, jitter = 0) => {
+    await c.steady(`document.querySelector(${JSON.stringify(sel)})`, sel + " to hold still");
     const p = await box(sel);
     assert.ok(p && p.w, "no box for " + sel);
     await touch(p.x, p.y, holdMs, jitter);
@@ -38,55 +38,60 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const swipe = async (dy) => {
     const p = await box("#log");
     await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y }] });
-    for (let k = 1; k <= 8; k++) { await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: p.x, y: p.y + (dy * k) / 8 }] }); await sleep(16); }
+    for (let k = 1; k <= 8; k++) { await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: p.x, y: p.y + (dy * k) / 8 }] }); await c.frames(1); }
     await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   };
   // watch records, every frame, the pill, the title and what the log shows.
-  await ev(`window.__watch = () => { const f = []; window.__frames = f; const t0 = performance.now();
+  await ev(`window.__watch = () => { window.__stopWatch = false; const f = []; window.__frames = f; const t0 = performance.now();
     const log = document.getElementById("log"), pill = document.getElementById("tobottom");
     const step = () => { f.push({ t: performance.now() - t0, hash: location.hash, pill: !pill.hidden, title: document.getElementById("title").textContent,
       loading: !!log.querySelector(".loading"), rows: log.querySelectorAll(".msg").length });
-      if (performance.now() - t0 < 2500) requestAnimationFrame(step); };
+      if (!window.__stopWatch) requestAnimationFrame(step); };
     requestAnimationFrame(step); }; 1`);
   const pillShown = () => ev(`!document.getElementById("tobottom").hidden`);
   const item = (id) => `#sessions a.go[href="#/s/pc/${id}"]`;
 
   await ev(`location.hash = "#/s/pc/s9"; 1`);
-  await sleep(1500);
+  await c.until(`document.getElementById("title").textContent === "Long" && !document.querySelector("#log .loading") && document.querySelectorAll("#log .msg").length > 0`, "the first chat to be drawn");
+  await c.until(`window.HubLogSettled()`, "the log to settle");
   assert.strictEqual(await pillShown(), false, "pill after the first open");
 
   // Taps on the log: a tap, a tap whose finger moves 2 px, a long press, the message box.
   await ev(`(() => { const l = document.getElementById("log"); l.scrollTop = l.scrollHeight; })()`);
-  await sleep(300);
-  for (const [name, hold, jitter] of [["tap", 60, 0], ["tap with jitter", 60, 10], ["long press", 800, 6]]) {
+  await c.until(`(() => { const l = document.getElementById("log"); return l.scrollHeight - l.scrollTop - l.clientHeight < 2; })()`, "the log at its end");
+  for (const [name, held, jitter] of [["tap", 60, 0], ["tap with jitter", 60, 10], ["long press", 800, 6]]) {
     const p = await ev(`(() => { const ms = document.querySelectorAll("#log .msg"); const n = ms[ms.length - 1]; const r = n.getBoundingClientRect(); return { x: r.x + r.width / 2, y: Math.min(r.y + r.height / 2, innerHeight - 200) }; })()`);
-    await touch(p.x, p.y, hold, jitter);
-    await sleep(600);
+    await touch(p.x, p.y, held, jitter);
+    await c.frames(4);
     assert.strictEqual(await pillShown(), false, name + " on a message showed the pill");
   }
   // A tap on the message box raises the keyboard (a shorter viewport) and
   // closing it gives the height back.
   await tap("#input");
-  for (const h of [850, 760, 650, 575]) { await send("Emulation.setDeviceMetricsOverride", { width: 412, height: h, deviceScaleFactor: 2.625, mobile: true }); await sleep(30); }
-  await sleep(500);
+  for (const h of [850, 760, 650, 575]) { await send("Emulation.setDeviceMetricsOverride", { width: 412, height: h, deviceScaleFactor: 2.625, mobile: true }); await c.frames(1); }
+  await c.until(`innerHeight === 575`, "the short viewport");
+  await c.until(`window.HubLogSettled()`, "the log to settle with the keyboard up");
   assert.strictEqual(await pillShown(), false, "a tap on the message box showed the pill");
   await ev(`document.getElementById("input").blur(); 1`);
   await tap("#log");
-  for (const h of [650, 760, 850, 915]) { await send("Emulation.setDeviceMetricsOverride", { width: 412, height: h, deviceScaleFactor: 2.625, mobile: true }); await sleep(30); }
-  await sleep(500);
+  for (const h of [650, 760, 850, 915]) { await send("Emulation.setDeviceMetricsOverride", { width: 412, height: h, deviceScaleFactor: 2.625, mobile: true }); await c.frames(1); }
+  await c.until(`innerHeight === 915`, "the full viewport");
+  await c.until(`window.HubLogSettled()`, "the log to settle with the keyboard down");
   assert.strictEqual(await pillShown(), false, "closing the keyboard showed the pill");
 
   // Switch right after a swipe, as a reader does.
   for (const [id, title] of [["bigchat", "Big chat"], ["s8", "Second"], ["s9", "Long"], ["bigchat", "Big chat"]]) {
     await swipe(150);
-    await sleep(250);
     await swipe(-2500);
-    await sleep(300);
     await tap("#menu");
-    await sleep(350);
+    await c.until(`document.getElementById("side").classList.contains("open") && document.getElementById("side").getAnimations().length === 0`, "the sidebar to open");
     await ev(`window.__watch(); 1`);
     await tap(item(id));
-    await sleep(2700);
+    // Frames are recorded until the chosen chat is drawn and the log has settled.
+    await c.until(`location.hash === "#/s/pc/${id}" && document.getElementById("title").textContent === ${JSON.stringify(title)} && !document.querySelector("#log .loading") && document.querySelectorAll("#log .msg").length > 0 && window.HubLogSettled()`, `switch to ${id}: the chat to be drawn`);
+    await c.until(`window.__frames.filter((x) => x.hash === "#/s/pc/${id}").length > 12`, `switch to ${id}: frames of the chosen chat to record`);
+    await c.frames(4);
+    await ev(`window.__stopWatch = true; 1`);
     const f = await ev(`window.__frames`);
     assert.ok(f.length > 10, "frames recorded");
     const pill = f.filter((x) => x.pill);
@@ -103,8 +108,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     assert.strictEqual(await ev(`(() => { const l = document.getElementById("log"); return Math.round(l.scrollHeight - l.scrollTop - l.clientHeight) < 2; })()`), true, `switch to ${id}: not at the end`);
   }
   // The big chat drew all its history in the end, from the split snapshot.
-  let users = 0;
-  for (let i = 0; i < 100 && users < 900; i++) { await sleep(100); users = await ev(`document.querySelectorAll("#log .msg.user").length`); }
+  await c.until(`document.querySelectorAll("#log .msg.user").length >= 900`, "the big chat's older rows");
+  const users = await ev(`document.querySelectorAll("#log .msg.user").length`);
   assert.strictEqual(users, 900, "big chat rows after the older part");
   console.log("ok");
   c.close();

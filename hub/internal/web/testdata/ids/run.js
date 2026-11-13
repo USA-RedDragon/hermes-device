@@ -8,21 +8,7 @@ const assert = require("assert");
 const [bin, url, dir] = process.argv.slice(2);
 
 const { proc, connect } = require("../cdp.js").launch(bin, dir);
-// until polls a page expression until it is truthy, so a step goes on when
-// the page is ready and not after a guessed delay. A page that never gets
-// there fails with what was awaited and the last value seen.
-const WAIT_MS = Number(process.env.CDP_TIMEOUT_MS) || 30000;
-const until = async (ev, expr, what) => {
-  const end = Date.now() + WAIT_MS;
-  let last;
-  for (;;) {
-    last = await ev(`(() => { try { return ${expr}; } catch (e) { return false; } })()`);
-    if (last) return last;
-    if (Date.now() > end) throw new Error(`gave up after ${WAIT_MS} ms waiting for ${what}; last value ${JSON.stringify(last)}`);
-    await new Promise((r) => setTimeout(r, 25));
-  }
-};
-
+const { until } = require("../cdp.js");
 
 // Visible text of a node (what innerText gives: hidden parts are left out).
 const ids = /[a-z]+_[a-z_]+|[a-z]+\.[a-z]+_[a-z_]+/;

@@ -26,6 +26,61 @@ const brief = (v, n = 100) => {
   return one.length > n ? one.slice(0, n) + "..." : one;
 };
 
+// until polls a page expression until it is truthy, so a step goes on when
+// the page is ready and not after a guessed delay. ev is the connection's
+// ev; expr is JavaScript that may throw while the page is not ready (that
+// counts as not yet). A page that never gets there fails after TIMEOUT with
+// what was awaited and the last value seen. It does not retry the step.
+const until = async (ev, expr, what) => {
+  const end = Date.now() + TIMEOUT;
+  let last;
+  for (;;) {
+    last = await ev(`(() => { try { return ${expr}; } catch (e) { return false; } })()`);
+    if (last) return last;
+    if (Date.now() > end) {
+      const where = await ev(`location.href + " " + document.readyState + " sessions=" + (document.getElementById("sessions") ? document.getElementById("sessions").children.length : "none")`).catch(() => "page not readable");
+      throw new Error(`gave up after ${TIMEOUT} ms waiting for ${what}; last value ${JSON.stringify(last)}; page ${where}`);
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+};
+exports.until = until;
+
+// steady waits until the element that the page expression gives has been
+// drawn, an image in it has loaded, and its box has not moved for three
+// polls, so an input aimed at it lands on it.
+const steady = (ev, el, what) => until(ev, `(() => {
+    const e = ${el};
+    if (!e) return false;
+    const b = e.getBoundingClientRect();
+    if (!b.width || !b.height) return false;
+    if (e.tagName === "IMG" && !(e.complete && e.naturalWidth > 0)) return false;
+    const k = [b.left, b.top, b.width, b.height].join();
+    const s = window.__steady = window.__steady && window.__steady.k === k && window.__steady.e === e ? { k, e, n: window.__steady.n + 1 } : { k, e, n: 0 };
+    return s.n >= 3;
+  })()`, what);
+exports.steady = steady;
+
+// poll runs an async function until it returns something truthy, for a
+// condition that lives outside the page (a Chrome target, a process). The
+// same bound and failure text as until.
+const poll = async (fn, what) => {
+  const end = Date.now() + TIMEOUT;
+  let last;
+  for (;;) {
+    last = await fn();
+    if (last) return last;
+    if (Date.now() > end) throw new Error(`gave up after ${TIMEOUT} ms waiting for ${what}; last value ${JSON.stringify(last)}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+};
+exports.poll = poll;
+
+// frames resolves once the page has drawn n frames, so an event queued by
+// the last input has run and been painted.
+const frames = (ev, n = 2) => ev(`new Promise((res) => { let k = ${n}; const f = () => (--k > 0 ? requestAnimationFrame(f) : res(true)); requestAnimationFrame(f); })`);
+exports.frames = frames;
+
 // launch starts Chrome and returns { proc, connect }.
 exports.launch = (bin, dir) => {
   const proc = spawn(bin, ["--headless=new", "--no-sandbox", "--disable-gpu", "--remote-debugging-port=0", "--user-data-dir=" + dir, "--hide-scrollbars", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
@@ -99,7 +154,14 @@ exports.launch = (bin, dir) => {
       return r.result.value;
     };
     await send("Inspector.enable"); // so a renderer crash is reported
-    return { send, ev, close: () => { sock.close(); proc.kill(); } };
+    // load opens url and waits until the new document shows ready (a page
+    // expression), not the one it replaces.
+    const load = async (u, ready, what) => {
+      await ev("window.__old = true");
+      await send("Page.navigate", { url: u });
+      await until(ev, `!window.__old && (${ready})`, what);
+    };
+    return { send, ev, load, steady: (el, what) => steady(ev, el, what), poll: (fn, what) => poll(fn, what), until: (expr, what) => until(ev, expr, what), frames: (n) => frames(ev, n), close: () => { sock.close(); proc.kill(); } };
   }
   return { proc, connect };
 };

@@ -9,16 +9,12 @@ const assert = require("assert");
 const [bin, url, dir] = process.argv.slice(2);
 
 const { proc, connect } = require("../cdp.js").launch(bin, dir);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 
 const rowFor = (title) => `[...document.querySelectorAll("a,button,li,div")].filter((x) => x.children.length < 4 && x.textContent.trim().startsWith(${JSON.stringify(title)})).pop()`;
-// Polls until the chat is listed, so a slow render does not race the click.
-const openChat = async (ev, title) => {
-  for (let i = 0; i < 400; i++) {
-    if (await ev(`!!(${rowFor(title)})`)) break;
-    await sleep(50);
-  }
+// Waits until the chat is listed, so a slow render does not race the click.
+const openChat = async (c, title) => {
+  const { ev } = c;
+  await c.until(`!!(${rowFor(title)})`, "chat " + title + " to be listed");
   return ev(`(() => { const e = ${rowFor(title)}; if (!e) return false; e.click(); return true; })()`);
 };
 
@@ -35,20 +31,22 @@ async function device(c, touch, w, h) {
 
   // A touch screen: opening and switching chats leave the box unfocused.
   await device(c, true, 412, 915);
-  await send("Page.navigate", { url: url + "/auth/login?next=/" });
-  await sleep(1500);
+  await c.load(url + "/auth/login?next=/", `document.getElementById("sessions").children.length > 0`, "the chat list");
   assert.ok(await ev(`matchMedia("(pointer: coarse)").matches`), "pointer: coarse is emulated");
   for (const title of ["Long", "Second", "Long"]) {
-    assert.ok(await openChat(ev, title), "chat " + title + " is listed");
-    await sleep(1200);
+    assert.ok(await openChat(c, title), "chat " + title + " is listed");
+    // The chat is drawn, so a focus on open would have happened by now.
+    await c.until(`document.getElementById("title").textContent.startsWith(${JSON.stringify(title)}) && !document.querySelector("#log .loading") && document.querySelectorAll("#log .msg").length > 0`, "chat " + title + " to be drawn");
+    await c.frames(2);
     assert.strictEqual(await ev(`document.activeElement && document.activeElement.id`), "", "touch: opening " + title + " must not focus the message box");
   }
 
   // The keyboard is open: the layout viewport is shorter.
   await device(c, true, 412, 575);
-  await sleep(500);
+  await c.until(`innerHeight === 575`, "the short viewport to apply");
   await ev(`(() => { const i = document.getElementById("input"); i.focus(); i.value = ""; i.dispatchEvent(new Event("input")); })()`);
-  await sleep(1500);
+  await c.until(`document.activeElement.id === "input"`, "the message box to take focus");
+  await c.frames(2);
   await ev(`(() => {
     window.__ls = 0;
     new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__ls += e.value; }).observe({ type: "layout-shift" });
@@ -61,11 +59,19 @@ async function device(c, touch, w, h) {
     requestAnimationFrame(loop);
   })()`);
   const base = await ev(`window.__snap()`);
+  // Count finished draft saves, so a pause lasts until the save is done.
+  await ev(`(() => { window.__puts = 0; const f = window.fetch; window.fetch = (...a) => { const p = f(...a); if (a[1] && a[1].method === "PUT" && /\\/draft$/.test(String(a[0]))) p.finally(() => { window.__puts++; }); return p; }; })()`);
   const key = async (ch) => { await send("Input.dispatchKeyEvent", { type: "keyDown", text: ch, key: ch }); await send("Input.dispatchKeyEvent", { type: "keyUp", key: ch }); };
   // 20 quick keys, then 4 with pauses long enough for the draft to save.
   const typed = [];
-  for (const ch of "hello there friend 12") { await key(ch); await sleep(120); typed.push(ch); }
-  for (const ch of "abcd") { await key(ch); await sleep(1000); typed.push(ch); }
+  for (const ch of "hello there friend 12") { await key(ch); await c.frames(2); typed.push(ch); }
+  for (const ch of "abcd") {
+    const puts = await ev(`window.__puts`);
+    await key(ch);
+    await c.until(`window.__puts > ${puts}`, "the draft to save after " + ch);
+    await c.frames(2);
+    typed.push(ch);
+  }
   const rows = await ev(`window.__rows`);
   const notes = await ev(`document.getElementById("draftnote").textContent`);
   assert.strictEqual(await ev(`document.getElementById("input").value`), "hello there friend 12abcd", "the keys reached the box");
@@ -80,10 +86,9 @@ async function device(c, touch, w, h) {
 
   // A desktop: opening a chat still focuses the box.
   await device(c, false, 1200, 800);
-  await send("Page.navigate", { url: url + "/" });
-  await sleep(1500);
-  assert.ok(await openChat(ev, "Second"), "desktop: chat is listed");
-  await sleep(1200);
+  await c.load(url + "/", `document.getElementById("sessions").children.length > 0`, "the chat list on a desktop");
+  assert.ok(await openChat(c, "Second"), "desktop: chat is listed");
+  await c.until(`document.activeElement && document.activeElement.id === "input"`, "desktop: the box to take focus on open");
   assert.strictEqual(await ev(`document.activeElement && document.activeElement.id`), "input", "desktop: opening a chat focuses the box");
   c.close();
   await new Promise((r) => { if (proc.exitCode !== null) r(); else proc.once("exit", r); });

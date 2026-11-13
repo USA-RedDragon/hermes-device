@@ -731,6 +731,8 @@
     window.addEventListener("resize", soon);
     if (window.visualViewport) window.visualViewport.addEventListener("resize", soon);
     jump.addEventListener("click", () => { s.pin(); });
+    // For tests that drive the page: true once the log has taken in its size.
+    window.HubLogSettled = s.settled;
     return s;
   })();
 

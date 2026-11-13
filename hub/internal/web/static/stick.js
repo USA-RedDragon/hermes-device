@@ -117,5 +117,9 @@ window.HubStick = (log, o) => {
     pin();
   }
 
-  return { sync, scrolled, heard, pin, release, look, reset, refresh: changed, pinned: () => pinned };
+  // settled says the log has taken in its latest size and no layout
+  // change is recent, so a scroll now is the reader's.
+  const settled = () => log.clientHeight === rec.c && now() - resized >= settle;
+
+  return { settled, sync, scrolled, heard, pin, release, look, reset, refresh: changed, pinned: () => pinned };
 };

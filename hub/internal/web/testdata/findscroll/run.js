@@ -12,37 +12,39 @@ const [bin, url, dir] = process.argv.slice(2);
 const shot = process.env.SHOT_PREFIX;
 
 const { proc, connect } = require("../cdp.js").launch(bin, dir);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
   const c = await connect();
   const { ev, send } = c;
   await send("Page.enable");
-  await send("Page.navigate", { url: url + "/auth/login?next=/" });
-  await sleep(1500);
+  await c.load(url + "/auth/login?next=/", `document.getElementById("sessions").children.length > 0`, "the chat list");
   await ev(`location.hash = "#/s/pc/s9"; 1`);
-  for (let i = 0; i < 50 && (await ev(`document.querySelectorAll("#log .msg").length`)) < 40; i++) await sleep(100);
+  await c.until(`document.querySelectorAll("#log .msg").length >= 40`, "the chat to be drawn");
   for (const [name, w, h, mobile] of [["412", 412, 915, true], ["desktop", 1280, 800, false]]) {
     for (const scheme of ["light", "dark"]) {
       await send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: mobile ? 2.625 : 1, mobile });
       await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] });
-      await sleep(1000);
+      // The page has the new size and scheme, and the log has taken the size
+      // in: a scroll before that would count as the layout's, not the reader's.
+      const settled = `innerWidth === ${w} && matchMedia("(prefers-color-scheme: dark)").matches === ${scheme === "dark"} && window.HubLogSettled()`;
+      await c.until(settled, name + " " + scheme + ": the layout to settle");
       const at = () => ev(`(() => { const l = document.getElementById("log"); return { top: Math.round(l.scrollTop), gap: Math.round(l.scrollHeight - l.scrollTop - l.clientHeight) }; })()`);
       const grow = (text) => ev(`(() => { const d = document.createElement("div"); d.className = "msg assistant"; d.textContent = ${JSON.stringify(text)}; document.getElementById("log").append(d); })()`);
       await ev(`(() => { const l = document.getElementById("log"); l.scrollTop = l.scrollHeight; })()`);
-      await sleep(300);
+      await c.until(`document.getElementById("log").scrollHeight - document.getElementById("log").scrollTop - document.getElementById("log").clientHeight < 2`, name + " " + scheme + ": the log at its end");
+      // The page has taken the reader's scroll to the end in: it follows again (no pill).
+      await c.until(`document.getElementById("tobottom").hidden`, name + " " + scheme + ": the page to follow the end again");
       // A log at its end follows what is added.
       await grow("tail one");
-      await sleep(300);
-      assert.ok((await at()).gap < 2, name + " " + scheme + ": follows the end");
+      await c.until(`document.getElementById("log").scrollHeight - document.getElementById("log").scrollTop - document.getElementById("log").clientHeight < 2`, name + " " + scheme + ": the log to follow the end");
       // Something that is not the reader's scroll moves the log up, as find in page does.
-      await sleep(1500);
+      await c.until(`window.HubLogSettled()`, name + " " + scheme + ": the log to take the growth in");
       await ev(`document.querySelectorAll("#log .msg")[3].scrollIntoView({ block: "start" }); 1`);
-      await sleep(300);
+      // The page has taken the scroll in: the jump pill shows.
+      await c.until(`!document.getElementById("tobottom").hidden`, name + " " + scheme + ": the page to see the scroll");
       const found = await at();
       assert.ok(found.gap > 500, name + " " + scheme + ": moved up, gap " + found.gap);
-      for (let i = 0; i < 6; i++) { await grow("streamed " + i); await sleep(120); }
-      await sleep(400);
+      for (let i = 0; i < 6; i++) { await grow("streamed " + i); await c.frames(2); }
       const kept = await at();
       assert.ok(Math.abs(kept.top - found.top) < 3, `${name} ${scheme}: the log went from ${found.top} to ${kept.top}`);
       if (shot) {
@@ -50,6 +52,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         fs.writeFileSync(`${shot}-${name}-${scheme}.png`, Buffer.from(r.data, "base64"));
       }
       await ev(`document.querySelectorAll("#log .msg.assistant").forEach((n) => { if (/^(tail one|streamed)/.test(n.textContent)) n.remove(); }); 1`);
+      await c.frames(2);
     }
   }
   console.log("ok");

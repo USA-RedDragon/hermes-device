@@ -9,16 +9,7 @@ const fs = require("fs");
 const [bin, url, dir] = process.argv.slice(2);
 
 const { proc, connect } = require("../cdp.js").launch(bin, dir);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// Polls until expr is truthy in the page, so a slow machine waits for the
-// render instead of racing a fixed sleep.
-const until = async (ev, expr, what) => {
-  for (let i = 0; i < 400; i++) {
-    if (await ev(expr)) return;
-    await sleep(50);
-  }
-  throw new Error("timed out waiting for " + what);
-};
+const { until } = require("../cdp.js");
 
 
 
@@ -42,7 +33,7 @@ async function run(c, w, touch, dark) {
   assert.ok(kinds.approvals >= 5 && kinds.tools >= 1 && kinds.notices >= 1 && kinds.table >= 1 && kinds.code >= 1 && kinds.msgs >= 2, tag + ": every card type is on the page " + JSON.stringify(kinds));
   // Open every folded group and card, so their bodies count too.
   await ev(`document.querySelectorAll("#log details").forEach((d) => { d.open = true; })`);
-  await sleep(300);
+  await c.frames(2);
   const r = await ev(`(() => {
     const vw = document.documentElement.clientWidth;
     const se = document.scrollingElement, log = document.getElementById("log");
@@ -71,10 +62,10 @@ async function run(c, w, touch, dark) {
   if (process.env.OVERFLOW_SHOT) {
     const shot = async (name) => fs.writeFileSync(process.env.OVERFLOW_SHOT + name + ".png", Buffer.from((await c.send("Page.captureScreenshot", { format: "png" })).data, "base64"));
     await ev(`[...document.querySelectorAll("#log .approval")].find((x) => /read-only script/.test(x.textContent)).scrollIntoView({ block: "center" })`);
-    await sleep(300);
+    await c.frames(2);
     await shot(tag + "-eval");
     await ev(`document.getElementById("log").scrollTop = 0`);
-    await sleep(300);
+    await c.frames(2);
     await shot(tag + "-top");
   }
 }
