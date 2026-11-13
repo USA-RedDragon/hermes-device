@@ -86,6 +86,8 @@ type Options struct {
 	Chats hub.ChatStore
 	// Prompts keeps each user's saved prompts. Nil: none.
 	Prompts hub.PromptLibrary
+	// Partners keeps each user's chat pairs that work together. Nil: none.
+	Partners hub.AgentPartners
 	// Version is the hub's release, shown in Settings.
 	Version string
 	// Scheduled serves the Scheduled page. Nil: no Scheduled page.
@@ -134,6 +136,9 @@ type Server struct {
 	subagents    hub.SubagentRoutes
 	chats        hub.ChatStore
 	prompts      hub.PromptLibrary
+	partners     hub.AgentPartners
+	// partnerOwners maps each single-user backend to its user.
+	partnerOwners map[string]string
 	authState
 	// deviceBackendIDs are the backends with devices on.
 	deviceBackendIDs map[string]bool
@@ -170,9 +175,12 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	if opts.KeepAlive == 0 {
 		opts.KeepAlive = 15 * time.Second
 	}
-	deviceBackends, names := map[string]bool{}, map[string]string{}
+	deviceBackends, names, owners := map[string]bool{}, map[string]string{}, map[string]string{}
 	for _, b := range cfg.Backends {
 		names[b.ID] = b.Name
+		if len(b.Users) == 1 {
+			owners[b.ID] = b.Users[0]
+		}
 		if b.Devices {
 			deviceBackends[b.ID] = true
 		}
@@ -187,6 +195,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		insights: opts.Insights, files: opts.Files,
 		notices: opts.Notices, notifier: opts.Notifier, claude: opts.Claude, scheduled: opts.Scheduled,
 		claudeCode: opts.ClaudeCode, subagents: opts.Subagents, chats: opts.Chats, prompts: opts.Prompts,
+		partners: opts.Partners, partnerOwners: owners,
 		deviceBackendIDs: deviceBackends, backendNames: names, pairPage: newPairPage(),
 		svc: opts.Service, links: opts.Links, tokens: opts.Tokens, groups: opts.Groups, log: opts.Logger,
 		oidc: &oidcClient{issuer: cfg.OIDC.IssuerURL, clientID: cfg.OIDC.ClientID, clientSecret: cfg.OIDC.ClientSecret,
@@ -381,6 +390,7 @@ func (s *Server) Handler() http.Handler {
 	s.scheduledRoutes(mux)
 	s.composeRoutes(mux)
 	s.promptRoutes(mux)
+	s.partnerRoutes(mux)
 	s.userRoutes(mux)
 	mux.HandleFunc("GET /link/telegram", s.handleLinkPage)
 	mux.HandleFunc("POST /link/telegram", s.handleLink)

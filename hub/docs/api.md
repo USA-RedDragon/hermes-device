@@ -34,6 +34,7 @@ Errors are JSON, `{"error": "..."}`, with the usual status: `401` when the login
 | One chat | under `/api/sessions/{backend}/{session}/`: `events` (the live stream), `prompt`, `interrupt`, `approvals/{approval}`, `rename`, `archive`, `delete`, `model`, `reasoning`, `draft`, `pin`, `read`, `rewind`, `branch`, `activity` |
 | Where a chat runs | `GET /api/computers`, `POST /api/places`, and per chat `place`, `move`, `release` |
 | Files and pages | per chat `media`, `page`, `folder`, `file`, `diff`, `changes` |
+| Chats that work together | `GET` and `POST /api/backends/{backend}/partners`, `DELETE /api/backends/{backend}/partners/{a}/{b}` |
 | Saved prompts | `GET /api/prompts`, `POST /api/prompts`, `PUT` and `DELETE /api/prompts/{name}` |
 | Memory | `/api/memory` and `/api/memory/{backend}/notes`, `projects`, `learned` |
 | Scheduled jobs | `/api/scheduled` and the jobs routes under it |
