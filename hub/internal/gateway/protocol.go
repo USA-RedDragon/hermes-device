@@ -60,6 +60,8 @@ const (
 	ReasonInvalidParams    = "invalid_params"
 	ReasonNotFound         = "not_found"
 	ReasonModelResolution  = "model_resolution_failed"
+	// ReasonNoModel is session.create on a Hermes with no model set up.
+	ReasonNoModel = "no_model_configured"
 	// ReasonRuntimeDraining is the retryable refusal of a gateway that is
 	// starting or retiring (gateway/session_authorities.py).
 	ReasonRuntimeDraining = "runtime_draining"

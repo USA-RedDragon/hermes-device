@@ -25,4 +25,6 @@ var (
 	// ErrBackendAway is a request that needs the backend at once while it
 	// restarts or cannot be reached.
 	ErrBackendAway = errors.New("backend away")
+	// ErrNoModel is a new chat on a Hermes that has no model set up.
+	ErrNoModel = errors.New("no model configured")
 )

@@ -166,7 +166,9 @@ type Gateway struct {
 	// drainingCalls answers that many more calls of a method with
 	// runtime_draining (RefuseWhileDraining).
 	drainingCalls map[string]int
-	down          *gatedListener
+	// refusedCalls answers every call of a method with a reason.
+	refusedCalls map[string]string
+	down         *gatedListener
 	// submissions are the admissions by session and submission_id, which
 	// outlive a restart as Hermes' session_admissions rows do.
 	submissions map[string]submission
@@ -342,6 +344,17 @@ func (g *Gateway) RefuseWhileDraining(method string, n int) {
 		g.drainingCalls = map[string]int{}
 	}
 	g.drainingCalls[method] = n
+}
+
+// RefuseCalls makes every call of method fail with reason, as Hermes
+// refuses session.create with no_model_configured. An empty reason ends it.
+func (g *Gateway) RefuseCalls(method, reason string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.refusedCalls == nil {
+		g.refusedCalls = map[string]string{}
+	}
+	g.refusedCalls[method] = reason
 }
 
 // Stop makes the gateway's process exit: every connection closes and new
@@ -866,6 +879,9 @@ func (g *Gateway) dispatchOrRefuse(c *conn, method string, p map[string]any) (an
 	if g.drainingCalls[method] > 0 {
 		g.drainingCalls[method]--
 		return nil, gateway.ReasonRuntimeDraining, nil
+	}
+	if reason := g.refusedCalls[method]; reason != "" {
+		return nil, reason, nil
 	}
 	return g.dispatch(c, method, p)
 }

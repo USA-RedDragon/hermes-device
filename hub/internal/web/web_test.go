@@ -566,3 +566,18 @@ func TestMeSettings(t *testing.T) {
 		t.Fatalf("me without a bot = %s", body)
 	}
 }
+
+// TestNewChatNoModel: Hermes refuses session.create with no_model_configured
+// and the new chat answers with a plain sentence, not the reason code.
+func TestNewChatNoModel(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	e.gw.RefuseCalls("session.create", "no_model_configured")
+	c := client(t)
+	m := login(t, e, c)
+	resp, body := post(t, c, e.url+"/api/sessions", m.CSRF, "", map[string]string{"backend_id": "pc"})
+	if resp.StatusCode != http.StatusConflict ||
+		!strings.Contains(body, `"No model is set up yet. Pick a model in Settings, then start the chat."`) {
+		t.Fatalf("new chat with no model = %d %s", resp.StatusCode, body)
+	}
+}

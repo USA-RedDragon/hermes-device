@@ -1031,6 +1031,10 @@ func (b *backend) create(ctx context.Context, cwd, rowCWD string) (hub.Session, 
 	if err := c.Call(cctx, gateway.MethodSessionCreate, gateway.CreateParams{
 		RequestID: uuid.NewString(), Source: gateway.SourceGUI, CWD: cwd, RowCWD: rowCWD,
 	}, &snap); err != nil {
+		var rerr *gateway.RPCError
+		if errors.As(err, &rerr) && rerr.Message == gateway.ReasonNoModel {
+			return hub.Session{}, hub.ErrNoModel
+		}
 		return hub.Session{}, err
 	}
 	ls := newLive(b, snap.SessionID)

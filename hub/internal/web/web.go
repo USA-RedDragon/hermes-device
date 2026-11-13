@@ -464,6 +464,10 @@ func (s *Server) api(h http.HandlerFunc) http.Handler {
 	})
 }
 
+// MsgNoModel is the answer to a chat that cannot start because Hermes has
+// no model set up.
+const MsgNoModel = "No model is set up yet. Pick a model in Settings, then start the chat."
+
 func (s *Server) fail(w http.ResponseWriter, err error) {
 	if computerError(w, err) || unknownCommand(w, err) {
 		return
@@ -485,6 +489,8 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		errorJSON(w, http.StatusTooManyRequests, "Too many messages are waiting for Hermes to come back. Send this one again later")
 	case errors.Is(err, hub.ErrBackendAway):
 		errorJSON(w, http.StatusServiceUnavailable, strings.TrimPrefix(err.Error(), hub.ErrBackendAway.Error()+": "))
+	case errors.Is(err, hub.ErrNoModel):
+		errorJSON(w, http.StatusConflict, MsgNoModel)
 	case errors.Is(err, hub.ErrShuttingDown):
 		errorJSON(w, http.StatusServiceUnavailable, "The hub is restarting. Send the message again in a moment")
 	case errors.Is(err, hub.ErrTitleInUse):

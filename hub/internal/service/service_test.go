@@ -737,3 +737,16 @@ func TestNewSessionAtSendsRowCWD(t *testing.T) {
 		t.Fatalf("plain session row_cwd = %q", got.RowCWD)
 	}
 }
+
+func TestNewSessionNoModel(t *testing.T) {
+	t.Parallel()
+	e := setup(t, service.Options{})
+	e.gw.RefuseCalls(gateway.MethodSessionCreate, gateway.ReasonNoModel)
+	if _, err := e.svc.NewSession(context.Background(), userAlice, backendPC); !errors.Is(err, hub.ErrNoModel) {
+		t.Fatalf("new session with no model = %v", err)
+	}
+	e.gw.RefuseCalls(gateway.MethodSessionCreate, "")
+	if _, err := e.svc.NewSession(context.Background(), userAlice, backendPC); err != nil {
+		t.Fatalf("new session after a model is set = %v", err)
+	}
+}
