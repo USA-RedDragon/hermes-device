@@ -48,7 +48,8 @@ def make_provider(core):
 
         @property
         def env_description(self) -> str:
-            return "the user's own device (Linux or macOS shell), reached through the Talaria hub"
+            return ("the user's own device (Linux or macOS bash, or on Windows Git Bash, PowerShell or WSL), "
+                    "reached through the Talaria hub")
 
         def is_available(self) -> bool:
             return True
@@ -173,6 +174,8 @@ def register(ctx) -> None:
     ctx.register_hook("on_session_start", hide_builtin_tools)
     ctx.register_terminal_environment_provider(make_provider(core))
     ctx.register_hook("pre_tool_call", core.pre_tool_call)
+    if "pre_llm_call" in core.valid_hooks():
+        ctx.register_hook("pre_llm_call", core.pre_llm_call)
     if "filter_session_list" in core.valid_hooks():
         ctx.register_hook("filter_session_list", core.filter_session_list)
     ctx.register_command("device", device_command, description="Bind this session to a device directory",

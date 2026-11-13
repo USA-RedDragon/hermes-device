@@ -181,10 +181,18 @@ class RouteTests(unittest.TestCase):
     def test_hello_rules(self):
         self.assertEqual(self.close_code(self.connect(version=1)), core.CLOSE_UNSUPPORTED_VERSION)
         self.assertEqual(self.close_code(self.connect(os="windows")), core.CLOSE_UNSUPPORTED_PLATFORM)
+        self.assertEqual(self.close_code(self.connect(os="windows", shell="cmd")), core.CLOSE_UNSUPPORTED_PLATFORM)
         self.assertEqual(self.close_code(self.connect(type="exec")), core.CLOSE_PROTOCOL_ERROR)
         with mock.patch.object(core, "HELLO_TIMEOUT_S", 0.2):
             with self.client.websocket_connect(PATH, headers={"X-Hermes-Device-Assertion": self.signer.sign()}) as ws:
                 self.assertEqual(self.close_code(ws), core.CLOSE_PROTOCOL_ERROR)
+
+    def test_windows_device_with_a_shell(self):
+        for shell in core.WINDOWS_SHELLS:
+            with self.subTest(shell=shell):
+                ws = self.connect(os="windows", shell=shell, roots=["/c/Users/alice"], home="/c/Users/alice")
+                self.assertEqual(ws.receive_json()["type"], "welcome")
+                ws.__exit__(None, None, None)
 
     def test_welcome_exec_and_devices(self):
         welcome, device = self.online()

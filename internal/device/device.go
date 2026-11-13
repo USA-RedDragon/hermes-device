@@ -32,7 +32,7 @@ var (
 	ErrReplaced           = errors.New("another talaria run with the same token took over this device (close 4409); stop the other daemon or run login again on one of them")
 	ErrUnsupportedVersion = errors.New("the Hermes device plugin and this talaria share no protocol version (close 4426); upgrade talaria and the plugin together")
 	ErrWindows            = errors.New("on Windows, talaria needs a shell: set device.shell to git-bash, powershell or wsl")
-	ErrUnsupportedOS      = errors.New("the Hermes device plugin does not serve this device's operating system (close 4427)")
+	ErrUnsupportedOS      = errors.New("the Hermes device plugin does not serve this device's operating system (close 4427); a Windows device needs a plugin with Windows support on the server")
 	ErrNoWelcome          = errors.New("no welcome from the device plugin")
 	ErrNoResume           = errors.New("no resume from the device plugin after a version 3 welcome")
 )

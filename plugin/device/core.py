@@ -96,6 +96,11 @@ CLOSE_PING_TIMEOUT = 4408
 CLOSE_REPLACED = 4409
 CLOSE_UNSUPPORTED_VERSION = 4426
 CLOSE_UNSUPPORTED_PLATFORM = 4427
+# The Windows shells a device may name in hello.shell (internal/winshell). A Windows device with
+# another shell gets CLOSE_UNSUPPORTED_PLATFORM. Its wire paths are those of its bash: /c/Users/x
+# for Git Bash (also under powershell), /mnt/c/Users/x for WSL.
+SHELL_GIT_BASH, SHELL_POWERSHELL, SHELL_WSL = "git-bash", "powershell", "wsl"
+WINDOWS_SHELLS = (SHELL_GIT_BASH, SHELL_POWERSHELL, SHELL_WSL)
 CLOSE_BACKEND_UNAVAILABLE = 4502
 
 EXIT_REFUSED = 126
@@ -614,6 +619,8 @@ class DeviceConn:
                "arch": self.arch, "home": self.home, "roots": list(self.roots),
                "client_version": self.client_version, "connected_at": int(self.connected_at),
                "capabilities": sorted(self.capabilities)}
+        if str(self.os or "").lower() == "windows":
+            out["shell"] = self.shell
         if CAPABILITY_BROWSER in self.capabilities:
             out["browser"] = dict(self.browser) or {"connected": False}
         if CAPABILITY_MCP in self.capabilities:
@@ -2613,6 +2620,75 @@ def is_pod_path(path: str, extra: Iterable[str] = ()) -> bool:
     return any(is_under(c, p) for c in candidates for p in _pod_paths(extra))
 
 
+def windows_platform_ok(os_name: Any, shell: Any) -> bool:
+    """A hello from Windows must name one of WINDOWS_SHELLS; other systems are not checked here."""
+    return str(os_name or "").lower() != "windows" or shell in WINDOWS_SHELLS
+
+
+def device_system_note(conn: Optional["DeviceConn"]) -> str:
+    """What the agent must know to write commands for a Windows device: its OS, the language of the
+    terminal tool and the form of its paths. "" for Linux and macOS, whose shell is bash."""
+    if conn is None or str(conn.os or "").lower() != "windows":
+        return ""
+    where = f"{conn.name} ({conn.hostname})" if conn.hostname and conn.hostname != conn.name else conn.name
+    if conn.shell == SHELL_POWERSHELL:
+        return (f"This session's computer {where} runs Windows, and its terminal tool runs PowerShell: write "
+                f"PowerShell commands (Get-ChildItem, Get-Location, Select-String, $env:NAME), not bash. Each "
+                f"command runs in a new powershell process; Set-Location carries over to the next command. "
+                f"Paths in the file tools (read_file, write_file, patch, search_files) are Git Bash paths: "
+                f"C:\\Users\\x is /c/Users/x there.")
+    if conn.shell == SHELL_WSL:
+        return (f"This session's computer {where} runs Windows, and its terminal tool runs bash inside WSL "
+                f"(Linux): write bash commands for Linux. The Windows drives are under /mnt (C:\\Users\\x is "
+                f"/mnt/c/Users/x); Windows programs run as name.exe, such as explorer.exe or cmd.exe /c.")
+    return (f"This session's computer {where} runs Windows, and its terminal tool runs Git Bash: write bash "
+            f"commands. Windows paths are /c/Users/x for C:\\Users\\x; Windows programs run by name (git, "
+            f"where.exe, cmd //c), and powershell -Command runs PowerShell when you need it.")
+
+
+def pre_llm_call(session_id: str = "", **_kwargs) -> Optional[dict]:
+    """Tell the agent which OS and shell a Windows device uses, at every turn of a session bound to
+    one, so that it writes commands in the right language. Nothing for other sessions."""
+    try:
+        res = resolve_session(session_id) if session_id else resolve_current()
+    except Exception:
+        return None
+    if res.state != STATE_BOUND or res.binding is None:
+        return None
+    note = device_system_note(hub().device(res.binding.device_id))
+    return {"context": note} if note else None
+
+
+_PS_SCRIPT = """$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+try {
+%s
+} finally {
+  if ($env:TALARIA_PS_CWD) { [System.IO.File]::WriteAllText($env:TALARIA_PS_CWD, (Get-Location).ProviderPath) }
+}
+if ($LASTEXITCODE) { exit $LASTEXITCODE }
+"""
+
+
+def powershell_command(command: str) -> str:
+    """The bash line that runs the agent's PowerShell command on a powershell device: PowerShell 7
+    when the device has it, else Windows PowerShell (the device exports TALARIA_POWERSHELL). The
+    command is passed encoded, so no quoting reaches it, and the folder it ends in becomes bash's,
+    so that Hermes tracks Set-Location like cd."""
+    import base64
+    encoded = base64.b64encode((_PS_SCRIPT % command).encode("utf-16-le")).decode("ascii")
+    return ('__tal_cwd=$(mktemp) && TALARIA_PS_CWD=$(cygpath -w "$__tal_cwd") '
+            '"${TALARIA_POWERSHELL:-powershell.exe}" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass '
+            f'-EncodedCommand {encoded}; __tal_rc=$?; __tal_dir=$(cat "$__tal_cwd" 2>/dev/null); rm -f "$__tal_cwd"; '
+            '[ -n "$__tal_dir" ] && cd "$(cygpath -u "$__tal_dir")"; (exit $__tal_rc)')
+
+
+def runs_powershell(device_id: str) -> bool:
+    conn = hub().device(device_id)
+    return conn is not None and str(conn.os or "").lower() == "windows" and conn.shell == SHELL_POWERSHELL
+
+
 class DeviceShell(BaseEnvironment):
     """Runs commands for one binding on its device, with Hermes's snapshot and cwd tracking."""
 
@@ -2655,6 +2731,10 @@ class DeviceShell(BaseEnvironment):
 
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
         effective = self.map_cwd(cwd)
+        # Only the terminal tool's own command (bounded_capture) is the agent's PowerShell; Hermes's
+        # file tools and probes send bash, which Git Bash runs as it is.
+        if kwargs.get("bounded_capture") and runs_powershell(self._binding.device_id):
+            command = powershell_command(command)
         state = {"cwd": effective, "proc": None}
         token = _EXEC_STATE.set(state)
         try:
@@ -3199,6 +3279,17 @@ def _make_yield_to_background_handler(original):
     return yield_to_background_handler
 
 
+def _make_spawn_via_env(original):
+    """A background terminal command on a powershell device is the agent's PowerShell too."""
+    def spawn_via_env(self, env: Any, command: str, *args, **kwargs):
+        if isinstance(env, DeviceRouterEnvironment):
+            res = resolve_current()
+            if res.state == STATE_BOUND and runs_powershell(res.binding.device_id):
+                command = powershell_command(command)
+        return original(self, env, command, *args, **kwargs)
+    return spawn_via_env
+
+
 def _make_signal_kill(original):
     def _signal_kill(self, session, *args, **kwargs):
         proc = getattr(session, "process", None)
@@ -3222,6 +3313,7 @@ HOOK_POINTS: tuple[tuple[str, str, str, Callable], ...] = (
     ("gateway.run_background", "GatewayBackgroundMixin", "_run_background_task", _make_run_background_task),
     ("tools.terminal_tool", "", "yield_to_background_handler", _make_yield_to_background_handler),
     ("tools.process_registry", "ProcessRegistry", "_signal_kill", _make_signal_kill),
+    ("tools.process_registry", "ProcessRegistry", "spawn_via_env", _make_spawn_via_env),
 )
 
 
@@ -3483,7 +3575,8 @@ def device_command(raw_args: str = "", session_id: str = "", **_kwargs) -> str:
         conns = h.devices()
         if not conns:
             return "No devices are connected."
-        return "\n".join(f"{c.name} [{c.device_id}] on {c.hostname or '?'} ({c.os}/{c.arch}), roots: "
+        return "\n".join(f"{c.name} [{c.device_id}] on {c.hostname or '?'} ({c.os}/{c.arch}"
+                         f"{', ' + c.shell if str(c.os).lower() == 'windows' and c.shell else ''}), roots: "
                          f"{', '.join(c.roots) or 'none'}" for c in sorted(conns, key=lambda c: c.name))
     if args[0] == "off" and len(args) == 1:
         res = h.resolve(sid)

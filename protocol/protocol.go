@@ -159,7 +159,9 @@ const (
 	// ClosePingTimeout: no pong within PingTimeout.
 	ClosePingTimeout = 4408
 	// CloseUnsupportedPlatform: the device runs an OS the plugin does not
-	// serve (Windows). The client stops.
+	// serve: Windows with a hello.shell that is not git-bash, powershell
+	// or wsl, or any Windows device for a plugin without Windows support. The client
+	// stops.
 	CloseUnsupportedPlatform = 4427
 	// CloseServiceRestart: the gateway that holds the plugin is stopping.
 	// Its commands cannot be resumed, so the device kills them at once.

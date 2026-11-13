@@ -485,8 +485,9 @@ async def device_socket(ws: WebSocket) -> None:
         logger.warning("device: refused hello: %s", why)
         await _close(ws, core.CLOSE_UNSUPPORTED_VERSION, why)
         return
-    if str(hello.get("os") or "").lower() == "windows":
-        await _close(ws, core.CLOSE_UNSUPPORTED_PLATFORM, "windows devices are not supported")
+    if not core.windows_platform_ok(hello.get("os"), hello.get("shell")):
+        await _close(ws, core.CLOSE_UNSUPPORTED_PLATFORM,
+                     "a windows device must name its shell: " + ", ".join(core.WINDOWS_SHELLS))
         return
     if claims is None:
         name, token = str(hello.get("name") or ""), str(hello.get("token") or "")

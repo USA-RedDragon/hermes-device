@@ -61,7 +61,7 @@ The hub relays the backend's close code and reason to the device unchanged. Code
 | <!-- docgen:const pkg=protocol name=ClosePingTimeout code=false -->4408<!-- /docgen:const --> | ping timeout | any | reconnect |
 | <!-- docgen:const pkg=protocol name=CloseReplaced code=false -->4409<!-- /docgen:const --> | replaced | plugin | `run` stops: another daemon with the same token took over |
 | <!-- docgen:const pkg=protocol name=CloseUnsupportedVersion code=false -->4426<!-- /docgen:const --> | unsupported version | plugin, device | stop, show the close reason (it names both sides' versions) and tell the user to upgrade |
-| <!-- docgen:const pkg=protocol name=CloseUnsupportedPlatform code=false -->4427<!-- /docgen:const --> | unsupported platform | plugin | stop: the device's OS (Windows) is not supported |
+| <!-- docgen:const pkg=protocol name=CloseUnsupportedPlatform code=false -->4427<!-- /docgen:const --> | unsupported platform | plugin | stop: a Windows device named no shell the plugin knows (see `shell`), or the plugin predates Windows support |
 | <!-- docgen:const pkg=protocol name=CloseBackendUnavailable code=false -->4502<!-- /docgen:const --> | backend unavailable | hub (also when the backend hop drops without a close frame) | reconnect with backoff |
 | `1008` | policy | Hermes plugin gate | reconnect with backoff (plugin disabled) |
 | `1011` | `hermes acp` exited | acp-host | reconnect with backoff |
@@ -180,7 +180,7 @@ Protocol version: <!-- docgen:const pkg=protocol name=Version code=false -->3<!-
 | `home` | The device user's `$HOME`. The plugin checks writes against the credential denylist relative to it (section 8.6) |
 | `capabilities` | Optional features the device serves (step 5). Absent means none |
 | `mcp_servers` | With `mcp` in `capabilities`: the names of the MCP servers in the device config (section 4.9). Absent otherwise |
-| `hostname`, `os`, `arch`, `shell`, `client_version` | For display and diagnostics. `os` and `arch` use Go's `GOOS` and `GOARCH` names. `os` MUST NOT be `windows`: the plugin closes with `4427` |
+| `hostname`, `os`, `arch`, `shell`, `client_version` | For display and diagnostics. `os` and `arch` use Go's `GOOS` and `GOARCH` names. With `os` `windows`, `shell` MUST be `git-bash`, `powershell` or `wsl` (section 14), else the plugin closes with `4427` |
 
 `welcome` (plugin to device):
 
@@ -825,7 +825,7 @@ For every file tool of a bound session (`read_file`, `write_file`, `patch`, `sea
 
 Hermes refuses file writes outside `HERMES_WRITE_SAFE_ROOT` (an `os.pathsep` list), whatever the backend, so device roots that file tools write to must be in it. At load, the plugin removes from `HERMES_WRITE_SAFE_ROOT` (in its own process environment) every `device_write_roots` entry that equals, contains or lies inside a pod-writable path: `/opt/data`, `HERMES_HOME`, the system temp directory, `/tmp`, `/var/tmp`, `/dev/shm`, the placeholder, and `terminal.cwd`. It logs an error for each. Such an entry would let pod-local sessions write there.
 
-Windows devices are not supported: the plugin needs POSIX absolute device paths, and the client refuses to run on Windows.
+Windows devices send POSIX paths too (section 14).
 
 ### 8.8 /device command
 
@@ -1120,3 +1120,34 @@ A collector that starts without its state file sends nothing older than 28 days,
 |---|---|
 | `run` | `POST /api/device/usage` with the device token and the report as body; the hub answers `204`. After a start and once a day it sends every hour from the start of the window to now; otherwise only the hours whose rows changed, with about 2000 rows per request and never part of an hour. After a failure it waits 30 s, doubling to 30 minutes |
 | `acp-host` | Answers `GET /usage` with the report of every row from `since` on. The request needs a hub assertion (section 3) with `leg` `usage`, `htm` `GET` and `htp` `/usage`; without one it answers `401`, `404` when usage is off, and `503` until its first scan after a start is done, so that the hub never replaces its rows with an empty report |
+
+## 14. Windows devices
+
+A Windows device still speaks POSIX paths and runs every exec command with a bash, because Hermes wraps each
+command (its snapshot, `cd` and cwd file) in bash and the file tools send bash scripts. `hello.shell` names the
+shell that the user chose in the device config (`device.shell`):
+
+| `shell` | Runs each exec command with | Paths on the wire | The agent writes |
+|---|---|---|---|
+| `git-bash` | Git for Windows' `bash.exe -c` | `/c/Users/x` for `C:\Users\x` | bash |
+| `powershell` | Git Bash, as `git-bash` | `/c/Users/x` | PowerShell |
+| `wsl` | `wsl.exe -d <distro> --cd <folder> --exec bash -c` | `/mnt/c/Users/x` (the distro's drive mount root) | bash for Linux |
+
+`roots`, `home` and `tmp_dir` in `hello` and `cwd` in `exec` use that form; the device turns `cwd` back into a Windows
+path before it checks the roots (case-insensitively) and starts the command. An `exec` `cwd` that names no Windows
+drive folder (`/etc` in WSL) is refused.
+
+With `powershell`, the plugin wraps the agent's own terminal commands (Hermes's foreground command and background
+`spawn_via_env`), not Hermes's file tool scripts: the command goes to `$TALARIA_POWERSHELL -NoProfile -NonInteractive
+-ExecutionPolicy Bypass -EncodedCommand` (the device sets `TALARIA_POWERSHELL` to `pwsh.exe` when PowerShell 7 is
+installed, else Windows PowerShell), and the folder it ends in becomes bash's, so `Set-Location` carries over like `cd`.
+
+The plugin tells the agent the OS and shell of a Windows device in a `pre_llm_call` context at each turn of a session
+bound to one; sessions on Linux and macOS devices get nothing. `/device list` and the device list API add `shell` for
+Windows devices.
+
+A command and everything it starts run in a Job Object: `kill` ends the whole tree (Windows has no SIGTERM for a
+process without a window, so both steps of section 4 end it at once), and a command that exits on its own leaves what
+it started in the background running, as a process group does on Unix. The exit code of a killed command is still
+`130` with `killed`. `signal` is never set. A plugin from before Windows support closes every Windows device with
+`4427`.
