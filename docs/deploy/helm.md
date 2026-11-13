@@ -25,9 +25,17 @@ The chart in `deploy/charts/talaria` runs the same parts as the compose install:
 2. Open http://localhost:8080 right away: the setup page makes the first account, an admin. The first person who
    opens it gets that account, so do it before the hub is reachable from anywhere else. Add other people under
    Settings, Users ([Set up logins](auth.md)).
-3. **Connect a model.** This step is required: until you do it, a chat says Hermes is not connected to any AI
-   provider. Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate
-   Hermes, and an existing one is not used. Run Hermes's own setup command in the Hermes pod (the Deployment is
+3. **Connect a model.** This step is required: until you do it, the chat area says Talaria has no model yet.
+   Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate Hermes, and an
+   existing one is not used.
+
+   As the admin, click **Connect a model** in the chat area (it shows until a model is connected; later it is
+   in Settings, Models) and pick where the model runs: a server of your own (Ollama, LM Studio, vLLM, llama.cpp),
+   a provider with an API key, or a subscription sign-in. Talaria checks the address or key through Hermes, lets
+   you pick the model new chats start with, and keeps nothing itself: Hermes stores the provider and key.
+   [Choosing models and providers](models.md) walks through each kind.
+
+   Or run Hermes's own setup command in the Hermes pod (the Deployment is
    named `<release>-hermes`, and its container `gateway`; here the release is `talaria`):
 
    ```bash

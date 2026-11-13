@@ -33,14 +33,27 @@ Behind your own reverse proxy, turn off response buffering and request timeouts 
 
 ## The model does not answer
 
-- "Hermes is not connected to any AI provider", or the model menu is empty: no model is connected yet. This is the
-  required "Connect a model" step of your install guide. Run `hermes model` inside Talaria's container (Talaria
+- "Talaria has no model yet" (or, for people who are not admins, "No model is set up yet") in the chat area, or
+  the model menu is empty: no model is connected yet. This is the required "Connect a model" step of your install
+  guide. An admin clicks **Connect a model** there, or opens Settings, Models ([Choosing models and
+  providers](models.md#connect-a-model-from-talaria)). Or run `hermes model` inside Talaria's container (Talaria
   has its own Hermes; an existing Hermes install elsewhere is not used): [Compose](compose.md#step-4-connect-a-model),
   [Unraid](unraid.md), [TrueNAS](truenas.md), [all-in-one](all-in-one.md), [Helm](helm.md#quick-start-try-it-with-port-forward),
-  and [Choosing models and providers](models.md#run-hermes-model). Then open a new chat and pick the model in the model menu.
-- "Could not start a chat" (`storage_unavailable` in the Hermes log): the same cause. Connect a model as above.
-- "Context too small" in the chat: the model's window is under 64,000 tokens. Pick another model in `hermes model`. In Ollama, `qwen3` has 40K and `qwen2.5` 32K.
-- An error with a status like 401 or 404 from the model: the address, the model name or the key in Hermes is wrong. Run `hermes model` again.
+  and [Choosing models and providers](models.md#set-a-model-on-the-server).
+- Connect a model is not there: only hub admins see it. The first account (made on the setup page) is one; others
+  are made admins in Settings, Users, or named in `auth.admins` (login proxy, OIDC).
+- "Could not reach http://localhost:11434/v1/models." when you test an address: Hermes runs in its own container,
+  so `localhost` is that container. Use the address of the machine that runs the server, and let the server
+  listen on it (Ollama: `OLLAMA_HOST=0.0.0.0:11434`).
+- "That API key was rejected": the provider refused the key, and nothing was saved. A key "saved, but not
+  checked" is one Hermes cannot check before it saves it; if replies then fail with an authentication error, edit
+  the key in Settings, Models.
+- "The sign-in code ran out": a code works for 15 minutes, and a Hermes restart forgets it. Click **Get a new code**.
+- "Could not reach Hermes" in Connect a model or Settings, Models: Hermes is restarting or down. Try again in a moment.
+- "Context too small" in the chat, or Talaria warns that a model's window is under 64,000 tokens: pick another
+  model (Settings, Models, or `hermes model`). In Ollama, `qwen3` has 40K and `qwen2.5` 32K.
+- An error with a status like 401 or 404 from the model: the address, the model name or the key in Hermes is
+  wrong. Test it again in Settings, Models, or run `hermes model` again.
 - A local model is very slow: expected without a GPU. See [Choosing models and providers](models.md#ollama).
 - Still the canned reply: Hermes still uses `talaria-demo`. Pick another model in `hermes model`.
 

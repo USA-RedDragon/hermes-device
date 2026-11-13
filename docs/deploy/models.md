@@ -2,17 +2,51 @@
 
 Talaria includes its own Hermes, the agent that talks to models. You do not need a separate Hermes, and an
 existing Hermes install is not used. Models and providers are settings of the Hermes inside Talaria. You connect
-them once, after you make your account, with Hermes's own setup command, `hermes model`, run in Talaria's
-container (the commands are below). The display name you give a connection becomes its group in the chat's model
-menu, where you pick the model for each chat.
+them once, after you make your account: from Talaria's own page (Connect a model), or with Hermes's own setup
+command, `hermes model`, run in Talaria's container. The name you give a connection becomes its group in the chat's
+model menu, where you pick the model for each chat.
 
-Hermes keeps what you set (and any API key you give it) in its data folder, so it survives upgrades. Until you
-connect a model, a new chat cannot start: it says Hermes is not connected to any AI provider, and the model menu
-is empty.
+Hermes keeps what you set (and any API key you give it) in its data folder, so it survives upgrades. Talaria keeps
+none of it. Until you connect a model, the chat area says "Talaria has no model yet" and a new chat cannot start.
 
-## Run `hermes model`
+## Connect a model from Talaria
 
-Run it in the Hermes container, as the `hermes` user, from a terminal on the server:
+Admins of the hub (the account made on the setup page, and anyone made an admin in Settings, Users; with a login
+proxy or OIDC, the people in `auth.admins`) see **Connect a model** in the chat area while no model is connected,
+and a Models tab in Settings at any time. Everyone else sees "No model is set up yet" and a Check again button.
+
+Connect a model asks where the model runs:
+
+- **On my own computer or network**: Ollama, LM Studio, vLLM, llama.cpp, or any server that speaks the OpenAI
+  API. Give it a name and the address, ending in `/v1` for Ollama and LM Studio, then **Test address**: Hermes
+  calls the address from its own container and lists the models it finds. Pick the one new chats start with, then
+  **Save and use**. From a container, `localhost` is the container itself, so use the address of the machine that
+  runs the server (see [Ollama](#ollama)). Advanced holds the API mode, the context window and whether the model
+  list follows the server.
+- **A provider, with an API key**: OpenRouter, Anthropic, OpenAI, Google AI Studio, DeepSeek, xAI, or any of the
+  others under **All providers**. Paste the key and **Check and connect**. Hermes checks keys for OpenRouter,
+  OpenAI, xAI and Google AI Studio with the provider before it saves them; a rejected key is not saved. Keys of
+  the other providers are saved but not checked: if the first reply fails with an authentication error, edit the
+  key in Settings, Models.
+- **A subscription account**: ChatGPT or Codex, Nous Portal, xAI Grok or MiniMax. Talaria shows a code and a link
+  to the provider's page, where you sign in and enter the code; it waits until you approve. A code works for 15
+  minutes; **Get a new code** starts again.
+
+Then pick the model new chats start with (Hermes suggests one), or skip and pick in a chat. After that, every
+model of the provider is in the chat's model menu, which an admin can also use to open Connect a model again.
+
+**Settings, Models** lists what Hermes has connected. Each row can be edited (a key field left empty keeps the
+saved key; Talaria never shows a key, only Hermes's masked preview), tested again, made the default for new chats,
+or removed. Removing the default asks which model to use instead; removing the only one brings back the Connect a
+model card.
+
+Anthropic account sign-in, Qwen sign-in, AWS Bedrock and Google Vertex AI cannot be set up from the page: use
+`hermes model` on the server, below.
+
+## Set a model on the server
+
+`hermes model` does the same from a terminal, and covers every provider Hermes knows. Run it in the Hermes
+container, as the `hermes` user:
 
 | Install | Command |
 | ------- | ------- |
@@ -36,7 +70,11 @@ needs a model with a context window of at least 64,000 tokens.
 
 ## Ollama
 
-[Ollama](https://ollama.com) is reached through Hermes's **Custom endpoint**:
+From Talaria: Connect a model, **On my own computer or network**, address `http://<Ollama's address>:11434/v1`
+(`http://ollama:11434/v1` for the compose `ollama` profile), Test address, pick the model, Save and use. If the
+model's window is under 64,000 tokens, Talaria says so and lets you pick another.
+
+With `hermes model`, Ollama is Hermes's **Custom endpoint**:
 
 1. Run `hermes model`, pick **Custom endpoint** (the last entry of the list).
 2. API base URL: `http://<Ollama's address>:11434/v1`. From a container, `localhost` is the container itself:

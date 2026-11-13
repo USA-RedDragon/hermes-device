@@ -21,16 +21,24 @@ Talaria on Unraid is one container from the all-in-one image ([design](all-in-on
 5. Right after the start, open **WebUI** in the container's menu (or `http://192.168.1.10:8080`). The setup page
    makes the first account, an admin: the first person who opens it gets that account, so do it before the port
    is reachable from outside your network. Add other people under Settings, Users.
-6. Connect a model. This step is required: until you do it, a chat says Hermes is not connected to any AI
-   provider. Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate
-   Hermes, and an existing one is not used. In the Unraid terminal (the **>_** icon at the top right), run
+6. Connect a model. This step is required: until you do it, the chat area says Talaria has no model yet.
+   Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate Hermes, and an
+   existing one is not used.
+
+   As the admin, click **Connect a model** in the chat area (it shows until a model is connected; later it is
+   in Settings, Models) and pick where the model runs: a server of your own (Ollama, LM Studio, vLLM, llama.cpp),
+   a provider with an API key, or a subscription sign-in. Talaria checks the address or key through Hermes, lets
+   you pick the model new chats start with, and keeps nothing itself: Hermes stores the provider and key.
+   [Choosing models and providers](models.md) walks through each kind.
+
+   Or, in the Unraid terminal (the **>_** icon at the top right), run
    Hermes's own setup command in the container:
 
    ```bash
    docker exec -it -u hermes Talaria hermes model
    ```
 
-   Or open the container's **Console** (its menu on the **Docker** tab); that shell is root, so run
+   You can also open the container's **Console** (its menu on the **Docker** tab); that shell is root, so run
    `runuser -u hermes -- hermes model` there.
 
    You will see a list of providers; move with the arrow keys. Pick one and give it what it asks for (an API

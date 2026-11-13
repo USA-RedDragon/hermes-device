@@ -25,14 +25,15 @@ docker compose logs init
 ```
 
 Open the address it prints right away and make your account on the setup page (the first visitor becomes the
-admin). Then pick a model and provider in Hermes:
+admin). Then click **Connect a model** in the chat area, or pick a model and provider with Hermes's own setup
+command:
 
 ```bash
 docker compose exec -u hermes hermes hermes model
 ```
 
 To look around without a provider, set `COMPOSE_PROFILES=demo` in `.env`, run `docker compose up -d --wait` and
-pick `talaria-demo` there ([Step 4](../docs/deploy/compose.md#step-4-pick-a-model-in-hermes)).
+pick `talaria-demo` there ([Step 4](../docs/deploy/compose.md#step-4-connect-a-model)).
 
 All guides: https://usa-reddragon.github.io/talaria/
 

@@ -26,9 +26,17 @@ YAML, with the all-in-one image ([design](all-in-one.md)). Tested on TrueNAS SCA
 
    ![The Talaria setup page with the user name alice and a display name filled in](images/truenas/setup.png)
 
-6. **Connect a model.** This step is required: until you do it, a chat says Hermes is not connected to any AI
-   provider. Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate
-   Hermes, and an existing one is not used. Open a shell in the container: **Apps**, **Installed**, `talaria`,
+6. **Connect a model.** This step is required: until you do it, the chat area says Talaria has no model yet.
+   Talaria includes its own Hermes, the agent that talks to models, so you do not need a separate Hermes, and an
+   existing one is not used.
+
+   As the admin, click **Connect a model** in the chat area (it shows until a model is connected; later it is
+   in Settings, Models) and pick where the model runs: a server of your own (Ollama, LM Studio, vLLM, llama.cpp),
+   a provider with an API key, or a subscription sign-in. Talaria checks the address or key through Hermes, lets
+   you pick the model new chats start with, and keeps nothing itself: Hermes stores the provider and key.
+   [Choosing models and providers](models.md) walks through each kind.
+
+   Or open a shell in the container: **Apps**, **Installed**, `talaria`,
    then under **Workloads**, **Containers**, the shell icon (the first icon next to `talaria – Running`). That
    shell runs as root; run Hermes's own setup command as its own user:
 

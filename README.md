@@ -11,8 +11,9 @@ Talaria is built on Hermes Agent by Nous Research (MIT). Not affiliated with or 
 ## Install
 
 Talaria includes its own Hermes, the agent that talks to models. You do not need a separate Hermes, and an
-existing Hermes install is not used. You connect models once, with Hermes's own setup command (`hermes model`, run
-inside Talaria's container), and then pick them in the chat's model menu. Every install guide has that as a
+existing Hermes install is not used. You connect models once, from Talaria's own page (Connect a model) or with
+Hermes's own setup command (`hermes model`, run inside Talaria's container), and then pick them in the chat's
+model menu. Every install guide has that as a
 numbered step right after you make your account.
 
 Every install runs the hub (web app and Telegram bot, with its own accounts), Hermes Agent with the Talaria
@@ -37,8 +38,9 @@ docker compose up -d --wait
 docker compose logs init
 ```
 
-Open the address it prints right away and make your account (the first visitor becomes the admin). Then pick a
-model and provider in Hermes, the agent ([details](docs/deploy/models.md)):
+Open the address it prints right away and make your account (the first visitor becomes the admin). Then click
+**Connect a model** in the chat area and connect Ollama, an API key or a subscription ([details](docs/deploy/models.md)),
+or do it from the server with Hermes's own setup command:
 
 ```bash
 docker compose exec -u hermes hermes hermes model

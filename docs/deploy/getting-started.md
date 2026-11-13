@@ -2,7 +2,7 @@
 
 Talaria is a web app and Telegram bot for [Hermes Agent](https://github.com/NousResearch/hermes-agent). You run it on your own server. The agent works in a sandbox on the server, or on your own computers once you pair them.
 
-Talaria includes its own Hermes, the agent that talks to models. You do not need a separate Hermes, and an existing Hermes install is not used. You connect models once, with Hermes's own setup command (`hermes model`, run inside Talaria's container), and then pick them in the chat's model menu. Every install guide has that as a numbered step right after you make your account.
+Talaria includes its own Hermes, the agent that talks to models. You do not need a separate Hermes, and an existing Hermes install is not used. You connect models once, from Talaria's own page (Connect a model, for admins) or with Hermes's own setup command (`hermes model`, run inside Talaria's container), and then pick them in the chat's model menu. Every install guide has that as a numbered step right after you make your account.
 
 A Talaria install has four parts, and every install path starts all of them:
 
@@ -45,7 +45,7 @@ The setup page that makes the first account, the first chat with the demo model,
 
 1. Start Talaria on the machine itself ([Docker Compose](compose.md), steps 1 to 3). It takes a few minutes, mostly the download.
 2. Open the address it prints right away and make your account on the setup page: the first visitor becomes the admin.
-3. Connect a model: run `hermes model` in Talaria's container (the exact command is a numbered step in your install guide, and [Choosing models and providers](models.md) has the details), or use the demo model to look around. Then pick it in the chat's model menu.
+3. Connect a model: click **Connect a model** in the chat area (or run `hermes model` in Talaria's container; the exact command is a numbered step in your install guide, and [Choosing models and providers](models.md) has the details), or use the demo model to look around. Then pick it in the chat's model menu.
 4. Send a message. Send `run: uname -a` to see the agent run a command in the sandbox.
 5. Pair your own computer so the agent can work on your files: [Add a computer](../start/add-a-computer.md).
 6. Optional: [Telegram](telegram.md), [Notifications](notifications.md), [Memory](memory.md).
