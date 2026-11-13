@@ -34,25 +34,25 @@ const (
 var ErrNotify = errors.New("invalid notify settings")
 
 // PushKey reads the VAPID key from VAPIDPrivateKeyFile, else
-// VAPIDPrivateKey. It is nil when neither is set.
-func (n Notify) PushKey() (*webpush.VAPID, error) {
+// VAPIDPrivateKey. It reports false when neither is set.
+func (n Notify) PushKey() (*webpush.VAPID, bool, error) {
 	text := n.VAPIDPrivateKey
 	if n.VAPIDPrivateKeyFile != "" {
 		b, err := os.ReadFile(n.VAPIDPrivateKeyFile)
 		if err != nil {
-			return nil, fmt.Errorf("%w: notify.vapid_private_key_file: %w", ErrNotify, err)
+			return nil, false, fmt.Errorf("%w: notify.vapid_private_key_file: %w", ErrNotify, err)
 		}
 		text = string(b)
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return nil, nil //nolint:nilnil // nil means Web Push is off
+		return nil, false, nil
 	}
 	k, err := webpush.ParseKey(text)
 	if err != nil {
-		return nil, fmt.Errorf("%w: notify.vapid_private_key: %w", ErrNotify, err)
+		return nil, false, fmt.Errorf("%w: notify.vapid_private_key: %w", ErrNotify, err)
 	}
-	return k, nil
+	return k, true, nil
 }
 
 func (c *Config) validateNotify() error {
@@ -72,11 +72,11 @@ func (c *Config) validateNotify() error {
 	if n.VAPIDSubject == "" && strings.HasPrefix(c.HTTP.PublicURL, "https:") {
 		n.VAPIDSubject = c.HTTP.PublicURL
 	}
-	k, err := n.PushKey()
+	_, pushOn, err := n.PushKey()
 	if err != nil {
 		return err
 	}
-	if k != nil && n.VAPIDSubject != "" && !strings.HasPrefix(n.VAPIDSubject, "mailto:") && !strings.HasPrefix(n.VAPIDSubject, "https:") {
+	if pushOn && n.VAPIDSubject != "" && !strings.HasPrefix(n.VAPIDSubject, "mailto:") && !strings.HasPrefix(n.VAPIDSubject, "https:") {
 		return fmt.Errorf("%w: notify.vapid_subject must be a mailto: or https: URL", ErrNotify)
 	}
 	return nil

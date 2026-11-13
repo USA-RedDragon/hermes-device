@@ -348,8 +348,8 @@ func TestNotifySettings(t *testing.T) {
 	if n.RemindAfter != 5*time.Minute || n.WatchInterval != 15*time.Second || n.JobInterval != time.Minute {
 		t.Fatalf("defaults = %+v", n)
 	}
-	if k, err := n.PushKey(); k != nil || err != nil {
-		t.Fatalf("push key without one set = %v, %v", k, err)
+	if _, on, err := n.PushKey(); on || err != nil {
+		t.Fatalf("push key without one set = %v, %v", on, err)
 	}
 	key, err := webpush.GenerateKey()
 	if err != nil {
@@ -361,9 +361,9 @@ func TestNotifySettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	k, err := cfg.Notify.PushKey()
-	if err != nil || k == nil || len(k.PublicKey()) != 87 {
-		t.Fatalf("push key = %v, %v", k, err)
+	k, on, err := cfg.Notify.PushKey()
+	if err != nil || !on || len(k.PublicKey()) != 87 {
+		t.Fatalf("push key = %v, %v, %v", k, on, err)
 	}
 	if !strings.HasPrefix(cfg.Notify.VAPIDSubject, "https://") {
 		t.Fatalf("subject = %q", cfg.Notify.VAPIDSubject)

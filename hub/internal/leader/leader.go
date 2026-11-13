@@ -18,9 +18,9 @@ type Lease interface {
 	Release(ctx context.Context) error
 }
 
-// TryLock takes the lock without waiting. It returns a nil Lease when
-// another replica holds it.
-type TryLock func(ctx context.Context) (Lease, error)
+// TryLock takes the lock without waiting. It reports false when another
+// replica holds it.
+type TryLock func(ctx context.Context) (Lease, bool, error)
 
 // Key derives an advisory lock key from a name, so different bots and apps
 // on one database do not share a lock.
@@ -40,11 +40,11 @@ const releaseTimeout = 5 * time.Second
 func Run(ctx context.Context, try TryLock, retry time.Duration, log *slog.Logger, lead func(context.Context)) {
 	waiting := false
 	for ctx.Err() == nil {
-		lease, err := try(ctx)
+		lease, held, err := try(ctx)
 		switch {
 		case err != nil:
 			log.Warn("Leader lock attempt failed", "error", err.Error())
-		case lease == nil:
+		case !held:
 			if !waiting {
 				log.Info("Another replica is the leader, standing by")
 				waiting = true

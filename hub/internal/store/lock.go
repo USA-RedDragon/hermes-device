@@ -35,19 +35,19 @@ type Lock struct {
 }
 
 // TryLock takes the PostgreSQL session advisory lock key without waiting.
-// It returns nil when another session holds the lock. The lock is checked
+// It reports false when another session holds the lock. The lock is checked
 // every check interval; Lost is closed when the check fails, as the lock
 // may then be gone. On SQLite, which only one process uses, it always
 // succeeds and is never lost.
-func (s *Store) TryLock(ctx context.Context, key int64, check time.Duration) (*Lock, error) {
+func (s *Store) TryLock(ctx context.Context, key int64, check time.Duration) (*Lock, bool, error) {
 	l := &Lock{key: key, lost: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
 	if s.dialect != postgresDialect {
 		close(l.done)
-		return l, nil
+		return l, true, nil
 	}
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("lock: %w", err)
+		return nil, false, fmt.Errorf("lock: %w", err)
 	}
 	for _, set := range lockSettings {
 		_, _ = conn.ExecContext(ctx, set)
@@ -55,17 +55,17 @@ func (s *Store) TryLock(ctx context.Context, key int64, check time.Duration) (*L
 	var ok bool
 	if err := conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&ok); err != nil {
 		discard(conn)
-		return nil, fmt.Errorf("lock: %w", err)
+		return nil, false, fmt.Errorf("lock: %w", err)
 	}
 	if !ok {
 		_ = conn.Close()
-		return nil, nil //nolint:nilnil // nil means another session holds it
+		return nil, false, nil
 	}
 	l.conn = conn
 	// The watcher lives as long as the lock, past ctx.
 	go l.watch(context.WithoutCancel(ctx), check)
 
-	return l, nil
+	return l, true, nil
 }
 
 // Lost is closed when the lock may no longer be held.

@@ -329,9 +329,9 @@ func TestSQLiteLockAlwaysHeld(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	s := openSQLite(t, filepath.Join(t.TempDir(), "hub.db"))
-	l, err := s.TryLock(ctx, 1, time.Second)
-	if l == nil || err != nil {
-		t.Fatalf("sqlite lock = %v %v", l, err)
+	l, held, err := s.TryLock(ctx, 1, time.Second)
+	if !held || err != nil {
+		t.Fatalf("sqlite lock = %v %v %v", l, held, err)
 	}
 	select {
 	case <-l.Lost():
@@ -348,15 +348,15 @@ func TestPostgresLockIsExclusive(t *testing.T) {
 	ctx := context.Background()
 	dsn := storetest.Postgres(t)
 	a, b := openPostgres(t, dsn), openPostgres(t, dsn)
-	la, err := a.TryLock(ctx, 77, 100*time.Millisecond)
-	if la == nil || err != nil {
-		t.Fatalf("first lock = %v %v", la, err)
+	la, held, err := a.TryLock(ctx, 77, 100*time.Millisecond)
+	if !held || err != nil {
+		t.Fatalf("first lock = %v %v", held, err)
 	}
-	if lb, err := b.TryLock(ctx, 77, 100*time.Millisecond); lb != nil || err != nil {
-		t.Fatalf("second holder got the lock: %v %v", lb, err)
+	if _, held, err := b.TryLock(ctx, 77, 100*time.Millisecond); held || err != nil {
+		t.Fatalf("second holder got the lock: %v %v", held, err)
 	}
-	if lc, err := b.TryLock(ctx, 78, 100*time.Millisecond); lc == nil || err != nil {
-		t.Fatalf("other key = %v %v", lc, err)
+	if _, held, err := b.TryLock(ctx, 78, 100*time.Millisecond); !held || err != nil {
+		t.Fatalf("other key = %v %v", held, err)
 	}
 	if err := la.Release(ctx); err != nil {
 		t.Fatal(err)
@@ -366,9 +366,9 @@ func TestPostgresLockIsExclusive(t *testing.T) {
 	default:
 		t.Fatal("released lock not marked lost")
 	}
-	lb, err := b.TryLock(ctx, 77, 100*time.Millisecond)
-	if lb == nil || err != nil {
-		t.Fatalf("lock after release = %v %v", lb, err)
+	lb, held, err := b.TryLock(ctx, 77, 100*time.Millisecond)
+	if !held || err != nil {
+		t.Fatalf("lock after release = %v %v", held, err)
 	}
 
 	terminateLockHolders(t, dsn, 77)
@@ -378,8 +378,8 @@ func TestPostgresLockIsExclusive(t *testing.T) {
 		t.Fatal("lost connection not noticed")
 	}
 	_ = lb.Release(ctx)
-	if la, err := a.TryLock(ctx, 77, time.Second); la == nil || err != nil {
-		t.Fatalf("lock after holder died = %v %v", la, err)
+	if _, held, err := a.TryLock(ctx, 77, time.Second); !held || err != nil {
+		t.Fatalf("lock after holder died = %v %v", held, err)
 	}
 }
 

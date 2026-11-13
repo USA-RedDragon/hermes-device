@@ -28,14 +28,14 @@ type memLease struct {
 	once sync.Once
 }
 
-func (l *memLock) try(context.Context) (leader.Lease, error) {
+func (l *memLock) try(context.Context) (leader.Lease, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.holder != nil {
-		return nil, nil //nolint:nilnil // the leader.TryLock contract
+		return nil, false, nil
 	}
 	l.holder = &memLease{l: l, lost: make(chan struct{})}
-	return l.holder, nil
+	return l.holder, true, nil
 }
 
 func (m *memLease) Lost() <-chan struct{} { return m.lost }
@@ -137,12 +137,12 @@ func TestTakeoverWithPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = s.Close() })
-		return func(ctx context.Context) (leader.Lease, error) {
-			l, err := s.TryLock(ctx, key, 100*time.Millisecond)
-			if l == nil {
-				return nil, err
+		return func(ctx context.Context) (leader.Lease, bool, error) {
+			l, held, err := s.TryLock(ctx, key, 100*time.Millisecond)
+			if !held {
+				return nil, false, err
 			}
-			return l, nil
+			return l, true, nil
 		}
 	}
 	a := start(t, open(), &active, &maxActive)

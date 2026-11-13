@@ -118,9 +118,11 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	svc.SetNotify(notifier.Notify)
 	webOpts := web.Options{Service: svc, Links: st, Tokens: st, Groups: st, Notices: st, Notifier: notifier, Chats: st, Prompts: st, Partners: st, AgentMessages: st, Accounts: st,
 		Version: cmd.Annotations["version"], Started: time.Now(), Agent: newAgent(cfg, svc, dialers), Snapshot: st.Snapshot, Scratch: cfg.Store.ScratchDir()}
-	devices, err := newDevices(cfg, st, svc, dialers)
-	if err != nil {
-		return err
+	var devices *device.Server
+	if cfg.Device.Enabled {
+		if devices, err = newDevices(cfg, st, svc, dialers); err != nil {
+			return err
+		}
 	}
 	if devices != nil {
 		svc.SetFiles(devices)
@@ -146,8 +148,10 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 		webOpts.ClaudeCode = cc
 		go cc.Run(ctx)
 	}
-	if webOpts.Memory, err = newMemory(cfg, svc, dialers); err != nil {
-		return err
+	if len(cfg.Backends) > 0 {
+		if webOpts.Memory, err = newMemory(cfg, svc, dialers); err != nil {
+			return err
+		}
 	}
 	if devices != nil {
 		webOpts.Files = devices
@@ -233,7 +237,7 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 
 // newNotifier returns the notifier of notices on people's phones.
 func newNotifier(cfg *config.Config, st *store.Store, svc *service.Service, dialers map[string]*gateway.Dialer) (*notify.Notifier, error) {
-	key, err := cfg.Notify.PushKey()
+	key, pushOn, err := cfg.Notify.PushKey()
 	if err != nil {
 		return nil, err
 	}
@@ -250,9 +254,9 @@ func newNotifier(cfg *config.Config, st *store.Store, svc *service.Service, dial
 	opts := notify.Options{Store: st, Access: svc, Prompts: svc, Users: users, Backends: names, Jobs: jobs,
 		PublicURL: cfg.HTTP.PublicURL, PushSubject: cfg.Notify.VAPIDSubject, Remind: cfg.Notify.RemindAfter, JobPoll: cfg.Notify.JobInterval,
 		Accounts: st.AccountNames}
-	if key != nil && cfg.Notify.VAPIDSubject == "" {
+	if pushOn && cfg.Notify.VAPIDSubject == "" {
 		slog.Warn("Web Push disabled: set notify.vapid_subject to a mailto: or https: URL, or use an https http.public_url")
-	} else if key != nil {
+	} else if pushOn {
 		opts.Push = key
 		slog.Info("Web Push enabled", "public_key", key.PublicKey())
 	}
@@ -267,25 +271,15 @@ const notifyRetry = 5 * time.Second
 // reminders and the reads of scheduled jobs.
 func runNotifyLeader(ctx context.Context, st *store.Store, svc *service.Service, n *notify.Notifier, cfg config.Notify) {
 	log := slog.Default().With("component", "notify")
-	try := func(ctx context.Context) (leader.Lease, error) {
-		l, err := st.TryLock(ctx, leader.Key("notify"), botCheckInterval)
-		if l == nil {
-			return nil, err
-		}
-		return l, nil
-	}
-	leader.Run(ctx, try, notifyRetry, log, func(ctx context.Context) {
+	leader.Run(ctx, tryLock(st, leader.Key("notify")), notifyRetry, log, func(ctx context.Context) {
 		go svc.Watch(ctx, cfg.WatchInterval)
 		n.Lead(ctx)
 	})
 }
 
-// newDevices returns the talaria device server, or nil when
-// device.enabled is off. Only backends with devices on get device legs.
+// newDevices returns the talaria device server, which device.enabled turns
+// on. Only backends with devices on get device legs.
 func newDevices(cfg *config.Config, st *store.Store, svc *service.Service, dialers map[string]*gateway.Dialer) (*device.Server, error) {
-	if !cfg.Device.Enabled {
-		return nil, nil //nolint:nilnil // nil means devices are off
-	}
 	key, err := cfg.Device.PrivateKey()
 	if err != nil {
 		return nil, err
@@ -320,13 +314,9 @@ func newClaudeCode(cfg *config.Config, st *store.Store, svc *service.Service, de
 		Location: cfg.Claude.Location()})
 }
 
-// newMemory returns the Memory page's core, or nil when no backend has
-// memory: every backend's Hermes may have the talaria device plugin's
-// memory routes, so each one counts.
+// newMemory returns the Memory page's core. Every backend's Hermes may
+// have the talaria device plugin's memory routes, so each one counts.
 func newMemory(cfg *config.Config, svc *service.Service, dialers map[string]*gateway.Dialer) (hub.Memory, error) {
-	if len(cfg.Backends) == 0 {
-		return nil, nil //nolint:nilnil // nil means no Memory page
-	}
 	rs := make(map[string]device.Requester, len(dialers))
 	for id, d := range dialers {
 		rs[id] = d
@@ -491,20 +481,24 @@ func openStore(ctx context.Context, cfg *config.Store) (*store.Store, error) {
 // holds its lock.
 const botCheckInterval = 2 * time.Second
 
+// tryLock is the store's advisory lock as a leader.TryLock.
+func tryLock(st *store.Store, key int64) leader.TryLock {
+	return func(ctx context.Context) (leader.Lease, bool, error) {
+		l, held, err := st.TryLock(ctx, key, botCheckInterval)
+		if !held {
+			return nil, false, err
+		}
+		return l, true, nil
+	}
+}
+
 // runBot runs the Telegram bot in the one replica that holds the bot's
 // leader lock. With SQLite there is one replica, and it always leads.
 func runBot(ctx context.Context, st *store.Store, bot *telegram.Bot, cfg config.Telegram, done chan<- struct{}) {
 	defer close(done)
 	log := slog.Default().With("component", "telegram")
 	key := leader.Key("telegram/" + strconv.FormatInt(telegram.BotID(cfg.Token), 10))
-	try := func(ctx context.Context) (leader.Lease, error) {
-		l, err := st.TryLock(ctx, key, botCheckInterval)
-		if l == nil {
-			return nil, err
-		}
-		return l, nil
-	}
-	leader.Run(ctx, try, cfg.LeaderRetry, log, func(ctx context.Context) {
+	leader.Run(ctx, tryLock(st, key), cfg.LeaderRetry, log, func(ctx context.Context) {
 		if err := bot.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Error("Telegram bot stopped", "error", err.Error())
 		}
