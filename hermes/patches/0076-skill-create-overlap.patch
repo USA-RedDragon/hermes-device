@@ -7,10 +7,10 @@ Subject: [PATCH] feat(skills): skill_manage create asks to extend an
 With skills.create_overlap_threshold above 0 (default 0 = off, upstream's behavior), a create whose name or description overlaps an installed skill is refused with the top 3 matches (token overlap on name and description, no model call). The agent patches one of them, or repeats the create with why_new, one sentence on why none fits, and it proceeds. The tool description now says: extend an existing skill when one covers the topic; create only for a new topic. A lookup error lets the create through.
 ---
  hermes_cli/config_defaults.py            |   4 +
- tests/tools/test_skill_create_overlap.py | 151 +++++++++++++++++++++++
- tools/skill_manager_tool.py              |  23 ++--
- tools/skill_overlap.py                   | 106 ++++++++++++++++
- 4 files changed, 277 insertions(+), 7 deletions(-)
+ tests/tools/test_skill_create_overlap.py | 165 +++++++++++++++++++++++
+ tools/skill_manager_tool.py              |  23 +++-
+ tools/skill_overlap.py                   | 106 +++++++++++++++
+ 4 files changed, 291 insertions(+), 7 deletions(-)
  create mode 100644 tests/tools/test_skill_create_overlap.py
  create mode 100644 tools/skill_overlap.py
 
@@ -31,10 +31,10 @@ index 70afd34e..5c63843c 100644
          # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
 diff --git a/tests/tools/test_skill_create_overlap.py b/tests/tools/test_skill_create_overlap.py
 new file mode 100644
-index 00000000..373c90c9
+index 00000000..e70fd326
 --- /dev/null
 +++ b/tests/tools/test_skill_create_overlap.py
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,165 @@
 +"""skill_manage create: refuse a skill that overlaps an installed one unless the create says why_new."""
 +
 +import json
@@ -163,6 +163,20 @@ index 00000000..373c90c9
 +            result = json.loads(skill_manage(action="", name="", operations=ops))
 +        assert result["success"] is True
 +
++    def test_the_lookup_leaves_out_disabled_skills(self, tmp_path):
++        """A disabled skill cannot be loaded or patched, so it is not offered as the one to extend."""
++        from tools import skills_tool
++        seen = {}
++
++        def find_all_skills(**kwargs):
++            seen.update(kwargs)
++            return []
++
++        with _skills(tmp_path, 0.35), patch.object(skills_tool, "find_all_skills", find_all_skills):
++            result = _create("flux-app-values", "Use when editing a Flux app values file.")
++        assert result["success"] is True
++        assert not seen.get("skip_disabled")
++
 +    def test_a_lookup_failure_lets_the_create_through(self, tmp_path):
 +        with _skills(tmp_path, 0.35), patch("tools.skills_tool.find_all_skills", side_effect=RuntimeError("boom")):
 +            result = _create("flux-app-values", "Use when editing a Flux app values file.")
@@ -269,7 +283,7 @@ index d73835db..3f05e53f 100644
                          "old_string": _OLD_STRING, "new_string": _NEW_STRING,
 diff --git a/tools/skill_overlap.py b/tools/skill_overlap.py
 new file mode 100644
-index 00000000..6ad64eb9
+index 00000000..192218f2
 --- /dev/null
 +++ b/tools/skill_overlap.py
 @@ -0,0 +1,106 @@
@@ -366,7 +380,7 @@ index 00000000..6ad64eb9
 +        from tools.skills_tool import find_all_skills
 +        frontmatter, _ = parse_frontmatter(content)
 +        matches = find_overlaps(name, str(frontmatter.get("description") or ""),
-+                                find_all_skills(skip_disabled=True), threshold=threshold)
++                                find_all_skills(), threshold=threshold)
 +    except Exception:
 +        return None
 +    if not matches:
