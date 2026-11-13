@@ -11,4 +11,5 @@ while IFS="$(printf '\t')" read -r src page; do
 done <"$out/.pages"
 rm "$out/.pages"
 pandoc lua docs/site/index.lua "$out"
+cp hub/internal/web/static/favicon.svg hub/internal/web/static/icon-192.png hub/internal/web/static/apple-touch-icon.png "$out/"
 echo "$out/index.html"
