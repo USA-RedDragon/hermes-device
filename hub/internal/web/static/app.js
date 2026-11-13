@@ -2152,7 +2152,7 @@
       const text = typeof d.text === "string" && d.text.length <= maxPageText ? d.text : null;
       // A send or draft is taken only right after the user's own click or key
       // press in the frame: fresh(cur) reads the hub's own activation.
-      if (d.type === "send" && text !== null) cur.sender.send(typeof d.id === "number" ? d.id : 0, text, this.fresh(cur));
+      if (d.type === "send" && text !== null) this.fresh(cur).then((ok) => cur.sender.send(typeof d.id === "number" ? d.id : 0, text, ok));
       else if (d.type === "draft" && text !== null) this.draft(cur, d.id, text);
       else if (d.type === "copy" && text !== null) this.copy(cur, text);
       else if (d.type === "copied") this.say(cur, "Copied", 2000);
@@ -2178,13 +2178,14 @@
 
     // draft puts a page's text in the message box, with the same rule as a
     // send; a refused draft shows the error the way a refused send does.
-    draft(cur, id, text) {
+    async draft(cur, id, text) {
       const reply = (r) => { if (id && cur.port) cur.port.postMessage({ type: "result", id, ok: r.ok, error: r.error || "" }); };
-      if (!this.fresh(cur)) {
+      if (!(await this.fresh(cur))) {
         this.sendState(cur, { failed: new Error(window.HubPageSend.noClick), text });
         reply({ ok: false, error: window.HubPageSend.noClick });
         return;
       }
+      if (cur !== this.cur) return;
       this.toComposer(cur, text);
       reply({ ok: true });
     },

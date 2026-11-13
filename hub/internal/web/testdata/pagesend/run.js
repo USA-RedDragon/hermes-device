@@ -14,12 +14,22 @@ const until = async (ok) => { for (let i = 0; i < 100 && !ok(); i++) await new P
 // activationTests runs the hub's activation check against a fake window and a
 // fake navigator.userActivation: the frame's gestures set the activation and
 // raise no event; the hub's own gestures raise events.
-function activationTests() {
+async function activationTests() {
   const make = () => {
     const w = { on: {}, timers: [], now: 0, activeNow: false, consumed: 0 };
     w.win = { addEventListener: (t, f) => { (w.on[t] = w.on[t] || []).push(f); }, removeEventListener: (t, f) => { w.on[t] = (w.on[t] || []).filter((x) => x !== f); } };
     w.fire = (t) => (w.on[t] || []).slice().forEach((f) => f({ type: t }));
-    w.run = (ms) => { w.now += ms; for (const t of w.timers.filter((x) => x.at <= w.now && !x.dead)) { t.dead = true; t.f(); } };
+    w.run = (ms) => {
+      const to = w.now + ms;
+      for (;;) {
+        const t = w.timers.filter((x) => !x.dead && x.at <= to).sort((a, b) => a.at - b.at)[0];
+        if (!t) break;
+        t.dead = true;
+        w.now = Math.max(w.now, t.at);
+        t.f();
+      }
+      w.now = to;
+    };
     w.act = HubPageSend.activation({
       win: w.win,
       active: () => w.activeNow,
@@ -27,40 +37,57 @@ function activationTests() {
       later: (f, ms) => { const t = { f, at: w.now + ms }; w.timers.push(t); return t; },
       cancel: (t) => { if (t) t.dead = true; },
     });
+    // take runs the check and lets the fake clock pass, so a check that
+    // waits for an activation has run out of patience.
+    w.take = async () => { const p = w.act.take(); for (let i = 0; i < 20; i++) { await Promise.resolve(); w.run(50); } return p; };
     return w;
   };
   let w = make();
-  assert.strictEqual(w.act.take(), false, "no activation: refused");
+  assert.strictEqual(await w.take(), false, "no activation: refused");
   w.activeNow = true; // the user clicks in the frame
-  assert.strictEqual(w.act.take(), true, "frame activation: taken");
-  assert.strictEqual(w.act.take(), false, "one send per activation");
+  assert.strictEqual(await w.take(), true, "frame activation: taken");
+  assert.strictEqual(await w.take(), false, "one send per activation");
+  // Five sends that arrive together off one click: one goes through.
+  w = make();
+  w.activeNow = true;
+  const burst = [1, 2, 3, 4, 5].map(() => w.act.take());
+  for (let i = 0; i < 20; i++) { await Promise.resolve(); w.run(50); }
+  const got = await Promise.all(burst);
+  assert.strictEqual(got.filter(Boolean).length, 1, "one of five at once");
+  // An activation that the hub hears of a moment late is still found.
+  w = make();
+  const late = w.act.take();
+  w.run(60);
+  w.activeNow = true;
+  w.run(40);
+  assert.strictEqual(await late, true, "a late activation counts");
   // The hub's own click: held through the gesture, then ended.
   w = make();
   w.fire("pointerdown"); w.activeNow = true;
-  assert.strictEqual(w.act.take(), false, "mid-gesture in the hub: refused");
+  assert.strictEqual(await w.take(), false, "mid-gesture in the hub: refused");
   w.fire("pointerup"); w.fire("click");
-  assert.strictEqual(w.act.take(), false, "just after a hub click: refused");
+  assert.strictEqual(await w.take(), false, "just after a hub click: refused");
   w.run(100);
   assert.strictEqual(w.activeNow, false, "the hub's activation is ended after its gesture");
   w.activeNow = true; // frame click after the hub's
-  assert.strictEqual(w.act.take(), true, "a frame click after a hub click counts");
+  assert.strictEqual(await w.take(), true, "a frame click after a hub click counts");
   // A gesture that never ends in the hub (pressed in the hub, released in the frame).
   w = make();
   w.fire("keydown"); w.activeNow = true;
   w.run(1499);
-  assert.strictEqual(w.act.take(), false);
+  assert.strictEqual(await w.take(), false);
   w.run(2);
   assert.strictEqual(w.activeNow, false);
   // settle ends the click that opened the page.
   w = make();
   w.activeNow = true; w.act.settle();
-  assert.strictEqual(w.act.take(), false);
+  assert.strictEqual(await w.take(), false);
   w.run(100);
   assert.strictEqual(w.activeNow, false);
   // A browser that cannot end the activation refuses every send.
   w = make();
   w.noConsume = true; w.activeNow = true;
-  assert.strictEqual(w.act.take(), false, "cannot consume: fail closed");
+  assert.strictEqual(await w.take(), false, "cannot consume: fail closed");
   // off removes the listeners.
   w = make();
   w.act.off();
@@ -148,7 +175,7 @@ async function main() {
     assert.deepStrictEqual(plain(log.replies[2]), [3, { ok: true }]);
   }
 
-  activationTests();
+  await activationTests();
   return bridgeTests();
 }
 

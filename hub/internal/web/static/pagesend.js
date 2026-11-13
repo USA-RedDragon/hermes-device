@@ -67,7 +67,7 @@ window.HubPageSend = (() => {
   // click or key press in the page. A user gesture in a frame also activates
   // the frames above it (HTML, "activation notification"), so the hub reads
   // its own navigator.userActivation: the page cannot set that, and nothing
-  // the page reports is trusted. take() answers true for one send per
+  // the page reports is trusted. take() answers (a promise) true for one send per
   // activation: it ends the hub's activation (consume) and checks that this
   // worked, so a browser that cannot end it refuses every send.
   //
@@ -76,7 +76,7 @@ window.HubPageSend = (() => {
   // so while one is going on, and for a moment after it, take() answers
   // false, and the hub's activation is ended once the gesture is over. So an
   // activation that is left when a send arrives came from the frame.
-  function activation({ win, active, consume, later, cancel }) {
+  function activation({ win, active, consume, later, cancel, step = 20, patience = 300 }) {
     let held = false;
     let end = 0;
     let cap = 0;
@@ -105,10 +105,28 @@ window.HubPageSend = (() => {
     for (const t of down) win.addEventListener(t, start, true);
     for (const t of up) win.addEventListener(t, stop, true);
     return {
+      // take answers a promise of true or false. A frame in another process
+      // tells the hub of its gesture a moment after its own page can act on
+      // it, so an activation that is not there yet is looked for for a short
+      // while. A script alone never makes one appear, so waiting gives it
+      // nothing.
       take() {
-        if (held || !active()) return false;
-        consume();
-        return !active();
+        if (held) return Promise.resolve(false);
+        return new Promise((resolve) => {
+          let waited = 0;
+          const look = () => {
+            if (held) { resolve(false); return; }
+            if (active()) {
+              consume();
+              resolve(!active());
+              return;
+            }
+            waited += step;
+            if (waited > patience) { resolve(false); return; }
+            later(look, step);
+          };
+          look();
+        });
       },
       // settle ends an activation that is already there, such as the click
       // that opened the page, as the hub's own gesture.
