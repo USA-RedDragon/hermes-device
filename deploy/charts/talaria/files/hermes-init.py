@@ -169,6 +169,27 @@ ROLLING = {
 }
 
 
+# Hermes settings Talaria defaults to: each is set only when config.yaml does not have it yet, so a value you set
+# (in config.yaml or your own settings) wins.
+DEFAULTS = {
+    # Keep every event of a long reply for the hub when it reconnects mid-reply (patched Hermes; upstream keeps 512
+    # events, a few KB of a streaming reply, and the hub then cannot show the reply's start). The replay stays
+    # bounded by bytes.
+    "gateway": {"replay_buffer_events": 0},
+}
+
+
+def fill(base, defaults):
+    for key, value in defaults.items():
+        if isinstance(value, dict):
+            if key not in base:
+                base[key] = {}
+            if isinstance(base[key], dict):
+                fill(base[key], value)
+        elif key not in base:
+            base[key] = value
+
+
 def merge(base, top):
     for key, value in top.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
@@ -190,6 +211,7 @@ def main():
     if os.path.exists(path):
         with open(path) as f:
             config = safe_load(f) or {}
+    fill(config, DEFAULTS)
     merge(config, talaria_config(pubkey))
     extra = env("TALARIA_EXTRA_CONFIG")
     if extra and os.path.exists(extra):

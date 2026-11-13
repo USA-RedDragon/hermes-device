@@ -35,6 +35,8 @@ jobs:
           persist-credentials: false
       - name: Copies of the setup scripts match
         run: hack/check-sync.sh
+      - name: Setup script tests
+        run: python3 -I hack/test_hermes_init.py
       - name: Shell scripts
         run: shellcheck -s sh compose/files/init.sh aio/rootfs/etc/cont-init.d/10-talaria hack/check-sync.sh
       - name: Compose file
