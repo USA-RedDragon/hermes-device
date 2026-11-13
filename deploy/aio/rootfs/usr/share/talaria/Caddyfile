@@ -1,4 +1,5 @@
-# Front of the hub: Caddy in front of the hub on localhost, so chat streams flush at once
+# Front of the hub on localhost. The hub flushes chat streams itself; Caddy is here to hold requests while the agent
+# starts (the hub starts first), then to show a page that reloads itself instead of an error
 {
 	admin off
 }
