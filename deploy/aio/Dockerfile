@@ -5,8 +5,8 @@
 # Design and trade-offs: https://usa-reddragon.github.io/talaria/deploy/all-in-one.html
 # Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research.
 
-ARG HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a
-ARG HUB_IMAGE=ghcr.io/usa-reddragon/talaria-hub:v0.26.54@sha256:832bd2db5b0aa144c28687990aca006cfda1a89268a73c1179b68e6fb4ea5504
+ARG HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p33@sha256:29e36b1cd8e846dc60b6697b599c7e010b64972e2a5f4b9334642f4535defe9f
+ARG HUB_IMAGE=ghcr.io/usa-reddragon/talaria-hub:v0.26.65@sha256:d03d66c4559cc370f7919e807113660c20cc8bfad6fb31257f4359f95d9c1e18
 ARG DEVICE_IMAGE=ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
 ARG CADDY_IMAGE=docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 

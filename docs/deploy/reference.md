@@ -53,7 +53,7 @@ TALARIA_OLLAMA_PULL=
 
 # --- Images ---
 # Another Hermes image, such as one you built or loaded (the default is pinned by digest)
-# TALARIA_HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30
+# TALARIA_HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p33
 
 # --- Time zone of schedules and the agent's clock (IANA name, such as Europe/Berlin). Empty: UTC
 TZ=
@@ -178,9 +178,9 @@ telegram:
   existingSecret: ""
 
 images:
-  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.54@sha256:832bd2db5b0aa144c28687990aca006cfda1a89268a73c1179b68e6fb4ea5504
+  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.65@sha256:d03d66c4559cc370f7919e807113660c20cc8bfad6fb31257f4359f95d9c1e18
   # -- Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
-  hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a
+  hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p33@sha256:29e36b1cd8e846dc60b6697b599c7e010b64972e2a5f4b9334642f4535defe9f
   device: ghcr.io/usa-reddragon/talaria:v0.26.0@sha256:c882110cb0ca0c44abac701aef5413655b2d7faebbcb871160d14dbd17c6e22c
   # -- The binary's file name at the root of the device image, for the image volume; "hermes-device" before v0.26.0
   deviceBinary: talaria
@@ -298,8 +298,8 @@ docker.io/ollama/ollama:0.40.16
 docker.io/pgvector/pgvector:0.8.1-pg17
 ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
 ghcr.io/plastic-labs/honcho:v3.6.0
-ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30
-ghcr.io/usa-reddragon/talaria-hub:v0.26.54
+ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p33
+ghcr.io/usa-reddragon/talaria-hub:v0.26.65
 ghcr.io/usa-reddragon/talaria-sandbox:v0.26.0
 ghcr.io/usa-reddragon/talaria:v0.26.0
 ```
