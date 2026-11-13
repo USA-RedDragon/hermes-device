@@ -433,6 +433,13 @@ func (s *Server) originOK(r *http.Request) bool {
 	return site == "" || site == "same-origin" || site == "none"
 }
 
+// crossOrigin answers a request whose Origin is not the public URL. The
+// message names the fix, because the usual cause is opening the hub at
+// another address (an IP, a second host name) than the configured one.
+func (s *Server) crossOrigin(w http.ResponseWriter) {
+	errorJSON(w, http.StatusForbidden, "Open Talaria at "+s.origin+", or set TALARIA_PUBLIC_URL to this address.")
+}
+
 type userKey struct{}
 
 func userFrom(r *http.Request) string {
@@ -450,7 +457,7 @@ func (s *Server) api(h http.HandlerFunc) http.Handler {
 			return
 		}
 		if !s.originOK(r) {
-			errorJSON(w, http.StatusForbidden, "cross-origin request")
+			s.crossOrigin(w)
 			return
 		}
 		if r.Method != http.MethodGet {

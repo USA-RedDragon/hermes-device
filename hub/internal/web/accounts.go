@@ -137,7 +137,7 @@ func (s *Server) clientAllowed(r *http.Request) bool {
 // publicPost checks a POST that needs no session: same origin and JSON.
 func (s *Server) publicPost(w http.ResponseWriter, r *http.Request, v any) bool {
 	if !s.originOK(r) {
-		errorJSON(w, http.StatusForbidden, "cross-origin request")
+		s.crossOrigin(w)
 		return false
 	}
 	return decode(w, r, v)

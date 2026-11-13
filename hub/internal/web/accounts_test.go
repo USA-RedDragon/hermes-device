@@ -117,8 +117,9 @@ func TestLocalSetupAndLogin(t *testing.T) {
 	if code := passwordLogin(t, e, c2, "nobody", alicePassword); code != http.StatusUnauthorized {
 		t.Fatalf("unknown user = %d", code)
 	}
-	if resp, _ := post(t, c2, e.url+"/auth/password", "", "https://evil.example", map[string]string{fieldName: userAlice, fieldPassword: alicePassword}); resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("cross-origin login = %d", resp.StatusCode)
+	if resp, body := post(t, c2, e.url+"/auth/password", "", "https://evil.example", map[string]string{fieldName: userAlice, fieldPassword: alicePassword}); resp.StatusCode != http.StatusForbidden ||
+		!strings.Contains(body, "Open Talaria at "+e.url+", or set TALARIA_PUBLIC_URL to this address.") {
+		t.Fatalf("cross-origin login = %d %s", resp.StatusCode, body)
 	}
 	if code := passwordLogin(t, e, c2, " ALICE ", alicePassword); code != http.StatusOK {
 		t.Fatalf("login = %d", code)
