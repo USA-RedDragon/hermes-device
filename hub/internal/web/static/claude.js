@@ -1,8 +1,8 @@
 "use strict";
-// HubClaude shows the Claude accounts of a backend with the claude-accounts
+// HubClaude shows the Claude accounts of a backend with the Claude
 // Hermes plugin, and the ChatGPT plan that Hermes itself signs in to: the
 // account and its usage on the line under a chat's
-// title (for a chat on the Claude pool, the account the pool runs it on),
+// title (for a chat on the Claude provider, the account the provider runs it on),
 // a panel on the Usage page with each account's API credit estimate, the
 // notice in a chat whose account lost its login, and the sign-in dialog. Only the backend's Claude admins see
 // the sign-in controls; the hub refuses everyone else too. The sign-in
@@ -22,7 +22,7 @@ window.HubClaude = (ctx) => {
   const cache = new Map();
   const loading = new Map();
   // pools maps "backend\nsession" to { at, data, model } for chats on the
-  // pool: the account the pool runs the chat's next turn on.
+  // provider: the account the provider runs the chat's next turn on.
   const pools = new Map();
   const minute = 60000;
   const me = () => (ctx.me() || {});
@@ -55,8 +55,8 @@ window.HubClaude = (ctx) => {
     return p;
   }
 
-  // poolAccount stands in for "the Claude pool" in a chat's status line: one
-  // account-like object whose week is the pool's average, so the line shows
+  // poolAccount stands in for "the Claude provider" in a chat's status line: one
+  // account-like object whose week is the provider's average, so the line shows
   // "Claude" and one week meter, not the account the chat runs on.
   function poolAccount(backend) {
     const c = cache.get(backend);
@@ -77,7 +77,7 @@ window.HubClaude = (ctx) => {
     return (c.data.accounts || []).find((a) => a.provider === provider) || null;
   }
 
-  // pool reads which account the pool runs a chat's next turn on, at most
+  // provider reads which account the provider runs a chat's next turn on, at most
   // once a minute unless force. It answers null when that is unknown.
   async function pool(backend, session, model, force) {
     const key = backend + "\n" + session;
@@ -98,7 +98,7 @@ window.HubClaude = (ctx) => {
   }
 
   // route is the line under the model picker: the account a chat on the
-  // pool runs on, or what an API credit provider bills. Null for others.
+  // provider runs on, or what an API credit provider bills. Null for others.
   async function route(backend, session, provider, model) {
     if (provider === poolProvider) {
       const p = await pool(backend, session, model);
@@ -178,7 +178,7 @@ window.HubClaude = (ctx) => {
   }
 
   // afterReply reads the usage of the chat's account again, and for a chat
-  // on the pool which account it is on.
+  // on the provider which account it is on.
   async function afterReply(backend, provider, session, model) {
     if (provider === poolProvider) {
       await pool(backend, session, model, true);
@@ -325,7 +325,7 @@ window.HubClaude = (ctx) => {
   }
 
   // panel is the Usage page's "Subscription accounts" section of a
-  // backend, or null when its Hermes has neither the claude-accounts plugin
+  // backend, or null when its Hermes has neither the Claude plugin
   // nor a ChatGPT plan.
   async function panel(backend) {
     const s = el("section", "usage-sec claude-panel");
@@ -339,7 +339,7 @@ window.HubClaude = (ctx) => {
       s.append(el("p", "err", "Could not read the subscription accounts: " + e.message));
       return s;
     }
-    s.append(el("p", "mem-hint", "The Claude and ChatGPT subscription accounts this Hermes can use, with the share of each usage window used. " +
+    s.append(el("p", "mem-hint", "The Claude and ChatGPT subscription accounts this Hermes reports, with the share of each usage window used. " +
       "Reset times are in " + (data.time_zone || "UTC") + " time. API credits are an estimate: the credit the plan includes each " +
       "month, less what Hermes spent through the account's API key since the month started. Anthropic does not report the balance, " +
       "so use outside Hermes is not counted."));
@@ -392,12 +392,12 @@ window.HubClaude = (ctx) => {
   // shortName is an account's own name, "caam" for "Claude (caam)".
   const shortName = (label) => (/^Claude \((.+)\)$/.exec(label || "") || [])[1] || label;
 
-  // poolSummary is the card at the top of the section: the pool's week as
+  // poolSummary is the card at the top of the section: the provider's week as
   // one number, with the per-account cards behind "Show accounts".
   function poolSummary(p, cards) {
     const box = el("div", "claude-account claude-pool");
     const top = el("div", "claude-top");
-    top.append(el("strong", "", "Claude pool"), el("span", "claude-meta", "(" + p.accounts + (p.accounts === 1 ? " account)" : " accounts)")));
+    top.append(el("strong", "", "Claude"), el("span", "claude-meta", "(" + p.accounts + (p.accounts === 1 ? " account)" : " accounts)")));
     box.append(top);
     if (typeof p.used_percent !== "number") {
       box.append(el("p", "hint", "No account's usage could be read (0 of " + p.accounts + " accounts read)."));

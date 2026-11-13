@@ -16,7 +16,7 @@ const (
 	ClaudeAPIName     = "Claude API"
 )
 
-// ClaudePoolProvider is the claude-accounts plugin's provider that runs
+// ClaudePoolProvider is the Claude plugin's provider that runs
 // each chat on one of the backend's Claude subscription accounts. The
 // pickers show its models under ClaudePoolGroup.
 const (
@@ -67,7 +67,7 @@ func isDigits(s string) bool {
 }
 
 // ArrangeModels sets each provider's Group and each model's Label as the
-// pickers show them, and puts the Claude groups first: the Claude pool's
+// pickers show them, and puts the Claude groups first: the Claude provider's
 // models by name under "Claude", then every account's API key models under
 // "Claude API credits" as "Opus 5.5 (caam credits)". Other providers keep
 // their name, IDs and order.
@@ -94,7 +94,7 @@ func ArrangeModels(providers []ModelProvider) {
 
 // newestPerFamily keeps the newest model of each Claude family, Opus,
 // Sonnet, Fable and Haiku first, then other families by name. Hermes can
-// list the pool's older pinned models too; IDs that name no Claude model
+// list the provider's older pinned models too; IDs that name no Claude model
 // stay after them, in order.
 func newestPerFamily(models []ModelChoice) []ModelChoice {
 	type best struct {
@@ -249,7 +249,7 @@ type ClaudeCredits struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// ClaudePool says which account the Claude pool runs a chat's next turn
+// ClaudePool says which account the Claude provider runs a chat's next turn
 // on. Account is empty when no account can, and Message says why.
 type ClaudePool struct {
 	Account  string `json:"account,omitempty"`
@@ -264,9 +264,9 @@ type ClaudePool struct {
 	Message    string    `json:"message,omitempty"`
 }
 
-// ClaudePoolUsage is the Claude pool's weekly use as one number: the
-// average of the "Current week" share used over the signed-in pool
-// accounts, each capped at 100. Accounts is how many accounts the pool
+// ClaudePoolUsage is the Claude provider's weekly use as one number: the
+// average of the "Current week" share used over the signed-in provider
+// accounts, each capped at 100. Accounts is how many accounts the provider
 // has and Read how many of them gave a weekly share; the rest are left out.
 // UsedPercent is nil when Read is 0. RoomAccounts is the accounts' worth of
 // room left. The Next fields say which full account's week resets first;
@@ -289,8 +289,8 @@ type ClaudeAccounts struct {
 	// TimeZone is the IANA zone of the windows' ResetsText.
 	TimeZone string          `json:"time_zone"`
 	Accounts []ClaudeAccount `json:"accounts"`
-	// Pool is the pool's weekly use, set when usage was asked for and the
-	// backend has pool accounts.
+	// Pool is the Claude weekly use, set when usage was asked for and the
+	// backend has provider accounts.
 	Pool *ClaudePoolUsage `json:"pool,omitempty"`
 }
 
@@ -340,7 +340,7 @@ type ClaudeSignInNotice struct {
 	Reason    string `json:"reason"`
 }
 
-// Claude serves the Claude accounts of backends with the claude-accounts
+// Claude serves the Claude accounts of backends with the Claude
 // Hermes plugin. Every method fails with ErrForbidden when the user may
 // not use the backend; the sign-in methods also when the user is not one
 // of the backend's Claude admins. ErrNoClaude is a backend without the
@@ -356,7 +356,7 @@ type Claude interface {
 	// running sign-in. The code is never logged or kept.
 	SendSignInCode(ctx context.Context, user, backendID, accountID, signInID, code string) (ClaudeSignIn, error)
 	CancelSignIn(ctx context.Context, user, backendID, accountID string) (ClaudeSignIn, error)
-	// ClaudePool says which account the Claude pool runs the session's
+	// ClaudePool says which account the Claude provider runs the session's
 	// next turn of model on.
 	ClaudePool(ctx context.Context, user, backendID, sessionID, model string) (ClaudePool, error)
 }

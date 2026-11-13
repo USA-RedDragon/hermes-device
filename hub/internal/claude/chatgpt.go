@@ -43,7 +43,7 @@ type ProviderWindow struct {
 }
 
 // ProviderUsage is a provider row's usage: Windows for one login, or
-// Accounts for a pool of several logins.
+// Accounts for several logins.
 type ProviderUsage struct {
 	Windows  []ProviderWindow  `json:"windows"`
 	Accounts []json.RawMessage `json:"accounts"`

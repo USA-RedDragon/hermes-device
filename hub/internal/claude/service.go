@@ -17,7 +17,7 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/service"
 )
 
-// LoggedOutHint starts the error that the claude-accounts plugin ends a
+// LoggedOutHint starts the error that the Claude plugin ends a
 // turn with when the account it runs has no usable login. The plugin
 // adds "(native: ...; cli: ...; login: <config dir>)".
 const LoggedOutHint = "Claude Code is installed but has no usable login"
@@ -416,7 +416,7 @@ func (s *Service) CancelSignIn(ctx context.Context, user, backendID, accountID s
 	return convertSignIn(si), nil
 }
 
-// ClaudePool says which account the pool runs a session's next turn on.
+// ClaudePool says which account the provider runs a session's next turn on.
 // See hub.Claude.
 func (s *Service) ClaudePool(ctx context.Context, user, backendID, sessionID, model string) (hub.ClaudePool, error) {
 	c, err := s.client(ctx, user, backendID)

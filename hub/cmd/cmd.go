@@ -337,7 +337,7 @@ func newInsights(cfg *config.Config, svc *service.Service, mem hub.Memory, diale
 }
 
 // newClaude returns the Claude accounts core, or nil when there is no
-// backend. Any backend's Hermes may have the claude-accounts plugin.
+// backend. Any backend's Hermes may have the Claude plugin.
 func newClaude(cfg *config.Config, svc *service.Service, n *notify.Notifier, dialers map[string]*gateway.Dialer) *claude.Service {
 	if len(cfg.Backends) == 0 {
 		return nil

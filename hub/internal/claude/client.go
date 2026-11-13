@@ -1,5 +1,5 @@
 // Package claude serves the Claude subscription accounts of Hermes
-// backends that run the claude-accounts dashboard plugin: their status
+// backends that run the Claude dashboard plugin: their status
 // and usage, the sign-in that the plugin runs with `claude auth login`,
 // and a notice when a chat's account lost its login.
 package claude
@@ -17,7 +17,7 @@ import (
 	"github.com/USA-RedDragon/hermes-hub/internal/device"
 )
 
-// PluginBase is where the Hermes dashboard mounts the claude-accounts
+// PluginBase is where the Hermes dashboard mounts the Claude
 // plugin's routes.
 const PluginBase = "/api/plugins/claude-accounts"
 
@@ -98,7 +98,7 @@ type Account struct {
 	Credits   *Credits `json:"api_credits"`
 }
 
-// Pool is the plugin's GET /pool answer: the account the pool runs a
+// Pool is the plugin's GET /pool answer: the account the provider runs a
 // chat's next turn on, or Message when none can.
 type Pool struct {
 	Account        string    `json:"account"`
@@ -134,7 +134,7 @@ type slowRequester interface {
 	RequestSlow(ctx context.Context, method, path string, body []byte) (*http.Response, error)
 }
 
-// Client calls the claude-accounts plugin of one backend.
+// Client calls the Claude plugin of one backend.
 type Client struct {
 	r device.Requester
 }
@@ -203,7 +203,7 @@ func (c *Client) Accounts(ctx context.Context, usage bool) (Accounts, error) {
 	return out, c.call(ctx, false, http.MethodGet, "/accounts"+q, nil, &out)
 }
 
-// Pool asks which account the pool runs the session's next turn of
+// Pool asks which account the provider runs the session's next turn of
 // model on.
 func (c *Client) Pool(ctx context.Context, sessionID, model string) (Pool, error) {
 	var out Pool

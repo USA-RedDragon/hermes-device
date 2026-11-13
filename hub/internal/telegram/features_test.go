@@ -699,7 +699,7 @@ type fakeSubagents struct {
 func (f *fakeSubagents) answer() hub.Subagents {
 	return hub.Subagents{Choice: f.choice, Choices: []hub.SubagentChoice{
 		{ID: "auto", Label: "Auto (model chooses)", Line: "The model picks a route for each subagent."},
-		{ID: "haiku", Label: "Haiku 5.5", Group: "Every subagent on", Line: "Every subagent runs on Haiku 5.5, through the Claude account pool.", Em: "Haiku 5.5"},
+		{ID: "haiku", Label: "Haiku 5.5", Group: "Every subagent on", Line: "Every subagent runs on Haiku 5.5, through Claude.", Em: "Haiku 5.5"},
 		{ID: "none", Label: "No subagents", Line: "This chat does not start subagents."},
 	}}
 }
@@ -742,7 +742,7 @@ func TestModelCommandSubagents(t *testing.T) {
 	}
 	data, _ := btns[2]["callback_data"].(string)
 	h.tg.press(dm(aliceTG), aliceTG, menu.ResultID, data)
-	h.tg.wait(mSend, "Subagents set to <b>Haiku 5.5</b>. Every subagent runs on Haiku 5.5, through the Claude account pool.")
+	h.tg.wait(mSend, "Subagents set to <b>Haiku 5.5</b>. Every subagent runs on Haiku 5.5, through Claude.")
 	subs.mu.Lock()
 	defer subs.mu.Unlock()
 	if len(subs.sets) != 1 || !strings.HasSuffix(subs.sets[0], "/haiku") {

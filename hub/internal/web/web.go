@@ -76,7 +76,7 @@ type Options struct {
 	// Notifier sends test notices and has the Web Push key.
 	Notifier Notifier
 	// Claude serves the Claude accounts of backends with the
-	// claude-accounts plugin. Nil: none.
+	// Claude plugin. Nil: none.
 	Claude hub.Claude
 	// ClaudeCode serves the Usage page's Claude Code panel. Nil: no panel.
 	ClaudeCode hub.ClaudeCode

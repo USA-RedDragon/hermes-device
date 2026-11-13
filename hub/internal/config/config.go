@@ -185,7 +185,7 @@ type Honcho struct {
 }
 
 // Claude configures the Claude subscription accounts that the
-// claude-accounts Hermes plugin runs.
+// Claude Hermes plugin runs.
 type Claude struct {
 	Admins   []string `name:"admins" description:"Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody"`
 	TimeZone string   `name:"time_zone" description:"IANA time zone of the reset times of Claude usage windows and of the days of Claude Code usage. Default: ui.time_zone"`

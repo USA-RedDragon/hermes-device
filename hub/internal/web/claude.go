@@ -156,7 +156,7 @@ func (s *Server) handleClaudeCode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleClaudePool says which account the Claude pool runs a chat's next
+// handleClaudePool says which account the Claude provider runs a chat's next
 // turn on: ?session=<chat>&model=<model>.
 func (s *Server) handleClaudePool(w http.ResponseWriter, r *http.Request) {
 	if s.claude == nil {

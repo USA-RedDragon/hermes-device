@@ -518,7 +518,7 @@ func add(t *hub.ClaudeCodeTotals, r hub.ClaudeCodeRow, total int64, cost float64
 }
 
 // accountLabels names each account uuid: the user's own name for it, else
-// the label of a claude-accounts slot signed in as it, else the email a
+// the label of a Claude account slot signed in as it, else the email a
 // computer reported. Unnamed accounts are left out.
 func accountLabels(accounts []hub.ClaudeCodeAccount, names map[string]string) map[string]string {
 	out := map[string]string{}

@@ -8,7 +8,7 @@ import (
 )
 
 // apiCreditsPrefix starts the provider of an account's API key. Those
-// credits are never part of the subscription pool.
+// credits are never part of the subscription total.
 const apiCreditsPrefix = "claude-api-"
 
 // PoolUsage pools the weekly use of Claude subscription accounts. Accounts

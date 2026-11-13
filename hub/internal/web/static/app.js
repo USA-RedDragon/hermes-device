@@ -2812,8 +2812,8 @@
       this.fillSubagents();
     },
     // route fills the line under the model picker: which account a chat on
-    // the Claude pool runs on, or what an API credit provider bills.
-    // Only the newest call writes the line: a pool lookup that started
+    // the Claude provider runs on, or what an API credit provider bills.
+    // Only the newest call writes the line: a provider lookup that started
     // before a model change can end after it.
     routeSeq: 0,
     async route(provider, model) {

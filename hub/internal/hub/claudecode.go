@@ -40,7 +40,7 @@ type ClaudeCodeRow struct {
 }
 
 // ClaudeCodeAccount is an account a source is signed in as, or a
-// claude-accounts slot that is not signed in (empty UUID).
+// Claude account slot that is not signed in (empty UUID).
 type ClaudeCodeAccount struct {
 	Source string `json:"-"`
 	UUID   string `json:"account_uuid"`

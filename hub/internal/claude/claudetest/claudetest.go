@@ -1,4 +1,4 @@
-// Package claudetest has a fake of the claude-accounts Hermes plugin for
+// Package claudetest has a fake of the Claude Hermes plugin for
 // tests, mounted on a gatewaytest.Gateway as the dashboard mounts it.
 package claudetest
 
@@ -26,7 +26,7 @@ type Plugin struct {
 	Usages map[string]claude.Usage
 	// Credits are the API credit estimates by account, sent with usage.
 	Credits map[string]*claude.Credits
-	// Pools are the pool answers by session; a session without one gets
+	// Pools are the answers by session; a session without one gets
 	// Pool.
 	Pools map[string]claude.Pool
 	Pool  claude.Pool

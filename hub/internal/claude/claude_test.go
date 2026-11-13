@@ -503,7 +503,7 @@ func TestNewChatModels(t *testing.T) {
 	e.chatgpt.Lock()
 	e.chatgpt.Model, e.chatgpt.Provider, e.chatgpt.ContextLength = sonnet, hub.ClaudePoolProvider, 1000000
 	e.chatgpt.Rows = []claude.ProviderRow{
-		{Slug: hub.ClaudePoolProvider, Name: "Claude pool", Authenticated: &yes, Models: []string{sonnet, "claude-opus-5-5", "gone"},
+		{Slug: hub.ClaudePoolProvider, Name: "Claude", Authenticated: &yes, Models: []string{sonnet, "claude-opus-5-5", "gone"},
 			UnavailableModels: []string{"gone"}, Capabilities: map[string]claude.ModelCapabilities{"claude-opus-5-5": {Reasoning: true}}},
 		{Slug: "cloud", Authenticated: &no, Models: []string{"remote"}},
 	}
