@@ -1,0 +1,739 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 18:44:52 +0000
+Subject: [PATCH] fix(memory): recall skips notices, keeps the cache warm, cuts
+ by section
+
+Recalled memory (an external provider's <memory-context> block) is no longer recalled for a turn no person wrote: subagent results, relayed agent messages, process notices and restart notes (the user-message classifier of 0068, which now also knows background process heartbeats and the restart-continuation turn) get no prefetch, give providers an empty message at turn start, and queue no refresh, so a notice is never the next turn's query.
+
+With memory.recall_history false the store keeps the recall a turn sent, and a later turn replays it byte for byte while the prompt cache is warm. Older blocks are dropped from the replay only at the last idle gap longer than memory.recall_cold_after_seconds (default 3600) before a user row, where the cache is cold anyway, and from the rows compaction keeps (except the newest user row). memory.recall_max_chars now cuts by section: the peer card, the session summary and the provider's answer stay whole (trimmed at paragraph or sentence ends only when they alone are too long), the newest observations fill the rest, the AI's self-description goes first, and a note names what was left out. The fence label says recall may be stale, from other chats or misattributed, and to prefer the conversation.
+---
+ agent/agent_init.py                           |   2 +
+ agent/context_compressor.py                   |  10 +
+ agent/conversation_compression_scaffolding.py |   2 +
+ agent/memory_context.py                       | 173 ++++++++++++++++--
+ agent/session_persistence.py                  |   5 +-
+ agent/turn_context.py                         |  25 +--
+ cli-config.yaml.example                       |  12 +-
+ gateway/run.py                                |   1 +
+ hermes_cli/config_defaults.py                 |   6 +-
+ run_agent.py                                  |   6 +-
+ tests/agent/test_memory_recall_scope.py       |  73 +++++---
+ tests/agent/test_recall_turn_gate.py          | 145 +++++++++++++++
+ website/docs/user-guide/configuration.md      |   5 +-
+ 13 files changed, 404 insertions(+), 61 deletions(-)
+ create mode 100644 tests/agent/test_recall_turn_gate.py
+
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index 4694172e..659e6111 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1167,6 +1167,8 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
+     _mem_section = _mem_section if isinstance(_mem_section, dict) else {}
+     agent._memory_recall_history = is_truthy_value(_mem_section.get("recall_history"), default=True)
+     agent._memory_recall_max_chars = max(0, _parse_config_int(_mem_section.get("recall_max_chars", 0), 0))
++    # memory.recall_cold_after_seconds (3600): idle time after which old recall is dropped from the replay.
++    agent._memory_recall_cold_after = _parse_config_int(_mem_section.get("recall_cold_after_seconds", 3600), 3600)
+     from agent.safe_worker_policy import safe_worker_enabled
+ 
+     if safe_worker_enabled():
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+index 3caee924..57c0dd2a 100644
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -5423,6 +5423,16 @@ Write only the summary body. Do not include any preamble or prefix."""
+         # payloads forever, which can push every subsequent API request past the provider's body-size limit
+         # and wedge the session. Port of Kilo-Org/kilocode#9434.
+         compressed = _strip_historical_media(compressed, spared=spared)
++        if getattr(self, "strip_recalled_memory", False):
++            # memory.recall_history false: compaction rewrites the prefix anyway, so the kept rows lose their
++            # recall here. The newest user row keeps it: that turn may still be running on it.
++            from agent.memory_context import strip_recalled_memory
++            users = [i for i, m in enumerate(compressed) if isinstance(m, dict) and m.get("role") == "user"]
++            for i in users[:-1]:
++                row = compressed[i]
++                for key in ("content", "api_content"):
++                    if row.get(key) is not None and strip_recalled_memory(row[key]) is not row[key]:
++                        compressed[i] = row = {**row, key: strip_recalled_memory(row[key])}
+ 
+         # Like-for-like savings: current_tokens includes system prompt/tool schemas, new_estimate is
+         # messages-only; comparing them fakes ~96% savings and kills the anti-thrashing guard.
+diff --git a/agent/conversation_compression_scaffolding.py b/agent/conversation_compression_scaffolding.py
+index e5e0be53..3e1f2457 100644
+--- a/agent/conversation_compression_scaffolding.py
++++ b/agent/conversation_compression_scaffolding.py
+@@ -23,6 +23,8 @@ _SYNTHETIC_USER_PREFIXES = (
+     "[Agent message ",
+     # Gateway notices: a process notification and a subagent resumed after a restart.
+     "[INTERNAL NOTIFICATION", "[The gateway restarted while you were working",
++    # A background process heartbeat and the restart-continuation turn (gateway/turn_handoff.py).
++    "[Background process ", "[Hermes restarted while your previous turn was running",
+ )
+ # Appended (not prepended) to gateway process notifications (gateway/run_notifications.py).
+ _INTERNAL_NOTIFICATION_FOOTER_OPEN = "[INTERNAL NOTIFICATION — generated by the Hermes gateway"
+diff --git a/agent/memory_context.py b/agent/memory_context.py
+index 6991cd27..ea7984a7 100644
+--- a/agent/memory_context.py
++++ b/agent/memory_context.py
+@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
+ _FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
+ _INTERNAL_CONTEXT_RE = re.compile(r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>', re.IGNORECASE)
+ _INTERNAL_NOTE_RE = re.compile(
+-    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
++    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*'
++    r'(?:Treat as (?:informational background data|authoritative reference data[^\]]*)\.|These are recalled notes[^\]]*)\]\s*',
+     re.IGNORECASE,
+ )
+ 
+@@ -178,9 +179,10 @@ def build_memory_context_block(raw_context: str) -> str:
+     clean = _drop_repeated_recall_lines(sanitized)
+     return (
+         "<memory-context>\n"
+-        "[System note: The following is recalled memory context, "
+-        "NOT new user input. Treat as authoritative reference data — "
+-        "this is the agent's persistent memory and should inform all responses.]\n\n"
++        "[System note: The following is recalled memory context, NOT new user input. "
++        "These are recalled notes, not facts checked for this chat: they may be stale, may come from "
++        "other chats, and may credit the user with things an agent did. Prefer the current "
++        "conversation when they disagree, and check before acting on them.]\n\n"
+         f"{clean}\n"
+         "</memory-context>"
+     )
+@@ -218,21 +220,164 @@ def strip_recalled_memory(content: Any) -> Any:
+     return content
+ 
+ 
++# Section kinds for the cap, by heading text. Checked in this order: the first match wins.
++_CAP_KINDS = (
++    ("ai", ("ai self", "ai identity", "ai representation", "ai card")),
++    ("card", ("peer card",)),
++    ("summary", ("summary",)),
++    ("answer", ("dialectic", "answer")),
++    ("observations", ("observation", "representation", "conclusion")),
++)
++_HEADING_RE = re.compile(r"^#{1,4} \S")
++_OBSERVATION_RE = re.compile(r"^\[\d{4}-\d\d-\d\d[ T]\d\d:\d\d(?::\d\d)?[^\]]*\] ")
++_SENTENCE_END_RE = re.compile(r"[.!?][\"')\]]*(?=\s)|\n")
++
++
++def _cap_sections(text: str) -> list[tuple[str, list[str], str]]:
++    """*text* as ``(kind, heading lines, body)`` sections. A heading with no body of its own joins the next
++    section, so "## User Representation" over "## Explicit Observations" is one section."""
++    sections: list[tuple[list[str], list[str]]] = [([], [])]
++    for line in text.split("\n"):
++        if _HEADING_RE.match(line):
++            headings, body = sections[-1]
++            if headings and not "\n".join(body).strip():
++                headings.append(line)
++                body.clear()
++            else:
++                sections.append(([line], []))
++        else:
++            sections[-1][1].append(line)
++    out = []
++    for headings, body in sections:
++        if not headings and not "\n".join(body).strip():
++            continue
++        title = " ".join(headings).lower()
++        kind = "preamble" if not headings else next(
++            (k for k, words in _CAP_KINDS if any(w in title for w in words)), "other")
++        out.append((kind, headings, "\n".join(body).strip("\n")))
++    return out
++
++
++def _trim_text(text: str, limit: int) -> str:
++    """*text* cut to at most *limit* chars at a paragraph boundary, else at the end of a sentence or line;
++    ``""`` when not even one sentence fits. Never cuts inside a sentence."""
++    if len(text) <= limit:
++        return text
++    kept: list[str] = []
++    size = 0
++    for para in text.split("\n\n"):
++        extra = len(para) + (2 if kept else 0)
++        if size + extra > limit:
++            if not kept:
++                room = text[:limit]
++                ends = [m.end() for m in _SENTENCE_END_RE.finditer(room)]
++                return room[: ends[-1]].rstrip() if ends else ""
++            break
++        kept.append(para)
++        size += extra
++    return "\n\n".join(kept)
++
++
++def _observation_entries(body: str) -> list[str]:
++    """A section body as entries: a timestamped line with the lines that continue it; other lines alone."""
++    entries: list[str] = []
++    for line in body.split("\n"):
++        if entries and line.strip() and not _OBSERVATION_RE.match(line) and (
++                line[0].isspace() or _OBSERVATION_RE.match(entries[-1])):
++            entries[-1] += "\n" + line
++        elif line.strip():
++            entries.append(line)
++    return entries
++
++
+ def cap_recalled_memory(text: str, max_chars: int) -> str:
+-    """Recall text cut to about *max_chars* (0 = no cap) at line boundaries, with a note where the cut is.
+-    Keeps the first quarter and the last three quarters: providers open with headings and often end with
+-    their newest entries and a profile card (Honcho lists observations oldest first, then the peer card)."""
++    """Recall text cut to about *max_chars* (0 = no cap) section by section, with a note on what was cut.
++
++    The peer card, the session summary, the provider's answer to this turn's question and any text before
++    the first heading are kept whole (cut at paragraph or sentence ends only when they alone exceed the
++    budget). Observations fill what is left, newest first, and keep their original order. Unknown sections
++    come next, and the AI's own self-description sections go first. Nothing is cut inside a sentence."""
+     if not max_chars or max_chars <= 0 or not isinstance(text, str) or len(text) <= max_chars:
+         return text
+-    head, tail = text[: max_chars // 4], text[len(text) - (max_chars - max_chars // 4):]
+-    if "\n" in head:
+-        head = head[: head.rfind("\n")]
+-    if "\n" in tail:
+-        tail = tail[tail.find("\n") + 1:]
+-    cut = len(text) - len(head) - len(tail)
+-    return f"{head.rstrip()}\n[... {cut:,} of {len(text):,} chars of recalled memory cut by memory.recall_max_chars ...]\n{tail}"
++    sections = _cap_sections(text)
++    kept: dict[int, str] = {}
++    budget = max_chars
++
++    def _cost(index: int, body: str) -> int:
++        return len("\n".join(sections[index][1])) + len(body) + 3
++
++    for kinds in (("preamble", "card"), ("summary",), ("answer",)):
++        for index, (kind, _, body) in enumerate(sections):
++            if kind not in kinds:
++                continue
++            body = _trim_text(body, max(0, budget - _cost(index, "")))
++            if body:
++                kept[index] = body
++                budget -= _cost(index, body)
++    observed = [(index, n, entry) for index, (kind, _, body) in enumerate(sections) if kind == "observations"
++                for n, entry in enumerate(_observation_entries(body))]
++    # Newest first: timestamped entries by their stamp, the rest by position (Honcho lists oldest first).
++    observed.sort(key=lambda item: (bool(_OBSERVATION_RE.match(item[2])), item[2][:21] if
++                                    _OBSERVATION_RE.match(item[2]) else "", item[0], item[1]), reverse=True)
++    chosen: dict[int, list[tuple[int, str]]] = {}
++    for index, n, entry in observed:
++        extra = len(entry) + 1 + (0 if index in chosen else _cost(index, ""))
++        if extra <= budget:
++            chosen.setdefault(index, []).append((n, entry))
++            budget -= extra
++    for index, entries in chosen.items():
++        kept[index] = "\n".join(entry for _, entry in sorted(entries))
++    for kinds in (("other",), ("ai",)):
++        for index, (kind, _, body) in enumerate(sections):
++            if kind in kinds and _cost(index, body) <= budget:
++                kept[index] = body
++                budget -= _cost(index, body)
++    parts = []
++    for index, (kind, headings, body) in enumerate(sections):
++        if index in kept:
++            parts.append("\n".join([*headings, kept[index]]) if headings else kept[index])
++    out = "\n\n".join(parts)
++    dropped = [" / ".join(h.lstrip("# ") for h in headings) for index, (_, headings, _) in enumerate(sections)
++               if index not in kept and headings]
++    older = len(observed) - sum(len(entries) for entries in chosen.values())
++    if older:
++        dropped.append(f"{older} older observation(s)")
++    note = f"[recalled memory trimmed to {len(out):,} of {len(text):,} chars by memory.recall_max_chars"
++    note += f"; left out: {'; '.join(dropped)}]" if dropped else "]"
++    return f"{out}\n\n{note}" if out else note
++
++
++def recall_cut_index(messages: list[Any], now: Any, cold_after: float) -> int:
++    """Index of the first message whose recalled memory replays as sent; rows before it are replayed without
++    their ``<memory-context>`` blocks.
++
++    Stripping an old block rewrites the request prefix from that row on, so it is done only when the
++    prompt cache is already cold: at the last idle gap longer than *cold_after* seconds before a user row,
++    or before ``now`` (this turn starts cold, so every earlier block goes). A gap inside a turn (a long tool
++    call) is not a cut: the turn's later requests cached its rows with their recall. Every later warm turn
++    finds the same cut, so the bytes sent before it stay the same. Rows without a timestamp are skipped;
++    *cold_after* <= 0 strips every earlier block (each turn rewrites the previous one)."""
++    if cold_after <= 0:
++        return len(messages)
++    cut = 0
++    previous = None
++    stamps = [(i, m.get("timestamp")) for i, m in enumerate(messages) if isinstance(m, dict)]
++    for index, stamp in stamps + [(len(messages), now)]:
++        if not isinstance(stamp, (int, float)):
++            continue
++        is_turn_start = index == len(messages) or messages[index].get("role") == "user"
++        if previous is not None and is_turn_start and stamp - previous > cold_after:
++            cut = index
++        previous = stamp
++    return cut
+ 
+ 
+ def recall_history_kept(agent: Any) -> bool:
+     """Whether recalled memory stays in history (``memory.recall_history``, default true)."""
+     return getattr(agent, "_memory_recall_history", True) is not False
++
++
++def recall_cold_after(agent: Any) -> float:
++    """Idle seconds after which the prompt cache counts as cold (``memory.recall_cold_after_seconds``)."""
++    value = getattr(agent, "_memory_recall_cold_after", 3600)
++    return float(value) if isinstance(value, (int, float)) else 3600.0
+diff --git a/agent/session_persistence.py b/agent/session_persistence.py
+index 60b274ad..76237a34 100644
+--- a/agent/session_persistence.py
++++ b/agent/session_persistence.py
+@@ -19,7 +19,7 @@ from agent.context_compressor import (
+     user_originated_turn_view,
+ )
+ from agent.lazy_forward import forward as _forward, forward_static as _forward_static
+-from agent.memory_context import recall_history_kept, sanitize_context, strip_recalled_memory
++from agent.memory_context import sanitize_context
+ 
+ from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
+ from agent.trajectory import save_trajectory as _save_trajectory_to_file
+@@ -230,9 +230,6 @@ def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any
+         content, api_content = durable_user_row_content(agent, msg, content, api_content)
+         ov_timestamp = getattr(agent, "_persist_user_message_timestamp", None)
+         timestamp = timestamp if ov_timestamp is None else ov_timestamp
+-    if role == "user" and not recall_history_kept(agent):
+-        # memory.recall_history false: the store keeps no recalled memory (later turns replay this row).
+-        content, api_content = strip_recalled_memory(content), strip_recalled_memory(api_content)
+     if api_content == content:
+         api_content = None
+     # get_messages_as_conversation replays rows through sanitize_context().strip(); capture the sent bytes
+diff --git a/agent/turn_context.py b/agent/turn_context.py
+index f1d51289..83ee65e9 100644
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -1065,6 +1065,11 @@ def _memory_turn_start_and_prefetch(
+     if not agent._memory_manager:
+         return ""
+     _query = _memory_query_text(original_user_message)
++    # A turn no person wrote (a subagent result, a relayed agent message, a gateway notice) recalls nothing
++    # and is not a query: providers see an empty message, and the previous turn's refresh stays queued.
++    from agent.conversation_compression_scaffolding import user_authored_text_of
++    if _query.strip():
++        _query = user_authored_text_of(_query) or ""
+     # The author rides along so a provider can attribute THIS turn, not whoever opened the session.
+     _author = turn_author if isinstance(turn_author, dict) else {}
+     with suppress(Exception):
+@@ -1108,13 +1113,9 @@ def _stamp_api_content_sidecar(
+     )
+     if _api_content is None or _api_content == durable_content:
+         return
++    # The stored row keeps the recall this turn sent, even with memory.recall_history false: later warm
++    # turns replay it byte for byte, and build_api_messages drops it once the cache is cold.
+     _turn_user_msg["api_content"] = _api_content
+-    from agent.memory_context import recall_history_kept, strip_recalled_memory
+-    if not recall_history_kept(agent):
+-        # The stored row is what later turns replay: without the recall this turn sent.
+-        _api_content = strip_recalled_memory(_api_content)
+-        if _api_content == durable_content:
+-            return
+ 
+     # When another writer materialized this turn's user row BEFORE the sidecar existed — in-place
+     # preflight compaction, or a close/early flush that raced the prologue (#102194) — the crash
+@@ -1175,9 +1176,6 @@ def _append_multimodal_context(
+             return
+         _in_place_compacted = preflight_compressed and bool(getattr(agent, "_last_compaction_in_place", False))
+         content = turn_user_msg["content"] if _in_place_compacted else _durable_content(turn_user_msg["content"])
+-        from agent.memory_context import recall_history_kept, strip_recalled_memory
+-        if not recall_history_kept(agent):
+-            content = strip_recalled_memory(content)
+         try:
+             _db.set_user_message_content(agent.session_id, _row_id, content, typed_ask_fields(turn_user_msg))
+         except Exception:
+@@ -1447,7 +1445,7 @@ def build_api_messages(
+     from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
+     from agent.conversation_loop import _clone_message_for_send
+     from agent.agent_message_headers import collapse_agent_message, collapse_enabled
+-    from agent.memory_context import recall_history_kept, strip_recalled_memory
++    from agent.memory_context import recall_cold_after, recall_cut_index, recall_history_kept, strip_recalled_memory
+     from agent.replay_cleanup import canonicalize_replay_history
+ 
+     has_current = isinstance(current_turn_user_idx, int) and 0 <= current_turn_user_idx < len(messages)
+@@ -1466,6 +1464,9 @@ def build_api_messages(
+     split = current_turn_user_idx if has_current else 0
+     replayed_prefix = canonicalize_replay_history(messages[:split], now=turn_now)
+     canonical_messages = replayed_prefix + messages[split:]
++    # memory.recall_history false: rows before the last cold gap replay without their recall blocks.
++    recall_cut = 0 if recall_history_kept(agent) else recall_cut_index(
++        replayed_prefix, turn_now, recall_cold_after(agent))
+ 
+     api_messages = []
+     for idx, msg in enumerate(canonical_messages):
+@@ -1503,8 +1504,8 @@ def build_api_messages(
+             # prefix stays byte-stable. User rows carry the injection sidecar; user
+             # and assistant rows may carry a sanitize-divergence sidecar.
+             api_msg["content"] = _api_content
+-        if idx < len(replayed_prefix) and msg.get("role") == "user" and not recall_history_kept(agent):
+-            # memory.recall_history false: recalled memory rides only the turn it was recalled for.
++        if idx < recall_cut and msg.get("role") == "user":
++            # Only once the cache is cold (or at compaction): stripping a warm row rewrites the cached prefix.
+             api_msg["content"] = strip_recalled_memory(api_msg.get("content"))
+         if idx < len(replayed_prefix) and msg.get("role") == "user" and collapse_enabled(agent):
+             # context.collapse_agent_messages: an older relayed agent message keeps its header and body.
+diff --git a/cli-config.yaml.example b/cli-config.yaml.example
+index f134a097..2c620f90 100644
+--- a/cli-config.yaml.example
++++ b/cli-config.yaml.example
+@@ -1076,13 +1076,15 @@ memory:
+   memory_char_limit: 2200   # ~800 tokens
+   user_char_limit: 1375     # ~500 tokens
+ 
+-  # External recall (<memory-context>) in history. false: a turn's recall rides only that turn;
+-  # older turns lose it on the wire, in the session store and in compaction input. Each new turn
+-  # then re-sends the previous turn once without prompt cache. Default true keeps every block.
++  # External recall (<memory-context>) in history. false: older turns lose their recall blocks on
++  # the wire once the prompt cache is cold (recall_cold_after_seconds idle) and at compaction, and
++  # compaction input never carries them; a warm turn replays them unchanged. Default true keeps every block.
+   recall_history: true
+-  # Longest recall block per turn in chars (0 = no cap): the middle is cut at line boundaries,
+-  # keeping the first quarter and the last three quarters, with a note where the cut is.
++  # Longest recall block per turn in chars (0 = no cap): peer card, session summary and the
++  # provider's answer stay whole, newest observations fill the rest, AI self-description goes first.
+   recall_max_chars: 0
++  # Idle seconds after which the prompt cache counts as cold (the route's real cache TTL).
++  recall_cold_after_seconds: 3600
+ 
+   # Periodic memory nudge: remind the agent to consider saving memories
+   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
+diff --git a/gateway/run.py b/gateway/run.py
+index b0dc18c1..129f670c 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -4092,6 +4092,7 @@ class GatewayRunner(
+         ("compression", "min_tail_user_messages"), ("compression", "keep_last_skill_chars"),
+         ("agent", "disabled_toolsets"),
+         ("memory", "provider"), ("memory", "recall_history"), ("memory", "recall_max_chars"),
++        ("memory", "recall_cold_after_seconds"),
+         ("context", "collapse_agent_messages"),
+         ("checkpoints", "enabled"), ("checkpoints", "max_snapshots"),
+         ("checkpoints", "max_total_size_mb"), ("checkpoints", "max_file_size_mb"))
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 6f6c5b77..70afd34e 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1345,8 +1345,12 @@ DEFAULT_CONFIG = {
+         # recalled for when false: older turns lose it on the wire, in the session store and in the
+         # summarizer's input. Each new turn then re-sends the previous turn once without prompt cache.
+         "recall_history": True,
+-        # Longest recall block per turn in chars (0 = no cap); the middle is cut at line boundaries.
++        # Longest recall block per turn in chars (0 = no cap); cut by section, never inside a sentence.
+         "recall_max_chars": 0,
++        # With recall_history false: older recall blocks are dropped from the replay only after this many
++        # idle seconds (the prompt cache is cold then, so the rewrite costs nothing) and at compaction.
++        # Match the cache TTL the route really has: 3600 for Claude subscriptions.
++        "recall_cold_after_seconds": 3600,
+     },
+     # Subagent delegation: `backend` = task-routing strategy ("default": keys below), `backends.<name>` = its settings.
+     "delegation": {
+diff --git a/run_agent.py b/run_agent.py
+index 51b7a908..33d42125 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -920,8 +920,10 @@ class AIAgent(
+             if turn_author is not None:
+                 sync_kwargs["turn_author"] = turn_author
+             self._memory_manager.sync_all(user_text, response_text, **sync_kwargs)
+-            # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.
+-            if not is_trivial_prompt(user_text):
++            # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts, nor
++            # on a turn no person wrote (a notice would be the next turn's recall query).
++            from agent.conversation_compression_scaffolding import user_authored_text_of
++            if not is_trivial_prompt(user_text) and user_authored_text_of(user_text) is not None:
+                 self._memory_manager.queue_prefetch_all(user_text, session_id=self.session_id or "")
+         except Exception:
+             pass
+diff --git a/tests/agent/test_memory_recall_scope.py b/tests/agent/test_memory_recall_scope.py
+index 2b458476..e4e7a3ea 100644
+--- a/tests/agent/test_memory_recall_scope.py
++++ b/tests/agent/test_memory_recall_scope.py
+@@ -43,12 +43,12 @@ def test_strip_keeps_text_around_the_block():
+     assert strip_recalled_memory("no recall here") == "no recall here"
+ 
+ 
+-def test_cap_keeps_head_and_tail_at_lines_and_says_so():
++def test_cap_keeps_newest_observations_whole_lines_and_says_so():
+     capped = cap_recalled_memory(RECALL, 400)
+-    assert len(capped) < 520 and "chars of recalled memory cut by memory.recall_max_chars" in capped
+-    assert capped.startswith("## User Representation\n") and capped.endswith("fact number 39 about the user\n")
+-    assert "fact number 20 " not in capped
+-    assert all(line.startswith(("## ", "- fact", "[... ")) for line in capped.splitlines())
++    assert len(capped) < 520 and "by memory.recall_max_chars" in capped
++    assert capped.startswith("## User Representation\n") and "fact number 39 about the user" in capped
++    assert "fact number 5 " not in capped
++    assert all(line.startswith(("## ", "- fact", "[recalled memory trimmed")) for line in capped.splitlines() if line)
+     assert cap_recalled_memory(RECALL, 0) is RECALL
+ 
+ 
+@@ -62,40 +62,70 @@ def test_default_keeps_recall_in_history(wire_env):
+     assert "<memory-context>" in users[0]["content"] and "<memory-context>" in users[-1]["content"]
+ 
+ 
+-def test_recall_rides_only_its_own_turn(wire_env):
++def _age_rows(db, sid, seconds):
++    """Move every stored row of *sid* *seconds* into the past (the chat went idle that long ago)."""
++    with db._lock:
++        db._conn.execute("UPDATE messages SET timestamp = timestamp - ? WHERE session_id = ?", (seconds, sid))
++        db._conn.commit()
++
++
++def test_warm_turn_replays_the_previous_recall_unchanged(wire_env):
+     make_agent, handler, db, sid = wire_env
+     _with_recall(make_agent(), keep=False).run_conversation("first ask", conversation_history=[], task_id="t1")
+-    first = _user_messages(_chat_requests(handler)[0])[0]["content"]
++    first = _user_messages(_chat_requests(handler)[-1])[0]["content"]
+     assert "<memory-context>" in first and "fact number 39" in first
+ 
+     stored = [r for r in db.get_messages(sid) if r["role"] == "user"]
+-    assert all("memory-context" not in (r["content"] or "") + (r["api_content"] or "") for r in stored)
+-    assert stored[0]["api_content"] == "first ask\n\nPLUGIN-CTX"  # the hook's context is still replayed
++    assert "memory-context" not in stored[0]["content"] and stored[0]["api_content"] == first
+ 
+     history = db.get_messages_as_conversation(sid)
+     handler.captured_requests = []
+     _with_recall(make_agent(), keep=False).run_conversation("second ask", conversation_history=history, task_id="t2")
+     users = _user_messages(_chat_requests(handler)[0])
+-    assert users[0]["content"] == "first ask\n\nPLUGIN-CTX"
++    # The cached prefix: the first turn's row goes out byte for byte as it was sent.
++    assert users[0]["content"] == first
+     assert "<memory-context>" in users[-1]["content"]
+ 
+ 
+-def test_live_history_older_turn_is_stripped_on_the_wire(wire_env):
++def test_cold_turn_drops_older_recall_and_later_warm_turns_keep_that_cut(wire_env):
++    make_agent, handler, db, sid = wire_env
++    _with_recall(make_agent(), keep=False).run_conversation("first ask", conversation_history=[], task_id="t1")
++    _age_rows(db, sid, 7200)
++    handler.captured_requests = []
++    _with_recall(make_agent(), keep=False).run_conversation(
++        "second ask", conversation_history=db.get_messages_as_conversation(sid), task_id="t2")
++    cold = _user_messages(_chat_requests(handler)[0])
++    assert cold[0]["content"] == "first ask\n\nPLUGIN-CTX"  # the hook's context is still replayed
++    assert "<memory-context>" in cold[-1]["content"]
++
++    handler.captured_requests = []
++    _with_recall(make_agent(), keep=False).run_conversation(
++        "third ask", conversation_history=db.get_messages_as_conversation(sid), task_id="t3")
++    warm = _user_messages(_chat_requests(handler)[0])
++    assert [m["content"] for m in warm[:2]] == [m["content"] for m in cold]
++
++
++def test_live_history_older_turn_is_stripped_only_after_a_cold_gap(wire_env):
++    import time
++
+     make_agent, handler, db, sid = wire_env
+-    agent = _with_recall(make_agent(), keep=False)
+     block = build_memory_context_block(RECALL)
+-    history = [{"role": "user", "content": "old ask", "api_content": "old ask\n\n" + block},
+-               {"role": "assistant", "content": "old answer"}]
+-    agent.run_conversation("new ask", conversation_history=history, task_id="t1")
+-    users = _user_messages(_chat_requests(handler)[0])
+-    assert users[0]["content"] == "old ask"
++    for age, stripped in ((7200, True), (60, False)):
++        handler.captured_requests = []
++        agent = _with_recall(make_agent(), keep=False)
++        history = [{"role": "user", "content": "old ask", "api_content": "old ask\n\n" + block,
++                    "timestamp": time.time() - age},
++                   {"role": "assistant", "content": "old answer", "timestamp": time.time() - age + 1}]
++        agent.run_conversation("new ask", conversation_history=history, task_id=f"t{age}")
++        users = _user_messages(_chat_requests(handler)[0])
++        assert (users[0]["content"] == "old ask") is stripped
+ 
+ 
+ def test_recall_cap_applies_to_the_sent_block(wire_env):
+     make_agent, handler, db, sid = wire_env
+     _with_recall(make_agent(), keep=False, max_chars=200).run_conversation("ask", conversation_history=[], task_id="t")
+     sent = _user_messages(_chat_requests(handler)[0])[0]["content"]
+-    assert "chars of recalled memory cut" in sent and "fact number 20 " not in sent
++    assert "recalled memory trimmed" in sent and "fact number 20 " not in sent
+ 
+ 
+ @pytest.mark.parametrize("strip", [False, True])
+@@ -121,7 +151,7 @@ def test_config_keys_reach_the_agent():
+     assert agent._memory_recall_history is True and agent._memory_recall_max_chars == 0
+ 
+ 
+-def test_multimodal_turn_stores_and_replays_without_recall(wire_env):
++def test_multimodal_turn_replays_its_recall_until_the_cache_is_cold(wire_env):
+     from run_agent import AIAgent
+ 
+     make_agent, handler, db, sid = wire_env
+@@ -131,10 +161,11 @@ def test_multimodal_turn_stores_and_replays_without_recall(wire_env):
+             [{"type": "text", "text": "what is this"}, image], conversation_history=[], task_id="t1")
+     sent = _user_messages(_chat_requests(handler)[0])[0]["content"]
+     assert any("<memory-context>" in (p.get("text") or "") for p in sent)
++    _age_rows(db, sid, 7200)
+     history = db.get_messages_as_conversation(sid)
+-    assert "memory-context" not in str(history[0]["content"]) and "PLUGIN-CTX" in str(history[0]["content"])
+     handler.captured_requests = []
+     with patch.object(AIAgent, "_model_supports_vision", return_value=True):
+         _with_recall(make_agent(), keep=False).run_conversation("and what about the second picture", conversation_history=history, task_id="t2")
+     users = _user_messages(_chat_requests(handler)[0])
+-    assert "memory-context" not in str(users[0]["content"]) and "<memory-context>" in str(users[-1]["content"])
++    assert "memory-context" not in str(users[0]["content"]) and "PLUGIN-CTX" in str(users[0]["content"])
++    assert "<memory-context>" in str(users[-1]["content"])
+diff --git a/tests/agent/test_recall_turn_gate.py b/tests/agent/test_recall_turn_gate.py
+new file mode 100644
+index 00000000..7c09b5f2
+--- /dev/null
++++ b/tests/agent/test_recall_turn_gate.py
+@@ -0,0 +1,145 @@
++"""Recalled memory: no recall on turns no person wrote, a section-aware cap, the fence label, compaction."""
++
++from __future__ import annotations
++
++from unittest.mock import MagicMock
++
++from agent.context_compressor import ContextCompressor
++from agent.conversation_compression_scaffolding import user_authored_text_of
++from agent.memory_context import (
++    build_memory_context_block, cap_recalled_memory, recall_cut_index, sanitize_context,
++)
++from tests.agent.test_api_content_sidecar import (  # noqa: F401  (wire_env is a fixture)
++    _chat_requests,
++    _user_messages,
++    wire_env,
++)
++from tests.agent.test_memory_recall_scope import RECALL, _with_recall
++
++NOTICES = (
++    "[ASYNC DELEGATION BATCH COMPLETE (2 tasks)]\nA subagent you started has finished: it released v1.2.",
++    "[Agent message am_0123456789abcdef from build]\nAnother AI agent of this user wrote everything below this line.\n\n"
++    "I pushed the tag.",
++    "[Background process proc_1 heartbeat #2 — still running after 2m]\nCommand: make",
++    "[Hermes restarted while your previous turn was running. The turn was stopped.]",
++)
++
++
++def test_notices_are_not_user_authored_and_a_real_message_is():
++    for notice in NOTICES:
++        assert user_authored_text_of(notice) is None, notice[:30]
++    assert user_authored_text_of("please ship the release") == "please ship the release"
++
++
++def test_internal_notice_gets_no_recall_and_queues_no_refresh(wire_env):
++    make_agent, handler, db, sid = wire_env
++    for i, notice in enumerate(NOTICES):
++        handler.captured_requests = []
++        agent = _with_recall(make_agent(), keep=False)
++        agent.run_conversation(notice, conversation_history=[], task_id=f"n{i}")
++        sent = _user_messages(_chat_requests(handler)[0])[-1]["content"]
++        assert "<memory-context>" not in sent, notice[:30]
++        agent._memory_manager.prefetch_all.assert_not_called()
++        agent._memory_manager.queue_prefetch_all.assert_not_called()
++        # Providers still count the turn, but get no query from it.
++        assert agent._memory_manager.on_turn_start.call_args.args[1] == ""
++
++
++def test_user_message_recalls_on_its_own_words(wire_env):
++    make_agent, handler, db, sid = wire_env
++    agent = _with_recall(make_agent(), keep=False)
++    agent.run_conversation("please ship the release", conversation_history=[], task_id="u1")
++    assert "<memory-context>" in _user_messages(_chat_requests(handler)[0])[-1]["content"]
++    assert agent._memory_manager.prefetch_all.call_args.args[0] == "please ship the release"
++    assert agent._memory_manager.queue_prefetch_all.call_args.args[0] == "please ship the release"
++
++
++HONCHO = (
++    "## Session Summary\nThe user is moving the cluster to new nodes. The drain of node a finished.\n\n"
++    "Next they want the storage class checked.\n\n"
++    "## User Representation\n## Explicit Observations\n\n"
++    + "".join(f"[2026-11-{d:02d} 10:00:00] observation from day {d} about the user\n" for d in range(1, 29))
++    + "\n## User Peer Card\nName: Sam\nPrefers short answers\n\n"
++    "## AI Self-Representation\n## Explicit Observations\n\n"
++    + "".join(f"[2026-11-{d:02d} 11:00:00] the assistant described itself on day {d}\n" for d in range(1, 15))
++    + "\n## AI Identity Card\nI am the assistant.\n\n"
++    "## Dialectic Answer\nThe user cares about the storage class next. They asked about it twice.\n"
++)
++
++
++def test_cap_keeps_card_summary_and_answer_whole_and_newest_observations():
++    capped = cap_recalled_memory(HONCHO, 1300)
++    assert len(capped) <= 1300 + 200
++    for whole in ("## Session Summary\nThe user is moving the cluster to new nodes. The drain of node a finished.\n\n"
++                  "Next they want the storage class checked.",
++                  "## User Peer Card\nName: Sam\nPrefers short answers",
++                  "## Dialectic Answer\nThe user cares about the storage class next. They asked about it twice."):
++        assert whole in capped
++    body, note = capped.rsplit("\n\n", 1)
++    assert "AI Self-Representation" not in body and "described itself" not in body
++    assert note.startswith("[recalled memory trimmed to") and "AI Self-Representation" in note
++    assert "day 28 about the user" in capped and "day 1 about the user" not in capped
++    observations = [line for line in capped.splitlines() if "about the user" in line]
++    assert observations == sorted(observations)  # original (oldest first) order is kept
++    # Section order is the provider's.
++    assert capped.index("Session Summary") < capped.index("Explicit Observations") < capped.index("Peer Card")
++
++
++def test_cap_trims_an_oversized_summary_at_a_paragraph_never_mid_sentence():
++    summary = "## Session Summary\n" + "\n\n".join(f"Paragraph {i} has one full sentence in it." for i in range(60))
++    capped = cap_recalled_memory(summary + "\n\n## User Peer Card\nName: Sam\n", 600)
++    assert "## User Peer Card\nName: Sam" in capped
++    body = capped.split("## Session Summary\n", 1)[1].split("\n\n## User Peer Card", 1)[0]
++    assert body and all(p.endswith("in it.") for p in body.split("\n\n"))
++    one = "## Session Summary\n" + " ".join(f"Sentence {i} ends here." for i in range(80))
++    capped = cap_recalled_memory(one, 300)
++    assert capped.split("\n\n[recalled memory")[0].endswith("ends here.")
++
++
++def test_label_says_recall_may_be_stale_and_is_still_scrubbed():
++    block = build_memory_context_block("## User Peer Card\nName: Sam")
++    assert "authoritative" not in block
++    assert "may be stale" in block and "other chats" in block and "Prefer the current conversation" in block
++    assert sanitize_context("before " + block.split("\n", 1)[1].rsplit("\n", 1)[0] + " after").startswith("before ")
++    assert "System note" not in sanitize_context(block.split("\n", 1)[1])
++
++
++def test_cut_index_moves_only_at_cold_gaps_before_user_rows():
++    rows = [{"role": "user", "timestamp": 0}, {"role": "assistant", "timestamp": 10},
++            {"role": "tool", "timestamp": 5000}, {"role": "user", "timestamp": 5100},
++            {"role": "assistant", "timestamp": 5110}]
++    # The 4990 s gap before the tool row is inside a turn: no cut there.
++    assert recall_cut_index(rows, 5200, 3600) == 0
++    rows[3]["timestamp"], rows[4]["timestamp"] = 9000, 9010
++    assert recall_cut_index(rows, 9100, 3600) == 3
++    assert recall_cut_index(rows, 20000, 3600) == len(rows)
++    assert recall_cut_index(rows, 9100, 0) == len(rows)
++
++
++def test_compaction_drops_recall_from_kept_rows_but_the_newest_user_row():
++    compressor = ContextCompressor(model="test/model", quiet_mode=True, config_context_length=64_000)
++    compressor.strip_recalled_memory = True
++    block = build_memory_context_block(RECALL)
++    rows = [{"role": "user", "content": "old", "api_content": "old\n\n" + block},
++            {"role": "assistant", "content": "ok"},
++            {"role": "user", "content": "new", "api_content": "new\n\n" + block}]
++    out = compressor._finalize_compressed([dict(r) for r in rows], rows, len(rows), False)
++    users = [m for m in out if m.get("role") == "user"]
++    assert users[0]["api_content"] == "old" and users[-1]["api_content"] == "new\n\n" + block
++    compressor.strip_recalled_memory = False
++    out = compressor._finalize_compressed([dict(r) for r in rows], rows, len(rows), False)
++    assert [m for m in out if m.get("role") == "user"][0]["api_content"] == "old\n\n" + block
++
++
++def test_cold_gap_setting_reaches_the_agent():
++    from unittest.mock import patch
++
++    from agent.agent_init import _init_memory
++
++    agent = MagicMock()
++    with patch("agent.safe_worker_policy.safe_worker_enabled", return_value=True):
++        _init_memory(agent, {"memory": {"recall_cold_after_seconds": "300"}}, True, "cli")
++    assert agent._memory_recall_cold_after == 300
++    with patch("agent.safe_worker_policy.safe_worker_enabled", return_value=True):
++        _init_memory(agent, {}, True, "cli")
++    assert agent._memory_recall_cold_after == 3600
+diff --git a/website/docs/user-guide/configuration.md b/website/docs/user-guide/configuration.md
+index 984d4e4e..10de40e7 100644
+--- a/website/docs/user-guide/configuration.md
++++ b/website/docs/user-guide/configuration.md
+@@ -916,8 +916,9 @@ memory:
+   user_profile_enabled: true
+   memory_char_limit: 2200   # ~800 tokens
+   user_char_limit: 1375     # ~500 tokens
+-  recall_history: true      # false: an external provider's recall rides only the turn it was recalled for
+-  recall_max_chars: 0       # Longest recall block per turn; the middle is cut at line boundaries (0 = no cap)
++  recall_history: true      # false: older recall blocks leave the replay once the cache is cold, and at compaction
++  recall_max_chars: 0       # Longest recall block per turn, cut by section (0 = no cap)
++  recall_cold_after_seconds: 3600  # Idle seconds after which the prompt cache counts as cold
+   write_approval: false     # true = require approval before any memory write
+ ```
+ 

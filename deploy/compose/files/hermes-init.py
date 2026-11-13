@@ -223,8 +223,8 @@ DEFAULTS = {
     # Leave out the prompt paragraph and the skill that answer "how do I set this up" with the agent's own commands
     # and docs; Talaria's hint above points to its Settings and docs instead (patched Hermes)
     "agent": {"product_help_guidance": False},
-    # Long chats (patched Hermes 0069 and 0070): recalled memory (Honcho) rides only the turn it was recalled for,
-    # cut to 8000 chars, and older agent messages lose their repeated instructions paragraph. A real chat carried
+    # Long chats (patched Hermes 0069, 0070 and 0075): recalled memory (Honcho) leaves older turns once the prompt
+    # cache is cold or at compaction, cut by section to 8000 chars, and older agent messages lose their repeated instructions paragraph. A real chat carried
     # an 18K-char recall block on every user turn, about 99% of each row.
     "memory": {"recall_history": False, "recall_max_chars": 8000},
     "context": {"collapse_agent_messages": True},

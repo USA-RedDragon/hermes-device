@@ -1,0 +1,5 @@
+# Existing tests of the code this patch changes
+tests/agent/test_api_content_sidecar.py
+tests/agent/test_compaction_user_provenance.py
+tests/agent/test_streaming_context_scrubber.py
+tests/gateway/test_vision_memory_leak.py
