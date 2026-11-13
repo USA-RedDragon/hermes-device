@@ -365,17 +365,19 @@ func TestEventStreamAndResume(t *testing.T) {
 	if strings.Join(kinds, ",") != "session.info,message.start,reasoning.delta,reasoning.delta,tool.start,tool.progress,tool.complete,message.delta,message.delta,message.complete" {
 		t.Fatalf("kinds = %v", kinds)
 	}
+	r2, stop2 := stream(t, c, e.url+"/api/sessions/pc/s1/events", evs[6].id)
+	again := readEvents(t, r2, "message.complete")
+	if len(again) != 3 || again[0].id != evs[7].id || again[0].kind != "message.delta" {
+		t.Fatalf("resumed = %+v", again)
+	}
+	stop2()
+	// An id from another replica is no resume point: a fresh open, with a
+	// new snapshot of the chat as it is.
 	r3, stop3 := stream(t, c, e.url+"/api/sessions/pc/s1/events", "otherreplica."+strings.SplitN(evs[6].id, ".", 2)[1])
 	if got := readEvents(t, r3, "snapshot"); len(got) != 1 {
 		t.Fatalf("id from another replica resumed: %+v", got)
 	}
 	stop3()
-	r2, stop2 := stream(t, c, e.url+"/api/sessions/pc/s1/events", evs[6].id)
-	defer stop2()
-	again := readEvents(t, r2, "message.complete")
-	if len(again) != 3 || again[0].id != evs[7].id || again[0].kind != "message.delta" {
-		t.Fatalf("resumed = %+v", again)
-	}
 }
 
 func TestTelegramLink(t *testing.T) {

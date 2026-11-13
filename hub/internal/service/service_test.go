@@ -247,14 +247,15 @@ func TestAttachStreamsInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop2()
-	evs2 := until(t, ch2, hub.KindMessageComplete)
-	if evs2[0].Kind != hub.KindSnapshot || !slices.Equal(kinds(evs2[1:]), want) {
-		t.Fatalf("second viewer = %v", kinds(evs2))
+	// A fresh open after a finished turn gets a new snapshot that shows the
+	// turn, not the old snapshot and the turn's events replayed.
+	evs2 := until(t, ch2, hub.KindSnapshot)
+	if len(evs2) != 1 {
+		t.Fatalf("second viewer = %v, want a snapshot first", kinds(evs2))
 	}
-	for i, ev := range evs2[1:] {
-		if ev.At != evs[i].At {
-			t.Fatalf("replayed %s at = %d, want %d", ev.Kind, ev.At, evs[i].At)
-		}
+	var s2 hub.Snapshot
+	if err := json.Unmarshal(evs2[0].Data, &s2); err != nil || len(s2.Messages) < 3 {
+		t.Fatalf("second snapshot has %d messages, %v", len(s2.Messages), err)
 	}
 	resumes := 0
 	for _, c := range e.gw.Calls() {
@@ -262,8 +263,8 @@ func TestAttachStreamsInOrder(t *testing.T) {
 			resumes++
 		}
 	}
-	if resumes != 1 {
-		t.Fatalf("resumes = %d, want 1 shared subscription", resumes)
+	if resumes != 2 {
+		t.Fatalf("resumes = %d, want 2: the open took a new snapshot", resumes)
 	}
 }
 
