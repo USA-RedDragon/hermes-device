@@ -32,6 +32,9 @@ const (
 	ollamaV1       = "http://ollama:11434/v1"
 	fieldProv      = "provider"
 	fieldConfirm   = "confirm"
+	fieldBaseURL   = "base_url"
+	fieldKey       = "key"
+	fieldValue     = "value"
 )
 
 type syncBuf struct {
@@ -134,52 +137,50 @@ func modelsCatalog(t *testing.T, e *modelsEnv, c *http.Client, base string) {
 	if !strings.Contains(text, `"id":"nous","name":"Nous Portal","signed_in":false,"here":true`) || !strings.Contains(text, `"id":"qwen-oauth","name":"Qwen (via Qwen CLI)","signed_in":false,"here":false`) {
 		t.Fatalf("accounts = %s", text)
 	}
-
 }
 
 func modelsServer(t *testing.T, c *http.Client, base, csrf string) {
 	t.Helper()
 	// Own server: Hermes's own messages come through as they are.
-	if code, r, _ := call(t, c, http.MethodPost, base+"/endpoints/test", csrf, map[string]any{"name": nameOllama, "base_url": "http://localhost:11434/v1"}); code != http.StatusOK ||
+	if code, r, _ := call(t, c, http.MethodPost, base+"/endpoints/test", csrf, map[string]any{fieldName: nameOllama, fieldBaseURL: "http://localhost:11434/v1"}); code != http.StatusOK ||
 		r["message"] != "Could not reach http://localhost:11434/v1/models." || r["reachable"] != false {
 		t.Fatalf("test localhost = %d %v", code, r)
 	}
-	if code, r, _ := call(t, c, http.MethodPost, base+"/endpoints/test", csrf, map[string]any{"name": nameOllama, "base_url": "http://ollama:11434"}); code != http.StatusOK ||
+	if code, r, _ := call(t, c, http.MethodPost, base+"/endpoints/test", csrf, map[string]any{fieldName: nameOllama, fieldBaseURL: "http://ollama:11434"}); code != http.StatusOK ||
 		r["resolved_base_url"] != ollamaV1 {
 		t.Fatalf("test = %d %v", code, r)
 	}
-	if code, _, text := call(t, c, http.MethodPost, base+"/endpoints", csrf, map[string]any{"name": nameOllama, "base_url": ollamaV1}); code != http.StatusBadRequest {
+	if code, _, text := call(t, c, http.MethodPost, base+"/endpoints", csrf, map[string]any{fieldName: nameOllama, fieldBaseURL: ollamaV1}); code != http.StatusBadRequest {
 		t.Fatalf("save with no model = %d %s", code, text)
 	}
-	if code, r, _ := call(t, c, http.MethodPost, base+"/endpoints", csrf, map[string]any{"name": nameOllama, "base_url": ollamaV1,
+	if code, r, _ := call(t, c, http.MethodPost, base+"/endpoints", csrf, map[string]any{fieldName: nameOllama, fieldBaseURL: ollamaV1,
 		keyModel: "qwen2.5:0.5b", "make_default": true}); code != http.StatusOK || r["id"] != "ollama" {
 		t.Fatalf("save = %d %v", code, r)
 	}
 	if code, st, _ := call(t, c, http.MethodGet, base+"/status", "", nil); code != http.StatusOK || st["ready"] != true || st["model"] != "qwen2.5:0.5b" {
 		t.Fatalf("status after save = %d %v", code, st)
 	}
-
 }
 
 func modelsKey(t *testing.T, e *modelsEnv, c *http.Client, base, csrf string) {
 	t.Helper()
 	// API key: a rejected key is Hermes's words; a good one is saved in
 	// Hermes and nowhere in the hub.
-	if code, r, _ := call(t, c, http.MethodPost, base+"/keys/test", csrf, map[string]string{"key": varOpenRouter, "value": "sk-bad"}); code != http.StatusOK ||
+	if code, r, _ := call(t, c, http.MethodPost, base+"/keys/test", csrf, map[string]string{fieldKey: varOpenRouter, fieldValue: "sk-bad"}); code != http.StatusOK ||
 		r["message"] != "That API key was rejected. Double-check it and try again." {
 		t.Fatalf("bad key = %d %v", code, r)
 	}
-	if code, r, _ := call(t, c, http.MethodPost, base+"/keys/test", csrf, map[string]string{"key": "DEEPSEEK_API_KEY", "value": "sk-ds"}); code != http.StatusOK ||
+	if code, r, _ := call(t, c, http.MethodPost, base+"/keys/test", csrf, map[string]string{fieldKey: "DEEPSEEK_API_KEY", fieldValue: "sk-ds"}); code != http.StatusOK ||
 		r["ok"] != true || r["reachable"] != false {
 		t.Fatalf("a key Hermes cannot check = %d %v", code, r)
 	}
 	if e.pc.Seen("POST /api/providers/validate") && strings.Contains(strings.Join(e.pc.Bodies, "\n"), "sk-ds") {
 		t.Fatal("a key with no probe went to Hermes's probe")
 	}
-	if code, r, _ := call(t, c, http.MethodPost, base+"/keys/test", csrf, map[string]string{"key": "GOOGLE_API_KEY", "value": "AIza-good"}); code != http.StatusOK || r["reachable"] != true {
+	if code, r, _ := call(t, c, http.MethodPost, base+"/keys/test", csrf, map[string]string{fieldKey: "GOOGLE_API_KEY", fieldValue: "AIza-good"}); code != http.StatusOK || r["reachable"] != true {
 		t.Fatalf("Google AI Studio is checked through its alias = %d %v", code, r)
 	}
-	code, r, text := call(t, c, http.MethodPut, base+"/keys", csrf, map[string]string{"key": varOpenRouter, "value": canary})
+	code, r, text := call(t, c, http.MethodPut, base+"/keys", csrf, map[string]string{fieldKey: varOpenRouter, fieldValue: canary})
 	if code != http.StatusOK || strings.Contains(text, canary) || e.pc.Keys[varOpenRouter] != canary {
 		t.Fatalf("save key = %d %v", code, r)
 	}
@@ -202,7 +203,7 @@ func modelsKeyGuard(t *testing.T, e *modelsEnv, c *http.Client, base, csrf strin
 	t.Helper()
 	// Only provider key variables may be written or removed.
 	for _, k := range []string{"HERMES_SECRET", "DEEPSEEK_BASE_URL", "LM_API_KEY", "lower_case"} {
-		if code, r, _ := call(t, c, http.MethodPut, base+"/keys", csrf, map[string]string{"key": k, "value": "x"}); code != http.StatusBadRequest {
+		if code, r, _ := call(t, c, http.MethodPut, base+"/keys", csrf, map[string]string{fieldKey: k, fieldValue: "x"}); code != http.StatusBadRequest {
 			t.Fatalf("save %s = %d %v", k, code, r)
 		}
 		if code, _, _ := call(t, c, http.MethodDelete, base+"/keys/"+k, csrf, nil); code != http.StatusBadRequest && code != http.StatusNotFound {
@@ -253,7 +254,6 @@ func modelsSignIn(t *testing.T, e *modelsEnv, c *http.Client, base, csrf string)
 		t.Fatalf("away = %d %v", code, r)
 	}
 	e.pc.Down = false
-
 }
 
 func modelsNoLeak(t *testing.T, e *modelsEnv) {
@@ -299,7 +299,7 @@ func TestModelsAdminOnly(t *testing.T) {
 		{http.MethodPost, "/endpoints"}, {http.MethodPut, "/keys"}, {http.MethodPost, "/keys/test"}, {http.MethodDelete, "/keys/OPENROUTER_API_KEY"},
 		{http.MethodPost, "/signin/nous"}, {http.MethodPost, "/default"}, {http.MethodDelete, "/endpoints/x"},
 	} {
-		body := map[string]string{"key": varOpenRouter, "value": canary, "base_url": "http://x", keyModel: "m", "name": "n"}
+		body := map[string]string{fieldKey: varOpenRouter, fieldValue: canary, fieldBaseURL: "http://x", keyModel: "m", fieldName: "n"}
 		if code, out, _ := call(t, bob, r.method, home+r.path, mb.CSRF, body); code != http.StatusForbidden || out["error"] != "Only an admin may connect models" {
 			t.Fatalf("bob %s %s = %d %v", r.method, r.path, code, out)
 		}

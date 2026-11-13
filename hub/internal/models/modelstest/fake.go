@@ -76,6 +76,9 @@ const (
 	kMessage   = "message"
 	kCategory  = "category"
 	kIsCurrent = "is_current"
+	kIsSet     = "is_set"
+	kReachable = "reachable"
+	kName      = "name"
 	openRouter = "openrouter"
 	sessionID  = "sess1"
 )
@@ -121,12 +124,12 @@ func (h *Hermes) routes() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		out := map[string]any{
-			"HERMES_SECRET":     map[string]any{"is_set": true, "redacted_value": "«redacted:…»", kCategory: "tool", "is_password": true},
-			"DEEPSEEK_BASE_URL": map[string]any{"is_set": false, kProvider: "deepseek", "provider_label": "DeepSeek", kCategory: "provider"},
+			"HERMES_SECRET":     map[string]any{kIsSet: true, "redacted_value": "«redacted:…»", kCategory: "tool", "is_password": true},
+			"DEEPSEEK_BASE_URL": map[string]any{kIsSet: false, kProvider: "deepseek", "provider_label": "DeepSeek", kCategory: "provider"},
 		}
 		for k, v := range envVars() {
 			val := h.Keys[k]
-			row := map[string]any{"is_set": val != "", "redacted_value": nil, kProvider: v.provider, "provider_label": v.label,
+			row := map[string]any{kIsSet: val != "", "redacted_value": nil, kProvider: v.provider, "provider_label": v.label,
 				"provider_primary": true, kCategory: "provider", "is_password": true, "url": v.url}
 			if val != "" {
 				row["redacted_value"] = mask(val)
@@ -158,19 +161,19 @@ func (h *Hermes) routes() {
 	h.mux.HandleFunc("POST /api/providers/validate", func(w http.ResponseWriter, r *http.Request) {
 		b := read(r)
 		if v, _ := b["value"].(string); strings.Contains(v, "bad") {
-			write(w, http.StatusOK, map[string]any{"ok": false, "reachable": true, kMessage: "That API key was rejected. Double-check it and try again."})
+			write(w, http.StatusOK, map[string]any{"ok": false, kReachable: true, kMessage: "That API key was rejected. Double-check it and try again."})
 			return
 		}
-		write(w, http.StatusOK, map[string]any{"ok": true, "reachable": true, kMessage: ""})
+		write(w, http.StatusOK, map[string]any{"ok": true, kReachable: true, kMessage: ""})
 	})
 	h.mux.HandleFunc("POST /api/providers/custom-endpoints/validate", func(w http.ResponseWriter, r *http.Request) {
 		b := read(r)
 		u, _ := b["base_url"].(string)
 		if strings.Contains(u, "localhost") {
-			write(w, http.StatusOK, map[string]any{"ok": false, "reachable": false, kMessage: "Could not reach " + u + "/models.", kModels: []string{}})
+			write(w, http.StatusOK, map[string]any{"ok": false, kReachable: false, kMessage: "Could not reach " + u + "/models.", kModels: []string{}})
 			return
 		}
-		write(w, http.StatusOK, map[string]any{"ok": true, "reachable": true, kMessage: "", kModels: []string{"qwen2.5:0.5b", "llama3.2:3b"},
+		write(w, http.StatusOK, map[string]any{"ok": true, kReachable: true, kMessage: "", kModels: []string{"qwen2.5:0.5b", "llama3.2:3b"},
 			"transport_checked": "chat_completions", "resolved_base_url": strings.TrimSuffix(u, "/v1") + "/v1"})
 	})
 	h.mux.HandleFunc("POST /api/providers/custom-endpoints", func(w http.ResponseWriter, r *http.Request) {
@@ -179,7 +182,7 @@ func (h *Hermes) routes() {
 		defer h.mu.Unlock()
 		id, _ := b["id"].(string)
 		if id == "" {
-			id, _ = b["name"].(string)
+			id, _ = b[kName].(string)
 			id = strings.ToLower(id)
 		}
 		h.Endpoints[id] = b
@@ -194,7 +197,7 @@ func (h *Hermes) routes() {
 		defer h.mu.Unlock()
 		eps := make([]any, 0, len(h.Endpoints))
 		for id, e := range h.Endpoints {
-			eps = append(eps, map[string]any{"id": id, "name": e["name"], "base_url": e["base_url"], kModel: e[kModel],
+			eps = append(eps, map[string]any{"id": id, kName: e[kName], "base_url": e["base_url"], kModel: e[kModel],
 				"has_api_key": e["api_key"] != nil, "api_key_preview": nil, kIsCurrent: h.Provider == id})
 		}
 		write(w, http.StatusOK, map[string]any{"endpoints": eps})
@@ -216,11 +219,11 @@ func (h *Hermes) routes() {
 		yes := true
 		ps := []any{}
 		for id, e := range h.Endpoints {
-			ps = append(ps, map[string]any{"slug": id, "name": e["name"], kModels: []string{"qwen2.5:0.5b", "llama3.2:3b"}, "authenticated": yes,
+			ps = append(ps, map[string]any{"slug": id, kName: e[kName], kModels: []string{"qwen2.5:0.5b", "llama3.2:3b"}, "authenticated": yes,
 				kIsCurrent: h.Provider == id})
 		}
 		if h.Keys["OPENROUTER_API_KEY"] != "" || h.Provider == openRouter {
-			ps = append(ps, map[string]any{"slug": openRouter, "name": "OpenRouter", kModels: []string{"openai/gpt-5"},
+			ps = append(ps, map[string]any{"slug": openRouter, kName: "OpenRouter", kModels: []string{"openai/gpt-5"},
 				"authenticated": h.Keys["OPENROUTER_API_KEY"] != "", kIsCurrent: h.Provider == openRouter})
 		}
 		write(w, http.StatusOK, map[string]any{"providers": ps, kModel: h.Model, kProvider: h.Provider})
@@ -250,7 +253,7 @@ func (h *Hermes) routes() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		row := func(id, name, flow string) map[string]any {
-			return map[string]any{"id": id, "name": name, "flow": flow, "cli_command": "hermes auth add " + id, "disconnectable": true,
+			return map[string]any{"id": id, kName: name, "flow": flow, "cli_command": "hermes auth add " + id, "disconnectable": true,
 				"status": map[string]any{"logged_in": h.SignedIn[id]}}
 		}
 		write(w, http.StatusOK, map[string]any{"providers": []any{row("nous", "Nous Portal", "device_code"),
