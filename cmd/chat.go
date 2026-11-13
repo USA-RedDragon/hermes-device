@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/USA-RedDragon/hermes-device/internal/chat"
-	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
-	"github.com/USA-RedDragon/hermes-device/internal/tokenstore"
+	"github.com/USA-RedDragon/talaria/internal/chat"
+	"github.com/USA-RedDragon/talaria/internal/hubapi"
+	"github.com/USA-RedDragon/talaria/internal/tokenstore"
 	"github.com/spf13/cobra"
 )
 

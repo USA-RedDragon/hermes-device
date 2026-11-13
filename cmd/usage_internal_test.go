@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/config"
+	"github.com/USA-RedDragon/talaria/internal/config"
 )
 
 func TestUsageSwitch(t *testing.T) {

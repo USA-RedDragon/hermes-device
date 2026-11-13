@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/mcp"
+	"github.com/USA-RedDragon/talaria/internal/mcp"
 )
 
 // Hub is where the device connects.

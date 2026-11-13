@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/protocol"
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 	"github.com/USA-RedDragon/talaria/hub/internal/store"
+	"github.com/USA-RedDragon/talaria/protocol"
 )
 
 func TestPutFile(t *testing.T) {

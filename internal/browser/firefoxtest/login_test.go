@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/browser/bidi"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
+	"github.com/USA-RedDragon/talaria/internal/browser/bidi"
+	"github.com/USA-RedDragon/talaria/internal/browser/broker"
 )
 
 const (

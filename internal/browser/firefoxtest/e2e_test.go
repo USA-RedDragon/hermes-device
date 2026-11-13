@@ -24,10 +24,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/extension/firefox"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/bidi"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/host"
+	"github.com/USA-RedDragon/talaria/extension/firefox"
+	"github.com/USA-RedDragon/talaria/internal/browser/bidi"
+	"github.com/USA-RedDragon/talaria/internal/browser/broker"
+	"github.com/USA-RedDragon/talaria/internal/browser/host"
 )
 
 const userJS = `user_pref("browser.shell.checkDefaultBrowser", false);

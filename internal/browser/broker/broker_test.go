@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/host"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/nativemsg"
+	"github.com/USA-RedDragon/talaria/internal/browser/broker"
+	"github.com/USA-RedDragon/talaria/internal/browser/host"
+	"github.com/USA-RedDragon/talaria/internal/browser/nativemsg"
 )
 
 // fakeExtension plays Firefox and the extension on the other end of the

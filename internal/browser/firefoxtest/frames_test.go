@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
+	"github.com/USA-RedDragon/talaria/internal/browser/broker"
 )
 
 // Hosts of the frame test servers: the page, a cross-origin frame (and a

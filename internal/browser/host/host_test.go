@@ -3,7 +3,7 @@ package host_test
 import (
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/browser/host"
+	"github.com/USA-RedDragon/talaria/internal/browser/host"
 )
 
 func TestInvocation(t *testing.T) {

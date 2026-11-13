@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/assertion"
+	"github.com/USA-RedDragon/talaria/assertion"
 )
 
 func expect() assertion.Expect {

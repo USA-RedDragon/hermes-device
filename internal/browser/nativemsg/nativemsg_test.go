@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/browser/nativemsg"
+	"github.com/USA-RedDragon/talaria/internal/browser/nativemsg"
 )
 
 func TestRoundTrip(t *testing.T) {

@@ -23,12 +23,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/assertion"
-	"github.com/USA-RedDragon/hermes-device/internal/allowlist"
-	"github.com/USA-RedDragon/hermes-device/internal/device"
-	"github.com/USA-RedDragon/hermes-device/internal/mcp"
-	"github.com/USA-RedDragon/hermes-device/internal/mcp/mcptest"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/assertion"
+	"github.com/USA-RedDragon/talaria/internal/allowlist"
+	"github.com/USA-RedDragon/talaria/internal/device"
+	"github.com/USA-RedDragon/talaria/internal/mcp"
+	"github.com/USA-RedDragon/talaria/internal/mcp/mcptest"
+	"github.com/USA-RedDragon/talaria/protocol"
 	"github.com/coder/websocket"
 )
 

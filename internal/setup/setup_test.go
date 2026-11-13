@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/setup"
+	"github.com/USA-RedDragon/talaria/internal/setup"
 )
 
 const testHub = "https://hub.example.com"

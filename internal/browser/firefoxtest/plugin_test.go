@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/allowlist"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
-	"github.com/USA-RedDragon/hermes-device/internal/device"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/internal/allowlist"
+	"github.com/USA-RedDragon/talaria/internal/browser/broker"
+	"github.com/USA-RedDragon/talaria/internal/device"
+	"github.com/USA-RedDragon/talaria/protocol"
 	"github.com/coder/websocket"
 )
 

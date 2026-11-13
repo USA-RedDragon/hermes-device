@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/config"
-	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
-	"github.com/USA-RedDragon/hermes-device/internal/hermesbuild"
-	"github.com/USA-RedDragon/hermes-device/internal/oci"
-	"github.com/USA-RedDragon/hermes-device/internal/oci/ocitest"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/internal/config"
+	"github.com/USA-RedDragon/talaria/internal/daemonstate"
+	"github.com/USA-RedDragon/talaria/internal/hermesbuild"
+	"github.com/USA-RedDragon/talaria/internal/oci"
+	"github.com/USA-RedDragon/talaria/internal/oci/ocitest"
+	"github.com/USA-RedDragon/talaria/protocol"
 )
 
 const testVersion = "v0.23.1"

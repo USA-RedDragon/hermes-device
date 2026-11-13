@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/internal/hubapi"
+	"github.com/USA-RedDragon/talaria/protocol"
 )
 
 // MoveCommand is the prompt that moves a chat the editor opened from

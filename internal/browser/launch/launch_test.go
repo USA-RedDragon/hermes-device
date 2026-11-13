@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/browser/launch"
+	"github.com/USA-RedDragon/talaria/internal/browser/launch"
 )
 
 func fake(environ []string, manager string, exists ...string) *launch.Launcher {

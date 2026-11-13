@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/mcp"
-	"github.com/USA-RedDragon/hermes-device/internal/mcp/mcptest"
+	"github.com/USA-RedDragon/talaria/internal/mcp"
+	"github.com/USA-RedDragon/talaria/internal/mcp/mcptest"
 )
 
 const fake = "fake"

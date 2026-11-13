@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/USA-RedDragon/hermes-device/internal/plugininstall"
-	"github.com/USA-RedDragon/hermes-device/plugin"
+	"github.com/USA-RedDragon/talaria/internal/plugininstall"
+	"github.com/USA-RedDragon/talaria/plugin"
 	"github.com/spf13/cobra"
 )
 

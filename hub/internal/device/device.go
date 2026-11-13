@@ -1,5 +1,5 @@
 // Package device is the hub side of hermes-device (docs/protocol.md of
-// github.com/USA-RedDragon/hermes-device): pairing, the device token, the
+// github.com/USA-RedDragon/talaria): pairing, the device token, the
 // bind API and the exec, ACP and gateway legs that the hub proxies to a
 // device's backend.
 package device
@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/protocol"
 	"github.com/USA-RedDragon/talaria/hub/internal/config"
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+	"github.com/USA-RedDragon/talaria/protocol"
 	"github.com/coder/websocket"
 )
 

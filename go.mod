@@ -1,4 +1,4 @@
-module github.com/USA-RedDragon/hermes-device
+module github.com/USA-RedDragon/talaria
 
 go 1.27.0
 

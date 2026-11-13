@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/setup"
+	"github.com/USA-RedDragon/talaria/internal/setup"
 	"github.com/spf13/cobra"
 )
 

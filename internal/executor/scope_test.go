@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/executor"
+	"github.com/USA-RedDragon/talaria/internal/executor"
 )
 
 // fakeSystemd writes a systemd-run that records its arguments, one per

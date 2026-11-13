@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/autoupdate"
+	"github.com/USA-RedDragon/talaria/internal/autoupdate"
 )
 
 // fakeDaemon records what a Daemon does, with a clock that only moves when

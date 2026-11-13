@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	firefox "github.com/USA-RedDragon/hermes-device/extension/firefox"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/launch"
+	firefox "github.com/USA-RedDragon/talaria/extension/firefox"
+	"github.com/USA-RedDragon/talaria/internal/browser/launch"
 )
 
 // extArgs is "browser extension --out" followed by rest.

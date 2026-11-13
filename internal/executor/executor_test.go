@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/executor"
+	"github.com/USA-RedDragon/talaria/internal/executor"
 )
 
 type sink struct {

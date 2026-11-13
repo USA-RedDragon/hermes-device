@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
+	"github.com/USA-RedDragon/talaria/internal/hubapi"
 	"github.com/coder/websocket"
 )
 

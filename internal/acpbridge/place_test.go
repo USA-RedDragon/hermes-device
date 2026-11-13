@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/acpbridge"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/internal/acpbridge"
+	"github.com/USA-RedDragon/talaria/protocol"
 	"github.com/coder/websocket"
 )
 

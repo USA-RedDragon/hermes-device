@@ -22,9 +22,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/assertion"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/assertion"
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
+	"github.com/USA-RedDragon/talaria/protocol"
 	"github.com/coder/websocket"
 )
 

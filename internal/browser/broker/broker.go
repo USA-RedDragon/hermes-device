@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/browser/nativemsg"
+	"github.com/USA-RedDragon/talaria/internal/browser/nativemsg"
 )
 
 // SocketName is the socket's file name in the state directory.

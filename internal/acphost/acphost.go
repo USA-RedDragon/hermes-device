@@ -20,9 +20,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/assertion"
-	"github.com/USA-RedDragon/hermes-device/internal/claudeusage"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/assertion"
+	"github.com/USA-RedDragon/talaria/internal/claudeusage"
+	"github.com/USA-RedDragon/talaria/protocol"
 	"github.com/coder/websocket"
 )
 

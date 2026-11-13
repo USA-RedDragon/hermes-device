@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/legacy"
+	"github.com/USA-RedDragon/talaria/internal/legacy"
 	"golang.org/x/mod/semver"
 )
 

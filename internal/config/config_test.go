@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/USA-RedDragon/configulator/v2"
-	"github.com/USA-RedDragon/hermes-device/internal/config"
-	"github.com/USA-RedDragon/hermes-device/internal/setup"
+	"github.com/USA-RedDragon/talaria/internal/config"
+	"github.com/USA-RedDragon/talaria/internal/setup"
 	"github.com/goccy/go-yaml"
 )
 

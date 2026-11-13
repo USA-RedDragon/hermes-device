@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/nativemsg"
+	"github.com/USA-RedDragon/talaria/internal/browser/broker"
+	"github.com/USA-RedDragon/talaria/internal/browser/nativemsg"
 )
 
 // Name is the native messaging host name the extension connects to.

@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/USA-RedDragon/hermes-device/cmd"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/host"
+	"github.com/USA-RedDragon/talaria/cmd"
+	"github.com/USA-RedDragon/talaria/internal/browser/host"
 )
 
 // https://goreleaser.com/cookbooks/using-main.version/

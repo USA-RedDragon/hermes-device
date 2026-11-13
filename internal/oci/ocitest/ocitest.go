@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/oci"
+	"github.com/USA-RedDragon/talaria/internal/oci"
 )
 
 // Digest is the sha256 digest of b.

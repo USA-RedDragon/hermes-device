@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
-	"github.com/USA-RedDragon/hermes-device/internal/splice"
+	"github.com/USA-RedDragon/talaria/internal/hubapi"
+	"github.com/USA-RedDragon/talaria/internal/splice"
 	"github.com/coder/websocket"
 )
 

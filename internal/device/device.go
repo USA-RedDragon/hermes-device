@@ -18,11 +18,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/USA-RedDragon/hermes-device/internal/allowlist"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
-	"github.com/USA-RedDragon/hermes-device/internal/executor"
-	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/internal/allowlist"
+	"github.com/USA-RedDragon/talaria/internal/browser/broker"
+	"github.com/USA-RedDragon/talaria/internal/executor"
+	"github.com/USA-RedDragon/talaria/internal/hubapi"
+	"github.com/USA-RedDragon/talaria/protocol"
 	"github.com/coder/websocket"
 	"golang.org/x/sys/unix"
 )

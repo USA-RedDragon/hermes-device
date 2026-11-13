@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/setup"
+	"github.com/USA-RedDragon/talaria/internal/setup"
 )
 
 func TestUpdatePathHint(t *testing.T) {

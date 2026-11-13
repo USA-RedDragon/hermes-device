@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/protocol"
 	"github.com/USA-RedDragon/talaria/hub/internal/config"
 	"github.com/USA-RedDragon/talaria/hub/internal/device"
 	"github.com/USA-RedDragon/talaria/hub/internal/device/devicetest"
@@ -20,6 +19,7 @@ import (
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 	"github.com/USA-RedDragon/talaria/hub/internal/store"
 	"github.com/USA-RedDragon/talaria/hub/internal/web"
+	"github.com/USA-RedDragon/talaria/protocol"
 )
 
 const (

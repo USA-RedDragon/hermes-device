@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/config"
-	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
-	"github.com/USA-RedDragon/hermes-device/internal/hermesbuild"
-	"github.com/USA-RedDragon/hermes-device/internal/oci"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/internal/config"
+	"github.com/USA-RedDragon/talaria/internal/daemonstate"
+	"github.com/USA-RedDragon/talaria/internal/hermesbuild"
+	"github.com/USA-RedDragon/talaria/internal/oci"
+	"github.com/USA-RedDragon/talaria/protocol"
 )
 
 // Retry delays of a failed background fetch of the server's Hermes build.

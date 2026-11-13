@@ -19,12 +19,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/chat"
-	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
-	"github.com/USA-RedDragon/hermes-device/internal/hermesbuild"
-	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
-	"github.com/USA-RedDragon/hermes-device/internal/oci"
-	"github.com/USA-RedDragon/hermes-device/internal/oci/ocitest"
+	"github.com/USA-RedDragon/talaria/internal/chat"
+	"github.com/USA-RedDragon/talaria/internal/daemonstate"
+	"github.com/USA-RedDragon/talaria/internal/hermesbuild"
+	"github.com/USA-RedDragon/talaria/internal/hubapi"
+	"github.com/USA-RedDragon/talaria/internal/oci"
+	"github.com/USA-RedDragon/talaria/internal/oci/ocitest"
 )
 
 const (

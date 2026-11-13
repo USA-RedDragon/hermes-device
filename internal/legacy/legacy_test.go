@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/legacy"
+	"github.com/USA-RedDragon/talaria/internal/legacy"
 )
 
 func TestDir(t *testing.T) {

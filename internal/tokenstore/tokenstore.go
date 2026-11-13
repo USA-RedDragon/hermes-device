@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/USA-RedDragon/hermes-device/internal/legacy"
+	"github.com/USA-RedDragon/talaria/internal/legacy"
 	"github.com/zalando/go-keyring"
 )
 

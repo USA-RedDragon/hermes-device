@@ -25,7 +25,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/oci"
+	"github.com/USA-RedDragon/talaria/internal/oci"
 )
 
 // DirName is the directory of this tool in the user cache directory.

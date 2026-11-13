@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/USA-RedDragon/hermes-device/internal/tokenstore"
+	"github.com/USA-RedDragon/talaria/internal/tokenstore"
 )
 
 // FileName is the state file's name in the state directory.

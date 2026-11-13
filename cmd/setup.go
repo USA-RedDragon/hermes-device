@@ -14,14 +14,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/browser/host"
-	"github.com/USA-RedDragon/hermes-device/internal/config"
-	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
-	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
-	"github.com/USA-RedDragon/hermes-device/internal/pairing"
-	"github.com/USA-RedDragon/hermes-device/internal/setup"
-	"github.com/USA-RedDragon/hermes-device/internal/splice"
-	"github.com/USA-RedDragon/hermes-device/internal/tokenstore"
+	"github.com/USA-RedDragon/talaria/internal/browser/host"
+	"github.com/USA-RedDragon/talaria/internal/config"
+	"github.com/USA-RedDragon/talaria/internal/daemonstate"
+	"github.com/USA-RedDragon/talaria/internal/hubapi"
+	"github.com/USA-RedDragon/talaria/internal/pairing"
+	"github.com/USA-RedDragon/talaria/internal/setup"
+	"github.com/USA-RedDragon/talaria/internal/splice"
+	"github.com/USA-RedDragon/talaria/internal/tokenstore"
 	"github.com/spf13/cobra"
 )
 

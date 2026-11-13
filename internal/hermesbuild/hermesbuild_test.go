@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/hermesbuild"
-	"github.com/USA-RedDragon/hermes-device/internal/oci"
-	"github.com/USA-RedDragon/hermes-device/internal/oci/ocitest"
+	"github.com/USA-RedDragon/talaria/internal/hermesbuild"
+	"github.com/USA-RedDragon/talaria/internal/oci"
+	"github.com/USA-RedDragon/talaria/internal/oci/ocitest"
 )
 
 var imageEnv = []string{ //nolint:gochecknoglobals // test fixture

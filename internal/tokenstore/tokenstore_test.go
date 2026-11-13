@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/tokenstore"
+	"github.com/USA-RedDragon/talaria/internal/tokenstore"
 	"github.com/zalando/go-keyring"
 )
 

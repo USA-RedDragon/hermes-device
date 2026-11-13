@@ -5,7 +5,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/executor"
+	"github.com/USA-RedDragon/talaria/internal/executor"
 )
 
 func TestExitMessage(t *testing.T) {

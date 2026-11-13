@@ -22,9 +22,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/assertion"
-	"github.com/USA-RedDragon/hermes-device/internal/acphost"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/assertion"
+	"github.com/USA-RedDragon/talaria/internal/acphost"
+	"github.com/USA-RedDragon/talaria/protocol"
 	"github.com/coder/websocket"
 )
 

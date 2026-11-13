@@ -6,10 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/USA-RedDragon/hermes-device/internal/acpbridge"
-	"github.com/USA-RedDragon/hermes-device/internal/config"
-	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
-	"github.com/USA-RedDragon/hermes-device/internal/tokenstore"
+	"github.com/USA-RedDragon/talaria/internal/acpbridge"
+	"github.com/USA-RedDragon/talaria/internal/config"
+	"github.com/USA-RedDragon/talaria/internal/hubapi"
+	"github.com/USA-RedDragon/talaria/internal/tokenstore"
 	"github.com/spf13/cobra"
 )
 

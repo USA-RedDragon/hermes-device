@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/attest"
+	"github.com/USA-RedDragon/talaria/internal/attest"
 )
 
 // Recorded on 2026-11-11 from the GitHub API: the attestations of

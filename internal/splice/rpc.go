@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
+	"github.com/USA-RedDragon/talaria/internal/hubapi"
 )
 
 // JSON-RPC error codes and data.reason values of docs/protocol.md 5.6.

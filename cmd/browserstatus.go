@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
-	"github.com/USA-RedDragon/hermes-device/internal/splice"
+	"github.com/USA-RedDragon/talaria/internal/browser/broker"
+	"github.com/USA-RedDragon/talaria/internal/splice"
 )
 
 // browserControl gives the splice's control endpoints the broker's state.

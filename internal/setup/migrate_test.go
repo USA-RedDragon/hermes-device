@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/setup"
+	"github.com/USA-RedDragon/talaria/internal/setup"
 )
 
 const legacyUnit = `[Unit]

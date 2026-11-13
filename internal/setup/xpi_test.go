@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/USA-RedDragon/hermes-device/internal/setup"
+	"github.com/USA-RedDragon/talaria/internal/setup"
 )
 
 func TestXPIURLFollowsCarriedUpdates(t *testing.T) {

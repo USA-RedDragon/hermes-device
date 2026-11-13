@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/hermesbuild"
+	"github.com/USA-RedDragon/talaria/internal/hermesbuild"
 )
 
 // TestLive pulls a real image and runs its hermes --version. It runs only

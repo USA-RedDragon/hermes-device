@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/assertion"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/assertion"
+	"github.com/USA-RedDragon/talaria/protocol"
 )
 
 // shared is one constant that Go and the Python plugin both define. Names

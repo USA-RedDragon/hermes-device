@@ -16,8 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/assertion"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/assertion"
 	"github.com/USA-RedDragon/talaria/hub/internal/config"
 	"github.com/USA-RedDragon/talaria/hub/internal/device"
 	"github.com/USA-RedDragon/talaria/hub/internal/device/devicetest"
@@ -27,6 +26,7 @@ import (
 	"github.com/USA-RedDragon/talaria/hub/internal/service"
 	"github.com/USA-RedDragon/talaria/hub/internal/store"
 	"github.com/USA-RedDragon/talaria/hub/internal/store/storetest"
+	"github.com/USA-RedDragon/talaria/protocol"
 	"github.com/coder/websocket"
 )
 

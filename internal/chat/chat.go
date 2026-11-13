@@ -21,13 +21,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/config"
-	"github.com/USA-RedDragon/hermes-device/internal/daemonstate"
-	"github.com/USA-RedDragon/hermes-device/internal/hermesbuild"
-	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
-	"github.com/USA-RedDragon/hermes-device/internal/oci"
-	"github.com/USA-RedDragon/hermes-device/internal/splice"
-	"github.com/USA-RedDragon/hermes-device/internal/tokenstore"
+	"github.com/USA-RedDragon/talaria/internal/config"
+	"github.com/USA-RedDragon/talaria/internal/daemonstate"
+	"github.com/USA-RedDragon/talaria/internal/hermesbuild"
+	"github.com/USA-RedDragon/talaria/internal/hubapi"
+	"github.com/USA-RedDragon/talaria/internal/oci"
+	"github.com/USA-RedDragon/talaria/internal/splice"
+	"github.com/USA-RedDragon/talaria/internal/tokenstore"
 )
 
 // GatewayURLEnv is the variable the Ink TUI dials instead of starting its

@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/protocol"
 )
 
 // KillGrace is how long a killed process group gets after SIGTERM before

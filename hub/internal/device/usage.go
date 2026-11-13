@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/assertion"
+	"github.com/USA-RedDragon/talaria/assertion"
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 

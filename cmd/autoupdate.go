@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/attest"
-	"github.com/USA-RedDragon/hermes-device/internal/autoupdate"
-	"github.com/USA-RedDragon/hermes-device/internal/config"
-	"github.com/USA-RedDragon/hermes-device/internal/setup"
+	"github.com/USA-RedDragon/talaria/internal/attest"
+	"github.com/USA-RedDragon/talaria/internal/autoupdate"
+	"github.com/USA-RedDragon/talaria/internal/config"
+	"github.com/USA-RedDragon/talaria/internal/setup"
 	"github.com/spf13/cobra"
 )
 

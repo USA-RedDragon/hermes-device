@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	firefox "github.com/USA-RedDragon/hermes-device/extension/firefox"
+	firefox "github.com/USA-RedDragon/talaria/extension/firefox"
 )
 
 func TestValidVersion(t *testing.T) {

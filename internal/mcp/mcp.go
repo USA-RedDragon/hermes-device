@@ -27,7 +27,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/protocol"
 )
 
 // ProtocolVersion is the MCP revision the client asks for in initialize.

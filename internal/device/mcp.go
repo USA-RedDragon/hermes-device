@@ -9,8 +9,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/mcp"
-	"github.com/USA-RedDragon/hermes-device/protocol"
+	"github.com/USA-RedDragon/talaria/internal/mcp"
+	"github.com/USA-RedDragon/talaria/protocol"
 )
 
 // MCP runs the MCP servers of the device config. *mcp.Manager is one.

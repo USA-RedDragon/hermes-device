@@ -8,11 +8,11 @@ import (
 	"os"
 	"path/filepath"
 
-	firefox "github.com/USA-RedDragon/hermes-device/extension/firefox"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/broker"
-	"github.com/USA-RedDragon/hermes-device/internal/browser/host"
-	"github.com/USA-RedDragon/hermes-device/internal/config"
-	"github.com/USA-RedDragon/hermes-device/internal/tokenstore"
+	firefox "github.com/USA-RedDragon/talaria/extension/firefox"
+	"github.com/USA-RedDragon/talaria/internal/browser/broker"
+	"github.com/USA-RedDragon/talaria/internal/browser/host"
+	"github.com/USA-RedDragon/talaria/internal/config"
+	"github.com/USA-RedDragon/talaria/internal/tokenstore"
 	"github.com/spf13/cobra"
 )
 

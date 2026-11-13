@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/USA-RedDragon/hermes-device/internal/hubapi"
+	"github.com/USA-RedDragon/talaria/internal/hubapi"
 )
 
 // Errors that end pairing without a token.

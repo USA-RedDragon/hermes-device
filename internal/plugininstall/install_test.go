@@ -7,8 +7,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/USA-RedDragon/hermes-device/internal/plugininstall"
-	"github.com/USA-RedDragon/hermes-device/plugin"
+	"github.com/USA-RedDragon/talaria/internal/plugininstall"
+	"github.com/USA-RedDragon/talaria/plugin"
 )
 
 func TestInstallReplacesTree(t *testing.T) {

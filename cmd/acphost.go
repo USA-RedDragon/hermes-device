@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/USA-RedDragon/hermes-device/assertion"
-	"github.com/USA-RedDragon/hermes-device/internal/acphost"
-	"github.com/USA-RedDragon/hermes-device/internal/claudeusage"
-	"github.com/USA-RedDragon/hermes-device/internal/config"
+	"github.com/USA-RedDragon/talaria/assertion"
+	"github.com/USA-RedDragon/talaria/internal/acphost"
+	"github.com/USA-RedDragon/talaria/internal/claudeusage"
+	"github.com/USA-RedDragon/talaria/internal/config"
 	"github.com/spf13/cobra"
 )
 
