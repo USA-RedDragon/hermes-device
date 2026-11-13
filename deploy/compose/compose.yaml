@@ -104,6 +104,49 @@ services:
       start_period: 3m
       start_interval: 2s
 
+  # Hosts one hermes acp per editor connection that the hub forwards (talaria acp). Shares the Hermes container's
+  # network, as acp-host talks to the gateway on localhost. The image is Hermes with the talaria binary added
+  acp-host:
+    build:
+      args:
+        HERMES_IMAGE: *hermes-image
+        DEVICE_IMAGE: *device-image
+      dockerfile_inline: |
+        ARG DEVICE_IMAGE
+        ARG HERMES_IMAGE
+        FROM $${DEVICE_IMAGE} AS device
+        FROM $${HERMES_IMAGE}
+        COPY --from=device /hermes-device /usr/local/bin/talaria
+    entrypoint: ["/usr/local/bin/talaria"]
+    command: ["acp-host"]
+    user: "10000:10000"
+    restart: unless-stopped
+    network_mode: service:hermes
+    depends_on:
+      hermes:
+        condition: service_healthy
+    environment:
+      <<: *hermes-env
+      HOME: /opt/data
+      TMPDIR: /tmp
+      TALARIA_UPDATE_AUTO: "false"
+      TALARIA_ACP_HOST_LISTEN: ":9130"
+      TALARIA_ACP_HOST_BACKEND_ID: main
+      TALARIA_ACP_HOST_PLACEHOLDER: /opt/data/device-placeholder
+      TALARIA_ACP_HOST_HERMES: /opt/hermes/.venv/bin/hermes
+      TALARIA_ACP_HOST_HUB_PUBLIC_KEY_FILE: /opt/data/talaria/hub_public_key.pem
+    volumes:
+      - hermes-data:/opt/data
+    tmpfs:
+      - /tmp:uid=10000,gid=10000
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-m", "3", "-o", "/dev/null", "http://127.0.0.1:9130/healthz"]
+      interval: 10s
+      timeout: 4s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+
   # The one published port. The hub lives in this container's network
   front:
     image: *caddy-image

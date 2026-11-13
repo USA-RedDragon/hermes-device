@@ -17,6 +17,8 @@ S=${TALARIA_SECRETS:-/secrets}
 HUB_DATA=${TALARIA_HUB_DATA:-/hub-data}
 WORK=${TALARIA_WORK:-/work}
 HERMES_URL=${TALARIA_HERMES_URL:-http://hermes:9120}
+# The acp-host that runs next to Hermes, for editors (talaria acp). Empty: the hub has no editor bridge
+ACP_URL=${TALARIA_ACP_URL-http://hermes:9130}
 HUB_UID=${TALARIA_HUB_UID:-65534}
 HERMES_UID=${TALARIA_HERMES_UID:-10000}
 SANDBOX_UID=${TALARIA_SANDBOX_UID:-568}
@@ -85,6 +87,9 @@ backends:
         name: Sandbox
         token: $(g sandbox-token)
 EOF
+if [ -n "$ACP_URL" ]; then
+  printf '    acp_url: %s\n' "$ACP_URL" >> "$S/hub/config.yaml.tmp"
+fi
 if [ -n "${TALARIA_HONCHO_URL:-}" ]; then
   # Shows what Honcho learned on the hub's Memory page. The compose Honcho runs without auth
   cat >> "$S/hub/config.yaml.tmp" <<EOF

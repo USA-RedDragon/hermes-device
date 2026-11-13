@@ -167,7 +167,46 @@ spec:
           resources: {{- toYaml .Values.hermes.resources | nindent 12 }}
           securityContext: *sc
           volumeMounts: *mounts
+        {{- if .Values.hermes.editorBridge.enabled }}
+        # Hosts one hermes acp per editor connection that the hub forwards (talaria acp). Its own container, so
+        # editor sessions outlive gateway restarts; the binary comes from the talaria image, mounted read-only
+        - name: acp-host
+          image: {{ .Values.images.hermes }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          command: ["/opt/talaria/hermes-device", "acp-host"]
+          workingDir: /opt/data
+          env:
+            - {name: HOME, value: /opt/data}
+            - {name: HERMES_HOME, value: /opt/data}
+            - {name: TMPDIR, value: /tmp}
+            - {name: TZ, value: {{ .Values.timeZone | quote }}}
+            - {name: TALARIA_UPDATE_AUTO, value: "false"}
+            - {name: TALARIA_ACP_HOST_LISTEN, value: ":9130"}
+            - {name: TALARIA_ACP_HOST_BACKEND_ID, value: main}
+            - {name: TALARIA_ACP_HOST_PLACEHOLDER, value: /opt/data/device-placeholder}
+            - {name: TALARIA_ACP_HOST_HERMES, value: /opt/hermes/.venv/bin/hermes}
+            - {name: TALARIA_ACP_HOST_HUB_PUBLIC_KEY_FILE, value: /opt/data/talaria/hub_public_key.pem}
+          ports:
+            - {name: acp, containerPort: 9130}
+          livenessProbe:
+            httpGet: {path: /healthz, port: 9130}
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 10m, memory: 64Mi}
+            limits: {memory: 4Gi}
+          securityContext: *sc
+          volumeMounts:
+            - {name: data, mountPath: /opt/data}
+            - {name: tmp, mountPath: /tmp}
+            - {name: device-bin, mountPath: /opt/talaria, readOnly: true}
+        {{- end }}
       volumes:
+        {{- if .Values.hermes.editorBridge.enabled }}
+        - name: device-bin
+          image:
+            reference: {{ .Values.images.device }}
+            pullPolicy: {{ .Values.images.pullPolicy }}
+        {{- end }}
         - name: data
           persistentVolumeClaim: {claimName: {{ $full }}-hermes}
         - name: tmp
@@ -196,3 +235,6 @@ spec:
   publishNotReadyAddresses: false
   ports:
     - {name: webapp, port: 9120, targetPort: webapp}
+    {{- if .Values.hermes.editorBridge.enabled }}
+    - {name: acp, port: 9130, targetPort: acp}
+    {{- end }}

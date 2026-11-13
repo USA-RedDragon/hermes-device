@@ -1,0 +1,10 @@
+#!/command/with-contenv sh
+# Hosts one hermes acp per editor connection that the hub forwards (talaria acp), as the hermes user. Only the hub
+# calls it, on the loopback address, with a signed assertion
+export HOME=/opt/data HERMES_HOME=/opt/data TMPDIR=/tmp TALARIA_UPDATE_AUTO=false
+export TALARIA_ACP_HOST_LISTEN=127.0.0.1:9130 TALARIA_ACP_HOST_BACKEND_ID=main
+export TALARIA_ACP_HOST_PLACEHOLDER=/opt/data/device-placeholder TALARIA_ACP_HOST_HERMES=/opt/hermes/.venv/bin/hermes
+export TALARIA_ACP_HOST_HUB_PUBLIC_KEY_FILE=/opt/data/talaria/hub_public_key.pem
+# The Hermes home setup writes the hub's public key; s6 runs this again after a failed start
+[ -s "$TALARIA_ACP_HOST_HUB_PUBLIC_KEY_FILE" ] || { s6-sleep 2; exit 1; }
+exec s6-setuidgid hermes talaria acp-host
