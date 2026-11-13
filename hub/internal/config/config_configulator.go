@@ -1309,7 +1309,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.StringSlice(names[45], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
 	fs.String(names[46], "", "Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription")
 	fs.String(names[47], "", "File that holds notify.vapid_private_key. Wins over vapid_private_key")
-	fs.String(names[48], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url")
+	fs.String(names[48], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url when that is https. With neither, the hub logs a warning and runs without Web Push")
 	fs.Duration(names[49], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
 	fs.Duration(names[50], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
 	fs.Duration(names[51], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")

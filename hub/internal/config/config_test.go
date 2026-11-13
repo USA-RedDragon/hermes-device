@@ -354,6 +354,16 @@ func TestNotifySettings(t *testing.T) {
 	if !strings.HasPrefix(cfg.Notify.VAPIDSubject, "https://") {
 		t.Fatalf("subject = %q", cfg.Notify.VAPIDSubject)
 	}
+	env["HUB_HTTP_PUBLIC_URL"] = "http://localhost:8080"
+	cfg, err = load(t, env, file)
+	if err != nil || cfg.Notify.VAPIDSubject != "" {
+		t.Fatalf("http public URL without subject: %q, %v", cfg.Notify.VAPIDSubject, err)
+	}
+	env["HUB_NOTIFY_VAPID_SUBJECT"] = "mailto:admin@example.com"
+	cfg, err = load(t, env, file)
+	if err != nil || cfg.Notify.VAPIDSubject != "mailto:admin@example.com" {
+		t.Fatalf("http public URL with mailto subject: %q, %v", cfg.Notify.VAPIDSubject, err)
+	}
 	for _, bad := range []map[string]string{
 		{"HUB_NOTIFY_VAPID_PRIVATE_KEY": "not a key"},
 		{"HUB_NOTIFY_VAPID_PRIVATE_KEY": key, "HUB_NOTIFY_VAPID_SUBJECT": "ops@example.com"},

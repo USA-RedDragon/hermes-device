@@ -17,7 +17,7 @@ import (
 type Notify struct {
 	VAPIDPrivateKey     string        `name:"vapid_private_key" secret:"true" description:"Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription"`
 	VAPIDPrivateKeyFile string        `name:"vapid_private_key_file" description:"File that holds notify.vapid_private_key. Wins over vapid_private_key"`
-	VAPIDSubject        string        `name:"vapid_subject" description:"How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url"`
+	VAPIDSubject        string        `name:"vapid_subject" description:"How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url when that is https. With neither, the hub logs a warning and runs without Web Push"`
 	RemindAfter         time.Duration `name:"remind_after" default:"5m" description:"How long an approval or question waits before the hub reminds its person once. 0 is the default"`
 	WatchInterval       time.Duration `name:"watch_interval" default:"15s" description:"How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default"`
 	JobInterval         time.Duration `name:"job_interval" default:"1m" description:"How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default"`
@@ -69,14 +69,14 @@ func (c *Config) validateNotify() error {
 	if n.JobInterval == 0 {
 		n.JobInterval = defaultJobInterval
 	}
-	if n.VAPIDSubject == "" {
+	if n.VAPIDSubject == "" && strings.HasPrefix(c.HTTP.PublicURL, "https:") {
 		n.VAPIDSubject = c.HTTP.PublicURL
 	}
 	k, err := n.PushKey()
 	if err != nil {
 		return err
 	}
-	if k != nil && !strings.HasPrefix(n.VAPIDSubject, "mailto:") && !strings.HasPrefix(n.VAPIDSubject, "https:") {
+	if k != nil && n.VAPIDSubject != "" && !strings.HasPrefix(n.VAPIDSubject, "mailto:") && !strings.HasPrefix(n.VAPIDSubject, "https:") {
 		return fmt.Errorf("%w: notify.vapid_subject must be a mailto: or https: URL", ErrNotify)
 	}
 	return nil

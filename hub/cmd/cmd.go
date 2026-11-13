@@ -228,7 +228,9 @@ func newNotifier(cfg *config.Config, st *store.Store, svc *service.Service, dial
 	}
 	opts := notify.Options{Store: st, Access: svc, Prompts: svc, Users: users, Backends: names, Jobs: jobs,
 		PublicURL: cfg.HTTP.PublicURL, PushSubject: cfg.Notify.VAPIDSubject, Remind: cfg.Notify.RemindAfter, JobPoll: cfg.Notify.JobInterval}
-	if key != nil {
+	if key != nil && cfg.Notify.VAPIDSubject == "" {
+		slog.Warn("Web Push disabled: set notify.vapid_subject to a mailto: or https: URL, or use an https http.public_url")
+	} else if key != nil {
 		opts.Push = key
 		slog.Info("Web Push enabled", "public_key", key.PublicKey())
 	}
