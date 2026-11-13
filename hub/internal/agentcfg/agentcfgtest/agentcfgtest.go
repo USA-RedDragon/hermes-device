@@ -76,6 +76,14 @@ func (a *Agent) Request(ctx context.Context, method, path string, body []byte) (
 	return rec.Result(), nil
 }
 
+// Edit runs f on the agent with its lock held, so a test can change what
+// the lists answer while the hub may already be asking.
+func (a *Agent) Edit(f func(*Agent)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	f(a)
+}
+
 // Seen reports whether a request with this method and path prefix came.
 func (a *Agent) Seen(prefix string) bool {
 	a.mu.Lock()

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/USA-RedDragon/talaria/hub/internal/agentcfg"
@@ -75,16 +76,40 @@ func setupAgent(t *testing.T, locked ...string) *agentEnv {
 	pc, home := agentcfgtest.New(), agentcfgtest.New()
 	tg := &fakeTelegram{}
 	var e *hubEnv
+	// The hub serves from the moment setupWith returns, and a browser that
+	// a test starts later reaches it through sockets the race detector
+	// cannot order against the assignment of e. The lock orders it.
+	var mu sync.RWMutex
+	mu.Lock()
 	e = setupWith(t, func(cfg *config.Config, opts *web.Options, st *store.Store) {
 		cfg.Agent.LockedKeys = locked
-		opts.Agent = agentcfg.New(agentcfg.Options{Access: lateAccess{&e}, Locked: locked,
+		opts.Agent = agentcfg.New(agentcfg.Options{Access: lockedAccess{&mu, lateAccess{&e}}, Locked: locked,
 			Requesters: map[string]device.Requester{"pc": pc, backendHome: home}})
 		opts.Telegram = tg
 		opts.Snapshot = st.Snapshot
 		opts.Scratch = t.TempDir()
 		opts.Updates = fixedUpdates{hub.UpdateStatus{Current: "0.26.70", Latest: &hub.Release{Version: "0.27.0"}}}
 	})
+	mu.Unlock()
 	return &agentEnv{hubEnv: e, pc: pc, home: home, tg: tg}
+}
+
+// lockedAccess is lateAccess that waits until the hub env is assigned.
+type lockedAccess struct {
+	mu *sync.RWMutex
+	lateAccess
+}
+
+func (l lockedAccess) Allowed(ctx context.Context, user, backendID string) error {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.lateAccess.Allowed(ctx, user, backendID)
+}
+
+func (l lockedAccess) Backends(ctx context.Context, user string) ([]hub.Backend, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.lateAccess.Backends(ctx, user)
 }
 
 func TestAgentAdminRoutes(t *testing.T) {
