@@ -27,7 +27,7 @@ Run `talaria login` again, and confirm the code in the browser within 10 minutes
 
 ## macOS: `talaria` waits and prints nothing
 
-macOS blocked a program downloaded with a browser and shows "talaria" Not Opened on the Mac's screen. Press Ctrl-C, choose Done, unpack the archive again and run `xattr -d com.apple.quarantine ./talaria` before the first run. See [Add a computer](../start/add-a-computer.md#on-macos).
+This happens only with an unsigned build (see Add a computer). macOS blocked a program downloaded with a browser and shows "talaria" Not Opened on the Mac's screen. Press Ctrl-C, choose Done, unpack the archive again and run `xattr -d com.apple.quarantine ./talaria` before the first run. See [Add a computer](../start/add-a-computer.md#on-macos).
 
 ## macOS over SSH: `could not read the device token from the OS keyring`
 

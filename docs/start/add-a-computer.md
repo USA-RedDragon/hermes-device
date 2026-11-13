@@ -50,7 +50,7 @@ On Linux, run the unpacked program once. It installs itself under `~/.talaria/bi
 
 ### On macOS
 
-The program is not signed with an Apple Developer ID and not notarized by Apple. What happens on the first run depends on how you downloaded it:
+Releases that the repository's maintainer has set up for it are signed with an Apple Developer ID and notarized by Apple, and need none of the steps below (on the first run macOS checks with Apple, so the Mac needs network access). The steps are for an unsigned build: a release made before signing was set up, or one from a fork. `codesign -dv ./talaria` tells which you have. What happens on the first run of an unsigned build depends on how you downloaded it:
 
 - **With `curl` in Terminal**, macOS does not mark the file, and it runs at once. This is the simplest way (use `darwin_amd64` on an Intel Mac):
 

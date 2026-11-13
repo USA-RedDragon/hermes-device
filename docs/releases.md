@@ -4,7 +4,7 @@ From v<!-- docgen:const pkg=internal/setup name=FirstAttestedVersion code=false 
 
 ## 1. What the release workflow attests
 
-`.github/workflows/release.yaml` runs on a push of a `v*` tag. After the shared GoReleaser workflow has built and uploaded the release, and the `firefox-extension` job has uploaded the signed `.xpi`:
+`.github/workflows/release.yaml` runs on a push of a `v*` tag. After the shared GoReleaser workflow has built and uploaded the release, the `macos-sign` job has signed and notarized the darwin archives (section 7), and the `firefox-extension` job has uploaded the signed `.xpi`:
 
 0. Before the build, `scripts/check-plugin-version.sh` fails the release when `PLUGIN_VERSION` in `plugin/device/core.py` or the version in `plugin/device/plugin.yaml` is not the tag's version, so the plugin in the image and in the binary reports the release it ships in. Commit `plugin: report version X.Y.Z` before tagging `vX.Y.Z`. Pre-release tags are not checked.
 1. The `attest-files` job downloads the release's `.tar.gz` archives, its checksum file and the `.xpi`, checks the archives against the checksum file, and attests all of them with `actions/attest-build-provenance`. That is one SLSA build provenance v1 statement with one subject per file.
@@ -90,3 +90,39 @@ gh attestation verify oci://ghcr.io/usa-reddragon/hermes-device:v0.13.0 --repo U
 4. It waits, for up to 30 minutes, until this device holds no command (running, or with output or an exit the plugin has not confirmed), runs no browser operation and no MCP call, and the chat splice has no TUI open. Then it refuses new work with a message that the device restarts for an update, and exits with status 75. systemd (`Restart=always`) and launchd (`KeepAlive`) start the new binary. When the device stays busy, the new binary stays installed and the daemon tries again at the next check.
 
 The first check comes 1 to 5 minutes after `run` starts, and the next ones every `update.interval` (default 6h, at least 1h) with up to 10% jitter. So each daemon makes about 4 conditional API requests a day, plus the attestation request of section 2 when it installs a release.
+
+## 7. macOS signing and notarization
+
+The `macos-sign` job of the release workflow signs the `talaria` and `hermes-device` binaries in the four darwin archives with a Developer ID Application certificate (hardened runtime, secure timestamp), has Apple notarize them, and uploads the archives again under the same names. It runs before the checksum file is rewritten and before `attest-files`, so `talaria_<version>_checksums.txt`, its `hermes-device_` copy and the attestations cover the signed files, and `update` verifies them as before. A bare command-line binary cannot be stapled, so on its first run Gatekeeper asks Apple online whether the binary is notarized.
+
+The shared GoReleaser workflow does not pass secrets to GoReleaser, so the job does this on a macOS runner with `codesign` and `notarytool` instead of GoReleaser's `notarize` setting.
+
+When any of the five secrets below is missing (a fork, or before they are set), the release still succeeds, the job is skipped, and the `macos-plan` job prints a notice that lists the missing secrets. The darwin binaries are then unsigned, and the Gatekeeper steps in [Add a computer](start/add-a-computer.md#on-macos) apply.
+
+### 7.1 What to create at Apple
+
+1. A Developer ID Application certificate. In the Apple Developer account, Certificates, Identifiers & Profiles, create a certificate of type Developer ID Application (the account holder can do this) from a certificate signing request made in Keychain Access. Install it, then in Keychain Access, My Certificates, export the certificate with its private key as a `.p12` file with a password.
+2. An App Store Connect API key. In App Store Connect, Users and Access, Integrations, Team Keys, create a key with the Developer role. Download the `.p8` file (Apple offers it once). Note the Key ID and the Issuer ID shown on that page.
+
+### 7.2 Repository secrets
+
+Add these under Settings, Secrets and variables, Actions, Repository secrets (or with `gh secret set <name>`):
+
+| Secret | Value |
+| --- | --- |
+| `MACOS_SIGN_P12` | the `.p12` file, base64: `base64 -i cert.p12 \| pbcopy` on macOS, `base64 -w0 cert.p12` on Linux |
+| `MACOS_SIGN_PASSWORD` | the password set when exporting the `.p12` |
+| `MACOS_NOTARY_KEY` | the `.p8` file, base64: `base64 -i AuthKey_XXXX.p8 \| pbcopy` on macOS, `base64 -w0 AuthKey_XXXX.p8` on Linux |
+| `MACOS_NOTARY_KEY_ID` | the Key ID of the API key |
+| `MACOS_NOTARY_ISSUER_ID` | the Issuer ID, a UUID |
+
+### 7.3 Verify on a Mac
+
+Unpack a darwin archive of a release and run:
+
+```sh
+codesign -dv --verbose=4 ./talaria
+spctl -a -vvv -t install ./talaria
+```
+
+`codesign` should show `Authority=Developer ID Application: ...`, a `Timestamp`, and `flags=0x10000(runtime)`. `spctl` should say `accepted` with `source=Notarized Developer ID` (it needs network access). `codesign --verify --strict ./talaria` checks the signature alone.
