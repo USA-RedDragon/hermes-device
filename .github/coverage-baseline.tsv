@@ -22,7 +22,7 @@ internal/acpbridge/place.go	155	141
 internal/acphost/acphost.go	275	219
 internal/acphost/rewrite.go	260	237
 internal/acphost/sweep.go	42	36
-internal/acphost/sweep_linux.go	38	28
+internal/acphost/sweep_linux.go	38	27
 internal/allowlist/allowlist.go	25	25
 internal/attest/attest.go	141	123
 internal/attest/bundle.go	248	212
