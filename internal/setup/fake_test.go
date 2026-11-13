@@ -3,6 +3,8 @@ package setup_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -122,4 +124,9 @@ func readFile(t *testing.T, path string) string {
 func exists(path string) bool {
 	_, err := os.Lstat(path)
 	return err == nil
+}
+
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }

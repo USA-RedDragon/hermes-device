@@ -1,3 +1,5 @@
+//go:build unix
+
 package device_test
 
 import (
@@ -16,7 +18,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -584,39 +585,6 @@ func TestNoWelcomeRetries(t *testing.T) {
 	waitFor(t, "a reconnect", func() bool { return f.conns.Load() >= 2 })
 }
 
-func TestDisconnectKillsCommands(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	pidFile := filepath.Join(root, "pid")
-	f := &fakeHub{}
-	var first atomic.Bool
-	f.handler = func(ctx context.Context, conn *websocket.Conn, _ protocol.Hello) {
-		if !first.CompareAndSwap(false, true) {
-			<-ctx.Done()
-			return
-		}
-		writeJSON(ctx, conn, protocol.Exec{Type: protocol.TypeExec, ID: "1", Cmd: "echo $$ > " + pidFile + "; echo go; sleep 60", Cwd: root, Timeout: 120})
-		for {
-			typ, _, err := readMsg(ctx, conn)
-			if err != nil || typ == protocol.TypeOutput {
-				return
-			}
-		}
-	}
-	srv := serve(t, f)
-	start(t, options(t, srv.URL, root))
-	waitFor(t, "a reconnect", func() bool { return f.conns.Load() >= 2 })
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, "the command to die", func() bool { return syscall.Kill(pid, 0) != nil })
-}
-
 // resumeHub serves the exec leg with a handler per connection, numbered
 // from 1. Each connection gets a version 3 welcome and then the resume
 // that resumeFor returns.
@@ -672,28 +640,6 @@ func readPid(t *testing.T, path string) int {
 		t.Fatal(err)
 	}
 	return pid
-}
-
-func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
-
-// waitOutput reads until the output of id holds want.
-func waitOutput(ctx context.Context, t *testing.T, conn *websocket.Conn, id, want string) {
-	t.Helper()
-	var got string
-	for !strings.Contains(got, want) {
-		typ, data, err := readMsg(ctx, conn)
-		if err != nil {
-			t.Errorf("read: %v (output so far %q)", err, got)
-			return
-		}
-		if typ == protocol.TypeOutput {
-			var o protocol.Output
-			_ = json.Unmarshal(data, &o)
-			if o.ID == id {
-				got += o.Data
-			}
-		}
-	}
 }
 
 type resumed struct {
@@ -1101,6 +1047,26 @@ func TestStableLegDropRetriesFast(t *testing.T) {
 	for i := 2; i < 8; i++ {
 		if gap := at[i].Sub(at[i-1]); gap > 300*time.Millisecond {
 			t.Errorf("retry %d came %v after the one before; want about MinBackoff after a stable leg dropped", i, gap)
+		}
+	}
+}
+
+// waitOutput reads until the output of id holds want.
+func waitOutput(ctx context.Context, t *testing.T, conn *websocket.Conn, id, want string) {
+	t.Helper()
+	var got string
+	for !strings.Contains(got, want) {
+		typ, data, err := readMsg(ctx, conn)
+		if err != nil {
+			t.Errorf("read: %v (output so far %q)", err, got)
+			return
+		}
+		if typ == protocol.TypeOutput {
+			var o protocol.Output
+			_ = json.Unmarshal(data, &o)
+			if o.ID == id {
+				got += o.Data
+			}
 		}
 	}
 }

@@ -1,3 +1,5 @@
+//go:build unix
+
 package acpbridge_test
 
 import (
@@ -17,10 +19,10 @@ const (
 	methodLoad    = "session/load"
 	methodPrompt  = "session/prompt"
 	methodList    = "session/list"
-	keyDir        = "dir"
 	keyCode       = "code"
 	keyMessage    = "message"
 	keyError      = "error"
+	keyDir        = "dir"
 	keyStopReason = "stopReason"
 	stopEndTurn   = "end_turn"
 	session2      = "local-2"

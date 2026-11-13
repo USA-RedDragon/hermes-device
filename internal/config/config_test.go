@@ -1,3 +1,5 @@
+//go:build unix
+
 package config_test
 
 import (

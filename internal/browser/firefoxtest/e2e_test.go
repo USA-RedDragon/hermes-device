@@ -1,3 +1,5 @@
+//go:build unix
+
 // Package firefoxtest_test drives a real, throwaway, headless Firefox
 // through the Hermes extension and the native host. It runs only with
 // HERMES_BROWSER_E2E=1 and never touches the user's own Firefox profile:

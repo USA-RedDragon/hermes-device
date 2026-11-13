@@ -1,8 +1,8 @@
+//go:build unix
+
 package setup_test
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -252,11 +252,6 @@ func TestMigrateLaunchdUnderLegacyAgent(t *testing.T) {
 	if bi < 0 || bo < bi {
 		t.Errorf("want bootstrap of the talaria agent before the bootout of the legacy one: %q", calls)
 	}
-}
-
-func sha256Hex(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
 }
 
 func TestMigrateKeepsRunningLegacyService(t *testing.T) {

@@ -1,3 +1,5 @@
+//go:build unix
+
 // Package mcpe2e_test runs MCP servers on a device end to end: the real
 // device client and MCP manager, with a fake MCP server (this test binary,
 // internal/mcp/mcptest), connect over a real WebSocket to the real device

@@ -1,3 +1,5 @@
+//go:build unix
+
 package device_test
 
 import (
