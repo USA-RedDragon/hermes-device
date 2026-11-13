@@ -956,7 +956,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7
 .pop .opt { display: grid; grid-template-columns: auto 1fr; gap: 0 .6rem; padding: .35rem .5rem; border-radius: 7px; cursor: pointer; align-items: baseline; }
 .pop .opt.sel, .pop .opt:hover { background: var(--hover); }
 .pop .opt.sel { box-shadow: inset 2px 0 0 var(--accent); }
-.pop .opt .c { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .86rem; font-weight: 600; overflow-wrap: anywhere; }
+.pop .opt .c { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .86rem; font-weight: 600; overflow-wrap: anywhere; max-width: 17rem; }
 .pop .opt .d { color: var(--muted); font-size: .82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .pop .opt .dir { color: var(--muted); font-weight: 400; }
 .pop .opt mark { background: none; color: var(--accent); }
