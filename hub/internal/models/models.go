@@ -1,0 +1,678 @@
+// Package models connects model providers to a backend's Hermes from the
+// hub, through Hermes's own setup routes on the dashboard listener: own
+// servers (custom endpoints), API keys and device-code sign-ins. Hermes
+// keeps the providers, keys and default model; the hub keeps nothing. A key
+// travels in one request and is never logged, kept or sent back: Hermes
+// answers with masked previews only. Only the routes in this file are
+// reached, never a generic proxy, and never Hermes's key reveal.
+package models
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/USA-RedDragon/talaria/hub/internal/config"
+	"github.com/USA-RedDragon/talaria/hub/internal/device"
+	"github.com/USA-RedDragon/talaria/hub/internal/hub"
+)
+
+// Access says which backends a user may use. *service.Service is one.
+type Access interface {
+	Allowed(ctx context.Context, user, backendID string) error
+}
+
+// Options are the dependencies of a Service.
+type Options struct {
+	Access   Access
+	Backends []config.Backend
+	// Requesters reach each backend's dashboard with the hub's session.
+	Requesters map[string]device.Requester
+	// SlowTimeout bounds calls that probe other hosts (an address test, a
+	// sign-in poll, a model list refresh). Default 60s.
+	SlowTimeout time.Duration
+}
+
+// Service implements hub.ModelSetup.
+type Service struct {
+	access Access
+	rs     map[string]device.Requester
+	slow   time.Duration
+}
+
+var _ hub.ModelSetup = (*Service)(nil)
+
+// New returns a Service.
+func New(opts Options) *Service {
+	if opts.SlowTimeout == 0 {
+		opts.SlowTimeout = 60 * time.Second
+	}
+	s := &Service{access: opts.Access, rs: map[string]device.Requester{}, slow: opts.SlowTimeout}
+	for _, b := range opts.Backends {
+		if r := opts.Requesters[b.ID]; r != nil {
+			s.rs[b.ID] = r
+		}
+	}
+	return s
+}
+
+// unreachable is the hub's own words for a Hermes it could not ask.
+const unreachable = "Could not reach Hermes. It may be restarting. Try again in a moment."
+
+const maxAnswer = 4 << 20
+
+// pollWait is how long a sign-in poll waits for Hermes to see a change,
+// under Hermes's own cap of 25 seconds.
+const pollWait = 20
+
+var (
+	endpointIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:~-]{1,128}$`)
+	providerPattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	sessionPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	keyPattern        = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,80}$`)
+)
+
+const (
+	geminiKey     = "GEMINI_API_KEY"
+	notUnderstood = "Hermes's answer was not understood."
+	fieldProvider = "provider"
+	fieldKey      = "key"
+	flowDevice    = "device_code"
+)
+
+// probeKey is the variable Hermes checks a key of name with before a save
+// (_CREDENTIAL_PROBES), or "" when Hermes has no check: then it answers ok
+// with reachable false.
+func probeKey(name string) string {
+	switch name {
+	case "OPENROUTER_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", geminiKey:
+		return name
+	case "GOOGLE_API_KEY":
+		// Google AI Studio's main variable has no probe; its alias does.
+		return geminiKey
+	}
+	return ""
+}
+
+// hiddenKeyProvider reports API-key providers the dialog leaves to the
+// server: LM Studio is a server of one's own, Azure Foundry needs an
+// endpoint address as well, custom is the own-server path.
+func hiddenKeyProvider(p string) bool {
+	return p == "lmstudio" || p == "azure-foundry" || p == "custom"
+}
+
+// commonProviders lead the API key list, in this order.
+func commonProviders() []string {
+	return []string{"openrouter", "anthropic", "openai-api", "gemini", "deepseek", "xai"}
+}
+
+func (s *Service) requester(ctx context.Context, user, backendID string) (device.Requester, error) {
+	if err := s.access.Allowed(ctx, user, backendID); err != nil {
+		return nil, err
+	}
+	r, ok := s.rs[backendID]
+	if !ok {
+		return nil, hub.ErrUnknownBackend
+	}
+	return r, nil
+}
+
+type slowRequester interface {
+	RequestSlow(ctx context.Context, method, path string, body []byte) (*http.Response, error)
+}
+
+// call sends one request to Hermes and returns its answer. A refusal comes
+// back as a *hub.ModelSetupError with Hermes's own detail.
+func (s *Service) call(ctx context.Context, r device.Requester, slow bool, method, path string, body any) (json.RawMessage, error) {
+	var b []byte
+	if body != nil {
+		var err error
+		if b, err = json.Marshal(body); err != nil {
+			return nil, err
+		}
+	}
+	var resp *http.Response
+	var err error
+	if sr, ok := r.(slowRequester); ok && slow {
+		cctx, cancel := context.WithTimeout(ctx, s.slow)
+		defer cancel()
+		resp, err = sr.RequestSlow(cctx, method, path, b)
+	} else {
+		resp, err = r.Request(ctx, method, path, b)
+	}
+	if err != nil {
+		return nil, &hub.ModelSetupError{Status: http.StatusBadGateway, Message: unreachable}
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
+	if err != nil {
+		return nil, &hub.ModelSetupError{Status: http.StatusBadGateway, Message: unreachable}
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, refusal(resp.StatusCode, data)
+	}
+	if !json.Valid(data) {
+		return nil, &hub.ModelSetupError{Status: http.StatusBadGateway, Message: notUnderstood}
+	}
+	return data, nil
+}
+
+// refusal turns a Hermes error answer into its own words. FastAPI puts
+// them in detail, as a string or a list of field errors.
+func refusal(status int, data []byte) error {
+	var e struct {
+		Detail  json.RawMessage `json:"detail"`
+		Message string          `json:"message"`
+		Error   string          `json:"error"`
+	}
+	msg := ""
+	if json.Unmarshal(data, &e) == nil {
+		var text string
+		var list []struct {
+			Msg string `json:"msg"`
+		}
+		switch {
+		case json.Unmarshal(e.Detail, &text) == nil && text != "":
+			msg = text
+		case json.Unmarshal(e.Detail, &list) == nil && len(list) > 0:
+			parts := make([]string, 0, len(list))
+			for _, l := range list {
+				parts = append(parts, l.Msg)
+			}
+			msg = strings.Join(parts, "; ")
+		case e.Message != "":
+			msg = e.Message
+		case e.Error != "":
+			msg = e.Error
+		}
+	}
+	if msg == "" {
+		msg = fmt.Sprintf("Hermes answered HTTP %d.", status)
+	}
+	code := status
+	if status >= 500 || status == http.StatusUnauthorized || status == http.StatusForbidden {
+		code = http.StatusBadGateway
+	}
+	return &hub.ModelSetupError{Status: code, Message: msg}
+}
+
+func bad(msg string) error {
+	return &hub.ModelSetupError{Status: http.StatusBadRequest, Message: msg}
+}
+
+// optionsRow is one provider row of Hermes's model options.
+type optionsRow struct {
+	Slug          string   `json:"slug"`
+	Name          string   `json:"name"`
+	Models        []string `json:"models"`
+	TotalModels   int      `json:"total_models"`
+	Authenticated *bool    `json:"authenticated"`
+	AuthType      string   `json:"auth_type"`
+	KeyEnv        string   `json:"key_env"`
+	IsCurrent     bool     `json:"is_current"`
+	IsUserDefined bool     `json:"is_user_defined"`
+}
+
+type options struct {
+	Providers []optionsRow `json:"providers"`
+	Model     string       `json:"model"`
+	Provider  string       `json:"provider"`
+}
+
+func (s *Service) options(ctx context.Context, r device.Requester, refresh, all bool) (options, error) {
+	q := url.Values{}
+	if refresh {
+		q.Set("refresh", "true")
+	}
+	if all {
+		q.Set("include_unconfigured", "true")
+	}
+	path := "/api/model/options"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var out options
+	data, err := s.call(ctx, r, refresh, http.MethodGet, path, nil)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, &hub.ModelSetupError{Status: http.StatusBadGateway, Message: notUnderstood}
+	}
+	return out, nil
+}
+
+// ModelStatus implements hub.ModelSetup.
+func (s *Service) ModelStatus(ctx context.Context, user, backendID string) (hub.ModelStatus, error) {
+	r, err := s.requester(ctx, user, backendID)
+	if err != nil {
+		return hub.ModelStatus{}, err
+	}
+	o, err := s.options(ctx, r, false, false)
+	if err != nil {
+		return hub.ModelStatus{}, err
+	}
+	return status(o), nil
+}
+
+// status reads readiness from the model options: a default model whose
+// provider Hermes can sign in to. Hermes lists a configured provider that
+// lost its credentials as not authenticated.
+func status(o options) hub.ModelStatus {
+	st := hub.ModelStatus{Model: o.Model, Provider: o.Provider}
+	if o.Model == "" {
+		return st
+	}
+	for _, p := range o.Providers {
+		if p.Slug == o.Provider || (o.Provider == "" && p.IsCurrent) {
+			st.Ready = p.Authenticated == nil || *p.Authenticated
+			return st
+		}
+	}
+	// A provider the list does not name: an authenticated one exists and
+	// Hermes resolves the default at chat start.
+	for _, p := range o.Providers {
+		if p.Authenticated == nil || *p.Authenticated {
+			st.Ready = true
+		}
+	}
+	return st
+}
+
+// ModelCall implements hub.ModelSetup.
+func (s *Service) ModelCall(ctx context.Context, user, backendID string, c hub.ModelCall) (json.RawMessage, error) {
+	r, err := s.requester(ctx, user, backendID)
+	if err != nil {
+		return nil, err
+	}
+	switch c.Op {
+	case hub.ModelCatalog:
+		return s.catalog(ctx, r)
+	case hub.ModelConnected:
+		return s.connected(ctx, r)
+	case hub.ModelOptions:
+		o, err := s.options(ctx, r, c.Refresh, false)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(authenticated(o))
+	case hub.ModelInfo:
+		return s.call(ctx, r, true, http.MethodGet, "/api/model/info", nil)
+	case hub.ModelRecommended:
+		if !providerPattern.MatchString(c.Provider) {
+			return nil, bad("Unknown provider.")
+		}
+		return s.call(ctx, r, true, http.MethodGet, "/api/model/recommended-default?provider="+url.QueryEscape(c.Provider), nil)
+	case hub.ModelSetDefault:
+		return s.setDefault(ctx, r, c.Default)
+	case hub.ModelTestEndpoint, hub.ModelSaveEndpoint:
+		return s.endpoint(ctx, r, c.Op, c.Endpoint)
+	case hub.ModelUseEndpoint, hub.ModelRemoveEndpoint:
+		if !endpointIDPattern.MatchString(c.ID) {
+			return nil, bad("Unknown server.")
+		}
+		path := "/api/providers/custom-endpoints/" + url.PathEscape(c.ID)
+		if c.Op == hub.ModelUseEndpoint {
+			return s.call(ctx, r, false, http.MethodPost, path+"/activate", nil)
+		}
+		return s.call(ctx, r, false, http.MethodDelete, path, nil)
+	case hub.ModelTestKey, hub.ModelSaveKey, hub.ModelRemoveKey:
+		return s.key(ctx, r, c)
+	case hub.ModelSignInStart, hub.ModelSignInPoll, hub.ModelSignInCancel, hub.ModelSignOut:
+		return s.signIn(ctx, r, c)
+	}
+	return nil, bad("Unknown call.")
+}
+
+func (s *Service) setDefault(ctx context.Context, r device.Requester, d *hub.DefaultSetup) (json.RawMessage, error) {
+	if d == nil || strings.TrimSpace(d.Model) == "" || !providerPattern.MatchString(strings.ToLower(d.Provider)) {
+		return nil, bad("Pick a model first.")
+	}
+	body := map[string]any{"scope": "main", fieldProvider: d.Provider, "model": strings.TrimSpace(d.Model),
+		"confirm_expensive_model": d.Confirm}
+	if d.BaseURL != "" {
+		body["base_url"] = d.BaseURL
+	}
+	return s.call(ctx, r, true, http.MethodPost, "/api/model/set", body)
+}
+
+func (s *Service) endpoint(ctx context.Context, r device.Requester, op hub.ModelOp, e *hub.EndpointSetup) (json.RawMessage, error) {
+	if e == nil || strings.TrimSpace(e.BaseURL) == "" {
+		return nil, bad("Enter the server's address first.")
+	}
+	if e.ID != "" && !endpointIDPattern.MatchString(e.ID) {
+		return nil, bad("Unknown server.")
+	}
+	if e.APIMode != nil && !slices.Contains([]string{"", "chat_completions", "codex_responses", "anthropic_messages"}, *e.APIMode) {
+		return nil, bad("Unknown API mode.")
+	}
+	body := *e
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" {
+		body.Name = "Local server"
+	}
+	body.BaseURL = strings.TrimSpace(body.BaseURL)
+	// Hermes requires a model name; its probe uses the first listed model
+	// when this one is blank.
+	body.Model = strings.TrimSpace(body.Model)
+	if op == hub.ModelTestEndpoint {
+		body.MakeDefault = false
+		return s.call(ctx, r, true, http.MethodPost, "/api/providers/custom-endpoints/validate", body)
+	}
+	if body.Model == "" {
+		return nil, bad("Pick a model first.")
+	}
+	return s.call(ctx, r, true, http.MethodPost, "/api/providers/custom-endpoints", body)
+}
+
+// envRow is one row of Hermes's GET /api/env.
+type envRow struct {
+	IsSet           bool   `json:"is_set"`
+	RedactedValue   string `json:"redacted_value"`
+	Description     string `json:"description"`
+	URL             string `json:"url"`
+	Category        string `json:"category"`
+	IsPassword      bool   `json:"is_password"`
+	Provider        string `json:"provider"`
+	ProviderLabel   string `json:"provider_label"`
+	ProviderPrimary bool   `json:"provider_primary"`
+}
+
+func (s *Service) env(ctx context.Context, r device.Requester) (map[string]envRow, error) {
+	data, err := s.call(ctx, r, false, http.MethodGet, "/api/env", nil)
+	if err != nil {
+		return nil, err
+	}
+	var rows map[string]envRow
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return nil, &hub.ModelSetupError{Status: http.StatusBadGateway, Message: notUnderstood}
+	}
+	return rows, nil
+}
+
+// keyVar reports whether name is a provider's API key variable: a
+// provider row that is no address override. Only these may be saved or
+// removed here, so an admin cannot write any other variable of Hermes.
+func keyVar(rows map[string]envRow, name string) bool {
+	row, ok := rows[name]
+	return ok && row.Provider != "" && row.Category == fieldProvider && !strings.HasSuffix(name, "_BASE_URL") &&
+		(row.ProviderPrimary || row.IsPassword) && !hiddenKeyProvider(row.Provider)
+}
+
+func (s *Service) key(ctx context.Context, r device.Requester, c hub.ModelCall) (json.RawMessage, error) {
+	name := c.ID
+	if c.Key != nil && c.Key.Key != "" {
+		name = c.Key.Key
+	}
+	if !keyPattern.MatchString(name) {
+		return nil, bad("Unknown provider.")
+	}
+	rows, err := s.env(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	if !keyVar(rows, name) {
+		return nil, bad("Unknown provider.")
+	}
+	if c.Op == hub.ModelRemoveKey {
+		return s.call(ctx, r, false, http.MethodDelete, "/api/env", map[string]string{fieldKey: name})
+	}
+	if c.Key == nil || strings.TrimSpace(c.Key.Value) == "" {
+		return nil, bad("Enter the key first.")
+	}
+	if c.Op == hub.ModelTestKey {
+		probe := probeKey(name)
+		if probe == "" {
+			// Hermes has no check for this provider: say so as it does.
+			return json.RawMessage(`{"ok":true,"reachable":false,"message":""}`), nil
+		}
+		return s.call(ctx, r, true, http.MethodPost, "/api/providers/validate", map[string]string{fieldKey: probe, "value": strings.TrimSpace(c.Key.Value)})
+	}
+	return s.call(ctx, r, false, http.MethodPut, "/api/env", map[string]any{fieldKey: name, "value": strings.TrimSpace(c.Key.Value), "provider_setup": true})
+}
+
+// oauthProvider is one row of GET /api/providers/oauth.
+type oauthProvider struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Flow           string `json:"flow"`
+	CLICommand     string `json:"cli_command"`
+	Disconnectable bool   `json:"disconnectable"`
+	Status         struct {
+		LoggedIn bool `json:"logged_in"`
+	} `json:"status"`
+}
+
+func (s *Service) oauth(ctx context.Context, r device.Requester) ([]oauthProvider, error) {
+	data, err := s.call(ctx, r, false, http.MethodGet, "/api/providers/oauth", nil)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Providers []oauthProvider `json:"providers"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, &hub.ModelSetupError{Status: http.StatusBadGateway, Message: notUnderstood}
+	}
+	return out.Providers, nil
+}
+
+func (s *Service) signIn(ctx context.Context, r device.Requester, c hub.ModelCall) (json.RawMessage, error) {
+	if c.Op == hub.ModelSignInCancel {
+		if !sessionPattern.MatchString(c.Session) {
+			return nil, bad("Unknown sign-in.")
+		}
+		return s.call(ctx, r, false, http.MethodDelete, "/api/providers/oauth/sessions/"+c.Session, nil)
+	}
+	if !providerPattern.MatchString(c.ID) {
+		return nil, bad("Unknown account.")
+	}
+	ps, err := s.oauth(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	i := slices.IndexFunc(ps, func(p oauthProvider) bool { return p.ID == c.ID })
+	if i < 0 {
+		return nil, bad("Unknown account.")
+	}
+	base := "/api/providers/oauth/" + c.ID
+	if c.Op == hub.ModelSignOut {
+		return s.call(ctx, r, false, http.MethodDelete, base, nil)
+	}
+	if c.Op == hub.ModelSignInPoll {
+		if !sessionPattern.MatchString(c.Session) {
+			return nil, bad("Unknown sign-in.")
+		}
+		data, err := s.call(ctx, r, true, http.MethodGet, fmt.Sprintf("%s/poll/%s?wait=%d", base, c.Session, pollWait), nil)
+		var me *hub.ModelSetupError
+		if errors.As(err, &me) && me.Status == http.StatusNotFound {
+			// Hermes forgot the session: it ran out, or Hermes restarted.
+			return json.RawMessage(`{"status":"expired"}`), nil
+		}
+		return data, err
+	}
+	if ps[i].Flow != flowDevice {
+		return nil, bad("Sign in to " + ps[i].Name + " on the server: " + ps[i].CLICommand)
+	}
+	return s.call(ctx, r, true, http.MethodPost, base+"/start", nil)
+}
+
+// keyProvider is an API-key provider the dialog offers.
+type keyProvider struct {
+	Provider    string `json:"provider"`
+	Name        string `json:"name"`
+	KeyEnv      string `json:"key_env"`
+	URL         string `json:"url,omitempty"`
+	Description string `json:"description,omitempty"`
+	Set         bool   `json:"set"`
+	Preview     string `json:"preview,omitempty"`
+	// Checked is true when Hermes checks the key with the provider
+	// before a save.
+	Checked bool `json:"checked"`
+	Common  bool `json:"common"`
+}
+
+// signInAccount is an account the dialog can sign in to.
+type signInAccount struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	SignedIn bool   `json:"signed_in"`
+	// Here is false for accounts only the server can sign in to.
+	Here       bool   `json:"here"`
+	CLICommand string `json:"cli_command,omitempty"`
+	Removable  bool   `json:"removable"`
+}
+
+func keyProviders(rows map[string]envRow, order []string) []keyProvider {
+	common := commonProviders()
+	byProvider := map[string]keyProvider{}
+	for name, row := range rows {
+		if !keyVar(rows, name) || !row.ProviderPrimary {
+			continue
+		}
+		label := row.ProviderLabel
+		if label == "" {
+			label = row.Provider
+		}
+		checked := probeKey(name) != ""
+		byProvider[row.Provider] = keyProvider{Provider: row.Provider, Name: label, KeyEnv: name, URL: row.URL, Description: row.Description,
+			Set: row.IsSet, Preview: preview(row), Checked: checked, Common: slices.Contains(common, row.Provider)}
+	}
+	rank := func(p string) int {
+		if i := slices.Index(common, p); i >= 0 {
+			return i
+		}
+		if i := slices.Index(order, p); i >= 0 {
+			return len(common) + i
+		}
+		return len(common) + len(order)
+	}
+	out := make([]keyProvider, 0, len(byProvider))
+	for _, p := range byProvider {
+		out = append(out, p)
+	}
+	slices.SortFunc(out, func(a, b keyProvider) int {
+		if d := rank(a.Provider) - rank(b.Provider); d != 0 {
+			return d
+		}
+		return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
+	})
+	return out
+}
+
+// preview is the masked key Hermes shows, without its marker.
+func preview(row envRow) string {
+	if !row.IsSet {
+		return ""
+	}
+	v := strings.TrimSuffix(strings.TrimPrefix(row.RedactedValue, "«redacted:"), "»")
+	return v
+}
+
+func (s *Service) catalog(ctx context.Context, r device.Requester) (json.RawMessage, error) {
+	rows, err := s.env(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	ps, err := s.oauth(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	var order []string
+	all, err := s.options(ctx, r, false, true)
+	if err == nil {
+		for _, p := range all.Providers {
+			order = append(order, p.Slug)
+		}
+	}
+	accounts := make([]signInAccount, 0, len(ps))
+	for _, p := range ps {
+		accounts = append(accounts, signInAccount{ID: p.ID, Name: p.Name, SignedIn: p.Status.LoggedIn, Here: p.Flow == flowDevice,
+			CLICommand: p.CLICommand, Removable: p.Disconnectable && p.Flow == flowDevice})
+	}
+	return json.Marshal(map[string]any{"keys": keyProviders(rows, order), "accounts": accounts})
+}
+
+// modelsOf is the authenticated providers of the options with their
+// models.
+type providerModels struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Models  []string `json:"models"`
+	Current bool     `json:"current"`
+}
+
+func authenticated(o options) map[string]any {
+	ps := []providerModels{}
+	for _, p := range o.Providers {
+		if p.Authenticated != nil && !*p.Authenticated {
+			continue
+		}
+		name := p.Name
+		if name == "" {
+			name = p.Slug
+		}
+		ps = append(ps, providerModels{ID: p.Slug, Name: name, Models: nonNil(p.Models), Current: p.IsCurrent})
+	}
+	return map[string]any{"model": o.Model, "provider": o.Provider, "providers": ps}
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+func (s *Service) connected(ctx context.Context, r device.Requester) (json.RawMessage, error) {
+	o, err := s.options(ctx, r, false, false)
+	if err != nil {
+		return nil, err
+	}
+	data, err := s.call(ctx, r, false, http.MethodGet, "/api/providers/custom-endpoints", nil)
+	if err != nil {
+		return nil, err
+	}
+	var ep struct {
+		Endpoints []json.RawMessage `json:"endpoints"`
+	}
+	if err := json.Unmarshal(data, &ep); err != nil {
+		return nil, &hub.ModelSetupError{Status: http.StatusBadGateway, Message: notUnderstood}
+	}
+	rows, err := s.env(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	ps, err := s.oauth(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	keys := []keyProvider{}
+	for _, k := range keyProviders(rows, nil) {
+		if k.Set {
+			keys = append(keys, k)
+		}
+	}
+	accounts := []signInAccount{}
+	for _, p := range ps {
+		if p.Status.LoggedIn {
+			accounts = append(accounts, signInAccount{ID: p.ID, Name: p.Name, SignedIn: true, Here: p.Flow == flowDevice,
+				CLICommand: p.CLICommand, Removable: p.Disconnectable && p.Flow == flowDevice})
+		}
+	}
+	endpoints := ep.Endpoints
+	if endpoints == nil {
+		endpoints = []json.RawMessage{}
+	}
+	out := authenticated(o)
+	out["endpoints"], out["keys"], out["accounts"], out["status"] = endpoints, keys, accounts, status(o)
+	return json.Marshal(out)
+}

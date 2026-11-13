@@ -66,6 +66,9 @@ type Options struct {
 	Computers hub.Computers
 	// Memory serves the Memory page. Nil: the hub has no Memory page.
 	Memory hub.Memory
+	// Models connects model providers to Hermes from Settings > Models.
+	// Nil: models are set up on the server only.
+	Models hub.ModelSetup
 	// Insights serves chat search and the Usage page. Nil: neither.
 	Insights hub.Insights
 	// Files serves the file viewer of chats on computers. Nil: none.
@@ -129,6 +132,7 @@ type Server struct {
 	sandboxes    func(context.Context, string) []hub.Sandbox
 	computers    hub.Computers
 	memory       hub.Memory
+	models       hub.ModelSetup
 	insights     hub.Insights
 	files        hub.ChatFiles
 	notices      hub.NotifyStore
@@ -196,7 +200,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	}
 	return &Server{
 		authState: st,
-		devices:   opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory,
+		devices:   opts.Devices, deviceAPI: opts.DeviceAPI, onRevoke: opts.OnRevoke, sandboxes: opts.Sandboxes, computers: opts.Computers, memory: opts.Memory, models: opts.Models,
 		insights: opts.Insights, files: opts.Files,
 		notices: opts.Notices, notifier: opts.Notifier, claude: opts.Claude, scheduled: opts.Scheduled,
 		claudeCode: opts.ClaudeCode, subagents: opts.Subagents, chats: opts.Chats, prompts: opts.Prompts,
@@ -389,6 +393,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/computers", s.api(s.handleComputers))
 	mux.Handle("GET /api/computers/{device}/folders", s.api(s.handleFolders))
 	s.memoryRoutes(mux)
+	s.modelRoutes(mux)
 	s.insightRoutes(mux)
 	s.notifyRoutes(mux)
 	s.claudeCodeRoutes(mux)

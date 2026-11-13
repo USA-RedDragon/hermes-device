@@ -25,6 +25,7 @@ import (
 	"github.com/USA-RedDragon/talaria/hub/internal/insights"
 	"github.com/USA-RedDragon/talaria/hub/internal/leader"
 	"github.com/USA-RedDragon/talaria/hub/internal/memory"
+	"github.com/USA-RedDragon/talaria/hub/internal/models"
 	"github.com/USA-RedDragon/talaria/hub/internal/notify"
 	"github.com/USA-RedDragon/talaria/hub/internal/pdf"
 	"github.com/USA-RedDragon/talaria/hub/internal/scheduled"
@@ -147,6 +148,7 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 	if devices != nil {
 		webOpts.Files = devices
 	}
+	webOpts.Models = newModels(cfg, svc, dialers)
 	webOpts.Insights = newInsights(cfg, svc, webOpts.Memory, dialers)
 	cs := newClaude(cfg, svc, notifier, dialers)
 	if cs != nil {
@@ -314,6 +316,19 @@ func newMemory(cfg *config.Config, svc *service.Service, dialers map[string]*gat
 		rs[id] = d
 	}
 	return memory.New(memory.Options{Access: svc, Backends: cfg.Backends, Requesters: rs})
+}
+
+// newModels returns the core of Settings > Models, or nil when there is no
+// backend.
+func newModels(cfg *config.Config, svc *service.Service, dialers map[string]*gateway.Dialer) hub.ModelSetup {
+	if len(cfg.Backends) == 0 {
+		return nil
+	}
+	rs := make(map[string]device.Requester, len(dialers))
+	for id, d := range dialers {
+		rs[id] = d
+	}
+	return models.New(models.Options{Access: svc, Backends: cfg.Backends, Requesters: rs})
 }
 
 // newInsights returns the core of chat search and the Usage page, or nil

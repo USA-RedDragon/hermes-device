@@ -18,7 +18,7 @@ const (
 // Auth configures how people log in.
 type Auth struct {
 	Mode           string   `name:"mode" description:"How people log in: local (accounts in the hub's database, with a setup page that makes the first one), proxy (a reverse proxy in front of the hub tells it who the user is) or oidc (an OpenID Connect provider). Default: oidc when oidc.issuer_url is set, else local"`
-	Admins         []string `name:"admins" description:"Hub user names that may manage people in Settings > Users, besides accounts marked admin there. The first local account is an admin"`
+	Admins         []string `name:"admins" description:"Hub user names that are admins besides accounts marked admin in Settings > Users: admins manage people and connect models (Settings > Models). The first local account is an admin"`
 	TrustedProxies []string `name:"trusted_proxies" description:"CIDRs or addresses of the reverse proxies in front of the hub, such as 10.0.0.0/8 or 127.0.0.1. In proxy mode the hub reads the user header only on requests from them. In every mode the hub takes the client address for login limits from their X-Forwarded-For"`
 	Local          Local    `name:"local"`
 	Proxy          Proxy    `name:"proxy"`

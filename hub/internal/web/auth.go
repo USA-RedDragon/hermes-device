@@ -268,7 +268,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"claude": s.hasClaude(r.Context(), sess.User), "claude_admin": s.isClaudeAdmin(sess.User), "telegram_steps": s.telegramSteps, "version": s.version,
 		"scheduled": s.scheduled != nil, "prompts": s.prompts != nil, "partners": s.partners != nil,
 		"auth": s.mode, "admin": s.accounts != nil && s.isAdmin(r.Context(), sess.User), "password": s.mode == config.AuthLocal && sess.Account,
-		"logout_url": s.logoutURL, "identity": sess.Identity, "issuer": s.issuer})
+		"models_admin": s.models != nil && s.isAdmin(r.Context(), sess.User),
+		"logout_url":   s.logoutURL, "identity": sess.Identity, "issuer": s.issuer})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
