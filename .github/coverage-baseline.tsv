@@ -19,10 +19,10 @@ extension/firefox/embed.go	45	39
 internal/acpbridge/acpbridge.go	487	425
 internal/acpbridge/inline.go	38	35
 internal/acpbridge/place.go	155	141
-internal/acphost/acphost.go	275	217
+internal/acphost/acphost.go	275	218
 internal/acphost/rewrite.go	260	237
 internal/acphost/sweep.go	42	36
-internal/acphost/sweep_linux.go	38	27
+internal/acphost/sweep_linux.go	38	28
 internal/allowlist/allowlist.go	25	25
 internal/attest/attest.go	141	123
 internal/attest/bundle.go	248	212
