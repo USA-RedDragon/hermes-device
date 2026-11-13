@@ -679,9 +679,26 @@ def _unattended_review() -> bool:
         return False
 
 
+def _approval_setting(cfg: Optional[dict] = None) -> Optional[bool]:
+    """The plugin's ``write_approval`` setting: True, False, or None when unset (or not a bool)."""
+    cfg = _config() if cfg is None else cfg
+    plugins = cfg.get("plugins") if isinstance(cfg.get("plugins"), dict) else {}
+    entry = (plugins.get("entries") or {}).get(PLUGIN) if isinstance(plugins.get("entries"), dict) else None
+    settings = entry.get("settings") if isinstance(entry, dict) else None
+    value = settings.get("write_approval") if isinstance(settings, dict) else None
+    return value if isinstance(value, bool) else None
+
+
 def _approval_on() -> bool:
+    """Whether a new project write waits for approval: the plugin's ``write_approval`` when set, else Hermes's
+    ``memory.write_approval``. Writes already staged stay staged either way."""
+    setting = _approval_setting()
+    if setting is False:
+        return False
     try:
         from tools import write_approval as wa
+        if setting is True:
+            return True
         return bool(wa.write_approval_enabled(wa.MEMORY))
     except Exception:
         return False

@@ -183,3 +183,66 @@ def test_write_waits_for_approval(mem, monkeypatch):
     assert seen["target"] == "memory" and mem.entries(slug) == ["later"]
     gone = mem.apply_pending({**payload, "project": "missing"}, original)
     assert not gone["success"]
+
+
+def _cfg(value):
+    settings = {} if value is None else {"write_approval": value}
+    return {"plugins": {"entries": {"project-memory": {"settings": settings}}}}
+
+
+@pytest.mark.parametrize("setting,global_on,want", [
+    (None, True, True), (None, False, False),
+    (False, True, False), (True, False, True),
+    (True, True, True), (False, False, False),
+    ("no", True, True),
+])
+def test_approval_switch(pm, monkeypatch, setting, global_on, want):
+    from tools import write_approval as wa
+    monkeypatch.setattr(pm, "_config", lambda: _cfg(setting))
+    monkeypatch.setattr(wa, "write_approval_enabled", lambda kind: global_on)
+    assert pm._approval_on() is want
+
+
+def _write_with(pm, hermes_home, monkeypatch, setting, global_on):
+    """One real-gate project write, with a fake approval queue; returns (result, staged payloads, slug)."""
+    from tools import write_approval as wa
+    monkeypatch.setattr(pm, "_unattended_review", lambda: False)
+    monkeypatch.setattr(pm, "_config", lambda: _cfg(setting))
+    slug = project(pm)
+    monkeypatch.setattr(pm, "project_for_session", lambda sid, live: (slug, ""))
+    monkeypatch.setattr(pm, "children_blocked", lambda: False)
+    monkeypatch.setattr(wa, "write_approval_enabled", lambda kind: global_on)
+
+    class Decision:
+        allow, blocked, message = False, False, "Staged for approval."
+
+    staged = [{"id": "old", "target": "project"}]
+    monkeypatch.setattr(wa, "evaluate_gate", lambda *a, **k: Decision())
+    monkeypatch.setattr(wa, "current_origin", lambda: "test")
+    monkeypatch.setattr(wa, "stage_write", lambda kind, payload, **k: staged.append(payload) or {"id": "new"})
+    out = json.loads(pm.handle({"action": "write", "operations": [{"action": "add", "content": "now"}]},
+                               session_id=f"sw-{hermes_home.parent.name}"))
+    return out, staged, slug
+
+
+def test_false_saves_directly_with_global_on(pm, hermes_home, monkeypatch):
+    out, staged, slug = _write_with(pm, hermes_home, monkeypatch, False, True)
+    assert out["success"] and not out.get("staged")
+    assert pm.entries(slug) == ["now"]
+    assert staged == [{"id": "old", "target": "project"}]  # the already staged entry is untouched
+
+
+def test_true_stages_with_global_off(pm, hermes_home, monkeypatch):
+    out, staged, slug = _write_with(pm, hermes_home, monkeypatch, True, False)
+    assert out["staged"] and pm.entries(slug) == []
+    assert len(staged) == 2 and staged[0]["id"] == "old"
+
+
+def test_unset_follows_global(pm, hermes_home, monkeypatch):
+    out, _, slug = _write_with(pm, hermes_home, monkeypatch, None, True)
+    assert out["staged"] and pm.entries(slug) == []
+
+
+def test_unset_global_off_saves(pm, hermes_home, monkeypatch):
+    out, _, slug = _write_with(pm, hermes_home, monkeypatch, None, False)
+    assert out["success"] and pm.entries(slug) == ["now"]

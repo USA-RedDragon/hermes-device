@@ -384,7 +384,7 @@ window.HubToolCard = (() => {
   function waiting(c) {
     if (c.pending) return true;
     const res = isObj(c.res) ? c.res : {};
-    return pendingWords.has(str(res.status)) || res.pending_approval === true || res.approval_pending === true || res.requires_approval === true;
+    return pendingWords.has(str(res.status)) || res.pending_approval === true || res.staged === true || res.approval_pending === true || res.requires_approval === true;
   }
 
   function noteBlocks(ops) {

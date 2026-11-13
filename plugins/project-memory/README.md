@@ -25,6 +25,9 @@ plugins:
     project-memory:
       settings:
         char_limit: 3000   # optional; default: memory.memory_char_limit, at most 3000 (the prompt section's room)
+        write_approval: false   # optional; true or false overrides memory.write_approval for project notes only; unset follows it
 ```
+
+`write_approval: false` saves project notes directly while Hermes's own memory stays gated. `true` stages them even when `memory.write_approval` is off. Writes already staged under `/memory pending` stay staged; only new writes follow the setting. Background review still stages patch, replace and remove.
 
 Notes live in `$HERMES_HOME/project-memories/<slug>/MEMORY.md`, with `meta.json` beside it.
