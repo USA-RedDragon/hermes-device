@@ -39,6 +39,7 @@ type setupFlags struct {
 	noService, noBrowser bool
 	noShell, uninstall   bool
 	wait                 time.Duration
+	shell, wslDistro     string
 }
 
 func newSetupCommand(b *base) *cobra.Command {
@@ -50,7 +51,8 @@ func newSetupCommand(b *base) *cobra.Command {
 			"pairs the computer with the hub (as login does), writes the config file when there is none, registers " +
 			"Firefox's native messaging host and opens the extension's install page, starts a systemd user service " +
 			"(launchd agent on macOS), offers to put ~/.talaria/bin on PATH for your login shell and bash -l, and offers to fix " +
-			"bash's PATH for zsh and fish users. Run it again at any time; " +
+			"bash's PATH for zsh and fish users. On Windows it registers a scheduled task that starts talaria at logon, " +
+			"puts talaria on your PATH and asks which shell the agent's commands run in (--shell). Run it again at any time; " +
 			"it only changes what is missing. setup --uninstall reverses what setup did.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -83,6 +85,8 @@ func newSetupCommand(b *base) *cobra.Command {
 	fl.BoolVar(&f.noBrowser, "no-browser", false, "Leave Firefox alone and write browser.enabled false into a new config")
 	fl.BoolVar(&f.noShell, "no-shell-check", false, "Do not check or change the PATH of the login shell and bash -l")
 	fl.BoolVar(&f.uninstall, "uninstall", false, "Undo what setup did, as its state file records")
+	fl.StringVar(&f.shell, "shell", "", "Windows: the shell for agent commands in a new config, git-bash, powershell or wsl (default: ask, or Git Bash when installed)")
+	fl.StringVar(&f.wslDistro, "wsl-distro", "", "Windows: the WSL distribution for --shell wsl (default: WSL's default)")
 	fl.DurationVar(&f.wait, "wait", 10*time.Minute, "How long to wait for the Firefox extension to connect; 0 skips")
 	return c
 }
@@ -176,7 +180,7 @@ func (b *base) setup(cmd *cobra.Command, sys *setup.System, cfg *config.Config, 
 		Version: b.version, Exe: exe, HubURL: hub, ConfigFile: cfgFile, ConfigExists: exists,
 		BrowserEnabled: cfg.Browser.Enabled, StateDir: stateDir, BinDir: binDir, Force: f.force,
 		OverwriteConfig: f.overwrite, NoService: f.noService, NoBrowser: f.noBrowser, NoShell: f.noShell, Wait: f.wait,
-		Releases: b.releases(),
+		Releases: b.releases(), Shell: f.shell, WSLDistro: f.wslDistro, Shells: availableShells(ctx),
 		Pair: func(ctx context.Context) (bool, error) {
 			return b.pairIfNeeded(ctx, out, sys, hub, st, f.name)
 		},

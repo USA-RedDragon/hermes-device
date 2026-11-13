@@ -58,6 +58,13 @@ type Options struct {
 	BrowserStatus func(ctx context.Context) (*BrowserStatus, error)
 	// Releases finds the signed extension.
 	Releases *Releases
+
+	// Shells are the Windows shells this computer can use, the default
+	// first; Shell is the one --shell asked for. WSLDistro is the WSL
+	// distribution for the wsl shell; empty is WSL's default.
+	Shells    []string
+	Shell     string
+	WSLDistro string
 }
 
 // Report is what setup did and what is left for the user.
@@ -122,7 +129,7 @@ func (s *System) Setup(ctx context.Context, o *Options) (*Report, error) {
 		return r, err
 	}
 	ff := s.FindFirefox()
-	browser, wrote, err := s.configStep(o, st, r, ff)
+	browser, wrote, err := s.configStep(ctx, o, st, r, ff)
 	if err != nil {
 		return r, err
 	}
@@ -133,7 +140,11 @@ func (s *System) Setup(ctx context.Context, o *Options) (*Report, error) {
 		}
 	}
 	if !o.NoShell {
-		err := s.shellStep(ctx, st, r, filepath.Dir(bin))
+		step := s.shellStep
+		if s.GOOS == goosWindows {
+			step = s.windowsPathStep
+		}
+		err := step(ctx, st, r, filepath.Dir(bin))
 		if serr := save(); err == nil {
 			err = serr
 		}
@@ -197,16 +208,26 @@ func (s *System) pairStep(ctx context.Context, o *Options, st *State, r *Report)
 
 // configStep writes the config file when it is missing and returns whether
 // browser control is on, and whether it wrote the file.
-func (s *System) configStep(o *Options, st *State, r *Report, ff *Firefox) (bool, bool, error) {
+func (s *System) configStep(ctx context.Context, o *Options, st *State, r *Report, ff *Firefox) (bool, bool, error) {
 	if o.ConfigExists && !o.OverwriteConfig {
 		r.done("Kept the existing config %s (--overwrite-config replaces it)", o.ConfigFile)
+		if o.Shell != "" {
+			r.todo("Set device.shell: %s in %s (setup keeps an existing config), then run setup again", o.Shell, o.ConfigFile)
+		}
 		if !o.BrowserEnabled && !o.NoBrowser && ff.Found() {
 			r.todo("Firefox is installed but browser.enabled is off in %s. Set it to true and run setup again to use Firefox", o.ConfigFile)
 		}
 		return o.BrowserEnabled && !o.NoBrowser, false, nil
 	}
 	browser := !o.NoBrowser && ff.Found()
-	data, err := ConfigYAML(o.HubURL, []string{s.Home}, browser)
+	shell := ""
+	if s.GOOS == goosWindows {
+		var err error
+		if shell, err = s.chooseShell(ctx, o); err != nil {
+			return false, false, err
+		}
+	}
+	data, err := ConfigYAML(o.HubURL, []string{s.Home}, browser, shell, o.WSLDistro)
 	if err != nil {
 		return false, false, err
 	}
@@ -219,6 +240,9 @@ func (s *System) configStep(o *Options, st *State, r *Report, ff *Firefox) (bool
 		st.ConfigBackup = backup
 	}
 	msg := fmt.Sprintf("Wrote %s (commands may run anywhere in %s; browser.enabled %t)", o.ConfigFile, s.Home, browser)
+	if shell != "" {
+		msg = fmt.Sprintf("Wrote %s (commands run in %s anywhere in %s; browser.enabled %t)", o.ConfigFile, shell, s.Home, browser)
+	}
 	if backup != "" {
 		msg += ", the old file is " + backup
 	}
@@ -572,7 +596,7 @@ func (s *System) Uninstall(ctx context.Context, o *UninstallOptions) (*Report, e
 	errs := []error{s.uninstallService(ctx, st, r)}
 	if errs[0] == nil {
 		errs = append(errs, uninstallHost(o, st, r), uninstallToken(o, st, r), uninstallConfig(st, r),
-			uninstallEdits(st, r), s.uninstallBinary(st, r), s.uninstallCache(r))
+			uninstallEdits(st, r), s.uninstallUserPath(ctx, st, r), s.uninstallBinary(st, r), s.uninstallCache(r))
 	} else {
 		r.todo("Kept the binary, the config and the token, because the service still runs. Stop it, then run setup --uninstall again")
 	}

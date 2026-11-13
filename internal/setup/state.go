@@ -50,6 +50,8 @@ type State struct {
 	PairedHub string `json:"paired_hub,omitempty"`
 	// Edits are the shell files setup changed.
 	Edits []Edit `json:"edits,omitempty"`
+	// UserPath is the directory setup added to the user's PATH on Windows.
+	UserPath string `json:"user_path,omitempty"`
 }
 
 // LoadState reads the state file in dir. A missing file is an empty state.

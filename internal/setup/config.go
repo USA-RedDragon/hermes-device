@@ -29,7 +29,9 @@ type FileConfig struct {
 		URL string `yaml:"url"`
 	} `yaml:"hub"`
 	Device struct {
-		Roots []string `yaml:"roots"`
+		Roots     []string `yaml:"roots"`
+		Shell     string   `yaml:"shell,omitempty"`
+		WSLDistro string   `yaml:"wsl-distro,omitempty"`
 	} `yaml:"device"`
 	Browser struct {
 		Enabled bool `yaml:"enabled"`
@@ -38,11 +40,16 @@ type FileConfig struct {
 
 const configHeader = "# Written by talaria setup. config.example.yaml in the repository lists every setting.\n"
 
-// ConfigYAML is the config file setup writes.
-func ConfigYAML(hub string, roots []string, browser bool) ([]byte, error) {
+// ConfigYAML is the config file setup writes. shell and distro are the
+// Windows shell (internal/winshell) and its WSL distribution, or empty.
+func ConfigYAML(hub string, roots []string, browser bool, shell, distro string) ([]byte, error) {
 	var c FileConfig
 	c.Hub.URL = hub
 	c.Device.Roots = roots
+	c.Device.Shell = shell
+	if shell == shellWSL {
+		c.Device.WSLDistro = distro
+	}
 	c.Browser.Enabled = browser
 	data, err := yaml.Marshal(c)
 	if err != nil {

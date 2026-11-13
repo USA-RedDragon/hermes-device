@@ -28,6 +28,13 @@ func (f *Firefox) Found() bool { return len(f.Command) > 0 || len(f.Profiles) > 
 
 func (s *System) profileRoots() []string {
 	h := s.Home
+	if s.GOOS == goosWindows {
+		appData := s.Getenv("APPDATA")
+		if appData == "" {
+			appData = filepath.Join(h, "AppData", "Roaming")
+		}
+		return []string{filepath.Join(appData, "Mozilla", "Firefox", "Profiles")}
+	}
 	if s.GOOS == darwin {
 		return []string{filepath.Join(h, "Library", "Application Support", "Firefox", "Profiles")}
 	}
@@ -43,14 +50,17 @@ func (s *System) profileRoots() []string {
 // FindFirefox looks for the Firefox program and its profiles.
 func (s *System) FindFirefox() *Firefox {
 	f := &Firefox{}
-	if s.GOOS == darwin {
+	switch s.GOOS {
+	case darwin:
 		for _, app := range []string{"/Applications/Firefox.app", filepath.Join(s.Home, "Applications", "Firefox.app")} {
 			if fi, err := os.Stat(app); err == nil && fi.IsDir() {
 				f.Command = []string{"open", "-a", app}
 				break
 			}
 		}
-	} else {
+	case goosWindows:
+		f.Command = s.windowsFirefox()
+	default:
 		for _, name := range []string{"firefox", "firefox-esr", "firefox-developer-edition", "firefox-nightly"} {
 			if p, err := s.LookPath(name); err == nil {
 				f.Command = []string{p}
@@ -73,6 +83,25 @@ func (s *System) FindFirefox() *Firefox {
 		}
 	}
 	return f
+}
+
+// windowsFirefox finds firefox.exe on PATH or where its installer puts
+// it, for every user or for this one.
+func (s *System) windowsFirefox() []string {
+	if p, err := s.LookPath("firefox.exe"); err == nil {
+		return []string{p}
+	}
+	for _, env := range []string{"ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"} {
+		dir := s.Getenv(env)
+		if dir == "" {
+			continue
+		}
+		p := filepath.Join(dir, "Mozilla Firefox", "firefox.exe")
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			return []string{p}
+		}
+	}
+	return nil
 }
 
 // ExtensionInstalled reports whether a profile has the Talaria extension

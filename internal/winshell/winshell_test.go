@@ -53,22 +53,24 @@ func TestPaths(t *testing.T) {
 	}
 }
 
+const pwd = "pwd"
+
 func TestArgv(t *testing.T) {
 	t.Parallel()
 	git := winshell.Shell{Kind: winshell.GitBash, Bash: `C:\Program Files\Git\bin\bash.exe`}
-	if got, want := git.Argv("pwd", true, `C:\x`), []string{git.Bash, "-l", "-c", "pwd"}; !slices.Equal(got, want) {
+	if got, want := git.Argv(pwd, true, `C:\x`), []string{git.Bash, "-l", "-c", pwd}; !slices.Equal(got, want) {
 		t.Errorf("git-bash argv = %q, want %q", got, want)
 	}
 	ps := winshell.Shell{Kind: winshell.PowerShell, Bash: git.Bash, PowerShell: `C:\Program Files\PowerShell\7\pwsh.exe`}
-	if got, want := ps.Argv("pwd", false, `C:\x`), []string{git.Bash, "-c", "pwd"}; !slices.Equal(got, want) {
+	if got, want := ps.Argv(pwd, false, `C:\x`), []string{git.Bash, "-c", pwd}; !slices.Equal(got, want) {
 		t.Errorf("powershell argv = %q, want %q", got, want)
 	}
 	if !slices.Contains(ps.Env(), "TALARIA_POWERSHELL=/c/Program Files/PowerShell/7/pwsh.exe") {
 		t.Errorf("powershell env = %q", ps.Env())
 	}
 	wsl := winshell.Shell{Kind: winshell.WSL, WSL: `C:\Windows\System32\wsl.exe`, Distro: "Ubuntu"}
-	want := []string{wsl.WSL, "-d", "Ubuntu", "--cd", `C:\x`, "--exec", "bash", "-l", "-c", "pwd"}
-	if got := wsl.Argv("pwd", true, `C:\x`); !slices.Equal(got, want) {
+	want := []string{wsl.WSL, "-d", "Ubuntu", "--cd", `C:\x`, "--exec", "bash", "-l", "-c", pwd}
+	if got := wsl.Argv(pwd, true, `C:\x`); !slices.Equal(got, want) {
 		t.Errorf("wsl argv = %q, want %q", got, want)
 	}
 	if wsl.Env() != nil {

@@ -131,6 +131,10 @@ func SocketFromManifest(manifestPath string) string {
 // ManifestDir is where Firefox looks for per-user native host manifests,
 // under home.
 func ManifestDir(home string) string {
+	if runtime.GOOS == "windows" {
+		// Firefox finds it through the registry key that setup writes.
+		return filepath.Join(home, "AppData", "Local", "talaria", "native-messaging-hosts")
+	}
 	if runtime.GOOS == "darwin" {
 		return filepath.Join(home, "Library", "Application Support", "Mozilla", "NativeMessagingHosts")
 	}

@@ -118,6 +118,9 @@ func browserSocket(cfg *config.Config) (string, error) {
 
 // removeHostManifest removes what installHostManifest wrote under home.
 func removeHostManifest(home string) error {
+	if err := unregisterHost(host.Name); err != nil {
+		return err
+	}
 	dir := host.ManifestDir(home)
 	for _, name := range []string{host.Name + ".json", host.SocketFileName, host.LegacyName + ".json", host.LegacyName + ".socket"} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -146,7 +149,10 @@ func installHostManifest(exe, home, sock string) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(dir, host.Name+".json")
-	return path, os.WriteFile(path, append(data, '\n'), 0o600)
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	return path, registerHost(host.Name, path)
 }
 
 // nativeHostSocket finds the run daemon's browser socket for the native

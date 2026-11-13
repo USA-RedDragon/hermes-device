@@ -176,7 +176,7 @@ func TestRootsDefaultToHome(t *testing.T) {
 
 func TestSetupConfigLoads(t *testing.T) {
 	t.Parallel()
-	data, err := setup.ConfigYAML(hubURL, []string{aliceHome}, true)
+	data, err := setup.ConfigYAML(hubURL, []string{aliceHome}, true, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
