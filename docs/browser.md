@@ -548,7 +548,7 @@ Prompt injection: page text reaches the model. The confirmation rules in section
 | Linux, Firefox as Snap | The Snap sandbox does not see host manifests in `~/.mozilla` by default and cannot run binaries outside the snap without the `native-messaging` portal (inference from Snap's confinement; not tested). Arch packages are not Snaps |
 | Linux, Firefox as Flatpak | Same problem; needs the WebExtensions portal or a manual `--filesystem` override (inference; not tested) |
 | macOS | Manifest in `~/Library/Application Support/Mozilla/NativeMessagingHosts/` (the code handles it). No `SO_PEERCRED`: the socket's mode is the only check (it could use `LOCAL_PEERCRED`) |
-| Windows | Not supported, as for the rest of talaria. Native hosts there are registered in the registry |
+| Windows | `talaria browser install` writes the manifest to `%LOCALAPPDATA%\talaria\native-messaging-hosts` and registers it under `HKEY_CURRENT_USER\Software\Mozilla\NativeMessagingHosts\talaria`, where Firefox looks for it. Not yet tested with Firefox on Windows |
 
 ## 10. Code and tests
 

@@ -63,11 +63,10 @@ program on each one and [pair it](docs/start/add-a-computer.md).
 
 `talaria` lets the server's Hermes Agent run its shell and file operations on your own PC, in a directory you
 choose, while the session itself stays on the server, where the web UI, Telegram and every other client can see it.
-Pinned to Hermes Agent v0.23.1. Linux and macOS only: Windows is not supported, because device paths must be POSIX
-paths. `talaria` was called `hermes-device` before release 0.19.0. See
+Pinned to Hermes Agent v0.23.1. Runs on Linux, macOS and Windows (commands in Git Bash, PowerShell or WSL). `talaria` was called `hermes-device` before release 0.19.0. See
 [Renamed from hermes-device](#renamed-from-hermes-device).
 
-- [Add a computer](docs/start/add-a-computer.md): install on Linux or macOS and pair it with your hub.
+- [Add a computer](docs/start/add-a-computer.md): install on Linux, macOS or Windows and pair it with your hub.
 - [Chat from a terminal](docs/guides/terminal-chat.md), [let the agent use Firefox](docs/guides/browser-extension.md) and [use Talaria in an editor](docs/guides/editor-bridge.md).
 - [Update, move or remove a computer](docs/guides/update-and-remove.md) a computer, and [troubleshooting](docs/guides/troubleshooting.md).
 - Reference: [command line](docs/reference/cli.md) and [configuration](docs/reference/configuration.md).

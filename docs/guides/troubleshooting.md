@@ -7,7 +7,7 @@ systemctl --user status talaria
 journalctl --user -u talaria -n 100 --no-pager
 ```
 
-On macOS: `tail -n 100 ~/Library/Logs/talaria.log`. For more detail, set `log-level: debug` in the config and restart the service. To check the config file without starting anything, run `talaria run --check-config`.
+On macOS: `tail -n 100 ~/Library/Logs/talaria.log`. On Windows, in PowerShell: `Get-Content -Tail 100 $env:LOCALAPPDATA\talaria\talaria.log`. For more detail, set `log-level: debug` in the config and restart the service. To check the config file without starting anything, run `talaria run --check-config`.
 
 ## Setup says `give the hub URL`
 
@@ -19,11 +19,12 @@ Run `talaria login` again, and confirm the code in the browser within 10 minutes
 
 ## The computer shows offline on the hub
 
-1. Is the daemon running? `systemctl --user status talaria` on Linux, `launchctl list | grep talaria` on macOS (a number in the first column is its process id).
+1. Is the daemon running? `systemctl --user status talaria` on Linux, `launchctl list | grep talaria` on macOS (a number in the first column is its process id), `schtasks /Query /TN talaria` on Windows.
 2. Can the computer reach the hub? `curl -fsS https://hub.example.com/healthz`.
 3. Does the log say the token was refused? The computer was removed on the hub, or the token store changed. Pair again with `talaria login`.
 4. On a headless Linux machine, the service stops when you log out. Run `loginctl enable-linger "$USER"` once.
 5. On macOS with a hub on your local network, a log full of `connect: no route to host` means macOS has not let talaria use the local network yet: answer the question on the Mac's screen with Allow, or turn talaria on under System Settings, Privacy & Security, Local Network. See [Add a computer](../start/add-a-computer.md#on-macos).
+6. On Windows, `schtasks /Query /TN talaria` should say `Running`. See [Windows: the scheduled task does not run](#windows-the-scheduled-task-does-not-run).
 
 ## macOS: `talaria` waits and prints nothing
 
@@ -36,6 +37,42 @@ The token is in the login keychain, which macOS keeps locked in SSH sessions. Ru
 ## No systemd user manager
 
 Setup stops with `no systemd user manager or launchd to run talaria run`. This happens on Alpine, in containers and in WSL without systemd. Run `talaria setup --no-service https://hub.example.com`, then start `~/.talaria/bin/talaria run` yourself from your own supervisor.
+
+## Windows: "Windows protected your PC"
+
+This is Microsoft Defender SmartScreen. Windows shows it when you start a downloaded program from Explorer that has no reputation with Microsoft yet, as unsigned programs such as talaria usually do. Choose More info, check that the app is `talaria.exe`, then Run anyway. Or run `.\talaria.exe setup ...` from a terminal, which does not show it, or run `Unblock-File` on the zip before you unpack it. See [Add a computer](../start/add-a-computer.md#on-windows).
+
+## Windows: Defender removed `talaria.exe`
+
+Microsoft Defender can flag new, unsigned programs. Check the zip against the release's checksum file and its attestation (see [Releases and verification](../releases.md)). If both match, restore the file under Windows Security, Virus & threat protection, Protection history, and report it to Microsoft as a false positive at <https://www.microsoft.com/en-us/wdsi/filesubmission>.
+
+## Windows: PowerShell execution policy
+
+You do not need to change it. `talaria.exe` is a program, not a script, and with the `powershell` shell each command starts PowerShell with `-ExecutionPolicy Bypass` and `-NoProfile`, for that process only. With `git-bash` or `wsl`, commands do not use PowerShell.
+
+## Windows: `WSL has no distribution` or `Git Bash is not installed`
+
+The shell in the config is missing on this PC, and the log repeats the error every 5 seconds while the computer shows offline:
+
+- `WSL has no Linux distribution`: install one, for example `wsl --install -d Ubuntu`, then open it once to create your Linux user.
+- `WSL has no distribution "Debian" (found Ubuntu)`: `device.wsl-distro` names a distribution that `wsl --list` does not show. Set it to one that does, or remove it to use your default distribution.
+- `Git Bash is not installed`: install [Git for Windows](https://git-scm.com/download/win) (`winget install Git.Git`). The `powershell` shell needs it too.
+
+Then restart the service: `schtasks /End /TN talaria`, then `schtasks /Run /TN talaria`. To pick another shell, set `device.shell` in `%LOCALAPPDATA%\talaria\config.yaml`, or run `talaria setup --overwrite-config --shell <shell>`.
+
+## Windows: the scheduled task does not run
+
+`schtasks /Query /TN talaria` shows the task's status:
+
+- `Running`: the service runs. If the computer is still offline, read the log.
+- `Ready`: it is not running. Start it with `schtasks /Run /TN talaria`. The task starts when you log on to Windows and runs only while you are logged on, so it does not run before the first logon after a restart.
+- `ERROR: The system cannot find the file specified`: there is no task. Run `talaria setup` again.
+
+Log lines `talaria service: the daemon exited (code N); starting it again in 5s` mean that the daemon starts and fails; the error is on the line before.
+
+## Windows over SSH: `no device token stored`
+
+When setup ran in a desktop session, the token is in Windows Credential Manager, which an SSH session cannot read. The service is not affected. Run commands that need the token, such as `talaria chat`, in a terminal on the PC's desktop.
 
 ## `talaria: command not found`
 
