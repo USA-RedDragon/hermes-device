@@ -16,17 +16,74 @@ window.HubAgent = (() => {
     return (short ? shortModes : Object.fromEntries(modes))[m] || "";
   }
 
-  // doctorSummary reads the health check's output: how many checks passed
-  // and the lines to look at (warnings and failures).
+  // Warnings about things most installs never set up: a provider login that
+  // was never made, a tool whose key or program is absent, a file the
+  // deployment manages itself. They are counted, not listed.
+  const optionalLine = [
+    /\(not logged in\)/i, /\(not configured\)/i, /\(missing [A-Z][A-Z0-9_]*\)/, /system dependency not met/i,
+    /generation unavailable/i, /^No [A-Z][A-Z0-9_]*_(TOKEN|KEY)\b/, /^No API key found/i, /not initialized/i, /\.env file missing/i, /config\.yaml not found/i,
+  ];
+
+  // quiet rewrites a line of the report in Talaria's words: no command to
+  // type on the server and no product name of the agent's maker.
+  function quiet(line) {
+    return String(line)
+      .replace(/\s*\((?:run|fix|try):[^)]*\)/gi, "")
+      .replace(/\bHermes(?: Agent)?\b/g, "the agent")
+      .replace(/\bhermes\b/g, "agent");
+  }
+
+  // doctorSummary reads the health check's output: how many checks passed,
+  // the lines to look at (failures, and warnings about things the install
+  // uses) and how many warnings were about optional things that are not set
+  // up.
   function doctorSummary(lines) {
     let passed = 0;
+    let optional = 0;
     const look = [];
     for (const raw of lines || []) {
       const l = String(raw).trim();
       if (/^(✓|✔|\[ok\]|OK\b)/i.test(l)) passed++;
-      else if (/^(✗|✘|⚠|!|\[warn|\[fail|\[error|WARN|FAIL|ERROR)/i.test(l)) look.push(l.replace(/^(✗|✘|⚠|!)\s*/, ""));
+      else if (/^(✗|✘|⚠|!|\[warn|\[fail|\[error|WARN|FAIL|ERROR)/i.test(l)) {
+        const text = l.replace(/^(✗|✘|⚠|!)\s*/, "");
+        if (optionalLine.some((re) => re.test(text))) optional++;
+        else look.push(quiet(text));
+      }
     }
-    return { passed, look };
+    return { passed, look, optional };
+  }
+
+  // reportText is the full report for the details box: the agent's own
+  // banner and its closing list of commands to type are left out, and so
+  // are the warnings about optional things (the summary counts them).
+  function reportText(lines) {
+    const blocks = [];
+    let cur = null;
+    let skipping = false;
+    for (const raw of lines || []) {
+      const l = String(raw);
+      if (/^[─━-]{8,}/.test(l.trim())) break;
+      if (/^\s*[┌│└]/.test(l) || !l.trim()) continue;
+      if (/^\s*◆/.test(l)) {
+        cur = { head: quiet(l).trim(), body: [] };
+        blocks.push(cur);
+        skipping = false;
+        continue;
+      }
+      if (/^\s*→/.test(l)) {
+        if (!skipping && cur && !/^\s*→\s*Run /.test(l)) cur.body.push(quiet(l).trimEnd());
+        continue;
+      }
+      const text = l.trim().replace(/^(✗|✘|⚠|!)\s*/, "");
+      skipping = /^\s*(✗|✘|⚠|!)/.test(l) && optionalLine.some((re) => re.test(text));
+      if (!skipping && cur) cur.body.push(quiet(l).trimEnd());
+    }
+    return blocks.filter((b) => b.body.length).map((b) => b.head + "\n" + b.body.join("\n")).join("\n\n");
+  }
+
+  // optionalLineText says how many optional things are not set up.
+  function optionalText(n) {
+    return n + " optional " + (n === 1 ? "item is" : "items are") + " not set up. That is fine unless you want them.";
   }
 
   // logTone is the color of one agent log line: w for warnings, e for errors.
@@ -620,10 +677,10 @@ window.HubAgent = (() => {
           const s = doctorSummary(r.lines);
           const lines = s.look.slice(0, 8);
           const pre = el("pre", "log");
-          pre.textContent = (r.lines || []).join("\n");
+          pre.textContent = reportText(r.lines);
           const det = el("details", "adv");
           det.append(el("summary", "", "Full report"), pre);
-          hc.replaceChildren(say(s.look.length ? "warn" : "good", "Health check: " + s.passed + " passed" + (s.look.length ? ", " + s.look.length + " to look at" : ""), [...lines, det]));
+          hc.replaceChildren(say(s.look.length ? "warn" : "good", "Health check: " + s.passed + " passed" + (s.look.length ? ", " + s.look.length + " to look at" : ""), [...lines, s.optional ? el("small", "muted", optionalText(s.optional)) : null, det]));
         } catch (e) { hc.replaceChildren(say("bad", "The health check did not finish.", [e.message])); }
         run.disabled = false;
       }, "pulse");
@@ -937,5 +994,5 @@ window.HubAgent = (() => {
     return { agentPane, toolsPane, diagnosticsPane, backupPane, telegramAdmin, updateBanner, quick };
   }
 
-  return { create, doctorSummary, logTone, modeLabel, bannerText, updateSteps, liveLine, zones, splitSkills };
+  return { create, doctorSummary, reportText, optionalText, logTone, modeLabel, bannerText, updateSteps, liveLine, zones, splitSkills };
 })();

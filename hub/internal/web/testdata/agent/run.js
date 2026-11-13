@@ -12,8 +12,27 @@ const eq = (a, b, msg) => assert.deepStrictEqual(JSON.parse(JSON.stringify(a)), 
 
 // The health check's report (the agent's doctor output).
 eq(A.doctorSummary(["Checking...", "✓ config ok", "✓ model reachable", "⚠ data folder 91% full", "✗ honcho unreachable"]),
-  { passed: 2, look: ["data folder 91% full", "honcho unreachable"] });
-eq(A.doctorSummary([]), { passed: 0, look: [] });
+  { passed: 2, look: ["data folder 91% full", "honcho unreachable"], optional: 0 });
+eq(A.doctorSummary([]), { passed: 0, look: [], optional: 0 });
+// Providers and tools nobody set up are not problems: they are counted, not listed.
+eq(A.doctorSummary([
+  "✓ Python 3.14.9", "⚠ Nous Portal auth (not logged in)", "⚠ OpenAI Codex auth (not logged in)", "→ No Codex credentials stored.",
+  "⚠ MiniMax OAuth (not logged in)", "⚠ xAI OAuth (not logged in)", "⚠ OpenRouter API (not configured)", "⚠ discord (missing DISCORD_BOT_TOKEN)",
+  "⚠ vision (system dependency not met)", "⚠ image_gen (image generation unavailable — check the provider selection)",
+  "⚠ Skills Hub directory not initialized (run: hermes skills list)", "⚠ No GITHUB_TOKEN (60 req/hr rate limit)", "✗ /opt/data/.env file missing",
+  "⚠ config.yaml not found (using defaults)", "⚠ No API key found in ~/./.env",
+]), { passed: 1, look: [], optional: 13 });
+// A real failure or warning stays, and says nothing of the agent's maker or its commands.
+eq(A.doctorSummary(["⚠ Nous Portal auth (not logged in)", "✗ /opt/data/state.db is corrupt (run: hermes doctor --fix)", "⚠ Hermes gateway is slow"]),
+  { passed: 0, look: ["/opt/data/state.db is corrupt", "the agent gateway is slow"], optional: 1 });
+assert.strictEqual(A.optionalText(1), "1 optional item is not set up. That is fine unless you want them.");
+assert.ok(A.optionalText(12).startsWith("12 optional items are not set up"));
+const report = A.reportText(["", "┌────┐", "│ 🩺 Hermes Doctor │", "└────┘", "", "◆ Python", "  ✓ Python 3.14.9", "", "◆ Auth Providers",
+  "  ⚠ Nous Portal auth (not logged in)", "  ⚠ OpenAI Codex auth (not logged in)", "    → No Codex credentials stored. Run `hermes auth add`", "◆ Files",
+  "  ✗ /opt/data/state.db is corrupt", "    → Run 'hermes doctor --fix' to repair", "  ⚠ config.yaml not found (using defaults)", "", "──────────────────",
+  "  Found 2 issue(s) to address:", "  1. Run 'hermes setup'"]);
+assert.strictEqual(report, "◆ Python\n  ✓ Python 3.14.9\n\n◆ Files\n  ✗ /opt/data/state.db is corrupt");
+assert.ok(!/hermes|nous/i.test(report), "no commands or product names");
 
 // Log line colors.
 assert.strictEqual(A.logTone("2026-11-13 10:44:30 WARNING provider slow"), "w");

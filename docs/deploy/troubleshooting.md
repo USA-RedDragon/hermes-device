@@ -1,7 +1,8 @@
 # Fix server problems
 
 Admins can start in the hub: **Settings, Diagnostics** shows whether each part is working (the hub, the agent,
-the sandbox, your computers, Telegram), runs a health check of the agent, and shows the newest lines of the agent's
+the sandbox, your computers, Telegram), runs a health check of the agent (it lists real problems and only counts optional logins and tools you have not
+set up), and shows the newest lines of the agent's
 log with a filter for warnings and errors. **Copy support info** copies all of it for a bug report.
 
 On the server, start with what is running and what it says.

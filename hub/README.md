@@ -238,7 +238,8 @@ never see these tabs, and every route checks it on the server (403 for anyone el
   files and commands are always on) and connections (other services the agent can use, by address and an optional
   token: on or off, test, remove).
 - **Settings, Diagnostics**: whether the hub, the agent, the sandbox, your computers and Telegram work, a health
-  check of the agent, the newest 200 lines of the agent's log (all, warnings or errors; it updates every 10 seconds
+  check of the agent (it lists failures and warnings about what the install uses, and counts the optional
+  logins and tools that are not set up), the newest 200 lines of the agent's log (all, warnings or errors; it updates every 10 seconds
   while open) and Copy support info.
 - **Settings, Backup** (hub admins): one zip with the hub's data, its keys and the agent's data. See
   [Upgrade and back up](https://usa-reddragon.github.io/talaria/deploy/upgrades.html#back-up).
