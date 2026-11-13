@@ -34,7 +34,7 @@ type Store struct {
 // Device is what the run daemon lets the agent use on this device.
 type Device struct {
 	Roots        []string      `name:"roots" description:"Absolute directories commands may run in. A command whose working directory is outside all of them is refused. Defaults to the home directory"`
-	TempDir      string        `name:"tmp-dir" description:"Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory"`
+	TempDir      string        `name:"tmp-dir" description:"Directory the agent uses on this device for its shell snapshot files. Defaults to the system temp directory"`
 	Shell        string        `name:"shell" default:"bash" description:"Shell used to run commands. On Windows: git-bash (Git for Windows' bash), powershell (pwsh when installed, else Windows PowerShell; needs Git Bash too, for the file tools) or wsl (bash in a WSL distribution); bash there picks Git Bash, else WSL"`
 	WSLDistro    string        `name:"wsl-distro" description:"WSL distribution for device.shell wsl on Windows. Defaults to WSL's default distribution"`
 	ResumeBuffer int           `name:"resume-buffer" default:"1048576" description:"Most output bytes per command that run keeps for a resume of the exec leg until the plugin confirms them. Older output of a command is dropped, and the plugin shows the gap"`
@@ -52,9 +52,9 @@ type Gateway struct {
 
 // Chat runs the local Hermes TUI.
 type Chat struct {
-	Managed    bool   `name:"managed" default:"true" description:"On Linux, run the exact Hermes build the server runs: run fetches it from the server's container image by digest when the server reports one, verifies it and keeps it in chat.managed-dir. false, or no image from the server, runs chat.hermes instead"`
-	ManagedDir string `name:"managed-dir" description:"Directory for the managed Hermes builds and their own Hermes home. Defaults to talaria/hermes in the user cache directory"`
-	Hermes     string `name:"hermes" default:"hermes" description:"Local Hermes launcher when chat.managed is off or the server reports no image. It must be the same release as the server's Hermes"`
+	Managed    bool   `name:"managed" default:"true" description:"On Linux, run the exact agent build the server runs: run fetches it from the server's container image by digest when the server reports one, verifies it and keeps it in chat.managed-dir. false, or no image from the server, runs chat.hermes instead"`
+	ManagedDir string `name:"managed-dir" description:"Directory for the managed agent builds and their own home. Defaults to talaria/hermes in the user cache directory"`
+	Hermes     string `name:"hermes" default:"hermes" description:"Local agent launcher (Hermes Agent) when chat.managed is off or the server reports no image. It must be the same release as the server's agent"`
 }
 
 // ACPHost is the in-pod ACP process host.

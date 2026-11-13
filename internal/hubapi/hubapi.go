@@ -45,7 +45,7 @@ var ErrUnauthorized = errors.New("hub refused the device token; run talaria logi
 
 // ErrNoEditorBridge is returned when the hub has no acp-host for this
 // device's Hermes.
-var ErrNoEditorBridge = errors.New("this hub has no editor bridge for your Hermes (the backend has no acp_url); ask the hub admin to set it up")
+var ErrNoEditorBridge = errors.New("editor access is not set up on this server (the backend has no acp_url); ask the hub admin to set it up")
 
 // Error is an error answer from the hub.
 type Error struct {

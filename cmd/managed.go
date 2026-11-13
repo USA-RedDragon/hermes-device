@@ -188,7 +188,7 @@ func permanent(err error) bool {
 }
 
 // errNoImage is chat --refresh without an image from the server.
-var errNoImage = errors.New("the server reports no Hermes image; chat uses chat.hermes")
+var errNoImage = errors.New("the server reports no agent image; chat uses chat.hermes")
 
 // progress prints the progress of a pull to w.
 func progress(w io.Writer) func(done, total int64) {
@@ -200,11 +200,11 @@ func progress(w io.Writer) func(done, total int64) {
 		if done >= total {
 			end = "\n"
 		}
-		_, _ = fmt.Fprintf(w, "\rFetching the server's Hermes build: %3d%% of %.1f GB%s", done*100/total, float64(total)/1e9, end)
+		_, _ = fmt.Fprintf(w, "\rFetching the server's agent build: %3d%% of %.1f GB%s", done*100/total, float64(total)/1e9, end)
 	}
 }
 
-// printStatus shows the server's Hermes and the managed builds.
+// printStatus shows the server's agent release and the managed builds.
 func printStatus(w io.Writer, cfg *config.Config, builds *hermesbuild.Store, st *daemonstate.State) error {
 	image := st.HermesImage
 	if image == "" {
@@ -214,7 +214,7 @@ func printStatus(w io.Writer, cfg *config.Config, builds *hermesbuild.Store, st 
 	if version == "" {
 		version = "unknown until run connects"
 	}
-	_, _ = fmt.Fprintf(w, "Server Hermes: %s\nServer image:  %s\n", version, image)
+	_, _ = fmt.Fprintf(w, "Server agent:  %s\nServer image:  %s\n", version, image)
 	if st.HermesBaseImage != "" {
 		_, _ = fmt.Fprintf(w, "Base image:    %s\n", st.HermesBaseImage)
 	}
@@ -294,6 +294,6 @@ func refreshBuild(ctx context.Context, w io.Writer, builds *hermesbuild.Store, s
 	if err := builds.Prune(image, keepPrevious); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "Hermes build ready: %s\n  in %s\n", b.Meta.Reference, b.Dir)
+	_, err = fmt.Fprintf(w, "Agent build ready: %s\n  in %s\n", b.Meta.Reference, b.Dir)
 	return err
 }

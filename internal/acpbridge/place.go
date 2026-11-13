@@ -331,7 +331,7 @@ func (b *Bridge) finishMove(p pendingReq, ok bool, m object) {
 			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(m["error"], &e)
-		b.notice(p.session, fmt.Sprintf("Moved this chat to %s, but Hermes could not load it: %s. Send %s to try again.",
+		b.notice(p.session, fmt.Sprintf("Moved this chat to %s, but the agent could not load it: %s. Send %s to try again.",
 			p.cwd, e.Message, MoveCommand))
 	}
 	b.writeEditor(endTurn(p.id))

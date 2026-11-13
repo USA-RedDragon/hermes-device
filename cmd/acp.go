@@ -18,7 +18,7 @@ func newACPCommand(b *base) *cobra.Command {
 		Use:   "acp",
 		Short: "Bridge an editor's ACP over stdio to the server",
 		Long: "acp speaks the Agent Client Protocol with an editor on stdin and stdout and relays it to the " +
-			"server's Hermes through the Talaria hub. Point the editor's agent command at `talaria acp`. " +
+			"server's agent through the Talaria hub. Point the editor's agent command at `talaria acp`. " +
 			"Logs go to stderr.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {

@@ -57,10 +57,10 @@ const lockPoll = 250 * time.Millisecond
 
 // Errors.
 var (
-	ErrNotPulled   = errors.New("the Hermes build is not on this device yet")
-	ErrNoLauncher  = errors.New("the Hermes build has no launcher")
-	ErrUnsupported = errors.New("managed Hermes builds run on Linux only")
-	ErrNoSpace     = errors.New("not enough free disk space for a Hermes build")
+	ErrNotPulled   = errors.New("the agent build is not on this device yet")
+	ErrNoLauncher  = errors.New("the agent build has no launcher")
+	ErrUnsupported = errors.New("managed agent builds run on Linux only")
+	ErrNoSpace     = errors.New("not enough free disk space for an agent build")
 )
 
 // MinFree is the free space a pull needs in the store's file system: a
@@ -262,11 +262,11 @@ func (s *Store) pull(ctx context.Context, image string, ref oci.Reference) error
 	img, err := oci.Pull(ctx, ref, staging, oci.Options{HTTP: s.HTTP, UserAgent: s.UserAgent, Arch: s.Arch,
 		Filter: Filter, Progress: s.Progress, Log: s.log()})
 	if err != nil {
-		return fmt.Errorf("fetch Hermes %s: %w", image, err)
+		return fmt.Errorf("fetch the agent build %s: %w", image, err)
 	}
 	final := s.buildDir(hex)
 	if err := relocate(staging, final); err != nil {
-		return fmt.Errorf("prepare Hermes %s: %w", image, err)
+		return fmt.Errorf("prepare the agent build %s: %w", image, err)
 	}
 	meta, err := json.MarshalIndent(Meta{Reference: image, Source: img.Source.String(), Manifest: img.Manifest,
 		Env: img.Config.Config.Env, PulledAt: time.Now().UTC()}, "", "  ")
@@ -411,7 +411,7 @@ func (s *Store) InUse(b *Build) bool {
 }
 
 // ErrInUse is a build that a running chat uses.
-var ErrInUse = errors.New("the Hermes build is in use by a running chat or a pull")
+var ErrInUse = errors.New("the agent build is in use by a running chat or a pull")
 
 // Remove deletes the build of image unless a chat uses it.
 func (s *Store) Remove(image string) error {

@@ -35,10 +35,10 @@ func WithDefaultHub(url string) Option {
 func NewCommand(version, commit string, opts ...Option) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "talaria",
-		Short: "Run a server Hermes agent's shell and file operations on this device",
+		Short: "Run a server agent's shell and file operations on this device",
 		Long: "talaria sets this computer up in one step (setup), pairs it with the Talaria hub (login), runs the agent's commands here (run), " +
-			"opens the local Hermes TUI against the server (chat) and bridges editors over ACP (acp). " +
-			"In the Hermes pod it installs the device plugin (plugin install) and hosts ACP processes (acp-host).",
+			"opens the agent's terminal chat against the server (chat) and bridges editors over ACP (acp). " +
+			"On the server it installs the device plugin (plugin install) and hosts ACP processes (acp-host).",
 		Version:       fmt.Sprintf("%s - %s", version, commit),
 		SilenceUsage:  true,
 		SilenceErrors: true,

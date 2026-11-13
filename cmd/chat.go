@@ -13,13 +13,13 @@ import (
 func newChatCommand(b *base) *cobra.Command {
 	var allowMismatch, status, refresh bool
 	c := &cobra.Command{
-		Use:   "chat [-- hermes-args...]",
-		Short: "Open the local Hermes TUI on the server, in this directory",
-		Long: "chat starts the local Hermes TUI (hermes --tui) in the current directory and points it at " +
-			"the running talaria run daemon, which carries it to the server's Hermes. On Linux it runs the exact build " +
+		Use:   "chat [-- agent-args...]",
+		Short: "Open the agent's terminal chat on the server, in this directory",
+		Long: "chat starts the agent's terminal chat (hermes --tui) in the current directory and points it at " +
+			"the running talaria run daemon, which carries it to the server's agent. On Linux it runs the exact build " +
 			"the server runs, which run fetches from the server's container image and verifies (chat.managed); otherwise, " +
-			"or when the server reports no image, it runs chat.hermes of the same release. Arguments after -- go to Hermes. " +
-			"Hermes' -c/--continue and -r/--resume flags are looked up on the server: -c alone continues the most recent " +
+			"or when the server reports no image, it runs chat.hermes of the same release. Arguments after -- go to the agent. " +
+			"Its -c/--continue and -r/--resume flags are looked up on the server: -c alone continues the most recent " +
 			"session bound to this device. --status shows the managed builds and --refresh fetches the server's build again.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := b.load()
@@ -79,10 +79,10 @@ func newChatCommand(b *base) *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&allowMismatch, "allow-version-mismatch", false,
-		"Start the TUI even when the local Hermes is not the server's release")
-	c.Flags().BoolVar(&status, "status", false, "Show the server's Hermes and the managed builds on this device, then exit")
+		"Start the chat even when the local agent build is not the server's release")
+	c.Flags().BoolVar(&status, "status", false, "Show the server's agent release and the managed builds on this device, then exit")
 	c.Flags().BoolVar(&refresh, "refresh", false,
-		"Fetch and verify the server's Hermes build again, remove old builds, then exit")
+		"Fetch and verify the server's agent build again, remove old builds, then exit")
 	c.MarkFlagsMutuallyExclusive("status", "refresh")
 	return c
 }

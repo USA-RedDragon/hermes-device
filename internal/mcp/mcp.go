@@ -896,7 +896,7 @@ func (p *proc) call(ctx context.Context, method string, params json.RawMessage) 
 		if p.forget(id) {
 			// Without waiting, so ctx being done does not keep it from the queue.
 			_ = p.notify(ctx, "notifications/cancelled",
-				map[string]any{"requestId": id, "reason": "cancelled by Hermes"}, false)
+				map[string]any{"requestId": id, "reason": "cancelled by the agent"}, false)
 		}
 		return nil, ctxError(ctx, p.s.name)
 	}

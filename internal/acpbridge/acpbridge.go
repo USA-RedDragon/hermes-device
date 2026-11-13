@@ -48,7 +48,7 @@ const (
 
 // MsgLost is the error message of editor requests that were in flight when
 // the ACP leg dropped.
-const MsgLost = "talaria: connection to Hermes lost; retry"
+const MsgLost = "talaria: connection to the agent lost; retry"
 
 // IDPrefix starts the ids of requests the bridge sends itself.
 const IDPrefix = "hermes-device-"
@@ -78,7 +78,7 @@ var ErrUnsupportedVersion = errors.New("the server does not support this talaria
 
 var (
 	errLost    = errors.New("ACP leg lost")
-	errTimeout = errors.New("no answer from Hermes")
+	errTimeout = errors.New("no answer from the agent")
 )
 
 // Hub is the part of the hub API the bridge uses. *hubapi.Client

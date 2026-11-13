@@ -45,7 +45,7 @@ const (
 var (
 	ErrNotRunning      = errors.New("talaria run is not running; start it first")
 	ErrOtherHub        = errors.New("the running talaria run uses another hub")
-	ErrVersionMismatch = errors.New("local Hermes and server Hermes are different releases")
+	ErrVersionMismatch = errors.New("the local agent build and the server's agent are different releases")
 	ErrNoVersion       = errors.New("could not read the version from hermes --version")
 )
 

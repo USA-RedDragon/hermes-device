@@ -74,16 +74,16 @@ Open the Hermes terminal interface on a server session. See [Chat from a termina
 
 <!-- docgen:output exec="scripts/cli-usage.sh chat" -->
 ```text
-chat starts the local Hermes TUI (hermes --tui) in the current directory and points it at the running talaria run daemon, which carries it to the server's Hermes. On Linux it runs the exact build the server runs, which run fetches from the server's container image and verifies (chat.managed); otherwise, or when the server reports no image, it runs chat.hermes of the same release. Arguments after -- go to Hermes. Hermes' -c/--continue and -r/--resume flags are looked up on the server: -c alone continues the most recent session bound to this device. --status shows the managed builds and --refresh fetches the server's build again.
+chat starts the agent's terminal chat (hermes --tui) in the current directory and points it at the running talaria run daemon, which carries it to the server's agent. On Linux it runs the exact build the server runs, which run fetches from the server's container image and verifies (chat.managed); otherwise, or when the server reports no image, it runs chat.hermes of the same release. Arguments after -- go to the agent. Its -c/--continue and -r/--resume flags are looked up on the server: -c alone continues the most recent session bound to this device. --status shows the managed builds and --refresh fetches the server's build again.
 
 Usage:
-  talaria chat [-- hermes-args...] [flags]
+  talaria chat [-- agent-args...] [flags]
 
 Flags:
-      --allow-version-mismatch[=true|false]   Start the TUI even when the local Hermes is not the server's release
+      --allow-version-mismatch[=true|false]   Start the chat even when the local agent build is not the server's release
   -h, --help[=true|false]                     help for chat
-      --refresh[=true|false]                  Fetch and verify the server's Hermes build again, remove old builds, then exit
-      --status[=true|false]                   Show the server's Hermes and the managed builds on this device, then exit
+      --refresh[=true|false]                  Fetch and verify the server's agent build again, remove old builds, then exit
+      --status[=true|false]                   Show the server's agent release and the managed builds on this device, then exit
 ```
 <!-- /docgen:output -->
 
@@ -93,7 +93,7 @@ Bridge an editor's ACP over standard input and output. See [Use Talaria in an ed
 
 <!-- docgen:output exec="scripts/cli-usage.sh acp" -->
 ```text
-acp speaks the Agent Client Protocol with an editor on stdin and stdout and relays it to the server's Hermes through the Talaria hub. Point the editor's agent command at `talaria acp`. Logs go to stderr.
+acp speaks the Agent Client Protocol with an editor on stdin and stdout and relays it to the server's agent through the Talaria hub. Point the editor's agent command at `talaria acp`. Logs go to stderr.
 
 Usage:
   talaria acp [flags]
