@@ -1,0 +1,5 @@
+# Existing tests of the goal continuation and the loop wakeup watcher this patch sits beside.
+tests/gateway/test_goal_resume_restart.py
+tests/gateway/test_goal_continuation_drain.py
+tests/gateway/test_goal_status_notice.py
+tests/gateway/test_loop_command.py

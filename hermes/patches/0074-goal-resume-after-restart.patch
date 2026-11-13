@@ -1,0 +1,391 @@
+From de7e2473b5fedb6d687f14473ce57ecf9f5f7e26 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 18:38:56 +0000
+Subject: [PATCH] fix(goals): an active goal resumes after a gateway restart
+
+The post-turn judge queues the next goal turn in an in-memory FIFO (a local chat: an admission written after the judge ran). A restart between a turn's end and that next turn dropped it, and the goal sat active and idle until the user wrote again; only a turn running at SIGTERM was handed to the next gateway. A goal-resume watcher, started like the /loop wakeup watcher (5 s after startup, then every 15 s, each served profile's store under its scope), now queues one continuation for every active goal whose session has been idle 30 s with no running turn, queued input or pending admission. It skips paused, done, wait-parked and budget-spent goals and honors `hermes pause`, and queues once per stalled state per process. No new key.
+---
+ gateway/run_goals.py                          | 102 +++++++++-
+ gateway/run_startup.py                        |   3 +-
+ hermes_cli/goals.py                           |  24 +++
+ .../gateway/test_goal_resume_after_restart.py | 180 ++++++++++++++++++
+ 4 files changed, 306 insertions(+), 3 deletions(-)
+ create mode 100644 tests/gateway/test_goal_resume_after_restart.py
+
+diff --git a/gateway/run_goals.py b/gateway/run_goals.py
+index 42d38850..1f5f1f47 100644
+--- a/gateway/run_goals.py
++++ b/gateway/run_goals.py
+@@ -24,6 +24,10 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
+ # Log-record parity with the origin module.
+ logger = logging.getLogger("gateway.run")
+ 
++# An active goal whose session has been idle this long with no turn, queued input or admission lost its
++# continuation (the in-memory FIFO / the judge did not survive a restart): the resume watcher re-queues it.
++GOAL_RESUME_GRACE_S = 30.0
++
+ 
+ class GatewayGoalsMixin:
+     """Goal/heartbeat continuation, post-turn hooks and loop-wakeup watcher methods for GatewayRunner."""
+@@ -337,23 +341,30 @@ class GatewayGoalsMixin:
+         prompt = decision.get("continuation_prompt") or ""
+         if not decision.get("should_continue") or not prompt or source is None:
+             return
++        await self._enqueue_goal_continuation(source, prompt)
++
++    async def _enqueue_goal_continuation(self, source: Any, prompt: str) -> bool:
++        """Queue one goal continuation turn for *source*'s session; True when it was queued."""
+         if getattr(source, "platform", None) == Platform.LOCAL:
+             # A local session's adapter FIFO has no reader: its turns are authority admissions.
+             # Commit the continuation there, as main's TUI chained it after the turn.
+             from gateway.session_automation import admit_route_wake
+             try:
+-                await admit_route_wake(self, self._delivery_adapter_for(source), source, prompt, "goal-continuation")
++                return bool(await admit_route_wake(
++                    self, self._delivery_adapter_for(source), source, prompt, "goal-continuation"))
+             except Exception:  # health: allow BLE001 -- best-effort like the FIFO enqueue below; traceback logged
+                 logger.debug("goal continuation: local admission failed", exc_info=True)
+-            return
++                return False
+         # Enqueue via the adapter's FIFO so a user message already in flight preempts naturally.
+         try:
+             adapter = self._delivery_adapter_for(source)
+             _quick_key = self._session_key_for_source(source)
+             if adapter and _quick_key:
+                 self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
++                return True
+         except Exception as exc:
+             logger.debug("goal continuation: enqueue failed: %s", exc)
++        return False
+ 
+     async def _run_post_turn_hooks(
+         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,
+@@ -578,3 +589,90 @@ class GatewayGoalsMixin:
+             except Exception as exc:
+                 logger.debug("loop wakeup watcher error: %s", exc)
+             await asyncio.sleep(interval)
++
++    async def _goal_resume_fire_one(self, sid: str, state: Any, now: float, tried: dict, profile: Optional[str] = None) -> bool:
++        """Queue the continuation an active /goal lost to a restart between its turn's end and the next
++        turn (the post-turn judge's FIFO entry is in memory only). Skips a goal that is not active, in
++        budget and idle past ``GOAL_RESUME_GRACE_S``, parked on a wait barrier, paused by ``hermes pause``,
++        or whose session runs, has queued input or holds a pending admission. Once per stalled state
++        (goal turn count and last turn time) per process; returns True when a turn was queued."""
++        from hermes_cli.goals import GoalManager
++
++        if state.status != "active" or state.turns_used >= state.max_turns:
++            return False
++        if now - max(state.last_turn_at or 0.0, state.created_at or 0.0) < GOAL_RESUME_GRACE_S:
++            return False
++        stalled = (state.turns_used, state.last_turn_at)
++        if tried.get(sid) == stalled:
++            return False
++        store = getattr(self, "session_store", None)
++        entry = store.lookup_by_session_id(sid) if store is not None else None
++        source, key = getattr(entry, "origin", None), getattr(entry, "session_key", None)
++        if source is None or not key:
++            return False
++        if profile and not getattr(source, "profile", None):
++            source.profile = profile
++        if self._is_session_running(key) or key in self._running_agents:
++            return False
++        adapter = self._delivery_adapter_for(source)
++        if adapter is None or self._queue_depth(key, adapter=adapter) > 0:
++            return False
++        from gateway.session_authorities import active_authority
++        authority = active_authority(self)
++        if authority is not None:
++            from hermes_state_runtime import list_session_admissions
++            pending = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid)
++            if pending:
++                return False
++        from agent.estop import check_paused
++
++        if check_paused("goal", logger):
++            return False
++
++        def _next_prompt():
++            mgr = GoalManager(session_id=sid, default_max_turns=self._goal_max_turns_from_config())
++            return None if not mgr.is_active() or mgr.is_waiting() else mgr.next_continuation_prompt()
++
++        prompt = await self._run_in_executor_with_context(_next_prompt)
++        if not prompt:
++            return False
++        tried[sid] = stalled
++        queued = await self._enqueue_goal_continuation(source, prompt)
++        logger.info("goal resume: %s continuation for session %s (turn %s)",
++                    "queued" if queued else "could not queue", sid, state.turns_used)
++        return queued
++
++    async def _goal_resume_watcher(self, interval: float = 15.0) -> None:
++        """Re-queue the continuation of every idle active /goal at startup and every ``interval``
++        seconds. Same multiplex shape as ``_loop_wakeup_watcher``: each served profile's store is read
++        under its own runtime scope."""
++        from gateway.run import _async_profile_runtime_scope, _resolve_handoff_watch_scopes
++        await asyncio.sleep(5)  # let platforms and the session authority finish starting
++        tried: dict = {}
++
++        def _scope(profile_home):
++            if profile_home is not None:
++                return _async_profile_runtime_scope(profile_home)
++            from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
++            return async_launch_profile_scope_if_multiplexed()
++
++        async def _scan_one_store(profile_name: Optional[str]) -> None:
++            from hermes_cli.goals import list_active_goals
++
++            await self._warm_goals_session_db("goal resume")
++            active = await self._run_in_executor_with_context(list_active_goals)
++            now = time.time()
++            for sid, state in active:
++                try:
++                    await self._goal_resume_fire_one(sid, state, now, tried, profile_name)
++                except Exception as exc:
++                    logger.debug("goal resume for %s failed: %s", sid, exc)
++
++        while self._running:
++            try:
++                for profile_name, profile_home in await _resolve_handoff_watch_scopes(self):
++                    async with _scope(profile_home):
++                        await _scan_one_store(profile_name)
++            except Exception as exc:
++                logger.debug("goal resume watcher error: %s", exc)
++            await asyncio.sleep(interval)
+diff --git a/gateway/run_startup.py b/gateway/run_startup.py
+index 7e79e16a..b8c5ffd2 100644
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -1687,7 +1687,8 @@ class GatewayStartupMixin:
+         "_kanban_notifier_watcher", "_kanban_dispatcher_watcher",
+     )
+     _POST_RECONNECT_WATCHERS = (
+-        "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",
++        "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_goal_resume_watcher",
++        "_profile_reconcile_watcher",
+     )
+ 
+     def _start_spawn_background_watchers(self) -> None:
+diff --git a/hermes_cli/goals.py b/hermes_cli/goals.py
+index 96ee695e..188c55aa 100644
+--- a/hermes_cli/goals.py
++++ b/hermes_cli/goals.py
+@@ -677,6 +677,30 @@ def clear_goal(session_id: str) -> None:
+     save_goal(session_id, state)
+ 
+ 
++def list_active_goals() -> list[tuple[str, GoalState]]:
++    """``[(session_id, GoalState), ...]`` for every ``active`` goal in the cached store; ``[]`` on any
++    DB error. The gateway's goal-resume watcher scans it, like ``loops.list_active_loops``."""
++    db = _get_session_db()
++    if db is None:
++        return []
++    prefix = _meta_key("")
++    try:
++        rows = db.list_meta_prefix(prefix)
++    except Exception as exc:
++        logger.debug("GoalManager: list_meta_prefix failed: %s", exc)
++        return []
++    out: list[tuple[str, GoalState]] = []
++    for key, raw in rows:
++        session_id = key[len(prefix):]
++        try:
++            state = GoalState.from_json(raw) if session_id and raw else None
++        except Exception:
++            state = None
++        if state is not None and state.status == "active":
++            out.append((session_id, state))
++    return out
++
++
+ def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason: str = "") -> bool:
+     """Carry a persistent /goal from a parent session to its continuation. Best-effort, never raises
+     (a failure here must not block compression). Returns True when a goal was migrated.
+diff --git a/tests/gateway/test_goal_resume_after_restart.py b/tests/gateway/test_goal_resume_after_restart.py
+new file mode 100644
+index 00000000..67b0ce54
+--- /dev/null
++++ b/tests/gateway/test_goal_resume_after_restart.py
+@@ -0,0 +1,180 @@
++"""An active /goal whose continuation was lost to a gateway restart is re-queued.
++
++The post-turn judge queues the next goal turn in an in-memory FIFO. A restart between the turn's end
++and that turn dropped it, and nothing re-queued it until the user wrote again. The goal-resume watcher
++(like the /loop wakeup watcher) finds active goals that sit idle and queues one continuation each.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import time
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++
++from gateway.config import GatewayConfig, Platform, PlatformConfig
++from gateway.run import GatewayRunner
++from gateway.session import SessionSource
++from hermes_cli import goals
++
++SID = "sid-goal-resume"
++KEY = "agent:main:discord:channel:chat-goal"
++
++
++@pytest.fixture
++def goal_env(tmp_path, monkeypatch):
++    home = tmp_path / ".hermes"
++    home.mkdir()
++    monkeypatch.setattr(Path, "home", lambda: tmp_path)
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
++
++    token = set_hermes_home_override(str(home))
++    goals._DB_CACHE.clear()
++    goals._get_session_db()
++    yield home
++    try:
++        reset_hermes_home_override(token)
++    except Exception:
++        pass
++    goals._DB_CACHE.clear()
++
++
++class _Store:
++    def __init__(self, entry):
++        self.entry = entry
++
++    def lookup_by_session_id(self, session_id):
++        return self.entry if self.entry is not None and session_id == SID else None
++
++
++class _Adapter:
++    def __init__(self):
++        self.fifo = []
++
++
++def _runner(*, running=False, queued=0, with_entry=True):
++    runner = object.__new__(GatewayRunner)
++    runner.config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="t")})
++    source = SessionSource(platform=Platform.DISCORD, chat_id="chat-goal", chat_type="channel",
++                           user_id="u", thread_id=None)
++    runner.session_store = _Store(SimpleNamespace(origin=source, session_key=KEY) if with_entry else None)
++    runner._running = True
++    runner._running_agents = {KEY: object()} if running else {}
++    runner.adapter = _Adapter()
++    runner.adapters = {Platform.DISCORD: runner.adapter}
++    runner._delivery_adapter_for = lambda src: runner.adapter
++    runner._is_session_running = lambda key: running
++    runner._queue_depth = lambda key, adapter=None: queued
++    runner._session_key_for_source = lambda src: KEY
++    runner._enqueue_fifo = lambda key, event, adapter: adapter.fifo.append((key, event.text))
++
++    async def _offload(fn, *a, **k):
++        return fn(*a, **k)
++
++    runner._run_in_executor_with_context = _offload
++    runner.session_authority = None
++    return runner
++
++
++def _set_goal(*, age=120.0, turns_used=2, status="active", max_turns=20):
++    mgr = goals.GoalManager(SID)
++    mgr.set("count to five", max_turns=max_turns)
++    state = mgr.state
++    state.turns_used = turns_used
++    state.last_turn_at = time.time() - age
++    state.created_at = time.time() - age - 10
++    state.status = status
++    goals.save_goal(SID, state)
++    return goals.load_goal(SID)
++
++
++def _fire(runner, state, tried=None):
++    return asyncio.run(GatewayRunner._goal_resume_fire_one(
++        runner, SID, state, time.time(), {} if tried is None else tried))
++
++
++def test_idle_active_goal_gets_one_continuation(goal_env):
++    runner, state = _runner(), _set_goal()
++    tried = {}
++    assert _fire(runner, state, tried) is True
++    assert len(runner.adapter.fifo) == 1
++    key, text = runner.adapter.fifo[0]
++    assert key == KEY and "count to five" in text
++    # The same stalled state is never queued twice.
++    assert _fire(runner, state, tried) is False
++    assert len(runner.adapter.fifo) == 1
++
++
++def test_list_active_goals_returns_only_active(goal_env):
++    _set_goal()
++    assert [sid for sid, _ in goals.list_active_goals()] == [SID]
++    goals.GoalManager(SID).pause()
++    assert goals.list_active_goals() == []
++
++
++@pytest.mark.parametrize("kwargs", [
++    {"status": "paused"},
++    {"status": "done"},
++    {"age": 5.0},                      # a turn or its judge just ended
++    {"turns_used": 20},                # budget spent
++])
++def test_goal_that_needs_no_continuation_is_left_alone(goal_env, kwargs):
++    runner, state = _runner(), _set_goal(**kwargs)
++    assert _fire(runner, state) is False
++    assert runner.adapter.fifo == []
++
++
++@pytest.mark.parametrize("runner_kwargs", [{"running": True}, {"queued": 1}, {"with_entry": False}])
++def test_busy_or_unknown_session_is_left_alone(goal_env, runner_kwargs):
++    runner, state = _runner(**runner_kwargs), _set_goal()
++    assert _fire(runner, state) is False
++    assert runner.adapter.fifo == []
++
++
++def test_goal_parked_on_a_wait_barrier_is_left_alone(goal_env):
++    mgr = goals.GoalManager(SID)
++    mgr.set("count to five")
++    mgr.wait_for_seconds(600, "waiting for a build")
++    state = goals.load_goal(SID)
++    state.last_turn_at = time.time() - 120
++    goals.save_goal(SID, state)
++    runner = _runner()
++    assert _fire(runner, goals.load_goal(SID)) is False
++    assert runner.adapter.fifo == []
++
++
++def test_hermes_pause_leaves_the_goal_stalled(goal_env, monkeypatch):
++    monkeypatch.setattr("agent.estop.check_paused", lambda *a, **k: True)
++    runner, state = _runner(), _set_goal()
++    assert _fire(runner, state) is False
++    assert runner.adapter.fifo == []
++
++
++def test_watcher_scans_at_startup_and_queues_the_lost_continuation(goal_env, monkeypatch):
++    _set_goal()
++    runner = _runner()
++    orig_sleep = asyncio.sleep
++    calls = {"n": 0}
++
++    async def _sleep(delay):
++        calls["n"] += 1
++        if calls["n"] >= 2:  # the startup delay, then one interval
++            runner._running = False
++        await orig_sleep(0)
++
++    monkeypatch.setattr(asyncio, "sleep", _sleep)
++
++    async def _scopes(_runner):
++        return [(None, None)]
++
++    monkeypatch.setattr("gateway.run._resolve_handoff_watch_scopes", _scopes)
++    runner._warm_goals_session_db = lambda label: orig_sleep(0)
++    asyncio.run(GatewayRunner._goal_resume_watcher(runner, interval=0))
++    assert len(runner.adapter.fifo) == 1
++
++
++def test_watcher_is_registered_after_reconnect():
++    assert "_goal_resume_watcher" in GatewayRunner._POST_RECONNECT_WATCHERS
+-- 
+2.56.0
+
