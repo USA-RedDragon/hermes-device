@@ -91,11 +91,6 @@ func TestLocalModeIsTheDefault(t *testing.T) {
 	if a.Mode != config.AuthLocal || a.Local.MaxFailures != 5 || a.Local.Lockout.Minutes() != 15 || cfg.Session.Secret != "" {
 		t.Fatalf("auth = %+v", a)
 	}
-	env["HUB_AUTH_LOCAL_SETUP_TOKEN"] = "short"
-	if _, err := load(t, env, ""); !errors.Is(err, config.ErrLocal) {
-		t.Fatalf("short setup token: %v", err)
-	}
-	env["HUB_AUTH_LOCAL_SETUP_TOKEN"] = strings.Repeat("t", 16)
 	env["HUB_AUTH_ADMINS"] = userAlice
 	env["HUB_CLAUDE_ADMINS"] = "alice=desktop"
 	body := "backends:\n  - id: desktop\n    url: http://desktop:9120\n    username: hub\n    password: pw\n    users: [alice]\n"

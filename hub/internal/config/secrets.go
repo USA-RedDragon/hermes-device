@@ -41,7 +41,6 @@ func (c *Config) readSecretFiles() error {
 		{&c.Session.Secret, c.Session.SecretFile, "session.secret_file"},
 		{&c.Store.DSN, c.Store.DSNFile, "store.dsn_file"},
 		{&c.Telegram.Token, c.Telegram.TokenFile, "telegram.token_file"},
-		{&c.Auth.Local.SetupToken, c.Auth.Local.SetupTokenFile, "auth.local.setup_token_file"},
 		{&c.Hermes.Password, c.Hermes.PasswordFile, "hermes.password_file"},
 	}
 	for i := range c.Backends {

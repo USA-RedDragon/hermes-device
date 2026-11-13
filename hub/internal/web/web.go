@@ -210,7 +210,6 @@ type authState struct {
 	trusted      []netip.Prefix
 	proxy        *auth.Proxy
 	local        config.Local
-	setupToken   string
 	admins       map[string]bool
 	configNames  map[string]bool
 	backendIDs   []string
@@ -230,7 +229,7 @@ func newAuthState(cfg *config.Config, opts Options) (authState, error) {
 		return authState{}, err
 	}
 	s := authState{mode: a.Mode, accounts: opts.Accounts, accountCache: &accountCache{}, hasher: opts.Hasher, limiter: auth.NewLimiter(loginsPerWindow, loginWindow),
-		trusted: trusted, local: a.Local, setupToken: a.Local.SetupToken, admins: map[string]bool{}, configNames: map[string]bool{},
+		trusted: trusted, local: a.Local, admins: map[string]bool{}, configNames: map[string]bool{},
 		oidcAuto: cfg.OIDC.AutoCreate, oidcDomains: cfg.OIDC.AllowedDomains, oidcGroups: cfg.OIDC.AllowedGroups,
 		emailClaim: cfg.OIDC.EmailClaim, proxyAuto: a.Proxy.AutoCreate}
 	if s.mode == "" {
@@ -290,6 +289,10 @@ func (s *Server) Handler() http.Handler {
 	files := http.FileServerFS(static)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", files))
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		if s.needsSetup(r.Context()) {
+			http.Redirect(w, r, "/setup", http.StatusFound)
+			return
+		}
 		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFileFS(w, r, static, "index.html")
 	})

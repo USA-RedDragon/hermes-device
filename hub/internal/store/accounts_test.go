@@ -181,24 +181,5 @@ func TestAuthSecrets(t *testing.T) {
 		if b, err := s.SessionSecret(ctx); err != nil || b != a {
 			t.Fatal("session secret changed")
 		}
-		if ok, err := s.SetupTokenOK(ctx, "x"); err != nil || ok {
-			t.Fatalf("no token: %v %v", ok, err)
-		}
-		tok, err := s.NewSetupToken(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ok, _ := s.SetupTokenOK(ctx, tok); !ok {
-			t.Fatal("token refused")
-		}
-		if ok, _ := s.SetupTokenOK(ctx, tok+"x"); ok {
-			t.Fatal("wrong token accepted")
-		}
-		if err := s.DropSetupToken(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if ok, _ := s.SetupTokenOK(ctx, tok); ok {
-			t.Fatal("dropped token accepted")
-		}
 	})
 }

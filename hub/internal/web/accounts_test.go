@@ -18,7 +18,6 @@ const (
 	alicePassword = "alice's long password"
 	bobPassword   = "bob's long password!"
 	resetPassword = "reset by the admin"
-	setupToken    = "a-setup-token-of-24-chars"
 	headerUser    = "Remote-User"
 	aliceIdentity = "alice@example.test"
 	userCarol     = "carol"
@@ -32,7 +31,7 @@ var testHasher = auth.NewHasher(auth.Params{Memory: 64, Time: 1, Threads: 1}, 4)
 func setupLocal(t *testing.T) *hubEnv {
 	t.Helper()
 	return setupWith(t, func(cfg *config.Config, opts *web.Options, st *store.Store) {
-		cfg.Auth = config.Auth{Mode: config.AuthLocal, Local: config.Local{SetupToken: setupToken, MaxFailures: 3}}
+		cfg.Auth = config.Auth{Mode: config.AuthLocal, Local: config.Local{MaxFailures: 3}}
 		cfg.OIDC, cfg.Users, cfg.UI.DefaultBackends = config.OIDC{}, nil, nil
 		cfg.Backends[0].Users = nil
 		opts.Accounts, opts.Hasher = st, testHasher
@@ -70,17 +69,16 @@ func TestLocalSetupAndLogin(t *testing.T) {
 	e := setupLocal(t)
 	c := client(t)
 	if resp, body := get(t, c, e.url+"/auth/info"); resp.StatusCode != http.StatusOK || !strings.Contains(body, `"setup":true`) ||
-		!strings.Contains(body, `"mode":"local"`) || !strings.Contains(body, `"setup_token_from":"config"`) {
+		!strings.Contains(body, `"mode":"local"`) || strings.Contains(body, "token") {
 		t.Fatalf("info = %d %s", resp.StatusCode, body)
 	}
 	if resp, _ := get(t, c, e.url+"/auth/login?next=/a"); resp.Request.URL.Path != "/login" || resp.Request.URL.Query().Get("next") != "/a" {
 		t.Fatalf("login redirect = %s", resp.Request.URL)
 	}
-	first := map[string]string{"token": "wrong-token-wrong-token", fieldName: "Alice", "display": "Alice A", fieldPassword: alicePassword}
-	if resp, _ := post(t, c, e.url+"/auth/setup", "", e.url, first); resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("wrong token = %d", resp.StatusCode)
+	if resp, _ := get(t, c, e.url+"/"); resp.Request.URL.Path != "/setup" {
+		t.Fatalf("root with no account = %s, want /setup", resp.Request.URL)
 	}
-	first["token"] = setupToken
+	first := map[string]string{fieldName: "Alice", "display": "Alice A", fieldPassword: alicePassword}
 	if resp, _ := post(t, c, e.url+"/auth/setup", "", "https://evil.example", first); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin setup = %d", resp.StatusCode)
 	}
@@ -103,6 +101,10 @@ func TestLocalSetupAndLogin(t *testing.T) {
 	}
 	if _, body := get(t, c, e.url+"/auth/info"); !strings.Contains(body, `"setup":false`) {
 		t.Fatalf("info after setup = %s", body)
+	}
+
+	if resp, _ := get(t, c, e.url+"/"); resp.Request.URL.Path != "/" {
+		t.Fatalf("root after setup = %s", resp.Request.URL)
 	}
 
 	c2 := client(t)

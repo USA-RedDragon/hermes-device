@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
@@ -29,8 +28,6 @@ type AccountStore interface {
 	DeleteAccount(ctx context.Context, name string) error
 	LoginFailed(ctx context.Context, name string, maxFailures int, lockout time.Duration) (bool, error)
 	LoginSucceeded(ctx context.Context, name string) error
-	SetupTokenOK(ctx context.Context, token string) (bool, error)
-	DropSetupToken(ctx context.Context) error
 }
 
 // Login limits per client address, on top of each account's lockout.
@@ -49,7 +46,6 @@ const (
 const (
 	msgBadLogin  = "Wrong name or password, or the account is locked for a while after too many tries"
 	msgTooMany   = "Too many tries from this address. Wait a minute and try again"
-	msgBadSetup  = "That setup token is not right. Find the token in the hub's log, or set auth.local.setup_token"
 	msgSetupDone = "The hub already has an account. Log in instead"
 )
 
@@ -147,6 +143,16 @@ func (s *Server) publicPost(w http.ResponseWriter, r *http.Request, v any) bool 
 	return decode(w, r, v)
 }
 
+// needsSetup reports whether this is a local hub with no account yet, so
+// the first visitor has to set it up.
+func (s *Server) needsSetup(ctx context.Context) bool {
+	if s.mode != config.AuthLocal || s.accounts == nil {
+		return false
+	}
+	n, err := s.accounts.CountAccounts(ctx)
+	return err == nil && n == 0
+}
+
 // handleAuthInfo tells the login and setup pages how this hub logs people
 // in. It needs no session.
 func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
@@ -158,10 +164,6 @@ func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out["setup"] = n == 0
-		out["setup_token_from"] = "log"
-		if s.setupToken != "" {
-			out["setup_token_from"] = "config"
-		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -234,22 +236,16 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 type setupBody struct {
-	Token    string `json:"token"`
 	Name     string `json:"name"`
 	Display  string `json:"display"`
 	Password string `json:"password"`
 }
 
-func (s *Server) setupTokenOK(ctx context.Context, tok string) (bool, error) {
-	if s.setupToken != "" {
-		return subtle.ConstantTimeCompare([]byte(tok), []byte(s.setupToken)) == 1, nil
-	}
-	return s.accounts.SetupTokenOK(ctx, tok)
-}
-
 // handleSetup makes the first account, an admin, while the hub has none
-// (auth.mode local). It needs the setup token from the config or the log,
-// so whoever reaches a fresh hub first cannot take it over.
+// (auth.mode local). It takes no token: the first visitor of the setup page
+// becomes the admin, as in DMRHub, and the hub warns about that at start.
+// Two replicas cannot both make one, because CreateFirstAccount decides in
+// the database.
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if s.mode != config.AuthLocal || s.accounts == nil {
 		errorJSON(w, http.StatusNotFound, "setup is off")
@@ -268,11 +264,6 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusConflict, msgSetupDone)
 		return
 	}
-	if ok, err := s.setupTokenOK(ctx, strings.TrimSpace(body.Token)); err != nil || !ok {
-		s.log.Warn("setup refused: wrong setup token", "client", auth.ClientIP(r, s.trusted).String())
-		errorJSON(w, http.StatusForbidden, msgBadSetup)
-		return
-	}
 	a, msg := s.newLocalAccount(ctx, body.Name, body.Display, "", body.Password)
 	if msg != "" {
 		errorJSON(w, http.StatusBadRequest, msg)
@@ -288,9 +279,6 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("setup", "error", err.Error())
 		errorJSON(w, http.StatusInternalServerError, "internal error")
 		return
-	}
-	if err := s.accounts.DropSetupToken(ctx); err != nil {
-		s.log.Warn("forget setup token", "error", err.Error())
 	}
 	s.log.Info("first account made", "user", a.Name)
 	if err := s.startSession(w, s.accountSession(a, "", nil)); err != nil {

@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -374,7 +373,6 @@ func (s *Store) LoginSucceeded(ctx context.Context, name string) error {
 // Meta keys of auth secrets.
 const (
 	metaSessionSecret = "session_secret"
-	metaSetupToken    = "setup_token_hash"
 )
 
 func randomSecret() (string, error) {
@@ -399,34 +397,4 @@ func (s *Store) SessionSecret(ctx context.Context) (string, error) {
 	var v string
 	err = s.row(ctx, `SELECT value FROM meta WHERE key = ?`, metaSessionSecret).Scan(&v)
 	return v, err
-}
-
-// NewSetupToken makes a first-user setup token, keeps only its hash and
-// returns it. A new token replaces the one before.
-func (s *Store) NewSetupToken(ctx context.Context) (string, error) {
-	tok, err := randomSecret()
-	if err != nil {
-		return "", err
-	}
-	err = s.exec(ctx, `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-		metaSetupToken, tokenHash(tok))
-	return tok, err
-}
-
-// SetupTokenOK reports whether tok is the stored setup token.
-func (s *Store) SetupTokenOK(ctx context.Context, tok string) (bool, error) {
-	var v string
-	err := s.row(ctx, `SELECT value FROM meta WHERE key = ?`, metaSetupToken).Scan(&v)
-	if errors.Is(err, sql.ErrNoRows) || tok == "" {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return subtle.ConstantTimeCompare([]byte(v), []byte(tokenHash(tok))) == 1, nil
-}
-
-// DropSetupToken forgets the setup token once the first account exists.
-func (s *Store) DropSetupToken(ctx context.Context) error {
-	return s.exec(ctx, `DELETE FROM meta WHERE key = ?`, metaSetupToken)
 }

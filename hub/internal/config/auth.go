@@ -26,10 +26,8 @@ type Auth struct {
 
 // Local configures accounts kept in the hub's database.
 type Local struct {
-	SetupToken     string        `name:"setup_token" secret:"true" description:"Token the first-user setup page asks for, at least 16 characters. Empty: while the hub has no account it makes one at start and prints it to its log"`
-	SetupTokenFile string        `name:"setup_token_file" description:"File that holds auth.local.setup_token. Wins over setup_token"`
-	MaxFailures    int           `name:"max_failures" default:"5" description:"Wrong passwords in a row that lock an account. 0 is the default"`
-	Lockout        time.Duration `name:"lockout" default:"15m" description:"How long a locked account stays locked. An admin can unlock it sooner by setting a new password. 0 is the default"`
+	MaxFailures int           `name:"max_failures" default:"5" description:"Wrong passwords in a row that lock an account. 0 is the default"`
+	Lockout     time.Duration `name:"lockout" default:"15m" description:"How long a locked account stays locked. An admin can unlock it sooner by setting a new password. 0 is the default"`
 }
 
 // Proxy configures login by a reverse proxy that tells the hub who the
@@ -75,9 +73,6 @@ const (
 
 // defaultUserClaim is proxy.jwt.user_claim's default, also for "".
 const defaultUserClaim = "sub"
-
-// minSetupToken is the shortest auth.local.setup_token.
-const minSetupToken = 16
 
 // Proxies parses TrustedProxies.
 func (a Auth) Proxies() ([]netip.Prefix, error) {
@@ -130,9 +125,6 @@ func (c *Config) validateAuth() error {
 	}
 	switch a.Mode {
 	case AuthLocal:
-		if a.Local.SetupToken != "" && len(a.Local.SetupToken) < minSetupToken {
-			return fmt.Errorf("%w: setup_token must be at least %d characters", ErrLocal, minSetupToken)
-		}
 	case AuthProxy:
 		return c.validateProxy()
 	case AuthOIDC:
