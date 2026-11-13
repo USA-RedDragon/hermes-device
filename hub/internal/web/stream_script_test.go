@@ -61,6 +61,14 @@ func TestStickScript(t *testing.T) {
 	runStreamScript(t, "stick.js", "stick.js")
 }
 
+// The chat list and the Activity panel keep the width the reader dragged
+// them to, inside their limits and with the chat column kept at 384 px, per
+// browser, with reset and the keys for it.
+func TestSidebarsScript(t *testing.T) {
+	t.Parallel()
+	runStreamScript(t, "sidebars.js", "sidebars.js")
+}
+
 // What the reader opened or closed in the chat stays so when the page
 // draws the nodes again.
 func TestUIStateScript(t *testing.T) {

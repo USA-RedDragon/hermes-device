@@ -27,7 +27,7 @@ button.ghost { border-color: transparent; background: transparent; color: var(--
 button.icon { border: 0; background: transparent; font-size: 1.3rem; padding: .2rem .5rem; color: var(--fg); }
 
 /* App shell: the page never scrolls; the sidebar list and the conversation scroll on their own. */
-.app { height: 100dvh; display: grid; grid-template-columns: 17rem minmax(0, 1fr); }
+.app { height: 100dvh; display: grid; grid-template-columns: var(--wl, 17rem) minmax(0, 1fr); position: relative; }
 .side { display: flex; flex-direction: column; min-height: 0; background: var(--side); border-right: 1px solid var(--line);
   padding-top: env(safe-area-inset-top); padding-left: env(safe-area-inset-left); overflow-x: clip; }
 .side-head { display: flex; align-items: center; gap: .5rem; padding: .6rem .75rem; min-width: 0; }
@@ -799,8 +799,8 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .claude-pool .claude-poolrow .usage-bar { width: min(12rem, 100%); }
 
 /* Activity: a chat's subagents and background work, right of the chat. */
-.app { grid-template-columns: 17rem minmax(0, 1fr) 22rem; }
-.app.act-closed { grid-template-columns: 17rem minmax(0, 1fr) 0; }
+.app { grid-template-columns: var(--wl, 17rem) minmax(0, 1fr) var(--wr, 22rem); }
+.app.act-closed { grid-template-columns: var(--wl, 17rem) minmax(0, 1fr) 0; }
 .app.act-closed .act { display: none; }
 .tok { display: flex; flex-direction: column; align-items: flex-end; flex: none; font-size: .78rem; color: var(--muted);
   font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -871,7 +871,7 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .toast { position: fixed; bottom: calc(1rem + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); z-index: 110;
   max-width: min(30rem, calc(100vw - 2rem)); background: var(--fg); color: var(--bg); padding: .45rem .8rem; border-radius: 8px; font-size: .85rem; }
 @media (max-width: 900px) {
-  .app, .app.act-closed { grid-template-columns: 17rem minmax(0, 1fr); }
+  .app, .app.act-closed { grid-template-columns: var(--wl, 17rem) minmax(0, 1fr); }
   .act { position: fixed; inset: 0 0 0 auto; width: min(24rem, 100%); z-index: 5; box-shadow: -8px 0 24px rgba(0, 0, 0, .2); }
 }
 @media (max-width: 760px) {
@@ -1251,3 +1251,23 @@ a.button, .page a.button { display: inline-flex; align-items: center; justify-co
   .ww-q input { font-size: 1rem; }
   .sessions .menu > button.ww-row-btn { min-height: 2.75rem; }
 }
+
+/* Drag handles on the inner edge of the chat list and the Activity panel. */
+.rs { position: absolute; top: 0; bottom: 0; width: 12px; z-index: 4; cursor: col-resize; touch-action: none; outline: none; }
+.rs.l { left: calc(var(--wl, 17rem) - 6px); }
+.rs.r { right: calc(var(--wr, 22rem) - 6px); }
+.rs::after { content: ""; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px; background: transparent; transition: background .12s; }
+.rs::before { content: ""; position: absolute; top: 50%; left: 4px; width: 4px; height: 34px; margin-top: -17px; border-radius: 3px;
+  background: var(--muted); opacity: 0; }
+.rs:hover::after, .rs:focus-visible::after, .rs.drag::after { background: var(--accent); }
+.rs:hover::before, .rs:focus-visible::before { opacity: .5; }
+.rs.drag::before { opacity: 1; background: var(--accent); }
+.rs.drag::after { width: 3px; left: 4.5px; }
+.rs .tip { display: none; position: absolute; top: 3.4rem; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg);
+  font-size: .75rem; padding: .15rem .5rem; border-radius: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rs.drag .tip { display: block; }
+.app.dragging, .app.dragging * { cursor: col-resize !important; user-select: none; }
+.app.act-closed .rs.r { display: none; }
+@media (max-width: 900px) { .rs.r { display: none; } }
+@media (max-width: 760px) { .rs.l { display: none; } }
+@media (prefers-reduced-motion: reduce) { .rs::after { transition: none; } }
