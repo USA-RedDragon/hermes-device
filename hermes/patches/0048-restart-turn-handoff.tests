@@ -12,3 +12,4 @@ tests/gateway/test_restart_listener_handover.py
 tests/gateway/test_restart_ticket_handover.py
 tests/tools/test_delegation_restart_handoff.py
 tests/gateway/test_restart_interrupt_notice.py
+tests/gateway/test_automation_wake_route.py

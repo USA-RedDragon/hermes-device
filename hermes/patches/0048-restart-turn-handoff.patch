@@ -8,12 +8,12 @@ gateway.restart_turn_handoff (false = off) and restart_turn_handoff_wait_seconds
 ---
  gateway/config.py                          |  10 +-
  gateway/config_loader.py                   |   2 +
- gateway/run_shutdown.py                    |  53 +++-
+ gateway/run_shutdown.py                    |  64 ++++-
  gateway/run_startup.py                     |   7 +
  gateway/session_settlement_recovery.py     |   5 +
- gateway/turn_handoff.py                    | 210 ++++++++++++++++
- tests/gateway/test_restart_turn_handoff.py | 266 +++++++++++++++++++++
- 7 files changed, 547 insertions(+), 6 deletions(-)
+ gateway/turn_handoff.py                    | 213 +++++++++++++++
+ tests/gateway/test_restart_turn_handoff.py | 300 +++++++++++++++++++++
+ 7 files changed, 595 insertions(+), 6 deletions(-)
  create mode 100644 gateway/turn_handoff.py
  create mode 100644 tests/gateway/test_restart_turn_handoff.py
 
@@ -66,10 +66,28 @@ index 9011be6719..e545fd2171 100644
      *_presence(
          "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
 diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
-index 0c6e522aae..1c5b36d56b 100644
+index 0c6e522aae..4f1e6f3b7e 100644
 --- a/gateway/run_shutdown.py
 +++ b/gateway/run_shutdown.py
-@@ -1637,7 +1637,18 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -1184,6 +1184,17 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+                 await self._deliver_session_end_messages(messages, session_key=session_key)
+             except Exception:
+                 logger.debug("Session-end plugin message delivery failed for %s", session_key, exc_info=True)
++            from gateway import turn_handoff
++            restart_cap = GatewayShutdownMixin._restart_agent_cleanup_cap(self)
++            if restart_cap and turn_handoff.handing_off():
++                # gateway.restart_turn_handoff: a handed-off turn's agent is released like an idle one (its memory
++                # writes and session end flushed first, the providers' shutdown after the release), so a memory
++                # read-ahead does not hold the stop for the 30 s cleanup bound.
++                await GatewayShutdownMixin._flush_agent_memory_off_loop(self, agent, session_key)
++                GatewayShutdownMixin._defer_memory_shutdowns(self, [(session_key, agent)])
++                await self._cleanup_agent_resources_off_loop(
++                    agent, context="shutdown finalize", session_key=session_key, timeout=restart_cap)
++                continue
+             # Off-loop + bounded: a wedged memory provider here used to hang the whole shutdown so
+             # SIGTERM never completed.
+             await self._cleanup_agent_resources_off_loop(agent, context="shutdown finalize", session_key=session_key)
+@@ -1637,7 +1648,18 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                  self._wedged_agent_count(), self._restart_safe_cron_count(),
              )
              return False
@@ -89,7 +107,7 @@ index 0c6e522aae..1c5b36d56b 100644
          if timeout <= 0:
              logger.info(
                  "Restart requested with %d active work unit(s); "
-@@ -1656,6 +1667,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -1656,6 +1678,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
          while self._awaitable_work_count() > 0:
              now = loop.time()
              if now >= deadline:
@@ -101,7 +119,7 @@ index 0c6e522aae..1c5b36d56b 100644
                  logger.warning(
                      "Restart after-turn wait timed out after %.0fs with %d "
                      "still active; proceeding to stop()/drain which may "
-@@ -2063,8 +2079,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -2063,8 +2090,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
          await self._notify_active_sessions_of_shutdown()
          logger.info("Shutdown phase: notify_active_sessions done at +%.2fs", ctx.elapsed())
  
@@ -114,7 +132,7 @@ index 0c6e522aae..1c5b36d56b 100644
          from gateway.run import GatewayRunner
          # Pre-mark resume_pending BEFORE the drain so a mid-drain SIGKILL still leaves a durable marker.
          _pre_drain_keys = await GatewayRunner._mark_running_sessions_resume_pending(
-@@ -2091,7 +2109,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -2091,7 +2120,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                  _cron_at_start, _api_at_start, _cron_timeout, _cron_drain_cfg, timeout,
              )
          _drain_started_at = time.monotonic()
@@ -124,7 +142,7 @@ index 0c6e522aae..1c5b36d56b 100644
          ctx.drain_elapsed = time.monotonic() - _drain_started_at
          logger.info(
              "Shutdown phase: drain done at +%.2fs (drain took %.2fs, timed_out=%s, active_at_start=%d, "
-@@ -2112,6 +2131,22 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -2112,6 +2142,22 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                  except Exception as _e:
                      logger.debug("clear_resume_pending after drain failed for %s: %s", _sk, _e)
  
@@ -147,7 +165,7 @@ index 0c6e522aae..1c5b36d56b 100644
      async def _stop_interrupt_remaining_work(self, ctx: GatewayShutdownMixin._StopContext) -> None:
          """Drain timed out: mark resume_pending, interrupt, settle, kill tool subprocesses, notify cron."""
          from gateway.run import GatewayRunner
-@@ -2442,7 +2477,15 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+@@ -2442,7 +2488,15 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                      timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
                  )
              _mark("stop: drain_active_work")
@@ -200,10 +218,10 @@ index 24004e6288..a204c4d797 100644
          if is_unattended(row):
 diff --git a/gateway/turn_handoff.py b/gateway/turn_handoff.py
 new file mode 100644
-index 0000000000..d8222ee597
+index 0000000000..c24d758717
 --- /dev/null
 +++ b/gateway/turn_handoff.py
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,213 @@
 +"""``gateway.restart_turn_handoff`` (false = off): a restart hands running turns to the next gateway.
 +
 +Without the key a graceful restart (SIGUSR1, ``/restart``, a supervisor's SIGTERM with
@@ -246,6 +264,7 @@ index 0000000000..d8222ee597
 +)
 +
 +
++DISPLAY_TEXT = "Hermes restarted during the last turn; continuing it."
 +HANDOFF_NOTICE = ("Gateway restarting: this turn was stopped and is handed to the restarted Hermes, which "
 +                  "continues it. Nothing needs to be sent again.")
 +_handing_off = False
@@ -362,8 +381,10 @@ index 0000000000..d8222ee597
 +    adapter = adapter_for(live.source)
 +    if adapter is None:
 +        return "no adapter"
++    # A producer card (closed metadata set, gateway/session_automation.py): viewers see a one-line notice,
++    # the model gets the continuation text.
 +    queued = await admit_route_wake(runner, adapter, live.source, CONTINUATION_TEXT, PRODUCER,
-+                                    {"restart_turn_handoff": True})
++                                    {"display_kind": "internal_notification", "display_text": DISPLAY_TEXT})
 +    return "continued" if queued else "not queued"
 +
 +
@@ -416,10 +437,10 @@ index 0000000000..d8222ee597
 +        logger.debug("Could not record the handed-off turns", exc_info=True)
 diff --git a/tests/gateway/test_restart_turn_handoff.py b/tests/gateway/test_restart_turn_handoff.py
 new file mode 100644
-index 0000000000..3151372697
+index 0000000000..75531c1979
 --- /dev/null
 +++ b/tests/gateway/test_restart_turn_handoff.py
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,300 @@
 +"""gateway.restart_turn_handoff: a restart hands running turns to the next gateway instead of waiting."""
 +import asyncio
 +import json
@@ -433,6 +454,7 @@ index 0000000000..3151372697
 +from gateway import turn_handoff
 +from gateway.config import GatewayConfig, load_gateway_config
 +from gateway.run import GatewayRunner
++from gateway.run_shutdown import GatewayShutdownMixin
 +from tests.gateway.restart_test_helpers import make_restart_runner
 +
 +
@@ -551,6 +573,34 @@ index 0000000000..3151372697
 +    assert seen[0][0] == 30.0
 +
 +
++@pytest.mark.asyncio
++@pytest.mark.parametrize("handing_off", [True, False])
++async def test_handed_off_agent_is_released_under_the_restart_cleanup_cap(monkeypatch, handing_off):
++    runner, _adapter = make_restart_runner()
++    runner._restart_requested = True
++    runner.config.restart_agent_cleanup_seconds = 5
++    turn_handoff._handing_off = handing_off
++    runner._flush_agent_transcript_at_shutdown = MagicMock()
++    runner._finalize_session_off_loop = AsyncMock(return_value=[])
++    runner._deliver_session_end_messages = AsyncMock()
++    runner._cleanup_agent_resources_off_loop = AsyncMock()
++    flush = AsyncMock()
++    defer = MagicMock()
++    monkeypatch.setattr(GatewayShutdownMixin, "_flush_agent_memory_off_loop", flush)
++    monkeypatch.setattr(GatewayShutdownMixin, "_defer_memory_shutdowns", defer)
++    agent = MagicMock()
++    await GatewayRunner._finalize_shutdown_agents(runner, {"agent:main:local:dm:s1": agent})
++    kwargs = runner._cleanup_agent_resources_off_loop.await_args.kwargs
++    if handing_off:
++        assert kwargs["timeout"] == 5.0
++        flush.assert_awaited_once()
++        defer.assert_called_once()
++    else:
++        assert "timeout" not in kwargs
++        flush.assert_not_awaited()
++        defer.assert_not_called()
++
++
 +def _authority(sessions, profile_id="default"):
 +    return SimpleNamespace(profile_id=profile_id, sessions=sessions)
 +
@@ -656,6 +706,11 @@ index 0000000000..3151372697
 +    assert authority.resolved == [("s2", "a2", 2)]  # the one its owner could not settle
 +    assert len(wakes) == 2 and all(w[2] == turn_handoff.PRODUCER for w in wakes)
 +    assert wakes[0][1] == turn_handoff.CONTINUATION_TEXT
++    # The wake's metadata passes the automation admission's own validation (a closed key set and card kinds).
++    from gateway.session_automation import _AUTOMATION_METADATA, automation_display_metadata
++    for wake_args in wakes:
++        assert set(wake_args[3]) <= _AUTOMATION_METADATA
++        assert automation_display_metadata(wake_args[3])["display_text"] == turn_handoff.DISPLAY_TEXT
 +    assert not (tmp_path / turn_handoff.FILE_NAME).exists()
 +    record = json.loads((tmp_path / turn_handoff.RESULT_FILE_NAME).read_text(encoding="utf-8"))
 +    assert [t["result"] for t in record["turns"]] == ["continued", "continued", "finished"]
