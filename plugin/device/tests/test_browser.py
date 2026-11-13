@@ -1105,7 +1105,16 @@ class BrowserDeviceTests(BrowserBase):
                                   device_id="d_sb", name="sandbox")
         self.sandbox.conn.user = core.SERVICE_USER
         self.sandbox.conn.capabilities = frozenset({core.CAPABILITY_BROWSER})
+        self.sandbox_fake = FakeBrowser()
+        attach_browser(self.sandbox, self.sandbox_fake)
+        self.sandbox.conn.user = core.SERVICE_USER
         self.addCleanup(self.sandbox.close)
+
+    def old_sandbox(self):
+        """A sandbox of an image from before it had a browser: no browser capability, so a session
+        that no computer serves falls back to the user's computers."""
+        self.sandbox.conn.capabilities = frozenset()
+        self.sandbox.conn.browser = {}
 
     def second(self, device_id="d_pc2", name="laptop", user="alice"):
         other = FakeDevice(self.hub, str(self.root), str(self.devtmp), str(self.home), device_id=device_id, name=name)
@@ -1142,6 +1151,99 @@ class BrowserDeviceTests(BrowserBase):
         self.assertEqual(self.run_tool("browser_navigate", url="https://example.com/")["tab_id"], 8)
         self.assertEqual(self.device.execs, [])
 
+    def tab_opens(self, fake):
+        return [r for r in fake.requests if r["op"] == "tab_open"]
+
+    def test_chat_with_no_computer_uses_the_sandbox_browser(self):
+        """Even with two computers connected, no choice to ask for: the sandbox's own Firefox."""
+        self.second()
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertEqual(out["tab_id"], 8)
+        self.assertTrue(self.tab_opens(self.sandbox_fake))
+        self.assertFalse(self.tab_opens(self.fake), "not the computer")
+        status = self.run_tool("browser_status")
+        self.assertEqual((status["device_id"], status["why"]),
+                         ("d_sb", "the sandbox's own headless Firefox, which has none of your logins"))
+        self.assertEqual([t["tab_id"] for t in status["tabs"]], [7, 8])
+        self.assertEqual([d["device_id"] for d in status["devices"]], ["d_pc2", "d_pc"],
+                         "the computers the user could choose instead")
+        self.assertFalse(any(d.get("selected") for d in status["devices"]))
+
+    def test_sandbox_browser_needs_no_user_setting(self):
+        del self.cfg["user"]
+        self.second(device_id="d_bob", name="bobs-pc", user="bob")
+        self.assertEqual(self.run_tool("browser_navigate", url="https://example.com/")["tab_id"], 8)
+        self.assertTrue(self.tab_opens(self.sandbox_fake))
+
+    def test_sandbox_browser_follows_the_tool_layer(self):
+        for tool, args in (("browser_snapshot", {"tab_id": 7}), ("browser_screenshot", {"tab_id": 7}), ("browser_tabs", {})):
+            with self.subTest(tool=tool):
+                self.assertNotIn("error", self.run_tool(tool, **args), tool)
+        self.assertTrue({"snapshot", "screenshot"} <= {r["op"] for r in self.sandbox_fake.requests})
+        self.assertEqual([r for r in self.fake.requests if r["op"] != "check"], [], "the computer was not used")
+
+    def test_chat_bound_to_a_computer_keeps_its_firefox(self):
+        self.session = "sess-1"
+        self.hub.bind("sess-1", "d_pc", str(self.root), operator=True)
+        self.assertEqual(self.run_tool("browser_status")["device_id"], "d_pc")
+        self.assertEqual(self.run_tool("browser_navigate", url="https://example.com/")["tab_id"], 8)
+        self.assertTrue(self.tab_opens(self.fake))
+        self.assertFalse(self.tab_opens(self.sandbox_fake))
+
+    def test_chosen_computer_wins_over_the_sandbox_in_a_sandbox_chat(self):
+        other, fake = self.second()
+        self.assertEqual(self.run_tool("browser_use_device", device="laptop")["device_id"], "d_pc2")
+        self.assertEqual(self.run_tool("browser_navigate", url="https://example.com/")["tab_id"], 8)
+        self.assertTrue(self.tab_opens(fake))
+        self.assertFalse(self.tab_opens(self.sandbox_fake))
+        self.assertTrue(self.run_tool("browser_use_device", device="default")["ok"])
+        self.assertEqual(self.run_tool("browser_status")["device_id"], "d_sb")
+
+    def test_job_with_no_computer_uses_the_sandbox_browser(self):
+        self.second()
+        self.run_of("job7")
+        self.assertEqual(self.run_tool("browser_navigate", url="https://example.com/")["tab_id"], 8)
+        self.assertTrue(self.tab_opens(self.sandbox_fake))
+        self.assertEqual(self.run_tool("browser_status")["why"],
+                         "the sandbox's own headless Firefox, which has none of your logins")
+
+    def test_job_with_a_computer_never_falls_back_to_the_sandbox(self):
+        other, fake = self.second()
+        browser.choices().set_job("job8", {"device_id": "d_pc2", "name": "laptop", "user": "alice",
+                                           "session_id": "fresh", "at": 1.0})
+        self.run_of("job8")
+        self.assertEqual(self.run_tool("browser_navigate", url="https://example.com/")["tab_id"], 8)
+        self.assertTrue(self.tab_opens(fake))
+        self.hub.detach(other.conn)
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("laptop [d_pc2], the browser device of scheduled job job8, is not connected", out["error"])
+        self.assertFalse(self.tab_opens(self.sandbox_fake))
+
+    def test_job_made_in_a_sandbox_chat_gets_no_record_and_no_note(self):
+        """The sandbox browser is the default, so nothing is stored and nothing is offered."""
+        self.second()
+        with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
+                mock.patch.object(browser, "_job_exists", lambda j: True):
+            created = browser._make_create_job(lambda **kw: {"id": "job1", **kw})(prompt="p", schedule="in 2m")
+            self.assertEqual(created["id"], "job1")
+            self.assertIsNone(browser.choices().job("job1"))
+            result = json.dumps({"success": True, "job_id": "job1"})
+            self.assertIsNone(browser.schedule_note("cronjob_manage", {"action": "create"}, result, "fresh"))
+        self.run_of("job1")
+        self.assertEqual(self.run_tool("browser_status")["device_id"], "d_sb")
+
+    def test_sandbox_that_is_away_has_no_browser(self):
+        self.hub.detach(self.sandbox.conn)
+        self.old_sandbox()
+        self.second()
+        self.second(device_id="d_pc3", name="desk")
+        self.assertIn("several computers offer a browser", self.run_tool("browser_navigate", url="https://example.com/")["error"])
+
+    def test_sandbox_without_firefox_connected_says_so(self):
+        self.sandbox.conn.browser = {"connected": False, "can_start": False}
+        out = self.run_tool("browser_navigate", url="https://example.com/")
+        self.assertIn("extension on device sandbox [d_sb] is not connected", out["error"])
+
     def test_page_chat_sets_the_browser_device(self):
         other, fake = self.second()
         self.assertEqual(browser.set_session_device("fresh", "d_pc2"), {"device_id": "d_pc2", "name": "laptop"})
@@ -1160,6 +1262,7 @@ class BrowserDeviceTests(BrowserBase):
         self.assertEqual(bobs.requests, [], "a session never uses another user's browser")
 
     def test_several_devices_need_a_choice(self):
+        self.old_sandbox()
         other, fake = self.second()
         out = self.run_tool("browser_navigate", url="https://example.com/")
         self.assertIn("several computers offer a browser", out["error"])
@@ -1185,6 +1288,7 @@ class BrowserDeviceTests(BrowserBase):
         self.assertIn("laptop [d_pc2], the browser device of session fresh, is not connected", out["error"])
 
     def test_devices_of_another_user_refused(self):
+        self.old_sandbox()
         self.second(user="bob")
         self.assertIn("computers of other users are connected", self.run_tool("browser_status")["reason"])
         self.assertEqual(self.run_tool("browser_status")["devices"], [])
@@ -1198,6 +1302,7 @@ class BrowserDeviceTests(BrowserBase):
     def test_without_the_user_setting_only_bound_sessions_have_a_browser(self):
         """The plugin cannot tell whose a session is that no computer serves, unless the
         operator names the backend's one user."""
+        self.old_sandbox()
         del self.cfg["user"]
         out = self.run_tool("browser_navigate", url="https://example.com/")
         self.assertIn("does not name its one user", out["error"])
@@ -1253,6 +1358,7 @@ class BrowserDeviceTests(BrowserBase):
         self.assertEqual(browser.choices().job("job1")["device_id"], "d_pc2")
 
     def test_job_run_fails_fast_when_its_device_is_offline(self):
+        self.old_sandbox()
         with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
                 mock.patch.object(browser, "_job_exists", lambda j: True):
             self.create_job()
@@ -1266,6 +1372,7 @@ class BrowserDeviceTests(BrowserBase):
         self.assertEqual(other.execs, [])
 
     def test_job_run_refuses_a_device_of_another_user(self):
+        self.old_sandbox()
         with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
                 mock.patch.object(browser, "_job_exists", lambda j: True):
             self.create_job()
@@ -1288,6 +1395,7 @@ class BrowserDeviceTests(BrowserBase):
         self.assertEqual(browser.cron_job_id("other"), "", "another session is not the run's")
 
     def test_job_created_without_a_browser_device_gets_none(self):
+        self.old_sandbox()
         self.hub.detach(self.device.conn)
         with mock.patch.object(core, "current_session_id", lambda: "fresh"), \
                 mock.patch.object(browser, "_job_exists", lambda j: True):
@@ -1417,6 +1525,7 @@ class BrowserDeviceTests(BrowserBase):
                 self.assertEqual(r["action"], "block")
 
     def test_create_with_a_browser_makes_the_job_and_says_how_to_give_it_one(self):
+        self.old_sandbox()
         create = {"action": "create", "prompt": "p", "schedule": "in 2m"}
         self.assertIsNone(browser.pre_tool_call(tool_name="cronjob_manage", args=create, session_id=self.session))
         self.create_job_unbound("job9")
@@ -1498,6 +1607,7 @@ class BrowserDeviceTests(BrowserBase):
         require_source()
         import hermes_cli.plugins as plugins
         self.fake.hold.add("inspect")
+        self.sandbox_fake.hold.add("inspect")
         mgr = plugins.PluginManager()
         mgr._hooks["pre_tool_call"] = [browser.pre_tool_call]
         with mock.patch.object(plugins, "_resolve_hook_callback_timeout", lambda: 2.0), \
@@ -1524,12 +1634,14 @@ class BrowserDeviceTests(BrowserBase):
         self.assertIn("store broke", r["message"])
 
     def test_run_of_a_job_without_a_browser_device_has_none(self):
+        self.old_sandbox()
         self.run_of("job7")
         out = self.run_tool("browser_navigate", url="https://example.com/")
         self.assertIn("scheduled job job7 has no browser device", out["error"])
         self.assertFalse([r for r in self.fake.requests if r["op"] == "tab_open"])
 
     def test_user_setting_checked_against_connected_devices(self):
+        self.old_sandbox()
         self.second(device_id="d_bob", name="bobs-pc", user="bob")
         self.second(device_id="d_sb2", name="sandbox2", user=core.SERVICE_USER)
         out = self.run_tool("browser_navigate", url="https://example.com/")

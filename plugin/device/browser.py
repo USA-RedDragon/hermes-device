@@ -422,6 +422,17 @@ def browser_devices(user: Optional[str] = None) -> list[Any]:
                   key=lambda c: (c.name, c.device_id))
 
 
+def sandbox_device(res: Any) -> Optional[Any]:
+    """The connected sandbox device of a session that no computer serves (its implicit binding,
+    ``res.sandbox``), or None. The sandbox runs its own headless Firefox with the extension, on a
+    profile of its own with no login of the user's, so it is the default browser of such sessions
+    and of scheduled jobs that have no computer (docs/browser.md section 3.2)."""
+    core = _core()
+    if not res.sandbox or res.binding is None:
+        return None
+    return core.hub().device(res.binding.device_id)
+
+
 def backend_user() -> str:
     """The plugin setting ``user``: the one hub user who uses this Hermes, or "" when unset."""
     value = _core().settings().get("user")
@@ -535,25 +546,33 @@ def pick(session_id: str, res: Any) -> tuple[Any, str]:
     1. a run of a scheduled job that has a browser device uses that one, and only that one;
     2. else the device chosen with browser_use_device in the session's lineage;
     3. else the computer the session is bound to;
-    4. else, for a session that no computer serves (the sandbox), the user's one connected
-       browser device.
+    4. else, for a session that no computer serves (a chat with no computer, a job with no
+       browser device), the sandbox's own Firefox (:func:`_default_device`).
 
     The session's user is the user of the computer it is bound to, else the plugin setting
-    ``user``. Every device must belong to that user; with neither, only rule 3 applies."""
+    ``user``. Every computer must belong to that user; the sandbox needs no user."""
     core = _core()
-    user = _session_user(res)
+    user_error: Optional[Unavailable] = None
+    try:
+        user = _session_user(res)
+    except Unavailable as exc:
+        # Only the user's computers need the user; the sandbox does not.
+        user, user_error = None, exc
     job_id = cron_job_id(session_id)
     if job_id:
         rec = choices().job(job_id)
         if rec is not None:
+            if user_error is not None:
+                raise user_error
             if user is not None and rec["user"] != user:
                 raise Unavailable(f"talaria: device {_label(rec)}, the browser device of scheduled job {job_id}, "
                                   f"belongs to another user than this session, so its browser is not used.")
             return _chosen(rec, f"scheduled job {job_id}"), "job"
-        raise Unavailable(f"talaria: scheduled job {job_id} has no browser device, so its runs cannot use a "
-                          f"browser. The user gives it one in a chat with browser_use_device and job_id.")
+        return _default_device(session_id, res, user, user_error, job_id)
     rec = _session_choice(session_id)
     if rec is not None:
+        if user_error is not None:
+            raise user_error
         if rec["user"] != _need_user(user):
             raise Unavailable(f"talaria: device {_label(rec)}, the browser device chosen in this session, "
                               f"belongs to another user than this session. Choose again with browser_use_device.")
@@ -565,6 +584,24 @@ def pick(session_id: str, res: Any) -> tuple[Any, str]:
                               f"{conn.name} [{conn.device_id}], which has no browser. Choose your computer with "
                               f"browser_use_device.")
         return conn, "bound"
+    return _default_device(session_id, res, user, user_error, "")
+
+
+def _default_device(session_id: str, res: Any, user: Optional[str], user_error: Optional[Unavailable],
+                    job_id: str) -> tuple[Any, str]:
+    """The browser of a session or job that has no computer of its own: the sandbox's own Firefox
+    when the session runs in a sandbox device that offers one. Else, as before the sandbox had a
+    browser (an install without a sandbox, or a sandbox image that is not updated yet), the
+    user's one connected computer, and no browser for a job."""
+    core = _core()
+    conn = sandbox_device(res)
+    if conn is not None and core.CAPABILITY_BROWSER in conn.capabilities:
+        return conn, "sandbox"
+    if job_id:
+        raise Unavailable(f"talaria: scheduled job {job_id} has no browser device, so its runs cannot use a "
+                          f"browser. The user gives it one in a chat with browser_use_device and job_id.")
+    if user_error is not None:
+        raise user_error
     found = browser_devices(_need_user(user))
     if len(found) == 1:
         return found[0], "only"
@@ -1529,7 +1566,8 @@ def _need_ref(args: dict) -> str:
 
 
 _HOW = {"job": "the browser device of this scheduled job", "chosen": "chosen with browser_use_device",
-        "bound": "the computer this session is bound to", "only": "the only computer with browser control"}
+        "bound": "the computer this session is bound to",
+        "only": "the only computer with browser control", "sandbox": "the sandbox's own headless Firefox, which has none of your logins"}
 
 
 def _device_list(user: Optional[str], selected: str = "") -> list[dict]:
@@ -1602,7 +1640,9 @@ def browser_status(args: dict, session_id: str = "", **_kwargs) -> str:
         out["tabs"] = tabs.get("tabs", []) if isinstance(tabs, dict) else []
     except core.BrowserError as exc:
         out["tabs_error"] = str(exc)
-    out["devices"] = _device_list(conn.user, conn.device_id)
+    # The sandbox belongs to no user; the computers listed are the ones the session's user could choose.
+    out["devices"] = _device_list(_known_user(session_id) if conn.user == core.SERVICE_USER else conn.user,
+                                  conn.device_id)
     return _ok(out)
 
 
@@ -1708,10 +1748,12 @@ def record_job(job: Any, bind: bool = True) -> None:
             choices().set_job_owner(job_id, owner, sid)
         if not bind:
             return
-        conn, _ = pick(sid, res)
+        conn, how = pick(sid, res)
     except Unavailable as exc:
         core.logger.info("device: scheduled job %s has no browser device: %s", job_id, exc)
         return
+    if how == "sandbox":
+        return  # the sandbox default is implicit: no record, so the job can still be given a computer
     choices().set_job(job_id, {"device_id": conn.device_id, "name": conn.name, "user": conn.user,
                                "session_id": sid, "at": round(time.time(), 3)})
     core.logger.info("device: scheduled job %s uses the browser of %s [%s]", job_id, conn.name, conn.device_id)
@@ -1759,9 +1801,11 @@ def schedule_note(tool_name: str, args: Any, result: Any, session_id: str) -> Op
         if not job_id or choices().job(job_id) is not None:
             return None
         sid, res = resolve(session_id)
-        conn, _ = pick(sid, res)
+        conn, how = pick(sid, res)
     except Exception:
         return None
+    if how == "sandbox":
+        return None  # the job already has the sandbox's browser
     data["browser_note"] = (f"The job was created and has no browser. If its prompt needs a browser, call "
                             f"browser_use_device with device \"{conn.name}\" and job_id \"{job_id}\"; the user "
                             f"is asked to allow it. Without that, its runs cannot use a browser.")
