@@ -1,0 +1,713 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 21:06:16 +0000
+Subject: [PATCH] fix(approval): a subagent's approval reaches its parent's
+ chat
+
+A background subagent asks for approval under its parent's session key, but the notifier and the prompt belonged to the parent's turn. The turn's end withdrew a prompt the subagent still waited on ("approval was withdrawn before the user answered"), a prompt raised after the turn had nowhere to go, and the viewer's answer was fenced to the turn's execution generation.
+
+A subagent's approval is now bound to the chat. It names the subagent's goal in its description and carries it as subagent, so the card shows which subagent asks. The turn's end keeps the notifier and the waiting subagent prompts while the session has live background subagents, and withdraws only the turn's own prompts. The prompt is registered with the session authority outside the turn's generation, so it stays in the snapshot, answers from any later generation, and keeps an idle chat listed as running for watchers. It waits the same approvals.timeout as a chat prompt.
+---
+ agent/delegation_context.py                   |  14 +-
+ apps/shared/src/gateway-contract.generated.ts |   1 +
+ apps/shared/src/gateway-contract.openrpc.json |  12 ++
+ gateway/run_turn_runner.py                    |  34 +++-
+ gateway/session_active_list.py                |   2 +
+ gateway/session_authority.py                  |  13 +-
+ gateway/session_controls.py                   |   5 +-
+ gateway/session_pending_controls.py           |  23 ++-
+ .../test_subagent_approval_outlives_turn.py   | 128 +++++++++++++
+ tests/tools/test_subagent_approval_routing.py | 179 ++++++++++++++++++
+ tools/approval.py                             |  25 +++
+ tools/approval_gateway_wait.py                |  20 ++
+ tools/delegate_tool_child_run.py              |   3 +-
+ tui_gateway/contracts/canonical_sessions.py   |   2 +
+ 14 files changed, 452 insertions(+), 9 deletions(-)
+ create mode 100644 tests/gateway/test_subagent_approval_outlives_turn.py
+ create mode 100644 tests/tools/test_subagent_approval_routing.py
+
+diff --git a/agent/delegation_context.py b/agent/delegation_context.py
+index 6e94f8d3..76d24ef6 100644
+--- a/agent/delegation_context.py
++++ b/agent/delegation_context.py
+@@ -13,6 +13,9 @@ from contextvars import ContextVar, Token
+ from typing import Iterator, Mapping, MutableMapping, overload
+ 
+ _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_context", default=False)
++# The goal of the delegate_task child running here: an approval it raises names it, so the user can tell which
++# subagent is asking.
++_DELEGATED_CHILD_GOAL: ContextVar[str] = ContextVar("hermes_delegated_child_goal", default="")
+ # Any in-process execution that is NOT the dispatcher-owned worker (cron jobs). Kept separate
+ # so delegate_task-specific behaviour (subprocess env scrubbing, its error strings) is unchanged.
+ _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatcher_owned_context", default=False)
+@@ -26,20 +29,27 @@ KANBAN_ENV_KEYS: tuple[str, ...] = (
+ 
+ 
+ @contextmanager
+-def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
++def delegated_child_context(session_id: str | None = None, goal: str | None = None) -> Iterator[None]:
+     """Mark child execution and isolate its task-local session identity. Even a context
+     entered without an id must restore the parent's session ContextVar (child
+-    construction calls ``set_current_session_id``)."""
++    construction calls ``set_current_session_id``). ``goal`` is what the child was asked to do."""
+     token = _DELEGATED_CHILD_CONTEXT.set(True)
++    goal_token = _DELEGATED_CHILD_GOAL.set(" ".join(str(goal or "").split()))
+     try:
+         from gateway.session_context import scoped_current_session_id  # lazy: it calls is_delegated_child_context()
+ 
+         with scoped_current_session_id(session_id):
+             yield
+     finally:
++        _DELEGATED_CHILD_GOAL.reset(goal_token)
+         _DELEGATED_CHILD_CONTEXT.reset(token)
+ 
+ 
++def delegated_child_goal() -> str:
++    """The goal of the delegate_task child running here, one line; ``""`` outside a child or with no goal."""
++    return _DELEGATED_CHILD_GOAL.get()
++
++
+ def is_delegated_child_context() -> bool:
+     """Return True while code is running for a delegate_task child."""
+     return bool(_DELEGATED_CHILD_CONTEXT.get())
+diff --git a/apps/shared/src/gateway-contract.generated.ts b/apps/shared/src/gateway-contract.generated.ts
+index 809b254b..c614daaf 100644
+--- a/apps/shared/src/gateway-contract.generated.ts
++++ b/apps/shared/src/gateway-contract.generated.ts
+@@ -5186,6 +5186,7 @@ export interface CanonicalPendingPrompt {
+   choices: string[]
+   command?: string | null
+   description?: string | null
++  subagent?: string | null
+   edit?: Record<string, unknown> | null
+   question?: string | null
+   multi_select?: boolean | null
+diff --git a/apps/shared/src/gateway-contract.openrpc.json b/apps/shared/src/gateway-contract.openrpc.json
+index e37dc9f9..d5304125 100644
+--- a/apps/shared/src/gateway-contract.openrpc.json
++++ b/apps/shared/src/gateway-contract.openrpc.json
+@@ -9599,6 +9599,18 @@
+             "default": null,
+             "title": "Description"
+           },
++          "subagent": {
++            "anyOf": [
++              {
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null,
++            "title": "Subagent"
++          },
+           "edit": {
+             "anyOf": [
+               {
+diff --git a/gateway/run_turn_runner.py b/gateway/run_turn_runner.py
+index 641b2199..96ebd43f 100644
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -718,7 +718,29 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
+                 logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=True)
+         return response, answered
+ 
++    def _background_approval_notify(self, approval_data: dict) -> None:
++        """The approval of a subagent. It is bound to the session, not to this turn: a background subagent asks
++        after the turn that started it ended, and the card stays answerable until it is answered or times out."""
++        if not approval_data.get("subagent"):
++            # Only a subagent asks once the turn is over; any other waiter has no card to answer.
++            raise RuntimeError("the turn that could ask this approval has ended")
++        owner = self._approval_owner
++        try:
++            self._render_approval_sync(approval_data)
++        except Exception:
++            if owner is None:
++                raise
++            logger.warning("Subagent approval card rendering failed; the session prompt stands", exc_info=True)
++        if owner is not None:
++            from gateway import local_viewer_events
++            authority, session_id, _generation = owner
++            authority.register_background_approval(
++                session_id, self._ctx.session_key, approval_data,
++                timeout_s=local_viewer_events.prompt_timeout_s(self, "approval"))
++
+     def _approval_notify_sync(self, approval_data: dict) -> None:
++        if approval_data.get("subagent"):
++            return self._background_approval_notify(approval_data)
+         if self._approval_owner is not None:
+             authority, session_id, generation = self._approval_owner
+             authority.check_approval_generation(session_id, generation)
+@@ -1003,7 +1025,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
+         """Run the turn with the per-session gateway approval callback registered: dangerous-command
+         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
+         from gateway.run import _wrap_current_message_with_observed_context
+-        from tools.approval import register_gateway_notify, unregister_gateway_notify
++        from tools.approval import register_gateway_notify
+         from tools.approval_context import reset_current_session_key, set_current_session_key
+         ctx = self._ctx
+         session_key = ctx.session_key or ""
+@@ -1072,7 +1094,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
+                 _settle_api_runtime_lock(agent, result, captured)
+             return result
+         finally:
+-            unregister_gateway_notify(session_key)
++            # A background subagent outlives this turn: the notifier stays for its approvals, and an approval it
++            # already waits on is not withdrawn with the turn.
++            from tools.approval import has_subagent_approval, release_gateway_turn
++            from tools.async_delegation import has_live_for_session
++            keep = False
++            with suppress(Exception):
++                keep = bool(session_key) and (has_subagent_approval(session_key)
++                                              or has_live_for_session(session_key=session_key))
++            release_gateway_turn(session_key, self._background_approval_notify if keep else None)
+             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
+             # run (interrupt, completion, gateway shutdown). Idempotent.
+             with suppress(Exception):
+diff --git a/gateway/session_active_list.py b/gateway/session_active_list.py
+index 61309fdf..d9d0a50c 100644
+--- a/gateway/session_active_list.py
++++ b/gateway/session_active_list.py
+@@ -21,6 +21,8 @@ def _status(live, handle, pending) -> str:
+         asked = live.controls.snapshot(sid, handle.execution_generation) or open_requests(live.event_stream, sid)
+         return 'waiting' if asked else 'working'
+     # Admitted, not yet claimed by the drain: the turn exists, its agent has not started.
++    if live.controls.has_background(handle.ref.session_id, handle.execution_generation):
++        return 'waiting'  # a subagent's approval waits on the idle session
+     return 'starting' if any(row['status'] == 'queued' for row in pending) else 'idle'
+ 
+ 
+diff --git a/gateway/session_authority.py b/gateway/session_authority.py
+index 9f215ec7..528a423c 100644
+--- a/gateway/session_authority.py
++++ b/gateway/session_authority.py
+@@ -1072,6 +1072,15 @@ class SessionAuthority:
+             self.check_approval_generation(session_id, generation)
+             live.controls.register(session_id, route, generation, data, timeout_s=timeout_s)
+ 
++    def register_background_approval(self, session_id, route, data, *, timeout_s=None):
++        """A subagent's approval: it belongs to the session, not to the running execution. A background
++        subagent asks after its parent's turn ended, and the prompt stays answerable until it is answered or
++        times out, whatever turn runs by then."""
++        live = self.sessions[session_id]
++        with live.event_stream.lock:
++            generation = self.db.get_session(session_id)['runtime_generation']
++            live.controls.register(session_id, route, generation, data, timeout_s=timeout_s, background=True)
++
+     def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
+         live = self.sessions[session_id]
+         with live.event_stream.lock:
+@@ -1089,7 +1098,9 @@ class SessionAuthority:
+                 raise RuntimeStoreError("permission_denied")
+             if type(generation) is not int:
+                 raise RuntimeStoreError("stale_generation")
+-            self.check_approval_generation(ref.session_id, generation)
++            # A subagent's prompt answers whichever turn (or none) runs now: it was never bound to one.
++            if not (kind == "approval" and isinstance(prompt_id, str) and live.controls.is_background(prompt_id)):
++                self.check_approval_generation(ref.session_id, generation)
+             if not isinstance(prompt_id, str) or not prompt_id:
+                 raise RuntimeStoreError("invalid_params")
+             return live.controls.respond(ref.session_id, generation, prompt_id, response, kind=kind)
+diff --git a/gateway/session_controls.py b/gateway/session_controls.py
+index 5fc37732..3edf1c76 100644
+--- a/gateway/session_controls.py
++++ b/gateway/session_controls.py
+@@ -645,7 +645,10 @@ class AuthorityConnection:
+             sessions.append({'session_id': entry.session_id, 'id': entry.session_id, 'title': row.get('title') or '',
+                              'source': row.get('source'), 'started_at': row.get('started_at'),
+                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
+-                             'running': entry.handle.execution_state == 'running'})
++                             # A subagent's approval waits on the session: it is not idle, and a watcher that
++                             # follows running sessions must follow it to see the approval.
++                             'running': entry.handle.execution_state == 'running' or entry.live.controls.has_background(
++                                 entry.session_id, entry.handle.execution_generation)})
+         sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
+         from gateway.session_picker_fields import live_picker_page
+         return {'sessions': await asyncio.to_thread(live_picker_page, self.authority, sessions, limit, workspace, picker,
+diff --git a/gateway/session_pending_controls.py b/gateway/session_pending_controls.py
+index 4ff98790..f8c101ed 100644
+--- a/gateway/session_pending_controls.py
++++ b/gateway/session_pending_controls.py
+@@ -14,8 +14,21 @@ class PendingControls:
+         self.events = events
+         self.pending = {}
+         self.remote_responders = {}
++        # Prompts of subagents: bound to the session, not to the turn that was running when they were raised, so
++        # a background subagent's approval outlives its parent's turn.
++        self.background = set()
+ 
+-    def register(self, session_id, route, generation, data, *, timeout_s=None):
++    def is_background(self, prompt_id):
++        with self.events.lock:
++            return prompt_id in self.background
++
++    def has_background(self, session_id, generation):
++        """Whether a subagent's approval still waits on this session."""
++        with self.events.lock:
++            self.snapshot(session_id, generation)
++            return bool(self.background & self.pending.keys())
++
++    def register(self, session_id, route, generation, data, *, timeout_s=None, background=False):
+         from gateway.run import _redact_approval_command
+         with self.events.lock:
+             prompt_id = data['request_id']
+@@ -29,12 +42,16 @@ class PendingControls:
+                       'command': _redact_approval_command(data.get('command', '')),
+                       'description': _redact_approval_command(data.get('description', '')),
+                       'choices': choices}
++            if data.get('subagent'):
++                prompt['subagent'] = str(data['subagent'])  # the goal of the subagent that asks
+             if 'edit' in data:
+                 prompt['edit'] = deepcopy(data['edit'])
+                 prompt['choices'] = ['once', 'deny']
+             if timeout_s is not None:
+                 prompt['timeout_s'] = timeout_s
+             self.pending[prompt_id] = (route, prompt)
++            if background:
++                self.background.add(prompt_id)
+             self.events.publish(session_id, prompt, event_type='approval.request')
+ 
+     def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
+@@ -56,8 +73,9 @@ class PendingControls:
+                 active = (prompt_id in self.remote_responders or
+                           (not route.event.is_set() if prompt['kind'] == 'clarify' else
+                            any(p['request_id'] == prompt_id for p in list_gateway_approvals(route))))
+-                if prompt['execution_generation'] != generation or not active:
++                if not active or (prompt['execution_generation'] != generation and prompt_id not in self.background):
+                     del self.pending[prompt_id]
++                    self.background.discard(prompt_id)
+                     self.remote_responders.pop(prompt_id, None)
+                     self.events.publish(session_id, {'prompt_id': prompt_id,
+                         'execution_generation': prompt['execution_generation']}, event_type=prompt['kind'] + '.settled')
+@@ -81,6 +99,7 @@ class PendingControls:
+                 self.remote_responders[prompt_id](kind, prompt_id, response[field])
+                 del self.remote_responders[prompt_id]
+                 del self.pending[prompt_id]
++                self.background.discard(prompt_id)
+                 self.events.publish(session_id, {'prompt_id': prompt_id, 'execution_generation': generation},
+                                     event_type=kind + '.settled')
+                 return {'status': 'resolved', 'prompt_id': prompt_id}
+diff --git a/tests/gateway/test_subagent_approval_outlives_turn.py b/tests/gateway/test_subagent_approval_outlives_turn.py
+new file mode 100644
+index 00000000..ad3e1952
+--- /dev/null
++++ b/tests/gateway/test_subagent_approval_outlives_turn.py
+@@ -0,0 +1,128 @@
++"""A background subagent's approval belongs to its parent's chat, not to the turn that started it.
++
++Real owner pieces (``SessionAuthority`` over a real ``SessionDB``, the real claim and settlement, the real
++approval queue); only the gateway runner is a stand-in.
++"""
++from types import SimpleNamespace
++
++import pytest
++
++from gateway.session_authority import LiveSession, SessionAuthority
++from gateway.session_contract import SessionActor, SessionRef
++from hermes_state import SessionDB
++from hermes_state_runtime import (
++    RuntimeStoreError, admit_session_input, begin_runtime_epoch, claim_session_input, settle_session_input,
++)
++from tools import approval
++from tools.approval_gateway_wait import _ApprovalEntry
++
++ROUTE = 'subagent-route'
++
++
++@pytest.fixture()
++def owner(tmp_path):
++    approval._gateway_queues.clear()
++    with SessionDB(db_path=tmp_path / 'state.db') as db:
++        db.create_session('s', source='test')
++        epoch = begin_runtime_epoch(db, instance_id='current')
++        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned',
++                                     instance_id='current', db=db, epoch=epoch)
++        authority.sessions['s'] = LiveSession(None, ROUTE)
++        yield SimpleNamespace(authority=authority, db=db, epoch=epoch)
++    approval._gateway_queues.clear()
++
++
++def _run_a_turn(owner, request_id):
++    admit_session_input(owner.db, epoch=owner.epoch, principal_id='human', session_id='s',
++                        request_id=request_id, payload={'text': 'start a subagent'})
++    row = claim_session_input(owner.db, epoch=owner.epoch, session_id='s')
++    return row['admission_id'], row['generation']
++
++
++def _end_the_turn(owner, admission_id, generation):
++    settle_session_input(owner.db, epoch=owner.epoch, admission_id=admission_id, generation=generation,
++                         outcome='completed')
++
++
++def _wait_for_a_subagent():
++    entry = _ApprovalEntry({'command': 'true # approval-test', 'request_id': 'sub-1',
++                            'description': 'Subagent "check it" asks: a test', 'subagent': 'check it'})
++    approval._gateway_queues.setdefault(ROUTE, []).append(entry)
++    return entry
++
++
++def _actor():
++    return SessionActor('human', 'owned', frozenset({'session:read', 'session:approve'}), 'viewer')
++
++
++@pytest.mark.asyncio
++async def test_a_subagent_prompt_stays_listed_and_answerable_after_the_turn_ended(owner):
++    authority = owner.authority
++    admission, generation = _run_a_turn(owner, 'first')
++    entry = _wait_for_a_subagent()
++    authority.register_background_approval('s', ROUTE, entry.data)
++    ref, actor = SessionRef('owned', 's'), _actor()
++    await authority.attach(actor, ref)
++    _end_the_turn(owner, admission, generation)
++
++    live = authority.sessions['s']
++    # An idle session lists the prompt a subagent waits on, which a turn-bound prompt would not survive.
++    assert [p['prompt_id'] for p in live.controls.snapshot('s', None)] == ['sub-1']
++    assert live.controls.has_background('s', generation)
++
++    # A later turn changes the generation; the answer still reaches the subagent's wait.
++    admission2, generation2 = _run_a_turn(owner, 'second')
++    assert generation2 != generation
++    result = await authority.respond(actor, ref, generation, 'sub-1', {'choice': 'once'})
++    assert result['status'] == 'resolved'
++    assert entry.result == 'once'
++    assert entry.event.is_set()
++    assert not live.controls.has_background('s', generation2)
++
++
++@pytest.mark.asyncio
++async def test_a_turn_prompt_is_still_fenced_to_its_turn(owner):
++    authority = owner.authority
++    admission, generation = _run_a_turn(owner, 'first')
++    entry = _ApprovalEntry({'command': 'rm -rf build', 'request_id': 'turn-1'})
++    approval._gateway_queues.setdefault(ROUTE, []).append(entry)
++    authority.register_approval('s', generation, ROUTE, entry.data)
++    ref, actor = SessionRef('owned', 's'), _actor()
++    await authority.attach(actor, ref)
++    _end_the_turn(owner, admission, generation)
++    with pytest.raises(RuntimeStoreError, match='stale_generation'):
++        await authority.respond(actor, ref, generation, 'turn-1', {'choice': 'once'})
++    assert entry.result is None
++
++
++def test_an_idle_session_with_a_subagent_prompt_is_not_idle(owner):
++    from gateway.session_active_list import _status
++    authority = owner.authority
++    admission, generation = _run_a_turn(owner, 'first')
++    _end_the_turn(owner, admission, generation)
++    live = authority.sessions['s']
++    handle = authority._handle(SessionRef('owned', 's'))
++    assert _status(live, handle, []) == 'idle'
++    entry = _wait_for_a_subagent()
++    authority.register_background_approval('s', ROUTE, entry.data)
++    assert _status(live, handle, []) == 'waiting'
++    approval.resolve_gateway_approval(ROUTE, 'deny', request_id='sub-1')
++    assert _status(live, handle, []) == 'idle'
++
++
++def test_the_prompt_is_a_normal_approval_card_naming_the_subagent(owner):
++    authority = owner.authority
++    events = []
++    live = authority.sessions['s']
++    live.event_stream.publish = lambda sid, payload, event_type=None: events.append((event_type, payload))
++    entry = _wait_for_a_subagent()
++    authority.register_background_approval('s', ROUTE, entry.data, timeout_s=1800)
++    (event_type, prompt), = events
++    assert event_type == 'approval.request'
++    assert prompt['kind'] == 'approval' and prompt['prompt_id'] == 'sub-1'
++    assert prompt['choices'] == ['once', 'deny', 'session', 'always']
++    assert prompt['description'] == 'Subagent "check it" asks: a test'
++    assert prompt['timeout_s'] == 1800
++    assert prompt['subagent'] == 'check it'
++    assert set(prompt) <= {'kind', 'prompt_id', 'execution_generation', 'command', 'description', 'choices',
++                           'timeout_s', 'subagent'}
+diff --git a/tests/tools/test_subagent_approval_routing.py b/tests/tools/test_subagent_approval_routing.py
+new file mode 100644
+index 00000000..d994042b
+--- /dev/null
++++ b/tests/tools/test_subagent_approval_routing.py
+@@ -0,0 +1,179 @@
++"""A subagent's approval reaches its parent's chat as a normal card that names the subagent, waits as long as
++a chat's approval does, and is not withdrawn when the parent's turn ends.
++"""
++import threading
++from types import SimpleNamespace
++
++import pytest
++
++from agent.delegation_context import delegated_child_context
++from gateway.run_turn_runner import TurnRunner
++from gateway.turn_context import TurnContext
++from tools import approval as mod
++from tools import approval_context
++
++KEY = "test-subagent-approval"
++
++
++@pytest.fixture
++def gateway_session(monkeypatch):
++    mod._gateway_queues.clear()
++    mod._gateway_notify_cbs.clear()
++    mod._session_approved.clear()
++    for name in ("HERMES_CRON_SESSION", "HERMES_YOLO_MODE", "HERMES_INTERACTIVE"):
++        monkeypatch.delenv(name, raising=False)
++    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
++    monkeypatch.setenv("HERMES_SESSION_KEY", KEY)
++    monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", False)
++    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "manual", "timeout": 1800})
++    yield
++    mod._gateway_queues.clear()
++    mod._gateway_notify_cbs.clear()
++
++
++def _ask(goal=None):
++    """Run the command gate on a worker thread, as a subagent (``goal``) or as the chat itself, and return
++    ``(thread, result holder, the prompts its notifier received)`` once the prompt was handed over."""
++    seen, handed = [], threading.Event()
++    mod.register_gateway_notify(KEY, lambda data: (seen.append(data), handed.set()))
++    holder = {}
++
++    def gate():
++        if goal is None:
++            holder["result"] = mod.check_all_command_guards("rm -rf .git", "local")
++        else:
++            with delegated_child_context("child-session", goal):
++                holder["result"] = mod.check_all_command_guards("rm -rf .git", "local")
++
++    thread = threading.Thread(target=gate, daemon=True)
++    thread.start()
++    assert handed.wait(timeout=10), "the approval was never handed to the notifier"
++    return thread, holder, seen
++
++
++def test_a_subagent_prompt_names_the_subagent_and_waits_the_chats_timeout(gateway_session):
++    thread, holder, seen = _ask("Check the rollout and report")
++    try:
++        (data,) = seen
++        assert data["subagent"] == "Check the rollout and report"
++        assert data["description"].startswith('Subagent "Check the rollout and report" asks: ')
++        assert data["timeout_s"] == 1800
++        assert data["command"] == "rm -rf .git"
++    finally:
++        mod.resolve_gateway_approval(KEY, "deny")
++        thread.join(timeout=10)
++
++
++def test_a_chat_prompt_is_unchanged(gateway_session):
++    thread, holder, seen = _ask(None)
++    try:
++        (data,) = seen
++        assert "subagent" not in data
++        assert not data["description"].startswith("Subagent")
++        assert data["timeout_s"] == 1800
++    finally:
++        mod.resolve_gateway_approval(KEY, "deny")
++        thread.join(timeout=10)
++
++
++def test_a_long_goal_is_cut_to_one_line(gateway_session):
++    thread, holder, seen = _ask("first line\nsecond " + "x" * 400)
++    try:
++        goal = seen[0]["subagent"]
++        assert "\n" not in goal and len(goal) <= 160 and goal.endswith("\u2026")
++    finally:
++        mod.resolve_gateway_approval(KEY, "deny")
++        thread.join(timeout=10)
++
++
++def test_the_end_of_the_turn_keeps_a_subagent_waiting_and_an_answer_reaches_it(gateway_session):
++    thread, holder, seen = _ask("Check the rollout and report")
++    later = []
++    mod.release_gateway_turn(KEY, later.append)
++    assert thread.is_alive(), "the turn's end withdrew the subagent's approval"
++    assert mod.has_subagent_approval(KEY)
++    assert mod._gateway_notify_cb(KEY) is not None
++    assert mod.resolve_gateway_approval(KEY, "once", request_id=seen[0]["request_id"]) == 1
++    thread.join(timeout=10)
++    assert not thread.is_alive()
++    assert holder["result"]["approved"] is True
++
++
++def test_the_end_of_the_turn_still_withdraws_the_chats_own_prompt(gateway_session):
++    thread, holder, seen = _ask(None)
++    mod.release_gateway_turn(KEY, lambda data: None)
++    thread.join(timeout=10)
++    assert not thread.is_alive()
++    assert holder["result"]["outcome"] == "cancelled"
++    assert "withdrawn" in holder["result"]["message"]
++
++
++def test_without_a_background_notifier_the_end_of_the_turn_withdraws_everything(gateway_session):
++    thread, holder, seen = _ask("Check the rollout and report")
++    mod.release_gateway_turn(KEY, None)
++    thread.join(timeout=10)
++    assert not thread.is_alive()
++    assert holder["result"]["outcome"] == "cancelled"
++    assert mod._gateway_notify_cb(KEY) is None
++
++
++def _turn(monkeypatch, notified):
++    ctx = TurnContext(message="hi", session_id="session-1", session_key=KEY,
++                      source=SimpleNamespace(user_id="user-1", user_name="Example", is_bot=False))
++    runner = object.__new__(TurnRunner)
++    runner._ctx = ctx
++    runner._approval_owner = None
++    monkeypatch.setattr(runner, "_native_image_run_message", lambda: "hi")
++    monkeypatch.setattr(runner, "_render_approval_sync", lambda data: notified.append(data))
++    return runner
++
++
++class _Agent:
++    def __init__(self, during=None):
++        self.during = during
++
++    def run_conversation(self, message, **kwargs):
++        if self.during:
++            self.during()
++        return {"final_response": "done"}
++
++
++def test_a_turn_with_a_live_subagent_leaves_its_notifier_for_the_subagent(gateway_session, monkeypatch):
++    from tools import async_delegation
++    notified = []
++    runner = _turn(monkeypatch, notified)
++    monkeypatch.setattr(async_delegation, "has_live_for_session",
++                        lambda session_key="", **kw: session_key == KEY)
++    runner._run_conversation_with_approval(_Agent(), [], None, "hi", None)
++    callback = mod._gateway_notify_cb(KEY)
++    assert callback is not None
++    callback({"command": "true # approval-test", "request_id": "r1", "subagent": "goal", "description": "d"})
++    assert [d["request_id"] for d in notified] == ["r1"]
++    with pytest.raises(RuntimeError):
++        callback({"command": "true", "request_id": "r2"})  # nobody but a subagent asks after the turn
++
++
++def test_a_turn_without_subagents_unregisters_its_notifier(gateway_session, monkeypatch):
++    from tools import async_delegation
++    runner = _turn(monkeypatch, [])
++    monkeypatch.setattr(async_delegation, "has_live_for_session", lambda session_key="", **kw: False)
++    runner._run_conversation_with_approval(_Agent(), [], None, "hi", None)
++    assert mod._gateway_notify_cb(KEY) is None
++
++
++def test_a_subagent_waiting_when_the_turn_ends_survives_it(gateway_session, monkeypatch):
++    from tools import async_delegation
++    runner = _turn(monkeypatch, [])
++    monkeypatch.setattr(async_delegation, "has_live_for_session", lambda session_key="", **kw: False)
++    started = {}
++
++    def subagent_asks_during_the_turn():
++        thread, holder, seen = _ask("Check the rollout and report")
++        started.update(thread=thread, holder=holder, seen=seen)
++
++    runner._run_conversation_with_approval(_Agent(subagent_asks_during_the_turn), [], None, "hi", None)
++    thread = started["thread"]
++    assert thread.is_alive(), "the end of the parent's turn withdrew the subagent's prompt"
++    mod.resolve_gateway_approval(KEY, "deny", request_id=started["seen"][0]["request_id"])
++    thread.join(timeout=10)
++    assert started["holder"]["result"]["outcome"] == "denied"
+diff --git a/tools/approval.py b/tools/approval.py
+index e290e5ab..47176ebf 100644
+--- a/tools/approval.py
++++ b/tools/approval.py
+@@ -143,6 +143,31 @@ def unregister_gateway_notify(session_key: str) -> None:
+             entry.event.set()
+ 
+ 
++def release_gateway_turn(session_key: str, background_cb=None) -> None:
++    """A turn ended under its approval notifier. Prompts of the turn's own tool calls are withdrawn, as
++    ``unregister_gateway_notify`` does. With ``background_cb`` the approvals that subagents of the session wait on
++    (``data["subagent"]``) keep waiting, and later ones from them go to ``background_cb``: a background subagent
++    outlives the turn that started it, and its approval must not be withdrawn with the turn."""
++    with _lock:
++        queue = _gateway_queues.pop(session_key, [])
++        kept = [e for e in queue if background_cb is not None and e.data.get("subagent")]
++        for entry in queue:
++            if entry not in kept:
++                entry.event.set()
++        if kept:
++            _gateway_queues[session_key] = kept
++        if background_cb is not None:
++            _gateway_notify_cbs[session_key] = background_cb
++        else:
++            _gateway_notify_cbs.pop(session_key, None)
++
++
++def has_subagent_approval(session_key: str) -> bool:
++    """Whether a subagent of the session waits on an approval."""
++    with _lock:
++        return any(e.data.get("subagent") for e in _gateway_queues.get(session_key, []))
++
++
+ def resolve_gateway_approval(session_key: str, choice: str,
+                              resolve_all: bool = False,
+                              reason: Optional[str] = None,
+diff --git a/tools/approval_gateway_wait.py b/tools/approval_gateway_wait.py
+index b2fcc637..bc313fa6 100644
+--- a/tools/approval_gateway_wait.py
++++ b/tools/approval_gateway_wait.py
+@@ -159,6 +159,25 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
+     return _finish(payload, resolved, choice, getattr(leader, "reason", None), coalesced=True, **extra)
+ 
+ 
++_SUBAGENT_GOAL_CHARS = 160
++
++
++def _name_subagent(approval_data: dict) -> dict:
++    """The approval of a delegate_task child, marked with ``subagent`` (its goal, one line) and a description that
++    says which subagent asks: the card is shown in the parent's chat, where the user sees only the command.
++    Unchanged outside a child."""
++    from agent.delegation_context import delegated_child_goal, is_delegated_child_context
++    if not is_delegated_child_context():
++        return approval_data
++    goal = delegated_child_goal()
++    if len(goal) > _SUBAGENT_GOAL_CHARS:
++        goal = goal[:_SUBAGENT_GOAL_CHARS - 1].rstrip() + "\u2026"
++    label = f'Subagent "{goal}"' if goal else "A subagent"
++    description = str(approval_data.get("description") or "").strip()
++    return {**approval_data, "subagent": goal or "subagent",
++            "description": f"{label} asks: {description}" if description else f"{label} asks to run this."}
++
++
+ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *, surface: str = "gateway") -> dict:
+     """Enqueue *approval_data*, notify the user, and block until resolved or timed
+     out. Shared by the terminal command guard, the execute_code guard, the plugin
+@@ -175,6 +194,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
+     from tools import approval as _approval
+     from agent.terminal_approval_batch import approval_published, preparing_terminal_approval, register_prepared_approval
+ 
++    approval_data = _name_subagent(approval_data)
+     primary_key = approval_data.get("pattern_key", "")
+     if surface == "gateway":
+         surface = _ctx.gateway_approval_surface()
+diff --git a/tools/delegate_tool_child_run.py b/tools/delegate_tool_child_run.py
+index 35fd6e98..9adf6942 100644
+--- a/tools/delegate_tool_child_run.py
++++ b/tools/delegate_tool_child_run.py
+@@ -989,7 +989,8 @@ class _ChildRun:
+             from agent.delegation_context import delegated_child_context
+             from tools.delegate_tool_routes import child_profile_scope
+             # A profile-routed child converses as that profile (config, secrets, skills, terminal policy).
+-            with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
++            with child_profile_scope(child), delegated_child_context(
++                    str(getattr(child, "session_id", "") or ""), self.goal):
+                 return child.run_conversation(
+                     user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
+                     **history_kwargs,
+diff --git a/tui_gateway/contracts/canonical_sessions.py b/tui_gateway/contracts/canonical_sessions.py
+index d6da2c21..eee8066e 100644
+--- a/tui_gateway/contracts/canonical_sessions.py
++++ b/tui_gateway/contracts/canonical_sessions.py
+@@ -113,6 +113,8 @@ class CanonicalPendingPrompt(Result):
+     choices: list[str]
+     command: str | None = None
+     description: str | None = None
++    # The goal of the subagent that asks: a subagent's approval belongs to the session, not to one turn.
++    subagent: str | None = None
+     edit: dict[str, JsonValue] | None = None
+     question: str | None = None
+     multi_select: bool | None = None
+-- 
+2.56.0
+

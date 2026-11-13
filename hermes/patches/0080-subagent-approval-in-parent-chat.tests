@@ -1,0 +1,9 @@
+# Upstream tests of the approval wait, a turn's approvals and the viewer's controls
+tests/tools/test_approval_cancelled_attribution.py
+tests/tools/test_approval_interrupt.py
+tests/tools/test_approval_gateway_wait_late_choice.py
+tests/gateway/test_session_bot_state.py
+tests/gateway/test_authority_principal.py
+tests/gateway/test_local_viewer_events_turn.py
+tests/gateway/test_peer_client_approvals.py
+tests/tui_gateway/contracts
