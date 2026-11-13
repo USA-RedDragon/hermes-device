@@ -37,17 +37,23 @@ type hTTPShadow struct {
 }
 
 type oIDCShadow struct {
-	IssuerURL    *string   `json:"issuer_url"    toml:"issuer_url"    yaml:"issuer_url"`
-	ClientID     *string   `json:"client_id"     toml:"client_id"     yaml:"client_id"`
-	ClientSecret *string   `json:"client_secret" toml:"client_secret" yaml:"client_secret"`
-	Scopes       *[]string `json:"scopes"        toml:"scopes"        yaml:"scopes"`
-	DisplayClaim *string   `json:"display_claim" toml:"display_claim" yaml:"display_claim"`
-	GroupsClaim  *string   `json:"groups_claim"  toml:"groups_claim"  yaml:"groups_claim"`
+	IssuerURL        *string   `json:"issuer_url"         toml:"issuer_url"         yaml:"issuer_url"`
+	ClientID         *string   `json:"client_id"          toml:"client_id"          yaml:"client_id"`
+	ClientSecret     *string   `json:"client_secret"      toml:"client_secret"      yaml:"client_secret"`
+	ClientSecretFile *string   `json:"client_secret_file" toml:"client_secret_file" yaml:"client_secret_file"`
+	Scopes           *[]string `json:"scopes"             toml:"scopes"             yaml:"scopes"`
+	DisplayClaim     *string   `json:"display_claim"      toml:"display_claim"      yaml:"display_claim"`
+	GroupsClaim      *string   `json:"groups_claim"       toml:"groups_claim"       yaml:"groups_claim"`
+	EmailClaim       *string   `json:"email_claim"        toml:"email_claim"        yaml:"email_claim"`
+	AutoCreate       *bool     `json:"auto_create"        toml:"auto_create"        yaml:"auto_create"`
+	AllowedDomains   *[]string `json:"allowed_domains"    toml:"allowed_domains"    yaml:"allowed_domains"`
+	AllowedGroups    *[]string `json:"allowed_groups"     toml:"allowed_groups"     yaml:"allowed_groups"`
 }
 
 type sessionShadow struct {
-	Secret *string        `json:"secret" toml:"secret" yaml:"secret"`
-	TTL    *impl.Duration `json:"ttl"    toml:"ttl"    yaml:"ttl"`
+	Secret     *string        `json:"secret"      toml:"secret"      yaml:"secret"`
+	SecretFile *string        `json:"secret_file" toml:"secret_file" yaml:"secret_file"`
+	TTL        *impl.Duration `json:"ttl"         toml:"ttl"         yaml:"ttl"`
 }
 
 type uIShadow struct {
@@ -59,6 +65,7 @@ type storeShadow struct {
 	Driver     *string `json:"driver"      toml:"driver"      yaml:"driver"`
 	Path       *string `json:"path"        toml:"path"        yaml:"path"`
 	DSN        *string `json:"dsn"         toml:"dsn"         yaml:"dsn"`
+	DSNFile    *string `json:"dsn_file"    toml:"dsn_file"    yaml:"dsn_file"`
 	ImportPath *string `json:"import_path" toml:"import_path" yaml:"import_path"`
 }
 
@@ -75,15 +82,60 @@ type usageShadow struct {
 	PrometheusURL *string `json:"prometheus_url" toml:"prometheus_url" yaml:"prometheus_url"`
 }
 
+type localShadow struct {
+	MaxFailures *int           `json:"max_failures" toml:"max_failures" yaml:"max_failures"`
+	Lockout     *impl.Duration `json:"lockout"      toml:"lockout"      yaml:"lockout"`
+}
+
+type jWTShadow struct {
+	JWKSURL     *string   `json:"jwks_url"     toml:"jwks_url"     yaml:"jwks_url"`
+	Header      *string   `json:"header"       toml:"header"       yaml:"header"`
+	Cookie      *string   `json:"cookie"       toml:"cookie"       yaml:"cookie"`
+	Issuer      *string   `json:"issuer"       toml:"issuer"       yaml:"issuer"`
+	Audiences   *[]string `json:"audiences"    toml:"audiences"    yaml:"audiences"`
+	UserClaim   *string   `json:"user_claim"   toml:"user_claim"   yaml:"user_claim"`
+	NameClaim   *string   `json:"name_claim"   toml:"name_claim"   yaml:"name_claim"`
+	EmailClaim  *string   `json:"email_claim"  toml:"email_claim"  yaml:"email_claim"`
+	GroupsClaim *string   `json:"groups_claim" toml:"groups_claim" yaml:"groups_claim"`
+}
+
+type proxyShadow struct {
+	UserHeader   *string    `json:"user_header"   toml:"user_header"   yaml:"user_header"`
+	NameHeader   *string    `json:"name_header"   toml:"name_header"   yaml:"name_header"`
+	EmailHeader  *string    `json:"email_header"  toml:"email_header"  yaml:"email_header"`
+	GroupsHeader *string    `json:"groups_header" toml:"groups_header" yaml:"groups_header"`
+	AutoCreate   *bool      `json:"auto_create"   toml:"auto_create"   yaml:"auto_create"`
+	LogoutURL    *string    `json:"logout_url"    toml:"logout_url"    yaml:"logout_url"`
+	JWT          *jWTShadow `json:"jwt"           toml:"jwt"           yaml:"jwt"`
+}
+
+type authShadow struct {
+	Mode           *string      `json:"mode"            toml:"mode"            yaml:"mode"`
+	Admins         *[]string    `json:"admins"          toml:"admins"          yaml:"admins"`
+	TrustedProxies *[]string    `json:"trusted_proxies" toml:"trusted_proxies" yaml:"trusted_proxies"`
+	Local          *localShadow `json:"local"           toml:"local"           yaml:"local"`
+	Proxy          *proxyShadow `json:"proxy"           toml:"proxy"           yaml:"proxy"`
+}
+
 type userShadow struct {
 	Sub  *string `json:"sub"  toml:"sub"  yaml:"sub"`
 	Name *string `json:"name" toml:"name" yaml:"name"`
 }
 
+type hermesShadow struct {
+	URL          *string `json:"url"           toml:"url"           yaml:"url"`
+	Name         *string `json:"name"          toml:"name"          yaml:"name"`
+	Username     *string `json:"username"      toml:"username"      yaml:"username"`
+	Password     *string `json:"password"      toml:"password"      yaml:"password"`
+	PasswordFile *string `json:"password_file" toml:"password_file" yaml:"password_file"`
+	Devices      *bool   `json:"devices"       toml:"devices"       yaml:"devices"`
+}
+
 type serviceDeviceShadow struct {
-	ID    *string `json:"id"    toml:"id"    yaml:"id"`
-	Name  *string `json:"name"  toml:"name"  yaml:"name"`
-	Token *string `json:"token" toml:"token" yaml:"token"`
+	ID        *string `json:"id"         toml:"id"         yaml:"id"`
+	Name      *string `json:"name"       toml:"name"       yaml:"name"`
+	Token     *string `json:"token"      toml:"token"      yaml:"token"`
+	TokenFile *string `json:"token_file" toml:"token_file" yaml:"token_file"`
 }
 
 type honchoShadow struct {
@@ -103,8 +155,10 @@ type backendShadow struct {
 	Provider       *string                `json:"provider"        toml:"provider"        yaml:"provider"`
 	Username       *string                `json:"username"        toml:"username"        yaml:"username"`
 	Password       *string                `json:"password"        toml:"password"        yaml:"password"`
+	PasswordFile   *string                `json:"password_file"   toml:"password_file"   yaml:"password_file"`
 	Users          *[]string              `json:"users"           toml:"users"           yaml:"users"`
 	Groups         *[]string              `json:"groups"          toml:"groups"          yaml:"groups"`
+	Everyone       *bool                  `json:"everyone"        toml:"everyone"        yaml:"everyone"`
 	CWD            *string                `json:"cwd"             toml:"cwd"             yaml:"cwd"`
 	ShowReasoning  *bool                  `json:"show_reasoning"  toml:"show_reasoning"  yaml:"show_reasoning"`
 	Devices        *bool                  `json:"devices"         toml:"devices"         yaml:"devices"`
@@ -118,6 +172,7 @@ type backendShadow struct {
 type telegramShadow struct {
 	Enabled         *bool          `json:"enabled"          toml:"enabled"          yaml:"enabled"`
 	Token           *string        `json:"token"            toml:"token"            yaml:"token"`
+	TokenFile       *string        `json:"token_file"       toml:"token_file"       yaml:"token_file"`
 	APIURL          *string        `json:"api_url"          toml:"api_url"          yaml:"api_url"`
 	DefaultBackends *[]string      `json:"default_backends" toml:"default_backends" yaml:"default_backends"`
 	AllowedGroups   *[]int64       `json:"allowed_groups"   toml:"allowed_groups"   yaml:"allowed_groups"`
@@ -164,7 +219,9 @@ type configShadow struct {
 	Shutdown *shutdownShadow  `json:"shutdown"  toml:"shutdown"  yaml:"shutdown"`
 	Hold     *holdShadow      `json:"hold"      toml:"hold"      yaml:"hold"`
 	Usage    *usageShadow     `json:"usage"     toml:"usage"     yaml:"usage"`
+	Auth     *authShadow      `json:"auth"      toml:"auth"      yaml:"auth"`
 	Users    *[]userShadow    `json:"users"     toml:"users"     yaml:"users"`
+	Hermes   *hermesShadow    `json:"hermes"    toml:"hermes"    yaml:"hermes"`
 	Backends *[]backendShadow `json:"backends"  toml:"backends"  yaml:"backends"`
 	Telegram *telegramShadow  `json:"telegram"  toml:"telegram"  yaml:"telegram"`
 	Device   *deviceShadow    `json:"device"    toml:"device"    yaml:"device"`
@@ -178,7 +235,7 @@ func ConfigSchema() *configulator.Schema[Config] {
 		ApplyDefaults: configApplyDefaults,
 		ApplyEnv:      configApplyEnv,
 		DecodeFile:    configDecodeFile,
-		Required:      []string{"http.public_url", "oidc.issuer_url", "oidc.client_id", "oidc.client_secret", "session.secret"},
+		Required:      []string{"http.public_url"},
 	}
 }
 
@@ -208,6 +265,10 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("oidc.display_claim", configulator.LayerDefault, "default tag")
 	cfg.OIDC.GroupsClaim = "groups"
 	set("oidc.groups_claim", configulator.LayerDefault, "default tag")
+	cfg.OIDC.EmailClaim = "email"
+	set("oidc.email_claim", configulator.LayerDefault, "default tag")
+	cfg.OIDC.AutoCreate = false
+	set("oidc.auto_create", configulator.LayerDefault, "default tag")
 	cfg.Session.TTL = time.Duration(int64(604800000000000))
 	set("session.ttl", configulator.LayerDefault, "default tag")
 	cfg.Store.Driver = "sqlite"
@@ -220,6 +281,32 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("shutdown.timeout", configulator.LayerDefault, "default tag")
 	cfg.Hold.Timeout = time.Duration(int64(600000000000))
 	set("hold.timeout", configulator.LayerDefault, "default tag")
+	cfg.Auth.Local.MaxFailures = 5
+	set("auth.local.max_failures", configulator.LayerDefault, "default tag")
+	cfg.Auth.Local.Lockout = time.Duration(int64(900000000000))
+	set("auth.local.lockout", configulator.LayerDefault, "default tag")
+	cfg.Auth.Proxy.UserHeader = "Remote-User"
+	set("auth.proxy.user_header", configulator.LayerDefault, "default tag")
+	cfg.Auth.Proxy.NameHeader = "Remote-Name"
+	set("auth.proxy.name_header", configulator.LayerDefault, "default tag")
+	cfg.Auth.Proxy.EmailHeader = "Remote-Email"
+	set("auth.proxy.email_header", configulator.LayerDefault, "default tag")
+	cfg.Auth.Proxy.GroupsHeader = "Remote-Groups"
+	set("auth.proxy.groups_header", configulator.LayerDefault, "default tag")
+	cfg.Auth.Proxy.AutoCreate = false
+	set("auth.proxy.auto_create", configulator.LayerDefault, "default tag")
+	cfg.Auth.Proxy.JWT.UserClaim = "sub"
+	set("auth.proxy.jwt.user_claim", configulator.LayerDefault, "default tag")
+	cfg.Auth.Proxy.JWT.NameClaim = "preferred_username"
+	set("auth.proxy.jwt.name_claim", configulator.LayerDefault, "default tag")
+	cfg.Auth.Proxy.JWT.EmailClaim = "email"
+	set("auth.proxy.jwt.email_claim", configulator.LayerDefault, "default tag")
+	cfg.Auth.Proxy.JWT.GroupsClaim = "groups"
+	set("auth.proxy.jwt.groups_claim", configulator.LayerDefault, "default tag")
+	cfg.Hermes.Name = "Hermes"
+	set("hermes.name", configulator.LayerDefault, "default tag")
+	cfg.Hermes.Devices = false
+	set("hermes.devices", configulator.LayerDefault, "default tag")
 	cfg.Telegram.Enabled = false
 	set("telegram.enabled", configulator.LayerDefault, "default tag")
 	cfg.Telegram.APIURL = "https://api.telegram.org"
@@ -320,6 +407,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			cfg.OIDC.ClientSecret = *s.OIDC.ClientSecret
 			set("oidc.client_secret", configulator.LayerFile, file)
 		}
+		if s.OIDC.ClientSecretFile != nil {
+			cfg.OIDC.ClientSecretFile = *s.OIDC.ClientSecretFile
+			set("oidc.client_secret_file", configulator.LayerFile, file)
+		}
 		if s.OIDC.Scopes != nil {
 			cfg.OIDC.Scopes = *s.OIDC.Scopes
 			set("oidc.scopes", configulator.LayerFile, file)
@@ -332,11 +423,31 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			cfg.OIDC.GroupsClaim = *s.OIDC.GroupsClaim
 			set("oidc.groups_claim", configulator.LayerFile, file)
 		}
+		if s.OIDC.EmailClaim != nil {
+			cfg.OIDC.EmailClaim = *s.OIDC.EmailClaim
+			set("oidc.email_claim", configulator.LayerFile, file)
+		}
+		if s.OIDC.AutoCreate != nil {
+			cfg.OIDC.AutoCreate = *s.OIDC.AutoCreate
+			set("oidc.auto_create", configulator.LayerFile, file)
+		}
+		if s.OIDC.AllowedDomains != nil {
+			cfg.OIDC.AllowedDomains = *s.OIDC.AllowedDomains
+			set("oidc.allowed_domains", configulator.LayerFile, file)
+		}
+		if s.OIDC.AllowedGroups != nil {
+			cfg.OIDC.AllowedGroups = *s.OIDC.AllowedGroups
+			set("oidc.allowed_groups", configulator.LayerFile, file)
+		}
 	}
 	if s.Session != nil {
 		if s.Session.Secret != nil {
 			cfg.Session.Secret = *s.Session.Secret
 			set("session.secret", configulator.LayerFile, file)
+		}
+		if s.Session.SecretFile != nil {
+			cfg.Session.SecretFile = *s.Session.SecretFile
+			set("session.secret_file", configulator.LayerFile, file)
 		}
 		if s.Session.TTL != nil {
 			v, ok := s.Session.TTL.Value()
@@ -372,6 +483,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		if s.Store.DSN != nil {
 			cfg.Store.DSN = *s.Store.DSN
 			set("store.dsn", configulator.LayerFile, file)
+		}
+		if s.Store.DSNFile != nil {
+			cfg.Store.DSNFile = *s.Store.DSNFile
+			set("store.dsn_file", configulator.LayerFile, file)
 		}
 		if s.Store.ImportPath != nil {
 			cfg.Store.ImportPath = *s.Store.ImportPath
@@ -421,6 +536,101 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			set("usage.prometheus_url", configulator.LayerFile, file)
 		}
 	}
+	if s.Auth != nil {
+		if s.Auth.Mode != nil {
+			cfg.Auth.Mode = *s.Auth.Mode
+			set("auth.mode", configulator.LayerFile, file)
+		}
+		if s.Auth.Admins != nil {
+			cfg.Auth.Admins = *s.Auth.Admins
+			set("auth.admins", configulator.LayerFile, file)
+		}
+		if s.Auth.TrustedProxies != nil {
+			cfg.Auth.TrustedProxies = *s.Auth.TrustedProxies
+			set("auth.trusted_proxies", configulator.LayerFile, file)
+		}
+		if s.Auth.Local != nil {
+			if s.Auth.Local.MaxFailures != nil {
+				cfg.Auth.Local.MaxFailures = *s.Auth.Local.MaxFailures
+				set("auth.local.max_failures", configulator.LayerFile, file)
+			}
+			if s.Auth.Local.Lockout != nil {
+				v, ok := s.Auth.Local.Lockout.Value()
+				if !ok {
+					return &configulator.OpaqueSpellingError{
+						Hint: "\"30s\"",
+						Path: "auth.local.lockout",
+					}
+				}
+				cfg.Auth.Local.Lockout = v
+				set("auth.local.lockout", configulator.LayerFile, file)
+			}
+		}
+		if s.Auth.Proxy != nil {
+			if s.Auth.Proxy.UserHeader != nil {
+				cfg.Auth.Proxy.UserHeader = *s.Auth.Proxy.UserHeader
+				set("auth.proxy.user_header", configulator.LayerFile, file)
+			}
+			if s.Auth.Proxy.NameHeader != nil {
+				cfg.Auth.Proxy.NameHeader = *s.Auth.Proxy.NameHeader
+				set("auth.proxy.name_header", configulator.LayerFile, file)
+			}
+			if s.Auth.Proxy.EmailHeader != nil {
+				cfg.Auth.Proxy.EmailHeader = *s.Auth.Proxy.EmailHeader
+				set("auth.proxy.email_header", configulator.LayerFile, file)
+			}
+			if s.Auth.Proxy.GroupsHeader != nil {
+				cfg.Auth.Proxy.GroupsHeader = *s.Auth.Proxy.GroupsHeader
+				set("auth.proxy.groups_header", configulator.LayerFile, file)
+			}
+			if s.Auth.Proxy.AutoCreate != nil {
+				cfg.Auth.Proxy.AutoCreate = *s.Auth.Proxy.AutoCreate
+				set("auth.proxy.auto_create", configulator.LayerFile, file)
+			}
+			if s.Auth.Proxy.LogoutURL != nil {
+				cfg.Auth.Proxy.LogoutURL = *s.Auth.Proxy.LogoutURL
+				set("auth.proxy.logout_url", configulator.LayerFile, file)
+			}
+			if s.Auth.Proxy.JWT != nil {
+				if s.Auth.Proxy.JWT.JWKSURL != nil {
+					cfg.Auth.Proxy.JWT.JWKSURL = *s.Auth.Proxy.JWT.JWKSURL
+					set("auth.proxy.jwt.jwks_url", configulator.LayerFile, file)
+				}
+				if s.Auth.Proxy.JWT.Header != nil {
+					cfg.Auth.Proxy.JWT.Header = *s.Auth.Proxy.JWT.Header
+					set("auth.proxy.jwt.header", configulator.LayerFile, file)
+				}
+				if s.Auth.Proxy.JWT.Cookie != nil {
+					cfg.Auth.Proxy.JWT.Cookie = *s.Auth.Proxy.JWT.Cookie
+					set("auth.proxy.jwt.cookie", configulator.LayerFile, file)
+				}
+				if s.Auth.Proxy.JWT.Issuer != nil {
+					cfg.Auth.Proxy.JWT.Issuer = *s.Auth.Proxy.JWT.Issuer
+					set("auth.proxy.jwt.issuer", configulator.LayerFile, file)
+				}
+				if s.Auth.Proxy.JWT.Audiences != nil {
+					cfg.Auth.Proxy.JWT.Audiences = *s.Auth.Proxy.JWT.Audiences
+					set("auth.proxy.jwt.audiences", configulator.LayerFile, file)
+				}
+				if s.Auth.Proxy.JWT.UserClaim != nil {
+					cfg.Auth.Proxy.JWT.UserClaim = *s.Auth.Proxy.JWT.UserClaim
+					set("auth.proxy.jwt.user_claim", configulator.LayerFile, file)
+				}
+				if s.Auth.Proxy.JWT.NameClaim != nil {
+					cfg.Auth.Proxy.JWT.NameClaim = *s.Auth.Proxy.JWT.NameClaim
+					set("auth.proxy.jwt.name_claim", configulator.LayerFile, file)
+				}
+				if s.Auth.Proxy.JWT.EmailClaim != nil {
+					cfg.Auth.Proxy.JWT.EmailClaim = *s.Auth.Proxy.JWT.EmailClaim
+					set("auth.proxy.jwt.email_claim", configulator.LayerFile, file)
+				}
+				if s.Auth.Proxy.JWT.GroupsClaim != nil {
+					cfg.Auth.Proxy.JWT.GroupsClaim = *s.Auth.Proxy.JWT.GroupsClaim
+					set("auth.proxy.jwt.groups_claim", configulator.LayerFile, file)
+				}
+			}
+		}
+	}
 	if s.Users != nil {
 		out := make([]User, len(*s.Users))
 		for i, esh := range *s.Users {
@@ -438,6 +648,32 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		}
 		cfg.Users = out
 		set("users", configulator.LayerFile, file)
+	}
+	if s.Hermes != nil {
+		if s.Hermes.URL != nil {
+			cfg.Hermes.URL = *s.Hermes.URL
+			set("hermes.url", configulator.LayerFile, file)
+		}
+		if s.Hermes.Name != nil {
+			cfg.Hermes.Name = *s.Hermes.Name
+			set("hermes.name", configulator.LayerFile, file)
+		}
+		if s.Hermes.Username != nil {
+			cfg.Hermes.Username = *s.Hermes.Username
+			set("hermes.username", configulator.LayerFile, file)
+		}
+		if s.Hermes.Password != nil {
+			cfg.Hermes.Password = *s.Hermes.Password
+			set("hermes.password", configulator.LayerFile, file)
+		}
+		if s.Hermes.PasswordFile != nil {
+			cfg.Hermes.PasswordFile = *s.Hermes.PasswordFile
+			set("hermes.password_file", configulator.LayerFile, file)
+		}
+		if s.Hermes.Devices != nil {
+			cfg.Hermes.Devices = *s.Hermes.Devices
+			set("hermes.devices", configulator.LayerFile, file)
+		}
 	}
 	if s.Backends != nil {
 		out := make([]Backend, len(*s.Backends))
@@ -468,6 +704,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 				e.Password = *esh.Password
 				set(idx+".password", configulator.LayerFile, file)
 			}
+			if esh.PasswordFile != nil {
+				e.PasswordFile = *esh.PasswordFile
+				set(idx+".password_file", configulator.LayerFile, file)
+			}
 			if esh.Users != nil {
 				e.Users = *esh.Users
 				set(idx+".users", configulator.LayerFile, file)
@@ -475,6 +715,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 			if esh.Groups != nil {
 				e.Groups = *esh.Groups
 				set(idx+".groups", configulator.LayerFile, file)
+			}
+			if esh.Everyone != nil {
+				e.Everyone = *esh.Everyone
+				set(idx+".everyone", configulator.LayerFile, file)
 			}
 			if esh.CWD != nil {
 				e.CWD = *esh.CWD
@@ -513,6 +757,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 					if esh1.Token != nil {
 						e1.Token = *esh1.Token
 						set(idx1+".token", configulator.LayerFile, file)
+					}
+					if esh1.TokenFile != nil {
+						e1.TokenFile = *esh1.TokenFile
+						set(idx1+".token_file", configulator.LayerFile, file)
 					}
 					out1[i1] = e1
 				}
@@ -567,6 +815,10 @@ func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin
 		if s.Telegram.Token != nil {
 			cfg.Telegram.Token = *s.Telegram.Token
 			set("telegram.token", configulator.LayerFile, file)
+		}
+		if s.Telegram.TokenFile != nil {
+			cfg.Telegram.TokenFile = *s.Telegram.TokenFile
+			set("telegram.token_file", configulator.LayerFile, file)
 		}
 		if s.Telegram.APIURL != nil {
 			cfg.Telegram.APIURL = *s.Telegram.APIURL
@@ -824,6 +1076,10 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.OIDC.ClientSecret = v
 		set("oidc.client_secret", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "oidc", "client_secret_file"); ok {
+		cfg.OIDC.ClientSecretFile = v
+		set("oidc.client_secret_file", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "oidc", "scopes"); ok {
 		lst := impl.SplitList(v, ec.ArraySeparator)
 		cfg.OIDC.Scopes = lst
@@ -837,9 +1093,40 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.OIDC.GroupsClaim = v
 		set("oidc.groups_claim", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "oidc", "email_claim"); ok {
+		cfg.OIDC.EmailClaim = v
+		set("oidc.email_claim", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "oidc", "auto_create"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "oidc.auto_create",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.OIDC.AutoCreate = p
+		set("oidc.auto_create", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "oidc", "allowed_domains"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.OIDC.AllowedDomains = lst
+		set("oidc.allowed_domains", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "oidc", "allowed_groups"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.OIDC.AllowedGroups = lst
+		set("oidc.allowed_groups", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "session", "secret"); ok {
 		cfg.Session.Secret = v
 		set("session.secret", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "session", "secret_file"); ok {
+		cfg.Session.SecretFile = v
+		set("session.secret_file", configulator.LayerEnv, n)
 	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "session", "ttl"); ok {
 		d, err := time.ParseDuration(v)
@@ -874,6 +1161,10 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "dsn"); ok {
 		cfg.Store.DSN = v
 		set("store.dsn", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "dsn_file"); ok {
+		cfg.Store.DSNFile = v
+		set("store.dsn_file", configulator.LayerEnv, n)
 	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "store", "import_path"); ok {
 		cfg.Store.ImportPath = v
@@ -922,6 +1213,149 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 		cfg.Usage.PrometheusURL = v
 		set("usage.prometheus_url", configulator.LayerEnv, n)
 	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "mode"); ok {
+		cfg.Auth.Mode = v
+		set("auth.mode", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "admins"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Auth.Admins = lst
+		set("auth.admins", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "trusted_proxies"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Auth.TrustedProxies = lst
+		set("auth.trusted_proxies", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "local", "max_failures"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.local.max_failures",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Auth.Local.MaxFailures = int(p)
+		set("auth.local.max_failures", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "local", "lockout"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.local.lockout",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Auth.Local.Lockout = d
+		set("auth.local.lockout", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "user_header"); ok {
+		cfg.Auth.Proxy.UserHeader = v
+		set("auth.proxy.user_header", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "name_header"); ok {
+		cfg.Auth.Proxy.NameHeader = v
+		set("auth.proxy.name_header", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "email_header"); ok {
+		cfg.Auth.Proxy.EmailHeader = v
+		set("auth.proxy.email_header", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "groups_header"); ok {
+		cfg.Auth.Proxy.GroupsHeader = v
+		set("auth.proxy.groups_header", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "auto_create"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.auto_create",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Auth.Proxy.AutoCreate = p
+		set("auth.proxy.auto_create", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "logout_url"); ok {
+		cfg.Auth.Proxy.LogoutURL = v
+		set("auth.proxy.logout_url", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "jwt", "jwks_url"); ok {
+		cfg.Auth.Proxy.JWT.JWKSURL = v
+		set("auth.proxy.jwt.jwks_url", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "jwt", "header"); ok {
+		cfg.Auth.Proxy.JWT.Header = v
+		set("auth.proxy.jwt.header", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "jwt", "cookie"); ok {
+		cfg.Auth.Proxy.JWT.Cookie = v
+		set("auth.proxy.jwt.cookie", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "jwt", "issuer"); ok {
+		cfg.Auth.Proxy.JWT.Issuer = v
+		set("auth.proxy.jwt.issuer", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "jwt", "audiences"); ok {
+		lst := impl.SplitList(v, ec.ArraySeparator)
+		cfg.Auth.Proxy.JWT.Audiences = lst
+		set("auth.proxy.jwt.audiences", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "jwt", "user_claim"); ok {
+		cfg.Auth.Proxy.JWT.UserClaim = v
+		set("auth.proxy.jwt.user_claim", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "jwt", "name_claim"); ok {
+		cfg.Auth.Proxy.JWT.NameClaim = v
+		set("auth.proxy.jwt.name_claim", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "jwt", "email_claim"); ok {
+		cfg.Auth.Proxy.JWT.EmailClaim = v
+		set("auth.proxy.jwt.email_claim", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "auth", "proxy", "jwt", "groups_claim"); ok {
+		cfg.Auth.Proxy.JWT.GroupsClaim = v
+		set("auth.proxy.jwt.groups_claim", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "hermes", "url"); ok {
+		cfg.Hermes.URL = v
+		set("hermes.url", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "hermes", "name"); ok {
+		cfg.Hermes.Name = v
+		set("hermes.name", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "hermes", "username"); ok {
+		cfg.Hermes.Username = v
+		set("hermes.username", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "hermes", "password"); ok {
+		cfg.Hermes.Password = v
+		set("hermes.password", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "hermes", "password_file"); ok {
+		cfg.Hermes.PasswordFile = v
+		set("hermes.password_file", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "hermes", "devices"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "hermes.devices",
+				Source: n,
+				Value:  v,
+			}
+		}
+		cfg.Hermes.Devices = p
+		set("hermes.devices", configulator.LayerEnv, n)
+	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "enabled"); ok {
 		p, err := strconv.ParseBool(v)
 		if err != nil {
@@ -938,6 +1372,10 @@ func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.Se
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "token"); ok {
 		cfg.Telegram.Token = v
 		set("telegram.token", configulator.LayerEnv, n)
+	}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "token_file"); ok {
+		cfg.Telegram.TokenFile = v
+		set("telegram.token_file", configulator.LayerEnv, n)
 	}
 	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "telegram", "api_url"); ok {
 		cfg.Telegram.APIURL = v
@@ -1199,23 +1637,57 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 		"oidc" + o.Separator + "issuer_url",
 		"oidc" + o.Separator + "client_id",
 		"oidc" + o.Separator + "client_secret",
+		"oidc" + o.Separator + "client_secret_file",
 		"oidc" + o.Separator + "scopes",
 		"oidc" + o.Separator + "display_claim",
 		"oidc" + o.Separator + "groups_claim",
+		"oidc" + o.Separator + "email_claim",
+		"oidc" + o.Separator + "auto_create",
+		"oidc" + o.Separator + "allowed_domains",
+		"oidc" + o.Separator + "allowed_groups",
 		"session" + o.Separator + "secret",
+		"session" + o.Separator + "secret_file",
 		"session" + o.Separator + "ttl",
 		"ui" + o.Separator + "default_backends",
 		"ui" + o.Separator + "time_zone",
 		"store" + o.Separator + "driver",
 		"store" + o.Separator + "path",
 		"store" + o.Separator + "dsn",
+		"store" + o.Separator + "dsn_file",
 		"store" + o.Separator + "import_path",
 		"shutdown" + o.Separator + "drain_delay",
 		"shutdown" + o.Separator + "timeout",
 		"hold" + o.Separator + "timeout",
 		"usage" + o.Separator + "prometheus_url",
+		"auth" + o.Separator + "mode",
+		"auth" + o.Separator + "admins",
+		"auth" + o.Separator + "trusted_proxies",
+		"auth" + o.Separator + "local" + o.Separator + "max_failures",
+		"auth" + o.Separator + "local" + o.Separator + "lockout",
+		"auth" + o.Separator + "proxy" + o.Separator + "user_header",
+		"auth" + o.Separator + "proxy" + o.Separator + "name_header",
+		"auth" + o.Separator + "proxy" + o.Separator + "email_header",
+		"auth" + o.Separator + "proxy" + o.Separator + "groups_header",
+		"auth" + o.Separator + "proxy" + o.Separator + "auto_create",
+		"auth" + o.Separator + "proxy" + o.Separator + "logout_url",
+		"auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "jwks_url",
+		"auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "header",
+		"auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "cookie",
+		"auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "issuer",
+		"auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "audiences",
+		"auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "user_claim",
+		"auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "name_claim",
+		"auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "email_claim",
+		"auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "groups_claim",
+		"hermes" + o.Separator + "url",
+		"hermes" + o.Separator + "name",
+		"hermes" + o.Separator + "username",
+		"hermes" + o.Separator + "password",
+		"hermes" + o.Separator + "password_file",
+		"hermes" + o.Separator + "devices",
 		"telegram" + o.Separator + "enabled",
 		"telegram" + o.Separator + "token",
+		"telegram" + o.Separator + "token_file",
 		"telegram" + o.Separator + "api_url",
 		"telegram" + o.Separator + "default_backends",
 		"telegram" + o.Separator + "allowed_groups",
@@ -1265,52 +1737,86 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[6], "127.0.0.1", "Metrics server IPv4 host")
 	fs.String(names[7], "::1", "Metrics server IPv6 host")
 	fs.Uint16(names[8], 8081, "Metrics server port")
-	fs.String(names[9], "", "OIDC issuer URL, such as https://auth.example.com/application/o/talaria-hub/")
-	fs.String(names[10], "", "OIDC client ID")
-	fs.String(names[11], "", "OIDC client secret")
-	fs.StringSlice(names[12], nil, "Scopes to request. Authentik's profile scope carries preferred_username and groups")
-	fs.Lookup(names[12]).DefValue = "[openid,profile,email]"
-	fs.String(names[13], "preferred_username", "ID token claim shown as the user's name. Display only: identity is always the sub claim")
-	fs.String(names[14], "groups", "ID token claim that holds the group names that backends[].groups lists")
-	fs.String(names[15], "", "Key for the session and login cookies. At least 32 characters")
-	fs.Duration(names[16], time.Duration(int64(604800000000000)), "How long a login lasts")
-	fs.StringSlice(names[17], nil, "Default backend per user, as user=backend pairs. A user without one gets their first backend")
-	fs.String(names[18], "", "IANA time zone of the times on the Scheduled page, such as Europe/Berlin. Default: the server's zone (the TZ environment variable, else /etc/localtime), else UTC")
-	fs.String(names[19], "sqlite", "Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices")
-	fs.String(names[20], "/data/hermes-hub.db", "Path of the SQLite database (store.driver sqlite)")
-	fs.String(names[21], "", "PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session")
-	fs.String(names[22], "", "With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped")
-	fs.Duration(names[23], time.Duration(int64(5000000000)), "How long the hub keeps serving after SIGTERM while /readyz fails, so load balancers stop sending it requests")
-	fs.Duration(names[24], time.Duration(int64(20000000000)), "How long the hub then waits for open requests and the Telegram bot to stop. Keep drain_delay plus timeout below the pod's termination grace period")
-	fs.Duration(names[25], time.Duration(int64(600000000000)), "How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default")
-	fs.String(names[26], "", "Base URL of a Prometheus query API, such as http://prometheus:9090, that scrapes the metrics of ollama-priority-proxy in front of the local GPU's Ollama. The Usage page then shows how long the GPU was busy. Empty: it does not")
-	fs.Bool(names[27], false, "Run the Telegram bot")
-	fs.String(names[28], "", "Telegram bot token from BotFather")
-	fs.String(names[29], "https://api.telegram.org", "Telegram Bot API base URL")
-	fs.StringSlice(names[30], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
-	fs.Int64Slice(names[31], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
-	fs.Duration(names[32], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
-	fs.Duration(names[33], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
-	fs.Var(impl.NewInt(5), names[34], "Retries of a Bot API call that Telegram answers with 429")
-	fs.Duration(names[35], time.Duration(int64(2000000000)), "With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over")
-	fs.Duration(names[36], time.Duration(int64(20000000000)), "How often the bot reads the chats of each linked group to add topics for new chats, rename topics and follow the chats that run")
-	fs.String(names[37], "collapsed", "How the status line of a turn shows its steps and thinking: collapsed (a quote that opens on a tap), expanded, or off")
-	fs.Bool(names[38], true, "In private chats, stream each turn into a draft (sendMessageDraft) that shows what runs and the reply as it is written, instead of editing the status line")
-	fs.Bool(names[39], false, "Serve the talaria device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
-	fs.String(names[40], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
-	fs.String(names[41], "", "File that holds device.signing_key. Wins over signing_key")
-	fs.Duration(names[42], time.Duration(int64(600000000000)), "How long a pairing code from talaria setup or talaria login stays valid")
-	fs.Duration(names[43], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
-	fs.Duration(names[44], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
-	fs.StringSlice(names[45], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
-	fs.String(names[46], "", "Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription")
-	fs.String(names[47], "", "File that holds notify.vapid_private_key. Wins over vapid_private_key")
-	fs.String(names[48], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url when that is https. With neither, the hub logs a warning and runs without Web Push")
-	fs.Duration(names[49], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
-	fs.Duration(names[50], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
-	fs.Duration(names[51], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
-	fs.StringSlice(names[52], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
-	fs.String(names[53], "", "IANA time zone of the reset times of Claude usage windows and of the days of Claude Code usage. Default: ui.time_zone")
+	fs.String(names[9], "", "OIDC issuer URL, such as https://auth.example.com/realms/home. Required in auth.mode oidc; setting it makes oidc the default mode")
+	fs.String(names[10], "", "OIDC client ID. Required in auth.mode oidc")
+	fs.String(names[11], "", "OIDC client secret. Required in auth.mode oidc unless client_secret_file is set")
+	fs.String(names[12], "", "File that holds oidc.client_secret. Wins over client_secret")
+	fs.StringSlice(names[13], nil, "Scopes to request. Add the scope that carries groups_claim if the provider needs one (such as groups)")
+	fs.Lookup(names[13]).DefValue = "[openid,profile,email]"
+	fs.String(names[14], "preferred_username", "ID token claim shown as the user's name. Display only: identity is always the sub claim")
+	fs.String(names[15], "groups", "ID token claim that holds the group names that backends[].groups and oidc.allowed_groups list")
+	fs.String(names[16], "email", "ID token claim with the user's email address, for oidc.allowed_domains and accounts an admin made by email. Used only when email_verified is true")
+	fs.Bool(names[17], false, "Make an account at the first login of a sub that is not in users[], when its verified email is in allowed_domains or it is in one of allowed_groups. Off: only subs in users[] and accounts an admin made log in")
+	fs.StringSlice(names[18], nil, "With auto_create: email domains whose verified addresses get an account, such as example.com. * allows any verified email")
+	fs.StringSlice(names[19], nil, "With auto_create: groups (groups_claim) whose members get an account")
+	fs.String(names[20], "", "Key for the session and login cookies, at least 32 characters. Empty with no secret_file: the hub makes one and keeps it in its database")
+	fs.String(names[21], "", "File that holds session.secret. Wins over secret")
+	fs.Duration(names[22], time.Duration(int64(604800000000000)), "How long a login lasts")
+	fs.StringSlice(names[23], nil, "Default backend per user, as user=backend pairs. A user without one gets their first backend")
+	fs.String(names[24], "", "IANA time zone of the times on the Scheduled page, such as Europe/Berlin. Default: the server's zone (the TZ environment variable, else /etc/localtime), else UTC")
+	fs.String(names[25], "sqlite", "Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices")
+	fs.String(names[26], "/data/hermes-hub.db", "Path of the SQLite database (store.driver sqlite)")
+	fs.String(names[27], "", "PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session")
+	fs.String(names[28], "", "File that holds store.dsn. Wins over dsn")
+	fs.String(names[29], "", "With store.driver postgres: an SQLite database of an earlier hub to copy into PostgreSQL at startup. The copy runs once; a missing file is skipped")
+	fs.Duration(names[30], time.Duration(int64(5000000000)), "How long the hub keeps serving after SIGTERM while /readyz fails, so load balancers stop sending it requests")
+	fs.Duration(names[31], time.Duration(int64(20000000000)), "How long the hub then waits for open requests and the Telegram bot to stop. Keep drain_delay plus timeout below the pod's termination grace period")
+	fs.Duration(names[32], time.Duration(int64(600000000000)), "How long the hub holds a message while its Hermes backend is restarting or cannot be reached. After that the user is told the message was not sent. 0 is the default")
+	fs.String(names[33], "", "Base URL of a Prometheus query API, such as http://prometheus:9090, that scrapes the metrics of ollama-priority-proxy in front of the local GPU's Ollama. The Usage page then shows how long the GPU was busy. Empty: it does not")
+	fs.String(names[34], "", "How people log in: local (accounts in the hub's database, with a setup page that makes the first one), proxy (a reverse proxy in front of the hub tells it who the user is) or oidc (an OpenID Connect provider). Default: oidc when oidc.issuer_url is set, else local")
+	fs.StringSlice(names[35], nil, "Hub user names that may manage people in Settings > Users, besides accounts marked admin there. The first local account is an admin")
+	fs.StringSlice(names[36], nil, "CIDRs or addresses of the reverse proxies in front of the hub, such as 10.0.0.0/8 or 127.0.0.1. In proxy mode the hub reads the user header only on requests from them. In every mode the hub takes the client address for login limits from their X-Forwarded-For")
+	fs.Var(impl.NewInt(5), names[37], "Wrong passwords in a row that lock an account. 0 is the default")
+	fs.Duration(names[38], time.Duration(int64(900000000000)), "How long a locked account stays locked. An admin can unlock it sooner by setting a new password. 0 is the default")
+	fs.String(names[39], "Remote-User", "Header that holds the user's identity: Remote-User (Authelia, Authentik), X-Auth-Request-User or X-Forwarded-User (oauth2-proxy), Tailscale-User-Login (tailscale serve). Not used with proxy.jwt.jwks_url")
+	fs.String(names[40], "Remote-Name", "Header with the user's display name. Not used with proxy.jwt.jwks_url")
+	fs.String(names[41], "Remote-Email", "Header with the user's email address. Not used with proxy.jwt.jwks_url")
+	fs.String(names[42], "Remote-Groups", "Header with the user's groups, separated by commas or |, for backends[].groups. Not used with proxy.jwt.jwks_url")
+	fs.Bool(names[43], false, "Make an account for each new identity the proxy sends. Off: only identities in users[] and accounts an admin made log in")
+	fs.String(names[44], "", "Where Log out sends the browser after the hub's own logout, such as the proxy's logout page. Empty: the hub's start page")
+	fs.String(names[45], "", "URL of the JSON Web Key Set that signs the proxy's tokens, such as https://<team>.cloudflareaccess.com/cdn-cgi/access/certs or the jwks_uri of the identity provider. Set: the hub reads the user from a verified token instead of user_header")
+	fs.String(names[46], "", "Header that holds the token: Authorization (Bearer), Cf-Access-Jwt-Assertion (Cloudflare Access) or the header an Envoy Gateway SecurityPolicy forwards the ID token in. Default Authorization when cookie is empty")
+	fs.String(names[47], "", "Cookie that holds the token, such as CF_Authorization. Read when header has none")
+	fs.String(names[48], "", "Token issuer (iss) to require. Required with jwks_url")
+	fs.StringSlice(names[49], nil, "Audiences (aud) the hub accepts: the OIDC client ID, or the application AUD tag of Cloudflare Access. Empty: any audience")
+	fs.String(names[50], "sub", "Claim that holds the user's identity, such as sub or email")
+	fs.String(names[51], "preferred_username", "Claim with the user's display name")
+	fs.String(names[52], "email", "Claim with the user's email address")
+	fs.String(names[53], "groups", "Claim with the user's groups, for backends[].groups")
+	fs.String(names[54], "", "Base URL of a Hermes Webapp listener, such as http://hermes:9120. Set: the hub adds a backend with id hermes that every hub user may use, in front of backends[]")
+	fs.String(names[55], "Hermes", "Display name of that backend")
+	fs.String(names[56], "", "Hermes dashboard user name of that backend. Required with url")
+	fs.String(names[57], "", "Hermes dashboard password of that backend. Required with url unless password_file is set")
+	fs.String(names[58], "", "File that holds hermes.password. Wins over password")
+	fs.Bool(names[59], false, "Let users pair talaria computers with that backend, as backends[].devices")
+	fs.Bool(names[60], false, "Run the Telegram bot")
+	fs.String(names[61], "", "Telegram bot token from BotFather. Required with enabled unless token_file is set")
+	fs.String(names[62], "", "File that holds telegram.token. Wins over token")
+	fs.String(names[63], "https://api.telegram.org", "Telegram Bot API base URL")
+	fs.StringSlice(names[64], nil, "Default backend per hub user, as user=backend pairs. A user without one gets their first backend")
+	fs.Int64Slice(names[65], nil, "Group chat IDs the bot answers in. The bot ignores every other group")
+	fs.Duration(names[66], time.Duration(int64(50000000000)), "Long poll timeout for getUpdates")
+	fs.Duration(names[67], time.Duration(int64(1500000000)), "Minimum time between edits of one live message")
+	fs.Var(impl.NewInt(5), names[68], "Retries of a Bot API call that Telegram answers with 429")
+	fs.Duration(names[69], time.Duration(int64(2000000000)), "With store.driver postgres, only one hub replica runs the bot. This is how often each other replica tries to take it over")
+	fs.Duration(names[70], time.Duration(int64(20000000000)), "How often the bot reads the chats of each linked group to add topics for new chats, rename topics and follow the chats that run")
+	fs.String(names[71], "collapsed", "How the status line of a turn shows its steps and thinking: collapsed (a quote that opens on a tap), expanded, or off")
+	fs.Bool(names[72], true, "In private chats, stream each turn into a draft (sendMessageDraft) that shows what runs and the reply as it is written, instead of editing the status line")
+	fs.Bool(names[73], false, "Serve the talaria device API under /api/device/ and the pairing page /device/pair. Backends also need backends[].devices")
+	fs.String(names[74], "", "Ed25519 private key that signs the hub's device assertions: a PEM PRIVATE KEY block (openssl genpkey -algorithm ed25519) or the 32-byte seed in base64. Required with device.enabled unless signing_key_file is set")
+	fs.String(names[75], "", "File that holds device.signing_key. Wins over signing_key")
+	fs.Duration(names[76], time.Duration(int64(600000000000)), "How long a pairing code from talaria setup or talaria login stays valid")
+	fs.Duration(names[77], time.Duration(int64(5000000000)), "How often a device may poll while it waits for the user to confirm pairing")
+	fs.Duration(names[78], time.Duration(int64(10000000000)), "How often the hub checks that each open device connection's device is not revoked and that its user may still use its backend. A revoke closes the device's connections on the replica that served it at once, and on other replicas within this time")
+	fs.StringSlice(names[79], nil, "CIDRs of proxies in front of the hub, such as 10.0.0.0/8. For a request from one of them the hub takes the device's address from X-Forwarded-For. Empty: the address of the TCP peer")
+	fs.String(names[80], "", "Web Push (VAPID) private key: a P-256 key as a PEM block (openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt) or the raw 32 bytes in base64url. Empty with no vapid_private_key_file: no Web Push. Keep it: a new key ends every browser's subscription")
+	fs.String(names[81], "", "File that holds notify.vapid_private_key. Wins over vapid_private_key")
+	fs.String(names[82], "", "How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url when that is https. With neither, the hub logs a warning and runs without Web Push")
+	fs.Duration(names[83], time.Duration(int64(300000000000)), "How long an approval or question waits before the hub reminds its person once. 0 is the default")
+	fs.Duration(names[84], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
+	fs.Duration(names[85], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
+	fs.StringSlice(names[86], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
+	fs.String(names[87], "", "IANA time zone of the reset times of Claude usage windows and of the days of Claude Code usage. Default: ui.time_zone")
 	return nil
 }
 
@@ -1459,6 +1965,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.OIDC.ClientSecret = v
 		set("oidc.client_secret", configulator.LayerCLI, "--"+n)
 	}
+	if n := "oidc" + o.Separator + "client_secret_file"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "oidc.client_secret_file",
+				Source: "--" + n,
+			}
+		}
+		cfg.OIDC.ClientSecretFile = v
+		set("oidc.client_secret_file", configulator.LayerCLI, "--"+n)
+	}
 	if n := "oidc" + o.Separator + "scopes"; fs.Changed(n) {
 		v, err := fs.GetStringSlice(n)
 		if err != nil {
@@ -1495,6 +2013,54 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.OIDC.GroupsClaim = v
 		set("oidc.groups_claim", configulator.LayerCLI, "--"+n)
 	}
+	if n := "oidc" + o.Separator + "email_claim"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "oidc.email_claim",
+				Source: "--" + n,
+			}
+		}
+		cfg.OIDC.EmailClaim = v
+		set("oidc.email_claim", configulator.LayerCLI, "--"+n)
+	}
+	if n := "oidc" + o.Separator + "auto_create"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "oidc.auto_create",
+				Source: "--" + n,
+			}
+		}
+		cfg.OIDC.AutoCreate = v
+		set("oidc.auto_create", configulator.LayerCLI, "--"+n)
+	}
+	if n := "oidc" + o.Separator + "allowed_domains"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "oidc.allowed_domains",
+				Source: "--" + n,
+			}
+		}
+		cfg.OIDC.AllowedDomains = v
+		set("oidc.allowed_domains", configulator.LayerCLI, "--"+n)
+	}
+	if n := "oidc" + o.Separator + "allowed_groups"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "oidc.allowed_groups",
+				Source: "--" + n,
+			}
+		}
+		cfg.OIDC.AllowedGroups = v
+		set("oidc.allowed_groups", configulator.LayerCLI, "--"+n)
+	}
 	if n := "session" + o.Separator + "secret"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
@@ -1506,6 +2072,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Session.Secret = v
 		set("session.secret", configulator.LayerCLI, "--"+n)
+	}
+	if n := "session" + o.Separator + "secret_file"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "session.secret_file",
+				Source: "--" + n,
+			}
+		}
+		cfg.Session.SecretFile = v
+		set("session.secret_file", configulator.LayerCLI, "--"+n)
 	}
 	if n := "session" + o.Separator + "ttl"; fs.Changed(n) {
 		v, err := fs.GetDuration(n)
@@ -1579,6 +2157,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.Store.DSN = v
 		set("store.dsn", configulator.LayerCLI, "--"+n)
 	}
+	if n := "store" + o.Separator + "dsn_file"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "store.dsn_file",
+				Source: "--" + n,
+			}
+		}
+		cfg.Store.DSNFile = v
+		set("store.dsn_file", configulator.LayerCLI, "--"+n)
+	}
 	if n := "store" + o.Separator + "import_path"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
@@ -1639,6 +2229,318 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		cfg.Usage.PrometheusURL = v
 		set("usage.prometheus_url", configulator.LayerCLI, "--"+n)
 	}
+	if n := "auth" + o.Separator + "mode"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.mode",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Mode = v
+		set("auth.mode", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "admins"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.admins",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Admins = v
+		set("auth.admins", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "trusted_proxies"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.trusted_proxies",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.TrustedProxies = v
+		set("auth.trusted_proxies", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "local" + o.Separator + "max_failures"; fs.Changed(n) {
+		v, err := fs.GetInt(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.local.max_failures",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Local.MaxFailures = v
+		set("auth.local.max_failures", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "local" + o.Separator + "lockout"; fs.Changed(n) {
+		v, err := fs.GetDuration(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.local.lockout",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Local.Lockout = v
+		set("auth.local.lockout", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "user_header"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.user_header",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.UserHeader = v
+		set("auth.proxy.user_header", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "name_header"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.name_header",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.NameHeader = v
+		set("auth.proxy.name_header", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "email_header"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.email_header",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.EmailHeader = v
+		set("auth.proxy.email_header", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "groups_header"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.groups_header",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.GroupsHeader = v
+		set("auth.proxy.groups_header", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "auto_create"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.auto_create",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.AutoCreate = v
+		set("auth.proxy.auto_create", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "logout_url"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.logout_url",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.LogoutURL = v
+		set("auth.proxy.logout_url", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "jwks_url"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.jwt.jwks_url",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.JWT.JWKSURL = v
+		set("auth.proxy.jwt.jwks_url", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "header"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.jwt.header",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.JWT.Header = v
+		set("auth.proxy.jwt.header", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "cookie"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.jwt.cookie",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.JWT.Cookie = v
+		set("auth.proxy.jwt.cookie", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "issuer"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.jwt.issuer",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.JWT.Issuer = v
+		set("auth.proxy.jwt.issuer", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "audiences"; fs.Changed(n) {
+		v, err := fs.GetStringSlice(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.jwt.audiences",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.JWT.Audiences = v
+		set("auth.proxy.jwt.audiences", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "user_claim"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.jwt.user_claim",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.JWT.UserClaim = v
+		set("auth.proxy.jwt.user_claim", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "name_claim"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.jwt.name_claim",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.JWT.NameClaim = v
+		set("auth.proxy.jwt.name_claim", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "email_claim"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.jwt.email_claim",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.JWT.EmailClaim = v
+		set("auth.proxy.jwt.email_claim", configulator.LayerCLI, "--"+n)
+	}
+	if n := "auth" + o.Separator + "proxy" + o.Separator + "jwt" + o.Separator + "groups_claim"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "auth.proxy.jwt.groups_claim",
+				Source: "--" + n,
+			}
+		}
+		cfg.Auth.Proxy.JWT.GroupsClaim = v
+		set("auth.proxy.jwt.groups_claim", configulator.LayerCLI, "--"+n)
+	}
+	if n := "hermes" + o.Separator + "url"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "hermes.url",
+				Source: "--" + n,
+			}
+		}
+		cfg.Hermes.URL = v
+		set("hermes.url", configulator.LayerCLI, "--"+n)
+	}
+	if n := "hermes" + o.Separator + "name"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "hermes.name",
+				Source: "--" + n,
+			}
+		}
+		cfg.Hermes.Name = v
+		set("hermes.name", configulator.LayerCLI, "--"+n)
+	}
+	if n := "hermes" + o.Separator + "username"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "hermes.username",
+				Source: "--" + n,
+			}
+		}
+		cfg.Hermes.Username = v
+		set("hermes.username", configulator.LayerCLI, "--"+n)
+	}
+	if n := "hermes" + o.Separator + "password"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "hermes.password",
+				Source: "--" + n,
+			}
+		}
+		cfg.Hermes.Password = v
+		set("hermes.password", configulator.LayerCLI, "--"+n)
+	}
+	if n := "hermes" + o.Separator + "password_file"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "hermes.password_file",
+				Source: "--" + n,
+			}
+		}
+		cfg.Hermes.PasswordFile = v
+		set("hermes.password_file", configulator.LayerCLI, "--"+n)
+	}
+	if n := "hermes" + o.Separator + "devices"; fs.Changed(n) {
+		v, err := fs.GetBool(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "hermes.devices",
+				Source: "--" + n,
+			}
+		}
+		cfg.Hermes.Devices = v
+		set("hermes.devices", configulator.LayerCLI, "--"+n)
+	}
 	if n := "telegram" + o.Separator + "enabled"; fs.Changed(n) {
 		v, err := fs.GetBool(n)
 		if err != nil {
@@ -1662,6 +2564,18 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ stri
 		}
 		cfg.Telegram.Token = v
 		set("telegram.token", configulator.LayerCLI, "--"+n)
+	}
+	if n := "telegram" + o.Separator + "token_file"; fs.Changed(n) {
+		v, err := fs.GetString(n)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "telegram.token_file",
+				Source: "--" + n,
+			}
+		}
+		cfg.Telegram.TokenFile = v
+		set("telegram.token_file", configulator.LayerCLI, "--"+n)
 	}
 	if n := "telegram" + o.Separator + "api_url"; fs.Changed(n) {
 		v, err := fs.GetString(n)
@@ -2148,6 +3062,25 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				}
 				s.Usage = &sub
 			}
+		case "auth":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("auth", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub authShadow
+				if err := sub.decodeJSON(dec, "auth"); err != nil {
+					return err
+				}
+				s.Auth = &sub
+			}
 		case "users":
 			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
@@ -2181,6 +3114,25 @@ func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 					return err
 				}
 				s.Users = &out
+			}
+		case "hermes":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("hermes", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub hermesShadow
+				if err := sub.decodeJSON(dec, "hermes"); err != nil {
+					return err
+				}
+				s.Hermes = &sub
 			}
 		case "backends":
 			if dec.PeekKind() == jsontext.KindNull {
@@ -2548,6 +3500,19 @@ func (s *oIDCShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 					Value: "(redacted)",
 				}
 			}
+		case "client_secret_file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.ClientSecretFile = &str
+			default:
+				return configJSONError(path+".client_secret_file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
 		case "scopes":
 			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
@@ -2604,6 +3569,92 @@ func (s *oIDCShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 			default:
 				return configJSONError(path+".groups_claim", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
+		case "email_claim":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.EmailClaim = &str
+			default:
+				return configJSONError(path+".email_claim", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "auto_create":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.AutoCreate = &b
+			default:
+				return configJSONError(path+".auto_create", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "allowed_domains":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".allowed_domains", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".allowed_domains"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.AllowedDomains = &out
+			}
+		case "allowed_groups":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".allowed_groups", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".allowed_groups"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.AllowedGroups = &out
+			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
 				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
@@ -2648,6 +3699,19 @@ func (s *sessionShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 					Path:  path + ".secret",
 					Value: "(redacted)",
 				}
+			}
+		case "secret_file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.SecretFile = &str
+			default:
+				return configJSONError(path+".secret_file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		case "ttl":
 			v, err := dec.ReadToken()
@@ -2801,6 +3865,19 @@ func (s *storeShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 					Path:  path + ".dsn",
 					Value: "(redacted)",
 				}
+			}
+		case "dsn_file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.DSNFile = &str
+			default:
+				return configJSONError(path+".dsn_file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		case "import_path":
 			v, err := dec.ReadToken()
@@ -2958,6 +4035,476 @@ func (s *usageShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 
 // decodeJSON decodes the members of an object whose opening brace has
 // been read. path is the object's dotted path.
+func (s *authShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "mode":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Mode = &str
+			default:
+				return configJSONError(path+".mode", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "admins":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".admins", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".admins"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.Admins = &out
+			}
+		case "trusted_proxies":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".trusted_proxies", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".trusted_proxies"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.TrustedProxies = &out
+			}
+		case "local":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError(path+".local", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub localShadow
+				if err := sub.decodeJSON(dec, path+".local"); err != nil {
+					return err
+				}
+				s.Local = &sub
+			}
+		case "proxy":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError(path+".proxy", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub proxyShadow
+				if err := sub.decodeJSON(dec, path+".proxy"); err != nil {
+					return err
+				}
+				s.Proxy = &sub
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *localShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "max_failures":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
+				if err != nil {
+					return configJSONError(path+".max_failures", v, err)
+				}
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".max_failures", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.MaxFailures = &num
+			default:
+				return configJSONError(path+".max_failures", v, fmt.Errorf("expected a number, got %v", v.Kind()))
+			}
+		case "lockout":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				var slot impl.Duration
+				if err := slot.UnmarshalText([]byte(v.String())); err != nil {
+					return configJSONError(path+".lockout", v, err)
+				}
+				s.Lockout = &slot
+			default:
+				return configJSONError(path+".lockout", v, fmt.Errorf("expected a text scalar (e.g. \"30s\"), got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *proxyShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "user_header":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.UserHeader = &str
+			default:
+				return configJSONError(path+".user_header", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "name_header":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.NameHeader = &str
+			default:
+				return configJSONError(path+".name_header", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "email_header":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.EmailHeader = &str
+			default:
+				return configJSONError(path+".email_header", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "groups_header":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.GroupsHeader = &str
+			default:
+				return configJSONError(path+".groups_header", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "auto_create":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.AutoCreate = &b
+			default:
+				return configJSONError(path+".auto_create", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
+			}
+		case "logout_url":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.LogoutURL = &str
+			default:
+				return configJSONError(path+".logout_url", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "jwt":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError(path+".jwt", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
+				var sub jWTShadow
+				if err := sub.decodeJSON(dec, path+".jwt"); err != nil {
+					return err
+				}
+				s.JWT = &sub
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *jWTShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "jwks_url":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.JWKSURL = &str
+			default:
+				return configJSONError(path+".jwks_url", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "header":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Header = &str
+			default:
+				return configJSONError(path+".header", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "cookie":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Cookie = &str
+			default:
+				return configJSONError(path+".cookie", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "issuer":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Issuer = &str
+			default:
+				return configJSONError(path+".issuer", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "audiences":
+			if dec.PeekKind() == jsontext.KindNull {
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginArray {
+					return configJSONError(path+".audiences", open, fmt.Errorf("expected an array, got %v", open.Kind()))
+				}
+				out := []string{}
+				for dec.PeekKind() != jsontext.KindEndArray {
+					v, err := dec.ReadToken()
+					if err != nil {
+						return err
+					}
+					if v.Kind() != jsontext.KindString {
+						return configJSONError(path+".audiences"+"["+strconv.Itoa(len(out))+"]", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+					}
+					el := v.String()
+					out = append(out, el)
+				}
+				if _, err := dec.ReadToken(); err != nil {
+					return err
+				}
+				s.Audiences = &out
+			}
+		case "user_claim":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.UserClaim = &str
+			default:
+				return configJSONError(path+".user_claim", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "name_claim":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.NameClaim = &str
+			default:
+				return configJSONError(path+".name_claim", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "email_claim":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.EmailClaim = &str
+			default:
+				return configJSONError(path+".email_claim", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "groups_claim":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.GroupsClaim = &str
+			default:
+				return configJSONError(path+".groups_claim", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
 func (s *userShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
@@ -2993,6 +4540,116 @@ func (s *userShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 				s.Name = &str
 			default:
 				return configJSONError(path+".name", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		default:
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *hermesShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if tok.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		switch key := tok.String(); key {
+		case "url":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.URL = &str
+			default:
+				return configJSONError(path+".url", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "name":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Name = &str
+			default:
+				return configJSONError(path+".name", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "username":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.Username = &str
+			default:
+				return configJSONError(path+".username", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "password":
+			if err := func() error {
+				v, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				switch v.Kind() {
+				case jsontext.KindNull:
+				case jsontext.KindString:
+					str := v.String()
+					s.Password = &str
+				default:
+					return configJSONError(path+".password", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+				}
+				return nil
+			}(); err != nil {
+				return &configulator.ParseError{
+					Err:   errors.New("invalid value"),
+					Path:  path + ".password",
+					Value: "(redacted)",
+				}
+			}
+		case "password_file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.PasswordFile = &str
+			default:
+				return configJSONError(path+".password_file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
+		case "devices":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Devices = &b
+			default:
+				return configJSONError(path+".devices", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
 			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
@@ -3104,6 +4761,19 @@ func (s *backendShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 					Value: "(redacted)",
 				}
 			}
+		case "password_file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.PasswordFile = &str
+			default:
+				return configJSONError(path+".password_file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
 		case "users":
 			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
@@ -3163,6 +4833,19 @@ func (s *backendShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 					return err
 				}
 				s.Groups = &out
+			}
+		case "everyone":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
+				b := v.Bool()
+				s.Everyone = &b
+			default:
+				return configJSONError(path+".everyone", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
 			}
 		case "cwd":
 			v, err := dec.ReadToken()
@@ -3383,6 +5066,19 @@ func (s *serviceDeviceShadow) decodeJSON(dec *jsontext.Decoder, path string) err
 					Value: "(redacted)",
 				}
 			}
+		case "token_file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.TokenFile = &str
+			default:
+				return configJSONError(path+".token_file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
+			}
 		default:
 			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
 				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
@@ -3563,6 +5259,19 @@ func (s *telegramShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 					Path:  path + ".token",
 					Value: "(redacted)",
 				}
+			}
+		case "token_file":
+			v, err := dec.ReadToken()
+			if err != nil {
+				return err
+			}
+			switch v.Kind() {
+			case jsontext.KindNull:
+			case jsontext.KindString:
+				str := v.String()
+				s.TokenFile = &str
+			default:
+				return configJSONError(path+".token_file", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		case "api_url":
 			v, err := dec.ReadToken()
@@ -4121,25 +5830,59 @@ func (c *Config) PrintConfig() string {
 	fmt.Fprintf(&b, "oidc.issuer_url = %v\n", c.OIDC.IssuerURL)
 	fmt.Fprintf(&b, "oidc.client_id = %v\n", c.OIDC.ClientID)
 	b.WriteString("oidc.client_secret = (redacted)\n")
+	fmt.Fprintf(&b, "oidc.client_secret_file = %v\n", c.OIDC.ClientSecretFile)
 	fmt.Fprintf(&b, "oidc.scopes = %v\n", c.OIDC.Scopes)
 	fmt.Fprintf(&b, "oidc.display_claim = %v\n", c.OIDC.DisplayClaim)
 	fmt.Fprintf(&b, "oidc.groups_claim = %v\n", c.OIDC.GroupsClaim)
+	fmt.Fprintf(&b, "oidc.email_claim = %v\n", c.OIDC.EmailClaim)
+	fmt.Fprintf(&b, "oidc.auto_create = %v\n", c.OIDC.AutoCreate)
+	fmt.Fprintf(&b, "oidc.allowed_domains = %v\n", c.OIDC.AllowedDomains)
+	fmt.Fprintf(&b, "oidc.allowed_groups = %v\n", c.OIDC.AllowedGroups)
 	b.WriteString("session.secret = (redacted)\n")
+	fmt.Fprintf(&b, "session.secret_file = %v\n", c.Session.SecretFile)
 	fmt.Fprintf(&b, "session.ttl = %v\n", c.Session.TTL)
 	fmt.Fprintf(&b, "ui.default_backends = %v\n", c.UI.DefaultBackends)
 	fmt.Fprintf(&b, "ui.time_zone = %v\n", c.UI.TimeZone)
 	fmt.Fprintf(&b, "store.driver = %v\n", c.Store.Driver)
 	fmt.Fprintf(&b, "store.path = %v\n", c.Store.Path)
 	b.WriteString("store.dsn = (redacted)\n")
+	fmt.Fprintf(&b, "store.dsn_file = %v\n", c.Store.DSNFile)
 	fmt.Fprintf(&b, "store.import_path = %v\n", c.Store.ImportPath)
 	fmt.Fprintf(&b, "shutdown.drain_delay = %v\n", c.Shutdown.DrainDelay)
 	fmt.Fprintf(&b, "shutdown.timeout = %v\n", c.Shutdown.Timeout)
 	fmt.Fprintf(&b, "hold.timeout = %v\n", c.Hold.Timeout)
 	fmt.Fprintf(&b, "usage.prometheus_url = %v\n", c.Usage.PrometheusURL)
+	fmt.Fprintf(&b, "auth.mode = %v\n", c.Auth.Mode)
+	fmt.Fprintf(&b, "auth.admins = %v\n", c.Auth.Admins)
+	fmt.Fprintf(&b, "auth.trusted_proxies = %v\n", c.Auth.TrustedProxies)
+	fmt.Fprintf(&b, "auth.local.max_failures = %v\n", c.Auth.Local.MaxFailures)
+	fmt.Fprintf(&b, "auth.local.lockout = %v\n", c.Auth.Local.Lockout)
+	fmt.Fprintf(&b, "auth.proxy.user_header = %v\n", c.Auth.Proxy.UserHeader)
+	fmt.Fprintf(&b, "auth.proxy.name_header = %v\n", c.Auth.Proxy.NameHeader)
+	fmt.Fprintf(&b, "auth.proxy.email_header = %v\n", c.Auth.Proxy.EmailHeader)
+	fmt.Fprintf(&b, "auth.proxy.groups_header = %v\n", c.Auth.Proxy.GroupsHeader)
+	fmt.Fprintf(&b, "auth.proxy.auto_create = %v\n", c.Auth.Proxy.AutoCreate)
+	fmt.Fprintf(&b, "auth.proxy.logout_url = %v\n", c.Auth.Proxy.LogoutURL)
+	fmt.Fprintf(&b, "auth.proxy.jwt.jwks_url = %v\n", c.Auth.Proxy.JWT.JWKSURL)
+	fmt.Fprintf(&b, "auth.proxy.jwt.header = %v\n", c.Auth.Proxy.JWT.Header)
+	fmt.Fprintf(&b, "auth.proxy.jwt.cookie = %v\n", c.Auth.Proxy.JWT.Cookie)
+	fmt.Fprintf(&b, "auth.proxy.jwt.issuer = %v\n", c.Auth.Proxy.JWT.Issuer)
+	fmt.Fprintf(&b, "auth.proxy.jwt.audiences = %v\n", c.Auth.Proxy.JWT.Audiences)
+	fmt.Fprintf(&b, "auth.proxy.jwt.user_claim = %v\n", c.Auth.Proxy.JWT.UserClaim)
+	fmt.Fprintf(&b, "auth.proxy.jwt.name_claim = %v\n", c.Auth.Proxy.JWT.NameClaim)
+	fmt.Fprintf(&b, "auth.proxy.jwt.email_claim = %v\n", c.Auth.Proxy.JWT.EmailClaim)
+	fmt.Fprintf(&b, "auth.proxy.jwt.groups_claim = %v\n", c.Auth.Proxy.JWT.GroupsClaim)
 	fmt.Fprintf(&b, "users = %v\n", c.Users)
+	fmt.Fprintf(&b, "hermes.url = %v\n", c.Hermes.URL)
+	fmt.Fprintf(&b, "hermes.name = %v\n", c.Hermes.Name)
+	fmt.Fprintf(&b, "hermes.username = %v\n", c.Hermes.Username)
+	b.WriteString("hermes.password = (redacted)\n")
+	fmt.Fprintf(&b, "hermes.password_file = %v\n", c.Hermes.PasswordFile)
+	fmt.Fprintf(&b, "hermes.devices = %v\n", c.Hermes.Devices)
 	b.WriteString("backends = (redacted)\n")
 	fmt.Fprintf(&b, "telegram.enabled = %v\n", c.Telegram.Enabled)
 	b.WriteString("telegram.token = (redacted)\n")
+	fmt.Fprintf(&b, "telegram.token_file = %v\n", c.Telegram.TokenFile)
 	fmt.Fprintf(&b, "telegram.api_url = %v\n", c.Telegram.APIURL)
 	fmt.Fprintf(&b, "telegram.default_backends = %v\n", c.Telegram.DefaultBackends)
 	fmt.Fprintf(&b, "telegram.allowed_groups = %v\n", c.Telegram.AllowedGroups)
