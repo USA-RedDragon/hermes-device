@@ -228,7 +228,7 @@ window.HubSettings = (ctx) => {
     const add = (k, v) => { if (v) dl.append(el("dt", "", k), el("dd", "", v)); };
     add("Computer name", d.hostname);
     add("System", [d.os, d.arch].filter(Boolean).join(" "));
-    add("Paired with", d.client_version ? "talaria " + d.client_version : "");
+    add("Client", d.client_version ? "talaria " + d.client_version : "");
     add("Connected", when(d.created_at));
     add("Last used", when(d.last_seen_at));
     add("Address", d.last_addr);

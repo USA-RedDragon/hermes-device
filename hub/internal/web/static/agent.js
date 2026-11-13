@@ -183,6 +183,7 @@ window.HubAgent = (() => {
     function toggle(on, disabled, label) {
       const t = el("input", "toggle");
       t.type = "checkbox";
+      t.setAttribute("role", "switch");
       t.checked = !!on;
       t.disabled = !!disabled;
       if (label) t.setAttribute("aria-label", label);
@@ -678,7 +679,7 @@ window.HubAgent = (() => {
           const r = await api("POST", base() + "/healthcheck");
           const s = doctorSummary(r.lines);
           const lines = s.look.slice(0, 8);
-          const pre = el("pre", "log");
+          const pre = el("pre", "logbox");
           pre.textContent = reportText(r.lines);
           const det = el("details", "adv");
           det.append(el("summary", "", "Full report"), pre);
@@ -695,22 +696,31 @@ window.HubAgent = (() => {
       p.append(acts, hc);
       const lh = el("div", "field");
       lh.append(el("span", "", "Agent log, newest last"));
-      const logBox = el("pre", "log");
+      const logBox = el("pre", "logbox");
       logBox.setAttribute("aria-live", "off");
-      const load = async () => {
+      // note shows a message in the box instead of lines.
+      const note = (text, bad) => {
+        logBox.className = "logbox note" + (bad ? " bad" : "");
+        logBox.replaceChildren(...(text.nodeType ? [text] : [document.createTextNode(text)]));
+      };
+      const noLines = () => logLevel === "ERROR" ? "No errors in the log." : logLevel === "WARNING" ? "No warnings in the log." : "The agent has written no log lines yet.";
+      // load reads the log. quiet keeps the lines shown while the refresh runs.
+      const load = async (quiet) => {
+        if (!quiet) note(waitLine("Loading the log"));
         try {
           const r = await api("GET", base() + "/log?lines=200&level=" + enc(logLevel));
-          const atEnd = logBox.scrollTop + logBox.clientHeight >= logBox.scrollHeight - 4;
-          logBox.replaceChildren(...(r.lines || []).map((l) => { const s = el("span", logTone(l), l + "\n"); return s; }));
-          if (!r.lines || !r.lines.length) logBox.textContent = "No lines.";
+          if (!r.lines || !r.lines.length) { note(noLines()); return; }
+          const atEnd = !logBox.scrollTop || logBox.scrollTop + logBox.clientHeight >= logBox.scrollHeight - 4 || logBox.classList.contains("note");
+          logBox.className = "logbox";
+          logBox.replaceChildren(...r.lines.map((l) => el("span", logTone(l), l + "\n")));
           if (atEnd) logBox.scrollTop = logBox.scrollHeight;
-        } catch (e) { logBox.textContent = "Could not read the log: " + e.message; }
+        } catch (e) { note("Could not read the log: " + e.message, true); }
       };
-      lh.append(seg([["", "Everything"], ["WARNING", "Warnings"], ["ERROR", "Errors"]], logLevel, "Log lines", (v) => { logLevel = v; load(); }), logBox,
+      lh.append(seg([["", "Everything"], ["WARNING", "Warnings"], ["ERROR", "Errors"]], logLevel, "Log lines", (v) => { logLevel = v; load(false); }), logBox,
         el("small", "", "The last 200 lines. It updates every 10 seconds while open."));
       p.append(lh);
-      await load();
-      logTimer = setInterval(() => { if (p.isConnected && !p.hidden && !document.hidden) load(); else if (!p.isConnected || p.hidden) clearInterval(logTimer); }, 10000);
+      await load(false);
+      logTimer = setInterval(() => { if (p.isConnected && !p.hidden && !document.hidden) load(true); else if (!p.isConnected || p.hidden) clearInterval(logTimer); }, 10000);
     }
 
     // ---- Settings > Backup ----
