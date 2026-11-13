@@ -54,7 +54,7 @@ Download the archive `talaria_<version>_<os>_<arch>.tar.gz` for your OS and arch
 ./talaria setup https://hub.example.com
 ```
 
-Release builds know the default hub, so `./talaria setup` without the URL also works with them. `setup` does each of these steps, and only the ones that are not done yet, so you can run it again at any time:
+The hub URL is required: a release does not know any hub, so `./talaria setup` without it stops with `give the hub URL`. `setup` does each of these steps, and only the ones that are not done yet, so you can run it again at any time:
 
 1. It copies itself to `~/.talaria/bin/talaria`. It refuses to replace a newer release there without `--force`.
 2. It pairs the computer with the hub, as `login` does: it prints a link and a code, and opens the link in your browser when it can. Sign in to the hub, check the code, name the device and confirm. The device token goes into the OS keyring (Secret Service on Linux, Keychain on macOS), or into a file with mode 0600 when no keyring is available. A stored token that the hub still accepts is kept.
