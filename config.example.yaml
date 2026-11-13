@@ -77,8 +77,12 @@ browser:
   # confirm-hosts: []
   # Exact host names where browser_login may submit the login form that Firefox fills from its own saved login, so a scheduled job can sign in without the agent seeing the password. Only https pages whose top-level host is listed; no subdomains. Scripts are refused there, and clicks, typing, key presses and screenshots on its login pages. Example: login.w3.ibm.com. The plugin cannot change this list
   # autologin-hosts: []
-  # Let the agent start Firefox, with the user's default profile, in the user's graphical session when the extension is not connected, so a scheduled job works after Firefox was closed. The sandbox image turns it off
+  # Let the agent start Firefox, with the user's default profile, in the user's graphical session when the extension is not connected, so a scheduled job works after Firefox was closed. Not used with headless
   start-firefox: true
+  # Run a Firefox of the daemon's own with no display, on a profile of its own, with the Talaria extension installed in it, and keep it running (docs/browser.md section 5.2). For a device that has no desktop, such as the sandbox image, which turns it on. Needs browser.enabled. It replaces start-firefox, and the profile holds only the logins of that device
+  headless: false
+  # Where the headless Firefox keeps its profile, so cookies and logins survive restarts. Default: firefox-profile in the state directory
+  # profile-dir: ""
   # Command that starts Firefox for start-firefox: a name on PATH or an absolute path
   firefox-command: "firefox"
 mcp:
