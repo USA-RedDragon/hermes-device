@@ -1,0 +1,873 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 10:07:26 +0000
+Subject: [PATCH] fix(web): web_extract always has a keyless provider
+
+Extract resolution was capability-blind: autodetect returned searxng (SEARXNG_URL) for extract, then the dispatcher refused it as search-only, so every web_extract call failed on a default install. Autodetect, the shared web.backend and the registry walk now skip providers that lack the capability, and an unpinned extract ends on a built-in http-fetch provider (SSRF-guarded GET, manual redirects through the SSRF and website-policy gates, size cap, HTML to Markdown with the stdlib, PDFs through read_file's converter). Only an explicit web.extract_backend naming a search-only backend is an error, now one clear message that the startup config check also reports. web_extract's tool gate no longer depends on a web_search backend.
+---
+ agent/web_search_registry.py                 |  22 +-
+ hermes_cli/config_value_checks.py            |  15 +-
+ tests/tools/test_web_extract_default.py      | 201 ++++++++++++
+ tests/tools/test_web_providers_brave_free.py |   2 +-
+ tests/tools/test_web_providers_ddgs.py       |   2 +-
+ tests/tools/test_web_providers_searxng.py    |   2 +-
+ tests/tools/test_web_tools_config.py         |   2 +-
+ tools/tool_backend_helpers.py                |  19 ++
+ tools/web_http_fetch.py                      | 318 +++++++++++++++++++
+ tools/web_tools.py                           |  42 ++-
+ tools/web_tools_extract.py                   |  19 +-
+ 11 files changed, 625 insertions(+), 19 deletions(-)
+ create mode 100644 tests/tools/test_web_extract_default.py
+ create mode 100644 tools/web_http_fetch.py
+
+diff --git a/agent/web_search_registry.py b/agent/web_search_registry.py
+index 491d90fb..bc69340d 100644
+--- a/agent/web_search_registry.py
++++ b/agent/web_search_registry.py
+@@ -12,8 +12,9 @@ provider configured as ``web.extract_backend`` falls through):
+ 3. Legacy preference walk (``_LEGACY_PREFERENCE``) filtered by availability —
+    the historic ``tools.web_tools._get_backend()`` order, so installs that never
+    set a config key keep landing on the same provider.
+-4. Keyless free-tier walk (``_KEYLESS_PREFERENCE``), last resort.
+-5. ``None`` — the tool points the user at ``hermes tools``.
++4. Keyless free-tier walk (``_KEYLESS_PREFERENCE``).
++5. Extract only: the built-in ``http-fetch`` provider (plain HTTP GET, no key), so an unpinned
++   extract never ends empty. Search: ``None``, the tool points the user at ``hermes tools``.
+ """
+ 
+ from __future__ import annotations
+@@ -32,6 +33,9 @@ _registry: ProviderRegistry[WebSearchProvider] = ProviderRegistry(
+ )
+ _registry.export(globals())
+ 
++# Built-in keyless extractor (tools/web_http_fetch.py): the last extract rung, never in a search walk.
++HTTP_FETCH_NAME = "http-fetch"
++
+ def _read_config_key(*path: str) -> Optional[str]:
+     """Resolve a dotted config key from ``config.yaml``. Returns None on miss."""
+     try:
+@@ -147,9 +151,23 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
+             except Exception as exc:
+                 logger.debug("provider %s.is_keyless_available() raised %s", name, exc)
+ 
++    if capability == "extract":
++        # Last rung: the built-in plain HTTP fetch, so an unpinned web_extract always has a provider.
++        return snapshot.get(HTTP_FETCH_NAME) or _http_fetch_provider()
++
+     return None
+ 
+ 
++def _http_fetch_provider() -> Optional[WebSearchProvider]:
++    try:
++        from tools.web_http_fetch import http_fetch_provider
++
++        return http_fetch_provider()
++    except Exception as exc:
++        logger.debug("built-in http-fetch provider unavailable: %s", exc)
++        return None
++
++
+ def _keyless_tier_enabled() -> bool:
+     """Read ``web.keyless_fallback`` from config.yaml (default: enabled)."""
+     try:
+diff --git a/hermes_cli/config_value_checks.py b/hermes_cli/config_value_checks.py
+index 738e988c..510003e0 100644
+--- a/hermes_cli/config_value_checks.py
++++ b/hermes_cli/config_value_checks.py
+@@ -58,9 +58,22 @@ def _validate_web_backends(config: dict[str, Any], issues: list[ConfigIssue]) ->
+     if not isinstance(web_cfg, dict):
+         return
+     try:
+-        from tools.tool_backend_helpers import removed_backend_note
++        from tools.tool_backend_helpers import removed_backend_note, web_backend_supports
+     except Exception:
+         return
++    # A capability pin on a backend that lacks the capability fails every call; it is a config error.
++    _extract = str(web_cfg.get("extract_backend") or "").strip().lower()
++    if _extract and not web_backend_supports(_extract, "extract"):
++        _issue(issues, "error",
++               f"web.extract_backend is '{_extract}', which is search-only and cannot extract URL content — "
++               "web_extract will fail until it is changed",
++               "Remove web.extract_backend (the default works with no key) or set it to firecrawl, tavily, "
++               "keenable, exa, parallel or http-fetch")
++    if str(web_cfg.get("search_backend") or "").strip().lower() == "http-fetch":
++        _issue(issues, "error",
++               "web.search_backend is 'http-fetch', which only fetches pages and cannot search — "
++               "web_search will fail until it is changed",
++               "Set web.search_backend to a search provider such as searxng, brave-free, ddgs or exa")
+     seen: set = set()
+     for _key in ("backend", "search_backend", "extract_backend"):
+         _val = str(web_cfg.get(_key) or "").strip().lower()
+diff --git a/tests/tools/test_web_extract_default.py b/tests/tools/test_web_extract_default.py
+new file mode 100644
+index 00000000..da51d9f0
+--- /dev/null
++++ b/tests/tools/test_web_extract_default.py
+@@ -0,0 +1,201 @@
++"""web_extract works out of the box: a search-only backend never ends an unpinned extract."""
++
++import asyncio
++import json
++import threading
++from http.server import BaseHTTPRequestHandler, HTTPServer
++
++import pytest
++
++from agent import web_search_registry as registry
++from tools import url_safety, web_tools
++from tools import tool_backend_helpers as helpers
++from tools.web_http_fetch import html_to_markdown
++
++PAGE = b"""<!doctype html><html><head><title>Hello Page</title><style>p{}</style>
++<script>var x = 1;</script></head><body><nav>menu</nav>
++<main><h1>Heading</h1><p>First <b>bold</b> paragraph with a <a href="/next">link</a>.</p>
++<ul><li>one</li><li>two</li></ul><pre>code  line</pre>
++<p>""" + b"filler text " * 30 + b"""</p></main><footer>foot</footer></body></html>"""
++
++
++class _Handler(BaseHTTPRequestHandler):
++    def do_GET(self):
++        if self.path == "/redirect-private":
++            self.send_response(302)
++            self.send_header("Location", "http://10.255.255.1/secret")
++            self.end_headers()
++            return
++        if self.path == "/missing":
++            self.send_response(404)
++            self.send_header("Content-Type", "text/html")
++            self.end_headers()
++            self.wfile.write(b"<html><body>nope</body></html>")
++            return
++        if self.path == "/big":
++            body, ctype = b"abcdefghij " * 5000, "text/plain"
++        elif self.path == "/plain":
++            body, ctype = "caf\u00e9 text".encode(), "text/plain; charset=utf-8"
++        else:
++            body, ctype = PAGE, "text/html; charset=utf-8"
++        self.send_response(200)
++        self.send_header("Content-Type", ctype)
++        self.send_header("Content-Length", str(len(body)))
++        self.end_headers()
++        self.wfile.write(body)
++
++    def log_message(self, *args):
++        pass
++
++
++@pytest.fixture()
++def server():
++    httpd = HTTPServer(("127.0.0.1", 0), _Handler)
++    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
++    thread.start()
++    yield f"http://127.0.0.1:{httpd.server_port}"
++    httpd.shutdown()
++    thread.join(timeout=5)
++
++
++@pytest.fixture(autouse=True)
++def _only_searxng(monkeypatch):
++    """Only web.search_backend: searxng and SEARXNG_URL; no keys, no keyless vendors, no network but loopback."""
++    for var in (
++        "EXA_API_KEY", "PARALLEL_API_KEY", "KEENABLE_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY",
++        "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "BRAVE_SEARCH_API_KEY",
++    ):
++        monkeypatch.delenv(var, raising=False)
++    monkeypatch.setenv("SEARXNG_URL", "http://127.0.0.1:1")
++    monkeypatch.setattr("agent.web_search_provider.get_provider_env", lambda name: __import__("os").environ.get(name, ""))
++    monkeypatch.setattr(web_tools, "_env_value", lambda name: __import__("os").environ.get(name, ""))
++    monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
++    monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
++    monkeypatch.setattr(registry, "_keyless_tier_enabled", lambda: False)
++    monkeypatch.setattr(helpers, "_raw_section", lambda section: {"search_backend": "searxng"} if section == "web" else None)
++    _set_web({"search_backend": "searxng"}, monkeypatch)
++
++
++def _set_web(cfg, monkeypatch):
++    monkeypatch.setattr(web_tools, "_load_web_config", lambda: dict(cfg))
++    monkeypatch.setattr(helpers, "_raw_section", lambda section: dict(cfg) if section == "web" else None)
++    monkeypatch.setattr(registry, "_read_config_key", lambda *path: (cfg.get(path[-1]) or None) if path[0] == "web" else None)
++
++
++@pytest.fixture()
++def allow_loopback(monkeypatch):
++    monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
++    url_safety._reset_allow_private_cache()
++    yield
++    url_safety._reset_allow_private_cache()
++
++
++def _extract(url, **kwargs):
++    return json.loads(asyncio.run(web_tools.web_extract_tool([url], **kwargs)))
++
++
++def test_unpinned_extract_skips_searxng(monkeypatch):
++    assert web_tools._get_search_backend() == "searxng"
++    assert web_tools._get_extract_backend() == "http-fetch"
++    assert web_tools._autodetect_backend("extract") is None
++    assert web_tools._autodetect_backend() == "searxng"
++
++
++def test_shared_search_only_backend_does_not_pin_extract(monkeypatch):
++    _set_web({"backend": "searxng"}, monkeypatch)
++    assert web_tools._get_search_backend() == "searxng"
++    assert web_tools._get_extract_backend() == "http-fetch"
++
++
++def test_extract_capable_autodetect_still_wins(monkeypatch):
++    monkeypatch.setenv("EXA_API_KEY", "k")
++    assert web_tools._get_extract_backend() == "exa"
++
++
++def test_extract_returns_page_content_with_only_searxng(server, allow_loopback):
++    result = _extract(server + "/page")
++    assert "error" not in result, result
++    page = result["results"][0]
++    assert page["title"] == "Hello Page"
++    content = page["content"]
++    assert "# Heading" in content
++    assert "**bold**" in content and f"[link]({server}/next)" in content
++    assert "- one" in content and "- two" in content
++    assert "code  line" in content
++    assert "menu" not in content and "foot" not in content and "var x" not in content
++    assert not page.get("error")
++
++
++def test_extract_plain_text_and_char_limit(server, allow_loopback):
++    page = _extract(server + "/plain")["results"][0]
++    assert page["content"] == "caf\u00e9 text"
++    big = _extract(server + "/big", char_limit=2000)["results"][0]
++    assert 0 < len(big["content"]) < 10000
++
++
++def test_origin_http_error_is_reported(server, allow_loopback):
++    page = _extract(server + "/missing")["results"][0]
++    assert page["error"].startswith("HTTP 404 from origin")
++
++
++def test_private_address_blocked_without_opt_in(server):
++    url_safety._reset_allow_private_cache()
++    page = _extract(server + "/page")["results"][0]
++    assert "private or internal network" in page["error"]
++
++
++def test_redirect_to_private_address_is_blocked(server, allow_loopback, monkeypatch):
++    real = url_safety.is_safe_url
++    monkeypatch.setattr(url_safety, "is_safe_url", lambda u: False if "10.255.255.1" in u else real(u))
++    page = _extract(server + "/redirect-private")["results"][0]
++    assert "private or internal network" in page["error"]
++
++
++def test_secret_in_url_is_refused(server, allow_loopback):
++    result = _extract(server + "/page?key=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789")
++    assert result["success"] is False and "API key" in result["error"]
++
++
++def test_pinned_search_only_extract_backend_is_one_config_error(server, allow_loopback, monkeypatch):
++    _set_web({"search_backend": "searxng", "extract_backend": "searxng"}, monkeypatch)
++    result = _extract(server + "/page")
++    assert result["success"] is False
++    error = result["error"]
++    assert "web.extract_backend is set to 'searxng'" in error and "search-only" in error
++    assert "http-fetch" in error and "\n" not in error
++
++
++def test_config_check_flags_search_only_extract_pin():
++    from hermes_cli.config_value_checks import _validate_web_backends
++
++    issues: list = []
++    _validate_web_backends({"web": {"extract_backend": "searxng"}}, issues)
++    assert len(issues) == 1 and issues[0].severity == "error" and "extract_backend" in issues[0].message
++    issues = []
++    _validate_web_backends({"web": {"search_backend": "searxng", "extract_backend": "exa"}}, issues)
++    assert issues == []
++
++
++def test_http_fetch_pin_resolves(server, allow_loopback, monkeypatch):
++    _set_web({"search_backend": "searxng", "extract_backend": "http-fetch"}, monkeypatch)
++    assert _extract(server + "/page")["results"][0]["title"] == "Hello Page"
++
++
++def test_http_fetch_never_joins_search_or_availability_walks(monkeypatch):
++    from tools.web_http_fetch import HttpFetchProvider
++
++    provider = HttpFetchProvider()
++    assert provider.supports_extract() and not provider.supports_search()
++    assert not provider.is_available()
++    web_tools._ensure_web_plugins_loaded()
++    assert registry.get_provider("http-fetch") is not None
++    assert registry.get_active_search_provider().name == "searxng"
++
++
++def test_html_to_markdown_basics():
++    title, md = html_to_markdown(
++        "<title> T </title><h2>Sub</h2><p>a<br>b</p><ol><li>x</li><li>y</li></ol>"
++        "<a href='javascript:void(0)'>skip</a><img src='/i.png' alt='pic'>", "http://h/dir/")
++    assert title == "T"
++    assert "## Sub" in md and "1. x" in md and "2. y" in md and "![pic](http://h/i.png)" in md
++    assert "[skip]" not in md and "skip" in md
+diff --git a/tests/tools/test_web_providers_brave_free.py b/tests/tools/test_web_providers_brave_free.py
+index 59a87d9b..6ead69de 100644
+--- a/tests/tools/test_web_providers_brave_free.py
++++ b/tests/tools/test_web_providers_brave_free.py
+@@ -158,7 +158,7 @@ class TestBraveFreeSearchOnlyErrors:
+         import asyncio
+         from tools import web_tools
+ 
+-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free"})
++        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"extract_backend": "brave-free"})
+         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+         async def _allow_ssrf(_url: str) -> bool:
+diff --git a/tests/tools/test_web_providers_ddgs.py b/tests/tools/test_web_providers_ddgs.py
+index 5d786f0c..292039dd 100644
+--- a/tests/tools/test_web_providers_ddgs.py
++++ b/tests/tools/test_web_providers_ddgs.py
+@@ -270,7 +270,7 @@ class TestDDGSSearchOnlyErrors:
+         import asyncio
+         from tools import web_tools
+ 
+-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
++        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"extract_backend": "ddgs"})
+         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
+         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+         async def _allow_ssrf(_url: str) -> bool:
+diff --git a/tests/tools/test_web_providers_searxng.py b/tests/tools/test_web_providers_searxng.py
+index 42b71020..ed78a43a 100644
+--- a/tests/tools/test_web_providers_searxng.py
++++ b/tests/tools/test_web_providers_searxng.py
+@@ -234,7 +234,7 @@ class TestSearXNGOnlyExtractCrawlErrors:
+         import asyncio
+         from tools import web_tools
+ 
+-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
++        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"extract_backend": "searxng"})
+         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+         async def _allow_ssrf(_url: str) -> bool:
+diff --git a/tests/tools/test_web_tools_config.py b/tests/tools/test_web_tools_config.py
+index 76c5f689..75848d1a 100644
+--- a/tests/tools/test_web_tools_config.py
++++ b/tests/tools/test_web_tools_config.py
+@@ -705,7 +705,7 @@ class TestCheckWebApiKey:
+             invalidate_check_fn_cache()
+             names = {d["function"]["name"]
+                      for d in model_tools.get_tool_definitions(enabled_toolsets=["web"])}
+-            assert names == set()
++            assert names == {"web_extract"}  # xai cannot serve web_search; http-fetch still extracts
+ 
+             monkeypatch.setenv("TAVILY_API_KEY", "tavily-test-key")
+             invalidate_check_fn_cache()
+diff --git a/tools/tool_backend_helpers.py b/tools/tool_backend_helpers.py
+index 968b129d..5853b3fe 100644
+--- a/tools/tool_backend_helpers.py
++++ b/tools/tool_backend_helpers.py
+@@ -292,6 +292,25 @@ def removed_backend_note(section: str, name: str) -> Optional[str]:
+     return REMOVED_BACKENDS.get(section, {}).get((name or "").strip().strip("'\"").lower())
+ 
+ 
++# Bundled web backends that cannot extract; used where the registry is not loaded (config checks).
++SEARCH_ONLY_WEB_BACKENDS = frozenset({"searxng", "brave-free", "ddgs", "openai-native", "xai"})
++
++
++def web_backend_supports(name: str, capability: str) -> bool:
++    """True when web backend *name* can serve *capability* (``search`` or ``extract``). Reads the
++    registered provider when there is one, else the bundled-backend table; an unknown name is True
++    (the strict-selection error reports it)."""
++    name = (name or "").strip().lower()
++    try:
++        from agent.web_search_registry import get_provider
++        provider = get_provider(name)
++        if provider is not None:
++            return bool(provider.supports_search() if capability == "search" else provider.supports_extract())
++    except Exception:
++        pass
++    return not (capability == "extract" and name in SEARCH_ONLY_WEB_BACKENDS)
++
++
+ def selection_error(section: str, selection_name: str, failure: str) -> str:
+     """The uniform honest-error contract for a selected-but-broken provider."""
+     failure = removed_backend_note(section, selection_name) or failure
+diff --git a/tools/web_http_fetch.py b/tools/web_http_fetch.py
+new file mode 100644
+index 00000000..1622deaa
+--- /dev/null
++++ b/tools/web_http_fetch.py
+@@ -0,0 +1,318 @@
++"""Built-in keyless ``web_extract`` provider: a plain HTTP GET, HTML to Markdown.
++
++It is the last rung of the extract ladder (``agent.web_search_registry``), so ``web_extract``
++works on an install with no web credentials and no reachable keyless vendor. It never joins an
++availability walk or the keyless ring; only an explicit ``web.extract_backend: http-fetch`` or the
++empty ladder reaches it. Every request is SSRF-guarded at connect time, redirects are followed by
++hand so each hop passes the SSRF and website-policy gates, and the body is size-capped.
++"""
++
++from __future__ import annotations
++
++import logging
++import re
++from concurrent.futures import ThreadPoolExecutor
++from html.parser import HTMLParser
++from typing import Any, Optional
++from urllib.parse import urljoin
++
++from agent.web_search_provider import WebSearchProvider
++
++logger = logging.getLogger(__name__)
++
++HTTP_FETCH_NAME = "http-fetch"
++BROWSER_USER_AGENT = (
++    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
++)
++MAX_TEXT_BYTES = 10 * 1024 * 1024
++MAX_PDF_BYTES = 30 * 1024 * 1024
++MAX_REDIRECTS = 5
++_TIMEOUT_S = 20.0
++_MAX_WORKERS = 5
++
++_HTML_TYPES = ("text/html", "application/xhtml+xml")
++_TEXT_TYPES = ("application/json", "application/xml", "application/ld+json", "application/rss+xml",
++               "application/atom+xml", "application/javascript")
++_SKIP_TAGS = frozenset({"script", "style", "noscript", "svg", "template", "iframe", "head", "canvas"})
++_BLOCK_TAGS = frozenset({
++    "p", "div", "section", "article", "main", "header", "footer", "aside", "nav", "ul", "ol", "table",
++    "tr", "form", "figure", "figcaption", "details", "summary", "dl", "dt", "dd", "hr", "address",
++})
++_CHARSET_RE = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_\-]+)""", re.IGNORECASE)
++
++
++class _HtmlToMarkdown(HTMLParser):
++    """Small stdlib HTML to Markdown converter: headings, paragraphs, lists, links, code, tables."""
++
++    def __init__(self, base_url: str):
++        super().__init__(convert_charrefs=True)
++        self.base_url = base_url
++        self.title = ""
++        self._in_title = False
++        self._skip = 0
++        self._main = 0
++        self._pre = 0
++        self._href: list[Optional[str]] = []
++        self._lists: list[list] = []  # [ordered, counter]
++        self._out: list[tuple[bool, str]] = []  # (inside main/article, text)
++
++    # -- output helpers
++    def _emit(self, text: str) -> None:
++        self._out.append((self._main > 0, text))
++
++    def _break(self, n: int = 2) -> None:
++        self._emit("\n" * n)
++
++    # -- parser events
++    def handle_starttag(self, tag: str, attrs: list) -> None:
++        a = dict(attrs)
++        if tag == "title":
++            self._in_title = True
++        if tag in _SKIP_TAGS:
++            self._skip += 1
++            return
++        if self._skip:
++            return
++        if tag in ("main", "article"):
++            self._main += 1
++        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
++            self._break()
++            self._emit("#" * int(tag[1]) + " ")
++        elif tag == "br":
++            self._emit("\n")
++        elif tag == "li":
++            self._break(1)
++            self._emit("  " * max(len(self._lists) - 1, 0))
++            if self._lists and self._lists[-1][0]:
++                self._lists[-1][1] += 1
++                self._emit(f"{self._lists[-1][1]}. ")
++            else:
++                self._emit("- ")
++        elif tag in ("ul", "ol"):
++            self._break()
++            self._lists.append([tag == "ol", 0])
++        elif tag == "pre":
++            self._break()
++            self._emit("```\n")
++            self._pre += 1
++        elif tag == "code" and not self._pre:
++            self._emit("`")
++        elif tag in ("strong", "b"):
++            self._emit("**")
++        elif tag in ("em", "i"):
++            self._emit("*")
++        elif tag == "blockquote":
++            self._break()
++            self._emit("> ")
++        elif tag == "a":
++            href = (a.get("href") or "").strip()
++            keep = href and not href.lower().startswith(("javascript:", "#", "mailto:", "tel:"))
++            self._href.append(urljoin(self.base_url, href) if keep else None)
++            if keep:
++                self._emit("[")
++        elif tag == "img":
++            alt = (a.get("alt") or "").strip()
++            src = (a.get("src") or "").strip()
++            if src:
++                self._emit(f"![{alt}]({urljoin(self.base_url, src)})")
++        elif tag in ("td", "th"):
++            self._emit(" | ")
++        elif tag in _BLOCK_TAGS:
++            self._break()
++
++    def handle_endtag(self, tag: str) -> None:
++        if tag == "title":
++            self._in_title = False
++        if tag in _SKIP_TAGS:
++            self._skip = max(self._skip - 1, 0)
++            return
++        if self._skip:
++            return
++        if tag in ("main", "article"):
++            self._main = max(self._main - 1, 0)
++        if tag in ("h1", "h2", "h3", "h4", "h5", "h6", "blockquote"):
++            self._break()
++        elif tag in ("ul", "ol"):
++            if self._lists:
++                self._lists.pop()
++            self._break()
++        elif tag == "pre":
++            self._pre = max(self._pre - 1, 0)
++            self._emit("\n```")
++            self._break()
++        elif tag == "code" and not self._pre:
++            self._emit("`")
++        elif tag in ("strong", "b"):
++            self._emit("**")
++        elif tag in ("em", "i"):
++            self._emit("*")
++        elif tag == "a" and self._href:
++            href = self._href.pop()
++            if href:
++                self._emit(f"]({href})")
++        elif tag in _BLOCK_TAGS:
++            self._break()
++
++    def handle_data(self, data: str) -> None:
++        if self._in_title:
++            self.title += data
++            return
++        if self._skip:
++            return
++        if self._pre:
++            self._emit(data)
++        else:
++            text = re.sub(r"\s+", " ", data)
++            if text.strip() or (text and self._out and not self._out[-1][1].endswith(("\n", " "))):
++                self._emit(text)
++
++    def markdown(self) -> str:
++        main = "".join(t for inside, t in self._out if inside)
++        text = main if len(main.strip()) >= 200 else "".join(t for _, t in self._out)
++        text = re.sub(r"[ \t]+\n", "\n", text)
++        text = re.sub(r"\n{3,}", "\n\n", text)
++        return text.strip()
++
++
++def html_to_markdown(html: str, base_url: str = "") -> tuple[str, str]:
++    """``(title, markdown)`` for an HTML document."""
++    parser = _HtmlToMarkdown(base_url)
++    parser.feed(html)
++    parser.close()
++    return re.sub(r"\s+", " ", parser.title).strip(), parser.markdown()
++
++
++def _decode(data: bytes, header_charset: Optional[str]) -> str:
++    candidates = []
++    if header_charset:
++        candidates.append(header_charset)
++    meta = _CHARSET_RE.search(data[:4096])
++    if meta:
++        candidates.append(meta.group(1).decode("ascii", "ignore"))
++    candidates.append("utf-8")
++    for charset in candidates:
++        try:
++            return data.decode(charset)
++        except (LookupError, UnicodeDecodeError):
++            continue
++    return data.decode("utf-8", "replace")
++
++
++def _header_charset(content_type: str) -> Optional[str]:
++    match = re.search(r"charset\s*=\s*[\"']?([A-Za-z0-9_\-]+)", content_type, re.IGNORECASE)
++    return match.group(1) if match else None
++
++
++class HttpFetchProvider(WebSearchProvider):
++    """Plain HTTP fetch. Extract-only, no credentials, never autodetected."""
++
++    name = HTTP_FETCH_NAME
++    display_name = "HTTP fetch"
++
++    def is_available(self) -> bool:
++        # Not a walk member: the registry reaches it only as the explicit pin or the last rung.
++        return False
++
++    def is_keyless_available(self) -> bool:
++        # Readiness probes (tool check_fn, doctor) count it as a working keyless extractor.
++        return True
++
++    def supports_search(self) -> bool:
++        return False
++
++    def supports_extract(self) -> bool:
++        return True
++
++    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
++        return {"success": False, "error": "http-fetch cannot search; it only fetches URLs"}
++
++    def get_setup_schema(self) -> dict[str, Any]:
++        return {"name": "HTTP fetch", "badge": "free · no key", "tag": "Plain HTTP GET of the page, HTML to Markdown.",
++                "env_vars": []}
++
++    # -- extract
++    def extract(self, urls: list[str], format: Optional[str] = None, **kwargs: Any) -> list[dict[str, Any]]:
++        if len(urls) <= 1:
++            return [self._fetch_one(u, format) for u in urls]
++        with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(urls))) as pool:
++            return list(pool.map(lambda u: self._fetch_one(u, format), urls))
++
++    def _fetch_one(self, url: str, format: Optional[str]) -> dict[str, Any]:
++        from plugins.web._common import page_error
++        try:
++            return self._fetch(url, format)
++        except Exception as exc:
++            logger.warning("http-fetch of %s failed: %s", url, exc)
++            return page_error(url, f"HTTP fetch failed: {exc}")
++
++    def _fetch(self, url: str, format: Optional[str]) -> dict[str, Any]:
++        import httpx
++
++        from plugins.web._common import document, origin_http_error, page_error
++        from tools.url_safety import create_ssrf_safe_client, is_safe_url
++        from tools.website_policy import check_website_access
++
++        headers = {
++            "User-Agent": BROWSER_USER_AGENT,
++            "Accept": "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.5",
++            "Accept-Language": "en-US,en;q=0.9",
++        }
++        current = url
++        with create_ssrf_safe_client(
++            follow_redirects=False, headers=headers, timeout=httpx.Timeout(_TIMEOUT_S, connect=10.0)
++        ) as client:
++            for _ in range(MAX_REDIRECTS + 1):
++                with client.stream("GET", current) as response:
++                    if response.is_redirect and response.headers.get("location"):
++                        current = urljoin(str(response.url), response.headers["location"])
++                        if not is_safe_url(current):
++                            return page_error(url, "Blocked: URL targets a private or internal network address")
++                        if check_website_access(current):
++                            return page_error(url, "Blocked: redirect target is blocked by the website policy")
++                        continue
++                    content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
++                    cap = MAX_PDF_BYTES if content_type == "application/pdf" else MAX_TEXT_BYTES
++                    body = bytearray()
++                    truncated = False
++                    for chunk in response.iter_bytes():
++                        body.extend(chunk)
++                        if len(body) > cap:
++                            del body[cap:]
++                            truncated = True
++                            break
++                    status, final_url = response.status_code, str(response.url)
++                    charset = _header_charset(response.headers.get("content-type", ""))
++                break
++            else:
++                return page_error(url, f"Too many redirects (more than {MAX_REDIRECTS})")
++
++        data = bytes(body)
++        if data.startswith(b"%PDF-") or content_type == "application/pdf":
++            if truncated:
++                return page_error(url, f"PDF larger than {MAX_PDF_BYTES // (1024 * 1024)} MB")
++            title, content = "", self._pdf_text(data)
++        elif content_type in _HTML_TYPES or (not content_type and b"<html" in data[:2048].lower()):
++            html = _decode(data, charset)
++            title, content = ("", html) if format == "html" else html_to_markdown(html, final_url)
++        elif content_type.startswith("text/") or content_type in _TEXT_TYPES or not content_type:
++            title, content = "", _decode(data, charset)
++        else:
++            return page_error(url, f"Unsupported content type: {content_type}")
++        if truncated:
++            content += f"\n\n[Truncated: the page is larger than {cap // (1024 * 1024)} MB]"
++        entry = document(final_url, title, content, source_url=url)
++        if error := origin_http_error(status):
++            entry["error"] = error
++        return entry
++
++    @staticmethod
++    def _pdf_text(data: bytes) -> str:
++        from tools.read_extract import ExtractionError, extract_document_bytes
++        try:
++            return extract_document_bytes(data, "page.pdf")
++        except ExtractionError as exc:
++            raise ValueError(f"cannot read the PDF: {exc}") from exc
++
++
++def http_fetch_provider() -> HttpFetchProvider:
++    return HttpFetchProvider()
+diff --git a/tools/web_tools.py b/tools/web_tools.py
+index 5f25ebee..416ca7eb 100644
+--- a/tools/web_tools.py
++++ b/tools/web_tools.py
+@@ -18,7 +18,7 @@ _firecrawl_client = _firecrawl_client_config = _parallel_client = _async_paralle
+ 
+ from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecrawl_api_key
+ from tools.debug_helpers import DebugSession
+-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
++from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists, web_backend_supports
+ from tools.url_safety import async_is_safe_url
+ from tools.web_tools_rescue import _managed_search_fallback, _rescue_eligible, _rescue_search
+ from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
+@@ -115,7 +115,7 @@ def _get_backend() -> str:
+     return _autodetect_backend() or _keyless_backend() or "firecrawl"  # default (backward compat)
+ 
+ 
+-def _autodetect_backend() -> Optional[str]:
++def _autodetect_backend(capability: str = "search") -> Optional[str]:
+     """Autodetect rungs above the keyless tier, or None. Explicit user credentials beat the managed-gateway
+     probe (a Nous OAuth token's tier may not grant web access; the gateway then fails at runtime with no
+     fallback). Free tiers trail paid."""
+@@ -128,7 +128,8 @@ def _autodetect_backend() -> Optional[str]:
+         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")), ("ddgs", _ddgs_package_importable()),
+     )
+     for backend, available in backend_candidates:
+-        if available:
++        # Capability-aware: an extract walk never lands on a search-only backend (SearXNG, Brave, ddgs).
++        if available and web_backend_supports(backend, capability):
+             return backend
+ 
+     # Plugin-contributed providers (built-ins are covered above); probe the held object directly.
+@@ -136,6 +137,7 @@ def _autodetect_backend() -> Optional[str]:
+         if (
+             provider.name not in _LEGACY_WEB_BACKENDS
+             and _runs_client_side(provider)
++            and web_backend_supports(provider.name, capability)
+             and _probe(provider, "is_available")
+         ):
+             return provider.name
+@@ -198,10 +200,22 @@ def _get_search_backend() -> str:
+ 
+ 
+ def _get_extract_backend() -> str:
+-    """Backend for web_extract: ``web.extract_backend`` (strict, no probe) > ``web.backend`` > autodetect.
++    """Backend for web_extract: ``web.extract_backend`` (strict, no probe), else the shared ``web.backend``
++    when it can extract, else an extract-capable autodetect, the keyless tier, and the built-in
++    ``http-fetch`` last. Only an explicit ``web.extract_backend`` naming a search-only backend is an
++    error (see ``_resolve_extract_provider``); an unpinned walk never ends there or on nothing.
+     A ``nous`` pin is managed Firecrawl; the client picks the gateway route for that capability."""
+     pin = _configured_backend("extract_backend")
+-    return "firecrawl" if pin == NOUS_MANAGED_PROVIDER else pin or _get_backend()
++    if pin:
++        return "firecrawl" if pin == NOUS_MANAGED_PROVIDER else pin
++    shared = _configured_backend()
++    if shared:
++        shared = "firecrawl" if shared == NOUS_MANAGED_PROVIDER else shared
++        if web_backend_supports(shared, "extract"):
++            return shared
++    elif read_selection("web") is not None:
++        return "firecrawl"
++    return _autodetect_backend("extract") or _keyless_backend() or "http-fetch"
+ 
+ 
+ def _ddgs_package_importable() -> bool:
+@@ -300,6 +314,13 @@ def _ensure_web_plugins_loaded() -> None:
+     except Exception as exc:
+         # Warning, not debug: a broken plugin import is otherwise invisible.
+         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
++    try:  # the built-in keyless extractor is not a plugin; make it pinnable by name
++        from agent.web_search_registry import HTTP_FETCH_NAME, get_provider, register_provider
++        from tools.web_http_fetch import http_fetch_provider
++        if get_provider(HTTP_FETCH_NAME) is None:
++            register_provider(http_fetch_provider())
++    except Exception as exc:
++        logger.debug("http-fetch registration failed: %s", exc)
+ 
+ 
+ def _finish_debug(call_name: str, debug_call_data: dict, error_msg: Optional[str] = None) -> Optional[str]:
+@@ -507,6 +528,8 @@ def check_web_api_key() -> bool:
+         _ensure_web_plugins_loaded()
+         from agent.web_search_registry import get_active_search_provider, get_active_extract_provider
+         for provider in (get_active_search_provider(), get_active_extract_provider()):
++            if provider is not None and getattr(provider, "name", None) == "http-fetch":
++                continue  # the built-in extractor needs nothing, so it says nothing about web_search
+             if provider is not None and getattr(provider, "name", None) in _WEB_CHECK_SKIP:
+                 # The registry's single-eligible / legacy walk picked a built-in that _get_backend
+                 # never autodetects (the explicit-config case was handled above): the dispatcher
+@@ -575,12 +598,19 @@ registry.register(
+     check_fn=check_web_api_key, requires_env=_web_requires_env(), emoji="🔍",
+     max_result_size_chars=100_000,
+ )
++
++
++def check_web_extract_available() -> bool:
++    """``web_extract`` always has a provider: the built-in keyless ``http-fetch`` is the last rung."""
++    return True
++
++
+ registry.register(
+     name="web_extract", toolset="web", schema=WEB_EXTRACT_SCHEMA,
+     handler=lambda args, **kw: web_extract_tool(
+         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown",
+         char_limit=args.get("char_limit"),
+     ),
+-    check_fn=check_web_api_key, requires_env=_web_requires_env(), is_async=True, emoji="📄",
++    check_fn=check_web_extract_available, requires_env=_web_requires_env(), is_async=True, emoji="📄",
+     max_result_size_chars=100_000,
+ )
+diff --git a/tools/web_tools_extract.py b/tools/web_tools_extract.py
+index c07a75a6..225544d5 100644
+--- a/tools/web_tools_extract.py
++++ b/tools/web_tools_extract.py
+@@ -21,7 +21,7 @@ logger = logging.getLogger("tools.web_tools")
+ 
+ _NO_RESULT_ERROR = "Extract backend returned no result for this URL"
+ _DEFAULT_EXTRACT_TIMEOUT_S = 120.0
+-_EXTRACT_BACKENDS_HINT = "firecrawl, tavily, keenable, exa, or parallel."
++_EXTRACT_BACKENDS_HINT = "firecrawl, tavily, keenable, exa, parallel, or http-fetch (or remove it; the default needs no key)."
+ _INVALID_ITEM_ERROR = (
+     "Invalid URL item at index {}: expected a URL string or an object with a string 'url' or 'href' field"
+ )
+@@ -114,8 +114,10 @@ def _validate_extract_urls(urls: list[Any]):
+ def _resolve_extract_provider(backend: str):
+     """Resolve the extract provider for *backend*; returns ``(provider, error_json)``.
+ 
+-    A registered search-only backend is a typed error (never a silent switch). An unregistered name with
+-    a stored web selection is a strict-selection error; with no selection, fall through to the walk.
++    ``backend`` comes from ``_get_extract_backend``, which never returns a search-only backend unless
++    ``web.extract_backend`` pins one: that config error is the only search-only case, a typed error
++    (never a silent switch). An unregistered name with a stored web selection is a strict-selection
++    error; with no selection, fall through to the walk, which ends on the built-in http-fetch.
+     """
+     from agent.web_search_registry import get_active_extract_provider, get_provider as _wsp_get_provider
+     provider = _wsp_get_provider(backend) if backend else None
+@@ -123,13 +125,18 @@ def _resolve_extract_provider(backend: str):
+         return provider, None
+     if provider is not None:
+         return None, _extract_error_json(
+-            f"{provider.display_name} is a search-only backend and cannot extract URL content. "
+-            "Set web.extract_backend to " + _EXTRACT_BACKENDS_HINT
++            f"web.extract_backend is set to '{provider.name}', but {provider.display_name} is search-only and "
++            "cannot extract URL content. Set web.extract_backend to " + _EXTRACT_BACKENDS_HINT
+         )
+     if backend and selection_exists("web"):
+         return None, _extract_error_json(_strict_selection_error("extract", backend))
+     provider = get_active_extract_provider()
+-    if provider is None:
++    if provider is None:  # registry unavailable (import failure): the built-in extractor still works
++        try:
++            from tools.web_http_fetch import http_fetch_provider
++            return http_fetch_provider(), None
++        except Exception:
++            pass
+         fallback = "No web extract provider configured. Set web.extract_backend to " + _EXTRACT_BACKENDS_HINT
+         return None, _extract_error_json(_no_provider_error("extract", fallback))
+     return provider, None
+-- 
+none
+
