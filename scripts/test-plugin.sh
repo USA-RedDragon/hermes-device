@@ -4,7 +4,7 @@
 # The interpreter and the hermes-agent source come from `hermes --print-runtime-command`.
 # Tests run with python -I and a throwaway HERMES_HOME. Hermes bootstrap prepares
 # dependencies per data root, so the runtime's own data root is used for the bootstrap
-# (HERMES_DEVICE_RUNTIME_HOME overrides it); HERMES_HOME is switched to the throwaway
+# (TALARIA_RUNTIME_HOME, or the older HERMES_DEVICE_RUNTIME_HOME, overrides it); HERMES_HOME is switched to the throwaway
 # directory before any test imports Hermes.
 #
 # With both HERMES_PYTHON and HERMES_AGENT_SRC set, as in the Hermes image, those are
@@ -12,7 +12,7 @@
 #
 # Usage: scripts/test-plugin.sh [unittest discover args...]
 # Env: HERMES (launcher, default: hermes on PATH), HERMES_PYTHON, HERMES_AGENT_SRC,
-# HERMES_DEVICE_RUNTIME_HOME, TMPDIR.
+# TALARIA_RUNTIME_HOME, TMPDIR.
 set -eu
 
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -30,17 +30,17 @@ else
   fi
 fi
 
-home=$(mktemp -d "${TMPDIR:-/tmp}/hermes-device-test.XXXXXX")
+home=$(mktemp -d "${TMPDIR:-/tmp}/talaria-test.XXXXXX")
 trap 'rm -rf "$home"' EXIT INT TERM
 
-HERMES_AGENT_SRC=${HERMES_AGENT_SRC:-$agent} HERMES_DEVICE_REPO=$repo HERMES_DEVICE_TEST_HOME=$home \
+HERMES_AGENT_SRC=${HERMES_AGENT_SRC:-$agent} TALARIA_REPO=$repo TALARIA_TEST_HOME=$home \
   "$python" -I -c '
 import os, sys
-agent, repo, home = os.environ["HERMES_AGENT_SRC"], os.environ["HERMES_DEVICE_REPO"], os.environ["HERMES_DEVICE_TEST_HOME"]
+agent, repo, home = os.environ["HERMES_AGENT_SRC"], os.environ["TALARIA_REPO"], os.environ["TALARIA_TEST_HOME"]
 for name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
     os.environ.pop(name, None)
 sys.path.insert(0, agent)
-runtime = os.environ.get("HERMES_DEVICE_RUNTIME_HOME")
+runtime = os.environ.get("TALARIA_RUNTIME_HOME") or os.environ.get("HERMES_DEVICE_RUNTIME_HOME")
 if runtime:
     os.environ["HERMES_HOME"] = runtime
 import hermes_bootstrap

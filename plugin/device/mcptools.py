@@ -59,20 +59,20 @@ def target(session_id: str = "") -> tuple[Any, Any]:
     sid = core.current_session_id() or session_id
     res = core.resolve_session(sid)
     if res.sandbox:
-        raise Unavailable(f"hermes-device: session {sid or '(none)'} runs in the sandbox device, which offers no MCP "
+        raise Unavailable(f"talaria: session {sid or '(none)'} runs in the sandbox device, which offers no MCP "
                           f"servers. MCP tools use the servers of the user's own computer: bind this session to it "
                           f"with /device <device> <dir>.")
     if res.state != core.STATE_BOUND:
         if res.state == core.STATE_NEVER_BOUND:
-            raise Unavailable(f"hermes-device: session {sid or '(none)'} is not bound to a device, so it has no MCP "
+            raise Unavailable(f"talaria: session {sid or '(none)'} is not bound to a device, so it has no MCP "
                               f"servers. Bind it to the user's computer with /device <device> <dir>.")
         raise Unavailable(core.fail_closed_message(res))
     device_id = res.binding.device_id
     conn = core.hub().device(device_id)
     if conn is None:
-        raise Unavailable(f"hermes-device: device {device_id} is not connected, so its MCP servers cannot be used.")
+        raise Unavailable(f"talaria: device {device_id} is not connected, so its MCP servers cannot be used.")
     if core.CAPABILITY_MCP not in conn.capabilities or not conn.mcp_servers:
-        raise Unavailable(f"hermes-device: device {conn.name} [{device_id}] offers no MCP servers. On that computer, "
+        raise Unavailable(f"talaria: device {conn.name} [{device_id}] offers no MCP servers. On that computer, "
                           f"list them under mcp.servers in the talaria config and restart talaria run.")
     return res, conn
 
@@ -347,7 +347,7 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
     def handler(args: dict, task_id: str = "", session_id: str = "", **_kwargs) -> Any:
         args = args if isinstance(args, dict) else {}
         if not enabled():
-            return _err("hermes-device: MCP tools are turned off (plugin setting mcp)", "unavailable")
+            return _err("talaria: MCP tools are turned off (plugin setting mcp)", "unavailable")
         try:
             _, conn = target(session_id)
             return fn(args, conn, session_id)
@@ -406,7 +406,7 @@ def call_timeout(args: dict) -> float:
 def _call(args: dict, conn: Any, session_id: str = "") -> Any:
     checked = _take_checked(_checked_key(session_id, args))
     if checked and checked != conn.device_id:
-        raise Unavailable(f"hermes-device: this session's device changed from {checked} to {conn.device_id} after "
+        raise Unavailable(f"talaria: this session's device changed from {checked} to {conn.device_id} after "
                           f"the call was checked; call the tool again")
     server = _server(conn, args)
     tool = str(args.get("tool") or "").strip()

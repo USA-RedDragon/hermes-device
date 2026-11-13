@@ -439,7 +439,7 @@ def negotiate(hello: dict, dev_mode: bool) -> tuple[Optional[int], str]:
     else:
         theirs = repr(hello.get("version"))
     client = hello.get("client_version") if isinstance(hello.get("client_version"), str) else "?"
-    return None, (f"hermes-device {client[:16]} speaks protocol {theirs[:12]}; plugin {core.PLUGIN_VERSION} speaks "
+    return None, (f"talaria {client[:16]} speaks protocol {theirs[:12]}; plugin {core.PLUGIN_VERSION} speaks "
                   f"{lowest} to {core.PROTOCOL_VERSION}; upgrade them together")
 
 

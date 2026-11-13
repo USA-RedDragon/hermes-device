@@ -92,7 +92,7 @@ class HubResumeTests(unittest.TestCase):
         self.hub.on_message(second.conn, {"type": "output", "id": rid, "data": "tail\n", "offset": 100})
         self.hub.on_message(second.conn, {"type": "exit", "id": rid, "code": 3})
         self.assertEqual(proc.wait(5), 3)
-        self.assertEqual(output(proc), "héllo\nworld\n\n[hermes-device: 87 bytes of output were lost while the "
+        self.assertEqual(output(proc), "héllo\nworld\n\n[talaria: 87 bytes of output were lost while the "
                                        "device was disconnected]\ntail\n")
 
     def test_grace_expiry_fails_with_255(self):

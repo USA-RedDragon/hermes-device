@@ -82,7 +82,7 @@ def start_firefox(conn: Any) -> None:
     try:
         core.hub().browser_call(conn.device_id, "start", {}, START_TIMEOUT_S, start=True)
     except core.BrowserError as exc:
-        raise Unavailable(f"hermes-device: Firefox on device {conn.name} [{conn.device_id}] was not running and did "
+        raise Unavailable(f"talaria: Firefox on device {conn.name} [{conn.device_id}] was not running and did "
                           f"not start: {exc}") from None
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and not conn.browser.get("connected"):
@@ -165,7 +165,7 @@ class Choices:
         with self._lock:
             self._load()
             if self._error:
-                raise Unavailable(f"hermes-device: the browser device choices cannot be read: {self._error}")
+                raise Unavailable(f"talaria: the browser device choices cannot be read: {self._error}")
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -203,7 +203,7 @@ class Choices:
                 self._stamp = _UNREAD
                 self._load()
                 if self._error:
-                    raise Unavailable(f"hermes-device: the browser device choices cannot be read: {self._error}")
+                    raise Unavailable(f"talaria: the browser device choices cannot be read: {self._error}")
                 if not edit():
                     return
                 try:
@@ -349,7 +349,7 @@ def _session_choice(session_id: str) -> Optional[dict]:
         try:
             cur = core.hub()._parent(cur)
         except core.LineageError as exc:
-            raise Unavailable(f"hermes-device: the browser device of session {session_id} cannot be found: "
+            raise Unavailable(f"talaria: the browser device of session {session_id} cannot be found: "
                               f"{exc}") from None
     return None
 
@@ -364,10 +364,10 @@ def _chosen(choice: dict, what: str) -> Any:
     core = _core()
     conn = core.hub().device(choice["device_id"])
     if conn is None:
-        raise Unavailable(f"hermes-device: device {_label(choice)}, the browser device of {what}, is not connected "
+        raise Unavailable(f"talaria: device {_label(choice)}, the browser device of {what}, is not connected "
                           f"(it is offline, or was removed from the hub), so its browser cannot be used.")
     if conn.user != choice["user"] or conn.user == core.SERVICE_USER:
-        raise Unavailable(f"hermes-device: device {conn.name} [{conn.device_id}], the browser device of {what}, now "
+        raise Unavailable(f"talaria: device {conn.name} [{conn.device_id}], the browser device of {what}, now "
                           f"belongs to another user, so its browser is not used.")
     return conn
 
@@ -384,20 +384,20 @@ def _session_user(res: Any) -> Optional[str]:
         if others:
             core.logger.error("device: the plugin setting user is %s, but devices of other hub users are connected "
                               "(%s); sessions that no computer serves get no browser", owner, ", ".join(others))
-            raise Unavailable(f"hermes-device: this Hermes names {owner} as its one user, but computers of other "
+            raise Unavailable(f"talaria: this Hermes names {owner} as its one user, but computers of other "
                               f"users are connected too, so a session that is not bound to a computer cannot use a "
                               f"browser. Bind the session to your computer with /device <device> <dir>.")
         return owner
     conn = core.hub().device(res.binding.device_id)
     if conn is None:
-        raise Unavailable(f"hermes-device: device {res.binding.device_id} is not connected, so its browser cannot "
+        raise Unavailable(f"talaria: device {res.binding.device_id} is not connected, so its browser cannot "
                           f"be used.")
     return conn.user
 
 
 def _need_user(user: Optional[str]) -> str:
     if user is None:
-        raise Unavailable("hermes-device: this session is not bound to a computer, and this Hermes does not name its "
+        raise Unavailable("talaria: this session is not bound to a computer, and this Hermes does not name its "
                           "one user (plugin setting user), so it cannot tell whose browser the session may use. "
                           "Bind the session to your computer with /device <device> <dir>.")
     return user
@@ -421,21 +421,21 @@ def pick(session_id: str, res: Any) -> tuple[Any, str]:
         rec = choices().job(job_id)
         if rec is not None:
             if user is not None and rec["user"] != user:
-                raise Unavailable(f"hermes-device: device {_label(rec)}, the browser device of scheduled job {job_id}, "
+                raise Unavailable(f"talaria: device {_label(rec)}, the browser device of scheduled job {job_id}, "
                                   f"belongs to another user than this session, so its browser is not used.")
             return _chosen(rec, f"scheduled job {job_id}"), "job"
-        raise Unavailable(f"hermes-device: scheduled job {job_id} has no browser device, so its runs cannot use a "
+        raise Unavailable(f"talaria: scheduled job {job_id} has no browser device, so its runs cannot use a "
                           f"browser. The user gives it one in a chat with browser_use_device and job_id.")
     rec = _session_choice(session_id)
     if rec is not None:
         if rec["user"] != _need_user(user):
-            raise Unavailable(f"hermes-device: device {_label(rec)}, the browser device chosen in this session, "
+            raise Unavailable(f"talaria: device {_label(rec)}, the browser device chosen in this session, "
                               f"belongs to another user than this session. Choose again with browser_use_device.")
         return _chosen(rec, f"session {session_id}"), "chosen"
     if res.state == core.STATE_BOUND and not res.sandbox:
         conn = core.hub().device(res.binding.device_id)
         if conn is not None and conn.user == core.SERVICE_USER:
-            raise Unavailable(f"hermes-device: session {session_id or '(none)'} is bound to the service device "
+            raise Unavailable(f"talaria: session {session_id or '(none)'} is bound to the service device "
                               f"{conn.name} [{conn.device_id}], which has no browser. Choose your computer with "
                               f"browser_use_device.")
         return conn, "bound"
@@ -443,10 +443,10 @@ def pick(session_id: str, res: Any) -> tuple[Any, str]:
     if len(found) == 1:
         return found[0], "only"
     if not found:
-        raise Unavailable(f"hermes-device: session {session_id or '(none)'} is not bound to a computer, and none of "
+        raise Unavailable(f"talaria: session {session_id or '(none)'} is not bound to a computer, and none of "
                           f"the user's computers with browser control is connected. Start talaria run with "
                           f"browser.enabled on your computer.")
-    raise Unavailable(f"hermes-device: session {session_id or '(none)'} is not bound to a computer, and several "
+    raise Unavailable(f"talaria: session {session_id or '(none)'} is not bound to a computer, and several "
                       f"computers offer a browser ({', '.join(f'{c.name} [{c.device_id}]' for c in found)}). Do not pick "
                       f"one yourself: ask the user which computer's Firefox to use, then call browser_use_device with "
                       f"that name.")
@@ -470,19 +470,19 @@ def target(session_id: str = "", start: bool = True) -> tuple[Any, Any]:
     conn, _ = pick(sid, res)
     device_id = conn.device_id
     if core.CAPABILITY_BROWSER not in conn.capabilities:
-        raise Unavailable(f"hermes-device: device {conn.name} [{device_id}] does not offer browser control. On "
+        raise Unavailable(f"talaria: device {conn.name} [{device_id}] does not offer browser control. On "
                           f"that computer: set browser.enabled to true in the talaria config, run "
                           f"talaria browser install, load the Hermes Firefox extension, and restart "
                           f"talaria run.")
     if not_running(conn):
         if not start:
-            raise Unavailable(f"hermes-device: Firefox is not running on device {conn.name} [{device_id}]. Any other "
+            raise Unavailable(f"talaria: Firefox is not running on device {conn.name} [{device_id}]. Any other "
                               f"browser tool, such as browser_navigate, starts it.")
         start_firefox(conn)
         raise Started(f"Firefox was not running on device {conn.name}, so it was started and is connected now. "
                       f"Make the same browser call again.")
     if not conn.browser.get("connected"):
-        raise Unavailable(f"hermes-device: the Hermes Firefox extension on device {conn.name} [{device_id}] is "
+        raise Unavailable(f"talaria: the Hermes Firefox extension on device {conn.name} [{device_id}] is "
                           f"not connected. Firefox must be running with the extension loaded"
                           f"{'' if conn.browser.get('can_start') else ' (this device does not start Firefox itself)'}.")
     return res, conn
@@ -921,7 +921,7 @@ def pre_tool_call(tool_name: str = "", args: Optional[dict] = None, task_id: str
         return _pre_tool_call(tool_name, args, session_id)
     except Exception as exc:
         _core().logger.warning("device-browser: pre_tool_call failed for %s", tool_name, exc_info=True)
-        return {"action": "block", "message": f"hermes-device: {tool_name} refused because the browser check failed: "
+        return {"action": "block", "message": f"talaria: {tool_name} refused because the browser check failed: "
                                               f"{exc}"}
 
 
@@ -1425,14 +1425,14 @@ def _check_job_owner(job_id: str, user: str) -> None:
     as the user's only on a backend that names its one user (plugin setting ``user``)."""
     rec = choices().job(job_id)
     if rec is not None and rec["user"] != user:
-        raise Unavailable(f"hermes-device: scheduled job {job_id} uses the browser of another user, so this session "
+        raise Unavailable(f"talaria: scheduled job {job_id} uses the browser of another user, so this session "
                           f"cannot change it.")
     owner = choices().job_owner(job_id)
     if owner is not None and owner != user:
-        raise Unavailable(f"hermes-device: scheduled job {job_id} belongs to another user, so this session cannot "
+        raise Unavailable(f"talaria: scheduled job {job_id} belongs to another user, so this session cannot "
                           f"give it a browser device.")
     if owner is None and rec is None and backend_user() != user:
-        raise Unavailable(f"hermes-device: it is not known which user created scheduled job {job_id}, so this "
+        raise Unavailable(f"talaria: it is not known which user created scheduled job {job_id}, so this "
                           f"session cannot give it a browser device. Create the job again in a chat bound to your "
                           f"computer.")
 
@@ -1447,7 +1447,7 @@ def browser_use_device(args: dict, session_id: str = "", **_kwargs) -> str:
         sid, res = resolve(session_id)
         running_job = cron_job_id(sid)
         if running_job:
-            raise Unavailable(f"hermes-device: this is a run of scheduled job {running_job}; a run cannot choose "
+            raise Unavailable(f"talaria: this is a run of scheduled job {running_job}; a run cannot choose "
                               f"browser devices. The user sets them in a chat.")
         user = _need_user(_session_user(res))
         if job_id:
@@ -1480,7 +1480,7 @@ def browser_use_device(args: dict, session_id: str = "", **_kwargs) -> str:
     except ValueError as exc:
         return _err(str(exc), "bad_arguments")
     except OSError as exc:
-        return _err(f"hermes-device: could not save the choice: {exc}", "failed")
+        return _err(f"talaria: could not save the choice: {exc}", "failed")
 
 
 def record_job(job: Any) -> None:
@@ -1537,7 +1537,7 @@ def _record_or_remove(job: dict) -> None:
             remove_job(str(job.get("id")))
         except Exception:
             _core().logger.error("device: could not remove scheduled job %s", job.get("id"), exc_info=True)
-        raise RuntimeError(f"hermes-device: the job was not created: its browser device could not be saved "
+        raise RuntimeError(f"talaria: the job was not created: its browser device could not be saved "
                            f"({exc})") from exc
 
 

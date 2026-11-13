@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_core import core  # noqa: E402
 
-REPO = Path(os.environ.get("HERMES_DEVICE_REPO") or Path(__file__).resolve().parents[3])
+REPO = Path(os.environ.get("TALARIA_REPO") or os.environ.get("HERMES_DEVICE_REPO") or Path(__file__).resolve().parents[3])
 SRC = Path(os.path.expanduser(os.environ.get("HERMES_AGENT_SRC") or "~/.hermes/hermes-agent"))
 
 
@@ -70,7 +70,7 @@ ASSERTION_NAMES = {"MaxLifetime": "MAX_LIFETIME_S", "ClockSkew": "CLOCK_SKEW_S",
 class WireConstantTests(unittest.TestCase):
     def check(self, go_file: Path, module, names: dict[str, str]):
         if not go_file.is_file():
-            self.skipTest(f"{go_file} not found; set HERMES_DEVICE_REPO")
+            self.skipTest(f"{go_file} not found; set TALARIA_REPO")
         consts = go_consts(go_file)
         self.assertGreater(len(consts), 5)
         for go_name, value in consts.items():
@@ -103,7 +103,7 @@ class SettingsDocContractTests(unittest.TestCase):
     def table(self) -> dict[str, str]:
         doc = REPO / "docs" / "protocol.md"
         if not doc.is_file():
-            self.skipTest(f"{doc} not found; set HERMES_DEVICE_REPO")
+            self.skipTest(f"{doc} not found; set TALARIA_REPO")
         text = doc.read_text(encoding="utf-8")
         section = text.split("### 8.1 Settings", 1)[1].split("### 8.2", 1)[0]
         return {m.group(1): m.group(2) for m in re.finditer(r"^\| `(\w+)` \| ([^|]+) \|", section, flags=re.M)}

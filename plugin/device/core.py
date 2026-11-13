@@ -370,6 +370,12 @@ _VERIFIER = assertion.Verifier()
 _KEY_CACHE: dict[str, Any] = {"text": None, "keys": []}
 _KEY_LOCK = threading.Lock()
 
+# The default env var of the hub public keys, and its name before the rename of hermes-device to talaria,
+# still read (with one warning) when the new one is unset.
+HUB_KEY_ENV = "TALARIA_HUB_PUBLIC_KEY"
+LEGACY_HUB_KEY_ENV = "HERMES_DEVICE_HUB_PUBLIC_KEY"
+_KEY_ENV_WARNED: list = []
+
 
 def hub_key_text() -> Optional[bytes]:
     s = settings()
@@ -380,8 +386,14 @@ def hub_key_text() -> Optional[bytes]:
         except OSError as exc:
             logger.error("device: cannot read hub_public_key_file %s: %s", path, exc)
             return None
-    env_name = s.get("hub_public_key_env") or "HERMES_DEVICE_HUB_PUBLIC_KEY"
+    env_name = s.get("hub_public_key_env") or HUB_KEY_ENV
     value = os.environ.get(str(env_name))
+    if not value and env_name == HUB_KEY_ENV:
+        value = os.environ.get(LEGACY_HUB_KEY_ENV)
+        if value and not _KEY_ENV_WARNED:
+            _KEY_ENV_WARNED.append(True)
+            logger.warning("device: the environment variable %s is deprecated; use %s. A later release stops "
+                           "reading it.", LEGACY_HUB_KEY_ENV, HUB_KEY_ENV)
     return value.encode("utf-8", errors="surrogatepass") if value else None
 
 
@@ -446,7 +458,7 @@ class DeviceProcess:
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             offset = self.received
         if offset > self.received:
-            self.feed(f"\n[hermes-device: {offset - self.received} bytes of output were lost while the device "
+            self.feed(f"\n[talaria: {offset - self.received} bytes of output were lost while the device "
                       f"was disconnected]\n")
         elif offset < self.received:
             raw = raw[self.received - offset:]
@@ -1200,7 +1212,7 @@ class Hub:
         if code != 0:
             why = proc.error or out.strip() or f"exit {code}"
             return finished_process(EXIT_LOST if code == EXIT_LOST else EXIT_REFUSED,
-                                    f"[hermes-device: could not create the sandbox directory {directory} on device "
+                                    f"[talaria: could not create the sandbox directory {directory} on device "
                                     f"{device_id}: {why}]")
         with self._lock:
             self._sandbox_ready.add((conn.conn_id, directory))
@@ -1214,7 +1226,7 @@ class Hub:
         if conn is None:
             return finished_process(EXIT_LOST, f"{note}[device {device_id} is not connected; the command did not run]")
         if not posixpath.isabs(cwd or ""):
-            return finished_process(EXIT_REFUSED, f"[hermes-device: no device directory for this command ({cwd!r})]")
+            return finished_process(EXIT_REFUSED, f"[talaria: no device directory for this command ({cwd!r})]")
         failed = self._ensure_sandbox_dir(conn, device_id, cwd)
         if failed is not None:
             return failed
@@ -1461,10 +1473,10 @@ class Hub:
 def fail_closed_message(res: Resolution) -> str:
     sid = res.session_id or "(none)"
     if res.sandbox:
-        return (f"hermes-device: session {sid} {res.reason or 'runs in the sandbox device'}, so this did not "
+        return (f"talaria: session {sid} {res.reason or 'runs in the sandbox device'}, so this did not "
                 f"run. Sessions that are not bound to a device run only in the sandbox, never on the server. Try "
                 f"again when the sandbox is back, or bind the session with /device <device> <dir>.")
-    return (f"hermes-device: session {sid} {res.reason or 'cannot be served'}, so this does not run on the "
+    return (f"talaria: session {sid} {res.reason or 'cannot be served'}, so this does not run on the "
             f"server. Rebind it with /device <device> <dir>.")
 
 
@@ -1472,7 +1484,7 @@ def refusal_message(res: Resolution) -> str:
     if res.state == STATE_NEVER_BOUND and fallback() == "device":
         return fail_closed_message(sandbox_resolution(res))
     if res.state == STATE_NEVER_BOUND:
-        return (f"hermes-device: session {res.session_id or '(none)'} is not bound to a device and this server "
+        return (f"talaria: session {res.session_id or '(none)'} is not bound to a device and this server "
                 f"refuses unbound sessions (fallback: refuse). Bind it with /device <device> <dir>.")
     return fail_closed_message(res)
 
@@ -1685,7 +1697,7 @@ def take_waited(session_id: str) -> float:
 
 def reconnect_note(device_id: str, waited: float) -> str:
     """The status line of a command that waited for its device."""
-    return f"[hermes-device: waited {waited:.0f}s for device {device_id} to reconnect]\n"
+    return f"[talaria: waited {waited:.0f}s for device {device_id} to reconnect]\n"
 
 
 def valid_hooks() -> frozenset[str]:
@@ -2842,13 +2854,13 @@ def read_text_for_edit(res: Resolution, path: str) -> Optional[str]:
         active_conn(res)
         f = read_device_file(res, device_abs_path(res, path))
     except DeviceError as exc:
-        raise OSError(f"hermes-device: cannot read {path} on the device: {exc}") from exc
+        raise OSError(f"talaria: cannot read {path} on the device: {exc}") from exc
     if f.kind == "missing":
         return None
     if f.kind != "file":
         raise OSError(f"Cannot edit non-file path: {path}")
     if f.size > MAX_READ_BYTES:
-        raise OSError(f"hermes-device: {path} is larger than {MAX_READ_BYTES} bytes")
+        raise OSError(f"talaria: {path} is larger than {MAX_READ_BYTES} bytes")
     return f.text[1:] if f.text.startswith(_BOM) else f.text
 
 
@@ -3033,7 +3045,7 @@ def _make_managed_turn_text(original):
             if getattr(policy, "ignore_user_config", False):
                 res = await asyncio.to_thread(resolve_session, sid, str(getattr(policy, "cwd", "") or ""))
                 if not runs_on_pod(res):
-                    head = (f"hermes-device: session {sid} {where(res)}, so this does not run on the server."
+                    head = (f"talaria: session {sid} {where(res)}, so this does not run on the server."
                             if res.state == STATE_BOUND else refusal_message(res))
                     return None, (f"{head} Safe-mode and config-bypass sessions do not load the "
                                   f"device plugin, so they cannot serve device sessions.")
@@ -3288,7 +3300,7 @@ def pre_tool_call(tool_name: str = "", args: Optional[dict] = None, task_id: str
         return _guard(tool_name, args if isinstance(args, dict) else {}, task_id)
     except Exception as exc:
         logger.warning("device: pre_tool_call guard failed for %s", tool_name, exc_info=True)
-        return _block(f"hermes-device: {tool_name} refused because the device check failed: {exc}")
+        return _block(f"talaria: {tool_name} refused because the device check failed: {exc}")
 
 
 def _guard(tool_name: str, args: dict, task_id: str) -> Optional[dict]:
@@ -3300,7 +3312,7 @@ def _guard(tool_name: str, args: dict, task_id: str) -> Optional[dict]:
     if runs_on_pod(res):
         job_id = device_job_run(res.session_id)
         if job_id:
-            return _block(f"hermes-device: scheduled job {job_id} was created or changed in a session that runs on a "
+            return _block(f"talaria: scheduled job {job_id} was created or changed in a session that runs on a "
                           f"device or the sandbox, and this server now runs sessions that are not bound on the server "
                           f"itself (fallback: {fallback()}), so its runs may not use tools.")
         return None
@@ -3312,7 +3324,7 @@ def _guard(tool_name: str, args: dict, task_id: str) -> Optional[dict]:
     if tool_name == CRON_TOOL and (res.sandbox or fallback() == "device"):
         pod_args = [k for k in CRON_POD_ARGS if args.get(k) not in (None, "", False)]
         if pod_args:
-            return _block(f"hermes-device: session {res.session_id} {where(res)}; cronjob_manage "
+            return _block(f"talaria: session {res.session_id} {where(res)}; cronjob_manage "
                           f"{', '.join(pod_args)} would run on the server, so it is refused. Schedule a "
                           f"prompt-only job; its run uses the sandbox.")
         action = str(args.get("action") or "").strip().lower()
@@ -3322,19 +3334,19 @@ def _guard(tool_name: str, args: dict, task_id: str) -> Optional[dict]:
             job = resolve_job_ref(str(job_id)) or {}
             stored = [k for k in CRON_JOB_POD_FIELDS if job.get(k) not in (None, "", False)]
             if stored:
-                return _block(f"hermes-device: session {res.session_id} {where(res)}; scheduled job {job_id} has "
+                return _block(f"talaria: session {res.session_id} {where(res)}; scheduled job {job_id} has "
                               f"{', '.join(stored)}, which run on the server, so cronjob_manage {action} is refused "
                               f"here. Change that job on the server itself.")
             br = sys.modules.get("hermes_device_browser")
             if action == "update" and job.get("id") and br is not None:
                 br.choices().mark_device_job(str(job["id"]), res.session_id)
     elif tool_name in POD_ONLY_TOOLS:
-        return _block(f"hermes-device: session {res.session_id} {where(res)}; {tool_name} "
+        return _block(f"talaria: session {res.session_id} {where(res)}; {tool_name} "
                       f"creates work that runs on the server, so it is refused for device sessions.")
     from tools.file_tools_paths import _terminal_env_type_for_task
     env_type = _terminal_env_type_for_task(task_id or "default")
     if env_type != PLUGIN_ID:
-        return _block(f"hermes-device: session {res.session_id} {where(res)}, but its terminal "
+        return _block(f"talaria: session {res.session_id} {where(res)}, but its terminal "
                       f"backend is {env_type!r}, not {PLUGIN_ID!r}, so tools would run on the server. Start a new "
                       f"session with terminal.backend: {PLUGIN_ID}.")
     cwd = hub().device_cwd(b)
@@ -3358,7 +3370,7 @@ def _guard(tool_name: str, args: dict, task_id: str) -> Optional[dict]:
     try:
         absolute = {p: device_abs_path(res, p, cwd=cwd) for p in paths}
     except DeviceError as exc:
-        return _block(f"hermes-device: {tool_name} refused: {exc}")
+        return _block(f"talaria: {tool_name} refused: {exc}")
     if tool_name in ("write_file", "patch"):
         targets = list(dict.fromkeys(absolute.values()))
         resolved = device_realpaths(res, targets)
@@ -3366,11 +3378,11 @@ def _guard(tool_name: str, args: dict, task_id: str) -> Optional[dict]:
             for candidate in dict.fromkeys((a, r)):
                 reason = device_write_denial(conn, candidate)
                 if reason:
-                    return _block(f"hermes-device: {tool_name} to {a} refused on device {conn.name}: {reason}")
+                    return _block(f"talaria: {tool_name} to {a} refused on device {conn.name}: {reason}")
     if v4a:
         rewritten = _rewrite_v4a(args["patch"], absolute)
         if _v4a_paths(rewritten) != [absolute[p] for p in paths]:
-            return _block("hermes-device: could not rewrite the V4A patch paths to device paths; use absolute "
+            return _block("talaria: could not rewrite the V4A patch paths to device paths; use absolute "
                           "device paths in the patch.")
         return None if rewritten == args["patch"] else {"action": "modify", "args": {"patch": rewritten}}
     new_path = absolute[paths[0]]

@@ -273,7 +273,7 @@ class EnvironmentTests(Base):
         self.reconnect_later(1.2)
         r = env.execute("echo after")
         self.assertEqual(r["returncode"], 0)
-        self.assertRegex(r["output"], r"^\[hermes-device: waited \d+s for device d_pc to reconnect\]\nafter\n$")
+        self.assertRegex(r["output"], r"^\[talaria: waited \d+s for device d_pc to reconnect\]\nafter\n$")
         self.assertEqual(env.execute("echo again")["output"], "again\n")
 
     def test_background_command_waits_for_a_reconnecting_device(self):
@@ -563,6 +563,25 @@ class LineageTests(Base):
         self.hub.resolve("c1")
         self.assertEqual(self.store.calls.count("c1"), 1)
         self.assertEqual(self.store.calls.count("sess-1"), 2)
+
+
+class HubKeyEnvTests(unittest.TestCase):
+    """TALARIA_HUB_PUBLIC_KEY is the default; HERMES_DEVICE_HUB_PUBLIC_KEY is still read when it is unset."""
+
+    def key(self, cfg, env):
+        with mock.patch.object(core, "settings", lambda: cfg), mock.patch.dict(os.environ, env, clear=True):
+            return core.hub_key_text()
+
+    def test_new_name(self):
+        self.assertEqual(self.key({}, {"TALARIA_HUB_PUBLIC_KEY": "new", "HERMES_DEVICE_HUB_PUBLIC_KEY": "old"}), b"new")
+
+    def test_old_name_still_read(self):
+        with self.assertLogs("hermes_device", level="WARNING"):
+            core._KEY_ENV_WARNED.clear()
+            self.assertEqual(self.key({}, {"HERMES_DEVICE_HUB_PUBLIC_KEY": "old"}), b"old")
+
+    def test_named_env_has_no_fallback(self):
+        self.assertIsNone(self.key({"hub_public_key_env": "MY_KEY"}, {"HERMES_DEVICE_HUB_PUBLIC_KEY": "old"}))
 
 
 class SessionListAudienceTests(Base):
@@ -1152,7 +1171,7 @@ class SandboxTests(Base):
                                                  session_id=self.session))
         r = env.execute("pwd")
         self.assertEqual(r["returncode"], 0)
-        self.assertRegex(r["output"], r"^\[hermes-device: waited \d+s for device d_sb to reconnect\]\n")
+        self.assertRegex(r["output"], r"^\[talaria: waited \d+s for device d_sb to reconnect\]\n")
         self.assertTrue(r["output"].endswith(str(self.sdir) + "\n"))
 
     def test_never_bound_runs_in_its_sandbox_dir(self):
