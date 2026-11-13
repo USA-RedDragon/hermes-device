@@ -1,7 +1,14 @@
-name: Test
+name: Hermes test
 
 on:
   pull_request:
+    paths:
+      - hermes/**
+      - hub/internal/gateway/**
+      - hub/internal/device/**
+      - plugin/**
+      - scripts/test-plugin.sh
+      - .github/workflows/hermes-test.yaml
   workflow_call:
 
 permissions:
@@ -10,6 +17,10 @@ permissions:
 concurrency:
   group: "${{ github.workflow }} @ ${{ github.event_name == 'pull_request' && github.ref || github.run_id }}"
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: hermes
 
 jobs:
   patches:
@@ -61,14 +72,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check out Hermes and hermes-hub
+      - name: Check out Hermes
         run: |
           version=$(scripts/base-version.sh)
           echo "HERMES_AGENT_VERSION=$version" >> "$GITHUB_ENV"
           echo "HERMES_AGENT_SRC=$RUNNER_TEMP/hermes-agent" >> "$GITHUB_ENV"
           git clone --quiet --depth 1 --branch "$version" -c advice.detachedHead=false \
             https://github.com/NousResearch/hermes-agent "$RUNNER_TEMP/hermes-agent"
-          git clone --quiet --depth 1 https://github.com/USA-RedDragon/hermes-hub "$RUNNER_TEMP/hermes-hub"
 
       - name: Apply patches
         env:
@@ -77,11 +87,11 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: ${{ runner.temp }}/hermes-hub/go.mod
-          cache: false
+          go-version-file: hub/go.mod
+          cache-dependency-path: hub/go.sum
 
-      - name: Contract tests of hermes-hub against the patched tree
-        working-directory: ${{ runner.temp }}/hermes-hub
+      - name: Contract tests of the hub against the patched tree
+        working-directory: hub
         run: |
           go test -count=1 -v -run 'AgainstSource$' ./internal/gateway/ ./internal/device/ | tee "$RUNNER_TEMP/test.txt"
           for t in TestContractAgainstSource TestClientMethodsAgainstSource; do
@@ -102,7 +112,7 @@ jobs:
       - name: Build for every platform
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .
+          context: hermes
           platforms: linux/amd64,linux/arm64
           pull: true
           push: false
@@ -110,13 +120,12 @@ jobs:
       - name: Load the amd64 image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .
+          context: hermes
           platforms: linux/amd64
           load: true
           tags: hermes-patches:test
 
       - name: Device plugin tests in the patched image
         run: |
-          git clone --quiet --depth 1 https://github.com/USA-RedDragon/hermes-device "$RUNNER_TEMP/hermes-device"
-          docker run --rm --entrypoint /bin/sh -v "$RUNNER_TEMP/hermes-device:/src:ro" -e HERMES_AGENT_SRC=/opt/hermes \
+          docker run --rm --entrypoint /bin/sh -v "$GITHUB_WORKSPACE:/src:ro" -e HERMES_AGENT_SRC=/opt/hermes \
             hermes-patches:test /src/scripts/test-plugin.sh

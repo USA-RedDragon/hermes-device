@@ -5,7 +5,7 @@
     ],
     "packageRules": [
         {
-            "description": "Each Hermes release gets its own PR at once, so the Hermes compatibility check runs on it before the Flux upgrade PR is merged. Merge it by hand: see docs/hermes-upgrade.md in hermes-hub.",
+            "description": "Each Hermes release gets its own PR at once, so the Hermes compatibility check runs on it before the Flux upgrade PR is merged. Merge it by hand: see hub/docs/hermes-upgrade.md.",
             "matchPackageNames": [
                 "NousResearch/hermes-agent"
             ],
@@ -16,6 +16,25 @@
             "minimumReleaseAge": "0 days",
             "dependencyDashboardApproval": false,
             "automerge": false
+        },
+        {
+            "description": "Each Hermes release gets its own PR at once for hermes/Dockerfile. CI applies the patches to it and runs their tests and the hub and device checks; a green PR merges and the Hermes release workflow publishes v<release>-p1. Rolling it out stays a manual Flux merge.",
+            "matchDatasources": [
+                "docker"
+            ],
+            "matchPackageNames": [
+                "/(^|\\/)nousresearch\\/hermes-agent$/"
+            ],
+            "groupName": "Hermes Agent",
+            "schedule": [
+                "at any time"
+            ],
+            "minimumReleaseAge": "0 days",
+            "dependencyDashboardApproval": false,
+            "automerge": true,
+            "matchFileNames": [
+                "hermes/Dockerfile"
+            ]
         }
     ]
 }
