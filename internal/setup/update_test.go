@@ -59,7 +59,7 @@ func releaseServer(t *testing.T, archive []byte, sum string) *setup.Releases {
 		switch r.URL.Path {
 		case "/r/latest":
 			http.Redirect(w, r, "https://github.com/alice/talaria/releases/tag/v0.9.0", http.StatusFound)
-		case "/r/download/v0.9.0/hermes-device_0.9.0_checksums.txt":
+		case "/r/download/v0.9.0/talaria_0.9.0_checksums.txt":
 			_, _ = w.Write([]byte(sum + "  " + name + "\n" + strings.Repeat("0", 64) + "  talaria_0.9.0_darwin_arm64.tar.gz\n"))
 		case "/r/download/v0.9.0/" + name:
 			_, _ = w.Write(archive)
@@ -186,7 +186,7 @@ func TestArchiveNames(t *testing.T) {
 			t.Errorf("ArchiveName = %q, want %q", got, tc[4])
 		}
 	}
-	if setup.ChecksumsName(vOld) != "hermes-device_0.8.1_checksums.txt" || setup.XPIName(vOld) != "talaria-firefox-0.8.1.xpi" {
+	if setup.ChecksumsName(vOld) != "talaria_0.8.1_checksums.txt" || setup.LegacyChecksumsName(vOld) != "hermes-device_0.8.1_checksums.txt" || setup.XPIName(vOld) != "talaria-firefox-0.8.1.xpi" {
 		t.Error("asset names")
 	}
 }

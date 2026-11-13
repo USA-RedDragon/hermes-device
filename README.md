@@ -46,7 +46,7 @@ A session is bound to a device and a directory. Every command of a bound session
 
 ### Setup
 
-Download the archive `talaria_<version>_<os>_<arch>.tar.gz` for your OS and architecture from the [latest release](https://github.com/USA-RedDragon/talaria/releases/latest), check it against `hermes-device_<version>_checksums.txt` (`sha256sum --ignore-missing -c hermes-device_<version>_checksums.txt`, or `shasum -a 256 --ignore-missing -c ...` on macOS), unpack it and run:
+Download the archive `talaria_<version>_<os>_<arch>.tar.gz` for your OS and architecture from the [latest release](https://github.com/USA-RedDragon/talaria/releases/latest), check it against `talaria_<version>_checksums.txt` (`sha256sum --ignore-missing -c talaria_<version>_checksums.txt`, or `shasum -a 256 --ignore-missing -c ...` on macOS), unpack it and run:
 
 ```sh
 ./talaria setup https://hub.example.com

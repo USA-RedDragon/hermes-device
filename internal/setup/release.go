@@ -133,6 +133,12 @@ func LegacyArchiveName(version, goos, goarch, goarm string) string {
 
 // ChecksumsName is the release's checksum file of version (without v).
 func ChecksumsName(version string) string {
+	return fmt.Sprintf("%s_%s_checksums.txt", BinaryName, version)
+}
+
+// LegacyChecksumsName is the checksum file name of releases up to v0.25.2.
+// Releases keep publishing it for the auto-update of older installs.
+func LegacyChecksumsName(version string) string {
 	return fmt.Sprintf("%s_%s_checksums.txt", ReleaseName, version)
 }
 
@@ -184,6 +190,9 @@ func ExtractBinary(archive []byte) ([]byte, error) {
 func (r *Releases) FetchArchive(ctx context.Context, tag, goos, goarch, goarm string) ([]byte, string, []byte, error) {
 	v := strings.TrimPrefix(tag, "v")
 	sums, err := r.Fetch(ctx, tag, ChecksumsName(v), maxChecksums)
+	if errors.Is(err, ErrNoAsset) {
+		sums, err = r.Fetch(ctx, tag, LegacyChecksumsName(v), maxChecksums)
+	}
 	if err != nil {
 		return nil, "", nil, err
 	}

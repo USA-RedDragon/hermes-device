@@ -320,9 +320,10 @@ What the Release workflow does (`.github/workflows/release.yaml`, job `firefox-e
 
 1. It builds the extension with `talaria browser extension --out DIR --ext-version X`, where X is the tag without its leading `v`. Only the `version` line differs from the files in `extension/firefox`.
 2. It runs `web-ext lint`, the same validator AMO runs, so problems show in the job log. The Tests workflow runs the same lint on every push.
-3. It compares the extension with the one signed for the newest earlier release that has an `updates.json`. When only the `version` differs, it uploads that release's `updates.json` to this release and stops: Firefox stays on the signed file of the earlier release, and AMO, which limits how many versions an account can submit per day, is not asked again. `talaria setup` follows `updates.json` to that file.
+3. It compares the extension with the one signed for the newest earlier release that has an `updates.json`. When only the `version` differs, it uploads that release's `updates.json` and its signed `.xpi` (under the name it was signed as) to this release and skips AMO: Firefox stays on the signed file of the earlier release, and AMO, which limits how many versions an account can submit per day, is not asked again. `talaria setup` follows `updates.json` to that file.
 4. Otherwise it signs with `web-ext sign --channel unlisted`, with the repository secrets `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`.
 5. It checks that the signed file has a Mozilla signature and the expected version, then uploads `talaria-firefox-<version>.xpi` and `updates.json` to the release.
+6. It rewrites `talaria_<version>_checksums.txt` over every archive and `.xpi`, and uploads the same file as `hermes-device_<version>_checksums.txt` for `talaria update` of older installs.
 
 The job skips signing, with a notice in its log, and the release then has no `.xpi` and no `updates.json`, when:
 

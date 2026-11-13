@@ -125,5 +125,11 @@ archives:
     ids: [hermes-device]
     formats: [tar.gz]
 
+# talaria_ matches the archives. The workflow rewrites this file over the
+# .xpi too and publishes a copy as hermes-device_<version>_checksums.txt for
+# talaria update of older installs.
+checksum:
+  name_template: "talaria_{{ .Version }}_checksums.txt"
+
 milestones:
   - close: true
