@@ -52,8 +52,9 @@ Talaria on Unraid is one container from the all-in-one image ([design](all-in-on
 Data is in `/mnt/user/appdata/talaria`: `hermes` (chats, memory) and `talaria` (hub database, keys, the
 sandbox's files). Back up both.
 
-The container is stopped with a 120 second timeout (`--stop-timeout 120` in **Extra Parameters**), so running
-replies can finish.
+Stopping, restarting or updating the container interrupts a reply that is running; the chat says so, and you
+send the message again. Talaria stops in a few seconds, well within Unraid's **Docker Stop Timeout** (Settings,
+Docker; 10 seconds by default).
 
 ## Update and change settings
 
@@ -120,11 +121,11 @@ cannot reach the server's own address unless **Settings, Docker, Host access to 
   <Support>https://github.com/USA-RedDragon/talaria/issues</Support>
   <Project>https://github.com/USA-RedDragon/talaria</Project>
   <Overview>Talaria: a web app and Telegram bot for Hermes Agent, with a sandbox for the agent's commands and your own computers paired in. One container: hub, agent and sandbox. Open the web UI right after the first start: the first visitor makes the admin account.</Overview>
-  <Category>Productivity: Tools:</Category>
+  <Category>AI: Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/deploy/aio/unraid/talaria.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/hub/internal/web/static/icon-512.png</Icon>
-  <ExtraParams>--stop-timeout 120</ExtraParams>
+  <Shell>bash</Shell>
   <DonateText/>
   <DonateLink/>
   <Config Name="Web port" Target="8080" Default="8080" Mode="tcp" Description="Port of the web app" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
@@ -134,7 +135,6 @@ cannot reach the server's own address unless **Settings, Docker, Host access to 
   <Config Name="Demo model" Target="TALARIA_DEMO" Default="false" Description="true: a stand-in model that needs no API key, to try Talaria (pick talaria-demo with: docker exec -it -u hermes Talaria hermes model). The model and provider are Hermes settings, see the docs" Type="Variable" Display="always" Required="false" Mask="false">false</Config>
   <Config Name="Your hub user" Target="TALARIA_USER" Default="" Description="Optional: the hub account of the person this agent works for, once it exists. Names that person in memory, and owns chats that are on no computer" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Telegram bot token" Target="TALARIA_TELEGRAM_TOKEN" Default="" Description="Optional, from @BotFather" Type="Variable" Display="advanced" Required="false" Mask="true"/>
-  <Config Name="Time zone" Target="TZ" Default="" Description="IANA name, such as America/New_York. Empty: UTC" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="PUID" Target="PUID" Default="99" Description="Owner of the Hermes data folder" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Description="Group of the Hermes data folder" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
 </Container>

@@ -281,7 +281,6 @@ TALARIA_PUBLIC_URL       (empty)                            Public URL
 TALARIA_DEMO             false                              Demo model
 TALARIA_USER             (empty)                            Your hub user
 TALARIA_TELEGRAM_TOKEN   (empty)                            Telegram bot token
-TZ                       (empty)                            Time zone
 PUID                     99                                 PUID
 PGID                     100                                PGID
 ```
