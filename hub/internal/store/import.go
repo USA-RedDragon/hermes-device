@@ -38,6 +38,8 @@ var importTables = []struct{ name, columns, key string }{
 	{"chat_marks", `"user", backend_id, session_id, pinned, seen_at, unread`, `"user", backend_id, session_id`},
 	{"read_baselines", `"user", at`, `"user"`},
 	{"saved_prompts", `"user", name_key, name, text, updated_at`, `"user", name_key`},
+	{"accounts", `name, display, email, identity, password_hash, admin, disabled, failures, locked_until, epoch, created_at, updated_at`, "name"},
+	{"account_backends", "name, backend_id", "name, backend_id"},
 }
 
 // ImportSQLite copies every row of the SQLite database at path into the

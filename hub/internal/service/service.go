@@ -26,6 +26,12 @@ type Directory interface {
 	Groups(ctx context.Context, user string) ([]string, error)
 }
 
+// Grants returns the backends an admin gave a user in Settings > Users,
+// on top of backends[].users and groups.
+type Grants interface {
+	Grants(ctx context.Context, user string) ([]string, error)
+}
+
 // Dialer opens gateway connections to one backend.
 type Dialer interface {
 	Dial(ctx context.Context, onEvent func(gateway.Event)) (*gateway.Client, error)
@@ -62,6 +68,9 @@ type Options struct {
 	// so every replica can say which choice answered one. Nil: the hub
 	// works every outcome out from the tool call.
 	Answers hub.AnswerStore
+	// Grants are the backends admins gave users. Nil: only the config
+	// decides.
+	Grants Grants
 	// SteerRetry is how long a steer waits before it tries again while the
 	// running turn has no agent to take it, and SteerWindow how long it
 	// keeps trying. Defaults 250ms and 3s.
@@ -79,6 +88,7 @@ type Service struct {
 	backends map[string]*backend
 	order    []string
 	dir      Directory
+	grants   Grants
 	opts     Options
 	log      *slog.Logger
 	origin   string
@@ -152,7 +162,7 @@ func New(cfgs []config.Backend, dir Directory, opts Options) *Service {
 		opts.CommandsTTL = 5 * time.Minute
 	}
 	ctx, stop := context.WithCancel(context.Background())
-	s := &Service{backends: map[string]*backend{}, dir: dir, opts: opts, log: opts.Logger, origin: uuid.NewString(), stop: stop,
+	s := &Service{backends: map[string]*backend{}, dir: dir, grants: opts.Grants, opts: opts, log: opts.Logger, origin: uuid.NewString(), stop: stop,
 		uploads: make(chan struct{}, maxUploads)}
 	for _, c := range cfgs {
 		b := &backend{svc: s, cfg: c, dialer: opts.Dialer(c), sessions: map[string]*live{},
@@ -183,8 +193,17 @@ func (s *Service) allowed(ctx context.Context, user string, b *backend) (bool, e
 	if user == "" {
 		return false, nil
 	}
-	if slices.Contains(b.cfg.Users, user) {
+	if b.cfg.Everyone || slices.Contains(b.cfg.Users, user) {
 		return true, nil
+	}
+	if s.grants != nil {
+		ids, err := s.grants.Grants(ctx, user)
+		if err != nil {
+			return false, fmt.Errorf("look up backend grants: %w", err)
+		}
+		if slices.Contains(ids, b.cfg.ID) {
+			return true, nil
+		}
 	}
 	if len(b.cfg.Groups) == 0 || s.dir == nil {
 		return false, nil

@@ -287,6 +287,25 @@ var migrations = []migration{
 		sqlite:   []string{`ALTER TABLE chat_marks ADD COLUMN pin_pos INTEGER NOT NULL DEFAULT 0`},
 		postgres: []string{`ALTER TABLE chat_marks ADD COLUMN pin_pos BIGINT NOT NULL DEFAULT 0`},
 	},
+	{
+		version: 20,
+		sqlite: []string{
+			`CREATE TABLE accounts (name TEXT PRIMARY KEY, display TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+				identity TEXT NOT NULL DEFAULT '', password_hash TEXT NOT NULL DEFAULT '', admin INTEGER NOT NULL DEFAULT 0,
+				disabled INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, locked_until INTEGER NOT NULL DEFAULT 0,
+				epoch INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+			`CREATE UNIQUE INDEX accounts_identity ON accounts (identity) WHERE identity <> ''`,
+			`CREATE TABLE account_backends (name TEXT NOT NULL, backend_id TEXT NOT NULL, PRIMARY KEY (name, backend_id))`,
+		},
+		postgres: []string{
+			`CREATE TABLE accounts (name TEXT PRIMARY KEY, display TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+				identity TEXT NOT NULL DEFAULT '', password_hash TEXT NOT NULL DEFAULT '', admin INTEGER NOT NULL DEFAULT 0,
+				disabled INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, locked_until BIGINT NOT NULL DEFAULT 0,
+				epoch BIGINT NOT NULL DEFAULT 0, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
+			`CREATE UNIQUE INDEX accounts_identity ON accounts (identity) WHERE identity <> ''`,
+			`CREATE TABLE account_backends (name TEXT NOT NULL, backend_id TEXT NOT NULL, PRIMARY KEY (name, backend_id))`,
+		},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas
