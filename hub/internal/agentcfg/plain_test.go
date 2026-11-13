@@ -13,6 +13,7 @@ func TestHumanize(t *testing.T) {
 		"mcp_servers":            "MCP servers",
 		"agent.locked_keys":      "Agent locked keys",
 		"github":                 "GitHub",
+		"ascii-video":            "ASCII video",
 		"Already Fine":           "Already Fine",
 		"":                       "",
 		"home_assistant_bridge2": "Home assistant bridge2",

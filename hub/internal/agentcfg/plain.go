@@ -45,7 +45,7 @@ var plainToolsets = map[string][2]string{
 
 var (
 	idToken = regexp.MustCompile(`[A-Za-z0-9]+(?:[_.][A-Za-z0-9]+)+`)
-	acronym = map[string]string{"api": "API", "mcp": "MCP", "url": "URL", "oauth": "OAuth", "ssh": "SSH", "ai": "AI", "id": "ID", "tts": "TTS", "stt": "STT", "pdf": "PDF", "ui": "UI", "cli": "CLI", "gpt": "GPT", "llm": "LLM", "sql": "SQL", "kicad": "KiCad", "github": "GitHub", "openai": "OpenAI", "ios": "iOS", "macos": "macOS"}
+	acronym = map[string]string{"api": "API", "mcp": "MCP", "url": "URL", "oauth": "OAuth", "ssh": "SSH", "ai": "AI", "ascii": "ASCII", "svg": "SVG", "html": "HTML", "pcb": "PCB", "rf": "RF", "id": "ID", "tts": "TTS", "stt": "STT", "pdf": "PDF", "ui": "UI", "cli": "CLI", "gpt": "GPT", "llm": "LLM", "sql": "SQL", "kicad": "KiCad", "github": "GitHub", "openai": "OpenAI", "ios": "iOS", "macos": "macOS"}
 )
 
 // Humanize turns an id (web_search, systematic-debugging, mcp_servers,

@@ -24,7 +24,7 @@ window.HubModelPick = (() => {
   function refusal(p) {
     if (!isModel(p) || p.status !== "refused") return "";
     const now = p.model ? p.model + (p.provider ? " (" + (window.HubPlain ? window.HubPlain.text(p.provider) : p.provider) + ")" : "") : "the current model";
-    return "Model switch to " + (p.target_model || "the picked model") + " was not applied (" + (window.HubPlain ? window.HubPlain.clean(p.reason) : "") || "refused" + "); still using " + now + ".";
+    return "Model switch to " + (p.target_model || "the picked model") + " was not applied (" + ((window.HubPlain ? window.HubPlain.clean(p.reason) : p.reason) || "refused") + "); still using " + now + ".";
   }
 
   return { ask, refusal };

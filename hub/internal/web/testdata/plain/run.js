@@ -16,6 +16,7 @@ const cases = {
   mcp_servers: "MCP servers",
   "agent.locked_keys": "Agent locked keys",
   "openai-codex": "OpenAI codex",
+  "ascii-video": "ASCII video",
   "Already Fine": "Already Fine",
   "Claude": "Claude",
   "": "",

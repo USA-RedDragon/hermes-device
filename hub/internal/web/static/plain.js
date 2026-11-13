@@ -4,7 +4,7 @@
 // labels for tools, skills and connections; this is the fallback for any
 // other id that reaches the page, so no snake_case or dotted key is shown.
 window.HubPlain = (() => {
-  const acronyms = { api: "API", mcp: "MCP", url: "URL", oauth: "OAuth", ssh: "SSH", ai: "AI", id: "ID", tts: "TTS", stt: "STT", pdf: "PDF", gpu: "GPU", cli: "CLI", llm: "LLM", openai: "OpenAI", github: "GitHub" };
+  const acronyms = { api: "API", mcp: "MCP", url: "URL", oauth: "OAuth", ssh: "SSH", ai: "AI", ascii: "ASCII", svg: "SVG", html: "HTML", pcb: "PCB", rf: "RF", id: "ID", tts: "TTS", stt: "STT", pdf: "PDF", gpu: "GPU", cli: "CLI", llm: "LLM", openai: "OpenAI", github: "GitHub" };
   const text = (id) => {
     const s = String(id == null ? "" : id).trim();
     if (!s || /[\s]/.test(s) || /[A-Z]/.test(s)) return s;
