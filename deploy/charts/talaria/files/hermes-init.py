@@ -157,7 +157,7 @@ def talaria_config(pubkey_path):
 
 # Zero-downtime rolling updates on Kubernetes (patched Hermes): SIGTERM opens a restart wait where running turns
 # finish and approvals stay answerable, the new pod's gateway waits as a standby for this one's lock, and the
-# Webapp listener is handed over and relays connections until the new gateway is ready. See docs/helm.md
+# Webapp listener is handed over and relays connections until the new gateway is ready. See https://usa-reddragon.github.io/talaria/deploy/helm.html
 ROLLING = {
     "gateway": {
         "sigterm_restart_wait": True,

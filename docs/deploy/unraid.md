@@ -7,7 +7,7 @@ Talaria on Unraid is one container from the all-in-one image ([design](all-in-on
    **Template repositories** at the bottom and click **Save**:
 
    ```text
-   https://github.com/USA-RedDragon/talaria-deploy
+   https://github.com/USA-RedDragon/talaria
    ```
 
    Then click **Add Container** and pick **Talaria** under **Template**.
@@ -33,22 +33,22 @@ replies can finish.
 
 ## Template
 
-<!-- docgen:code file=aio/unraid/talaria.xml -->
+<!-- docgen:code file=deploy/aio/unraid/talaria.xml -->
 ```
 <?xml version="1.0"?>
-<!-- Unraid Community Applications template for the Talaria all-in-one image. See docs/unraid.md -->
+<!-- Unraid Community Applications template for the Talaria all-in-one image. See https://usa-reddragon.github.io/talaria/deploy/unraid.html -->
 <Container version="2">
   <Name>Talaria</Name>
   <Repository>ghcr.io/usa-reddragon/talaria-aio:latest</Repository>
   <Registry>https://github.com/users/USA-RedDragon/packages/container/package/talaria-aio</Registry>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
-  <Support>https://github.com/USA-RedDragon/talaria-deploy/issues</Support>
-  <Project>https://github.com/USA-RedDragon/talaria-deploy</Project>
-  <Overview>Talaria: a web app and Telegram bot for Hermes Agent, with a sandbox for the agent's commands and your own computers paired in. One container: hub, agent, sandbox and a built-in login. The first login is in the container's log (look for "Open:").</Overview>
+  <Support>https://github.com/USA-RedDragon/talaria/issues</Support>
+  <Project>https://github.com/USA-RedDragon/talaria</Project>
+  <Overview>Talaria: a web app and Telegram bot for Hermes Agent, with a sandbox for the agent's commands and your own computers paired in. One container: hub, agent and sandbox. Open the web UI right after the first start: the first visitor makes the admin account.</Overview>
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/USA-RedDragon/talaria-deploy/main/aio/unraid/talaria.xml</TemplateURL>
+  <TemplateURL>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/deploy/aio/unraid/talaria.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/USA-RedDragon/talaria-hub/main/internal/web/static/icon-512.png</Icon>
   <ExtraParams>--stop-timeout 120</ExtraParams>
   <DonateText/>
@@ -61,8 +61,7 @@ replies can finish.
   <Config Name="Model API URL" Target="TALARIA_MODEL_BASE_URL" Default="" Description="Any OpenAI-compatible API, such as https://openrouter.ai/api/v1" Type="Variable" Display="always" Required="false" Mask="false"/>
   <Config Name="Model" Target="TALARIA_MODEL" Default="" Description="Model name at that API, such as anthropic/claude-sonnet-4.5" Type="Variable" Display="always" Required="false" Mask="false"/>
   <Config Name="Model API key" Target="TALARIA_MODEL_API_KEY" Default="" Description="API key of that service" Type="Variable" Display="always" Required="false" Mask="true"/>
-  <Config Name="Admin email" Target="TALARIA_ADMIN_EMAIL" Default="admin@talaria.local" Description="Login of the first user" Type="Variable" Display="advanced" Required="false" Mask="false">admin@talaria.local</Config>
-  <Config Name="Admin password" Target="TALARIA_ADMIN_PASSWORD" Default="" Description="Empty: a random one, printed in the log" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Your hub user" Target="TALARIA_USER" Default="" Description="Optional: the hub account of the person this agent works for, once it exists. Names that person in memory, and owns chats that are on no computer" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Telegram bot token" Target="TALARIA_TELEGRAM_TOKEN" Default="" Description="Optional, from @BotFather" Type="Variable" Display="advanced" Required="false" Mask="true"/>
   <Config Name="Time zone" Target="TZ" Default="" Description="IANA name, such as America/New_York. Empty: UTC" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="PUID" Target="PUID" Default="99" Description="Owner of the Hermes data folder" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>

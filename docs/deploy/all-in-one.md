@@ -12,7 +12,7 @@ docker run -d --name talaria -p 8080:8080 \
 docker logs talaria 2>&1 | grep -A3 Open:
 ```
 
-The image is built from `aio/Dockerfile` for amd64 and arm64 and published on each release (see
+The image is built from `deploy/aio/Dockerfile` for amd64 and arm64 and published on each release (see
 [Images](images.md)). To build it yourself from a checkout: `docker build -f aio/Dockerfile -t talaria-aio .`.
 
 ## Design

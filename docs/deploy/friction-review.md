@@ -4,7 +4,7 @@ Date: 2026-11-13. Kit commit: the one that added this page.
 
 Setup: a Debian 13 cloud image in QEMU (6 vCPU, 12 GB RAM, user-mode networking, no GPU). Docker from
 get.docker.com (Docker 29.9, Compose 5.7). For Helm: kind v0.33.0 (Kubernetes 1.37), kubectl 1.37, Helm 3.22.
-Times are wall-clock seconds per step. "Chat" is `hack/smoke.py`, which does what a person does in the browser:
+Times are wall-clock seconds per step. "Chat" is `deploy/hack/smoke.py`, which does what a person does in the browser:
 log in through the built-in login, open a chat, send a message, wait for the reply, and with the demo model send
 `run: ...` and check the command ran in the sandbox. No browser was used, and no real API keys.
 
@@ -31,7 +31,7 @@ Snags in pass 1, and what changed:
 1. The docs did not say how to install Docker, nor that the user needs the `docker` group (and a new login)
    to run `docker` without `sudo`. Added both to "What you need".
 2. The Hermes image is private (expected). The compose file pins it by digest, so an image loaded from a file
-   does not match. `TALARIA_HERMES_IMAGE` existed but only `docs/images.md` named it. It is now in
+   does not match. `TALARIA_HERMES_IMAGE` existed but only `docs/deploy/images.md` named it. It is now in
    `.env.example`, and Step 1 points to it.
 3. `docker compose up -d --wait --remove-orphans` did not stop the demo model: a service of a profile that is
    off is not an orphan. Step 4 now uses `docker compose rm -sf demo-llm`.
@@ -71,7 +71,7 @@ Found while building the kit (before the review), fixed in the kit:
 
 Snags in pass 1, and what changed:
 
-1. The chart download command extracted `charts/talaria` instead of `talaria`, so `helm install ./talaria`
+1. The chart download command extracted `deploy/charts/talaria` instead of `talaria`, so `helm install ./talaria`
    failed. Fixed `--strip-components`.
 2. The front container (Caddy) failed with `exec /usr/bin/caddy: operation not permitted`: the binary carries
    the file capability `cap_net_bind_service`, and the chart dropped all capabilities with no privilege

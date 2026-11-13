@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # Talaria all-in-one: the hub, Hermes and the sandbox in one container, for Unraid, TrueNAS and
 # anyone who wants a single container. Build from the repository root:
-#   docker build -f aio/Dockerfile -t talaria-aio .
-# Design and trade-offs: docs/all-in-one.md
+#   docker build -f deploy/aio/Dockerfile -t talaria-aio deploy
+# Design and trade-offs: https://usa-reddragon.github.io/talaria/deploy/all-in-one.html
 # Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research.
 
 ARG HERMES_IMAGE=ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a

@@ -16,10 +16,10 @@ For real use, set `TALARIA_MODEL_BASE_URL`, `TALARIA_MODEL` and `TALARIA_MODEL_A
 
 `PUID` and `PGID` 568 are the TrueNAS `apps` user, which owns datasets with the Apps preset.
 
-<!-- docgen:code file=aio/truenas/compose.yaml -->
+<!-- docgen:code file=deploy/aio/truenas/compose.yaml -->
 ```yaml
 # TrueNAS SCALE (24.10 and later): Apps, Discover Apps, the menu next to Custom App, Install via YAML. Paste this
-# file, change the four lines marked CHANGE, and save. See docs/truenas.md
+# file, change the four lines marked CHANGE, and save. See https://usa-reddragon.github.io/talaria/deploy/truenas.html
 services:
   talaria:
     image: ghcr.io/usa-reddragon/talaria-aio:latest

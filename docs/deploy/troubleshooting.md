@@ -45,7 +45,7 @@ Pages (the agent's HTML pages) and Web Push need HTTPS or `localhost`. On a plai
 
 ## A computer will not pair or shows offline
 
-See the `talaria` [troubleshooting](https://github.com/USA-RedDragon/talaria/blob/main/docs/guides/troubleshooting.md) page. The usual causes: the computer cannot open the hub's public address, the pairing code expired (10 minutes), or the service on the computer is not running. In the hub, Settings, Computers shows when each computer last connected and how the last connection ended.
+See the `talaria` [troubleshooting](../guides/troubleshooting.md) page. The usual causes: the computer cannot open the hub's public address, the pairing code expired (10 minutes), or the service on the computer is not running. In the hub, Settings, Computers shows when each computer last connected and how the last connection ended.
 
 ## Telegram does not answer
 
@@ -73,4 +73,4 @@ Helm: `helm uninstall talaria -n talaria`, then delete the PVCs and the `<releas
 
 ## Report a problem
 
-Open an issue in [talaria-deploy](https://github.com/USA-RedDragon/talaria-deploy/issues) with the install path, the output of `docker compose ps -a` (or `kubectl get pods`) and the relevant log lines. Remove tokens and passwords from anything you paste.
+Open an issue in [talaria](https://github.com/USA-RedDragon/talaria/issues) with the install path, the output of `docker compose ps -a` (or `kubectl get pods`) and the relevant log lines. Remove tokens and passwords from anything you paste.

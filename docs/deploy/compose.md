@@ -23,8 +23,8 @@ built-in login. Every secret is made for you on the first start.
 
 ```bash
 mkdir talaria && cd talaria
-curl -fsSL https://github.com/USA-RedDragon/talaria-deploy/archive/refs/heads/main.tar.gz \
-  | tar -xz --strip-components=2 talaria-deploy-main/compose
+curl -fsSL https://github.com/USA-RedDragon/talaria/archive/refs/heads/main.tar.gz \
+  | tar -xz --strip-components=3 talaria-main/deploy/compose
 cp .env.example .env
 ```
 
@@ -153,7 +153,7 @@ Data lives in Docker volumes: `talaria_hermes-data` (chats, memory, Hermes setti
 ## Add your computers
 
 Install `talaria` on each computer you want the agent to work on, and pair it with your hub. See the
-[talaria README](https://github.com/USA-RedDragon/talaria#setup). Give `talaria setup` your hub's address
+[setup page](../start/setup-and-pairing.md). Give `talaria setup` your hub's address
 (`TALARIA_PUBLIC_URL`).
 
 ## Troubleshooting

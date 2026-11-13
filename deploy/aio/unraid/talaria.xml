@@ -1,17 +1,17 @@
 <?xml version="1.0"?>
-<!-- Unraid Community Applications template for the Talaria all-in-one image. See docs/unraid.md -->
+<!-- Unraid Community Applications template for the Talaria all-in-one image. See https://usa-reddragon.github.io/talaria/deploy/unraid.html -->
 <Container version="2">
   <Name>Talaria</Name>
   <Repository>ghcr.io/usa-reddragon/talaria-aio:latest</Repository>
   <Registry>https://github.com/users/USA-RedDragon/packages/container/package/talaria-aio</Registry>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
-  <Support>https://github.com/USA-RedDragon/talaria-deploy/issues</Support>
-  <Project>https://github.com/USA-RedDragon/talaria-deploy</Project>
+  <Support>https://github.com/USA-RedDragon/talaria/issues</Support>
+  <Project>https://github.com/USA-RedDragon/talaria</Project>
   <Overview>Talaria: a web app and Telegram bot for Hermes Agent, with a sandbox for the agent's commands and your own computers paired in. One container: hub, agent and sandbox. Open the web UI right after the first start: the first visitor makes the admin account.</Overview>
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/USA-RedDragon/talaria-deploy/main/aio/unraid/talaria.xml</TemplateURL>
+  <TemplateURL>https://raw.githubusercontent.com/USA-RedDragon/talaria/main/deploy/aio/unraid/talaria.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/USA-RedDragon/talaria-hub/main/internal/web/static/icon-512.png</Icon>
   <ExtraParams>--stop-timeout 120</ExtraParams>
   <DonateText/>

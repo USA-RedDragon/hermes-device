@@ -1,6 +1,6 @@
 # Install Talaria on Kubernetes with Helm
 
-The chart in `charts/talaria` runs the same parts as the compose install: the hub (with its web front and the
+The chart in `deploy/charts/talaria` runs the same parts as the compose install: the hub (with its web front and the
 built-in login in one pod), Hermes, and the sandbox. It makes every key it needs on the first install.
 
 ## What you need
@@ -12,8 +12,8 @@ built-in login in one pod), Hermes, and the sandbox. It makes every key it needs
 ## Quick start (try it, with port-forward)
 
 ```bash
-curl -fsSL https://github.com/USA-RedDragon/talaria-deploy/archive/refs/heads/main.tar.gz \
-  | tar -xz --strip-components=2 talaria-deploy-main/charts
+curl -fsSL https://github.com/USA-RedDragon/talaria/archive/refs/heads/main.tar.gz \
+  | tar -xz --strip-components=3 talaria-main/deploy/charts
 helm install talaria ./talaria --namespace talaria --create-namespace \
   --set publicUrl=http://localhost:8080 --set demo.enabled=true
 kubectl -n talaria rollout status deploy/talaria-hermes --timeout=10m

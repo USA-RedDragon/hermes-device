@@ -3,18 +3,17 @@
 Every install uses these images, pinned by digest. The compose file, the Helm chart and the all-in-one
 Dockerfile pin the same versions.
 
-<!-- docgen:output exec="grep -oE '(ghcr\.io|docker\.io)/[a-z0-9./_-]+:[A-Za-z0-9._-]+' compose/compose.yaml | sort -u" -->
+<!-- docgen:output exec="grep -oE '(ghcr\.io|docker\.io)/[a-z0-9./_-]+:[A-Za-z0-9._-]+' deploy/compose/compose.yaml | sort -u" -->
 ```text
 docker.io/library/caddy:2.10-alpine
 docker.io/ollama/ollama:0.40.16
 docker.io/pgvector/pgvector:0.8.1-pg17
-ghcr.io/dexidp/dex:v2.44.0
 ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
 ghcr.io/plastic-labs/honcho:v3.6.0
 ghcr.io/usa-reddragon/hermes-device-sandbox:v0.25.3
 ghcr.io/usa-reddragon/hermes-device:v0.25.3
 ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30
-ghcr.io/usa-reddragon/talaria-hub:v0.26.45
+ghcr.io/usa-reddragon/talaria-hub:v0.26.53
 ```
 <!-- /docgen:output -->
 
@@ -44,7 +43,7 @@ cosign verify ghcr.io/usa-reddragon/talaria-hermes:<tag> \
   --certificate-identity-regexp '^https://github.com/USA-RedDragon/hermes-patches/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 cosign verify ghcr.io/usa-reddragon/talaria-aio:<tag> \
-  --certificate-identity-regexp '^https://github.com/USA-RedDragon/talaria-deploy/' \
+  --certificate-identity-regexp '^https://github.com/USA-RedDragon/talaria(-deploy)?/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

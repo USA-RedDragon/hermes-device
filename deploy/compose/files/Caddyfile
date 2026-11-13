@@ -9,7 +9,7 @@
 }
 
 # TALARIA_SITE is :<TALARIA_PORT> by default (plain HTTP). Set it to a domain name, and publish ports 80 and 443, for
-# automatic HTTPS (docs/compose.md)
+# automatic HTTPS (https://usa-reddragon.github.io/talaria/deploy/compose.html)
 {$TALARIA_SITE} {
 	# Empty, or "tls internal" (Caddy's own CA) or "tls <email>" from TALARIA_TLS
 	{$TALARIA_TLS_LINE}

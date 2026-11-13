@@ -5,7 +5,7 @@ type: application
 version: 0.1.0
 # The talaria-hub release this chart was tested with
 appVersion: "0.26.45"
-home: https://github.com/USA-RedDragon/talaria-deploy
+home: https://github.com/USA-RedDragon/talaria
 sources:
   - https://github.com/USA-RedDragon/talaria-hub
   - https://github.com/USA-RedDragon/talaria

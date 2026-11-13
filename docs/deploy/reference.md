@@ -4,9 +4,9 @@ Everything on this page is generated from the files in the repository, so it mat
 
 ## Compose settings (.env)
 
-Every setting is optional. Copy `compose/.env.example` to `.env` and change what you need, then run `docker compose up -d`. The `init` service writes the configs again from `.env` on every start and never changes a secret it made.
+Every setting is optional. Copy `deploy/compose/.env.example` to `.env` and change what you need, then run `docker compose up -d`. The `init` service writes the configs again from `.env` on every start and never changes a secret it made.
 
-<!-- docgen:code file=compose/.env.example -->
+<!-- docgen:code file=deploy/compose/.env.example -->
 ```
 # Talaria settings for docker compose. Copy this file to .env and change what you need.
 # Every setting is optional. Secrets that Talaria needs inside are made for you on the first start.
@@ -18,18 +18,22 @@ TALARIA_PORT=8080
 # https://<your domain> behind HTTPS, or http://<this host's address>:<TALARIA_PORT> on a LAN. Pages and push
 # notifications need HTTPS or localhost.
 TALARIA_PUBLIC_URL=
-# For automatic HTTPS from Caddy: your domain name (also publish ports 80 and 443, see docs/compose.md)
+# For automatic HTTPS from Caddy: your domain name (also publish ports 80 and 443, see https://usa-reddragon.github.io/talaria/deploy/compose.html)
 # TALARIA_SITE=talaria.example.com
 # Where the certificate comes from. Empty: Let's Encrypt (the domain must point at this host, ports 80 and 443
 # open). An email address: the same, with that contact. internal: Caddy's own CA, for a LAN or a test; then
-# browsers and computers must trust its root (docs/compose.md)
+# browsers and computers must trust its root (https://usa-reddragon.github.io/talaria/deploy/compose.html)
 # TALARIA_TLS=internal
 
-# --- First login ---
-TALARIA_ADMIN_USER=admin
-TALARIA_ADMIN_EMAIL=admin@talaria.local
-# Empty: a random password, shown by "docker compose logs init"
-TALARIA_ADMIN_PASSWORD=
+# --- Accounts ---
+# There is no admin password here: the first person who opens Talaria makes the admin account on its setup
+# page. Other login options (your OIDC provider, or a reverse proxy such as Authelia): https://usa-reddragon.github.io/talaria/deploy/auth.html
+# The hub account of the person this Hermes works for, once it exists (optional). Names that person in Honcho
+# memory, and owns chats that are on no computer. Empty: works while one person's computers are paired
+TALARIA_USER=
+# Contact address that push services get with Web Push, such as mailto:you@example.com. Empty: the public URL
+# when that is https (push notifications need https anyway)
+TALARIA_PUSH_CONTACT=
 
 # --- Model ---
 # Optional parts to start: demo (a stand-in model with no API key), ollama, honcho, honcho-embeddings.
@@ -75,14 +79,13 @@ TALARIA_HONCHO_URL=
 
 ## Compose services
 
-<!-- docgen:output exec="awk '/^services:/{s=1;next} /^[a-z]/{s=0} s && /^  [a-z][a-z0-9-]*:$/{print $1}' compose/compose.yaml | tr -d :" -->
+<!-- docgen:output exec="awk '/^services:/{s=1;next} /^[a-z]/{s=0} s && /^  [a-z][a-z0-9-]*:$/{print $1}' deploy/compose/compose.yaml | tr -d :" -->
 ```text
 init
 plugin
 hermes-init
 hermes
 front
-dex
 hub
 sandbox
 demo-llm
@@ -98,9 +101,9 @@ honcho-embeddings
 
 ## Helm chart
 
-The chart is `charts/talaria`.
+The chart is `deploy/charts/talaria`.
 
-<!-- docgen:code file=charts/talaria/Chart.yaml -->
+<!-- docgen:code file=deploy/charts/talaria/Chart.yaml -->
 ```yaml
 apiVersion: v2
 name: talaria
@@ -109,7 +112,7 @@ type: application
 version: 0.1.0
 # The talaria-hub release this chart was tested with
 appVersion: "0.26.45"
-home: https://github.com/USA-RedDragon/talaria-deploy
+home: https://github.com/USA-RedDragon/talaria
 sources:
   - https://github.com/USA-RedDragon/talaria-hub
   - https://github.com/USA-RedDragon/talaria
@@ -121,7 +124,7 @@ kubeVersion: ">=1.29.0-0"
 
 Only `publicUrl` is required.
 
-<!-- docgen:code file=charts/talaria/values.yaml -->
+<!-- docgen:code file=deploy/charts/talaria/values.yaml -->
 ```yaml
 # Talaria Helm chart values. Only publicUrl is required. Secrets and keys that Talaria needs inside are made on
 # the first install and kept in the Secret <release>-talaria-keys, which uninstall leaves in place.
@@ -134,16 +137,20 @@ publicUrl: ""
 timeZone: UTC
 
 auth:
-  # -- builtin: a small login service (Dex) inside the hub pod, with one admin account. oidc: your own identity
-  # provider. The hub's own accounts will become the default when they ship; builtin then goes away
-  mode: builtin
-  admin:
-    # -- Hub user name of the admin
-    user: admin
-    # -- Login of the admin with mode builtin
-    email: admin@talaria.local
-    # -- Password of the admin with mode builtin. Empty: a random one, kept in the keys Secret
-    password: ""
+  # -- local: the hub's own accounts; the first person who opens Talaria makes the admin account on its setup
+  # page. proxy: a reverse proxy that logs people in (Authelia, oauth2-proxy, Envoy Gateway) says who they are.
+  # oidc: your OpenID Connect provider. See https://usa-reddragon.github.io/talaria/deploy/auth.html
+  mode: local
+  # -- The hub account of the person this Hermes works for (optional). Owns chats that are on no computer.
+  # Empty: works while one person's computers are paired
+  user: ""
+  # -- Hub user names that are admins, besides accounts marked admin in Settings > Users
+  admins: []
+  # -- Addresses the hub reads the client address from X-Forwarded-For for: the front container in the same pod
+  trustedProxies: ["127.0.0.1/32"]
+  # -- The hub's auth.proxy settings, as they are, for mode proxy, such as {user_header: Remote-User} or a jwt
+  # block. Only the proxy may reach the Service then: anyone else could send the header
+  proxy: {}
   oidc:
     # -- Issuer URL of your identity provider (mode oidc)
     issuerUrl: ""
@@ -151,10 +158,14 @@ auth:
     # -- Client secret. Or name a Secret with key client-secret in existingSecret
     clientSecret: ""
     existingSecret: ""
-    # -- Who may log in: each OIDC sub and its hub user name. The admin user above must be one of them
-    users: []
-    #  - sub: "..."
-    #    name: admin
+    # -- More of the hub's oidc settings, as they are, such as {auto_create: true, allowed_domains: [example.com]}
+    settings: {}
+  # -- Identities from the provider or proxy and their hub user names, such as [{sub: "...", name: alice}].
+  # Optional: an admin can also make accounts in Settings > Users
+  users: []
+
+# -- Contact address that push services get with Web Push, such as mailto:you@example.com. Empty: publicUrl
+pushContact: ""
 
 model:
   # -- Any OpenAI-compatible API, such as https://openrouter.ai/api/v1. Empty with demo.enabled: the demo model
@@ -177,19 +188,18 @@ telegram:
   existingSecret: ""
 
 images:
-  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.45@sha256:72c81af7265bc3a74b167b17bb3598d9e0f2839877997a6f66d00c8cecf5d7ec
-  # -- Talaria Hermes: Hermes Agent with the Talaria patches (docs/images.md)
+  hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.53@sha256:8e7f087e2636b62f0fdc4a6ff2c773282366c76b734f89f92a0730a9ae03caca
+  # -- Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
   hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a
   device: ghcr.io/usa-reddragon/hermes-device:v0.25.3@sha256:c19e36561ac6b34798eea6464dfbf5f974b44102d30c1e1f789abc88c3a7eeb0
   sandbox: ghcr.io/usa-reddragon/hermes-device-sandbox:v0.25.3@sha256:ec2ffbec87ada250eec859e98467d91bf3cf1e59b65e158c5d3e0faec3cd2ebb
   caddy: docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
-  dex: ghcr.io/dexidp/dex:v2.44.0@sha256:5d0656fce7d453c0e3b2706abf40c0d0ce5b371fb0b73b3cf714d05f35fa5f86
   pullPolicy: IfNotPresent
 # -- Secrets for private images, such as [{name: ghcr}]
 imagePullSecrets: []
 
 hub:
-  # -- Replicas. More than 1 needs store postgres and auth.mode oidc (the builtin login keeps state in its pod)
+  # -- Replicas. More than 1 needs store postgres
   replicas: 1
   store:
     # -- sqlite (one replica, on the hub's volume) or postgres
@@ -201,8 +211,8 @@ hub:
     storageClass: ""
   # -- Extra HUB_* environment variables, such as HUB_LOG_LEVEL: debug
   env: {}
-  # -- PEM certificates of private authorities the hub trusts besides the usual public ones: for publicUrl (the
-  # built-in login is there) or an identity provider whose certificates a private CA signs
+  # -- PEM certificates of private authorities the hub trusts besides the usual public ones: for an OIDC provider
+  # or a proxy's key set (jwks_url) whose certificates a private CA signs
   caBundle: ""
   resources:
     requests: {cpu: 10m, memory: 64Mi}
@@ -262,17 +272,7 @@ It reads the same `TALARIA_*` names as compose. The settings of the Unraid templ
 
 <!-- docgen:output exec="grep -o 'Target=\"[A-Z_]*\"' aio/unraid/talaria.xml | sed 's/Target=\"//;s/\"//'" -->
 ```text
-TALARIA_PUBLIC_URL
-TALARIA_DEMO
-TALARIA_MODEL_BASE_URL
-TALARIA_MODEL
-TALARIA_MODEL_API_KEY
-TALARIA_ADMIN_EMAIL
-TALARIA_ADMIN_PASSWORD
-TALARIA_TELEGRAM_TOKEN
-TZ
-PUID
-PGID
+
 ```
 <!-- /docgen:output -->
 
@@ -280,17 +280,16 @@ PGID
 
 Every install pulls these, pinned by digest. [Images](images.md) says what each one is.
 
-<!-- docgen:output exec="grep -oE '(ghcr\.io|docker\.io)/[a-z0-9./_-]+:[A-Za-z0-9._-]+' compose/compose.yaml | sort -u" -->
+<!-- docgen:output exec="grep -oE '(ghcr\.io|docker\.io)/[a-z0-9./_-]+:[A-Za-z0-9._-]+' deploy/compose/compose.yaml | sort -u" -->
 ```text
 docker.io/library/caddy:2.10-alpine
 docker.io/ollama/ollama:0.40.16
 docker.io/pgvector/pgvector:0.8.1-pg17
-ghcr.io/dexidp/dex:v2.44.0
 ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
 ghcr.io/plastic-labs/honcho:v3.6.0
 ghcr.io/usa-reddragon/hermes-device-sandbox:v0.25.3
 ghcr.io/usa-reddragon/hermes-device:v0.25.3
 ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30
-ghcr.io/usa-reddragon/talaria-hub:v0.26.45
+ghcr.io/usa-reddragon/talaria-hub:v0.26.53
 ```
 <!-- /docgen:output -->

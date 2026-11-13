@@ -55,7 +55,7 @@ PUBLIC_URL=${PUBLIC_URL%/}
 USER_NAME=${TALARIA_USER:-}
 
 # --- hub: backends can only be set in its config file. Login settings (auth.mode and the rest) come from the
-# hub's own HUB_AUTH_* and HUB_OIDC_* variables, see docs/auth.md ---
+# hub's own HUB_AUTH_* and HUB_OIDC_* variables, see https://usa-reddragon.github.io/talaria/deploy/auth.html ---
 cat > "$S/hub/config.yaml.tmp" <<EOF
 auth:
   # Caddy (front) runs in the hub's network namespace: read the client's address from X-Forwarded-For

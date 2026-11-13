@@ -12,7 +12,7 @@ The computer connects out to the hub over HTTPS. You do not open any port on the
 
 ## Pair a computer
 
-1. Download `talaria` for your system from the [latest release](https://github.com/USA-RedDragon/talaria/releases/latest) and unpack it. The [install page](https://github.com/USA-RedDragon/talaria/blob/main/docs/start/install.md) has the details for each system.
+1. Download `talaria` for your system from the [latest release](https://github.com/USA-RedDragon/talaria/releases/latest) and unpack it. The [install page](../start/install.md) has the details for each system.
 2. Run setup with your hub's address:
 
    ```sh
@@ -52,7 +52,7 @@ A chat that was ever tied to a computer never falls back to the server. If the c
 
 - The agent runs commands as your user, on the folders you allow. By default that is your home directory. Narrow it with `device.roots` in `~/.config/talaria/config.yaml`.
 - Each command has a memory cap on Linux with systemd.
-- The agent asks before it does anything you cannot undo in Firefox: see [Let the agent use Firefox](https://github.com/USA-RedDragon/talaria/blob/main/docs/guides/browser-extension.md).
+- The agent asks before it does anything you cannot undo in Firefox: see [Let the agent use Firefox](../guides/browser-extension.md).
 - To cut a computer off, remove it in Settings, Computers. Its token stops working at once.
 
 ## Your hub is not on the public internet
@@ -61,4 +61,4 @@ The computer must reach the hub. Put the hub behind a VPN you already use (Tails
 
 ## More
 
-The `talaria` repository has the full guides: [install](https://github.com/USA-RedDragon/talaria/blob/main/docs/start/install.md), [pairing](https://github.com/USA-RedDragon/talaria/blob/main/docs/start/setup-and-pairing.md), [Firefox control](https://github.com/USA-RedDragon/talaria/blob/main/docs/guides/browser-extension.md), [editors](https://github.com/USA-RedDragon/talaria/blob/main/docs/guides/editor-bridge.md) and [troubleshooting](https://github.com/USA-RedDragon/talaria/blob/main/docs/guides/troubleshooting.md).
+The `talaria` repository has the full guides: [install](../start/install.md), [pairing](../start/setup-and-pairing.md), [Firefox control](../guides/browser-extension.md), [editors](../guides/editor-bridge.md) and [troubleshooting](../guides/troubleshooting.md).

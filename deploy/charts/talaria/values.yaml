@@ -11,7 +11,7 @@ timeZone: UTC
 auth:
   # -- local: the hub's own accounts; the first person who opens Talaria makes the admin account on its setup
   # page. proxy: a reverse proxy that logs people in (Authelia, oauth2-proxy, Envoy Gateway) says who they are.
-  # oidc: your OpenID Connect provider. See docs/auth.md
+  # oidc: your OpenID Connect provider. See https://usa-reddragon.github.io/talaria/deploy/auth.html
   mode: local
   # -- The hub account of the person this Hermes works for (optional). Owns chats that are on no computer.
   # Empty: works while one person's computers are paired
@@ -61,7 +61,7 @@ telegram:
 
 images:
   hub: ghcr.io/usa-reddragon/talaria-hub:v0.26.53@sha256:8e7f087e2636b62f0fdc4a6ff2c773282366c76b734f89f92a0730a9ae03caca
-  # -- Talaria Hermes: Hermes Agent with the Talaria patches (docs/images.md)
+  # -- Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
   hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a
   device: ghcr.io/usa-reddragon/hermes-device:v0.25.3@sha256:c19e36561ac6b34798eea6464dfbf5f974b44102d30c1e1f789abc88c3a7eeb0
   sandbox: ghcr.io/usa-reddragon/hermes-device-sandbox:v0.25.3@sha256:ec2ffbec87ada250eec859e98467d91bf3cf1e59b65e158c5d3e0faec3cd2ebb

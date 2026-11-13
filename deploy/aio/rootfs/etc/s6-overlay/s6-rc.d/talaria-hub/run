@@ -4,6 +4,6 @@ export HUB_HTTP_PORT=8081 HUB_HTTP_IPV4_HOST=127.0.0.1 HUB_HTTP_IPV6_HOST=::1
 export HUB_HTTP_PUBLIC_URL="${TALARIA_PUBLIC_URL:-http://localhost:8080}"
 export HUB_STORE_DRIVER=sqlite HUB_STORE_PATH=/talaria/hub/talaria-hub.db
 export HUB_DEVICE_ENABLED=true HUB_DEVICE_TRUSTED_PROXIES=127.0.0.1/32
-# Login: local accounts unless HUB_AUTH_MODE and its settings come from the container's environment (docs/auth.md)
+# Login: local accounts unless HUB_AUTH_MODE and its settings come from the container's environment (https://usa-reddragon.github.io/talaria/deploy/auth.html)
 export HUB_UI_TIME_ZONE="${TZ:-UTC}" HUB_CLAUDE_TIME_ZONE="${TZ:-UTC}"
 exec s6-setuidgid nobody talaria-hub

@@ -9,7 +9,7 @@ name: talaria
 
 x-images:
   hub: &hub-image ghcr.io/usa-reddragon/talaria-hub:v0.26.53@sha256:8e7f087e2636b62f0fdc4a6ff2c773282366c76b734f89f92a0730a9ae03caca
-  # Talaria Hermes: Hermes Agent with the Talaria patches (docs/images.md)
+  # Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
   hermes: &hermes-image ${TALARIA_HERMES_IMAGE:-ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a}
   device: &device-image ghcr.io/usa-reddragon/hermes-device:v0.25.3@sha256:c19e36561ac6b34798eea6464dfbf5f974b44102d30c1e1f789abc88c3a7eeb0
   sandbox: &sandbox-image ghcr.io/usa-reddragon/hermes-device-sandbox:v0.25.3@sha256:ec2ffbec87ada250eec859e98467d91bf3cf1e59b65e158c5d3e0faec3cd2ebb
@@ -152,7 +152,7 @@ services:
       HUB_DEVICE_TRUSTED_PROXIES: 127.0.0.1/32
       HUB_UI_TIME_ZONE: ${TZ:-UTC}
       HUB_CLAUDE_TIME_ZONE: ${TZ:-UTC}
-      # Login settings (HUB_AUTH_MODE, HUB_OIDC_*, HUB_AUTH_PROXY_*): add them in compose.override.yaml, see docs/auth.md
+      # Login settings (HUB_AUTH_MODE, HUB_OIDC_*, HUB_AUTH_PROXY_*): add them in compose.override.yaml, see https://usa-reddragon.github.io/talaria/deploy/auth.html
     volumes:
       - hub-data:/data
       - type: volume
