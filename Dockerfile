@@ -4,8 +4,8 @@ FROM scratch
 COPY --from=alpine:latest /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 ARG TARGETPLATFORM
-COPY $TARGETPLATFORM/hermes-device /
+COPY $TARGETPLATFORM/talaria /
 ENV TALARIA_UPDATE_AUTO=false
 USER 65534:65534
 EXPOSE 9130
-ENTRYPOINT ["/hermes-device"]
+ENTRYPOINT ["/talaria"]

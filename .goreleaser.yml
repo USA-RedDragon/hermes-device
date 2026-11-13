@@ -1,7 +1,7 @@
 ---
 version: 2
 
-project_name: hermes-device
+project_name: talaria
 
 release:
   github:
@@ -9,7 +9,7 @@ release:
     name: talaria
 
 dockers_v2:
-  - ids: [hermes-device]
+  - ids: [talaria]
     images:
       - "ghcr.io/usa-reddragon/{{ .ProjectName }}"
     tags:
@@ -31,7 +31,7 @@ dockers_v2:
     flags:
       - "--pull"
   - id: sandbox
-    ids: [hermes-device]
+    ids: [talaria]
     dockerfile: Dockerfile.sandbox
     images:
       - "ghcr.io/usa-reddragon/{{ .ProjectName }}-sandbox"
@@ -47,7 +47,7 @@ dockers_v2:
     labels:
       "org.opencontainers.image.created": "{{.Date}}"
       "org.opencontainers.image.title": "{{.ProjectName}}-sandbox"
-      "org.opencontainers.image.description": "Agent sandbox that runs hermes-device run as a service device"
+      "org.opencontainers.image.description": "Agent sandbox that runs talaria run as a service device"
       "org.opencontainers.image.revision": "{{.FullCommit}}"
       "org.opencontainers.image.version": "{{.Version}}"
       "org.opencontainers.image.url": "https://github.com/USA-RedDragon/talaria"
@@ -86,7 +86,8 @@ builds:
       - -trimpath
 
   # The same program under its name before the rename, for the archives
-  # that auto-update of older releases looks for, and for the images.
+  # that auto-update of releases up to v0.25.x looks for (v0.18 and older
+  # read only these). Kept until the removal in docs/releases.md.
   - id: hermes-device
     main: .
     binary: hermes-device
@@ -124,6 +125,7 @@ archives:
   - id: hermes-device
     ids: [hermes-device]
     formats: [tar.gz]
+    name_template: 'hermes-device_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}'
 
 # talaria_ matches the archives. The workflow rewrites this file over the
 # .xpi too and publishes a copy as hermes-device_<version>_checksums.txt for

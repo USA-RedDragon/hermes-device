@@ -263,8 +263,8 @@ jobs:
     strategy:
       matrix:
         image:
-          - ghcr.io/usa-reddragon/hermes-device
-          - ghcr.io/usa-reddragon/hermes-device-sandbox
+          - ghcr.io/usa-reddragon/talaria
+          - ghcr.io/usa-reddragon/talaria-sandbox
     env:
       IMAGE: ${{ matrix.image }}
       TAG: ${{ github.ref_name }}
