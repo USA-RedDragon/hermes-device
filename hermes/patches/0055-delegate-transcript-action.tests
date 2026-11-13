@@ -1,0 +1,7 @@
+tests/tools/test_delegate_control_actions.py
+tests/tools/test_delegation_live_log.py
+tests/tools/test_delegate_tool_sessions.py
+tests/tools/test_delegate_combined_delegation_id.py
+tests/tools/test_delegate_gateway_inline.py
+tests/tools/test_delegate_group_schema.py
+tests/agent/test_subagent_lifecycle.py

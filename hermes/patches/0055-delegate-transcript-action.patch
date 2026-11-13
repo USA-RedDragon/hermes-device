@@ -1,0 +1,684 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 07:03:34 +0000
+Subject: [PATCH] feat(delegation): delegate_task action=transcript reads a
+ child's steps
+
+A parent could see a subagent's progress only through the live .log paths in the spawn result, which sit in the gateway's cache and are out of reach when the parent's terminal runs on another machine, and are gone after 7 days. delegate_task(action='transcript', subagent_id=... | delegation_id=..., task_index=...) now returns the child's stored session as entries (assistant text, thinking, tool calls with arguments, tool results cut with their full size, times) with status and running, newest limit entries by default, after= to read on, max_chars to bound a page. It works for running and finished children of the caller's own spawn tree only (live registry ownership, or the stored row's ancestry), masks credentials like the live log, and falls back to the task's log only for a delegation whose manifest names the caller as owner. The manifest now records the owner session and each task's subagent_id. The spawn result's live_transcripts_hint points to the action.
+---
+ run_agent.py                                  |   2 +
+ .../tools/test_delegate_transcript_action.py  | 195 +++++++++++++
+ tools/delegate_tool.py                        |  43 ++-
+ tools/delegate_tool_dispatch.py               |   5 +-
+ tools/delegate_tool_registry.py               |   2 +-
+ tools/delegate_tool_transcript.py             | 274 ++++++++++++++++++
+ tools/delegation_live_log.py                  |  16 +
+ 7 files changed, 527 insertions(+), 10 deletions(-)
+ create mode 100644 tests/tools/test_delegate_transcript_action.py
+ create mode 100644 tools/delegate_tool_transcript.py
+
+diff --git a/run_agent.py b/run_agent.py
+index 16d959c8..51b7a908 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -1363,6 +1363,8 @@ class AIAgent(
+             background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
+             action=function_args.get("action"),
+             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
++            delegation_id=function_args.get("delegation_id"), task_index=function_args.get("task_index"),
++            limit=function_args.get("limit"), after=function_args.get("after"), max_chars=function_args.get("max_chars"),
+         )
+ 
+     _invoke_tool = _forward("agent.agent_runtime_helpers", "invoke_tool")
+diff --git a/tests/tools/test_delegate_transcript_action.py b/tests/tools/test_delegate_transcript_action.py
+new file mode 100644
+index 00000000..3525c9d8
+--- /dev/null
++++ b/tests/tools/test_delegate_transcript_action.py
+@@ -0,0 +1,195 @@
++"""delegate_task(action='transcript'): a parent reads its own subagents' stored transcripts, running or finished."""
++
++import json
++import weakref
++
++import pytest
++
++from tools.delegate_tool import _register_subagent, _unregister_subagent, delegate_task
++
++
++class _Parent:
++    def __init__(self, db, session_id):
++        self._session_db, self.session_id = db, session_id
++
++
++class _LiveChild:
++    def __init__(self, parent, session_id, delegation_id=None, index=None):
++        self._delegate_parent_ref = weakref.ref(parent)
++        self.session_id = session_id
++        self._delegation_id, self._delegation_task_index = delegation_id, index
++
++
++@pytest.fixture
++def db(tmp_path):
++    from hermes_state import SessionDB
++    store = SessionDB(db_path=tmp_path / "state.db")
++    yield store
++    store.close()
++
++
++def _child_session(db, sid, subagent_id, parent, steps=3, ended=True):
++    marker = {"_delegate_from": parent, "_subagent_id": subagent_id}
++    db.create_session(sid, source="subagent", parent_session_id=parent, model_config=marker)
++    db.append_message(sid, "user", "do the thing")
++    for n in range(steps):
++        call = {"id": f"c{n}", "type": "function", "function": {"name": "terminal", "arguments": json.dumps({"command": f"echo {n}"})}}
++        db.append_message(sid, "assistant", f"step {n}", tool_calls=[call], reasoning=f"thinking {n}")
++        db.append_message(sid, "tool", "x" * 5000 if n == 0 else f"out {n}", tool_call_id=f"c{n}", tool_name="terminal")
++    if ended:
++        db.end_session(sid, "completed")
++
++
++def _call(parent, **kw):
++    return json.loads(delegate_task(action="transcript", parent_agent=parent, **kw))
++
++
++def test_finished_child_tail_and_paging(db):
++    db.create_session("parent", source="cli")
++    _child_session(db, "kid", "sa-0-aaaa", "parent")
++    parent = _Parent(db, "parent")
++    page = _call(parent, subagent_id="sa-0-aaaa", limit=3)
++    assert page["status"] == "finished" and page["running"] is False and page["source"] == "session"
++    assert page["total_entries"] == 7 and page["returned"] == 3 and page["first_index"] == 4
++    assert page["has_more"] is False and page["next_after"] == 7
++    first = _call(parent, subagent_id="sa-0-aaaa", limit=3, after=0)
++    assert [e["index"] for e in first["entries"]] == [0, 1, 2] and first["has_more"] is True
++    assert first["entries"][0]["role"] == "user" and first["entries"][0]["text"] == "do the thing"
++    asst = first["entries"][1]
++    assert asst["text"] == "step 0" and asst["thinking"] == "thinking 0"
++    assert asst["tool_calls"][0]["name"] == "terminal" and "echo 0" in asst["tool_calls"][0]["arguments"]
++    tool = first["entries"][2]
++    assert tool["name"] == "terminal" and tool["result_size"] == 5000 and tool["result"].endswith("(+3500 chars)")
++    rest = _call(parent, subagent_id="sa-0-aaaa", limit=10, after=first["next_after"])
++    assert [e["index"] for e in rest["entries"]] == [3, 4, 5, 6] and rest["has_more"] is False
++    assert all(e["time"] for e in rest["entries"])
++
++
++def test_max_chars_bounds_a_page_and_next_after_continues(db):
++    db.create_session("parent", source="cli")
++    _child_session(db, "kid", "sa-0-bbbb", "parent")
++    parent = _Parent(db, "parent")
++    page = _call(parent, subagent_id="sa-0-bbbb", after=0, max_chars=1000)
++    assert 1 <= page["returned"] < 7 and page["has_more"] is True
++    nxt = _call(parent, subagent_id="sa-0-bbbb", after=page["next_after"], limit=200)
++    assert nxt["first_index"] == page["next_after"]
++
++
++def test_running_child_found_in_registry(db):
++    db.create_session("parent", source="cli")
++    _child_session(db, "kid", "sa-0-cccc", "parent", ended=False)
++    parent = _Parent(db, "parent")
++    child = _LiveChild(parent, "kid")
++    _register_subagent({"subagent_id": "sa-0-cccc", "parent_id": None, "depth": 0, "goal": "g", "model": "m",
++                        "started_at": 1.0, "status": "running", "tool_count": 0, "agent": child})
++    try:
++        page = _call(parent, subagent_id="sa-0-cccc")
++        assert page["running"] is True and page["status"] == "running" and page["goal"] == "g"
++        assert page["total_entries"] == 7
++    finally:
++        _unregister_subagent("sa-0-cccc")
++
++
++def test_another_conversations_child_is_refused(db):
++    db.create_session("parent", source="cli")
++    db.create_session("other", source="cli")
++    _child_session(db, "kid", "sa-0-dddd", "other")
++    result = json.loads(delegate_task(action="transcript", subagent_id="sa-0-dddd", parent_agent=_Parent(db, "parent")))
++    assert "error" in result and "spawn tree" in result["error"]
++    # a live child of another parent is refused too, even though the id is registered
++    other = _Parent(db, "other")
++    _register_subagent({"subagent_id": "sa-0-dddd", "parent_id": None, "depth": 0, "goal": "g", "model": "m",
++                        "started_at": 1.0, "status": "running", "tool_count": 0,
++                        "agent": _LiveChild(other, "kid")})
++    try:
++        result = json.loads(delegate_task(action="transcript", subagent_id="sa-0-dddd",
++                                          parent_agent=_Parent(db, "parent")))
++        assert "error" in result
++        assert _call(other, subagent_id="sa-0-dddd")["running"] is True
++    finally:
++        _unregister_subagent("sa-0-dddd")
++
++
++def test_unknown_and_missing_ids(db):
++    db.create_session("parent", source="cli")
++    parent = _Parent(db, "parent")
++    assert "error" in json.loads(delegate_task(action="transcript", subagent_id="sa-0-nope", parent_agent=parent))
++    assert "requires subagent_id" in json.loads(delegate_task(action="transcript", parent_agent=parent))["error"]
++    assert "integers" in json.loads(delegate_task(action="transcript", subagent_id="x", limit="many",
++                                                  parent_agent=parent))["error"]
++
++
++def test_compression_rotated_parent_still_owns_its_child(db):
++    db.create_session("p1", source="cli")
++    _child_session(db, "kid", "sa-0-eeee", "p1")
++    db.end_session("p1", "compression")
++    db.create_session("p2", source="cli", parent_session_id="p1")
++    assert _call(_Parent(db, "p2"), subagent_id="sa-0-eeee")["total_entries"] == 7
++
++
++def _manifest(tmp_path, deleg, owner, tasks):
++    root = tmp_path / "cache" / "delegation" / "live" / deleg
++    root.mkdir(parents=True)
++    (root / "manifest.json").write_text(json.dumps({"delegation_id": deleg, "owner_session_id": owner, "tasks": tasks}))
++    return root
++
++
++def test_delegation_id_and_task_index_map_through_the_manifest(db, tmp_path):
++    db.create_session("parent", source="cli")
++    _child_session(db, "kid0", "sa-0-ffff", "parent")
++    _child_session(db, "kid1", "sa-1-gggg", "parent", steps=1)
++    _manifest(tmp_path, "deleg_1", "parent", [
++        {"index": 0, "subagent_id": "sa-0-ffff", "status": "completed"},
++        {"index": 1, "subagent_id": "sa-1-gggg", "status": "completed"}])
++    parent = _Parent(db, "parent")
++    assert _call(parent, delegation_id="deleg_1", task_index=1)["total_entries"] == 3
++    assert _call(parent, delegation_id="deleg_1")["subagent_id"] == "sa-0-ffff"
++    assert "error" in json.loads(delegate_task(action="transcript", delegation_id="deleg_1", task_index=5,
++                                               parent_agent=parent))
++    # another conversation's delegation id proves nothing: the child's ancestry must reach the caller
++    db.create_session("stranger", source="cli")
++    assert "error" in json.loads(delegate_task(action="transcript", delegation_id="deleg_1",
++                                               parent_agent=_Parent(db, "stranger")))
++
++
++def test_log_fallback_only_for_the_owner(db, tmp_path):
++    db.create_session("parent", source="cli")
++    db.create_session("stranger", source="cli")
++    root = _manifest(tmp_path, "deleg_2", "parent", [])
++    log = root / "task-0.log"
++    log.write_text("\n".join(f"line {i}" for i in range(10)))
++    (root / "manifest.json").write_text(json.dumps({
++        "owner_session_id": "parent",
++        "tasks": [{"index": 0, "subagent_id": "sa-0-hhhh", "log": str(log), "status": "running"}]}))
++    page = _call(_Parent(db, "parent"), delegation_id="deleg_2", limit=3)
++    assert page["source"] == "log" and [e["text"] for e in page["entries"]] == ["line 7", "line 8", "line 9"]
++    assert "error" in json.loads(delegate_task(action="transcript", delegation_id="deleg_2",
++                                               parent_agent=_Parent(db, "stranger")))
++
++
++def test_secrets_are_redacted(db):
++    db.create_session("parent", source="cli")
++    db.create_session("kid", source="subagent", parent_session_id="parent",
++                      model_config={"_delegate_from": "parent", "_subagent_id": "sa-0-iiii"})
++    db.append_message("kid", "tool", "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789", tool_call_id="c", tool_name="terminal")
++    page = _call(_Parent(db, "parent"), subagent_id="sa-0-iiii")
++    assert "sk-abcdefghijklmnopqrstuvwxyz0123456789" not in page["entries"][0]["result"]
++
++
++def test_schema_and_hint_advertise_transcript():
++    from tools.delegate_tool import DELEGATE_TASK_SCHEMA, oneshot_delegate_function
++    from tools.delegate_tool_dispatch import _BACKGROUND_NOTES
++    props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
++    assert "transcript" in props["action"]["enum"] and {"delegation_id", "task_index", "after", "limit"} <= props.keys()
++    assert "action='transcript'" in _BACKGROUND_NOTES["live_transcripts_hint"] and "tail -f" not in _BACKGROUND_NOTES["live_transcripts_hint"]
++    slim = oneshot_delegate_function(DELEGATE_TASK_SCHEMA)["parameters"]["properties"]
++    assert not {"action", "delegation_id", "after"} & slim.keys()
++
++
++def test_record_manifest_children(tmp_path):
++    from tools.delegation_live_log import create_live_transcripts, record_manifest_children
++    deleg, _, _ = create_live_transcripts([{"goal": "a"}, {"goal": "b"}], home=tmp_path)
++    record_manifest_children(deleg, "parent", {0: "sa-0-x", 1: None}, home=tmp_path)
++    data = json.loads((tmp_path / "cache" / "delegation" / "live" / deleg / "manifest.json").read_text())
++    assert data["owner_session_id"] == "parent"
++    assert data["tasks"][0]["subagent_id"] == "sa-0-x" and "subagent_id" not in data["tasks"][1]
+diff --git a/tools/delegate_tool.py b/tools/delegate_tool.py
+index 84f83285..b4d714c0 100644
+--- a/tools/delegate_tool.py
++++ b/tools/delegate_tool.py
+@@ -11,6 +11,7 @@ the delegation call and the summary result, never the child's intermediate
+ tool calls or reasoning.
+ """
+ 
++import json
+ import logging
+ import time
+ import weakref
+@@ -550,12 +551,18 @@ def _build_children(
+         if route.report() is not None:
+             child._delegate_route = route.report()
+         child._delegate_task_route = route  # what a restart handoff records (tools/delegate_tool_handoff.py)
++        child._delegation_task_index = i
+         if live_deleg_id:
+             child._delegation_id = live_deleg_id
+             _ident_ref = getattr(child, "_progress_identity_ref", None)
+             if isinstance(_ident_ref, dict):
+                 _ident_ref["delegation_id"] = live_deleg_id
+         children.append((i, t, child))
++    if live_deleg_id and children:
++        from tools.delegation_live_log import record_manifest_children
++        record_manifest_children(
++            live_deleg_id, str(getattr(parent_agent, "session_id", "") or ""),
++            {i: getattr(c, "_subagent_id", None) for (i, _, c) in children}, home=_parent_live_home(parent_agent))
+     return children, None
+ 
+ 
+@@ -609,7 +616,9 @@ def delegate_task(
+     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
+     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
+     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
+-    credentials_cfg: Optional[dict[str, Any]] = None,
++    credentials_cfg: Optional[dict[str, Any]] = None, delegation_id: Optional[str] = None,
++    task_index: Optional[int] = None, limit: Optional[int] = None, after: Optional[int] = None,
++    max_chars: Optional[int] = None,
+ ) -> str:
+     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
+     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
+@@ -619,10 +628,16 @@ def delegate_task(
+         return tool_error("delegate_task requires a parent agent context.")
+ 
+     normalized_action = (action or "").strip().lower()
++    if normalized_action == "transcript":
++        from tools.delegate_tool_transcript import read_subagent_transcript
++        result = read_subagent_transcript(
++            parent_agent, subagent_id=subagent_id, delegation_id=delegation_id, task_index=task_index,
++            limit=limit, after=after, max_chars=max_chars)
++        return tool_error(result["error"]) if "error" in result else json.dumps(result, ensure_ascii=False)
+     if normalized_action in _CONTROL_ACTIONS:
+         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
+     if normalized_action and normalized_action != "spawn":
+-        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
++        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, stop, or transcript.")
+ 
+     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
+     if is_spawn_paused():
+@@ -755,7 +770,8 @@ _DESCRIPTION_DELIVERY = (
+     "as a new message when subagents finish ({delivery}). Background results are delivered only "
+     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
+     "wait or poll on transcripts, artifact files, or CI for a child. "
+-    "While children run, `action` (list/steer/stop) controls them live.\n\n"
++    "While children run, `action` (list/steer/stop) controls them live; `action='transcript'` reads a child's steps, "
++    "running or finished.\n\n"
+ )
+ _ONESHOT_DESCRIPTION_DELIVERY = "Parallel children are joined and their results return in this tool call.\n\n"
+ _DESCRIPTION_HEAD = (
+@@ -897,11 +913,22 @@ DELEGATE_TASK_SCHEMA = {
+                 "'list' = ids/goals/status/transcripts; 'steer' = queue "
+                 "course-correction text into one child (subagent_id + "
+                 "message) without stopping it; 'stop' = end one child "
+-                "early (subagent_id; partial result still returns). "
++                "early (subagent_id; partial result still returns); 'transcript' = read "
++                "a child's steps (assistant text, tool calls and cut results, times), running or finished: "
++                "subagent_id, or delegation_id + task_index; newest `limit` entries unless `after` is set. "
+                 "Control actions return immediately; goal/tasks are ignored unless spawning.",
+-                enum=["spawn", "list", "steer", "stop"],
++                enum=["spawn", "list", "steer", "stop", "transcript"],
+             ),
+             "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
++            "delegation_id": _p("string", "For action='transcript' without subagent_id: the delegation_id of the spawn response."),
++            "task_index": _p("integer", "For action='transcript' with delegation_id: the task's index (default 0)."),
++            "limit": _p("integer", "For action='transcript': entries per page (default 20, max 200)."),
++            "after": _p(
++                "integer",
++                "For action='transcript': read forward from this entry index (the previous page's next_after); "
++                "omit for the newest entries.",
++            ),
++            "max_chars": _p("integer", "For action='transcript': most chars of entries per page (default 20000)."),
+             "message": _p(
+                 "string",
+                 "For action='steer': the course correction, appended to "
+@@ -913,7 +940,8 @@ DELEGATE_TASK_SCHEMA = {
+ }
+ 
+ 
+-_LIVE_CONTROL_PARAMS = frozenset({"action", "subagent_id", "message"})
++_LIVE_CONTROL_PARAMS = frozenset({
++    "action", "subagent_id", "message", "delegation_id", "task_index", "limit", "after", "max_chars"})
+ 
+ 
+ def oneshot_delegate_function(function: dict) -> dict:
+@@ -981,7 +1009,8 @@ registry.register(
+         max_iterations=args.get("max_iterations"), role=args.get("role"),
+         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
+         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+-        parent_agent=kw.get("parent_agent"),
++        parent_agent=kw.get("parent_agent"), delegation_id=args.get("delegation_id"), task_index=args.get("task_index"),
++        limit=args.get("limit"), after=args.get("after"), max_chars=args.get("max_chars"),
+     ),
+     check_fn=check_delegate_requirements,
+     emoji="🔀",
+diff --git a/tools/delegate_tool_dispatch.py b/tools/delegate_tool_dispatch.py
+index 5ec407ad..300ff096 100644
+--- a/tools/delegate_tool_dispatch.py
++++ b/tools/delegate_tool_dispatch.py
+@@ -380,8 +380,9 @@ _BACKGROUND_NOTES = {
+         "one early."
+     ),
+     "live_transcripts_hint": (
+-        "Each subagent streams a human-readable transcript of its operations to the file listed above (append-only, "
+-        "one per task). Read or `tail -f` these paths at any time to watch a child work while it runs."
++        "Read what a child did, while it runs or after, with delegate_task(action='transcript', subagent_id=...) "
++        "(or delegation_id + task_index): its steps, tool calls and cut results (the newest entries by default), "
++        "`after` to read on. The files listed above hold the same in short form, but your terminal may not reach them."
+     ),
+ }
+ 
+diff --git a/tools/delegate_tool_registry.py b/tools/delegate_tool_registry.py
+index 177cc7ca..2a7cb5d2 100644
+--- a/tools/delegate_tool_registry.py
++++ b/tools/delegate_tool_registry.py
+@@ -195,7 +195,7 @@ def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) ->
+ 
+ # Model-facing control actions accepted by delegate_task(action=...).
+ # "spawn" (or omitted) keeps the historical spawn semantics.
+-_CONTROL_ACTIONS = frozenset({"list", "steer", "stop"})
++_CONTROL_ACTIONS = frozenset({"list", "steer", "stop", "transcript"})
+ 
+ def _resolve_session_lineage(session_id: Optional[str], parent_agent: Any) -> str:
+     """Tip of a session id's compression lineage via the parent's live SessionDB (best-effort; input unchanged when
+diff --git a/tools/delegate_tool_transcript.py b/tools/delegate_tool_transcript.py
+new file mode 100644
+index 00000000..dbca26e1
+--- /dev/null
++++ b/tools/delegate_tool_transcript.py
+@@ -0,0 +1,274 @@
++"""``delegate_task(action='transcript')``: a parent reads the steps of its own subagents, running or finished.
++
++The reader is the child's stored session (``tools/delegate_tool_sessions.py`` finds it by ``subagent_id``), so
++it works while the child runs and after it ended, past the 7-day live-log cleanup, and from a parent whose
++terminal is on another machine than the one holding ``cache/delegation``. Only when no stored session is found
++(a child that never wrote a row) does it read the ``task-<n>.log`` of the delegation's manifest.
++
++Scope is the caller's own spawn tree: a running child is found in the live registry by the same ownership rule
++as list/steer/stop; a finished one by the ``subagent_id`` stamped on its row, and only when its ancestry reaches
++the caller's conversation. A delegation id is mapped to its children through ``manifest.json``, never trusted
++alone.
++"""
++
++from __future__ import annotations
++
++import json
++import time
++from pathlib import Path
++from typing import Any, Optional
++
++DEFAULT_LIMIT = 20
++MAX_LIMIT = 200
++DEFAULT_MAX_CHARS = 20000
++MAX_MAX_CHARS = 200000
++_TEXT_CUT = 4000
++_THINKING_CUT = 600
++_ARG_CUT = 400
++_RESULT_CUT = 1500
++_LOG_LINE_CUT = 1000
++
++
++def _cut(value: Any, limit: int) -> tuple[str, int]:
++    """``(text cut to *limit* chars, full size)``; the cut text ends with a note of what was left out."""
++    text = value if isinstance(value, str) else ("" if value is None else str(value))
++    size = len(text)
++    if size > limit:
++        text = text[:limit] + f" ...(+{size - limit} chars)"
++    return text, size
++
++
++def _redact(text: str) -> str:
++    """Same boundary as the live log: mask credentials, withhold rather than leak."""
++    if not text:
++        return text
++    try:
++        from agent.redact import redact_sensitive_text
++        return redact_sensitive_text(text, force=True) or ""
++    except Exception:  # pragma: no cover - core module
++        return "[withheld: redaction unavailable]"
++
++
++def _iso(ts: Any) -> Optional[str]:
++    if isinstance(ts, (int, float)) and ts > 0:
++        return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(ts))
++    return None
++
++
++def _parsed(value: Any) -> Any:
++    if isinstance(value, str):
++        try:
++            return json.loads(value)
++        except ValueError:
++            return value
++    return value
++
++
++def _call_entry(call: Any) -> dict[str, Any]:
++    fn = call.get("function") if isinstance(call, dict) and isinstance(call.get("function"), dict) else {}
++    args = fn.get("arguments", "")
++    if not isinstance(args, str):
++        args = json.dumps(args, ensure_ascii=False, default=str)
++    shown, size = _cut(_redact(args), _ARG_CUT)
++    entry = {"id": call.get("id") if isinstance(call, dict) else None, "name": fn.get("name"), "arguments": shown}
++    if size > _ARG_CUT:
++        entry["arguments_size"] = size
++    return entry
++
++
++def _entry(index: int, msg: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
++    role = msg.get("role")
++    out: dict[str, Any] = {"index": index, "role": role, "time": _iso(msg.get("timestamp"))}
++    content = msg.get("content")
++    if role == "tool":
++        call_id = msg.get("tool_call_id")
++        out["tool_call_id"] = call_id
++        out["name"] = msg.get("tool_name") or names.get(call_id or "")
++        out["result"], out["result_size"] = _cut(_redact(content if isinstance(content, str) else json.dumps(
++            content, ensure_ascii=False, default=str)), _RESULT_CUT)
++        return out
++    if isinstance(content, str) and content:
++        out["text"], size = _cut(_redact(content), _TEXT_CUT)
++        if size > _TEXT_CUT:
++            out["text_size"] = size
++    elif content:
++        out["text"], _ = _cut(_redact(json.dumps(content, ensure_ascii=False, default=str)), _TEXT_CUT)
++    if role == "assistant":
++        reasoning = msg.get("reasoning") or msg.get("reasoning_content")
++        if isinstance(reasoning, str) and reasoning.strip():
++            out["thinking"], _ = _cut(_redact(reasoning), _THINKING_CUT)
++        calls = _parsed(msg.get("tool_calls"))
++        if isinstance(calls, list) and calls:
++            out["tool_calls"] = [_call_entry(c) for c in calls]
++    return out
++
++
++def _call_names(messages: list[dict[str, Any]]) -> dict[str, str]:
++    names: dict[str, str] = {}
++    for msg in messages:
++        calls = _parsed(msg.get("tool_calls")) if msg.get("role") == "assistant" else None
++        for call in calls if isinstance(calls, list) else ():
++            fn = call.get("function") if isinstance(call, dict) else None
++            if isinstance(fn, dict) and call.get("id") and fn.get("name"):
++                names[call["id"]] = fn["name"]
++    return names
++
++
++def _compression_lineage(db: Any, session_id: str) -> frozenset[str]:
++    """*session_id* plus the sessions it continues by compression, walked backward."""
++    if not session_id:
++        return frozenset()
++    ids, current = {session_id}, session_id
++    row = db.get_session(current)
++    while row and db._is_compression_child_row(row) and row["parent_session_id"] not in ids and len(ids) < 200:
++        current = row["parent_session_id"]
++        ids.add(current)
++        row = db.get_session(current)
++    return frozenset(ids)
++
++
++def _manifest(delegation_id: str, home: Optional[Path]) -> Optional[dict[str, Any]]:
++    from tools.delegation_live_log import _manifest_path
++    try:
++        data = json.loads(_manifest_path(delegation_id, home).read_text(encoding="utf-8-sig"))
++    except (OSError, ValueError):
++        return None
++    return data if isinstance(data, dict) else None
++
++
++def _owned_records(parent_agent: Any) -> list[dict[str, Any]]:
++    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, _owns_subagent_record
++    with _active_subagents_lock:
++        records = list(_active_subagents.values())
++    return [r for r in records if _owns_subagent_record(r, parent_agent)]
++
++
++def _int(value: Any, default: int, low: int, high: int) -> Optional[int]:
++    if value is None or value == "":
++        return default
++    if isinstance(value, bool):
++        return None
++    try:
++        number = int(value)
++    except (TypeError, ValueError):
++        return None
++    return max(low, min(high, number))
++
++
++def read_subagent_transcript(parent_agent: Any, *, subagent_id: Optional[str], delegation_id: Optional[str],
++                             task_index: Any, limit: Any, after: Any, max_chars: Any) -> dict[str, Any]:
++    """The payload of one transcript page, or ``{"error": ...}``. Never reads outside the caller's spawn tree."""
++    from tools.delegate_tool import _parent_live_home
++    sid, deleg = (subagent_id or "").strip(), (delegation_id or "").strip()
++    if not sid and not deleg:
++        return {"error": "action='transcript' requires subagent_id (from the spawn response or action='list'), or "
++                         "delegation_id with task_index."}
++    count, start, budget = (_int(limit, DEFAULT_LIMIT, 1, MAX_LIMIT), _int(after, -1, -1, 1 << 40),
++                            _int(max_chars, DEFAULT_MAX_CHARS, 1000, MAX_MAX_CHARS))
++    if count is None or start is None or budget is None:
++        return {"error": "limit, after and max_chars must be integers."}
++    index = _int(task_index, 0, 0, 1 << 20)
++    if index is None:
++        return {"error": "task_index must be an integer."}
++    db = getattr(parent_agent, "_session_db", None)
++    home = _parent_live_home(parent_agent)
++    parent_sid = str(getattr(parent_agent, "session_id", "") or "")
++    manifest = _manifest(deleg, home) if deleg else None
++    manifest_task = None
++    if not sid:
++        owned = [r for r in _owned_records(parent_agent)
++                 if getattr(r.get("agent"), "_delegation_id", None) == deleg
++                 and getattr(r.get("agent"), "_delegation_task_index", None) == index]
++        manifest_task = next((t for t in (manifest or {}).get("tasks", []) if t.get("index") == index), None)
++        sid = (owned[0].get("subagent_id") if len(owned) == 1 else None) or (manifest_task or {}).get("subagent_id") or ""
++        if not sid:
++            return {"error": f"No transcript for delegation '{deleg}' task {index} in this conversation's spawn tree."}
++    unknown = {"error": f"No subagent '{sid}' in this conversation's spawn tree (or its stored session is gone). "
++                        "Use action='list' for running children; ids of earlier ones are in their spawn response."}
++
++    running_record = next((r for r in _owned_records(parent_agent) if r.get("subagent_id") == sid), None)
++    child = getattr(running_record.get("agent"), "session_id", None) if running_record else None
++    if not (isinstance(child, str) and child) and db is not None and parent_sid:
++        from tools.delegate_tool_sessions import stored_child_session
++        try:
++            child = stored_child_session(db, sid, _compression_lineage(db, parent_sid))
++        except Exception:
++            child = None
++    if not (isinstance(child, str) and child):
++        # Last resort: the log of a delegation this conversation owns (manifest stamped at dispatch).
++        log = _log_page(manifest, parent_sid, db, sid, index, count, start, budget) if manifest else None
++        return log or unknown
++    if db is None:
++        return unknown
++    try:
++        lineage = db.transcript_lineage_ids(child)
++        messages = db.get_messages(child, include_ancestors=len(lineage) > 1, include_compacted=True)
++        row = db.get_session(child) or {}
++    except Exception as exc:
++        return {"error": f"Could not read the stored session of '{sid}': {exc}"}
++    total = len(messages)
++    reset = start > total  # the child compacted its history since that cursor was issued
++    first = max(0, total - count) if start < 0 or reset else start
++    names = _call_names(messages)
++    entries, used = [], 0
++    for i in range(first, min(total, first + count)):
++        entry = _entry(i, messages[i], names)
++        size = len(json.dumps(entry, ensure_ascii=False, default=str))
++        if entries and used + size > budget:
++            break
++        entries.append(entry)
++        used += size
++    end = first + len(entries)
++    if running_record is not None:
++        status = running_record.get("status") or "running"
++    else:
++        status = "finished" if row.get("ended_at") else "idle"
++    payload: dict[str, Any] = {
++        "action": "transcript", "subagent_id": sid, "source": "session", "status": status,
++        "running": running_record is not None, "goal": (running_record or {}).get("goal"),
++        "total_entries": total, "first_index": first, "returned": len(entries), "entries": entries,
++        "next_after": end, "has_more": end < total,
++    }
++    if deleg:
++        payload["delegation_id"], payload["task_index"] = deleg, index
++    if reset:
++        payload["note"] = "after was past the end (the child compacted its history); showing the newest entries."
++    elif start < 0 and first > 0:
++        payload["note"] = (f"Showing the newest {len(entries)} of {total} entries. Pass after=<index> to read "
++                           "forward; next_after continues where this page ended.")
++    return payload
++
++
++def _log_page(manifest: dict[str, Any], parent_sid: str, db: Any, sid: str, index: int, count: int, start: int,
++              budget: int) -> Optional[dict[str, Any]]:
++    """The tail of a task's .log, only for a delegation whose manifest names this conversation as its owner
++    (and this subagent for the task)."""
++    owner = str(manifest.get("owner_session_id") or "")
++    if not owner or not parent_sid or db is None:
++        return None
++    try:
++        if owner not in _compression_lineage(db, parent_sid):
++            return None
++    except Exception:
++        return None
++    task = next((t for t in manifest.get("tasks", []) if t.get("index") == index), None)
++    if not task or task.get("subagent_id") != sid or not task.get("log"):
++        return None
++    try:
++        lines = Path(task["log"]).read_text(encoding="utf-8", errors="replace").splitlines()
++    except OSError:
++        return None
++    total = len(lines)
++    first = max(0, total - count) if start < 0 or start > total else start
++    shown, used = [], 0
++    for i in range(first, min(total, first + count)):
++        text, _ = _cut(_redact(lines[i]), _LOG_LINE_CUT)
++        if shown and used + len(text) > budget:
++            break
++        shown.append({"index": i, "text": text})
++        used += len(text)
++    end = first + len(shown)
++    return {"action": "transcript", "subagent_id": sid, "source": "log", "status": task.get("status"),
++            "total_entries": total, "first_index": first, "returned": len(shown), "entries": shown,
++            "next_after": end, "has_more": end < total,
++            "note": "The stored session was not found; these are lines of the child's live log."}
+diff --git a/tools/delegation_live_log.py b/tools/delegation_live_log.py
+index 0ec9fedd..b331c782 100644
+--- a/tools/delegation_live_log.py
++++ b/tools/delegation_live_log.py
+@@ -323,6 +323,22 @@ def update_manifest_statuses(delegation_id: Optional[str],
+         _dump_json(mp, manifest)
+ 
+ 
++def record_manifest_children(delegation_id: Optional[str], owner_session_id: str,
++                             subagent_ids: dict[int, Optional[str]], home: Optional[Path] = None) -> None:
++    """Best-effort: name the owning conversation and each task's ``subagent_id`` in the manifest, so
++    ``delegate_task(action='transcript', delegation_id=..., task_index=...)`` can find the child's stored session."""
++    if not delegation_id:
++        return
++    with _best_effort("manifest children"):
++        mp = _manifest_path(delegation_id, home)
++        manifest = json.loads(mp.read_text(encoding="utf-8-sig"))
++        manifest["owner_session_id"] = owner_session_id
++        for task in manifest.get("tasks", []):
++            if subagent_ids.get(task.get("index")):
++                task["subagent_id"] = subagent_ids[task["index"]]
++        _dump_json(mp, manifest)
++
++
+ def prune_stale_live_dirs(max_age_days: int = LIVE_RETENTION_DAYS, root: Optional[Path] = None) -> int:
+     """Remove live/<delegation_id> dirs older than the retention window. Best-effort.
+ 
