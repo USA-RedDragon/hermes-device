@@ -1,23 +1,65 @@
-# talaria
+# Talaria
 
-One server Hermes Agent owns every session. `talaria` lets that agent run its shell and file operations on your own PC, in a directory you choose, while the session itself stays on the server, where the web UI, Telegram and every other client can see it.
+Talaria is a self-hosted web app and Telegram bot for [Hermes Agent](https://github.com/NousResearch/hermes-agent).
+You chat with the agent from a phone or a browser; it works in a sandbox on your server or on your own computers,
+asks before it does anything risky, and can show you interactive pages, use Firefox and work in your editor.
 
 Docs: https://usa-reddragon.github.io/talaria/
 
-Pinned to Hermes Agent v0.23.1. Linux and macOS only: Windows is not supported, because device paths must be POSIX paths.
+Talaria is built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research.
 
-`talaria` was called `hermes-device` before release 0.19.0. See [Renamed from hermes-device](#renamed-from-hermes-device).
+## Install
 
-## Guides
+Every install runs the hub (web app and Telegram bot, with its own accounts), Hermes Agent with the Talaria
+patches, and a sandbox for the agent's commands. Secrets are made for you on the first start, and the first person
+who opens Talaria makes the admin account.
+
+| You have | Use | Guide |
+| -------- | --- | ----- |
+| A Linux host with Docker | Docker Compose, [`deploy/compose`](deploy/compose) | [Docker Compose](docs/deploy/compose.md) |
+| A Kubernetes cluster | Helm chart [`deploy/charts/talaria`](deploy/charts/talaria) | [Kubernetes with Helm](docs/deploy/helm.md) |
+| Unraid | All-in-one container, [`deploy/aio/unraid`](deploy/aio/unraid) | [Unraid](docs/deploy/unraid.md) |
+| TrueNAS SCALE 24.10 or later | All-in-one container, [`deploy/aio/truenas`](deploy/aio/truenas) | [TrueNAS](docs/deploy/truenas.md) |
+
+Quick start with Docker Compose:
+
+```bash
+mkdir talaria && cd talaria
+curl -fsSL https://github.com/USA-RedDragon/talaria/archive/refs/heads/main.tar.gz \
+  | tar -xz --strip-components=3 talaria-main/deploy/compose
+cp .env.example .env
+docker compose up -d --wait
+docker compose logs init
+```
+
+Open the address it prints and make your account. It starts with a demo model that needs no API key; then
+[choose a real model](docs/deploy/models.md). To let the agent work on your own computers, install the `talaria`
+program on each one and [pair it](docs/start/setup-and-pairing.md).
+
+## What is in this repository
+
+| Path | What | Releases |
+| ---- | ---- | -------- |
+| `/` (this README from [Parts](#parts) on) | `talaria`, the program for your own computers, and the Hermes device plugin | tags `vX.Y.Z`, the [latest release](https://github.com/USA-RedDragon/talaria/releases/latest) |
+| [`hub/`](hub) | The hub: web app, Telegram bot, accounts, API | tags `hub/vX.Y.Z`, image `ghcr.io/usa-reddragon/talaria-hub` |
+| [`hermes/`](hermes) | Talaria Hermes: Hermes Agent with the Talaria patches | tags `hermes/v<release>-p<n>`, image `ghcr.io/usa-reddragon/talaria-hermes` |
+| [`deploy/`](deploy) | The install kit: Docker Compose, Helm chart, all-in-one image for Unraid and TrueNAS | tags `aio/vX.Y.Z`, image `ghcr.io/usa-reddragon/talaria-aio` |
+| [`docs/`](docs) | The docs site (with the pages in `hub/docs`) | https://usa-reddragon.github.io/talaria/ |
+
+# The talaria program
+
+`talaria` lets the server's Hermes Agent run its shell and file operations on your own PC, in a directory you
+choose, while the session itself stays on the server, where the web UI, Telegram and every other client can see it.
+Pinned to Hermes Agent v0.23.1. Linux and macOS only: Windows is not supported, because device paths must be POSIX
+paths. `talaria` was called `hermes-device` before release 0.19.0. See
+[Renamed from hermes-device](#renamed-from-hermes-device).
 
 - [Install](docs/start/install.md) on Linux or macOS, then [set up and pair a computer](docs/start/setup-and-pairing.md) with your hub.
 - [Chat from a terminal](docs/guides/terminal-chat.md), [let the agent use Firefox](docs/guides/browser-extension.md) and [use Talaria in an editor](docs/guides/editor-bridge.md).
 - [Update, move and remove](docs/guides/update-and-remove.md) a computer, and [troubleshooting](docs/guides/troubleshooting.md).
 - Reference: [command line](docs/reference/cli.md) and [configuration](docs/reference/configuration.md).
 
-You need a Talaria hub first. [talaria-deploy](https://github.com/USA-RedDragon/talaria-deploy) installs one on your own server.
-
-## Parts
+### Parts
 
 One Go binary, `talaria` (also `tal`, a link that setup makes next to it), with these subcommands:
 
@@ -36,7 +78,7 @@ One Go binary, `talaria` (also `tal`, a link that setup makes next to it), with 
 
 The wire protocol between the PC, the hub and the pod is in [docs/protocol.md](docs/protocol.md).
 
-## How it works
+### How it works
 
 Your PC dials only the hub, over HTTPS and WebSockets. The hub checks the device token, finds the one backend the device was paired with, and forwards:
 
@@ -46,7 +88,7 @@ Your PC dials only the hub, over HTTPS and WebSockets. The hub checks the device
 
 A session is bound to a device and a directory. Every command of a bound session runs on that device, in that directory, and only inside the roots you allow in the config. The session's server-side working directory is a placeholder directory in the pod. A session that was ever bound never falls back to the pod shell, also after compression, branching or a subagent. Sessions that were never bound (web or Telegram sessions, for example) run where the plugin's `fallback` setting says: in the pod (`local`, the default), nowhere (`refuse`), or in a per-person sandbox pod (`device`, see [Agent sandbox](#agent-sandbox)).
 
-### Setup
+#### Setup
 
 Download the archive `talaria_<version>_<os>_<arch>.tar.gz` for your OS and architecture from the [latest release](https://github.com/USA-RedDragon/talaria/releases/latest), check it against `talaria_<version>_checksums.txt` (`sha256sum --ignore-missing -c talaria_<version>_checksums.txt`, or `shasum -a 256 --ignore-missing -c ...` on macOS), unpack it and run:
 
@@ -71,7 +113,7 @@ The hub URL is required: a release does not know any hub, so `./talaria setup` w
 
 `login` and `run` still work on their own, for example for a service device or a computer without a desktop.
 
-### Updates
+#### Updates
 
 ```sh
 talaria update
@@ -85,7 +127,7 @@ Commands that you run (`chat`, `acp`, `setup`, `login` and `browser`) look for a
 
 Both share one cache of the release lookup, `~/.cache/talaria/release.json` on Linux and `~/Library/Caches/talaria/release.json` on macOS. They ask the GitHub API at most once an hour (the daemon) or once a day (the CLI), with the cached ETag, which keeps them far below GitHub's limit of 60 requests per hour per IP address without a token. When GitHub answers that the limit is reached, they stop asking until the time it gives.
 
-### The daemon
+#### The daemon
 
 The service runs `talaria run -c ~/.config/talaria/config.yaml`. To run it yourself:
 
@@ -99,7 +141,7 @@ On Linux with a systemd user manager, `run` starts each agent command in a syste
 
 `run --no-splice` (or `gateway.splice: false`) runs only the exec leg: no loopback listener, no daemon state file and no whoami call, so `chat` cannot use it. Use it for a headless service device such as the sandbox pod. There, give the token with `hub.token` or `hub.token-file` (a file that holds only the token and that others cannot read) instead of `login` and the keyring.
 
-### Chat
+#### Chat
 
 ```sh
 cd ~/src/app
@@ -123,7 +165,7 @@ The server can already run any command on this PC through the exec leg, so an im
 
 With `chat.managed` set to `false`, on macOS, when the server reports no image, or when the image has no build for this PC's architecture (the Hermes image has amd64 and arm64), `chat` runs `chat.hermes` (default `hermes` on `PATH`) with your own Hermes home. That Hermes must be the same release as the server's: `chat` checks this and refuses to start on a mismatch (`--allow-version-mismatch` starts it anyway).
 
-### VS Code and other ACP editors
+#### VS Code and other ACP editors
 
 Point the editor's ACP client at `talaria acp` as the agent command. Under Remote-SSH, the ACP extension and so `talaria acp` run on the SSH host, which is then the device. The bridge binds each new session to the editor's folder, inlines the files you attach, and reconnects by itself, without the editor seeing the replayed history again.
 
@@ -131,7 +173,7 @@ The editor's chat list shows the chats bound to this computer in the editor's fo
 
 Each editor window costs one `hermes acp` process in the pod.
 
-### Firefox
+#### Firefox
 
 The agent can also use your own Firefox, with your logins, in its own "Hermes" tab group. It sees and acts only on tabs in that group. It asks you the first time it opens a site or submits a form on a site in a session, and every time it acts on a page with password, payment or one-time code fields.
 
@@ -147,7 +189,7 @@ The browser needs no sign-in of its own. It is authorized by this computer: the 
 
 The agent's tools are `browser_status`, `browser_use_device`, `browser_tabs`, `browser_navigate`, `browser_back`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_vision` and `browser_screenshot` (a screenshot the user sees in the Talaria hub). A session bound to this computer uses its Firefox. A session that runs in the sandbox, such as a web chat or a scheduled job, uses the Firefox of your one computer with browser control, or the one `browser_use_device` picks, when the plugin setting `user` names you as the backend's one user. A scheduled job keeps the browser computer of the chat that created it: its commands run in the sandbox and its browser steps run here, also when Firefox was closed (docs/browser.md section 3.2). To stop it, close the tab group, disable the extension, stop `run`, or remove the computer on the hub. [docs/browser.md](docs/browser.md) has the design, the approval rules and the security model.
 
-### MCP servers
+#### MCP servers
 
 The agent can use MCP servers that run on this computer, for tools that must work on its own files and programs (for example a reverse engineering server). List them in the config file under `mcp.servers`; only servers listed there can run, and the plugin cannot add one. `run` starts a server over stdio when the agent first uses it, keeps it running while it is used, stops it after `mcp.idle-timeout` without requests (it loses its state, such as open files; a server's own `idle-timeout` overrides this, and `0` keeps it running), starts it again after it exits (with a wait that grows while it keeps failing), and stops it when `run` stops. The server's stderr goes to the daemon log.
 
@@ -166,11 +208,11 @@ The server gets the daemon's environment (without the device token) plus `env`. 
 
 The agent's tools are `mcp_device_servers`, `mcp_device_tools` (list or search a server's tools, or show one tool's schema) and `mcp_device_call`, for sessions bound to this computer. It asks you before it runs a tool that its server does not mark read-only, once per tool for the session or always (plugin setting `mcp_approval`; `always` asks for every tool, since the read-only mark is the server's own claim). Tool results are untrusted data. [docs/protocol.md](docs/protocol.md) sections 4.9 and 8.11 have the details.
 
-### Agent messages
+#### Agent messages
 
 The plugin's `device-agents` tools let the user's agents message each other through the hub: `agent_peers` lists the user's other chats (with the computer and folder of each) and the subagents of the caller's own delegation tree, `agent_send` sends one of them a message, and `agent_set_name` gives a chat a short name. It does not matter which computer a chat runs on. A message to an idle chat starts a turn, one to a busy chat waits for its current turn, and a running subagent or parent gets it with its next tool result. The target sees it marked as from another agent, never as the user's words, and it never approves anything. The hub limits how many messages agents send and how long a chain of answers can be. [docs/protocol.md](docs/protocol.md) section 12 has the details.
 
-### Claude Code usage
+#### Claude Code usage
 
 The daemon counts the tokens that Claude Code used on the computer and sends the counts to the hub, which shows them on its Usage page with every computer and Hermes together. It reads the transcripts in `~/.claude` (or each directory in `$CLAUDE_CONFIG_DIR`) and in `usage.claude-dirs`, and only these parts of them: the time, model, the four token counts, the account and organization ids, whether the line is a subagent's (sidechain), and the base name of the session's folder, such as `app` for `/home/alice/src/app`. It reads the signed-in account's ids and email from `.claude.json`, so the hub can name the account, and keeps a list of when the signed-in account switched (the account timeline file in the state directory, never a token). Claude Code does not record which account a request used, so each request counts for the account that was signed in at its time; requests from before the list began count for the account of their session's start. It never reads or sends what was said, tool output, file contents or full paths. It reads only what was added since its last look, every 30 seconds, and keeps its place in `claude-usage.gob` in the state directory, so the first scan of a large history is the only long one.
 
@@ -178,7 +220,7 @@ In the Hermes pod, `acp-host` counts the same way in each per-account directory 
 
 `usage.enabled: false` turns counting off. It is on by default, except for `run` in a container. [docs/protocol.md](docs/protocol.md) section 13 lists exactly what is read and what is sent.
 
-## Renamed from hermes-device
+### Renamed from hermes-device
 
 Release 0.19.0 renamed the program from `hermes-device` to `talaria`, and the repository was renamed to `USA-RedDragon/talaria` after 0.19.1. The Go module, the container images (`ghcr.io/usa-reddragon/hermes-device` and `-sandbox`, which still hold the binary as `hermes-device`), the Firefox extension's id and the plugin keep their names.
 
@@ -208,7 +250,7 @@ A file that is already at the new place wins; the old one is left where it is an
 
 `TALARIA_*` environment variables win; an unset one falls back to the `HERMES_DEVICE_*` one, with a deprecation warning. A later release stops reading the old variables, stops publishing the `hermes-device_*` archives and no longer keeps the old host manifest.
 
-## Server setup
+### Server setup
 
 1. Install the plugin before Hermes starts, for example from an init container that runs this image:
 
@@ -239,7 +281,7 @@ A file that is already at the new place wins; the old one is left where it is an
 
 docs/protocol.md section 8 lists every plugin setting.
 
-## Agent sandbox
+### Agent sandbox
 
 With `fallback: local`, sessions that are not bound to a PC run their commands in the Hermes gateway container, which can read the server's secrets, environment, state database and processes. `fallback: device` runs them on a sandbox device instead: one sandbox pod per person, in its own namespace, that runs `talaria run` as a service device of the hub.
 
@@ -266,19 +308,19 @@ The release builds the image `ghcr.io/usa-reddragon/hermes-device-sandbox` (Alpi
 | Volume | A persistent volume at `/work`, with `fsGroup: 568` |
 | Network | Egress to the internet and the hub only; no ingress |
 
-## Versions
+### Versions
 
 On Linux, `chat` runs the server's own Hermes build, taken from the image that the plugin reports (Chat). Otherwise the local Hermes that `chat` runs must be the same release as the server's Hermes.
 
 The `talaria` image in the pod and the `talaria` binary on each PC should be the same release. Release 0.3.0 negotiates the exec leg protocol with its peer (versions 2 and 3), so a 0.2.0 binary still works with a 0.3.0 plugin and the other way round, but only version 3 keeps commands alive across a drop. Upgrade the pod first, then the PCs. When the two sides share no version, the leg closes with code 4426 and a message that names both versions, and `run` stops and prints it.
 
-### Reconnects and restarts
+#### Reconnects and restarts
 
 With protocol version 3, a command keeps running when the exec leg drops, for example when the hub restarts or the network goes away. The device keeps the command's output that the plugin has not confirmed (`device.resume-buffer`, 1 MiB per command), and the plugin keeps the tool call waiting, both for the plugin's `grace_seconds` (default 120). When the device reconnects in time, it sends the missing output and the exit code, and the agent sees the command finish as if nothing happened.
 
 A restart of the Hermes gateway (also a rollout) cannot keep commands: they belong to the gateway process. The plugin fails them at once with exit 255 and a note, and the device kills them as soon as it sees the gateway stop, or at the latest when it reconnects to the new gateway. The exception is a graceful restart with `device` in Hermes's `terminal.process_handoff_backends`: commands already moved to the background go to the next gateway and keep running if it starts within `grace_seconds` (set it to `device.max-grace`, `600` for the default), see docs/protocol.md section 4.7. A restart of `run` also loses its commands: they fail with exit 255 when it reconnects. An automatic update restarts `run` only when it holds no commands, not even an exit the plugin has not confirmed yet.
 
-## Configuration
+### Configuration
 
 The client and `acp-host` read `talaria/config.yaml` under the user config directory (`~/.config/talaria/config.yaml` on Linux), or the file given with `-c`, then environment variables, then flags. A `config.yaml` in the current directory is not read. `talaria setup` writes the file when it does not exist.
 
@@ -338,9 +380,9 @@ The client and `acp-host` read `talaria/config.yaml` under the user config direc
 
 <!-- configulator:end -->
 
-## Tests
+### Tests
 
 - Go: `go test -race ./...`. `protocol/contract_test.go` checks that the Go and Python wire constants agree.
-- Plugin: `scripts/test-plugin.sh`, which runs the plugin tests in the local Hermes install's Python runtime, including contract tests against `HERMES_AGENT_SRC`. The workflow "Hermes compatibility" runs it inside the Hermes image of the release in its `HERMES_VERSION`; Renovate opens a PR for each new release. The upgrade steps are in hermes-hub's [docs/hermes-upgrade.md](https://github.com/USA-RedDragon/hermes-hub/blob/main/docs/hermes-upgrade.md).
+- Plugin: `scripts/test-plugin.sh`, which runs the plugin tests in the local Hermes install's Python runtime, including contract tests against `HERMES_AGENT_SRC`. The workflow "Hermes compatibility" runs it inside the Hermes image of the release in its `HERMES_VERSION`; Renovate opens a PR for each new release. The upgrade steps are in hermes-hub's [hub/docs/hermes-upgrade.md](hub/docs/hermes-upgrade.md).
 - MCP: `HERMES_MCP_E2E=1 go test -count=1 -v ./internal/mcp/mcpe2e/` runs the device client and a fake MCP server against the plugin's exec route on uvicorn in the local Hermes runtime, and drives the server through the plugin's `device-mcp` tools.
 - Firefox: `HERMES_BROWSER_E2E=1 go test -count=1 -v -run TestFirefoxEndToEnd ./internal/browser/firefoxtest/` drives a throwaway headless Firefox on a fresh profile and `HOME`, through the extension and, when `hermes` is on `PATH`, through the plugin's browser tools (docs/browser.md section 10).

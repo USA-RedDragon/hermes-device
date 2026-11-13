@@ -1,14 +1,12 @@
 # talaria-hub
 
-[![Release](https://github.com/USA-RedDragon/talaria-hub/actions/workflows/release.yaml/badge.svg)](https://github.com/USA-RedDragon/talaria-hub/actions/workflows/release.yaml) [![go.mod version](https://img.shields.io/github/go-mod/go-version/USA-RedDragon/talaria-hub.svg)](https://github.com/USA-RedDragon/talaria-hub) [![License](https://badgen.net/github/license/USA-RedDragon/talaria-hub)](https://github.com/USA-RedDragon/talaria-hub/blob/main/LICENSE)
+[![Release](https://github.com/USA-RedDragon/talaria/actions/workflows/hub-release.yaml/badge.svg)](https://github.com/USA-RedDragon/talaria/actions/workflows/hub-release.yaml) [![go.mod version](https://img.shields.io/github/go-mod/go-version/USA-RedDragon/talaria?filename=hub%2Fgo.mod)](https://github.com/USA-RedDragon/talaria/tree/main/hub) [![License](https://badgen.net/github/license/USA-RedDragon/talaria)](https://github.com/USA-RedDragon/talaria/blob/main/hub/LICENSE)
 
 The hub of Talaria: one web front end, with its own accounts, a reverse-proxy login or OpenID Connect, for many [Hermes Agent](https://github.com/NousResearch/hermes-agent) gateways. It is made for a phone first.
 
-Docs: https://usa-reddragon.github.io/talaria-hub/
+Docs: https://usa-reddragon.github.io/talaria/ (this page, the guides below and the rest of Talaria). The hub lives in `hub/` of the talaria repository and is released with tags `hub/vX.Y.Z`.
 
-Guides: [admin guide](docs/admin.md) (people, backends, computers, proxies), [logging in](docs/auth.md), [configuration](docs/configuration.md) (every setting) and the [API overview](docs/api.md). To install the hub with Hermes and a sandbox in one step, use [talaria-deploy](https://github.com/USA-RedDragon/talaria-deploy). `docs/site/build.sh` builds these pages into a static site with pandoc.
-
-Guides: the [API overview](docs/api.md). To install the hub with Hermes and a sandbox in one step, use [talaria-deploy](https://github.com/USA-RedDragon/talaria-deploy). `docs/site/build.sh` builds the pages in `docs/` into a static site with pandoc.
+Guides: [admin guide](docs/admin.md) (people, backends, computers, proxies), [logging in](docs/auth.md), [configuration](docs/configuration.md) (every setting) and the [API overview](docs/api.md). To install the hub with Hermes and a sandbox in one step, use the [install kit](https://github.com/USA-RedDragon/talaria/blob/main/docs/deploy/getting-started.md).
 
 - One list of the sessions on every Hermes backend that you may use, live and stored.
 - Open a session and continue it, also a live session that VS Code or the CLI started. The gateway keeps ownership of the session, so you can go back to VS Code at any time.
@@ -24,7 +22,7 @@ Guides: the [API overview](docs/api.md). To install the hub with Hermes and a sa
 - A line under the chat title with the model, how full its context is (such as `41k / 131k context`, with a small meter), the subagents that run now by model (such as `subagents: Haiku ×6`), reply speed and the working folder. It opens to pick the model, the thinking level and the chat's Subagents (see [Subagent routes](#subagent-routes)).
 - Rename, archive, delete, pin and export chats, and search their titles. The list marks chats that run, replies you have not seen yet, and chats that wait for your approval or answer (see [The message box and the chat list](#the-message-box-and-the-chat-list)).
 - An optional Telegram bot (`telegram.*`) that uses the same backends and permissions.
-- Optional [talaria](https://github.com/USA-RedDragon/talaria) computer support (`device.*`): users pair their own computers, start or move chats onto a computer and folder from the web page or Telegram, and Talaria runs commands, edits files and serves VS Code there.
+- Optional [talaria](https://github.com/USA-RedDragon/talaria/blob/main/docs/deploy/computers.md) computer support (`device.*`): users pair their own computers, start or move chats onto a computer and folder from the web page or Telegram, and Talaria runs commands, edits files and serves VS Code there.
 
 The hub speaks the canonical session protocol of Hermes <!-- docgen:const pkg=internal/gateway name=HermesVersion -->`v0.23.1`<!-- /docgen:const -->: JSON-RPC over the gateway's `/api/ws` WebSocket. A contract test (`internal/gateway/contract_test.go`) checks the protocol lines it depends on against a Hermes checkout (`HERMES_AGENT_SRC`, default `~/.hermes/hermes-agent`). Set `HERMES_AGENT_VERSION` to check a newer release. Before a Hermes upgrade, follow [docs/hermes-upgrade.md](docs/hermes-upgrade.md).
 
@@ -472,7 +470,7 @@ Put the PEM in `notify.vapid_private_key` (environment variable `HUB_NOTIFY_VAPI
 
 ## Devices
 
-With `device.enabled` the hub is the server side of [talaria](https://github.com/USA-RedDragon/talaria) (called hermes-device before its release 0.19.0), as its `docs/protocol.md` describes. The hub imports that module's `protocol` and `assertion` packages for the wire names and the hub assertion.
+With `device.enabled` the hub is the server side of the `talaria` program at the root of this repository (called hermes-device before its release 0.19.0), as [docs/protocol.md](https://github.com/USA-RedDragon/talaria/blob/main/docs/protocol.md) describes. The hub imports that module's `protocol` and `assertion` packages for the wire names and the hub assertion.
 
 - **Pairing.** `talaria setup` (or `talaria login`) calls `POST /api/device/pair` and shows a code and the link `<http.public_url>/device/pair`. The user signs in there, types the code, checks the computer's name, system, address and request time, names it and confirms. The code never comes from the link, so a link someone else sends cannot pair their computer with this user. The device then gets its token from `POST /api/device/pair/token`, once. The hub keeps only the SHA-256 of the token. The hub limits pairing requests per address and wrong codes per user (10 in 15 minutes).
 - **Backend.** Each device is pinned to one backend at pairing: one with `backends[].devices: true` that the user may use. On every request and every WebSocket upgrade, and again every `device.recheck_interval` while a connection is open, the hub checks the token, that the device is not revoked and that its user may still use the backend.
