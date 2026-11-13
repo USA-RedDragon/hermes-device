@@ -517,8 +517,8 @@ def _make_cron_toolsets(core: Any) -> Callable[[Callable], Callable]:
 
 CRON_NOTE = (" Scheduled jobs can message another chat: their agent has agent_send and agent_peers whatever "
              "enabled_toolsets says (not for [], the zero-tool allowlist), so a job whose prompt says to tell a "
-             "chat needs no extra toolset. A job created in a chat with a browser computer has no browser until "
-             "browser_use_device is called with its job_id, which asks the user.")
+             "chat needs no extra toolset. A job created in a chat bound to one of the user's computers runs there "
+             "(commands, files and browser); device picks another computer or none, and the user is asked once.")
 
 
 def install_cron_hooks(core: Any) -> None:

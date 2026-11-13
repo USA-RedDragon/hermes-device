@@ -198,7 +198,7 @@ class HookTests(TabBase):
         with mock.patch.object(core, "valid_hooks", lambda: frozenset(
                 {"agent_turn_start", "agent_turn_end", "pre_llm_call", "subagent_stop"})):
             browser.register(Ctx(), core)
-        self.assertEqual([h for h in hooks if h not in ("pre_tool_call", "on_session_delete")],
+        self.assertEqual([h for h in hooks if h not in ("pre_tool_call", "on_session_delete", "on_session_start")],
                          ["agent_turn_start", "agent_turn_end", "pre_llm_call", "subagent_stop"])
 
 

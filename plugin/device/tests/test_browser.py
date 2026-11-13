@@ -177,7 +177,8 @@ class BrowserBase(Base):
                                  ("pre_llm_call", browser.on_turn_start),
                                  ("post_llm_call", browser.on_turn_end),
                                  ("on_session_end", browser.on_turn_end),
-                                 ("subagent_stop", browser.on_subagent_stop)])
+                                 ("subagent_stop", browser.on_subagent_stop),
+                                 ("on_session_start", browser._jobs().on_session_start)])
         import cron.scheduler
         self.assertIsNotNone(getattr(cron.scheduler.create_job_with_scheduler_registration,
                                      core._WRAPPED_MARK, None))
@@ -1136,8 +1137,17 @@ class BrowserDeviceTests(BrowserBase):
     def create_job(self, job_id="job1"):
         created = browser._make_create_job(lambda **kw: {"id": job_id, **kw})(prompt="p", schedule="in 2m")
         self.assertEqual(created["id"], job_id)
-        self.assertIsNone(browser.choices().job(job_id), "a create gives the job no browser")
-        browser.record_job(created)  # the user allowed it with browser_use_device
+        self.assertIsNone(browser.choices().job(job_id), "a create outside cronjob_manage gives the job no device")
+        # The user allowed the creating session's browser device with browser_use_device (a browser-only record).
+        try:
+            sid, res = browser.resolve(core.current_session_id())
+            conn, how = browser.pick(sid, res)
+        except browser.Unavailable:
+            return
+        if how == "sandbox":
+            return
+        browser.choices().set_job(job_id, {"device_id": conn.device_id, "name": conn.name, "user": conn.user,
+                                           "session_id": sid, "at": 0})
 
     def test_sandbox_never_offered_as_browser(self):
         self.assertEqual([c.device_id for c in browser.browser_devices()], ["d_pc"])
@@ -1411,8 +1421,8 @@ class BrowserDeviceTests(BrowserBase):
             self.assertIn("no scheduled job", self.run_tool("browser_use_device", device="d_pc2", job_id="nope")["error"])
             out = self.run_tool("browser_use_device", device="d_pc2", job_id="SEV review")
             self.assertEqual(self.decision["action"], "approve")
-            self.assertTrue(self.decision["rule_key"].startswith("browser:schedule:"))
-            self.assertIn("scheduled job SEV review", self.decision["message"])
+            self.assertEqual(self.decision["rule_key"], "browser:job-device:d_pc2:job1")
+            self.assertIn("scheduled job job1", self.decision["message"])
             self.assertEqual(out["job_id"], "job1")
             self.answer = False
             out = self.run_tool("browser_use_device", device="d_pc", job_id="job1")
@@ -1500,40 +1510,59 @@ class BrowserDeviceTests(BrowserBase):
             self.assertIn("not known which user created scheduled job older", out["error"])
             self.assertIsNone(browser.choices().job("older"))
 
-    def test_scheduling_with_a_browser_asks_the_user(self):
+    def test_scheduling_on_a_computer_asks_once(self):
+        """Giving a job a computer asks; updates, runs and resumes of a job that has one do not
+        (Jacob answered "always" three times and was asked a fourth time after an update)."""
         gate = browser.pre_tool_call
+        self.second()
         create = {"action": "create", "prompt": "p", "schedule": "in 2m"}
         self.assertIsNone(gate(tool_name="cronjob_manage", args=create, session_id=self.session),
-                          "a create asks nothing, so an unanswered prompt cannot cancel it")
+                          "a create in a sandbox chat gives the job no computer and asks nothing")
+        self.session = "sess-1"
+        self.hub.bind("sess-1", "d_pc", str(self.root), operator=True)
+        r = gate(tool_name="cronjob_manage", args=create, session_id=self.session)
+        self.assertEqual((r["action"], r["rule_key"]), ("approve", "browser:job-device:d_pc:new"),
+                         "a create in a chat bound to a computer gives the job that computer, which asks")
+        self.assertIsNone(gate(tool_name="cronjob_manage", args=dict(create, device="none"), session_id=self.session))
         self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": "list"}, session_id=self.session))
-        browser.choices().set_job("job1", {"device_id": "d_pc", "name": "pc", "user": "alice"})
+        browser.choices().set_job_owner("job1", "alice", self.session)
+        browser.choices().set_job("job1", {"device_id": "d_pc", "name": "pc", "user": "alice", "dir": str(self.root)})
         with mock.patch.object(browser, "_job_id", lambda ref: ref):
+            for args in ({"action": "update", "job_id": "job1", "prompt": "new"},
+                         {"action": "update", "job_id": "job1", "schedule": "every 3h"},
+                         {"action": "update", "job_id": "job1", "device": "d_pc"},
+                         {"action": "update", "job_id": "job1", "device": "pc"},
+                         {"action": "run", "job_id": "job1"}, {"action": "resume", "job_id": "job1"},
+                         {"action": "pause", "job_id": "job1"}, {"action": "remove", "job_id": "job1"},
+                         {"action": "update", "job_id": "job1", "device": "none"}):
+                with self.subTest(args=args):
+                    self.assertIsNone(gate(tool_name="cronjob_manage", args=args, session_id=self.session))
             keys = set()
-            for action in ("update", "run", "resume"):
-                r = gate(tool_name="cronjob_manage", args={"action": action, "job_id": "job1"}, session_id=self.session)
+            for args in ({"action": "update", "job_id": "job1", "device": "d_pc2"},
+                         {"action": "update", "job_id": "job1", "device": "laptop", "prompt": "other text"},
+                         {"device": "laptop", "job_id": "job1"}):
+                tool = "cronjob_manage" if "action" in args else "browser_use_device"
+                r = gate(tool_name=tool, args=args, session_id=self.session)
                 self.assertEqual(r["action"], "approve")
                 self.assertIn("scheduled job job1", r["message"])
                 keys.add(r["rule_key"])
-            self.assertEqual(len(keys), 3)
-            self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": "run", "job_id": "job2"},
-                                   session_id=self.session))
-            for action in ("pause", "remove"):
-                self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": action, "job_id": "job1"},
-                                       session_id=self.session))
+            self.assertEqual(keys, {"browser:job-device:d_pc2:job1"},
+                             "one stable rule per job and device, whatever the request text")
             with mock.patch.object(browser, "no_user", lambda: True):
-                r = gate(tool_name="cronjob_manage", args={"action": "run", "job_id": "job1"}, session_id=self.session)
+                r = gate(tool_name="cronjob_manage", args={"action": "update", "job_id": "job1", "device": "d_pc2"},
+                         session_id=self.session)
                 self.assertEqual(r["action"], "block")
 
     def test_create_with_a_browser_makes_the_job_and_says_how_to_give_it_one(self):
         self.old_sandbox()
-        create = {"action": "create", "prompt": "p", "schedule": "in 2m"}
+        create = {"action": "create", "prompt": "p", "schedule": "in 2m", "device": "none"}
         self.assertIsNone(browser.pre_tool_call(tool_name="cronjob_manage", args=create, session_id=self.session))
         self.create_job_unbound("job9")
         result = json.dumps({"success": True, "job_id": "job9"})
         out = json.loads(browser.schedule_note("cronjob_manage", create, result, self.session))
         self.assertTrue(out["success"])
         self.assertIn('browser_use_device with device "pc" and job_id "job9"', out["browser_note"])
-        browser.record_job({"id": "job9"})
+        browser.choices().set_job("job9", {"device_id": "d_pc", "name": "pc", "user": "alice"})
         self.assertIsNone(browser.schedule_note("cronjob_manage", create, result, self.session), "it has one now")
         self.assertIsNone(browser.schedule_note("cronjob_manage", {"action": "list"}, result, self.session))
         self.hub.detach(self.device.conn)
@@ -1571,13 +1600,15 @@ class BrowserDeviceTests(BrowserBase):
                 mock.patch("tools.approval.request_tool_approval", unanswered), \
                 mock.patch("tools.approval_prompt.request_elicitation_consent", never), \
                 mock.patch.object(browser, "_job_id", lambda ref: ref):
+            self.second()
             browser.choices().set_job("job1", {"device_id": "d_pc", "name": "pc", "user": "alice"})
+            browser.choices().set_job_owner("job1", "alice", self.session)
             results = {}
 
             def scheduled():
                 results["run"] = plugins.resolve_pre_tool_block(
-                    "cronjob_manage", {"action": "run", "job_id": "job1"}, session_id=self.session,
-                    tool_call_id="call-1")
+                    "cronjob_manage", {"action": "update", "job_id": "job1", "device": "d_pc2"},
+                    session_id=self.session, tool_call_id="call-1")
 
             started = time.monotonic()
             worker = threading.Thread(target=scheduled, daemon=True)
@@ -1585,7 +1616,7 @@ class BrowserDeviceTests(BrowserBase):
             self.assertTrue(asked.wait(10), "Hermes's approval gate was not asked")
             self.assertLess(time.monotonic() - started, timeout, "the hook returned before the prompt")
             self.assertEqual(prompts[0][0], "cronjob_manage")
-            self.assertTrue(prompts[0][1].startswith("browser:schedule:"))
+            self.assertEqual(prompts[0][1], "browser:job-device:d_pc2:job1")
             time.sleep(timeout * 2)
             self.assertTrue(worker.is_alive(), "the prompt is still unanswered")
             for sid, n in (("other-session", 2), (self.session, 3)):

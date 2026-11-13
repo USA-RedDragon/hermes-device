@@ -419,7 +419,7 @@ class CronToolsetsTest(unittest.TestCase):
 
     def test_description_tells_the_model(self):
         self.assertIn("agent_send", agents.CRON_NOTE)
-        self.assertIn("browser_use_device", agents.CRON_NOTE)
+        self.assertIn("device picks another computer", agents.CRON_NOTE)
 
 
 class RoutesTest(unittest.TestCase):

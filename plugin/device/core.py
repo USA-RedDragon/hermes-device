@@ -1608,12 +1608,26 @@ def resolve_session(session_id: str, cwd: Optional[str] = None) -> Resolution:
     whose cwd is the placeholder and that has no binding fails closed), plus the implicit
     sandbox binding of ``fallback: device``."""
     res = hub().resolve(session_id)
+    if res.state == STATE_NEVER_BOUND:
+        job = job_resolution(res)
+        if job is not None:
+            return job
     if res.state == STATE_NEVER_BOUND and any(is_placeholder_cwd(c) for c in (session_cwd(), cwd or "")):
         return Resolution(STATE_FAIL_CLOSED, session_id,
                           reason="was created for a device (its cwd is the placeholder) but is not bound")
     if res.state == STATE_NEVER_BOUND and fallback() == "device":
         return sandbox_resolution(res)
     return res
+
+
+def job_resolution(res: Resolution) -> Optional[Resolution]:
+    """For a run of a scheduled job that has a device (docs/browser.md section 3.5): bound to that
+    device and the job's directory, or fail closed when it cannot be used. None for any other
+    session."""
+    jobs = sys.modules.get("hermes_device_jobs")
+    if jobs is None or getattr(jobs, "_browser_ref", None) is None:
+        return None
+    return jobs.resolution(res)
 
 
 _SANDBOX_NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}")
@@ -3444,7 +3458,8 @@ def _guard(tool_name: str, args: dict, task_id: str) -> Optional[dict]:
         if pod_args:
             return _block(f"talaria: session {res.session_id} {where(res)}; cronjob_manage "
                           f"{', '.join(pod_args)} would run on the server, so it is refused. Schedule a "
-                          f"prompt-only job; its run uses the sandbox.")
+                          f"prompt-only job; to run it on one of your computers, give cronjob_manage device "
+                          f"(and device_dir) instead of workdir.")
         action = str(args.get("action") or "").strip().lower()
         job_id = args.get("job_id")
         if job_id and action not in CRON_SAFE_ACTIONS:

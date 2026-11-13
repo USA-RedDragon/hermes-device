@@ -21,6 +21,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import tempfile
 import threading
 import time
@@ -114,6 +115,7 @@ class Choices:
         self._jobs: dict[str, dict] = {}
         self._device_jobs: dict[str, dict] = {}
         self._owners: dict[str, dict] = {}
+        self._asks: dict[str, dict] = {}
 
     def _file_stamp(self) -> Optional[tuple]:
         try:
@@ -130,7 +132,7 @@ class Choices:
         if stamp == self._stamp:
             return
         self._stamp, self._error = stamp, ""
-        self._sessions, self._jobs, self._device_jobs, self._owners = {}, {}, {}, {}
+        self._sessions, self._jobs, self._device_jobs, self._owners, self._asks = {}, {}, {}, {}, {}
         if stamp is None:
             return
         try:
@@ -155,8 +157,16 @@ class Choices:
                                                        for v in owners.values()):
                 raise ValueError("job_owners is not an object of objects with a user")
             self._owners = {str(k): v for k, v in owners.items()}
+            asks = raw.get("job_asks") or {}
+            if not isinstance(asks, dict) or not all(isinstance(v, dict) and isinstance(v.get("job_id"), str)
+                                                     for v in asks.values()):
+                raise ValueError("job_asks is not an object of objects with a job_id")
+            self._asks = {str(k): v for k, v in asks.items()}
+            for k, v in self._jobs.items():
+                if "dir" in v and not (isinstance(v["dir"], str) and v["dir"].startswith("/")):
+                    raise ValueError(f"jobs entry {str(k)[:64]!r} has a dir that is not an absolute path")
         except Exception as exc:
-            self._sessions, self._jobs, self._device_jobs, self._owners = {}, {}, {}, {}
+            self._sessions, self._jobs, self._device_jobs, self._owners, self._asks = {}, {}, {}, {}, {}
             self._error = f"{self._path} is unreadable ({exc})"
             _core().logger.error("device: %s; browser device choices fail closed until it is fixed", self._error)
 
@@ -171,7 +181,7 @@ class Choices:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         doc = {"version": CHOICES_VERSION, "sessions": dict(sorted(self._sessions.items())),
                "jobs": dict(sorted(self._jobs.items())), "device_jobs": dict(sorted(self._device_jobs.items())),
-               "job_owners": dict(sorted(self._owners.items()))}
+               "job_owners": dict(sorted(self._owners.items())), "job_asks": dict(sorted(self._asks.items()))}
         fd, tmp = tempfile.mkstemp(prefix=".browser-", suffix=".tmp", dir=str(self._path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -235,6 +245,30 @@ class Choices:
             rec = self._owners.get(job_id)
             return rec["user"] if rec is not None else None
 
+    def job_owner_session(self, job_id: str) -> Optional[str]:
+        """The session that created the job, or None when it is not known."""
+        with self._lock:
+            self.check()
+            rec = self._owners.get(job_id)
+            return str(rec.get("session_id") or "") or None if rec is not None else None
+
+    def mark_ask(self, job_id: str, rule: str) -> bool:
+        """Record that the job's chat was asked for ``rule``; False when it was before."""
+        key = f"{job_id} {rule}"
+        done = []
+
+        def edit() -> bool:
+            if key in self._asks:
+                return False
+            self._asks[key] = {"job_id": job_id, "rule": rule, "at": round(time.time(), 3)}
+            done.append(True)
+            return True
+        self._change(edit)
+        return bool(done)
+
+    def unmark_ask(self, job_id: str, rule: str) -> None:
+        self._set("_asks", f"{job_id} {rule}", None)
+
     def set_job_owner(self, job_id: str, user: str, session_id: str) -> None:
         self._set("_owners", job_id, {"user": user, "session_id": session_id, "at": round(time.time(), 3)})
 
@@ -268,6 +302,7 @@ class Choices:
         """Drop the choices of jobs that no longer exist."""
         def edit() -> bool:
             gone = [(t, j) for t in (self._jobs, self._device_jobs, self._owners) for j in t if not alive(j)]
+            gone += [(self._asks, k) for k, v in self._asks.items() if not alive(v["job_id"])]
             for t, j in gone:
                 del t[j]
             return bool(gone)
@@ -1025,51 +1060,21 @@ GATED = frozenset({"browser_navigate", "browser_tabs", "browser_click", "browser
 
 
 SCHEDULE_TOOLS = frozenset({"cronjob_manage", "browser_use_device"})
-# cronjob_manage actions that make a job with a browser device run again or change what it does.
-_JOB_ACTIONS = frozenset({"update", "run", "resume"})
+
+
+def _jobs():
+    return _core()._load_sibling("hermes_device_jobs", "jobs.py")
 
 
 def _schedule_gate(tool_name: str, args: dict, session_id: str) -> Optional[dict]:
-    """Ask the user before work is scheduled that drives a browser unattended: an update, run or
-    resume of a job that has a browser device, and browser_use_device for a job (section 3.2). A
-    create asks nothing: the new job has no browser until browser_use_device gives it one, so an
-    unanswered prompt can never cancel the create. A prompt injection could
-    otherwise set up a job that reads the user's logged-in sites with nobody watching.
-
-    The hook never waits for the user: it returns an approve request, and Hermes asks through
-    its own approval gate after the hook returned (Once, This chat, Always or Deny). The rule
-    covers only the same request again, so a session or always answer never lets another job,
-    device or change through."""
-    action = str(args.get("action") or "").strip().lower()
-    raw = args.get("job_id")
-    try:
-        if tool_name == "browser_use_device":
-            if not raw or str(args.get("device") or "").strip() == "default":
-                return None
-            _, res = resolve(session_id)
-            job_id = _job_id(str(raw))
-            if not job_id:
-                return None
-            _check_job_owner(job_id, _need_user(_session_user(res)))
-            what, device = f"scheduled job {str(raw)[:64]}", str(args.get("device") or "")[:64]
-        elif action in _JOB_ACTIONS and isinstance(raw, str) and raw:
-            job_id = _job_id(raw)
-            rec = choices().job(job_id) if job_id else None
-            if rec is None:
-                return None
-            what, device = f"scheduled job {job_id[:64]}", _label(rec)
-        else:
-            return None
-    except (Unavailable, ValueError):
-        return None
-    message = (f"Let {what} use the Firefox on {device}, with your logins, in runs where nobody is watching? It can "
-               f"open the sites you approved with \"always\" and read them.")
-    if no_user():
-        return {"action": "block", "message": f"{tool_name} was not run: {message} Only the user can allow this, "
-                                              f"in a chat."}
-    digest = hashlib.sha256(json.dumps([tool_name, args, device], sort_keys=True, default=str).encode()).hexdigest()
-    return {"action": "approve", "rule_key": _rule("schedule", digest[:16]),
-            "message": f"{message} Approving for the session (or always) allows only this same request again."}
+    """Ask the user before a scheduled job gets a computer, or moves to another one: a
+    cronjob_manage create (the chat's computer by default, or ``device``), an update with
+    ``device``, and browser_use_device for a job (docs/browser.md section 3.5). The rule is
+    ``browser:job-device:<device id>:<job id>``, the same for the same job and device whatever the
+    request looked like, so an "always" answer holds. Updates, runs and resumes that leave the
+    device alone ask nothing. The hook never waits for the user: Hermes asks through its own
+    approval gate after the hook returned."""
+    return _jobs().gate(tool_name, args, session_id)
 
 
 def pre_tool_call(tool_name: str = "", args: Optional[dict] = None, task_id: str = "", session_id: str = "",
@@ -1091,6 +1096,8 @@ def _pre_tool_call(tool_name: str, args: Optional[dict], session_id: str) -> Opt
     blocked at once."""
     if tool_name in SCHEDULE_TOOLS:
         return _schedule_gate(tool_name, args if isinstance(args, dict) else {}, session_id)
+    if tool_name == _jobs().ALLOW_TOOL:
+        return _jobs().allow_gate(args if isinstance(args, dict) else {})
     if tool_name not in GATED:
         return None
     args = args if isinstance(args, dict) else {}
@@ -1122,11 +1129,16 @@ def _pre_tool_call(tool_name: str, args: Optional[dict], session_id: str) -> Opt
                 f"retry it; report that this step needs the user.")}
         if approval and not approved(approval.get("rule_key") or ""):
             _take_grant(key)
+            try:
+                told = _jobs().ask_chat(_session(session_id), str(approval.get("rule_key") or ""), tool_name)
+            except Exception:
+                _core().logger.warning("device-browser: could not tell the job's chat", exc_info=True)
+                told = ""
             return {"action": "block", "message": (
                 f"{tool_name} was not run: it needs the user's approval (rule {approval.get('rule_key')}), and no "
                 f"user is present in this run (a scheduled job or a one-shot query). Only approvals the user gave "
                 f"as \"always\" count here. Do not retry it; report that the user must approve it once with "
-                f"\"always\" in a chat, or add plugin_rule:{approval.get('rule_key')} to command_allowlist.")}
+                f"\"always\" in a chat, or add plugin_rule:{approval.get('rule_key')} to command_allowlist.{told}")}
     return approval
 
 
@@ -1588,7 +1600,7 @@ def _device_list(user: Optional[str], selected: str = "") -> list[dict]:
 def set_session_device(session_id: str, device_id: str) -> dict:
     """Make a connected computer the browser device of a session, as browser_use_device does. The
     hub calls it for a page chat, the chat that the Firefox extension opens on that computer
-    (docs/browser.md section 3.3). The choice records the computer's user, so :func:`pick` still
+    (docs/browser.md section 3.5). The choice records the computer's user, so :func:`pick` still
     refuses it in a session of another user. Raises ValueError for a device that is not a
     connected computer with browser control."""
     core = _core()
@@ -1702,7 +1714,7 @@ def browser_use_device(args: dict, session_id: str = "", **_kwargs) -> str:
             if job_id:
                 choices().set_job(job_id, None)
                 return _ok({"ok": True, "job_id": job_id, "device": None,
-                            "note": "The job's runs use the user's only computer with browser control."})
+                            "note": "The job has no computer now: its runs use the sandbox."})
             choices().set_session(sid, None)
             return _ok({"ok": True, "device": None, "note": "This session uses its default browser device again."})
         mine = browser_devices(user)
@@ -1714,8 +1726,15 @@ def browser_use_device(args: dict, session_id: str = "", **_kwargs) -> str:
         conn = found[0]
         choice = {"device_id": conn.device_id, "name": conn.name, "user": conn.user, "at": round(time.time(), 3)}
         if job_id:
-            choices().set_job(job_id, dict(choice, session_id=sid))
-            return _ok({"ok": True, "job_id": job_id, "device": conn.name, "device_id": conn.device_id})
+            try:
+                rec = _jobs().plan(sid, res, {"device": conn.device_id}, current=choices().job(job_id))
+                rec = _jobs().checked(rec)
+            except ValueError as exc:
+                raise ValueError(f"the job was not changed: {exc}") from None
+            choices().set_job(job_id, dict(rec, session_id=sid, at=round(time.time(), 3)))
+            return _ok({"ok": True, "job_id": job_id, "device": conn.name, "device_id": conn.device_id,
+                        "dir": rec["dir"], "note": f"Each run of the job runs its commands, files and browser on "
+                                                   f"{conn.name} in {rec['dir']}."})
         choices().set_session(sid, choice)
         return _ok({"ok": True, "device": conn.name, "device_id": conn.device_id})
     except Unavailable as exc:
@@ -1727,10 +1746,11 @@ def browser_use_device(args: dict, session_id: str = "", **_kwargs) -> str:
 
 
 def record_job(job: Any, bind: bool = True) -> None:
-    """Record the hub user of the session that just created a job, and with ``bind`` give the job
-    the session's browser device, so that the job's runs use it (section 3.2). No device when the
-    session has none. Raises when the choices cannot be read or saved. A create does not bind:
-    the user allows a job's browser with browser_use_device (job_id), which asks."""
+    """Record the hub user of the session that just created a job, and give the job the device
+    that the cronjob_manage create asked for (docs/browser.md section 3.5): ``device``, else the
+    computer the creating chat is bound to, which the user allowed when the create asked. A
+    create from elsewhere (the CLI, the dashboard) gives no device. Raises when the choices
+    cannot be read or saved."""
     core = _core()
     job_id = str(job.get("id") or "") if isinstance(job, dict) else ""
     sid = core.current_session_id()
@@ -1746,17 +1766,13 @@ def record_job(job: Any, bind: bool = True) -> None:
         owner = _session_user(res)
         if owner is not None:
             choices().set_job_owner(job_id, owner, sid)
-        if not bind:
-            return
-        conn, how = pick(sid, res)
     except Unavailable as exc:
-        core.logger.info("device: scheduled job %s has no browser device: %s", job_id, exc)
+        core.logger.info("device: the user of scheduled job %s is not known: %s", job_id, exc)
+    pending, rec = _jobs().pending_record(job_id, sid)
+    if not bind or not pending or rec is None:
         return
-    if how == "sandbox":
-        return  # the sandbox default is implicit: no record, so the job can still be given a computer
-    choices().set_job(job_id, {"device_id": conn.device_id, "name": conn.name, "user": conn.user,
-                               "session_id": sid, "at": round(time.time(), 3)})
-    core.logger.info("device: scheduled job %s uses the browser of %s [%s]", job_id, conn.name, conn.device_id)
+    choices().set_job(job_id, rec)
+    core.logger.info("device: scheduled job %s runs on %s [%s] in %s", job_id, rec["name"], rec["device_id"], rec["dir"])
 
 
 def _make_create_job(original: Callable) -> Callable:
@@ -1776,7 +1792,7 @@ def _record_or_remove(job: dict) -> None:
     """record_job; when the choice cannot be saved, the job is removed and the error raised, so
     that no job runs without the browser device its creator meant."""
     try:
-        record_job(job, bind=False)
+        record_job(job)
     except Exception as exc:
         _core().logger.error("device: could not save the browser device of scheduled job %s", job.get("id"),
                              exc_info=True)
@@ -1799,6 +1815,8 @@ def schedule_note(tool_name: str, args: Any, result: Any, session_id: str) -> Op
         data = json.loads(result)
         job_id = str(data.get("job_id") or "") if isinstance(data, dict) and data.get("success") else ""
         if not job_id or choices().job(job_id) is not None:
+            return None
+        if "device" in data:
             return None
         sid, res = resolve(session_id)
         conn, how = pick(sid, res)
@@ -2400,6 +2418,7 @@ def register(ctx: Any, core: Any) -> None:
         if hook in known:
             ctx.register_hook(hook, fn)
     install_cron_hook()
+    _jobs().register(ctx, core, sys.modules[__name__])
 
 
 def install_cron_hook() -> bool:
