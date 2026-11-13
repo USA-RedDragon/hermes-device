@@ -1,7 +1,7 @@
 name: Docs
 
-# One site for all of Talaria: docs/ with hub/docs, hub/README.md and
-# hermes/README.md (docs/nav.md lists the pages), published to GitHub Pages.
+# One site for all of Talaria: docs/ with hub/docs, hub/README.md,
+# hermes/README.md and plugins/README.md (docs/nav.md lists the pages), published to GitHub Pages.
 
 on:
   pull_request:

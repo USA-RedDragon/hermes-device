@@ -64,6 +64,7 @@ end
 M.trees = {
   { docs = "hub/docs", readme = "hub/README.md", out = "hub" },
   { readme = "hermes/README.md", out = "hermes" },
+  { readme = "plugins/README.md", out = "plugins" },
 }
 
 function M.default_out(src)

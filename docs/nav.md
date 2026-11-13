@@ -38,6 +38,7 @@ This page lists the pages of the docs site in reading order, by section; the sit
   - [Install kit settings](deploy/reference.md)
   - [Images](deploy/images.md)
   - [Talaria Hermes patches](../hermes/README.md)
+  - [Talaria Hermes plugins](../plugins/README.md)
   - [Wire protocol](protocol.md)
   - [Browser control design](browser.md)
 - Project

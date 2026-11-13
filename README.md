@@ -43,6 +43,7 @@ program on each one and [pair it](docs/start/setup-and-pairing.md).
 | `/` (this README from [Parts](#parts) on) | `talaria`, the program for your own computers, and the Hermes device plugin | tags `vX.Y.Z`, the [latest release](https://github.com/USA-RedDragon/talaria/releases/latest) |
 | [`hub/`](hub) | The hub: web app, Telegram bot, accounts, API | tags `hub/vX.Y.Z`, image `ghcr.io/usa-reddragon/talaria-hub` |
 | [`hermes/`](hermes) | Talaria Hermes: Hermes Agent with the Talaria patches | tags `hermes/v<release>-p<n>`, image `ghcr.io/usa-reddragon/talaria-hermes` |
+| [`plugins/`](plugins) | Hermes plugins Talaria uses: subagent routes, project memory | tags `plugins/vX.Y.Z`, tarball on the release |
 | [`deploy/`](deploy) | The install kit: Docker Compose, Helm chart, all-in-one image for Unraid and TrueNAS | tags `aio/vX.Y.Z`, image `ghcr.io/usa-reddragon/talaria-aio` |
 | [`docs/`](docs) | The docs site (with the pages in `hub/docs`) | https://usa-reddragon.github.io/talaria/ |
 
