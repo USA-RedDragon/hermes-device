@@ -14,6 +14,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // Runner runs the programs setup needs: systemctl, launchctl, shells and
@@ -101,10 +103,9 @@ func LocalSystem(goos string) (*System, error) {
 	if err != nil {
 		return nil, err
 	}
-	interactive := false
-	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
-		interactive = true
-	}
+	// A terminal, not any character device: /dev/null is one too, and setup
+	// run from launchd, cron or ssh host cmd < /dev/null must not prompt
+	interactive := isTerminal(os.Stdin)
 	return &System{
 		GOOS: goos, Home: home, ConfigDir: cfg, CacheDir: cache, UID: os.Getuid(),
 		Shell: loginShell(os.Getenv("SHELL"), os.Getuid()), Run: OSRunner{}, Getenv: os.Getenv,
@@ -147,4 +148,10 @@ func exists(path string) bool {
 
 func (s *System) printf(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.Out, format, args...)
+}
+
+// isTerminal reports whether f is a terminal. A character device is not
+// enough: /dev/null is one too.
+func isTerminal(f *os.File) bool {
+	return term.IsTerminal(int(f.Fd())) //nolint:gosec // a file descriptor fits in an int
 }
