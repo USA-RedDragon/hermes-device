@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 )
 
 // MaxToBrowser is the largest message Firefox accepts from a native host.
@@ -46,7 +47,7 @@ func Write(w io.Writer, msg []byte, limit int) error {
 		return fmt.Errorf("%w: %d bytes, limit %d", ErrTooLarge, len(msg), limit)
 	}
 	buf := make([]byte, 4+len(msg))
-	binary.LittleEndian.PutUint32(buf, uint32(len(msg))) //nolint:gosec // bounded by limit above
+	binary.LittleEndian.PutUint32(buf, uint32(min(len(msg), math.MaxUint32)))
 	copy(buf[4:], msg)
 	_, err := w.Write(buf)
 	return err

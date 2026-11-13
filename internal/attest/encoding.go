@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -140,7 +141,7 @@ func decodeSnappy(src []byte, limit int) ([]byte, error) {
 	if k <= 0 || limit < 0 || length64 > uint64(limit) {
 		return nil, fmt.Errorf("snappy: bad length or more than %d bytes", limit)
 	}
-	n := int(length64) //nolint:gosec // at most limit
+	n := int(min(length64, math.MaxInt))
 	src = src[k:]
 	dst := make([]byte, 0, n)
 	for len(src) > 0 {

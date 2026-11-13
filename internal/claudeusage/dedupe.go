@@ -2,6 +2,7 @@ package claudeusage
 
 import (
 	"hash/fnv"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -155,7 +156,7 @@ func (t *table) add(r *record, d uint32) bool {
 		})
 	}
 	if !found {
-		i := int32(len(t.entries)) //nolint:gosec // 35 days hold far fewer responses than 2^31
+		i := int32(min(len(t.entries), math.MaxInt32))
 		t.entries = append(t.entries, e)
 		t.exact[e.Exact] = i
 		t.addRoute(e.Route, i)
@@ -209,7 +210,7 @@ func (t *table) filter(keep func(*entry) bool) {
 	for i, e := range t.entries {
 		remap[i] = -1
 		if keep(&e) {
-			remap[i] = int32(len(kept)) //nolint:gosec // as in add
+			remap[i] = int32(min(len(kept), math.MaxInt32))
 			kept = append(kept, e)
 		}
 	}

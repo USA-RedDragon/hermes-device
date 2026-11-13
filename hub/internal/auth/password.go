@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -144,6 +145,6 @@ func verify(encoded, password string) (bool, error) {
 	if err != nil || len(want) == 0 || len(want) > 128 {
 		return false, ErrBadHash
 	}
-	got := argon2.IDKey([]byte(password), salt, p.Time, p.Memory, p.Threads, uint32(len(want))) //nolint:gosec // length checked above
+	got := argon2.IDKey([]byte(password), salt, p.Time, p.Memory, p.Threads, uint32(min(len(want), math.MaxUint32)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }

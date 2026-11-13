@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 	"unicode/utf8"
 )
@@ -182,7 +183,7 @@ func (tr *TrustedRoot) verifySCT(leaf, issuer *x509.Certificate) error {
 			errs = append(errs, fmt.Errorf("SCT %d: log %x is not a trusted CT log", i+1, s.logID))
 			continue
 		}
-		ts := time.UnixMilli(int64(s.timestamp)) //nolint:gosec // a time in ms
+		ts := time.UnixMilli(int64(min(s.timestamp, math.MaxInt64)))
 		if !key.validAt(ts) {
 			errs = append(errs, fmt.Errorf("SCT %d: the CT log key was not valid at %s", i+1, ts.UTC()))
 			continue
@@ -196,9 +197,9 @@ func (tr *TrustedRoot) verifySCT(leaf, issuer *x509.Certificate) error {
 		msg = binary.BigEndian.AppendUint64(msg, s.timestamp)
 		msg = append(msg, 0, 1)
 		msg = append(msg, keyHash[:]...)
-		msg = append(msg, byte(len(tbs)>>16), byte(len(tbs)>>8), byte(len(tbs))) //nolint:gosec // len(tbs) < 1<<24
+		msg = append(msg, byte(len(tbs)>>16&0xff), byte(len(tbs)>>8&0xff), byte(len(tbs)&0xff))
 		msg = append(msg, tbs...)
-		msg = binary.BigEndian.AppendUint16(msg, uint16(len(s.ext))) //nolint:gosec // parsed from a uint16
+		msg = binary.BigEndian.AppendUint16(msg, uint16(min(len(s.ext), math.MaxUint16)))
 		msg = append(msg, s.ext...)
 		sum := sha256.Sum256(msg)
 		if !ecdsa.VerifyASN1(key.ecdsa, sum[:], s.sig) {

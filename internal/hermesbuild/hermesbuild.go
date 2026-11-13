@@ -73,7 +73,7 @@ func freeSpace(dir string) (uint64, error) {
 	if err := syscall.Statfs(dir, &st); err != nil {
 		return 0, err
 	}
-	return st.Bavail * uint64(st.Bsize), nil //nolint:gosec // Bsize is positive
+	return st.Bavail * uint64(max(st.Bsize, 0)), nil
 }
 
 // DefaultDir is hermes in this tool's directory of the user cache
@@ -324,7 +324,7 @@ func (s *Store) openLock(hex string) (*os.File, error) {
 }
 
 func flock(f *os.File, how int) error {
-	err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB) //nolint:gosec // a file descriptor fits in int
+	err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB)
 	if errors.Is(err, syscall.EWOULDBLOCK) {
 		return errBusy
 	}

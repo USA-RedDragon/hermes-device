@@ -17,6 +17,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"net/url"
 	"strings"
@@ -183,12 +184,12 @@ func TestInclusionProof(t *testing.T) {
 		root := merkleRoot(leaves)
 		for i := range size {
 			path := merklePath(i, leaves)
-			got, err := rootFromInclusionProof(uint64(i), uint64(size), leaves[i], path) //nolint:gosec // small
+			got, err := rootFromInclusionProof(uint64(i), uint64(size), leaves[i], path)
 			if err != nil || !bytes.Equal(got, root) {
 				t.Fatalf("size %d index %d: %x, %v", size, i, got, err)
 			}
 			if len(path) > 0 {
-				if got, err := rootFromInclusionProof(uint64(i), uint64(size), leaves[i], path[1:]); err == nil && bytes.Equal(got, root) { //nolint:gosec // small
+				if got, err := rootFromInclusionProof(uint64(i), uint64(size), leaves[i], path[1:]); err == nil && bytes.Equal(got, root) {
 					t.Fatalf("size %d index %d: a short proof verified", size, i)
 				}
 			}
@@ -449,14 +450,14 @@ func (s *sigstore) leaf(t *testing.T, sp *spec, key *ecdsa.PrivateKey) (*x509.Ce
 		ctKey = sp.sctKey
 	}
 	logID := sha256.Sum256(spki(t, ctKey))
-	ts := uint64(sp.sctTime.UnixMilli()) //nolint:gosec // a time
+	ts := uint64(sp.sctTime.UnixMilli())
 	ikh := sha256.Sum256(inter.RawSubjectPublicKeyInfo)
 	tbs := pre.RawTBSCertificate
 	msg := []byte{0, 0}
 	msg = binary.BigEndian.AppendUint64(msg, ts)
 	msg = append(msg, 0, 1)
 	msg = append(msg, ikh[:]...)
-	msg = append(msg, byte(len(tbs)>>16), byte(len(tbs)>>8), byte(len(tbs))) //nolint:gosec // small
+	msg = append(msg, byte(len(tbs)>>16&0xff), byte(len(tbs)>>8&0xff), byte(len(tbs)&0xff))
 	msg = append(msg, tbs...)
 	msg = append(msg, 0, 0)
 	if sp.sctBadSig {
@@ -470,11 +471,11 @@ func (s *sigstore) leaf(t *testing.T, sp *spec, key *ecdsa.PrivateKey) (*x509.Ce
 	one := append([]byte{0}, logID[:]...)
 	one = binary.BigEndian.AppendUint64(one, ts)
 	one = append(one, 0, 0, 4, 3)
-	one = binary.BigEndian.AppendUint16(one, uint16(len(sig))) //nolint:gosec // small
+	one = binary.BigEndian.AppendUint16(one, uint16(min(len(sig), math.MaxUint16)))
 	one = append(one, sig...)
-	list := binary.BigEndian.AppendUint16(nil, uint16(len(one))) //nolint:gosec // small
+	list := binary.BigEndian.AppendUint16(nil, uint16(min(len(one), math.MaxUint16)))
 	list = append(list, one...)
-	list = append(binary.BigEndian.AppendUint16(nil, uint16(len(list))), list...) //nolint:gosec // small
+	list = append(binary.BigEndian.AppendUint16(nil, uint16(min(len(list), math.MaxUint16))), list...)
 	val, err := asn1.Marshal(list)
 	if err != nil {
 		t.Fatal(err)

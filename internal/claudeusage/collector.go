@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -153,7 +154,7 @@ func (c *Collector) dim(k dimKey) uint32 {
 	if i, ok := c.dimIdx[k]; ok {
 		return i
 	}
-	i := uint32(len(c.dims)) //nolint:gosec // far fewer dims than 2^32
+	i := uint32(min(len(c.dims), math.MaxUint32))
 	c.dims = append(c.dims, k)
 	c.dimIdx[k] = i
 	return i
@@ -571,7 +572,7 @@ func (c *Collector) Load() {
 		if j, ok := remap[st.Dims[i].Source]; ok {
 			st.Dims[i].Source = j
 		} else {
-			dropped[uint32(i)] = true //nolint:gosec // far fewer dims than 2^32
+			dropped[uint32(i)] = true
 		}
 	}
 	c.files, c.dims, c.owners = st.Files, st.Dims, st.Owners
@@ -648,7 +649,7 @@ func (c *Collector) compactDims() {
 	var dims []dimKey
 	for i, d := range c.dims {
 		if used[i] {
-			remap[i] = uint32(len(dims)) //nolint:gosec // far fewer dims than 2^32
+			remap[i] = uint32(min(len(dims), math.MaxUint32))
 			dims = append(dims, d)
 		}
 	}
