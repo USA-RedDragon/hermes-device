@@ -31,9 +31,117 @@ jobs:
     secrets:
       token: ${{ secrets.GITHUB_TOKEN }}
 
+  macos-plan:
+    name: Plan macOS signing
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sign: ${{ steps.plan.outputs.sign }}
+    steps:
+      - name: Decide whether to sign
+        id: plan
+        env:
+          HAVE_P12: ${{ secrets.MACOS_SIGN_P12 != '' }}
+          HAVE_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD != '' }}
+          HAVE_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY != '' }}
+          HAVE_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID != '' }}
+          HAVE_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER_ID != '' }}
+        run: |
+          sign=true
+          missing=()
+          [ "$HAVE_P12" = true ] || missing+=(MACOS_SIGN_P12)
+          [ "$HAVE_PASSWORD" = true ] || missing+=(MACOS_SIGN_PASSWORD)
+          [ "$HAVE_NOTARY_KEY" = true ] || missing+=(MACOS_NOTARY_KEY)
+          [ "$HAVE_NOTARY_KEY_ID" = true ] || missing+=(MACOS_NOTARY_KEY_ID)
+          [ "$HAVE_NOTARY_ISSUER" = true ] || missing+=(MACOS_NOTARY_ISSUER_ID)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::notice title=macOS binaries not signed::These repository secrets are not set: ${missing[*]}. The darwin binaries in this release are unsigned and not notarized, so macOS Gatekeeper blocks them when they are downloaded with a browser (docs/releases.md section 7)."
+            sign=false
+          fi
+          echo "sign=$sign" >> "$GITHUB_OUTPUT"
+
+  # Signs and notarizes the darwin binaries in the archives that GoReleaser
+  # uploaded and uploads the archives again under the same names. The
+  # checksum file and the attestations are made after this job, over the
+  # signed archives. GoReleaser's own notarize step cannot be used: the
+  # shared workflow does not pass it any secrets.
+  macos-sign:
+    name: Sign macOS binaries
+    needs: [release, macos-plan]
+    if: ${{ needs.macos-plan.outputs.sign == 'true' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+      SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+      NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+      NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+      NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+    steps:
+      - name: Import the signing certificate
+        run: |
+          keychain="$RUNNER_TEMP/sign.keychain-db"
+          pass=$(uuidgen)
+          printf '%s' "$SIGN_P12" | base64 --decode > "$RUNNER_TEMP/sign.p12"
+          printf '%s' "$NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          security import "$RUNNER_TEMP/sign.p12" -k "$keychain" -P "$SIGN_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pass" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          identity=$(security find-identity -v -p codesigning "$keychain" | grep 'Developer ID Application' | head -n1 | sed -E 's/^ *[0-9]+\) ([0-9A-F]{40}) .*/\1/')
+          [ -n "$identity" ] || { echo "::error::the .p12 has no Developer ID Application identity"; exit 1; }
+          echo "IDENTITY=$identity" >> "$GITHUB_ENV"
+          rm "$RUNNER_TEMP/sign.p12"
+
+      - name: Sign, notarize and upload the darwin archives
+        env:
+          COPYFILE_DISABLE: 1
+        run: |
+          work="$RUNNER_TEMP/darwin"
+          mkdir -p "$work"
+          cd "$work"
+          gh release download "$TAG" --pattern '*_darwin_*.tar.gz'
+          shopt -s nullglob
+          archives=(*_darwin_*.tar.gz)
+          [ "${#archives[@]}" -eq 4 ] || { echo "::error::expected 4 darwin archives, found ${#archives[@]}"; exit 1; }
+          for archive in "${archives[@]}"; do
+            name=${archive%.tar.gz}
+            mkdir "$name"
+            tar -xzf "$archive" -C "$name"
+            members=$(tar -tzf "$archive")
+            for bin in "$name"/*; do
+              file "$bin" | grep -q 'Mach-O' || continue
+              codesign --force --options runtime --timestamp --sign "$IDENTITY" "$bin"
+              codesign --verify --strict --verbose=2 "$bin"
+              ditto -c -k --keepParent "$bin" "$name.zip"
+              xcrun notarytool submit "$name.zip" --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait --timeout 30m | tee "$name.log"
+              grep -q 'status: Accepted' "$name.log" || { echo "::error::Apple did not accept $bin"; exit 1; }
+              rm "$name.zip" "$name.log"
+            done
+            rm "$archive"
+            tar -czf "$archive" --uid 0 --gid 0 --uname '' --gname '' -C "$name" $(printf '%s\n' "$members")
+            tar -tzf "$archive"
+          done
+          gh release upload "$TAG" "${archives[@]}" --clobber
+
+      - name: Remove the keychain and keys
+        if: ${{ always() }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/sign.keychain-db" || true
+          rm -f "$RUNNER_TEMP/sign.p12" "$RUNNER_TEMP/notary.p8"
+
   firefox-extension:
     name: Firefox extension
-    needs: release
+    needs: [release, macos-plan, macos-sign]
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.macos-plan.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.macos-sign.result) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -208,8 +316,8 @@ jobs:
   # uploaded. talaria update verifies these attestations.
   attest-files:
     name: Attest release files
-    needs: [release, firefox-extension]
-    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    needs: [release, macos-plan, macos-sign, firefox-extension]
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.macos-plan.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.macos-sign.result) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
