@@ -53,7 +53,7 @@ func ownService(data []byte) bool {
 
 // ErrNoServiceManager is returned when the computer has no systemd user
 // manager or launchd that setup can use.
-var ErrNoServiceManager = errors.New("no systemd user manager or launchd to run talaria run")
+var ErrNoServiceManager = errors.New("no systemd user manager, launchd or Task Scheduler to run talaria run")
 
 // ErrForeignService is returned when a service file that setup did not
 // write is in the way.
@@ -91,6 +91,8 @@ func (s *System) NewService() (Service, error) {
 		return &systemdService{s: s}, nil
 	case darwin:
 		return &launchdService{s: s}, nil
+	case goosWindows:
+		return &taskService{s: s}, nil
 	default:
 		return nil, ErrNoServiceManager
 	}

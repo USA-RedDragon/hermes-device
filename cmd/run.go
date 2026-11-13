@@ -24,6 +24,7 @@ import (
 	"github.com/USA-RedDragon/talaria/internal/executor"
 	"github.com/USA-RedDragon/talaria/internal/hubapi"
 	"github.com/USA-RedDragon/talaria/internal/mcp"
+	"github.com/USA-RedDragon/talaria/internal/setup"
 	"github.com/USA-RedDragon/talaria/internal/splice"
 	"github.com/USA-RedDragon/talaria/internal/tokenstore"
 	"github.com/spf13/cobra"
@@ -39,7 +40,7 @@ const CheckConfigFlag = "check-config"
 const runCommand = "run"
 
 func newRunCommand(b *base) *cobra.Command {
-	var noSplice, checkConfig bool
+	var noSplice, checkConfig, service bool
 	cmd := &cobra.Command{
 		Use:   runCommand,
 		Short: "Run the device daemon: the exec leg and the chat splice",
@@ -47,9 +48,15 @@ func newRunCommand(b *base) *cobra.Command {
 			"it runs only the exec leg, for a headless service device such as the sandbox pod.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if service {
+				return runSupervisor(cmd.Context(), b)
+			}
 			cfg, err := b.load()
 			if err != nil {
 				return err
+			}
+			if exe, err := b.executable(); err == nil {
+				setup.RemoveOldBinaries(exe)
 			}
 			if noSplice {
 				cfg.Gateway.Splice = false
@@ -76,6 +83,8 @@ func newRunCommand(b *base) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&noSplice, "no-splice", false, "Run only the exec leg, without the chat splice (sets gateway.splice to false)")
+	cmd.Flags().BoolVar(&service, ServiceFlag, false, "Supervise run for the Windows scheduled task that setup creates: run it as a child, log to a file and start it again when it exits")
+	_ = cmd.Flags().MarkHidden(ServiceFlag)
 	cmd.Flags().BoolVar(&checkConfig, CheckConfigFlag, false, "Load and check the config the way run does, then exit; auto-update runs a new release with it before it installs it")
 	return cmd
 }
@@ -125,6 +134,18 @@ func runToken(cfg *config.Config) (token, deviceID, stateDir string, err error) 
 	return rec.Token, rec.DeviceID, dir, nil
 }
 
+// deviceTempDir is device.tmp-dir, or the system temp directory, created.
+func deviceTempDir(cfg *config.Config) (string, error) {
+	dir := cfg.Device.TempDir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create device.tmp-dir %s: %w", dir, err)
+	}
+	return dir, nil
+}
+
 // spliceServer is what the daemon needs of *splice.Server.
 type spliceServer interface {
 	Serve(ctx context.Context, ln net.Listener) error
@@ -157,19 +178,16 @@ func runDaemon(ctx context.Context, cfg *config.Config, version, userAgent strin
 	if err != nil {
 		return err
 	}
-	tempDir := cfg.Device.TempDir
-	if tempDir == "" {
-		tempDir = os.TempDir()
-	}
-	if err := os.MkdirAll(tempDir, 0o700); err != nil {
-		return fmt.Errorf("create device.tmp-dir %s: %w", tempDir, err)
+	tempDir, err := deviceTempDir(cfg)
+	if err != nil {
+		return err
 	}
 	opts := device.Options{
 		Hub: hub, Allow: allow, Shell: cfg.Device.Shell, TempDir: tempDir, ClientVersion: version, Env: commandEnv(os.Environ()),
 		MinBackoff: cfg.Reconnect.MinBackoff, MaxBackoff: cfg.Reconnect.MaxBackoff, PingInterval: cfg.PingInterval,
 		ResumeBuffer: cfg.Device.ResumeBuffer, MaxGrace: cfg.Device.MaxGrace,
 	}
-	if opts.WinShell, err = windowsShell(ctx, cfg); err != nil {
+	if err := setWindowsShell(ctx, cfg, &opts); err != nil {
 		return err
 	}
 	opts.Scope = commandScope(ctx, cfg, opts.Env)

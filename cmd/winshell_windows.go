@@ -8,11 +8,22 @@ import (
 	"log/slog"
 
 	"github.com/USA-RedDragon/talaria/internal/config"
+	"github.com/USA-RedDragon/talaria/internal/device"
 	"github.com/USA-RedDragon/talaria/internal/winshell"
 )
 
-// windowsShell resolves device.shell on Windows. The default, bash, is Git
-// Bash when it is installed, else WSL.
+// availableShells are the shells setup offers here, the default first.
+func availableShells(ctx context.Context) []string { return winshell.Detect(ctx).Kinds() }
+
+// setWindowsShell sets the shell that runs agent commands on Windows from
+// device.shell. The default, bash, is Git Bash when it is installed, else
+// WSL.
+func setWindowsShell(ctx context.Context, cfg *config.Config, opts *device.Options) error {
+	sh, err := windowsShell(ctx, cfg)
+	opts.WinShell = sh
+	return err
+}
+
 func windowsShell(ctx context.Context, cfg *config.Config) (*winshell.Shell, error) {
 	kind := cfg.Device.Shell
 	if kind == "" || kind == "bash" {
