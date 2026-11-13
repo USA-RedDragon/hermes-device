@@ -20,8 +20,8 @@ import (
 
 // Retry delays of a failed background fetch of the server's Hermes build.
 const (
-	fetchRetryMin = time.Minute
-	fetchRetryMax = time.Hour
+	fetchRetryInitial = time.Minute
+	fetchRetryMax     = time.Hour
 	// keepPrevious is how many builds besides the current one a prune
 	// keeps, so a chat started just before an upgrade can start again.
 	keepPrevious = 1
@@ -113,7 +113,7 @@ func (h *serverHermes) fetchLoop(ctx context.Context, builds *hermesbuild.Store)
 			return
 		case want = <-h.fetch:
 		}
-		delay := fetchRetryMin
+		delay := fetchRetryInitial
 		for want.image != "" && h.fetchOnce(ctx, builds, want) {
 			slog.Warn("Trying the Hermes build again later", "image", want.image, "in", delay)
 			t := time.NewTimer(delay)
@@ -129,7 +129,7 @@ func (h *serverHermes) fetchLoop(ctx context.Context, builds *hermesbuild.Store)
 						continue
 					}
 					t.Stop()
-					want, delay = next, fetchRetryMin
+					want, delay = next, fetchRetryInitial
 					break wait
 				case <-t.C:
 					delay = min(delay*2, fetchRetryMax)

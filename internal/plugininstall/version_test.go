@@ -34,7 +34,9 @@ func pluginVersion(t *testing.T, root string) string {
 
 func check(t *testing.T, root, tag string) (string, error) {
 	t.Helper()
-	out, err := exec.Command("sh", filepath.Join(root, "scripts", "check-plugin-version.sh"), tag).CombinedOutput()
+	cmd := exec.CommandContext(t.Context(), "sh", "scripts/check-plugin-version.sh", tag)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
