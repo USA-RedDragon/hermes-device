@@ -132,7 +132,6 @@ type env struct {
 	push *fakePush
 	n    *notify.Notifier
 	now  time.Time
-	ctx  context.Context //nolint:containedctx // the tests' one context
 	pend *pending
 	jobs *fakeJobs
 }
@@ -144,7 +143,7 @@ func setup(t *testing.T, mutate func(*notify.Options)) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	e := &env{st: st, tg: &fakeTG{}, push: &fakePush{}, now: time.Date(2026, 11, 11, 15, 0, 0, 0, time.UTC), ctx: context.Background(),
+	e := &env{st: st, tg: &fakeTG{}, push: &fakePush{}, now: time.Date(2026, 11, 11, 15, 0, 0, 0, time.UTC),
 		pend: &pending{}, jobs: &fakeJobs{}}
 	st.SetClock(func() time.Time { return e.now })
 	o := notify.Options{Store: st, Access: access{alice: backend, bob: "other"}, Prompts: e.pend, Users: []string{alice, bob},
@@ -160,10 +159,10 @@ func setup(t *testing.T, mutate func(*notify.Options)) *env {
 		name string
 		tg   int64
 	}{{alice, 11}, {bob, 22}} {
-		if err := st.LinkTelegram(e.ctx, u.tg, u.name); err != nil {
+		if err := st.LinkTelegram(context.Background(), u.tg, u.name); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.SavePushSubscription(e.ctx, hub.PushSubscription{User: u.name, Endpoint: endpoint + u.name, P256dh: "k", Auth: "a"}); err != nil {
+		if _, err := st.SavePushSubscription(context.Background(), hub.PushSubscription{User: u.name, Endpoint: endpoint + u.name, P256dh: "k", Auth: "a"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -178,8 +177,8 @@ func approval(key string) hub.Notice {
 func TestApprovalReachesOnlyItsPersonOnce(t *testing.T) {
 	t.Parallel()
 	e := setup(t, nil)
-	e.n.HandleNow(e.ctx, approval("prompt:s1:p1"))
-	e.n.HandleNow(e.ctx, approval("prompt:s1:p1"))
+	e.n.HandleNow(context.Background(), approval("prompt:s1:p1"))
+	e.n.HandleNow(context.Background(), approval("prompt:s1:p1"))
 	if e.tg.count() != 1 || e.push.count() != 1 {
 		t.Fatalf("telegram %d, push %d", e.tg.count(), e.push.count())
 	}
@@ -201,21 +200,21 @@ func TestSettingsQuietHoursAndPresence(t *testing.T) {
 	e := setup(t, nil)
 	set := hub.DefaultNotifySettings()
 	set.Approvals = false
-	_ = e.st.SetNotifySettings(e.ctx, alice, set)
-	e.n.HandleNow(e.ctx, approval("k1"))
+	_ = e.st.SetNotifySettings(context.Background(), alice, set)
+	e.n.HandleNow(context.Background(), approval("k1"))
 	set = hub.DefaultNotifySettings()
 	set.QuietStart, set.QuietEnd, set.TimeZone = "08:00", "10:00", "America/Chicago"
-	_ = e.st.SetNotifySettings(e.ctx, alice, set)
-	e.n.HandleNow(e.ctx, approval("k2"))
-	_ = e.st.SetNotifySettings(e.ctx, alice, hub.DefaultNotifySettings())
-	_ = e.st.SetPresence(e.ctx, alice, backend, session, true)
-	e.n.HandleNow(e.ctx, approval("k3"))
+	_ = e.st.SetNotifySettings(context.Background(), alice, set)
+	e.n.HandleNow(context.Background(), approval("k2"))
+	_ = e.st.SetNotifySettings(context.Background(), alice, hub.DefaultNotifySettings())
+	_ = e.st.SetPresence(context.Background(), alice, backend, session, true)
+	e.n.HandleNow(context.Background(), approval("k3"))
 	if e.tg.count() != 0 || e.push.count() != 0 {
 		t.Fatalf("sent while off, quiet or looking: telegram %d, push %d", e.tg.count(), e.push.count())
 	}
-	_ = e.st.SaveTelegramChat(e.ctx, hub.TelegramChat{ChatID: 11, User: alice, BackendID: backend, SessionID: session})
-	_ = e.st.SetPresence(e.ctx, alice, backend, session, false)
-	e.n.HandleNow(e.ctx, approval("k4"))
+	_ = e.st.SaveTelegramChat(context.Background(), hub.TelegramChat{ChatID: 11, User: alice, BackendID: backend, SessionID: session})
+	_ = e.st.SetPresence(context.Background(), alice, backend, session, false)
+	e.n.HandleNow(context.Background(), approval("k4"))
 	if e.tg.count() != 0 || e.push.count() != 1 {
 		t.Fatalf("attached chat: telegram %d, push %d", e.tg.count(), e.push.count())
 	}
@@ -224,16 +223,16 @@ func TestSettingsQuietHoursAndPresence(t *testing.T) {
 func TestOneReminder(t *testing.T) {
 	t.Parallel()
 	e := setup(t, nil)
-	_ = e.st.SetPresence(e.ctx, alice, backend, session, true)
-	e.n.HandleNow(e.ctx, approval("prompt:s1:p1"))
+	_ = e.st.SetPresence(context.Background(), alice, backend, session, true)
+	e.n.HandleNow(context.Background(), approval("prompt:s1:p1"))
 	e.now = e.now.Add(3 * time.Minute)
-	e.n.RemindNow(e.ctx)
+	e.n.RemindNow(context.Background())
 	if e.tg.count() != 0 {
 		t.Fatal("reminded too early or while looking")
 	}
 	e.now = e.now.Add(4 * time.Minute)
-	e.n.RemindNow(e.ctx)
-	e.n.RemindNow(e.ctx)
+	e.n.RemindNow(context.Background())
+	e.n.RemindNow(context.Background())
 	if e.tg.count() != 1 || e.push.count() != 1 || !e.tg.sent[0].m.Reminder {
 		t.Fatalf("reminders: telegram %+v, push %d", e.tg.sent, e.push.count())
 	}
@@ -245,20 +244,20 @@ func TestOneReminder(t *testing.T) {
 func TestSettledPromptGetsNoReminder(t *testing.T) {
 	t.Parallel()
 	e := setup(t, nil)
-	e.n.HandleNow(e.ctx, approval("prompt:s1:p1"))
-	e.n.HandleNow(e.ctx, hub.Notice{Kind: hub.NoticeSettled, BackendID: backend, SessionID: session, PromptIDs: []string{"p1"}})
+	e.n.HandleNow(context.Background(), approval("prompt:s1:p1"))
+	e.n.HandleNow(context.Background(), hub.Notice{Kind: hub.NoticeSettled, BackendID: backend, SessionID: session, PromptIDs: []string{"p1"}})
 	if len(e.tg.settled) != 1 || e.tg.settled[0][0].ChatID != 11 {
 		t.Fatalf("settled = %+v", e.tg.settled)
 	}
 	e.now = e.now.Add(time.Hour)
-	e.n.RemindNow(e.ctx)
+	e.n.RemindNow(context.Background())
 	if e.tg.count() != 1 {
 		t.Fatal("reminded a settled prompt")
 	}
-	e.n.HandleNow(e.ctx, approval("prompt:s1:p2"))
+	e.n.HandleNow(context.Background(), approval("prompt:s1:p2"))
 	e.pend.gone = true
 	e.now = e.now.Add(time.Hour)
-	e.n.RemindNow(e.ctx)
+	e.n.RemindNow(context.Background())
 	if e.tg.count() != 2 {
 		t.Fatalf("reminded a prompt Hermes no longer has: %d", e.tg.count())
 	}
@@ -270,13 +269,13 @@ func TestOutcomeShowsOnceOnSettledNotices(t *testing.T) {
 	ask := func(id string) {
 		n := approval("prompt:s1:" + id)
 		n.Prompt.ID = id
-		e.n.HandleNow(e.ctx, n)
+		e.n.HandleNow(context.Background(), n)
 	}
 	settle := func(id string) {
-		e.n.HandleNow(e.ctx, hub.Notice{Kind: hub.NoticeSettled, BackendID: backend, SessionID: session, PromptIDs: []string{id}})
+		e.n.HandleNow(context.Background(), hub.Notice{Kind: hub.NoticeSettled, BackendID: backend, SessionID: session, PromptIDs: []string{id}})
 	}
 	outcome := func(id string) {
-		e.n.HandleNow(e.ctx, hub.Notice{Kind: hub.NoticeOutcome, BackendID: backend, SessionID: session, PromptIDs: []string{id},
+		e.n.HandleNow(context.Background(), hub.Notice{Kind: hub.NoticeOutcome, BackendID: backend, SessionID: session, PromptIDs: []string{id},
 			Outcome: &hub.ApprovalOutcome{PromptID: id, Allowed: true, Via: hub.AnsweredElsewhere}})
 	}
 	ask("p1")
@@ -290,7 +289,7 @@ func TestOutcomeShowsOnceOnSettledNotices(t *testing.T) {
 	if len(e.tg.outcomes) != 1 || e.tg.outcomes[0].PromptID != "p1" {
 		t.Fatalf("outcomes = %+v", e.tg.outcomes)
 	}
-	if _, err := e.st.RecordAnswer(e.ctx, backend, "p3", hub.PromptAnswer{Choice: hub.ChoiceOnce, Via: hub.AnsweredInHub}); err != nil {
+	if _, err := e.st.RecordAnswer(context.Background(), backend, "p3", hub.PromptAnswer{Choice: hub.ChoiceOnce, Via: hub.AnsweredInHub}); err != nil {
 		t.Fatal(err)
 	}
 	ask("p3")
@@ -305,27 +304,27 @@ func TestLinkedGroupGetsNoticesInGeneral(t *testing.T) {
 	t.Parallel()
 	e := setup(t, nil)
 	const group = -1001234
-	if err := e.st.LinkTelegramGroup(e.ctx, hub.TelegramGroup{User: alice, ChatID: group, LinkedAt: e.now}); err != nil {
+	if err := e.st.LinkTelegramGroup(context.Background(), hub.TelegramGroup{User: alice, ChatID: group, LinkedAt: e.now}); err != nil {
 		t.Fatal(err)
 	}
-	e.n.HandleNow(e.ctx, approval("k1"))
+	e.n.HandleNow(context.Background(), approval("k1"))
 	if e.tg.count() != 1 || e.tg.sent[0].chat != group {
 		t.Fatalf("sent = %+v", e.tg.sent)
 	}
-	if err := e.st.SaveTelegramTopic(e.ctx, hub.TelegramTopic{ChatID: group, ThreadID: 7, User: alice, BackendID: backend,
+	if err := e.st.SaveTelegramTopic(context.Background(), hub.TelegramTopic{ChatID: group, ThreadID: 7, User: alice, BackendID: backend,
 		SessionID: session, Name: title, Seen: e.now}); err != nil {
 		t.Fatal(err)
 	}
-	e.n.HandleNow(e.ctx, approval("k2"))
+	e.n.HandleNow(context.Background(), approval("k2"))
 	if e.tg.count() != 1 {
 		t.Fatalf("a prompt of a chat with a topic got a notice in General too: %+v", e.tg.sent)
 	}
-	e.n.HandleNow(e.ctx, hub.Notice{Kind: hub.NoticeFailure, BackendID: backend, SessionID: session, Key: "f1", Title: title,
+	e.n.HandleNow(context.Background(), hub.Notice{Kind: hub.NoticeFailure, BackendID: backend, SessionID: session, Key: "f1", Title: title,
 		Detail: "needs a sign-in"})
 	if e.tg.count() != 2 || e.tg.sent[1].chat != group || e.tg.sent[1].m.Record.Kind != hub.NoticeFailure {
 		t.Fatalf("a failure of a chat with a topic did not reach General: %+v", e.tg.sent)
 	}
-	e.n.HandleNow(e.ctx, hub.Notice{Kind: hub.NoticeSettled, BackendID: backend, SessionID: session, PromptIDs: []string{"p1"},
+	e.n.HandleNow(context.Background(), hub.Notice{Kind: hub.NoticeSettled, BackendID: backend, SessionID: session, PromptIDs: []string{"p1"},
 		Cancelled: true})
 	if len(e.tg.cancelled) != 1 || !e.tg.cancelled[0] {
 		t.Fatalf("settled = %+v, cancelled = %v", e.tg.settled, e.tg.cancelled)
@@ -336,7 +335,7 @@ func TestBurstLimit(t *testing.T) {
 	t.Parallel()
 	e := setup(t, func(o *notify.Options) { o.Burst = 2 })
 	for _, k := range []string{"a", "b", "c", "d"} {
-		e.n.HandleNow(e.ctx, approval(k))
+		e.n.HandleNow(context.Background(), approval(k))
 	}
 	if e.tg.count() != 2 {
 		t.Fatalf("sent %d, want 2", e.tg.count())
@@ -347,11 +346,11 @@ func TestGoneSubscriptionIsDeleted(t *testing.T) {
 	t.Parallel()
 	e := setup(t, nil)
 	e.push.gone = true
-	e.n.HandleNow(e.ctx, approval("k"))
-	if subs, _ := e.st.PushSubscriptions(e.ctx, alice); len(subs) != 0 {
+	e.n.HandleNow(context.Background(), approval("k"))
+	if subs, _ := e.st.PushSubscriptions(context.Background(), alice); len(subs) != 0 {
 		t.Fatalf("subscriptions = %+v", subs)
 	}
-	if subs, _ := e.st.PushSubscriptions(e.ctx, bob); len(subs) != 1 {
+	if subs, _ := e.st.PushSubscriptions(context.Background(), bob); len(subs) != 1 {
 		t.Fatalf("bob's subscription went too: %+v", subs)
 	}
 }
@@ -379,15 +378,15 @@ func (f *fakeJobs) set(body string) {
 func TestScheduledJobs(t *testing.T) {
 	t.Parallel()
 	e := setup(t, nil)
-	_ = e.st.SetNotifySettings(e.ctx, alice, hub.NotifySettings{Jobs: true, Failures: true, Telegram: true, Push: true})
+	_ = e.st.SetNotifySettings(context.Background(), alice, hub.NotifySettings{Jobs: true, Failures: true, Telegram: true, Push: true})
 	e.jobs.set(`[{"id":"j1","name":"Nightly","last_run_at":"2026-11-10T03:00:00","last_status":"ok"}]`)
-	e.n.PollJobsNow(e.ctx)
+	e.n.PollJobsNow(context.Background())
 	if e.tg.count() != 0 {
 		t.Fatal("first sight of a job sent a notice")
 	}
 	e.jobs.set(`[{"id":"j1","name":"Nightly","last_run_at":"2026-11-11T03:00:00","last_status":"ok"}]`)
-	e.n.PollJobsNow(e.ctx)
-	e.n.PollJobsNow(e.ctx)
+	e.n.PollJobsNow(context.Background())
+	e.n.PollJobsNow(context.Background())
 	if e.tg.count() != 1 || e.tg.sent[0].m.Record.Kind != hub.NoticeJob || !strings.Contains(e.tg.sent[0].m.Detail, "Nightly finished") {
 		t.Fatalf("job notices = %+v", e.tg.sent)
 	}
@@ -395,7 +394,7 @@ func TestScheduledJobs(t *testing.T) {
 		t.Fatalf("job url = %q", e.tg.sent[0].m.URL)
 	}
 	e.jobs.set(`[{"id":"j1","name":"Nightly","last_run_at":"2026-11-12T03:00:00","last_status":"error","last_error":"HTTP 401: please log in again, token sk-abcdefghijklmnopqrstuvwxyz0123"}]`)
-	e.n.PollJobsNow(e.ctx)
+	e.n.PollJobsNow(context.Background())
 	if e.tg.count() != 2 || e.tg.sent[1].m.Record.Kind != hub.NoticeFailure || !strings.Contains(e.tg.sent[1].m.Detail, "needs you to sign in") {
 		t.Fatalf("failure notices = %+v", e.tg.sent)
 	}
@@ -410,14 +409,14 @@ func TestScheduledJobs(t *testing.T) {
 func TestScheduledJobResultsChoice(t *testing.T) {
 	t.Parallel()
 	e := setup(t, nil)
-	_ = e.st.SetNotifySettings(e.ctx, alice, hub.NotifySettings{Failures: true, Telegram: true, Push: true})
+	_ = e.st.SetNotifySettings(context.Background(), alice, hub.NotifySettings{Failures: true, Telegram: true, Push: true})
 	run := func(at string) {
 		e.jobs.set(`[{"id":"g","name":"General","last_run_at":"` + at + `","last_status":"ok","talaria_results":"general"},
 			{"id":"h","name":"HubOnly","last_run_at":"` + at + `","last_status":"error","last_error":"boom","talaria_results":"hub"},
 			{"id":"t","name":"Topic","last_run_at":"` + at + `","last_status":"ok","talaria_results":"topic","talaria_owner":"alice"},
 			{"id":"o","name":"Others","last_run_at":"` + at + `","last_status":"error","last_error":"x","talaria_owner":"bob"},
 			{"id":"d","name":"Default","last_run_at":"` + at + `","last_status":"ok"}]`)
-		e.n.PollJobsNow(e.ctx)
+		e.n.PollJobsNow(context.Background())
 	}
 	run("2026-11-10T03:00:00")
 	run("2026-11-11T03:00:00")
@@ -435,7 +434,7 @@ func TestScheduledJobResultsChoice(t *testing.T) {
 		t.Fatalf("push = %d", len(e.push.sent))
 	}
 	// With a linked group, a topic job's success stays out of General.
-	if err := e.st.LinkTelegramGroup(e.ctx, hub.TelegramGroup{User: alice, ChatID: -100, LinkedAt: e.now}); err != nil {
+	if err := e.st.LinkTelegramGroup(context.Background(), hub.TelegramGroup{User: alice, ChatID: -100, LinkedAt: e.now}); err != nil {
 		t.Fatal(err)
 	}
 	run("2026-11-12T03:00:00")
@@ -473,11 +472,11 @@ func TestHeldBackNoticesGetNoReminder(t *testing.T) {
 	t.Parallel()
 	e := setup(t, func(o *notify.Options) { o.Burst = 2 })
 	for _, k := range []string{"a", "b", "c", "d"} {
-		e.n.HandleNow(e.ctx, approval(k))
+		e.n.HandleNow(context.Background(), approval(k))
 	}
 	e.now = e.now.Add(11 * time.Minute)
-	e.n.RemindNow(e.ctx)
-	e.n.RemindNow(e.ctx)
+	e.n.RemindNow(context.Background())
+	e.n.RemindNow(context.Background())
 	if e.tg.count() != 4 {
 		t.Fatalf("sent %d, want 2 notices and 2 reminders", e.tg.count())
 	}
@@ -491,14 +490,14 @@ func TestQuietPersonDoesNotBlockReminders(t *testing.T) {
 	})
 	set := hub.DefaultNotifySettings()
 	set.QuietStart, set.QuietEnd = "00:00", "23:59"
-	_ = e.st.SetNotifySettings(e.ctx, alice, set)
+	_ = e.st.SetNotifySettings(context.Background(), alice, set)
 	for i := range 101 {
-		e.n.HandleNow(e.ctx, approval("k"+strconv.Itoa(i)))
+		e.n.HandleNow(context.Background(), approval("k"+strconv.Itoa(i)))
 	}
 	sent := e.tg.count()
 	e.now = e.now.Add(6 * time.Minute)
 	for range 3 {
-		e.n.RemindNow(e.ctx)
+		e.n.RemindNow(context.Background())
 	}
 	if got := e.tg.count() - sent; got != 101 {
 		t.Fatalf("bob got %d reminders, want 101", got)
@@ -508,12 +507,12 @@ func TestQuietPersonDoesNotBlockReminders(t *testing.T) {
 func TestClaudeSignInGoesOnlyToItsUsers(t *testing.T) {
 	t.Parallel()
 	e := setup(t, func(o *notify.Options) { o.Access = access{alice: backend, bob: backend} })
-	_ = e.st.SaveTelegramChat(e.ctx, hub.TelegramChat{ChatID: 11, User: alice, BackendID: backend, SessionID: session})
+	_ = e.st.SaveTelegramChat(context.Background(), hub.TelegramChat{ChatID: 11, User: alice, BackendID: backend, SessionID: session})
 	detail := "Claude (account1) (last signed in as alice@example.com) needs a sign-in: the login expired or was revoked. Open the hub to sign in."
 	n := hub.Notice{Kind: hub.NoticeClaudeSignIn, BackendID: backend, SessionID: session, Key: "claude:desk:account1:1",
 		Title: title, Detail: detail, Users: []string{alice}}
-	e.n.HandleNow(e.ctx, n)
-	e.n.HandleNow(e.ctx, n)
+	e.n.HandleNow(context.Background(), n)
+	e.n.HandleNow(context.Background(), n)
 	if e.tg.count() != 1 || e.push.count() != 1 {
 		t.Fatalf("telegram %d, push %d", e.tg.count(), e.push.count())
 	}
@@ -526,9 +525,9 @@ func TestClaudeSignInGoesOnlyToItsUsers(t *testing.T) {
 	}
 	set := hub.DefaultNotifySettings()
 	set.ClaudeSignIn = false
-	_ = e.st.SetNotifySettings(e.ctx, alice, set)
+	_ = e.st.SetNotifySettings(context.Background(), alice, set)
 	n.Key = "claude:desk:account1:2"
-	e.n.HandleNow(e.ctx, n)
+	e.n.HandleNow(context.Background(), n)
 	if e.tg.count() != 1 || e.push.count() != 1 {
 		t.Fatalf("sent with the setting off: telegram %d, push %d", e.tg.count(), e.push.count())
 	}
@@ -537,21 +536,21 @@ func TestClaudeSignInGoesOnlyToItsUsers(t *testing.T) {
 func TestPrivateChatWithTopicsGetsNoticesInItsMainChat(t *testing.T) {
 	t.Parallel()
 	e := setup(t, nil)
-	if err := e.st.LinkTelegram(e.ctx, 12, alice); err != nil {
+	if err := e.st.LinkTelegram(context.Background(), 12, alice); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.st.LinkTelegramGroup(e.ctx, hub.TelegramGroup{User: alice, ChatID: 11, LinkedAt: e.now}); err != nil {
+	if err := e.st.LinkTelegramGroup(context.Background(), hub.TelegramGroup{User: alice, ChatID: 11, LinkedAt: e.now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.st.SaveTelegramTopic(e.ctx, hub.TelegramTopic{ChatID: 11, ThreadID: 7, User: alice, BackendID: backend,
+	if err := e.st.SaveTelegramTopic(context.Background(), hub.TelegramTopic{ChatID: 11, ThreadID: 7, User: alice, BackendID: backend,
 		SessionID: session, Name: title, Seen: e.now}); err != nil {
 		t.Fatal(err)
 	}
-	e.n.HandleNow(e.ctx, approval("k1"))
+	e.n.HandleNow(context.Background(), approval("k1"))
 	if e.tg.count() != 0 {
 		t.Fatalf("a prompt of a chat with a topic got a notice: %+v", e.tg.sent)
 	}
-	e.n.HandleNow(e.ctx, hub.Notice{Kind: hub.NoticeFailure, BackendID: backend, SessionID: session, Key: "f1", Title: title,
+	e.n.HandleNow(context.Background(), hub.Notice{Kind: hub.NoticeFailure, BackendID: backend, SessionID: session, Key: "f1", Title: title,
 		Detail: "needs a sign-in"})
 	if e.tg.count() != 2 || e.tg.sent[0].chat != 11 || e.tg.sent[1].chat != 12 {
 		t.Fatalf("sent = %+v, want the main chat with topics first, then the other private chat", e.tg.sent)

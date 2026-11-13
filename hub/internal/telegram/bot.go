@@ -226,7 +226,6 @@ type chatState struct {
 }
 
 type attachment struct {
-	ctx       context.Context //nolint:containedctx // lives as long as the attachment; cancelled by stop
 	cancel    context.CancelFunc
 	to        dest
 	user      string
@@ -994,7 +993,7 @@ func (b *Bot) attach(ctx context.Context, to dest, user, backendID, sessionID st
 		return fmt.Errorf("failed to attach: %w", err)
 	}
 	a := &attachment{
-		ctx: actx, cancel: acancel, to: to, user: user, backendID: backendID, sessionID: sessionID,
+		cancel: acancel, to: to, user: user, backendID: backendID, sessionID: sessionID,
 		events: events, detach: detach, done: make(chan struct{}),
 	}
 	a.lastSeq.Store(max(since, 0))
@@ -1002,7 +1001,7 @@ func (b *Bot) attach(ctx context.Context, to dest, user, backendID, sessionID st
 	st.att, st.user = a, user
 	b.logger.Info("Attached Telegram chat", "chat", to.chat, "thread", to.thread, "user", user, "backend", backendID, "session", sessionID, "since", since)
 	b.wg.Add(1)
-	go b.pump(a)
+	go b.pump(actx, a)
 	if b.state != nil && b.forum(to.chat) == nil {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), callTimeout)
 		defer cancel()
@@ -1078,10 +1077,10 @@ func (b *Bot) stop(ctx context.Context, to dest, user string) {
 	b.sendText(ctx, to, "Stop requested.")
 }
 
-func (b *Bot) pump(a *attachment) {
+// pump renders the attachment's events until ctx, which stop cancels, ends.
+func (b *Bot) pump(ctx context.Context, a *attachment) {
 	defer b.wg.Done()
 	defer close(a.done)
-	ctx := a.ctx
 	interval := b.cfg.EditInterval
 	if a.to.thread != 0 {
 		interval = max(interval, groupEditInterval)
