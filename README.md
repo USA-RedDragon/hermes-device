@@ -6,6 +6,15 @@ Pinned to Hermes Agent v0.23.1. Linux and macOS only: Windows is not supported, 
 
 `talaria` was called `hermes-device` before release 0.19.0. See [Renamed from hermes-device](#renamed-from-hermes-device).
 
+## Guides
+
+- [Install](docs/start/install.md) on Linux or macOS, then [set up and pair a computer](docs/start/setup-and-pairing.md) with your hub.
+- [Chat from a terminal](docs/guides/terminal-chat.md), [let the agent use Firefox](docs/guides/browser-extension.md) and [use Talaria in an editor](docs/guides/editor-bridge.md).
+- [Update, move and remove](docs/guides/update-and-remove.md) a computer, and [troubleshooting](docs/guides/troubleshooting.md).
+- Reference: [command line](docs/reference/cli.md) and [configuration](docs/reference/configuration.md).
+
+You need a Talaria hub first. [talaria-deploy](https://github.com/USA-RedDragon/talaria-deploy) installs one on your own server.
+
 ## Parts
 
 One Go binary, `talaria` (also `tal`, a link that setup makes next to it), with these subcommands:
