@@ -105,17 +105,37 @@ type Reader struct {
 // New returns a Reader that keeps its work files under dir (os.TempDir
 // when empty) and gives up on a PDF after timeout (60s when zero).
 func New(dir string, timeout time.Duration) *Reader {
+	return NewWithPath(dir, timeout, os.Getenv("PATH"))
+}
+
+// NewWithPath is New with the poppler programs and sh looked up in the
+// directories of path, a PATH-style list, instead of the process's PATH.
+func NewWithPath(dir string, timeout time.Duration, path string) *Reader {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
 	r := &Reader{dir: dir, timeout: timeout, slots: make(chan struct{}, slots), tools: map[string]string{}}
 	r.removeStale()
 	for _, t := range []string{"sh", "pdfinfo", "pdftotext", "pdftoppm"} {
-		if p, err := exec.LookPath(t); err == nil {
+		if p, ok := lookIn(path, t); ok {
 			r.tools[t] = p
 		}
 	}
 	return r
+}
+
+// lookIn finds the executable file name in the directories of path.
+func lookIn(path, name string) (string, bool) {
+	for _, d := range filepath.SplitList(path) {
+		if d == "" {
+			continue
+		}
+		p := filepath.Join(d, name)
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 {
+			return p, true
+		}
+	}
+	return "", false
 }
 
 // removeStale removes work directories that a process which stopped
