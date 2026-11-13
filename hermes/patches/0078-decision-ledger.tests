@@ -1,0 +1,8 @@
+# Upstream tests of the compressor, the live config reload, toolsets and the tool catalog this patch touches
+tests/agent/test_context_compressor.py
+tests/agent/test_context_compressor_summary_continuity.py
+tests/agent/test_compaction_skill_pin.py
+tests/tui_gateway/test_compression_config_hot_reload.py
+tests/tui_gateway/test_gui_surface_toolsets.py
+tests/tools/test_toolsets.py
+tests/tools/test_tool_search.py
