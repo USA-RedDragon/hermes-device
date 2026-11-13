@@ -385,7 +385,7 @@ window.HubUsage = (ctx) => {
     } else if (r.gpu_error) {
       gpu.append(el("p", "err", r.gpu_error));
     } else {
-      gpu.append(el("p", "none", "Not set up. The hub needs usage.prometheus_url to read the GPU's time."));
+      gpu.append(el("p", "none", "Not set up on this hub. Whoever runs the hub can turn it on."));
     }
     out.push(gpu);
 
@@ -620,7 +620,7 @@ window.HubFiles = (ctx) => {
     if (c !== cur || mine !== c.gen) return;
     const box = el("div", "files-changes");
     box.append(el("h2", "", "Files Talaria wrote in this chat"));
-    box.append(el("p", "mem-hint", "From its write_file and patch calls. A file may have changed since."));
+    box.append(el("p", "mem-hint", "Files it created or edited. A file may have changed since."));
     if (w.status === "rejected") box.append(el("p", "err", w.reason.message));
     else if (!w.value.files.length) box.append(el("p", "none", "None."));
     else {

@@ -23,8 +23,8 @@ window.HubModelPick = (() => {
   // refusal returns the text for a deferred pick that Hermes dropped, or "".
   function refusal(p) {
     if (!isModel(p) || p.status !== "refused") return "";
-    const now = p.model ? p.model + (p.provider ? " (" + p.provider + ")" : "") : "the current model";
-    return "Model switch to " + (p.target_model || "the picked model") + " was not applied (" + (p.reason || "refused") + "); still using " + now + ".";
+    const now = p.model ? p.model + (p.provider ? " (" + (window.HubPlain ? window.HubPlain.text(p.provider) : p.provider) + ")" : "") : "the current model";
+    return "Model switch to " + (p.target_model || "the picked model") + " was not applied (" + (window.HubPlain ? window.HubPlain.clean(p.reason) : "") || "refused" + "); still using " + now + ".";
   }
 
   return { ask, refusal };

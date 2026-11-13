@@ -454,7 +454,7 @@ window.HubMemory = (ctx) => {
     const add = (k, v) => dl.append(el("dt", "", k), el("dd", "", v));
     const inProject = !!notes.project;
     add("File", store.file);
-    if (!inProject) add("Ask before Talaria saves", (notes.approval ? "On" : "Off") + " (memory.write_approval)");
+    if (!inProject) add("Ask before Talaria saves", (notes.approval ? "On" : "Off"));
     add("Limit", fmt(store.limit) + " characters");
     d.append(dl);
     const acts = el("div", "mem-acts");
