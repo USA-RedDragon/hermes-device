@@ -136,6 +136,11 @@ window.HubActivity = (ctx) => {
         return true;
       case "approval.request": return approval(p);
       case "approval.settled": case "clarify.settled": return settle(p.prompt_id);
+      case "prompt.lost": {
+        let any = false;
+        for (const id of p.prompt_ids || []) any = settle(id) || any;
+        return any;
+      }
       case "approval.cancelled": {
         let any = false;
         for (const id of p.request_ids || []) any = settle(id) || any;

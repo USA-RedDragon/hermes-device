@@ -660,7 +660,8 @@
       this.sink = null;
       this.turn = null;
       this.tools = new Map();
-      this.approvals = new Map();
+      if (this.cards) this.cards.dispose();
+      this.cards = window.HubApprovals.create({ el, api, base: this.base, words: t, banner, add: (box) => this.add(box) });
       this.pending = [];
       this.failed = [];
       this.at = 0;
@@ -1218,85 +1219,9 @@
       location.hash = "";
     }
 
-    approval(p) {
-      const id = p.prompt_id;
-      if (!id || this.approvals.has(id)) return;
-      const box = el("div", "approval");
-      const clarify = p.kind === "clarify";
-      box.append(el("b", "", clarify ? "Question" : t("approval")));
-      if (p.description) box.append(el("div", "", p.description));
-      if (p.command) box.append(el("pre", "", p.command));
-      if (p.question) box.append(el("div", "", p.question));
-      const actions = el("div", "actions");
-      const buttons = [];
-      const answer = async (body) => {
-        for (const b of buttons) b.disabled = true;
-        try {
-          if (body.allow !== undefined) await api("POST", this.base + "/approvals/" + encodeURIComponent(id), body);
-          else await api("POST", this.base + "/prompts/" + encodeURIComponent(id) + "/answer", body);
-        } catch (e) {
-          // 404: the prompt was settled where this page could not see it (another tab, Telegram, a timeout)
-          if (e.status === 404) { this.settle(id, "No longer waiting"); return; }
-          for (const b of buttons) b.disabled = false;
-          banner("Could not answer: " + e.message, true);
-        }
-      };
-      const button = (cls, text, body) => {
-        const b = el("button", cls, text);
-        b.type = "button";
-        b.onclick = () => answer(typeof body === "function" ? body() : body);
-        buttons.push(b);
-        return b;
-      };
-      const choices = Array.isArray(p.choices) ? p.choices : [];
-      if (!clarify && !choices.length) {
-        actions.append(button("primary", t("allow"), { allow: true }), button("danger", t("deny"), { allow: false }));
-      } else if (!clarify) {
-        const names = { once: t("allow"), session: "Allow in this chat", always: "Always allow", deny: t("deny") };
-        for (const c of choices) actions.append(button(c === "deny" ? "danger" : c === "once" ? "primary" : "", names[c] || c, { choice: c }));
-      } else {
-        const picks = [];
-        if (p.multi_select) {
-          const list = el("div", "picks");
-          for (const c of choices) {
-            const row = el("label", "pick");
-            const cb = el("input");
-            cb.type = "checkbox";
-            cb.value = c;
-            picks.push(cb);
-            buttons.push(cb);
-            row.append(cb, el("span", "", c));
-            list.append(row);
-          }
-          box.append(list);
-          actions.append(button("primary", "Send", () => ({ picks: picks.filter((b) => b.checked).map((b) => b.value) })));
-        } else {
-          for (const c of choices) actions.append(button("", c, { picks: [c] }));
-        }
-        const input = el("input", "answer");
-        input.type = "text";
-        input.placeholder = choices.length ? "Or type an answer" : "Type your answer";
-        input.setAttribute("aria-label", "Answer");
-        buttons.push(input);
-        const send = button(choices.length ? "" : "primary", "Answer", () => ({ text: input.value }));
-        input.onkeydown = (e) => { if (e.key === "Enter" && input.value.trim()) { e.preventDefault(); send.click(); } };
-        const typed = el("div", "typed");
-        typed.append(input, send);
-        box.append(typed);
-        actions.append(button("ghost", "Skip", { skip: true }));
-      }
-      box.append(actions);
-      this.approvals.set(id, box);
-      this.add(box);
-    }
+    approval(p) { this.cards.offer(p); }
 
-    settle(id, text) {
-      const box = this.approvals.get(id);
-      if (!box) return;
-      const actions = box.querySelector(".actions");
-      for (const extra of box.querySelectorAll(".picks, .typed")) extra.remove();
-      if (actions) actions.replaceChildren(el("span", "status", text));
-    }
+    settle(id, text) { this.cards.outcome(id, text); }
 
     setStatus(text) {
       if (!text) {
@@ -1609,11 +1534,10 @@
         case "input.sent": this.sentEvent(p); break;
         case "input.not_sent": this.notSentEvent(p); break;
         case "approval.request": case "clarify.request": this.approval(p); break;
-        case "approval.settled": case "clarify.settled": this.settle(p.prompt_id, "Answered"); break;
-        case "approval.outcome": this.settle(p.prompt_id, outcomeText(p)); break;
-        case "approval.cancelled":
-          for (const id of p.request_ids || []) this.settle(id, "Cancelled");
-          break;
+        case "approval.settled": case "clarify.settled": this.cards.settled(p.prompt_id); break;
+        case "approval.outcome": this.cards.outcome(p.prompt_id, outcomeText(p)); break;
+        case "approval.cancelled": this.cards.cancelled(p.request_ids); break;
+        case "prompt.lost": this.cards.lost(p.prompt_ids); break;
         case "error": this.add(el("div", "note bad", p.message || "Error")); break;
         case "claude.signin": this.add(claude.chatNotice(this.backend, p)); break;
         default: break;

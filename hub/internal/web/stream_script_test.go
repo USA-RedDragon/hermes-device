@@ -45,6 +45,14 @@ func TestReconcileScript(t *testing.T) {
 	runStreamScript(t, "reconcile.js", "reconcile.js")
 }
 
+// Every pending approval gets a card with its own buttons; an answer reads
+// as sent until Hermes settles it, a drop is not shown as an answer, and an
+// answer Hermes does not confirm can be sent again.
+func TestApprovalsScript(t *testing.T) {
+	t.Parallel()
+	runStreamScript(t, "approvals.js", "approvals.js")
+}
+
 // The log stays at its end for a reader at the end through any change of
 // its size, and on the same message for a reader above it; a scroll the
 // layout caused is not the reader.
