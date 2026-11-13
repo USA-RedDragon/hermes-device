@@ -10,7 +10,7 @@ import (
 	"github.com/USA-RedDragon/talaria/hub/internal/gateway/gatewaytest"
 )
 
-const chromeName = "chrome"
+var chromeNames = []string{"chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "chrome"}
 
 // A pending image chip in the composer opens the image viewer and Back or
 // Escape close it without leaving an overlay; testdata/chipview/run.js drives
@@ -23,7 +23,7 @@ func TestChipOpensViewer(t *testing.T) {
 		t.Skip("node is not installed")
 	}
 	var chrome string
-	for _, n := range []string{"chromium", "chromium-browser", "google-chrome", "google-chrome-stable", chromeName} {
+	for _, n := range chromeNames {
 		if p, err := exec.LookPath(n); err == nil {
 			chrome = p
 			break
