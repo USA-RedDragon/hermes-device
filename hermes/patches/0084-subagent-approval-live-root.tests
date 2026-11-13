@@ -1,0 +1,5 @@
+# The provenance review, its approval path and the delegation hook it reads
+tests/tools/test_smart_provenance.py
+tests/tools/test_approval_provenance.py
+tests/tools/test_subagent_approval_routing.py
+tests/tools/test_approval.py
