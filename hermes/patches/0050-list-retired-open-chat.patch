@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 20:44:16 -0600
+Subject: [PATCH] fix(gateway): list an open local chat that left memory
+
+A chat reopened by a later touch and then retired idle keeps ended_at NULL. Neither the live feed (not in memory) nor the stored feed (needs ended_at) listed it, so it vanished from pickers. The stored feed now offers an open local chat that is not in memory, under the same receipt, owner and queued-input checks.
+---
+ gateway/session_listing.py                    |  6 +-
+ .../test_retired_open_session_listing.py      | 65 +++++++++++++++++++
+ 2 files changed, 69 insertions(+), 2 deletions(-)
+ create mode 100644 tests/gateway/test_retired_open_session_listing.py
+
+diff --git a/gateway/session_listing.py b/gateway/session_listing.py
+index d3bf45ecef..98d79c20af 100644
+--- a/gateway/session_listing.py
++++ b/gateway/session_listing.py
+@@ -172,6 +172,9 @@ def _closed_local_session(authority, actor, row, tip):
+ def _stored_closed(authority, actor, owner):
+     """Boot leaves an ended session unrestored and a listing never restores one (a worker thread): judge
+     its stored receipt as ``authorize`` and ``closed_and_unviewed`` would after a restore. No viewer.
++    A row that is open but not in memory is offered too: a chat reopened by a later touch and then
++    retired idle (``gateway/session_retirement.py``) keeps ``ended_at`` NULL, and neither feed would
++    list it. Boot restores open rows, so only a retired or refused one gets here.
+     The stored receipt is judged by the checks a restore runs on it (``restorable_receipt``); the
+     restore's live route check (another session on its route) stays the restore's."""
+     from gateway.session_local_recovery import restorable_receipt
+@@ -184,5 +187,4 @@ def _stored_closed(authority, actor, owner):
+     except (KeyError, TypeError, ValueError, AttributeError):
+         return False
+     return ((same_owner(receipt['principal_id'], actor.subject) or 'session:operator' in actor.capabilities)
+-            and row is not None and row['ended_at'] is not None
+-            and not list_session_admissions(authority.db, session_id=owner))
++            and row is not None and not list_session_admissions(authority.db, session_id=owner))
+diff --git a/tests/gateway/test_retired_open_session_listing.py b/tests/gateway/test_retired_open_session_listing.py
+new file mode 100644
+index 0000000000..310bf72f20
+--- /dev/null
++++ b/tests/gateway/test_retired_open_session_listing.py
+@@ -0,0 +1,65 @@
++"""A local chat that left memory while its row is open still lists, as resumable."""
++import json
++from types import SimpleNamespace
++
++import pytest
++
++from gateway.session_contract import SessionActor
++from hermes_state_local import POLICY_PREFIX
++
++_CAPS = frozenset({'session:create', 'session:read', 'session:submit'})
++
++
++@pytest.fixture
++def make_authority(tmp_path, monkeypatch):
++    from gateway import run
++    from gateway.config import GatewayConfig
++    from gateway.session import SessionStore
++    from gateway.session_authority import initialize_session_authority
++    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
++
++    async def build():
++        store = SessionStore(tmp_path / 'sessions', GatewayConfig())
++        runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
++        return await initialize_session_authority(runner, profile_id=str(tmp_path / 'home'), instance_id='i')
++    return build
++
++
++def _create(authority, request_id):
++    from gateway.session_local import create_local_session
++    actor = SessionActor('owner', authority.profile_id, _CAPS, 'socket')
++    return create_local_session(authority, actor, {'request_id': request_id, 'source': 'gui', 'cwd': '/',
++                                                  'model': 'frozen', 'toolsets': []})
++
++
++def _retire(authority, sid):
++    from gateway.session_retirement import retire_idle
++    from gateway.session_viewer_close import _physical_target
++    live = authority.sessions[sid]
++    assert retire_idle(authority, sid, live, _physical_target(authority, sid))
++    assert sid not in authority.sessions
++
++
++@pytest.mark.asyncio
++async def test_an_open_chat_that_retired_from_memory_is_still_offered(make_authority):
++    authority = await make_authority()
++    from gateway.session_listing import _stored_closed
++    ref = _create(authority, 'reopened')
++    receipt = json.loads(authority.db.get_meta(POLICY_PREFIX + ref.session_id))
++    assert authority.db.get_session(receipt['entry']['session_id'])['ended_at'] is None
++    _retire(authority, ref.session_id)
++    actor = SessionActor('owner', authority.profile_id, _CAPS, 'peer')
++    assert _stored_closed(authority, actor, ref.session_id)
++
++
++@pytest.mark.asyncio
++async def test_an_open_chat_with_queued_input_is_not_offered_as_stored(make_authority):
++    from gateway.session_listing import _stored_closed
++    from hermes_state_runtime import admit_session_input
++    authority = await make_authority()
++    sid = _create(authority, 'queued').session_id
++    admit_session_input(authority.db, epoch=authority.epoch, principal_id=authority.sessions[sid].source.user_id,
++                        session_id=sid, request_id='r1', payload={'text': 'queued'})
++    authority.sessions.pop(sid)
++    actor = SessionActor('owner', authority.profile_id, _CAPS, 'peer')
++    assert not _stored_closed(authority, actor, sid)
