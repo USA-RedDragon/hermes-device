@@ -271,6 +271,7 @@ details.toolgroup .group-body { display: flex; flex-direction: column; gap: .5re
 .chip details.range summary { cursor: pointer; font-size: .75rem; }
 .chip details.range input { width: 5rem; margin-top: .2rem; font: inherit; font-size: 16px; padding: .1rem .3rem;
   border: 1px solid var(--line); border-radius: 5px; background: var(--card); color: var(--fg); }
+.chip button.open { display: flex; align-items: center; gap: .35rem; min-width: 0; padding: 0; border-radius: 6px; color: inherit; font: inherit; cursor: pointer; text-align: left; }
 .chip button { border: 0; background: none; color: var(--muted); padding: 0 .3rem; font-size: 1rem; line-height: 1; }
 .msg.user .atts { margin-bottom: .35rem; }
 .msg.user .atts:last-child { margin-bottom: 0; }

@@ -1789,10 +1789,26 @@
     shut.type = "button";
     bar.append(el("span", "name", name || ""), open, shut);
     box.append(img, bar);
-    const close = () => { box.remove(); document.removeEventListener("keydown", onKey, true); if (prev && prev.focus) prev.focus(); };
+    // The viewer holds a history entry so Back closes it and nothing else.
+    let entry = false;
+    try { history.pushState({ lightbox: true }, "", location.href); entry = true; } catch (_) { /* no history entry */ }
+    let done = false;
+    const close = (fromBack) => {
+      if (done) return;
+      done = true;
+      box.remove();
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("popstate", onBack);
+      if (entry && fromBack !== true && history.state && history.state.lightbox) history.back();
+      // The thumbnail's chip may be gone by now: fall back to the message box.
+      const back = prev && prev.isConnected && prev !== document.body ? prev : document.getElementById("input");
+      if (back && back.focus) back.focus();
+    };
     const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+    const onBack = () => close(true);
     box.addEventListener("click", (e) => { if (e.target !== open) close(); });
     document.addEventListener("keydown", onKey, true);
+    window.addEventListener("popstate", onBack);
     document.body.append(box);
     box.focus();
   }
@@ -2309,18 +2325,25 @@
       box.hidden = !this.list.length;
       for (const a of this.list) {
         const chip = el("div", "chip");
+        // An image opens full size in the viewer; the thumbnail and the
+        // name are one button, the x beside it only removes.
+        const head = a.url ? el("button", "open") : chip;
         if (a.url) {
+          head.type = "button";
+          head.title = "View " + (a.file.name || "attachment");
+          head.onclick = () => openImage(a.url, a.file.name || "attachment");
           const img = el("img");
           img.alt = "";
           img.src = a.url;
-          chip.append(img);
+          head.append(img);
         } else if (a.pdf) {
           chip.append(pdfIcon());
         } else {
           chip.append(el("span", "file", "file"));
         }
-        chip.append(el("span", "name", a.file.name || "attachment"),
-          el("span", "size", a.pdf && a.pages ? pages(a.pages) : size(a.file.size)));
+        head.append(el("span", "name", a.file.name || "attachment"));
+        if (a.url) chip.append(head);
+        chip.append(el("span", "size", a.pdf && a.pages ? pages(a.pages) : size(a.file.size)));
         if (a.pdf) chip.append(this.rangeBox(a));
         const x = el("button", "", "\u00d7");
         x.type = "button";
