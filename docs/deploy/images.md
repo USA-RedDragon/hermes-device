@@ -39,10 +39,10 @@ Both are signed keyless with cosign. Verify with:
 
 ```bash
 cosign verify ghcr.io/usa-reddragon/talaria-hermes:<tag> \
-  --certificate-identity-regexp '^https://github.com/USA-RedDragon/hermes-patches/' \
+  --certificate-identity-regexp '^https://github.com/USA-RedDragon/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 cosign verify ghcr.io/usa-reddragon/talaria-aio:<tag> \
-  --certificate-identity-regexp '^https://github.com/USA-RedDragon/talaria(-deploy)?/' \
+  --certificate-identity-regexp '^https://github.com/USA-RedDragon/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

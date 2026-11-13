@@ -123,9 +123,9 @@ jobs:
           context: hermes
           platforms: linux/amd64
           load: true
-          tags: hermes-patches:test
+          tags: talaria-hermes:test
 
       - name: Device plugin tests in the patched image
         run: |
           docker run --rm --entrypoint /bin/sh -v "$GITHUB_WORKSPACE:/src:ro" -e HERMES_AGENT_SRC=/opt/hermes \
-            hermes-patches:test /src/scripts/test-plugin.sh
+            talaria-hermes:test /src/scripts/test-plugin.sh
