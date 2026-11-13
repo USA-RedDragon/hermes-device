@@ -48,7 +48,7 @@ The old config is saved first. Then remove the old computer on the old hub (Sett
    talaria setup --uninstall
    ```
 
-   This stops and removes the service, removes the native messaging host and the stored token, puts back any config or service file that setup replaced, removes the lines setup added to your shell files (the backups stay), and removes the program. A config file you changed since setup is kept.
+   This stops and removes the service, removes the native messaging host and the stored token, puts back any config or service file that setup replaced, removes the lines setup added to your shell files (the backups stay), removes talaria's cache and, on macOS, the service's log `~/Library/Logs/talaria.log`, and removes the program. A config file you changed since setup is kept, and so are config backups. On macOS run it in Terminal on the Mac, not over SSH: over SSH the login keychain is locked, so the token cannot be deleted.
 3. Remove the Talaria extension in Firefox (`about:addons`).
 
 If the uninstall cannot stop the service, it keeps the program, the config and the token, so you can stop the service and run it again.
