@@ -1,0 +1,216 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 21:16:03 +0000
+Subject: [PATCH] fix(delegation): a handed-off subagent keeps its start and
+ tool count
+
+A background subagent resumed by the next gateway after a restart was registered as new: started_at was the restart time, tool_count 0, and its elapsed time counted from the restart, so subagent.list and delegation.status showed the wrong start, tool count and duration.
+
+The handoff now records the child's start and tool count from its registry record, and the resumed child is registered with them (the unit's dispatch time and the tool results in its stored transcript when the record has none). The relay counts on from the stored count, and the child's duration counts from its original start.
+---
+ .../tools/test_delegation_restart_handoff.py  | 68 +++++++++++++++++++
+ tools/delegate_tool_child_run.py              | 17 ++++-
+ tools/delegate_tool_handoff.py                | 34 +++++++++-
+ tools/delegate_tool_progress.py               |  5 ++
+ 4 files changed, 121 insertions(+), 3 deletions(-)
+
+diff --git a/tests/tools/test_delegation_restart_handoff.py b/tests/tools/test_delegation_restart_handoff.py
+index 8ccd59fd..5598c292 100644
+--- a/tests/tools/test_delegation_restart_handoff.py
++++ b/tests/tools/test_delegation_restart_handoff.py
+@@ -585,3 +585,71 @@ def test_queued_unit_is_handed_off_whole_and_queued_again_on_the_next_gateway():
+     event = wait_until(lambda: _completions("deleg_call"), what="the queued unit's completion")[0]
+     assert [(r["task_index"], r["summary"]) for r in event["results"]] == [
+         (0, "resumed 0"), (1, "resumed 1"), (2, "resumed 2")]
++
++
++# ── Start time and tool count survive the handoff ───────────────────────────
++def _registered_child(subagent_id, **attrs):
++    from tools.delegate_tool_child_run import _register_child
++    child = SimpleNamespace(_subagent_id=subagent_id, model="m", _delegate_depth=1, _parent_session_id=PARENT, **attrs)
++    assert _register_child(child, SimpleNamespace(session_id=PARENT), "goal", owner_session_id=None,
++                           owner_transport=None, owner_session_record=None) == subagent_id
++    return child
++
++
++def _record(subagent_id) -> dict:
++    from tools.delegate_tool_registry import list_active_subagents
++    return next(r for r in list_active_subagents() if r["subagent_id"] == subagent_id)
++
++
++def test_handed_off_child_reports_its_original_start_and_tool_count(resume_seams):
++    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, _unregister_subagent
++    from tools.delegate_tool_progress import _ChildProgressRelay
++    from tools.delegate_tool_child_run import _ChildRun
++
++    # Old gateway: a running child that has made 7 tool calls since its start 20 minutes ago.
++    started = time.time() - 1200
++    old = _registered_child("sa-1-abcd", tool=None, stops=[], session_id="child-1")
++    old.hard_interrupt = lambda message=None, *, tool_reason=None: None
++    old.get_activity_summary = lambda: {"current_tool": None}
++    with _active_subagents_lock:
++        _active_subagents["sa-1-abcd"].update(started_at=started, tool_count=7)
++    state = {}
++    handoff._handoff_fn({1: old})(time.monotonic() + 5, state)
++    assert state["1"]["started_at"] == started and state["1"]["tool_count"] == 7
++    _unregister_subagent("sa-1-abcd", agent=old)
++
++    # The spec the old gateway stored; the next gateway builds the child from it.
++    unit = _resume_unit()
++    unit["handoff"]["children"]["1"].update(state["1"])
++    db = _session_db()
++    _stored_child(db, cut=True)
++    ru = handoff._ResumedUnit(unit)
++    parent = handoff._ResumeParent(ru.spec["parent"], db)
++    child = ru._build(1, ru.spec["children"]["1"], parent, db)
++    child._subagent_id, child.model, child._delegate_depth, child._parent_session_id = "sa-1-abcd", "m", 1, PARENT
++
++    # New gateway: registered with the original start and count, and the next call counts on from 7.
++    from tools.delegate_tool_child_run import _register_child
++    _register_child(child, parent, "task 1", owner_session_id=None, owner_transport=None, owner_session_record=None)
++    rec = _record("sa-1-abcd")
++    assert rec["started_at"] == started and rec["tool_count"] == 7
++    relay = _ChildProgressRelay(1, "task 1", None, lambda *a, **k: None, 2, "sa-1-abcd", None, 0, "m", None, {})
++    relay._on_tool_started("terminal", "ls", {}, {})
++    assert _record("sa-1-abcd")["tool_count"] == 8 and relay.tool_count == 8
++    assert _record("sa-1-abcd")["started_at"] == started
++
++    # Elapsed time counts from the original start, not from the new gateway.
++    run = _ChildRun(child, parent, 1, "task 1", "sa-1-abcd", None)
++    assert run.elapsed() >= 1199
++    _unregister_subagent("sa-1-abcd", agent=child)
++
++
++def test_resumed_child_without_a_recorded_start_uses_the_dispatch_time_and_stored_tool_results(resume_seams):
++    db = _session_db()
++    _stored_child(db, cut=True)  # two tool calls, one result stored
++    unit = _resume_unit()
++    unit["dispatched_at"] = time.time() - 600
++    ru = handoff._ResumedUnit(unit)
++    child = ru._build(1, ru.spec["children"]["1"], handoff._ResumeParent(ru.spec["parent"], db), db)
++    assert child._delegate_started_at == unit["dispatched_at"]
++    assert child._delegate_tool_count == 2  # call_a and the closed call_b
+diff --git a/tools/delegate_tool_child_run.py b/tools/delegate_tool_child_run.py
+index 9adf6942..e218ba6a 100644
+--- a/tools/delegate_tool_child_run.py
++++ b/tools/delegate_tool_child_run.py
+@@ -450,6 +450,15 @@ def _register_child(
+     _register_subagent(record)
+     return record["subagent_id"]
+ 
++def _resumed_number(child: Any, name: str, kind: type) -> Any:
++    """What a child resumed after a gateway restart carries from before it (its original start, its tool count);
++    None for any other child, test doubles included."""
++    value = getattr(child, name, None)
++    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
++        return None
++    return kind(value)
++
++
+ def _subagent_record(
+     child: Any, parent_agent: Any, goal: str, *, owner_session_id: Optional[str], owner_transport: Any,
+     owner_session_record: Any, status: str = "running",
+@@ -473,7 +482,8 @@ def _subagent_record(
+         "goal": goal,
+         "delegation_id": _str_or_none(getattr(child, "_delegation_id", None)),
+         "model": _str_or_none(getattr(child, "model", None)),
+-        "started_at": time.time(), "status": status, "tool_count": 0, "agent": child,
++        "started_at": _resumed_number(child, "_delegate_started_at", float) or time.time(), "status": status,
++        "tool_count": _resumed_number(child, "_delegate_tool_count", int) or 0, "agent": child,
+         # Owning conversation's durable session id (same lineage completion delivery routes by), sourced from the
+         # child's stamp so it survives a parent_agent rebuild between dispatch and run; used for list/steer/stop
+         # ownership when the weakref chain breaks.
+@@ -837,7 +847,10 @@ class _ChildRun:
+     parent_reads_snapshot: list = field(default_factory=list)
+ 
+     def elapsed(self) -> float:
+-        return round(time.monotonic() - self.child_start, 2)
++        """Seconds since the child started; a child resumed after a gateway restart counts from its original start."""
++        ran = time.monotonic() - self.child_start
++        started = _resumed_number(self.child, "_delegate_started_at", float)
++        return round(max(ran, time.time() - started) if started else ran, 2)
+ 
+     def relay_text(self, delta: str) -> None:
+         """Stream callback forwarding the child's reply text up the progress relay so gateway watch windows mirror it
+diff --git a/tools/delegate_tool_handoff.py b/tools/delegate_tool_handoff.py
+index b270c4d3..a94baa89 100644
+--- a/tools/delegate_tool_handoff.py
++++ b/tools/delegate_tool_handoff.py
+@@ -197,9 +197,27 @@ def _in_tool(child: Any) -> bool:
+         return False
+ 
+ 
++def _registry_progress(child: Any) -> dict[str, Any]:
++    """The start time and tool count the child's registry record shows now. The next gateway carries both on, so a
++    handed-off child's start, elapsed time and tool count do not restart."""
++    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
++    subagent_id = getattr(child, "_subagent_id", None)
++    if not isinstance(subagent_id, str) or not subagent_id:
++        return {}
++    with _active_subagents_lock:
++        rec = _active_subagents.get(subagent_id) or {}
++        started, count = rec.get("started_at"), rec.get("tool_count")
++    out: dict[str, Any] = {}
++    if isinstance(started, (int, float)) and not isinstance(started, bool) and started > 0:
++        out["started_at"] = float(started)
++    if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
++        out["tool_count"] = count
++    return out
++
++
+ def _child_state(child: Any) -> dict[str, Any]:
+     """What the child reached that only this process knows: its working directory and current session id."""
+-    state: dict[str, Any] = {"session_id": getattr(child, "session_id", None)}
++    state: dict[str, Any] = {"session_id": getattr(child, "session_id", None), **_registry_progress(child)}
+     try:
+         from tools.delegate_tool_routes import child_profile_scope
+         from tools.terminal_tool import get_session_cwd
+@@ -459,11 +477,25 @@ class _ResumedUnit:
+             child._delegation_id = live
+             if isinstance(ident := getattr(child, "_progress_identity_ref", None), dict):
+                 ident["delegation_id"] = live
++        self._carry_progress(child, spec, history)
+         # No stored turn means the child never started its conversation: it starts on its goal.
+         child._delegate_resume = {"cwd": spec.get("cwd"), **({"history": history, "message": RESUME_MESSAGE}
+                                                               if history else {})}
+         return child
+ 
++    def _carry_progress(self, child: Any, spec: dict, history: list) -> None:
++        """The resumed child keeps its original start (recorded when the last gateway stopped it, else the unit's
++        dispatch time) and counts tools on from the stored count (else the tool results of its stored transcript),
++        so its row, elapsed time and tool count carry on across the restart instead of starting over."""
++        started, count = spec.get("started_at"), spec.get("tool_count")
++        if not isinstance(started, (int, float)) or isinstance(started, bool) or started <= 0:
++            started = self.unit.get("dispatched_at")
++        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
++            count = sum(1 for m in history if isinstance(m, dict) and m.get("role") == "tool")
++        if isinstance(started, (int, float)) and not isinstance(started, bool) and started > 0:
++            child._delegate_started_at = float(started)
++        child._delegate_tool_count = count
++
+     def _attach_transcript(self, index: int, spec: dict, child: Any) -> None:
+         path = spec.get("transcript")
+         if not path:
+diff --git a/tools/delegate_tool_progress.py b/tools/delegate_tool_progress.py
+index 667cb0ae..11f60bd8 100644
+--- a/tools/delegate_tool_progress.py
++++ b/tools/delegate_tool_progress.py
+@@ -333,6 +333,9 @@ class _ChildProgressRelay:
+         for src, dst in (("session_id", "child_session_id"), ("delegation_id", "delegation_id")):
+             if self.session_ref.get(src):
+                 kw[dst] = str(self.session_ref[src])
++        if self.subagent_id is not None:  # a resumed child's registry record starts at its count before the restart
++            with _active_subagents_lock:
++                self.tool_count = max(self.tool_count, (_active_subagents.get(self.subagent_id) or {}).get("tool_count") or 0)
+         kw["tool_count"] = self.tool_count
+         return kw
+ 
+@@ -408,6 +411,8 @@ class _ChildProgressRelay:
+         if self.subagent_id is not None:
+             with _active_subagents_lock:
+                 rec = _active_subagents.get(self.subagent_id)
++                # A child resumed after a restart is registered with the count it had before.
++                self.tool_count = max(self.tool_count, ((rec or {}).get("tool_count") or 0) + 1)
+                 if rec is not None:
+                     rec["tool_count"] = self.tool_count
+                     rec["last_tool"] = tool_name or ""

@@ -1,0 +1,6 @@
+# The restart handoff and the subagent registry, roster and process handoff around the record it fixes
+tests/tools/test_delegation_restart_handoff.py
+tests/tui_gateway/test_subagent_snapshot.py
+tests/tools/test_subagent_process_handoff.py
+tests/tools/test_delegate_transcript_action.py
+tests/tools/test_delegation_profile_route.py
