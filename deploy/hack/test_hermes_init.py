@@ -89,6 +89,70 @@ class TimeZone(unittest.TestCase):
         self.assertNotIn("timezone", cfg)
 
 
+class Soul(unittest.TestCase):
+    """The agent's personality is Talaria's, unless someone wrote their own."""
+
+    STOCK = ("You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of "
+             "the ask \u2014 a one-line question gets a one-line answer, and finished work gets a short report of what "
+             "changed, what's verified, and what's left, never a replay of the process. No filler (\"Great question,\" "
+             "\"I'd be happy to\"), no restating the request back, no re-summarizing what you already said, no narrating "
+             "tool calls the user can see. Plain claims over adjectives; when unsure, say so plainly. Agree because it's "
+             "right, not because the user said it. Depth is earned \u2014 give it when the user asks for detail, teaches, or "
+             "the stakes demand it, not by default.")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = self.tmp.name
+        self.m = load(self.home)
+        self.path = os.path.join(self.home, "SOUL.md")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def read(self):
+        with open(self.path, encoding="utf-8") as f:
+            return f.read()
+
+    def write(self, text):
+        with open(self.path, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+
+    def test_new_install_gets_talarias(self):
+        self.m.soul()
+        self.assertEqual(self.read().strip(), self.m.TALARIA_SOUL)
+
+    def test_stock_text_is_replaced_also_with_other_line_endings_and_spacing(self):
+        for text in (self.STOCK, self.STOCK + "\n", "\ufeff" + self.STOCK.replace(". ", ".\r\n") .replace(".\r\n", ". ") + "\r\n\r\n", ""):
+            self.write(text)
+            self.m.soul()
+            self.assertEqual(self.read().strip(), self.m.TALARIA_SOUL, repr(text[:20]))
+
+    def test_the_older_scaffold_is_replaced(self):
+        self.write("# Hermes Agent Persona\n\n<!--\nThis file defines the agent's personality and tone.\n"
+                   "The agent will embody whatever you write here.\nEdit this to customize how Hermes communicates with you.\n\n"
+                   "This file is loaded fresh each message -- no restart needed.\n"
+                   "Delete the contents (or this file) to use the default personality.\n-->")
+        self.m.soul()
+        self.assertEqual(self.read().strip(), self.m.TALARIA_SOUL)
+
+    def test_your_own_text_stays(self):
+        for text in ("Answer like a pirate.", self.STOCK + " Also: be brief.", self.m.TALARIA_SOUL + "\nMore."):
+            self.write(text)
+            self.m.soul()
+            self.assertEqual(self.read(), text)
+
+    def test_talarias_own_text_is_not_a_stock_text(self):
+        import hashlib
+        self.assertNotIn(hashlib.sha256(self.m.TALARIA_SOUL.encode()).hexdigest(), self.m.STOCK_SOULS)
+        low = self.m.TALARIA_SOUL.lower()
+        for word in ("hermes", "nous", "claude"):
+            self.assertNotIn(word, low)
+
+    def test_stock_hashes_match_the_stock_text(self):
+        import hashlib
+        self.assertIn(hashlib.sha256(self.STOCK.encode()).hexdigest(), self.m.STOCK_SOULS)
+
+
 class Defaults(unittest.TestCase):
     def run_init(self, existing=None, extra=None):
         with tempfile.TemporaryDirectory() as home:

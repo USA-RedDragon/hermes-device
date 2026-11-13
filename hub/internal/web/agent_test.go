@@ -118,6 +118,14 @@ func TestAgentAdminRoutes(t *testing.T) {
 	if code != http.StatusOK || out["applied_live"] != true || e.pc.Soul != "Answer briefly." {
 		t.Fatalf("soul = %d %v", code, out)
 	}
+	// Reset sends no text and gets Talaria's default, never an empty file (the agent's own text would return).
+	code, _, _ = call(t, c, http.MethodPut, base+"/soul", m.CSRF, map[string]any{fieldContent: ""})
+	if code != http.StatusOK || e.pc.Soul != agentcfg.DefaultSoul {
+		t.Fatalf("reset soul = %d %q", code, e.pc.Soul)
+	}
+	if _, st, _ = call(t, c, http.MethodGet, base+pSettings, "", nil); st["soul_default"] != agentcfg.DefaultSoul {
+		t.Fatalf("settings soul_default = %v", st["soul_default"])
+	}
 	agentToolsAndConnections(t, e, c, base, m.CSRF)
 	agentDiagnostics(t, c, base, m.CSRF)
 }

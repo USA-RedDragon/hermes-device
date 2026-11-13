@@ -211,12 +211,14 @@ func Thresholds() []float64 { return []float64{0.4, 0.5, 0.7, 0.85} }
 
 // Settings is Settings, Agent.
 type Settings struct {
-	ApprovalsMode        string   `json:"approvals_mode"`
-	CompressionEnabled   bool     `json:"compression_enabled"`
-	CompressionThreshold float64  `json:"compression_threshold"`
-	TimeZone             string   `json:"timezone"`
-	Soul                 string   `json:"soul"`
-	Locked               []string `json:"locked"`
+	ApprovalsMode        string  `json:"approvals_mode"`
+	CompressionEnabled   bool    `json:"compression_enabled"`
+	CompressionThreshold float64 `json:"compression_threshold"`
+	TimeZone             string  `json:"timezone"`
+	Soul                 string  `json:"soul"`
+	// SoulDefault is Talaria's default personality, for Reset.
+	SoulDefault string   `json:"soul_default"`
+	Locked      []string `json:"locked"`
 	// Live is true when the agent applies changes to open chats.
 	Live bool `json:"live"`
 }
@@ -285,6 +287,7 @@ func (s *Service) AgentSettings(ctx context.Context, user, backendID string) (Se
 		return Settings{}, err
 	}
 	st.Soul = soul.Content
+	st.SoulDefault = DefaultSoul
 	for _, k := range []string{KeySoul, KeyApprovals, KeyCompression, KeyThreshold, KeyTimeZone} {
 		if s.Locked(k) {
 			st.Locked = append(st.Locked, k)
@@ -355,14 +358,28 @@ func (s *Service) SaveSettings(ctx context.Context, user, backendID string, u Se
 
 const maxSoul = 64 << 10
 
-// SaveSoul writes the agent's personality. It answers whether open chats
-// get it on their next message.
+// DefaultSoul is Talaria's default personality: what a new install starts
+// with (the setup step deploy/compose/files/hermes-init.py writes the same
+// text, and a test keeps them equal) and what Reset restores.
+const DefaultSoul = "You are the agent in Talaria, a personal assistant that works for the person who runs it. Be direct: match the " +
+	"length of your reply to the weight of the ask, so a one-line question gets a one-line answer and finished work " +
+	"gets a short report of what changed, what you checked, and what is left. No filler, no restating the request, " +
+	"no narrating tool calls the user can see. Plain claims over adjectives; when unsure, say so plainly. Agree " +
+	"because it is right, not because the user said it. Give depth when the user asks for detail or the stakes demand " +
+	"it, not by default."
+
+// SaveSoul writes the agent's personality. Empty text writes Talaria's
+// default: an empty file would bring back the agent's built-in text. It
+// answers whether open chats get it on their next message.
 func (s *Service) SaveSoul(ctx context.Context, user, backendID, content string) (bool, error) {
 	if s.Locked(KeySoul) {
 		return false, lockedErr()
 	}
 	if len(content) > maxSoul {
 		return false, bad("The personality is too long. Keep it under 64 KB.")
+	}
+	if strings.TrimSpace(content) == "" {
+		content = DefaultSoul
 	}
 	r, err := s.Requester(ctx, user, backendID)
 	if err != nil {

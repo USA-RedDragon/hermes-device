@@ -296,7 +296,7 @@ window.HubAgent = (() => {
         note(ps);
         try {
           const r = await api("PUT", base() + "/soul", { content });
-          ta.value = content;
+          ta.value = content || st.soul_default || "";
           note(ps, say("good", liveLine("The personality", undefined, r.applied_live)));
         } catch (e) { note(ps, say("bad", "Not saved.", [e.message])); }
       };

@@ -228,7 +228,8 @@ The whole-file editor sends the entries it showed with the edited text. Entries 
 Admins of a backend (`agent.admins`, or the hub's admins when it is empty) change its agent from the hub; members
 never see these tabs, and every route checks it on the server (403 for anyone else).
 
-- **Settings, Agent**: the personality (what the agent is told about itself in every chat), how it asks before
+- **Settings, Agent**: the personality (what the agent is told about itself in every chat; a new install starts with
+  Talaria's own text, and Reset brings it back), how it asks before
   risky commands (every time, only when a command looks risky, never), whether long chats summarize their older
   messages and from how full, and the time zone for scheduled jobs and the agent's clock. Each applies to everyone
   on the server. The install's `TZ` sets the time zone until someone picks one here; from then on the choice in

@@ -5,6 +5,7 @@ Runs in the Hermes image as its hermes user, with HERMES_HOME on the data volume
 - copies the talaria device plugin (written by the plugin step into /plugin-src) into the home,
 - writes the hub's public key, derived from the hub's signing key, for the device plugin,
 - merges the Talaria settings into config.yaml (other settings you change stay),
+- gives the agent Talaria's personality (SOUL.md) when it has none or still has the stock text,
 - enables the device plugin.
 
 Settings come from environment variables (see .env.example). Secrets come from /secrets (or
@@ -105,6 +106,41 @@ def password_hash():
     sys.path.insert(0, "/opt/hermes")
     from plugins.dashboard_auth.basic import hash_password
     return hash_password(secret("password"))
+
+
+# The agent's personality, SOUL.md, for a new install: Talaria's own text instead of the stock one. The hub's
+# Settings, Agent has the same text (hub/internal/agentcfg, kept equal by a test) for "Reset to Talaria's default".
+TALARIA_SOUL = """\
+You are the agent in Talaria, a personal assistant that works for the person who runs it. Be direct: match the \
+length of your reply to the weight of the ask, so a one-line question gets a one-line answer and finished work \
+gets a short report of what changed, what you checked, and what is left. No filler, no restating the request, \
+no narrating tool calls the user can see. Plain claims over adjectives; when unsure, say so plainly. Agree \
+because it is right, not because the user said it. Give depth when the user asks for detail or the stakes demand \
+it, not by default."""
+
+# SHA-256 of the stock texts (stripped, line endings unified) that the agent's image seeds into SOUL.md. A file that
+# holds one of them, or nothing, carries no choice of yours, so it becomes Talaria's text. Any other text is yours.
+STOCK_SOULS = frozenset((
+    "36c1f5a2e92cd1d018311eaf4c8f1e8886672eae78212e033c681d0e3d5d506f",
+    "731f9a403cdc6a5c5c0e5c956a9238f54dae8b6e253bc29f9e47efb38eb6081a",
+    "2765a846e1bb371d78d3b93b403dfb0f8d1ba1a9895edb5f608367abfe81194d",
+    "82fa3438d86f8b95c6e96be89d853c8b561b3e6973ed61c90e70e0231dd24a7e",
+    "6bc146a50e8fe3bd555e89a77e93af1f781cece8cf549f0d7a02ee2389811c72",
+))
+
+
+def soul():
+    """Writes TALARIA_SOUL to SOUL.md when it is missing, empty or one of the stock texts."""
+    path = os.path.join(HOME, "SOUL.md")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read().replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff").strip()
+        if text and hashlib.sha256(text.encode()).hexdigest() not in STOCK_SOULS:
+            return
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        f.write(TALARIA_SOUL + "\n")
+    os.replace(path + ".tmp", path)
+    print("hermes-init: personality set to Talaria's")
 
 
 def talaria_config(pubkey_path):
@@ -217,6 +253,7 @@ def main():
         # The image's own entrypoint does this; the chart runs Hermes without it
         subprocess.run([sys.executable, "/opt/hermes/tools/skills_sync.py"], check=False)
     pubkey = write_public_key()
+    soul()
     path = os.path.join(HOME, "config.yaml")
     config = {}
     if os.path.exists(path):
