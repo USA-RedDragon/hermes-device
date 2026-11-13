@@ -4,7 +4,8 @@ Talaria on Unraid is one container from the all-in-one image ([design](all-in-on
 
 1. Get the template. Unraid removed the **Template repositories** field from the Docker tab in 6.10, so there is
    no URL to add there. Instead, download the template onto the server. In the Unraid terminal (the **>_** icon at
-   the top right), run:
+   the top right of the Unraid page; it runs as root. Not a container's **Console**, which cannot reach
+   `/boot`), run:
 
    ```bash
    mkdir -p /boot/config/plugins/dockerMan/templates-user
@@ -57,10 +58,22 @@ The template pulls `talaria-aio:latest`, so Unraid's own update check covers it:
 - **Change a setting** (Public URL, Telegram token, time zone): click the Talaria icon on the **Docker** tab,
   pick **Edit**, change it, **Apply**.
 
-Both need the container to be made from the template. A container started by hand with `docker run` in the
-terminal shows no **Edit** and no update check (Unraid lists it as not managed by it). To move such a container
-onto the template, stop and remove it (`docker rm -f <name>`), then add the template with the same two data paths;
-nothing in `/mnt/user/appdata/talaria` is lost.
+Both need the container to be made from the template. A container started by hand with `docker run` shows as
+**3rd Party** on the Docker tab, with no **Edit** and an update status of **not available**. To move it onto the
+template:
+
+1. Note where its data lives, in the Unraid terminal:
+
+   ```bash
+   docker inspect Talaria --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
+   ```
+
+2. Get the template (step 1 of the install above).
+3. Remove the old container: its icon, **Remove**. This removes the container only; the folders from step 1 stay.
+4. **Add Container**, pick **Talaria** under **User templates**, set **Hermes data** and **Talaria data** to the
+   folders from step 1 (the ones mounted at `/opt/data` and `/talaria`), the same **Public URL**, and **Apply**.
+
+Chats, accounts and the model setup come back as they were.
 
 ## Ollama on the same server
 
