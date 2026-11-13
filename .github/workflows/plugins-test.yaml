@@ -1,0 +1,65 @@
+name: Plugins test
+
+on:
+  pull_request:
+    paths:
+      - plugins/**
+      - .github/workflows/plugins-test.yaml
+  push:
+    branches: [main]
+    paths:
+      - plugins/**
+      - .github/workflows/plugins-test.yaml
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }} @ ${{ github.ref }}"
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: plugins
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: uvx ruff@0.15.22 check .
+      - name: Shell scripts
+        run: |
+          sh -n scripts/install-plugin.sh
+          bash -n scripts/run-tests.sh
+
+  test:
+    name: Tests on Hermes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out Hermes
+        run: |
+          version=$(tr -d '[:space:]' < .hermes-version)
+          echo "HERMES_AGENT_SRC=$RUNNER_TEMP/hermes-agent" >> "$GITHUB_ENV"
+          echo "Hermes $version" >> "$GITHUB_STEP_SUMMARY"
+          git clone --quiet --depth 1 --branch "$version" -c advice.detachedHead=false \
+            https://github.com/NousResearch/hermes-agent "$RUNNER_TEMP/hermes-agent"
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: Install Hermes and its test dependencies
+        working-directory: ${{ env.HERMES_AGENT_SRC }}
+        run: uv sync --locked --python 3.14 --extra all --extra anthropic --group dev --group test
+
+      - name: Plugin tests
+        run: scripts/run-tests.sh "$HERMES_AGENT_SRC"
