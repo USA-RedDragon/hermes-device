@@ -84,10 +84,6 @@ auth:
   # CIDRs or addresses of the reverse proxies in front of the hub, such as 10.0.0.0/8 or 127.0.0.1. In proxy mode the hub reads the user header only on requests from them. In every mode the hub takes the client address for login limits from their X-Forwarded-For
   # trusted_proxies: []
   local:
-    # Token the first-user setup page asks for, at least 16 characters. Empty: while the hub has no account it makes one at start and prints it to its log
-    # setup_token: "(secret)"
-    # File that holds auth.local.setup_token. Wins over setup_token
-    # setup_token_file: ""
     # Wrong passwords in a row that lock an account. 0 is the default
     max_failures: 5
     # How long a locked account stays locked. An admin can unlock it sooner by setting a new password. 0 is the default

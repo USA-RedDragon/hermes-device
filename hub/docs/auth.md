@@ -34,14 +34,14 @@ This adds a backend with id `hermes` that every hub user may use.
 
 ## Local accounts (`auth.mode: local`)
 
-1. Start the hub. While it has no account, it prints a setup token to its log:
+1. Start the hub. While it has no account, it logs a warning with the setup URL (the public URL plus `/setup`):
 
    ```text
-   level=WARN msg="The hub has no account yet. Open the setup page and give this setup token. ..." url=https://hub.example.com/setup setup_token=...
+   level=WARN msg="Setup is not finished. The first visitor of the setup page becomes the admin, so finish setup before the hub is open to the internet" url=https://hub.example.com/setup
    ```
 
-   With Docker: `docker compose logs hub | grep setup_token`. To pick the token yourself (for an install with no log access), set `auth.local.setup_token` or `auth.local.setup_token_file`; then the hub prints no token.
-2. Open the setup page, give the token, a name and a password. That makes the first account, an admin, with every backend. The setup page works only while the hub has no account, also with several replicas, and a restart makes a new token until then.
+   There is no setup token. Whoever opens the setup page first gets the admin account, so open it yourself before you expose the hub. Opening the hub's root address with no account redirects to the setup page.
+2. Open the setup page and give a name and a password. That makes the first account, an admin, with every backend. The setup page works only while the hub has no account, also with several replicas: the database lets exactly one first account in. After that the page says the hub is already set up.
 3. Add the other people in Settings > Users.
 
 Passwords:
