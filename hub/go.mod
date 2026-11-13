@@ -49,3 +49,5 @@ require (
 )
 
 tool github.com/USA-RedDragon/configulator/v2/cmd/configulator
+
+replace github.com/USA-RedDragon/hermes-device => ../
