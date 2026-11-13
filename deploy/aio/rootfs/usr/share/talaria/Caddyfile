@@ -12,6 +12,23 @@
 		# Chats stream as server-sent events: send each event at once
 		reverse_proxy 127.0.0.1:8081 {
 			flush_interval -1
+			# Hermes starts after the hub. Until its gateway answers, hold requests (up to a minute) instead of
+			# letting the hub answer 502 "gateway is restarting"
+			health_port 9120
+			health_uri /api/health
+			health_interval 1s
+			health_timeout 2s
+			lb_try_duration 60s
+			lb_try_interval 250ms
 		}
+	}
+	# Still starting after a minute: a page that tries again by itself
+	handle_errors 502 503 {
+		header Retry-After 5
+		header Cache-Control no-store
+		respond `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<meta http-equiv="refresh" content="5"><title>Talaria is starting</title>
+<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem">
+<h1>Talaria is starting</h1><p>The agent is still starting. This page tries again every few seconds.</p>` 503
 	}
 }

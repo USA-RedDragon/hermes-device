@@ -26,7 +26,7 @@ bringing a second supervisor.
 | Setup | `/etc/cont-init.d/10-talaria`, once per start, after Hermes's own setup: the same `init.sh` and `hermes-init.py` as the compose install | root, then hermes |
 | Hermes gateway | The container's command (`gateway run`), as in the plain Hermes image | hermes (`PUID`) |
 | Hub | s6 service `talaria-hub`, on 127.0.0.1:8081 | nobody |
-| Front | s6 service `talaria-front` (Caddy), the one port: `TALARIA_PORT` (8080) | nobody |
+| Front | s6 service `talaria-front` (Caddy), the one port inside the container: `TALARIA_PORT` (8080). Publish it on any host port. Until the Hermes gateway answers its health check, it holds requests (up to a minute, then a page that reloads itself) | nobody |
 | Sandbox | s6 service `talaria-sandbox`, `talaria run` as a service device | agent (2568) |
 | Demo model | s6 service `talaria-demo`, only with `TALARIA_DEMO=true` | nobody |
 
