@@ -1,3 +1,10 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 10:20:00 +0000
+Subject: [PATCH] fix(execute_code): remote probes run in the environment cwd
+
+execute_code remote probes ran outside the environment working directory; they now run in the cwd of the environment.
+---
 diff --git a/tests/tools/test_code_execution_device_cwd.py b/tests/tools/test_code_execution_device_cwd.py
 new file mode 100644
 index 00000000..855985b8
