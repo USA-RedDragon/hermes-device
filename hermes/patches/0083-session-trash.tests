@@ -1,0 +1,7 @@
+# Upstream tests of the delete, prune, clean and mutate paths the trash sits in
+tests/hermes_cli/test_sessions_delete.py
+tests/test_session_spillover_cleanup.py
+tests/gateway/test_session_mutation_lineage_delete.py
+tests/gateway/test_session_mutation_retirement.py
+tests/hermes_state/test_delegate_cascade.py
+tests/tui_gateway/test_session_delete_rpc.py

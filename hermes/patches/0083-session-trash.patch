@@ -1,0 +1,1171 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 21:56:41 +0000
+Subject: [PATCH] feat(sessions): a delete moves the chat to a trash for 7 days
+
+With sessions.trash_days above 0 (default 7; 0 = delete at once, upstream's behavior), every delete path hides the chat instead of removing it: `hermes sessions delete`, the gateway/hub delete (session.mutate delete), bulk delete, `sessions prune`, `sessions clean` and the housekeeping prune. A trashed session and its delegate or compression children keep every row (messages, FTS entries, usage, system prompts, pin); a marker in state_meta hides them from session lists, counts, search, id and title resolves, peer recovery, boot restore and the live list, and fences new admissions. `hermes sessions trash` lists them (id, title, deleted, messages, purge time); `hermes sessions restore <id>` brings one back with its children and pin. A purge hard-deletes after trash_days, on the next delete or housekeeping pass; `hermes sessions delete --purge <id>` deletes one at once. Plugins and memory providers (on_session_delete) hear about a chat only when it is purged. Bulk deletes print how many went to the trash and how to restore.
+---
+ gateway/session_live_listing.py            |   4 +-
+ gateway/session_local_recovery.py          |   3 +-
+ hermes_cli/config_defaults.py              |   4 +
+ hermes_cli/sessions_cmd.py                 |  65 +++++-
+ hermes_cli/subcommands/sessions.py         |  12 +-
+ hermes_state.py                            |   3 +-
+ hermes_state_gateway.py                    |   4 +
+ hermes_state_maintenance.py                |  16 +-
+ hermes_state_mutation_retirement.py        |  11 +-
+ hermes_state_runtime.py                    |   4 +-
+ hermes_state_search.py                     |   2 +
+ hermes_state_sessions.py                   |  55 ++++-
+ hermes_state_titles.py                     |   5 +-
+ hermes_state_trash.py                      | 152 +++++++++++++
+ tests/conftest.py                          |  22 ++
+ tests/gateway/test_native_http_auth.py     |   3 +-
+ tests/gateway/test_session_trash_delete.py |  53 +++++
+ tests/hermes_state/test_session_trash.py   | 253 +++++++++++++++++++++
+ 18 files changed, 645 insertions(+), 26 deletions(-)
+ create mode 100644 hermes_state_trash.py
+ create mode 100644 tests/gateway/test_session_trash_delete.py
+ create mode 100644 tests/hermes_state/test_session_trash.py
+
+diff --git a/gateway/session_live_listing.py b/gateway/session_live_listing.py
+index 60d9af12..ea5f814a 100644
+--- a/gateway/session_live_listing.py
++++ b/gateway/session_live_listing.py
+@@ -18,6 +18,7 @@ from dataclasses import dataclass
+ 
+ from gateway.session_contract import SessionHandle, SessionRef
+ from hermes_state_runtime import RuntimeStoreError
++from hermes_state_trash import not_trashed_sql
+ 
+ # Sessions per worker-thread read; each batch is one await, so the loop serves other work between them.
+ LISTING_BATCH = 256
+@@ -49,7 +50,8 @@ def _store_facts(db, session_ids):
+             "s.archived, s.runtime_revision, s.runtime_generation, "
+             "(SELECT t.ended_at FROM state_meta m JOIN sessions t ON t.id = CASE WHEN json_valid(m.value) "
+             "THEN json_extract(m.value, '$.entry.session_id') END WHERE m.key = ? || s.id) AS target_ended_at "
+-            "FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?))", (POLICY_PREFIX, ids)).fetchall()
++            "FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?)) "
++            f"AND {not_trashed_sql('s')}", (POLICY_PREFIX, ids)).fetchall()
+         pending = conn.execute(
+             "SELECT target_session_id, admission_id, seq, status FROM session_admissions "
+             "WHERE target_session_id IN (SELECT value FROM json_each(?)) "
+diff --git a/gateway/session_local_recovery.py b/gateway/session_local_recovery.py
+index 9b00f417..71f9fa9c 100644
+--- a/gateway/session_local_recovery.py
++++ b/gateway/session_local_recovery.py
+@@ -425,7 +425,8 @@ def reset_local_session(store, old_entry, session_id, now, display_name):
+ _BOOT_RECEIPTS_SQL = (
+     "SELECT m.key FROM state_meta m LEFT JOIN sessions s "
+     "ON s.id = CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
+-    "WHERE m.key LIKE ? AND (s.ended_at IS NULL OR s.end_reason = 'compression' "
++    "WHERE m.key LIKE ? AND (s.id IS NULL OR NOT EXISTS (SELECT 1 FROM state_meta _t WHERE _t.key = 'gateway.trash.v1.' || s.id)) "
++    "AND (s.ended_at IS NULL OR s.end_reason = 'compression' "
+     "OR EXISTS (SELECT 1 FROM session_admissions a WHERE a.target_session_id = substr(m.key, ?) "
+     "AND a.status IN ('queued','started','unknown')) "
+     "OR EXISTS (SELECT 1 FROM state_meta c WHERE c.key = ? || substr(m.key, ?)))")
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index a6392723..77646eaf 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -2363,6 +2363,10 @@ DEFAULT_CONFIG = {
+         # auto_prune key, every surface asks once the disk holding state.db runs low
+         # (hermes_cli/prune_advisor.py); either answer writes the key and ends the question.
+         "auto_prune": False,
++        # A delete (CLI, gateway/hub API, prune, clean) moves the chat to a trash for this many days:
++        # hidden everywhere, restorable (`hermes sessions trash`, `hermes sessions restore <id>`),
++        # then purged. `hermes sessions delete --purge <id>` removes one at once. 0 = delete at once.
++        "trash_days": 7,
+         # Inactive days of ended-session history to keep (= `hermes sessions prune`).
+         "retention_days": 90,
+         # Auto-archive (soft-hide, never delete) sessions with no activity for auto_archive_days,
+diff --git a/hermes_cli/sessions_cmd.py b/hermes_cli/sessions_cmd.py
+index d9632356..2134dc67 100644
+--- a/hermes_cli/sessions_cmd.py
++++ b/hermes_cli/sessions_cmd.py
+@@ -658,21 +658,65 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
+ 
+ # -- delete / prune / archive -------------------------------------------------
+ 
++def _bulk_delete_notice(db, count, verb) -> str:
++    """The line a bulk delete prints: how many, and (with the trash on) how to bring them back."""
++    line = f"{verb} {count} session(s)."
++    from hermes_state_trash import configured_trash_days
++    if count and configured_trash_days():
++        line += (f" They are in the trash for {configured_trash_days():g} days: list with `hermes sessions trash`, "
++                 "restore one with `hermes sessions restore <id>`.")
++    return line
++
++
++def _cmd_trash(db, args):
++    from hermes_cli.session_filters import format_epoch
++    from hermes_state_trash import configured_trash_days
++    rows = db.list_trash()
++    if not rows:
++        print("The trash is empty.")
++        return
++    days = configured_trash_days()
++    print(f"{'ID':<28} {'Deleted':<17} {'Msgs':>5}  {'Purged':<17} Title\n" + "─" * 100)
++    for r in rows:
++        purged = format_epoch(r["expires_at"]) if r.get("expires_at") else "next delete"
++        extra = f" (+{r['children']} child)" if r["children"] else ""
++        print(f"{r['id']:<28} {format_epoch(r['deleted_at']):<17} {r['message_count']:>5}  {purged:<17} "
++              f"{(r.get('title') or '')[:36]}{extra}{' [pinned]' if r['pinned'] else ''}")
++    print(f"\nRestore one with: hermes sessions restore <id>. Chats leave the trash after {days:g} days.")
++
++
++def _cmd_restore(db, args):
++    root = db.resolve_trashed_id(args.session_id)
++    if root is None:
++        print(f"No trashed session matches '{args.session_id}'. List them with: hermes sessions trash")
++        return 1
++    restored = db.restore_session(root)
++    if not restored:
++        print(f"Session '{root}' was not in the trash.")
++        return 1
++    kids = len(restored) - 1
++    print(f"Restored session '{root}'" + (f" and {kids} child session{'' if kids == 1 else 's'}" if kids else "") + ".")
++
++
+ def _cmd_delete(db, args):
+-    resolved_session_id = db.resolve_session_id(args.session_id)
++    purge = bool(getattr(args, "purge", False))
++    resolved_session_id = db.resolve_session_id(args.session_id) or (
++        db.resolve_trashed_id(args.session_id) if purge else None)
+     if not resolved_session_id:
+         return _not_found(args.session_id)
+     # The delete is honored (explicit id), but a pin is a "keep" flag: say so instead of silently destroying it.
+     _pinned_note = " (this session is PINNED)" if (db.get_session(resolved_session_id) or {}).get("pinned") else ""
+     if not args.yes:
+-        refused = _confirm_or_exit_code(f"Delete session '{resolved_session_id}'{_pinned_note} and all its messages? [y/N] ")
++        what = ("PERMANENTLY delete (no trash, cannot be restored)" if purge else "Move to the trash")
++        refused = _confirm_or_exit_code(f"{what} session '{resolved_session_id}'{_pinned_note} and all its messages? [y/N] ")
+         if refused is not None:
+             return refused
+     elif _pinned_note:
+         print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
+     from hermes_state_runtime import RuntimeStoreError
+     try:
+-        if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir(), exclude_active_write_guards=True):
++        if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir(), exclude_active_write_guards=True,
++                                 purge=purge):
+             return _not_found(args.session_id)
+     except SessionActiveWriteGuardError as exc:
+         print(f"Cannot delete active session: {exc}")
+@@ -688,7 +732,12 @@ def _cmd_delete(db, args):
+         else:
+             print(f"Cannot delete session '{resolved_session_id}': {exc.reason}")
+         return 1
+-    print(f"Deleted session '{resolved_session_id}'.")
++    from hermes_state_trash import configured_trash_days
++    if purge or not configured_trash_days():
++        print(f"Deleted session '{resolved_session_id}'.")
++    else:
++        print(f"Moved session '{resolved_session_id}' to the trash. "
++              f"Restore: hermes sessions restore {resolved_session_id} (list: hermes sessions trash).")
+ 
+ 
+ #: Age floor for `prune --never-active`; generous: a young never-active row may be a chat nobody replied to yet.
+@@ -843,11 +892,12 @@ def _cmd_prune_or_archive(db, args, action):
+         from hermes_cli.gateway_client import GatewayClientError
+         from hermes_cli.sessions_owner import owner_prune, report_owner_failure
+         try:
+-            print(f"Pruned {owner_prune(args.owner_endpoint, filters=filters)['deleted']} session(s).")
++            print(_bulk_delete_notice(db, owner_prune(args.owner_endpoint, filters=filters)['deleted'], "Pruned"))
+         except (GatewayClientError, OSError, TimeoutError) as exc:
+             return report_owner_failure(exc)
+     elif prune:
+-        print(f"Pruned {db.prune_sessions(sessions_dir=_sessions_dir(), exclude_active_write_guards=True, **filters)} session(s).")
++        pruned = db.prune_sessions(sessions_dir=_sessions_dir(), exclude_active_write_guards=True, **filters)
++        print(_bulk_delete_notice(db, pruned, "Pruned"))
+     else:
+         print(f"Archived {db.archive_sessions(**filters)} session(s). They're hidden from listings "
+               "but fully recoverable (nothing was deleted).")
+@@ -1379,8 +1429,9 @@ _PRE_DB_HANDLERS = {
+     "discard": _cmd_discard,  # a gateway control (prompt.resolve_unknown), never a direct store write
+     "adopt": _cmd_adopt,  # native resumes on the owner; reads its own store read-only
+ }
+-_OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
++_OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned", "trash"})
+ _DB_HANDLERS = {
++    "trash": _cmd_trash, "restore": _cmd_restore,
+     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
+     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
+     "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
+diff --git a/hermes_cli/subcommands/sessions.py b/hermes_cli/subcommands/sessions.py
+index e4180e0c..6ce9c548 100644
+--- a/hermes_cli/subcommands/sessions.py
++++ b/hermes_cli/subcommands/sessions.py
+@@ -130,9 +130,19 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
+         help="md/qmd only: after verified single-session export, delete that session (needs --yes)")
+     _flag(sessions_export, "--force", help="md/qmd only: overwrite an existing export file")
+ 
+-    sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a specific session")
++    sessions_delete = sessions_subparsers.add_parser(
++        "delete", help="Delete a specific session (moves it to the trash; --purge removes it at once)")
+     sessions_delete.add_argument("session_id", help="Session ID to delete")
+     add_yes_flag(sessions_delete, "Skip confirmation")
++    _flag(sessions_delete, "--purge",
++        help="Delete now, with no trash: the chat cannot be restored. Takes the id of one chat, "
++             "trashed or not")
++
++    sessions_subparsers.add_parser(
++        "trash", help="List deleted sessions that can still be restored (id, title, deleted, messages)")
++    sessions_restore = sessions_subparsers.add_parser(
++        "restore", help="Bring a deleted session back from the trash, with its children")
++    sessions_restore.add_argument("session_id", help="Session ID from `hermes sessions trash`")
+ 
+     sessions_prune = sessions_subparsers.add_parser(
+         "prune", help="Delete old sessions (filterable by time window, source, title, ...)")
+diff --git a/hermes_state.py b/hermes_state.py
+index fe0249d6..81d6cc0e 100644
+--- a/hermes_state.py
++++ b/hermes_state.py
+@@ -80,6 +80,7 @@ from hermes_state_prompt_refresh import SessionPromptRefreshMixin
+ from hermes_state_usage import SessionUsageMixin
+ from hermes_state_maintenance import SessionMaintenanceMixin
+ from hermes_state_gateway import SessionGatewayMixin
++from hermes_state_trash import SessionTrashMixin
+ from hermes_state_compression import SessionCompressionMixin
+ from hermes_state_search import SessionSearchMixin
+ 
+@@ -466,7 +467,7 @@ class SessionDB(
+     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
+     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
+     SessionMessagesMixin, SessionPruneRewriteMixin, SessionApiContentMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin,
+-    SessionPromptRefreshMixin,
++    SessionPromptRefreshMixin, SessionTrashMixin,
+ ):
+     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
+ 
+diff --git a/hermes_state_gateway.py b/hermes_state_gateway.py
+index 53099b3c..f6b14545 100644
+--- a/hermes_state_gateway.py
++++ b/hermes_state_gateway.py
+@@ -60,6 +60,7 @@ _PEER_SELECT_HEAD = """
+ _HANDOFF_OWNED_ROW_SQL = "(s.handoff_state = 'completed')"
+ _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = ?
+                   AND s.source = ?
++                  AND NOT EXISTS (SELECT 1 FROM state_meta _t WHERE _t.key = 'gateway.trash.v1.' || s.id)
+                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
+                        OR {_HANDOFF_OWNED_ROW_SQL})
+                   AND NOT EXISTS (
+@@ -76,6 +77,7 @@ _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key =
+                 LIMIT 1
+                 """
+ _PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.source = ?
++                  AND NOT EXISTS (SELECT 1 FROM state_meta _t WHERE _t.key = 'gateway.trash.v1.' || s.id)
+                   AND COALESCE(s.user_id, '') = COALESCE(?, '')
+                   AND COALESCE(s.chat_id, '') = COALESCE(?, '')
+                   AND COALESCE(s.chat_type, '') = COALESCE(?, '')
+@@ -426,6 +428,7 @@ class SessionGatewayMixin:
+                AND COALESCE(s.input_tokens, 0) = 0
+                AND COALESCE(s.output_tokens, 0) = 0
+                AND COALESCE(s.pinned, 0) = 0
++               AND NOT EXISTS (SELECT 1 FROM state_meta _t WHERE _t.key = 'gateway.trash.v1.' || s.id)
+                AND COALESCE(s.archived, 0) = 0
+                AND s.started_at IS NOT NULL
+                AND s.started_at < ?
+@@ -541,6 +544,7 @@ class SessionGatewayMixin:
+             LEFT JOIN system_prompts sp
+               ON sp.hash = sessions.system_prompt_hash
+             WHERE session_key IS NOT NULL
++              AND NOT EXISTS (SELECT 1 FROM state_meta _t WHERE _t.key = 'gateway.trash.v1.' || sessions.id)
+               AND started_at = (
+                   SELECT MAX(s2.started_at) FROM sessions s2
+                   WHERE s2.session_key = sessions.session_key
+diff --git a/hermes_state_maintenance.py b/hermes_state_maintenance.py
+index c53e061d..0cccf77d 100644
+--- a/hermes_state_maintenance.py
++++ b/hermes_state_maintenance.py
+@@ -12,6 +12,7 @@ from hermes_state_common import (
+     escape_like as _escape_like, emit_session_deleted,
+ )
+ from hermes_startup_watchdog import report_startup_progress
++from hermes_state_trash import not_trashed_sql
+ 
+ # caplog tests pin the "hermes_state" logger name.
+ logger = logging.getLogger("hermes_state")
+@@ -252,6 +253,7 @@ class SessionMaintenanceMixin:
+         # Pinned is a durable "keep" flag: bulk prune/delete/archive exclude pinned rows unless opted in.
+         if not include_pinned:
+             clauses.append(_not_pinned_sql())
++        clauses.append(not_trashed_sql("s"))  # the trash has its own expiry; a prune never touches it
+         return " AND ".join(clauses), params
+ 
+     def _prune_where(self, older_than_days, source, filters, *, whole_lineages: bool = False) -> tuple[str, list]:
+@@ -384,16 +386,20 @@ class SessionMaintenanceMixin:
+             raise ValueError("prune_sessions() never deletes open sessions: include_open is archive-only")
+         where, where_params = self._prune_where(older_than_days, source, filters, whole_lineages=True)
+         removed_ids: list[str] = []
++        soft = self._soft_delete_enabled()
+         def _do(conn):
+             cursor = conn.execute(f"SELECT s.id FROM sessions s WHERE {where}", where_params)
+             session_ids = {row["id"] for row in cursor.fetchall()}
+             if exclude_active_write_guards:
+                 session_ids -= self._guarded_ids(conn, session_ids)
+             from hermes_state_mutation_retirement import prune_retired_tombstones, retire_prunable
+-            session_ids = retire_prunable(conn, sorted(session_ids))
++            session_ids = retire_prunable(conn, sorted(session_ids), fence=not soft)
+             prune_retired_tombstones(conn)  # every prune pass also reclaims expired deletion tombstones
+             if not session_ids:
+                 return 0
++            if soft:  # restorable for sessions.trash_days; the purge is what removes rows
++                removed_ids.extend(self._trash_in_transaction(conn, {sid: sid for sid in session_ids}, reason="prune"))
++                return len(session_ids)
+             # Batched: a cron-heavy store prunes tens of thousands of ids in one call.
+             for chunk in _id_chunks(session_ids):
+                 ph = _placeholders(chunk)
+@@ -401,9 +407,16 @@ class SessionMaintenanceMixin:
+                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
+                 removed_ids.extend(chunk)
++            self._forget_trash_marks(conn, session_ids)
+             self._delete_unreferenced_system_prompts(conn)
+             return len(session_ids)
+         count = self._execute_write(_do)
++        if soft:
++            if deleted_ids is not None:
++                deleted_ids.extend(removed_ids)
++            if count:
++                self.purge_expired_trash(sessions_dir=sessions_dir)
++            return count
+         if count:
+             emit_session_deleted(self, removed_ids, reason="prune", sessions_dir=sessions_dir)
+         from hermes_state_media import collect_retired_media
+@@ -530,6 +543,7 @@ class SessionMaintenanceMixin:
+             # _MAX_LEASE_S=900 per call, so a multi-minute step renews per step rather than
+             # once at entry. No-op when the watchdog is not armed; never raises.
+             report_startup_progress(900.0, phase="state_db_auto_prune")
++            self.purge_expired_trash(sessions_dir=sessions_dir)
+             result["pruned"] = pruned = self.prune_sessions(
+                 older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+             report_startup_progress(900.0, phase="state_db_auto_sweep")
+diff --git a/hermes_state_mutation_retirement.py b/hermes_state_mutation_retirement.py
+index 0e3afdb7..b28397f8 100644
+--- a/hermes_state_mutation_retirement.py
++++ b/hermes_state_mutation_retirement.py
+@@ -233,7 +233,7 @@ def _derived_api_sessions(conn, session_ids):
+         (json.dumps(list(session_ids)),))}
+ 
+ 
+-def retire_prunable(conn, session_ids):
++def retire_prunable(conn, session_ids, *, fence=True):
+     """Sweep variant of :func:`retire_sessions`: fence the idle sessions and return only those ids.
+     A session with live or unknown work is skipped, so one busy row cannot abort a whole
+     prune/empty-session sweep (explicit deletes still refuse with ``session_busy``). A local
+@@ -253,6 +253,8 @@ def retire_prunable(conn, session_ids):
+         whole = conversations.get(sid, (sid,))
+         return swept.issuperset(whole) and not any(conn.execute(_LIVE_LEDGER_SQL, (x, x)).fetchone() for x in whole)
+     quiet = [sid for sid in session_ids if removable(sid)]
++    if not fence:  # a trash move fences its own routes and keeps the rest
++        return quiet
+     derived |= _derived_api_sessions(conn, quiet)
+     retire_sessions(conn, quiet, expiring=[sid for sid in quiet if sid not in derived])
+     return quiet
+@@ -262,7 +264,14 @@ def delete_in_transaction(db, conn, session_id, payload):
+     from hermes_state_mutation_guards import require_idle, delete_targets
+     targets = delete_targets(conn, session_id)
+     require_idle(db, conn, targets)
++    if db._soft_delete_enabled():
++        # The hub's and gateway's delete: the chat and its children go to the trash, restorable.
++        for sid in targets:  # the route starts a new conversation, as after a hard delete
++            db._bump_conversation_generation(conn, sid, 'session_reset')
++        db._trash_in_transaction(conn, {sid: session_id for sid in targets})
++        return set(), {'deleted_ids': targets, 'trashed': True}
+     retire_sessions(conn, targets)
++    db._forget_trash_marks(conn, targets)
+     for sid in targets:
+         db._bump_conversation_generation(conn, sid, 'session_reset')
+         conn.execute('UPDATE sessions SET parent_session_id=NULL, runtime_revision=runtime_revision+1 WHERE parent_session_id=?', (sid,))
+diff --git a/hermes_state_runtime.py b/hermes_state_runtime.py
+index 49207f55..798a4ec7 100644
+--- a/hermes_state_runtime.py
++++ b/hermes_state_runtime.py
+@@ -542,7 +542,9 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
+         affected, projection = apply_action(db, conn, session_id, operation, payload, prepared=_prepared)
+         event = None
+         if operation == 'delete':
+-            event = SessionGoneEvent(tuple(projection.get('deleted_ids') or (session_id,)), 'delete')
++            # A trashed chat keeps its plugin copies (Honcho, memory); only a purge tells them.
++            event = (None if projection.get('trashed') else
++                     SessionGoneEvent(tuple(projection.get('deleted_ids') or (session_id,)), 'delete'))
+         elif payload.get('archived') is True and session is not None and not session['archived']:
+             event = SessionGoneEvent(tuple(affected) or (session_id,), 'archive')
+         conn.executemany('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?',
+diff --git a/hermes_state_search.py b/hermes_state_search.py
+index 4f42f0a5..8a402385 100644
+--- a/hermes_state_search.py
++++ b/hermes_state_search.py
+@@ -24,6 +24,7 @@ from hermes_state_common import (
+     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
+ )
+ from hermes_state_fts import fts_layout_current, fts_layout_drift
++from hermes_state_trash import not_trashed_sql
+ 
+ # Pre-split logger identity so log filtering/capture is unchanged.
+ logger = logging.getLogger("hermes_state")
+@@ -268,6 +269,7 @@ def _search_filter_clauses(
+         where.append("(m.active = 1 OR m.compacted = 1)")
+     # display_kind="hidden" rows are model-facing scaffolding the person never saw; a hit would confuse.
+     where.append("COALESCE(m.display_kind, '') <> 'hidden'")
++    where.append(not_trashed_sql("s"))  # a trashed chat's messages stay out of every search
+     if source_filter is not None:
+         where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+         params.extend(source_filter)
+diff --git a/hermes_state_sessions.py b/hermes_state_sessions.py
+index 476b3ef5..d8807dbf 100644
+--- a/hermes_state_sessions.py
++++ b/hermes_state_sessions.py
+@@ -15,6 +15,7 @@ from agent.session_activity import (
+     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
+ )
+ from hermes_state_errors import SessionActiveWriteGuardError
++from hermes_state_trash import TRASH_PREFIX, not_trashed_sql
+ from hermes_state_common import (
+     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
+     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
+@@ -153,6 +154,7 @@ def _session_filter_where(
+         where.append("s.archived = 1")
+     elif not include_archived:
+         where.append("s.archived = 0")
++    where.append(not_trashed_sql("s"))  # a trashed chat is in no list or count
+     return where, params
+ 
+ 
+@@ -232,6 +234,8 @@ def _delete_delegate_children(conn, parent_ids: list[str]) -> list[str]:
+         # FK safety: orphan any untagged stragglers pointing at a doomed row.
+         conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
+         conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
++        for sid in chunk:
++            conn.execute("DELETE FROM state_meta WHERE key = ?", (TRASH_PREFIX + sid,))
+     return ids
+ 
+ 
+@@ -840,7 +844,7 @@ class SessionSessionsMixin:
+             "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved, "
+             "COALESCE(tp.prompt, s.tool_names) AS _tool_names_resolved "
+             "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
+-            "LEFT JOIN system_prompts tp ON tp.hash = s.tool_names WHERE s.id = ?",
++            f"LEFT JOIN system_prompts tp ON tp.hash = s.tool_names WHERE s.id = ? AND {not_trashed_sql('s')}",
+             (session_id,),
+         )
+         return self._session_row_dict(row) if row else None
+@@ -849,7 +853,7 @@ class SessionSessionsMixin:
+         """Picker columns only: the live listing skips ``get_session``'s prompt/tool JOIN and flush."""
+         row = self._read_one(
+             "SELECT id, source, title, started_at, ended_at, message_count, model, hidden, archived "
+-            "FROM sessions WHERE id = ?",
++            f"FROM sessions WHERE id = ? AND {not_trashed_sql('sessions')}",
+             (session_id,),
+         )
+         return dict(row) if row else None
+@@ -882,7 +886,7 @@ class SessionSessionsMixin:
+         if exact:
+             return exact["id"]
+         matches = self._read_all(
+-            "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
++            f"SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' AND {not_trashed_sql('sessions')} ORDER BY started_at DESC LIMIT 2",
+             (f"{_escape_like(session_id_or_prefix)}%",),
+         )
+         return matches[0]["id"] if len(matches) == 1 else None
+@@ -1716,9 +1720,11 @@ class SessionSessionsMixin:
+         expected_display_messages: Optional[dict[str, list[dict[str, Any]]]] = None,
+         exclude_active_write_guards: bool = False,
+         include_compression_chain: bool = False,
++        purge: bool = False,
+     ) -> bool:
+         """Delete a session and its messages; delegate children cascade, branch/compression children
+-        are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
++        are orphaned. Unless ``purge`` (or ``sessions.trash_days`` is 0), the chat and its delegate
++        children go to the trash instead (hidden, restorable, rows kept; see hermes_state_trash). Optional expected ids fence delegate drift; expected display snapshots fence
+         transcript drift. Both checks run inside the same write transaction as deletion.
+         With ``exclude_active_write_guards``, raises :class:`SessionActiveWriteGuardError` if the row
+         is protected by an active turn lease or compression lock.
+@@ -1735,9 +1741,10 @@ class SessionSessionsMixin:
+             return self.delete_sessions(
+                 [session_id], sessions_dir=sessions_dir,
+                 exclude_active_write_guards=exclude_active_write_guards,
+-                include_compression_chain=True,
++                include_compression_chain=True, purge=purge,
+             ) > 0
+         removed_ids: list[str] = []
++        soft = not purge and self._soft_delete_enabled()
+         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
+         def _do(conn):
+             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
+@@ -1762,9 +1769,14 @@ class SessionSessionsMixin:
+                 for covered_id, expected in expected_display_messages.items()
+             ):
+                 return False
++            if soft:
++                removed_ids.extend(self._trash_in_transaction(
++                    conn, {sid: session_id for sid in [*scope, *_collect_delegate_child_ids(conn, scope)]}))
++                return True
+             from hermes_state_mutation_retirement import retire_sessions
+             retire_sessions(conn, scope)
+             removed_ids.extend(_delete_delegate_children(conn, scope))
++            self._forget_trash_marks(conn, scope)
+             for sid in scope:  # orphan remaining children (branches) so FK is satisfied
+                 conn.execute("UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (sid,))
+                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+@@ -1773,6 +1785,10 @@ class SessionSessionsMixin:
+             removed_ids.extend(scope)
+             return True
+         deleted = self._execute_write(_do)
++        if soft:
++            if deleted:
++                self.purge_expired_trash(sessions_dir=sessions_dir)
++            return bool(deleted)
+         if deleted:
+             emit_session_deleted(self, removed_ids, reason="delete", primary=session_id, sessions_dir=sessions_dir)
+         from hermes_state_media import collect_retired_media
+@@ -1846,9 +1862,10 @@ class SessionSessionsMixin:
+     def delete_sessions(
+         self, session_ids: list[str], sessions_dir: Optional[Path] = None,
+         exclude_active_write_guards: bool = False, skipped_ids: Optional[list[str]] = None,
+-        include_compression_chain: bool = False,
++        include_compression_chain: bool = False, purge: bool = False,
+     ) -> int:
+-        """Bulk delete with :meth:`delete_session` semantics per row, in ONE transaction. Unknown ids
++        """Bulk delete with :meth:`delete_session` semantics per row, in ONE transaction. A bulk delete
++        goes to the trash (restorable) unless ``purge`` (the trash's own expiry) or ``trash_days`` is 0. Unknown ids
+         are skipped (UI selection can race another tab's delete). With ``exclude_active_write_guards``, rows
+         protected by an active turn lease or compression lock are skipped and, when given, appended
+         to ``skipped_ids`` so callers can tell the user. Returns the number deleted.
+@@ -1863,6 +1880,7 @@ class SessionSessionsMixin:
+         if not unique_ids:
+             return 0
+         removed_ids: list[str] = []
++        soft = not purge and self._soft_delete_enabled()
+         def _do(conn):
+             existing = [row["id"] for chunk in _id_chunks(unique_ids) for row in conn.execute(
+                 f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(chunk)})", chunk,
+@@ -1907,9 +1925,18 @@ class SessionSessionsMixin:
+                 if not existing:
+                     return 0
+                 expanded = expand(existing)
++            if soft:
++                roots: dict = {}
++                for sid in existing:
++                    members = expand([sid])
++                    for member in [*members, *_collect_delegate_child_ids(conn, members)]:
++                        roots.setdefault(member, sid)
++                removed_ids.extend(self._trash_in_transaction(conn, roots))
++                return len(existing)
+             from hermes_state_mutation_retirement import retire_sessions
+             retire_sessions(conn, expanded)
+             removed_ids.extend(_delete_delegate_children(conn, expanded))
++            self._forget_trash_marks(conn, expanded)
+             for chunk in _id_chunks(expanded):
+                 ph = _session_ids_placeholders(chunk)
+                 conn.execute(  # orphan children whose parent is in the kill list (FK)
+@@ -1924,6 +1951,10 @@ class SessionSessionsMixin:
+             # 3 rows, however many physical links those rows had.
+             return len(existing)
+         count = self._execute_write(_do)
++        if soft:
++            if count:
++                self.purge_expired_trash(sessions_dir=sessions_dir)
++            return count
+         if count:
+             emit_session_deleted(self, removed_ids, reason="delete", primary=unique_ids[0] if len(unique_ids) == 1 else None,
+                                  sessions_dir=sessions_dir)
+@@ -1939,7 +1970,7 @@ class SessionSessionsMixin:
+     # shape as every : other emptiness guard in this module. (#95868)
+     _EMPTY_SESSION_WHERE = (
+         "message_count = 0 AND ended_at IS NOT NULL AND archived = 0 AND NOT EXISTS ("
+-        "SELECT 1 FROM messages WHERE messages.session_id = sessions.id)"
++        "SELECT 1 FROM messages WHERE messages.session_id = sessions.id) AND " + not_trashed_sql("sessions")
+     )
+ 
+     def count_empty_sessions(self) -> int:
+@@ -1950,14 +1981,18 @@ class SessionSessionsMixin:
+         """Delete every empty, ended, non-archived session in one transaction, orphaning (not cascading)
+         children; transcript files are swept too."""
+         removed_ids: list[str] = []
++        soft = self._soft_delete_enabled()
+         def _do(conn):
+             session_ids = {row["id"] for row in conn.execute(
+                 f"SELECT id FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"
+             ).fetchall()}
+             from hermes_state_mutation_retirement import retire_prunable
+-            session_ids = retire_prunable(conn, sorted(session_ids))
++            session_ids = retire_prunable(conn, sorted(session_ids), fence=not soft)
+             if not session_ids:
+                 return 0
++            if soft:
++                removed_ids.extend(self._trash_in_transaction(conn, {sid: sid for sid in session_ids}, reason="clean"))
++                return len(session_ids)
+             for chunk in _id_chunks(session_ids):
+                 ph = _session_ids_placeholders(chunk)
+                 conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
+@@ -1969,6 +2004,8 @@ class SessionSessionsMixin:
+             self._delete_unreferenced_system_prompts(conn)
+             return len(session_ids)
+         count = self._execute_write(_do)
++        if soft:
++            return count
+         if count:
+             emit_session_deleted(self, removed_ids, reason="empty_sweep", sessions_dir=sessions_dir)
+         from hermes_state_media import collect_retired_media
+diff --git a/hermes_state_titles.py b/hermes_state_titles.py
+index 09fc991e..be50cc9c 100644
+--- a/hermes_state_titles.py
++++ b/hermes_state_titles.py
+@@ -8,6 +8,7 @@ import re
+ from typing import Any, Dict, Optional
+ 
+ from agent.message_sanitization import _sanitize_surrogates
++from hermes_state_trash import not_trashed_sql
+ from hermes_state_common import (
+     _COMPRESSION_CHILD_SQL, _RECOVERABLE_END_REASONS, _RECOVERABLE_END_REASONS_SQL,
+     _non_continuation_child_sql, escape_like as _escape_like,
+@@ -252,7 +253,7 @@ class SessionTitlesMixin:
+         row = self._read_one(
+             "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
+             "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
+-            "WHERE s.title = ?", (title,))
++            f"WHERE s.title = ? AND {not_trashed_sql('s')}", (title,))
+         if not row:
+             return None
+         session = self._session_row_dict(row)
+@@ -280,7 +281,7 @@ class SessionTitlesMixin:
+         # Escape LIKE wildcards so "%"/"_" in titles cannot false-match.
+         numbered = self._read_all(
+             "SELECT id, title, started_at FROM sessions "
+-            "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
++            f"WHERE title LIKE ? ESCAPE '\\' AND {not_trashed_sql('sessions')} ORDER BY started_at DESC",
+             (f"{_escape_like(title)} #%",))
+         return numbered[0]["id"] if numbered else (exact["id"] if exact else None)
+ 
+diff --git a/hermes_state_trash.py b/hermes_state_trash.py
+new file mode 100644
+index 00000000..afcd8831
+--- /dev/null
++++ b/hermes_state_trash.py
+@@ -0,0 +1,152 @@
++"""Session trash: a delete hides a chat and keeps its rows until ``sessions.trash_days`` pass.
++
++A trashed session keeps every row (messages, FTS entries, usage, system prompts, pins). One
++``state_meta`` marker per session (``TRASH_PREFIX + id``) says it is trashed; every list, search,
++resolve and resume read skips a marked id (``not_trashed_sql``). ``restore`` removes the markers of
++the deleted chat and its children. ``purge`` is the upstream hard delete, and the only path that
++tells plugins (``on_session_delete``) and removes transcript files.
++"""
++import json
++import logging
++import os
++import time
++from pathlib import Path
++from typing import Any, Optional
++
++from hermes_state_keys import prefix_range
++
++logger = logging.getLogger(__name__)
++
++TRASH_PREFIX = "gateway.trash.v1."
++TRASH_DAYS_DEFAULT = 7.0
++# More ids than this in one call is a bulk delete: it always goes to the trash, never straight out.
++EXPLICIT_PURGE_MAX_IDS = 3
++
++
++def not_trashed_sql(alias: str = "s", column: str = "id") -> str:
++    """Predicate for ``alias`` rows that are not in the trash (a primary-key probe on state_meta)."""
++    return (f"NOT EXISTS (SELECT 1 FROM state_meta _trash WHERE _trash.key = '{TRASH_PREFIX}' || {alias}.{column})")
++
++
++def configured_trash_days() -> float:
++    """``sessions.trash_days``: days a deleted chat stays restorable; 0 = delete at once (upstream)."""
++    try:
++        raw = os.environ.get("HERMES_SESSIONS_TRASH_DAYS")  # overrides config.yaml
++        if raw is None or not raw.strip():
++            from hermes_cli.config import load_config_readonly
++            raw = (load_config_readonly().get("sessions") or {}).get("trash_days", TRASH_DAYS_DEFAULT)
++        days = float(raw)
++    except Exception:
++        return TRASH_DAYS_DEFAULT
++    return days if days > 0 else 0.0
++
++
++class SessionTrashMixin:
++    """Soft delete, listing, restore and purge for ``SessionDB``."""
++
++    def _soft_delete_enabled(self) -> bool:
++        return configured_trash_days() > 0
++
++    def _trash_in_transaction(self, conn, roots: dict, *, reason: str = "delete") -> list:
++        """Mark each id of *roots* (id -> the chat the user deleted) as trashed, inside the caller's
++        write transaction, and fence its routes so no turn is admitted against it while it is hidden.
++        Rows, messages, FTS entries, prompts and pins stay. Returns the ids marked."""
++        from hermes_state_mutation_retirement import retire_routes
++        now = time.time()
++        ids = list(roots)
++        for sid in ids:
++            conn.execute(
++                "INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)",
++                (TRASH_PREFIX + sid, json.dumps({"deleted_at": now, "reason": reason, "root": roots[sid]})))
++        retire_routes(conn, ids)
++        return ids
++
++    def _trash_entries(self, conn) -> list:
++        lo, hi = prefix_range(TRASH_PREFIX)
++        out = []
++        for key, raw in conn.execute("SELECT key,value FROM state_meta WHERE key>=? AND key<?", (lo, hi)).fetchall():
++            try:
++                data = json.loads(raw)
++            except (TypeError, ValueError):
++                continue
++            if isinstance(data, dict):
++                out.append({"id": key[len(TRASH_PREFIX):], "deleted_at": float(data.get("deleted_at") or 0),
++                            "reason": data.get("reason") or "delete", "root": data.get("root") or key[len(TRASH_PREFIX):]})
++        return out
++
++    def list_trash(self) -> list:
++        """One row per trashed chat (the one the user deleted): id, title, deleted_at, expires_at,
++        message_count (its own and its children's), children, reason. Newest deletion first."""
++        days = configured_trash_days()
++        with self._read_ctx() as conn:
++            entries = self._trash_entries(conn)
++            groups: dict = {}
++            for e in entries:
++                groups.setdefault(e["root"], []).append(e)
++            rows = []
++            for root, members in groups.items():
++                ids = [m["id"] for m in members]
++                head = conn.execute("SELECT id, title, source, pinned FROM sessions WHERE id = ?", (root,)).fetchone()
++                if head is None:
++                    continue
++                marks = ",".join("?" for _ in ids)
++                count = conn.execute(
++                    f"SELECT COALESCE(SUM(message_count), 0) FROM sessions WHERE id IN ({marks})", ids).fetchone()[0]
++                at = max(m["deleted_at"] for m in members)
++                rows.append({"id": root, "title": head["title"], "source": head["source"], "pinned": bool(head["pinned"]),
++                             "deleted_at": at, "expires_at": at + days * 86400 if days else None,
++                             "message_count": int(count or 0), "children": len(ids) - 1,
++                             "reason": members[0]["reason"]})
++        rows.sort(key=lambda r: r["deleted_at"], reverse=True)
++        return rows
++
++    def resolve_trashed_id(self, id_or_prefix: str) -> Optional[str]:
++        """Exact id, else the single unambiguous prefix, among trashed chats (the ones a user deleted)."""
++        roots = [r["id"] for r in self.list_trash()]
++        if id_or_prefix in roots:
++            return id_or_prefix
++        matches = [r for r in roots if r.startswith(id_or_prefix)]
++        return matches[0] if len(matches) == 1 else None
++
++    def is_trashed(self, session_id: str) -> bool:
++        return self._read_one("SELECT 1 FROM state_meta WHERE key = ?", (TRASH_PREFIX + session_id,)) is not None
++
++    def restore_session(self, id_or_prefix: str) -> list:
++        """Bring a trashed chat back with its children (delegates, compression segments). Returns the
++        ids restored; empty when nothing matches. Its deletion fence is lifted, its pin and rows were kept."""
++        from hermes_state_mutation_retirement import RETIRED_PREFIX
++        root = self.resolve_trashed_id(id_or_prefix)
++        if root is None:
++            return []
++
++        def _do(conn):
++            ids = [e["id"] for e in self._trash_entries(conn) if e["root"] == root]
++            for sid in ids:
++                conn.execute("DELETE FROM state_meta WHERE key IN (?,?)", (TRASH_PREFIX + sid, RETIRED_PREFIX + sid))
++            return ids
++        return self._execute_write(_do) or []
++
++    def purge_expired_trash(self, days: Optional[float] = None, sessions_dir: Optional[Path] = None) -> int:
++        """Hard-delete chats trashed more than *days* (default ``sessions.trash_days``) ago. With
++        ``trash_days`` 0 nothing is ever held, so a leftover trash is purged whole. Returns chats purged."""
++        days = configured_trash_days() if days is None else float(days)
++        cutoff = time.time() - days * 86400
++        with self._read_ctx() as conn:
++            entries = self._trash_entries(conn)
++        roots = sorted({e["root"] for e in entries if e["deleted_at"] <= cutoff})
++        if not roots:
++            return 0
++        return self.delete_sessions(roots, sessions_dir=sessions_dir, purge=True)
++
++    def _forget_trash_marks(self, conn, ids) -> None:
++        for sid in ids:
++            conn.execute("DELETE FROM state_meta WHERE key = ?", (TRASH_PREFIX + sid,))
++
++
++def trash_notice(count: int, first_id: str = "") -> str:
++    """One line for a CLI that moved *count* chats to the trash."""
++    days = configured_trash_days()
++    keep = f"for {days:g} days" if days else ""
++    which = first_id if count == 1 and first_id else "<id>"
++    return (f"Moved {count} session{'' if count == 1 else 's'} to the trash {keep}. "
++            f"List: hermes sessions trash. Restore: hermes sessions restore {which}.").replace("  ", " ")
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 1ef689a4..359c4295 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -1683,3 +1683,25 @@ def real_bash() -> str:
+             if candidate.exists():
+                 return str(candidate)
+     return found or "bash"
++
++
++@pytest.fixture(autouse=True)
++def _session_trash_off(_hermetic_environment, monkeypatch):
++    """Upstream tests assert a delete removes the rows; the trash (sessions.trash_days, default 7)
++    is off here. The env var is set directly, not through ``monkeypatch``, so a test's
++    ``monkeypatch.undo()`` does not turn the trash back on. Tests of the trash take ``trash_on``."""
++    previous = os.environ.get("HERMES_SESSIONS_TRASH_DAYS")
++    os.environ["HERMES_SESSIONS_TRASH_DAYS"] = "0"
++    try:
++        yield
++    finally:
++        if previous is None:
++            os.environ.pop("HERMES_SESSIONS_TRASH_DAYS", None)
++        else:
++            os.environ["HERMES_SESSIONS_TRASH_DAYS"] = previous
++
++
++@pytest.fixture
++def trash_on(_session_trash_off, monkeypatch):
++    """The trash as shipped: a delete keeps the chat for 7 days."""
++    monkeypatch.setenv("HERMES_SESSIONS_TRASH_DAYS", "7")
+diff --git a/tests/gateway/test_native_http_auth.py b/tests/gateway/test_native_http_auth.py
+index 8ba94e22..58592e08 100644
+--- a/tests/gateway/test_native_http_auth.py
++++ b/tests/gateway/test_native_http_auth.py
+@@ -18,7 +18,7 @@ from tests.gateway.test_normal_runtime_boot import control
+ 
+ 
+ @contextmanager
+-def daemon(tmp_path):
++def daemon(tmp_path, trash_days=0):
+     home, user = tmp_path / 'state', tmp_path / 'user'
+     home.mkdir(mode=0o700, exist_ok=True)
+     user.mkdir(exist_ok=True)
+@@ -32,6 +32,7 @@ def daemon(tmp_path):
+         'model': {'provider': 'custom', 'default': 'native-http-fixture',
+                   'base_url': 'http://127.0.0.1:1/v1'},
+         'auxiliary': {'title_generation': {'enabled': False}},
++        'sessions': {'trash_days': trash_days},  # 0: a delete removes rows, as these tests expect
+     }))
+     root = Path(__file__).resolve().parents[2]
+     env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
+diff --git a/tests/gateway/test_session_trash_delete.py b/tests/gateway/test_session_trash_delete.py
+new file mode 100644
+index 00000000..ac79cf00
+--- /dev/null
++++ b/tests/gateway/test_session_trash_delete.py
+@@ -0,0 +1,53 @@
++"""The gateway's DELETE (what the hub calls) moves a chat to the trash instead of removing it."""
++import asyncio
++import json
++import sqlite3
++
++import httpx
++import pytest
++from websockets.asyncio.client import connect
++
++from hermes_state import SessionDB
++from tests.gateway.test_native_http_auth import daemon, headers, ticket
++from tests.gateway.test_session_mutation_reset import reset_round
++
++
++async def _listed(home, descriptor):
++    async with connect(descriptor['api_origin'].replace('http:', 'ws:') + '/api/ws', subprotocols=[
++            'hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket(home, descriptor, 'interactive')]) as ws:
++        await ws.send(json.dumps({'id': 1, 'method': 'session.list', 'params': {'limit': 200}}))
++        while True:
++            result = json.loads(await ws.recv())
++            if result.get('id') == 1:
++                return {row['session_id'] for row in result['result']['sessions']}
++
++
++@pytest.mark.platforms("linux")
++def test_delete_trashes_hides_from_the_list_and_restores(tmp_path):
++    with daemon(tmp_path, trash_days=7) as (home, descriptor), \
++            httpx.Client(base_url=descriptor['api_origin'], trust_env=False) as client:
++        params, reset = asyncio.run(reset_round(home, descriptor))
++        sid, target = params['session_id'], reset['target_session_id']
++        assert sid in asyncio.run(_listed(home, descriptor))
++
++        response = client.delete('/api/sessions/' + sid, params={'request_id': 'trash-it',
++            'expected_revision': reset['revision'], 'expected_generation': reset['execution_generation']},
++            headers=headers(ticket(home, descriptor)))
++        assert response.status_code == 200, response.text
++        assert set(response.json()['deleted_ids']) == {sid, target}
++
++        # Rows stay, trash markers are written, the route is gone, and the list no longer shows it.
++        with sqlite3.connect(home / 'state.db') as db:
++            assert db.execute('SELECT COUNT(*) FROM sessions WHERE id IN (?,?)', (sid, target)).fetchone()[0] == 2
++            marked = {row[0] for row in db.execute("SELECT key FROM state_meta WHERE key LIKE 'gateway.trash.v1.%'")}
++            assert marked == {'gateway.trash.v1.' + sid, 'gateway.trash.v1.' + target}
++            assert not any(json.loads(row[0])['session_id'] in {sid, target}
++                           for row in db.execute('SELECT entry_json FROM gateway_routing'))
++        assert sid not in asyncio.run(_listed(home, descriptor))
++
++        # Restore (what `hermes sessions restore` does) lifts the markers and the chat reads again.
++        with SessionDB(home / 'state.db') as db:
++            assert [r['id'] for r in db.list_trash()] == [sid]
++            assert db.get_session(sid) is None
++            assert sorted(db.restore_session(sid)) == sorted([sid, target])
++            assert db.get_session(sid) is not None
+diff --git a/tests/hermes_state/test_session_trash.py b/tests/hermes_state/test_session_trash.py
+new file mode 100644
+index 00000000..2fa5a6bc
+--- /dev/null
++++ b/tests/hermes_state/test_session_trash.py
+@@ -0,0 +1,253 @@
++"""Deleting a chat moves it to a trash: hidden everywhere, restorable until sessions.trash_days pass."""
++import json
++import sys
++import time
++
++import pytest
++
++from hermes_state import SessionDB
++from hermes_state_trash import TRASH_PREFIX
++
++NEEDLE = "zebracrossing"
++
++
++@pytest.fixture
++def db(tmp_path, trash_on):
++    database = SessionDB(tmp_path / "state.db")
++    try:
++        yield database
++    finally:
++        database.close()
++
++
++def _chat(db, sid, *, text=None, ended=False, **kw):
++    db.create_session(sid, source="cli", **kw)
++    db.append_message(session_id=sid, role="user", content=text or f"hello {sid}")
++    if ended:
++        db.end_session(sid, "done")
++
++
++def _family(db):
++    """P with a delegate child C; the child also says the needle."""
++    _chat(db, "P", text=f"parent says {NEEDLE}")
++    db.create_session("C", source="cli", parent_session_id="P", model_config={"_delegate_from": "P"})
++    db.append_message(session_id="C", role="user", content=f"child says {NEEDLE} too")
++
++
++def _listed(db):
++    return {s["id"] for s in db.list_sessions_rich(limit=100, include_children=True)}
++
++
++def _hits(db):
++    return {m["session_id"] for m in db.search_messages(NEEDLE)}
++
++
++def _rows(db, sid):
++    return db._conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (sid,)).fetchone()[0]
++
++
++def test_delete_then_restore_brings_back_children_and_search(db):
++    _family(db)
++    assert _hits(db) == {"P", "C"}
++
++    assert db.delete_session("P") is True
++
++    # Hidden everywhere, rows kept.
++    assert "P" not in _listed(db) and "C" not in _listed(db)
++    assert _hits(db) == set()
++    assert db.get_session("P") is None and db.resolve_session_id("P") is None
++    assert _rows(db, "P") == 1 and _rows(db, "C") == 1
++    rows = db.list_trash()
++    assert [(r["id"], r["children"], r["message_count"]) for r in rows] == [("P", 1, 2)]
++
++    assert sorted(db.restore_session("P")) == ["C", "P"]
++
++    assert "P" in _listed(db)
++    assert _hits(db) == {"P", "C"}
++    assert db.get_session("P")["id"] == "P"
++    assert db.list_trash() == []
++
++
++def test_restore_by_child_id_or_prefix_restores_the_chat(db):
++    _family(db)
++    db.delete_session("P")
++    assert db.resolve_trashed_id("P") == "P"
++    assert db.resolve_trashed_id("nope") is None
++    assert sorted(db.restore_session("P")) == ["C", "P"]
++    assert db.restore_session("P") == []
++
++
++def test_trashed_chat_keeps_pin_and_system_prompt(db):
++    db.create_session("pinned", source="cli", system_prompt="sys prompt body")
++    db.append_message(session_id="pinned", role="user", content="x")
++    db.set_session_pinned("pinned", True)
++    db.delete_session("pinned")
++    prompts = db._conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0]
++    assert prompts >= 1
++    assert db.list_trash()[0]["pinned"] is True
++    db.restore_session("pinned")
++    assert db.get_session("pinned")["pinned"] == 1
++    assert "pinned" in {s["id"] for s in db.list_sessions_rich(limit=10, include_pinned=True)}
++
++
++def test_trashing_does_not_notify_plugins_but_purge_does(db, monkeypatch):
++    events = []
++    monkeypatch.setattr("hermes_state_common.emit_session_deleted",
++                        lambda _db, ids, **kw: events.append((sorted(ids), kw.get("reason"))))
++    monkeypatch.setattr("hermes_state_sessions.emit_session_deleted",
++                        lambda _db, ids, **kw: events.append((sorted(ids), kw.get("reason"))))
++    _family(db)
++    db.delete_session("P")
++    assert events == []
++    assert db.delete_session("P", purge=True) is True
++    assert events and events[0][0] == ["C", "P"]
++
++
++def test_bulk_delete_goes_to_the_trash(db):
++    for n in range(5):
++        _chat(db, f"s{n}", ended=True)
++    assert db.delete_sessions(["s0", "s1", "s2", "s3"]) == 4
++    assert {r["id"] for r in db.list_trash()} == {"s0", "s1", "s2", "s3"}
++    assert _listed(db) == {"s4"}
++    assert all(_rows(db, f"s{n}") == 1 for n in range(4))
++
++
++def test_prune_and_clean_go_to_the_trash(db):
++    _chat(db, "old", ended=True)
++    db.create_session("blank", source="cli")
++    db.end_session("blank", "done")
++    assert db.delete_empty_sessions() == 1
++    assert [r["id"] for r in db.list_trash()] == ["blank"]
++    assert db.get_session("blank") is None
++    assert db.prune_sessions(older_than_days=0) == 1
++    assert {r["id"] for r in db.list_trash()} == {"old", "blank"}
++    assert _rows(db, "old") == 1
++    # A second prune or clean never touches what is in the trash.
++    assert db.prune_sessions(older_than_days=0) == 0
++    assert db.delete_empty_sessions() == 0
++
++
++def test_purge_after_trash_days(db):
++    _family(db)
++    _chat(db, "keep")
++    _chat(db, "later")
++    db.delete_session("P")
++    db.delete_session("later")
++    # P was trashed 8 days ago; "later" a minute ago.
++    old = time.time() - 8 * 86400
++    db._execute_write(lambda c: c.execute(
++        "UPDATE state_meta SET value = json_set(value, '$.deleted_at', ?) WHERE key IN (?, ?)",
++        (old, TRASH_PREFIX + "P", TRASH_PREFIX + "C")))
++    assert db.purge_expired_trash() == 1
++    assert db._conn.execute("SELECT COUNT(*) FROM sessions WHERE id IN ('P','C')").fetchone()[0] == 0
++    assert _rows(db, "P") == 0 and _rows(db, "C") == 0
++    assert db._conn.execute("SELECT COUNT(*) FROM state_meta WHERE key LIKE ?", (TRASH_PREFIX + "%",)).fetchone()[0] == 1
++    assert [r["id"] for r in db.list_trash()] == ["later"]
++    assert db.get_session("keep") is not None
++    assert _hits(db) == set()
++
++
++def test_a_delete_purges_what_expired(db):
++    _chat(db, "a")
++    _chat(db, "b")
++    db.delete_session("a")
++    old = time.time() - 9 * 86400
++    db._execute_write(lambda c: c.execute(
++        "UPDATE state_meta SET value = json_set(value, '$.deleted_at', ?) WHERE key = ?", (old, TRASH_PREFIX + "a")))
++    db.delete_session("b")
++    assert [r["id"] for r in db.list_trash()] == ["b"]
++    assert db._conn.execute("SELECT COUNT(*) FROM sessions WHERE id = 'a'").fetchone()[0] == 0
++
++
++def test_purge_flag_deletes_now_even_when_trashed(db):
++    _chat(db, "x")
++    assert db.delete_session("x", purge=True) is True
++    assert db.list_trash() == []
++    assert db._conn.execute("SELECT COUNT(*) FROM sessions WHERE id = 'x'").fetchone()[0] == 0
++    _chat(db, "y")
++    db.delete_session("y")
++    assert db.delete_session("y", purge=True) is True
++    assert db.list_trash() == []
++    assert db._conn.execute("SELECT COUNT(*) FROM state_meta WHERE key = ?", (TRASH_PREFIX + "y",)).fetchone()[0] == 0
++
++
++def test_trash_days_zero_deletes_at_once(tmp_path, monkeypatch, trash_on):
++    monkeypatch.setenv("HERMES_SESSIONS_TRASH_DAYS", "0")
++    with SessionDB(tmp_path / "state.db") as db:
++        _chat(db, "gone")
++        db.delete_session("gone")
++        assert db.list_trash() == []
++        assert db._conn.execute("SELECT COUNT(*) FROM sessions WHERE id = 'gone'").fetchone()[0] == 0
++
++
++def test_hub_delete_hides_the_chat_from_the_gateway_list_and_restore_returns_it(db):
++    """The gateway/hub delete (session.mutate delete) trashes; the picker list reads the same store."""
++    from hermes_state_runtime import begin_runtime_epoch, mutate_runtime_session
++    _family(db)
++    _chat(db, "other")
++    epoch = begin_runtime_epoch(db, instance_id="owner")
++    result = mutate_runtime_session(
++        db, epoch=epoch, principal_id="p", session_id="P", request_id="r1", expected_revision=0,
++        expected_generation=0, operation="delete", payload={})
++    assert sorted(result["deleted_ids"]) == ["C", "P"]
++    picker = {s["id"] for s in db.list_sessions_rich(limit=200, order_by_last_active=True, include_pinned=True)}
++    assert picker == {"other"}
++    assert [r["id"] for r in db.list_trash()] == ["P"]
++    assert db.restore_session("P")
++    picker = {s["id"] for s in db.list_sessions_rich(limit=200, order_by_last_active=True, include_pinned=True)}
++    assert picker == {"other", "P"}
++
++
++def test_trashed_chat_fences_new_admissions_until_restored(db):
++    from hermes_state_mutation_retirement import RETIRED_PREFIX
++    _chat(db, "f")
++    db.delete_session("f")
++    assert db._conn.execute("SELECT 1 FROM state_meta WHERE key = ?", (RETIRED_PREFIX + "f",)).fetchone()
++    db.restore_session("f")
++    assert db._conn.execute("SELECT 1 FROM state_meta WHERE key = ?", (RETIRED_PREFIX + "f",)).fetchone() is None
++
++
++def _run_cli(monkeypatch, db, *argv):
++    import hermes_cli.main as main_mod
++    import hermes_state
++    monkeypatch.setattr(hermes_state, "SessionDB", lambda *a, **k: db)
++    monkeypatch.setattr(db, "close", lambda: None)
++    monkeypatch.setattr(sys, "argv", ["hermes", "sessions", *argv])
++    main_mod.main()
++
++
++def test_cli_delete_trash_restore_and_purge(db, monkeypatch, capsys):
++    _family(db)
++    _run_cli(monkeypatch, db, "delete", "P", "--yes")
++    out = capsys.readouterr().out
++    assert "Moved session 'P' to the trash" in out and "hermes sessions restore P" in out
++
++    _run_cli(monkeypatch, db, "trash")
++    out = capsys.readouterr().out
++    assert "P" in out and "+1 child" in out and "hermes sessions restore <id>" in out
++
++    _run_cli(monkeypatch, db, "restore", "P")
++    assert "Restored session 'P' and 1 child session" in capsys.readouterr().out
++    assert db.get_session("P") is not None
++
++    _run_cli(monkeypatch, db, "delete", "P", "--yes", "--purge")
++    assert "Deleted session 'P'." in capsys.readouterr().out
++    _run_cli(monkeypatch, db, "trash")
++    assert "The trash is empty." in capsys.readouterr().out
++    assert db._conn.execute("SELECT COUNT(*) FROM sessions WHERE id = 'P'").fetchone()[0] == 0
++
++
++def test_cli_prune_says_how_many_and_how_to_restore(db, monkeypatch, capsys):
++    _chat(db, "old1", ended=True)
++    _chat(db, "old2", ended=True)
++    _run_cli(monkeypatch, db, "prune", "--older-than", "0", "--yes", "--force")
++    out = capsys.readouterr().out
++    assert "Pruned 2 session(s)." in out
++    assert "hermes sessions trash" in out and "hermes sessions restore <id>" in out
++    assert len(db.list_trash()) == 2
++
++
++def test_cli_restore_unknown_id_fails(db, monkeypatch, capsys):
++    with pytest.raises(SystemExit):
++        _run_cli(monkeypatch, db, "restore", "missing")
++    assert "No trashed session matches 'missing'" in capsys.readouterr().out
+-- 
+2.56.0
+
