@@ -234,6 +234,10 @@ DEFAULTS = {
     # prune; the trigger of Anthropic's own tool-result clearing), so a long chat compacts less often. The prune
     # spares the skill compaction keeps (patched Hermes 0071).
     "compression": {"keep_last_skill_chars": 20000, "proactive_prune_tokens": 100000},
+    # Smart approval judges each risky step by who asked for it (patched Hermes 0077): only the user's own words
+    # can clear a force push, a deletion or a publish, never a file, page, script output or another agent, and a
+    # block names its rule. It takes effect with approvals.mode: smart.
+    "approvals": {"smart_provenance": True},
 }
 
 

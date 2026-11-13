@@ -229,6 +229,7 @@ class LongChatDefaults(unittest.TestCase):
         self.assertEqual(got["memory"], {"recall_history": False, "recall_max_chars": 8000})
         self.assertEqual(got["context"], {"collapse_agent_messages": True})
         self.assertEqual(got["compression"], {"keep_last_skill_chars": 20000, "proactive_prune_tokens": 100000})
+        self.assertIs(got["approvals"]["smart_provenance"], True)
 
     def test_explicit_values_win(self):
         got = self.run_init({"memory": {"provider": "honcho", "recall_history": True},
@@ -238,6 +239,8 @@ class LongChatDefaults(unittest.TestCase):
                                               "keep_last_skill_chars": 20000})
         got = self.run_init(extra={"context": {"collapse_agent_messages": False}})
         self.assertIs(got["context"]["collapse_agent_messages"], False)
+        got = self.run_init({"approvals": {"mode": "smart", "smart_provenance": False}})
+        self.assertEqual(got["approvals"], {"mode": "smart", "smart_provenance": False})
 
 
 class Hint(unittest.TestCase):
