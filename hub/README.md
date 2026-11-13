@@ -26,7 +26,7 @@ The hub speaks the canonical session protocol of Hermes <!-- docgen:const pkg=in
 
 ## How it works
 
-Each user logs in through the OIDC provider. The hub identifies the user only by the ID token's `sub` claim, which the user cannot change, and maps it to a hub user name with `users[]`. A login whose `sub` is not in `users[]` is refused and gets no session. The `oidc.display_claim` (default `preferred_username`) is shown on screen and never used for access. A user may use a backend when their hub user name is in `backends[].users`, or a group from `oidc.groups_claim` is in `backends[].groups`. Every API call and every stream checks this. The hub stores each user's groups from the last login, so the Telegram bot can apply the same rules. Telegram links and `ui.default_backends` also use the hub user name.
+Each user logs in with a hub account and password, through a reverse proxy that says who they are, or through an OIDC provider (`auth.mode`, see [Login](#login)). With OIDC the hub identifies the user only by the ID token's `sub` claim, which the user cannot change, and maps it to a hub user name with `users[]` or to an account. A login with no user name is refused and gets no session. The `oidc.display_claim` (default `preferred_username`) is shown on screen and never used for access. A user may use a backend when it has `everyone`, their hub user name is in `backends[].users`, a group from the login is in `backends[].groups`, or an admin gave it to them in Settings > Users. Every API call and every stream checks this. The hub stores each user's groups from the last login, so the Telegram bot can apply the same rules. Telegram links and `ui.default_backends` also use the hub user name.
 
 ```yaml
 users:
@@ -363,13 +363,9 @@ The size is not a per-chat setting on purpose. Ollama loads a model again when a
 
 When a chat switches to another model, Hermes drops `model.context_length` from that chat's settings and takes the new model's window from its model data. To pin the window of another local model, give it a `context_length` under its name in the `models` of its `custom_providers` entry.
 
-## Set up Authentik
+## Login
 
-1. Create an OAuth2/OpenID provider: client type confidential, redirect URI `https://<public host>/auth/callback` (strict), signing key set, scopes `openid`, `profile` and `email`. Authentik's default `profile` scope mapping sends `preferred_username` and `groups`.
-2. Create an application with slug `talaria-hub` that uses the provider. The issuer is then `https://<authentik host>/application/o/talaria-hub/`.
-3. Bind the users or groups that may log in to the application.
-4. Keep the provider's subject mode at "Based on the User's hashed ID" (the default). Put each user's `sub` in the hub's `users[]`; the values belong in the deployment config, not in this repository.
-5. Give the hub `oidc.issuer_url`, `oidc.client_id` and `oidc.client_secret`.
+The hub logs people in with its own accounts (the default, with a setup page for the first one), behind a reverse proxy that says who they are (Authelia, Authentik, oauth2-proxy, tailscale serve, Cloudflare Access, Envoy Gateway), or with an OpenID Connect provider. See [docs/auth.md](docs/auth.md).
 
 ## Telegram
 
