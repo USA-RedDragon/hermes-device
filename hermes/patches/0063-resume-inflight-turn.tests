@@ -1,0 +1,2 @@
+# Existing tests of the resume and the event stream the patch extends.
+tests/gateway/test_resume_inflight_reply.py

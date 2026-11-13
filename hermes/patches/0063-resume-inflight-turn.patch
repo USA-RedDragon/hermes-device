@@ -1,0 +1,412 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 09:08:25 +0000
+Subject: [PATCH] feat(gateway): session.resume hands the running turn's events
+ so far
+
+A viewer that resumed a session mid-turn got the transcript, which does not hold the running turn yet, and the frames after the subscription: the turn's tool calls and the reply's start were gone unless the bounded replay ring still held them, which a long turn outruns. A client could only hold the reply back and say it would show when done. The session's event stream now records the running execution's frames under the lock that publishes each frame, consecutive deltas joined, a status or a tool's progress kept only at its newest, the oldest tool results shortened past 4 MiB; session.resume returns them as inflight_turn {events, sequence}, read under the same lock as last_sequence, in the shape session.events.since returns frames: a viewer shows them and applies only frames after sequence.
+---
+ apps/shared/src/gateway-contract.generated.ts |   5 +
+ apps/shared/src/gateway-contract.openrpc.json |  34 ++++
+ gateway/session_authority.py                  |   6 +-
+ gateway/session_contract.py                   |   3 +
+ gateway/session_controls.py                   |   1 +
+ gateway/session_events.py                     |  63 ++++++++
+ tests/gateway/test_resume_inflight_turn.py    | 152 ++++++++++++++++++
+ tui_gateway/contracts/canonical_sessions.py   |   9 ++
+ 8 files changed, 272 insertions(+), 1 deletion(-)
+ create mode 100644 tests/gateway/test_resume_inflight_turn.py
+
+diff --git a/apps/shared/src/gateway-contract.generated.ts b/apps/shared/src/gateway-contract.generated.ts
+index d5b9386c..809b254b 100644
+--- a/apps/shared/src/gateway-contract.generated.ts
++++ b/apps/shared/src/gateway-contract.generated.ts
+@@ -5164,6 +5164,7 @@ export interface CanonicalSnapshot {
+   todo_state?: TodoState | null
+   open_requests?: OpenRequestEntry[] | null
+   inflight_reply?: CanonicalInflightReply | null
++  inflight_turn?: CanonicalInflightTurn | null
+ }
+ export interface CanonicalPendingAdmission {
+   admission_id: string
+@@ -5236,6 +5237,10 @@ export interface CanonicalInflightReply {
+   text: string
+   sequence: number
+ }
++export interface CanonicalInflightTurn {
++  events: Record<string, unknown>[]
++  sequence: number
++}
+ export interface CanonicalResumeParams {
+   profile?: string | null
+   session_id?: string
+diff --git a/apps/shared/src/gateway-contract.openrpc.json b/apps/shared/src/gateway-contract.openrpc.json
+index 511163d7..e37dc9f9 100644
+--- a/apps/shared/src/gateway-contract.openrpc.json
++++ b/apps/shared/src/gateway-contract.openrpc.json
+@@ -9279,6 +9279,29 @@
+         "title": "CanonicalInflightReply",
+         "type": "object"
+       },
++      "CanonicalInflightTurn": {
++        "additionalProperties": false,
++        "properties": {
++          "events": {
++            "items": {
++              "additionalProperties": true,
++              "type": "object"
++            },
++            "title": "Events",
++            "type": "array"
++          },
++          "sequence": {
++            "title": "Sequence",
++            "type": "integer"
++          }
++        },
++        "required": [
++          "events",
++          "sequence"
++        ],
++        "title": "CanonicalInflightTurn",
++        "type": "object"
++      },
+       "CanonicalListParams": {
+         "additionalProperties": false,
+         "properties": {
+@@ -11139,6 +11162,17 @@
+               }
+             ],
+             "default": null
++          },
++          "inflight_turn": {
++            "anyOf": [
++              {
++                "$ref": "#/components/schemas/CanonicalInflightTurn"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null
+           }
+         },
+         "required": [
+diff --git a/gateway/session_authority.py b/gateway/session_authority.py
+index 8db14649..9f215ec7 100644
+--- a/gateway/session_authority.py
++++ b/gateway/session_authority.py
+@@ -402,13 +402,16 @@ class SessionAuthority:
+             # Read under the same lock as the sequence: the text holds every delta up to it and none after.
+             reply = live.event_stream.reply_for(active_generation) if active_generation is not None else ''
+             inflight = {'text': reply, 'sequence': sequence} if reply else None
++            # The running turn's frames up to the same sequence: the viewer shows them, then the frames after.
++            frames = live.event_stream.turn_for(active_generation) if active_generation is not None else []
++            turn = {'events': frames, 'sequence': sequence} if active_generation is not None else None
+             if history:
+                 history, target = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared))), None
+             else:
+                 history, target = (), self.unless_deleted(ref, lambda: transcript_target(self, ref))
+             snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
+                                         tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts,
+-                                        transcript_target=target, inflight_reply=inflight)
++                                        transcript_target=target, inflight_reply=inflight, inflight_turn=turn)
+         from gateway.session_viewer_close import cancel_persisted_close
+         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
+         from gateway.session_deferred_pick import reask_on_attach
+@@ -1058,6 +1061,7 @@ class SessionAuthority:
+             live.event_stream.note_progress(generation, event_type, payload)
+             delivered = live.event_stream.publish(session_id, payload, event_type=event_type)
+             live.event_stream.note_reply(generation, event_type, payload)
++            live.event_stream.note_turn(generation, event_type, payload)
+             from gateway.session_api_turn import publish_api_event
+             observed = publish_api_event(self, session_id, event_type, payload)
+             return bool(delivered or observed)
+diff --git a/gateway/session_contract.py b/gateway/session_contract.py
+index 77f12d40..03629e65 100644
+--- a/gateway/session_contract.py
++++ b/gateway/session_contract.py
+@@ -85,6 +85,9 @@ class SubscriptionSnapshot:
+     # The running reply's text so far in its current segment and the stream sequence it is current as of
+     # (``{"text", "sequence"}``), None when no reply text streams. Frames after ``sequence`` carry the rest.
+     inflight_reply: JsonObject | None = None
++    # The running execution's frames so far, deltas joined, and the sequence they are current as of
++    # (``{"events", "sequence"}``), None when no execution runs. Frames after ``sequence`` carry the rest.
++    inflight_turn: JsonObject | None = None
+ 
+ 
+ class SessionAuthority(Protocol):
+diff --git a/gateway/session_controls.py b/gateway/session_controls.py
+index 872984e8..5fc37732 100644
+--- a/gateway/session_controls.py
++++ b/gateway/session_controls.py
+@@ -760,6 +760,7 @@ class AuthorityConnection:
+                 'pending': [asdict(r) for r in snapshot.pending],
+                 'prompts': list(snapshot.prompts), 'info': info,
+                 **({'inflight_reply': dict(snapshot.inflight_reply)} if snapshot.inflight_reply else {}),
++                **({'inflight_turn': dict(snapshot.inflight_turn)} if snapshot.inflight_turn is not None else {}),
+                 'pending_connection': pending_connection(self.authority, ref.session_id),
+                 # Still-waiting server→client requests: the event ring cannot say "still open".
+                 'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
+diff --git a/gateway/session_events.py b/gateway/session_events.py
+index 0ab5c973..679f3280 100644
+--- a/gateway/session_events.py
++++ b/gateway/session_events.py
+@@ -36,6 +36,69 @@ class SessionEvents:
+         # The running execution's reply text so far, in its current segment (``note_reply``); a resume
+         # hands it with the snapshot so a viewer that joins mid-reply needs no replay of its deltas.
+         self._reply = None
++        # The running execution's frames so far (``note_turn``), deltas joined: a resume hands them so a
++        # viewer that joins mid-turn shows the whole turn (its tool calls and the reply so far) however
++        # far the turn ran past what the bounded replay ring holds.
++        self._turn = None
++
++    # The most a running turn's frames keep; past it the oldest tool results are shortened.
++    TURN_BYTES = 4 << 20
++    TURN_RESULT_KEEP = 4096
++
++    def note_turn(self, generation, event_type, payload):
++        """Record one execution frame for ``turn_for`` (the caller holds ``lock`` right after the frame's
++        ``publish``, so ``sequence`` is the frame's and the record matches the stream at every point)."""
++        turn = self._turn
++        if turn is None or turn['generation'] != generation:
++            turn = self._turn = {'generation': generation, 'frames': [], 'bytes': 0}
++        frames = turn['frames']
++        payload = deepcopy(payload) if isinstance(payload, dict) else {}
++        last = frames[-1] if frames else None
++        text = payload.get('text')
++        if (event_type in ('message.delta', 'reasoning.delta') and last is not None and last['type'] == event_type
++                and isinstance(text, str) and isinstance(last['payload'].get('text'), str)):
++            # Consecutive deltas are one delta with their texts joined.
++            last['payload'] = {**last['payload'], **payload, 'text': last['payload']['text'] + text}
++            last['seq'] = self.sequence
++            turn['bytes'] += len(text)
++        else:
++            if event_type in ('thinking.delta', 'tool.progress'):
++                # Each replaces the one before (a status line, a tool's progress): keep the newest.
++                key = payload.get('tool_id') if event_type == 'tool.progress' else None
++                for i in range(len(frames) - 1, -1, -1):
++                    f = frames[i]
++                    if f['type'] == event_type and (event_type == 'thinking.delta' or f['payload'].get('tool_id') == key):
++                        turn['bytes'] -= f['size']
++                        del frames[i]
++                        break
++            size = len(repr(payload))
++            frames.append({**self.execution, 'type': event_type, 'session_id': self._public_id, 'payload': payload,
++                           'replay_epoch': self.epoch, 'seq': self.sequence, 'size': size})
++            turn['bytes'] += size
++        if turn['bytes'] > self.TURN_BYTES:
++            self._shorten(turn)
++
++    def _shorten(self, turn):
++        """Cut the oldest tool results to ``TURN_RESULT_KEEP`` characters until the turn fits; the newest
++        frame stays whole."""
++        for f in turn['frames'][:-1]:
++            if turn['bytes'] <= self.TURN_BYTES:
++                return
++            if f['type'] != 'tool.complete':
++                continue
++            for k, v in list(f['payload'].items()):
++                if isinstance(v, str) and len(v) > self.TURN_RESULT_KEEP:
++                    f['payload'][k] = v[:self.TURN_RESULT_KEEP] + '\n[... shortened]'
++            size = len(repr(f['payload']))
++            turn['bytes'] += size - f['size']
++            f['size'] = size
++
++    def turn_for(self, generation):
++        """*generation*'s frames so far, as ``since`` returns frames, or [] (caller holds ``lock``)."""
++        turn = self._turn
++        if turn is None or turn['generation'] != generation:
++            return []
++        return [{k: v for k, v in f.items() if k != 'size'} for f in turn['frames']]
+ 
+     def note_reply(self, generation, event_type, payload):
+         """Record one execution frame's effect on the reply text (the caller holds ``lock`` across the
+diff --git a/tests/gateway/test_resume_inflight_turn.py b/tests/gateway/test_resume_inflight_turn.py
+new file mode 100644
+index 00000000..04a3aef5
+--- /dev/null
++++ b/tests/gateway/test_resume_inflight_turn.py
+@@ -0,0 +1,152 @@
++"""session.resume hands the running turn's frames so far (deltas joined) with the sequence they are current
++as of, so a viewer that joins mid-turn shows every tool call and the reply so far, then the frames after."""
++import asyncio
++import queue
++import threading
++from types import SimpleNamespace
++
++import pytest
++
++from gateway.session_events import SessionEvents
++
++
++def _publish(events, generation, kind, payload):
++    with events.lock:
++        events.publish('chat', payload, event_type=kind)
++        events.note_turn(generation, kind, payload)
++
++
++def test_turn_frames_join_deltas_and_keep_the_newest_status():
++    events = SessionEvents()
++    _publish(events, 1, 'message.start', {})
++    _publish(events, 1, 'reasoning.delta', {'text': 'th'})
++    _publish(events, 1, 'reasoning.delta', {'text': 'ink'})
++    _publish(events, 1, 'thinking.delta', {'text': 'one'})
++    _publish(events, 1, 'tool.start', {'tool_id': 't1', 'name': 'terminal'})
++    _publish(events, 1, 'tool.progress', {'tool_id': 't1', 'message': 'a'})
++    _publish(events, 1, 'thinking.delta', {'text': 'two'})
++    _publish(events, 1, 'tool.progress', {'tool_id': 't1', 'message': 'b'})
++    _publish(events, 1, 'tool.complete', {'tool_id': 't1', 'result': 'ok'})
++    _publish(events, 1, 'message.delta', {'text': 'Hel'})
++    _publish(events, 1, 'message.delta', {'text': 'lo'})
++    with events.lock:
++        frames = events.turn_for(1)
++        assert events.turn_for(2) == []
++        latest = events.sequence
++    kinds = [f['type'] for f in frames]
++    assert kinds == ['message.start', 'reasoning.delta', 'tool.start', 'thinking.delta', 'tool.progress',
++                     'tool.complete', 'message.delta']
++    assert frames[1]['payload']['text'] == 'think'
++    assert frames[3]['payload']['text'] == 'two'
++    assert frames[4]['payload']['message'] == 'b'
++    assert frames[-1]['payload']['text'] == 'Hello' and frames[-1]['seq'] == latest
++    assert [f['seq'] for f in frames] == sorted(f['seq'] for f in frames)
++    assert all(f['session_id'] == 'chat' and 'size' not in f for f in frames)
++    # A new execution starts afresh.
++    _publish(events, 2, 'message.start', {})
++    with events.lock:
++        assert events.turn_for(1) == [] and [f['type'] for f in events.turn_for(2)] == ['message.start']
++
++
++def test_turn_frames_shorten_the_oldest_tool_results_past_the_cap(monkeypatch):
++    events = SessionEvents()
++    monkeypatch.setattr(SessionEvents, 'TURN_BYTES', 120_000)
++    for i in range(20):
++        _publish(events, 1, 'tool.start', {'tool_id': f't{i}'})
++        _publish(events, 1, 'tool.complete', {'tool_id': f't{i}', 'result': str(i) * 10_000})
++    with events.lock:
++        frames = events.turn_for(1)
++    results = [f['payload']['result'] for f in frames if f['type'] == 'tool.complete']
++    assert len(results) == 20
++    assert results[0].endswith('[... shortened]') and results[-1] == '19' * 10_000
++    assert sum(len(repr(f['payload'])) for f in frames) <= 130_000
++
++
++@pytest.mark.asyncio
++async def test_resume_mid_turn_shows_every_tool_call_and_the_whole_reply(tmp_path, monkeypatch):
++    from gateway.config import GatewayConfig, Platform
++    from gateway.session import SessionSource, SessionStore
++    from gateway.session_authority import LiveSession, initialize_session_authority
++    from gateway.session_contract import SessionRef, Submission
++    from gateway.session_controls import AuthorityConnection
++    from tui_gateway import event_replay
++
++    # The replay ring holds almost nothing, as for a long turn: only the inflight turn can rebuild it.
++    monkeypatch.setattr(event_replay, '_REPLAY_BUFFER_MAX', 4)
++    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
++    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
++    db = store._db
++    steps = []
++    for i in range(40):
++        steps.append(('tool.start', {'tool_id': f't{i}', 'name': 'terminal'}))
++        steps.append(('tool.complete', {'tool_id': f't{i}', 'name': 'terminal', 'result': f'out {i}'}))
++        steps.extend(('message.delta', {'text': f'part {i}.{k} '}) for k in range(30))
++        steps.append(('message.interim', {'text': ''.join(f'part {i}.{k} ' for k in range(30)), 'already_streamed': True}))
++    halfway, release = threading.Event(), threading.Event()
++    holder = {}
++
++    def run():
++        authority, sid = holder['authority'], 'chat'
++        generation = authority.executing[sid]
++        for i, (kind, payload) in enumerate(steps):
++            authority.publish_execution(sid, generation, kind, payload)
++            if i == len(steps) // 2:
++                halfway.set()
++        release.wait(10)
++
++    async def answer(event):
++        await asyncio.to_thread(run)
++        return 'done'
++
++    runner = SimpleNamespace(_session_db=db, session_store=store, _draining=False,
++                             _handle_message=answer, _adapter_for_source=lambda source: None)
++    authority = holder['authority'] = await initialize_session_authority(runner, profile_id='p', instance_id='owner')
++    ref = SessionRef('p', 'chat')
++    source = SessionSource(platform=Platform.TELEGRAM, chat_id='chat')
++    db.create_session('chat', source='telegram')
++    authority.sessions['chat'] = LiveSession(source, 'chat')
++
++    class Peer:
++        def __init__(self):
++            self.frames = queue.Queue()
++
++        def write(self, frame):
++            self.frames.put(frame)
++            return True
++
++    starter = AuthorityConnection(authority, Peer(), {'user_id': 'viewer'})
++    await starter.resume(ref, {})
++    await authority.submit(starter.actor, Submission('1', ref, {'text': 'go'}, 'queue'))
++    await asyncio.to_thread(halfway.wait, 10)
++    joined = []
++    for _ in range(5):
++        peer = Peer()
++        conn = AuthorityConnection(authority, peer, {'user_id': 'viewer'})
++        snap = await conn.resume(ref, {})
++        joined.append((peer, conn, snap))
++        await asyncio.sleep(0)
++    release.set()
++    await authority.sessions['chat'].task
++    want_tools = [f't{i}' for i in range(40)]
++    want_text = ''.join(p['text'] for k, p in steps if k == 'message.delta')
++    try:
++        for peer, _, snap in joined:
++            turn = snap.get('inflight_turn')
++            assert turn is not None and turn['sequence'] == snap['last_sequence']
++            assert all(f['seq'] <= turn['sequence'] for f in turn['events'])
++            frames = list(turn['events'])
++            while True:
++                frame = (await asyncio.to_thread(peer.frames.get, True, 5))['params']
++                if frame['type'] == 'message.complete':
++                    break
++                if frame['seq'] > snap['last_sequence']:
++                    frames.append(frame)
++            tools = [f['payload']['tool_id'] for f in frames if f['type'] == 'tool.complete']
++            text = ''.join(f['payload']['text'] for f in frames if f['type'] == 'message.delta')
++            assert tools == want_tools, f'joined at {snap["last_sequence"]}: tools {tools[:3]}...'
++            assert text == want_text, f'joined at {snap["last_sequence"]}: {len(text)} of {len(want_text)} chars'
++    finally:
++        for _, conn, _ in joined:
++            await conn.close()
++        await starter.close()
++        store.close_all_db_handles()
+diff --git a/tui_gateway/contracts/canonical_sessions.py b/tui_gateway/contracts/canonical_sessions.py
+index 4e00667d..d6da2c21 100644
+--- a/tui_gateway/contracts/canonical_sessions.py
++++ b/tui_gateway/contracts/canonical_sessions.py
+@@ -154,6 +154,11 @@ class CanonicalInflightReply(Result):
+     sequence: int
+ 
+ 
++class CanonicalInflightTurn(Result):
++    events: list[dict[str, JsonValue]]
++    sequence: int
++
++
+ class CanonicalSnapshot(Result):
+     session_id: str
+     stored_session_id: str
+@@ -182,6 +187,10 @@ class CanonicalSnapshot(Result):
+     # A running reply's text so far (its current segment) and the event sequence it is current as of:
+     # a viewer shows it, then applies only frames after ``sequence``. Absent when no reply text streams.
+     inflight_reply: CanonicalInflightReply | None = None
++    # The running turn's frames so far, deltas joined, as ``session.events.since`` returns frames, and the
++    # sequence they are current as of: a viewer shows them, then applies only frames after ``sequence``.
++    # Absent when no turn runs.
++    inflight_turn: CanonicalInflightTurn | None = None
+ 
+ 
+ class CanonicalListParams(ProfileParams):
+-- 
+2.56.0
+
