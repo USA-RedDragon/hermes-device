@@ -333,7 +333,7 @@ func (r *Reader) render(ctx context.Context, dir string, first, last int) ([][]b
 }
 
 func readLimited(path string, n int64) ([]byte, error) {
-	f, err := os.Open(path) //nolint:gosec // a file name the reader made
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open a page: %w", err)
 	}
@@ -348,6 +348,14 @@ func readLimited(path string, n int64) ([]byte, error) {
 	return b, nil
 }
 
+// command is exec.CommandContext for a program found by New, with its
+// arguments added after it.
+func command(ctx context.Context, program string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, program)
+	cmd.Args = append(cmd.Args, args...)
+	return cmd
+}
+
 // limitScript sets the resource limits, then runs the program. The
 // program and its arguments come as positional parameters, so no file
 // name is ever parsed by the shell. Each ulimit call sets one limit,
@@ -358,7 +366,7 @@ const limitScript = `{ ulimit -v %d && ulimit -t %d && ulimit -f %d && ulimit -c
 // limits, until ctx ends. Its standard output goes to stdout.
 func (r *Reader) run(ctx context.Context, dir string, stdout io.Writer, tool string, args ...string) error {
 	script := fmt.Sprintf(limitScript, memLimit>>10, cpuSeconds, fileLimit>>9)
-	cmd := exec.CommandContext(ctx, r.tools["sh"], append([]string{"-c", script, "sh", r.tools[tool]}, args...)...) //nolint:gosec // fixed programs, arguments made here
+	cmd := command(ctx, r.tools["sh"], append([]string{"-c", script, "sh", r.tools[tool]}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + dir, "TMPDIR=" + dir, "XDG_CACHE_HOME=" + dir, "LC_ALL=C.UTF-8"}
 	cmd.Stdin = nil

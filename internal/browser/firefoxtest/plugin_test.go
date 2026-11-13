@@ -97,9 +97,9 @@ func pluginLayer(ctx context.Context, t *testing.T, b *broker.Broker, formURL, p
 	if err != nil {
 		t.Fatal(err)
 	}
-	tests := filepath.Join(repo, "plugin", "device", "tests")
-	py := exec.CommandContext(ctx, "sh", filepath.Join(repo, "scripts", "test-plugin.sh"), //nolint:gosec // repo script
-		"-s", tests, "-t", tests, "-p", "test_browser_e2e.py", "-v")
+	py := exec.CommandContext(ctx, "sh", "scripts/test-plugin.sh",
+		"-s", "plugin/device/tests", "-t", "plugin/device/tests", "-p", "test_browser_e2e.py", "-v")
+	py.Dir = repo
 	py.Env = append(os.Environ(), "HERMES_BROWSER_E2E_SOCKET="+sock, "HERMES_BROWSER_E2E_FORM_URL="+formURL,
 		"HERMES_BROWSER_E2E_PAGES_URL="+pagesURL,
 		"HERMES_BROWSER_E2E_ROOT="+root)

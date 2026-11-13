@@ -15,7 +15,8 @@ import (
 // HERMESBUILD_LIVE_DIR (the store directory) set.
 func TestLive(t *testing.T) {
 	t.Parallel()
-	image, dir := os.Getenv("HERMESBUILD_LIVE_IMAGE"), os.Getenv("HERMESBUILD_LIVE_DIR")
+	image, _ := os.LookupEnv("HERMESBUILD_LIVE_IMAGE")
+	dir, _ := os.LookupEnv("HERMESBUILD_LIVE_DIR")
 	if image == "" || dir == "" {
 		t.Skip("HERMESBUILD_LIVE_IMAGE and HERMESBUILD_LIVE_DIR are unset")
 	}
@@ -36,7 +37,7 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.CommandContext(ctx, launcher, "--version") //nolint:gosec // the build this test just pulled and verified
+	cmd := exec.CommandContext(ctx, launcher, "--version")
 	cmd.Env = env
 	cmd.Dir = s.Home()
 	out, err := cmd.CombinedOutput()

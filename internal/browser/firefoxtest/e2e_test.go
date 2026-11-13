@@ -244,11 +244,11 @@ func startFirefox(ctx context.Context, t *testing.T) (*broker.Broker, *bidi.Clie
 // when the test ends.
 func runFirefox(ctx context.Context, t *testing.T, profile string, env []string) <-chan error {
 	t.Helper()
-	bin := os.Getenv("HERMES_BROWSER_FIREFOX")
-	if bin == "" {
-		bin = "/usr/bin/firefox"
+	bin, err := exec.LookPath("firefox")
+	if err != nil {
+		t.Fatal(err)
 	}
-	ff := exec.CommandContext(ctx, bin, "--headless", "--no-remote", "--profile", profile, //nolint:gosec // test-controlled binary
+	ff := exec.CommandContext(ctx, bin, "--headless", "--no-remote", "--profile", profile,
 		"--remote-debugging-port=0", "--remote-allow-system-access", "about:blank")
 	ff.Env = env
 	var log bytes.Buffer
@@ -299,7 +299,7 @@ func screenshot(ctx context.Context, t *testing.T, b *broker.Broker, tabID int) 
 		t.Fatalf("screenshot is %v", img.Bounds())
 	}
 	t.Logf("screenshot: %dx%d PNG, %d bytes", img.Bounds().Dx(), img.Bounds().Dy(), len(raw))
-	if out := os.Getenv("HERMES_BROWSER_E2E_OUT"); out != "" {
+	if out, ok := os.LookupEnv("HERMES_BROWSER_E2E_OUT"); ok && out != "" {
 		writeFile(t, filepath.Join(out, "example.png"), raw)
 	}
 }
@@ -412,10 +412,10 @@ func formPage(w http.ResponseWriter, r *http.Request) {
 	default:
 		// The link points at the same server by another loopback name,
 		// which the device did not allow.
-		port := r.Host[strings.LastIndex(r.Host, ":"):]
+		port := html.EscapeString(r.Host[strings.LastIndex(r.Host, ":"):])
 		page := `<title>form</title><form action="/done"><label for="q">Query</label>` +
 			`<input id="q" name="q"><button>Go</button></form><a href="http://localhost` + port + `/done?q=leak">other</a>`
-		_, _ = io.WriteString(w, page) //nolint:gosec // fixed test page
+		_, _ = io.WriteString(w, page)
 	}
 }
 
@@ -530,7 +530,7 @@ func evalInTab(ctx context.Context, bc *bidi.Client, urlPart, expr string) strin
 
 func writeFile(t *testing.T, path string, data []byte) {
 	t.Helper()
-	if err := os.WriteFile(path, data, 0o600); err != nil { //nolint:gosec // test-controlled path
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

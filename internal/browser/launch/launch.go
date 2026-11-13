@@ -69,7 +69,7 @@ func (l *Launcher) defaults() {
 	}
 	if l.Output == nil {
 		l.Output = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			return exec.CommandContext(ctx, name, args...).Output() //nolint:gosec // fixed helper commands
+			return exec.CommandContext(ctx, name, args...).Output()
 		}
 	}
 	if l.LookPath == nil {
@@ -235,7 +235,12 @@ func (l *Launcher) Launch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec,noctx // configured command; must outlive ctx
+	// Firefox outlives ctx, so no context starts it.
+	path, err := exec.LookPath(argv[0])
+	if err != nil {
+		return fmt.Errorf("start %s: %w", argv[0], err)
+	}
+	cmd := &exec.Cmd{Path: path, Args: argv}
 	cmd.Env = env
 	// Standard streams stay on /dev/null: a pipe would break when the
 	// daemon exits while Firefox runs on.

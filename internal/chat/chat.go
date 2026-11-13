@@ -529,8 +529,12 @@ func managedLaunch(ctx context.Context, builds *hermesbuild.Store, image string,
 
 func runTUI(p Params, l *launch, token string) (int, error) {
 	argv := l.argv
-	//nolint:gosec,noctx // the user's configured Hermes or the verified server build; chat forwards signals to it and waits, so no context may kill it
-	cmd := exec.Command(argv[0], argv[1:]...)
+	// No context may kill the TUI: chat forwards signals to it and waits.
+	path, err := exec.LookPath(argv[0])
+	if err != nil {
+		return 0, err
+	}
+	cmd := &exec.Cmd{Path: path, Args: argv}
 	cmd.Env = Env(l.env, p.Control.State.Splice, token)
 	cmd.Dir = p.Dir
 	if l.keep != nil {
@@ -563,7 +567,7 @@ func runTUI(p Params, l *launch, token string) (int, error) {
 			}
 		}
 	}()
-	err := cmd.Wait()
+	err = cmd.Wait()
 	close(done)
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {

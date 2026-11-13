@@ -82,8 +82,8 @@ type msg struct {
 // Serve speaks MCP over stdio until in ends. It returns the exit code.
 func Serve(in io.Reader, out, errw io.Writer) int {
 	s := &server{out: out, errw: errw, waiting: map[string]chan struct{}{}, replies: map[string]chan json.RawMessage{}}
-	if path := os.Getenv(PIDFileEnv); path != "" {
-		if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil { //nolint:gosec // test helper
+	if path, ok := os.LookupEnv(PIDFileEnv); ok && path != "" {
+		if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
 			fmt.Fprintln(f, os.Getpid())
 			_ = f.Close()
 		}

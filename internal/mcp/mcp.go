@@ -590,7 +590,12 @@ func (s *server) env() []string {
 
 // start runs the server and does the initialize handshake.
 func (s *server) start() (*proc, error) {
-	cmd := exec.Command(s.cfg.Command, s.cfg.Args...) //nolint:gosec,noctx // the command comes from the device config; stop ends its process group
+	// No context kills the server: stop ends its process group.
+	path, err := exec.LookPath(s.cfg.Command)
+	if err != nil {
+		return nil, err
+	}
+	cmd := &exec.Cmd{Path: path, Args: append([]string{s.cfg.Command}, s.cfg.Args...)}
 	cmd.Env = s.env()
 	cmd.Dir = s.cfg.Dir
 	if cmd.Dir == "" {

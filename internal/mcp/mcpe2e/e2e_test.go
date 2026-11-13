@@ -91,9 +91,9 @@ func TestMCPEndToEnd(t *testing.T) { //nolint:paralleltest // one plugin server 
 	if err != nil {
 		t.Fatal(err)
 	}
-	tests := filepath.Join(repo, "plugin", "device", "tests")
-	py := exec.CommandContext(ctx, "sh", filepath.Join(repo, "scripts", "test-plugin.sh"), //nolint:gosec // repo script
-		"-s", tests, "-t", tests, "-p", "test_mcp_e2e.py", "-v")
+	py := exec.CommandContext(ctx, "sh", "scripts/test-plugin.sh",
+		"-s", "plugin/device/tests", "-t", "plugin/device/tests", "-p", "test_mcp_e2e.py", "-v")
+	py.Dir = repo
 	py.Env = append(os.Environ(), "HERMES_MCP_E2E_DIR="+dir, "HERMES_MCP_E2E_ROOT="+root,
 		"HERMES_MCP_E2E_KEY="+base64.StdEncoding.EncodeToString(pub))
 	var out strings.Builder
@@ -111,7 +111,7 @@ func TestMCPEndToEnd(t *testing.T) { //nolint:paralleltest // one plugin server 
 			t.Fatalf("plugin test ended before it listened: %v\n%s", err, out.String())
 		case <-time.After(50 * time.Millisecond):
 		}
-		if b, err := os.ReadFile(portFile); err == nil { //nolint:gosec // test file
+		if b, err := os.ReadFile(portFile); err == nil {
 			port, _ = strconv.Atoi(strings.TrimSpace(string(b)))
 		}
 	}
@@ -149,7 +149,7 @@ func TestMCPEndToEnd(t *testing.T) { //nolint:paralleltest // one plugin server 
 		t.Fatalf("plugin side failed: %v", pyErr)
 	}
 
-	pids, err := os.ReadFile(pidFile) //nolint:gosec // test file
+	pids, err := os.ReadFile(pidFile)
 	if err != nil {
 		t.Fatal(err)
 	}

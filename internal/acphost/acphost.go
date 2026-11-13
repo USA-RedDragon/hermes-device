@@ -322,6 +322,10 @@ func (c *connection) serve() {
 // start runs `<hermes> acp` in its own process group, with the host's
 // environment. The pipes are plain files so Wait does not wait on them.
 func (c *connection) start() (*exec.Cmd, *os.File, *os.File, *os.File, error) {
+	path, err := exec.LookPath(c.srv.opts.Hermes)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
 	inR, inW, err := os.Pipe()
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -336,8 +340,9 @@ func (c *connection) start() (*exec.Cmd, *os.File, *os.File, *os.File, error) {
 		closeAll(inR, inW, outR, outW)
 		return nil, nil, nil, nil, err
 	}
-	//nolint:gosec,noctx // the hermes path is operator config; stop ends the process group with a grace period, which a context kill would cut short
-	cmd := exec.Command(c.srv.opts.Hermes, "acp")
+	// No context kills it: stop ends the process group with a grace
+	// period, which a context kill would cut short.
+	cmd := &exec.Cmd{Path: path, Args: []string{c.srv.opts.Hermes, "acp"}}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, errW
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	c.srv.mu.Lock()

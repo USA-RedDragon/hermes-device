@@ -86,7 +86,12 @@ func start(shell string, req Request, out func([]byte), grace time.Duration) (*P
 		unit = scopeUnit()
 		argv = req.Scope.argv(unit, argv)
 	}
-	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec,noctx // running the agent's command is the purpose; Kill stops its process group
+	// No context kills the command: Kill stops its process group.
+	path, err := exec.LookPath(argv[0])
+	if err != nil {
+		return nil, err
+	}
+	cmd := &exec.Cmd{Path: path, Args: argv}
 	cmd.Dir = req.Cwd
 	cmd.Env = req.Env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

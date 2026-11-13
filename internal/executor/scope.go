@@ -141,7 +141,7 @@ func (s *Scope) probe(ctx context.Context, env []string) (string, error) {
 	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	argv := s.argv(scopeUnit(), []string{"true"})
-	cmd := exec.CommandContext(pctx, argv[0], argv[1:]...) //nolint:gosec // systemd-run from PATH with fixed arguments
+	cmd := command(pctx, s.SystemdRun, argv[1:]...)
 	cmd.Env = env
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -194,6 +194,19 @@ const (
 	oomSettle = 500 * time.Millisecond
 )
 
+// systemctl is the user manager's systemctl with args.
+func (s *Scope) systemctl(ctx context.Context, args ...string) *exec.Cmd {
+	return command(ctx, s.Systemctl, append([]string{"--user"}, args...)...)
+}
+
+// command is exec.CommandContext for a program that is configuration, not
+// the caller's input, with its arguments added after it.
+func command(ctx context.Context, program string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, program)
+	cmd.Args = append(cmd.Args, args...)
+	return cmd
+}
+
 // oomKilled reports whether systemd ended the scope unit because the
 // kernel's OOM killer killed a process in it (OOMPolicy=kill gives the
 // unit result oom-kill), and clears the failed unit. systemd keeps a
@@ -204,7 +217,7 @@ func (s *Scope) oomKilled(unit string) bool {
 	defer cancel()
 	start := time.Now()
 	for {
-		out, err := exec.CommandContext(ctx, s.Systemctl, "--user", "show", "--property=ActiveState,Result", unit).Output() //nolint:gosec // systemctl with a unit name we made
+		out, err := s.systemctl(ctx, "show", "--property=ActiveState,Result", unit).Output()
 		if err != nil {
 			return false
 		}
@@ -220,7 +233,7 @@ func (s *Scope) oomKilled(unit string) bool {
 		running := state == "active" || state == "activating" || state == "deactivating"
 		if !running || state == "active" && result == "success" && waited >= oomSettle || waited >= oomWait {
 			if state == "failed" {
-				_ = exec.CommandContext(ctx, s.Systemctl, "--user", "reset-failed", unit).Run() //nolint:gosec // as above
+				_ = s.systemctl(ctx, "reset-failed", unit).Run()
 			}
 			return result == "oom-kill"
 		}
