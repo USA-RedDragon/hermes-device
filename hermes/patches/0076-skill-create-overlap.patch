@@ -1,0 +1,381 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 13:22:06 -0600
+Subject: [PATCH] feat(skills): skill_manage create asks to extend an
+ overlapping skill
+
+With skills.create_overlap_threshold above 0 (default 0 = off, upstream's behavior), a create whose name or description overlaps an installed skill is refused with the top 3 matches (token overlap on name and description, no model call). The agent patches one of them, or repeats the create with why_new, one sentence on why none fits, and it proceeds. The tool description now says: extend an existing skill when one covers the topic; create only for a new topic. A lookup error lets the create through.
+---
+ hermes_cli/config_defaults.py            |   4 +
+ tests/tools/test_skill_create_overlap.py | 151 +++++++++++++++++++++++
+ tools/skill_manager_tool.py              |  23 ++--
+ tools/skill_overlap.py                   | 106 ++++++++++++++++
+ 4 files changed, 277 insertions(+), 7 deletions(-)
+ create mode 100644 tests/tools/test_skill_create_overlap.py
+ create mode 100644 tools/skill_overlap.py
+
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 70afd34e..5c63843c 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1533,6 +1533,10 @@ DEFAULT_CONFIG = {
+         # review fork. true = ALWAYS stage (SKILL.md too large for an inline prompt): /skills
+         # pending, /skills diff <id>, /skills approve|reject <id>.
+         "write_approval": False,
++        # skill_manage create looks for installed skills whose name or description overlaps the new one
++        # (token overlap, 0..1). A best match at or above this is refused with the top 3 matches unless the
++        # create carries why_new. 0 = off (upstream's behavior).
++        "create_overlap_threshold": 0.0,
+         # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
+         # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
+         # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
+diff --git a/tests/tools/test_skill_create_overlap.py b/tests/tools/test_skill_create_overlap.py
+new file mode 100644
+index 00000000..373c90c9
+--- /dev/null
++++ b/tests/tools/test_skill_create_overlap.py
+@@ -0,0 +1,151 @@
++"""skill_manage create: refuse a skill that overlaps an installed one unless the create says why_new."""
++
++import json
++from contextlib import contextmanager
++from unittest.mock import patch
++
++import pytest
++
++from tools import skill_overlap
++from tools.skill_manager_tool import SKILL_MANAGE_SCHEMA, skill_manage
++
++
++def _content(name, description):
++    return f"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\nStep 1: Do the thing.\n"
++
++
++@contextmanager
++def _skills(tmp_path, threshold):
++    with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
++         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
++         patch("tools.skill_overlap.configured_threshold", return_value=threshold):
++        yield
++
++
++def _create(name, description, **extra):
++    op = {"action": "create", "name": name, "content": _content(name, description), **extra}
++    return json.loads(skill_manage(action="", name="", operations=[op]))
++
++
++def _flat_create(name, description, **extra):
++    return json.loads(skill_manage(action="create", name=name, content=_content(name, description), **extra))
++
++
++FLUX = ("flux-app", "Use when adding or changing an app in the Flux repo.")
++
++
++def _seed(tmp_path):
++    assert _create(*FLUX)["success"] is True
++
++
++class TestScoring:
++    def test_same_topic_scores_high_and_other_topic_low(self):
++        near = skill_overlap.score("flux-app-values", "Use when editing a Flux app values file.", *FLUX)
++        far = skill_overlap.score("gardening-tips", "Use when planning a vegetable garden.", *FLUX)
++        assert near >= 0.35 > far
++        assert far == 0.0
++
++    def test_scoring_is_deterministic_and_ignores_case_and_plurals(self):
++        a = skill_overlap.score("Flux-Apps", "Changing Flux apps", *FLUX)
++        assert a == skill_overlap.score("Flux-Apps", "Changing Flux apps", *FLUX)
++        assert skill_overlap.tokens("Apps, Flux!") == skill_overlap.tokens("app flux")
++
++    def test_top_three_best_first_with_name_tie_break(self):
++        skills = [{"name": n, "description": "Deploy the cluster app"} for n in ("d", "c", "b", "a")]
++        found = skill_overlap.find_overlaps("deploy-cluster-app", "Deploy the cluster app", skills, threshold=0.1)
++        assert [m["name"] for m in found] == ["a", "b", "c"]
++
++    def test_threshold_zero_finds_nothing(self):
++        assert skill_overlap.find_overlaps("flux-app", FLUX[1], [dict(name="flux-app-x", description=FLUX[1])],
++                                           threshold=0) == []
++
++
++class TestCreateGate:
++    def test_overlap_is_refused_with_matches(self, tmp_path):
++        with _skills(tmp_path, 0.35):
++            _seed(tmp_path)
++            result = _create("flux-app-values", "Use when editing a Flux app values file.")
++        assert result["success"] is False
++        assert "flux-app" in result["error"] and "why_new" in result["error"]
++        assert result["failed_index"] == 0
++        assert [m["name"] for m in result["overlapping_skills"]] == ["flux-app"]
++        assert not (tmp_path / "flux-app-values").exists()
++
++    def test_why_new_lets_the_create_through(self, tmp_path):
++        with _skills(tmp_path, 0.35):
++            _seed(tmp_path)
++            result = _create("flux-app-values", "Use when editing a Flux app values file.",
++                             why_new="Values-file layout is a separate topic from app wiring.")
++        assert result["success"] is True
++        assert (tmp_path / "flux-app-values" / "SKILL.md").exists()
++
++    def test_blank_why_new_does_not_count(self, tmp_path):
++        with _skills(tmp_path, 0.35):
++            _seed(tmp_path)
++            result = _create("flux-app-values", "Use when editing a Flux app values file.", why_new="  ")
++        assert result["success"] is False
++
++    def test_flat_shape_is_gated_and_passes_with_why_new(self, tmp_path):
++        with _skills(tmp_path, 0.35):
++            _seed(tmp_path)
++            refused = _flat_create("flux-app-values", "Use when editing a Flux app values file.")
++            allowed = _flat_create("flux-app-values", "Use when editing a Flux app values file.",
++                                   why_new="Separate topic.")
++        assert refused["success"] is False and refused["overlapping_skills"]
++        assert allowed["success"] is True
++
++    def test_unrelated_create_needs_no_reason(self, tmp_path):
++        with _skills(tmp_path, 0.35):
++            _seed(tmp_path)
++            result = _create("gardening-tips", "Use when planning a vegetable garden.")
++        assert result["success"] is True
++
++    def test_off_by_default_changes_nothing(self, tmp_path):
++        with _skills(tmp_path, 0.0):
++            _seed(tmp_path)
++            result = _create("flux-app-values", "Use when editing a Flux app values file.")
++        assert result["success"] is True
++
++    def test_refusal_inside_a_batch_rolls_the_batch_back(self, tmp_path):
++        ops = [{"action": "create", "name": "gardening-tips",
++                "content": _content("gardening-tips", "Use when planning a vegetable garden.")},
++               {"action": "create", "name": "flux-app-values",
++                "content": _content("flux-app-values", "Use when editing a Flux app values file.")}]
++        with _skills(tmp_path, 0.35):
++            _seed(tmp_path)
++            result = json.loads(skill_manage(action="", name="", operations=ops))
++        assert result["success"] is False and result["failed_index"] == 1
++        assert not (tmp_path / "gardening-tips").exists()
++
++    def test_patch_write_and_edit_are_never_gated(self, tmp_path):
++        with _skills(tmp_path, 0.35):
++            _seed(tmp_path)
++            ops = [{"action": "patch", "name": "flux-app", "old_string": "Step 1", "new_string": "Step one"},
++                   {"action": "write_file", "name": "flux-app", "file_path": "references/a.md",
++                    "file_content": "x"}]
++            result = json.loads(skill_manage(action="", name="", operations=ops))
++        assert result["success"] is True
++
++    def test_a_lookup_failure_lets_the_create_through(self, tmp_path):
++        with _skills(tmp_path, 0.35), patch("tools.skills_tool.find_all_skills", side_effect=RuntimeError("boom")):
++            result = _create("flux-app-values", "Use when editing a Flux app values file.")
++        assert result["success"] is True
++
++
++class TestConfigAndSchema:
++    @pytest.mark.parametrize("value,expected", [(0.4, 0.4), (0, 0.0), ("0.5", 0.5), (7, 1.0), ("x", 0.0), (-1, 0.0), (None, 0.0)])
++    def test_configured_threshold(self, value, expected):
++        with patch("hermes_cli.config.load_config", return_value={"skills": {"create_overlap_threshold": value}}):
++            assert skill_overlap.configured_threshold() == expected
++
++    def test_default_is_off(self):
++        from hermes_cli.config_defaults import DEFAULT_CONFIG
++        assert DEFAULT_CONFIG["skills"]["create_overlap_threshold"] == 0.0
++
++    def test_description_and_schema_say_extend_first(self):
++        assert "Extend an existing skill when one covers the topic; create only for a new topic" \
++            in SKILL_MANAGE_SCHEMA["description"]
++        create = next(b for b in SKILL_MANAGE_SCHEMA["parameters"]["properties"]["operations"]["items"]["anyOf"]
++                      if b["properties"]["action"]["enum"] == ["create"])
++        assert create["properties"]["why_new"]["type"] == "string"
++        assert "why_new" not in create["required"]
+diff --git a/tools/skill_manager_tool.py b/tools/skill_manager_tool.py
+index d73835db..3f05e53f 100644
+--- a/tools/skill_manager_tool.py
++++ b/tools/skill_manager_tool.py
+@@ -465,12 +465,16 @@ def _clip(text: str, n: int, ellipsis: str) -> str:
+ 
+ # --- Core actions -------------------------------------------------------------
+ 
+-def _create_skill(name: str, content: str, category: str | None = None) -> dict[str, Any]:
++def _create_skill(name: str, content: str, category: str | None = None,
++                  why_new: str | None = None) -> dict[str, Any]:
+     if err := (_validate_name(name) or _validate_category(category)
+                or _validate_frontmatter(content) or _validate_content_size(content)):
+         return _err(err)
+     if existing := _find_skill(name):
+         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
++    from tools.skill_overlap import check_create
++    if overlap := check_create(name, content, why_new):  # skills.create_overlap_threshold
++        return overlap
+     skill_dir = _resolve_skill_dir(name, category)
+     from hermes_constants import mkdir_under_hermes_home
+     mkdir_under_hermes_home(skill_dir.parent)
+@@ -702,7 +706,7 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
+ 
+ 
+ _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",
+-                 "absorbed_into", "operations")
++                 "absorbed_into", "operations", "why_new")
+ 
+ 
+ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
+@@ -735,7 +739,7 @@ def _act_patch(a):
+ # action -> handler(args dict) returning a result dict, or a tool_error JSON string for
+ # argument-shape errors. "edit" is a legacy alias for a full rewrite (not in the schema).
+ _ACTION_HANDLERS = {
+-    "create": lambda a: _create_skill(a["name"], a["content"], a["category"]),
++    "create": lambda a: _create_skill(a["name"], a["content"], a["category"], a.get("why_new")),
+     "edit": lambda a: _edit_skill(a["name"], a["content"]),
+     "patch": _act_patch,
+     "delete": lambda a: _delete_skill(a["name"], absorbed_into=a["absorbed_into"]),
+@@ -784,7 +788,7 @@ def skill_manage(
+     action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
+     file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,
+     replace_all: bool = False, absorbed_into: str | None = None, task_id: str | None = None,
+-    session_id: str | None = None, operations=None) -> str:
++    session_id: str | None = None, operations=None, why_new: str | None = None) -> str:
+     """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
+     see _skill_manage_batch) overrides the flat fields."""
+     if operations is not None:
+@@ -796,7 +800,7 @@ def skill_manage(
+     # of origin; bypassed when replaying an approved staged write.
+     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
+                 old_string=old_string, new_string=new_string, replace_all=replace_all,
+-                absorbed_into=absorbed_into)
++                absorbed_into=absorbed_into, why_new=why_new)
+     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
+         return gate_result
+     if (shape_err := _op_shape_error(action, args)) is not None:
+@@ -848,8 +852,10 @@ def _skill_manage_description() -> str:
+         f"Description: max {SKILL_PROMPT_DESC_LIMIT} chars, 'Use when <trigger>. <behavior>.', never "
+         "the category name (the index shows it). Write lessons, not logs: "
+         "imperative rule + why, no PR numbers/dates/incident narration, one "
+-        "rule per lesson, references/ named by topic (extend before adding). "
+-        "skill_view() shows format conventions."
++        "rule per lesson, references/ named by topic. Extend an existing skill "
++        "when one covers the topic; create only for a new topic (a create that overlaps an "
++        "installed skill is refused with the matches unless it carries why_new, one short "
++        "sentence on why none of them fits). skill_view() shows format conventions."
+     )
+ 
+ 
+@@ -898,6 +904,9 @@ SKILL_MANAGE_SCHEMA = {
+                                     "description": "Full SKILL.md text (YAML frontmatter + markdown body)."},
+                         "category": {"type": "string",
+                                      "description": "Optional category subdir (e.g. 'devops')."},
++                        "why_new": {"type": "string",
++                                    "description": "Why no existing skill fits: one short sentence; "
++                                                   "needed when the create overlaps an installed skill."},
+                     }, ("content",)),
+                     _op_schema("patch", {
+                         "old_string": _OLD_STRING, "new_string": _NEW_STRING,
+diff --git a/tools/skill_overlap.py b/tools/skill_overlap.py
+new file mode 100644
+index 00000000..6ad64eb9
+--- /dev/null
++++ b/tools/skill_overlap.py
+@@ -0,0 +1,106 @@
++"""Overlap check for ``skill_manage`` create: find installed skills a new skill would duplicate.
++
++Deterministic token overlap on the skill name and description, no model call. With
++``skills.create_overlap_threshold`` above 0, a create whose best match scores at or above it is
++refused with the top matches, unless the create carries a short ``why_new`` reason.
++"""
++from __future__ import annotations
++
++import re
++from typing import Any, Optional
++
++# Words that say nothing about a skill's topic: grammar, and the frame every description shares
++# ("Use when <trigger>. <behavior>.").
++_STOP = frozenset((
++    "a an and are as at be by for from how in into is it its of on or our that the their then this "
++    "to use used uses using when whenever with without you your skill skills agent agents "
++    "any all each per via not no do does done can may must should will also more most other").split())
++_MIN_LEN = 2
++_SPLIT = re.compile(r"[^a-z0-9]+")
++MAX_MATCHES = 3
++MAX_WHY_NEW = 500
++
++
++def _stem(word: str) -> str:
++    for suffix in ("ing", "es", "s"):
++        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
++            return word[:-len(suffix)]
++    return word
++
++
++def tokens(text: str) -> frozenset[str]:
++    """Lowercase topic words of ``text``: split on non-alphanumerics, drop stop words and short words."""
++    words = (_stem(w) for w in _SPLIT.split((text or "").lower()))
++    return frozenset(w for w in words if len(w) >= _MIN_LEN and w not in _STOP)
++
++
++def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
++    return len(a & b) / len(a | b) if a and b else 0.0
++
++
++def _cover(a: frozenset[str], b: frozenset[str]) -> float:
++    return len(a & b) / min(len(a), len(b)) if a and b else 0.0
++
++
++def score(name: str, description: str, other_name: str, other_description: str) -> float:
++    """0..1. The name overlap (share of the shorter name's words) and the description overlap (Jaccard)
++    each count half; one identical name word alone cannot reach 0.5 unless the names are one word."""
++    n_new, n_old = tokens(name), tokens(other_name)
++    d_new, d_old = tokens(description), tokens(other_description)
++    return round(0.5 * _cover(n_new, n_old) + 0.5 * _jaccard(d_new, d_old), 3)
++
++
++def find_overlaps(name: str, description: str, skills: list[dict[str, Any]], *,
++                  threshold: float, limit: int = MAX_MATCHES) -> list[dict[str, Any]]:
++    """The installed skills scoring at or above ``threshold``, best first (name order breaks ties)."""
++    if threshold <= 0:
++        return []
++    found = []
++    for skill in skills:
++        other = str(skill.get("name") or "")
++        if not other or other == name:
++            continue
++        s = score(name, description, other, str(skill.get("description") or ""))
++        if s >= threshold:
++            found.append({"name": other, "category": skill.get("category") or "",
++                          "description": skill.get("description") or "", "score": s})
++    found.sort(key=lambda m: (-m["score"], m["name"]))
++    return found[:limit]
++
++
++def configured_threshold() -> float:
++    """``skills.create_overlap_threshold`` (0 = off, upstream's behavior); a bad value reads as off."""
++    try:
++        from hermes_cli.config import cfg_get, load_config
++        value = float(cfg_get(load_config(), "skills", "create_overlap_threshold") or 0)
++    except Exception:
++        return 0.0
++    return min(value, 1.0) if value > 0 else 0.0
++
++
++def check_create(name: str, content: str, why_new: Optional[str]) -> Optional[dict[str, Any]]:
++    """None to let the create proceed, else the error result that lists the matches.
++
++    Proceeds when the check is off, when ``why_new`` holds a reason, or when no skill overlaps. Fails
++    open: a lookup error must never stop an agent from saving a lesson."""
++    threshold = configured_threshold()
++    if threshold <= 0 or (isinstance(why_new, str) and why_new.strip()):
++        return None
++    try:
++        from agent.skill_utils import parse_frontmatter
++        from tools.skills_tool import find_all_skills
++        frontmatter, _ = parse_frontmatter(content)
++        matches = find_overlaps(name, str(frontmatter.get("description") or ""),
++                                find_all_skills(skip_disabled=True), threshold=threshold)
++    except Exception:
++        return None
++    if not matches:
++        return None
++    names = ", ".join(f"'{m['name']}'" for m in matches)
++    return {
++        "success": False,
++        "error": (f"Not created: '{name}' overlaps installed skills ({names}). Extend one of them: "
++                  f"skill_view it, then skill_manage patch (or write_file for a reference file). If none of them "
++                  f"fits, create again with why_new: one short sentence on why this is a new topic."),
++        "overlapping_skills": matches,
++        "why_new_hint": "Retry the create with why_new set only when no listed skill covers the topic."}

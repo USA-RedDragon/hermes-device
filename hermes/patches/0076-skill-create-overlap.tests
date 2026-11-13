@@ -1,0 +1,4 @@
+# Upstream tests of the skill_manage create path the overlap check sits in
+tests/tools/test_skill_manager_tool.py
+tests/tools/test_skill_manage_batch.py
+tests/tools/test_skill_manage_schema_diet.py
