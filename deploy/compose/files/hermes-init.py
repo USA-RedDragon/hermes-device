@@ -223,6 +223,17 @@ DEFAULTS = {
     # Leave out the prompt paragraph and the skill that answer "how do I set this up" with the agent's own commands
     # and docs; Talaria's hint above points to its Settings and docs instead (patched Hermes)
     "agent": {"product_help_guidance": False},
+    # Long chats (patched Hermes 0069 and 0070): recalled memory (Honcho) rides only the turn it was recalled for,
+    # cut to 8000 chars, and older agent messages lose their repeated instructions paragraph. A real chat carried
+    # an 18K-char recall block on every user turn, about 99% of each row.
+    "memory": {"recall_history": False, "recall_max_chars": 8000},
+    "context": {"collapse_agent_messages": True},
+    # Compaction keeps the newest loaded skill whole up to 20000 chars instead of a reload marker (patched Hermes
+    # 0015; Claude Code re-attaches up to 5K tokens per skill, and 40 of 44 skills measured fit), and old tool
+    # output over 8000 chars is cut to a one-line summary once a chat passes 100K tokens (upstream's proactive
+    # prune; the trigger of Anthropic's own tool-result clearing), so a long chat compacts less often. The prune
+    # spares the skill compaction keeps (patched Hermes 0071).
+    "compression": {"keep_last_skill_chars": 20000, "proactive_prune_tokens": 100000},
 }
 
 

@@ -198,6 +198,48 @@ class Defaults(unittest.TestCase):
         self.assertIs(got["agent"]["product_help_guidance"], True)
 
 
+class LongChatDefaults(unittest.TestCase):
+    """Recall on its own turn only, collapsed agent messages, the newest skill kept, old tool output pruned."""
+
+    def run_init(self, existing=None, extra=None):
+        with tempfile.TemporaryDirectory() as home:
+            m = load(home)
+            path = os.path.join(home, "config.yaml")
+            if existing is not None:
+                with open(path, "w") as f:
+                    json.dump(existing, f)
+            env = {}
+            if extra is not None:
+                env["TALARIA_EXTRA_CONFIG"] = os.path.join(home, "extra.yaml")
+                with open(env["TALARIA_EXTRA_CONFIG"], "w") as f:
+                    json.dump(extra, f)
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.object(m, "install_plugin"), \
+                    mock.patch.object(m, "write_public_key", return_value="/k"), \
+                    mock.patch.object(m, "talaria_config", return_value={}), \
+                    mock.patch.object(m, "setup_honcho"), \
+                    mock.patch.object(m, "demo_provider"), \
+                    mock.patch.object(m.subprocess, "run"):
+                m.main()
+            with open(path) as f:
+                return json.load(f)
+
+    def test_unset_gets_the_long_chat_settings(self):
+        got = self.run_init()
+        self.assertEqual(got["memory"], {"recall_history": False, "recall_max_chars": 8000})
+        self.assertEqual(got["context"], {"collapse_agent_messages": True})
+        self.assertEqual(got["compression"], {"keep_last_skill_chars": 20000, "proactive_prune_tokens": 100000})
+
+    def test_explicit_values_win(self):
+        got = self.run_init({"memory": {"provider": "honcho", "recall_history": True},
+                             "compression": {"threshold": 0.7, "proactive_prune_tokens": 0}})
+        self.assertEqual(got["memory"], {"provider": "honcho", "recall_history": True, "recall_max_chars": 8000})
+        self.assertEqual(got["compression"], {"threshold": 0.7, "proactive_prune_tokens": 0,
+                                              "keep_last_skill_chars": 20000})
+        got = self.run_init(extra={"context": {"collapse_agent_messages": False}})
+        self.assertIs(got["context"]["collapse_agent_messages"], False)
+
+
 class Hint(unittest.TestCase):
     def test_help_points_to_talaria(self):
         with tempfile.TemporaryDirectory() as home:
