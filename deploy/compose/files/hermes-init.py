@@ -112,7 +112,10 @@ def talaria_config(pubkey_path):
             "The web app renders GitHub-flavored Markdown: headings, lists, task lists, tables, links and fenced "
             "code. It does not render math, HTML widgets or ::directives. Show an image with "
             "![description](/absolute/path.png) and link any other file as [name](/absolute/path); the hub serves "
-            "files your reply names this way. Save such files in the chat's working folder, never in /tmp.")
+            "files your reply names this way. Save such files in the chat's working folder, never in /tmp. "
+            "When someone asks how to set something up or change a setting, point them to Talaria's Settings (the "
+            "gear below the chat list) and to the docs at https://usa-reddragon.github.io/talaria/, never to hermes "
+            "commands or the agent's config files: they may have no access to the server.")
     cfg = {
         "webapp": {"enabled": True, "host": "0.0.0.0", "port": 9120},
         # detach_removed_default: removing the default model's provider in Settings > Models also drops the default
@@ -182,6 +185,9 @@ DEFAULTS = {
     # Images reach the model the way Claude Code sends them (patched Hermes 0061): scaled once to 2000 px, PNG kept
     # up to 512 KB. Upstream halves anything over 1568 px or 256 KB to a JPEG, so 10 px text is unreadable.
     "vision": {"embed_max_dimension": 2000, "embed_target_bytes": 524288, "resize_mode": "fit"},
+    # Leave out the prompt paragraph and the skill that answer "how do I set this up" with the agent's own commands
+    # and docs; Talaria's hint above points to its Settings and docs instead (patched Hermes)
+    "agent": {"product_help_guidance": False},
 }
 
 

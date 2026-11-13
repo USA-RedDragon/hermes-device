@@ -57,17 +57,40 @@ class Defaults(unittest.TestCase):
                     mock.patch.object(m.subprocess, "run"):
                 m.main()
             with open(path) as f:
-                return json.load(f)["gateway"]
+                return json.load(f)
 
     def test_missing_key_gets_zero(self):
-        self.assertEqual(self.run_init(), {"replay_buffer_events": 0, "x": 1})
-        self.assertEqual(self.run_init({"gateway": {"other": True}})["replay_buffer_events"], 0)
+        self.assertEqual(self.run_init()["gateway"], {"replay_buffer_events": 0, "x": 1})
+        self.assertEqual(self.run_init({"gateway": {"other": True}})["gateway"]["replay_buffer_events"], 0)
 
     def test_value_in_config_yaml_wins(self):
-        self.assertEqual(self.run_init({"gateway": {"replay_buffer_events": 2000}})["replay_buffer_events"], 2000)
+        got = self.run_init({"gateway": {"replay_buffer_events": 2000}})
+        self.assertEqual(got["gateway"]["replay_buffer_events"], 2000)
 
     def test_value_in_own_settings_wins(self):
-        self.assertEqual(self.run_init(extra={"gateway": {"replay_buffer_events": 512}})["replay_buffer_events"], 512)
+        got = self.run_init(extra={"gateway": {"replay_buffer_events": 512}})
+        self.assertEqual(got["gateway"]["replay_buffer_events"], 512)
+
+    def test_product_help_guidance_off_unless_set(self):
+        self.assertIs(self.run_init()["agent"]["product_help_guidance"], False)
+        got = self.run_init({"agent": {"max_turns": 9}})["agent"]
+        self.assertEqual(got, {"max_turns": 9, "product_help_guidance": False})
+        self.assertIs(self.run_init({"agent": {"product_help_guidance": True}})["agent"]["product_help_guidance"], True)
+        got = self.run_init(extra={"agent": {"product_help_guidance": True}})
+        self.assertIs(got["agent"]["product_help_guidance"], True)
+
+
+class Hint(unittest.TestCase):
+    def test_help_points_to_talaria(self):
+        with tempfile.TemporaryDirectory() as home:
+            m = load(home)
+            with mock.patch.object(m, "password_hash", return_value="h"), \
+                    mock.patch.object(m, "secret", return_value="s"):
+                cfg = m.talaria_config("/k")
+        for platform in ("desktop", "cli"):
+            hint = cfg["platform_hints"][platform]["replace"]
+            self.assertIn("Talaria's Settings", hint)
+            self.assertIn("https://usa-reddragon.github.io/talaria/", hint)
 
 
 class VisionDefaults(unittest.TestCase):
