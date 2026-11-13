@@ -1,6 +1,6 @@
 # Install
 
-`talaria` is one program for your own computer. It lets the Talaria agent on your server run commands and use Firefox on this computer, in folders you choose. Before you install it, you need a Talaria hub: see [talaria-deploy](https://github.com/USA-RedDragon/talaria-deploy) to run your own. You also need the hub's address, for example `https://hub.example.com`, and an account on it.
+`talaria` is one program for your own computer. It lets the Talaria agent on your server run commands and use Firefox on this computer, in folders you choose. Before you install it, you need a Talaria hub: see [Pick an install](../deploy/getting-started.md) to run your own. You also need the hub's address, for example `https://hub.example.com`, and an account on it.
 
 ## Supported systems
 

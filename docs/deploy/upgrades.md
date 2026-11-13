@@ -64,8 +64,9 @@ All-in-one: stop the container, put the two folders back, start it.
 
 ## Before you upgrade
 
-- Back up first, and read the release notes of [talaria-hub](https://github.com/USA-RedDragon/talaria-hub/releases)
-  and [talaria](https://github.com/USA-RedDragon/talaria/releases).
+- Back up first, and read the [release notes](https://github.com/USA-RedDragon/talaria/releases): the hub's
+  releases are tagged `hub/vX.Y.Z`, the Hermes image's `hermes/v<release>-p<n>`, the all-in-one image's
+  `aio/vX.Y.Z`, and the `talaria` program's `vX.Y.Z`.
 - The install files pin exact image digests. A new copy of the install files brings new pins, so the upgrade is
   the files, not `docker compose pull`. [Images](images.md) lists what is pinned now.
 - Upgrade the server first, then your computers. The `talaria` program on a computer updates itself, and a

@@ -197,7 +197,7 @@ Flags:
 
 ## plugin install
 
-On the server: write the Hermes device plugin into a plugins folder. For people who run the server by hand; the [talaria-deploy](https://github.com/USA-RedDragon/talaria-deploy) installs do this for you.
+On the server: write the Hermes device plugin into a plugins folder. For people who run the server by hand; the [install kit](../deploy/getting-started.md) does this for you.
 
 <!-- docgen:output exec="scripts/cli-usage.sh plugin install" -->
 ```text
