@@ -31,10 +31,10 @@ func TestTypingMovesNothing(t *testing.T) {
 		t.Skip("Chrome is not installed")
 	}
 	e := setup(t)
-	var ms []map[string]any
+	ms := make([]map[string]any, 0, 80)
 	for i := range 40 {
-		ms = append(ms, map[string]any{"role": "user", "text": fmt.Sprintf("question %d", i)},
-			map[string]any{"role": "assistant", "text": strings.Repeat(fmt.Sprintf("Answer %d fills the log. ", i), 8)})
+		ms = append(ms, map[string]any{kRole: roleUser, kText: fmt.Sprintf("question %d", i)},
+			map[string]any{kRole: roleAssistant, kText: strings.Repeat(fmt.Sprintf("Answer %d fills the log. ", i), 8)})
 	}
 	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Long", Live: true, StartedAt: 900, Messages: ms})
 	e.gw.AddSession(&gatewaytest.Session{ID: "s8", Title: "Second", Live: true, StartedAt: 800, Messages: ms[:4]})
