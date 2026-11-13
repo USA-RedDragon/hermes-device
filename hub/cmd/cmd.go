@@ -94,7 +94,7 @@ func run(cmd *cobra.Command, cfg *config.Config) error {
 		return err
 	}
 	opts := service.Options{HoldTimeout: cfg.Hold.Timeout, Dialer: func(b config.Backend) service.Dialer { return dialers[b.ID] },
-		Answers: st, Grants: st}
+		Answers: st, Grants: st, SubagentLog: st}
 	if st.Postgres() {
 		opts.Relay = st
 	}

@@ -261,7 +261,7 @@ func (g *Gateway) branch(s *Session, payload, result map[string]any) string {
 // row_kind, paged by an opaque cursor; an empty oldest-order page means
 // caught up.
 func (g *Gateway) hTranscript(_ *conn, p map[string]any) (any, string, func()) {
-	if !onlyKeys(p, kSessionID, kProfile, "subagent_id", kCursor, kLimit, kOrder, "inline_images") {
+	if !onlyKeys(p, kSessionID, kProfile, "subagent_id", kCursor, kLimit, kOrder, "inline_images", "tool_details") {
 		return nil, errInvalidParams, nil
 	}
 	s := g.sessions[str(p, kSessionID)]
@@ -277,6 +277,12 @@ func (g *Gateway) hTranscript(_ *conn, p map[string]any) (any, string, func()) {
 		order = gateway.OrderOldest
 	}
 	if limit < 1 || limit > gateway.MaxTranscriptPage || (order != gateway.OrderOldest && order != gateway.OrderLatest) {
+		return nil, errInvalidParams, nil
+	}
+	if str(p, kSubagentID) != "" {
+		return g.childTranscript(s, p, int(limit))
+	}
+	if _, ok := p["tool_details"]; ok {
 		return nil, errInvalidParams, nil
 	}
 	rows := make([]map[string]any, 0, len(s.Messages))
@@ -299,7 +305,7 @@ func (g *Gateway) hTranscript(_ *conn, p map[string]any) (any, string, func()) {
 		start := min(at, len(rows))
 		end := min(start+n, len(rows))
 		next := strconv.Itoa(end)
-		return map[string]any{kSessionID: s.ID, "rows": rows[start:end], "next_cursor": next, "reset": !set}, "", nil
+		return map[string]any{kSessionID: s.ID, kRows: rows[start:end], kNextCursor: next, kReset: !set}, "", nil
 	}
 	end := len(rows)
 	if set {
@@ -310,7 +316,7 @@ func (g *Gateway) hTranscript(_ *conn, p map[string]any) (any, string, func()) {
 	if start > 0 {
 		next = strconv.Itoa(start)
 	}
-	return map[string]any{kSessionID: s.ID, "rows": rows[start:end], "next_cursor": next, "reset": !set}, "", nil
+	return map[string]any{kSessionID: s.ID, kRows: rows[start:end], kNextCursor: next, kReset: !set}, "", nil
 }
 
 // pathCompress is /compress as the catalog names it.

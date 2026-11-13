@@ -75,7 +75,7 @@ func (g *Gateway) hSubagentTail(_ *conn, p map[string]any) (any, string, func())
 	}
 	id := str(p, kSubagentID)
 	if s.subagent(id) < 0 {
-		return map[string]any{kSubagentID: id, "available": false, kText: "", kTruncated: false}, "", nil
+		return map[string]any{kSubagentID: id, kAvailable: false, kText: "", kTruncated: false}, "", nil
 	}
 	return map[string]any{kSubagentID: id, "available": true, kText: "=== transcript ===\n" + id + " working", kTruncated: false}, "", nil
 }

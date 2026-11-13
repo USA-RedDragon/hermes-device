@@ -121,6 +121,8 @@ type Session struct {
 	// Subagents are the subagents the session runs, as subagent.list
 	// lists them.
 	Subagents []gateway.SubagentRow
+	// children are the stored transcripts of its subagents, by id.
+	children map[string]*child
 	// Processes are the session's background processes, as process.list
 	// lists them.
 	Processes []gateway.ProcessRow

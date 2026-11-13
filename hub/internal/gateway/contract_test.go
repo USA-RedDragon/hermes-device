@@ -553,6 +553,7 @@ func jsonKeys(t *testing.T, v any) []string {
 func TestParamsUseOnlyKeysTheGatewayAccepts(t *testing.T) {
 	t.Parallel()
 	listKeys := []string{"include_hidden", "limit", "picker", "scope", "title"}
+	transcriptKeys := []string{"cursor", "inline_images", "limit", "order", kProfile, kSessionID, "subagent_id"}
 	cases := []struct {
 		params  any
 		allowed []string
@@ -579,8 +580,9 @@ func TestParamsUseOnlyKeysTheGatewayAccepts(t *testing.T) {
 		{gateway.SteerQueuedParams{SessionID: "s", AdmissionID: "a"}, []string{"admission_id", kSessionID}, true},
 		{gateway.RewindPayload{TargetMessageID: 3}, []string{"target_message_id"}, true},
 		{gateway.BranchPayload{Title: "t", ThroughMessageID: 3}, []string{"through_message_id", kTitle}, true},
-		{gateway.TranscriptParams{SessionID: "s", Cursor: "c", Limit: 10, Order: gateway.OrderLatest},
-			[]string{"cursor", "inline_images", "limit", "order", kProfile, kSessionID, "subagent_id"}, false},
+		{gateway.TranscriptParams{SessionID: "s", Cursor: "c", Limit: 10, Order: gateway.OrderLatest}, transcriptKeys, false},
+		// tool_details only goes to a Hermes that lists gateway.CapTranscriptToolDetails (Talaria Hermes).
+		{gateway.TranscriptParams{SessionID: "s", SubagentID: "sa", ToolDetails: 8192}, append(slices.Clone(transcriptKeys), "tool_details"), false},
 		{gateway.SlashExecParams{SessionID: "s", Command: "usage"}, []string{"command", kSessionID}, true},
 		{gateway.SessionParams{SessionID: "s"}, []string{kSessionID}, true},
 	}

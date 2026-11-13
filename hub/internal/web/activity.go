@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
@@ -66,6 +67,32 @@ func (s *Server) handleSubagentTail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
+}
+
+// handleSubagentEvents lists a subagent's steps after the seq in after: its
+// text, thinking, tool calls with their results, and the messages the user
+// sent it. They stay readable after the subagent ends.
+func (s *Server) handleSubagentEvents(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.svc.(hub.SubagentTranscripts)
+	if !ok {
+		errorJSON(w, http.StatusNotFound, "this hub does not keep subagent steps")
+		return
+	}
+	var after int64
+	if v := r.URL.Query().Get("after"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			errorJSON(w, http.StatusBadRequest, "after must be a seq")
+			return
+		}
+		after = n
+	}
+	out, err := a.SubagentEvents(r.Context(), userFrom(r), r.PathValue("backend"), r.PathValue("session"), r.PathValue("subagent"), after)
+	if err != nil {
+		s.activityFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleSteerSubagent(w http.ResponseWriter, r *http.Request) {

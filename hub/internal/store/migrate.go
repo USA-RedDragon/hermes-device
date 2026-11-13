@@ -313,6 +313,29 @@ var migrations = []migration{
 		postgres: []string{`CREATE TABLE agent_partners ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_a TEXT NOT NULL,
 			session_b TEXT NOT NULL, created_at BIGINT NOT NULL, PRIMARY KEY ("user", backend_id, session_a, session_b))`},
 	},
+	{
+		version: 22,
+		sqlite: []string{
+			`CREATE TABLE subagent_logs ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL, subagent_id TEXT NOT NULL,
+				read_cursor TEXT NOT NULL, epoch INTEGER NOT NULL, next_seq INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+				PRIMARY KEY ("user", backend_id, session_id, subagent_id))`,
+			`CREATE INDEX subagent_logs_updated ON subagent_logs (updated_at)`,
+			`CREATE TABLE subagent_events ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL, subagent_id TEXT NOT NULL,
+				seq INTEGER NOT NULL, at_ms INTEGER NOT NULL, kind TEXT NOT NULL, call_id TEXT NOT NULL, name TEXT NOT NULL, args TEXT NOT NULL,
+				result TEXT NOT NULL, result_size INTEGER NOT NULL, duration_ms INTEGER, failed INTEGER NOT NULL, text TEXT NOT NULL,
+				PRIMARY KEY ("user", backend_id, session_id, subagent_id, seq))`,
+		},
+		postgres: []string{
+			`CREATE TABLE subagent_logs ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL, subagent_id TEXT NOT NULL,
+				read_cursor TEXT NOT NULL, epoch BIGINT NOT NULL, next_seq BIGINT NOT NULL, updated_at BIGINT NOT NULL,
+				PRIMARY KEY ("user", backend_id, session_id, subagent_id))`,
+			`CREATE INDEX subagent_logs_updated ON subagent_logs (updated_at)`,
+			`CREATE TABLE subagent_events ("user" TEXT NOT NULL, backend_id TEXT NOT NULL, session_id TEXT NOT NULL, subagent_id TEXT NOT NULL,
+				seq BIGINT NOT NULL, at_ms BIGINT NOT NULL, kind TEXT NOT NULL, call_id TEXT NOT NULL, name TEXT NOT NULL, args TEXT NOT NULL,
+				result TEXT NOT NULL, result_size BIGINT NOT NULL, duration_ms BIGINT, failed INTEGER NOT NULL, text TEXT NOT NULL,
+				PRIMARY KEY ("user", backend_id, session_id, subagent_id, seq))`,
+		},
+	},
 }
 
 // migrateLockKey is the PostgreSQL advisory lock that keeps two replicas

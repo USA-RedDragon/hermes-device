@@ -134,6 +134,7 @@ func (s *Service) SteerSubagent(ctx context.Context, user, backendID, sessionID,
 		if res.Status != "queued" {
 			return hub.ErrSteerRejected
 		}
+		s.recordSteer(ctx, user, backendID, sessionID, subagentID, text)
 		return nil
 	})
 }

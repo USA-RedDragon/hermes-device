@@ -68,6 +68,10 @@ type Options struct {
 	// so every replica can say which choice answered one. Nil: the hub
 	// works every outcome out from the tool call.
 	Answers hub.AnswerStore
+	// SubagentLog keeps the steps of subagents and the messages users sent
+	// them. Nil: the hub reads a subagent's steps from Hermes every time,
+	// and they are gone once Hermes cannot read them.
+	SubagentLog hub.SubagentLog
 	// Grants are the backends admins gave users. Nil: only the config
 	// decides.
 	Grants Grants
@@ -104,6 +108,8 @@ type Service struct {
 	notify atomic.Pointer[func(hub.Notice)]
 	// turnErrors takes the failed turns of every subscribed session.
 	turnErrors atomic.Pointer[func(TurnError)]
+	// subagentLocks orders the reads of each subagent's transcript.
+	subagentLocks subagentLocks
 }
 
 // SetNotify makes the service hand each notice to f. f must not block: it

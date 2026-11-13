@@ -90,9 +90,65 @@ const (
 // MaxTranscriptPage.
 type TranscriptParams struct {
 	SessionID string `json:"session_id"`
-	Cursor    string `json:"cursor,omitempty"`
-	Limit     int    `json:"limit,omitempty"`
-	Order     string `json:"order,omitempty"`
+	// SubagentID reads a delegated child of the session instead.
+	SubagentID string `json:"subagent_id,omitempty"`
+	Cursor     string `json:"cursor,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+	Order      string `json:"order,omitempty"`
+	// ToolDetails asks for tool calls and results, up to that many chars
+	// each (Talaria Hermes patch 0051; only when runtime.describe lists
+	// CapTranscriptToolDetails).
+	ToolDetails int `json:"tool_details,omitempty"`
+}
+
+// CapTranscriptToolDetails is the runtime.describe capability of a Hermes
+// whose session.transcript takes tool_details.
+const CapTranscriptToolDetails = "transcript-tool-details-v1"
+
+// MaxToolDetails is the most tool_details takes.
+const MaxToolDetails = 65536
+
+// ChildTranscript is session.transcript's result with subagent_id: a page
+// of the child's rows, and whether Hermes found the child and whether it
+// still runs.
+type ChildTranscript struct {
+	TranscriptResult
+	Available bool `json:"available"`
+	Running   bool `json:"running"`
+}
+
+// TranscriptRow is the part of a session.transcript row the hub reads for a
+// subagent's steps. ToolCalls, Result and ResultSize come only with
+// tool_details.
+type TranscriptRow struct {
+	RowKind   string   `json:"row_kind"`
+	Role      string   `json:"role"`
+	Text      string   `json:"text"`
+	Timestamp *float64 `json:"timestamp"`
+	RowID     *int64   `json:"row_id"`
+	// Reasoning and ReasoningContent are the assistant's reasoning
+	// sidecars, text when Hermes has it as text.
+	Reasoning        json.RawMessage `json:"reasoning"`
+	ReasoningContent json.RawMessage `json:"reasoning_content"`
+	ToolCalls        []struct {
+		ID   string          `json:"id"`
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"args"`
+	} `json:"tool_calls"`
+	ToolCallID string          `json:"tool_call_id"`
+	Name       string          `json:"name"`
+	Args       json.RawMessage `json:"args"`
+	Result     *string         `json:"result"`
+	ResultSize int             `json:"result_size"`
+	// DisplayMetadata carries tool_outcome (ToolOutcome) on a tool row when
+	// sessions.tool_outcome_metadata is on.
+	DisplayMetadata json.RawMessage `json:"display_metadata"`
+}
+
+// ToolOutcome is how long a stored tool call ran and whether it failed.
+type ToolOutcome struct {
+	DurationMS int64 `json:"duration_ms"`
+	IsError    bool  `json:"is_error"`
 }
 
 // MaxTranscriptPage is the most rows one session.transcript page has
