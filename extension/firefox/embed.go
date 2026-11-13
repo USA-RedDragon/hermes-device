@@ -37,7 +37,7 @@ func Write(dir, version string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // extension source, no secret
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	return fs.WalkDir(Files, ".", func(p string, d fs.DirEntry, err error) error {
@@ -51,10 +51,10 @@ func Write(dir, version string) error {
 			}
 		}
 		dst := filepath.Join(dir, p)
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { //nolint:gosec // as above
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}
-		return os.WriteFile(dst, data, 0o644) //nolint:gosec // as above
+		return os.WriteFile(dst, data, 0o600)
 	})
 }
 

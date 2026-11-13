@@ -73,5 +73,5 @@ func rewritePyvenv(p, final string) error {
 	if !changed {
 		return nil
 	}
-	return os.WriteFile(p, out.Bytes(), 0o644) //nolint:gosec // the image's own config file, read by its Python
+	return os.WriteFile(p, out.Bytes(), 0o600)
 }

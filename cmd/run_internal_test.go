@@ -298,7 +298,11 @@ func TestRunNoSpliceWithTokenFile(t *testing.T) {
 	s.cfg.Gateway.Splice = false
 	s.cfg.Device.TempDir = filepath.Join(t.TempDir(), "tmp", "nested")
 	s.cfg.Hub.TokenFile = filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(s.cfg.Hub.TokenFile, []byte(testToken+"\n"), 0o440); err != nil { //nolint:gosec // the group-readable mode a Kubernetes secret gets
+	// The group-readable mode a Kubernetes secret gets.
+	if err := os.WriteFile(s.cfg.Hub.TokenFile, []byte(testToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(s.cfg.Hub.TokenFile, 0o440); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

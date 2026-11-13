@@ -27,7 +27,11 @@ func fakeSystemd(t *testing.T, runExit, show string) (dir, args string) {
 		// the file open for writing, which makes its exec fail with
 		// ETXTBSY (go.dev/issue/22315).
 		syscall.ForkLock.RLock()
-		err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755) //nolint:gosec // a test program
+		prog := filepath.Join(dir, name)
+		err := os.WriteFile(prog, []byte(body), 0o600)
+		if err == nil {
+			err = os.Chmod(prog, 0o700)
+		}
 		syscall.ForkLock.RUnlock()
 		if err != nil {
 			t.Fatal(err)

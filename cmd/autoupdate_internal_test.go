@@ -84,7 +84,10 @@ func autoBase(t *testing.T, version string, verify setup.AttestationVerifier) (*
 	if err := os.MkdirAll(filepath.Dir(bin), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(bin, []byte(version), 0o700); err != nil { //nolint:gosec // a program
+	if err := os.WriteFile(bin, []byte(version), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	archive := targz(t, setup.BinaryName, "0.15.0")

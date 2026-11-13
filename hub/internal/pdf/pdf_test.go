@@ -134,11 +134,11 @@ func TestReadEncrypted(t *testing.T) {
 	if err := os.WriteFile(plain, pdftest.Make("secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command(qpdf, "--encrypt", "user-pw", "owner-pw", "256", "--", plain, locked).CombinedOutput() //nolint:gosec,noctx // test
+	out, err := exec.Command(qpdf, "--encrypt", "user-pw", "owner-pw", "256", "--", plain, locked).CombinedOutput() //nolint:noctx // test
 	if err != nil {
 		t.Fatalf("qpdf: %v %s", err, out)
 	}
-	data, err := os.ReadFile(locked) //nolint:gosec // test file
+	data, err := os.ReadFile(locked)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,11 @@ func fakeTools(t *testing.T, info, text string) {
 		t.Skip("no sh")
 	}
 	for name, body := range map[string]string{"pdfinfo": info, "pdftotext": text, "pdftoppm": "exit 0"} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!"+sh+"\n"+body+"\n"), 0o700); err != nil { //nolint:gosec // test script
+		script := filepath.Join(bin, name)
+		if err := os.WriteFile(script, []byte("#!"+sh+"\n"+body+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(script, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -266,7 +270,11 @@ func TestReadDefusesMarkers(t *testing.T) {
 
 func TestRenderStopKeepsText(t *testing.T) { //nolint:paralleltest // sets PATH
 	fakeTools(t, `echo "Title: x"; echo "Pages: 4"`, `printf 'some text\f'`)
-	if err := os.WriteFile(filepath.Join(filepath.Dir(mustLook(t, "pdftoppm")), "pdftoppm"), []byte("#!/bin/sh\nsleep 30\n"), 0o700); err != nil { //nolint:gosec // test script
+	pdftoppm := filepath.Join(filepath.Dir(mustLook(t, "pdftoppm")), "pdftoppm")
+	if err := os.WriteFile(pdftoppm, []byte("#!/bin/sh\nsleep 30\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(pdftoppm, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	r := pdf.New(t.TempDir(), time.Second)

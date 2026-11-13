@@ -139,14 +139,14 @@ func installHostManifest(exe, home, sock string) (string, error) {
 		return "", err
 	}
 	dir := host.ManifestDir(home)
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // Firefox reads it; it holds no secret
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(dir, host.SocketFileName), []byte(sock+"\n"), 0o644); err != nil { //nolint:gosec // as above
+	if err := os.WriteFile(filepath.Join(dir, host.SocketFileName), []byte(sock+"\n"), 0o600); err != nil {
 		return "", err
 	}
 	path := filepath.Join(dir, host.Name+".json")
-	return path, os.WriteFile(path, append(data, '\n'), 0o644) //nolint:gosec // as above
+	return path, os.WriteFile(path, append(data, '\n'), 0o600)
 }
 
 // nativeHostSocket finds the run daemon's browser socket for the native

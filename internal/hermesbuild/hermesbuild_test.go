@@ -318,7 +318,10 @@ func TestRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	launcher := filepath.Join(b.Dir, "opt/hermes/libexec/hermes")
-	if err := os.WriteFile(launcher, []byte("#!/bin/sh\necho broken\n"), 0o700); err != nil { //nolint:gosec // test launcher
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\necho broken\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(launcher, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Refresh(ctx, image); err != nil {

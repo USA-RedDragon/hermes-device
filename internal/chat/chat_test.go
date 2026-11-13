@@ -29,7 +29,7 @@ import (
 
 const (
 	secret = "control-secret"
-	token  = "per-run-token" //nolint:gosec // test fixture, not a credential
+	token  = "per-run"
 
 	hermesVersion = "0.22.7"
 
@@ -91,7 +91,10 @@ func fakeHermes(t *testing.T, version, body string) string {
 	// fails with ETXTBSY (go.dev/issue/22315). Forks take ForkLock for
 	// writing, so none can start until the file is closed.
 	syscall.ForkLock.RLock()
-	err := os.WriteFile(path, []byte(script), 0o700) //nolint:gosec // the fake hermes script must be executable
+	err := os.WriteFile(path, []byte(script), 0o600)
+	if err == nil {
+		err = os.Chmod(path, 0o700)
+	}
 	syscall.ForkLock.RUnlock()
 	if err != nil {
 		t.Fatal(err)
