@@ -22,8 +22,10 @@ device:
   # roots: []
   # Directory Hermes uses on this device for its shell snapshot files. Defaults to the system temp directory
   # tmp-dir: ""
-  # Shell used to run commands
+  # Shell used to run commands. On Windows: git-bash (Git for Windows' bash), powershell (pwsh when installed, else Windows PowerShell; needs Git Bash too, for the file tools) or wsl (bash in a WSL distribution); bash there picks Git Bash, else WSL
   shell: "bash"
+  # WSL distribution for device.shell wsl on Windows. Defaults to WSL's default distribution
+  # wsl-distro: ""
   # Most output bytes per command that run keeps for a resume of the exec leg until the plugin confirms them. Older output of a command is dropped, and the plugin shows the gap
   resume-buffer: 1048576
   # Longest time run keeps commands running after the exec leg drops, waiting for a resume. The plugin's grace_seconds applies when it is shorter
