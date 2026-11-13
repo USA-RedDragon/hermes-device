@@ -73,6 +73,7 @@ func setupWith(t *testing.T, fn func(cfg *config.Config, opts *web.Options, st *
 	t.Cleanup(func() { _ = st.Close() })
 	srv := httptest.NewUnstartedServer(nil)
 	pub := "http://" + srv.Listener.Addr().String()
+	is.redirect = pub + "/auth/callback"
 	cfg := &config.Config{LogLevel: "info",
 		HTTP:    config.HTTP{PublicURL: pub},
 		OIDC:    config.OIDC{IssuerURL: is.srv.URL, ClientID: clientID, ClientSecret: "s3cret", Scopes: []string{"openid", "profile"}, DisplayClaim: "preferred_username", GroupsClaim: "groups"},

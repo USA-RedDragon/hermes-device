@@ -24,6 +24,9 @@ type issuer struct {
 	key      *rsa.PrivateKey
 	clientID string
 	secret   string
+	// redirect is the callback the client registered, set by the test setup
+	// like a real provider's client registration.
+	redirect string
 
 	mu       sync.Mutex
 	user     string
@@ -60,17 +63,17 @@ func newIssuer(t *testing.T) *issuer {
 	})
 	mux.HandleFunc("GET /authorize", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		if q.Get("client_id") != is.clientID || q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" ||
+		if q.Get("redirect_uri") != is.redirect || q.Get("client_id") != is.clientID || q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" ||
 			q.Get("response_type") != responseTypeCode {
 			http.Error(w, "bad authorize request", http.StatusBadRequest)
 			return
 		}
 		code := randomString()
 		is.mu.Lock()
-		is.codes[code] = grant{nonce: q.Get("nonce"), challenge: q.Get("code_challenge"), redirect: q.Get("redirect_uri")}
+		is.codes[code] = grant{nonce: q.Get("nonce"), challenge: q.Get("code_challenge"), redirect: is.redirect}
 		is.mu.Unlock()
-		target := q.Get("redirect_uri") + "?code=" + code + "&state=" + url.QueryEscape(q.Get("state"))
-		http.Redirect(w, r, target, http.StatusFound) //nolint:gosec // fake issuer in tests
+		target := is.redirect + "?code=" + code + "&state=" + url.QueryEscape(q.Get("state"))
+		http.Redirect(w, r, target, http.StatusFound)
 	})
 	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
