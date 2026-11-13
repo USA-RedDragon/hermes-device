@@ -1,0 +1,208 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 08:30:27 +0000
+Subject: [PATCH] fix(web): autodetect never picks a server-side-only search
+ provider
+
+The openai-native web provider only declares OpenAI's server-side web_search tool on the Codex Responses transport. Autodetect picked it whenever OpenAI or Codex credentials existed, so every client-side web_search call failed and fell back to the keyless tier. A provider now declares runs_client_side() (False for openai-native); the autodetect ladder and the registry availability walk skip it, and a failed call on it is not rescued by the keyless ring, so an explicit pin on another transport returns its one-line error. The pin still drives the Codex swap.
+---
+ agent/web_search_provider.py                  |  7 ++
+ agent/web_search_registry.py                  | 10 ++-
+ plugins/web/openai_native/provider.py         |  3 +
+ .../test_web_openai_native_autodetect.py      | 87 +++++++++++++++++++
+ tools/web_tools.py                            | 15 +++-
+ tools/web_tools_rescue.py                     |  4 +
+ 6 files changed, 124 insertions(+), 2 deletions(-)
+ create mode 100644 tests/tools/test_web_openai_native_autodetect.py
+
+diff --git a/agent/web_search_provider.py b/agent/web_search_provider.py
+index d4b43a9a..35d8a92d 100644
+--- a/agent/web_search_provider.py
++++ b/agent/web_search_provider.py
+@@ -74,6 +74,13 @@ class WebSearchProvider(ProviderBase):
+         """True if this provider implements :meth:`search`."""
+         return True
+ 
++    def runs_client_side(self) -> bool:
++        """False for a provider that never runs a search in Hermes itself (it only declares a
++        server-side tool to a transport, e.g. ``openai-native``). Such a provider is never picked
++        by autodetect or the availability walk, and a failed call on it is not rescued by the
++        keyless ring; only an explicit ``web.search_backend`` / ``web.backend`` selects it."""
++        return True
++
+     def is_keyless_available(self) -> bool:
+         """True when this provider can serve calls WITHOUT credentials (public anonymous
+         free tiers such as Exa / Parallel MCP); used only when NO provider is configured or
+diff --git a/agent/web_search_registry.py b/agent/web_search_registry.py
+index d6918152..491d90fb 100644
+--- a/agent/web_search_registry.py
++++ b/agent/web_search_registry.py
+@@ -116,7 +116,15 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
+ 
+     # Fallbacks are availability-filtered so a registered-but-keyless provider
+     # never becomes "active" on a fresh install.
+-    eligible = [p for p in snapshot.values() if _capable(p) and _available(p)]
++    # A provider that only declares a server-side tool (``runs_client_side()`` False) is never a
++    # fallback for client-side search; only an explicit selection (above) reaches it.
++    def _client_ok(p: WebSearchProvider) -> bool:
++        try:
++            return capability != "search" or bool(p.runs_client_side())
++        except Exception:
++            return True
++
++    eligible = [p for p in snapshot.values() if _capable(p) and _client_ok(p) and _available(p)]
+     if len(eligible) == 1:
+         return eligible[0]
+ 
+diff --git a/plugins/web/openai_native/provider.py b/plugins/web/openai_native/provider.py
+index f1b36e00..468c6f76 100644
+--- a/plugins/web/openai_native/provider.py
++++ b/plugins/web/openai_native/provider.py
+@@ -71,6 +71,9 @@ class OpenAINativeWebSearchProvider(BaseWebSearchProvider):
+     def is_available(self) -> bool:
+         return has_codex_credentials()
+ 
++    def runs_client_side(self) -> bool:
++        return False
++
+     def search(self, query: str, limit: int = 5) -> dict[str, Any]:
+         """Never called on a successful native turn — the transport replaces the tool
+         before the request goes out. Reached only when the active transport cannot host
+diff --git a/tests/tools/test_web_openai_native_autodetect.py b/tests/tools/test_web_openai_native_autodetect.py
+new file mode 100644
+index 00000000..816700f0
+--- /dev/null
++++ b/tests/tools/test_web_openai_native_autodetect.py
+@@ -0,0 +1,87 @@
++"""openai-native only declares a server-side tool; client-side search must never autodetect it."""
++
++import json
++
++import pytest
++
++from agent import web_search_registry as registry
++from agent.transports import codex as codex_mod
++from plugins.web.openai_native import provider as native_mod
++from plugins.web.openai_native.provider import OpenAINativeWebSearchProvider
++from tools import web_tools, web_tools_rescue
++
++
++@pytest.fixture(autouse=True)
++def _codex_credentials_no_search_keys(monkeypatch):
++    for var in (
++        "EXA_API_KEY", "PARALLEL_API_KEY", "KEENABLE_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY",
++        "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "BRAVE_SEARCH_API_KEY", "SEARXNG_URL",
++    ):
++        monkeypatch.delenv(var, raising=False)
++    monkeypatch.setattr("agent.web_search_provider.get_provider_env", lambda name: "", raising=True)
++    monkeypatch.setattr(web_tools, "_env_value", lambda name: "", raising=True)
++    monkeypatch.setattr(web_tools, "_load_web_config", dict, raising=True)
++    monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False, raising=True)
++    monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False, raising=True)
++    monkeypatch.setattr(native_mod, "has_codex_credentials", lambda: True)
++
++
++@pytest.fixture()
++def native_registry():
++    with registry._lock:
++        saved = dict(registry._providers)
++        registry._providers.clear()
++    registry.register_provider(OpenAINativeWebSearchProvider())
++    yield registry
++    with registry._lock:
++        registry._providers.clear()
++        registry._providers.update(saved)
++
++
++def test_provider_declares_server_side_only():
++    provider = OpenAINativeWebSearchProvider()
++    assert provider.is_available() is True
++    assert provider.runs_client_side() is False
++
++
++def test_autodetect_skips_openai_native(native_registry, monkeypatch):
++    monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
++    assert web_tools._autodetect_backend() is None
++
++
++def test_get_backend_never_returns_openai_native(native_registry, monkeypatch):
++    monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
++    monkeypatch.setattr(web_tools, "_keyless_backend", lambda: None)
++    assert web_tools._get_search_backend() != "openai-native"
++
++
++def test_registry_walk_skips_openai_native(native_registry):
++    assert registry.get_active_search_provider() is None
++
++
++def test_explicit_pin_still_resolves(native_registry, monkeypatch):
++    monkeypatch.setattr(registry, "_configured_backend", lambda cap: "openai-native")
++    provider = registry.get_active_search_provider()
++    assert provider is not None and provider.name == "openai-native"
++
++
++def test_pin_drives_codex_swap(native_registry, monkeypatch):
++    monkeypatch.setattr(registry, "_configured_backend", lambda cap: "openai-native")
++    assert codex_mod._openai_prefers_native_web_search() is True
++
++
++def test_pin_on_other_transport_is_one_clear_error_not_a_rescue(native_registry, monkeypatch):
++    """The client tool reaches the provider only off the Codex transport; the error stands."""
++    monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
++    monkeypatch.setattr(web_tools, "_get_search_backend", lambda: "openai-native")
++    monkeypatch.setattr(web_tools_rescue, "_keyless_rescue_enabled", lambda: True)
++
++    def _no_rescue(*args, **kwargs):
++        raise AssertionError("keyless rescue must not run for a server-side-only provider")
++
++    monkeypatch.setattr(web_tools_rescue, "_rescue_search", _no_rescue)
++    monkeypatch.setattr(web_tools, "_rescue_search", _no_rescue)
++    result = json.loads(web_tools.web_search_tool("hello"))
++    assert result["success"] is False
++    assert "Codex Responses transport" in result["error"]
++    assert "\n" not in result["error"]
+diff --git a/tools/web_tools.py b/tools/web_tools.py
+index 02b9ef3f..5f25ebee 100644
+--- a/tools/web_tools.py
++++ b/tools/web_tools.py
+@@ -133,11 +133,24 @@ def _autodetect_backend() -> Optional[str]:
+ 
+     # Plugin-contributed providers (built-ins are covered above); probe the held object directly.
+     for provider in _list_registered_web_providers():
+-        if provider.name not in _LEGACY_WEB_BACKENDS and _probe(provider, "is_available"):
++        if (
++            provider.name not in _LEGACY_WEB_BACKENDS
++            and _runs_client_side(provider)
++            and _probe(provider, "is_available")
++        ):
+             return provider.name
+     return None
+ 
+ 
++def _runs_client_side(provider) -> bool:
++    """False for a provider that only declares a server-side tool (openai-native); autodetect never picks it."""
++    try:
++        return bool(provider.runs_client_side())
++    except Exception as exc:
++        logger.debug("web provider %r.runs_client_side() raised: %s", getattr(provider, "name", provider), exc)
++        return True
++
++
+ def _keyless_backend() -> Optional[str]:
+     """Keyless free-tier backend name, or None. Strictly the last autodetect rung so it never
+     pre-empts a keyed backend. Discovery must run first: reachable from contexts that haven't
+diff --git a/tools/web_tools_rescue.py b/tools/web_tools_rescue.py
+index 071f0535..d08af3c3 100644
+--- a/tools/web_tools_rescue.py
++++ b/tools/web_tools_rescue.py
+@@ -82,6 +82,10 @@ def _rescue_eligible(provider) -> bool:
+     if not _keyless_rescue_enabled() or provider is None:
+         return False
+     try:
++        # A server-side-only provider (openai-native) fails with a clear message on a transport that
++        # cannot host it; rerouting to another backend would hide that the selection is wrong.
++        if not getattr(provider, "runs_client_side", lambda: True)():
++            return False
+         from plugins.web.keyless_mcp import _KEYLESS_RING
+         name = getattr(provider, "name", "")
+         return name not in _KEYLESS_RING or not _ring_vendor_keyless(name)
