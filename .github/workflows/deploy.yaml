@@ -38,8 +38,9 @@ jobs:
       - name: Setup script tests
         run: python3 -I hack/test_hermes_init.py
       - name: Shell scripts
-        run: shellcheck -s sh compose/files/init.sh aio/rootfs/etc/cont-init.d/10-talaria hack/check-sync.sh \
-          aio/rootfs/etc/s6-overlay/s6-rc.d/talaria-searxng/run aio/rootfs/etc/s6-overlay/s6-rc.d/talaria-searxng/finish
+        run: |
+          shellcheck -s sh compose/files/init.sh aio/rootfs/etc/cont-init.d/10-talaria hack/check-sync.sh \
+            aio/rootfs/etc/s6-overlay/s6-rc.d/talaria-searxng/run aio/rootfs/etc/s6-overlay/s6-rc.d/talaria-searxng/finish
       - name: Compose file
         run: |
           cp compose/.env.example compose/.env
