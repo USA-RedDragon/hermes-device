@@ -1,5 +1,10 @@
 {{- $full := include "talaria.fullname" . -}}
 {{- $rolling := .Values.hermes.rolling.enabled -}}
+{{- /* Image volumes need Kubernetes 1.33; older clusters get an init container that copies the binary */ -}}
+{{- $mode := .Values.hermes.editorBridge.binary -}}
+{{- if eq $mode "auto" -}}
+{{- $mode = ternary "image" "copy" (semverCompare ">=1.33-0" .Capabilities.KubeVersion.Version) -}}
+{{- end -}}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -85,6 +90,20 @@ spec:
             capabilities: {drop: [ALL]}
           volumeMounts:
             - {name: plugin-src, mountPath: /plugin-src}
+        {{- if and .Values.hermes.editorBridge.enabled (eq $mode "copy") }}
+        # Clusters older than 1.33 (no image volumes): the talaria binary for acp-host, copied into a shared emptyDir
+        # (the image has no shell or cp)
+        - name: device-bin
+          image: {{ .Values.images.device }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          args: ["copy-self", "/device-bin/talaria"]
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 128Mi}
+          securityContext: *sc
+          volumeMounts:
+            - {name: device-bin, mountPath: /device-bin}
+        {{- end }}
         # Device plugin, hub public key, Talaria settings in config.yaml
         - name: init
           image: {{ .Values.images.hermes }}
@@ -169,11 +188,12 @@ spec:
           volumeMounts: *mounts
         {{- if .Values.hermes.editorBridge.enabled }}
         # Hosts one hermes acp per editor connection that the hub forwards (talaria acp). Its own container, so
-        # editor sessions outlive gateway restarts; the binary comes from the talaria image, mounted read-only
+        # editor sessions outlive gateway restarts; the binary comes from the talaria image (copied by an init container,
+        # or mounted read-only as an image volume)
         - name: acp-host
           image: {{ .Values.images.hermes }}
           imagePullPolicy: {{ .Values.images.pullPolicy }}
-          command: ["/opt/talaria/hermes-device", "acp-host"]
+          command: ["/opt/talaria/{{ if eq $mode "copy" }}talaria{{ else }}{{ .Values.images.deviceBinary }}{{ end }}", "acp-host"]
           workingDir: /opt/data
           env:
             - {name: HOME, value: /opt/data}
@@ -202,10 +222,15 @@ spec:
         {{- end }}
       volumes:
         {{- if .Values.hermes.editorBridge.enabled }}
+        {{- if eq $mode "copy" }}
+        - name: device-bin
+          emptyDir: {}
+        {{- else }}
         - name: device-bin
           image:
             reference: {{ .Values.images.device }}
             pullPolicy: {{ .Values.images.pullPolicy }}
+        {{- end }}
         {{- end }}
         - name: data
           persistentVolumeClaim: {claimName: {{ $full }}-hermes}

@@ -182,6 +182,8 @@ images:
   # -- Talaria Hermes: Hermes Agent with the Talaria patches (https://usa-reddragon.github.io/talaria/deploy/images.html)
   hermes: ghcr.io/usa-reddragon/talaria-hermes:v0.23.1-p30@sha256:4a5d4e2affd196ac92037e2d3e1e3fefbb32ab74f5467f5b324d0e401187cc0a
   device: ghcr.io/usa-reddragon/hermes-device:v0.25.3@sha256:c19e36561ac6b34798eea6464dfbf5f974b44102d30c1e1f789abc88c3a7eeb0
+  # -- The binary's file name at the root of the device image, for the image volume; "talaria" from v0.26.0
+  deviceBinary: hermes-device
   sandbox: ghcr.io/usa-reddragon/hermes-device-sandbox:v0.25.3@sha256:ec2ffbec87ada250eec859e98467d91bf3cf1e59b65e158c5d3e0faec3cd2ebb
   caddy: docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
   pullPolicy: IfNotPresent
@@ -210,10 +212,13 @@ hub:
 
 hermes:
   # -- The editor bridge: runs acp-host in the Hermes pod and gives the hub its address, so that editors can use
-  # talaria acp. Mounts the talaria image as a volume, which needs Kubernetes 1.33 or newer; turn it off on older
-  # clusters
+  # talaria acp
   editorBridge:
     enabled: true
+    # -- How acp-host gets the talaria binary: "auto" mounts the talaria image as a volume on Kubernetes 1.33 or newer
+    # and has an init container copy the binary into an emptyDir on older clusters. Force "image" or "copy" when the
+    # detection is wrong (helm template without --kube-version). "copy" needs a talaria image with copy-self
+    binary: auto
   persistence:
     size: 20Gi
     storageClass: ""
