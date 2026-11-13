@@ -169,3 +169,26 @@ func TestNewChatModelsAPI(t *testing.T) {
 		t.Fatalf("anonymous models = %d", resp.StatusCode)
 	}
 }
+
+// TestMeClaudeNeedsPlugin: /api/me says claude only when some backend's
+// Hermes has the Claude accounts plugin.
+func TestMeClaudeNeedsPlugin(t *testing.T) {
+	t.Parallel()
+	for _, plugin := range []bool{false, true} {
+		var e *hubEnv
+		e = setupWith(t, func(cfg *config.Config, opts *web.Options, _ *store.Store) {
+			cfg.Backends[0].Users = []string{userAlice}
+			d := gateway.NewDialer(gateway.Credentials{BaseURL: cfg.Backends[0].URL, Provider: "basic", Username: clientID, Password: "pw"})
+			opts.Claude = claude.New(claude.Options{Access: lateAccess{&e}, Requesters: map[string]device.Requester{"pc": d}})
+		})
+		if plugin {
+			claudetest.New(e.gw)
+		}
+		alice := client(t)
+		login(t, e, alice)
+		_, body := get(t, alice, e.url+"/api/me")
+		if got := strings.Contains(body, `"claude":true`); got != plugin {
+			t.Errorf("plugin=%v: me = %s", plugin, body)
+		}
+	}
+}

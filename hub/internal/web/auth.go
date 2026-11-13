@@ -265,7 +265,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"default_backend": s.defaults[sess.User], "devices": s.devices != nil, "computers": s.computers != nil,
 		"memory": s.memory != nil, "usage": s.insights != nil || s.claudeCode != nil, "claude_code": s.claudeCode != nil,
 		"files": s.files != nil, "notify": s.notices != nil,
-		"claude": s.claude != nil, "claude_admin": s.isClaudeAdmin(sess.User), "telegram_steps": s.telegramSteps, "version": s.version,
+		"claude": s.hasClaude(r.Context(), sess.User), "claude_admin": s.isClaudeAdmin(sess.User), "telegram_steps": s.telegramSteps, "version": s.version,
 		"scheduled": s.scheduled != nil, "prompts": s.prompts != nil, "partners": s.partners != nil,
 		"auth": s.mode, "admin": s.accounts != nil && s.isAdmin(r.Context(), sess.User), "password": s.mode == config.AuthLocal && sess.Account,
 		"logout_url": s.logoutURL, "identity": sess.Identity, "issuer": s.issuer})

@@ -535,3 +535,38 @@ func TestNewChatModels(t *testing.T) {
 		t.Errorf("a backend alice cannot use = %v", err)
 	}
 }
+
+func TestPresent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	creds := func(u string) device.Requester {
+		return gateway.NewDialer(gateway.Credentials{BaseURL: u, Provider: "basic", Username: "hub", Password: "pw"})
+	}
+	bare := gatewaytest.New("hub", "pw")
+	t.Cleanup(bare.Close)
+	with := gatewaytest.New("hub", "pw")
+	t.Cleanup(with.Close)
+	claudetest.New(with)
+	svc := func(r map[string]device.Requester) *claude.Service {
+		return claude.New(claude.Options{Access: access{}, Requesters: r})
+	}
+	if svc(map[string]device.Requester{other: creds(bare.URL())}).Present(ctx, bob) {
+		t.Error("a Hermes without the plugin is present")
+	}
+	if svc(nil).Present(ctx, bob) {
+		t.Error("no backends is present")
+	}
+	both := svc(map[string]device.Requester{other: creds(bare.URL()), backendMain: creds(with.URL())})
+	if !both.Present(ctx, bob) {
+		t.Error("a Hermes with the plugin is not present")
+	}
+	if both.Present(ctx, "carol") {
+		t.Error("a user without access sees accounts")
+	}
+	if both.Present(ctx, alice) != true {
+		t.Error("alice uses the backend with the plugin")
+	}
+	if svc(map[string]device.Requester{other: creds(bare.URL())}).Present(ctx, alice) {
+		t.Error("alice has no access to other")
+	}
+}

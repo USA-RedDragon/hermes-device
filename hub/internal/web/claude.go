@@ -54,6 +54,22 @@ func (s *Server) handleNewChatModels(w http.ResponseWriter, r *http.Request) {
 	}{m, hub.ReasoningEfforts()})
 }
 
+// claudePresent is the optional part of a hub.Claude that says whether
+// any backend of a user has Claude accounts.
+type claudePresent interface {
+	Present(ctx context.Context, user string) bool
+}
+
+// hasClaude says whether to show the Claude accounts pages: the hub has
+// the Claude core and, when it can tell, some backend has accounts.
+func (s *Server) hasClaude(ctx context.Context, user string) bool {
+	if s.claude == nil {
+		return false
+	}
+	p, ok := s.claude.(claudePresent)
+	return !ok || p.Present(ctx, user)
+}
+
 func (s *Server) isClaudeAdmin(user string) bool {
 	a, ok := s.claude.(claudeAdmin)
 	return ok && a.Admin(user)

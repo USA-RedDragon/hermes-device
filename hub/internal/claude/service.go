@@ -126,6 +126,35 @@ func New(o Options) *Service {
 	return s
 }
 
+// presentTimeout bounds the probe of one backend in Present.
+const presentTimeout = 3 * time.Second
+
+// Present reports whether any backend user may use has Claude accounts
+// (or a ChatGPT plan), as the Hermes of that backend says. A Hermes
+// without the Claude accounts plugin answers "none"; one that cannot be
+// reached counts as present, so the Claude pages do not vanish while
+// it restarts. The answers come from the same cache as ClaudeAccounts.
+func (s *Service) Present(ctx context.Context, user string) bool {
+	var wg sync.WaitGroup
+	found := make(chan struct{}, len(s.clients))
+	for id := range s.clients {
+		if s.o.Access.Allowed(ctx, user, id) != nil {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pctx, cancel := context.WithTimeout(ctx, presentTimeout)
+			defer cancel()
+			if _, err := s.ClaudeAccounts(pctx, user, id, false); !errors.Is(err, hub.ErrNoClaude) {
+				found <- struct{}{}
+			}
+		}()
+	}
+	wg.Wait()
+	return len(found) > 0
+}
+
 // IsAdmin reports whether user may sign a backend's Claude accounts in.
 func (s *Service) IsAdmin(user, backendID string) bool {
 	return slices.Contains(s.admins[backendID], user)
