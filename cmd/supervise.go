@@ -145,5 +145,7 @@ func runSupervisor(ctx context.Context, b *base) error {
 	slog.Info("Supervising the daemon for the scheduled task", "binary", exe, "args", args)
 	ctx, stop := signalContext(ctx)
 	defer stop()
+	ctx, cancel := withParent(ctx)
+	defer cancel()
 	return supervise(ctx, exe, args, filepath.Join(base, legacy.Name))
 }
