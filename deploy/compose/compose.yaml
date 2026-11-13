@@ -1,7 +1,8 @@
 # Talaria: the hub (web app), Hermes (the agent) and a sandbox (where the agent runs commands), on one host.
 #
-#   docker compose --profile demo up -d      # try it with the demo model, no API key
-#   docker compose logs init                 # the address to open; the first visitor makes the admin account
+#   docker compose up -d --wait                          # start it
+#   docker compose logs init                             # the address to open; the first visitor makes the admin
+#   docker compose exec -u hermes hermes hermes model    # pick a model (or talaria-demo, with profile demo)
 #
 # Settings are in .env (copy .env.example). Every secret is made by the init service on the first start and
 # kept in the "secrets" volume. Optional parts are profiles: demo, ollama, honcho, honcho-embeddings.

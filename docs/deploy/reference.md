@@ -37,7 +37,7 @@ TALARIA_PUSH_CONTACT=
 
 # --- Model ---
 # The model and provider are Hermes settings, not Talaria ones. After the first start:
-#   docker compose exec -it hermes hermes model
+#   docker compose exec -u hermes hermes hermes model
 # (see the docs page "Choosing models and providers"). Provider keys that Hermes reads from its environment,
 # such as OPENROUTER_API_KEY, can go in compose.override.yaml under hermes: environment:.
 #
@@ -48,7 +48,7 @@ TALARIA_PUSH_CONTACT=
 COMPOSE_PROFILES=
 # Ollama's own setting: the context window it serves. Hermes needs at least 64K
 OLLAMA_CONTEXT_LENGTH=65536
-# With profile ollama: a model to download on start, such as qwen3:8b
+# With profile ollama: a model to download on start, such as llama3.1:8b (it needs tool calls and a 64K window)
 TALARIA_OLLAMA_PULL=
 
 # --- Images ---
