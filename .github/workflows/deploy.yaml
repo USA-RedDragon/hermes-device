@@ -48,13 +48,24 @@ jobs:
           COMPOSE_PROFILES=demo,ollama,honcho,honcho-embeddings docker compose -f compose/compose.yaml config -q
       - name: Helm chart
         run: |
+          # The packaged common library in charts/ matches Chart.lock
+          helm dependency list charts/talaria | awk 'NR > 1 && NF && $NF != "ok" { print; bad = 1 } END { exit bad }'
           helm lint charts/talaria --set publicUrl=http://localhost:8080 --set demo.enabled=true
+          for kv in 1.29.0 1.35.0; do
+            helm template t charts/talaria --kube-version "$kv" --set publicUrl=http://localhost:8080 --set demo.enabled=true > /dev/null
+          done
           helm template t charts/talaria --set publicUrl=https://talaria.example.com --set ingress.enabled=true \
-            --set httpRoute.enabled=true --set 'httpRoute.parentRefs[0].name=gw' > /dev/null
+            --set httpRoute.enabled=true --set 'httpRoute.parentRefs[0].name=gw' \
+            --api-versions gateway.networking.k8s.io/v1/HTTPRoute > /dev/null
           helm template t charts/talaria --set publicUrl=https://talaria.example.com --set auth.mode=oidc \
             --set auth.oidc.issuerUrl=https://id.example.com --set auth.oidc.clientId=c \
             --set 'auth.oidc.users[0].sub=s' --set 'auth.oidc.users[0].name=admin' \
             --set hub.store.driver=postgres --set hub.store.existingSecret=db --set hub.replicas=2 > /dev/null
+          helm template t charts/talaria --set publicUrl=http://localhost:8080 --set searxng.enabled=false \
+            --set hermes.editorBridge.enabled=false --set hermes.rolling.enabled=false > /dev/null
+          # The editor bridge's binary: an image volume from 1.35, an init container's copy below
+          helm template t charts/talaria --kube-version 1.35.0 --set publicUrl=http://localhost:8080 | grep 'reference: ghcr.io/usa-reddragon/talaria:' > /dev/null
+          helm template t charts/talaria --kube-version 1.34.0 --set publicUrl=http://localhost:8080 | grep 'copy-self' > /dev/null
       - name: Unraid template
         run: |
           sudo apt-get install -y --no-install-recommends libxml2-utils
