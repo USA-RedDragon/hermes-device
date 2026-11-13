@@ -2,6 +2,7 @@ package tokenstore_test
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -34,6 +35,9 @@ func (f *fakeKeyring) Set(s, u, p string) error {
 }
 
 func (f *fakeKeyring) Delete(s, u string) error {
+	if f.getErr != nil {
+		return f.getErr
+	}
 	if _, ok := f.m[s+"/"+u]; !ok {
 		return keyring.ErrNotFound
 	}
@@ -112,5 +116,28 @@ func TestLoadLockedKeychain(t *testing.T) {
 	s = &tokenstore.Store{Keyring: &fakeKeyring{m: map[string]string{}, getErr: locked}, File: filepath.Join(t.TempDir(), "token")}
 	if _, err := s.Load(record().Hub); !errors.Is(err, tokenstore.ErrNoToken) {
 		t.Fatalf("Load without KeyringAlwaysThere = %v, want ErrNoToken", err)
+	}
+}
+
+// A keyring that cannot be reached (Windows Credential Manager over SSH)
+// does not stop Delete of a token that is in the file, but Delete reports
+// it when there is no file, as the token may then be in the keyring.
+func TestDeleteWithUnreachableKeyring(t *testing.T) {
+	t.Parallel()
+	file := filepath.Join(t.TempDir(), "token")
+	kr := &fakeKeyring{m: map[string]string{}, fail: true}
+	s := &tokenstore.Store{Keyring: kr, File: file}
+	if _, err := s.Save(record()); err != nil {
+		t.Fatal(err)
+	}
+	kr.getErr = errors.New("A specified logon session does not exist")
+	if err := s.Delete(record().Hub); err != nil {
+		t.Fatalf("Delete with the token in the file: %v", err)
+	}
+	if _, err := os.Stat(file); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("token file left: %v", err)
+	}
+	if err := s.Delete(record().Hub); err == nil {
+		t.Error("Delete without a file hid the keyring error")
 	}
 }

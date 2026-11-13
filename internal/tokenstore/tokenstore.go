@@ -195,17 +195,26 @@ func (s *Store) Delete(hub string) error {
 	if err != nil {
 		return err
 	}
+	var kerr error
 	if s.Keyring != nil {
 		for _, svc := range []string{Service, LegacyService} {
 			if err := s.Keyring.Delete(svc, acct); err != nil && !errors.Is(err, keyring.ErrNotFound) {
-				return err
+				kerr = err
+				break
 			}
 		}
 	}
-	if err := os.Remove(s.File); err != nil && !errors.Is(err, os.ErrNotExist) {
+	err = os.Remove(s.File)
+	switch {
+	case err == nil:
+		// Save writes the file only when the keyring fails, so a keyring
+		// that cannot be reached now (Windows Credential Manager in an SSH
+		// session) holds no token of this hub.
+		return nil
+	case !errors.Is(err, os.ErrNotExist):
 		return err
 	}
-	return nil
+	return kerr
 }
 
 func writePrivate(path string, data []byte) error {
