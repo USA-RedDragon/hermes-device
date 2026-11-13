@@ -1,7 +1,6 @@
 # Install Talaria on Kubernetes with Helm
 
-The chart in `deploy/charts/talaria` runs the same parts as the compose install: the hub (with its web front and the
-built-in login in one pod), Hermes, and the sandbox. It makes every key it needs on the first install.
+The chart in `deploy/charts/talaria` runs the same parts as the compose install: the hub (with its web front in one pod), Hermes, and the sandbox. It makes every key it needs on the first install.
 
 ## What you need
 
@@ -20,14 +19,9 @@ kubectl -n talaria rollout status deploy/talaria-hermes --timeout=10m
 kubectl -n talaria port-forward svc/talaria 8080:8080
 ```
 
-Open http://localhost:8080 and log in as `admin@talaria.local` with the password from
-
-```bash
-kubectl -n talaria get secret talaria-keys -o jsonpath='{.data.admin-password}' | base64 -d; echo
-```
-
-Keep the local port of the port-forward the same as the port in `publicUrl`: the hub reaches the built-in login
-at that address.
+Open http://localhost:8080 right away: the setup page makes the first account, an admin. The first person who
+opens it gets that account, so do it before the hub is reachable from anywhere else. Add other people under
+Settings, Users ([Login options](auth.md)).
 
 ## With a host name
 
@@ -44,12 +38,8 @@ API, use `httpRoute.enabled=true` and `httpRoute.parentRefs` instead of the Ingr
 `<release>-device` for `/api/device/` (device WebSockets, no request timeout) and `<release>` for the rest (24
 hours, for server-sent events). An authenticating policy belongs on `<release>` only ([Login](auth.md)).
 
-When `publicUrl` has a certificate from a private CA (your own, or step-ca), give the hub that CA with
-`--set-file hub.caBundle=ca.crt`: the hub opens `publicUrl` itself for the built-in login.
-
-The hub pod must be able to open `publicUrl`, because the built-in login is there. In most clusters the name
-resolves to the load balancer and this works. Where it does not (split DNS), use `auth.mode=oidc` with your own
-identity provider.
+With `auth.mode=oidc` and a provider whose certificate comes from a private CA (your own, or step-ca), give the
+hub that CA with `--set-file hub.caBundle=ca.crt`.
 
 ## Zero-downtime updates
 
@@ -69,7 +59,7 @@ volume, set `hermes.persistence.accessMode=ReadWriteMany` and the pod affinity i
 
 The hub with SQLite (the default) is one pod that is replaced (`Recreate`), which takes a few seconds; the
 browser reconnects. For a hub with no gap, use PostgreSQL (`hub.store.driver=postgres`,
-`hub.store.existingSecret` with key `dsn`), `auth.mode=oidc`, and `hub.replicas=2`: the chart then uses a
+`hub.store.existingSecret` with key `dsn`) and `hub.replicas=2`: the chart then uses a
 rolling update with `maxUnavailable: 0` and a PodDisruptionBudget.
 
 The sandbox is one pod that is replaced: a second sandbox would take over the first one's connection.
@@ -77,7 +67,7 @@ The sandbox is one pod that is replaced: a second sandbox would take over the fi
 ## Keys and secrets
 
 On the first install the chart makes the hub's Ed25519 signing key, the Web Push key, the session secret, the
-login client secret, the password the hub uses with Hermes, the sandbox token and the admin password, and keeps
+password the hub uses with Hermes and the sandbox token, and keeps
 them in the Secret `<release>-keys`. Upgrades read them back, so they never change. Uninstall leaves that Secret
 and the volumes in place (`helm.sh/resource-policy: keep`); delete them by hand to start over.
 

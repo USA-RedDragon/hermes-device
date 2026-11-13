@@ -4,7 +4,7 @@ Start with what is running and what it says.
 
 ```bash
 docker compose ps -a                 # every service, and why one stopped
-docker compose logs init             # first start: the address and login
+docker compose logs init             # first start: the address
 docker compose logs hub hermes       # the two parts you talk to
 ```
 
@@ -17,10 +17,15 @@ On Kubernetes: `kubectl -n talaria get pods`, `kubectl -n talaria logs deploy/ta
 
 ## I cannot log in
 
-- You did not see the password: `docker compose logs init` shows it again. Helm: read it from the `<release>-keys` Secret.
-- The login page says the address is wrong, or the hub log shows `oidc discovery ... connection refused`: `TALARIA_PUBLIC_URL` does not match how you open Talaria. Use the same address in both, then `docker compose up -d`. The hub itself must be able to open that address, because the built-in login is there.
-- A redirect to the wrong host after login: the same cause. The hub accepts requests only for its public URL.
-- With your own OIDC provider, the hub refuses you and logs a `sub`: add that `sub` to the user list. See [Login options](auth.md#your-own-oidc-provider).
+- The setup page says the hub is already set up, and you did not make the account: someone else opened it first.
+  Stop Talaria, and if you do not know who that was, start over with `docker compose down -v` (this deletes
+  everything), then keep the port closed to others until you made the account.
+- You forgot the password: another admin sets a new one under Settings, Users. With no other admin, restore a
+  backup or start over (no shell reset command yet).
+- Locked after 5 wrong passwords: wait 15 minutes, or an admin sets a new password.
+- A redirect to the wrong host after login: `TALARIA_PUBLIC_URL` does not match how you open Talaria. Use the same
+  address in both, then `docker compose up -d`.
+- With your own OIDC provider, the hub refuses you and logs a `sub`: make an account with their email, turn on `auto_create`, or list the `sub`. See [Login options](auth.md#your-own-oidc-provider).
 
 ## Chats do not stream, or stop after a while
 

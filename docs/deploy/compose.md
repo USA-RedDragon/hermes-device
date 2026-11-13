@@ -40,21 +40,26 @@ The first start downloads the images (about 1.2 GB, mostly the Hermes image) and
 `--wait` returns when every part is healthy. On the test VM, with the Hermes image already there, this step
 took 26 seconds.
 
-## Step 3: Log in
+## Step 3: Make your account
 
 ```bash
 docker compose logs init
 ```
 
-shows the address and the first login:
+shows the address:
 
 ```text
- Open:      http://localhost:8080
- Log in as: admin@talaria.local
- Password:  <random>
+ Open:  http://localhost:8080
 ```
 
-Open the address in a browser on the same host, log in, and send a message. With the demo model, the reply
+Open it in a browser on the same host. While Talaria has no account, it shows the setup page: give a user name, a
+display name and a password of at least 12 characters. The first person who does this becomes the admin, so do it
+right away, before Talaria is reachable from other machines. There is no password in the log. Then send a
+message.
+
+![The setup page](images/setup.png)
+
+Add other people later under Settings, Users (see [Login options](auth.md)). With the demo model, the reply
 starts with "This is the Talaria demo model". Two messages show more:
 
 - `run: uname -a`: the agent runs the command in the sandbox. A risky command, such as `run: rm -rf /work/old`,
@@ -123,8 +128,8 @@ The hub accepts requests only for the address in `TALARIA_PUBLIC_URL`. By defaul
   resolve to this host on every device, through your DNS or each device's hosts file.
 - **Behind your own reverse proxy:** proxy to port 8080 of the host and set `TALARIA_PUBLIC_URL` to the
   proxy's address. Turn off response buffering (chats stream as server-sent events) and allow WebSockets on
-  `/api/device/`. The hub must be able to reach `TALARIA_PUBLIC_URL` itself, because the built-in login is
-  there.
+  `/api/device/`. To let the proxy log people in (Authelia, oauth2-proxy), see
+  [Login options](auth.md#behind-a-reverse-proxy).
 
 ## Settings
 
@@ -137,12 +142,11 @@ start; it never changes a secret it made.
 
 | Service | What it does |
 | ------- | ------------ |
-| `init` | Makes the secrets once, writes the hub and login configs, prints the first login, then exits |
+| `init` | Makes the secrets once, writes the hub config, prints the address, then exits |
 | `plugin` | Copies the Talaria device plugin out of its image, then exits |
 | `hermes-init` | Sets up the Hermes home: plugin, hub key, Talaria settings in `config.yaml`, then exits |
 | `hermes` | Hermes Agent, the agent itself |
-| `front` | Caddy: the one published port; sends `/dex/` to the login and the rest to the hub |
-| `dex` | The built-in login (temporary, see [Login](auth.md)) |
+| `front` | Caddy: the one published port, in front of the hub (and HTTPS when `TALARIA_SITE` is set) |
 | `hub` | The Talaria hub: web app, Telegram bot, device connections |
 | `sandbox` | Runs the agent's commands for chats that are not on one of your computers |
 | `demo-llm` | The demo model (profile `demo`) |
@@ -153,7 +157,7 @@ Data lives in Docker volumes: `talaria_hermes-data` (chats, memory, Hermes setti
 ## Add your computers
 
 Install `talaria` on each computer you want the agent to work on, and pair it with your hub. See the
-[setup page](../start/setup-and-pairing.md). Give `talaria setup` your hub's address
+[Set up and pair a computer](../start/setup-and-pairing.md) page. Give `talaria setup` your hub's address
 (`TALARIA_PUBLIC_URL`).
 
 ## Troubleshooting

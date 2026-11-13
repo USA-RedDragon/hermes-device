@@ -15,15 +15,9 @@ Talaria on Unraid is one container from the all-in-one image ([design](all-in-on
 3. Leave **Demo model** at `true` to try it, or set **Model API URL**, **Model** and **Model API key** and make
    it `false`.
 4. **Apply**. The first start downloads about 1.2 GB.
-5. Click the container's icon, **Logs**, and find the lines
-
-   ```text
-    Open:      http://192.168.1.10:8080
-    Log in as: admin@talaria.local
-    Password:  <random>
-   ```
-
-6. Open the address (or **WebUI** in the container's menu) and log in.
+5. Right after the start, open **WebUI** in the container's menu (or `http://192.168.1.10:8080`). The setup page
+   makes the first account, an admin: the first person who opens it gets that account, so do it before the port
+   is reachable from outside your network. Add other people under Settings, Users.
 
 Data is in `/mnt/user/appdata/talaria`: `hermes` (chats, memory) and `talaria` (hub database, keys, the
 sandbox's files). Back up both.

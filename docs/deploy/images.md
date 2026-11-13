@@ -24,7 +24,6 @@ ghcr.io/usa-reddragon/talaria-hub:v0.26.53
 | `ghcr.io/usa-reddragon/hermes-device` | The `talaria` binary; the chart and compose copy the device plugin out of it | Yes |
 | `ghcr.io/usa-reddragon/hermes-device-sandbox` | The sandbox | Yes |
 | `docker.io/library/caddy` | The web front | Yes |
-| `ghcr.io/dexidp/dex` | The built-in login (temporary) | Yes |
 | `ghcr.io/usa-reddragon/talaria-aio` | The all-in-one image (Unraid, TrueNAS, `docker run`) | Yes |
 
 Optional parts (compose profiles): `docker.io/ollama/ollama`, `ghcr.io/plastic-labs/honcho`,

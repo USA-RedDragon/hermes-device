@@ -18,7 +18,7 @@ What to keep:
 
 | Install | Where |
 | ------- | ----- |
-| Compose | Volumes `talaria_hermes-data`, `talaria_hub-data`, `talaria_secrets`, `talaria_sandbox-work`, `talaria_dex-data`, and your `.env` |
+| Compose | Volumes `talaria_hermes-data`, `talaria_hub-data`, `talaria_secrets`, `talaria_sandbox-work`, and your `.env` |
 | Helm | PVCs `<release>-hermes`, `<release>-hub`, `<release>-sandbox`, and the Secret `<release>-keys` |
 | All-in-one | The `/opt/data` and `/talaria` folders |
 
@@ -30,7 +30,7 @@ A compose backup with the stack stopped:
 
 ```bash
 docker compose stop
-for v in hermes-data hub-data secrets sandbox-work dex-data; do
+for v in hermes-data hub-data secrets sandbox-work; do
   docker run --rm -v talaria_$v:/v -v "$PWD":/b alpine tar -czf /b/talaria-$v.tgz -C /v .
 done
 docker compose start
@@ -53,7 +53,7 @@ Compose, from the backup above, into a stopped stack:
 
 ```bash
 docker compose down
-for v in hermes-data hub-data secrets sandbox-work dex-data; do
+for v in hermes-data hub-data secrets sandbox-work; do
   docker volume create talaria_$v
   docker run --rm -v talaria_$v:/v -v "$PWD":/b alpine sh -c "cd /v && tar -xzf /b/talaria-$v.tgz"
 done

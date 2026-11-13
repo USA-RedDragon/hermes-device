@@ -7,7 +7,7 @@ A Talaria install has four parts, and every install path starts all of them:
 - **The hub:** the web app, the Telegram bot and the place your computers connect to.
 - **Hermes:** the agent itself, with the Talaria plugin.
 - **The sandbox:** a small container where the agent runs commands for chats that are not on one of your computers.
-- **A login:** one admin account, made on the first start.
+- **Accounts:** the hub's own. The first person who opens Talaria makes the admin account, and adds the others.
 
 Every key and secret is made for you on the first start. You do not write any config file to try it.
 
@@ -25,9 +25,9 @@ If you are not sure, use Docker Compose. It is the path with the most testing.
 
 ## What you will see
 
-The login page, the first chat with the demo model, and an approval, which the agent asks for before it runs something risky:
+The setup page that makes the first account, the first chat with the demo model, and an approval, which the agent asks for before it runs something risky:
 
-![The Talaria login page](images/login.png)
+![The setup page: your name, a display name and a password make the first account, an admin](images/setup.png)
 
 ![A first chat: the demo model answers "This is the Talaria demo model", and the line under the title shows the model and the context size](images/chat-reply.png)
 
@@ -42,7 +42,7 @@ The login page, the first chat with the demo model, and an approval, which the a
 ## The first fifteen minutes
 
 1. Start Talaria with the demo model, on the machine itself ([Docker Compose](compose.md), steps 1 to 3). It takes a few minutes, mostly the download.
-2. Open the address it prints and log in with the password in the log.
+2. Open the address it prints right away and make your account on the setup page: the first visitor becomes the admin.
 3. Send a message. Send `run: uname -a` to see the agent run a command in the sandbox.
 4. Switch to a real model: [Choosing models and providers](models.md).
 5. Pair your own computer so the agent can work on your files: [Adding your computers](computers.md).

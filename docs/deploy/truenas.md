@@ -9,7 +9,9 @@ YAML, with the all-in-one image ([design](all-in-one.md)).
 3. Name it `talaria` and paste the file below. Change the lines marked `CHANGE`: your TrueNAS address in
    `TALARIA_PUBLIC_URL`, and the dataset paths.
 4. **Save**. The first start downloads about 1.2 GB.
-5. Open the app's **Logs** and find `Open:`, `Log in as:` and `Password:`. Open the address and log in.
+5. Open `http://<TrueNAS address>:8080` (or the app's **Web UI** button) right away. The setup page makes the
+   first account, an admin; the first person who opens it gets that account. Add other people under Settings,
+   Users.
 
 For real use, set `TALARIA_MODEL_BASE_URL`, `TALARIA_MODEL` and `TALARIA_MODEL_API_KEY`, and `TALARIA_DEMO` to
 `"false"` (**Edit** on the app).
