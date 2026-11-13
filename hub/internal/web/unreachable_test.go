@@ -17,7 +17,10 @@ import (
 // and retries.
 func TestSessionsWhenHermesIsUnreachable(t *testing.T) {
 	t.Parallel()
-	e := setupService(t, nil, func(o *service.Options) { o.AwayNotice = 300 * time.Millisecond })
+	e := setupService(t, nil, func(o *service.Options) {
+		o.AwayNotice = 300 * time.Millisecond
+		o.AwayAlarm = 900 * time.Millisecond
+	})
 	c := client(t)
 	login(t, e, c)
 	resp, body := get(t, c, e.url+"/api/sessions")
@@ -35,6 +38,16 @@ func TestSessionsWhenHermesIsUnreachable(t *testing.T) {
 	resp, body = get(t, c, e.url+"/api/sessions")
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "First") || resp.Header.Get(web.UnreachableHeader) != "pc" {
 		t.Fatalf("sessions with Hermes down = %d %q %s; want the last list, marked", resp.StatusCode, resp.Header.Get(web.UnreachableHeader), body)
+	}
+
+	// Past AwayNotice only: a quiet note, no error. Past AwayAlarm: down.
+	if resp.Header.Get(web.DownHeader) != "" {
+		t.Fatalf("down header %q after a short silence; want none", resp.Header.Get(web.DownHeader))
+	}
+	time.Sleep(700 * time.Millisecond)
+	resp, _ = get(t, c, e.url+"/api/sessions")
+	if resp.Header.Get(web.DownHeader) != "pc" {
+		t.Fatalf("down header %q after a long silence; want pc", resp.Header.Get(web.DownHeader))
 	}
 
 	fresh := setup(t)

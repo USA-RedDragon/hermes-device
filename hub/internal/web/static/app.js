@@ -56,12 +56,13 @@
   // alone may clear it again by itself with clearBanner, so a connection
   // that came back does not wipe a message about something else.
   let bannerKey = "";
-  function banner(text, bad, key) {
+  function banner(text, bad, key, quiet) {
     const b = $("banner");
     bannerKey = text ? key || "" : "";
     b.hidden = !text;
     b.replaceChildren();
     b.classList.toggle("bad", !!bad);
+    b.classList.toggle("quiet", !!quiet);
     if (!text) return;
     const close = el("button", "close", "\u00d7");
     close.type = "button";
@@ -85,7 +86,8 @@
 
   function ago(iso) {
     const v = Date.parse(iso);
-    if (!v || v < 0) return "";
+    // A time before 2001 is a missing one (zero or the epoch), never an age.
+    if (!v || v < 978307200000) return "";
     const s = Math.max(0, (Date.now() - v) / 1000);
     if (s < 60) return "now";
     if (s < 3600) return Math.floor(s / 60) + "m";
@@ -128,6 +130,7 @@
   // show only when there is more than one. While a chat's menu is open the
   // list is not redrawn, so a refresh cannot throw away a half-typed name.
   let listing = false;
+  const AWAY_NOTE = "Reconnecting to the agent. You can keep reading and typing.";
   let notice = "";
   // unhid is a chat just unarchived. Hermes lists archived and hidden
   // chats together, so one that stays in that list was hidden, not archived.
@@ -162,13 +165,17 @@
       // is, asked for again soon, and no banner unless that lasts.
       const refreshing = unreachableIDs(meta.headers && meta.headers.get("X-Talaria-Refreshing"));
       const sessions = keepUnreachable(lastList, got, down);
-      for (const b of backends) if (down.has(b.id) && !b.error) b.error = "The agent is not answering. Retrying";
+      const alarm = unreachableIDs(meta.headers && meta.headers.get("X-Talaria-Down"));
       lastList = { backends, sessions };
       if (down.size) {
-        banner("Cannot reach the agent. Showing the chats from before; retrying.", true, "list");
+        // One status, in the top bar. While the agent may be restarting it
+        // is a quiet note; an error only once it is down.
+        if (alarm.size) banner(sessions.length ? "Cannot reach the agent. Showing the chats from before; retrying." : "Cannot reach the agent. Retrying.", true, "away");
+        else if (bannerKey !== "away" || !$("banner").classList.contains("bad")) banner(AWAY_NOTE, false, "away", true);
         listRetry = setTimeout(refreshList, listBackoff.next());
       } else {
         listBackoff.reset();
+        clearBanner("away");
         clearBanner("list");
         if (refreshing.size) listRetry = setTimeout(refreshList, 2000);
       }
@@ -297,8 +304,9 @@
         }
         group.append(h);
       }
-      if (b.error) group.append(el("p", "err", "Unreachable: " + b.error));
       const mine = sessions.filter((s) => s.backend_id === b.id && !s.archived && shown(s)).sort(order);
+      // With the chats shown (the hub's copy), the top bar says it all.
+      if (b.error && !mine.length) group.append(el("p", "err", "Unreachable: " + b.error));
       const hits = mine.filter((s) => match(s) && !s.pinned);
       found += hits.length;
       if (!mine.length && !b.error) group.append(el("p", "none", "No chats yet."));
@@ -360,7 +368,7 @@
     a.append(col);
     if (badge) a.append(badge);
     const when = el("span", "when", ago(s.updated_at));
-    if (s.updated_at) when.title = new Date(s.updated_at).toLocaleString();
+    if (when.textContent) when.title = new Date(s.updated_at).toLocaleString();
     a.append(when, ...chats.tail(s), ...worksWith.mark(s));
     const state = chats.label(s);
     a.setAttribute("aria-label", (s.title || t("newchat")) + (state ? ", " + state : ""));
@@ -1403,7 +1411,7 @@
     }
 
     snapshot(s) {
-      clearBanner("backend");
+      if (!$("banner").classList.contains("bad")) clearBanner("away");
       const kept = window.HubReconcile.anchor(this.log, stick.pinned(), rowPlace(this.log));
       const carried = window.HubReconcile.carry(this.pending, s);
       this.keep = new Set(carried.filter((c) => c.act === "again").flatMap((c) => (c.p.atts || []).map((a) => a.url)));
@@ -1655,8 +1663,8 @@
         case "snapshot": this.snapshot(p); break;
         case "snapshot.older": this.olderRows(p); break;
         case "backend.status":
-          if (p.connected) clearBanner("backend");
-          else banner("Lost the connection to the agent. Reconnecting.", false, "backend");
+          if (p.connected) clearBanner("away");
+          else if (bannerKey !== "away" || !$("banner").classList.contains("bad")) banner(AWAY_NOTE, false, "away", true);
           break;
         case "message.start":
           // A message handed to the running turn can arrive while a reply

@@ -97,8 +97,11 @@ type Options struct {
 	// hub.WithCached). Defaults 800ms.
 	ListFast, AttachFast time.Duration
 	// AwayNotice is how long a backend may not answer before a page is told
-	// it is away. Default 10s.
+	// it is away. Default 60s.
 	AwayNotice time.Duration
+	// AwayAlarm is how long a backend may not answer before the page
+	// calls it down and not restarting. Default gateway.RestartBudget.
+	AwayAlarm time.Duration
 }
 
 // Service is the hub core.
@@ -195,6 +198,9 @@ func New(cfgs []config.Backend, dir Directory, opts Options) *Service {
 	}
 	if opts.AwayNotice == 0 {
 		opts.AwayNotice = defaultAwayNotice
+	}
+	if opts.AwayAlarm == 0 {
+		opts.AwayAlarm = defaultAwayAlarm
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	s := &Service{backends: map[string]*backend{}, dir: dir, grants: opts.Grants, opts: opts, log: opts.Logger, origin: uuid.NewString(), stop: stop,
@@ -334,7 +340,7 @@ func (s *Service) Sessions(ctx context.Context, user string) ([]hub.Session, err
 	)
 	fail := func() *hub.UnreachableError {
 		if failed == nil {
-			failed = &hub.UnreachableError{Backends: map[string]string{}, Stale: map[string]bool{}, Pending: map[string]bool{}}
+			failed = &hub.UnreachableError{Backends: map[string]string{}, Stale: map[string]bool{}, Pending: map[string]bool{}, Down: map[string]bool{}}
 		}
 		return failed
 	}
@@ -352,6 +358,9 @@ func (s *Service) Sessions(ctx context.Context, user string) ([]hub.Session, err
 				f.Stale[hb.ID] = true
 				if b.noticeAway() {
 					f.Backends[hb.ID] = reason(gateway.ErrStalled)
+					if b.alarmAway(nil) {
+						f.Down[hb.ID] = true
+					}
 				} else {
 					f.Pending[hb.ID] = true
 				}
@@ -370,6 +379,9 @@ func (s *Service) Sessions(ctx context.Context, user string) ([]hub.Session, err
 					f.Pending[hb.ID] = true
 				} else {
 					f.Backends[hb.ID] = reason(err)
+					if b.alarmAway(err) {
+						f.Down[hb.ID] = true
+					}
 				}
 			}
 			out = append(out, list...)
@@ -1188,9 +1200,9 @@ func (b *backend) list(ctx context.Context) ([]hub.Session, error) {
 				s.Source = *r.Source
 			}
 			switch {
-			case r.LastActiveAt != nil && *r.LastActiveAt > 0:
+			case r.LastActiveAt != nil && realTime(*r.LastActiveAt):
 				s.UpdatedAt = time.UnixMilli(int64(*r.LastActiveAt * 1000))
-			case r.StartedAt != nil:
+			case r.StartedAt != nil && realTime(*r.StartedAt):
 				s.UpdatedAt = time.UnixMilli(int64(*r.StartedAt * 1000))
 			}
 			rows[s.ID] = s
@@ -1796,3 +1808,8 @@ func (b *backend) unwatch(done func(id string) bool) {
 		ls.idle()
 	}
 }
+
+// realTime is whether a time in Unix seconds from the backend is one: a
+// zero or tiny value means it did not say, and is kept as the zero time
+// so no page shows the age of the epoch.
+func realTime(sec float64) bool { return sec > 0 }

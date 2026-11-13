@@ -46,6 +46,10 @@ type UnreachableError struct {
 	Backends map[string]string
 	Stale    map[string]bool
 	Pending  map[string]bool
+	// Down names the backends in Backends that are down, not restarting:
+	// away for the whole restart budget, or failing in a way a restart
+	// does not explain. The others get a quiet note.
+	Down map[string]bool
 }
 
 func (e *UnreachableError) Error() string {

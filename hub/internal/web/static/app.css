@@ -133,6 +133,7 @@ button.primary.ib:hover { filter: brightness(1.08); }
 .banner .close { flex: none; background: none; border: 0; color: inherit; font-size: 1.15rem; line-height: 1; padding: 0 .2rem; cursor: pointer; opacity: .85; }
 .banner .close:hover { opacity: 1; }
 .banner.bad { background: var(--bad); }
+.banner.quiet { background: var(--hover); color: var(--muted, inherit); border-bottom: 1px solid var(--line); }
 .welcome { flex: 1; display: grid; place-items: center; color: var(--muted); padding: 1rem; }
 
 .main { --gutter: clamp(.75rem, 2.5vw, 2.5rem); --read: 60rem; }

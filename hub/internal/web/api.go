@@ -82,6 +82,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		// The page must never take a failed list for an empty one: it
 		// keeps the chats it has for these backends, says so and retries.
 		w.Header().Set(UnreachableHeader, idList(ue.Backends))
+		if down := idList(ue.Down); down != "" {
+			w.Header().Set(DownHeader, down)
+		}
 		if len(ss) == 0 {
 			errorJSON(w, http.StatusServiceUnavailable, "Cannot reach the agent ("+unreachableWords(ue)+"). Retrying")
 			return
@@ -94,6 +97,10 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 // a session list could not reach. Their rows in the answer, if any, are
 // the hub's last list of them.
 const UnreachableHeader = "X-Talaria-Unreachable"
+
+// DownHeader names, as UnreachableHeader does, those of them that are
+// down for good measure and not restarting: only these get an error.
+const DownHeader = "X-Talaria-Down"
 
 // RefreshingHeader names, as UnreachableHeader does, the backends whose
 // rows are the hub's copy because their fresh list is still on its way.

@@ -5,10 +5,10 @@
 // check and goes on, to record the whole run)
 // POKE_URL/silence makes the gateway answer nothing, /other sends the
 // hub's traffic to the other replica, which has seen nothing of the
-// backend, and /release makes the gateway answer again. For 45 seconds of
+// backend, and /release makes the gateway answer again. For 40 seconds of
 // silence the page, open and then loaded fresh on the other replica, keeps
 // the chat list, the title, the model line and the messages; no banner
-// shows in the first seconds and only plain words after; a message sent
+// shows in the first seconds, then one quiet note, then one error; a message sent
 // meanwhile shows at once and its reply comes once the gateway answers.
 const assert = require("assert");
 const fs = require("fs");
@@ -29,10 +29,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TITLE = "Rollout chat";
 const MODEL = "big";
 const SENT = "sent during the switch";
-const SILENCE = 45;
+const SILENCE = 44;
 const OTHER_AT = 5;
 const SEND_AT = 9;
-const QUIET = 9;
+const QUIET = 10; // AwayNotice of the test hub
+const ALARM = 20; // AwayAlarm of the test hub
+const ALARM_BY = 40; // the other replica starts its count when the page moves to it, and the page polls
+const NOTE = "Reconnecting to the agent. You can keep reading and typing.";
+const ROW_AGE = "3h"; // the chat was last active three hours ago
 
 const state = `(() => {
   const $ = (id) => document.getElementById(id);
@@ -46,6 +50,10 @@ const state = `(() => {
     loadingChats: $("sessions").textContent.includes("Loading chats"),
     msgs: document.querySelectorAll("#log .msg").length,
     bars: !!bars && getComputedStyle(bars).visibility !== "hidden",
+    bad: !!b && !b.hidden && b.classList.contains("bad"),
+    sideErr: Array.from(document.querySelectorAll("#sessions .err")).map((n) => n.textContent).join("|"),
+    age: (document.querySelector("#sessions a.go .when") || {}).textContent || "",
+    stale: /\\d{4,}d\\b/.test(document.body.innerText),
     banner: b && !b.hidden ? b.textContent.replace(/\\u00d7$/, "") : "",
     sent: Array.from(document.querySelectorAll("#log .msg.user")).some((n) => n.innerText.includes("${SENT}")),
     notSent: /Not sent|not sent|Could not send/.test($("log").innerText),
@@ -57,7 +65,8 @@ const state = `(() => {
   const c = await connect();
   const { ev, send } = c;
   await send("Page.enable");
-  await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+  await send("Emulation.setDeviceMetricsOverride", { width: Number(process.env.SHOT_WIDTH || 1280), height: Number(process.env.SHOT_HEIGHT || 800), deviceScaleFactor: 1, mobile: Number(process.env.SHOT_WIDTH || 1280) < 500 });
+  if (process.env.SHOT_DARK) await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
   await send("Page.navigate", { url: url + "/auth/login?next=/" });
   await sleep(1500);
   await ev(`location.hash = "#/s/pc/s9"; 1`);
@@ -102,7 +111,7 @@ const state = `(() => {
     s = await ev(state);
     s.t = sec;
     seen.push(s);
-    if (shot) {
+    if (shot && (!process.env.SHOT_AT || process.env.SHOT_AT.split(",").includes(String(sec)))) {
       const r = await send("Page.captureScreenshot", {});
       fs.writeFileSync(`${shot}-${String(sec).padStart(2, "0")}.png`, Buffer.from(r.data, "base64"));
     }
@@ -111,8 +120,14 @@ const state = `(() => {
     check(s.model === MODEL, "model line " + where);
     check(s.chats > 0 && !s.loadingChats, "chat list " + where);
     check(s.msgs >= 4 && !s.bars, "messages " + where);
+    check(s.sideErr === "", "a second status in the sidebar " + where);
+    check(s.age === ROW_AGE, "the row's age should be " + ROW_AGE + " " + where);
+    check(!s.stale, "an age in thousands of days " + where);
     if (sec < QUIET) check(s.banner === "", "a banner this soon " + where);
-    else if (s.banner) check(/^(Cannot reach the agent|Lost the connection to the agent)/.test(s.banner), "banner words " + where);
+    else if (sec < QUIET + OTHER_AT + 5) check(s.banner === "" || (s.banner === NOTE && !s.bad), "a quiet note or none " + where);
+    else if (sec < ALARM + OTHER_AT) check(s.banner === NOTE && !s.bad, "one quiet note, not an error " + where);
+    else if (sec >= ALARM_BY) check(/^Cannot reach the agent/.test(s.banner) && s.bad, "one error after a long outage " + where);
+    else check(s.banner === NOTE || (/^Cannot reach the agent/.test(s.banner) && s.bad), "one status " + where);
     if (sentAt) check(s.sent && !s.notSent, "the message sent " + where);
   }
   console.log("banners: " + JSON.stringify([...new Set(seen.map((x) => x.t + ": " + x.banner).filter((x) => !x.endsWith(": ")))].slice(0, 3)));

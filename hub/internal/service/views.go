@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"sync"
 	"time"
 
+	"github.com/USA-RedDragon/talaria/hub/internal/gateway"
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
 )
 
@@ -22,7 +24,10 @@ import (
 const (
 	defaultListFast   = 800 * time.Millisecond
 	defaultAttachFast = 800 * time.Millisecond
-	defaultAwayNotice = 10 * time.Second
+	defaultAwayNotice = 60 * time.Second
+	// defaultAwayAlarm is how long a backend may not answer before the
+	// page calls it down, not restarting: the whole restart budget.
+	defaultAwayAlarm = gateway.RestartBudget
 )
 
 // viewMaxAge bounds how old a copy may be to stand in for a backend that is
@@ -97,6 +102,15 @@ func (b *backend) awayFor() time.Duration {
 // noticeAway is whether the backend has been away long enough to tell the
 // user.
 func (b *backend) noticeAway() bool { return b.awayFor() >= b.svc.opts.AwayNotice }
+
+// alarmAway is whether the backend has been away so long, or failed in a
+// way a restart does not explain, that it is down and not restarting.
+func (b *backend) alarmAway(err error) bool {
+	if b.awayFor() >= b.svc.opts.AwayAlarm {
+		return true
+	}
+	return err != nil && !gateway.Retryable(err) && !errors.Is(err, gateway.ErrStalled) && !errors.Is(err, context.DeadlineExceeded)
+}
 
 // hasListed reports whether the backend listed its sessions since the hub
 // started.

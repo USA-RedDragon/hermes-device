@@ -18,7 +18,7 @@ import (
 // A Hermes rollout does not show in the page: while the gateway answers
 // nothing for 45 seconds, a page that is open, and one loaded fresh on the
 // other replica, keep the chat list, the title, the model line and the
-// messages; only past AwayNotice a short note says the agent is away; and
+// messages; only past AwayNotice one quiet note in the top bar says the agent is reconnecting, and past AwayAlarm one error; the chat row keeps its real age; and
 // a message sent meanwhile shows at once and reaches Hermes when it is
 // back. testdata/rollout/run.js drives the real page in headless Chrome.
 // ROLLOUT_SHOT=prefix also writes a screenshot every second, and
@@ -34,8 +34,11 @@ func TestRolloutKeepsThePage(t *testing.T) {
 		t.Skip("node is not installed")
 	}
 	chrome := chromePath(t)
-	e := setupService(t, nil, func(o *service.Options) { o.AwayNotice = 10 * time.Second })
-	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Rollout chat", Live: true, StartedAt: 900, Model: modelBig, Provider: "llama",
+	e := setupService(t, nil, func(o *service.Options) {
+		o.AwayNotice = 10 * time.Second
+		o.AwayAlarm = 20 * time.Second
+	})
+	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Rollout chat", Live: true, StartedAt: 900, LastActiveAt: float64(time.Now().Add(-3 * time.Hour).Unix()), Model: modelBig, Provider: "llama",
 		Messages: []map[string]any{
 			{kRole: roleUser, kText: "first question"},
 			{kRole: roleAssistant, kText: "first answer"},
