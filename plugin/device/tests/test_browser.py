@@ -1127,6 +1127,8 @@ class BrowserDeviceTests(BrowserBase):
     def create_job(self, job_id="job1"):
         created = browser._make_create_job(lambda **kw: {"id": job_id, **kw})(prompt="p", schedule="in 2m")
         self.assertEqual(created["id"], job_id)
+        self.assertIsNone(browser.choices().job(job_id), "a create gives the job no browser")
+        browser.record_job(created)  # the user allowed it with browser_use_device
 
     def test_sandbox_never_offered_as_browser(self):
         self.assertEqual([c.device_id for c in browser.browser_devices()], ["d_pc"])
@@ -1393,13 +1395,8 @@ class BrowserDeviceTests(BrowserBase):
     def test_scheduling_with_a_browser_asks_the_user(self):
         gate = browser.pre_tool_call
         create = {"action": "create", "prompt": "p", "schedule": "in 2m"}
-        r = gate(tool_name="cronjob_manage", args=create, session_id=self.session)
-        self.assertEqual(r["action"], "approve")
-        self.assertIn("pc [d_pc]", r["message"])
-        self.assertEqual(gate(tool_name="cronjob_manage", args=dict(create), session_id=self.session)["rule_key"],
-                         r["rule_key"], "the same request has the same rule")
-        other = gate(tool_name="cronjob_manage", args=dict(create, prompt="q"), session_id=self.session)
-        self.assertNotEqual(other["rule_key"], r["rule_key"], "an answer for one job covers no other")
+        self.assertIsNone(gate(tool_name="cronjob_manage", args=create, session_id=self.session),
+                          "a create asks nothing, so an unanswered prompt cannot cancel it")
         self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": "list"}, session_id=self.session))
         browser.choices().set_job("job1", {"device_id": "d_pc", "name": "pc", "user": "alice"})
         with mock.patch.object(browser, "_job_id", lambda ref: ref):
@@ -1418,9 +1415,25 @@ class BrowserDeviceTests(BrowserBase):
             with mock.patch.object(browser, "no_user", lambda: True):
                 r = gate(tool_name="cronjob_manage", args={"action": "run", "job_id": "job1"}, session_id=self.session)
                 self.assertEqual(r["action"], "block")
+
+    def test_create_with_a_browser_makes_the_job_and_says_how_to_give_it_one(self):
+        create = {"action": "create", "prompt": "p", "schedule": "in 2m"}
+        self.assertIsNone(browser.pre_tool_call(tool_name="cronjob_manage", args=create, session_id=self.session))
+        self.create_job_unbound("job9")
+        result = json.dumps({"success": True, "job_id": "job9"})
+        out = json.loads(browser.schedule_note("cronjob_manage", create, result, self.session))
+        self.assertTrue(out["success"])
+        self.assertIn('browser_use_device with device "pc" and job_id "job9"', out["browser_note"])
+        browser.record_job({"id": "job9"})
+        self.assertIsNone(browser.schedule_note("cronjob_manage", create, result, self.session), "it has one now")
+        self.assertIsNone(browser.schedule_note("cronjob_manage", {"action": "list"}, result, self.session))
         self.hub.detach(self.device.conn)
-        self.assertIsNone(gate(tool_name="cronjob_manage", args={"action": "create"}, session_id=self.session),
-                          "no browser device, nothing to ask")
+        self.assertIsNone(browser.schedule_note("cronjob_manage", create,
+                                                json.dumps({"success": True, "job_id": "job8"}), self.session),
+                          "no browser device, no note")
+
+    def create_job_unbound(self, job_id):
+        browser._make_create_job(lambda **kw: {"id": job_id, **kw})(prompt="p", schedule="in 2m")
 
     def test_schedule_gate_never_waits_for_the_user(self):
         """Hermes runs pre_tool_call under plugins.hook_callback_timeout and, while one call of a
@@ -1504,7 +1517,9 @@ class BrowserDeviceTests(BrowserBase):
 
     def test_gate_errors_block(self):
         with mock.patch.object(browser, "resolve", side_effect=RuntimeError("store broke")):
-            r = browser.pre_tool_call(tool_name="cronjob_manage", args={"action": "create"}, session_id=self.session)
+            with mock.patch.object(browser, "_job_id", lambda ref: ref):
+                r = browser.pre_tool_call(tool_name="browser_use_device", args={"device": "d_pc", "job_id": "job1"},
+                                          session_id=self.session)
         self.assertEqual(r["action"], "block")
         self.assertIn("store broke", r["message"])
 

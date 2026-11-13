@@ -454,11 +454,17 @@ def on_turn_end(session_id: str = "", **_kwargs) -> None:
 
 
 def transform_tool_result(tool_name: str = "", result: Any = None, session_id: str = "", **_kwargs) -> Optional[str]:
-    if not session_id:
-        return None
-    items = INBOX.take(session_id)
+    note = None
+    try:
+        browser = sys.modules.get("hermes_device_browser")
+        note = browser.schedule_note(tool_name, _kwargs.get("args"), result, session_id) if browser else None
+    except Exception:
+        logger.debug("device: schedule note failed", exc_info=True)
+    if isinstance(note, str):
+        result = note
+    items = INBOX.take(session_id) if session_id else []
     if not items:
-        return None
+        return note
     base = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
     return base + "".join("\n\n" + i["text"] for i in items)
 
@@ -495,8 +501,47 @@ TURN_HOOKS = ("agent_turn_start", "agent_turn_end")
 LLM_CALL_HOOKS = ("pre_llm_call", "post_llm_call")
 
 
+def _make_cron_toolsets(core: Any) -> Callable[[Callable], Callable]:
+    def make(original: Callable) -> Callable:
+        def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
+            out = original(job, cfg)
+            # A job's toolset list names what the creator remembered; messaging another chat must
+            # not depend on remembering this one. An empty list stays the explicit zero-tool
+            # allowlist, and plugin setting cron_agents: false turns this off.
+            if out and TOOLSET not in out and core.settings().get("cron_agents", True) is not False:
+                return [*out, TOOLSET]
+            return out
+        return _resolve_cron_enabled_toolsets
+    return make
+
+
+CRON_NOTE = (" Scheduled jobs can message another chat: their agent has agent_send and agent_peers whatever "
+             "enabled_toolsets says (not for [], the zero-tool allowlist), so a job whose prompt says to tell a "
+             "chat needs no extra toolset. A job created in a chat with a browser computer has no browser until "
+             "browser_use_device is called with its job_id, which asks the user.")
+
+
+def install_cron_hooks(core: Any) -> None:
+    """Give every scheduled run the agent tools, and say so in the cronjob_manage description."""
+    try:
+        import cron.scheduler
+        core._wrap(cron.scheduler, "_resolve_cron_enabled_toolsets", _make_cron_toolsets(core))
+    except Exception:
+        logger.error("device: cannot wrap the cron toolset choice; a job needs device-agents in enabled_toolsets "
+                     "to message a chat", exc_info=True)
+    try:
+        from tools.registry import registry
+        entry = registry.get_entry("cronjob_manage")
+        schema = entry.schema if entry is not None else None
+        if isinstance(schema, dict) and CRON_NOTE not in str(schema.get("description") or ""):
+            schema["description"] = str(schema.get("description") or "") + CRON_NOTE
+    except Exception:
+        logger.debug("device: cronjob_manage description not extended", exc_info=True)
+
+
 def register(ctx: Any, core: Any) -> None:
     global _LIFECYCLE
+    install_cron_hooks(core)
     for name, schema in SCHEMAS.items():
         ctx.register_tool(name, TOOLSET, schema, HANDLERS[name], check_fn=offered,
                           description=schema["description"], emoji=EMOJI)

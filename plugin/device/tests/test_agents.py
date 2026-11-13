@@ -389,12 +389,37 @@ class ToolTest(unittest.TestCase):
         self.assertEqual(out["seen"], {"to": "b", "text": "hi", "reply_to": "am_0"})
         self.assertEqual(out["caller"], {"session_id": "s1"})
 
+    def test_browser_note_joins_the_inbox(self):
+        browser = types.SimpleNamespace(schedule_note=lambda tool, args, result, sid: result + " +note")
+        with mock.patch.dict(sys.modules, {"hermes_device_browser": browser}):
+            self.assertEqual(agents.transform_tool_result("cronjob_manage", "r", "s9", args={}), "r +note")
+            agents.INBOX.put("s9", "m1", "hello", running_only=False)
+            self.assertIn("hello", agents.transform_tool_result("cronjob_manage", "r", "s9", args={}))
+
     def test_offered_needs_hub(self):
         bus = agents.Bus()
         with mock.patch.object(agents, "BUS", bus):
             self.assertFalse(agents.offered())
             bus.take(0)
             self.assertTrue(agents.offered())
+
+
+class CronToolsetsTest(unittest.TestCase):
+    def wrap(self, listed, setting=None):
+        core = types.SimpleNamespace(settings=lambda: {} if setting is None else {"cron_agents": setting})
+        return agents._make_cron_toolsets(core)(lambda job, cfg: list(listed))({}, {})
+
+    def test_job_without_device_agents_can_still_agent_send(self):
+        self.assertEqual(self.wrap(["terminal", "web"]), ["terminal", "web", agents.TOOLSET])
+        self.assertEqual(self.wrap([agents.TOOLSET, "web"]), [agents.TOOLSET, "web"])
+
+    def test_zero_tool_job_and_the_setting_turn_it_off(self):
+        self.assertEqual(self.wrap([]), [])
+        self.assertEqual(self.wrap(["web"], setting=False), ["web"])
+
+    def test_description_tells_the_model(self):
+        self.assertIn("agent_send", agents.CRON_NOTE)
+        self.assertIn("browser_use_device", agents.CRON_NOTE)
 
 
 class RoutesTest(unittest.TestCase):

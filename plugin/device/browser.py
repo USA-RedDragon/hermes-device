@@ -993,9 +993,10 @@ _JOB_ACTIONS = frozenset({"update", "run", "resume"})
 
 
 def _schedule_gate(tool_name: str, args: dict, session_id: str) -> Optional[dict]:
-    """Ask the user before work is scheduled that drives a browser unattended: a job created in
-    a session that has a browser device (only such a job gets one), an update, run or resume of
-    a job that has one, and browser_use_device for a job (section 3.2). A prompt injection could
+    """Ask the user before work is scheduled that drives a browser unattended: an update, run or
+    resume of a job that has a browser device, and browser_use_device for a job (section 3.2). A
+    create asks nothing: the new job has no browser until browser_use_device gives it one, so an
+    unanswered prompt can never cancel the create. A prompt injection could
     otherwise set up a job that reads the user's logged-in sites with nobody watching.
 
     The hook never waits for the user: it returns an approve request, and Hermes asks through
@@ -1014,10 +1015,6 @@ def _schedule_gate(tool_name: str, args: dict, session_id: str) -> Optional[dict
                 return None
             _check_job_owner(job_id, _need_user(_session_user(res)))
             what, device = f"scheduled job {str(raw)[:64]}", str(args.get("device") or "")[:64]
-        elif action == "create":
-            sid, res = resolve(session_id)
-            conn, _ = pick(sid, res)
-            what, device = "a new scheduled job", f"{conn.name} [{conn.device_id}]"
         elif action in _JOB_ACTIONS and isinstance(raw, str) and raw:
             job_id = _job_id(raw)
             rec = choices().job(job_id) if job_id else None
@@ -1689,10 +1686,11 @@ def browser_use_device(args: dict, session_id: str = "", **_kwargs) -> str:
         return _err(f"talaria: could not save the choice: {exc}", "failed")
 
 
-def record_job(job: Any) -> None:
-    """Record the hub user of the session that just created a job, and give the job the
-    session's browser device, so that the job's runs use it (section 3.2). No device when the
-    session has none. Raises when the choices cannot be read or saved."""
+def record_job(job: Any, bind: bool = True) -> None:
+    """Record the hub user of the session that just created a job, and with ``bind`` give the job
+    the session's browser device, so that the job's runs use it (section 3.2). No device when the
+    session has none. Raises when the choices cannot be read or saved. A create does not bind:
+    the user allows a job's browser with browser_use_device (job_id), which asks."""
     core = _core()
     job_id = str(job.get("id") or "") if isinstance(job, dict) else ""
     sid = core.current_session_id()
@@ -1708,6 +1706,8 @@ def record_job(job: Any) -> None:
         owner = _session_user(res)
         if owner is not None:
             choices().set_job_owner(job_id, owner, sid)
+        if not bind:
+            return
         conn, _ = pick(sid, res)
     except Unavailable as exc:
         core.logger.info("device: scheduled job %s has no browser device: %s", job_id, exc)
@@ -1734,7 +1734,7 @@ def _record_or_remove(job: dict) -> None:
     """record_job; when the choice cannot be saved, the job is removed and the error raised, so
     that no job runs without the browser device its creator meant."""
     try:
-        record_job(job)
+        record_job(job, bind=False)
     except Exception as exc:
         _core().logger.error("device: could not save the browser device of scheduled job %s", job.get("id"),
                              exc_info=True)
@@ -1745,6 +1745,27 @@ def _record_or_remove(job: dict) -> None:
             _core().logger.error("device: could not remove scheduled job %s", job.get("id"), exc_info=True)
         raise RuntimeError(f"talaria: the job was not created: its browser device could not be saved "
                            f"({exc})") from exc
+
+
+def schedule_note(tool_name: str, args: Any, result: Any, session_id: str) -> Optional[str]:
+    """The result of a cronjob_manage create in a session that has a browser device, with a note
+    that the job has no browser yet and how to give it one. None when there is nothing to add."""
+    if tool_name != "cronjob_manage" or not isinstance(args, dict) \
+            or str(args.get("action") or "").strip().lower() != "create" or not isinstance(result, str):
+        return None
+    try:
+        data = json.loads(result)
+        job_id = str(data.get("job_id") or "") if isinstance(data, dict) and data.get("success") else ""
+        if not job_id or choices().job(job_id) is not None:
+            return None
+        sid, res = resolve(session_id)
+        conn, _ = pick(sid, res)
+    except Exception:
+        return None
+    data["browser_note"] = (f"The job was created and has no browser. If its prompt needs a browser, call "
+                            f"browser_use_device with device \"{conn.name}\" and job_id \"{job_id}\"; the user "
+                            f"is asked to allow it. Without that, its runs cannot use a browser.")
+    return json.dumps(data, ensure_ascii=False)
 
 
 def _visit_guard(tool: str, args: dict, sid: str) -> dict:
