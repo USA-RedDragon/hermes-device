@@ -21,6 +21,12 @@ assert.ok(M.serverCommand("helm")[1].startsWith("kubectl -n <namespace> exec -it
 eq(M.serverCommand("unraid")[1], "docker exec -it -u hermes Talaria hermes model");
 for (const k of ["", undefined, "other"]) eq(M.serverCommand(k)[1], "docker exec -it -u hermes <container> hermes model", String(k));
 
+// The demo model: offered only when the install runs it (the custom provider talaria-demo).
+eq(M.findDemo({ providers: [{ id: "custom:talaria-demo", models: ["talaria-demo"] }] }), { provider: "custom:talaria-demo", model: "talaria-demo" });
+eq(M.findDemo({ providers: [{ id: "talaria-demo", models: [] }] }), { provider: "talaria-demo", model: "talaria-demo" });
+assert.strictEqual(M.findDemo({ providers: [{ id: "openrouter", models: ["x"] }] }), null);
+assert.strictEqual(M.findDemo(null), null);
+
 // Address tests, with Hermes's own answers (v0.23.1, read live).
 let v = M.serverVerdict({ ok: true, reachable: true, message: "", models: ["qwen2.5:0.5b"], resolved_base_url: "http://ollama:11434/v1" }, "http://ollama:11434");
 eq([v.tone, v.title, v.at, v.models], ["good", "Found 1 model", "http://ollama:11434/v1", ["qwen2.5:0.5b"]]);

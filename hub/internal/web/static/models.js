@@ -857,6 +857,37 @@ window.HubModels = (() => {
         btn("primary", "Start a chat", () => { close(); ctx.startChat(); }))];
     }
 
+    // ---- Demo model ----
+    // demoButton adds "Try it without a key" to the first-run card when the
+    // install runs the demo model: one click makes it the default and starts
+    // a chat.
+    async function demoButton(backend, acts, before, fine, card) {
+      let opts;
+      try {
+        opts = await api("GET", path(backend, "/options"));
+      } catch (_) {
+        return;
+      }
+      const demo = findDemo(opts);
+      if (!demo || !card.isConnected) return;
+      const b = btn("", "Try it without a key", null, "play");
+      b.onclick = async () => {
+        b.disabled = true;
+        card.querySelector(".say")?.remove();
+        try {
+          const r = await api("POST", path(backend, "/default"), { provider: demo.provider, model: demo.model });
+          if (r && r.ok === false) throw new Error(r.message || "The demo model was not picked.");
+          ctx.connected();
+          ctx.startChat();
+        } catch (e) {
+          b.disabled = false;
+          card.append(say("bad", "The demo model is not answering.", ["It runs only while the install has it turned on. Connect a model instead, or ask whoever runs this server to turn the demo on."]));
+        }
+      };
+      acts.insertBefore(b, before);
+      fine.textContent = "Try it without a key uses Talaria's demo model: canned replies, no provider. Switch to a real model at any time in Settings, Models.";
+    }
+
     // ---- First-run card ----
     // firstRun draws the card into box for status st0 ({ ready, admin }).
     function firstRun(box, st0, check) {
@@ -874,7 +905,9 @@ window.HubModels = (() => {
         a.target = "_blank";
         a.rel = "noopener";
         acts.append(btn("primary", "Connect a model", () => open(st0.backend), "plug"), a);
-        card.append(acts, el("p", "fine", "You can add more later in Settings, Models."));
+        const fine = el("p", "fine", "You can add more later in Settings, Models.");
+        card.append(acts, fine);
+        demoButton(st0.backend, acts, a, fine, card);
       } else {
         card.append(el("h1", "", "No model is set up yet"),
           el("p", "", "This agent cannot chat until an admin connects a model. Ask whoever runs this Talaria to open Settings, then Models."));
@@ -894,7 +927,17 @@ window.HubModels = (() => {
     return { open, close, firstRun, settings: (pane) => window.HubModelSettings({ api, el, me: ctx.me, connect: open, pane, say, btn, field, secret, input, path, hermesDown, toast: ctx.toast, changed: ctx.connected }) };
   }
 
-  return { create, split, serverCommand, isLocal, serverVerdict, keyVerdict, signInState, minutesLeft, windowWarning, findProviders, next };
+  // findDemo finds the install's demo model in the model options: the
+  // provider talaria-demo (a custom provider), or null.
+  function findDemo(opts) {
+    for (const p of (opts && opts.providers) || []) {
+      const id = String(p.id || "");
+      if (id === "talaria-demo" || id === "custom:talaria-demo") return { provider: id, model: (p.models || []).includes("talaria-demo") || !(p.models || []).length ? "talaria-demo" : p.models[0] };
+    }
+    return null;
+  }
+
+  return { create, findDemo, split, serverCommand, isLocal, serverVerdict, keyVerdict, signInState, minutesLeft, windowWarning, findProviders, next };
 })();
 
 // HubModelSettings is Settings > Models: what Hermes has connected, with
