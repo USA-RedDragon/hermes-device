@@ -112,8 +112,8 @@ services:
 
 3. Point the agent at it: `runuser -u hermes -- hermes model` in the Talaria shell, **Custom endpoint** (right after
    `talaria-demo` and **Local models**), API base URL `http://<TrueNAS address>:30068/v1`, then Enter for the rest:
-   no API key, auto-detect, the model it found, an empty context length (the agent asks Ollama), the display name and
-   the reasoning effort.
+   no API key, auto-detect, the model it found, an empty context length (the agent asks Ollama for the window it
+   serves, 65536 here, not the model's maximum of 131072), the display name and the reasoning effort.
 
    ![hermes model with the custom endpoint http://10.0.2.15:30068/v1: Verified endpoint, Detected model llama3.2:3b, Default model set to llama3.2:3b](images/truenas/hermes-model-ollama.png)
 

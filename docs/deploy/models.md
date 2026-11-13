@@ -101,7 +101,9 @@ With `hermes model`, Ollama is the agent's **Custom endpoint**:
    profile. The agent checks the address at once and says how many models it sees.
 3. Leave the API key empty and press Enter for the API compatibility mode (auto-detect). It lists Ollama's
    models by number: type the number of yours. Press Enter for the context length (the agent asks Ollama for the
-   model's window and sends it with every request), the display name and the reasoning effort.
+   window it serves: the one `ollama ps` shows, else the model's `num_ctx`, else the one `OLLAMA_CONTEXT_LENGTH`
+   gives the model when it loads; never the model's trained maximum), the display name and the reasoning effort.
+   A number typed here always wins over what Ollama reports.
 4. It prints `Default model set to: <model> (via <address>)`. Start a new chat; the model's name shows above
    the chat.
 
@@ -110,8 +112,10 @@ Ollama's own settings matter too (they are Ollama's, not Talaria's):
 - Pick a model that handles tool calls and a 64K window, such as `llama3.1:8b` or `gpt-oss:20b`. `qwen3` (40K) and
   `qwen2.5` (32K) in Ollama are too small for the agent. Small CPU models (`llama3.2:3b`) work but are slow
   and often write tool calls as plain text.
-- `OLLAMA_CONTEXT_LENGTH=65536` (or more) on the Ollama container sets the window it serves to clients that do not
-  ask for one; the compose `ollama` profile sets it. The agent asks for the window itself, so this is a safety net.
+- `OLLAMA_CONTEXT_LENGTH=65536` (or more) on the Ollama container sets the window it serves; the compose `ollama`
+  profile sets it. Ollama's OpenAI-compatible API, which the agent uses, ignores a window asked for per request, so
+  this setting (or a `num_ctx` in the model's Modelfile) is what counts. Below 64K the agent refuses the model and
+  says so, rather than let Ollama cut off the start of long chats.
 - On Unraid, a container on a custom `br0` network cannot reach one on the host's bridge (and the other way round)
   unless **Settings, Docker, Host access to custom networks** is on. Using the server's address and Ollama's
   published port 11434 works in the default bridge setup.

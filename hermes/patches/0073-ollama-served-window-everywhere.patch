@@ -1,0 +1,435 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 12:30:29 -0600
+Subject: [PATCH] fix(model): Ollama's served window on any host and at runtime
+
+Patch 0054 made the context probe report the window Ollama serves, but only for a local address, and the runtime num_ctx still came from the model's trained maximum. An Ollama behind a DNS name or a reverse proxy got the GGUF maximum from /api/show (131072 for llama3.2:3b where the server serves 65536), and a cached maximum on such a host was never checked again. At runtime query_ollama_num_ctx returned the Modelfile num_ctx else the maximum, which Hermes sent as options.num_ctx (Ollama's /v1 ignores it) and which lifted the window the minimum-context check saw past what Ollama truncates at.
+
+A self-hosted server is now one the probe waterfall recognizes on any host, not only a local address; for Ollama every path (custom endpoint probe, /api/show step, cache reconcile, runtime num_ctx) uses the served window: /api/ps context_length, else num_ctx, else what a load gives (OLLAMA_CONTEXT_LENGTH), else 4096 with a warning. The load waits up to 180 s, so a large model is not taken for 4096. num_ctx is no longer kept on disk, so an older build's stored maximum is not read back. model.context_length wins: it becomes num_ctx with no probe, and the compressor clamp cannot undercut it. Hosted Ollama (ollama.com) keeps the model maximum.
+---
+ agent/agent_init_ollama.py                    | 38 ++++----
+ agent/model_metadata.py                       | 80 +++++++++++++----
+ tests/agent/test_local_probe_disk_cache.py    | 24 +++---
+ tests/agent/test_ollama_num_ctx.py            | 20 +++--
+ .../test_ollama_served_window_any_host.py     | 86 +++++++++++++++++++
+ 5 files changed, 191 insertions(+), 57 deletions(-)
+ create mode 100644 tests/agent/test_ollama_served_window_any_host.py
+
+diff --git a/agent/agent_init_ollama.py b/agent/agent_init_ollama.py
+index 1f6f2cad..1460221c 100644
+--- a/agent/agent_init_ollama.py
++++ b/agent/agent_init_ollama.py
+@@ -4,7 +4,7 @@ from __future__ import annotations
+ 
+ from agent.agent_runtime_helpers import _ra
+ from agent.model_metadata import (
+-    _infer_provider_from_url, detect_local_server_type, is_local_endpoint, query_ollama_num_ctx,
++    _infer_provider_from_url, _is_ollama_server, detect_local_server_type, is_local_endpoint, query_ollama_num_ctx,
+ )
+ 
+ 
+@@ -23,8 +23,9 @@ def _route_serves_num_ctx(agent) -> bool:
+ 
+ 
+ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
+-    # Ollama defaults num_ctx to 2048, so detect the max window and send num_ctx per request.
+-    # model.ollama_num_ctx overrides; model.context_length caps the detected value (VRAM).
++    # num_ctx is the window the server serves: model.ollama_num_ctx if set, else model.context_length
++    # (the user's word wins over any probe), else the window Ollama reports it serves. Never the
++    # GGUF maximum: Ollama's /v1 ignores options.num_ctx, so a larger value was never allocated.
+     agent._ollama_num_ctx: int | None = None
+     _override = _model_cfg.get("ollama_num_ctx") if isinstance(_model_cfg, dict) else None
+     if _override is not None:
+@@ -41,34 +42,29 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
+                 _pinned, agent.model, agent.base_url or agent.provider,
+             )
+             return
+-    if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
++    if agent._ollama_num_ctx is None and agent.base_url and (is_local_endpoint(agent.base_url) or _route_serves_num_ctx(agent)):
+         try:
+             # api_key may be a callable (Entra token provider); detection needs a string.
+             _key = agent.api_key if isinstance(agent.api_key, str) else ""
+-            _detected = query_ollama_num_ctx(agent.model, agent.base_url, api_key=_key or "")
+-            if _detected and _detected > 0:
+-                agent._ollama_num_ctx = _detected
++            if _config_context_length:
++                # An explicit model.context_length is the window on an Ollama route, larger or
++                # smaller than a probe would say: the user's word wins, so no probe (it may load
++                # the model) and the compressor clamp below cannot undercut it.
++                if _is_ollama_server(agent.base_url, _key or ""):
++                    agent._ollama_num_ctx = _config_context_length
++            else:
++                _detected = query_ollama_num_ctx(agent.model, agent.base_url, api_key=_key or "")
++                if _detected and _detected > 0:
++                    agent._ollama_num_ctx = _detected
+         except Exception as exc:
+             _ra().logger.debug("Local server num_ctx detection failed: %s", exc)
+-    # Cap auto-detected num_ctx to the explicit context_length (GGUF metadata can advertise
+-    # 256K+ and Ollama would allocate that much VRAM); never override an explicit num_ctx.
+-    if (
+-        agent._ollama_num_ctx
+-        and _config_context_length
+-        and _override is None
+-        and agent._ollama_num_ctx > _config_context_length
+-    ):
+-        _ra().logger.info(
+-            "Ollama num_ctx capped: %d -> %d (model.context_length override)",
+-            agent._ollama_num_ctx, _config_context_length,
+-        )
+-        agent._ollama_num_ctx = _config_context_length
+     if agent._ollama_num_ctx and not getattr(agent, "quiet_mode", True):
+         # Name the real source: a config override is honoured on any local server, /api/show is Ollama-only.
+         _ra().logger.info(
+             "Local server num_ctx: will request %d tokens (%s)",
+             agent._ollama_num_ctx,
+-            "model.ollama_num_ctx" if _override is not None else "model max from Ollama /api/show",
++            "model.ollama_num_ctx" if _override is not None else
++            "model.context_length" if _config_context_length else "the window Ollama serves",
+         )
+ 
+ 
+diff --git a/agent/model_metadata.py b/agent/model_metadata.py
+index e0f02fd0..c01a488a 100644
+--- a/agent/model_metadata.py
++++ b/agent/model_metadata.py
+@@ -632,16 +632,48 @@ def _ollama_served_context(client, server_url: str, bare_model: str, show: dict[
+     if served is None:
+         served = _ollama_show_context({"parameters": show.get("parameters") or ""}, gguf_first=False)
+     if served is None:
+-        try:  # a load with no prompt runs nothing; the server picks the window and /api/ps reports it
+-            client.post(f"{server_url}/api/generate", json={"model": bare_model, "prompt": "", "stream": False}, timeout=30.0)
++        try:  # a load with no prompt runs nothing; the server picks the window and /api/ps reports it.
++            # A large model takes a while to load, so the wait is long: a timeout here would fall to
++            # the 4096 default below and refuse a model the server serves at 64K+.
++            client.post(f"{server_url}/api/generate", json={"model": bare_model, "prompt": "", "stream": False}, timeout=_OLLAMA_LOAD_TIMEOUT_SECONDS)
+             served = _ollama_loaded_context(client, server_url, bare_model)
+         except Exception:
+             served = None
+     if served is None:
++        logger.warning(
++            "Ollama at %s did not say what window it serves %s (not loaded, no num_ctx, load failed); "
++            "assuming Ollama's default %s tokens. Set model.context_length in config.yaml to the "
++            "server's OLLAMA_CONTEXT_LENGTH to override.", server_url, bare_model, f"{OLLAMA_DEFAULT_NUM_CTX:,}")
+         served = OLLAMA_DEFAULT_NUM_CTX
+     return min(served, maximum) if maximum else served
+ 
+ 
++#: Longest wait for the empty-prompt load in ``_ollama_served_context``.
++_OLLAMA_LOAD_TIMEOUT_SECONDS = 180.0
++
++
++def _self_hosted_url(base_url: str) -> bool:
++    """True when *base_url* is no known hosted provider (ollama.com included): a server its
++    operator runs, whose window is a runtime setting rather than the model's trained maximum."""
++    return bool(base_url) and _infer_provider_from_url(base_url) is None
++
++
++def _self_hosted_server(base_url: str, api_key: str = "") -> bool:
++    """A server that serves its own window (Ollama, llama.cpp, vLLM, LM Studio), on any host: a
++    local address, or a hostname the probe waterfall recognizes (TTL-cached). Locality alone
++    missed an Ollama behind a DNS name or a reverse proxy, which then got the trained maximum."""
++    if not base_url:
++        return False
++    if is_local_endpoint(base_url):
++        return True
++    if not _self_hosted_url(base_url):
++        return False
++    try:
++        return detect_local_server_type(base_url, api_key=api_key) is not None
++    except Exception:
++        return False
++
++
+ # (host, canonical paths, model ids, context) — see _endpoint_scoped_context_length.
+ _ENDPOINT_SCOPED_CONTEXT = (
+     ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "kimi-k3", "kimi-k3-cot"}, 1_048_576),
+@@ -1478,19 +1510,29 @@ def _is_ollama_server(base_url: str, api_key: str) -> bool:
+ 
+ 
+ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Optional[int]:
+-    """Ollama ``/api/show`` context (Modelfile num_ctx, else GGUF max); the value to send as ``num_ctx``."""
+-    bare_model, server_url = _strip_provider_prefix(model), _server_root(base_url)
+-    if not _is_ollama_server(base_url, api_key):
++    """The window a self-hosted Ollama serves *model* with (see ``_ollama_served_context``); the
++    value to send as ``num_ctx``. Not the GGUF maximum: Ollama's OpenAI-compatible ``/v1`` ignores
++    ``options.num_ctx``, so a maximum sent there was a window the server never allocated, and it
++    lifted the agent's window past what Ollama truncates at. Short-TTL memo only, no disk cache:
++    a restart with another ``OLLAMA_CONTEXT_LENGTH`` must show on the next session."""
++    bare_model = _strip_provider_prefix(model)
++    if not bare_model or not _self_hosted_url(base_url) or not _is_ollama_server(base_url, api_key):
++        return None
++    return _memo_local_probe(("ollama_served", bare_model, base_url.rstrip("/")), lambda: _query_ollama_served_uncached(bare_model, base_url, api_key))
++
++
++def _query_ollama_served_uncached(bare_model: str, base_url: str, api_key: str = "") -> Optional[int]:
++    import httpx
++    server_url = _server_root(base_url)
++    if _endpoint_blackholed(server_url):
++        return None
++    try:
++        with httpx.Client(timeout=5.0, headers=_auth_headers(api_key), verify=model_metadata_http.resolve_verify(server_url)) as client:
++            resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
++            return _ollama_served_context(client, server_url, bare_model, resp.json()) if resp.status_code == 200 else None
++    except Exception as exc:
++        _note_if_connect_timeout(exc, server_url)
+         return None
+-    _disk_key = f"{server_url}|{bare_model}"
+-    disk_hit = _local_probe_disk_get("ollama_num_ctx", _disk_key)
+-    if isinstance(disk_hit, int) and disk_hit > 0:
+-        return disk_hit
+-    data = _ollama_show(server_url, api_key, bare_model)
+-    ctx = _ollama_show_context(data, gguf_first=False) if data is not None else None
+-    if ctx is not None:
+-        _local_probe_disk_put("ollama_num_ctx", _disk_key, ctx)
+-    return ctx
+ 
+ 
+ def query_ollama_supports_vision(model: str, base_url: str, api_key: str = "") -> Optional[bool]:
+@@ -1535,6 +1577,10 @@ def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = ""
+     server_url = _server_root(base_url)
+     if _endpoint_blackholed(server_url):
+         return None
++    # A self-hosted Ollama on any host (a DNS name, a reverse proxy) serves its runtime window, not
++    # the GGUF maximum this probe returns for hosted Ollama.
++    if _self_hosted_url(base_url) and _is_ollama_server(base_url, api_key):
++        return query_ollama_num_ctx(model, base_url, api_key=api_key)
+     data = _ollama_show(server_url, api_key, model, timeout=5.0, note_blackhole=True)
+     # Hosted Ollama: the GGUF max is authoritative (the operator may have capped num_ctx arbitrarily).
+     return _ollama_show_context(data, gguf_first=True, minimum=1024) if data is not None else None
+@@ -2039,7 +2085,7 @@ def _validate_cached_context_length(model: str, base_url: str, cached: int, *, a
+     # _query_local_context_length prefers num_ctx from Modelfile, while _query_ollama_api_show returns the
+     # GGUF training max first which can be larger and would create a false-safe window for compression
+     # (#63122). Non-local endpoints preserve the existing GGUF-first behavior.
+-    if is_local_endpoint(base_url):
++    if _self_hosted_server(base_url, api_key):
+         return _reconcile_local_cached_context_length(model, base_url, cached, api_key=api_key)
+     return cached
+ 
+@@ -2104,7 +2150,7 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key:
+         return context_length
+     # Local endpoints: the num_ctx-aware probe first — _query_ollama_api_show is GGUF-first, which
+     # can be larger and create a false-safe compression window.
+-    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if is_local_endpoint(base_url) else None
++    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if _self_hosted_server(base_url, api_key) else None
+     if local_ctx:
+         return local_ctx
+     # 2b. Ollama native /api/show (GGUF-first for non-local). Non-Ollama servers 404/405 quickly.
+@@ -2362,7 +2408,7 @@ def get_model_context_length(
+                 return or_ctx
+     # 7. Local server before hardcoded defaults — ``Hermes-3-Llama-3.1-70B`` matches ``llama``
+     # (131072) even when vLLM runs at a lower ``--max-model-len``.
+-    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if base_url and is_local_endpoint(base_url) else None
++    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if _self_hosted_server(base_url, api_key) else None
+     if local_ctx:
+         return local_ctx
+     # 8. Hardcoded defaults: `key in model` only — the reverse would let "claude-sonnet-4" match "claude-sonnet-4-6" and return 1M.
+diff --git a/tests/agent/test_local_probe_disk_cache.py b/tests/agent/test_local_probe_disk_cache.py
+index f9afd8b5..ebd7c13d 100644
+--- a/tests/agent/test_local_probe_disk_cache.py
++++ b/tests/agent/test_local_probe_disk_cache.py
+@@ -86,33 +86,35 @@ class TestDetectLocalServerTypeDiskL2:
+ 
+ 
+ class TestOllamaNumCtxDiskL2:
+-    def test_disk_hit_skips_api_show(self):
++    def test_stale_disk_entry_is_not_served(self):
++        """An older build persisted the GGUF maximum as num_ctx; it must never be read back."""
+         _clear_in_proc()
+         MM._local_probe_disk_put("server_type", "http://127.0.0.1:11434", "ollama")
+         MM._local_probe_disk_put(
+             "ollama_num_ctx", "http://127.0.0.1:11434|llama3", 131072
+         )
+-        with patch("httpx.Client") as mock_client:
++        with patch("agent.model_metadata._query_ollama_served_uncached", return_value=8192) as probe:
+             ctx = MM.query_ollama_num_ctx("llama3", "http://127.0.0.1:11434/v1")
+-        assert ctx == 131072
+-        mock_client.assert_not_called()
++        assert ctx == 8192
++        probe.assert_called_once()
+ 
+-    def test_successful_show_persists(self):
++    def test_served_window_is_not_persisted(self):
++        """The served window changes with a server restart; only the short in-process memo keeps it."""
+         _clear_in_proc()
+         MM._local_probe_disk_put("server_type", "http://127.0.0.1:11434", "ollama")
+         resp = MagicMock(status_code=200)
+         resp.json.return_value = {
+-            "parameters": "",
+-            "model_info": {"llama.context_length": 8192},
++            "parameters": "num_ctx 8192",
++            "model_info": {"llama.context_length": 131072},
+         }
++        ps = MagicMock(status_code=200)
++        ps.json.return_value = {"models": []}
+         client = MagicMock()
+         client.post.return_value = resp
++        client.get.return_value = ps
+         client.__enter__ = lambda s: client
+         client.__exit__ = lambda s, *a: False
+         with patch("httpx.Client", return_value=client):
+             ctx = MM.query_ollama_num_ctx("llama3", "http://127.0.0.1:11434/v1")
+         assert ctx == 8192
+-        assert (
+-            MM._local_probe_disk_get("ollama_num_ctx", "http://127.0.0.1:11434|llama3")
+-            == 8192
+-        )
++        assert MM._local_probe_disk_get("ollama_num_ctx", "http://127.0.0.1:11434|llama3") is None
+diff --git a/tests/agent/test_ollama_num_ctx.py b/tests/agent/test_ollama_num_ctx.py
+index 1bb5d25c..d3054fca 100644
+--- a/tests/agent/test_ollama_num_ctx.py
++++ b/tests/agent/test_ollama_num_ctx.py
+@@ -18,12 +18,16 @@ from agent.model_metadata import query_ollama_num_ctx, query_ollama_supports_vis
+ # ═══════════════════════════════════════════════════════════════════════
+ 
+ 
+-def _mock_httpx_client(show_response_data, status_code=200):
+-    """Create a mock httpx.Client context manager that returns given /api/show data."""
++def _mock_httpx_client(show_response_data, status_code=200, loaded=None):
++    """Create a mock httpx.Client context manager that returns given /api/show data, and an
++    /api/ps that lists *loaded* (``[(name, context_length)]``)."""
+     mock_resp = MagicMock(status_code=status_code)
+     mock_resp.json.return_value = show_response_data
++    ps_resp = MagicMock(status_code=200)
++    ps_resp.json.return_value = {"models": [{"name": n, "context_length": c} for n, c in (loaded or [])]}
+     mock_client = MagicMock()
+     mock_client.post.return_value = mock_resp
++    mock_client.get.return_value = ps_resp
+     mock_ctx = MagicMock()
+     mock_ctx.__enter__ = MagicMock(return_value=mock_client)
+     mock_ctx.__exit__ = MagicMock(return_value=False)
+@@ -33,13 +37,13 @@ def _mock_httpx_client(show_response_data, status_code=200):
+ class TestQueryOllamaNumCtx:
+     """Test the Ollama /api/show context length query."""
+ 
+-    def test_returns_context_from_model_info(self):
+-        """Should extract context_length from GGUF model_info metadata."""
++    def test_returns_the_served_window_not_model_info(self):
++        """The loaded window (/api/ps), not the GGUF maximum: Ollama's /v1 ignores options.num_ctx."""
+         show_data = {
+             "model_info": {"llama.context_length": 131072},
+             "parameters": "",
+         }
+-        mock_ctx, _ = _mock_httpx_client(show_data)
++        mock_ctx, _ = _mock_httpx_client(show_data, loaded=[("llama3.1:8b", 65536)])
+ 
+         with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+             # httpx is imported inside the function — patch the module import
+@@ -47,7 +51,7 @@ class TestQueryOllamaNumCtx:
+             with patch.object(httpx, "Client", return_value=mock_ctx):
+                 result = query_ollama_num_ctx("llama3.1:8b", "http://localhost:11434/v1")
+ 
+-        assert result == 131072
++        assert result == 65536
+ 
+     def test_prefers_explicit_num_ctx_from_modelfile(self):
+         """If the Modelfile sets num_ctx explicitly, that should take priority."""
+@@ -73,7 +77,7 @@ class TestQueryOllamaNumCtx:
+             "model_info": {"qwen2.context_length": 32768},
+             "parameters": "",
+         }
+-        mock_ctx, mock_client = _mock_httpx_client(show_data)
++        mock_ctx, mock_client = _mock_httpx_client(show_data, loaded=[("qwen2.5:7b", 32768)])
+ 
+         with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+             import httpx
+@@ -81,7 +85,7 @@ class TestQueryOllamaNumCtx:
+                 result = query_ollama_num_ctx("local:qwen2.5:7b", "http://localhost:11434/v1")
+ 
+         # Verify the post was called with stripped name (no "local:" prefix)
+-        call_args = mock_client.post.call_args
++        call_args = mock_client.post.call_args_list[0]
+         assert call_args.kwargs["json"]["name"] == "qwen2.5:7b"
+         assert result == 32768
+ 
+diff --git a/tests/agent/test_ollama_served_window_any_host.py b/tests/agent/test_ollama_served_window_any_host.py
+new file mode 100644
+index 00000000..73b03388
+--- /dev/null
++++ b/tests/agent/test_ollama_served_window_any_host.py
+@@ -0,0 +1,86 @@
++"""A self-hosted Ollama's window is the one it serves on every path, on any host.
++
++Locality is not the test: an Ollama behind a DNS name or a reverse proxy got the GGUF maximum from
++``/api/show``. And the agent's runtime ``num_ctx`` came from the same maximum: Ollama's ``/v1``
++ignores ``options.num_ctx``, so that value was a window the server never allocated, and it lifted
++the agent's window past where Ollama truncates. A user-set ``model.context_length`` still wins.
++"""
++from types import SimpleNamespace
++
++import pytest
++
++from agent import agent_init_ollama
++from agent import model_metadata as mm
++from tests.agent.test_ollama_served_context import MODEL, TRAINED, ollama
++
++
++@pytest.fixture
++def remote(monkeypatch, tmp_path):
++    """The fake server's URL counts as a public DNS name, not a local address."""
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.setattr(mm, "is_local_endpoint", lambda url: False)
++    monkeypatch.setattr(agent_init_ollama, "is_local_endpoint", lambda url: False)
++
++
++def test_remote_custom_endpoint_gets_the_served_window(ollama, remote):
++    state = ollama(loaded=65536)
++    assert mm.get_model_context_length(MODEL, base_url=state.url + "/v1") == 65536
++
++
++def test_remote_server_default_is_read_by_a_load(ollama, remote):
++    state = ollama(server_default=8192)
++    assert mm.get_model_context_length(MODEL, base_url=state.url + "/v1") == 8192
++    assert ("POST", "/api/generate") in state.calls
++
++
++def test_remote_stale_cached_maximum_is_reconciled(ollama, remote):
++    state = ollama(loaded=65536)
++    mm.save_context_length(MODEL, state.url + "/v1", TRAINED)  # what an older build persisted
++    assert mm.get_model_context_length(MODEL, base_url=state.url + "/v1") == 65536
++
++
++def test_user_context_length_wins(ollama, remote):
++    state = ollama(loaded=8192)
++    assert mm.get_model_context_length(MODEL, base_url=state.url + "/v1", config_context_length=131072) == 131072
++    assert state.calls == []
++
++
++def test_hosted_ollama_keeps_the_model_maximum(monkeypatch):
++    """ollama.com serves the model's window and has no /api/ps: no served-window probe there."""
++    monkeypatch.setattr(mm, "_is_ollama_server", lambda *a: pytest.fail("hosted Ollama probed as self-hosted"))
++    monkeypatch.setattr(mm, "_ollama_show", lambda *a, **k: {"parameters": "", "model_info": {"llama.context_length": TRAINED}})
++    assert mm._query_ollama_api_show_uncached(MODEL, "https://ollama.com/v1") == TRAINED
++
++
++def _agent(url):
++    return SimpleNamespace(model=MODEL, base_url=url + "/v1", api_key="ollama", provider="custom", quiet_mode=True)
++
++
++def test_runtime_num_ctx_is_the_served_window(ollama, remote):
++    state = ollama(loaded=65536)
++    agent = _agent(state.url)
++    agent_init_ollama._configure_ollama_num_ctx(agent, {}, None)
++    assert agent._ollama_num_ctx == 65536
++
++
++def test_runtime_num_ctx_never_the_maximum_on_a_local_server(ollama):
++    state = ollama(server_default=8192)
++    agent = _agent(state.url)
++    agent_init_ollama._configure_ollama_num_ctx(agent, {}, None)
++    assert agent._ollama_num_ctx == 8192
++
++
++def test_runtime_num_ctx_follows_the_user_context_length_without_a_probe(ollama, remote):
++    state = ollama(loaded=8192)
++    for configured in (4096, 131072):
++        agent = _agent(state.url)
++        agent_init_ollama._configure_ollama_num_ctx(agent, {}, configured)
++        assert agent._ollama_num_ctx == configured
++    assert ("POST", "/api/show") not in state.calls
++
++
++def test_runtime_ollama_num_ctx_override_still_wins(ollama, remote):
++    state = ollama(loaded=8192)
++    agent = _agent(state.url)
++    agent_init_ollama._configure_ollama_num_ctx(agent, {"ollama_num_ctx": 32768}, 131072)
++    assert agent._ollama_num_ctx == 32768

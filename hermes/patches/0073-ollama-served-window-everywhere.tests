@@ -1,0 +1,8 @@
+# Upstream tests of the context probe, the cache reconcile and num_ctx, and patch 0054 this fix completes
+tests/agent/test_ollama_served_context.py
+tests/agent/test_model_metadata_local_ctx.py
+tests/agent/test_model_metadata.py
+tests/agent/test_endpoint_blackhole.py
+tests/agent/test_probe_cache_followups.py
+tests/agent/test_context_fallback_label.py
+tests/plugins/model_providers/test_custom_profile.py

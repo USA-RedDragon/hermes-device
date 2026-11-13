@@ -172,8 +172,8 @@ Ollama is its own container; The agent reaches it by the server's address.
 3. Point the agent at it: `docker exec -it -u hermes Talaria hermes model`, **Custom endpoint**, API base URL
    `http://<your Unraid address>:11434/v1` (such as `http://192.168.1.10:11434/v1`), then: no API key, Enter for
    auto-detect, Enter to use the model it found, context length `65536` (the window you gave Ollama; left empty,
-   the agent takes the model's own maximum, 131072 for llama3.2), a display name such as `Ollama`, and Enter for the
-   reasoning effort.
+   the agent asks Ollama for the window it serves, the same 65536, not the model's maximum of 131072), a display
+   name such as `Ollama`, and Enter for the reasoning effort.
 
    ![hermes model with the custom endpoint http://10.0.2.15:11434/v1: Verified endpoint, Detected model llama3.2:3b, context length 65536, display name Ollama, Default model set to llama3.2:3b](images/unraid/hermes-model-ollama.png)
 
