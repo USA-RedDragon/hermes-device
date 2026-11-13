@@ -77,6 +77,7 @@ func NewCommand(version, commit string, opts ...Option) *cobra.Command {
 		b.interactive(newACPCommand(b)),
 		newACPHostCommand(b),
 		newPluginCommand(b),
+		newCopySelfCommand(b),
 		browserCommand(b),
 		b.interactive(newSetupCommand(b)),
 		newUpdateCommand(b),

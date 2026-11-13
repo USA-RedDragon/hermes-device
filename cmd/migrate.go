@@ -50,7 +50,7 @@ func underLegacyService() bool {
 // daemon still runs), and those that only print.
 func skipMigration(c *cobra.Command) bool {
 	switch c.Name() {
-	case "acp-host", "extension", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd:
+	case "acp-host", copySelfCommand, "extension", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd:
 		return true
 	case installCommand:
 		return c.Parent() != nil && c.Parent().Name() == "plugin"
