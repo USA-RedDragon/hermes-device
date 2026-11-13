@@ -54,12 +54,17 @@ program on each one and [pair it](docs/start/add-a-computer.md).
 
 | Path | What | Releases |
 | ---- | ---- | -------- |
-| `/` (this README from [Parts](#parts) on) | `talaria`, the program for your own computers, and the Hermes device plugin | tags `vX.Y.Z`, the [latest release](https://github.com/USA-RedDragon/talaria/releases/latest) |
+| `/` with [`cmd/`](cmd), [`internal/`](internal), [`main.go`](main.go) (this README from [Parts](#parts) on) | `talaria`, the program for your own computers | tags `vX.Y.Z`, the [latest release](https://github.com/USA-RedDragon/talaria/releases/latest), image `ghcr.io/usa-reddragon/talaria` |
+| [`Dockerfile.sandbox`](Dockerfile.sandbox) | The agent sandbox: a container that runs `talaria run` as a service computer, so the agent has a shell before you pair your own | with `talaria`, image `ghcr.io/usa-reddragon/talaria-sandbox` |
+| [`plugin/`](plugin) | The device plugin for Hermes, built into `talaria` and installed by it | with `talaria` |
+| [`extension/`](extension) | The Firefox extension that lets the agent use your browser | with `talaria`, signed `.xpi` on the release |
+| [`protocol/`](protocol), [`assertion/`](assertion) | The wire protocol between `talaria`, the plugin and the hub, and the hub's signed connection assertion | with `talaria` and the hub |
 | [`hub/`](hub) | The hub: web app, Telegram bot, accounts, API | tags `hub/vX.Y.Z`, image `ghcr.io/usa-reddragon/talaria-hub` |
 | [`hermes/`](hermes) | Talaria Hermes: Hermes Agent with the Talaria patches | tags `hermes/v<release>-p<n>`, image `ghcr.io/usa-reddragon/talaria-hermes` |
 | [`plugins/`](plugins) | Hermes plugins Talaria uses: subagent routes, project memory | tags `plugins/vX.Y.Z`, tarball on the release |
-| [`deploy/`](deploy) | The install kit: Docker Compose, Helm chart, all-in-one image for Unraid and TrueNAS | tags `aio/vX.Y.Z`, image `ghcr.io/usa-reddragon/talaria-aio` |
+| [`deploy/`](deploy) | The install kit: Docker Compose, Helm chart, all-in-one image for Unraid and TrueNAS, SearXNG settings for web search | tags `aio/vX.Y.Z`, image `ghcr.io/usa-reddragon/talaria-aio`; Compose and the Helm chart are used from `main` |
 | [`docs/`](docs) | The docs site (with the pages in `hub/docs`) | https://usa-reddragon.github.io/talaria/ |
+| [`scripts/`](scripts) | Maintainer scripts for tests and releases | not released |
 
 # The talaria program
 
