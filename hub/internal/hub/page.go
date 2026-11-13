@@ -82,6 +82,29 @@ func PageBlocks(text string) (pages []string, cleaned string) {
 	return pages, strings.TrimSpace(manyBlank.ReplaceAllString(strings.Join(keep, "\n"), "\n\n"))
 }
 
+// FenceOpen says whether text ends inside a fenced block that is not
+// closed: a reply that arrives in pieces was cut inside a code or page
+// block, so the next piece of the same turn goes on from it. The web page
+// has the same rule (HubPageBlocks.open).
+func FenceOpen(text string) bool {
+	if !strings.Contains(text, "```") && !strings.Contains(text, "~~~") {
+		return false
+	}
+	lines := strings.Split(text, "\n")
+	for i := 0; i < len(lines); i++ {
+		m := fenceStart.FindStringSubmatch(strings.TrimSuffix(lines[i], "\r"))
+		if m == nil {
+			continue
+		}
+		end := fenceEnd(lines, i+1, m[1])
+		if end < 0 {
+			return true
+		}
+		i = end
+	}
+	return false
+}
+
 // fenceEnd is the index of the line that closes a fence opened with
 // marker, from line from on, or -1.
 func fenceEnd(lines []string, from int, marker string) int {

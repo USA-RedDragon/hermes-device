@@ -157,3 +157,40 @@ func noRedirect(c *http.Client) *http.Client {
 	n.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &n
 }
+
+// A reply that reached the transcript, or the live stream, in two pieces
+// cut inside its page block still serves its page: the piece after the cut
+// goes on from the one before.
+func TestPageFromAReplyInPieces(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	html := "<!doctype html>\n<style>\n.picker .pbody { padding: .2rem 1rem .8rem; display: flex; }\n</style>\n<p>pieces</p>"
+	first, second := "Here.\n```page\n"+html[:40], html[40:]+"\n```\nDone."
+	e.gw.AddSession(&gatewaytest.Session{ID: "m2", Title: titleMedia, Live: true, StartedAt: 200, Messages: []map[string]any{
+		{kRole: roleUser, kText: "page please"}, {kRole: "assistant", kText: first}, {kRole: "assistant", kText: second}}})
+	e.gw.AddSession(&gatewaytest.Session{ID: "m3", Title: titleMedia, Live: true, StartedAt: 300})
+	c := client(t)
+	login(t, e, c)
+	id := hub.PageID(html)
+	if resp, body := getAs(t, c, e.url+"/api/sessions/pc/m2/page?id="+id, "iframe"); resp.StatusCode != http.StatusOK || !strings.HasSuffix(body, "<p>pieces</p>") {
+		t.Fatalf("stored in pieces = %d %q", resp.StatusCode, body)
+	}
+	if resp, _ := getAs(t, c, e.url+"/api/sessions/pc/m3/page?id="+id, "iframe"); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("before the reply = %d", resp.StatusCode)
+	}
+	e.gw.Publish("m3", "message.start", map[string]any{})
+	e.gw.Publish("m3", "message.delta", map[string]any{kText: first})
+	e.gw.Publish("m3", "message.start", map[string]any{})
+	e.gw.Publish("m3", "message.delta", map[string]any{kText: second})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, body := getAs(t, c, e.url+"/api/sessions/pc/m3/page?id="+id, "iframe")
+		if resp.StatusCode == http.StatusOK && strings.HasSuffix(body, "<p>pieces</p>") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("streamed in pieces = %d %q", resp.StatusCode, body)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

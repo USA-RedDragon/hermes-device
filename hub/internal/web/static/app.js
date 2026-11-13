@@ -1434,8 +1434,10 @@
         if (r) { this.reasoning(r); ui.closeUnlessKept(this.turn.reasoning); }
         if (text) {
           this.assistantText(text);
-          if (Number.isInteger(rid)) this.turn.text.dataset.row = rid;
-          this.turn.text = null;
+          if (Number.isInteger(rid) && !this.turn.text.dataset.row) this.turn.text.dataset.row = rid;
+          // A reply stored in pieces cut inside a fenced block goes on in
+          // the same bubble, so its page block stays whole.
+          if (!window.HubPageBlocks.open(this.turn.raw)) this.turn.text = null;
         }
         return;
       }
@@ -1506,7 +1508,13 @@
         }
         case "tool.complete": this.toolDone(this.toolCard(p.tool_id, p.name, p.args), p); break;
         case "message.delta": this.setStatus(""); if (typeof p.text === "string" && p.text) this.assistantText(p.text, true); break;
-        case "message.interim": if (p.text && !p.already_streamed) { this.assistantText(p.text); this.turn.text = null; } break;
+        case "message.interim":
+          if (p.text && !p.already_streamed) {
+            this.assistantText(p.text);
+            // A piece that ends inside a fenced block: the next one goes on in the same bubble.
+            if (!window.HubPageBlocks.open(this.turn.raw)) this.turn.text = null;
+          }
+          break;
         case "message.complete": {
           // The end of a message handed to the running turn, not of a turn.
           if (p.outcome && !p.status && p.admission_id) { this.transferEnded(p); break; }

@@ -86,3 +86,20 @@ func TestPageTitleAndPath(t *testing.T) {
 		}
 	}
 }
+
+func TestFenceOpen(t *testing.T) {
+	t.Parallel()
+	for text, want := range map[string]bool{
+		"plain text":                          false,
+		"a\n```page\n<p>x":                    true,
+		"a\n```page\n<p>x</p>\n```\nb":        false,
+		"a\n```js\nx\n```\n~~~page\ny":        true,
+		"````md\n```\nx\n```\n":               true,
+		"a\r\n```page\r\n<p>x</p>\r\n```\r\n": false,
+		".8rem; display: flex; }\n```\nafter": true,
+	} {
+		if got := hub.FenceOpen(text); got != want {
+			t.Errorf("FenceOpen(%q) = %v", text, got)
+		}
+	}
+}

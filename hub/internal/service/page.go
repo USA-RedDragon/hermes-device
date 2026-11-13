@@ -31,7 +31,8 @@ func (s *Service) Page(ctx context.Context, user, backendID, sessionID, id strin
 }
 
 // page finds the page block with that id in the replies of the snapshot's
-// transcript or the events since.
+// transcript or the events since. A reply that came in pieces cut inside a
+// fenced block is read as one: the piece after the cut goes on from it.
 func (ls *live) page(id string) (string, bool) {
 	ls.mu.Lock()
 	snap := ls.snapshot.Data
@@ -50,9 +51,16 @@ func (ls *live) page(id string) (string, bool) {
 		Messages []json.RawMessage `json:"messages"`
 	}
 	if len(snap) > 0 && json.Unmarshal(snap, &s) == nil {
+		joined := ""
 		for _, raw := range s.Messages {
 			var r row
-			if json.Unmarshal(raw, &r) != nil || r.Role != "assistant" {
+			if json.Unmarshal(raw, &r) != nil {
+				continue
+			}
+			if r.Role == "user" {
+				joined = ""
+			}
+			if r.Role != "assistant" {
 				continue
 			}
 			var content string
@@ -61,6 +69,13 @@ func (ls *live) page(id string) (string, bool) {
 			} else {
 				_ = json.Unmarshal(r.Content, &content)
 			}
+			if content == "" {
+				continue
+			}
+			if hub.FenceOpen(joined) {
+				content = joined + content
+			}
+			joined = content
 			if p, ok := find(content); ok {
 				return p, true
 			}
@@ -87,6 +102,11 @@ func (ls *live) page(id string) (string, bool) {
 			}
 			if p, ok := find(string(reply)); ok {
 				return p, true
+			}
+			// A message handed to the running turn starts while a reply is
+			// inside a fenced block: the reply goes on after it.
+			if e.Kind == hub.KindMessageStart && hub.FenceOpen(string(reply)) {
+				continue
 			}
 			reply = reply[:0]
 		}
