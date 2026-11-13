@@ -62,7 +62,8 @@ func (s *Store) TryLock(ctx context.Context, key int64, check time.Duration) (*L
 		return nil, nil //nolint:nilnil // nil means another session holds it
 	}
 	l.conn = conn
-	go l.watch(check) //nolint:gosec,contextcheck // the watcher lives as long as the lock, past ctx
+	// The watcher lives as long as the lock, past ctx.
+	go l.watch(context.WithoutCancel(ctx), check)
 
 	return l, nil
 }
@@ -70,7 +71,7 @@ func (s *Store) TryLock(ctx context.Context, key int64, check time.Duration) (*L
 // Lost is closed when the lock may no longer be held.
 func (l *Lock) Lost() <-chan struct{} { return l.lost }
 
-func (l *Lock) watch(check time.Duration) {
+func (l *Lock) watch(ctx context.Context, check time.Duration) {
 	defer close(l.done)
 	t := time.NewTicker(check)
 	defer t.Stop()
@@ -79,7 +80,7 @@ func (l *Lock) watch(check time.Duration) {
 		case <-l.stop:
 			return
 		case <-t.C:
-			ctx, cancel := context.WithTimeout(context.Background(), check)
+			ctx, cancel := context.WithTimeout(ctx, check)
 			_, err := l.conn.ExecContext(ctx, `SELECT 1`)
 			cancel()
 			if err != nil {

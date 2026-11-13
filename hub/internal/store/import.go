@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -19,11 +20,25 @@ const importLockKey = 0x6875622d696d7074 // "hub-impt"
 // ErrNotPostgres is returned by ImportSQLite on an SQLite store.
 var ErrNotPostgres = errors.New("store: import needs a PostgreSQL store")
 
+// importTable is one table ImportSQLite copies. Its statements are built
+// from these fixed names, never from the file's content.
+type importTable struct{ name, columns, key string }
+
+func (t importTable) selectSQL() string { return "SELECT " + t.columns + " FROM " + t.name }
+
+func (t importTable) insertSQL(n int) string {
+	marks := make([]string, n)
+	for i := range marks {
+		marks[i] = fmt.Sprintf("$%d", i+1)
+	}
+	return "INSERT INTO " + t.name + " (" + t.columns + ") VALUES (" + strings.Join(marks, ", ") + ") ON CONFLICT (" + t.key + ") DO NOTHING"
+}
+
 // importTables are the tables ImportSQLite copies, with their columns. A
 // table the file does not have is skipped.
 //
 //nolint:gochecknoglobals // a fixed table
-var importTables = []struct{ name, columns, key string }{
+var importTables = []importTable{
 	{"telegram_links", `telegram_id, "user", linked_at`, "telegram_id"},
 	{"link_tokens", "token_hash, telegram_id, expires_at", "token_hash"},
 	{"users", `name, "groups", seen_at`, "name"},
@@ -81,7 +96,7 @@ func (s *Store) ImportSQLite(ctx context.Context, path string) (int, bool, error
 	}
 	n := 0
 	for _, t := range importTables {
-		copied, err := copyTable(ctx, src, tx, t.name, t.columns, t.key)
+		copied, err := copyTable(ctx, src, tx, t)
 		if err != nil {
 			return 0, false, fmt.Errorf("import %s: %w", t.name, err)
 		}
@@ -106,16 +121,16 @@ func (s *Store) imported(ctx context.Context) (bool, error) {
 	return err == nil, err
 }
 
-func copyTable(ctx context.Context, src *sql.DB, tx *sql.Tx, table, columns, key string) (int, error) {
+func copyTable(ctx context.Context, src *sql.DB, tx *sql.Tx, t importTable) (int, error) {
 	var found string
-	err := src.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&found)
+	err := src.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, t.name).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
 	if err != nil {
 		return 0, err
 	}
-	rows, err := src.QueryContext(ctx, "SELECT "+columns+" FROM "+table) //nolint:gosec // fixed names from importTables
+	rows, err := src.QueryContext(ctx, t.selectSQL())
 	if err != nil {
 		return 0, err
 	}
@@ -124,14 +139,7 @@ func copyTable(ctx context.Context, src *sql.DB, tx *sql.Tx, table, columns, key
 	if err != nil {
 		return 0, err
 	}
-	marks := ""
-	for i := range cols {
-		if i > 0 {
-			marks += ", "
-		}
-		marks += fmt.Sprintf("$%d", i+1)
-	}
-	insert := "INSERT INTO " + table + " (" + columns + ") VALUES (" + marks + ") ON CONFLICT (" + key + ") DO NOTHING" //nolint:gosec // fixed names
+	insert := t.insertSQL(len(cols))
 	n := 0
 	for rows.Next() {
 		vals := make([]any, len(cols))

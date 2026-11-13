@@ -412,19 +412,18 @@ func newClient(ctx context.Context, conn *websocket.Conn, onEvent func(Event)) (
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 		return nil, ErrNoAuthority
 	}
-	go c.read() //nolint:gosec // the reader outlives the dial context by design
+	go c.read(context.WithoutCancel(ctx))
 	return c, nil
 }
 
-// read runs for the life of the connection, past any request context.
-//
-//nolint:contextcheck // see above
-func (c *Client) read() {
+// read runs for the life of the connection, past any request context: ctx
+// carries the values of the dial's but not its cancellation.
+func (c *Client) read(ctx context.Context) {
 	var err error
 	defer func() { c.fail(err) }()
 	for {
 		var data []byte
-		_, data, err = c.conn.Read(context.Background())
+		_, data, err = c.conn.Read(ctx)
 		if err != nil {
 			return
 		}

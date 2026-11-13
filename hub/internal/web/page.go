@@ -83,11 +83,6 @@ func withBridge(page []byte) []byte {
 	return append(out, page[at:]...)
 }
 
-// pageHash is the hub route that opens a page in its frame.
-func pageHash(backendID, sessionID, ref string) string {
-	return "/#/page/" + url.PathEscape(backendID) + "/" + url.PathEscape(sessionID) + "/" + url.PathEscape(ref)
-}
-
 // handlePage serves a page for the hub's sandboxed frame: a page block of a
 // reply (?id=<PageID>) or an HTML file that a reply names with a MEDIA
 // directive (?path=). The page runs in an opaque origin under pageCSP, so
@@ -108,7 +103,8 @@ func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
 		ref = p
 	}
 	if dest := r.Header.Get("Sec-Fetch-Dest"); dest != "" && dest != "iframe" {
-		http.Redirect(w, r, pageHash(backendID, sessionID, ref), http.StatusSeeOther) //nolint:gosec // a fragment on the hub's own root; every part is escaped
+		// The hub route that opens the page in its frame.
+		http.Redirect(w, r, "/#/page/"+url.PathEscape(backendID)+"/"+url.PathEscape(sessionID)+"/"+url.PathEscape(ref), http.StatusSeeOther)
 		return
 	}
 	page, err := s.readPage(r, backendID, sessionID, id, p)

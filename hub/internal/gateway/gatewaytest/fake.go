@@ -646,7 +646,7 @@ func (g *Gateway) login(w http.ResponseWriter, r *http.Request) {
 	g.cookies[v] = true
 	g.logins++
 	g.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: "hermes_session_at", Value: v, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode}) //nolint:gosec // plain-HTTP test server
+	http.SetCookie(w, &http.Cookie{Name: "hermes_session_at", Value: v, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 	_, _ = w.Write([]byte(`{"ok":true,"next":"/"}`))
 }
 
