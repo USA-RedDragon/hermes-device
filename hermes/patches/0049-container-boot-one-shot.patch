@@ -1,0 +1,131 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jacob McSwain <jacob@mcswain.dev>
+Date: Thu, 12 Nov 2026 19:36:42 -0600
+Subject: [PATCH] fix(container): only the default or gateway command boots
+ gateways from run intent
+
+A container that mounts the volume of a running gateway, such as a one-shot setup or init container, booted a gateway of its own from the persisted run intent. Only the default command and a gateway command do now; HERMES_CONTAINER_AUTOSTART_GATEWAYS (1 or 0) decides for any other command. Containers that override the entrypoint never run the reconcile and are unchanged.
+---
+ hermes_cli/container_boot.py            | 29 ++++++++++++--
+ tests/hermes_cli/test_container_boot.py | 50 +++++++++++++++++++++++++
+ 2 files changed, 76 insertions(+), 3 deletions(-)
+
+diff --git a/hermes_cli/container_boot.py b/hermes_cli/container_boot.py
+index 4fbd7d2a..22726596 100644
+--- a/hermes_cli/container_boot.py
++++ b/hermes_cli/container_boot.py
+@@ -118,6 +118,8 @@ def reconcile_profile_gateways(
+     legacy_default_state = _maybe_migrate_legacy_gateway_run_state(
+         hermes_home, container_argv=container_argv, dry_run=dry_run)
+     default_prior_state = legacy_default_state or _read_desired_state(hermes_home)
++    autostart = _container_autostarts_gateways(
++        tuple(container_argv) if container_argv is not None else _read_container_argv())
+     # The root slot INHERITS every named slot's autostart intent, because it is the one process
+     # that serves them. Without this an image only ever driven as `hermes -p coder gateway start`
+     # booted with ZERO gateways: it has no root state (or "stopped"), every named slot is now
+@@ -125,8 +127,8 @@ def reconcile_profile_gateways(
+     # looks healthy while nothing is listening.
+     fold = fold_named_slot_intent(
+         default_prior_state, ((name, prior) for name, _dir, prior in named if name not in standalone))
+-    folded, default_should_start = list(fold.folded), fold.root_should_start
+-    if folded and default_prior_state not in _AUTOSTART_STATES:
++    folded, default_should_start = list(fold.folded), fold.root_should_start and autostart
++    if folded and default_prior_state not in _AUTOSTART_STATES and autostart:
+         log.warning("%s", boot_notice(folded))
+     if not dry_run:
+         _cleanup_stale_runtime_files(hermes_home)
+@@ -136,7 +138,7 @@ def reconcile_profile_gateways(
+ 
+     for name, entry, prior_state in named:
+         # Registered down unless standalone: any other started named slot IS a second gateway on this host.
+-        should_start = name in standalone and prior_state in _AUTOSTART_STATES
++        should_start = autostart and name in standalone and prior_state in _AUTOSTART_STATES
+         if not dry_run:
+             _cleanup_stale_runtime_files(entry)
+             _register_service(scandir, name, start=should_start)
+@@ -237,6 +239,27 @@ def _is_dashboard_container(argv: Sequence[str]) -> bool:
+     return bool(args) and args[0] == "dashboard"
+ 
+ 
++def _container_autostarts_gateways(argv: Sequence[str]) -> bool:
++    """Whether this container boots gateways from their persisted run intent.
++
++    A container whose command is a one-shot (a setup or init script, `hermes config set`, a
++    shell) must not start a gateway just because the volume it shares says one was running.
++    The default command and `gateway ...` boot them; `HERMES_CONTAINER_AUTOSTART_GATEWAYS`
++    (1 or 0) decides for any other command.
++    """
++    raw = os.environ.get("HERMES_CONTAINER_AUTOSTART_GATEWAYS", "").strip().lower()
++    if raw in ("1", "true", "yes"):
++        return True
++    if raw in ("0", "false", "no"):
++        return False
++    args = _strip_container_argv_prefix(argv)
++    while args and args[0] in ("-p", "--profile"):
++        args = args[2:]
++    while args and args[0].startswith("-") and args[0] not in ("-p", "--profile"):
++        args = args[1:]
++    return not args or args[0] == "gateway"
++
++
+ def _read_desired_state(profile_dir: Path) -> str | None:
+     """Persisted ``desired_state`` (operator intent), else legacy ``gateway_state``; missing or
+     unparseable files count as "no state" so a corrupt file can't bork boot."""
+diff --git a/tests/hermes_cli/test_container_boot.py b/tests/hermes_cli/test_container_boot.py
+index 999e8971..4b079364 100644
+--- a/tests/hermes_cli/test_container_boot.py
++++ b/tests/hermes_cli/test_container_boot.py
+@@ -355,3 +355,53 @@ def test_a_stopped_fleet_still_boots_nothing(tmp_path: Path) -> None:
+ 
+     assert [a.action for a in actions] == ["registered"] * 3
+     assert not any(a.folded_into_root for a in actions)
++
++
++# ---------------------------------------------------------------------------
++# A one-shot container on the same volume does not start a gateway
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize(
++    ("argv", "starts"),
++    [
++        ((), True),
++        (("/opt/hermes/docker/main-wrapper.sh", "gateway", "run"), True),
++        (("/opt/hermes/docker/main-wrapper.sh", "-p", "coder", "gateway", "run"), True),
++        (("/opt/hermes/docker/main-wrapper.sh", "sh", "/setup.sh"), False),
++        (("/opt/hermes/docker/main-wrapper.sh", "config", "set", "model", "x"), False),
++        (("/opt/hermes/docker/main-wrapper.sh", "-p", "coder", "config", "set"), False),
++    ],
++)
++def test_only_the_default_or_gateway_command_boots_a_gateway(
++    tmp_path: Path, argv: tuple[str, ...], starts: bool,
++) -> None:
++    hermes_home = tmp_path / "data"
++    hermes_home.mkdir()
++    _seed_default_root(hermes_home, state="running")
++    solo = _make_profile(hermes_home, "solo", state=None, desired_state="running")
++    (solo / "config.yaml").write_text("gateway:\n  standalone: true\n")
++
++    actions = reconcile_profile_gateways(
++        hermes_home=hermes_home, scandir=tmp_path / "svc", dry_run=True, container_argv=argv)
++
++    assert [a.action for a in actions] == (["started"] if starts else ["registered"]) * 2
++
++
++def test_the_autostart_variable_decides_for_any_command(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    hermes_home = tmp_path / "data"
++    hermes_home.mkdir()
++    _seed_default_root(hermes_home, state="running")
++    one_shot = ("/opt/hermes/docker/main-wrapper.sh", "sh", "/setup.sh")
++
++    monkeypatch.setenv("HERMES_CONTAINER_AUTOSTART_GATEWAYS", "1")
++    actions = reconcile_profile_gateways(
++        hermes_home=hermes_home, scandir=tmp_path / "svc", dry_run=True, container_argv=one_shot)
++    assert [a.action for a in actions] == ["started"]
++
++    monkeypatch.setenv("HERMES_CONTAINER_AUTOSTART_GATEWAYS", "0")
++    actions = reconcile_profile_gateways(
++        hermes_home=hermes_home, scandir=tmp_path / "svc", dry_run=True, container_argv=())
++    assert [a.action for a in actions] == ["registered"]

@@ -1,0 +1,4 @@
+# The container boot reconcile and the s6 service slots this patch changes
+tests/hermes_cli/test_container_boot.py
+tests/hermes_cli/test_service_manager.py
+tests/hermes_cli/test_gateway_multiplex_s6.py
