@@ -139,7 +139,7 @@ notify:
   # vapid_private_key: "(secret)"
   # File that holds notify.vapid_private_key. Wins over vapid_private_key
   # vapid_private_key_file: ""
-  # How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url
+  # How push services can reach the hub's operator: a mailto: or https: URL. Default http.public_url when that is https. With neither, the hub logs a warning and runs without Web Push
   # vapid_subject: ""
   # How long an approval or question waits before the hub reminds its person once. 0 is the default
   remind_after: "5m"
