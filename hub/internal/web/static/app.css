@@ -1191,3 +1191,62 @@ a.button, .page a.button { display: inline-flex; align-items: center; justify-co
 .confirm p { margin: 0; width: 100%; font-size: .88rem; }
 .set-detail .hint { margin: 0; }
 @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
+
+/* Works with: the menu row, the panel (a bottom sheet on phones), chips on agent message cards, the list mark. */
+.sessions .menu > button.ww-row-btn { display: flex; align-items: center; gap: .5rem; }
+.ww-row-btn .ico { width: 1rem; height: 1rem; flex: none; }
+.ww-row-btn .r { margin-left: auto; color: var(--muted); font-size: .78rem; }
+.ww-mark { flex: none; display: inline-grid; color: var(--accent); }
+.ww-mark svg { width: .9rem; height: .9rem; }
+.ww-chips { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .25rem; min-width: 0; }
+.ww-chip { display: inline-flex; align-items: center; gap: .25rem; padding: .05rem .5rem; border: 1px solid var(--line); border-radius: 999px;
+  font-size: .72rem; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ww-chip svg { width: .8rem; height: .8rem; }
+.ww-chip.partner { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.ww-refusal { padding: 0 .75rem .55rem; }
+.ww-refusal .link { display: inline-flex; align-items: center; gap: .35rem; font-size: .85rem; color: var(--accent); }
+.ww-refusal .link svg { width: .95rem; height: .95rem; }
+.ww-layer { position: fixed; inset: 0; z-index: 60; }
+.ww-bg { position: absolute; inset: 0; }
+.ww-panel { position: absolute; top: 3.4rem; right: .75rem; width: 21rem; max-width: calc(100vw - 1.5rem); max-height: calc(100dvh - 4.5rem); overflow-y: auto;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, .25); font-size: .9rem; padding-bottom: .5rem; }
+.ww-head { display: flex; align-items: center; gap: .4rem; padding: .5rem .5rem .1rem .8rem; }
+.ww-head b { flex: 1; }
+.ww-grab { display: none; }
+.ww-head .ib, .ww-rm { width: 2.2rem; height: 2.2rem; display: inline-grid; place-items: center; padding: 0; flex: none; }
+.ww-head .ib svg, .ww-rm svg { width: 1.1rem; height: 1.1rem; }
+.ww-rm:hover { color: var(--bad); }
+.ww-note { margin: .1rem .8rem .6rem; color: var(--muted); font-size: .8rem; }
+.ww-list { padding: 0 .4rem; }
+.ww-row { display: flex; align-items: center; gap: .6rem; padding: .35rem .4rem; border-radius: 8px; min-height: 2.5rem; width: 100%; text-align: left; border: 0; background: none; color: var(--fg); }
+.ww-row > svg { width: 1.1rem; height: 1.1rem; flex: none; color: var(--muted); fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ww-row .t { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ww-row .t b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ww-row .t span { color: var(--muted); font-size: .74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ww-row:hover { background: var(--hover); }
+.ww-none { margin: .3rem .8rem; color: var(--muted); font-size: .82rem; }
+.ww-err { margin: .3rem .8rem; color: var(--bad); font-size: .82rem; }
+.ww-add { display: flex; align-items: center; gap: .5rem; margin: .4rem .6rem .2rem; width: calc(100% - 1.2rem); min-height: 2.4rem; color: var(--muted); background: var(--bg); }
+.ww-add svg { width: 1.1rem; height: 1.1rem; }
+.ww-picker { margin: .4rem .6rem .2rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.ww-q { display: flex; align-items: center; gap: .5rem; padding: .35rem .6rem; border-bottom: 1px solid var(--line); color: var(--muted); }
+.ww-q svg { width: 1rem; height: 1rem; flex: none; }
+.ww-q input { flex: 1; min-width: 0; border: 0; background: none; color: var(--fg); font: inherit; outline: none; }
+.ww-opts { max-height: 12rem; overflow-y: auto; padding: .2rem; }
+@media (max-width: 760px) {
+  .ww-bg { background: rgba(0, 0, 0, .45); }
+  .ww-panel { top: auto; left: 0; right: 0; bottom: 0; width: auto; max-width: none; max-height: 85dvh; border-radius: 16px 16px 0 0; border-width: 1px 0 0;
+    padding-bottom: calc(.8rem + env(safe-area-inset-bottom)); }
+  .ww-grab { display: block; position: absolute; top: .4rem; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--line); }
+  .ww-head { padding: .9rem .6rem .1rem 1rem; }
+  .ww-head b { font-size: 1rem; }
+  .ww-head .ib, .ww-rm { width: 2.75rem; height: 2.75rem; }
+  .ww-note { margin: .1rem 1rem .5rem; }
+  .ww-list { padding: 0 .6rem; }
+  .ww-row { min-height: 3rem; }
+  .ww-add { min-height: 2.75rem; margin: .4rem 1rem 0; width: calc(100% - 2rem); }
+  .ww-picker { margin: .4rem 1rem 0; }
+  .ww-q { min-height: 2.75rem; }
+  .ww-q input { font-size: 1rem; }
+  .sessions .menu > button.ww-row-btn { min-height: 2.75rem; }
+}

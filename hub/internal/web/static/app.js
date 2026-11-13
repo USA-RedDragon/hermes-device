@@ -108,6 +108,7 @@
   let unhid = "";
   let lastList = null;
   let menuOpen = false;
+  let worksLoaded = false;
   let showArchived = false;
   const listBackoff = window.HubBackoff();
   let listRetry = 0;
@@ -127,6 +128,7 @@
       }
       if (!menuOpen || !document.querySelector("#sessions .menu")) drawList();
       if (me.computers) loadPlaces(sessions);
+      if (me.partners && !worksLoaded) { worksLoaded = true; worksWith.load(); }
     } catch (e) {
       if (e.message !== "login required") {
         banner("Could not load chats: " + e.message, true, "list");
@@ -303,7 +305,7 @@
     if (badge) a.append(badge);
     const when = el("span", "when", ago(s.updated_at));
     if (s.updated_at) when.title = new Date(s.updated_at).toLocaleString();
-    a.append(when, ...chats.tail(s));
+    a.append(when, ...chats.tail(s), ...worksWith.mark(s));
     const state = chats.label(s);
     a.setAttribute("aria-label", (s.title || t("newchat")) + (state ? ", " + state : ""));
     a.onclick = () => openSide(false);
@@ -389,7 +391,7 @@
     });
     rename.setAttribute("role", "menuitem");
     archive.setAttribute("role", "menuitem");
-    menu.append(...extra.top, ...(s.archived ? [] : pinOrder.items(s, close)), rename, extra.export, archive);
+    menu.append(...extra.top, ...(s.archived ? [] : pinOrder.items(s, close)), rename, ...worksWith.menuItems(s, close), extra.export, archive);
     const p = placeOf(s);
     if (computers.some((c) => c.backend_id === s.backend_id)) {
       menu.append(button("", "Move to computer...", () => { close(); picker.open({ move: s, place: p }); }));
@@ -823,6 +825,7 @@
       const box = window.HubNotice.card(n, text, { el, toast, at: waiting ? 0 : this.at });
       box.dataset.ukey = "n:" + ui.hash(text);
       if (n.id) box.title = n.id;
+      if (n.kind === "agent") worksWith.decorate(box, n.id, this.backend, this.session);
       this.add(box);
       if (waiting) {
         box.classList.add("pending");
@@ -1142,6 +1145,7 @@
       }
       this.known.learn(call.name, call.args, res);
       card.view.update(call);
+      if (card.toolName === "agent_send") worksWith.refusal(card, call.out + " " + call.error, this.backend, this.session);
       if (card.toolName === "browser_screenshot" && !failed && res && typeof res.path === "string" && mediaPath(res.path)) {
         card.view.body.append(mediaRow(this.base, [res.path], "shot"));
       }
@@ -3558,6 +3562,17 @@
   const chats = window.HubChatList({ api, el, toast, banner, refresh: () => refreshList(),
     exportChat: (b, s, title) => msgActs.exportChat(b, s, title), computers: () => computers,
     newChat: () => newChat(), pickFolder: (c) => { openSide(false); picker.open({ computer: c }); }, me: () => me });
+
+  const worksWith = window.HubWorksWith.create({ api, el, toast, banner, me: () => me,
+    backends: () => (lastList ? lastList.backends : []), sessions: () => (lastList ? lastList.sessions : []),
+    where: (s) => {
+      const p = placeOf(s);
+      if (!p) return "";
+      if (p.kind === "computer") return (p.mine ? p.name : "another computer") + (p.dir ? ", " + p.dir : "");
+      return p.kind === "sandbox" ? "sandbox" : "";
+    },
+    current: () => current, redraw: () => { if (!menuOpen || !document.querySelector("#sessions .menu")) drawList(); },
+    phone: () => matchMedia("(max-width: 760px)").matches });
 
   const pinOrder = window.HubPinOrder({ api, el, toast, banner, pinned: pinnedChats, redraw: () => drawList(), refresh: () => refreshList(),
     nav: () => $("sessions"),
