@@ -248,6 +248,125 @@ class LongChatDefaults(unittest.TestCase):
         self.assertEqual(got["approvals"], {"mode": "smart", "smart_provenance": False})
 
 
+class StockDefaults(unittest.TestCase):
+    """The all-in-one image: the agent's own first-start setup writes a full config.yaml with its stock values before
+    this step runs. Stock values get Talaria's, on a new install and on an upgrade; values someone changed stay."""
+
+    # The keys of the agent's seeded config.yaml (cli-config.yaml.example) that Talaria has defaults for
+    STOCK = {"memory": {"memory_enabled": True, "recall_history": True, "recall_max_chars": 0},
+             "compression": {"enabled": True, "keep_last_skill_chars": 0, "proactive_prune_tokens": 0},
+             "agent": {"max_turns": 90}, "gateway": None}
+    TALARIA = {"memory.recall_history": False, "memory.recall_max_chars": 8000,
+               "compression.keep_last_skill_chars": 20000, "compression.proactive_prune_tokens": 100000,
+               "compression.summary_style": "compact", "compression.decision_ledger_chars": 6000,
+               "gateway.replay_buffer_events": 0, "vision.resize_mode": "fit", "approvals.smart_provenance": True}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = self.tmp.name
+        self.m = load(self.home)
+        # Only the all-in-one image names the seeded file
+        self.env = {"TALARIA_STOCK_CONFIG": os.path.join(self.home, "stock.yaml")}
+        with open(self.env["TALARIA_STOCK_CONFIG"], "w") as f:
+            json.dump(self.STOCK, f)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_init(self, existing=None):
+        path = os.path.join(self.home, "config.yaml")
+        if existing is not None:
+            with open(path, "w") as f:
+                json.dump(existing, f)
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(self.m, "install_plugin"), \
+                mock.patch.object(self.m, "write_public_key", return_value="/k"), \
+                mock.patch.object(self.m, "talaria_config", return_value={}), \
+                mock.patch.object(self.m, "setup_honcho"), \
+                mock.patch.object(self.m, "demo_provider"), \
+                mock.patch.object(self.m.subprocess, "run"):
+            self.m.main()
+        with open(path) as f:
+            return json.load(f)
+
+    def assertTalaria(self, got, *but):
+        for key, want in self.TALARIA.items():
+            if key not in but:
+                self.assertIs(type(self.m.lookup(got, key)), type(want), key)
+                self.assertEqual(self.m.lookup(got, key), want, key)
+
+    def stock(self, **changes):
+        cfg = json.loads(json.dumps(self.STOCK))
+        for key, value in changes.items():
+            section, name = key.split("__")
+            cfg.setdefault(section, {})[name] = value
+        return cfg
+
+    def test_fresh_install_gets_talarias_over_the_seeded_stock_values(self):
+        got = self.run_init(self.stock())
+        self.assertTalaria(got)
+        self.assertIs(got["memory"]["memory_enabled"], True)
+        self.assertEqual(got["agent"]["max_turns"], 90)
+        # A second start changes nothing
+        self.assertEqual(self.run_init(), got)
+
+    def test_upgrade_with_stock_values_gets_talarias(self):
+        # An install from before this record: the stock values on disk, next to the keys the old step filled in
+        old = self.stock(compression__summary_style="compact", compression__decision_ledger_chars=6000,
+                         approvals__smart_provenance=True)
+        old["gateway"] = None
+        self.assertFalse(os.path.exists(os.path.join(self.home, "talaria", "defaults.json")))
+        self.assertTalaria(self.run_init(old))
+
+    def test_upgrade_keeps_values_someone_changed(self):
+        old = self.stock(memory__recall_max_chars=4000, compression__proactive_prune_tokens=50000,
+                         compression__summary_style="legacy")
+        got = self.run_init(old)
+        self.assertEqual(got["memory"]["recall_max_chars"], 4000)
+        self.assertEqual(got["compression"]["proactive_prune_tokens"], 50000)
+        self.assertEqual(got["compression"]["summary_style"], "legacy")
+        self.assertTalaria(got, "memory.recall_max_chars", "compression.proactive_prune_tokens",
+                           "compression.summary_style")
+        self.assertEqual(self.run_init(), got)
+
+    def test_a_value_changed_after_this_step_is_yours_for_good(self):
+        got = self.run_init(self.stock())
+        # Set back to the stock value in Settings: a choice, and it stays
+        got["memory"]["recall_history"] = True
+        got["compression"]["keep_last_skill_chars"] = 0
+        got = self.run_init(got)
+        self.assertIs(got["memory"]["recall_history"], True)
+        self.assertEqual(got["compression"]["keep_last_skill_chars"], 0)
+        self.assertEqual(self.run_init(got)["memory"]["recall_history"], True)
+        with open(os.path.join(self.home, "talaria", "defaults.json")) as f:
+            state = json.load(f)
+        self.assertIn("memory.recall_history", state["yours"])
+        self.assertNotIn("memory.recall_history", state["applied"])
+
+    def test_a_new_talaria_default_replaces_the_one_this_step_set(self):
+        self.run_init(self.stock())
+        with mock.patch.dict(self.m.DEFAULTS["memory"], {"recall_max_chars": 6000}):
+            self.assertEqual(self.run_init()["memory"]["recall_max_chars"], 6000)
+
+    def test_compose_install_with_talarias_values_already_set(self):
+        # Compose ran this step before the agent ever started, so config.yaml holds Talaria's values and no record
+        got = self.run_init({"memory": {"recall_history": False, "recall_max_chars": 8000}})
+        self.assertTalaria(got)
+
+    def test_without_a_seeded_file_a_stock_value_is_a_choice(self):
+        # Compose and the chart: the agent never seeded config.yaml, so someone wrote recall_history: true
+        self.env = {}
+        os.environ.pop("TALARIA_STOCK_CONFIG", None)
+        got = self.run_init({"memory": {"recall_history": True}})
+        self.assertIs(got["memory"]["recall_history"], True)
+        self.assertTalaria(got, "memory.recall_history")
+
+    def test_false_is_not_zero(self):
+        # replay_buffer_events false is no stock value of the integer key
+        got = self.run_init({"gateway": {"replay_buffer_events": False}})
+        self.assertIs(got["gateway"]["replay_buffer_events"], False)
+
+
 class Hint(unittest.TestCase):
     def test_help_points_to_talaria(self):
         with tempfile.TemporaryDirectory() as home:

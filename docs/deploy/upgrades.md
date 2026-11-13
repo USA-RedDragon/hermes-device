@@ -134,6 +134,12 @@ All-in-one: stop the container, put the two folders back, start it.
   release or two apart still works.
 - The new hub migrates its database on the first start. Going back to an older hub release after that needs the
   backup you took before.
+- Each start, Talaria puts its own agent settings into the agent's `config.yaml` (long-chat memory and
+  compaction sizes, the reconnect buffer, image sizes, smart approvals). A setting you changed is never touched.
+  On the all-in-one image the agent writes its own stock settings first, so a setting that still holds the
+  agent's stock value counts as unchanged and gets Talaria's value, also on an upgrade from an older all-in-one
+  release. What Talaria set is recorded in `talaria/defaults.json` in the agent's data: once you change one of
+  those settings, it stays yours, also if you later set it back to the stock value.
 
 ## Check it worked
 

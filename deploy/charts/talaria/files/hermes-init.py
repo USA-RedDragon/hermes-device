@@ -210,8 +210,8 @@ ROLLING = {
 }
 
 
-# Hermes settings Talaria defaults to: each is set only when config.yaml does not have it yet, so a value you set
-# (in config.yaml or your own settings) wins.
+# Hermes settings Talaria defaults to (see apply_defaults): a value you set (in config.yaml or your own settings)
+# wins, while a key that is missing or still holds the agent's stock value gets Talaria's.
 DEFAULTS = {
     # Keep every event of a long reply for the hub when it reconnects mid-reply (patched Hermes; upstream keeps 512
     # events, a few KB of a streaming reply, and the hub then cannot show the reply's start). The replay stays
@@ -247,15 +247,103 @@ DEFAULTS = {
 }
 
 
-def fill(base, defaults):
-    for key, value in defaults.items():
+UNSET = object()
+
+
+def leaves(tree, prefix=""):
+    for key, value in tree.items():
         if isinstance(value, dict):
-            if key not in base:
-                base[key] = {}
-            if isinstance(base[key], dict):
-                fill(base[key], value)
-        elif key not in base:
-            base[key] = value
+            yield from leaves(value, prefix + key + ".")
+        else:
+            yield prefix + key, value
+
+
+def lookup(tree, dotted):
+    for key in dotted.split("."):
+        if not isinstance(tree, dict) or key not in tree:
+            return UNSET
+        tree = tree[key]
+    return tree
+
+
+def same(a, b):
+    # By type too: in Python False == 0 and True == 1
+    return type(a) is type(b) and a == b
+
+
+def stock_config():
+    """The config file the agent's image seeds into a new home (TALARIA_STOCK_CONFIG), or {}.
+
+    Only the all-in-one image sets it: there the agent's own first-start setup runs before this step and writes that
+    file as config.yaml. Compose and the chart run this step first, so a stock value in their config.yaml was set by
+    someone."""
+    path = env("TALARIA_STOCK_CONFIG")
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            return safe_load(f) or {}
+    except Exception as e:  # noqa: BLE001 - a broken stock file only loses the comparison
+        print("hermes-init: could not read the stock config:", e)
+        return {}
+
+
+def apply_defaults(config):
+    """Puts DEFAULTS into config, unless you chose a value yourself.
+
+    A key gets Talaria's value when it is missing, empty, already Talaria's value, or the value of the agent's seeded
+    config file (see stock_config: on the all-in-one image the agent's own first-start setup writes it before this
+    step, so its values carry no choice of yours; an install from before this record has them on disk, and an
+    upgrade gives them Talaria's values too). What this step set is remembered in
+    talaria/defaults.json. Once a key differs from that, you changed it, and from then on it is yours for good, also
+    when you later set it back to the stock value. A key that held any other value when first seen is yours too.
+    """
+    path = os.path.join(HOME, "talaria", "defaults.json")
+    state = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            state = json.load(f)
+    applied = dict(state.get("applied") or {})
+    yours = set(state.get("yours") or [])
+    stock = stock_config()
+    changed = []
+    for key, want in leaves(DEFAULTS):
+        if key in yours:
+            continue
+        parts = key.split(".")
+        node = config
+        for part in parts[:-1]:
+            if node.get(part) is None:
+                # Missing, or a section with every key commented out (the stock gateway: section)
+                node[part] = {}
+            node = node[part]
+            if not isinstance(node, dict):
+                break
+        if not isinstance(node, dict):
+            # A section that is not a mapping is yours; leave it as it is
+            continue
+        have = node.get(parts[-1], UNSET)
+        if have is UNSET or have is None:
+            ours = True
+        elif key in applied:
+            ours = same(have, applied[key])
+        else:
+            ours = same(have, want) or same(have, lookup(stock, key))
+        if not ours:
+            yours.add(key)
+            applied.pop(key, None)
+            continue
+        if not same(have, want):
+            changed.append(key)
+        node[parts[-1]] = applied[key] = want
+    new = {"applied": applied, "yours": sorted(yours)}
+    if new != state:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w") as f:
+            json.dump(new, f, indent=1, sort_keys=True)
+        os.replace(path + ".tmp", path)
+    if changed:
+        print("hermes-init: Talaria defaults set:", ", ".join(changed))
 
 
 def merge(base, top):
@@ -280,7 +368,7 @@ def main():
     if os.path.exists(path):
         with open(path) as f:
             config = safe_load(f) or {}
-    fill(config, DEFAULTS)
+    apply_defaults(config)
     merge(config, talaria_config(pubkey))
     extra = env("TALARIA_EXTRA_CONFIG")
     if extra and os.path.exists(extra):

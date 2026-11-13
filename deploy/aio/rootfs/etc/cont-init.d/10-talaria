@@ -30,8 +30,9 @@ esac
 # Web search through the SearXNG in this image (service talaria-searxng), unless TALARIA_SEARXNG=false
 export TALARIA_SEARXNG_URL=http://127.0.0.1:8888
 
-# The Hermes home, as the hermes user
+# The Hermes home, as the hermes user. Hermes's own setup (01-hermes-setup) ran first and seeds a new home's
+# config.yaml from this file, so its stock values get Talaria's defaults (hermes-init.py, apply_defaults)
 cd /opt/data
 HOME=/opt/data TALARIA_SECRETS_DIR="$T/secrets/hermes" TALARIA_FALLBACK_ROOT="$T/work" \
-  HERMES_WRITE_SAFE_ROOT="/opt/data:$T/work" \
+  HERMES_WRITE_SAFE_ROOT="/opt/data:$T/work" TALARIA_STOCK_CONFIG=/opt/hermes/cli-config.yaml.example \
   s6-setuidgid hermes /opt/hermes/.venv/bin/python -I /usr/share/talaria/hermes-init.py
