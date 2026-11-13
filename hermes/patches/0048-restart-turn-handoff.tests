@@ -1,0 +1,13 @@
+# The restart wait, the stop's drain and interrupt, and the takeover's recovery this patch changes
+tests/gateway/test_sigterm_restart_wait.py
+tests/gateway/test_restart_drain.py
+tests/gateway/test_launchd_exit_timeout_drain_cap.py
+tests/gateway/test_startup_restart_race.py
+tests/gateway/test_restart_resume_pending.py
+tests/gateway/test_shutdown_kill_off_loop.py
+tests/gateway/test_shutdown_flush_recovery.py
+tests/gateway/test_startup_adapter_settle.py
+tests/gateway/test_startup_recovery_parks_profile.py
+tests/gateway/test_restart_listener_handover.py
+tests/gateway/test_restart_ticket_handover.py
+tests/tools/test_delegation_restart_handoff.py

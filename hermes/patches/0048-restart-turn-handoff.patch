@@ -1,0 +1,626 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jacob McSwain <jacob@mcswain.dev>
+Date: Thu, 12 Nov 2026 19:10:06 -0600
+Subject: [PATCH] feat(gateway): a restart hands running turns to the next
+ gateway
+
+gateway.restart_turn_handoff (false = off) and restart_turn_handoff_wait_seconds (0): a graceful restart no longer waits for running turns (agent.restart_after_turn_timeout, then the stop's agent.restart_drain_timeout) while every new turn of the profile is refused. After the handoff wait it stops each running turn like a user's Stop and writes the canonical sessions it stopped to $HERMES_HOME/.turn-handoff.json (0600); the gateway that takes the profile over settles a handed-off turn its owner left unknown as interrupted and queues one continuation turn per session in its FIFO. One turn parked on a subagent's approval held a rolling update's restart wait for 406 s, with no chat able to run anything.
+---
+ gateway/config.py                          |  10 +-
+ gateway/config_loader.py                   |   2 +
+ gateway/run_shutdown.py                    |  52 ++++-
+ gateway/run_startup.py                     |   7 +
+ gateway/turn_handoff.py                    | 177 +++++++++++++++
+ tests/gateway/test_restart_turn_handoff.py | 248 +++++++++++++++++++++
+ 6 files changed, 490 insertions(+), 6 deletions(-)
+ create mode 100644 gateway/turn_handoff.py
+ create mode 100644 tests/gateway/test_restart_turn_handoff.py
+
+diff --git a/gateway/config.py b/gateway/config.py
+index 629fb4435c..31cae21cf1 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -686,6 +686,12 @@ class GatewayConfig:
+     # polls (subagent and process lists, delegation status, transcripts, config and model reads, the command
+     # catalog) instead of getting runtime_draining for them. False = only the wait's own verbs.
+     restart_wait_ws_reads: bool = False
++    # A restart hands running turns to the next gateway instead of waiting for them: after
++    # restart_turn_handoff_wait_seconds, each running turn of a canonical session is stopped like a user's Stop, and
++    # the gateway that takes the profile over queues a continuation turn for it. False = the restart waits for turns
++    # (agent.restart_after_turn_timeout) and the stop drains them (agent.restart_drain_timeout).
++    restart_turn_handoff: bool = False
++    restart_turn_handoff_wait_seconds: float = 0.0
+     # In-process loop liveness watchdog: after consecutive missed probes it dumps all-thread stacks
+     # and hard-exits with the service-restart code. The knobs tolerate transient self-recovering
+     # stalls (adapter reconnect doing sync socket I/O) so a short block does not cause restart churn.
+@@ -726,7 +732,7 @@ class GatewayConfig:
+         "restart_listener_relay_seconds", "restart_listener_hold_seconds", "stop_trace",
+         "restart_ticket_handover", "restart_listener_relay_close_sockets", "restart_reads_grace_seconds",
+         "restart_socket_close_delay_seconds", "restart_memory_shutdown_after_release_seconds",
+-        "restart_wait_ws_reads", "loop_watchdog",
++        "restart_wait_ws_reads", "restart_turn_handoff", "restart_turn_handoff_wait_seconds", "loop_watchdog",
+         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
+         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+     )
+@@ -875,6 +881,8 @@ class GatewayConfig:
+             restart_memory_shutdown_after_release_seconds=bounded_float(
+                 "restart_memory_shutdown_after_release_seconds", 0.0, 0.0, 600.0),
+             restart_wait_ws_reads=_coerce_bool(pick("restart_wait_ws_reads"), False),
++            restart_turn_handoff=_coerce_bool(pick("restart_turn_handoff"), False),
++            restart_turn_handoff_wait_seconds=bounded_float("restart_turn_handoff_wait_seconds", 0.0, 0.0, 3600.0),
+             restart_wait_plugin_sockets=[
+                 str(name).strip("/ ") for name in (pick("restart_wait_plugin_sockets") or [])
+                 if isinstance(pick("restart_wait_plugin_sockets"), list) and str(name).strip("/ ")],
+diff --git a/gateway/config_loader.py b/gateway/config_loader.py
+index 9011be6719..e545fd2171 100644
+--- a/gateway/config_loader.py
++++ b/gateway/config_loader.py
+@@ -110,6 +110,8 @@ _TOPLEVEL_BRIDGE: tuple = (
+     ("restart_memory_shutdown_after_release_seconds", "restart_memory_shutdown_after_release_seconds", "nested",
+      None, None),
+     ("restart_wait_ws_reads", "restart_wait_ws_reads", "nested", None, None),
++    ("restart_turn_handoff", "restart_turn_handoff", "nested", None, None),
++    ("restart_turn_handoff_wait_seconds", "restart_turn_handoff_wait_seconds", "nested", None, None),
+     ("streaming", "streaming", "dict", None, None),
+     *_presence(
+         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+index 0c6e522aae..4ca0660ccf 100644
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -1637,7 +1637,18 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+                 self._wedged_agent_count(), self._restart_safe_cron_count(),
+             )
+             return False
+-        timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
++        from gateway import turn_handoff
++        handoff = turn_handoff.enabled(self)
++        if handoff:
++            # gateway.restart_turn_handoff: running turns go to the next gateway, which continues them, instead
++            # of holding this one (and every new turn of the profile) for up to restart_after_turn_timeout.
++            timeout = turn_handoff.wait_seconds(self)
++            if timeout <= 0:
++                logger.info("Restart requested with %d active work unit(s); handing running turns to the "
++                            "next gateway (gateway.restart_turn_handoff)", active)
++                return False
++        else:
++            timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
+         if timeout <= 0:
+             logger.info(
+                 "Restart requested with %d active work unit(s); "
+@@ -1656,6 +1667,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+         while self._awaitable_work_count() > 0:
+             now = loop.time()
+             if now >= deadline:
++                if handoff:
++                    logger.info("Restart wait of %.0fs over with %d active work unit(s); handing running turns "
++                                "to the next gateway (gateway.restart_turn_handoff)", timeout,
++                                self._active_work_count())
++                    return False
+                 logger.warning(
+                     "Restart after-turn wait timed out after %.0fs with %d "
+                     "still active; proceeding to stop()/drain which may "
+@@ -2063,8 +2079,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+         await self._notify_active_sessions_of_shutdown()
+         logger.info("Shutdown phase: notify_active_sessions done at +%.2fs", ctx.elapsed())
+ 
+-    async def _stop_drain_active_work(self, timeout: float, ctx: GatewayShutdownMixin._StopContext) -> None:
+-        """Pre-mark resume_pending, drain agents/cron/API work into ``ctx``."""
++    async def _stop_drain_active_work(self, timeout: float, ctx: GatewayShutdownMixin._StopContext,
++                                      agent_timeout: Optional[float] = None) -> None:
++        """Pre-mark resume_pending, drain agents/cron/API work into ``ctx``. ``agent_timeout``: the chat
++        turns' own drain budget when it differs from ``timeout`` (``gateway.restart_turn_handoff``: 0)."""
+         from gateway.run import GatewayRunner
+         # Pre-mark resume_pending BEFORE the drain so a mid-drain SIGKILL still leaves a durable marker.
+         _pre_drain_keys = await GatewayRunner._mark_running_sessions_resume_pending(
+@@ -2091,7 +2109,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+                 _cron_at_start, _api_at_start, _cron_timeout, _cron_drain_cfg, timeout,
+             )
+         _drain_started_at = time.monotonic()
+-        ctx.active_agents, ctx.timed_out = await self._drain_active_agents(timeout, _cron_timeout)
++        ctx.active_agents, ctx.timed_out = await self._drain_active_agents(
++            timeout if agent_timeout is None else agent_timeout, _cron_timeout)
+         ctx.drain_elapsed = time.monotonic() - _drain_started_at
+         logger.info(
+             "Shutdown phase: drain done at +%.2fs (drain took %.2fs, timed_out=%s, active_at_start=%d, "
+@@ -2112,6 +2131,22 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+                 except Exception as _e:
+                     logger.debug("clear_resume_pending after drain failed for %s: %s", _sk, _e)
+ 
++    @staticmethod
++    def _export_handed_off_turns(runner) -> None:
++        """``gateway.restart_turn_handoff``: before the interrupt, name the canonical turns it stops, so the
++        gateway that takes the profile over continues them (``gateway.turn_handoff``)."""
++        from gateway import turn_handoff
++        if not turn_handoff.enabled(runner):
++            return
++        from gateway.run import get_hermes_home
++        try:
++            count = turn_handoff.export_turns(runner, get_hermes_home())
++        except Exception:
++            logger.warning("Could not hand the running turns to the next gateway", exc_info=True)
++            return
++        if count:
++            logger.info("Shutdown phase: handing %d running turn(s) to the next gateway", count)
++
+     async def _stop_interrupt_remaining_work(self, ctx: GatewayShutdownMixin._StopContext) -> None:
+         """Drain timed out: mark resume_pending, interrupt, settle, kill tool subprocesses, notify cron."""
+         from gateway.run import GatewayRunner
+@@ -2124,6 +2159,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+         # Mark resume_pending BEFORE interrupting so the next message auto-resumes (stuck sessions
+         # still escalate via .restart_failure_counts). CURRENT _running_agents, not the drain snapshot.
+         await GatewayRunner._mark_running_sessions_resume_pending(self, "mark_resume_pending")
++        GatewayShutdownMixin._export_handed_off_turns(self)
+         reason = GatewayRunner._shutdown_interrupt_reason(self)
+         self._interrupt_running_agents(reason)
+         interrupt_grace_timeout = GatewayRunner._post_interrupt_grace_timeout(self)
+@@ -2442,7 +2478,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
+                     timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
+                 )
+             _mark("stop: drain_active_work")
+-            await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
++            from gateway import turn_handoff
++            if turn_handoff.enabled(self):
++                # The restart wait already ended for the handoff: chat turns are stopped now, not drained; cron
++                # and API runs keep their own drain floor.
++                await GatewayRunner._stop_drain_active_work(self, timeout, ctx, agent_timeout=0.0)
++            else:
++                await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
+             _mark("stop: hand_off_delegations")
+             await GatewayRunner._stop_hand_off_delegations(self, ctx)
+             _mark("stop: hand_off_processes")
+diff --git a/gateway/run_startup.py b/gateway/run_startup.py
+index 1c6b6f9e86..7e79e16a41 100644
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -1653,6 +1653,13 @@ class GatewayStartupMixin:
+         await self._finish_startup_restore()
+         from gateway.run_runtime import recover_gateway_native_sessions
+         await recover_gateway_native_sessions(self)
++        # gateway.restart_turn_handoff: after recovery (a handed-off turn its owner could not settle is fenced
++        # unknown by now), queue a continuation for each turn the previous gateway stopped for this takeover.
++        if getattr(getattr(self, "config", None), "restart_turn_handoff", False):
++            from gateway import turn_handoff
++            from gateway.run import get_hermes_home
++            self._retain_background_task(asyncio.create_task(
++                turn_handoff.continue_handed_off_turns(self, get_hermes_home())))
+         # Surface state.db init failures to messaging platforms before the user loses data.
+         # See #88235.
+         await self._send_session_db_warning_notifications()
+diff --git a/gateway/turn_handoff.py b/gateway/turn_handoff.py
+new file mode 100644
+index 0000000000..a5c31c51f2
+--- /dev/null
++++ b/gateway/turn_handoff.py
+@@ -0,0 +1,177 @@
++"""``gateway.restart_turn_handoff`` (false = off): a restart hands running turns to the next gateway.
++
++Without the key a graceful restart (SIGUSR1, ``/restart``, a supervisor's SIGTERM with
++``gateway.sigterm_restart_wait``) waits for running turns up to ``agent.restart_after_turn_timeout``, and
++the stop then drains them up to ``agent.restart_drain_timeout``. New turns are refused the whole time, so
++one long turn (a coordinator waiting on subagents, a subagent parked on an approval) keeps every chat of
++the profile from running anything for minutes.
++
++With the key the restart waits at most ``gateway.restart_turn_handoff_wait_seconds`` (0 by default), then
++stops each running turn the way a user's Stop does (a terminal command moves to the background where its
++backend hands processes over, background subagents are handed over by ``delegation.restart_handoff``).
++Just before that, it writes the canonical sessions whose turns it stops to
++``$HERMES_HOME/.turn-handoff.json`` (mode 0600). The gateway that takes the profile over reads the file
++once, after its startup recovery, settles a handed-off turn that its owner could not settle (``unknown``)
++as interrupted, and queues one continuation turn per session in that session's FIFO, so the work goes on
++within seconds of the takeover with no input from the user. A turn that completed after all gets none.
++Classic (non-canonical) sessions keep upstream's ``resume_pending`` auto-resume.
++"""
++from __future__ import annotations
++
++import json
++import logging
++import os
++import time
++from pathlib import Path
++from typing import Any
++
++logger = logging.getLogger(__name__)
++
++FILE_NAME = ".turn-handoff.json"
++# A file older than this is from an earlier restart, not the one this gateway takes over from.
++MAX_AGE_S = 900.0
++PRODUCER = "restart-continuation"
++CONTINUATION_TEXT = (
++    "[Hermes restarted while your previous turn was running. The turn was stopped so the restart could "
++    "go ahead and was handed to the restarted Hermes: a tool call cut by the restart reads as interrupted, "
++    "a terminal command that was still running moved to the background (check it with the process tool), "
++    "and background subagents carry on. Continue the task from where it stopped; do not redo finished "
++    "steps. If a later message from the user changed the task, follow that instead.]"
++)
++
++
++def _config(runner) -> Any:
++    return getattr(runner, "config", None)
++
++
++def enabled(runner) -> bool:
++    """The key is on and this stop is a restart (a plain shutdown still waits and drains)."""
++    return bool(getattr(_config(runner), "restart_turn_handoff", False)
++                and getattr(runner, "_restart_requested", False))
++
++
++def wait_seconds(runner) -> float:
++    try:
++        return max(0.0, float(getattr(_config(runner), "restart_turn_handoff_wait_seconds", 0.0) or 0.0))
++    except (TypeError, ValueError):
++        return 0.0
++
++
++def _path(home) -> Path:
++    return Path(home) / FILE_NAME
++
++
++def running_turns(runner) -> list[dict]:
++    """The canonical sessions with a claimed, running turn, across every authority the runner serves."""
++    from gateway.session_authorities import all_authorities
++    turns = []
++    for authority in all_authorities(runner):
++        for session_id, live in list((getattr(authority, "sessions", None) or {}).items()):
++            stream = getattr(live, "event_stream", None)
++            execution = dict(getattr(stream, "execution", None) or {})
++            if execution.get("execution_generation") is None or not execution.get("admission_id"):
++                continue
++            turns.append({
++                "profile_id": getattr(authority, "profile_id", None), "session_id": session_id,
++                "route": getattr(live, "route", None), "admission_id": execution["admission_id"],
++                "generation": execution["execution_generation"],
++            })
++    return turns
++
++
++def export_turns(runner, home) -> int:
++    """Write the running canonical turns for the next gateway; returns how many."""
++    turns = running_turns(runner)
++    if not turns:
++        return 0
++    path = _path(home)
++    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
++    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
++    try:
++        with os.fdopen(fd, "w", encoding="utf-8") as fh:
++            json.dump({"written_at": time.time(), "pid": os.getpid(), "turns": turns}, fh)
++        os.replace(tmp, path)
++    except BaseException:
++        tmp.unlink(missing_ok=True)
++        raise
++    return len(turns)
++
++
++def take_turns(home) -> list[dict]:
++    """Read and remove the handed-over turns, once; [] when there is no fresh file."""
++    path = _path(home)
++    try:
++        raw = path.read_text(encoding="utf-8")
++    except FileNotFoundError:
++        return []
++    finally:
++        path.unlink(missing_ok=True)
++    try:
++        data = json.loads(raw)
++    except ValueError:
++        logger.warning("Ignoring an unreadable %s", FILE_NAME)
++        return []
++    if not isinstance(data, dict) or time.time() - float(data.get("written_at") or 0) > MAX_AGE_S:
++        return []
++    return [t for t in data.get("turns") or [] if isinstance(t, dict) and t.get("session_id") and t.get("route")]
++
++
++async def _continue_one(runner, authority, turn) -> str:
++    """Settle one handed-off turn if needed and queue its continuation; returns what happened."""
++    import asyncio
++    from gateway.session_contract import SessionRef
++    from gateway.session_local_recovery import restore_completion_route
++    from gateway.session_automation import admit_route_wake
++    from hermes_state_runtime import get_session_admission
++    session_id = turn["session_id"]
++    row = await asyncio.to_thread(get_session_admission, authority.db, admission_id=turn.get("admission_id") or "")
++    status, outcome = (row or {}).get("status"), (row or {}).get("outcome")
++    if status == "terminal" and outcome not in ("interrupted",):
++        return "finished"
++    ref = SessionRef(authority.profile_id, session_id)
++    if status == "unknown":
++        # Its owner stopped it for this handoff but could not commit the settlement before it exited: the
++        # input is not lost (the continuation redoes the work), so nobody has to decide whether to resend it.
++        await authority.resolve_unknown_as_owner(ref, row["admission_id"], row["generation"])
++    elif status not in ("terminal", None):
++        return f"left {status}"
++    restore_completion_route(runner, turn["route"])
++    live = authority.sessions.get(session_id)
++    if live is None or getattr(live, "source", None) is None:
++        return "no live session"
++    adapter = runner._delivery_adapter_for(live.source)
++    queued = await admit_route_wake(runner, adapter, live.source, CONTINUATION_TEXT, PRODUCER,
++                                    {"restart_turn_handoff": True})
++    return "continued" if queued else "not queued"
++
++
++async def continue_handed_off_turns(runner, home) -> int:
++    """On the gateway that took the profile over: queue a continuation for each turn the previous gateway
++    handed over (``export_turns``). Returns how many were queued; never raises."""
++    if not getattr(_config(runner), "restart_turn_handoff", False):
++        return 0
++    try:
++        turns = take_turns(home)
++    except Exception:
++        logger.warning("Could not read the turns the previous gateway handed over", exc_info=True)
++        return 0
++    if not turns:
++        return 0
++    from gateway.session_authorities import active_authority
++    authority = active_authority(runner)
++    queued = 0
++    for turn in turns:
++        if authority is None or turn.get("profile_id") not in (None, getattr(authority, "profile_id", None)):
++            logger.warning("Handed-off turn of %s left alone: profile %s is not served here",
++                           turn["session_id"], turn.get("profile_id"))
++            continue
++        try:
++            result = await _continue_one(runner, authority, turn)
++        except Exception:
++            logger.warning("Could not continue the handed-off turn of %s", turn["session_id"], exc_info=True)
++            continue
++        queued += result == "continued"
++        logger.info("Handed-off turn of %s: %s", turn["session_id"], result)
++    if queued:
++        logger.info("Queued %d continuation turn(s) the previous gateway handed over", queued)
++    return queued
+diff --git a/tests/gateway/test_restart_turn_handoff.py b/tests/gateway/test_restart_turn_handoff.py
+new file mode 100644
+index 0000000000..c28a82888d
+--- /dev/null
++++ b/tests/gateway/test_restart_turn_handoff.py
+@@ -0,0 +1,248 @@
++"""gateway.restart_turn_handoff: a restart hands running turns to the next gateway instead of waiting."""
++import asyncio
++import json
++import os
++import time
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, MagicMock
++
++import pytest
++
++from gateway import turn_handoff
++from gateway.config import GatewayConfig, load_gateway_config
++from gateway.run import GatewayRunner
++from tests.gateway.restart_test_helpers import make_restart_runner
++
++
++def test_off_by_default():
++    assert GatewayConfig().restart_turn_handoff is False
++    assert GatewayConfig().restart_turn_handoff_wait_seconds == 0.0
++    cfg = GatewayConfig.from_dict({"gateway": {"restart_turn_handoff": True,
++                                               "restart_turn_handoff_wait_seconds": 7}})
++    assert cfg.restart_turn_handoff is True
++    assert cfg.restart_turn_handoff_wait_seconds == 7.0
++    assert GatewayConfig.from_dict({"gateway": {"restart_turn_handoff_wait_seconds": -1}}
++                                   ).restart_turn_handoff_wait_seconds == 0.0
++
++
++def test_config_yaml_keys_reach_the_runner_config(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    (tmp_path / "config.yaml").write_text(
++        "gateway:\n  restart_turn_handoff: true\n  restart_turn_handoff_wait_seconds: 3\n", encoding="utf-8")
++    cfg = load_gateway_config()
++    assert cfg.restart_turn_handoff is True
++    assert cfg.restart_turn_handoff_wait_seconds == 3.0
++
++
++def test_enabled_only_for_a_restart():
++    runner = SimpleNamespace(config=GatewayConfig(restart_turn_handoff=True), _restart_requested=False)
++    assert turn_handoff.enabled(runner) is False
++    runner._restart_requested = True
++    assert turn_handoff.enabled(runner) is True
++    runner.config = GatewayConfig()
++    assert turn_handoff.enabled(runner) is False
++
++
++@pytest.mark.asyncio
++async def test_restart_does_not_wait_for_a_running_turn_with_the_key():
++    runner, _adapter = make_restart_runner()
++    runner.config.restart_turn_handoff = True
++    runner.stop = AsyncMock()
++    runner._restart_after_turn_timeout = 540.0
++    runner._running_agents["agent:main:local:dm:s1"] = MagicMock()
++
++    started = time.monotonic()
++    assert runner.request_restart(detached=False, via_service=True) is True
++    await asyncio.wait_for(runner._restart_task, timeout=2.0)
++
++    assert time.monotonic() - started < 1.0
++    runner.stop.assert_awaited_once_with(restart=True, detached_restart=False, service_restart=True)
++    assert runner._running_agents  # still running: the stop hands it over
++
++
++@pytest.mark.asyncio
++async def test_restart_waits_only_the_handoff_wait():
++    runner, _adapter = make_restart_runner()
++    runner.config.restart_turn_handoff = True
++    runner.config.restart_turn_handoff_wait_seconds = 0.3
++    runner.stop = AsyncMock()
++    runner._restart_after_turn_timeout = 540.0
++    runner._running_agents["agent:main:local:dm:s1"] = MagicMock()
++
++    started = time.monotonic()
++    assert runner.request_restart(detached=False, via_service=True) is True
++    await asyncio.sleep(0.1)
++    runner.stop.assert_not_awaited()
++    await asyncio.wait_for(runner._restart_task, timeout=2.0)
++    assert 0.25 <= time.monotonic() - started < 1.5
++    runner.stop.assert_awaited_once()
++
++
++@pytest.mark.asyncio
++async def test_without_the_key_the_restart_still_waits_for_the_turn():
++    runner, _adapter = make_restart_runner()
++    runner.stop = AsyncMock()
++    runner._restart_after_turn_timeout = 540.0
++    runner._running_agents["agent:main:local:dm:s1"] = MagicMock()
++
++    assert runner.request_restart(detached=False, via_service=True) is True
++    await asyncio.sleep(0.3)
++    runner.stop.assert_not_awaited()
++    runner._restart_task.cancel()
++    await asyncio.gather(runner._restart_task, return_exceptions=True)
++
++
++@pytest.mark.asyncio
++async def test_stop_drains_chat_turns_with_no_budget_under_the_handoff(monkeypatch):
++    runner, _adapter = make_restart_runner()
++    runner._restart_requested = True
++    runner.config.restart_turn_handoff = True
++    runner._restart_drain_timeout = 30.0
++    seen = []
++
++    async def drain(timeout, cron_timeout=None):
++        seen.append((timeout, cron_timeout))
++        return {}, True
++
++    runner._drain_active_agents = drain
++    ctx = GatewayRunner._StopContext(deferred_count=lambda: 0)
++    ctx.started_at = time.monotonic()
++    await GatewayRunner._stop_drain_active_work(runner, 30.0, ctx, agent_timeout=0.0)
++    assert seen[0][0] == 0.0
++    assert seen[0][1] >= 30.0  # cron and API runs keep their floor
++    seen.clear()
++    await GatewayRunner._stop_drain_active_work(runner, 30.0, ctx)
++    assert seen[0][0] == 30.0
++
++
++def _authority(sessions, profile_id="default"):
++    return SimpleNamespace(profile_id=profile_id, sessions=sessions)
++
++
++def _live(route, execution):
++    return SimpleNamespace(route=route, event_stream=SimpleNamespace(execution=execution), source=None)
++
++
++def test_export_names_only_running_canonical_turns(tmp_path, monkeypatch):
++    sessions = {
++        "s1": _live("agent:main:local:dm:s1", {"authority_epoch": 3, "execution_generation": 7, "admission_id": "a1"}),
++        "s2": _live("agent:main:local:dm:s2", {"authority_epoch": 3, "admission_id": "a2"}),  # queued, not claimed
++        "s3": _live("agent:main:local:dm:s3", {}),
++    }
++    runner = SimpleNamespace(session_authorities=None, session_authority=_authority(sessions))
++    assert turn_handoff.export_turns(runner, tmp_path) == 1
++    path = tmp_path / turn_handoff.FILE_NAME
++    assert (os.stat(path).st_mode & 0o777) == 0o600
++    turns = turn_handoff.take_turns(tmp_path)
++    assert turns == [{"profile_id": "default", "session_id": "s1", "route": "agent:main:local:dm:s1",
++                      "admission_id": "a1", "generation": 7}]
++    assert not path.exists()
++    assert turn_handoff.take_turns(tmp_path) == []  # once
++
++
++def test_export_writes_nothing_when_no_turn_runs(tmp_path):
++    runner = SimpleNamespace(session_authorities=None, session_authority=_authority({}))
++    assert turn_handoff.export_turns(runner, tmp_path) == 0
++    assert not (tmp_path / turn_handoff.FILE_NAME).exists()
++
++
++def test_stale_or_damaged_file_is_ignored_and_removed(tmp_path):
++    path = tmp_path / turn_handoff.FILE_NAME
++    path.write_text(json.dumps({"written_at": time.time() - 3600, "turns": [
++        {"session_id": "s1", "route": "r"}]}), encoding="utf-8")
++    assert turn_handoff.take_turns(tmp_path) == []
++    assert not path.exists()
++    path.write_text("{not json", encoding="utf-8")
++    assert turn_handoff.take_turns(tmp_path) == []
++    assert not path.exists()
++
++
++def test_stop_exports_before_the_interrupt(tmp_path, monkeypatch):
++    monkeypatch.setattr("gateway.run.get_hermes_home", lambda: tmp_path)
++    sessions = {"s1": _live("agent:main:local:dm:s1", {"execution_generation": 1, "admission_id": "a1"})}
++    runner = SimpleNamespace(config=GatewayConfig(restart_turn_handoff=True), _restart_requested=True,
++                             session_authorities=None, session_authority=_authority(sessions))
++    GatewayRunner._export_handed_off_turns(runner)
++    assert (tmp_path / turn_handoff.FILE_NAME).exists()
++    (tmp_path / turn_handoff.FILE_NAME).unlink()
++    runner._restart_requested = False  # a plain shutdown hands nothing over
++    GatewayRunner._export_handed_off_turns(runner)
++    assert not (tmp_path / turn_handoff.FILE_NAME).exists()
++
++
++class _FakeAuthority:
++    def __init__(self, rows, live):
++        self.profile_id = "default"
++        self.db = object()
++        self.rows = rows
++        self.sessions = live
++        self.resolved = []
++
++    async def resolve_unknown_as_owner(self, ref, admission_id, generation, *, notice=None):
++        self.resolved.append((ref.session_id, admission_id, generation))
++        self.rows[admission_id] = {**self.rows[admission_id], "status": "terminal", "outcome": "interrupted"}
++
++
++def _write(tmp_path, turns):
++    (tmp_path / turn_handoff.FILE_NAME).write_text(
++        json.dumps({"written_at": time.time(), "turns": turns}), encoding="utf-8")
++
++
++@pytest.mark.asyncio
++async def test_takeover_queues_one_continuation_per_interrupted_turn(tmp_path, monkeypatch):
++    rows = {
++        "a1": {"admission_id": "a1", "status": "terminal", "outcome": "interrupted", "generation": 7},
++        "a2": {"admission_id": "a2", "status": "unknown", "outcome": None, "generation": 2},
++        "a3": {"admission_id": "a3", "status": "terminal", "outcome": "completed", "generation": 4},
++    }
++    source = SimpleNamespace(platform="local")
++    live = {sid: SimpleNamespace(source=source, route=f"agent:main:local:dm:{sid}") for sid in ("s1", "s2", "s3")}
++    authority = _FakeAuthority(rows, live)
++    runner = SimpleNamespace(config=GatewayConfig(restart_turn_handoff=True), session_authorities=None,
++                             session_authority=authority, _delivery_adapter_for=lambda src: "adapter")
++    monkeypatch.setattr("hermes_state_runtime.get_session_admission",
++                        lambda db, *, admission_id: rows.get(admission_id))
++    monkeypatch.setattr("gateway.session_local_recovery.restore_completion_route", lambda runner, key: None)
++    wakes = []
++
++    async def wake(runner, adapter, src, text, producer, metadata=None):
++        wakes.append((src, text, producer, metadata))
++        return True
++
++    monkeypatch.setattr("gateway.session_automation.admit_route_wake", wake)
++    _write(tmp_path, [{"profile_id": "default", "session_id": sid, "route": f"agent:main:local:dm:{sid}",
++                       "admission_id": aid, "generation": rows[aid]["generation"]}
++                      for sid, aid in (("s1", "a1"), ("s2", "a2"), ("s3", "a3"))])
++
++    assert await turn_handoff.continue_handed_off_turns(runner, tmp_path) == 2
++    assert authority.resolved == [("s2", "a2", 2)]  # the one its owner could not settle
++    assert len(wakes) == 2 and all(w[2] == turn_handoff.PRODUCER for w in wakes)
++    assert wakes[0][1] == turn_handoff.CONTINUATION_TEXT
++    assert not (tmp_path / turn_handoff.FILE_NAME).exists()
++
++
++@pytest.mark.asyncio
++async def test_takeover_without_the_key_leaves_the_file(tmp_path):
++    _write(tmp_path, [{"session_id": "s1", "route": "r", "admission_id": "a1"}])
++    runner = SimpleNamespace(config=GatewayConfig())
++    assert await turn_handoff.continue_handed_off_turns(runner, tmp_path) == 0
++    assert (tmp_path / turn_handoff.FILE_NAME).exists()
++
++
++@pytest.mark.asyncio
++async def test_takeover_skips_another_profile_and_survives_a_failure(tmp_path, monkeypatch):
++    rows = {"a1": {"admission_id": "a1", "status": "terminal", "outcome": "interrupted", "generation": 1}}
++    authority = _FakeAuthority(rows, {"s1": SimpleNamespace(source=SimpleNamespace(), route="r1")})
++    runner = SimpleNamespace(config=GatewayConfig(restart_turn_handoff=True), session_authorities=None,
++                             session_authority=authority, _delivery_adapter_for=lambda src: None)
++    monkeypatch.setattr("hermes_state_runtime.get_session_admission",
++                        lambda db, *, admission_id: rows.get(admission_id))
++    monkeypatch.setattr("gateway.session_local_recovery.restore_completion_route", lambda runner, key: None)
++
++    async def wake(*args, **kwargs):
++        raise RuntimeError("refused")
++
++    monkeypatch.setattr("gateway.session_automation.admit_route_wake", wake)
++    _write(tmp_path, [{"profile_id": "other", "session_id": "s9", "route": "r9", "admission_id": "a9"},
++                      {"profile_id": "default", "session_id": "s1", "route": "r1", "admission_id": "a1"}])
++    assert await turn_handoff.continue_handed_off_turns(runner, tmp_path) == 0
