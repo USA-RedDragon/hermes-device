@@ -1,0 +1,6 @@
+# Upstream tests of the summary path, the live config reload, and the ledger (0078) the handoff carries
+tests/agent/test_context_compressor.py
+tests/agent/test_context_compressor_summary_continuity.py
+tests/agent/test_context_compressor_zero_user_provenance.py
+tests/agent/test_decision_ledger.py
+tests/tui_gateway/test_compression_config_hot_reload.py
