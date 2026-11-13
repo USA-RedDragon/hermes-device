@@ -113,7 +113,7 @@ type Update struct {
 type Usage struct {
 	Enabled           *bool    `name:"enabled" description:"Count the tokens Claude Code used here and send the counts to the hub: only token counts, model names, account ids, the signed-in account's email and project folder names, never what was said. Unset: on for run, except in a container, and on for acp-host"`
 	ClaudeDirs        []string `name:"claude-dirs" description:"More Claude Code config directories (CLAUDE_CONFIG_DIR values) to count, besides $CLAUDE_CONFIG_DIR or ~/.claude"`
-	HermesAccountsDir string   `name:"hermes-accounts-dir" description:"acp-host: directory of the claude-accounts plugin's per-account Claude Code directories. Defaults to $CLAUDE_ACCOUNTS_ROOT, else claude in $HERMES_HOME"`
+	HermesAccountsDir string   `name:"hermes-accounts-dir" description:"acp-host: directory of the per-account Claude Code directories. Defaults to $CLAUDE_ACCOUNTS_ROOT, else claude in $HERMES_HOME"`
 	StateFile         string   `name:"state-file" description:"File that keeps what was counted across restarts. Defaults to claude-usage.gob in the state directory for run, and device/claude-usage.gob in $HERMES_HOME for acp-host"`
 }
 

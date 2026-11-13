@@ -895,7 +895,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[38], time.Duration(int64(21600000000000)), "Time between release checks of run, with up to 10% jitter. At least 1h")
 	fs.Bool(names[39], false, "Count the tokens Claude Code used here and send the counts to the hub: only token counts, model names, account ids, the signed-in account's email and project folder names, never what was said. Unset: on for run, except in a container, and on for acp-host")
 	fs.StringSlice(names[40], nil, "More Claude Code config directories (CLAUDE_CONFIG_DIR values) to count, besides $CLAUDE_CONFIG_DIR or ~/.claude")
-	fs.String(names[41], "", "acp-host: directory of the claude-accounts plugin's per-account Claude Code directories. Defaults to $CLAUDE_ACCOUNTS_ROOT, else claude in $HERMES_HOME")
+	fs.String(names[41], "", "acp-host: directory of the per-account Claude Code directories. Defaults to $CLAUDE_ACCOUNTS_ROOT, else claude in $HERMES_HOME")
 	fs.String(names[42], "", "File that keeps what was counted across restarts. Defaults to claude-usage.gob in the state directory for run, and device/claude-usage.gob in $HERMES_HOME for acp-host")
 	return nil
 }
