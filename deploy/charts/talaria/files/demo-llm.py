@@ -34,7 +34,9 @@ def tool_call_for(body):
     msgs = body.get("messages") or []
     if not msgs or msgs[-1].get("role") != "user":
         return None
-    text = last_user_text(msgs)
+    # Only the first paragraph: Hermes appends plugin context (such as the shell of a Windows computer)
+    # after a blank line.
+    text = last_user_text(msgs).split("\n\n", 1)[0]
     names = {t.get("function", {}).get("name") for t in body.get("tools") or []}
     if text.lower().startswith("run:") and "terminal" in names:
         return {"index": 0, "id": "call_demo_%d" % time.time_ns(), "type": "function",
