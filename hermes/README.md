@@ -84,7 +84,7 @@ The Test workflow runs on pull requests and before each release:
 
 ## Adding or changing a patch
 
-1. Clone upstream and check out the release in the Dockerfile.
+1. Clone upstream and check out the release in the Dockerfile. Commit there as `USA-RedDragon <USA-RedDragon@users.noreply.github.com>` (`git config user.name USA-RedDragon`, `git config user.email USA-RedDragon@users.noreply.github.com` in that clone): the patch headers are public, and the Patches check fails on any other author.
 2. Make the change as one commit with its tests, in upstream's style and with a config option that keeps upstream's default.
 3. Run its tests: `uv sync --locked --python 3.14 --extra all --extra anthropic --group dev --group test`, then `.venv/bin/python -m pytest <test files>`.
 4. Put all patches on one branch in order and export them: `git format-patch --zero-commit --no-signature -o patches <release>..HEAD`. Keep the numbers in the file names; they set the order.
