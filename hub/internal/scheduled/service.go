@@ -844,7 +844,9 @@ func (s *Service) RunJob(ctx context.Context, user, backendID, jobID string) err
 	}
 	paused := j.State == statePaused || !j.enabled()
 	done := make(chan error, 1)
+	ended := make(chan struct{})
 	go func() {
+		defer close(ended)
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.o.RunTimeout)
 		defer cancel()
 		err := b.c.trigger(rctx, jobID)
@@ -854,7 +856,7 @@ func (s *Service) RunJob(ctx context.Context, user, backendID, jobID string) err
 		done <- err
 	}()
 	if paused {
-		go s.keepPaused(context.WithoutCancel(ctx), b, jobID, done)
+		go s.keepPaused(context.WithoutCancel(ctx), b, jobID, ended)
 		return nil
 	}
 	select {
@@ -870,7 +872,7 @@ func (s *Service) RunJob(ctx context.Context, user, backendID, jobID string) err
 // keepPaused pauses again a paused job that a run resumed. It watches
 // the job until Hermes claimed the run (the job is enabled) or the run
 // ended.
-func (s *Service) keepPaused(ctx context.Context, b *backend, jobID string, done <-chan error) {
+func (s *Service) keepPaused(ctx context.Context, b *backend, jobID string, ended <-chan struct{}) {
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 	deadline := time.After(time.Minute)
@@ -891,7 +893,7 @@ func (s *Service) keepPaused(ctx context.Context, b *backend, jobID string, done
 			return
 		}
 		select {
-		case <-done:
+		case <-ended:
 			finished = true
 		case <-deadline:
 			return
