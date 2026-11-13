@@ -248,8 +248,8 @@ never see these tabs, and every route checks it on the server (403 for anyone el
   and starts the bot at once; a token the install sets wins and shows read-only.
 - **The update banner** (hub admins only): a new hub, agent release or `talaria` for a computer, with the steps
   for the install type (`ui.install`). The hub reads the public release list once a day (`updates.check`).
-- **In a chat**: the sliders button in the top bar, or the chip at the end of the model line, opens a panel with
-  the same switches for tools, skills, connections and how the agent asks. An admin's change applies to every open
+- **In a chat**: the sliders button inside the message box, at its right edge, opens a panel above the box (a
+  sheet from the bottom on a phone) with the same switches for tools, skills, connections and how the agent asks. An admin's change applies to every open
   chat from its next message, without a restart: the agent rebuilds the chat's tool list, reconnects connections
   and rebuilds its instructions before the next reply (the reply that runs keeps what it had). Everyone can turn
   asking off for their own chat only ("Never ask in this chat", what `/yolo` does); members see the rest read

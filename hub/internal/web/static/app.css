@@ -270,6 +270,12 @@ details.toolgroup .group-body { display: flex; flex-direction: column; gap: .5re
 .composer textarea { flex: 1; font: inherit; font-size: 16px; resize: none; max-height: 40vh; padding: .5rem .6rem;
   border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
 .composer-row { display: flex; gap: .5rem; align-items: flex-end; }
+/* The Tools button sits inside the box at its right edge; the box keeps room for it so text never runs under it. */
+.taw { position: relative; flex: 1; min-width: 0; display: flex; }
+.composer .taw textarea { padding-right: 2.8rem; min-width: 0; }
+.composer .toolsbtn.ib { position: absolute; right: .4rem; bottom: .3rem; width: 2rem; height: 2rem; color: var(--muted); border-radius: 8px; }
+.composer .toolsbtn.ib.on { color: var(--accent); }
+.pagechat .composer .toolsbtn { display: none !important; }
 .composer button.attach { color: var(--muted); padding: 0 .35rem; align-self: stretch; display: flex; align-items: center; line-height: 0; }
 .composer.drop { outline: 2px dashed var(--accent); outline-offset: -4px; }
 .chips, .atts { display: flex; flex-wrap: wrap; gap: .35rem; }
@@ -1479,14 +1485,11 @@ button.link svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; s
 .banner.upd { flex-wrap: nowrap; }
 .banner.upd > span { min-width: 0; }
 .banner.upd button:not(.close) { min-height: 2rem; padding: .1rem .6rem; font-size: .85rem; background: transparent; color: #fff; border-color: rgba(255, 255, 255, .7); }
-.info summary .qp { display: inline-flex; gap: .3rem; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: .05rem .55rem; font-size: .78rem;
-  background: var(--bg); color: var(--fg); min-height: 1.8rem; cursor: pointer; }
-.info summary .qp svg { width: .95rem; height: .95rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
-/* On a phone the top bar's own button opens the same panel, so the chip would only crowd the line. */
-@media (max-width: 760px) { .info summary .qp { display: none; } }
 .ib.on { color: var(--accent); background: var(--hover); }
 .main { position: relative; }
-.qpanel { position: absolute; right: .75rem; top: 6.2rem; width: min(23rem, calc(100% - 1.5rem)); max-height: calc(100% - 7rem); overflow-y: auto;
+/* The panel opens above the message box: a zero-height anchor sits on the box's top edge. */
+.qanchor { position: relative; flex: none; height: 0; z-index: 30; }
+.qpanel { position: absolute; right: .75rem; bottom: .4rem; width: min(23rem, calc(100% - 1.5rem)); max-height: min(34rem, calc(100dvh - 10rem)); overflow-y: auto;
   background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(0, 0, 0, .25); z-index: 30;
   flex-direction: column; }
 .qpanel:not([hidden]) { display: flex; }
@@ -1510,7 +1513,7 @@ button.link svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; s
 .qfoot { border-top: 1px solid var(--line); padding: .5rem .9rem; display: flex; align-items: center; gap: .5rem; font-size: .85rem; }
 .qfoot .grow { flex: 1; }
 @media (max-width: 700px) {
-  .qpanel { position: fixed; left: 0; right: 0; top: auto; bottom: 0; width: 100%; max-height: 82dvh; border-radius: 14px 14px 0 0; border-bottom: 0;
+  .qpanel { position: fixed; left: 0; right: 0; bottom: 0; width: 100%; max-height: 82dvh; border-radius: 14px 14px 0 0; border-bottom: 0;
     padding-bottom: env(safe-area-inset-bottom); }
   .qpanel .grab { display: block; }
   .qpscrim:not([hidden]) { display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 29; }

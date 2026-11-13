@@ -2645,17 +2645,6 @@
     line.append(mt, el("span", "break"));
     line.append(...lim.parts);
     line.append(el("span", "grow"));
-    if (view && me.agent) {
-      const chip = el("span", "qp", "");
-      chip.setAttribute("role", "button");
-      chip.tabIndex = 0;
-      chip.title = "Tools, skills and safety";
-      chip.append(window.HubIcons.icon("sliders"), "Tools and skills");
-      const go = (e) => { e.preventDefault(); e.stopPropagation(); quickPanel(true); };
-      chip.onclick = go;
-      chip.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") go(e); };
-      line.append(chip);
-    }
     line.append(el("span", "who2", me.display || me.user || ""));
     $("qpbtn").hidden = !(view && me.agent);
     mirrorTokens();
@@ -3972,7 +3961,7 @@
       // composedPath is fixed when the click starts, so a control the click
       // removed (Show more) still counts as inside the panel.
       const path = e.composedPath();
-      if (!box.hidden && !path.includes(box) && !e.target.closest("#qpbtn, .qp")) quickPanel(false);
+      if (!box.hidden && !path.includes(box) && !e.target.closest("#qpbtn")) quickPanel(false);
     });
     agentUI.updateBanner($("updbanner"));
     $("scrim").onclick = () => openSide(false);

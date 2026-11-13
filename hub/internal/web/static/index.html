@@ -83,7 +83,6 @@
       <div id="tok" class="tok" title="Tokens of this chat's own turns. Subagents and background prompts count apart, in Activity." hidden><span id="tokturn"></span><span id="toksub" class="tsub"></span></div>
       <button id="filesbtn" class="ghost ib" type="button" hidden title="Files: this chat's folder and what Talaria changed" aria-label="Files"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
       <button id="exportbtn" class="ghost ib" type="button" hidden title="Export as Markdown (Ctrl+Shift+E)" aria-label="Export as Markdown"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></button>
-      <button id="qpbtn" class="ghost ib" type="button" hidden title="Tools, skills and safety" aria-label="Tools, skills and safety" aria-haspopup="dialog" aria-expanded="false" aria-controls="qpanel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M16 6a2 2 0 1 0 0 .01M10 12a2 2 0 1 0 0 .01M18 18a2 2 0 1 0 0 .01"/></svg></button>
       <button id="actbtn" class="ghost ib actbtn" type="button" aria-expanded="false" aria-controls="act" aria-label="Activity" title="Activity: subagents and background tasks (Ctrl+.)" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span id="actcount" class="count" hidden>0</span></button>
     </header>
     <details id="info" class="info" hidden>
@@ -110,14 +109,17 @@
     <div id="log" class="log" aria-live="polite" hidden></div>
     <div class="tbhold"><button id="tobottom" class="tobottom" type="button" title="Jump to latest" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"/></svg><span class="lbl">Jump to latest</span></button></div>
     <div id="qpscrim" class="qpscrim" hidden></div>
-    <div id="qpanel" class="qpanel" role="dialog" aria-labelledby="qp-title" hidden></div>
+    <div class="qanchor"><div id="qpanel" class="qpanel" role="dialog" aria-labelledby="qp-title" hidden></div></div>
     <form id="composer" class="composer" hidden>
       <div id="pop" class="pop" role="listbox" aria-label="Suggestions" hidden></div>
       <div id="chips" class="chips" aria-label="Attachments" hidden></div>
       <div class="composer-row">
         <button id="attach" class="ghost ib attach" type="button" aria-label="Attach files" title="Attach files or images"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg></button>
         <input id="files" type="file" multiple hidden>
-        <textarea id="input" rows="1" placeholder="Message Talaria" aria-label="Message" aria-autocomplete="list" aria-controls="pop"></textarea>
+        <div class="taw">
+          <textarea id="input" rows="1" placeholder="Message Talaria" aria-label="Message" aria-autocomplete="list" aria-controls="pop"></textarea>
+          <button id="qpbtn" class="ghost ib toolsbtn" type="button" hidden title="Tools, skills and safety" aria-label="Tools, skills and safety" aria-haspopup="dialog" aria-expanded="false" aria-controls="qpanel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M16 6a2 2 0 1 0 0 .01M10 12a2 2 0 1 0 0 .01M18 18a2 2 0 1 0 0 .01"/></svg></button>
+        </div>
         <button id="send" class="primary ib send" type="submit" aria-label="Send message" title="Send (Enter)" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
       </div>
       <div class="hint"><span id="draftnote" aria-live="polite"></span><span class="grow"></span><span class="keyonly"><kbd>/</kbd> commands · <kbd>@</kbd> files · <kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> new line · <kbd>↑</kbd> edit last</span></div>
