@@ -4,36 +4,12 @@
 // Opens the chat's quick panel and the Settings tabs that list tools,
 // skills and connections, on a phone and on a desktop, and asserts that no
 // snake_case or dotted id shows in the text a person reads.
-const { spawn } = require("child_process");
 const assert = require("assert");
 const [bin, url, dir] = process.argv.slice(2);
 
-const proc = spawn(bin, ["--headless=new", "--no-sandbox", "--disable-gpu", "--remote-debugging-port=0", "--user-data-dir=" + dir, "--hide-scrollbars", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+const { proc, connect } = require("../cdp.js").launch(bin, dir);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function connect() {
-  const ws = await new Promise((res, rej) => {
-    let buf = "";
-    proc.stderr.on("data", (d) => { buf += d; const m = /ws:\/\/\S+/.exec(buf); if (m) res(m[0]); });
-    proc.on("exit", () => rej(new Error("chrome exited: " + buf)));
-  });
-  const t = await (await fetch(`http://127.0.0.1:${new URL(ws).port}/json/new?about:blank`, { method: "PUT" })).json();
-  const sock = new WebSocket(t.webSocketDebuggerUrl);
-  await new Promise((r) => (sock.onopen = r));
-  let id = 0;
-  const pend = new Map();
-  sock.onmessage = (m) => {
-    const d = JSON.parse(m.data);
-    if (d.id && pend.has(d.id)) { const { res, rej } = pend.get(d.id); pend.delete(d.id); d.error ? rej(new Error(JSON.stringify(d.error))) : res(d.result); }
-  };
-  const send = (method, params = {}) => new Promise((res, rej) => { const i = ++id; pend.set(i, { res, rej }); sock.send(JSON.stringify({ id: i, method, params })); });
-  const ev = async (expr) => {
-    const r = await send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true });
-    if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails));
-    return r.result.value;
-  };
-  return { send, ev, close: () => { sock.close(); proc.kill(); } };
-}
 
 // Visible text of a node (what innerText gives: hidden parts are left out).
 const ids = /[a-z]+_[a-z_]+|[a-z]+\.[a-z]+_[a-z_]+/;
