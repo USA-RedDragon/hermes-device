@@ -1091,6 +1091,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7
   .info summary .metric { gap: .2rem; }
   .info summary .mtok { min-width: 2.5rem; }
   .info summary .long, .info summary .who2, .info summary .grow { display: none; }
+  .info summary .who1 { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .info summary .mtok:not([hidden]) { display: inline; margin-left: auto; order: 9; }
   .info summary::after { display: none; }
   .info summary .metric .lbl, .info summary .metric.ctx .lbl { display: inline; }
@@ -1478,6 +1479,8 @@ button.link svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; s
 .info summary .qp { display: inline-flex; gap: .3rem; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: .05rem .55rem; font-size: .78rem;
   background: var(--bg); color: var(--fg); min-height: 1.8rem; cursor: pointer; }
 .info summary .qp svg { width: .95rem; height: .95rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+/* On a phone the top bar's own button opens the same panel, so the chip would only crowd the line. */
+@media (max-width: 760px) { .info summary .qp { display: none; } }
 .ib.on { color: var(--accent); background: var(--hover); }
 .main { position: relative; }
 .qpanel { position: absolute; right: .75rem; top: 6.2rem; width: min(23rem, calc(100% - 1.5rem)); max-height: calc(100% - 7rem); overflow-y: auto;
