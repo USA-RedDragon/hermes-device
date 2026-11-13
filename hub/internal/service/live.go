@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -311,15 +312,60 @@ func (ls *live) fences(revision, generation *int64) {
 }
 
 // setPrompts replaces the pending prompts and announces each, so a prompt
-// raised before the hub subscribed reaches its users too. ls.mu is held.
-func (ls *live) setPrompts(ps []gateway.Prompt) {
+// raised before the hub subscribed reaches its users too. A prompt the hub
+// held that Hermes no longer lists is over without an answer (a restart of
+// Hermes drops the threads that waited on it): it is settled as lost, so
+// no card keeps buttons that cannot work. announce also sends a prompt the
+// hub did not hold as an event, for viewers that stay attached through a
+// resume and so get no snapshot. ls.mu is held.
+func (ls *live) setPrompts(ps []gateway.Prompt, announce bool) {
+	old := ls.prompts
 	ls.prompts = map[string]gateway.Prompt{}
 	for _, p := range ps {
 		if p.Kind == gateway.PromptApproval || p.Kind == gateway.PromptClarify {
 			ls.prompts[p.PromptID] = p
 			ls.promptNotice(p)
+			if _, known := old[p.PromptID]; announce && !known {
+				ls.announcePrompt(p)
+			}
 		}
 	}
+	var lost []string
+	for id := range old {
+		if _, ok := ls.prompts[id]; !ok {
+			lost = append(lost, id)
+		}
+	}
+	if len(lost) > 0 {
+		slices.Sort(lost)
+		ls.lostPrompts(lost)
+	}
+}
+
+// announcePrompt sends a prompt as the request event Hermes sends for it.
+// ls.mu is held.
+func (ls *live) announcePrompt(p gateway.Prompt) {
+	kind := hub.KindApprovalRequest
+	if p.Kind == gateway.PromptClarify {
+		kind = hub.KindClarifyRequest
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		return
+	}
+	ls.emit(kind, data)
+}
+
+// lostPrompts settles prompts Hermes no longer lists and nobody answered.
+// ls.mu is held.
+func (ls *live) lostPrompts(ids []string) {
+	data, err := json.Marshal(struct {
+		PromptIDs []string `json:"prompt_ids"`
+	}{ids})
+	if err == nil {
+		ls.emit(hub.KindPromptLost, data)
+	}
+	ls.settle(true, ids...)
 }
 
 func promptInfo(p gateway.Prompt) hub.PromptInfo {

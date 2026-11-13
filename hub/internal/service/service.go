@@ -1176,7 +1176,7 @@ func (b *backend) ensure(ctx context.Context, ls *live) (*gateway.Client, error)
 			ls.subID = snap.SubscriptionID
 			ls.generation = max(ls.generation, snap.ExecutionGeneration)
 			ls.revision = max(ls.revision, snap.Revision)
-			ls.setPrompts(snap.Prompts)
+			ls.setPrompts(snap.Prompts, true)
 			ls.setInputs(snap.Pending)
 			ls.flushEarly()
 			ls.mu.Unlock()
@@ -1274,7 +1274,7 @@ func (b *backend) subscribed(ctx context.Context, c *gateway.Client, ls *live, s
 	if snap.Info.Provider != nil && *snap.Info.Provider != "" {
 		ls.provider = *snap.Info.Provider
 	}
-	ls.setPrompts(snap.Prompts)
+	ls.setPrompts(snap.Prompts, false)
 	ls.setInputs(snap.Pending)
 	ls.turnAdmission = ""
 	if snap.Running {

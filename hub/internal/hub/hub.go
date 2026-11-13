@@ -47,7 +47,10 @@ const (
 	KindMessageComplete = "message.complete"
 	KindMessageInterim  = "message.interim"
 	KindApprovalRequest = "approval.request"
-	KindError           = "error"
+	// KindPromptLost is a hub-made event: Hermes no longer lists these
+	// pending prompts (data: prompt_ids) and the hub saw no answer to them.
+	KindPromptLost = "prompt.lost"
+	KindError      = "error"
 )
 
 // Event is one ordered event from an attached session. Data is the gateway

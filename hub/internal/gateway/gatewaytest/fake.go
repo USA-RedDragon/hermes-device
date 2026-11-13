@@ -513,6 +513,25 @@ func (g *Gateway) Ask(sessionID string, pr gateway.Prompt) {
 	g.publishLocked(s, "approval.request", pr)
 }
 
+// AskSilently makes a session hold an approval that no event announced, as
+// a gateway that took over from a restarted one does for a waiter it
+// resumed: only a snapshot lists it.
+func (g *Gateway) AskSilently(sessionID string, pr gateway.Prompt) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.sessions[sessionID].prompts[pr.PromptID] = pr
+}
+
+// Withdraw drops pending prompts with no event and no answer, as a
+// restart does to the threads that waited on them.
+func (g *Gateway) Withdraw(sessionID string, ids ...string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, id := range ids {
+		delete(g.sessions[sessionID].prompts, id)
+	}
+}
+
 // ServerRequest sends a server request to every open WebSocket, as
 // tui_gateway/server_requests.py does to a client that answers them.
 func (g *Gateway) ServerRequest(id, method string, params any) {

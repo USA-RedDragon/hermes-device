@@ -260,6 +260,13 @@ func (r *renderer) handle(ctx context.Context, ev hub.Event) {
 		if r.decode(ev, &p) {
 			r.settled(ctx, true, p.RequestIDs...)
 		}
+	case hub.KindPromptLost:
+		var p struct {
+			PromptIDs []string `json:"prompt_ids"`
+		}
+		if r.decode(ev, &p) {
+			r.settled(ctx, true, p.PromptIDs...)
+		}
 	case hub.KindApprovalOutcome:
 		var o hub.ApprovalOutcome
 		if r.decode(ev, &o) {
