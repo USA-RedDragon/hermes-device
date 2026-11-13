@@ -4,5 +4,6 @@
 # default of --name is the host name of this computer, so it is replaced.
 set -eu
 go run . "$@" -h 2>&1 |
+	grep -v "^go: downloading " |
 	sed -e '/^Global Flags:/,$d' -e '/--name string/s/(default "[^"]*")/(default the host name)/' |
 	sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
