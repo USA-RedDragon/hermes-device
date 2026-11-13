@@ -20,10 +20,10 @@ func TestNoIdsInVisibleText(t *testing.T) {
 	chrome := chromePath(t)
 	e := setupAgent(t)
 	e.pc.Toolsets = append(e.pc.Toolsets,
-		map[string]any{"name": "brand_new_set", "label": "", "description": "calls new_tool and other_tool", "enabled": true, "configured": true},
-		map[string]any{"name": "code_execution", "label": "Code Execution", "description": "execute_code", "enabled": true, "configured": true})
-	e.pc.Skills = append(e.pc.Skills, map[string]any{"name": "weather_brief_daily", "description": "Short forecasts", "enabled": true, "provenance": "hub"})
-	e.pc.Servers = append(e.pc.Servers, map[string]any{"name": "home_assistant", "transport": "http", "url": "https://ha.example/mcp", "enabled": true, "source": "config"})
+		toolset("brand_new_set", "", "calls new_tool and other_tool"),
+		toolset("code_execution", "Code Execution", "execute_code"))
+	e.pc.Skills = append(e.pc.Skills, map[string]any{fieldName: "weather_brief_daily", "description": "Short forecasts", keyEnabled: true, "provenance": "hub"})
+	e.pc.Servers = append(e.pc.Servers, map[string]any{fieldName: "home_assistant", "transport": "http", keyURL: "https://ha.example/mcp", keyEnabled: true, "source": "config"})
 	prof, err := os.MkdirTemp("", "ids-profile-")
 	if err != nil {
 		t.Fatal(err)
@@ -33,4 +33,8 @@ func TestNoIdsInVisibleText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
+}
+
+func toolset(name, label, desc string) map[string]any {
+	return map[string]any{fieldName: name, "label": label, "description": desc, keyEnabled: true, "configured": true}
 }

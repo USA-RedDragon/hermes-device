@@ -436,7 +436,7 @@ func (s *Service) Toolsets(ctx context.Context, user, backendID string) ([]Tools
 		if talariaOwned(t.Name) {
 			continue
 		}
-		t = plainToolset(t)
+		t = PlainToolset(t)
 		t.Always = alwaysOn(t.Name)
 		if t.Always {
 			t.Enabled = true
