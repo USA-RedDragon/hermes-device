@@ -1,6 +1,10 @@
 # hermes-patches
 
-A small set of patches on top of the pinned [Hermes Agent](https://github.com/NousResearch/hermes-agent) release, built into a multi-arch image (`linux/amd64`, `linux/arm64`, the same platforms as upstream's image).
+A small set of patches on top of the pinned [Hermes Agent](https://github.com/NousResearch/hermes-agent) release, built into a multi-arch image (`linux/amd64`, `linux/arm64`, the same platforms as upstream's image). The image is published publicly as **Talaria Hermes**, `ghcr.io/usa-reddragon/talaria-hermes`.
+
+Built on Hermes Agent by Nous Research (MIT). Not affiliated with or endorsed by Nous Research.
+
+Hermes Agent is Copyright (c) 2025 Nous Research, under the MIT License in [LICENSE](LICENSE); the patches use the same terms. The image carries both files in `/usr/share/doc/talaria-hermes/` (`LICENSE`, `NOTICE`).
 
 Each patch fixes one limit, sits behind a config option whose default keeps upstream's behavior, has upstream-style tests, and is written so that upstream can take it. When upstream ships a fix, the patch is dropped.
 
@@ -14,9 +18,9 @@ Each patch fixes one limit, sits behind a config option whose default keeps upst
 
 Tags are `v<upstream release>-p<n>`: `v0.23.1-p1`, `v0.23.1-p2`, then `v0.24.0-p1` after the base moves. The upstream release is always the part before `-p`.
 
-The Release workflow runs on every push to `main` that changes the Dockerfile, the patches, the scripts or the workflows. It runs the tests, then builds and pushes `ghcr.io/usa-reddragon/hermes-patches:<tag>` with BuildKit SLSA provenance and an SBOM, signs the image keyless with cosign (GitHub artifact attestations are not available for private repositories of a user account), and creates the tag and a GitHub release that lists the patches. Run it by hand (workflow_dispatch) to release HEAD again.
+The Release workflow runs on every push to `main` that changes the Dockerfile, the patches, the scripts or the workflows. It runs the tests, then builds and pushes one image under two names, `ghcr.io/usa-reddragon/talaria-hermes:<tag>` (public, also tagged `latest-stable`) and `ghcr.io/usa-reddragon/hermes-patches:<tag>` (the name existing deployments pull), with BuildKit SLSA provenance and an SBOM, signs the image keyless with cosign (GitHub artifact attestations are not available for private repositories of a user account), and creates the tag and a GitHub release that lists the patches. Run it by hand (workflow_dispatch) to release HEAD again.
 
-Verify a release with `cosign verify ghcr.io/usa-reddragon/hermes-patches:<tag> --certificate-identity-regexp '^https://github.com/USA-RedDragon/hermes-patches/' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
+Verify a release with `cosign verify ghcr.io/usa-reddragon/talaria-hermes:<tag> --certificate-identity-regexp '^https://github.com/USA-RedDragon/hermes-patches/' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
 
 Renovate bumps `HERMES_BASE` in the Dockerfile as soon as upstream releases. A green PR merges on its own, which publishes `v<new release>-p1`. Rolling it out is a separate Renovate PR in the Flux repo that is never merged on its own.
 
