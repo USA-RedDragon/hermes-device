@@ -5,14 +5,17 @@
 // the two: scrolling away from the end, or back to within gap pixels of it,
 // or pin() and release() for a click that means the same.
 //
-// A scroll event that nothing of the reader's caused is not the reader. A
-// composer that grows lays the log out at an in-between height first; the
-// browser clamps scrollTop there and fires an event, after the layout has
-// settled, for a scrollTop nobody chose, and it looks like the reader
-// scrolling up. The reader is known by what the reader does: heard() is
-// called for a wheel, a touch, a navigation key or a press on the
-// scrollbar, and only a scroll event during or soon after one counts.
-// Any other change of scrollTop is undone by the next sync().
+// A scroll event that the layout caused is not the reader. A composer that
+// grows lays the log out at an in-between height first; the browser clamps
+// scrollTop there and fires an event, after the layout has settled, for a
+// scrollTop nobody chose, and it looks like the reader scrolling up. Such an
+// event comes with a change of the log's own height or a shorter content,
+// or soon after one, and sync() undoes it. Every other scroll is the
+// reader's, whatever moved it: heard() is called for a wheel, a touch, a
+// navigation key or a press on the scrollbar, and its scrolls count for a
+// while even next to a layout change; find in page, focus moving to a link
+// and a jump to an anchor have no such call and count on their own. Content
+// that grows below does not make a scroll the layout's: a reply streams.
 //
 // o.probe(log) returns {n, off}: the first message in view and how far its
 // top is below the top of the log, or null. o.place(n, log) returns that
@@ -26,10 +29,18 @@ window.HubStick = (log, o) => {
   let until = 0;
   let pinned = true;
   let anchor = null;
+  const settle = o.settle || 600;
   let rec = { h: 0, c: 0, top: 0 };
+  let resized = -Infinity;
 
   const gap = () => log.scrollHeight - log.scrollTop - log.clientHeight;
-  const note = () => { rec = { h: log.scrollHeight, c: log.clientHeight, top: log.scrollTop }; };
+  const note = () => {
+    if (log.clientHeight !== rec.c) resized = now();
+    rec = { h: log.scrollHeight, c: log.clientHeight, top: log.scrollTop };
+  };
+  // layoutMoved says a scroll that the reader did not announce came from the
+  // layout: the log changed height, shrank, or did so just before.
+  const layoutMoved = () => log.clientHeight !== rec.c || log.scrollHeight < rec.h || now() - resized < settle;
   const take = () => { anchor = pinned ? null : o.probe(log); };
   const set = (top) => { log.scrollTop = top; note(); };
 
@@ -58,8 +69,8 @@ window.HubStick = (log, o) => {
   function scrolled() {
     if (log.hidden) return;
     if (Math.abs(log.scrollTop - rec.top) < 1) return;
-    if (now() >= until) { sync(); return; }
-    until = Math.max(until, now() + 300);
+    if (now() < until) until = Math.max(until, now() + 300);
+    else if (layoutMoved()) { sync(); return; }
     const up = log.scrollTop < rec.top;
     note();
     // Only a real distance from the end leaves it: a tap's jitter, a

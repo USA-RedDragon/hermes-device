@@ -143,18 +143,50 @@ const wheelTo = (x, top) => {
   assert.strictEqual(x.log.start(x.tags.indexOf(n)) - x.log.top, -300, "first message in view keeps its place");
 }
 
-// A change of scrollTop that is not the reader's is undone for a reader above the end.
+// A scroll nothing announced and the layout did not cause is the reader's:
+// find in page, focus moving to a link or a jump to an anchor. It is kept
+// for a reader at the end, also while a reply streams, and for one above it.
+{
+  const x = make([500, 500, 500, 500], 600);
+  x.s.pin();
+  x.tick(5000);
+  x.log.scrollTop = 200; // Ctrl+F found older text
+  x.s.scrolled();
+  assert.strictEqual(x.s.pinned(), false);
+  for (let i = 0; i < 5; i++) {
+    x.tick(50);
+    x.log.heights[3] += 40; // the reply grows below
+    x.s.sync();
+  }
+  assert.strictEqual(x.log.scrollTop, 200, "streaming does not take the reader back to the end");
+  x.log.scrollTop = 1500; // a jump to an anchor lower down
+  x.s.scrolled();
+  x.log.heights[3] += 40;
+  x.s.sync();
+  assert.strictEqual(x.log.scrollTop, 1500);
+}
+
+// A scroll that comes with a change of the log's height, or soon after one,
+// is the layout's and is undone: a reader above the end keeps the place.
 {
   const x = make([500, 500, 500, 500], 600);
   x.s.pin();
   wheelTo(x, 500);
-  assert.strictEqual(x.s.pinned(), false);
   x.tick(5000);
-  x.log.scrollTop = 1400;
+  x.log.client = 400; // the composer grew
+  x.log.scrollTop = 1100;
   x.s.scrolled();
   assert.strictEqual(x.s.pinned(), false);
   x.s.sync();
   assert.strictEqual(x.log.scrollTop, 500);
+  x.tick(100);
+  x.log.scrollTop = 1400; // the clamp event after the layout settled
+  x.s.scrolled();
+  assert.strictEqual(x.log.scrollTop, 500);
+  x.tick(2000);
+  x.log.scrollTop = 1400; // much later it is a find
+  x.s.scrolled();
+  assert.strictEqual(x.log.scrollTop, 1400);
 }
 
 // A reader that scrolls back to within the threshold is at the end again.
