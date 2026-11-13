@@ -1,10 +1,29 @@
 name: Tests
 
+# Device daemon only: changes to the other parts of the repository do not run it.
 on:
   pull_request:
+    paths-ignore:
+      - deploy/**
+      - docs/**
+      - hub/**
+      - hermes/**
+      - README.md
+      - .github/workflows/aio.yaml
+      - .github/workflows/deploy.yaml
+      - .github/workflows/docs.yaml
   push:
     branches:
       - main
+    paths-ignore:
+      - deploy/**
+      - docs/**
+      - hub/**
+      - hermes/**
+      - README.md
+      - .github/workflows/aio.yaml
+      - .github/workflows/deploy.yaml
+      - .github/workflows/docs.yaml
 
 concurrency:
   group: "${{ github.workflow }} @ ${{ github.ref }}"
