@@ -33,7 +33,12 @@ Behind your own reverse proxy, turn off response buffering and request timeouts 
 
 ## The model does not answer
 
-- "Could not start a chat" (`storage_unavailable` in the Hermes log): Hermes has no model yet. Run `hermes model`, see [Choosing models and providers](models.md).
+- "Hermes is not connected to any AI provider", or the model menu is empty: no model is connected yet. This is the
+  required "Connect a model" step of your install guide. Run `hermes model` inside Talaria's container (Talaria
+  has its own Hermes; an existing Hermes install elsewhere is not used): [Compose](compose.md#step-4-connect-a-model),
+  [Unraid](unraid.md), [TrueNAS](truenas.md), [all-in-one](all-in-one.md), [Helm](helm.md#quick-start-try-it-with-port-forward),
+  and [Choosing models and providers](models.md#run-hermes-model). Then open a new chat and pick the model in the model menu.
+- "Could not start a chat" (`storage_unavailable` in the Hermes log): the same cause. Connect a model as above.
 - "Context too small" in the chat: the model's window is under 64,000 tokens. Pick another model in `hermes model`. In Ollama, `qwen3` has 40K and `qwen2.5` 32K.
 - An error with a status like 401 or 404 from the model: the address, the model name or the key in Hermes is wrong. Run `hermes model` again.
 - A local model is very slow: expected without a GPU. See [Choosing models and providers](models.md#ollama).
