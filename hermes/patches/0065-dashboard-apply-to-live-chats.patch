@@ -1,0 +1,543 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 03:56:23 -0600
+Subject: [PATCH] feat(dashboard): apply tool, MCP, skill and SOUL.md changes
+ to open chats
+
+An open chat's agent keeps the tool list and system prompt it was built with, so a toolset, MCP server, skill or SOUL.md change saved through the dashboard reached only chats started after it, a /reload-mcp, `hermes sessions refresh-prompts`, or a restart. dashboard.apply_to_live_chats (false = off) applies them before the route answers: a toolset change re-resolves every live gateway chat's toolsets, an MCP server change reconnects the servers and refreshes the chats (the gateway's reload.mcp with consent), and a skill or SOUL.md change records a profile-wide prompt refresh, so each chat rebuilds its system prompt once on its next turn. Answers then carry applied_live. POST /api/dashboard/apply-live applies on demand after a background action (skill install or uninstall). Off, every answer is unchanged.
+---
+ hermes_cli/config_defaults.py                 |   4 +
+ hermes_cli/dashboard_live.py                  | 121 +++++++++++
+ hermes_cli/web_models.py                      |   3 +
+ hermes_cli/web_routers/mcp.py                 |  11 +-
+ hermes_cli/web_routers/profiles.py            |   4 +-
+ hermes_cli/web_routers/skills.py              |   7 +-
+ hermes_cli/web_routers/tools.py               |  23 +-
+ .../test_dashboard_apply_to_live_chats.py     | 199 ++++++++++++++++++
+ 8 files changed, 359 insertions(+), 13 deletions(-)
+ create mode 100644 hermes_cli/dashboard_live.py
+ create mode 100644 tests/hermes_cli/test_dashboard_apply_to_live_chats.py
+
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 24477e1c50..8c183c5b05 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1013,6 +1013,10 @@ DEFAULT_CONFIG = {
+         # and refuse to change it with 409: a save there was overridden or came back on the next start, and a
+         # key saved to .env hid the deployment's key for good.
+         "managed_read_only": False,
++        # Toolset, MCP server, skill and SOUL.md changes saved through the dashboard apply to open chats from
++        # their next message (tool lists are rebuilt, MCP servers reconnected, system prompts rebuilt once)
++        # instead of only to chats started after the change. See hermes_cli/dashboard_live.py.
++        "apply_to_live_chats": False,
+         # IPs / bounded CIDRs of reverse proxies trusted to supply X-Forwarded-Proto/-For. Loopback
+         # always trusted; wildcards and /0 rejected (spoofing guard).
+         "trusted_proxies": [],
+diff --git a/hermes_cli/dashboard_live.py b/hermes_cli/dashboard_live.py
+new file mode 100644
+index 0000000000..de4b76adab
+--- /dev/null
++++ b/hermes_cli/dashboard_live.py
+@@ -0,0 +1,121 @@
++"""``dashboard.apply_to_live_chats``: dashboard changes reach open chats on their next message.
++
++The agent of an open chat keeps the tool list and the system prompt it was built with, so a toolset,
++MCP server, skill or SOUL.md change saved from the dashboard reached only chats started after it (or
++a ``/reload-mcp``, ``hermes sessions refresh-prompts`` or a restart). With the key on, the routes that
++save those changes apply them before they answer:
++
++- ``tools``: tool availability is probed again and every live gateway chat re-resolves its toolsets
++  from config, as ``/reload-mcp`` does, without reconnecting MCP servers.
++- ``mcp``: MCP servers are reconnected from config, then every live gateway chat is refreshed
++  (the gateway's own ``reload.mcp`` with consent given).
++- ``prompt``: a profile-wide prompt refresh is recorded (``hermes sessions refresh-prompts``), so each
++  chat rebuilds its system prompt from the current SOUL.md and skills once, on its next turn.
++
++A running turn finishes with what it had. Tool and MCP changes reach only chats served by this process
++(the dashboard mounted in a gateway); a standalone dashboard answers ``applied_live: false`` for them.
++"""
++from __future__ import annotations
++
++import logging
++import sys
++from typing import Iterable
++
++logger = logging.getLogger(__name__)
++
++KINDS = ("tools", "mcp", "prompt")
++
++
++def enabled(cfg: dict | None = None) -> bool:
++    if cfg is None:
++        try:
++            from hermes_cli.config import load_config_readonly
++
++            cfg = load_config_readonly()
++        except Exception:
++            return False
++    section = cfg.get("dashboard") if isinstance(cfg, dict) else None
++    return isinstance(section, dict) and section.get("apply_to_live_chats") is True
++
++
++def _gateway():
++    """The in-process gateway server module, or None when no gateway runs in this process."""
++    server = sys.modules.get("tui_gateway.server")
++    if server is None or not hasattr(server, "_refresh_live_sessions"):
++        return None
++    return server
++
++
++def _refresh_tools() -> bool:
++    server = _gateway()
++    if server is None:
++        return False
++    from tools.mcp_tool_agent import reprobe_tool_availability
++
++    with server._mcp_reload_lock:
++        reprobe_tool_availability()
++        server._refresh_live_sessions()
++    return True
++
++
++def _reload_mcp() -> bool:
++    server = _gateway()
++    if server is None:
++        return False
++    resp = server.handle_request({"jsonrpc": "2.0", "id": "dashboard-live", "method": "reload.mcp",
++                                  "params": {"confirm": True}})
++    return isinstance(resp, dict) and isinstance(resp.get("result"), dict)
++
++
++def _refresh_prompts() -> bool:
++    from agent.prompt_builder import clear_skills_system_prompt_cache
++    from hermes_state import SessionDB
++
++    clear_skills_system_prompt_cache(clear_snapshot=True)
++    db = SessionDB()
++    try:
++        db.request_prompt_refresh()
++    finally:
++        close = getattr(db, "close", None)
++        if callable(close):
++            close()
++    return True
++
++
++_APPLY = {"tools": _refresh_tools, "mcp": _reload_mcp, "prompt": _refresh_prompts}
++
++
++def launch_profile(profile: str | None) -> bool:
++    """Whether a request's ``profile`` is the one this process serves chats for."""
++    return (profile or "").strip().lower() in {"", "default", "current"}
++
++
++async def answer(payload: dict, kind: str, profile: str | None) -> dict:
++    """A route's answer after it saved a ``kind`` change for ``profile``: with the key on, the change is
++    applied to open chats first and the answer says whether with ``applied_live``; off, it is unchanged."""
++    import asyncio
++
++    if not enabled():
++        return payload
++    applied = launch_profile(profile) and await asyncio.to_thread(apply, kind)
++    return {**payload, "applied_live": applied}
++
++
++def apply(kinds: Iterable[str] | str, *, force: bool = False) -> bool:
++    """Apply saved changes of ``kinds`` to open chats; True when every kind was applied.
++
++    Off (the key unset) does nothing and answers False, unless ``force``. Never raises: a failure is
++    logged and answers False, and the change itself stays saved for new chats."""
++    if isinstance(kinds, str):
++        kinds = (kinds,)
++    wanted = [k for k in dict.fromkeys(kinds) if k in _APPLY]
++    if not wanted or not (force or enabled()):
++        return False
++    ok = True
++    for kind in wanted:
++        try:
++            ok = _APPLY[kind]() and ok
++        except Exception:
++            logger.warning("Could not apply the dashboard's %s change to open chats", kind, exc_info=True)
++            ok = False
++    return ok
+diff --git a/hermes_cli/web_models.py b/hermes_cli/web_models.py
+index b62e8b886c..912e81123a 100644
+--- a/hermes_cli/web_models.py
++++ b/hermes_cli/web_models.py
+@@ -523,6 +523,9 @@ class ToolsetToggle(BaseModel):
+     enabled: bool
+     profile: Optional[str] = None
+ 
++class LiveApply(BaseModel):
++    kinds: list[str]
++
+ class ToolsetProviderSelect(BaseModel):
+     provider: str
+     # Web-only scope 'search' | 'extract'; omitted → whole-provider (legacy web.backend path).
+diff --git a/hermes_cli/web_routers/mcp.py b/hermes_cli/web_routers/mcp.py
+index fefae2dc77..d7608b637e 100644
+--- a/hermes_cli/web_routers/mcp.py
++++ b/hermes_cli/web_routers/mcp.py
+@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
+ from fastapi import APIRouter, HTTPException, Request
+ from fastapi.responses import HTMLResponse
+ 
++from hermes_cli.dashboard_live import answer as live_answer
+ from hermes_cli.web_deps import late
+ from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, _normalize_mcp_server_create
+ from hermes_cli.web_models import MCPCatalogInstall, MCPEnabledToggle, MCPServerCreate, MCPServersReplace
+@@ -154,7 +155,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
+     except Exception as exc:
+         _log.exception("POST /api/mcp/servers failed")
+         raise HTTPException(status_code=400, detail=str(exc)) from exc
+-    return _mcp_server_summary(name, server_config)
++    return await live_answer(_mcp_server_summary(name, server_config), "mcp", body.profile or profile)
+ 
+ 
+ @router.put("/api/mcp/servers")
+@@ -177,7 +178,7 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] =
+     ok, issues = await asyncio.to_thread(_run)
+     if not ok:
+         raise HTTPException(status_code=400, detail="; ".join(issues))
+-    return {"ok": True}
++    return await live_answer({"ok": True}, "mcp", body.profile or profile)
+ 
+ 
+ @router.delete("/api/mcp/servers/{name}")
+@@ -198,7 +199,7 @@ async def remove_mcp_server(name: str, profile: Optional[str] = None):
+ 
+     if not await asyncio.to_thread(_run):
+         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+-    return {"ok": True}
++    return await live_answer({"ok": True}, "mcp", profile)
+ 
+ 
+ @router.post("/api/mcp/servers/{name}/test")
+@@ -392,7 +393,7 @@ async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle, profile: Opt
+             save_config(cfg)
+         return {"ok": True, "name": name, "enabled": bool(body.enabled)}
+ 
+-    return await asyncio.to_thread(_run)
++    return await live_answer(await asyncio.to_thread(_run), "mcp", body.profile or profile)
+ 
+ 
+ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> dict[str, Any]:
+@@ -535,4 +536,4 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
+     except Exception as exc:
+         _log.exception("install_mcp_catalog_entry failed")
+         raise HTTPException(status_code=400, detail=str(exc))
+-    return {"ok": True, "name": name, "background": False}
++    return await live_answer({"ok": True, "name": name, "background": False}, "mcp", effective_profile)
+diff --git a/hermes_cli/web_routers/profiles.py b/hermes_cli/web_routers/profiles.py
+index c3a46ff68a..44e8c132fc 100644
+--- a/hermes_cli/web_routers/profiles.py
++++ b/hermes_cli/web_routers/profiles.py
+@@ -1036,7 +1036,9 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
+     except OSError as e:
+         _log.exception("PUT /api/profiles/%s/soul failed", name)
+         raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
+-    return {"ok": True}
++    from hermes_cli.dashboard_live import answer as live_answer
++
++    return await live_answer({"ok": True}, "prompt", name)
+ 
+ 
+ @router.put("/api/profiles/{name}/description")
+diff --git a/hermes_cli/web_routers/skills.py b/hermes_cli/web_routers/skills.py
+index 608742f89a..0ce10599f8 100644
+--- a/hermes_cli/web_routers/skills.py
++++ b/hermes_cli/web_routers/skills.py
+@@ -12,6 +12,7 @@ from typing import Optional
+ 
+ from fastapi import APIRouter, HTTPException
+ 
++from hermes_cli.dashboard_live import answer as live_answer
+ from hermes_cli.web_deps import late
+ from hermes_cli.web_server_profiles import _hub_action_name, _installed_hub_identifiers
+ from hermes_cli.web_models import (
+@@ -430,7 +431,7 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
+             save_disabled_skills(config, disabled)
+         return {"ok": True, "name": body.name, "enabled": body.enabled}
+ 
+-    return await asyncio.to_thread(_run)
++    return await live_answer(await asyncio.to_thread(_run), "prompt", body.profile or profile)
+ 
+ 
+ @router.get("/api/skills/content")
+@@ -466,7 +467,7 @@ async def create_skill(body: SkillCreate, profile: Optional[str] = None):
+     if not result.get("success"):
+         raise HTTPException(status_code=400, detail=result.get("error", "Failed to create skill."))
+     _clear_skills_prompt_cache()
+-    return result
++    return await live_answer(result, "prompt", body.profile or profile)
+ 
+ 
+ @router.put("/api/skills/content")
+@@ -480,4 +481,4 @@ async def update_skill_content(body: SkillContentUpdate, profile: Optional[str]
+         status = 404 if "not found" in str(err).lower() else 400
+         raise HTTPException(status_code=status, detail=err)
+     _clear_skills_prompt_cache()
+-    return result
++    return await live_answer(result, "prompt", body.profile or profile)
+diff --git a/hermes_cli/web_routers/tools.py b/hermes_cli/web_routers/tools.py
+index cb01e4c201..aa45c7c56c 100644
+--- a/hermes_cli/web_routers/tools.py
++++ b/hermes_cli/web_routers/tools.py
+@@ -15,8 +15,9 @@ from fastapi import APIRouter, HTTPException
+ from hermes_cli.web_deps import late
+ from hermes_cli.web_server_profiles import _plugin_terminal_backend_rows
+ from starlette.concurrency import run_in_threadpool
++from hermes_cli.dashboard_live import answer as live_answer
+ from hermes_cli.web_models import (
+-    TerminalBackendSelect, ToolsetEnvUpdate, ToolsetModelSelect, ToolsetPostSetup,
++    LiveApply, TerminalBackendSelect, ToolsetEnvUpdate, ToolsetModelSelect, ToolsetPostSetup,
+     ToolsetProviderSelect, ToolsetToggle)
+ from hermes_cli.web_routers._common import (
+     _CONFIG_MUTATION_LOCK, _profile_cli_args, _profile_scope, _spawn_hermes_action,
+@@ -216,6 +217,19 @@ def _bad_request(detail: str) -> HTTPException:
+     return HTTPException(status_code=400, detail=detail)
+ 
+ 
++@router.post("/api/dashboard/apply-live")
++async def apply_to_live_chats(body: LiveApply):
++    """Apply saved changes to open chats on demand, for changes a background action made (a skill
++    install or uninstall). 409 while ``dashboard.apply_to_live_chats`` is off."""
++    from hermes_cli import dashboard_live
++
++    if not body.kinds or any(k not in dashboard_live.KINDS for k in body.kinds):
++        raise _bad_request(f"kinds must be some of: {', '.join(dashboard_live.KINDS)}")
++    if not dashboard_live.enabled():
++        raise HTTPException(status_code=409, detail="dashboard.apply_to_live_chats is off")
++    return {"ok": True, "applied_live": await asyncio.to_thread(dashboard_live.apply, body.kinds)}
++
++
+ def _no_models(name: str) -> dict:
+     return {"name": name, "has_models": False, "models": [], "current": None, "default": None}
+ 
+@@ -330,9 +344,9 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str]
+         except Exception:
+             _log.exception("install-on-enable post-setup spawn failed for %s", name)
+ 
+-    return {
++    return await live_answer({
+         "ok": True, "name": name, "platform": target_platform, "enabled": body.enabled,
+-        "post_setup_started": post_setup_started}
++        "post_setup_started": post_setup_started}, "tools", scope_profile)
+ 
+ 
+ @router.get("/api/tools/toolsets/{name}/config")
+@@ -615,7 +629,8 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
+         return saved, skipped, status
+ 
+     saved, skipped, status = await asyncio.to_thread(_run)
+-    return {"ok": True, "name": name, "saved": saved, "skipped": skipped, "is_set": status}
++    return await live_answer(
++        {"ok": True, "name": name, "saved": saved, "skipped": skipped, "is_set": status}, "tools", body.profile or profile)
+ 
+ 
+ @router.post("/api/tools/toolsets/{name}/post-setup")
+diff --git a/tests/hermes_cli/test_dashboard_apply_to_live_chats.py b/tests/hermes_cli/test_dashboard_apply_to_live_chats.py
+new file mode 100644
+index 0000000000..1e1fde3ca9
+--- /dev/null
++++ b/tests/hermes_cli/test_dashboard_apply_to_live_chats.py
+@@ -0,0 +1,199 @@
++"""``dashboard.apply_to_live_chats``: dashboard changes reach open chats on their next message.
++
++Without the key a toolset, MCP server, skill or SOUL.md change saved through the dashboard reached only
++chats started after it. With it, the routes refresh the live gateway chats (tools, MCP) or record a
++profile-wide prompt refresh (skills, SOUL.md) before they answer, and say so with ``applied_live``.
++Off (the default) keeps upstream's behavior and answers exactly as before.
++"""
++import sys
++import types
++
++import pytest
++
++
++def _reset_caches():
++    import hermes_cli.config as cfg
++
++    cfg._LOAD_CONFIG_CACHE.clear()
++    cfg._RAW_CONFIG_CACHE.clear()
++
++
++@pytest.fixture
++def client(monkeypatch, _isolate_hermes_home):
++    try:
++        from starlette.testclient import TestClient
++    except ImportError:
++        pytest.skip("fastapi/starlette not installed")
++    import hermes_state
++    from hermes_constants import get_hermes_home
++    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
++
++    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
++    _reset_caches()
++    c = TestClient(app)
++    c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
++    yield c
++    _reset_caches()
++
++
++def _gate(on):
++    from hermes_cli.config import load_config, save_config
++
++    cfg = load_config()
++    cfg.setdefault("dashboard", {})["apply_to_live_chats"] = on
++    cfg["mcp_servers"] = {"calendar": {"url": "https://calendar.example/mcp", "enabled": True}}
++    save_config(cfg)
++    _reset_caches()
++
++
++@pytest.fixture
++def gateway(monkeypatch):
++    """The in-process gateway with its refresh and RPC entry recorded instead of run."""
++    import tui_gateway.server as server
++    import tools.mcp_tool_agent as mta
++
++    calls = []
++
++    def _refresh_live_sessions(*args, **kwargs):
++        assert server._mcp_reload_lock.locked(), "refresh runs under the reload lock"
++        calls.append(("refresh", args, kwargs))
++
++    def handle_request(req):
++        calls.append(("rpc", req["method"], req["params"]))
++        return {"jsonrpc": "2.0", "id": req["id"], "result": {"status": "reloaded"}}
++
++    monkeypatch.setattr(server, "_refresh_live_sessions", _refresh_live_sessions)
++    monkeypatch.setattr(server, "handle_request", handle_request)
++    monkeypatch.setattr(mta, "reprobe_tool_availability", lambda: calls.append(("reprobe",)))
++    return calls
++
++
++def _epoch():
++    from hermes_state import SessionDB
++
++    db = SessionDB()
++    try:
++        return db.prompt_refresh_epoch("any-session")
++    finally:
++        db.close()
++
++
++def _a_toolset():
++    from hermes_cli.tools_config import _get_effective_configurable_toolsets
++
++    return next(name for name, _, _ in _get_effective_configurable_toolsets() if name not in {"stt"})
++
++
++def test_off_by_default_changes_nothing_live(client, gateway):
++    from hermes_cli.config_defaults import DEFAULT_CONFIG
++
++    assert DEFAULT_CONFIG["dashboard"]["apply_to_live_chats"] is False
++    _gate(False)
++    r = client.put(f"/api/tools/toolsets/{_a_toolset()}", json={"enabled": False})
++    assert r.status_code == 200, r.text
++    assert "applied_live" not in r.json()
++    r = client.put("/api/mcp/servers/calendar/enabled", json={"enabled": False})
++    assert r.status_code == 200, r.text
++    assert "applied_live" not in r.json()
++    r = client.put("/api/skills/toggle", json={"name": "some-skill", "enabled": False})
++    assert "applied_live" not in r.json()
++    assert gateway == []
++    assert _epoch() == 0
++
++
++def test_toolset_toggle_refreshes_live_chats(client, gateway):
++    _gate(True)
++    r = client.put(f"/api/tools/toolsets/{_a_toolset()}", json={"enabled": False})
++    assert r.status_code == 200, r.text
++    assert r.json()["applied_live"] is True
++    assert [c[0] for c in gateway] == ["reprobe", "refresh"]
++
++
++def test_mcp_changes_reload_servers_in_the_gateway(client, gateway):
++    _gate(True)
++    r = client.put("/api/mcp/servers/calendar/enabled", json={"enabled": False})
++    assert r.status_code == 200, r.text
++    assert r.json() == {"ok": True, "name": "calendar", "enabled": False, "applied_live": True}
++    assert gateway == [("rpc", "reload.mcp", {"confirm": True})]
++    gateway.clear()
++    r = client.delete("/api/mcp/servers/calendar")
++    assert r.status_code == 200, r.text
++    assert r.json()["applied_live"] is True
++    assert gateway == [("rpc", "reload.mcp", {"confirm": True})]
++
++
++def test_skill_and_soul_changes_rebuild_prompts_on_the_next_turn(client, gateway):
++    _gate(True)
++    assert _epoch() == 0
++    r = client.put("/api/skills/toggle", json={"name": "some-skill", "enabled": False})
++    assert r.status_code == 200, r.text
++    assert r.json()["applied_live"] is True
++    first = _epoch()
++    assert first > 0
++    r = client.put("/api/profiles/default/soul", json={"content": "Answer briefly."})
++    assert r.status_code == 200, r.text
++    assert r.json() == {"ok": True, "applied_live": True}
++    assert _epoch() > first
++    assert gateway == [], "prompt refreshes need no gateway"
++
++
++def test_without_a_gateway_tool_changes_are_not_applied_live(client, monkeypatch):
++    _gate(True)
++    monkeypatch.delitem(sys.modules, "tui_gateway.server", raising=False)
++    r = client.put(f"/api/tools/toolsets/{_a_toolset()}", json={"enabled": True})
++    assert r.status_code == 200, r.text
++    assert r.json()["applied_live"] is False
++
++
++def test_another_profile_is_not_applied_to_this_process(gateway):
++    from hermes_cli import dashboard_live
++
++    assert dashboard_live.launch_profile(None)
++    assert dashboard_live.launch_profile("default")
++    assert not dashboard_live.launch_profile("work")
++
++
++def test_apply_live_route(client, gateway):
++    _gate(False)
++    r = client.post("/api/dashboard/apply-live", json={"kinds": ["prompt"]})
++    assert r.status_code == 409
++    _gate(True)
++    r = client.post("/api/dashboard/apply-live", json={"kinds": ["nonsense"]})
++    assert r.status_code == 400
++    r = client.post("/api/dashboard/apply-live", json={"kinds": ["prompt", "tools"]})
++    assert r.status_code == 200, r.text
++    assert r.json() == {"ok": True, "applied_live": True}
++    assert _epoch() > 0
++    assert [c[0] for c in gateway] == ["reprobe", "refresh"]
++
++
++def test_a_failed_refresh_answers_false_and_keeps_the_change(client, gateway, monkeypatch):
++    _gate(True)
++    server = sys.modules["tui_gateway.server"]
++    monkeypatch.setattr(server, "handle_request", lambda req: {"jsonrpc": "2.0", "id": req["id"], "error": {"code": 5019}})
++    r = client.put("/api/mcp/servers/calendar/enabled", json={"enabled": False})
++    assert r.status_code == 200, r.text
++    assert r.json()["applied_live"] is False
++    from hermes_cli.config import load_config
++
++    _reset_caches()
++    assert load_config()["mcp_servers"]["calendar"]["enabled"] is False
++
++
++def test_live_refresh_reresolves_each_open_chats_toolsets(monkeypatch, _isolate_hermes_home):
++    """The real gateway's refresh rebuilds every open chat's tools from the saved toolsets."""
++    import tui_gateway.server as server
++    import tools.mcp_tool_agent as mta
++    from hermes_cli import dashboard_live
++
++    seen = []
++    monkeypatch.setattr(mta, "refresh_agent_mcp_tools",
++                        lambda agent, **kw: seen.append((agent, kw.get("enabled_override"), kw.get("preserve_prefix"))))
++    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
++    monkeypatch.setattr(server, "_session_info", lambda agent, sess: {})
++    agent = types.SimpleNamespace(platform="cli", enabled_toolsets=["web", "terminal"], disabled_toolsets=None)
++    monkeypatch.setitem(server._sessions, "sid-live", {"agent": agent, "session_key": "k", "profile_home": None})
++    _gate(True)
++    assert dashboard_live.apply("tools") is True
++    assert [s[0] for s in seen] == [agent]
++    assert seen[0][1] is not None and seen[0][2] is False

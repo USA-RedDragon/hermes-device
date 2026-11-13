@@ -1,0 +1,8 @@
+# Upstream tests of the routes this patch answers from
+tests/hermes_cli/test_web_server_skills_profiles.py
+tests/hermes_cli/test_web_routers_tools_install_on_enable.py
+tests/hermes_cli/test_web_server_skill_editor.py
+tests/hermes_cli/test_web_profile_soul_writes.py
+tests/hermes_cli/test_web_toolset_profile_scope.py
+tests/hermes_cli/test_mcp_probe_redaction.py
+tests/hermes_cli/test_mcp_dashboard_oauth.py
