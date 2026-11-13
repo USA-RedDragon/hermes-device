@@ -50,15 +50,17 @@ func (s *Server) userRoutes(mux *http.ServeMux) {
 }
 
 type userView struct {
-	Name     string   `json:"name"`
-	Display  string   `json:"display"`
-	Email    string   `json:"email"`
-	Identity string   `json:"identity"`
-	Admin    bool     `json:"admin"`
-	Disabled bool     `json:"disabled"`
-	Locked   bool     `json:"locked"`
-	Password bool     `json:"password"`
-	Backends []string `json:"backends"`
+	Name     string `json:"name"`
+	Display  string `json:"display"`
+	Email    string `json:"email"`
+	Identity string `json:"identity"`
+	Admin    bool   `json:"admin"`
+	Disabled bool   `json:"disabled"`
+	Locked   bool   `json:"locked"`
+	// LockedUntil is when a locked account unlocks, in Unix seconds.
+	LockedUntil int64    `json:"locked_until,omitempty"`
+	Password    bool     `json:"password"`
+	Backends    []string `json:"backends"`
 	// Source is "account" for an account in the hub's database and
 	// "config" for an entry of users[], which only the config changes.
 	Source  string `json:"source"`
@@ -83,7 +85,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	users := make([]userView, 0, len(accounts)+len(s.users))
 	for _, a := range accounts {
 		users = append(users, userView{Name: a.Name, Display: a.Display, Email: a.Email, Identity: a.Identity,
-			Admin: a.Admin || s.admins[a.Name], Disabled: a.Disabled, Locked: a.Locked(now), Password: a.PasswordHash != "",
+			Admin: a.Admin || s.admins[a.Name], Disabled: a.Disabled, Locked: a.Locked(now), LockedUntil: lockedUntil(a, now), Password: a.PasswordHash != "",
 			Backends: nonNil(a.Backends), Source: "account", Created: a.CreatedAt.Unix()})
 	}
 	for sub, name := range s.users {
@@ -91,6 +93,13 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	slices.SortFunc(users, func(a, b userView) int { return strings.Compare(a.Name, b.Name) })
 	writeJSON(w, http.StatusOK, map[string]any{"mode": s.mode, "users": users, "backends": s.backendViews, "me": userFrom(r)})
+}
+
+func lockedUntil(a store.Account, now time.Time) int64 {
+	if !a.Locked(now) {
+		return 0
+	}
+	return a.LockedUntil.Unix()
 }
 
 func nonNil(s []string) []string {
