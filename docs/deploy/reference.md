@@ -259,9 +259,19 @@ httpRoute:
 
 It reads the same `TALARIA_*` names as compose. The settings of the Unraid template:
 
-<!-- docgen:output exec="grep -o 'Target=\"[A-Z_]*\"' aio/unraid/talaria.xml | sed 's/Target=\"//;s/\"//'" -->
+<!-- docgen:output exec="scripts/unraid-settings.sh" -->
 ```text
-
+Setting                  Default                            Name in Unraid
+8080                     8080                               Web port
+TALARIA_PUBLIC_URL       (empty)                            Public URL
+/opt/data                /mnt/user/appdata/talaria/hermes   Hermes data
+/talaria                 /mnt/user/appdata/talaria/talaria  Talaria data
+TALARIA_DEMO             false                              Demo model
+TALARIA_USER             (empty)                            Your hub user
+TALARIA_TELEGRAM_TOKEN   (empty)                            Telegram bot token
+TZ                       (empty)                            Time zone
+PUID                     99                                 PUID
+PGID                     100                                PGID
 ```
 <!-- /docgen:output -->
 
