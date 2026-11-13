@@ -66,9 +66,9 @@ func (d *systemd) respond(home string) func(string, []string) ([]byte, error) {
 			d.active = false
 		case name == zsh:
 			path := fakeShellPath(home, ".zshrc", home+"/.local/bin:/usr/local/bin:/usr/bin:"+home+"/gone")
-			return []byte("noise from .zshrc\n__HERMES_DEVICE_PATH__=" + path + "\n"), nil
+			return []byte("noise from .zshrc\n__TALARIA_PATH__=" + path + "\n"), nil
 		case name == bash:
-			return []byte("\n__HERMES_DEVICE_PATH__=" + fakeShellPath(home, bashProfile, "/usr/local/bin:/usr/bin") + "\n"), nil
+			return []byte("\n__TALARIA_PATH__=" + fakeShellPath(home, bashProfile, "/usr/local/bin:/usr/bin") + "\n"), nil
 		}
 		return nil, nil
 	}
@@ -375,8 +375,8 @@ func checkSecondRun(t *testing.T, f *fixture) {
 			t.Errorf("second run called %q", c)
 		}
 	}
-	if strings.Count(readFile(t, filepath.Join(home, ".zshrc")), "hermes-device setup >>>") != 1 ||
-		strings.Count(readFile(t, filepath.Join(home, ".config", "shell", "env.sh")), "hermes-device setup >>>") != 2 {
+	if strings.Count(readFile(t, filepath.Join(home, ".zshrc")), "talaria setup >>>") != 1 ||
+		strings.Count(readFile(t, filepath.Join(home, ".config", "shell", "env.sh")), "talaria setup >>>") != 2 {
 		t.Error("second run added another block")
 	}
 	if len(rep.Todo) != 0 {
@@ -416,12 +416,12 @@ func checkInstalled(t *testing.T, f *fixture, rep *setup.Report) {
 		t.Errorf("started %q", f.run.started)
 	}
 	env := readFile(t, filepath.Join(home, ".config", "shell", "env.sh"))
-	if !strings.Contains(env, `for hermes_device_dir in "$HOME/.local/bin"; do`) || strings.Contains(env, "gone") ||
-		!strings.Contains(env, `for hermes_device_dir in "$HOME/.talaria/bin"; do`) || strings.Count(env, "# >>> hermes-device setup >>>") != 2 {
+	if !strings.Contains(env, `for talaria_dir in "$HOME/.local/bin"; do`) || strings.Contains(env, "gone") ||
+		!strings.Contains(env, `for talaria_dir in "$HOME/.talaria/bin"; do`) || strings.Count(env, "# >>> talaria setup >>>") != 2 {
 		t.Errorf("env.sh:\n%s", env)
 	}
 	zshrc := readFile(t, filepath.Join(home, ".zshrc"))
-	if !strings.HasPrefix(zshrc, "export EDITOR=vi\n\n# >>> hermes-device setup >>>\n") || !strings.Contains(zshrc, `. "$HOME/.config/shell/env.sh"`) {
+	if !strings.HasPrefix(zshrc, "export EDITOR=vi\n\n# >>> talaria setup >>>\n") || !strings.Contains(zshrc, `. "$HOME/.config/shell/env.sh"`) {
 		t.Errorf(".zshrc:\n%s", zshrc)
 	}
 	if got := readFile(t, filepath.Join(home, ".zshrc.talaria-20261110-120000.bak")); got != zshrcText {

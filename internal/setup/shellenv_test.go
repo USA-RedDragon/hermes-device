@@ -18,7 +18,7 @@ const (
 func pathRunner(paths map[string]string) *fakeRunner {
 	return &fakeRunner{respond: func(name string, _ []string) ([]byte, error) {
 		if p, ok := paths[name]; ok {
-			return []byte("\n__HERMES_DEVICE_PATH__=" + p + "\n"), nil
+			return []byte("\n__TALARIA_PATH__=" + p + "\n"), nil
 		}
 		return nil, errNotFound
 	}}
@@ -84,8 +84,8 @@ func TestSetupAddsBinDirToSourcedEnvFile(t *testing.T) {
 		t.Error("changed a startup file that already sources env.sh")
 	}
 	got := readFile(t, filepath.Join(home, ".config", "shell", "env.sh"))
-	if !strings.HasPrefix(got, env+"\n# >>> hermes-device setup >>>\n# talaria's install directory") ||
-		!strings.Contains(got, `for hermes_device_dir in "$HOME/.talaria/bin"; do`) {
+	if !strings.HasPrefix(got, env+"\n# >>> talaria setup >>>\n# talaria's install directory") ||
+		!strings.Contains(got, `for talaria_dir in "$HOME/.talaria/bin"; do`) {
 		t.Errorf("env.sh:\n%s", got)
 	}
 	out, _ := f.sys.Out.(*bytes.Buffer)
@@ -122,9 +122,9 @@ func TestFixBinDirFish(t *testing.T) {
 		}
 	}
 	conf := filepath.Join(sys.Home, ".config", "fish", "conf.d", "talaria.fish")
-	want := "# >>> hermes-device setup >>>\n# talaria's install directory, for the talaria and tal commands in a terminal and in agent commands.\n" +
+	want := "# >>> talaria setup >>>\n# talaria's install directory, for the talaria and tal commands in a terminal and in agent commands.\n" +
 		"if test -d \"$HOME/.talaria/bin\"; and not contains -- \"$HOME/.talaria/bin\" $PATH\n" +
-		"    set -gx PATH \"$HOME/.talaria/bin\" $PATH\nend\n# <<< hermes-device setup <<<\n"
+		"    set -gx PATH \"$HOME/.talaria/bin\" $PATH\nend\n# <<< talaria setup <<<\n"
 	if got := readFile(t, conf); got != want {
 		t.Errorf("talaria.fish:\n%s", got)
 	}
@@ -133,6 +133,33 @@ func TestFixBinDirFish(t *testing.T) {
 	}
 	if changed, err := setup.RemoveBlocks(conf, true); err != nil || !changed || exists(conf) {
 		t.Errorf("RemoveBlocks = %t, %v", changed, err)
+	}
+}
+
+// A block that a release before the rename wrote counts as present, and
+// uninstall removes it.
+func TestFixBinDirKeepsLegacyBlock(t *testing.T) {
+	t.Parallel()
+	sys := newSystem(t, linux, &fakeRunner{}, nil, nil)
+	bin := filepath.Join(sys.Home, ".talaria", "bin")
+	rep := &setup.ShellReport{Login: fish, BinDir: bin, LoginLacksBin: true}
+	conf := filepath.Join(sys.Home, ".config", "fish", "conf.d", "talaria.fish")
+	legacy := "# >>> hermes-device setup >>>\n# talaria's install directory, for the talaria and tal commands in a terminal and in agent commands.\n" +
+		"if test -d \"$HOME/.talaria/bin\"; and not contains -- \"$HOME/.talaria/bin\" $PATH\n" +
+		"    set -gx PATH \"$HOME/.talaria/bin\" $PATH\nend\n# <<< hermes-device setup <<<\n"
+	writeFile(t, conf, "set -gx EDITOR vi\n\n"+legacy)
+	st := &setup.State{}
+	if err := sys.FixBinDir(rep, sys.PlanBinDir(rep), st); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, conf); got != "set -gx EDITOR vi\n\n"+legacy || len(st.Edits) != 0 {
+		t.Errorf("FixBinDir changed the file with the legacy block:\n%s\nedits %+v", got, st.Edits)
+	}
+	if changed, err := setup.RemoveBlocks(conf, false); err != nil || !changed {
+		t.Fatalf("RemoveBlocks = %t, %v", changed, err)
+	}
+	if got := readFile(t, conf); got != "set -gx EDITOR vi\n" {
+		t.Errorf("after RemoveBlocks:\n%q", got)
 	}
 }
 

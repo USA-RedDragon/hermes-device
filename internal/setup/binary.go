@@ -30,9 +30,9 @@ const (
 	LegacyBinaryName = "hermes-device"
 )
 
-// ReleaseName names the release files that do not carry the binary's
-// name, such as the checksum file. It is the repository's name.
-const ReleaseName = "hermes-device"
+// LegacyReleaseName named the release files that do not carry the binary's
+// name, such as the checksum file, before the rename to talaria.
+const LegacyReleaseName = "hermes-device"
 
 // ErrDowngrade is returned when the installed binary is newer than the one
 // that would replace it.

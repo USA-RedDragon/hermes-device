@@ -15,10 +15,30 @@ import (
 
 // Markers around every block setup adds to a shell file.
 const (
-	blockBegin = "# >>> hermes-device setup >>>"
-	blockEnd   = "# <<< hermes-device setup <<<"
-	pathMarker = "__HERMES_DEVICE_PATH__="
+	blockBegin = "# >>> talaria setup >>>"
+	blockEnd   = "# <<< talaria setup <<<"
+	pathMarker = "__TALARIA_PATH__="
 )
+
+// Markers of the blocks that releases before the rename to talaria wrote.
+// Setup leaves such a block in place, counts it as the same block, and
+// removes it on uninstall.
+const (
+	legacyBlockBegin = "# >>> hermes-device setup >>>"
+	legacyBlockEnd   = "# <<< hermes-device setup <<<"
+)
+
+// pathVar is the loop variable of the PATH block.
+const (
+	pathVar       = "talaria_dir"
+	legacyPathVar = "hermes_device_dir"
+)
+
+// legacyBlock is block as a release before the rename wrote it.
+func legacyBlock(block string) string {
+	return strings.NewReplacer(blockBegin, legacyBlockBegin, blockEnd, legacyBlockEnd, pathVar, legacyPathVar,
+		"talaria runs agent commands", "hermes-device runs agent commands").Replace(block)
+}
 
 // basePath is the PATH that the service manager gives the daemon, before
 // bash -l adds to it.
@@ -223,24 +243,24 @@ const binComment = "talaria's install directory, for the talaria and tal command
 // envBlock adds dirs to PATH, in this order, when they exist and are not
 // on PATH yet.
 func (s *System) envBlock(shell string, dirs []string) string {
-	return s.pathBlock(fmt.Sprintf("PATH directories that %s has and bash -l lacked. hermes-device runs agent commands with bash -l.", shell), dirs)
+	return s.pathBlock(fmt.Sprintf("PATH directories that %s has and bash -l lacked. talaria runs agent commands with bash -l.", shell), dirs)
 }
 
 func (s *System) pathBlock(comment string, dirs []string) string {
 	var b strings.Builder
 	b.WriteString(blockBegin + "\n")
 	b.WriteString("# " + comment + "\n")
-	b.WriteString("for hermes_device_dir in")
+	b.WriteString("for " + pathVar + " in")
 	for _, d := range slices.Backward(dirs) {
 		b.WriteString(" " + s.shQuote(d))
 	}
 	b.WriteString("; do\n" +
 		"    case \":$PATH:\" in\n" +
-		"        *\":$hermes_device_dir:\"*) ;;\n" +
-		"        *) [ -d \"$hermes_device_dir\" ] && PATH=\"$hermes_device_dir:$PATH\" ;;\n" +
+		"        *\":$" + pathVar + ":\"*) ;;\n" +
+		"        *) [ -d \"$" + pathVar + "\" ] && PATH=\"$" + pathVar + ":$PATH\" ;;\n" +
 		"    esac\n" +
 		"done\n" +
-		"unset hermes_device_dir\n" +
+		"unset " + pathVar + "\n" +
 		"export PATH\n" +
 		blockEnd + "\n")
 	return b.String()
@@ -383,7 +403,7 @@ func (s *System) appendBlock(path, block string, st *State) error {
 	if fi, lerr := os.Lstat(path); created && lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%s is a symbolic link to a missing file; left it alone", path)
 	}
-	if strings.Contains(string(old), block) {
+	if strings.Contains(string(old), block) || strings.Contains(string(old), legacyBlock(block)) {
 		return nil
 	}
 	e := Edit{File: path, Created: created}
@@ -431,18 +451,21 @@ func RemoveBlocks(path string, created bool) (bool, error) {
 		return false, err
 	}
 	var out []string
-	in, changed := false, false
+	in, changed, end := false, false, ""
 	sc := bufio.NewScanner(strings.NewReader(string(data)))
 	sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
 	for sc.Scan() {
 		line := sc.Text()
 		switch {
-		case !in && line == blockBegin:
-			in, changed = true, true
+		case !in && (line == blockBegin || line == legacyBlockBegin):
+			in, changed, end = true, true, blockEnd
+			if line == legacyBlockBegin {
+				end = legacyBlockEnd
+			}
 			if n := len(out); n > 0 && out[n-1] == "" {
 				out = out[:n-1]
 			}
-		case in && line == blockEnd:
+		case in && line == end:
 			in = false
 		case !in:
 			out = append(out, line)
@@ -455,7 +478,7 @@ func RemoveBlocks(path string, created bool) (bool, error) {
 		return false, nil
 	}
 	if in {
-		return false, fmt.Errorf("%s: a hermes-device setup block has no end marker; left it alone", path)
+		return false, fmt.Errorf("%s: a talaria setup block has no end marker; left it alone", path)
 	}
 	text := strings.Join(out, "\n")
 	if text != "" {

@@ -139,7 +139,7 @@ func ChecksumsName(version string) string {
 // LegacyChecksumsName is the checksum file name of releases up to v0.25.2.
 // Releases keep publishing it for the auto-update of older installs.
 func LegacyChecksumsName(version string) string {
-	return fmt.Sprintf("%s_%s_checksums.txt", ReleaseName, version)
+	return fmt.Sprintf("%s_%s_checksums.txt", LegacyReleaseName, version)
 }
 
 // ParseChecksums reads a sha256sum file: "<hex>  <name>" lines.

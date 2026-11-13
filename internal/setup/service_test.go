@@ -123,7 +123,7 @@ func TestShellFixKeepsSymlinkedDotfiles(t *testing.T) {
 		t.Error("the link's target lacks the source line")
 	}
 	env := readFile(t, filepath.Join(home, ".config", "shell", "env.sh"))
-	if !strings.Contains(env, `for hermes_device_dir in "/opt/a b/bin" "$HOME/.local/bin"; do`) {
+	if !strings.Contains(env, `for talaria_dir in "/opt/a b/bin" "$HOME/.local/bin"; do`) {
 		t.Errorf("env.sh:\n%s", env)
 	}
 	if len(st.Edits) != 3 || !st.Edits[0].Created || st.Edits[1].Backup == "" {
@@ -139,9 +139,9 @@ func TestCheckShellFish(t *testing.T) {
 	dir := t.TempDir()
 	r := &fakeRunner{respond: func(name string, _ []string) ([]byte, error) {
 		if name == fish {
-			return []byte("__HERMES_DEVICE_PATH__=" + dir + ":/usr/bin\n"), nil
+			return []byte("__TALARIA_PATH__=" + dir + ":/usr/bin\n"), nil
 		}
-		return []byte("__HERMES_DEVICE_PATH__=/usr/bin\n"), nil
+		return []byte("__TALARIA_PATH__=/usr/bin\n"), nil
 	}}
 	sys := newSystem(t, linux, r, nil, nil)
 	sys.Shell = "/usr/bin/fish"
