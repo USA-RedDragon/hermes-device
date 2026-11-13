@@ -230,7 +230,14 @@ In the Hermes pod, `acp-host` counts the same way in each per-account directory 
 
 ### Renamed from hermes-device
 
-Release 0.19.0 renamed the program from `hermes-device` to `talaria`, and the repository was renamed to `USA-RedDragon/talaria` after 0.19.1. The Go module, the container images (`ghcr.io/usa-reddragon/hermes-device` and `-sandbox`, which still hold the binary as `hermes-device`), the Firefox extension's id and the plugin keep their names.
+Release 0.19.0 renamed the program from `hermes-device` to `talaria`, and the repository was renamed to `USA-RedDragon/talaria` after 0.19.1. The first release after 0.25.3 renames the rest:
+
+- The Go module is `github.com/USA-RedDragon/talaria` (it was `github.com/USA-RedDragon/hermes-device`).
+- The container images are `ghcr.io/usa-reddragon/talaria` and `ghcr.io/usa-reddragon/talaria-sandbox`, with the binary as `/talaria` and `/usr/local/bin/talaria` (the sandbox keeps a `hermes-device` link to it). Releases up to 0.25.3 stay at `ghcr.io/usa-reddragon/hermes-device` and `hermes-device-sandbox`; later releases are not published there, so move image references to the new names.
+- The blocks that `setup` writes to shell files are marked `talaria setup`. Blocks marked `hermes-device setup` that older releases wrote stay in place, count as the same block, and `setup --uninstall` removes them.
+- The plugin reads the hub public keys from `TALARIA_HUB_PUBLIC_KEY`; when it is unset, from `HERMES_DEVICE_HUB_PUBLIC_KEY`, with a deprecation warning. Its messages start with `talaria:`.
+
+Some names stay because deployed hubs, plugins and Firefox depend on them: the Firefox extension's id `browser@hermes-device` (signed by addons.mozilla.org), the assertion header `X-Hermes-Device-Assertion` and type `hermes-device-assertion`, the `hermes-device:<id>` session list audience, the `hermes_device_*` error reasons and `hermes-device-*` request ids ([docs/protocol.md](docs/protocol.md)), the screenshot folder `cache/screenshots/hermes-device` that the hub shows, and the plugin's Python module names.
 
 Releases before 0.19.3 accept only release attestations signed in a repository named `hermes-device`, so they cannot install releases built after the repository rename by themselves: install 0.19.3 or later by hand once (verify the archive with `gh attestation verify <archive> --repo USA-RedDragon/talaria` and its checksum first). From 0.19.3 on, `update` and auto-update accept both names for the same repository ID.
 
@@ -256,7 +263,9 @@ The first `talaria` command on a computer that has the old names moves them, and
 
 A file that is already at the new place wins; the old one is left where it is and the log says so. `run --check-config`, `acp-host` and `plugin install` move nothing, and neither does a `talaria` that is not the installed binary (one you downloaded and run from elsewhere), except `setup`. While the old service runs, other commands (`chat` or an editor's `acp`, for example) move the files but leave the service alone, so that work the old daemon runs is not stopped; the service moves when the daemon restarts, for example after its automatic update. The auto-update of 0.17.0 and 0.18.0 installs 0.19.0 by itself (the release still has `hermes-device_*` archives for it), and the new daemon then migrates the computer.
 
-`TALARIA_*` environment variables win; an unset one falls back to the `HERMES_DEVICE_*` one, with a deprecation warning. A later release stops reading the old variables, stops publishing the `hermes-device_*` archives and no longer keeps the old host manifest.
+`TALARIA_*` environment variables win; an unset one falls back to the `HERMES_DEVICE_*` one, with a deprecation warning.
+
+Releases still publish, for the auto-update of older installs, the `hermes-device_<version>_<os>_<arch>.tar.gz` archives (with a `hermes-device` binary; 0.18.0 and older look only for these) and a copy of the checksum file as `hermes-device_<version>_checksums.txt` (0.25.2 and older read only that one). 0.25.3 and later read the `talaria_*` files. A later release, announced at least one release ahead, stops reading the old variables, stops publishing the `hermes-device_*` files and no longer keeps the old host manifest; installs older than 0.25.3 then need one `talaria update` from a newer binary, or a new install.
 
 ### Server setup
 
@@ -281,7 +290,7 @@ A file that is already at the new place wins; the old one is left where it is an
            device_write_roots: [/home/alice/src]
    ```
 
-   Put the hub's Ed25519 public key in `HERMES_DEVICE_HUB_PUBLIC_KEY` (or set `hub_public_key_file`). Add the device roots that file tools may write to `HERMES_WRITE_SAFE_ROOT`. The plugin drops any of them that overlap a pod-writable path.
+   Put the hub's Ed25519 public key in `TALARIA_HUB_PUBLIC_KEY` (or set `hub_public_key_file`). Add the device roots that file tools may write to `HERMES_WRITE_SAFE_ROOT`. The plugin drops any of them that overlap a pod-writable path.
 
 3. Run `talaria acp-host` in its own container of the Hermes pod, with the same `HERMES_HOME`, on a port that only the hub can reach.
 
@@ -307,7 +316,7 @@ plugins:
 
 Each session lineage gets its own directory, `<fallback_root>/<root session id>`, created on first use. Keep `terminal.cwd` an empty directory: Hermes still reads project context files such as `AGENTS.md` from it when it builds the prompt. File tools, edit approval and `@file` references read and write there. When the sandbox is offline, the command fails with a message; it never runs in the gateway container. `/device <device> <dir>` still moves a session to a PC. Add `fallback_root` to `HERMES_WRITE_SAFE_ROOT` if you set that variable.
 
-The release builds the image `ghcr.io/usa-reddragon/hermes-device-sandbox` (Alpine, `linux/amd64`, `linux/arm64`, `linux/arm/v7`). It holds bash, coreutils, git, openssh-client, curl, ca-certificates, python3 with pip and venv, nodejs and npm, build-base, jq, ripgrep, fd, tar, gzip, zstd, unzip and less. It runs as uid and gid 568 with home `/work`, starts `talaria run` under tini, and works with a read-only root filesystem: `HOME`, `TMPDIR`, caches, `pip install` (user site) and `npm install -g` all go to the `/work` volume, and `/work/.local/bin` is on `PATH`, also in login shells. The image sets `TALARIA_DEVICE_ROOTS=/work`, `TALARIA_GATEWAY_SPLICE=false`, `TALARIA_STORE_KEYRING=false` and `TALARIA_UPDATE_AUTO=false`. The deployment sets:
+The release builds the image `ghcr.io/usa-reddragon/talaria-sandbox` (Alpine, `linux/amd64`, `linux/arm64`, `linux/arm/v7`). It holds bash, coreutils, git, openssh-client, curl, ca-certificates, python3 with pip and venv, nodejs and npm, build-base, jq, ripgrep, fd, tar, gzip, zstd, unzip and less. It runs as uid and gid 568 with home `/work`, starts `talaria run` under tini, and works with a read-only root filesystem: `HOME`, `TMPDIR`, caches, `pip install` (user site) and `npm install -g` all go to the `/work` volume, and `/work/.local/bin` is on `PATH`, also in login shells. The image sets `TALARIA_DEVICE_ROOTS=/work`, `TALARIA_GATEWAY_SPLICE=false`, `TALARIA_STORE_KEYRING=false` and `TALARIA_UPDATE_AUTO=false`. The deployment sets:
 
 | Setting | Value |
 |---|---|

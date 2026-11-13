@@ -85,6 +85,8 @@ The hub proves to the backend that one upgrade request comes from one paired dev
 
 Header name: `X-Hermes-Device-Assertion` (<!-- docgen:const pkg=assertion name=Header -->`X-Hermes-Device-Assertion`<!-- /docgen:const -->).
 
+The header, the `typ` below, the `hermes-device:<id>` session list audience (section 8.12), the `hermes_device_*` error reasons (section 5.6) and the `hermes-device-*` request ids keep the names from before the rename to talaria: deployed hubs, plugins and devices of every release match them, so a rename would break mixed versions.
+
 ```text
 value     = "v1." payload "." signature
 payload   = base64url(no padding) of the UTF-8 JSON claims object
@@ -134,7 +136,7 @@ Verifiers read one or more keys, in either form, mixed:
 
 Blank lines and lines starting with `#` are ignored. Several keys allow rotation: the hub signs with the new key once every pod has both.
 
-- Plugin: setting `hub_public_key_file` (a path), else the env var named by `hub_public_key_env` (default `HERMES_DEVICE_HUB_PUBLIC_KEY`).
+- Plugin: setting `hub_public_key_file` (a path), else the env var named by `hub_public_key_env` (default `TALARIA_HUB_PUBLIC_KEY`; when that is unset, the older `HERMES_DEVICE_HUB_PUBLIC_KEY` with a deprecation warning).
 - acp-host: `acp-host.hub-public-key-file`, else `acp-host.hub-public-key`.
 
 ## 4. Exec leg
@@ -743,7 +745,7 @@ The plugin is a Hermes user plugin named `device`, installed into `$HERMES_HOME/
 | Key | Default | Meaning |
 |---|---|---|
 | `backend_id` | none (required) | This backend's id, the assertion `aud` |
-| `hub_public_key_env` | `HERMES_DEVICE_HUB_PUBLIC_KEY` | Env var holding the hub public keys (section 3.4) |
+| `hub_public_key_env` | `TALARIA_HUB_PUBLIC_KEY` (falls back to `HERMES_DEVICE_HUB_PUBLIC_KEY`) | Env var holding the hub public keys (section 3.4) |
 | `hub_public_key_file` | none | File holding the hub public keys; wins over the env var |
 | `placeholder` | none (required) | Server directory used as the cwd of device sessions. Must exist. Must match acp-host's `acp-host.placeholder` |
 | `device_write_roots` | `[]` | Device directories the operator added to `HERMES_WRITE_SAFE_ROOT` so file tools can write to devices (section 8.7) |

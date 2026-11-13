@@ -25,7 +25,7 @@ HERMES_AGENT_SRC=<dir> HERMES_AGENT_VERSION=v0.23.1 go test -count=1 -v -run 'Ag
 
 ## Rollout order
 
-1. If the hub or the plugin changed, release them and roll them out first: talaria-hub in `apps/hermes-hub`, and the talaria image (still `ghcr.io/usa-reddragon/hermes-device`) used by the `device-plugin` init container and the sandboxes. A version that still works with the old Hermes can go out ahead of it. A version that needs the new Hermes goes in the same Flux commit as the Hermes upgrade.
+1. If the hub or the plugin changed, release them and roll them out first: talaria-hub in `apps/hermes-hub`, and the talaria image (`ghcr.io/usa-reddragon/talaria`; `hermes-device` up to v0.25.3) used by the `device-plugin` init container and the sandboxes. A version that still works with the old Hermes can go out ahead of it. A version that needs the new Hermes goes in the same Flux commit as the Hermes upgrade.
 2. Merge the Hermes PR in home-cluster-flux. Watch both Hermes pods restart and become ready, and check that the hub can still open a chat in each.
 3. Update Hermes on each computer that runs `talaria chat`. It refuses a local Hermes that differs from the server's unless given `--allow-version-mismatch`.
 4. Merge the compatibility PRs in talaria-hub and talaria, so `HERMES_VERSION` records the release now in use.
