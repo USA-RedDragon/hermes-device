@@ -1,0 +1,11 @@
+# Upstream tests of save_config, the managed scope and the approval save path
+tests/hermes_cli/test_config.py
+tests/hermes_cli/test_config_rmw_lock.py
+tests/hermes_cli/test_managed_scope_config.py
+tests/hermes_cli/test_managed_scope_writeguard.py
+tests/hermes_cli/test_managed_scope_regression.py
+tests/hermes_cli/test_dashboard_managed_read_only.py
+tests/tui_gateway/test_config_set_managed_keys.py
+tests/tools/test_request_tool_approval.py
+tests/hermes_cli/test_approvals_suggest.py
+tests/gateway/test_managed_worker_frozen_config.py

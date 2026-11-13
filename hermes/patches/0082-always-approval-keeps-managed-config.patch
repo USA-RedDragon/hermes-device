@@ -1,0 +1,446 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 20:11:36 +0000
+Subject: [PATCH] fix(config): an always approval keeps the managed settings in
+ config.yaml
+
+save_permanent_allowlist loaded the merged config and wrote it back through save_config, which strips every leaf the managed layer pins. A deployment whose init renders the managed values into config.yaml (the user layer merged with HERMES_MANAGED_DIR) lost all of them on the first always answer. The save is now a single-key write of command_allowlist, read and written under a new cross-process lock (config.yaml.lock), so two processes answering always at once both land. save_config takes the same lock and keeps each managed leaf as it is on disk instead of deleting it; the caller's value of a managed leaf is still never written.
+---
+ hermes_cli/config.py                          |  96 +++++++++-
+ ...st_always_approval_keeps_managed_config.py | 169 ++++++++++++++++++
+ .../test_permanent_allowlist_reconcile.py     |  36 ++--
+ tools/approval.py                             |  40 +++--
+ 4 files changed, 305 insertions(+), 36 deletions(-)
+ create mode 100644 tests/tools/test_always_approval_keeps_managed_config.py
+
+diff --git a/hermes_cli/config.py b/hermes_cli/config.py
+index 494966f37a..91bb054102 100644
+--- a/hermes_cli/config.py
++++ b/hermes_cli/config.py
+@@ -2337,20 +2337,91 @@ _FALLBACK_COMMENT = """
+ """
+ 
+ 
+-def _strip_managed_keys_for_save(config: dict[str, Any]) -> dict[str, Any]:
+-    """Drop every leaf the managed layer pins (bulk safety net; single-key ``config set``
+-    hard-rejects) and tell the user what was not saved."""
++_MISSING = object()
++
++
++def _raw_leaf(raw: Any, dotted: str) -> Any:
++    """The value at a dotted managed leaf of the raw file, or ``_MISSING``."""
++    node = raw
++    for part in dotted.split("."):
++        if not isinstance(node, dict) or part not in node:
++            return _MISSING
++        node = node[part]
++    return node
++
++
++def _strip_managed_keys_for_save(config: dict[str, Any], on_disk: Optional[dict[str, Any]] = None) -> dict[str, Any]:
++    """Keep every leaf the managed layer pins as it is on disk (bulk safety net; single-key
++    ``config set`` hard-rejects) and tell the user what was not saved.
++
++    The caller's value of a managed leaf is the managed one (``load_config`` overlays it), so it
++    is never written. The file's own value stays: a deployment that renders the managed values
++    into config.yaml (an init merge) must not lose them to the first unrelated save."""
+     managed_keys = managed_scope.managed_config_keys()
+     if not managed_keys:
+         return config
+     config, _stripped = _strip_dotted_keys(copy.deepcopy(config), managed_keys)
+-    if _stripped:
++    not_saved = set(_stripped)
++    for dotted in managed_keys:
++        value = _raw_leaf(on_disk or {}, dotted)
++        if value is _MISSING:
++            continue
++        *parents, leaf = dotted.split(".")
++        node = config
++        for part in parents:
++            child = node.get(part)
++            if not isinstance(child, dict):
++                child = node[part] = {}
++            node = child
++        node[leaf] = copy.deepcopy(value)
++        not_saved.discard(dotted)
++    if not_saved:
+         print(
+-            f"Note: {len(_stripped)} managed setting(s) were not saved "
+-            f"(managed by your administrator): {', '.join(sorted(_stripped))}", file=sys.stderr)
++            f"Note: {len(not_saved)} managed setting(s) were not saved "
++            f"(managed by your administrator): {', '.join(sorted(not_saved))}", file=sys.stderr)
+     return config
+ 
+ 
++_CONFIG_WRITE_LOCK_HOLDERS: dict[str, Any] = {}
++_CONFIG_WRITE_LOCK_HOLDERS_GUARD = threading.Lock()
++
++
++@contextmanager
++def config_write_lock(config_path: Optional[Path] = None):
++    """Serialize a read-modify-write of config.yaml across threads and processes.
++
++    ``_CONFIG_LOCK`` is per process; the gateway, the ACP host, cron and session workers share one
++    config.yaml, and two unlocked read-then-replace cycles keep only the last writer's change.
++    Reentrant per thread (``hermes_cli.auth._file_lock``), taken after ``_CONFIG_LOCK``."""
++    from hermes_cli.auth import _file_lock
++
++    path = Path(config_path) if config_path is not None else get_config_path()
++    with _CONFIG_WRITE_LOCK_HOLDERS_GUARD:
++        holder = _CONFIG_WRITE_LOCK_HOLDERS.setdefault(str(path), threading.local())
++    with _CONFIG_LOCK, _file_lock(
++        path.with_name(path.name + ".lock"), holder, 15.0,
++        f"Timed out waiting for the config file lock ({path})",
++    ):
++        yield
++
++
++def write_user_config_key(config_path: Path, key_path: str, value: Any) -> bool:
++    """Set ONE key of the user config file and leave every other byte of it alone.
++
++    For state a caller owns end to end (``command_allowlist``): read the current value with
++    ``require_readable_config_before_write`` under ``config_write_lock``, compute, then call this.
++    Unlike ``save_config`` it never rewrites the document from a merged load, so managed and
++    default-valued settings in the file stay. False (nothing written) on a package-managed install."""
++    if is_managed():
++        managed_error("save configuration")
++        return False
++    from hermes_cli.config_backend import write_config_key
++    with config_write_lock(config_path):
++        write_config_key(config_path, key_path, value)
++        _RAW_CONFIG_CACHE.pop(str(config_path), None)
++    return True
++
++
+ def _commented_sections_for_save(normalized: dict[str, Any]) -> Optional[str]:
+     """Commented-out example blocks for features that are off/unconfigured."""
+     parts = []
+@@ -2378,8 +2449,15 @@ def save_config(
+ 
+         config_path = get_config_path()
+         _refuse_failed_read(config_path, config)
+-        config = _strip_managed_keys_for_save(config)
++        _raw_for_paths, current_normalized = _save_config_locked(
++            config, config_path, strip_defaults, preserve_keys, merge_existing)
++    from hermes_cli.observability.shared_metrics_disabled import record_config_saved
++    record_config_saved(_raw_for_paths, current_normalized)
+ 
++
++def _save_config_locked(config, config_path, strip_defaults, preserve_keys, merge_existing):
++    """``save_config``'s read-merge-write, under the cross-process config lock."""
++    with config_write_lock(config_path):
+         ensure_hermes_home()
+         # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
+         # agent.max_turns) so _strip_default_values keeps exactly what the user set. The
+@@ -2388,6 +2466,7 @@ def save_config(
+         # strip pass drop every user section whose value matches a default (#113301).
+         from hermes_cli.config_backend import keeping_read_base
+         _raw_for_paths = keeping_read_base(lambda: require_readable_config_before_write(config_path))
++        config = _strip_managed_keys_for_save(config, _raw_for_paths)
+         from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
+         config = rebase_for_save(config, _raw_for_paths, merge_existing)
+ 
+@@ -2407,8 +2486,7 @@ def save_config(
+         _secure_file(config_path)
+         _RAW_CONFIG_CACHE.pop(str(config_path), None)
+         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+-    from hermes_cli.observability.shared_metrics_disabled import record_config_saved
+-    record_config_saved(_raw_for_paths, current_normalized)
++    return _raw_for_paths, current_normalized
+ 
+ 
+ def load_env() -> dict[str, str]:
+diff --git a/tests/tools/test_always_approval_keeps_managed_config.py b/tests/tools/test_always_approval_keeps_managed_config.py
+new file mode 100644
+index 0000000000..fba17f1244
+--- /dev/null
++++ b/tests/tools/test_always_approval_keeps_managed_config.py
+@@ -0,0 +1,169 @@
++"""Saving an ``always`` approval must not rewrite config.yaml without the managed settings.
++
++A deployment that renders config.yaml as the user layer merged with the managed overlay (the
++managed values are in the file too) lost all of them on the first ``always`` answer:
++``save_permanent_allowlist`` loaded the merged config and wrote it back through ``save_config``,
++which strips every leaf the managed layer pins, so a 13 KB file became a 2 KB skeleton. The save
++was also an unlocked read-modify-write, so two processes answering ``always`` at the same time
++kept only one of the two entries.
++"""
++
++import json
++import os
++import subprocess
++import sys
++import textwrap
++from pathlib import Path
++
++import pytest
++
++import hermes_yaml as yaml
++from hermes_cli import managed_scope
++from tools import approval
++
++MANAGED = textwrap.dedent("""\
++    model:
++      default: acme/pinned
++      provider: claude-pool
++    agent:
++      max_iterations: 400
++      clarify_timeout: 1800
++    dashboard:
++      managed_read_only: true
++    vision:
++      resize_mode: fit
++    """)
++
++# config.yaml as the managed merge renders it: user settings plus every managed value.
++RENDERED = textwrap.dedent("""\
++    # operator note
++    model:
++      default: acme/pinned
++      provider: claude-pool
++    agent:
++      max_iterations: 400
++      clarify_timeout: 1800
++    dashboard:
++      managed_read_only: true
++    vision:
++      resize_mode: fit
++    memory:
++      memory_char_limit: 9000
++    command_allowlist:
++    - git status
++    """)
++
++
++def _leaves(d, prefix=""):
++    out = {}
++    for k, v in d.items():
++        key = f"{prefix}.{k}" if prefix else str(k)
++        if isinstance(v, dict) and v:
++            out.update(_leaves(v, key))
++        else:
++            out[key] = v
++    return out
++
++
++@pytest.fixture
++def managed_home(tmp_path, monkeypatch):
++    home, managed = tmp_path / "home", tmp_path / "managed"
++    home.mkdir()
++    managed.mkdir()
++    (managed / "config.yaml").write_text(MANAGED)
++    (home / "config.yaml").write_text(RENDERED)
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
++    managed_scope.invalidate_managed_cache()
++    saved_approved = set(approval._permanent_approved)
++    saved_baseline = dict(approval._permanent_baseline_by_home)
++    approval._permanent_approved.clear()
++    approval._permanent_baseline_by_home.clear()
++    approval.load_permanent_allowlist()
++    try:
++        yield home
++    finally:
++        approval._permanent_approved.clear()
++        approval._permanent_approved.update(saved_approved)
++        approval._permanent_baseline_by_home.clear()
++        approval._permanent_baseline_by_home.update(saved_baseline)
++        managed_scope.invalidate_managed_cache()
++
++
++def _on_disk(home):
++    return yaml.safe_load((home / "config.yaml").read_text())
++
++
++def test_an_always_approval_keeps_every_managed_setting_in_the_file(managed_home):
++    approval.approve_permanent("plugin_rule:browser:visit:example.com")
++    approval.save_permanent_allowlist(approval._permanent_approved)
++
++    saved = _on_disk(managed_home)
++    leaves = _leaves(saved)
++    for key, value in _leaves(yaml.safe_load(MANAGED)).items():
++        assert leaves.get(key) == value, f"managed setting {key} was dropped by an always save"
++    assert saved["memory"] == {"memory_char_limit": 9000}
++    assert saved["command_allowlist"] == ["git status", "plugin_rule:browser:visit:example.com"]
++    assert "# operator note" in (managed_home / "config.yaml").read_text()
++
++
++def test_save_config_leaves_the_managed_values_on_disk(managed_home):
++    """Every other bulk save (model pick, plugin toggle) must not strip the rendered file either."""
++    from hermes_cli.config import load_config, save_config
++    config = load_config()
++    config["memory"]["memory_char_limit"] = 7000
++    config["agent"]["max_iterations"] = 5      # a managed leaf: not saved, and not deleted
++    save_config(config)
++
++    leaves = _leaves(_on_disk(managed_home))
++    for key, value in _leaves(yaml.safe_load(MANAGED)).items():
++        assert leaves.get(key) == value, f"managed setting {key} was dropped by save_config"
++    assert leaves["memory.memory_char_limit"] == 7000
++
++
++_WORKER = textwrap.dedent("""\
++    import json, os, sys, time
++    from pathlib import Path
++    rendezvous, me, other, entry = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
++    import hermes_cli.config as cfg
++    from tools import approval
++
++    def _meet(real):
++        def wrapper(*a, **k):
++            result = real(*a, **k)
++            if not (rendezvous / me).exists():   # only at the save's first config read
++                (rendezvous / me).touch()
++                deadline = time.monotonic() + 3
++                while not (rendezvous / other).exists() and time.monotonic() < deadline:
++                    time.sleep(0.02)
++            return result
++        return wrapper
++
++    approval.load_permanent_allowlist()
++    cfg.load_config = _meet(cfg.load_config)
++    cfg.require_readable_config_before_write = _meet(cfg.require_readable_config_before_write)
++    approval.approve_permanent(entry)
++    approval.save_permanent_allowlist(approval._permanent_approved)
++    print(json.dumps("ok"))
++    """)
++
++
++def test_two_processes_answering_always_at_once_both_land(managed_home, tmp_path):
++    """Both savers read before either writes (they wait for each other at their first config
++    read, up to 3 s); an unlocked read-modify-write then keeps only the last writer's entry."""
++    rendezvous = tmp_path / "rendezvous"
++    rendezvous.mkdir()
++    script = tmp_path / "worker.py"
++    script.write_text(_WORKER)
++    env = {**os.environ, "PYTHONPATH": str(Path(approval.__file__).resolve().parents[1])}
++    procs = [subprocess.Popen([sys.executable, str(script), str(rendezvous), me, other, entry],
++                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
++             for me, other, entry in (("a", "b", "docker *"), ("b", "a", "cargo *"))]
++    for p in procs:
++        out, err = p.communicate(timeout=60)
++        assert p.returncode == 0, err
++        assert json.loads(out.strip().splitlines()[-1]) == "ok"
++
++    saved = _on_disk(managed_home)
++    assert sorted(saved["command_allowlist"]) == ["cargo *", "docker *", "git status"]
++    assert saved["agent"]["max_iterations"] == 400
+diff --git a/tests/tools/test_permanent_allowlist_reconcile.py b/tests/tools/test_permanent_allowlist_reconcile.py
+index d2b4c30f44..42b6f7047b 100644
+--- a/tests/tools/test_permanent_allowlist_reconcile.py
++++ b/tests/tools/test_permanent_allowlist_reconcile.py
+@@ -21,19 +21,31 @@ import pytest
+ from tools import approval
+ 
+ 
+-@pytest.fixture
+-def fake_config(monkeypatch):
+-    """A dict standing in for config.yaml, plus a clean module baseline."""
+-    store = {"command_allowlist": []}
++class _ConfigFile:
++    """``store["command_allowlist"]`` reads and writes the real config.yaml of a scratch home."""
++
++    def __init__(self, path):
++        self.path = path
+ 
+-    def _load():
+-        return {"command_allowlist": list(store["command_allowlist"])}
++    def __getitem__(self, key):
++        import hermes_yaml as yaml
++        return (yaml.safe_load(self.path.read_text()) or {}).get(key, [])
+ 
+-    def _save(config):
+-        store["command_allowlist"] = list(config.get("command_allowlist", []))
++    def __setitem__(self, key, value):
++        import hermes_yaml as yaml
++        data = yaml.safe_load(self.path.read_text()) or {}
++        data[key] = list(value)
++        self.path.write_text(yaml.safe_dump(data))
+ 
+-    monkeypatch.setattr("hermes_cli.config.load_config", _load, raising=False)
+-    monkeypatch.setattr("hermes_cli.config.save_config", _save, raising=False)
++
++@pytest.fixture
++def fake_config(monkeypatch, tmp_path):
++    """A scratch home whose config.yaml holds the allowlist, plus a clean module baseline."""
++    home = tmp_path / "home"
++    home.mkdir()
++    (home / "config.yaml").write_text("command_allowlist: []\n")
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    store = _ConfigFile(home / "config.yaml")
+ 
+     saved_approved = set(approval._permanent_approved)
+     saved_baseline = dict(approval._permanent_baseline_by_home)
+@@ -112,10 +124,10 @@ def test_save_failure_is_logged_not_raised(fake_config, monkeypatch, caplog):
+     """The existing contract: a config write failure must not break approval."""
+     _start_process_with(fake_config, ["ls *"])
+ 
+-    def _boom():
++    def _boom(*_args, **_kwargs):
+         raise OSError("disk full")
+ 
+-    monkeypatch.setattr("hermes_cli.config.load_config", _boom, raising=False)
++    monkeypatch.setattr("hermes_cli.config.require_readable_config_before_write", _boom, raising=False)
+     approval.approve_permanent("docker *")
+     with caplog.at_level(logging.WARNING, logger=approval.logger.name):
+         approval.save_permanent_allowlist(approval._permanent_approved)   # must not raise
+diff --git a/tools/approval.py b/tools/approval.py
+index 4557e11086..47176ebf42 100644
+--- a/tools/approval.py
++++ b/tools/approval.py
+@@ -519,8 +519,11 @@ def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
+ def _read_permanent_allowlist() -> set:
+     """``command_allowlist`` of the active profile's config as a set (empty on malformed input)."""
+     from hermes_cli.config import load_config_readonly
+-    config = load_config_readonly()
+-    raw = config.get("command_allowlist")
++    return _allowlist_entries(load_config_readonly().get("command_allowlist"))
++
++
++def _allowlist_entries(raw) -> set:
++    """A ``command_allowlist`` value as a set (empty on malformed input)."""
+     legacy = isinstance(raw, str)
+     if legacy:
+         # Old config-set versions serialized list values as scalar strings.
+@@ -582,21 +585,28 @@ def save_permanent_allowlist(patterns: set):
+     ``patterns`` may only ADD: an entry left out of it is not removed, because the
+     on-disk list wins for anything this process did not approve itself. Remove
+     entries by editing ``command_allowlist`` in config.yaml.
++
++    Only ``command_allowlist`` is written, read and written under the cross-process config lock:
++    rewriting the whole merged config here dropped every managed setting from a config.yaml
++    that holds them, and an unlocked read-modify-write lost a concurrent process's entry.
+     """
+     try:
+-        from hermes_cli.config import load_config, save_config
+-        config = load_config()
+-        on_disk = set(config.get("command_allowlist", []) or [])
+-        with _lock:
+-            key = _baseline_key()
+-            baseline = _permanent_baseline_by_home.get(key, set())
+-            merged = on_disk | (set(patterns) - baseline)
+-            config["command_allowlist"] = sorted(merged)
+-            save_config(config)
+-            _permanent_baseline_by_home[key] = set(merged)
+-            governing = _permanent_set()
+-            governing.clear()
+-            governing.update(merged)
++        from hermes_cli import config as config_mod
++        config_path = config_mod.get_config_path()
++        with config_mod.config_write_lock(config_path):
++            raw = config_mod.require_readable_config_before_write(config_path).get("command_allowlist")
++            on_disk = _allowlist_entries(raw)
++            with _lock:
++                key = _baseline_key()
++                baseline = _permanent_baseline_by_home.get(key, set())
++                merged = on_disk | (set(patterns) - baseline)
++                if raw != sorted(merged) and not config_mod.write_user_config_key(
++                        config_path, "command_allowlist", sorted(merged)):
++                    return
++                _permanent_baseline_by_home[key] = set(merged)
++                governing = _permanent_set()
++                governing.clear()
++                governing.update(merged)
+     except Exception as e:
+         logger.warning("Could not save allowlist: %s", e)
+ 
