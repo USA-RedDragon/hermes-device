@@ -44,8 +44,8 @@ func TestOpenStateSurvivesASnapshot(t *testing.T) {
 			result("c4", "sea"),
 			{kRole: roleAssistant, kText: "It says bee."},
 		}})
-	poke := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		e.gw.RetireSubscriptions("s9")
+	poke := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		e.gw.RetireSubscriptions(r.Context(), "s9")
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(poke.Close)

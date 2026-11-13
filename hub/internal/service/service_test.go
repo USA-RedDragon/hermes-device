@@ -595,7 +595,7 @@ func TestReplayGapTakesNewSnapshot(t *testing.T) {
 	}
 	defer stop()
 	next(t, ch)
-	e.gw.RetireSubscriptions(sLive)
+	e.gw.RetireSubscriptions(t.Context(), sLive)
 	if k := next(t, ch).Kind; k != hub.KindSnapshot {
 		t.Fatalf("after gap = %s", k)
 	}

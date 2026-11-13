@@ -633,12 +633,12 @@ func (g *Gateway) Publish(sessionID, typ string, payload any) {
 
 // RetireSubscriptions drops every subscription to a session and sends
 // session.replay_gap, as the gateway does when a viewer's backlog overflows.
-func (g *Gateway) RetireSubscriptions(sessionID string) {
+func (g *Gateway) RetireSubscriptions(ctx context.Context, sessionID string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	s := g.sessions[sessionID]
 	for c := range s.subs {
-		c.send(context.Background(), map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: map[string]any{
+		c.send(ctx, map[string]any{kJSONRPC: jsonRPCVersion, kMethod: kEvent, kParams: map[string]any{
 			"type": gateway.ReplayGapEvent, kSessionID: s.ID,
 			kPayload: map[string]any{kReplayEpoch: s.epoch, "latest_seq": s.seq}}})
 	}
