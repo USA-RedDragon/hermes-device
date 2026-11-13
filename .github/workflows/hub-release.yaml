@@ -1,0 +1,121 @@
+name: Hub release
+
+# A tag hub/vX.Y.Z releases the hub in hub/: goreleaser builds the binaries
+# and pushes ghcr.io/usa-reddragon/talaria-hub and hermes-hub with the tags
+# vX.Y.Z, vX, vX.Y and latest, then this workflow makes the GitHub release
+# hub/vX.Y.Z (never marked latest: the latest release is the talaria daemon's,
+# which auto-update reads).
+#
+# goreleaser OSS has no tag prefix setting (monorepo support is a Pro
+# feature), so the workflow strips hub/ and passes the version in
+# GORELEASER_CURRENT_TAG with release and changelog turned off in
+# hub/.goreleaser.yml. No bare vX.Y.Z tag is ever created: that is a daemon
+# release tag.
+#
+# Run it by hand on a branch to build everything, images included, without
+# pushing (a snapshot), to check a change to the release.
+
+on:
+  push:
+    tags:
+      - "hub/v*"
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }} @ ${{ github.ref }}"
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      packages: write
+    env:
+      REF: ${{ github.ref_name }}
+      PUBLISH: ${{ startsWith(github.ref, 'refs/tags/hub/v') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Version
+        run: |
+          if [ "$PUBLISH" = true ]; then
+            tag=${REF#hub/}
+            prev=$(git tag -l 'hub/v*' --sort=-version:refname | grep -vx "$REF" | head -n1)
+          else
+            tag=v0.0.0-snapshot
+            prev=$(git tag -l 'hub/v*' --sort=-version:refname | head -n1)
+          fi
+          {
+            echo "GORELEASER_CURRENT_TAG=$tag"
+            echo "GORELEASER_PREVIOUS_TAG=${prev#hub/}"
+            echo "PREV_REF=$prev"
+          } >> "$GITHUB_ENV"
+          echo "Hub $tag (previous ${prev:-none})" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: env.PUBLISH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: hub/go.mod
+          cache-dependency-path: hub/go.sum
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Generate
+        working-directory: hub
+        run: go generate ./...
+
+      - name: Release
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: "~> v2"
+          workdir: hub
+          args: release --clean --skip=validate ${{ env.PUBLISH != 'true' && '--snapshot' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Images
+        run: |
+          {
+            echo '```'
+            docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep -E 'usa-reddragon/(talaria-hub|hermes-hub)' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: GitHub release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          {
+            echo "Hub $GORELEASER_CURRENT_TAG."
+            echo
+            echo "Images: \`ghcr.io/usa-reddragon/talaria-hub:$GORELEASER_CURRENT_TAG\` and \`ghcr.io/usa-reddragon/hermes-hub:$GORELEASER_CURRENT_TAG\`"
+          } > "$RUNNER_TEMP/notes.md"
+          files=(hub/dist/*.tar.gz hub/dist/*checksums.txt hub/LICENSE)
+          args=(--verify-tag --latest=false --title "Hub $GORELEASER_CURRENT_TAG" --notes-file "$RUNNER_TEMP/notes.md")
+          if [ -n "$PREV_REF" ]; then
+            args+=(--generate-notes --notes-start-tag "$PREV_REF")
+          fi
+          if gh release view "$REF" > /dev/null 2>&1; then
+            gh release upload "$REF" "${files[@]}" --clobber
+          else
+            gh release create "$REF" "${args[@]}" "${files[@]}"
+          fi

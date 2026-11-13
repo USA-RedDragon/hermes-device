@@ -3,12 +3,16 @@ version: 2
 
 project_name: talaria-hub
 
+# The hub is released from the talaria monorepo with tags hub/vX.Y.Z. The
+# release workflow (.github/workflows/hub-release.yaml) passes vX.Y.Z as
+# GORELEASER_CURRENT_TAG and makes the GitHub release on hub/vX.Y.Z itself,
+# so goreleaser never creates a bare vX.Y.Z tag: that would be a daemon
+# release in this repository.
 release:
-  extra_files:
-    - glob: ./LICENSE
-  github:
-    owner: USA-RedDragon
-    name: "{{ .ProjectName }}"
+  disable: true
+
+changelog:
+  disable: true
 
 dockers_v2:
   - images:
@@ -29,8 +33,8 @@ dockers_v2:
       "org.opencontainers.image.revision": "{{.FullCommit}}"
       "org.opencontainers.image.version": "{{.Version}}"
       "org.opencontainers.image.licenses": MIT
-      "org.opencontainers.image.url": "https://github.com/USA-RedDragon/{{ .ProjectName }}"
-      "org.opencontainers.image.source": "https://github.com/USA-RedDragon/{{ .ProjectName }}"
+      "org.opencontainers.image.url": "https://github.com/USA-RedDragon/talaria"
+      "org.opencontainers.image.source": "https://github.com/USA-RedDragon/talaria"
     flags:
       - "--pull"
 
