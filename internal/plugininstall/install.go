@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -109,7 +110,12 @@ func writeFileSync(path string, data []byte, mode os.FileMode) error {
 	return f.Close()
 }
 
+// syncDir makes the entries of dir durable. Windows cannot open a directory
+// for a flush, and NTFS logs its metadata, so there it does nothing.
 func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	f, err := os.Open(dir)
 	if err != nil {
 		return err
