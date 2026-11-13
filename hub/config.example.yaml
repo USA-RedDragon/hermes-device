@@ -40,8 +40,8 @@ session:
 ui:
   # Default backend per user, as user=backend pairs. A user without one gets their first backend
   # default_backends: []
-  # IANA time zone of the times on the Scheduled page
-  time_zone: "America/Chicago"
+  # IANA time zone of the times on the Scheduled page, such as Europe/Berlin. Default: the server's zone (the TZ environment variable, else /etc/localtime), else UTC
+  # time_zone: ""
 store:
   # Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices
   driver: "sqlite"
@@ -150,5 +150,5 @@ notify:
 claude:
   # Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody
   # admins: []
-  # IANA time zone of the reset times of Claude usage windows
-  time_zone: "America/Chicago"
+  # IANA time zone of the reset times of Claude usage windows and of the days of Claude Code usage. Default: ui.time_zone
+  # time_zone: ""

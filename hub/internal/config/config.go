@@ -90,13 +90,17 @@ type User struct {
 // UI configures the web UI. Every user gets the same UI.
 type UI struct {
 	DefaultBackends []string `name:"default_backends" description:"Default backend per user, as user=backend pairs. A user without one gets their first backend"`
-	TimeZone        string   `name:"time_zone" default:"America/Chicago" description:"IANA time zone of the times on the Scheduled page"`
+	TimeZone        string   `name:"time_zone" description:"IANA time zone of the times on the Scheduled page, such as Europe/Berlin. Default: the server's zone (the TZ environment variable, else /etc/localtime), else UTC"`
 }
 
 // Location is TimeZone's location; UTC for an unknown zone.
 func (u UI) Location() *time.Location {
-	loc, err := time.LoadLocation(u.TimeZone)
-	if err != nil || u.TimeZone == "" {
+	return location(u.TimeZone)
+}
+
+func location(name string) *time.Location {
+	loc, err := time.LoadLocation(name)
+	if err != nil || name == "" {
 		return time.UTC
 	}
 	return loc
@@ -152,7 +156,7 @@ type Honcho struct {
 // claude-accounts Hermes plugin runs.
 type Claude struct {
 	Admins   []string `name:"admins" description:"Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody"`
-	TimeZone string   `name:"time_zone" default:"America/Chicago" description:"IANA time zone of the reset times of Claude usage windows"`
+	TimeZone string   `name:"time_zone" description:"IANA time zone of the reset times of Claude usage windows and of the days of Claude Code usage. Default: ui.time_zone"`
 }
 
 // AdminMap parses Admins: the Claude admins of each backend.
@@ -171,11 +175,7 @@ func (c Claude) AdminMap() (map[string][]string, error) {
 
 // Location is TimeZone's location; UTC for an unknown zone.
 func (c Claude) Location() *time.Location {
-	loc, err := time.LoadLocation(c.TimeZone)
-	if err != nil || c.TimeZone == "" {
-		return time.UTC
-	}
-	return loc
+	return location(c.TimeZone)
 }
 
 func (c *Config) validateClaude(names map[string]bool) error {
@@ -198,16 +198,13 @@ func (c *Config) validateClaude(names map[string]bool) error {
 		}
 	}
 	if c.Claude.TimeZone == "" {
-		c.Claude.TimeZone = defaultClaudeTimeZone
+		c.Claude.TimeZone = c.UI.TimeZone
 	}
 	if _, err := time.LoadLocation(c.Claude.TimeZone); err != nil {
 		return fmt.Errorf("%w: %q", ErrClaudeTimeZone, c.Claude.TimeZone)
 	}
 	return nil
 }
-
-// defaultClaudeTimeZone is claude.time_zone's default, also for "".
-const defaultClaudeTimeZone = "America/Chicago"
 
 // Device configures hermes-device: computers that users pair with one of
 // their backends, so Hermes runs commands and editors on them.
@@ -318,7 +315,7 @@ func (c *Config) validateUsers() error {
 		}
 	}
 	if c.UI.TimeZone == "" {
-		c.UI.TimeZone = defaultClaudeTimeZone
+		c.UI.TimeZone = ServerTimeZone()
 	}
 	if _, err := time.LoadLocation(c.UI.TimeZone); err != nil {
 		return fmt.Errorf("%w: %q", ErrUITimeZone, c.UI.TimeZone)

@@ -210,8 +210,6 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("oidc.groups_claim", configulator.LayerDefault, "default tag")
 	cfg.Session.TTL = time.Duration(int64(604800000000000))
 	set("session.ttl", configulator.LayerDefault, "default tag")
-	cfg.UI.TimeZone = "America/Chicago"
-	set("ui.time_zone", configulator.LayerDefault, "default tag")
 	cfg.Store.Driver = "sqlite"
 	set("store.driver", configulator.LayerDefault, "default tag")
 	cfg.Store.Path = "/data/hermes-hub.db"
@@ -254,8 +252,6 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("notify.watch_interval", configulator.LayerDefault, "default tag")
 	cfg.Notify.JobInterval = time.Duration(int64(60000000000))
 	set("notify.job_interval", configulator.LayerDefault, "default tag")
-	cfg.Claude.TimeZone = "America/Chicago"
-	set("claude.time_zone", configulator.LayerDefault, "default tag")
 	return nil
 }
 
@@ -1279,7 +1275,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[15], "", "Key for the session and login cookies. At least 32 characters")
 	fs.Duration(names[16], time.Duration(int64(604800000000000)), "How long a login lasts")
 	fs.StringSlice(names[17], nil, "Default backend per user, as user=backend pairs. A user without one gets their first backend")
-	fs.String(names[18], "America/Chicago", "IANA time zone of the times on the Scheduled page")
+	fs.String(names[18], "", "IANA time zone of the times on the Scheduled page, such as Europe/Berlin. Default: the server's zone (the TZ environment variable, else /etc/localtime), else UTC")
 	fs.String(names[19], "sqlite", "Database: sqlite (a file, for one replica only) or postgres (for one or more replicas). It holds Telegram links, link tokens, users' last seen groups, the Telegram bot's state and paired devices")
 	fs.String(names[20], "/data/hermes-hub.db", "Path of the SQLite database (store.driver sqlite)")
 	fs.String(names[21], "", "PostgreSQL connection string (store.driver postgres), such as postgres://hub:password@db.example.com:5432/hub. Connect to the database directly, not through a PgBouncer pool in transaction mode: the Telegram leader lock needs its own session")
@@ -1314,7 +1310,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.Duration(names[50], time.Duration(int64(15000000000)), "How often the hub looks for running chats that nobody has open, to see their approvals and questions. 0 is the default")
 	fs.Duration(names[51], time.Duration(int64(60000000000)), "How often the hub reads each backend's scheduled jobs for their results and failures. 0 is the default")
 	fs.StringSlice(names[52], nil, "Who may sign the Claude accounts of a backend in from the hub, as user=backend pairs. They see the sign-in controls and get the sign-in notices; the backend's other users see only usage. Empty: nobody")
-	fs.String(names[53], "America/Chicago", "IANA time zone of the reset times of Claude usage windows")
+	fs.String(names[53], "", "IANA time zone of the reset times of Claude usage windows and of the days of Claude Code usage. Default: ui.time_zone")
 	return nil
 }
 

@@ -85,7 +85,7 @@ type Options struct {
 	Backends []Backend
 	Fetch    Fetcher
 	Prices   *Prices
-	// Location is the time zone of days. Default America/Chicago.
+	// Location is the time zone of days. Default UTC.
 	Location *time.Location
 	Logger   *slog.Logger
 	Now      func() time.Time
@@ -119,11 +119,7 @@ func New(o Options) (*Service, error) {
 		o.Prices = p
 	}
 	if o.Location == nil {
-		loc, err := time.LoadLocation("America/Chicago")
-		if err != nil {
-			return nil, err
-		}
-		o.Location = loc
+		o.Location = time.UTC
 	}
 	return &Service{o: o, log: o.Logger.With("component", "claude-code"), polled: map[string]time.Time{},
 		polling: map[string]chan struct{}{}}, nil

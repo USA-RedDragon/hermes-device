@@ -385,10 +385,15 @@ func TestClaudeSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Claude.Admins) != 0 || cfg.Claude.TimeZone != "America/Chicago" || cfg.Claude.Location().String() != "America/Chicago" {
-		t.Fatalf("defaults = %+v", cfg.Claude)
+	if len(cfg.Claude.Admins) != 0 || cfg.UI.TimeZone != config.ServerTimeZone() || cfg.Claude.TimeZone != cfg.UI.TimeZone {
+		t.Fatalf("defaults = %+v %+v", cfg.Claude, cfg.UI)
 	}
 	env := secrets()
+	env["HUB_UI_TIME_ZONE"] = "Asia/Tokyo"
+	if cfg, err = load(t, env, file); err != nil || cfg.Claude.Location().String() != "Asia/Tokyo" {
+		t.Fatalf("claude zone follows ui: %v %+v", err, cfg)
+	}
+	env = secrets()
 	env["HUB_CLAUDE_ADMINS"] = "alice=desktop, bob=cluster,alice=cluster"
 	env["HUB_CLAUDE_TIME_ZONE"] = "Europe/Berlin"
 	cfg, err = load(t, env, file)
