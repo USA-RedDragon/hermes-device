@@ -106,7 +106,8 @@ func takeBinding(result json.RawMessage) (json.RawMessage, string) {
 
 // sameDir reports whether the binding dir bound is the editor's cwd. The
 // plugin stores the real path, so cwd counts also after its symlinks are
-// resolved.
+// resolved; so does bound, for a path stored with a symlink in it (on
+// macOS, /var and /tmp are links into /private).
 func sameDir(bound, cwd string) bool {
 	if bound == "" {
 		return false
@@ -115,7 +116,14 @@ func sameDir(bound, cwd string) bool {
 		return true
 	}
 	resolved, err := filepath.EvalSymlinks(cwd)
-	return err == nil && resolved == bound
+	if err != nil {
+		return false
+	}
+	if resolved == bound {
+		return true
+	}
+	target, err := filepath.EvalSymlinks(bound)
+	return err == nil && target == resolved
 }
 
 // sessionPlace returns the place of an open session.
