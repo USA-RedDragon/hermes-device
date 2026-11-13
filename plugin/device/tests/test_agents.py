@@ -183,6 +183,26 @@ class TreeTest(unittest.TestCase):
         self.assertEqual(c["parent_subagent_id"], "sa-0-a")
         self.assertEqual(sorted(s["subagent_id"] for s in c["tree"]), ["sa-0-a", "sa-0-c", "sa-1-b"])
 
+    def test_caller_of_names_a_cron_job(self):
+        browser = types.SimpleNamespace(cron_job_id=lambda sid: "faab67fa8abd" if sid in ("s1", "c3") else "")
+        jobs = types.ModuleType("cron.jobs")
+        jobs.get_job = lambda jid: {"id": jid, "name": "re-zero chapter check"} if jid == "faab67fa8abd" else None
+        cron_pkg = types.ModuleType("cron")
+        with mock.patch.dict(sys.modules, {"hermes_device_browser": browser, "cron": cron_pkg, "cron.jobs": jobs}):
+            self.assertEqual(agents.caller_of("s1")["cron_job"], {"id": "faab67fa8abd", "name": "re-zero chapter check"})
+            self.assertEqual(agents.caller_of("c3")["cron_job"]["id"], "faab67fa8abd")
+            self.assertNotIn("cron_job", agents.caller_of("c2"))
+            jobs.get_job = lambda jid: (_ for _ in ()).throw(RuntimeError("no store"))
+            self.assertEqual(agents.caller_of("s1")["cron_job"], {"id": "faab67fa8abd", "name": ""})
+
+    def test_chat_has_no_cron_job(self):
+        browser = types.SimpleNamespace(cron_job_id=lambda sid: "")
+        with mock.patch.dict(sys.modules, {"hermes_device_browser": browser}):
+            self.assertNotIn("cron_job", agents.caller_of("s1"))
+        with mock.patch.dict(sys.modules, {"hermes_device_browser": types.SimpleNamespace(
+                cron_job_id=lambda sid: 1 / 0)}):
+            self.assertNotIn("cron_job", agents.caller_of("s1"))
+
     def test_caller_of_chat(self):
         c = agents.caller_of("s1")
         self.assertEqual(c["root_session_id"], "s1")

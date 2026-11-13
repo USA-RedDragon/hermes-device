@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+import sys
 import threading
 import time
 from collections import deque
@@ -283,6 +284,26 @@ def _root_of(session_id: str, records: list[dict]) -> str:
     return sid
 
 
+def cron_job_of(session_id: str) -> Optional[dict]:
+    """``{id, name}`` of the scheduled job whose run the session belongs to, else None. The job
+    shows in the hub as the sender, so a chat reads "cron job <name>" and not an unknown session."""
+    try:
+        browser = sys.modules.get("hermes_device_browser")
+        job_id = browser.cron_job_id(session_id) if browser is not None and session_id else ""
+    except Exception:
+        logger.debug("device: cron job of %s not readable", session_id, exc_info=True)
+        return None
+    if not job_id:
+        return None
+    name = ""
+    try:
+        from cron.jobs import get_job
+        name = str((get_job(job_id) or {}).get("name") or "")
+    except Exception:
+        logger.debug("device: cron job %s not readable", job_id, exc_info=True)
+    return {"id": job_id, "name": name[:MAX_NAME * 2]}
+
+
 def caller_of(session_id: str) -> dict:
     """The calling chat or subagent, and the live subagents of its tree."""
     records = _registry()
@@ -295,6 +316,9 @@ def caller_of(session_id: str) -> dict:
         out["subagent_id"] = me["subagent_id"]
         out["parent_session_id"] = me["owner"]
         out["parent_subagent_id"] = me["parent_id"]
+    job = cron_job_of(session_id)
+    if job is not None:
+        out["cron_job"] = job
     return out
 
 
