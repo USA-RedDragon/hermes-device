@@ -173,8 +173,15 @@ func (s *System) PathHint(bin string) string {
 	return fmt.Sprintf("%s is not on PATH, so the talaria and tal commands are \"not found\" in a terminal. Run %s setup to add it.", tilde(dir), tilde(bin))
 }
 
-// OnPath reports whether dir is on this process's PATH.
+// OnPath reports whether dir is on this process's PATH. Windows separates
+// PATH with ";" and compares directories without regard to case.
 func (s *System) OnPath(dir string) bool {
+	if s.GOOS == goosWindows {
+		dir = filepath.Clean(dir)
+		return slices.ContainsFunc(strings.Split(s.Getenv("PATH"), ";"), func(d string) bool {
+			return d != "" && strings.EqualFold(filepath.Clean(d), dir)
+		})
+	}
 	return onPath(strings.Split(s.Getenv("PATH"), ":"), dir)
 }
 

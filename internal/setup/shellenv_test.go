@@ -165,10 +165,21 @@ func TestFixBinDirKeepsLegacyBlock(t *testing.T) {
 	}
 }
 
+// envPath is the PATH variable's name.
+const envPath = "PATH"
+
 func TestOnPath(t *testing.T) {
 	t.Parallel()
-	sys := newSystem(t, linux, &fakeRunner{}, nil, map[string]string{"PATH": "/usr/bin:/home/alice/.talaria/bin/"})
+	sys := newSystem(t, linux, &fakeRunner{}, nil, map[string]string{envPath: "/usr/bin:/home/alice/.talaria/bin/"})
 	if !sys.OnPath("/home/alice/.talaria/bin") || sys.OnPath("/home/alice/.local/bin") {
 		t.Error("OnPath")
+	}
+}
+
+func TestOnPathWindows(t *testing.T) {
+	t.Parallel()
+	sys := newSystem(t, windows, &fakeRunner{}, nil, map[string]string{envPath: `C:\Windows\system32;C:\Users\Alice\.talaria\bin`})
+	if !sys.OnPath(`C:\Users\alice\.talaria\bin`) || sys.OnPath(`C:\Users\alice\.local\bin`) || sys.OnPath("C") {
+		t.Error("OnPath on Windows")
 	}
 }

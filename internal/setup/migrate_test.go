@@ -292,7 +292,7 @@ func TestMigrateNoPathNoteWhenOnPath(t *testing.T) {
 	t.Parallel()
 	l := newLegacyLayout(t)
 	l.sys.Getenv = func(k string) string {
-		if k == "PATH" {
+		if k == envPath {
 			return "/usr/bin:" + filepath.Dir(l.bin)
 		}
 		return ""
@@ -302,7 +302,7 @@ func TestMigrateNoPathNoteWhenOnPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, n := range m.Notes {
-		if strings.Contains(n, "PATH") {
+		if strings.Contains(n, envPath) {
 			t.Errorf("note %q", n)
 		}
 	}
