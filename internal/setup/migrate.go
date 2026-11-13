@@ -167,19 +167,19 @@ func (s *System) Migrate(ctx context.Context, o MigrateOptions) (*Migration, err
 
 func (s *System) migrateLock() (func(), error) {
 	dir := filepath.Join(s.Home, filepath.Dir(BinDir))
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // holds the program
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 	f, err := os.OpenFile(filepath.Join(dir, ".migrate.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil { //nolint:gosec // a file descriptor fits an int
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
 	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // as above
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	}, nil
 }
@@ -199,7 +199,7 @@ func isDir(p string) bool {
 // place wins.
 func (s *System) migrateBinary(p migratePaths, m *Migration) error {
 	if isRegular(p.legacyBin) {
-		if err := os.MkdirAll(filepath.Dir(p.bin), 0o755); err != nil { //nolint:gosec // a program directory
+		if err := os.MkdirAll(filepath.Dir(p.bin), 0o755); err != nil {
 			return err
 		}
 		if fileExists(p.bin) {
@@ -549,7 +549,7 @@ func (s *System) migrateService(ctx context.Context, p migratePaths, o MigrateOp
 	}
 	if rerr == nil && !fileExists(p.newService) {
 		out := []byte(s.migrateServiceContent(p, string(data)))
-		if err := os.MkdirAll(filepath.Dir(p.newService), 0o755); err != nil { //nolint:gosec // the service manager reads it
+		if err := os.MkdirAll(filepath.Dir(p.newService), 0o755); err != nil {
 			return shas, nil, err
 		}
 		if err := writeFileAtomic(p.newService, out, 0o644); err != nil {

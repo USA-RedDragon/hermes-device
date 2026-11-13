@@ -27,7 +27,7 @@ type TryLock func(ctx context.Context) (Lease, error)
 func Key(name string) int64 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte("hermes-hub/" + name))
-	return int64(h.Sum64() & 0x7fffffffffffffff) //nolint:gosec // masked to fit
+	return int64(h.Sum64() & 0x7fffffffffffffff)
 }
 
 // releaseTimeout bounds giving the lock up.

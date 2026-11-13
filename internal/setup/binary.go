@@ -111,7 +111,7 @@ func (s *System) InstallBinary(ctx context.Context, src, dst, version string, fo
 			return false, fmt.Errorf("%w: %s is %s and this binary is %s; run that one, or pass --force", ErrDowngrade, dst, have, version)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { //nolint:gosec // a program directory
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return false, err
 	}
 	return true, writeFileAtomic(dst, data, 0o755)

@@ -46,7 +46,7 @@ func (s *Store) PutClaudeCodeReport(ctx context.Context, src hub.ClaudeCodeSourc
 		for _, h := range hours {
 			args = append(args, h)
 		}
-		if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM claude_code_usage WHERE source = ? AND hour IN (`+marks(len(hours))+`)`), //nolint:gosec // only placeholders
+		if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM claude_code_usage WHERE source = ? AND hour IN (`+marks(len(hours))+`)`),
 			args...); err != nil {
 			return err
 		}

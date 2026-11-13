@@ -426,7 +426,7 @@ func (s *System) appendBlock(path, block string, st *State) error {
 		data += "\n"
 	}
 	data += block
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec // a shell file
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	if err := writeFileAtomic(path, []byte(data), mode); err != nil {

@@ -26,7 +26,7 @@ func HermesSource(t *testing.T, marker string) string {
 		home, _ := os.UserHomeDir()
 		src = filepath.Join(home, ".hermes", "hermes-agent")
 	}
-	if _, err := os.Stat(filepath.Join(src, marker)); err != nil { //nolint:gosec // a test reads the checkout it is told to
+	if _, err := os.Stat(filepath.Join(src, marker)); err != nil {
 		if explicit {
 			t.Fatalf("Hermes checkout at %s has no %s: %v", src, marker, err)
 		}
@@ -44,7 +44,7 @@ func HermesSource(t *testing.T, marker string) string {
 
 func sourceVersion(t *testing.T, src string) string {
 	t.Helper()
-	if b, err := os.ReadFile(filepath.Join(src, "install-stamp.json")); err == nil { //nolint:gosec // a test reads the checkout it is told to
+	if b, err := os.ReadFile(filepath.Join(src, "install-stamp.json")); err == nil {
 		var stamp struct {
 			BaseVersion string `json:"baseVersion"`
 			Distance    int    `json:"distance"`
@@ -54,7 +54,7 @@ func sourceVersion(t *testing.T, src string) string {
 			return "v" + stamp.BaseVersion
 		}
 	}
-	out, err := exec.CommandContext(t.Context(), "git", "-C", src, "describe", "--tags", "--exact-match").Output() //nolint:gosec // a test runs git on the checkout it is told to
+	out, err := exec.CommandContext(t.Context(), "git", "-C", src, "describe", "--tags", "--exact-match").Output()
 	if err != nil {
 		return ""
 	}

@@ -159,5 +159,5 @@ func (s *System) printf(format string, args ...any) {
 // isTerminal reports whether f is a terminal. A character device is not
 // enough: /dev/null is one too.
 func isTerminal(f *os.File) bool {
-	return term.IsTerminal(int(f.Fd())) //nolint:gosec // a file descriptor fits in an int
+	return term.IsTerminal(int(f.Fd()))
 }

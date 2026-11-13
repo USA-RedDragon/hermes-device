@@ -130,7 +130,7 @@ func (s *System) WriteServiceFile(svc Service, bin, cfg, ours string, force bool
 			return res, err
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(svc.Path()), 0o755); err != nil { //nolint:gosec // the service manager reads it
+	if err := os.MkdirAll(filepath.Dir(svc.Path()), 0o755); err != nil {
 		return res, err
 	}
 	res.Wrote = true

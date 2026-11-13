@@ -111,7 +111,7 @@ func serverMethods(t *testing.T, src string) map[string]bool {
 	}
 	out := map[string]bool{}
 	for _, f := range files {
-		b, err := os.ReadFile(f) //nolint:gosec // a test reads the checkout it is told to
+		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -131,7 +131,7 @@ func sentMethods(t *testing.T, src string, server map[string]bool) map[string]bo
 	literal := regexp.MustCompile("[\"'`]([a-z_][a-z0-9_]*(?:\\.[a-z0-9_]+)+)[\"'`]")
 	out := map[string]bool{}
 	scan := func(path string) {
-		b, err := os.ReadFile(path) //nolint:gosec // a test reads the checkout it is told to
+		b, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -71,7 +71,7 @@ func newLegacyLayout(t *testing.T) *legacyLayout {
 		socket:         filepath.Join(h, ".mozilla", "native-messaging-hosts", "talaria.socket"),
 	}
 	writeFile(t, l.legacyBin, "binary")
-	if err := os.Chmod(l.legacyBin, 0o755); err != nil { //nolint:gosec // test program
+	if err := os.Chmod(l.legacyBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(l.legacyCfg, "config.yaml"), "hub:\n  url: https://hub.example.com\nstore:\n  token-file: "+l.legacyCfg+"/token\n  state-dir: "+l.legacyCfg+"\n")

@@ -110,7 +110,7 @@ func (s *System) Update(ctx context.Context, o *UpdateOptions) (string, error) {
 		_ = tmp.Close()
 		return "", err
 	}
-	if err := tmp.Chmod(0o755); err != nil { //nolint:gosec // a program
+	if err := tmp.Chmod(0o755); err != nil {
 		_ = tmp.Close()
 		return "", err
 	}
