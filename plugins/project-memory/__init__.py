@@ -30,7 +30,7 @@ def register(ctx) -> None:
     core = _core()
     ctx.register_tool(core.TOOL, core.TOOLSET, core.SCHEMA, core.handle, check_fn=core.offered,
                       description=core.SCHEMA["description"])
-    ctx.register_system_prompt_section(core.SECTION_ID, core.section, max_chars=4000)
+    ctx.register_system_prompt_section(core.SECTION_ID, core.section, max_chars=core.request_section_chars())
     ctx.register_hook("subagent_start", core.note_child)
     try:
         from hermes_cli.plugins import VALID_HOOKS

@@ -47,10 +47,14 @@ MEMORY_FILE = "MEMORY.md"
 
 KIND_REMOTE, KIND_ROOT, KIND_FOLDER = "remote", "root", "folder"
 MIN_CHAR_LIMIT = 200
-# A sanity bound on the notes' size. The system prompt section holds at most 4,000 chars (Hermes's own cap), so
-# notes past SECTION_BUDGET stay on disk and the agent reads them with the tool; render_block says how many.
+# A sanity bound on the notes' size. The prompt section is asked to hold the limit plus its header (SECTION_HEAD
+# chars), up to what Hermes grants (plugins.max_section_chars, default 4,000). Notes past the granted size stay on
+# disk and the agent reads them with the tool; render_block says how many.
 MAX_CHAR_LIMIT = 32000
-SECTION_BUDGET = 3990
+SECTION_HEAD = 1000
+HERMES_SECTION_DEFAULT = 4000
+SECTION_MARGIN = 10
+_granted = HERMES_SECTION_DEFAULT  # max_chars Hermes granted at registration (see request_section_chars)
 MAX_LABEL = 200
 MAX_ALIASES_SHOWN = 3
 RESOLVE_TIMEOUT_S = 10
@@ -549,6 +553,31 @@ def char_limit(cfg: Optional[dict] = None) -> int:
     return max(MIN_CHAR_LIMIT, min(value, MAX_CHAR_LIMIT))
 
 
+def request_section_chars() -> int:
+    """The ``max_chars`` to register the prompt section with: room for the largest note set plus its header, cut to
+    what this Hermes allows (``plugins.max_section_chars``, 4,000 unless raised; a Hermes without it allows 4,000)."""
+    global _granted
+    wanted = MAX_CHAR_LIMIT + SECTION_HEAD
+    try:
+        from hermes_cli.plugins import system_prompt_section_ceiling
+        ceiling = int(system_prompt_section_ceiling())
+    except Exception:
+        ceiling = HERMES_SECTION_DEFAULT
+    _granted = max(1, min(wanted, ceiling))
+    limit = char_limit()
+    if _granted < limit + SECTION_HEAD:
+        logger.warning("project-memory: the prompt shows at most %d chars of notes (char_limit is %d); set "
+                       "plugins.max_section_chars to %d or more in Hermes's config to show all of them",
+                       _granted - SECTION_HEAD, limit, limit + SECTION_HEAD)
+    return _granted
+
+
+def section_budget(limit: Optional[int] = None) -> int:
+    """The characters the prompt block may use: the limit plus its header, at most what Hermes granted."""
+    limit = char_limit() if limit is None else limit
+    return min(limit + SECTION_HEAD, _granted) - SECTION_MARGIN
+
+
 def memory_path(slug: str) -> Path:
     return base_dir() / slug / MEMORY_FILE
 
@@ -600,6 +629,7 @@ def render_block(slug: str, limit: Optional[int] = None, note: str = NOTE) -> st
     if meta is None:
         return ""
     limit = char_limit() if limit is None else limit
+    budget = section_budget(limit)
     raw = entries(slug)
     items = [_sanitize(e) for e in raw]
     delim = _delim()
@@ -609,11 +639,11 @@ def render_block(slug: str, limit: Optional[int] = None, note: str = NOTE) -> st
     head = f"{note}\n\n{sep}\nPROJECT MEMORY ({_label(meta)}) [{pct}%, {used:,}/{limit:,} chars]\n{sep}\n"
     if not items:
         return head + "(no project notes yet)"
-    if len(head) + len(delim.join(items)) <= SECTION_BUDGET:
+    if len(head) + len(delim.join(items)) <= budget:
         return head + delim.join(items)
     marker = ("\n[{n} more project notes are not shown: they do not fit in the prompt. Read them with "
               "project_memory action read, then shorten or remove some.]")
-    room = SECTION_BUDGET - len(head) - len(marker) - 8
+    room = budget - len(head) - len(marker) - 8
     shown: list[str] = []
     for item in items:
         if len(delim.join([*shown, item])) <= room:

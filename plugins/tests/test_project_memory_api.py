@@ -48,10 +48,12 @@ def test_register(pm):
 
         def register_system_prompt_section(self, sid, fn, **kw):
             seen["section"] = sid
+            seen["max_chars"] = kw["max_chars"]
 
         def register_hook(self, name, fn):
             seen.setdefault("hooks", []).append(name)
 
     mod.register(Ctx())
     assert seen["tool"] == ("project_memory", "project-memory")
+    assert 4000 <= seen["max_chars"] <= pm.MAX_CHAR_LIMIT + pm.SECTION_HEAD
     assert seen["section"] == "project-memory" and "subagent_start" in seen["hooks"]

@@ -125,6 +125,50 @@ def test_long_entry_under_global_limit(mem, monkeypatch):
     assert "[66%, 6,000/9,000 chars]" in block and "1 more project notes are not shown" in block
 
 
+def _notes_8000(mem, monkeypatch):
+    monkeypatch.setattr(mem, "_config", lambda: {"memory": {"memory_char_limit": 8000}})
+    slug = project(mem)
+    for i in range(8):
+        mem.add(slug, f"note {i} " + "x" * 989)  # 8 entries of 1,000 chars: 8,000 with the delimiters
+    return slug
+
+
+def test_8000_chars_of_notes_fit_when_hermes_grants_room(mem, monkeypatch):
+    slug = _notes_8000(mem, monkeypatch)
+    monkeypatch.setattr(mem, "_granted", 12000)
+    block = mem.render_block(slug)
+    assert "more project notes are not shown" not in block
+    assert all(f"note {i} " in block for i in range(8))
+    assert len(block) <= mem.section_budget(8000) < 12000
+
+
+def test_notes_are_cut_at_what_hermes_grants(mem, monkeypatch):
+    slug = _notes_8000(mem, monkeypatch)
+    monkeypatch.setattr(mem, "_granted", 4000)
+    block = mem.render_block(slug)
+    assert len(block) <= 3990 and "more project notes are not shown" in block
+    assert mem.section_budget(8000) == 3990
+
+
+def test_request_section_chars_follows_the_hermes_ceiling(mem, monkeypatch, caplog):
+    import sys
+    import types
+    monkeypatch.setattr(mem, "_config", lambda: {"memory": {"memory_char_limit": 8000}})
+    fake = types.ModuleType("hermes_cli.plugins")
+    fake.system_prompt_section_ceiling = lambda: 12000
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", fake)
+    assert mem.request_section_chars() == 12000 and mem.section_budget() == 8990
+    assert "plugins.max_section_chars" not in caplog.text
+    fake.system_prompt_section_ceiling = lambda: 100000
+    assert mem.request_section_chars() == 33000  # the largest note set plus the header
+    fake.system_prompt_section_ceiling = lambda: 4000
+    with caplog.at_level("WARNING", logger="project_memory"):
+        assert mem.request_section_chars() == 4000
+    assert "plugins.max_section_chars to 9000" in caplog.text
+    del fake.system_prompt_section_ceiling  # a Hermes without the setting keeps 4,000
+    assert mem.request_section_chars() == 4000 and mem.section_budget() == 3990
+
+
 def test_prompt_block(mem):
     slug = project(mem)
     assert "(no project notes yet)" in mem.render_block(slug)

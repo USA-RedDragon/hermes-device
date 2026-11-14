@@ -30,6 +30,13 @@ plugins:
 
 `write_approval: false` saves project notes directly while Hermes's own memory stays gated. `true` stages them even when `memory.write_approval` is off. Writes already staged under `/memory pending` stay staged; only new writes follow the setting. Background review still stages patch, replace and remove.
 
-The prompt holds at most 4,000 characters of project notes (Hermes's cap for a plugin section). When the notes are longer, the prompt shows the entries that fit, in order, and says how many it left out; the agent reads the rest with `project_memory action read`. Keep the entries the agent needs in every turn first.
+The prompt holds the notes up to `char_limit` (plus a short header), as far as Hermes allows a plugin section. Hermes caps a section at 4,000 characters unless `plugins.max_section_chars` is raised in its config, so with `char_limit: 8000` set `plugins.max_section_chars` to 9000 or more (the plugin asks for at most 33,000; all sections together may use that value plus 4,000). The plugin logs a warning at load when the allowed size is below the limit. When the notes are longer than the section, the prompt shows the entries that fit, in order, and says how many it left out; the agent reads the rest with `project_memory action read`. Keep the entries the agent needs in every turn first.
+
+```yaml
+plugins:
+  max_section_chars: 12000
+```
+
+This setting needs the Talaria Hermes patch `0091-plugin-section-max-chars`; a Hermes without it keeps 4,000.
 
 Notes live in `$HERMES_HOME/project-memories/<slug>/MEMORY.md`, with `meta.json` beside it.
