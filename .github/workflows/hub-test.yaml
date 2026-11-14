@@ -16,6 +16,9 @@ concurrency:
   group: "${{ github.workflow }} @ ${{ github.ref }}"
   cancel-in-progress: true
 
+env:
+  CDP_TIMEOUT_MS: "120000"
+
 defaults:
   run:
     working-directory: hub
@@ -53,6 +56,10 @@ jobs:
           go-version-file: hub/go.mod
           cache-dependency-path: hub/go.sum
 
+      - name: Allow browser sandboxes
+        working-directory: .
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - run: go generate ./...
 
       - name: Install PDF tools
@@ -77,6 +84,10 @@ jobs:
         with:
           go-version-file: hub/go.mod
           cache-dependency-path: hub/go.sum
+
+      - name: Allow browser sandboxes
+        working-directory: .
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - run: go generate ./...
 
@@ -153,6 +164,10 @@ jobs:
         with:
           go-version-file: hub/go.mod
           cache-dependency-path: hub/go.sum
+
+      - name: Allow browser sandboxes
+        working-directory: .
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - run: go generate ./...
 
