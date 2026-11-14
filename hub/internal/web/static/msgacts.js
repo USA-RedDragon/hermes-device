@@ -40,7 +40,6 @@ window.HubMsgActions = (ctx) => {
         acts.owner = b;
         acts.dataset.state = "-";
         b.after(acts);
-        b.acts = acts;
       }
       if (acts.dataset.state === state) continue;
       acts.dataset.state = state;
@@ -71,9 +70,12 @@ window.HubMsgActions = (ctx) => {
       return;
     }
     const b = t.closest(".msg");
-    if (!b || !b.acts || !coarse() || t.closest("a, button, details, summary, pre, img")) return;
-    for (const x of log.querySelectorAll(".acts.show")) if (x !== b.acts) x.classList.remove("show");
-    b.acts.classList.toggle("show");
+    if (!b || !coarse() || t.closest("a, button, details, summary, pre, img")) return;
+    let acts = b.nextElementSibling;
+    while (acts && (acts.classList.contains("queued") || acts.classList.contains("lost"))) acts = acts.nextElementSibling;
+    if (!acts || !acts.classList.contains("acts") || acts.owner !== b) return;
+    for (const x of log.querySelectorAll(".acts.show")) if (x !== acts) x.classList.remove("show");
+    acts.classList.toggle("show");
   });
 
   let queued = false;

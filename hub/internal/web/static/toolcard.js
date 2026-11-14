@@ -808,6 +808,9 @@ window.HubToolCard = (() => {
     return { res, failed, out: out || "" };
   }
 
+  // The card of each box, for the one click listener below.
+  const cards = new WeakMap();
+
   function create(ctx, c0) {
     const { el } = ctx;
     const T = window.HubTimes;
@@ -847,7 +850,7 @@ window.HubToolCard = (() => {
     vis.hidden = true;
     box.append(head, vis, live, wrap);
     const view = { node: box, body: extra, live, derived: null, cur: null, toggle };
-    box.hubCard = view;
+    cards.set(box, view);
     // The blocks of a card (and the code highlighting in them) are built when
     // the card first opens, not when it is created.
     let built = false;
@@ -1064,7 +1067,7 @@ window.HubToolCard = (() => {
         return;
       }
       const head = t.closest(".notice-head");
-      const card = head && head.parentNode && head.parentNode.hubCard;
+      const card = head && head.parentNode && cards.get(head.parentNode);
       if (card) card.toggle();
     });
   }
