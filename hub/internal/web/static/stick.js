@@ -88,10 +88,12 @@ window.HubStick = (log, o) => {
   // scrolled is for each scroll event of the log.
   function scrolled() {
     if (log.hidden) return;
-    if (Math.abs(log.scrollTop - rec.top) < 1) return;
-    if (now() < until) until = Math.max(until, now() + 300);
-    else if (layoutMoved() || (pinned && now() < fresh)) { keep("undo"); sync(); return; }
-    const up = log.scrollTop < rec.top;
+    const top = log.scrollTop;
+    if (Math.abs(top - rec.top) < 1) return;
+    const t = now();
+    if (t < until) until = Math.max(until, t + 300);
+    else if (layoutMoved() || (pinned && t < fresh)) { keep("undo"); sync(); return; }
+    const up = top < rec.top;
     note();
     // Only a real distance from the end leaves it: a tap's jitter, a
     // sub-pixel scrollTop after layout, or a log that grows taller (a
@@ -104,6 +106,15 @@ window.HubStick = (log, o) => {
     if (was !== pinned) keep("scroll");
     take();
     changed();
+  }
+
+  // scrollSoon is scrolled() once per frame: a wheel or a touch sends many
+  // scroll events a frame, and each need not read the layout.
+  let scrollQueued = false;
+  function scrollSoon() {
+    if (scrollQueued) return;
+    scrollQueued = true;
+    frame(() => { scrollQueued = false; scrolled(); });
   }
 
   // heard says the reader is scrolling, for ms (default hold) from now.
@@ -181,6 +192,6 @@ window.HubStick = (log, o) => {
   // change is recent, so a scroll now is the reader's.
   const settled = () => log.clientHeight === rec.c && now() - resized >= settle && now() >= fresh;
 
-  return { settled, sync, scrolled, heard, pin, pinSoon, release, look, reset, drawn, refresh: changed, pinned: () => pinned,
+  return { settled, sync, scrolled, scrollSoon, heard, pin, pinSoon, release, look, reset, drawn, refresh: changed, pinned: () => pinned,
     acted: () => acted, trail: () => trail.slice() };
 };

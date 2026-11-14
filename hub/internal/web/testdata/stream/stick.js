@@ -350,7 +350,7 @@ const wheelTo = (x, top) => {
 }
 
 // Writes that stream in put a pinned log at its end once, after the last write, and a log
-// whose reader moved away is left where it is.
+// whose reader moved away is left where it is. Scroll events of one frame count once.
 {
   const rafs = [];
   const log = new Log([500, 500, 500], 600);
@@ -371,6 +371,10 @@ const wheelTo = (x, top) => {
   s.pinSoon();
   assert.strictEqual(rafs.length, 0, "a released log queues no pin");
   assert.strictEqual(log.scrollTop, top, "a released log is not moved by a streamed write");
+  reads = 0;
+  for (let i = 0; i < 20; i++) s.scrollSoon();
+  assert.strictEqual(rafs.length, 1, "twenty scroll events of a frame queue one pass");
+  assert.strictEqual(reads, 0, "no read before the frame");
 }
 console.log("ok");
 })();

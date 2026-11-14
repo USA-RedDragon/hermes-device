@@ -745,7 +745,7 @@
       }
       soon();
     }).observe(log, { childList: true, subtree: true, characterData: true });
-    log.addEventListener("scroll", () => s.scrolled(), { passive: true });
+    log.addEventListener("scroll", () => s.scrollSoon(), { passive: true });
     let swiped = false;
     log.addEventListener("wheel", (e) => {
       // Firefox sends the rest of a wheel gesture where it began, also once
@@ -754,7 +754,7 @@
       const r = log.getBoundingClientRect();
       if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
       s.heard(400);
-      if (e.deltaY < 0) s.release();
+      if (e.deltaY < 0 && s.pinned()) s.release();
     }, { passive: true });
     log.addEventListener("touchstart", () => { swiped = false; }, { passive: true });
     // A touch only says the reader may scroll; whether the reader left the
@@ -774,7 +774,7 @@
       if (tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT") return;
       if (["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "].includes(e.key)) {
         s.heard(800);
-        if (["PageUp", "Home", "ArrowUp"].includes(e.key)) s.release();
+        if (["PageUp", "Home", "ArrowUp"].includes(e.key) && s.pinned()) s.release();
       }
     }, { capture: true, passive: true });
     log.addEventListener("click", (e) => ui.record(e), true);
