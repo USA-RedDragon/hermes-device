@@ -1,0 +1,816 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 00:42:22 +0000
+Subject: [PATCH] feat(delegate): resume a finished subagent with
+ action='resume'
+
+A finished background subagent could not take a second round of work; the
+parent had to spawn a new one and brief it from its branch and notes.
+delegate_task action='resume' (subagent_id, or delegation_id + task_index, and
+a message) rebuilds a finished child of the calling chat from its stored
+transcript the way a restart handoff does: same goal, route and model,
+toolsets, working directory and device binding, its original start time and
+tool count carried on. The message is appended as the next user turn and the
+child runs as a new background unit with its live transcript and the usual
+result re-entry, which reads "Subagent resumed and finished". The unit counts
+toward the chat's cap and queues behind it. A running child, a child of another
+chat, a nested caller and a child without a finished-run record are refused.
+
+Dispatch stamps each child's session with the record a rebuild needs, and its
+finish adds where it ended. It lasts as long as the session: sessions.retention_days
+when sessions.auto_prune is on, otherwise until the parent chat is deleted.
+---
+ tests/tools/test_delegate_resume_action.py | 366 +++++++++++++++++++++
+ tools/async_delegation.py                  |   3 +-
+ tools/delegate_tool.py                     |  12 +-
+ tools/delegate_tool_child_run.py           |   3 +
+ tools/delegate_tool_dispatch.py            |   3 +-
+ tools/delegate_tool_handoff.py             |  54 ++-
+ tools/delegate_tool_resume.py              | 170 ++++++++++
+ tools/process_registry_notifications.py    |  28 +-
+ 8 files changed, 625 insertions(+), 14 deletions(-)
+ create mode 100644 tests/tools/test_delegate_resume_action.py
+ create mode 100644 tools/delegate_tool_resume.py
+
+diff --git a/tests/tools/test_delegate_resume_action.py b/tests/tools/test_delegate_resume_action.py
+new file mode 100644
+index 00000000..3c40bb63
+--- /dev/null
++++ b/tests/tools/test_delegate_resume_action.py
+@@ -0,0 +1,366 @@
++"""delegate_task(action='resume'): a finished background subagent gets a second round of work with its full context.
++
++The child is rebuilt from its stored transcript the way a restart handoff rebuilds one, so the stored sessions are real
++(``state.db``) and the child agents and the runtime route are fakes. The registry lifetimes are the real ones.
++"""
++
++import json
++import queue
++import threading
++import time
++from types import SimpleNamespace
++from unittest.mock import MagicMock
++
++import pytest
++
++from tests.waiting import wait_until
++from tools import async_delegation as ad
++from tools import delegate_tool_handoff as handoff
++from tools.delegate_tool import delegate_task
++from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
++from tools.process_registry import process_registry
++
++PARENT = "parent-sid"
++OTHER_CHAT = "other-chat-sid"
++SID = "sa-0-abcd"
++CHILD = "child-0"
++BASE_URL = "http://ollama.example.com/v1"
++
++
++@pytest.fixture(autouse=True)
++def _clean_state():
++    ad._reset_for_tests()
++    _drain()
++    yield
++    ad._reset_for_tests()
++    _drain()
++    with _active_subagents_lock:
++        _active_subagents.clear()
++
++
++def _drain() -> list:
++    items = []
++    while True:
++        try:
++            items.append(process_registry.completion_queue.get_nowait())
++        except queue.Empty:
++            return items
++
++
++def _completions(delegation_id=None) -> list:
++    return [e for e in _drain() if isinstance(e, dict) and e.get("type") == "async_delegation"
++            and (delegation_id is None or e.get("delegation_id") == delegation_id)]
++
++
++def _db():
++    from hermes_state_registry import acquire
++    return acquire()
++
++
++class _Parent:
++    def __init__(self, db, session_id=PARENT):
++        self._session_db, self.session_id, self._delegate_depth = db, session_id, 0
++
++
++def _record(*, started_at=None, tool_count=None) -> dict:
++    """The resume record dispatch stamps on a child's session, and the state its finish adds."""
++    child = {"goal": "fix the parser", "context": "repo at ~/src", "role": None, "subagent_id": SID,
++             "session_id": CHILD, "transcript": None,
++             "route": {"backend": "model_map", "label": "quick", "route": {"base_url": BASE_URL, "model": "qwen"}}}
++    spec = {"version": 1, "parent": {"session_id": PARENT, "model": "main", "provider": "custom", "base_url": BASE_URL},
++            "session": {}, "children": {"0": child}, "task_count": 1, "live_deleg_id": "deleg_call", "top_role": "leaf",
++            "max_children": 3}
++    state = {"session_id": CHILD, "cwd": "/work/parser", "started_at": started_at or time.time() - 900,
++             "tool_count": 5 if tool_count is None else tool_count}
++    return {handoff.RESUME_KEY: spec, handoff.RESUME_STATE_KEY: state}
++
++
++def _finished_child(db, *, parent=PARENT, record=True, ended=True):
++    db.create_session(session_id=parent, source="telegram")
++    config = {"_delegate_from": parent, "_subagent_id": SID, **(_record() if record is True else record or {})}
++    db.create_session(session_id=CHILD, source="subagent", parent_session_id=parent, model_config=config)
++    db.append_message(CHILD, "user", content="fix the parser")
++    calls = [{"id": "call_a", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]
++    db.append_message(CHILD, "assistant", content="", tool_calls=calls)
++    db.append_message(CHILD, "tool", content="def parse(): ...", tool_name="read_file", tool_call_id="call_a")
++    db.append_message(CHILD, "assistant", content="Fixed the parser; tests pass.")
++    if ended:
++        db.end_session(CHILD, "agent_close")
++
++
++def _call(parent, **kw) -> dict:
++    raw = delegate_task(action="resume", parent_agent=parent, **kw)
++    return json.loads(raw)
++
++
++def _fake_child(stop=None, started=None):
++    """A child agent whose conversation answers at once, or blocks until ``stop`` is set (a stop signal sets it)."""
++    child = MagicMock()
++    for name, value in (("_delegate_restart_handoff", False), ("_delegate_live_writer", None),
++                        ("_live_transcript_path", None), ("_delegate_output_schema", None), ("_delegate_images", []),
++                        ("_credential_pool", None), ("_subagent_id", SID), ("session_id", CHILD), ("model", "qwen"),
++                        ("_delegate_depth", 1), ("_parent_session_id", PARENT)):
++        setattr(child, name, value)
++    child.get_activity_summary.return_value = {"current_tool": None}
++    calls = []
++
++    def converse(**kwargs):
++        calls.append(kwargs)
++        if started is not None:
++            started.set()
++        if stop is not None:
++            stop.wait(10)
++            if child._delegate_restart_handoff:
++                return {"final_response": "", "completed": False, "interrupted": True, "api_calls": 1, "messages": []}
++        return {"final_response": "Second round done.", "completed": True, "interrupted": False, "api_calls": 2,
++                "messages": []}
++
++    child.run_conversation.side_effect = converse
++    if stop is not None:
++        child.interrupt.side_effect = lambda *a, **k: stop.set()
++    child.conversations = calls
++    return child
++
++
++@pytest.fixture
++def seams(monkeypatch):
++    """The runtime pieces a rebuild reaches outside the stored session; the recorded route is never asked again."""
++    built = []
++    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {"restart_handoff": True})
++    monkeypatch.setattr("tools.delegate_tool._resolve_delegation_credentials", lambda route, parent: {
++        "model": route.get("model"), "provider": None, "base_url": route.get("base_url"), "api_key": None,
++        "api_mode": None})
++    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
++                        lambda **kw: {"base_url": BASE_URL, "api_key": "local"})
++    monkeypatch.setattr("tools.delegate_tool_dispatch._resolve_async_wake_sid", lambda *a, **k: "")
++    monkeypatch.setattr("tools.delegate_tool._get_max_async_children", lambda: 3)
++
++    def never(*args, **kwargs):
++        raise AssertionError("the recorded route must not be asked of the backend again")
++    monkeypatch.setattr("tools.delegate_tool_routes._route_one", never)
++
++    def use(*children):
++        pending = list(children)
++
++        def build(**kwargs):
++            built.append(kwargs)
++            child = pending.pop(0)
++            child._progress_identity_ref = {}
++            return child
++        monkeypatch.setattr("tools.delegate_tool._build_child_preserving_parent_tools", build)
++    use.built = built
++    return use
++
++
++def test_resumed_child_continues_with_its_prior_messages_and_the_new_message(seams):
++    db = _db()
++    _finished_child(db)
++    child = _fake_child()
++    seams(child)
++    handle = _call(_Parent(db), subagent_id=SID, message="Now fix the lexer too.")
++    assert handle["status"] == "dispatched" and handle["subagent_id"] == SID and handle["mode"] == "background"
++    assert handle["delegation_id"] == "deleg_call" and handle["task_index"] == 0
++
++    event = wait_until(lambda: _completions(handle["run_id"]), what="the resumed child's completion")[0]
++    kwargs = child.conversations[0]
++    assert kwargs["user_message"] == "Now fix the lexer too."
++    history = kwargs["conversation_history"]
++    assert [m["role"] for m in history] == ["user", "assistant", "tool", "assistant"]
++    assert history[0]["content"] == "fix the parser" and history[2]["content"] == "def parse(): ..."
++    assert history[-1]["content"] == "Fixed the parser; tests pass."
++
++    # Rebuilt as the same child: its own session and id, on its recorded route, in the directory it ended in.
++    built = seams.built[0]
++    assert built["resume_session_id"] == CHILD and built["subagent_id"] == SID and built["goal"] == "fix the parser"
++    assert built["model"] == "qwen" and built["override_base_url"] == BASE_URL
++    assert child._delegate_resume["cwd"] == "/work/parser"
++    assert child._delegation_id == "deleg_call"
++    assert db.get_session(CHILD)["ended_at"] is None  # reopened for the new turn
++
++    assert event["status"] == "completed" and event["resumed"]["subagent_ids"] == [SID]
++    from tools.process_registry_notifications import _format_async_delegation, async_delegation_display_text
++    text = _format_async_delegation(event)
++    assert text.startswith("[ASYNC DELEGATION BATCH COMPLETE")
++    assert "Subagent resumed and finished: fix the parser" in text and "Second round done." in text
++    assert async_delegation_display_text(event).startswith("Subagent Task Completed (resumed)")
++
++
++def test_resume_by_delegation_id_and_task_index(seams, tmp_path, monkeypatch):
++    db = _db()
++    _finished_child(db)
++    manifest = {"owner_session_id": PARENT, "tasks": [{"index": 0, "subagent_id": SID}]}
++    monkeypatch.setattr("tools.delegate_tool_transcript._manifest", lambda deleg, home: manifest)
++    seams(_fake_child())
++    handle = _call(_Parent(db), delegation_id="deleg_call", task_index=0, message="again")
++    assert handle["status"] == "dispatched" and handle["subagent_id"] == SID
++
++
++def test_running_child_cannot_be_resumed(seams):
++    db = _db()
++    _finished_child(db)
++    with _active_subagents_lock:
++        _active_subagents[SID] = {"subagent_id": SID, "status": "running", "agent": _fake_child()}
++    seams()  # building anything would raise
++    result = _call(_Parent(db), subagent_id=SID, message="more")
++    assert "still running" in result["error"] and "steer" in result["error"]
++    assert _completions() == []
++
++
++def test_unfinished_child_without_an_end_record_cannot_be_resumed(seams):
++    db = _db()
++    record = _record()
++    del record[handoff.RESUME_STATE_KEY]
++    _finished_child(db, record=record, ended=False)
++    seams()
++    assert "no finished-run record" in _call(_Parent(db), subagent_id=SID, message="more")["error"]
++
++
++def test_child_of_another_chat_cannot_be_resumed(seams):
++    db = _db()
++    _finished_child(db)
++    db.create_session(session_id=OTHER_CHAT, source="telegram")
++    seams()
++    result = _call(_Parent(db, OTHER_CHAT), subagent_id=SID, message="steal it")
++    assert "spawn tree" in result["error"] and "cannot be resumed" in result["error"]
++    assert _completions() == []
++    assert db.get_session(CHILD)["ended_at"] is not None  # untouched
++
++
++def test_resume_needs_a_message_and_a_top_level_caller(seams):
++    db = _db()
++    _finished_child(db)
++    seams()
++    assert "non-empty 'message'" in _call(_Parent(db), subagent_id=SID, message="  ")["error"]
++    nested = _Parent(db)
++    nested._delegate_depth = 1
++    assert "nested" in _call(nested, subagent_id=SID, message="go")["error"]
++
++
++def test_resume_at_the_chat_cap_queues_and_runs_when_a_slot_frees(seams, monkeypatch):
++    monkeypatch.setattr("tools.delegate_tool._get_max_async_children", lambda: 1)
++    db = _db()
++    _finished_child(db)
++    release, occupied = threading.Event(), threading.Event()
++
++    def occupy():
++        occupied.set()
++        release.wait(10)
++        return {"status": "completed", "summary": "slot released"}
++
++    assert ad.dispatch_async_delegation(
++        goal="occupy", context=None, toolsets=None, role="leaf", model="m", session_key=PARENT,
++        parent_session_id=PARENT, runner=occupy, max_async_children=1)["status"] == "dispatched"
++    assert occupied.wait(5)
++
++    child = _fake_child()
++    seams(child)
++    handle = _call(_Parent(db), subagent_id=SID, message="queue me")
++    assert handle["status"] == "queued" and handle["queue_position"] == 1 and handle["queued_by"] == "chat"
++    time.sleep(0.3)
++    assert child.conversations == []  # nothing runs while the chat is at its cap
++    assert [r["status"] for r in ad.list_async_delegations() if r["delegation_id"] == handle["run_id"]] == ["queued"]
++
++    release.set()
++    events = wait_until(lambda: _completions(handle["run_id"]), what="the queued resume's completion")
++    assert events[0]["status"] == "completed" and child.conversations[0]["user_message"] == "queue me"
++
++
++def test_finished_child_records_where_it_ended():
++    from tools.delegate_tool_child_run import _ChildRun
++    db = _db()
++    _finished_child(db, record={handoff.RESUME_KEY: _record()[handoff.RESUME_KEY]}, ended=False)
++    started = time.time() - 600
++    from tools.delegate_tool_child_run import _register_child
++    child = SimpleNamespace(
++        _subagent_id=SID, model="m", _delegate_depth=1, _parent_session_id=PARENT, session_id=CHILD, _session_db=db,
++        _session_init_model_config={handoff.RESUME_KEY: {}}, _delegate_started_at=started, _delegate_tool_count=3,
++        close=lambda: None, _delegate_restart_handoff=False)
++    _register_child(child, SimpleNamespace(session_id=PARENT), "goal", owner_session_id=None, owner_transport=None,
++                    owner_session_record=None)
++    with _active_subagents_lock:
++        _active_subagents[SID].update(tool_count=9)
++    from tools.terminal_tool import record_session_cwd
++    record_session_cwd(SID, "/work/end")
++    run = _ChildRun(child, SimpleNamespace(), 0, "goal", SID, None)
++    run.cleanup(heartbeat=SimpleNamespace(stop=lambda: None), child_pool=None, leased_cred_id=None, close_deferred=False)
++    config = json.loads(db.get_session(CHILD)["model_config"])
++    state = config[handoff.RESUME_STATE_KEY]
++    assert state["cwd"] == "/work/end" and state["tool_count"] == 9 and state["started_at"] == started
++    assert state["session_id"] == CHILD
++
++
++def test_dispatch_stamps_each_child_with_a_resume_record(monkeypatch):
++    route = SimpleNamespace(backend="default", label=None, profile_home=None, routing_cfg={"model": "qwen"})
++    child = SimpleNamespace(_delegate_task_route=route, _subagent_id=SID, session_id=CHILD, _session_init_model_config={},
++                            max_iterations=30)
++    unit = SimpleNamespace(parent_agent=SimpleNamespace(), children=[(0, {"goal": "g", "images": ["x"]}, child)],
++                           top_role="leaf", max_children=3, task_list=[{"goal": "g"}], live_deleg_id="deleg_call",
++                           group=None)
++    monkeypatch.setattr(handoff, "_parent_snapshot", lambda parent: {"session_id": PARENT})
++    monkeypatch.setattr(handoff, "_session_snapshot", lambda parent: {})
++    monkeypatch.setattr("tools.delegate_tool_config._get_worktree_isolation", lambda: False)
++    handoff.stamp_resume_specs(unit, "deleg_call")
++    stamped = child._session_init_model_config[handoff.RESUME_KEY]
++    assert set(stamped["children"]) == {"0"} and stamped["children"]["0"]["subagent_id"] == SID
++    assert stamped["children"]["0"]["images"] is None and stamped["live_deleg_id"] == "deleg_call"
++    json.dumps(stamped)  # it goes into the session row
++
++    monkeypatch.setattr("tools.delegate_tool_config._get_worktree_isolation", lambda: True)
++    isolated = SimpleNamespace(_delegate_task_route=route, _session_init_model_config={})
++    handoff.stamp_resume_specs(SimpleNamespace(**{**vars(unit), "children": [(0, {"goal": "g"}, isolated)]}), None)
++    assert isolated._session_init_model_config == {}  # an isolated worktree is gone when the child stops
++
++
++def test_restart_handoff_of_a_resumed_child_continues_it_on_the_next_gateway(seams):
++    db = _db()
++    _finished_child(db)
++    stop, started = threading.Event(), threading.Event()
++    first = _fake_child(stop=stop, started=started)
++    seams(first)
++    handle = _call(_Parent(db), subagent_id=SID, message="Round two, please.")
++    assert handle["status"] == "dispatched" and started.wait(5)
++    run_id = handle["run_id"]
++    original_start = first._delegate_started_at
++    assert first._delegate_tool_count == 5  # counted on from the first round, not from zero
++
++    # The old gateway stops the child at a clean point and leaves the unit for the next one.
++    first.get_activity_summary.return_value = {"current_tool": None}
++    assert ad.hand_off_for_restart(2.0, 8.0) == 1
++    assert _completions(run_id) == []  # nothing delivered by the old gateway
++    row = json.loads(_row_json(run_id))
++    spec = row["handoff"]
++    assert spec["resumed"] is True and spec["resume"] == [0]
++    assert spec["children"]["0"]["started_at"] == original_start and spec["children"]["0"]["tool_count"] == 5
++
++    # The next gateway rebuilds the child; it continues with the restart notice, not the parent's message again.
++    ad._reset_for_tests()
++    with _active_subagents_lock:
++        _active_subagents.clear()
++    second = _fake_child()
++    seams(second)
++    assert ad.adopt_handed_off_delegations(handoff._resume_unit) == 1
++    event = wait_until(lambda: _completions(run_id), what="the resumed unit's completion")[0]
++    assert event["status"] == "completed" and event["resumed"]["subagent_ids"] == [SID]
++    kwargs = second.conversations[0]
++    assert kwargs["user_message"] == handoff.RESUME_MESSAGE
++    assert kwargs["conversation_history"][0]["content"] == "fix the parser"
++    assert second._delegate_started_at == original_start and second._delegate_tool_count == 5
++    assert [r["summary"] for r in event["results"]] == ["Second round done."]
++
++
++def _row_json(delegation_id: str) -> str:
++    import sqlite3
++    from hermes_constants import get_hermes_home
++    conn = sqlite3.connect(get_hermes_home() / "state.db")
++    try:
++        return conn.execute("SELECT task_json FROM async_delegations WHERE delegation_id=?",
++                            (delegation_id,)).fetchone()[0]
++    finally:
++        conn.close()
++
++
++def test_schema_offers_resume():
++    from tools.delegate_tool import DELEGATE_TASK_SCHEMA, _build_top_level_description
++    assert "resume" in DELEGATE_TASK_SCHEMA["parameters"]["properties"]["action"]["enum"]
++    assert "action='resume'" in _build_top_level_description()
++    assert "resume" in json.loads(delegate_task(action="nonsense", parent_agent=_Parent(None)))["error"]
+diff --git a/tools/async_delegation.py b/tools/async_delegation.py
+index 80c6171e..6f144360 100644
+--- a/tools/async_delegation.py
++++ b/tools/async_delegation.py
+@@ -1290,7 +1290,8 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
+             "is_batch": True, "results": result.get("results") or [],
+             "live_transcripts": result.get("live_transcripts"), "error": result.get("error"),
+             "total_duration_seconds": result.get("total_duration_seconds"),
+-            **({"group": result["group"]} if result.get("group") is not None else {})}
++            **({"group": result["group"]} if result.get("group") is not None else {}),
++            **({"resumed": result["resumed"]} if result.get("resumed") else {})}
+     else:
+         # A runner with no measured count (a cron run without a session) omits api_calls: never a fake 0.
+         payload = {
+diff --git a/tools/delegate_tool.py b/tools/delegate_tool.py
+index 86ab2a1f..42ecdd01 100644
+--- a/tools/delegate_tool.py
++++ b/tools/delegate_tool.py
+@@ -654,10 +654,15 @@ def delegate_task(
+             parent_agent, subagent_id=subagent_id, delegation_id=delegation_id, task_index=task_index,
+             limit=limit, after=after, max_chars=max_chars)
+         return tool_error(result["error"]) if "error" in result else json.dumps(result, ensure_ascii=False)
++    if normalized_action == "resume":
++        from tools.delegate_tool_resume import resume_subagent
++        result = resume_subagent(parent_agent, subagent_id=subagent_id, delegation_id=delegation_id,
++                                 task_index=task_index, message=message)
++        return tool_error(result["error"]) if "error" in result else json.dumps(result, ensure_ascii=False)
+     if normalized_action in _CONTROL_ACTIONS:
+         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
+     if normalized_action and normalized_action != "spawn":
+-        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, stop, or transcript.")
++        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, stop, transcript, or resume.")
+ 
+     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
+     if is_spawn_paused():
+@@ -791,7 +796,8 @@ _DESCRIPTION_DELIVERY = (
+     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
+     "wait or poll on transcripts, artifact files, or CI for a child. "
+     "While children run, `action` (list/steer/stop) controls them live; `action='transcript'` reads a child's steps, "
+-    "running or finished.\n\n"
++    "running or finished; `action='resume'` (subagent_id or delegation_id + task_index, and message) sends a "
++    "finished subagent its next task with its full context.\n\n"
+ )
+ _ONESHOT_DESCRIPTION_DELIVERY = "Parallel children are joined and their results return in this tool call.\n\n"
+ _DESCRIPTION_HEAD = (
+@@ -937,7 +943,7 @@ DELEGATE_TASK_SCHEMA = {
+                 "a child's steps (assistant text, tool calls and cut results, times), running or finished: "
+                 "subagent_id, or delegation_id + task_index; newest `limit` entries unless `after` is set. "
+                 "Control actions return immediately; goal/tasks are ignored unless spawning.",
+-                enum=["spawn", "list", "steer", "stop", "transcript"],
++                enum=["spawn", "list", "steer", "stop", "transcript", "resume"],
+             ),
+             "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
+             "delegation_id": _p("string", "For action='transcript' without subagent_id: the delegation_id of the spawn response."),
+diff --git a/tools/delegate_tool_child_run.py b/tools/delegate_tool_child_run.py
+index e218ba6a..0cf23860 100644
+--- a/tools/delegate_tool_child_run.py
++++ b/tools/delegate_tool_child_run.py
+@@ -1229,6 +1229,9 @@ class _ChildRun:
+         no turn is active."""
+         child = self.child
+         heartbeat.stop()
++        if not close_deferred and getattr(child, "_delegate_restart_handoff", False) is not True:
++            from tools.delegate_tool_handoff import record_resume_state
++            record_resume_state(child)  # before its registry row and tools go: start, tool count, directory
+ 
+         # Safe even if the child was never registered (ID missing on test doubles).
+         if self.subagent_id:
+diff --git a/tools/delegate_tool_dispatch.py b/tools/delegate_tool_dispatch.py
+index 08d35811..6b5ca891 100644
+--- a/tools/delegate_tool_dispatch.py
++++ b/tools/delegate_tool_dispatch.py
+@@ -450,9 +450,10 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
+     """Hand ONE unit to the async registry; the runner joins on that unit's children only. ``queue``
+     (``delegation.at_capacity: queue``): a full pool queues the unit instead of rejecting it."""
+     from tools.async_delegation import dispatch_async_delegation_batch, release_queued
+-    from tools.delegate_tool_handoff import unit_handoff
++    from tools.delegate_tool_handoff import stamp_resume_specs, unit_handoff
+     child_agents = [c for (_, _, c) in unit.children]
+     handoff, handoff_fn = unit_handoff(unit, slot_key or unit_id)
++    stamp_resume_specs(unit, slot_key or unit_id)
+ 
+     def _interrupt():
+         for c in child_agents:
+diff --git a/tools/delegate_tool_handoff.py b/tools/delegate_tool_handoff.py
+index a94baa89..e0cbc966 100644
+--- a/tools/delegate_tool_handoff.py
++++ b/tools/delegate_tool_handoff.py
+@@ -88,6 +88,46 @@ def _strip_secrets(value: Any) -> tuple[Any, bool]:
+     return value, False
+ 
+ 
++# ── Finished children: what ``delegate_task(action='resume')`` needs ────────
++# Each child's stored session carries, in its ``model_config`` (copied onto every compression continuation), the same
++# record a restart handoff rebuilds a child from (``RESUME_KEY``, written at dispatch) and where it ended
++# (``RESUME_STATE_KEY``, written when it finishes: working directory, start time, tool count). It lives as long as
++# the session does, which is how long the child can be resumed (``sessions.retention_days`` when
++# ``sessions.auto_prune`` is on; never pruned otherwise; deleted with its parent chat).
++RESUME_KEY = "_delegate_resume"
++RESUME_STATE_KEY = "_delegate_resume_state"
++
++
++def stamp_resume_specs(unit: Any, slot_key: Optional[str]) -> None:
++    """At dispatch, add each child's resume record to the config its session row is created with. Never raises; a
++    child without one (worktree isolation, an unreadable route) cannot be resumed and its session says so."""
++    try:
++        from tools.delegate_tool_config import _get_worktree_isolation
++        if _get_worktree_isolation():
++            return  # the child's worktree is finalized when it stops: nothing to resume into
++        spec = _unit_spec(unit, slot_key)
++        for i, _task, child in unit.children:
++            config = getattr(child, "_session_init_model_config", None)
++            child_spec = spec["children"].get(str(i))
++            if isinstance(config, dict) and child_spec is not None:
++                config[RESUME_KEY] = {**{k: v for k, v in spec.items() if k != "children"},
++                                      "children": {str(i): {**child_spec, "images": None}}}
++    except Exception:
++        logger.debug("delegate_task: could not record a resume record", exc_info=True)
++
++
++def record_resume_state(child: Any) -> None:
++    """When a child finishes (before its tools are torn down), record where it ended. Never raises."""
++    try:
++        config = getattr(child, "_session_init_model_config", None)
++        db, session_id = getattr(child, "_session_db", None), getattr(child, "session_id", None)
++        if not (isinstance(config, dict) and RESUME_KEY in config and db is not None and session_id):
++            return
++        db.patch_session_model_config(session_id, {RESUME_STATE_KEY: _child_state(child)})
++    except Exception:
++        logger.debug("delegate_task: could not record where a subagent ended", exc_info=True)
++
++
+ # ── Dispatch: what the next gateway needs ───────────────────────────────────
+ def unit_handoff(unit: Any, slot_key: Optional[str]) -> tuple[Optional[dict], Optional[Callable]]:
+     """``(spec, handoff_fn)`` for one background unit, or ``(None, None)`` when the unit is not handed off
+@@ -344,8 +384,10 @@ class _ResumeParent:
+ class _ResumedUnit:
+     """One adopted unit: rebuild its unfinished children, run them, join with the children that had finished."""
+ 
+-    def __init__(self, unit: dict):
++    def __init__(self, unit: dict, message: Optional[str] = None):
++        """``message``: the user turn a resumed child continues with (``delegate_task(action='resume')``), in place of\n        the restart notice. Only its first run has it: a restart after that continues with the notice."""
+         self.unit, self.spec, self.kept = unit, unit["handoff"], dict(unit["kept"])
++        self.message = message
+         self.delegation_id = unit["delegation_id"]
+         self.children: dict[int, Any] = {}
+         self._stopped = self._handing_off = False
+@@ -384,7 +426,9 @@ class _ResumedUnit:
+                 except Exception as exc:
+                     logger.warning("Async delegation %s: task %d cannot be resumed: %s", self.delegation_id, i, exc)
+                     results[i] = _fabricated_entry(
+-                        i, "interrupted", f"Interrupted by a gateway restart and could not be resumed: {exc}", None)
++                        i, "interrupted" if not self.spec.get("resumed") else "error",
++                        (f"Could not be resumed: {exc}" if self.spec.get("resumed")
++                         else f"Interrupted by a gateway restart and could not be resumed: {exc}"), None)
+                     continue
+                 self.children[i] = child
+                 built.append((i, {"goal": child_spec["goal"]}, child))
+@@ -410,6 +454,10 @@ class _ResumedUnit:
+             out["delegation_id"] = self.spec["live_deleg_id"]
+         if self.spec.get("group") is not None:
+             out["group"] = self.spec["group"]
++        if self.spec.get("resumed"):  # the completion reads "Subagent resumed and finished"
++            out["resumed"] = {"task_indexes": indexes, "delegation_id": self.spec.get("live_deleg_id"),
++                              "subagent_ids": [(self.spec.get("children") or {}).get(str(i), {}).get("subagent_id")
++                                               for i in indexes]}
+         return out
+ 
+     def _execute(self, built: list, goals: list, parent: Any) -> dict[str, Any]:
+@@ -479,7 +527,7 @@ class _ResumedUnit:
+                 ident["delegation_id"] = live
+         self._carry_progress(child, spec, history)
+         # No stored turn means the child never started its conversation: it starts on its goal.
+-        child._delegate_resume = {"cwd": spec.get("cwd"), **({"history": history, "message": RESUME_MESSAGE}
++        child._delegate_resume = {"cwd": spec.get("cwd"), **({"history": history, "message": self.message or RESUME_MESSAGE}
+                                                               if history else {})}
+         return child
+ 
+diff --git a/tools/delegate_tool_resume.py b/tools/delegate_tool_resume.py
+new file mode 100644
+index 00000000..632d4ee1
+--- /dev/null
++++ b/tools/delegate_tool_resume.py
+@@ -0,0 +1,170 @@
++"""``delegate_task(action='resume')``: a second round of work for a finished background subagent.
++
++The child is rebuilt from its stored transcript the way a restart handoff rebuilds one (``tools/delegate_tool_handoff.py``):
++the same goal, route and model, toolsets, working directory and device binding, its original start time and its tool
++count carried on. The parent's message is appended as the next user turn, and the child runs as a new background unit
++with the usual live transcript and result re-entry (the completion reads "Subagent resumed and finished"). The unit
++counts toward the chat's cap and queues behind it like any other (``delegation.at_capacity``).
++
++Scope is the caller's own spawn tree, as for ``action='transcript'``: the child's stored session must descend from this
++conversation. A child that is still running (or queued) is steered, not resumed. The record that lets a child be rebuilt
++is stamped on its session at dispatch and finished at its end (``delegate_tool_handoff.RESUME_KEY``); a child without it
++(spawned before this existed, or under worktree isolation) cannot be resumed.
++"""
++
++from __future__ import annotations
++
++import json
++import threading
++import time
++from typing import Any, Optional
++
++_resuming: set[str] = set()
++_resuming_lock = threading.Lock()
++
++
++def _model_config(row: dict[str, Any]) -> dict[str, Any]:
++    raw = row.get("model_config")
++    if isinstance(raw, str):
++        try:
++            raw = json.loads(raw)
++        except ValueError:
++            return {}
++    return raw if isinstance(raw, dict) else {}
++
++
++def _find_subagent(parent_agent: Any, subagent_id: Optional[str], delegation_id: Optional[str],
++                   task_index: Any) -> tuple[str, Optional[str]]:
++    """``(subagent_id, error)``: the id as given, or the one the delegation's task ran as."""
++    from tools.delegate_tool_transcript import _int, _manifest, _owned_records
++    sid, deleg = (subagent_id or "").strip(), (delegation_id or "").strip()
++    if sid:
++        return sid, None
++    if not deleg:
++        return "", ("action='resume' requires subagent_id (from the spawn response or action='list'), or "
++                    "delegation_id with task_index.")
++    index = _int(task_index, 0, 0, 1 << 20)
++    if index is None:
++        return "", "task_index must be an integer."
++    from tools.delegate_tool import _parent_live_home
++    owned = [r for r in _owned_records(parent_agent)
++             if getattr(r.get("agent"), "_delegation_id", None) == deleg
++             and getattr(r.get("agent"), "_delegation_task_index", None) == index]
++    task = next((t for t in (_manifest(deleg, _parent_live_home(parent_agent)) or {}).get("tasks", [])
++                 if t.get("index") == index), None)
++    sid = (owned[0].get("subagent_id") if len(owned) == 1 else None) or (task or {}).get("subagent_id") or ""
++    if not sid:
++        return "", f"No subagent for delegation '{deleg}' task {index} in this conversation's spawn tree."
++    return sid, None
++
++
++def _is_live(subagent_id: str) -> bool:
++    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
++    with _active_subagents_lock:
++        return subagent_id in _active_subagents
++
++
++def resume_subagent(parent_agent: Any, *, subagent_id: Optional[str], delegation_id: Optional[str],
++                    task_index: Any, message: Optional[str]) -> dict[str, Any]:
++    """The dispatch handle of the resumed run, or ``{"error": ...}``. Nothing is changed when it refuses."""
++    from tools.delegate_tool_handoff import RESUME_KEY, RESUME_STATE_KEY
++    from tools.delegate_tool_sessions import stored_child_session
++    from tools.delegate_tool_transcript import _compression_lineage
++    if getattr(parent_agent, "_delegate_depth", 0) > 0:
++        return {"error": "action='resume' is for the conversation that spawned the subagent, not for a nested one."}
++    text = (message or "").strip()
++    if not text:
++        return {"error": "action='resume' requires a non-empty 'message': what the subagent should do next."}
++    sid, error = _find_subagent(parent_agent, subagent_id, delegation_id, task_index)
++    if error:
++        return {"error": error}
++    db = getattr(parent_agent, "_session_db", None)
++    parent_sid = str(getattr(parent_agent, "session_id", "") or "")
++    session_id = None
++    if db is not None and parent_sid:
++        try:
++            session_id = stored_child_session(db, sid, _compression_lineage(db, parent_sid))
++        except Exception:
++            session_id = None
++    if not session_id:
++        return {"error": f"No subagent '{sid}' in this conversation's spawn tree (or its stored session is gone), so "
++                         "it cannot be resumed. Spawn a new subagent and brief it from its branch and notes."}
++    if _is_live(sid):
++        return {"error": f"Subagent '{sid}' is still running (or queued). Use action='steer' to redirect it; "
++                         "its result arrives as a normal completion message. Only a finished subagent can be resumed."}
++    config = _model_config(db.get_session(session_id) or {})
++    spec, state = config.get(RESUME_KEY), config.get(RESUME_STATE_KEY)
++    if not isinstance(spec, dict) or not isinstance(state, dict):
++        return {"error": f"Subagent '{sid}' has no finished-run record to resume from (it was spawned before resume "
++                         "existed, ran under worktree isolation, or has not finished). Spawn a new subagent and brief "
++                         "it from its branch and notes."}
++    with _resuming_lock:
++        if sid in _resuming:
++            return {"error": f"Subagent '{sid}' is already being resumed."}
++        _resuming.add(sid)
++    try:
++        return _dispatch(parent_agent, sid, session_id, spec, state, text)
++    finally:
++        with _resuming_lock:
++            _resuming.discard(sid)
++
++
++def _dispatch(parent_agent: Any, sid: str, session_id: str, spec: dict[str, Any], state: dict[str, Any],
++              text: str) -> dict[str, Any]:
++    from tools.async_delegation import _new_delegation_id, dispatch_async_delegation_batch
++    from tools.delegate_tool import _get_max_async_children, is_spawn_paused
++    from tools.delegate_tool_config import _get_max_concurrent_children_total, _get_queue_at_capacity, _get_restart_handoff
++    from tools.delegate_tool_dispatch import _capture_origin, _resolve_async_session_key, _resolve_async_wake_sid
++    from tools.delegate_tool_handoff import _ResumedUnit
++    if is_spawn_paused():
++        return {"error": "Delegation spawning is paused. Clear the pause before resuming a subagent."}
++    entries = spec.get("children") or {}
++    index_key, child = next(iter(entries.items()), (None, None))
++    if child is None or child.get("subagent_id") != sid:
++        return {"error": f"The resume record of '{sid}' is unreadable."}
++    index = int(index_key)
++    origin_wake_sid, origin_ui, _transport, _record, history_delivery = _capture_origin()
++    wake_sid = _resolve_async_wake_sid(origin_wake_sid, history_delivery,
++                                       oneshot_session=getattr(parent_agent, "_oneshot_session", None) is True)
++    if wake_sid is None:
++        return {"error": "This session cannot receive a background result, so a subagent cannot be resumed here."}
++    session_key, origin_ui = _resolve_async_session_key(parent_agent, origin_ui)
++    count = max(int(spec.get("task_count") or 1), index + 1)
++    goals = [""] * count
++    goals[index] = child.get("goal") or ""
++    # The record a restart handoff would rebuild the child from, moved to where the child ended.
++    resume_child = {**child, **{k: v for k, v in state.items() if v is not None}, "session_id": session_id}
++    unit_id = _new_delegation_id()
++    record = {**spec, "children": {index_key: resume_child}, "task_count": count, "resumed": True,
++              "slot_key": unit_id}
++    resumed = _ResumedUnit({
++        "delegation_id": unit_id, "handoff": record, "kept": {}, "goals": goals, "task_indexes": [index],
++        "parent_session_id": str(getattr(parent_agent, "session_id", "") or ""), "origin_ui_session_id": origin_ui,
++        "dispatched_at": time.time()}, message=text)
++    handoff = record if _get_restart_handoff() else None
++    routing: dict[str, Any] = dict(
++        session_key=session_key, origin_ui_session_id=origin_ui, origin_session_id=wake_sid,
++        parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children())
++    queue = _get_queue_at_capacity()
++    if queue:
++        routing["max_total"] = _get_max_concurrent_children_total()
++    handle = dispatch_async_delegation_batch(
++        goals=goals, context=child.get("context"), toolsets=None, role=spec.get("top_role") or "leaf", model=None,
++        runner=resumed.run, interrupt_fn=resumed.interrupt, progress_fn=resumed.progress, delegation_id=unit_id,
++        task_indexes=[index], handoff=handoff, handoff_fn=resumed.hand_off if handoff else None,
++        queue_at_capacity=queue, task_transcripts=({str(index): child["transcript"]} if child.get("transcript") else None),
++        **routing)
++    if handle.get("status") not in ("dispatched", "queued"):
++        return {"error": handle.get("error") or "The subagent could not be resumed."}
++    payload = {
++        "action": "resume", "status": handle["status"], "mode": "background", "subagent_id": sid,
++        "delegation_id": spec.get("live_deleg_id") or unit_id, "run_id": unit_id, "task_index": index,
++        "note": ("The subagent continues its conversation with your message as the next turn, in the background; its "
++                 "result re-enters the conversation as a new message ('Subagent resumed and finished'). Results are "
++                 "delivered only after you END YOUR TURN: do anything that does not depend on it, then stop with a "
++                 "one-line status. Do not poll its transcript to wait for it.")}
++    if handle["status"] == "queued":
++        payload.update(queue_position=handle.get("queue_position"), queued_by=handle.get("queued_by"))
++        payload["note"] = ("Nothing is blocked: the chat is at its background limit, so this resume is QUEUED and "
++                           "starts on its own when a run finishes (first in, first out). " + payload["note"])
++    return payload
+diff --git a/tools/process_registry_notifications.py b/tools/process_registry_notifications.py
+index dfe7dfb8..7ec87b42 100644
+--- a/tools/process_registry_notifications.py
++++ b/tools/process_registry_notifications.py
+@@ -217,6 +217,19 @@ def _recovery_lines(evt: dict) -> list[str]:
+     return lines
+ 
+ 
++def _resumed_intro(resumed: object, goals: list, results: list) -> str:
++    """Intro of a unit that is a finished subagent resumed with a new message (``delegate_task(action='resume')``)."""
++    resumed = resumed if isinstance(resumed, dict) else {}
++    index = next(iter(resumed.get("task_indexes") or [results[0].get("task_index", 0) if results else 0]), 0)
++    goal = goals[index] if isinstance(index, int) and 0 <= index < len(goals) else ""
++    sid = next(iter(resumed.get("subagent_ids") or []), None)
++    ident = ", ".join(x for x in (f"subagent {sid}" if sid else "", f"delegation {resumed['delegation_id']}"
++                                  if resumed.get("delegation_id") else "") if x)
++    return (f"Subagent resumed and finished: {goal or 'the task'}" + (f" ({ident})" if ident else "") + ". You sent it "
++            "a new message and it continued with its full earlier context; its result for that round is below. You "
++            "may have moved on since — act on it, or resume it again.")
++
++
+ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> str:
+     """Consolidated block for a delegate_task fan-out that finished as one unit."""
+     results, goals = evt.get("results") or [], evt.get("goals") or []
+@@ -226,14 +239,17 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
+     unit = f"group '{group}' ({n_unit} subagent(s))" if group is not None else f"{n_unit} subagent(s)"
+     # Each task names its own route below; the unit's one model would misreport a batch on several routes.
+     per_task_routes = bool(results) and all(_ran_on_line(r) for r in results)
+-    lines = _preamble(
+-        evt,
+-        f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
++    intro = (
+         f"A background fan-out unit you dispatched earlier — {unit} — has finished; its consolidated results are "
+         "below. Any other units from the same delegate_task call report separately as they finish. You may have "
+         "moved on since dispatching — act on these or re-dispatch if things have changed. If you are still waiting "
+-        "on siblings, end your turn after acting on this one.",
+-        completed_at, with_goal=False, with_model=not per_task_routes)
++        "on siblings, end your turn after acting on this one.")
++    if resumed := evt.get("resumed"):
++        intro = _resumed_intro(resumed, goals, results)
++    lines = _preamble(
++        evt,
++        f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
++        intro, completed_at, with_goal=False, with_model=not per_task_routes)
+     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
+     lines += _recovery_lines(evt)
+     if evt.get("error") and not results:
+@@ -350,7 +366,7 @@ def async_delegation_display_text(evt: dict) -> str:
+         goal = goals[index] if 0 <= index < len(goals) else result.get("goal", "")
+         titles.append(" ".join(str(goal or "Background task").split()))
+     if len(results) == 1:
+-        return f"Subagent Task {labels[0]}: {_short_title(titles[0])}"
++        return f"Subagent Task {labels[0]}{' (resumed)' if evt.get('resumed') else ''}: {_short_title(titles[0])}"
+     outcome = labels[0] if len(set(labels)) == 1 else "Finished with Issues"
+     title = " ".join(str(evt.get("group") or "").split()) or "; ".join(titles)
+     return f"Subagent Tasks {outcome}: {_short_title(title)} ({len(results)} tasks)"

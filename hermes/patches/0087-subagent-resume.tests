@@ -1,0 +1,13 @@
+# The delegation code a resume rebuilds children with, its schema, and the completion text
+tests/tools/test_delegation_restart_handoff.py
+tests/tools/test_delegate_transcript_action.py
+tests/tools/test_delegate_control_actions.py
+tests/tools/test_delegate.py
+tests/tools/test_delegate_capacity_queue.py
+tests/tools/test_delegate_group_schema.py
+tests/tools/test_delegate_child_transcript_release.py
+tests/tools/test_async_delegation.py
+tests/tools/test_async_delegation_requeue.py
+tests/tools/test_async_delegation_route_lines.py
+tests/tools/test_subagent_process_handoff.py
+tests/tui_gateway/test_delegate_completion_routing.py
