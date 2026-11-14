@@ -1,0 +1,1199 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 00:46:30 +0000
+Subject: [PATCH] fix(goals): no turn budget by default, pause only when stuck
+
+A /goal was capped at 20 turns and then paused whatever the progress. It now
+has no turn cap by default (goals.max_turns 0; 0 and None stay 0 instead of
+falling back to 20) and runs until the judge says done, the user pauses or
+clears it, or it is stuck. goals.stuck_turns (default 3, 0 = off) pauses a goal
+whose judge reason repeats that many turns in a row, or whose no-tool turn
+repeats the previous reply, with a plain reason and /goal resume to continue.
+A positive goals.max_turns still caps. Status shows 'turn N', the set
+confirmation drops the budget, and the /goal help says so. Kanban goal-mode
+workers keep their own cap.
+---
+ gateway/run_goals.py                          |  38 +++-
+ gateway/session_viewer_automation.py          |   8 +-
+ hermes_cli/cli_loops_mixin.py                 |  15 +-
+ hermes_cli/commands.py                        |   2 +-
+ hermes_cli/config_defaults.py                 |  13 +-
+ hermes_cli/goal_command.py                    |  12 +-
+ hermes_cli/goals.py                           | 162 ++++++++++++++-
+ locales/af.yaml                               |   1 +
+ locales/ar.yaml                               |   1 +
+ locales/de.yaml                               |   1 +
+ locales/en.yaml                               |   1 +
+ locales/es.yaml                               |   1 +
+ locales/fr.yaml                               |   1 +
+ locales/ga.yaml                               |   1 +
+ locales/hu.yaml                               |   1 +
+ locales/it.yaml                               |   1 +
+ locales/ja.yaml                               |   1 +
+ locales/ko.yaml                               |   1 +
+ locales/pt.yaml                               |   1 +
+ locales/ru.yaml                               |   1 +
+ locales/tr.yaml                               |   1 +
+ locales/uk.yaml                               |   1 +
+ locales/zh-hant.yaml                          |   1 +
+ locales/zh.yaml                               |   1 +
+ .../gateway/test_goal_resume_after_restart.py |  14 ++
+ .../gateway/test_session_viewer_automation.py |   2 +-
+ tests/hermes_cli/test_gateway_automation.py   |   4 +-
+ tests/hermes_cli/test_goal_uncapped.py        | 194 ++++++++++++++++++
+ tui_gateway/methods_tools.py                  |   7 +-
+ tui_gateway/prompt_turn.py                    |   8 +-
+ ui-tui/src/app/goalStatus.ts                  |   2 +-
+ website/docs/reference/slash-commands.md      |   2 +-
+ website/docs/user-guide/configuration.md      |   7 +-
+ website/docs/user-guide/features/goals.md     |  38 ++--
+ 34 files changed, 478 insertions(+), 67 deletions(-)
+ create mode 100644 tests/hermes_cli/test_goal_uncapped.py
+
+diff --git a/gateway/run_goals.py b/gateway/run_goals.py
+index 1f5f1f47..d16542dd 100644
+--- a/gateway/run_goals.py
++++ b/gateway/run_goals.py
+@@ -34,7 +34,7 @@ class GatewayGoalsMixin:
+ 
+     # ── /goal — persistent cross-turn goals (Ralph-style loop) ──────────
+     def _goal_max_turns_from_config(self) -> int:
+-        """Configured /goal turn budget. GatewayRunner.config is a GatewayConfig dataclass, so the
++        """Configured /goal turn cap (0 = no cap). GatewayRunner.config is a GatewayConfig dataclass, so the
+         top-level ``goals`` block is only reachable via hermes_cli.config.load_config()."""
+         try:
+             goals_cfg = (
+@@ -46,9 +46,29 @@ class GatewayGoalsMixin:
+                 from hermes_cli.config import load_config
+ 
+                 goals_cfg = (load_config() or {}).get("goals") or {}
+-            return int(goals_cfg.get("max_turns", 20) or 20)
++            from hermes_cli.goals import max_turns_from_config
++
++            return max_turns_from_config(goals_cfg)
++        except Exception:
++            return 0
++
++    def _goal_stuck_turns_from_config(self) -> int:
++        """Configured ``goals.stuck_turns`` (0 = never pause as stuck)."""
++        from hermes_cli.goals import DEFAULT_STUCK_TURNS, stuck_turns_from_config
++
++        try:
++            goals_cfg = (
++                (self.config or {}).get("goals", {})
++                if isinstance(self.config, dict)
++                else getattr(self.config, "goals", {}) or {}
++            )
++            if not goals_cfg:
++                from hermes_cli.config import load_config
++
++                goals_cfg = (load_config() or {}).get("goals") or {}
++            return stuck_turns_from_config(goals_cfg)
+         except Exception:
+-            return 20
++            return DEFAULT_STUCK_TURNS
+ 
+     async def _warm_goals_session_db(self, label: str) -> None:
+         """Warm the goals SessionDB cache off-loop (best-effort): a cold cache runs the state.db
+@@ -93,7 +113,8 @@ class GatewayGoalsMixin:
+         def _load():
+             from hermes_cli.goals import GoalManager
+             max_turns = self._goal_max_turns_from_config()
+-            return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
++            return lambda sid: GoalManager(
++                session_id=sid, default_max_turns=max_turns, stuck_turns=self._goal_stuck_turns_from_config())
+         return await self._manager_for_event(event, "goal", _load)
+ 
+     async def _get_heartbeat_manager_for_event(self, event: MessageEvent):
+@@ -311,7 +332,8 @@ class GatewayGoalsMixin:
+         def _load():
+             from hermes_cli.goals import GoalManager
+             max_turns = self._goal_max_turns_from_config()
+-            return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
++            return lambda sid: GoalManager(
++                session_id=sid, default_max_turns=max_turns, stuck_turns=self._goal_stuck_turns_from_config())
+ 
+         mgr = await self._post_turn_manager(session_entry, "goal continuation", "goals", _load)
+         if mgr is None or not mgr.is_active():
+@@ -598,7 +620,7 @@ class GatewayGoalsMixin:
+         (goal turn count and last turn time) per process; returns True when a turn was queued."""
+         from hermes_cli.goals import GoalManager
+ 
+-        if state.status != "active" or state.turns_used >= state.max_turns:
++        if state.status != "active" or state.budget_spent():
+             return False
+         if now - max(state.last_turn_at or 0.0, state.created_at or 0.0) < GOAL_RESUME_GRACE_S:
+             return False
+@@ -630,7 +652,9 @@ class GatewayGoalsMixin:
+             return False
+ 
+         def _next_prompt():
+-            mgr = GoalManager(session_id=sid, default_max_turns=self._goal_max_turns_from_config())
++            mgr = GoalManager(
++                session_id=sid, default_max_turns=self._goal_max_turns_from_config(),
++                stuck_turns=self._goal_stuck_turns_from_config())
+             return None if not mgr.is_active() or mgr.is_waiting() else mgr.next_continuation_prompt()
+ 
+         prompt = await self._run_in_executor_with_context(_next_prompt)
+diff --git a/gateway/session_viewer_automation.py b/gateway/session_viewer_automation.py
+index cf55f910..5ce610ca 100644
+--- a/gateway/session_viewer_automation.py
++++ b/gateway/session_viewer_automation.py
+@@ -48,14 +48,16 @@ def _max_turns(runner):
+     configured = getattr(runner, "_goal_max_turns_from_config", None)
+     if configured is not None:
+         return configured()
+-    from hermes_cli.goals import DEFAULT_MAX_TURNS
+-    return DEFAULT_MAX_TURNS
++    from hermes_cli.goals import DEFAULT_GOAL_MAX_TURNS
++    return DEFAULT_GOAL_MAX_TURNS
+ 
+ 
+ def _manager(runner, kind, target):
+     if kind == "goal":
+         from hermes_cli.goals import GoalManager
+-        return GoalManager(session_id=target, default_max_turns=_max_turns(runner))
++        stuck = getattr(runner, "_goal_stuck_turns_from_config", None)
++        kwargs = {"stuck_turns": stuck()} if stuck is not None else {}
++        return GoalManager(session_id=target, default_max_turns=_max_turns(runner), **kwargs)
+     if kind == "loop":
+         from hermes_cli.loops import LoopManager
+         return LoopManager(session_id=target)
+diff --git a/hermes_cli/cli_loops_mixin.py b/hermes_cli/cli_loops_mixin.py
+index 1a0e540a..858b07a7 100644
+--- a/hermes_cli/cli_loops_mixin.py
++++ b/hermes_cli/cli_loops_mixin.py
+@@ -621,17 +621,22 @@ class CLILoopsMixin:
+ 
+     def _get_goal_manager(self):
+         """GoalManager bound to the current session_id (see ``_session_bound_manager``)."""
+-        def max_turns():
++        def limits():
+             from hermes_cli.config import load_config
++            from hermes_cli.goals import DEFAULT_STUCK_TURNS, max_turns_from_config, stuck_turns_from_config
+             try:
+                 goals_cfg = (load_config() or {}).get("goals") or {}
+-                return int(goals_cfg.get("max_turns", 20) or 20)
+-            except Exception:  # health: allow BLE001 -- main's fallback: an unreadable goals config is the 20-turn default
+-                return 20
++                return max_turns_from_config(goals_cfg), stuck_turns_from_config(goals_cfg)
++            except Exception:  # health: allow BLE001 -- an unreadable goals config is the default: no cap, stuck after 3
++                return 0, DEFAULT_STUCK_TURNS
+ 
+         def load():
+             from hermes_cli.goals import GoalManager
+-            return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns())
++
++            def build(sid):
++                max_turns, stuck_turns = limits()
++                return GoalManager(session_id=sid, default_max_turns=max_turns, stuck_turns=stuck_turns)
++            return build
+ 
+         def remote(sid, connection):
+             from hermes_cli.gateway_automation import GatewayGoalManager
+diff --git a/hermes_cli/commands.py b/hermes_cli/commands.py
+index c6ae840b..c757281d 100644
+--- a/hermes_cli/commands.py
++++ b/hermes_cli/commands.py
+@@ -148,7 +148,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
+                busy_policy="dispatch", busy_handler="queue"),
+     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
+                aliases=("s",), args_hint="<prompt>", busy_policy="dispatch", busy_handler="steer"),
+-    CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
++    CommandDef("goal", "Set a standing goal Hermes works on across turns until done, stopped or stuck (no turn limit)", "Session",
+                args_hint="[text | -- <text> | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
+                argument_mode="mixed", busy_policy="dispatch", busy_handler="goal"),
+     CommandDef("heartbeat", "Set a recurring prompt that re-enters this session when idle", "Session",
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 77646eaf..77646374 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1461,12 +1461,15 @@ DEFAULT_CONFIG = {
+     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.
+     "prefill_messages_file": "",
+     # Goals — persistent cross-turn /goal loop: after each turn an aux-model judge checks if the
+-    # goal is satisfied, else a continuation prompt re-enters the session until done, budget
+-    # exhausted, or paused. Judge failures fail OPEN; the budget is the backstop.
++    # goal is satisfied, else a continuation prompt re-enters the session until done, you pause or
++    # clear it, or it is stuck. Judge failures fail OPEN; stuck detection is the backstop.
+     "goals": {
+-        # Max continuation turns before auto-pause (/goal resume) — guards against judge false
+-        # negatives and unbounded spend.
+-        "max_turns": 20,
++        # Turn cap before auto-pause (/goal resume). 0 = no cap: the goal runs until done, stopped
++        # or stuck. A positive value caps every new goal at that many turns.
++        "max_turns": 0,
++        # Pause a goal as stuck when the judge gives substantially the same "not done" reason, or
++        # a turn with no tool call repeats the previous reply, this many turns in a row (0 = never).
++        "stuck_turns": 3,
+     },
+     # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
+     # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially
+diff --git a/hermes_cli/goal_command.py b/hermes_cli/goal_command.py
+index 0c19ebf3..d360f300 100644
+--- a/hermes_cli/goal_command.py
++++ b/hermes_cli/goal_command.py
+@@ -151,8 +151,11 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
+         contract = contract if not contract.is_empty() else None
+     previous = mgr.state.goal if mgr.has_goal() else ""
+     state = mgr.set(headline or arg, contract=contract)
+-    output = render("gateway.goal.set", "⊙ Goal set ({budget}-turn budget): {goal}",
+-                    budget=state.max_turns, goal=state.goal)
++    if state.capped:
++        output = render("gateway.goal.set", "⊙ Goal set ({budget}-turn budget): {goal}",
++                        budget=state.max_turns, goal=state.goal)
++    else:
++        output = render("gateway.goal.set_uncapped", "⊙ Goal set (no turn limit): {goal}", goal=state.goal)
+     if previous and previous != state.goal:
+         output += f"\n(replaced the previous goal)\n  was: {previous}"
+     if state.has_contract():
+@@ -167,8 +170,9 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
+     else:
+         against = " against the contract above" if state.has_contract() else ""
+         output += (f"\nAfter each turn, a judge model checks if the goal is done{against}. "
+-                   "Hermes keeps working until it is, you pause/clear it, or the budget is "
+-                   "exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.")
++                   "Hermes keeps working until it is, you pause/clear it, "
++                   + ("or the budget is exhausted" if state.capped else "or it stops making progress")
++                   + ". Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.")
+     return GoalCommandResult(output, goals.goal_kick_prompt(state.goal, last_user_message), kickoff=True)
+ 
+ 
+diff --git a/hermes_cli/goals.py b/hermes_cli/goals.py
+index 188c55aa..c28d53bd 100644
+--- a/hermes_cli/goals.py
++++ b/hermes_cli/goals.py
+@@ -9,6 +9,8 @@ failures are fail-OPEN (``continue``); the turn budget is the backstop.
+ from __future__ import annotations
+ 
+ import asyncio
++import difflib
++import hashlib
+ import json
+ import logging
+ import os
+@@ -29,7 +31,15 @@ logger = logging.getLogger(__name__)
+ 
+ # ── Constants & defaults ──────────────────────────────────────────────
+ 
++# A /goal has no turn budget by default: it runs until the judge says done, the user pauses or clears
++# it, or it is stuck (see ``goals.stuck_turns``). ``goals.max_turns`` > 0 still caps it. 0 = no cap.
++NO_TURN_CAP = 0
++DEFAULT_GOAL_MAX_TURNS = NO_TURN_CAP
++# Kanban goal-mode workers run unattended with nobody to /goal resume them, so they keep a cap.
+ DEFAULT_MAX_TURNS = 20
++# Consecutive turns with the same judge reason (or the same idle reply) before the goal pauses as stuck.
++DEFAULT_STUCK_TURNS = 3
++_STUCK_SIMILARITY = 0.92
+ DEFAULT_JUDGE_TIMEOUT = 30.0
+ # Judge output budget. Reasoning models burn hidden-reasoning tokens before the visible one-line
+ # JSON verdict; 200 (the original) reliably truncated it and tripped the auto-pause. 4096 covers
+@@ -422,7 +432,7 @@ class GoalState:
+     goal: str
+     status: str = "active"          # active | paused | done | cleared
+     turns_used: int = 0
+-    max_turns: int = DEFAULT_MAX_TURNS
++    max_turns: int = DEFAULT_GOAL_MAX_TURNS   # 0 = no cap
+     created_at: float = 0.0
+     last_turn_at: float = 0.0
+     last_verdict: Optional[str] = None        # "done" | "blocked" | "continue" | "wait" | "skipped"
+@@ -432,6 +442,12 @@ class GoalState:
+     # Tracked separately from parse failures: a broken API key returns 401 every call and must
+     # auto-pause instead of burning the budget on an unreachable judge.
+     consecutive_transport_failures: int = 0   # judge API/transport errors in a row
++    # Stuck detection: the judge's "not done" reason repeating, or a turn with no tool calls that
++    # repeats the previous reply. Reset by /goal resume.
++    same_reason_streak: int = 0
++    last_reason_norm: str = ""
++    same_reply_streak: int = 0
++    last_reply_hash: str = ""
+     # User-added criteria (/subgoal). Both the judge and continuation prompts include them.
+     subgoals: list[str] = field(default_factory=list)
+     # Wait barrier (judge ``wait`` verdict or ``/goal wait``): parks the loop instead of re-poking the
+@@ -459,12 +475,14 @@ class GoalState:
+     def from_json(cls, raw: str) -> GoalState:
+         data = json.loads(raw)
+         raw_subgoals = data.get("subgoals") or []
+-        ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
++        ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations", "same_reason_streak", "same_reply_streak")}
+         floats = {k: float(data.get(k) or 0.0) for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")}
+         return cls(
+             goal=data.get("goal", ""),
+             status=data.get("status", "active"),
+-            max_turns=int(data.get("max_turns") or DEFAULT_MAX_TURNS),
++            max_turns=max(0, int(data.get("max_turns") or DEFAULT_GOAL_MAX_TURNS)),
++            last_reason_norm=str(data.get("last_reason_norm") or ""),
++            last_reply_hash=str(data.get("last_reply_hash") or ""),
+             last_verdict=data.get("last_verdict"),
+             last_reason=data.get("last_reason"),
+             paused_reason=data.get("paused_reason"),
+@@ -487,6 +505,23 @@ class GoalState:
+         """Numbered ``- N. text`` block; empty when there are no subgoals."""
+         return "\n".join(f"- {i}. {text}" for i, text in enumerate(self.subgoals, start=1))
+ 
++    @property
++    def capped(self) -> bool:
++        return self.max_turns > 0
++
++    def budget_spent(self) -> bool:
++        """True only for a goal with an explicit turn cap that has used it up."""
++        return self.max_turns > 0 and self.turns_used >= self.max_turns
++
++    def turns_label(self) -> str:
++        return f"{self.turns_used}/{self.max_turns} turns" if self.capped else f"turn {self.turns_used}"
++
++    def reset_stuck(self) -> None:
++        self.same_reason_streak = 0
++        self.last_reason_norm = ""
++        self.same_reply_streak = 0
++        self.last_reply_hash = ""
++
+     def clear_wait(self) -> None:
+         self.waiting_on_pid = None
+         self.waiting_on_session = None
+@@ -1110,6 +1145,64 @@ _JUDGE_CONFIG_HINT = (
+ )
+ 
+ 
++def max_turns_from_config(goals_cfg: Any) -> int:
++    """``goals.max_turns`` as a cap: a positive int caps, anything else (0, None, junk) is no cap."""
++    try:
++        value = int((goals_cfg or {}).get("max_turns") or 0)
++    except (TypeError, ValueError, AttributeError):
++        return NO_TURN_CAP
++    return value if value > 0 else NO_TURN_CAP
++
++
++def stuck_turns_from_config(goals_cfg: Any) -> int:
++    """``goals.stuck_turns``: consecutive same-reason turns before a stuck pause (0 = never)."""
++    try:
++        raw = (goals_cfg or {}).get("stuck_turns")
++        return max(0, int(DEFAULT_STUCK_TURNS if raw is None else raw))
++    except (TypeError, ValueError, AttributeError):
++        return DEFAULT_STUCK_TURNS
++
++
++def _normalize_text(text: str) -> str:
++    return " ".join(re.sub(r"[^0-9a-z]+", " ", (text or "").lower()).split())
++
++
++def _same_reason(a: str, b: str) -> bool:
++    """Whether two normalized judge reasons say the same thing. Case, punctuation and spacing are
++    already gone; a near-identical rewording still counts, a reason that names new work does not."""
++    if not a or not b:
++        return False
++    return a == b or difflib.SequenceMatcher(None, a, b).ratio() >= _STUCK_SIMILARITY
++
++
++def _reply_hash(text: str) -> str:
++    norm = _normalize_text(text)
++    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16] if norm else ""
++
++
++def _turn_used_tools(session_id: str) -> Optional[bool]:
++    """Whether the newest turn of ``session_id`` called any tool (None when it cannot be told).
++    Every file change goes through a tool call, so a turn without one changed nothing."""
++    try:
++        db = _get_session_db()
++        if db is None:
++            return None
++        rows = db.get_messages(str(session_id), limit=400, latest=True)
++    except Exception:
++        return None
++    if not rows:
++        return None
++    for msg in reversed(rows):
++        if not isinstance(msg, dict):
++            continue
++        role = msg.get("role")
++        if role == "user":
++            return False
++        if role == "tool" or (role == "assistant" and msg.get("tool_calls")):
++            return True
++    return None
++
++
+ class GoalManager:
+     """Per-session goal state + continuation decisions.
+ 
+@@ -1118,9 +1211,12 @@ class GoalManager:
+     canonical user-role message to feed back into ``run_conversation``.
+     """
+ 
+-    def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
++    def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_GOAL_MAX_TURNS,
++                 stuck_turns: int = DEFAULT_STUCK_TURNS):
+         self.session_id = session_id
+-        self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
++        # 0 / None = no turn cap; the loop then ends on done, the user, or a stuck pause.
++        self.default_max_turns = max(0, int(default_max_turns or 0))
++        self.stuck_turns = max(0, int(DEFAULT_STUCK_TURNS if stuck_turns is None else stuck_turns))
+         self._state: Optional[GoalState] = load_goal(session_id)
+ 
+     def refresh(self) -> None:
+@@ -1146,7 +1242,7 @@ class GoalManager:
+         s = self._state
+         if s is None or s.status == "cleared":
+             return "No active goal. Set one with /goal <text>."
+-        turns = f"{s.turns_used}/{s.max_turns} turns"
++        turns = s.turns_label()
+         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
+         con = ", contract" if self.has_contract() else ""
+         gat = f", {len(s.gates)} gate{'s' if len(s.gates) != 1 else ''}" if s.gates else ""
+@@ -1199,7 +1295,7 @@ class GoalManager:
+             raise ValueError("goal text is empty")
+         self._state = GoalState(
+             goal=goal, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
+-            max_turns=int(max_turns) if max_turns else self.default_max_turns,
++            max_turns=int(max_turns) if max_turns and int(max_turns) > 0 else self.default_max_turns,
+             contract=contract if contract is not None else GoalContract(),
+         )
+         return self._save()
+@@ -1225,6 +1321,7 @@ class GoalManager:
+         self._state.status = "active"
+         self._state.paused_reason = None
+         self._state.clear_wait()   # resuming starts fresh
++        self._state.reset_stuck()
+         if reset_budget:
+             self._state.turns_used = 0
+         return self._save()
+@@ -1375,7 +1472,7 @@ class GoalManager:
+             return _decision(
+                 "active", True, prompt, "gate_failed",
+                 f"gate failed (exit {exit_code}): $ {gate.command}",
+-                f"✗ Quality gate failed ({state.turns_used}/{state.max_turns} turns, "
++                f"✗ Quality gate failed ({state.turns_label()}, "
+                 f"attempt {gate.attempts}/{gate.max_retries}): $ {gate.command}",
+             )
+ 
+@@ -1505,6 +1602,40 @@ class GoalManager:
+             "Use /goal resume to keep going, or /goal clear to stop.",
+         )
+ 
++    def _stuck_pause(self, state: GoalState, what: str, reason: str) -> dict[str, Any]:
++        n = self.stuck_turns
++        return self._pause_decision(
++            f"stuck: {what} {n} turns in a row", "continue", reason,
++            f"⏸ Goal paused — no progress: {what} {n} turns in a row"
++            + (f" ({_truncate(reason, 200)})" if reason else "")
++            + ". Use /goal resume to keep going (after changing course or fixing what blocks it), "
++            "or /goal clear to stop.",
++        )
++
++    def _track_stuck(self, state: GoalState, last_response: str, reason: str, *, judged_ok: bool) -> Optional[dict[str, Any]]:
++        """Update the no-progress streaks for this turn and return a pause decision when stuck.
++        Streak 1: the judge's reason repeating (reworded repeats count). Streak 2: a turn that called
++        no tool and repeated the previous turn's final text."""
++        if self.stuck_turns <= 0:
++            return None
++        norm = _normalize_text(reason) if judged_ok else ""
++        if norm and _same_reason(norm, state.last_reason_norm):
++            state.same_reason_streak = max(state.same_reason_streak, 1) + 1
++        else:
++            state.same_reason_streak = 1 if norm else 0
++        state.last_reason_norm = norm
++        digest = _reply_hash(last_response)
++        if digest and digest == state.last_reply_hash and _turn_used_tools(self.session_id) is False:
++            state.same_reply_streak = max(state.same_reply_streak, 1) + 1
++        else:
++            state.same_reply_streak = 1 if digest else 0
++        state.last_reply_hash = digest
++        if state.same_reason_streak >= self.stuck_turns:
++            return self._stuck_pause(state, "the judge gave the same reason", reason)
++        if state.same_reply_streak >= self.stuck_turns:
++            return self._stuck_pause(state, "the reply repeated with no tool calls", _truncate(last_response, 200))
++        return None
++
+     def evaluate_after_turn(
+         self, last_response: str, *, user_initiated: bool = True,
+         background_processes: Optional[list[dict[str, Any]]] = None,
+@@ -1528,7 +1659,11 @@ class GoalManager:
+         # so the judge is skipped and the gate's output drives the next turn (same turn budget).
+         gate_decision = self._check_gates()
+         if gate_decision is not None:
+-            if gate_decision.get("should_continue") and state.turns_used >= state.max_turns:
++            if gate_decision.get("should_continue"):
++                stuck = self._track_stuck(state, last_response, str(gate_decision.get("reason") or ""), judged_ok=True)
++                if stuck is not None:
++                    return stuck
++            if gate_decision.get("should_continue") and state.budget_spent():
+                 return self._budget_pause(state, "gate_failed", gate_decision.get("reason", ""), note=" (a quality gate is still failing)")
+             return gate_decision
+ 
+@@ -1582,13 +1717,18 @@ class GoalManager:
+                 + _JUDGE_CONFIG_HINT.format(provider="openrouter", model="google/gemini-3-flash-preview"),
+             )
+ 
+-        if state.turns_used >= state.max_turns:
++        stuck = self._track_stuck(state, last_response, reason, judged_ok=not (parse_failed or transport_failed))
++        if stuck is not None:
++            return stuck
++
++        if state.budget_spent():
+             return self._budget_pause(state, "continue", reason)
+ 
+         self._save()
++        progress = f"{state.turns_used}/{state.max_turns}" if state.capped else f"turn {state.turns_used}"
+         return _decision(
+             "active", True, self.next_continuation_prompt(), "continue", reason,
+-            f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}",
++            f"↻ Continuing toward goal ({progress}): {reason}",
+         )
+ 
+     def next_continuation_prompt(self) -> Optional[str]:
+diff --git a/locales/af.yaml b/locales/af.yaml
+index c90d9884..afbfe410 100644
+--- a/locales/af.yaml
++++ b/locales/af.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ Doelwit hervat: {goal}\nGaan nou voort — ek neem dadelik die volgende stap."
+     invalid: "Ongeldige doelwit: {error}"
+     set: "⊙ Doelwit gestel ({budget}-beurt-begroting): {goal}\nEk sal aanhou werk totdat die doelwit klaar is, jy dit pouseer/verwyder, of die begroting opgebruik is.\nBeheer: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add vereis 'n uitdruklik opgestelde gateway-administrateur (allow_admin_from vir privaatgesprekke, group_allow_admin_from vir groepe)."
+   help:
+     header: "📖 **Hermes-opdragte**\n"
+diff --git a/locales/ar.yaml b/locales/ar.yaml
+index 80958dd2..5e170710 100644
+--- a/locales/ar.yaml
++++ b/locales/ar.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ استُؤنف الهدف: {goal}\nسأتابع الآن — سأتخذ الخطوة التالية فورًا."
+     invalid: "هدف غير صالح: {error}"
+     set: "⊙ حُدِّد الهدف (ميزانية {budget} دور): {goal}\nسأواصل العمل حتى يكتمل الهدف، أو توقفه/تمسحه، أو تنفد الميزانية.\nالتحكم: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ يتطلّب /goal gate add مشرف بوّابة مضبوطًا صراحةً (allow_admin_from للرسائل الخاصة، group_allow_admin_from للمجموعات)."
+   help:
+     header: "📖 **أوامر Hermes**\n"
+diff --git a/locales/de.yaml b/locales/de.yaml
+index c0654952..c7a2ea08 100644
+--- a/locales/de.yaml
++++ b/locales/de.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ Ziel fortgesetzt: {goal}\nEs geht sofort weiter — ich übernehme jetzt den nächsten Schritt."
+     invalid: "Ungültiges Ziel: {error}"
+     set: "⊙ Ziel gesetzt ({budget}-Zug-Budget): {goal}\nIch arbeite weiter, bis das Ziel erreicht ist, Sie es pausieren/löschen oder das Budget aufgebraucht ist.\nSteuerung: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add erfordert einen explizit konfigurierten Gateway-Admin (allow_admin_from für Direktnachrichten, group_allow_admin_from für Gruppen)."
+   help:
+     header: "📖 **Hermes-Befehle**\n"
+diff --git a/locales/en.yaml b/locales/en.yaml
+index 81708870..e6ba941d 100644
+--- a/locales/en.yaml
++++ b/locales/en.yaml
+@@ -214,6 +214,7 @@ gateway:
+     resumed: "▶ Goal resumed: {goal}\nContinuing now — I'll take the next step right away."
+     invalid: "Invalid goal: {error}"
+     set: "⊙ Goal set ({budget}-turn budget): {goal}\nI'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add requires an explicitly configured gateway admin (allow_admin_from for DMs, group_allow_admin_from for groups)."
+   help:
+     header: "📖 **Hermes Commands**\n"
+diff --git a/locales/es.yaml b/locales/es.yaml
+index 4b003927..f4eb756a 100644
+--- a/locales/es.yaml
++++ b/locales/es.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ Objetivo reanudado: {goal}\nContinuando ahora — daré el siguiente paso de inmediato."
+     invalid: "Objetivo no válido: {error}"
+     set: "⊙ Objetivo establecido (presupuesto de {budget} turnos): {goal}\nSeguiré trabajando hasta que el objetivo se complete, lo pauses/elimines o se agote el presupuesto.\nControles: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add requiere un administrador del gateway configurado explícitamente (allow_admin_from para MD, group_allow_admin_from para grupos)."
+   help:
+     header: "📖 **Comandos de Hermes**\n"
+diff --git a/locales/fr.yaml b/locales/fr.yaml
+index 470642dc..c30dc46f 100644
+--- a/locales/fr.yaml
++++ b/locales/fr.yaml
+@@ -237,6 +237,7 @@ gateway:
+     resumed: "▶ Objectif repris : {goal}\nReprise immédiate — je passe tout de suite à l'étape suivante."
+     invalid: "Objectif invalide : {error}"
+     set: "⊙ Objectif défini (budget de {budget} tours) : {goal}\nJe continuerai jusqu'à ce que l'objectif soit terminé, que vous le mettiez en pause/effaciez, ou que le budget soit épuisé.\nContrôles : /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add nécessite un admin du gateway explicitement configuré (allow_admin_from pour les messages privés, group_allow_admin_from pour les groupes)."
+   help:
+     header: "📖 **Commandes Hermes**\n"
+diff --git a/locales/ga.yaml b/locales/ga.yaml
+index 5e3e7408..e9004c07 100644
+--- a/locales/ga.yaml
++++ b/locales/ga.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ Sprioc atosaithe: {goal}\nAg leanúint ar aghaidh anois — déanfaidh mé an chéad chéim eile láithreach."
+     invalid: "Sprioc neamhbhailí: {error}"
+     set: "⊙ Sprioc socraithe (buiséad {budget} seal): {goal}\nLeanfaidh mé ag obair go dtí go bhfuil an sprioc críochnaithe, go gcuirfidh tú ar sos / go nglanfaidh tú í, nó go n-úsáidfear an buiséad.\nSmacht: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ Teastaíonn riarthóir gateway atá cumraithe go sainráite le /goal gate add (allow_admin_from do DMs, group_allow_admin_from do ghrúpaí)."
+   help:
+     header: "📖 **Orduithe Hermes**\n"
+diff --git a/locales/hu.yaml b/locales/hu.yaml
+index 994c7a85..e6169ce8 100644
+--- a/locales/hu.yaml
++++ b/locales/hu.yaml
+@@ -214,6 +214,7 @@ gateway:
+     resumed: "▶ Cél folytatva: {goal}\nMáris folytatom — azonnal megteszem a következő lépést."
+     invalid: "Érvénytelen cél: {error}"
+     set: "⊙ Cél beállítva ({budget} körös keret): {goal}\nDolgozni fogok rajta, amíg a cél el nem készül, te nem szünetelteted/törlöd, vagy a keret ki nem merül.\nVezérlés: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ A /goal gate add parancshoz kifejezetten beállított átjáró-admin kell (allow_admin_from a DM-ekhez, group_allow_admin_from a csoportokhoz)."
+   help:
+     header: "📖 **Hermes parancsok**\n"
+diff --git a/locales/it.yaml b/locales/it.yaml
+index 60013cd1..4e7a37a7 100644
+--- a/locales/it.yaml
++++ b/locales/it.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ Obiettivo ripreso: {goal}\nContinuo subito — farò immediatamente il prossimo passo."
+     invalid: "Obiettivo non valido: {error}"
+     set: "⊙ Obiettivo impostato (budget di {budget} turni): {goal}\nContinuerò a lavorare finché l'obiettivo non sarà completato, lo metterai in pausa/lo cancellerai, oppure il budget sarà esaurito.\nControlli: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add richiede un admin del gateway configurato esplicitamente (allow_admin_from per i DM, group_allow_admin_from per i gruppi)."
+   help:
+     header: "📖 **Comandi Hermes**\n"
+diff --git a/locales/ja.yaml b/locales/ja.yaml
+index fa149f60..b2f2d988 100644
+--- a/locales/ja.yaml
++++ b/locales/ja.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ 目標を再開しました: {goal}\nすぐに続行します — 直ちに次のステップに進みます。"
+     invalid: "無効な目標: {error}"
+     set: "⊙ 目標を設定しました ({budget} ターンの予算): {goal}\n目標が完了するか、一時停止/解除されるか、予算が尽きるまで作業を続けます。\nコントロール: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add には、明示的に設定されたゲートウェイ管理者が必要です (DM は allow_admin_from、グループは group_allow_admin_from)。"
+   help:
+     header: "📖 **Hermes コマンド**\n"
+diff --git a/locales/ko.yaml b/locales/ko.yaml
+index c3031399..b001a718 100644
+--- a/locales/ko.yaml
++++ b/locales/ko.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ 목표 재개: {goal}\n바로 계속합니다 — 즉시 다음 단계를 진행하겠습니다."
+     invalid: "잘못된 목표: {error}"
+     set: "⊙ 목표 설정됨 ({budget}회 예산): {goal}\n목표가 완료되거나, 일시정지/삭제하거나, 예산이 소진될 때까지 계속 작업하겠습니다.\n제어: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add는 명시적으로 설정된 게이트웨이 관리자가 필요해요(DM은 allow_admin_from, 그룹은 group_allow_admin_from)."
+   help:
+     header: "📖 **Hermes 명령**\n"
+diff --git a/locales/pt.yaml b/locales/pt.yaml
+index 2cf555c0..eef38e77 100644
+--- a/locales/pt.yaml
++++ b/locales/pt.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ Objetivo retomado: {goal}\nContinuando agora — darei o próximo passo imediatamente."
+     invalid: "Objetivo inválido: {error}"
+     set: "⊙ Objetivo definido (orçamento de {budget} turnos): {goal}\nVou continuar a trabalhar até o objetivo estar concluído, pausares/limpares ou o orçamento esgotar.\nControlos: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add exige um administrador do gateway configurado explicitamente (allow_admin_from para DMs, group_allow_admin_from para grupos)."
+   help:
+     header: "📖 **Comandos do Hermes**\n"
+diff --git a/locales/ru.yaml b/locales/ru.yaml
+index 25022b56..3bf40492 100644
+--- a/locales/ru.yaml
++++ b/locales/ru.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ Цель возобновлена: {goal}\nПродолжаю прямо сейчас — немедленно сделаю следующий шаг."
+     invalid: "Недопустимая цель: {error}"
+     set: "⊙ Цель задана (бюджет {budget} ходов): {goal}\nЯ продолжу работу, пока цель не будет достигнута, вы её не приостановите/очистите, или бюджет не исчерпается.\nУправление: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add требует явно настроенного администратора шлюза (allow_admin_from для ЛС, group_allow_admin_from для групп)."
+   help:
+     header: "📖 **Команды Hermes**\n"
+diff --git a/locales/tr.yaml b/locales/tr.yaml
+index fc00610f..2c4b2251 100644
+--- a/locales/tr.yaml
++++ b/locales/tr.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ Hedef devam ettirildi: {goal}\nHemen devam ediyorum — bir sonraki adımı derhal atacağım."
+     invalid: "Geçersiz hedef: {error}"
+     set: "⊙ Hedef ayarlandı ({budget} turluk bütçe): {goal}\nHedef tamamlanana, siz duraklatana/temizleyene veya bütçe tükenene kadar çalışmaya devam edeceğim.\nKontroller: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add, açıkça yapılandırılmış bir gateway yöneticisi gerektirir (DM'ler için allow_admin_from, gruplar için group_allow_admin_from)."
+   help:
+     header: "📖 **Hermes Komutları**\n"
+diff --git a/locales/uk.yaml b/locales/uk.yaml
+index f79eaaaf..74061b3d 100644
+--- a/locales/uk.yaml
++++ b/locales/uk.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ Ціль відновлено: {goal}\nПродовжую зараз — негайно зроблю наступний крок."
+     invalid: "Неприпустима ціль: {error}"
+     set: "⊙ Ціль встановлено (бюджет {budget} ходів): {goal}\nЯ продовжуватиму працювати, доки ціль не буде досягнута, ви її не призупините/очистите, або бюджет не вичерпається.\nКерування: /goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add потребує явно налаштованого адміністратора шлюзу (allow_admin_from для приватних чатів, group_allow_admin_from для груп)."
+   help:
+     header: "📖 **Команди Hermes**\n"
+diff --git a/locales/zh-hant.yaml b/locales/zh-hant.yaml
+index 7ee2ec5d..9fa211ec 100644
+--- a/locales/zh-hant.yaml
++++ b/locales/zh-hant.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ 目標已恢復：{goal}\n立即繼續 — 我馬上進行下一步。"
+     invalid: "無效目標：{error}"
+     set: "⊙ 目標已設定（{budget} 輪預算）：{goal}\n我會持續工作直到目標完成、你暫停／清除目標，或預算耗盡。\n控制指令：/goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add 需要明確設定的閘道管理員（私訊用 allow_admin_from，群組用 group_allow_admin_from）。"
+   help:
+     header: "📖 **Hermes 指令**\n"
+diff --git a/locales/zh.yaml b/locales/zh.yaml
+index 4cd199ef..b303fa8b 100644
+--- a/locales/zh.yaml
++++ b/locales/zh.yaml
+@@ -211,6 +211,7 @@ gateway:
+     resumed: "▶ 目标已恢复：{goal}\n立即继续 — 我马上进行下一步。"
+     invalid: "无效目标：{error}"
+     set: "⊙ 目标已设置（{budget} 轮预算）：{goal}\n我将持续工作直到目标完成、你暂停/清除它，或预算耗尽。\n控制命令：/goal status · /goal pause · /goal resume · /goal clear"
++    set_uncapped: "⊙ Goal set (no turn limit): {goal}\nI'll keep working until the goal is done, you pause/clear it, or it stops making progress.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+     gate_add_admin_only: "⛔ /goal gate add 需要显式配置的网关管理员（私聊用 allow_admin_from，群组用 group_allow_admin_from）。"
+   help:
+     header: "📖 **Hermes 命令**\n"
+diff --git a/tests/gateway/test_goal_resume_after_restart.py b/tests/gateway/test_goal_resume_after_restart.py
+index 67b0ce54..3b036438 100644
+--- a/tests/gateway/test_goal_resume_after_restart.py
++++ b/tests/gateway/test_goal_resume_after_restart.py
+@@ -178,3 +178,17 @@ def test_watcher_scans_at_startup_and_queues_the_lost_continuation(goal_env, mon
+ 
+ def test_watcher_is_registered_after_reconnect():
+     assert "_goal_resume_watcher" in GatewayRunner._POST_RECONNECT_WATCHERS
++
++
++def test_uncapped_goal_past_twenty_turns_is_resumed(goal_env):
++    """A goal with no turn cap never counts as budget-spent, however many turns it used."""
++    runner, state = _runner(), _set_goal(max_turns=0, turns_used=57)
++    assert state.max_turns == 0
++    assert _fire(runner, state) is True
++    assert len(runner.adapter.fifo) == 1
++
++
++def test_capped_goal_at_its_cap_is_still_left_alone(goal_env):
++    runner, state = _runner(), _set_goal(max_turns=5, turns_used=5)
++    assert _fire(runner, state) is False
++    assert runner.adapter.fifo == []
+diff --git a/tests/gateway/test_session_viewer_automation.py b/tests/gateway/test_session_viewer_automation.py
+index ebe3e340..9679b642 100644
+--- a/tests/gateway/test_session_viewer_automation.py
++++ b/tests/gateway/test_session_viewer_automation.py
+@@ -75,7 +75,7 @@ async def test_the_goal_judge_runs_on_the_owner(owner, monkeypatch):
+     decision = reply['value']
+     assert seen == [('write the report', 'drafted the outline')]
+     assert decision['should_continue'] is True
+-    assert decision['message'] == '↻ Continuing toward goal (1/20): only the outline exists'
++    assert decision['message'] == '↻ Continuing toward goal (turn 1): only the outline exists'
+     assert decision['continuation_prompt'].startswith('[Continuing toward your standing goal]')
+     assert json.loads(owner.db.get_meta('goal:' + owner.target))['turns_used'] == 1
+ 
+diff --git a/tests/hermes_cli/test_gateway_automation.py b/tests/hermes_cli/test_gateway_automation.py
+index 2059d65e..93e9e5eb 100644
+--- a/tests/hermes_cli/test_gateway_automation.py
++++ b/tests/hermes_cli/test_gateway_automation.py
+@@ -44,7 +44,7 @@ def test_goal_manager_is_the_gateways(cli):
+     assert cli.conn.calls == [('goal', 'state')]  # loaded from the gateway, not this process's store
+     state = mgr.set('ship it')
+     assert state.goal == 'ship it' and mgr.is_active()
+-    assert mgr.status_line() == '⊙ Goal (active, 0/20 turns): ship it'
++    assert mgr.status_line() == '⊙ Goal (active, turn 0): ship it'
+     assert json.loads(cli.db.get_meta('goal:sid-1'))['goal'] == 'ship it'
+     with pytest.raises(IndexError, match='index out of range'):
+         mgr.remove_subgoal(4)
+@@ -116,5 +116,5 @@ def test_goal_draft_drafts_on_the_gateway(cli, monkeypatch):
+     result = dispatch_goal_command(mgr, 'draft ship the API', authorize_gate=lambda: None, progress=lines.append)
+     assert drafted == ['ship the API'] and ('goal', 'command') in cli.conn.calls
+     assert lines == ['Drafting completion contract…']
+-    assert result.output.startswith('⊙ Goal set (20-turn budget): ship the API') and result.kickoff
++    assert result.output.startswith('⊙ Goal set (no turn limit): ship the API') and result.kickoff
+     assert mgr.state.goal == 'ship the API'
+diff --git a/tests/hermes_cli/test_goal_uncapped.py b/tests/hermes_cli/test_goal_uncapped.py
+new file mode 100644
+index 00000000..59c85969
+--- /dev/null
++++ b/tests/hermes_cli/test_goal_uncapped.py
+@@ -0,0 +1,194 @@
++"""A /goal has no turn budget by default: it ends on done, the user, or when it is stuck."""
++
++from __future__ import annotations
++
++import time
++from unittest.mock import patch
++
++import pytest
++
++from hermes_cli import goals
++from hermes_cli.goal_command import dispatch_goal_command
++
++SID = "sid-uncapped"
++
++
++@pytest.fixture
++def hermes_home(tmp_path, monkeypatch):
++    from pathlib import Path
++
++    home = tmp_path / ".hermes"
++    home.mkdir()
++    monkeypatch.setattr(Path, "home", lambda: tmp_path)
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    goals._DB_CACHE.clear()
++    yield home
++    goals._DB_CACHE.clear()
++
++
++_TOPICS = ["parser", "database schema", "login form", "cache layer", "CLI flags", "release notes", "docker image",
++           "retry logic", "metrics exporter", "config loader", "unit fixtures", "http client", "search index",
++           "log rotation", "auth tokens", "email templates", "job queue", "file watcher", "rate limiter",
++           "i18n catalog", "build script", "plugin loader", "audit trail", "webhook signer", "pager"]
++
++
++def _fresh(i):
++    """A judge reason that names different work each turn."""
++    return f"The {_TOPICS[i % len(_TOPICS)]} is fixed, now the {_TOPICS[(i * 7 + 3) % len(_TOPICS)]} still needs work"
++
++
++def _judge(reason):
++    """judge_goal reply: not done, usable output (verdict, reason, parse_failed, wait, transport)."""
++    return ("continue", reason() if callable(reason) else reason, False, None, False)
++
++
++def _turn(mgr, reply="working on it", *, tools=True, reason="tests still fail"):
++    with patch.object(goals, "judge_goal", return_value=_judge(reason)), \
++            patch.object(goals, "_turn_used_tools", return_value=tools):
++        return mgr.evaluate_after_turn(reply, user_initiated=True)
++
++
++def test_default_goal_is_uncapped(hermes_home):
++    mgr = goals.GoalManager(SID)
++    state = mgr.set("ship it")
++    assert state.max_turns == 0 and not state.capped
++    assert goals.load_goal(SID).max_turns == 0   # 0 survives a reload, it does not become 20
++    assert "turn 0" in mgr.status_line() and "/" not in mgr.status_line().split("turn 0")[0].split()[-1]
++    assert "20" not in mgr.status_line()
++
++
++def test_default_goal_continues_past_twenty_turns_with_progress(hermes_home):
++    mgr = goals.GoalManager(SID)
++    mgr.set("ship it")
++    for i in range(1, 46):
++        decision = _turn(mgr, f"step {i}", reason=_fresh(i))
++        assert decision["should_continue"] is True, (i, decision)
++        assert decision["status"] == "active"
++    assert mgr.state.turns_used == 45
++    assert "/" not in decision["message"].split("(")[1].split(")")[0]
++    assert mgr.state.status == "active"
++
++
++def test_zero_and_none_config_mean_no_cap():
++    assert goals.max_turns_from_config({"max_turns": 0}) == 0
++    assert goals.max_turns_from_config({"max_turns": None}) == 0
++    assert goals.max_turns_from_config({}) == 0
++    assert goals.max_turns_from_config(None) == 0
++    assert goals.max_turns_from_config({"max_turns": 7}) == 7
++    assert goals.GoalManager("x", default_max_turns=0).default_max_turns == 0
++    assert goals.GoalManager("x", default_max_turns=None).default_max_turns == 0
++    assert goals.GoalState.from_json(goals.GoalState(goal="g", max_turns=0).to_json()).max_turns == 0
++
++
++def test_explicit_cap_still_pauses_at_n(hermes_home):
++    mgr = goals.GoalManager(SID, default_max_turns=3)
++    mgr.set("ship it")
++    assert mgr.state.max_turns == 3
++    assert "0/3 turns" in mgr.status_line()
++    out = [_turn(mgr, f"step {i}", reason=_fresh(i)) for i in range(1, 4)]
++    assert out[0]["should_continue"] and out[1]["should_continue"]
++    assert out[2]["status"] == "paused" and not out[2]["should_continue"]
++    assert "3/3 turns used" in out[2]["message"]
++    assert "turn budget exhausted" in mgr.state.paused_reason
++
++
++def test_same_judge_reason_three_times_pauses_as_stuck(hermes_home):
++    mgr = goals.GoalManager(SID)
++    mgr.set("ship it")
++    assert _turn(mgr, "a", reason="The tests are still failing in test_x.")["should_continue"]
++    assert _turn(mgr, "b", reason="the tests are still failing in test_x")["should_continue"]
++    third = _turn(mgr, "c", reason="The tests are still failing in test_x!")
++    assert third["status"] == "paused" and not third["should_continue"]
++    assert "no progress" in third["message"] and "/goal resume" in third["message"]
++    assert mgr.state.status == "paused" and mgr.state.paused_reason.startswith("stuck")
++    assert mgr.state.turns_used == 3
++
++
++def test_changing_reason_resets_the_stuck_streak(hermes_home):
++    mgr = goals.GoalManager(SID)
++    mgr.set("ship it")
++    for reason in ["tests failing in module alpha", "tests failing in module alpha",
++                   "lint reports forty unused imports across the package", "tests failing in module alpha",
++                   "tests failing in module alpha"]:
++        assert _turn(mgr, reason, reason=reason)["should_continue"]
++    assert mgr.state.status == "active"
++
++
++def test_stuck_turns_is_configurable_and_zero_disables(hermes_home):
++    mgr = goals.GoalManager(SID, stuck_turns=2)
++    mgr.set("ship it")
++    assert _turn(mgr, "a")["should_continue"]
++    assert _turn(mgr, "b")["status"] == "paused"
++    mgr = goals.GoalManager("sid-never", stuck_turns=0)
++    mgr.set("ship it")
++    for _ in range(8):
++        assert _turn(mgr, "same", tools=False)["should_continue"]
++    assert goals.stuck_turns_from_config({"stuck_turns": 5}) == 5
++    assert goals.stuck_turns_from_config({}) == goals.DEFAULT_STUCK_TURNS
++
++
++def test_same_reply_without_tool_calls_pauses_as_stuck(hermes_home):
++    mgr = goals.GoalManager(SID)
++    mgr.set("ship it")
++    decisions = [_turn(mgr, "I am waiting for you.", tools=False, reason=_fresh(i))
++                 for i in range(3)]
++    assert decisions[1]["should_continue"]
++    assert decisions[2]["status"] == "paused" and "no tool calls" in decisions[2]["message"]
++
++
++def test_same_reply_with_tool_calls_is_not_stuck(hermes_home):
++    mgr = goals.GoalManager(SID)
++    mgr.set("ship it")
++    for i in range(6):
++        assert _turn(mgr, "Done with this batch.", tools=True, reason=_fresh(i))["should_continue"]
++
++
++def test_resume_clears_the_stuck_state(hermes_home):
++    mgr = goals.GoalManager(SID)
++    mgr.set("ship it")
++    for _ in range(3):
++        _turn(mgr)
++    assert mgr.state.status == "paused"
++    mgr.resume()
++    assert mgr.state.status == "active" and mgr.state.same_reason_streak == 0
++    assert _turn(mgr)["should_continue"]
++
++
++def test_judge_parse_failures_still_pause_unchanged(hermes_home):
++    mgr = goals.GoalManager(SID)
++    mgr.set("ship it")
++    last = None
++    for _ in range(goals.DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES):
++        with patch.object(goals, "judge_goal", return_value=("continue", "no json", True, None, False)):
++            last = mgr.evaluate_after_turn(f"reply {_}", user_initiated=True)
++    assert last["status"] == "paused"
++    assert "isn't returning the required JSON verdict" in last["message"]
++    assert mgr.state.paused_reason.startswith("judge model returned unparseable output")
++
++
++def test_set_confirmation_has_no_budget_unless_capped(hermes_home):
++    out = dispatch_goal_command(goals.GoalManager(SID), "ship it", authorize_gate=lambda: None)
++    assert "no turn limit" in out.output and "20" not in out.output and "budget" not in out.output
++    capped = dispatch_goal_command(goals.GoalManager("sid-capped", default_max_turns=5), "ship it",
++                                   authorize_gate=lambda: None)
++    assert "5-turn budget" in capped.output
++
++
++def test_config_default_is_uncapped_with_stuck_turns():
++    from hermes_cli.config_defaults import DEFAULT_CONFIG
++
++    assert DEFAULT_CONFIG["goals"]["max_turns"] == 0
++    assert DEFAULT_CONFIG["goals"]["stuck_turns"] == 3
++
++
++def test_goal_command_help_says_no_turn_limit():
++    from hermes_cli.commands import COMMAND_REGISTRY
++
++    goal = next(c for c in COMMAND_REGISTRY if c.name == "goal")
++    assert "no turn limit" in goal.description and "stuck" in goal.description
++
++
++def test_old_state_without_stuck_fields_loads(hermes_home):
++    state = goals.GoalState.from_json('{"goal": "g", "status": "active", "turns_used": 4, "max_turns": 20}')
++    assert state.max_turns == 20 and state.same_reason_streak == 0 and state.last_reason_norm == ""
++    assert time.time() > 0
+diff --git a/tui_gateway/methods_tools.py b/tui_gateway/methods_tools.py
+index 1fe36999..9ff2a17d 100644
+--- a/tui_gateway/methods_tools.py
++++ b/tui_gateway/methods_tools.py
+@@ -803,10 +803,11 @@ def _cmd_goal(rid, params, session, name, arg):
+         if err:
+             return err
+         try:
+-            max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
++            goals_cfg = _load_cfg().get("goals") or {}
++            max_turns, stuck_turns = goals.max_turns_from_config(goals_cfg), goals.stuck_turns_from_config(goals_cfg)
+         except Exception:
+-            max_turns = 20
+-        mgr = goals.GoalManager(session_id=sid_key, default_max_turns=max_turns)
++            max_turns, stuck_turns = 0, goals.DEFAULT_STUCK_TURNS
++        mgr = goals.GoalManager(session_id=sid_key, default_max_turns=max_turns, stuck_turns=stuck_turns)
+         from hermes_cli.goal_command import dispatch_goal_command
+         result = dispatch_goal_command(
+             mgr, arg, authorize_gate=lambda: None,
+diff --git a/tui_gateway/prompt_turn.py b/tui_gateway/prompt_turn.py
+index c5658bfb..8359d25c 100644
+--- a/tui_gateway/prompt_turn.py
++++ b/tui_gateway/prompt_turn.py
+@@ -67,12 +67,14 @@ def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
+ def _active_goal_manager(session: dict):
+     """The session's GoalManager when a goal is active, else None."""
+     from hermes_cli.goals import GoalManager
++    from hermes_cli.goals import DEFAULT_STUCK_TURNS, max_turns_from_config, stuck_turns_from_config
+     try:
+-        max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
++        goals_cfg = _load_cfg().get("goals") or {}
++        max_turns, stuck_turns = max_turns_from_config(goals_cfg), stuck_turns_from_config(goals_cfg)
+     except Exception:
+-        max_turns = 20
++        max_turns, stuck_turns = 0, DEFAULT_STUCK_TURNS
+     goal_mgr = GoalManager(
+-        session_id=str(session.get("session_key") or ""), default_max_turns=max_turns)
++        session_id=str(session.get("session_key") or ""), default_max_turns=max_turns, stuck_turns=stuck_turns)
+     return goal_mgr if goal_mgr.is_active() else None
+ 
+ 
+diff --git a/ui-tui/src/app/goalStatus.ts b/ui-tui/src/app/goalStatus.ts
+index 6dfe76bc..f1de3844 100644
+--- a/ui-tui/src/app/goalStatus.ts
++++ b/ui-tui/src/app/goalStatus.ts
+@@ -37,7 +37,7 @@ export function goalLine(goal: GoalSnapshot | null): GoalLine | null {
+   }
+ 
+   // Subgoals and gates as the CLI dock counts them: a tool adding criteria mid-turn shows up here.
+-  const turns = [`${goal.turns_used}/${goal.max_turns} turns`, count(goal.subgoals.length, 'subgoal'), count(goal.gates.length, 'gate')]
++  const turns = [goal.max_turns > 0 ? `${goal.turns_used}/${goal.max_turns} turns` : `turn ${goal.turns_used}`, count(goal.subgoals.length, 'subgoal'), count(goal.gates.length, 'gate')]
+     .filter(Boolean)
+     .join(' · ')
+ 
+diff --git a/website/docs/reference/slash-commands.md b/website/docs/reference/slash-commands.md
+index 37787af5..3375143e 100644
+--- a/website/docs/reference/slash-commands.md
++++ b/website/docs/reference/slash-commands.md
+@@ -52,7 +52,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
+ | `/stop` | Kill all running background processes |
+ | `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn (doesn't interrupt the current agent response). In the CLI, `/queue` with no arguments lists the pending queue, and `/queue list`, `/queue edit N <new prompt>`, `/queue rm N`, `/queue move A B`, and `/queue clear` inspect and manage queued prompts before they are sent. Prompts that begin with a management word can be force-queued with `/queue add <prompt>`. On the gateway's session, prompts queued mid-run live in the gateway's shared queue for the session: `list`/`rm`/`edit`/`clear` act on every prompt queued there (other windows' too), and `move` is refused for prompts the gateway holds, because it runs them in order. |
+ | `/steer <prompt>` | Inject a mid-run note that arrives at the agent **after the next tool call** — no interrupt, no new user turn. The text is appended to the last tool result's content once the current tool completes, giving the agent new context without breaking the current tool-calling loop. Use this to nudge direction mid-task (e.g. "focus on the auth module" while the agent is running tests). |
+-| `/goal <text>` | Set a standing goal Hermes works toward across turns — our take on the Ralph loop. After each turn an auxiliary judge model decides whether the goal is done; if not, Hermes auto-continues. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Budget defaults to 20 turns (`goals.max_turns`); any real user message preempts the continuation loop, and state survives `/resume`. See [Persistent Goals](../user-guide/features/goals.md) for the full walkthrough. |
++| `/goal <text>` | Set a standing goal Hermes works toward across turns — our take on the Ralph loop. After each turn an auxiliary judge model decides whether the goal is done; if not, Hermes auto-continues. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. No turn limit by default (`goals.max_turns` caps it); a goal that makes no progress pauses itself (`goals.stuck_turns`); any real user message preempts the continuation loop, and state survives `/resume`. See [Persistent Goals](../user-guide/features/goals.md) for the full walkthrough. |
+ | `/subgoal <text>` | Append a user-supplied criterion to the active goal mid-loop. The continuation prompt surfaces all subgoals to the agent verbatim, and the judge factors them into its DONE/CONTINUE verdict — so the goal isn't marked done until the original goal **and** every subgoal are met. Subcommands: `/subgoal` (list), `/subgoal remove <N>`, `/subgoal clear`. Requires an active `/goal`. |
+ | `/heartbeat every <interval> <prompt>` (alias: `/hb`) | Set a recurring prompt that re-enters **this session** as a normal user turn whenever it's idle and the interval has elapsed (min 60s; missed ticks coalesce). Subcommands: `/heartbeat status`, `/heartbeat pause`, `/heartbeat resume`, `/heartbeat clear`. Session-scoped and in-process — use `hermes cron` for durable isolated schedules. See [Session Heartbeats](../user-guide/features/heartbeat.md). |
+ | `/loop [interval] <prompt> [--times N] [--until <condition>]` (alias: `/proactive`) | Re-run a prompt (or another slash command) on a recurring interval in **this session** — fixed cadence (`/loop 5m check the deploy`) or continuous re-fire when no interval is given. `--times N` caps the run count; `--until <condition>` lets an auxiliary judge stop the loop when the condition is met. Subcommands: `/loop status`, `/loop pause`, `/loop resume`, `/loop stop`. See [Loops](../user-guide/features/loops.md). |
+diff --git a/website/docs/user-guide/configuration.md b/website/docs/user-guide/configuration.md
+index 8fd1a2e9..0221f7a3 100644
+--- a/website/docs/user-guide/configuration.md
++++ b/website/docs/user-guide/configuration.md
+@@ -1420,14 +1420,15 @@ For a user/plugin policy gate at the same point — keep the agent going with yo
+ 
+ ## Standing Goals (`/goal`)
+ 
+-When a standing goal is active, Hermes judges whether each assistant response satisfies it. If not, it feeds a continuation prompt back into the same session and keeps working until the goal is done, the turn budget is exhausted, or the user pauses/clears it. The turn budget is the real backstop — judge failures fail **open** (continue) so a flaky judge never wedges progress.
++When a standing goal is active, Hermes judges whether each assistant response satisfies it. If not, it feeds a continuation prompt back into the same session and keeps working until the goal is done, it is stuck, or the user pauses/clears it. Stuck detection is the real backstop — judge failures fail **open** (continue) so a flaky judge never wedges progress.
+ 
+ ```yaml
+ goals:
+-  max_turns: 20   # Max continuation turns before Hermes auto-pauses the goal (default: 20)
++  max_turns: 0    # Turn cap before Hermes auto-pauses the goal (default: 0 = no cap)
++  stuck_turns: 3  # Pause as stuck after N turns with the same judge reason (default: 3, 0 = off)
+ ```
+ 
+-`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](./features/goals.md) for the full feature.
++`max_turns: 0` (default) puts no cap on a goal; a positive value caps how many turns it can drive before Hermes auto-pauses it and asks the user to `/goal resume`. `stuck_turns` pauses a goal that makes no progress: the judge's reason, or a no-tool reply, repeats that many turns in a row. See [Goals](./features/goals.md) for the full feature.
+ 
+ ### API Timeouts
+ 
+diff --git a/website/docs/user-guide/features/goals.md b/website/docs/user-guide/features/goals.md
+index 323d5f8f..364cf4b1 100644
+--- a/website/docs/user-guide/features/goals.md
++++ b/website/docs/user-guide/features/goals.md
+@@ -6,7 +6,7 @@ description: "Set a standing goal and let Hermes keep working across turns until
+ 
+ # Persistent Goals (`/goal`)
+ 
+-`/goal` gives Hermes a standing objective that survives across turns. After every turn a lightweight judge model checks whether the goal is satisfied by the assistant's last response. If not, Hermes automatically feeds a continuation prompt back into the same session and keeps working — until the goal is achieved, you pause or clear it, or the turn budget runs out.
++`/goal` gives Hermes a standing objective that survives across turns. After every turn a lightweight judge model checks whether the goal is satisfied by the assistant's last response. If not, Hermes automatically feeds a continuation prompt back into the same session and keeps working — until the goal is achieved, you pause or clear it, or it is stuck.
+ 
+ It's our take on the **Ralph loop**, directly inspired by [Codex CLI 0.128.0's `/goal`](https://github.com/openai/codex) by Eric Traut (OpenAI). The core idea — keep a goal alive across turns and don't stop until it's achieved — is theirs. The implementation here is independent and adapted to Hermes' architecture.
+ 
+@@ -47,11 +47,11 @@ If you want work on the board, put it there yourself (`hermes kanban create …`
+ 
+ What you'll see:
+ 
+-1. **Goal accepted** — `⊙ Goal set (20-turn budget): <your goal>`
++1. **Goal accepted** — `⊙ Goal set (no turn limit): <your goal>`
+ 2. **Turn 1 runs** — Hermes starts working as if you'd sent the goal as a normal message.
+ 3. **Judge runs** — after the turn, the judge model decides `done`, `continue`, or `blocked`.
+-4. **Loop fires if needed** — if `continue`, you'll see `↻ Continuing toward goal (1/20): <judge's reason>` and Hermes takes the next step automatically.
+-5. **Terminates** — eventually you see either `✓ Goal achieved: <reason>` or `⏸ Goal paused — N/20 turns used`.
++4. **Loop fires if needed** — if `continue`, you'll see `↻ Continuing toward goal (turn 1): <judge's reason>` and Hermes takes the next step automatically.
++5. **Terminates** — eventually you see either `✓ Goal achieved: <reason>` or `⏸ Goal paused — no progress: …`.
+ 
+ ## Commands
+ 
+@@ -190,16 +190,18 @@ The judge is deliberately conservative: it marks a goal `done` only when the res
+ 
+ ### Fail-open semantics
+ 
+-If the judge errors (network blip, malformed response, unavailable aux client), Hermes treats the verdict as `continue` — a broken judge never wedges progress. The **turn budget** is the real backstop.
++If the judge errors (network blip, malformed response, unavailable aux client), Hermes treats the verdict as `continue` — a broken judge never wedges progress. **Stuck detection** is the real backstop.
+ 
+-### Turn budget
++### No turn limit, stuck detection
+ 
+-Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
++A goal has no turn budget by default (`goals.max_turns: 0`). It runs until the judge says done, you pause or clear it, or it is stuck. It auto-pauses as stuck when the judge gives substantially the same "not done" reason, or a turn that called no tool repeats the previous reply, `goals.stuck_turns` turns in a row (default 3; 0 turns this off). `/goal resume` continues after a stuck pause:
+ 
+ ```
+-⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going, or /goal clear to stop.
++⏸ Goal paused — no progress: the judge gave the same reason 3 turns in a row (...). Use /goal resume to keep going (after changing course or fixing what blocks it), or /goal clear to stop.
+ ```
+ 
++Set `goals.max_turns` to a positive number to also cap every goal at that many turns; at the cap Hermes pauses with `⏸ Goal paused — 20/20 turns used`.
++
+ `/goal resume` resets the counter to zero, so you can keep going in measured chunks.
+ 
+ ### User messages always preempt
+@@ -228,10 +230,12 @@ Add to `~/.hermes/config.yaml`:
+ 
+ ```yaml
+ goals:
+-  # Max continuation turns before Hermes auto-pauses and asks you to
+-  # /goal resume. Default 20. Lower this if you want tighter loops;
+-  # raise it for long-running refactors.
+-  max_turns: 20
++  # Turn cap before Hermes auto-pauses and asks you to /goal resume.
++  # Default 0 = no cap (a goal ends on done, you, or stuck detection).
++  max_turns: 0
++  # Pause as stuck after this many turns in a row with the same judge
++  # reason or the same no-tool reply. 0 = never.
++  stuck_turns: 3
+ ```
+ 
+ ### Choosing the judge model
+@@ -252,25 +256,25 @@ The judge call is small (~200 output tokens) and runs once per turn, so a cheap
+ ```
+ You: /goal Create four files ~/.hermes/cache/scratch/note_{1..4}.txt, one per turn, each containing its number as text
+ 
+-  ⊙ Goal set (20-turn budget): Create four files ~/.hermes/cache/scratch/note_{1..4}.txt, one per turn, each containing its number as text
++  ⊙ Goal set (no turn limit): Create four files ~/.hermes/cache/scratch/note_{1..4}.txt, one per turn, each containing its number as text
+ 
+ Hermes: Creating ~/.hermes/cache/scratch/note_1.txt now.
+   💻 echo "1" > ~/.hermes/cache/scratch/note_1.txt   (0.1s)
+   I've created ~/.hermes/cache/scratch/note_1.txt with the content "1". I'll continue with the remaining files on the next turn as you specified.
+ 
+-  ↻ Continuing toward goal (1/20): Only 1 of 4 files has been created; 3 files remain.
++  ↻ Continuing toward goal (turn 1): Only 1 of 4 files has been created; 3 files remain.
+ 
+ Hermes: [Continuing toward your standing goal]
+   💻 echo "2" > ~/.hermes/cache/scratch/note_2.txt   (0.1s)
+   Created ~/.hermes/cache/scratch/note_2.txt. Two more to go.
+ 
+-  ↻ Continuing toward goal (2/20): 2 of 4 files created; 2 remain.
++  ↻ Continuing toward goal (turn 2): 2 of 4 files created; 2 remain.
+ 
+ Hermes: [Continuing toward your standing goal]
+   💻 echo "3" > ~/.hermes/cache/scratch/note_3.txt   (0.1s)
+   Created ~/.hermes/cache/scratch/note_3.txt.
+ 
+-  ↻ Continuing toward goal (3/20): 3 of 4 files created; 1 remains.
++  ↻ Continuing toward goal (turn 3): 3 of 4 files created; 1 remains.
+ 
+ Hermes: [Continuing toward your standing goal]
+   💻 echo "4" > ~/.hermes/cache/scratch/note_4.txt   (0.1s)
+@@ -287,7 +291,7 @@ Four turns, one `/goal` invocation, zero "keep going" prompts from you.
+ 
+ No judge is perfect. Two failure modes to watch for:
+ 
+-**False negative — judge says continue when the goal is actually done.** The turn budget catches this. You'll see `⏸ Goal paused` and can `/goal clear` or just send a new message.
++**False negative — judge says continue when the goal is actually done.** Stuck detection catches this when the judge keeps giving the same reason; otherwise `/goal clear`. You'll see `⏸ Goal paused` and can `/goal clear` or just send a new message.
+ 
+ **False positive — judge says done when work remains.** You'll see `✓ Goal achieved` but you know better. Send a follow-up message to continue, or re-set the goal more precisely: `/goal <more specific text>`. The judge's system prompt is deliberately conservative to make false positives rarer than false negatives.
+ 

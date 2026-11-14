@@ -1,0 +1,15 @@
+# Existing upstream tests of the goal loop, its commands and config this patch sits beside.
+tests/hermes_cli/test_goals.py
+tests/hermes_cli/test_goal_dispatch.py
+tests/hermes_cli/test_goal_gates.py
+tests/hermes_cli/test_goal_judge_delegations.py
+tests/hermes_cli/test_cli_goal_parked_resume.py
+tests/hermes_cli/test_cli_status_bar_goal.py
+tests/hermes_cli/test_gateway_automation.py
+tests/hermes_cli/test_kanban_goal_mode.py
+tests/gateway/test_goal_max_turns_config.py
+tests/gateway/test_goal_resume_restart.py
+tests/gateway/test_goal_continuation_drain.py
+tests/gateway/test_session_viewer_automation.py
+tests/tui_gateway/test_goal_command.py
+tests/agent/test_i18n.py
