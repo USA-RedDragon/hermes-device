@@ -392,7 +392,7 @@ func TestAttachMidTurnBackfillsCurrentTurn(t *testing.T) {
 	e.gw.AddSession(&gatewaytest.Session{ID: "s-run", Live: true, Running: true})
 	e.gw.Publish("s-run", "message.complete", map[string]any{kText: "old"})
 	e.gw.Publish("s-run", "message.start", map[string]any{})
-	e.gw.Publish("s-run", "tool.start", map[string]any{"tool_id": "t9", "name": "terminal"})
+	e.gw.Publish("s-run", "tool.start", map[string]any{"tool_id": "t9", kName: toolTerm})
 	ch, stop, err := e.svc.Attach(ctx, userAlice, backendPC, "s-run", 0)
 	if err != nil {
 		t.Fatal(err)

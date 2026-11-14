@@ -160,7 +160,7 @@ func TestLateJoinDuringAToolStreamsTheNextReply(t *testing.T) {
 	t.Parallel()
 	e := setup(t, service.Options{})
 	ch := joinLate(t, e, "s-tool")
-	e.gw.Publish("s-tool", "tool.complete", map[string]any{kToolID: "t1", "name": "terminal"})
+	e.gw.Publish("s-tool", "tool.complete", map[string]any{kToolID: "t1", kName: toolTerm})
 	e.gw.Publish("s-tool", "message.delta", map[string]any{kText: "All done."})
 	evs := until(t, ch, hub.KindMessageDelta)
 	if text(t, evs[len(evs)-1]) != "All done." {

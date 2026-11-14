@@ -39,7 +39,7 @@ func activitySetup(t *testing.T) *env {
 	e.gw.AddSession(&gatewaytest.Session{ID: sLive, Title: liveTitle, Live: true, StartedAt: 2000,
 		Subagents: []gateway.SubagentRow{
 			{SubagentID: subMine, Goal: "Read the store", Model: ptr("qwen"), Status: ptr(statusRunning), ToolCount: ptr(3),
-				LastTool: ptr("terminal"), LastPreview: ptr("go test ./..."),
+				LastTool: ptr(toolTerm), LastPreview: ptr("go test ./..."),
 				AcceptingSteer: ptr(true), StartedAt: ptr(1700000000.5)},
 			{SubagentID: "sa-1-child", ParentID: ptr(subMine), Depth: ptr(1), Goal: "Child", Status: ptr(statusRunning),
 				AcceptingSteer: ptr(false)},
@@ -57,7 +57,7 @@ func TestActivityListsOnlyTheSessionsWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(st.Subagents) != 2 || st.Subagents[0].ID != subMine || st.Subagents[0].ToolCount != 3 || st.Subagents[0].Model != "qwen" ||
-		st.Subagents[0].LastTool != "terminal" || st.Subagents[0].LastPreview != "go test ./..." ||
+		st.Subagents[0].LastTool != toolTerm || st.Subagents[0].LastPreview != "go test ./..." ||
 		!st.Subagents[0].AcceptingSteer || st.Subagents[1].ParentID != subMine || st.Subagents[1].AcceptingSteer {
 		t.Fatalf("subagents = %+v", st.Subagents)
 	}
