@@ -312,3 +312,49 @@ func TestMediaNamedByMarkdown(t *testing.T) {
 		}
 	}
 }
+
+// The image a vision_analyze or browser_vision call looks at is served to
+// the session that made the call, as the call's card shows it, and to no
+// other session. A non-image path and a bare name stay refused.
+func TestMediaNamedByVisionCall(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	seen, page, batched, other := shotDir+"seen.png", shotDir+"page.jpg", shotDir+"batched.png", shotDir+"other.png"
+	notImage, unnamed := "/opt/data/hermes/config.yaml", shotDir+"unnamed.png"
+	for _, p := range []string{seen, page, batched, other, unnamed} {
+		e.gw.SetFile(p, []byte(shotPNG))
+	}
+	e.gw.SetFile(notImage, []byte("key: value"))
+	call := func(id, name, args string) map[string]any {
+		return map[string]any{kRole: roleAssistant, kText: "", "tool_calls": []map[string]any{{"id": id, "function": map[string]any{"name": name, "arguments": args}}}}
+	}
+	e.gw.AddSession(&gatewaytest.Session{ID: "m1", Title: titleMedia, Live: true, StartedAt: 200, Messages: []map[string]any{
+		call("c1", "vision_analyze", `{"image_url":"`+seen+`","question":"what is it?"}`),
+		call("c2", "browser_vision", `{"image_url":"`+page+`"}`),
+		call("c3", "tool_call", `{"calls":[{"name":"vision_analyze","arguments":{"image_url":"`+batched+`"}}]}`),
+		call("c4", "vision_analyze", `{"image_url":"`+notImage+`"}`),
+		call("c5", "terminal", `{"command":"cat `+unnamed+`","image_url":"`+unnamed+`"}`),
+	}})
+	e.gw.AddSession(&gatewaytest.Session{ID: "m2", Title: "Other", Live: true, StartedAt: 100, Messages: []map[string]any{
+		call("d1", "vision_analyze", `{"image_url":"`+other+`"}`),
+	}})
+	c := client(t)
+	login(t, e, c)
+	for _, p := range []string{seen, page, batched} {
+		resp, body := get(t, c, mediaURL(e, "pc", p))
+		if resp.StatusCode != http.StatusOK || body != shotPNG || !strings.HasPrefix(resp.Header.Get("Content-Disposition"), "inline") {
+			t.Fatalf("%s = %d %q %v", p, resp.StatusCode, body, resp.Header)
+		}
+	}
+	for _, p := range []string{other, notImage, unnamed} {
+		if resp, body := get(t, c, mediaURL(e, "pc", p)); resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s from the first session = %d %s", p, resp.StatusCode, body)
+		}
+	}
+	if resp, body := get(t, c, e.url+"/api/sessions/pc/m2/media?path="+url.QueryEscape(seen)); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("another session's image = %d %s", resp.StatusCode, body)
+	}
+	if resp, body := get(t, c, e.url+"/api/sessions/pc/m2/media?path="+url.QueryEscape(other)); resp.StatusCode != http.StatusOK || body != shotPNG {
+		t.Fatalf("its own image = %d %q", resp.StatusCode, body)
+	}
+}

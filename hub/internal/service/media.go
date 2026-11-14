@@ -44,8 +44,8 @@ func inMediaRoots(roots []string, p string) bool {
 	return false
 }
 
-// Media opens a file that the session's replies, browser_screenshot results
-// or user image attachments name. A path under the media roots comes from
+// Media opens a file that the session's replies, browser_screenshot results,
+// user image attachments or vision_analyze and browser_vision calls name. A path under the media roots comes from
 // the backend's server; any other path, and one the server does not have,
 // comes from the device that runs the session, when one does. See
 // hub.Media.
@@ -155,8 +155,9 @@ type readCloser struct {
 	io.Closer
 }
 
-// names reports whether a reply, a browser_screenshot result or a user's
-// image attachment of the session names p: in the snapshot's transcript or
+// names reports whether a reply, a browser_screenshot result, a user's
+// image attachment or the image a vision_analyze or browser_vision call
+// looked at in the session names p: in the snapshot's transcript or
 // the events since.
 func (ls *live) names(p string) bool {
 	ls.mu.Lock()
@@ -203,7 +204,8 @@ type row struct {
 		ID       string `json:"id"`
 		CallID   string `json:"call_id"`
 		Function struct {
-			Name string `json:"name"`
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
 		} `json:"function"`
 	} `json:"tool_calls"`
 }
@@ -228,6 +230,9 @@ func rowsName(rows []json.RawMessage, p string) bool {
 			}
 		case "assistant":
 			for _, c := range r.ToolCalls {
+				if visionNames(c.Function.Name, c.Function.Arguments, p) {
+					return true
+				}
 				for _, id := range []string{c.ID, c.CallID} {
 					if id != "" {
 						calls[id] = c.Function.Name
@@ -259,6 +264,7 @@ func eventsName(ring []hub.Event, p string) bool {
 		var d struct {
 			Text   *string         `json:"text"`
 			Name   string          `json:"name"`
+			Args   json.RawMessage `json:"args"`
 			Result json.RawMessage `json:"result"`
 		}
 		_ = json.Unmarshal(e.Data, &d)
@@ -277,7 +283,13 @@ func eventsName(ring []hub.Event, p string) bool {
 			if e.Kind != hub.KindMessageInterim {
 				reply.Reset()
 			}
-		case hub.KindToolComplete:
+		case hub.KindToolStart, hub.KindToolComplete:
+			if visionNames(d.Name, d.Args, p) {
+				return true
+			}
+			if e.Kind != hub.KindToolComplete {
+				continue
+			}
 			if d.Name != hub.ScreenshotTool {
 				continue
 			}
@@ -304,4 +316,44 @@ func replyNames(text, p string) bool {
 func screenshotNames(result, p string) bool {
 	var m map[string]any
 	return json.Unmarshal([]byte(result), &m) == nil && hub.ScreenshotPath(m) == p
+}
+
+// visionTools are the tools that look at an image named by an image_url
+// argument.
+var visionTools = []string{"vision_analyze", "browser_vision"}
+
+// visionNames reports whether a call of a vision tool, or a batch of calls
+// (tool_call) that holds one, looks at the image p. The arguments are a JSON
+// object or a string that holds one. Only the image_url of the call counts,
+// and p is already a MediaPath.
+func visionNames(name string, args json.RawMessage, p string) bool {
+	if !hub.ImagePath(p) || len(args) == 0 {
+		return false
+	}
+	if name != "tool_call" && !slices.Contains(visionTools, name) {
+		return false
+	}
+	var s string
+	if json.Unmarshal(args, &s) == nil {
+		args = json.RawMessage(s)
+	}
+	var a struct {
+		ImageURL string `json:"image_url"`
+		Calls    []struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		} `json:"calls"`
+	}
+	if json.Unmarshal(args, &a) != nil {
+		return false
+	}
+	if name != "tool_call" {
+		return a.ImageURL == p
+	}
+	for _, c := range a.Calls {
+		if c.Name != "tool_call" && visionNames(c.Name, c.Arguments, p) {
+			return true
+		}
+	}
+	return false
 }
