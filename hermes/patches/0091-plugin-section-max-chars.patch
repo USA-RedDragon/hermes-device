@@ -1,0 +1,235 @@
+From d210b073ec246d6ef957849f406f83bc8d0c8234 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 20:09:23 -0600
+Subject: [PATCH] feat(plugins): a plugin prompt section can be larger than
+ 4,000 chars
+
+A plugin system prompt section was cut at 4,000 characters, and 8,000 for all sections together, so project-memory could not show the notes up to the limit Jacob sets (8,000, and its own cap is 32,000).
+
+plugins.max_section_chars (default 4000, never lower) is the largest max_chars a plugin may ask for when it registers a section. The aggregate budget is that value plus 4,000 (still 8,000 by default), and a persisted section is restored up to the same value. A section keeps its own max_chars, so plugins that ask for nothing stay at 4,000.
+---
+ agent/system_prompt.py                      |  7 ++-
+ hermes_cli/plugins.py                       |  3 +-
+ hermes_cli/plugins_context.py               |  7 ++-
+ hermes_cli/plugins_dispatch.py              | 26 +++++++-
+ tests/hermes_cli/test_plugin_section_cap.py | 70 +++++++++++++++++++++
+ website/docs/user-guide/configuration.md    | 11 ++++
+ 6 files changed, 115 insertions(+), 9 deletions(-)
+ create mode 100644 tests/hermes_cli/test_plugin_section_cap.py
+
+diff --git a/agent/system_prompt.py b/agent/system_prompt.py
+index 3d2054e8..45f99d30 100644
+--- a/agent/system_prompt.py
++++ b/agent/system_prompt.py
+@@ -146,9 +146,10 @@ def _restore_plugin_prompt_sections(prompt: str) -> tuple:
+     exact canonical container emitted by core is accepted — user/project text
+     may resemble a frame."""
+     from hermes_cli.plugins import (
+-        MAX_SYSTEM_PROMPT_SECTION_CHARS, PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START,
+-        RenderedPluginSystemPromptSection, format_system_prompt_sections,
++        PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START,
++        RenderedPluginSystemPromptSection, format_system_prompt_sections, system_prompt_section_ceiling,
+     )
++    ceiling = system_prompt_section_ceiling()
+     start = prompt.rfind(PLUGIN_SECTIONS_START)
+     end = prompt.find(PLUGIN_SECTIONS_END, start + len(PLUGIN_SECTIONS_START)) if start >= 0 else -1
+     if end < 0:
+@@ -161,7 +162,7 @@ def _restore_plugin_prompt_sections(prompt: str) -> tuple:
+     for match in _PLUGIN_SECTION_FRAME_RE.finditer(framed):
+         content_len = int(match.group("chars"))
+         content = framed[match.end() : match.end() + content_len]
+-        if content_len > MAX_SYSTEM_PROMPT_SECTION_CHARS or len(content) != content_len:
++        if content_len > ceiling or len(content) != content_len:
+             continue
+         restored.append(RenderedPluginSystemPromptSection(id=match.group("id"), content=content,
+                                                           position="after_memory", plugin="persisted-prompt"))
+diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
+index 48add2e7..e45ca36d 100644
+--- a/hermes_cli/plugins.py
++++ b/hermes_cli/plugins.py
+@@ -51,7 +51,8 @@ from hermes_cli.plugins_loader import (
+ from hermes_cli.plugins_dispatch import (
+     DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS, HERMES_EVENT_NAMESPACE, MAX_SYSTEM_PROMPT_SECTION_CHARS,
+     MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS, PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START,
+-    SYSTEM_PROMPT_SECTION_POSITIONS, _EVENT_EMIT_DEPTH_CAP, _EVENT_PENDING_CAP,
++    SYSTEM_PROMPT_SECTION_POSITIONS, system_prompt_section_ceiling, system_prompt_sections_total_budget,
++    _EVENT_EMIT_DEPTH_CAP, _EVENT_PENDING_CAP,
+     _HOOK_CALLBACK_TIMEOUT_SECS, _HOOK_TIMEOUT_SUPPRESSION_SECONDS, _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
+     _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PluginDispatchMixin, PluginSystemPromptSection,
+     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
+diff --git a/hermes_cli/plugins_context.py b/hermes_cli/plugins_context.py
+index 71bacc4f..2c4116ac 100644
+--- a/hermes_cli/plugins_context.py
++++ b/hermes_cli/plugins_context.py
+@@ -782,9 +782,10 @@ class PluginContext(PluginCapabilityCtxMixin):
+         if position not in _facade().SYSTEM_PROMPT_SECTION_POSITIONS:
+             raise ValueError("system prompt section position must be one of: "
+                              + ", ".join(sorted(_facade().SYSTEM_PROMPT_SECTION_POSITIONS)))
+-        if (isinstance(max_chars, bool) or not isinstance(max_chars, int)
+-                or not 0 < max_chars <= _facade().MAX_SYSTEM_PROMPT_SECTION_CHARS):
+-            raise ValueError(f"system prompt section max_chars must be between 1 and {_facade().MAX_SYSTEM_PROMPT_SECTION_CHARS}")
++        ceiling = _facade().system_prompt_section_ceiling(_facade().MAX_SYSTEM_PROMPT_SECTION_CHARS)
++        if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 0 < max_chars <= ceiling:
++            raise ValueError(f"system prompt section max_chars must be between 1 and {ceiling} "
++                             "(plugins.max_section_chars raises the limit)")
+         existing = self._manager._system_prompt_sections.get(id)
+         if existing is not None:
+             raise ValueError(f"system prompt section {id!r} is already registered by plugin {existing.plugin!r}")
+diff --git a/hermes_cli/plugins_dispatch.py b/hermes_cli/plugins_dispatch.py
+index f1b9acad..55291fbc 100644
+--- a/hermes_cli/plugins_dispatch.py
++++ b/hermes_cli/plugins_dispatch.py
+@@ -104,12 +104,33 @@ DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS = 4_000
+ MAX_SYSTEM_PROMPT_SECTION_CHARS = 4_000
+ MAX_SYSTEM_PROMPT_SECTIONS = 32
+ MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS = 8_000
++_SECTION_CEILING_HARD_MAX = 200_000
+ _SYSTEM_PROMPT_SECTION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+ _SYSTEM_PROMPT_SECTION_HEADING_PREFIX = "## Plugin Context: "
+ PLUGIN_SECTIONS_START = "<!-- hermes-plugin-sections:start -->"
+ PLUGIN_SECTIONS_END = "<!-- hermes-plugin-sections:end -->"
+ 
+ 
++def system_prompt_section_ceiling(floor: int = MAX_SYSTEM_PROMPT_SECTION_CHARS) -> int:
++    """Largest ``max_chars`` one plugin section may ask for: ``plugins.max_section_chars`` (it can only
++    raise the default ``floor``, 4,000; a non-integer or smaller value is ignored)."""
++    try:
++        from hermes_cli.config import load_config_readonly
++        plugins_cfg = (load_config_readonly() or {}).get("plugins")
++        value = plugins_cfg.get("max_section_chars") if isinstance(plugins_cfg, dict) else None
++    except Exception:
++        value = None
++    if isinstance(value, int) and not isinstance(value, bool) and value > floor:
++        return min(value, _SECTION_CEILING_HARD_MAX)
++    return floor
++
++
++def system_prompt_sections_total_budget() -> int:
++    """Budget for all sections together: 8,000 by default, the ceiling plus 4,000 once it is raised."""
++    return max(MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS,
++               system_prompt_section_ceiling() + MAX_SYSTEM_PROMPT_SECTION_CHARS)
++
++
+ def is_valid_system_prompt_section_id(value: Any) -> bool:
+     """Return whether *value* is a stable, heading-safe section identifier."""
+     return isinstance(value, str) and bool(_SYSTEM_PROMPT_SECTION_ID_RE.fullmatch(value))
+@@ -671,6 +692,7 @@ class PluginDispatchMixin:
+         frozen_info = types.MappingProxyType(dict(session_info))
+         rendered: list[RenderedPluginSystemPromptSection] = []
+         total_chars = len(PLUGIN_SECTIONS_START) + len(PLUGIN_SECTIONS_END) + 2
++        total_budget = system_prompt_sections_total_budget()
+         for _section_id, section in sorted(self._system_prompt_sections.items()):
+             if len(rendered) >= MAX_SYSTEM_PROMPT_SECTIONS:
+                 logger.warning(
+@@ -683,11 +705,11 @@ class PluginDispatchMixin:
+             rendered_chars = len(format_system_prompt_section(section.id, text))
+             if rendered:
+                 rendered_chars += 2  # canonical ``\n\n`` separator
+-            if total_chars + rendered_chars > MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS:
++            if total_chars + rendered_chars > total_budget:
+                 logger.warning(
+                     "Plugin system prompt section %s (%s) exceeded the aggregate "
+                     "session budget (%d chars) and was skipped", section.id, section.plugin,
+-                    MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS)
++                    total_budget)
+                 continue
+             rendered.append(
+                 RenderedPluginSystemPromptSection(
+diff --git a/tests/hermes_cli/test_plugin_section_cap.py b/tests/hermes_cli/test_plugin_section_cap.py
+new file mode 100644
+index 00000000..1db41ee9
+--- /dev/null
++++ b/tests/hermes_cli/test_plugin_section_cap.py
+@@ -0,0 +1,70 @@
++"""plugins.max_section_chars lifts the cap on one plugin system prompt section (default 4,000)."""
++from __future__ import annotations
++
++import pytest
++
++import hermes_cli.plugins_dispatch as dispatch
++from agent.system_prompt import _restore_plugin_prompt_sections
++from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest, format_system_prompt_sections
++
++
++def _config(monkeypatch, plugins):
++    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda *a, **k: {"plugins": plugins})
++
++
++def _ctx(manager, name="notes"):
++    return PluginContext(PluginManifest(name=name, key=name, source="user"), manager)
++
++
++def test_default_ceiling_is_unchanged(monkeypatch):
++    _config(monkeypatch, {})
++    assert dispatch.system_prompt_section_ceiling() == 4_000
++    with pytest.raises(ValueError, match="between 1 and 4000"):
++        _ctx(PluginManager()).register_system_prompt_section("notes.big", "x", max_chars=8_600)
++
++
++@pytest.mark.parametrize("bad", [0, -5, 100, True, "9000", None, 1.5])
++def test_bad_or_lower_values_keep_the_default(monkeypatch, bad):
++    _config(monkeypatch, {"max_section_chars": bad})
++    assert dispatch.system_prompt_section_ceiling() == 4_000
++
++
++def test_a_larger_ceiling_lets_a_section_carry_8000_chars_of_notes(monkeypatch):
++    _config(monkeypatch, {"max_section_chars": 12_000})
++    manager = PluginManager()
++    text = "n" * 8_600  # 8,000 chars of notes plus the header
++    _ctx(manager).register_system_prompt_section("notes.big", text, max_chars=9_000)
++    rendered = manager.render_system_prompt_sections({"session_id": "s"})
++    assert [item.content for item in rendered] == [text]
++
++
++def test_ceiling_is_also_an_upper_bound(monkeypatch):
++    _config(monkeypatch, {"max_section_chars": 12_000})
++    with pytest.raises(ValueError, match="between 1 and 12000"):
++        _ctx(PluginManager()).register_system_prompt_section("notes.big", "x", max_chars=12_001)
++
++
++def test_other_sections_keep_their_own_max_chars(monkeypatch):
++    _config(monkeypatch, {"max_section_chars": 12_000})
++    manager = PluginManager()
++    _ctx(manager).register_system_prompt_section("notes.small", "y" * 4_500)  # default max_chars 4,000
++    assert manager.render_system_prompt_sections({"session_id": "s"}) == []
++
++
++def test_aggregate_budget_grows_with_the_ceiling(monkeypatch):
++    _config(monkeypatch, {})
++    assert dispatch.system_prompt_sections_total_budget() == 8_000
++    _config(monkeypatch, {"max_section_chars": 12_000})
++    assert dispatch.system_prompt_sections_total_budget() == 16_000
++
++
++def test_a_persisted_long_section_is_restored(monkeypatch):
++    _config(monkeypatch, {"max_section_chars": 12_000})
++    manager = PluginManager()
++    text = "n" * 8_600
++    _ctx(manager).register_system_prompt_section("notes.big", text, max_chars=9_000)
++    block = format_system_prompt_sections(manager.render_system_prompt_sections({"session_id": "s"}))
++    restored = _restore_plugin_prompt_sections(f"intro\n{block}\n\nConversation started: now")
++    assert [item.content for item in restored] == [text]
++    _config(monkeypatch, {})
++    assert _restore_plugin_prompt_sections(f"intro\n{block}\n\nConversation started: now") == ()
+diff --git a/website/docs/user-guide/configuration.md b/website/docs/user-guide/configuration.md
+index 0221f7a3..62649d0b 100644
+--- a/website/docs/user-guide/configuration.md
++++ b/website/docs/user-guide/configuration.md
+@@ -964,6 +964,17 @@ file_read_max_chars: 30000
+ 
+ The agent also deduplicates file reads automatically — if the same file region is read twice and the file hasn't changed, a lightweight stub is returned instead of re-sending the content. This resets on context compression so the agent can re-read files after their content is summarized away.
+ 
++## Plugin prompt section size
++
++A plugin can add a section to the system prompt, at most 4,000 characters each and 8,000 together. A plugin that keeps more (such as project notes) asks for a larger `max_chars` when it registers, and Hermes grants it only up to `plugins.max_section_chars`:
++
++```yaml
++plugins:
++  max_section_chars: 12000   # default 4000 (the minimum); all sections together may use this plus 4000
++```
++
++A section over its own `max_chars` is skipped, as before. A value below 4,000, or one that is not an integer, is ignored; the highest allowed is 200,000. A section saved in a session's prompt is restored on resume only while it fits this limit.
++
+ ## Tool Output Truncation Limits
+ 
+ Three related caps control how much raw output a tool can return before Hermes truncates it:

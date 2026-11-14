@@ -1,0 +1,7 @@
+# Plugin prompt sections, their registration, and the prompt restore this patch changes
+tests/hermes_cli/test_plugin_prompt_sections.py
+tests/hermes_cli/test_plugins_context.py
+tests/hermes_cli/test_plugins.py
+tests/agent/test_system_prompt.py
+tests/agent/test_system_prompt_restore.py
+tests/agent/test_compaction_prompt_rebuild.py
