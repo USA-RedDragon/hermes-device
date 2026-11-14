@@ -84,7 +84,7 @@ func switchJump(t *testing.T, bin string) {
 				call := fmt.Sprintf("c%d", i)
 				ms = append(ms, map[string]any{kRole: roleAssistant, kText: "", kCalls: []map[string]any{{"id": call,
 					fnKey: map[string]any{fieldName: toolTerminal, ilArgs: `{"command":"ls -la /tmp"}`}}}},
-					map[string]any{kRole: stepTool, kCallID: call, "content": strings.Repeat("line of output\n", 12)})
+					map[string]any{kRole: stepTool, kCallID: call, fieldContent: strings.Repeat("line of output\n", 12)})
 			}
 			text := strings.Repeat(fmt.Sprintf("%s answer %d fills the log. ", c.id, i), 3+i%17)
 			if i%9 == 4 {
