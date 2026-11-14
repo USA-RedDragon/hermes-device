@@ -3642,8 +3642,18 @@
       else if (!m) showWelcome();
     }
     menuOpen = false;
-    drawList();
-    refreshList();
+    // The chat list (which chat is current) after the chat has painted:
+    // its 150 rows took the first frame of a switch.
+    afterPaint(() => { if (lastHash === location.hash) drawList(); refreshList(); });
+  }
+
+  // afterPaint runs fn once after the next frame is drawn, or in 100 ms
+  // for a page that draws no frames (hidden).
+  function afterPaint(fn) {
+    let done = false;
+    const run = () => { if (!done) { done = true; fn(); } };
+    requestAnimationFrame(() => setTimeout(run, 0));
+    setTimeout(run, 100);
   }
 
   async function send(ev, extra) {
@@ -4312,7 +4322,9 @@
       setInterval(() => { if (!document.hidden) memory.refresh(); }, 60000);
     }
     if (me.computers) {
-      await loadComputers();
+      // Not waited for: the chat's stream opens at once, and the
+      // computers draw when they come.
+      loadComputers().then(() => { if (lastList) drawList(); });
       setInterval(() => { if (!document.hidden) { loadComputers(); loadPlace(); } }, 20000);
     }
     if (page) {
