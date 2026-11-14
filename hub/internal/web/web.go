@@ -493,7 +493,7 @@ func (s *Server) Handler() http.Handler {
 	if s.deviceAPI != nil {
 		mux.Handle("/api/device/", s.deviceAPI)
 	}
-	return headers(mux)
+	return timed(headers(mux))
 }
 
 func headers(next http.Handler) http.Handler {

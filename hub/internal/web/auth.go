@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -292,12 +293,16 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
+	// Encoded before the status goes out, so the hub's Server-Timing
+	// covers the whole answer.
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		slog.Debug("write JSON answer", "error", err.Error())
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Debug("write JSON answer", "error", err.Error())
-	}
+	_, _ = w.Write(buf.Bytes())
 }
 
 func errorJSON(w http.ResponseWriter, code int, msg string) {

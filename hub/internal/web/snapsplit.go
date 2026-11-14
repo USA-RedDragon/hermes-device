@@ -32,6 +32,17 @@ type eventWriter struct {
 	// fp is the transcript the page says it shows (?fp=), "" when it does
 	// not.
 	fp string
+	// before, when set, runs once just before the first bytes are written.
+	before func()
+}
+
+// emit writes one event, after before.
+func (ew *eventWriter) emit(w io.Writer, e hub.Event, fp string) bool {
+	if f := ew.before; f != nil {
+		ew.before = nil
+		f()
+	}
+	return ew.s.writeEventFP(w, e, fp)
 }
 
 // snapFP names a snapshot's transcript: a hash of its messages. It is ""
@@ -56,7 +67,7 @@ func snapFP(data json.RawMessage) string {
 
 func (ew *eventWriter) write(w io.Writer, e hub.Event) bool {
 	if e.Kind != hub.KindSnapshot {
-		return ew.s.writeEvent(w, e)
+		return ew.emit(w, e, "")
 	}
 	var fp string
 	if !e.Provisional {
@@ -65,28 +76,28 @@ func (ew *eventWriter) write(w io.Writer, e hub.Event) bool {
 			// The page shows this transcript already, as it was when it
 			// reconnected to a replica that did not know its event id.
 			ew.fp, ew.split = "", false
-			return ew.s.writeEventFP(w, hub.Event{Seq: e.Seq, Kind: kindSnapshotSame, Data: json.RawMessage("{}")}, fp)
+			return ew.emit(w, hub.Event{Seq: e.Seq, Kind: kindSnapshotSame, Data: json.RawMessage("{}")}, fp)
 		}
 	}
 	// The page asks for the text of a cut tool output when a card opens;
 	// the fingerprint above is of the whole rows.
 	if !ew.split && !e.Provisional {
 		e.Data = trimToolRows(e.Data)
-		return ew.s.writeEventFP(w, e, fp)
+		return ew.emit(w, e, fp)
 	}
 	head, older, ok := splitSnapshot(e.Data)
 	if !ok {
 		e.Data = trimToolRows(e.Data)
 		if e.Provisional {
-			return ew.s.writeEvent(w, hub.Event{Kind: e.Kind, Data: e.Data, At: e.At, Provisional: true})
+			return ew.emit(w, hub.Event{Kind: e.Kind, Data: e.Data, At: e.At, Provisional: true}, "")
 		}
 		ew.split = false
-		return ew.s.writeEventFP(w, e, fp)
+		return ew.emit(w, e, fp)
 	}
 	// Only the head is cut before the first bytes go out; the older rows
 	// are cut after the flush, so the first rows do not wait for them.
 	head = trimToolRows(head)
-	if !ew.s.writeEventFP(w, hub.Event{Kind: e.Kind, Data: head, At: e.At, Provisional: e.Provisional}, fp) {
+	if !ew.emit(w, hub.Event{Kind: e.Kind, Data: head, At: e.At, Provisional: e.Provisional}, fp) {
 		return false
 	}
 	if e.Provisional {

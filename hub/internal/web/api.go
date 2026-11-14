@@ -547,6 +547,7 @@ type sseEvent struct {
 // the hub sequence, so a browser that reconnects sends it back as
 // Last-Event-ID and gets only what it missed.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	since := r.Header.Get("Last-Event-ID")
 	if since == "" {
 		since = r.URL.Query().Get("since")
@@ -571,6 +572,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer stop()
+	attached := time.Since(start)
 	// Why and when each stream ends, so a stream that keeps ending young is
 	// told from one a client or a proxy cut.
 	began, ended := time.Now(), "client gone"
@@ -588,8 +590,33 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	h.Add("Vary", "Accept-Encoding")
 	out := newStreamWriter(w, flusher, r.Header.Get("Accept-Encoding"))
 	defer out.Close()
-	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprint(out, "retry: 2000\n\n")
+	// The status goes out with the first event when one is waiting (the
+	// snapshot of a fresh open), so its Server-Timing tells how long the
+	// hub took to attach (attach) and to make the event (snap).
+	open := func(prep time.Duration) {
+		h.Set(serverTiming, "attach;dur="+msDur(attached)+", snap;dur="+msDur(prep)+", hub;dur="+msDur(time.Since(start)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(out, "retry: 2000\n\n")
+	}
+	select {
+	case e, ok := <-ch:
+		if !ok {
+			open(0)
+			out.Flush()
+			return
+		}
+		made := time.Now()
+		ew.before = func() { open(time.Since(made)) }
+		if !ew.write(out, e) {
+			return
+		}
+		if ew.before != nil {
+			open(time.Since(made))
+		}
+	default:
+		open(0)
+	}
+	ew.before = nil
 	out.Flush()
 	tick := time.NewTicker(s.keepAlive)
 	defer tick.Stop()
