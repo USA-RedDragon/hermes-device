@@ -17,6 +17,14 @@
 // and a jump to an anchor have no such call and count on their own. Content
 // that grows below does not make a scroll the layout's: a reply streams.
 //
+// A chat just opened is at its end until the reader acts in it. Until
+// then a scroll nobody announced is undone, whatever the layout did: the
+// browser can still be moving the log for the chat shown before (a
+// touchpad's fling, a smooth scroll), and that is not the reader reading
+// this chat. It ends with the reader's first wheel, touch, pointer or key
+// (heard), o.fresh ms (default 1000) after drawn() says the chat's
+// history is on the page, or 15 s after the open.
+//
 // o.probe(log) returns {n, off}: the first message in view and how far its
 // top is below the top of the log, or null. o.place(n, log) returns that
 // distance now, or null when n is gone. o.changed() runs when the state
@@ -32,6 +40,18 @@ window.HubStick = (log, o) => {
   const settle = o.settle || 600;
   let rec = { h: 0, c: 0, top: 0 };
   let resized = -Infinity;
+  const freshFor = o.fresh || 1000;
+  let fresh = 0;
+  // acted says the reader acted in the log since the last reset.
+  let acted = false;
+  // trail keeps the last moves of the log since the last reset, for a
+  // report of a view that left the end without the reader.
+  let trail = [];
+  const keep = (what) => {
+    if (trail.length >= 40) trail.shift();
+    trail.push({ what, t: Math.round(now() - opened), top: Math.round(log.scrollTop), h: log.scrollHeight, c: log.clientHeight, pinned });
+  };
+  let opened = now();
 
   const gap = () => log.scrollHeight - log.scrollTop - log.clientHeight;
   const note = () => {
@@ -70,7 +90,7 @@ window.HubStick = (log, o) => {
     if (log.hidden) return;
     if (Math.abs(log.scrollTop - rec.top) < 1) return;
     if (now() < until) until = Math.max(until, now() + 300);
-    else if (layoutMoved()) { sync(); return; }
+    else if (layoutMoved() || (pinned && now() < fresh)) { keep("undo"); sync(); return; }
     const up = log.scrollTop < rec.top;
     note();
     // Only a real distance from the end leaves it: a tap's jitter, a
@@ -79,13 +99,19 @@ window.HubStick = (log, o) => {
     // end keep a reader at the end pinned. A reader above the end pins
     // again by coming back within gapMax.
     const g = gap();
+    const was = pinned;
     pinned = g < gapMax && (pinned || !up || g < 1);
+    if (was !== pinned) keep("scroll");
     take();
     changed();
   }
 
   // heard says the reader is scrolling, for ms (default hold) from now.
-  function heard(ms) { until = now() + (ms || hold); }
+  function heard(ms) {
+    until = now() + (ms || hold);
+    fresh = 0;
+    acted = true;
+  }
 
   function pin() {
     pinned = true;
@@ -95,6 +121,7 @@ window.HubStick = (log, o) => {
   }
 
   function release() {
+    keep("release");
     pinned = false;
     take();
     note();
@@ -105,6 +132,7 @@ window.HubStick = (log, o) => {
   function look() {
     note();
     pinned = gap() < gapMax;
+    keep("look");
     take();
     changed();
   }
@@ -114,12 +142,23 @@ window.HubStick = (log, o) => {
   // reader's (emptying the log drops scrollTop to 0).
   function reset() {
     until = 0;
+    opened = now();
+    fresh = opened + 15000;
+    acted = false;
+    trail = [];
     pin();
+  }
+
+  // drawn says the chat's history is on the page: a chat just opened is
+  // the reader's to move freshFor ms from now.
+  function drawn() {
+    if (fresh > now()) fresh = Math.min(fresh, now() + freshFor);
   }
 
   // settled says the log has taken in its latest size and no layout
   // change is recent, so a scroll now is the reader's.
-  const settled = () => log.clientHeight === rec.c && now() - resized >= settle;
+  const settled = () => log.clientHeight === rec.c && now() - resized >= settle && now() >= fresh;
 
-  return { settled, sync, scrolled, heard, pin, release, look, reset, refresh: changed, pinned: () => pinned };
+  return { settled, sync, scrolled, heard, pin, release, look, reset, drawn, refresh: changed, pinned: () => pinned,
+    acted: () => acted, trail: () => trail.slice() };
 };

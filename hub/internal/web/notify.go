@@ -26,6 +26,7 @@ const maxEndpoint = 2048
 
 func (s *Server) notifyRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/presence", s.api(s.handlePresence))
+	mux.Handle("POST /api/view-report", s.api(s.handleViewReport))
 	mux.Handle("POST /api/sessions/{backend}/{session}/prompts/{prompt}/answer", s.api(s.handleAnswer))
 	if s.notices == nil {
 		return

@@ -316,4 +316,35 @@ const wheelTo = (x, top) => {
   x.s.sync();
   assert.strictEqual(x.log.scrollTop, 900);
 }
+// A chat just opened: a scroll up that nobody announced and the layout
+// did not cause (the browser still moving the log for the chat shown
+// before) does not take the reader off its end; once the chat is drawn
+// and a moment has passed, or once the reader acts, scrolls are the
+// reader's again.
+{
+  const x = make([500, 500, 500, 500], 600);
+  x.s.pin();
+  x.tick(5000);
+  x.s.reset();
+  x.log.heights = [500, 500, 500, 500, 500];
+  x.s.sync();
+  x.s.drawn();
+  x.tick(16);
+  x.log.scrollTop = 900; // the fling of the chat before goes on
+  x.s.scrolled();
+  assert.strictEqual(x.s.pinned(), true, "an unannounced scroll right after the open is not the reader");
+  assert.strictEqual(x.log.scrollTop, 1900, "the log is back at its end");
+  assert.strictEqual(x.s.settled(), false, "a scroll now would not be the reader's");
+  x.tick(1000);
+  assert.strictEqual(x.s.settled(), true);
+  x.log.scrollTop = 900; // Ctrl+F found older text
+  x.s.scrolled();
+  assert.strictEqual(x.s.pinned(), false, "later a find is the reader's");
+  x.s.reset();
+  x.log.heights = [500, 500, 500, 500, 500];
+  x.s.sync();
+  wheelTo(x, 700);
+  assert.strictEqual(x.s.pinned(), false, "the reader's own wheel right after the open counts");
+  assert.strictEqual(x.s.acted(), true);
+}
 console.log("ok");

@@ -62,6 +62,8 @@ exports.launch = (bin, dir) => {
     };
     return {
       ev,
+      send,
+      context,
       goto: (url) => send("browsingContext.navigate", { context, url, wait: "complete" }),
       click: (x, y) => send("input.performActions", { context, actions: [{ type: "pointer", id: "m", parameters: { pointerType: "mouse" }, actions: [{ type: "pointerMove", x: Math.round(x), y: Math.round(y) }, { type: "pointerDown", button: 0 }, { type: "pointerUp", button: 0 }] }] }),
       enter: () => send("input.performActions", { context, actions: [{ type: "key", id: "k", actions: [{ type: "keyDown", value: "\uE006" }, { type: "keyUp", value: "\uE006" }] }] }),

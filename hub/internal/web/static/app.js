@@ -671,6 +671,7 @@
       place,
       changed: () => {
         if (s.pinned()) unseen = 0;
+        else viewLeft();
         // A chat that is still loading has no latest to jump to.
         jump.hidden = s.pinned() || log.hidden || !!(view && !view.loaded);
         const label = unseen ? (unseen === 1 ? t("newone") : t("newmany").replace("%d", unseen)) : t("tobottom");
@@ -699,7 +700,15 @@
     }).observe(log, { childList: true, subtree: true, characterData: true });
     log.addEventListener("scroll", () => s.scrolled(), { passive: true });
     let swiped = false;
-    log.addEventListener("wheel", (e) => { s.heard(400); if (e.deltaY < 0) s.release(); }, { passive: true });
+    log.addEventListener("wheel", (e) => {
+      // Firefox sends the rest of a wheel gesture where it began, also once
+      // the pointer has left for the chat list: that is not the reader in
+      // this log.
+      const r = log.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
+      s.heard(400);
+      if (e.deltaY < 0) s.release();
+    }, { passive: true });
     log.addEventListener("touchstart", () => { swiped = false; }, { passive: true });
     // A touch only says the reader may scroll; whether the reader left the
     // end is for the scroll events to tell (a tap or a long press that
@@ -735,6 +744,26 @@
     window.HubLogSettled = s.settled;
     return s;
   })();
+
+  // viewLeft tells the hub when a chat opened in the last 15 s is no longer
+  // shown at its end and the reader did nothing in it, once per open: the
+  // log's last moves and the chat's events, for the hub's log. A reader who
+  // lands on older messages after a switch should never see that.
+  let viewTold = null;
+  function viewLeft() {
+    const v = view;
+    if (!v || !v.loaded || viewTold === v || stick.acted() || Date.now() - v.openedAt > 15000) return;
+    viewTold = v;
+    const log = $("log");
+    const stack = String(new Error().stack || "").split("\n").slice(1, 8).join(" | ").slice(0, 800);
+    setTimeout(() => {
+      if (view !== v || stick.pinned()) return;
+      const body = { backend: v.backend, session: v.session, ms: Date.now() - v.openedAt,
+        gap: Math.round(log.scrollHeight - log.scrollTop - log.clientHeight), trail: stick.trail(), events: (v.kinds || []).slice(-20),
+        stack };
+      api("POST", "/api/view-report", body).catch(() => { /* only a report */ });
+    }, 300);
+  }
 
   // A snapshot renders its newest rows first: at least firstRows rows and
   // firstChars characters, in whole turns. The older rows follow in the
@@ -1514,6 +1543,7 @@
       this.jumpTo();
       this.fillOlder();
       if (view === this) restoreView(this);
+      if (view === this) stick.drawn();
     }
 
     // olderRows takes the rows a split snapshot sent after its newest ones.
@@ -1598,6 +1628,8 @@
         return;
       }
       n.scrollIntoView({ block: "center" });
+      // The search put the reader there: not a view that went astray.
+      viewTold = this;
       stick.look();
       n.classList.add("flash");
       setTimeout(() => n.classList.remove("flash"), 2500);
@@ -3292,6 +3324,8 @@
         if (e.kind === "snapshot") fp = e.fp || "";
         else if (e.kind !== "snapshot.older" && e.kind !== "backend.status") fp = "";
         if (first) mark("parsed");
+        (chat.kinds = chat.kinds || []).push(Math.round(Date.now() - chat.openedAt) + ":" + e.kind + (e.provisional ? "*" : ""));
+        if (chat.kinds.length > 40) chat.kinds.shift();
         chat.event(e.kind, e.data, e.at);
         if (first) {
           first = false;
@@ -3939,6 +3973,8 @@
         const n = a && logItems(chat.log)[a.i];
         if (!n) chat.log.scrollTop = st.log.top;
         else chat.log.scrollTop += n.getBoundingClientRect().top - chat.log.getBoundingClientRect().top - a.off;
+        // The reader's place from before the reload, not a view astray.
+        viewTold = chat;
         stick.release();
       };
       place();

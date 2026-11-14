@@ -216,6 +216,8 @@ type Gateway struct {
 	compressed        []string
 	// stalls hold the next call of a method on its connection (StallNext).
 	stalls map[string]chan struct{}
+	// resumeDelay is how long session.resume takes (SlowResume).
+	resumeDelay func(sessionID string) time.Duration
 	// silent, while open, holds every call and every new connection
 	// (Silence).
 	silent chan struct{}
@@ -224,6 +226,32 @@ type Gateway struct {
 type submission struct {
 	text    string
 	receipt map[string]any
+}
+
+// SlowResume makes session.resume of a session take d(sessionID) to
+// answer, as a busy Hermes: the connection's later calls wait behind it.
+func (g *Gateway) SlowResume(d func(sessionID string) time.Duration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.resumeDelay = d
+}
+
+// resumeWait holds a session.resume for what slow says, and reports false
+// when done closed first.
+func resumeWait(done <-chan struct{}, slow func(string) time.Duration, method string, p map[string]any) bool {
+	if method != gateway.MethodSessionResume || slow == nil {
+		return true
+	}
+	d := slow(str(p, kSessionID))
+	if d <= 0 {
+		return true
+	}
+	select {
+	case <-time.After(d):
+		return true
+	case <-done:
+		return false
+	}
 }
 
 // gatedListener is the fake's listener. While down it accepts and at once
@@ -863,6 +891,7 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		stall := g.stalls[req.Method]
 		delete(g.stalls, req.Method)
+		slow := g.resumeDelay
 		g.mu.Unlock()
 		if stall != nil {
 			select {
@@ -870,6 +899,9 @@ func (g *Gateway) ws(w http.ResponseWriter, r *http.Request) {
 			case <-r.Context().Done():
 				return
 			}
+		}
+		if !resumeWait(r.Context().Done(), slow, req.Method, req.Params) {
+			return
 		}
 		if !g.hush(r.Context().Done()) {
 			return
