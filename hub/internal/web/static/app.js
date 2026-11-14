@@ -3373,7 +3373,6 @@
     // the event id then gets "snapshot.same" instead of the whole chat.
     let fp = "";
     const follow = window.HubStream(view.base + "/events", {
-      query: () => (fp ? "fp=" + encodeURIComponent(fp) : ""),
       message: (m) => {
         if (first) mark("event");
         let e;
@@ -3403,7 +3402,7 @@
         try { await api("GET", "/api/me"); } catch (_) { return; }
         banner("Could not open this chat. Reconnecting.", true, "stream");
       },
-    });
+    }, { query: () => (fp ? "fp=" + encodeURIComponent(fp) : "") });
     stream = follow;
     focusInput();
     if (page) {
