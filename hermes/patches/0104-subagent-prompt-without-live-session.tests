@@ -1,0 +1,10 @@
+# New: a subagent's prompt with no live parent session, and a child's error text (tests/gateway/test_subagent_prompt_without_live_session.py, tests/tools/test_delegate_error_text.py)
+# The subagent prompt paths, idle retirement and the delegate child run it builds on
+tests/gateway/test_subagent_approval_outlives_turn.py
+tests/gateway/test_subagent_clarify_outlives_turn.py
+tests/gateway/test_retired_open_session_listing.py
+tests/tools/test_subagent_clarify_routing.py
+tests/tools/test_delegate.py
+tests/tools/test_delegate_liveness_timeout.py
+tests/tools/test_delegate_interrupted_partial_output.py
+tests/tools/test_delegation_restart_handoff.py

@@ -1,0 +1,358 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 14:22:06 +0000
+Subject: [PATCH] fix(delegate): a subagent's question outlives its chat's
+ memory; a child's error names its exception
+
+A background subagent ended with status=error and the parent's session id
+as its whole error. A subagent keeps running after its parent chat left the
+gateway's memory (an idle conversation retires, a restarted gateway starts
+without it) and asks a question or an approval later. Registering that
+prompt with the viewers read `authority.sessions[<parent session id>]` and
+raised KeyError inside the child's tool call; str(KeyError(id)) is only the
+id, so the parent read it as the error. Same lookup in the clarify path
+after the answer.
+
+Registering a subagent's prompt now restores a retired conversation, and
+when it cannot be restored (a restart of a local conversation, a deleted
+one) logs a warning and leaves only the viewers' copy unregistered: the
+chat adapter already shows the card and takes the answer.
+
+A child that raises now reports `Type: message (at file:line in function)`;
+a KeyError says `KeyError: missing key '<key>'`, never the bare key.
+---
+ gateway/run_turn_runner.py                    |   4 +-
+ gateway/session_authority.py                  |  31 +++-
+ ...st_subagent_prompt_without_live_session.py | 139 ++++++++++++++++++
+ tests/tools/test_delegate_error_text.py       |  45 ++++++
+ tools/delegate_tool_child_run.py              |  23 ++-
+ 5 files changed, 237 insertions(+), 5 deletions(-)
+ create mode 100644 tests/gateway/test_subagent_prompt_without_live_session.py
+ create mode 100644 tests/tools/test_delegate_error_text.py
+
+diff --git a/gateway/run_turn_runner.py b/gateway/run_turn_runner.py
+index 3514756d..36dbd052 100644
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -729,7 +729,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
+             fallback=_text_fallback)
+         if self._approval_owner is not None:
+             authority, session_id, generation = self._approval_owner
+-            authority.sessions[session_id].controls.snapshot(session_id, generation)
++            # A subagent's card outlives the conversation's memory (retired idle, or a restart): nothing to snapshot.
++            if (live := authority.sessions.get(session_id)) is not None:
++                live.controls.snapshot(session_id, generation)
+         # Branch on the explicit flag, never on the text: a real answer can start with '[' (a
+         # "[A] staging" label, "[urgent] ..." free text) and must not be mistaken for a sentinel.
+         if not answered:
+diff --git a/gateway/session_authority.py b/gateway/session_authority.py
+index c91ebab3..e2b11a82 100644
+--- a/gateway/session_authority.py
++++ b/gateway/session_authority.py
+@@ -7,6 +7,7 @@ from __future__ import annotations
+ 
+ import asyncio
+ import contextlib
++import logging
+ from contextvars import ContextVar
+ from dataclasses import asdict, dataclass, field
+ from functools import partial
+@@ -28,6 +29,8 @@ from hermes_state_runtime import (
+     list_session_admissions, recover_session_inputs, resolve_unknown_session_input,
+ )
+ 
++logger = logging.getLogger(__name__)
++
+ # Capped backoff for a claim refused by transient storage (writer lock, full disk).
+ _CLAIM_RETRY_MIN_S, _CLAIM_RETRY_MAX_S = 0.25, 5.0
+ # Longest a settled turn's adapter may hold its adopted crash marker before the follower is claimed.
+@@ -1072,11 +1075,33 @@ class SessionAuthority:
+             self.check_approval_generation(session_id, generation)
+             live.controls.register(session_id, route, generation, data, timeout_s=timeout_s)
+ 
++    def _background_live(self, session_id, what):
++        """The live session a subagent's *what* registers on, or None. A background subagent outlives the
++        memory of its parent chat: an idle conversation retires (``session_retirement``) and a restarted
++        gateway starts without it, yet the subagent asks later. A retired one is restored here; one that
++        cannot be (a restart of a local conversation, a deleted one) leaves only the viewers' copy of the
++        prompt unregistered: the chat adapter shows the card and takes its answer without it. Never a
++        ``KeyError`` out of the subagent's tool call, which ended the subagent with the session id as its error."""
++        live = self.sessions.get(session_id)
++        if live is None:
++            from gateway.session_retirement import restore_retired
++            try:
++                restore_retired(self, session_id)
++            except Exception:
++                logger.warning("Subagent %s: conversation %s could not be restored", what, session_id, exc_info=True)
++            live = self.sessions.get(session_id)
++        if live is None:
++            logger.warning("Subagent %s not registered with viewers: conversation %s is not in memory "
++                           "(retired while idle, or the gateway restarted); the card stands", what, session_id)
++        return live
++
+     def register_background_approval(self, session_id, route, data, *, timeout_s=None):
+         """A subagent's approval: it belongs to the session, not to the running execution. A background
+         subagent asks after its parent's turn ended, and the prompt stays answerable until it is answered or
+         times out, whatever turn runs by then."""
+-        live = self.sessions[session_id]
++        live = self._background_live(session_id, 'approval')
++        if live is None:
++            return
+         with live.event_stream.lock:
+             generation = self.db.get_session(session_id)['runtime_generation']
+             live.controls.register(session_id, route, generation, data, timeout_s=timeout_s, background=True)
+@@ -1084,7 +1109,9 @@ class SessionAuthority:
+     def register_background_clarify(self, session_id, entry, *, timeout_s=None):
+         """A subagent's question: it belongs to the session, not to the running execution (see
+         ``register_background_approval``), so it stays answerable after its parent's turn ended."""
+-        live = self.sessions[session_id]
++        live = self._background_live(session_id, 'question')
++        if live is None:
++            return
+         with live.event_stream.lock:
+             generation = self.db.get_session(session_id)['runtime_generation']
+             live.controls.register_clarify(session_id, generation, entry, timeout_s=timeout_s, background=True)
+diff --git a/tests/gateway/test_subagent_prompt_without_live_session.py b/tests/gateway/test_subagent_prompt_without_live_session.py
+new file mode 100644
+index 00000000..d752658a
+--- /dev/null
++++ b/tests/gateway/test_subagent_prompt_without_live_session.py
+@@ -0,0 +1,139 @@
++"""A background subagent's question or approval needs no live session of its parent chat.
++
++An idle local or API conversation leaves ``authority.sessions`` (``session_retirement``), and a restarted gateway
++starts without it. A background subagent keeps running through both and asks later; ``authority.sessions[id]``
++then raised ``KeyError(<parent session id>)`` inside the child's tool call, and the child ended with
++``status=error`` and the bare id as its error. The registration is only the viewers' copy of a card that the chat
++adapter already shows, so it restores the conversation when it can and otherwise leaves the card standing.
++
++Real owner pieces (``SessionAuthority`` over a real ``SessionDB``, the real ``TurnRunner`` clarify path); only the
++chat adapter is a stand-in.
++"""
++import asyncio
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import pytest
++
++from gateway.platforms.base import SendResult
++from gateway.run_turn_runner import TurnRunner
++from gateway.session_authority import LiveSession, SessionAuthority
++from hermes_state import SessionDB
++from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
++from tools import approval
++from tools.approval_gateway_wait import _ApprovalEntry
++from tools import clarify_gateway as cg
++
++KEY = "retired-parent-route"
++PARENT = "20261107_034217_644791"
++ONE = [{"qid": "q0", "question": "Which one?", "choices": ["a", "b"], "multi_select": False}]
++
++
++class _Adapter:
++    def __init__(self):
++        self.cards = []
++
++    async def send_clarify(self, **kwargs):
++        self.cards.append(kwargs)
++        return SendResult(success=True, message_id="1")
++
++    async def retire_clarify_card(self, clarify_id, notice):
++        pass
++
++
++@pytest.fixture()
++def owner(tmp_path):
++    cg._entries.clear()
++    cg._session_index.clear()
++    approval._gateway_queues.clear()
++    with SessionDB(db_path=tmp_path / "state.db") as db:
++        db.create_session(PARENT, source="test")
++        epoch = begin_runtime_epoch(db, instance_id="current")
++        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="owned",
++                                     instance_id="current", db=db, epoch=epoch)
++        authority.sessions[PARENT] = LiveSession(None, KEY)
++        yield SimpleNamespace(authority=authority, db=db, epoch=epoch)
++    cg._entries.clear()
++    cg._session_index.clear()
++    approval._gateway_queues.clear()
++
++
++def _turn_generation(owner):
++    admit_session_input(owner.db, epoch=owner.epoch, principal_id="human", session_id=PARENT,
++                        request_id="first", payload={"text": "start a subagent"})
++    return claim_session_input(owner.db, epoch=owner.epoch, session_id=PARENT)["generation"]
++
++
++def _runner(owner, generation, adapter):
++    runner = object.__new__(TurnRunner)
++    runner._approval_owner = (owner.authority, PARENT, generation)
++    runner._ctx = SimpleNamespace(
++        _status_adapter=adapter, _status_chat_id="C1", _status_thread_metadata={}, session_key=KEY,
++        stream_consumer_holder=[None], source=SimpleNamespace(platform="telegram"))
++
++    class _Fut:
++        def __init__(self, r): self._r = r
++        def result(self, timeout=None): return self._r
++
++    runner._schedule = lambda coro, label: _Fut(asyncio.run(coro))
++    return runner
++
++
++def test_a_subagent_approval_registers_nothing_for_a_conversation_that_left_memory(owner, caplog):
++    del owner.authority.sessions[PARENT]  # idle retirement, or a gateway that restarted
++    data = {"command": "true # approval-test", "request_id": "sub-1", "subagent": "check it"}
++    with caplog.at_level("WARNING"):
++        owner.authority.register_background_approval(PARENT, KEY, data)  # was KeyError(PARENT)
++    assert PARENT not in owner.authority.sessions
++    assert PARENT in caplog.text and "not in memory" in caplog.text  # never silent
++
++
++def test_a_subagent_question_registers_nothing_for_a_conversation_that_left_memory(owner, caplog):
++    del owner.authority.sessions[PARENT]
++    entry = cg.register(clarify_id="c1", session_key=KEY, question="Which one?", choices=["a"],
++                        multi_select=False, subagent="check it")
++    with caplog.at_level("WARNING"):
++        owner.authority.register_background_clarify(PARENT, entry)  # was KeyError(PARENT)
++    assert PARENT in caplog.text and "not in memory" in caplog.text
++
++
++def test_a_conversation_retirement_let_go_is_restored_for_the_prompt(owner):
++    seen = []
++
++    def restore(authority, session_id):
++        seen.append(session_id)
++        authority.sessions[session_id] = LiveSession(None, KEY)
++
++    del owner.authority.sessions[PARENT]
++    entry = _ApprovalEntry({"command": "true # approval-test", "request_id": "sub-1", "subagent": "check it"})
++    approval._gateway_queues.setdefault(KEY, []).append(entry)
++    data = entry.data
++    with patch("gateway.session_retirement.restore_retired", restore):
++        owner.authority.register_background_approval(PARENT, KEY, data)
++    assert seen == [PARENT]
++    live = owner.authority.sessions[PARENT]
++    assert [p["prompt_id"] for p in live.controls.snapshot(PARENT, None)] == ["sub-1"]
++
++
++def test_a_subagent_asks_its_question_with_no_live_session_and_gets_the_answer(owner):
++    generation = _turn_generation(owner)
++    adapter = _Adapter()
++    del owner.authority.sessions[PARENT]
++    real_wait = cg.wait_for_response
++    with patch("tools.clarify_gateway.get_clarify_timeout", return_value=1800), \
++            patch("tools.clarify_gateway.wait_for_response",
++                  lambda clarify_id, timeout: real_wait(clarify_id, timeout=0.05)):
++        reply = _runner(owner, generation, adapter)._background_clarify_ask(ONE, "check it")
++    assert adapter.cards and adapter.cards[0]["question"].startswith('Subagent "check it" asks: Which one?')
++    assert reply["outcome"] == "timed_out"  # a silent user, not a KeyError
++
++
++def test_a_subagent_approval_notify_with_no_live_session_renders_the_card(owner):
++    generation = _turn_generation(owner)
++    runner = _runner(owner, generation, _Adapter())
++    rendered = []
++    runner._render_approval_sync = rendered.append
++    del owner.authority.sessions[PARENT]
++    data = {"command": "true # approval-test", "request_id": "sub-1", "subagent": "check it"}
++    runner._background_approval_notify(data)
++    assert rendered == [data]
+diff --git a/tests/tools/test_delegate_error_text.py b/tests/tools/test_delegate_error_text.py
+new file mode 100644
+index 00000000..a12383e5
+--- /dev/null
++++ b/tests/tools/test_delegate_error_text.py
+@@ -0,0 +1,45 @@
++"""A child that raises ends with an error that names the exception, never a bare ``str(exc)``.
++
++``str(KeyError("20261107_034217_644791"))`` is just the quoted key, so a subagent that died on a missing dict
++entry reported the parent's session id as its whole error.
++"""
++from unittest.mock import MagicMock
++
++import pytest
++
++from tools.delegate_tool_child_run import describe_exception
++
++
++def _raise_missing():
++    sessions = {}
++    return sessions["20261107_034217_644791"]
++
++
++def test_a_key_error_names_the_exception_and_says_the_key_is_missing():
++    with pytest.raises(KeyError) as caught:
++        _raise_missing()
++    text = describe_exception(caught.value)
++    assert text.startswith("KeyError: missing key '20261107_034217_644791'")
++    assert "_raise_missing" in text and "test_delegate_error_text.py" in text  # where it came from
++
++
++def test_other_exceptions_keep_their_message_after_the_name():
++    assert describe_exception(RuntimeError("boom")) == "RuntimeError: boom"
++
++
++def test_an_exception_without_a_message_is_its_name():
++    assert describe_exception(ValueError()) == "ValueError"
++
++
++def test_a_raised_key_error_reaches_the_entry_and_the_result_line():
++    from tools.delegate_tool import _run_single_child
++
++    child = MagicMock()
++    child._credential_pool = None
++    child.run_conversation.side_effect = KeyError("20261107_034217_644791")
++    parent = MagicMock()
++    parent._active_children = []
++    parent._delegate_depth = 0
++    result = _run_single_child(task_index=0, goal="g", child=child, parent_agent=parent)
++    assert result["status"] == "error"
++    assert result["error"].startswith("KeyError: missing key '20261107_034217_644791'")
+diff --git a/tools/delegate_tool_child_run.py b/tools/delegate_tool_child_run.py
+index 776a67ec..2eaed640 100644
+--- a/tools/delegate_tool_child_run.py
++++ b/tools/delegate_tool_child_run.py
+@@ -185,6 +185,25 @@ def _detach_child(parent_agent: Any, child: Any) -> None:
+     except (ValueError, UnboundLocalError) as e:
+         logger.debug("Could not remove child from active_children: %s", e)
+ 
++def describe_exception(exc: BaseException) -> str:
++    """An exception as a child's error text: ``Type: message (at file:line in function)``. ``str(KeyError(k))`` is
++    only the quoted key, so a missing session id reached the parent as the whole error; a KeyError says its key is
++    missing, and the innermost frame says where."""
++    name = type(exc).__name__
++    message = f"missing key {exc.args[0]!r}" if isinstance(exc, KeyError) and len(exc.args) == 1 else str(exc)
++    text = f"{name}: {message}" if message else name
++    try:
++        import traceback
++        frames = traceback.extract_tb(exc.__traceback__)
++        if frames:
++            last = frames[-1]
++            tail = "/".join(last.filename.replace("\\", "/").split("/")[-2:])
++            text += f" (at {tail}:{last.lineno} in {last.name})"
++    except Exception:
++        pass
++    return text
++
++
+ def _signal_child_stop(child: Any, *reason: str, tool_reason: str = "parent delegation ended") -> None:
+     """Cooperative interrupt so the child's worker thread can exit cleanly. ``tool_reason`` is the
+     fixed cause the child's tools see (a pending approval wait reports it instead of a user deny)."""
+@@ -1111,7 +1130,7 @@ class _ChildRun:
+             if diagnostic_path:
+                 logger.warning("Subagent %d 0-API-call timeout — diagnostic written to %s", task_index, diagnostic_path)
+         if not is_timeout:
+-            _err = str(exc)
++            _err = describe_exception(exc)
+         elif stale_after is not None:
+             _err = (
+                 f"Subagent stopped making progress after {child_api_calls} API call(s) — no activity for "
+@@ -1143,7 +1162,7 @@ class _ChildRun:
+             "_child_role": getattr(child, "_delegate_role", None),
+             "diagnostic_path": diagnostic_path,
+         }
+-        _error_entry = self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
++        _error_entry = self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else _err)
+         close_deferred = is_timeout and not future.done()
+         if close_deferred:
+             _defer_close_after_timeout(child, future)
