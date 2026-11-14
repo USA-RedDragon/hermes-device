@@ -244,7 +244,7 @@ device:
 Then restart the service: `systemctl --user restart talaria` on Linux, `launchctl kickstart -k gui/$(id -u)/io.github.usa-reddragon.talaria` on macOS, `schtasks /End /TN talaria` then `schtasks /Run /TN talaria` on Windows, or run `talaria setup` again on any of them. Every key is listed in the [configuration reference](../reference/configuration.md).
 
 - The agent runs commands as your user, so it can do what you can do in the allowed folders. Treat it like a person who has your terminal.
-- Each command runs with a memory cap on Linux with systemd, so a runaway command is killed and nothing else is affected. The default is 75% of the service's limit.
+- On Linux with systemd each command runs in a scope of its own, so when the kernel's OOM killer ends a command, the daemon keeps running. There is no memory cap by default; set `device.command-memory-max` (for example `4G`) to cap each command.
 - The agent asks before it does anything you cannot undo in Firefox: see [Let the agent use Firefox](../guides/browser-extension.md).
 - The agent cannot reach the computer when the daemon is not running.
 - The computer's token stays in your system keyring (Secret Service on Linux, Keychain on macOS, Credential Manager on Windows), or in a file readable only by you when there is no keyring (or, on macOS, when setup ran over SSH).

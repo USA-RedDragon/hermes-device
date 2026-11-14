@@ -214,9 +214,7 @@ func (d *systemdService) Content(bin, cfg string) []byte {
 		"ExecStart=" + d.unitPath(bin) + " run -c " + d.unitPath(cfg) + "\n" +
 		"Restart=always\n" +
 		"RestartSec=5\n" +
-		"MemoryMax=2G\n" +
 		"OOMPolicy=continue\n" +
-		"TasksMax=512\n" +
 		"\n" +
 		"[Install]\n" +
 		"WantedBy=default.target\n")

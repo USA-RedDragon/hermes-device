@@ -83,38 +83,41 @@ func readArgs(t *testing.T, path string) []string {
 	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 }
 
-func TestNewScopeAutoFromServiceLimit(t *testing.T) {
+func TestNewScopeNoCapByDefault(t *testing.T) {
 	t.Parallel()
 	bin, args := fakeSystemd(t, "", "")
-	s, err := executor.NewScope(t.Context(), probe(t, bin, serviceCgroup, "2147483648", "512"), 0, true)
+	s, err := executor.NewScope(t.Context(), probe(t, bin, serviceCgroup, "2147483648", "512"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.MemoryMax != 1536<<20 || s.TasksMax != 512 || s.PartOf != "talaria.service" {
+	if s.MemoryMax != 0 || s.TasksMax != 512 || s.PartOf != "talaria.service" {
 		t.Errorf("scope = %+v", s)
 	}
 	got := strings.Join(readArgs(t, args), " ")
 	for _, want := range []string{
-		"--user --scope --quiet --unit=talaria-cmd-", "-p MemoryMax=1610612736", "-p OOMPolicy=kill",
+		"--user --scope --quiet --unit=talaria-cmd-", "-p OOMPolicy=kill",
 		"-p TasksMax=512", "-p PartOf=talaria.service", "--expand-environment=no -- true END",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("probe args %q lack %q", got, want)
 		}
 	}
+	if strings.Contains(got, "MemoryMax") {
+		t.Errorf("probe args %q set a MemoryMax", got)
+	}
 }
 
 func TestNewScopeDefaults(t *testing.T) {
 	t.Parallel()
 	bin, _ := fakeSystemd(t, "", "")
-	s, err := executor.NewScope(t.Context(), probe(t, bin, "/user.slice/user-1000.slice/session-4.scope", "max", "max"), 0, true)
+	s, err := executor.NewScope(t.Context(), probe(t, bin, "/user.slice/user-1000.slice/session-4.scope", "max", "max"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.MemoryMax != executor.DefaultMemoryMax || s.TasksMax != 0 || s.PartOf != "" {
+	if s.MemoryMax != 0 || s.TasksMax != 0 || s.PartOf != "" {
 		t.Errorf("scope = %+v", s)
 	}
-	s, err = executor.NewScope(t.Context(), probe(t, bin, serviceCgroup, "2147483648", "512"), 3<<30, false)
+	s, err = executor.NewScope(t.Context(), probe(t, bin, serviceCgroup, "2147483648", "512"), 3<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +141,7 @@ func TestNewScopeUnavailable(t *testing.T) {
 		"no program": {missing, "no systemd-run"},
 		"no bus":     {probe(t, failing, serviceCgroup, "max", "max"), "Failed to connect to bus"},
 	} {
-		s, err := executor.NewScope(t.Context(), c.p, 0, true)
+		s, err := executor.NewScope(t.Context(), c.p, 0)
 		if !errors.Is(err, executor.ErrNoScope) || !strings.Contains(err.Error(), c.want) || s != nil {
 			t.Errorf("%s: %v, %v", name, s, err)
 		}
@@ -149,7 +152,7 @@ func TestNewScopeWithoutExpandOption(t *testing.T) {
 	t.Parallel()
 	old := "case \"$*\" in *--expand-environment*) echo \"systemd-run: unrecognized option '--expand-environment=no'\" >&2; exit 1 ;; esac\n"
 	bin, args := fakeSystemd(t, old, "")
-	s, err := executor.NewScope(t.Context(), probe(t, bin, serviceCgroup, "max", "max"), 0, true)
+	s, err := executor.NewScope(t.Context(), probe(t, bin, serviceCgroup, "max", "max"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,6 +217,20 @@ func TestScopeReportsOOM(t *testing.T) {
 	}
 }
 
+func TestScopeReportsOOMWithoutCap(t *testing.T) {
+	t.Parallel()
+	bin, args := fakeSystemd(t, "", `ActiveState=failed\nResult=oom-kill\n`)
+	s := scopeIn(bin)
+	s.MemoryMax = 0
+	res, _ := run(t, executor.Request{Cmd: "kill -KILL $$", Cwd: t.TempDir(), Env: os.Environ(), Scope: s})
+	if !res.OOM || res.MemoryMax != 0 || res.Code != 137 {
+		t.Errorf("result %+v", res)
+	}
+	if got := strings.Join(readArgs(t, args), " "); strings.Contains(got, "MemoryMax") || !strings.Contains(got, "-p OOMPolicy=kill") {
+		t.Errorf("args %q", got)
+	}
+}
+
 func TestScopeSignalWithoutOOM(t *testing.T) {
 	t.Parallel()
 	bin, _ := fakeSystemd(t, "", `ActiveState=inactive\nResult=success\n`)
@@ -246,7 +263,7 @@ func TestScopeOOMSystemd(t *testing.T) {
 	if os.Getenv("TALARIA_SYSTEMD_TESTS") != "1" {
 		t.Skip("set TALARIA_SYSTEMD_TESTS=1 to run commands in real systemd scopes")
 	}
-	s, err := executor.NewScope(t.Context(), executor.SystemProbe(os.Environ()), 64<<20, false)
+	s, err := executor.NewScope(t.Context(), executor.SystemProbe(os.Environ()), 64<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +286,7 @@ func TestScopeKeepsShellExpansionsSystemd(t *testing.T) {
 	if os.Getenv("TALARIA_SYSTEMD_TESTS") != "1" {
 		t.Skip("set TALARIA_SYSTEMD_TESTS=1 to run commands in real systemd scopes")
 	}
-	s, err := executor.NewScope(t.Context(), executor.SystemProbe(os.Environ()), 64<<20, false)
+	s, err := executor.NewScope(t.Context(), executor.SystemProbe(os.Environ()), 64<<20)
 	if err != nil {
 		t.Fatal(err)
 	}

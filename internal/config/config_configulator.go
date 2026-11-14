@@ -145,7 +145,7 @@ func configApplyDefaults(cfg *Config, _ string, set configulator.SetOrigin) erro
 	set("device.resume-buffer", configulator.LayerDefault, "default tag")
 	cfg.Device.MaxGrace = time.Duration(int64(600000000000))
 	set("device.max-grace", configulator.LayerDefault, "default tag")
-	cfg.Device.CommandMemoryMax = "auto"
+	cfg.Device.CommandMemoryMax = "off"
 	set("device.command-memory-max", configulator.LayerDefault, "default tag")
 	cfg.Gateway.Listen = "127.0.0.1:0"
 	set("gateway.listen", configulator.LayerDefault, "default tag")
@@ -909,7 +909,7 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	fs.String(names[11], "", "WSL distribution for device.shell wsl on Windows. Defaults to WSL's default distribution")
 	fs.Var(impl.NewInt(1048576), names[12], "Most output bytes per command that run keeps for a resume of the exec leg until the plugin confirms them. Older output of a command is dropped, and the plugin shows the gap")
 	fs.Duration(names[13], time.Duration(int64(600000000000)), "Longest time run keeps commands running after the exec leg drops, waiting for a resume. The plugin's grace_seconds applies when it is shorter")
-	fs.String(names[14], "auto", "Memory cap of each agent command, as bytes or with a K, M, G or T suffix (powers of 1024), for example 4G. On Linux with a systemd user manager, run starts each command in a systemd scope of its own with this MemoryMax, so the kernel kills only a command that uses more, and the agent is told so. auto is 75% of the MemoryMax of the cgroup that run runs in (the talaria service), or 4G when that has no limit. 0 or off runs commands in run's own cgroup, without a cap of their own. No effect on macOS")
+	fs.String(names[14], "off", "Memory cap of each agent command, as bytes or with a K, M, G or T suffix (powers of 1024), for example 4G. Default off: no cap. On Linux with a systemd user manager, run starts each command in a systemd scope of its own, so an out-of-memory kill ends only that command and not the daemon, and with a size here the scope has that MemoryMax and the agent is told when a command used more. off, 0 and auto (the old default, now the same as off) set no cap. No effect on macOS")
 	fs.String(names[15], "127.0.0.1:0", "Loopback address of the chat splice. Port 0 picks a free port")
 	fs.Bool(names[16], true, "Run the chat splice in run. false (or run --no-splice) runs only the exec leg: no listener, no daemon state file and no whoami call, for a headless service device such as the sandbox pod")
 	fs.Bool(names[17], true, "On Linux, run the exact agent build the server runs: run fetches it from the server's container image by digest when the server reports one, verifies it and keeps it in chat.managed-dir. false, or no image from the server, runs chat.hermes instead")

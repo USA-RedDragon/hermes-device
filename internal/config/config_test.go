@@ -208,26 +208,23 @@ func TestLegacyEnvironmentVariables(t *testing.T) {
 
 func TestCommandMemory(t *testing.T) {
 	t.Parallel()
-	for in, want := range map[string]struct {
-		n    int64
-		auto bool
-	}{
-		"auto": {0, true}, "AUTO": {0, true}, "off": {0, false}, "0": {0, false},
-		"4G": {4 << 30, false}, "4GiB": {4 << 30, false}, "512m": {512 << 20, false}, "1t": {1 << 40, false},
-		"20000000": {20000000, false}, "16M": {16 << 20, false},
+	for in, want := range map[string]int64{
+		"off": 0, "OFF": 0, "0": 0, "auto": 0, "AUTO": 0,
+		"4G": 4 << 30, "4GiB": 4 << 30, "512m": 512 << 20, "1t": 1 << 40,
+		"20000000": 20000000, "16M": 16 << 20,
 	} {
-		n, auto, err := config.Device{CommandMemoryMax: in}.CommandMemory()
-		if err != nil || n != want.n || auto != want.auto {
-			t.Errorf("%q: %d, %v, %v", in, n, auto, err)
+		n, err := config.Device{CommandMemoryMax: in}.CommandMemory()
+		if err != nil || n != want {
+			t.Errorf("%q: %d, %v", in, n, err)
 		}
 	}
 	for _, in := range []string{"", "-1G", "1.5G", "4X", "15M", "99999999999T", "lots"} {
-		if _, _, err := (config.Device{CommandMemoryMax: in}).CommandMemory(); !errors.Is(err, config.ErrMemorySize) {
+		if _, err := (config.Device{CommandMemoryMax: in}).CommandMemory(); !errors.Is(err, config.ErrMemorySize) {
 			t.Errorf("%q: %v", in, err)
 		}
 	}
 	cfg, err := load(map[string]string{hubURLEnv: hubURL}, "")
-	if err != nil || cfg.Device.CommandMemoryMax != "auto" {
+	if err != nil || cfg.Device.CommandMemoryMax != "off" {
 		t.Errorf("default %+v, %v", cfg, err)
 	}
 	if _, err := load(map[string]string{hubURLEnv: hubURL, "TALARIA_DEVICE_COMMAND_MEMORY_MAX": "big"}, ""); !errors.Is(err, config.ErrMemorySize) {

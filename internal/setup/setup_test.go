@@ -33,9 +33,7 @@ Conflicts=hermes-device.service
 ExecStart=%h/.talaria/bin/talaria run -c %h/.config/talaria/config.yaml
 Restart=always
 RestartSec=5
-MemoryMax=2G
 OOMPolicy=continue
-TasksMax=512
 
 [Install]
 WantedBy=default.target
@@ -194,7 +192,7 @@ func TestSetupRefusesForeignUnitAndRecovers(t *testing.T) {
 	f := newFixture(t)
 	f.opts.NoShell, f.opts.NoBrowser = true, true
 	unit := filepath.Join(f.sys.Home, ".config", "systemd", "user", setup.UnitName)
-	writeFile(t, unit, strings.Replace(workingUnit, "MemoryMax=2G", "MemoryMax=8G", 1))
+	writeFile(t, unit, strings.Replace(workingUnit, "OOMPolicy=continue\n", "MemoryMax=8G\nOOMPolicy=continue\n", 1))
 	if _, err := f.sys.Setup(t.Context(), f.opts); err == nil || !strings.Contains(err.Error(), "--force") {
 		t.Fatalf("Setup with a foreign unit: %v", err)
 	}
@@ -206,7 +204,7 @@ func TestSetupRefusesForeignUnitAndRecovers(t *testing.T) {
 	if _, err := f.sys.Setup(t.Context(), f.opts); err != nil {
 		t.Fatalf("Setup --force: %v", err)
 	}
-	if !strings.Contains(readFile(t, unit), "MemoryMax=2G") || !exists(unit+".talaria-20261110-120000.bak") {
+	if strings.Contains(readFile(t, unit), "MemoryMax") || !exists(unit+".talaria-20261110-120000.bak") {
 		t.Error("force did not replace the unit after a backup")
 	}
 	st, _ = setup.LoadState(f.opts.StateDir)
@@ -274,7 +272,7 @@ func TestUninstallLeavesReplacedUnitAndRestoresBackups(t *testing.T) {
 	f := newFixture(t)
 	f.opts.NoShell, f.opts.NoBrowser, f.opts.Force, f.opts.OverwriteConfig = true, true, true, true
 	unit := filepath.Join(f.sys.Home, ".config", "systemd", "user", setup.UnitName)
-	mine := strings.Replace(workingUnit, "MemoryMax=2G", "MemoryMax=8G", 1)
+	mine := strings.Replace(workingUnit, "OOMPolicy=continue\n", "MemoryMax=8G\nOOMPolicy=continue\n", 1)
 	writeFile(t, unit, mine)
 	writeFile(t, f.opts.ConfigFile, "log-level: debug\n")
 	f.opts.ConfigExists = true
@@ -435,5 +433,35 @@ func TestUninstallRemovesCacheAndLaunchdLog(t *testing.T) {
 	}
 	if exists(svc.Path()) || exists(logFile) {
 		t.Errorf("agent file or its log left: %+v", rep)
+	}
+}
+
+// An earlier release wrote MemoryMax=2G and TasksMax=512 into the unit.
+// Setup replaces that unit with one that has neither, and leaves a drop-in
+// with the user's own MemoryMax alone.
+func TestSetupDropsOldFixedLimits(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.opts.NoShell, f.opts.NoBrowser = true, true
+	unit := filepath.Join(f.sys.Home, ".config", "systemd", "user", setup.UnitName)
+	if _, err := f.sys.Setup(t.Context(), f.opts); err != nil {
+		t.Fatal(err)
+	}
+	fresh := readFile(t, unit)
+	if strings.Contains(fresh, "MemoryMax") || strings.Contains(fresh, "TasksMax") || !strings.Contains(fresh, "OOMPolicy=continue\n") {
+		t.Errorf("new unit:\n%s", fresh)
+	}
+	old := strings.Replace(fresh, "OOMPolicy=continue\n", "MemoryMax=2G\nOOMPolicy=continue\nTasksMax=512\n", 1)
+	writeFile(t, unit, old)
+	dropin := filepath.Join(filepath.Dir(unit), setup.UnitName+".d", "limits.conf")
+	writeFile(t, dropin, "[Service]\nMemoryMax=8G\n")
+	if _, err := f.sys.Setup(t.Context(), f.opts); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, unit); got != fresh {
+		t.Errorf("unit after setup:\n%s", got)
+	}
+	if readFile(t, dropin) != "[Service]\nMemoryMax=8G\n" {
+		t.Error("setup changed the user's drop-in")
 	}
 }

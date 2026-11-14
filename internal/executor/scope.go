@@ -16,24 +16,20 @@ import (
 	"time"
 )
 
-// DefaultMemoryMax is the command memory cap when the daemon's own cgroup
-// has no memory limit to take it from.
-const DefaultMemoryMax = 4 << 30
-
 // ErrNoScope is returned when commands cannot run in a systemd scope of
 // their own.
 var ErrNoScope = errors.New("commands cannot run in a systemd scope of their own")
 
 // Scope runs each command in a transient systemd user scope of its own, with
-// a memory cap, so that the kernel's OOM killer ends only a command that
-// uses more than the cap, with all its processes (OOMPolicy=kill), and not
-// the service that runs the daemon. The
+// OOMPolicy=kill, so that the kernel's OOM killer ends a command that it
+// kills a process of with all its processes, and not the service that runs
+// the daemon. The scope has a memory cap only when MemoryMax is set. The
 // command keeps its process id: systemd-run --scope moves itself into the
 // scope and then executes the command.
 type Scope struct {
 	// SystemdRun and Systemctl are the paths of the programs.
 	SystemdRun, Systemctl string
-	// MemoryMax is the cap of each command in bytes.
+	// MemoryMax is the cap of each command in bytes; 0 sets none.
 	MemoryMax int64
 	// TasksMax caps the tasks of each command; 0 leaves the manager's
 	// default.
@@ -53,9 +49,11 @@ type Scope struct {
 func (s *Scope) argv(unit string, argv []string) []string {
 	out := []string{
 		s.SystemdRun, "--user", "--scope", "--quiet", "--unit=" + unit, "--description=talaria agent command",
-		"-p", "MemoryMax=" + strconv.FormatInt(s.MemoryMax, 10),
 		"-p", "OOMPolicy=kill",
 		"-p", "TimeoutStopSec=" + strconv.Itoa(int(KillGrace/time.Second)) + "s",
+	}
+	if s.MemoryMax > 0 {
+		out = append(out, "-p", "MemoryMax="+strconv.FormatInt(s.MemoryMax, 10))
 	}
 	if s.TasksMax > 0 {
 		out = append(out, "-p", "TasksMax="+strconv.FormatInt(s.TasksMax, 10))
@@ -90,12 +88,11 @@ func SystemProbe(env []string) ScopeProbe {
 	return ScopeProbe{GOOS: runtime.GOOS, ProcCgroup: "/proc/self/cgroup", CgroupRoot: "/sys/fs/cgroup", LookPath: exec.LookPath, Env: env}
 }
 
-// NewScope returns the scope for a memory cap of memoryMax bytes, or with
-// auto for 75% of the memory limit of the daemon's own cgroup
-// (DefaultMemoryMax when it has none). It runs one empty command in a scope
+// NewScope returns the scope for a memory cap of memoryMax bytes, or with 0
+// for none. It runs one empty command in a scope
 // to check that the systemd user manager takes them. The error wraps
 // ErrNoScope and says why commands cannot have a scope.
-func NewScope(ctx context.Context, p ScopeProbe, memoryMax int64, auto bool) (*Scope, error) {
+func NewScope(ctx context.Context, p ScopeProbe, memoryMax int64) (*Scope, error) {
 	if p.GOOS != "linux" {
 		return nil, fmt.Errorf("%w: only on Linux with systemd", ErrNoScope)
 	}
@@ -110,18 +107,10 @@ func NewScope(ctx context.Context, p ScopeProbe, memoryMax int64, auto bool) (*S
 	s := &Scope{SystemdRun: run, Systemctl: ctl, MemoryMax: memoryMax}
 	if cg, ok := ownCgroup(p.ProcCgroup); ok {
 		dir := filepath.Join(p.CgroupRoot, filepath.FromSlash(cg))
-		if auto {
-			if limit := readLimit(filepath.Join(dir, "memory.max")); limit > 0 {
-				s.MemoryMax = limit / 4 * 3 &^ (1<<20 - 1)
-			}
-		}
 		s.TasksMax = readLimit(filepath.Join(dir, "pids.max"))
 		if base := filepath.Base(cg); strings.HasSuffix(base, ".service") && strings.Contains(cg, "/user@") {
 			s.PartOf = base
 		}
-	}
-	if s.MemoryMax <= 0 {
-		s.MemoryMax = DefaultMemoryMax
 	}
 	s.KeepVars = true
 	msg, err := s.probe(ctx, p.Env)
@@ -171,7 +160,7 @@ func ownCgroup(path string) (string, bool) {
 	return "", false
 }
 
-// readLimit reads a cgroup limit file such as memory.max. It returns 0 for
+// readLimit reads a cgroup limit file such as pids.max. It returns 0 for
 // max and for a file it cannot read.
 func readLimit(path string) int64 {
 	data, err := os.ReadFile(path)

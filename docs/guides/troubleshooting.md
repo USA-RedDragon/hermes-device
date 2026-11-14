@@ -84,7 +84,7 @@ The agent tried to work in a folder that is not under `device.roots`. Add the fo
 
 ## A command was killed: out of memory
 
-The agent sees `[killed: out of memory (limit 1.5 GiB)...]`. Only that command was killed. Raise the cap with `device.command-memory-max` (for example `4G`) or turn it off with `off`. macOS has no per-command cap.
+The agent sees `[killed: out of memory ...]`. Only that command was killed. Either the computer ran out of memory, or you set `device.command-memory-max` (there is no cap by default) and the command used more. Raise the cap (for example `16G`) or turn it off with `off`. macOS has no per-command cap.
 
 ## The Talaria extension does not connect
 

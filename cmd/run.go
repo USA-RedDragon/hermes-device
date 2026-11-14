@@ -447,18 +447,17 @@ func runArgs(args []string) []string {
 	return []string{runCommand}
 }
 
-// commandScope returns the systemd scope that each command runs in, or nil
-// when device.command-memory-max is off or commands cannot have a scope,
-// which it logs.
+// commandScope returns the systemd scope that each command runs in, with
+// the memory cap of device.command-memory-max when that sets one, or nil
+// when commands cannot have a scope, which it logs.
 func commandScope(ctx context.Context, cfg *config.Config, env []string) *executor.Scope {
-	limit, auto, err := cfg.Device.CommandMemory()
-	if err != nil || limit == 0 && !auto {
-		slog.Info("Commands run in the daemon's cgroup, without a memory cap of their own", "device.command-memory-max", cfg.Device.CommandMemoryMax)
-		return nil
-	}
-	scope, err := executor.NewScope(ctx, executor.SystemProbe(env), limit, auto)
+	limit, err := cfg.Device.CommandMemory()
 	if err != nil {
-		slog.Info("Commands run in the daemon's cgroup, without a memory cap of their own", "reason", err)
+		limit = 0
+	}
+	scope, err := executor.NewScope(ctx, executor.SystemProbe(env), limit)
+	if err != nil {
+		slog.Info("Commands run in the daemon's cgroup", "reason", err)
 		return nil
 	}
 	slog.Info("Each command runs in a systemd scope of its own", "memory_max", scope.MemoryMax, "tasks_max", scope.TasksMax, "part_of", scope.PartOf)

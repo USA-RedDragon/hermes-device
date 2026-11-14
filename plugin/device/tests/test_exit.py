@@ -42,7 +42,7 @@ class ExitTests(unittest.TestCase):
 
     def test_oom_kill_without_limit(self):
         _, out = self.run_exit({"code": 143, "signal": "SIGTERM", "reason": "oom", "memory_max": "big"})
-        self.assertIn("[killed: out of memory. The command used more memory", out)
+        self.assertIn("[killed: out of memory. The device ran out of memory and stopped the command", out)
 
     def test_signal_alone_adds_no_note(self):
         code, out = self.run_exit({"code": 137, "signal": "SIGKILL"})

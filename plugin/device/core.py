@@ -542,11 +542,12 @@ def format_bytes(n: int) -> str:
 def oom_note(memory_max: Any) -> str:
     """The note the model sees for a command the device's kernel killed for memory (exit reason
     ``oom``, docs/protocol.md section 4.4)."""
-    limit = ""
     if isinstance(memory_max, int) and not isinstance(memory_max, bool) and memory_max > 0:
-        limit = f" (limit {format_bytes(memory_max)})"
-    return (f"[killed: out of memory{limit}. The command used more memory than the device allows one "
-            f"command, so the device stopped it; use less memory, for example by narrowing a search]")
+        return (f"[killed: out of memory (limit {format_bytes(memory_max)}). The command used more memory than "
+                f"the device allows one command, so the device stopped it; use less memory, for example by "
+                f"narrowing a search]")
+    return ("[killed: out of memory. The device ran out of memory and stopped the command; use less memory, "
+            "for example by narrowing a search]")
 
 
 def finished_process(code: int, note: str) -> DeviceProcess:
