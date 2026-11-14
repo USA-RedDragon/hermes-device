@@ -23,8 +23,12 @@ const preload = `() => {
   window.__lists = 0;
   window.__flip = "";
   const f0 = window.fetch;
+  window.__inflight = 0;
   window.fetch = async function (u, o) {
-    const r = await f0.apply(this, arguments);
+    const listing = /\\/api\\/(sessions|backends)(\\?|$)/.test(String(u)) && !(o && o.method && o.method !== "GET");
+    if (listing) window.__inflight++;
+    let r;
+    try { r = await f0.apply(this, arguments); } finally { if (listing) setTimeout(() => { window.__inflight--; }, 0); }
     if (!/\\/api\\/sessions(\\?|$)/.test(String(u)) || (o && o.method && o.method !== "GET")) return r;
     window.__lists++;
     if (!window.__flip) return r;
@@ -98,17 +102,29 @@ const { proc, connect } = driver();
   await until(`document.querySelectorAll('#sessions a.go[href^="#/s/pc/"]').length >= 3`, "the chats in the list");
   await until(`innerWidth > 1400`, "the desktop size");
 
+  // drawn waits until no list request is in flight and two frames have been
+  // painted, so the page has drawn what the last answer held.
+  const drawn = async () => {
+    await until(`window.__inflight === 0`, "the list requests to end");
+    await ev(`new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => res(true), 0))))`);
+  };
+
   // refetch asks for the list again, as the page does on a chat event, and
   // waits until the answer is in and drawn.
   const refetch = async () => {
     const n = await ev(`window.__lists`);
     await ev(`(() => { document.dispatchEvent(new Event("visibilitychange")); return 1; })()`);
     await until(`window.__lists > ${n}`, "the list fetched again");
-    await sleep(150);
+    await drawn();
   };
   const hashNow = () => ev(`location.hash`);
   const home = async () => { await ev(`(() => { location.hash = "#/"; return 1; })()`); await until(`location.hash === "#/" || location.hash === ""`, "home"); await sleep(100); };
+  // settle asks for the list with no change set and waits for it to be
+  // drawn, so a list that was still on its way when the last chat opened
+  // or closed is in before a row is measured, and the next one is the same.
+  const settle = async () => { await ev(`(() => { window.__flip = ""; return 1; })()`); await refetch(); };
   const tryClick = async (id, between, what) => {
+    await settle();
     const p = await box(id);
     assert.ok(p, "no row for " + id);
     await ev(`(() => { window.__pressed = ${row(id)}; return 1; })()`);
@@ -130,10 +146,8 @@ const { proc, connect } = driver();
   await home();
 
   // The list comes again with the pressed chat working, which moves it.
-  await ev(`(() => { window.__flip = "s4"; return 1; })()`);
-  await tryClick("s4", async () => { await refetch(); }, "a changed list drawn between press and release");
+  await tryClick("s4", async () => { await ev(`(() => { window.__flip = "s4"; return 1; })()`); await refetch(); }, "a changed list drawn between press and release");
   await home();
-  await ev(`(() => { window.__flip = ""; return 1; })()`);
 
   // An unchanged list leaves the rows as they are, so a press, a hover and
   // a focus on one stay on it (the first list after a chat opens may still
@@ -160,8 +174,8 @@ const { proc, connect } = driver();
   const ids = ["s2", "s3", "s4"];
   for (let i = 0; i < 12; i++) {
     const id = ids[i % ids.length];
-    await ev(`(() => { window.__flip = ${i % 2 ? JSON.stringify(ids[(i + 1) % ids.length]) : '""'}; return 1; })()`);
-    await tryClick(id, async () => { if (i % 3) await sleep(i * 7); await refetch(); }, `click ${i}`);
+    const flip = i % 2 ? JSON.stringify(ids[(i + 1) % ids.length]) : '""';
+    await tryClick(id, async () => { if (i % 3) await sleep(i * 7); await ev(`(() => { window.__flip = ${flip}; return 1; })()`); await refetch(); }, `click ${i}`);
     await home();
   }
   console.log("ok");

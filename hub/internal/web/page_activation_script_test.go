@@ -90,11 +90,12 @@ func TestPageSendNeedsUserActivationFirefox(t *testing.T) {
 	}
 }
 
-// firefoxPath finds Firefox, and skips the test where there is none.
+// firefoxPath finds Firefox, takes a browser slot like chromePath, and skips the test where there is none.
 func firefoxPath(t *testing.T) string {
 	t.Helper()
 	for _, n := range []string{"firefox", "firefox-esr"} {
 		if p, err := exec.LookPath(n); err == nil {
+			takeChromeSlot(t)
 			return p
 		}
 	}

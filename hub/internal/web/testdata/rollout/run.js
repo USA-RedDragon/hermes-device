@@ -103,6 +103,14 @@ const state = `(() => {
       check(first && first.title === TITLE && first.model === MODEL && first.msgs >= 4 && first.chats > 0,
         "fresh load during the silence: " + JSON.stringify(first));
     }
+    // The page asks for the list again on its own backoff, up to 15 s apart,
+    // so how soon it learns of the alarm depends on where in that wait the
+    // alarm falls and on how slow the machine is. Wake it as a returning user
+    // does, twice, well before ALARM_BY, so the check below does not depend
+    // on where the backoff happens to be.
+    if (sec === ALARM_BY - 12 || sec === ALARM_BY - 6) {
+      await ev(`(() => { document.dispatchEvent(new Event("visibilitychange")); return 1; })()`);
+    }
     if (sec === SEND_AT) {
       await ev(`(() => { const i = document.getElementById("input"); i.value = "${SENT}"; i.dispatchEvent(new Event("input")); document.getElementById("composer").requestSubmit(); return 1; })()`);
       sentAt = Date.now();

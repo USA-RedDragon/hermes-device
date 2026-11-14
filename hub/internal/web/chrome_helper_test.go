@@ -10,8 +10,9 @@ import (
 	"time"
 )
 
-// chromeSlots caps how many tests run Chrome at once: a dozen cold starts on a
-// small runner outlast the 30 s wait for the DevTools address.
+// chromeSlots caps how many tests run a browser (Chrome or Firefox) at once: a
+// dozen cold starts on a small runner outlast the 30 s wait for the DevTools
+// address, and Firefox runs left out of the cap starved the Chrome ones.
 const chromeSlots = 2
 
 // chromePath finds Chrome or Chromium for the tests that drive the real
