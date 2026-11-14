@@ -30,6 +30,20 @@ func WithCached(ctx context.Context) context.Context {
 	return context.WithValue(ctx, cachedKey{}, true)
 }
 
+type listAfterKey struct{}
+
+// WithListAfter asks for a chat list taken after t: the user changed
+// something at t, so a list the hub kept from before it would not show it.
+func WithListAfter(ctx context.Context, t time.Time) context.Context {
+	return context.WithValue(ctx, listAfterKey{}, t)
+}
+
+// ListAfter is the time WithListAfter set on ctx, zero when none.
+func ListAfter(ctx context.Context) time.Time {
+	t, _ := ctx.Value(listAfterKey{}).(time.Time)
+	return t
+}
+
 // Cached reports whether WithCached is set on ctx.
 func Cached(ctx context.Context) bool {
 	v, _ := ctx.Value(cachedKey{}).(bool)

@@ -47,13 +47,15 @@ func (v *views) has(backendID, key string) bool {
 }
 
 // listsTheCopy checks that svc lists the hub's copy of the chats at once,
-// marked as refreshing.
-func listsTheCopy(ctx context.Context, t *testing.T, name string, svc *service.Service) {
+// marked as refreshing. A replica that listed the chats moments ago
+// (recent) answers from that list, which needs no mark.
+func listsTheCopy(ctx context.Context, t *testing.T, name string, svc *service.Service, recent bool) {
 	t.Helper()
 	started := time.Now()
 	list, err := svc.Sessions(ctx, userAlice)
 	ue := hub.Unreachable(err)
-	if ue == nil || !ue.Pending[backendPC] || ue.Backends[backendPC] != "" || time.Since(started) > 2*time.Second {
+	marked := ue != nil && ue.Pending[backendPC] && ue.Backends[backendPC] == ""
+	if (!marked && !(recent && err == nil)) || time.Since(started) > 2*time.Second {
 		t.Fatalf("%s: list while silent = %v after %s", name, err, time.Since(started))
 	}
 	for _, s := range list {
@@ -98,9 +100,8 @@ func TestSilentBackendServesTheCopy(t *testing.T) {
 	// Another replica, which has seen nothing of this backend.
 	other := service.New(e.cfg.Backends, groups{userAlice: {"admins"}}, opts)
 	t.Cleanup(other.Close)
-	for name, svc := range map[string]*service.Service{"same replica": e.svc, "other replica": other} {
-		listsTheCopy(ctx, t, name, svc)
-	}
+	listsTheCopy(ctx, t, "same replica", e.svc, true)
+	listsTheCopy(ctx, t, "other replica", other, false)
 	started := time.Now()
 	ch, stop, err = other.Attach(ctx, userAlice, backendPC, sLive, 0)
 	if err != nil {

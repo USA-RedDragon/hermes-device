@@ -437,6 +437,11 @@ const longTurn = 2 * time.Minute
 // fails, and a tool an unattended run could not use. ls.mu is held.
 func (ls *live) turnNotices(ev gateway.Event) {
 	switch ev.Type {
+	case hub.KindMessageStart, hub.KindMessageComplete, "session.updated", hub.KindSessionDeleted:
+		// The chat list shows whether a chat runs, its title and its time.
+		ls.b.touchList()
+	}
+	switch ev.Type {
 	case hub.KindMessageStart:
 		if ls.turnStart.IsZero() {
 			ls.turnStart = time.Now()

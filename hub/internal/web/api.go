@@ -69,7 +69,9 @@ func (s *Server) handleBackends(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r)
-	ss, err := s.svc.Sessions(hub.WithCached(r.Context()), user)
+	t0 := time.Now()
+	ss, err := s.svc.Sessions(s.listCtx(r.Context(), user), user)
+	addTiming(w, "list", t0)
 	ue := hub.Unreachable(err)
 	if err != nil && ue == nil {
 		s.fail(w, err)
@@ -92,7 +94,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	t0 = time.Now()
 	body := s.marked(r.Context(), user, ss, ue == nil)
+	addTiming(w, "marks", t0)
 	if ue != nil {
 		writeJSON(w, http.StatusOK, body)
 		return

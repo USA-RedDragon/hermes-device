@@ -427,6 +427,9 @@ func (b *backend) listFor(ctx context.Context, cached bool) (list []hub.Session,
 			return nil, false, ctx.Err()
 		}
 	}
+	if list, ok := b.keptList(ctx); ok {
+		return list, false, nil
+	}
 	t := time.NewTimer(b.svc.opts.ListFast)
 	defer t.Stop()
 	select {
@@ -939,11 +942,14 @@ type backend struct {
 	// listMu guards the last session list that worked, served while the
 	// backend restarts, the copy of it in the store (listSaved) and the
 	// list in flight.
-	listMu    sync.Mutex
-	listed    []hub.Session
-	listedAt  time.Time
-	listSaved []byte
-	listing   *listCall
+	listMu   sync.Mutex
+	listed   []hub.Session
+	listedAt time.Time
+	// listTouched is when a chat's turn started or ended or its title
+	// changed: a list from before it is out of date.
+	listTouched time.Time
+	listSaved   []byte
+	listing     *listCall
 
 	// snapMu guards snaps, the newest rows of each chat as it last opened.
 	snapMu sync.Mutex
@@ -961,6 +967,50 @@ const listStaleAfter = 15 * time.Minute
 
 // lastList is the last session list that worked when it is recent; else
 // nil.
+// How long the hub answers the chat list from its last one, and how old
+// that list may get before an answer also reads it again. A page asks for
+// the list on every open and switch; reading it from Hermes each time made
+// each of those wait for three session.list calls.
+const (
+	listServeFor     = 30 * time.Second
+	listRefreshAfter = time.Second
+)
+
+// keptList is the last list, when it is recent and nothing the hub saw
+// (a turn, a title, a change the user made: hub.ListAfter) has changed it
+// since. An answer from it reads the list again in the background when it
+// is more than listRefreshAfter old; a page that follows a chat hears of a
+// change through its stream (sessions.changed). Only a backend whose
+// connection is up is answered so.
+func (b *backend) keptList(ctx context.Context) ([]hub.Session, bool) {
+	b.mu.Lock()
+	up := alive(b.client) && b.awaySince.IsZero()
+	b.mu.Unlock()
+	if !up {
+		// A backend that went away is listed as before: from Hermes, or
+		// from the hub's copy marked as such.
+		return nil, false
+	}
+	b.listMu.Lock()
+	list, at, touched := b.listed, b.listedAt, b.listTouched
+	b.listMu.Unlock()
+	age := time.Since(at)
+	if list == nil || age >= listServeFor || !at.After(touched) || !at.After(hub.ListAfter(ctx)) {
+		return nil, false
+	}
+	if age >= listRefreshAfter {
+		b.sharedList(ctx)
+	}
+	return slices.Clone(list), true
+}
+
+// touchList marks the last list out of date.
+func (b *backend) touchList() {
+	b.listMu.Lock()
+	defer b.listMu.Unlock()
+	b.listTouched = time.Now()
+}
+
 func (b *backend) lastList() []hub.Session {
 	b.listMu.Lock()
 	defer b.listMu.Unlock()

@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -39,8 +40,11 @@ func (t *timingWriter) stamp() {
 	}
 	t.wrote = true
 	h := t.ResponseWriter.Header()
-	if h.Get(serverTiming) == "" {
+	switch v := h.Get(serverTiming); {
+	case v == "":
 		h.Set(serverTiming, "hub;dur="+msDur(time.Since(t.began)))
+	case !strings.Contains(v, "hub;"):
+		h.Set(serverTiming, v+", hub;dur="+msDur(time.Since(t.began)))
 	}
 }
 
@@ -67,3 +71,13 @@ func (t *timingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 
 func (t *timingWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }
+
+// addTiming adds name's time since t0 to the answer's Server-Timing.
+func addTiming(w http.ResponseWriter, name string, t0 time.Time) {
+	h := w.Header()
+	part := name + ";dur=" + msDur(time.Since(t0))
+	if v := h.Get(serverTiming); v != "" {
+		part = v + ", " + part
+	}
+	h.Set(serverTiming, part)
+}

@@ -61,7 +61,7 @@ func (s *Server) listFP(ctx context.Context, user string) string {
 	if m.fp != "" && time.Since(m.at) < listMemoFor {
 		return m.fp
 	}
-	ss, err := s.svc.Sessions(hub.WithCached(ctx), user)
+	ss, err := s.svc.Sessions(s.listCtx(ctx, user), user)
 	ue := hub.Unreachable(err)
 	if err != nil && ue == nil {
 		return ""

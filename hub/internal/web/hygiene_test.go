@@ -38,8 +38,16 @@ func TestSessionsListETag(t *testing.T) {
 	if again := getWith(t, c, e.url+"/api/sessions", map[string]string{ifNoneMatch: tag}); again.StatusCode != http.StatusNotModified {
 		t.Fatalf("same list = %d, want 304", again.StatusCode)
 	}
+	// A chat started outside the hub shows once the hub reads the list
+	// again: the hub answers from its last list and reads it behind.
 	e.gw.AddSession(&gatewaytest.Session{ID: "newer", Title: "Newer", Live: true, StartedAt: 500})
-	if changed := getWith(t, c, e.url+"/api/sessions", map[string]string{ifNoneMatch: tag}); changed.StatusCode != http.StatusOK || changed.Header.Get("ETag") == tag {
+	var changed *http.Response
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+		if changed = getWith(t, c, e.url+"/api/sessions", map[string]string{ifNoneMatch: tag}); changed.StatusCode == http.StatusOK {
+			break
+		}
+	}
+	if changed.StatusCode != http.StatusOK || changed.Header.Get("ETag") == tag {
 		t.Fatalf("changed list = %d etag %q", changed.StatusCode, changed.Header.Get("ETag"))
 	}
 }

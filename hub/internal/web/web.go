@@ -500,6 +500,27 @@ func (s *Server) Handler() http.Handler {
 	return timed(headers(mux))
 }
 
+// readPost is whether r is a POST that changes nothing a read shows: the
+// places of a list of chats (a read with a body), the page saying it is
+// seen, and its view report. They come on every open and switch; a real
+// change drops the user's kept answers, these must not.
+func readPost(r *http.Request) bool {
+	switch r.URL.Path {
+	case "/api/places", "/api/presence", "/api/view-report":
+		return true
+	}
+	return false
+}
+
+// listCtx asks the service for a chat list that shows user's own changes.
+func (s *Server) listCtx(ctx context.Context, user string) context.Context {
+	ctx = hub.WithCached(ctx)
+	if t, ok := s.wrote.Load(user); ok {
+		ctx = hub.WithListAfter(ctx, t.(time.Time))
+	}
+	return ctx
+}
+
 func headers(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -576,10 +597,13 @@ func (s *Server) api(h http.HandlerFunc) http.Handler {
 				return
 			}
 		}
-		if r.Method != http.MethodGet {
+		if r.Method != http.MethodGet && !readPost(r) {
 			// A change is shown by the next read, not hidden by a kept answer.
 			s.last.forget(sess.User)
 			defer s.last.forget(sess.User)
+			// A chat list kept from before the change would not show it.
+			s.wrote.Store(sess.User, time.Now())
+			defer s.wrote.Store(sess.User, time.Now())
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), userKey{}, sess.User)))
 	})
