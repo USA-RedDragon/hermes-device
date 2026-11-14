@@ -141,7 +141,7 @@ func TestCutOutputsDoNotWidenTheFirstRows(t *testing.T) {
 	call := func(id string) map[string]any {
 		return map[string]any{"id": id, fnKey: map[string]any{fieldName: toolTerminal, ilArgs: "{}"}}
 	}
-	var msgs []map[string]any
+	msgs := make([]map[string]any, 0, 240)
 	for i := range 60 {
 		id := "w" + strconv.Itoa(i)
 		msgs = append(msgs,

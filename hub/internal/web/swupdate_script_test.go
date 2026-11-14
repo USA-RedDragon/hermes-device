@@ -13,7 +13,7 @@ import (
 // old release mixed in. The old release is the fixture in
 // testdata/swupdate (its service worker is the one of hub/v0.26.93 and its
 // script is served with a long max-age); the same origin then switches to
-// the real hub (a request to /__new). testdata/swupdate/run.js drives
+// the live hub (a request to /__new). testdata/swupdate/run.js drives
 // headless Chrome, once with a reload alone and once with the old worker
 // asked for the new files first, as the old page's update check did. It
 // skips where node or Chrome is missing.
@@ -33,14 +33,14 @@ func TestOneReloadReplacesAnOldClient(t *testing.T) {
 		return b
 	}
 	page, script, worker := read("old.html"), read("oldapp.js"), read("oldsw.js")
-	real := *e.front.h.Load()
+	live := *e.front.h.Load()
 	file := func(w http.ResponseWriter, typ, cache string, b []byte) {
 		w.Header().Set("Content-Type", typ)
 		w.Header().Set("Cache-Control", cache)
 		_, _ = w.Write(b)
 	}
 	// The old release serves its page, script and worker; login and the
-	// API are the hub's, so the old page has a session as a real client does.
+	// API are the hub's, so the old page has a session as a live client does.
 	var old http.Handler
 	old = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -51,11 +51,11 @@ func TestOneReloadReplacesAnOldClient(t *testing.T) {
 		case "/sw.js":
 			file(w, "text/javascript; charset=utf-8", "no-cache", worker)
 		case "/__new":
-			e.front.to(real)
+			e.front.to(live)
 		case "/__old":
 			e.front.to(old)
 		default:
-			real.ServeHTTP(w, r)
+			live.ServeHTTP(w, r)
 		}
 	})
 	for _, prefetch := range []string{"reload", "prefetch"} {
