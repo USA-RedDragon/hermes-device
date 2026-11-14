@@ -843,8 +843,8 @@ func TestSendToBusyChatSteersAndSaysSo(t *testing.T) {
 	}
 }
 
-// A subagent that names its parent chat gets "your parent chat 'x' (session
-// s1)" back, not "your parent chat chat 'x'".
+// A subagent that names its parent chat gets the chat named once in the
+// result.
 func TestSendToParentChatByIDNamesItOnce(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
@@ -854,7 +854,7 @@ func TestSendToParentChatByIDNamesItOnce(t *testing.T) {
 	}
 	res, _ := a.result.(map[string]any)
 	to, _ := res["to"].(string)
-	if !strings.HasPrefix(to, "your parent chat '") || strings.Contains(to, "chat chat") {
+	if !strings.HasPrefix(to, "your parent chat '") || strings.Count(to, "chat") != 1 {
 		t.Fatalf("to = %q", to)
 	}
 }
