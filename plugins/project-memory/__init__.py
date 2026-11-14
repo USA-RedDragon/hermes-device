@@ -40,3 +40,4 @@ def register(ctx) -> None:
         ctx.register_hook("agent_turn_start", core.on_turn_start)
     core.extend_memory_schema()
     core.install_pending_replay()
+    core.register_skills_provider()

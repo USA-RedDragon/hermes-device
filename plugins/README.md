@@ -7,7 +7,9 @@ on the other.
 | Plugin | What it does | Needs |
 |---|---|---|
 | [`subagent-routes`](subagent-routes/README.md) | The model routes a chat's subagents may use, chosen per chat in the hub (`delegation.backend: model_map`). Optional guard against waiting by `sleep` polling. | Hermes with pluggable delegation providers (v0.22.5 or later) |
-| [`project-memory`](project-memory/README.md) | One curated `MEMORY.md` per git repository of a chat's bound device folder: a `project_memory` tool, a prompt block, and the hub's Memory page. | Hermes v0.22.5 or later and the Talaria device plugin |
+| [`project-memory`](project-memory/README.md) | One curated `MEMORY.md` per git repository of a chat's bound device folder: a `project_memory` tool, a prompt block, project skills (with the Talaria Hermes patch `0093-project-skills`), and the hub's Memory page. | Hermes v0.22.5 or later and the Talaria device plugin |
+
+`scripts/audit-global-skills.py` lists global skills that look project-specific (paths, repository slugs, private hosts, project names), read-only, as candidates to move into a project skill.
 
 Tested against Hermes v0.23.1 (`.hermes-version`).
 

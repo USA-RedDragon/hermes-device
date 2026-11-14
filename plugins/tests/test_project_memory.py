@@ -303,3 +303,54 @@ def test_unset_follows_global(pm, hermes_home, monkeypatch):
 def test_unset_global_off_saves(pm, hermes_home, monkeypatch):
     out, _, slug = _write_with(pm, hermes_home, monkeypatch, None, False)
     assert out["success"] and pm.entries(slug) == ["now"]
+
+
+def test_project_skills_dir_sits_next_to_the_notes(mem):
+    slug = project(mem)
+    assert mem.skills_dir(slug) == mem.base_dir() / slug / "skills"
+    assert mem.skills_dir("nope") is None
+    assert mem.skill_count(slug) == 0
+    (mem.skills_dir(slug) / "layout").mkdir(parents=True)
+    (mem.skills_dir(slug) / "layout" / "SKILL.md").write_text("---\nname: layout\ndescription: x\n---\nbody\n")
+    assert mem.skill_count(slug) == 1
+    assert mem.project_json(slug, mem.read_meta(slug), 100)["skills"] == 1
+
+
+def test_skill_terms_name_the_project(mem):
+    sha = "f" * 40
+    slug = project(mem, "github.com/alice/demo-app", root=sha)
+    project(mem, "gitlab.example/alice/demo-app-mirror", root=sha)
+    with mem._locked():
+        mem._note_folder(slug, "dev1", "pc", "/home/alice/work/demo-checkout")
+    terms = mem.skill_terms(slug)
+    assert "demo-app" in terms and "demo-checkout" in terms
+    assert mem.skill_terms("nope") == []
+
+
+def test_session_project_is_none_when_nothing_is_known(mem, monkeypatch):
+    monkeypatch.setattr(mem, "project_for_session", lambda sid, live: (None, "not bound"))
+    assert mem.session_project("s") is None
+    monkeypatch.setattr(mem, "project_for_session", lambda sid, live: ("slug", ""))
+    assert mem.session_project("s") == "slug"
+    monkeypatch.setattr(mem, "project_for_session", lambda sid, live: 1 / 0)
+    assert mem.session_project("s") is None
+
+
+def test_the_skills_provider_is_registered_with_the_hermes_hooks(mem, monkeypatch):
+    import sys
+    import types
+    calls = []
+    stub = types.ModuleType("agent.skill_utils")
+    stub.register_project_skills_provider = lambda *a: calls.append(a)
+    monkeypatch.setitem(sys.modules, "agent.skill_utils", stub)
+    assert mem.register_skills_provider() is True
+    assert calls == [(mem.session_project, mem.skills_dir, mem.skill_terms)]
+    monkeypatch.setitem(sys.modules, "agent.skill_utils", types.ModuleType("agent.skill_utils"))
+    assert mem.register_skills_provider() is False
+
+
+def test_prompt_and_memory_notes_say_where_skills_go(mem):
+    slug = project(mem)
+    block = mem.render_block(slug, note=mem.NOTE + mem.SKILLS_NOTE)
+    assert "scope='project'" in block and "generic" in block
+    assert "project skills" in mem.MEMORY_TOOL_NOTE

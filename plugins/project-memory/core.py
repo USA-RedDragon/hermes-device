@@ -44,6 +44,7 @@ DIR_NAME = "project-memories"
 META = "meta.json"
 FOLDERS = "folders.json"
 MEMORY_FILE = "MEMORY.md"
+SKILLS_DIR = "skills"
 
 KIND_REMOTE, KIND_ROOT, KIND_FOLDER = "remote", "root", "folder"
 MIN_CHAR_LIMIT = 200
@@ -77,9 +78,17 @@ NOTE = ("This chat works in a project folder, so it has a project memory next to
 CHILD_NOTE = ("This task works in a project folder. Its project memory is below; subagents can read it but not "
               "change it, so report new project facts in your result.")
 
+SKILLS_NOTE = ("\n\nSKILLS: this chat's project also has project skills (skill_manage with scope='project'): "
+               "knowledge about this one codebase (layout, commands, people, conventions) belongs in one, "
+               "not in a global skill; a project-specific lesson found while using a global skill goes in a "
+               "project skill too. Global skills stay generic: no project names, repo paths, hostnames or "
+               "usernames.")
+
 MEMORY_TOOL_NOTE = ("\n\nPROJECTS: in a chat bound to a project folder, facts about that project (its code, rules, "
                     "decisions, people involved, state) go in project_memory, not here. Use memory only for facts "
-                    "about the user or rules that apply in every project. When unsure, use project_memory.")
+                    "about the user or rules that apply in every project. When unsure, use project_memory. "
+                    "Procedures about one project are project skills (skill_manage scope='project'); global "
+                    "skills must be generic.")
 
 # Runs with /bin/sh on the device in the bound folder; prints only the lines the plugin parses. Remote URLs lose
 # their credentials on the device, before they are sent.
@@ -586,6 +595,52 @@ def store(slug: str, limit: Optional[int] = None):
     return _store_class()(memory_path(slug), char_limit() if limit is None else limit)
 
 
+def skills_dir(slug: str) -> Optional[Path]:
+    """The project's skills dir, next to its MEMORY.md (it need not exist yet); None for an unknown project."""
+    return base_dir() / slug / SKILLS_DIR if valid_slug(slug) and read_meta(slug) is not None else None
+
+
+def session_project(session_id: str) -> Optional[str]:
+    """The slug of the session's project for the skills lookups: the cached answer, else a probe. None for a
+    chat with no project folder or a device that is not known yet. Never raises."""
+    try:
+        slug, _why = project_for_session(session_id, live=False)
+    except Exception:
+        return None
+    return slug
+
+
+def skill_terms(slug: str) -> list[str]:
+    """Words that name the project (its repository name, its aliases' repository names, its folders' names),
+    which a global skill must not carry."""
+    meta = read_meta(slug) or {}
+    words = {str(meta.get("name") or "")}
+    words.update(str(a).rsplit("/", 1)[-1] for a in meta.get("aliases") or [] if isinstance(a, str))
+    for f in meta.get("folders") or []:
+        if isinstance(f, dict) and isinstance(f.get("dir"), str):
+            words.add(posixpath.basename(f["dir"].rstrip("/")))
+    return sorted(w for w in words if len(w) >= 3 and w not in {"home", "src", "code", "repo", "project", "work"})
+
+
+def skill_count(slug: str) -> int:
+    root = skills_dir(slug)
+    try:
+        return sum(1 for _ in root.rglob("SKILL.md")) if root is not None and root.is_dir() else 0
+    except OSError:
+        return 0
+
+
+def register_skills_provider() -> bool:
+    """Tell this Hermes where a chat's project skills live (Talaria Hermes patch 0093); False on a Hermes
+    without it, where skills stay global."""
+    try:
+        from agent.skill_utils import register_project_skills_provider
+    except ImportError:
+        return False
+    register_project_skills_provider(session_project, skills_dir, skill_terms)
+    return True
+
+
 def entries(slug: str) -> list[str]:
     from tools.memory_tool_store import MemoryStore
     return list(dict.fromkeys(MemoryStore._read_file(memory_path(slug))))
@@ -665,7 +720,7 @@ def section(info: Any) -> str:
         logger.warning("project-memory: could not find the project of session %s: %s", session_id,
                        type(exc).__name__)
         return ""
-    return render_block(slug, note=CHILD_NOTE if child else NOTE)
+    return render_block(slug, note=(CHILD_NOTE if child else NOTE) + ("" if child else SKILLS_NOTE))
 
 
 # --- the tool ---------------------------------------------------------------------------------------
@@ -958,7 +1013,7 @@ def project_json(slug: str, meta: dict, limit: int) -> dict:
             "name": str(meta.get("name") or slug),
             "aliases": [a for a in meta.get("aliases") or [] if isinstance(a, str)],
             "root_commit": root if isinstance(root, str) and SHA_RE.fullmatch(root) else "",
-            "folders": folders, "count": len(items), "used": len(_delim().join(items)), "limit": limit}
+            "folders": folders, "skills": skill_count(slug), "count": len(items), "used": len(_delim().join(items)), "limit": limit}
 
 
 def list_projects() -> dict:

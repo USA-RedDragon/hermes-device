@@ -17,6 +17,26 @@ Provides:
 
 Subagents can read project memory but not write it, as they cannot write the global memory.
 
+## Project skills
+
+With the Talaria Hermes patch `0093-project-skills`, the project also has skills, kept next to its notes in
+`$HERMES_HOME/project-memories/<slug>/skills/` (same slug, so clones, worktrees and mirrors share them). The plugin
+registers the project of each session with Hermes; `skill_manage` then takes `scope: project` or `scope: global`.
+
+- A project skill is listed (marked `[project]`), loaded and edited only in chats bound to that project and in their
+  subagents, and wins over a global skill of the same name there. It needs no trust entry.
+- Project skills hold knowledge about the one codebase: layout, commands, people, conventions, and a project-specific
+  lesson found while using a global skill. A global skill is only for a procedure that applies across projects and is
+  written generically: no project names, repo paths, hostnames or usernames. The prompt block, the `skill_manage`
+  description and the memory tool description say so, and a global skill that names the project gets a warning.
+- A chat with no project keeps every skill global, as before. On a Hermes without the patch nothing changes.
+- With the device plugin's skill mirror configured, project skills are committed to the same repository under
+  `projects/<slug>/<skill>`.
+- The hub's project list carries `skills`, the number of project skills.
+
+`scripts/audit-global-skills.py` (in the plugins directory) lists global skills that look project-specific, as a
+read-only report.
+
 ## Config
 
 ```yaml
