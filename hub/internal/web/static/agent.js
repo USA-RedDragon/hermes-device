@@ -460,7 +460,7 @@ window.HubAgent = (() => {
       filter.setAttribute("aria-label", "Find a skill");
       const acts = el("div", "acts");
       acts.append(add, filter);
-      const list = el("div", "lst");
+      const list = el("div", "skgroups");
       box.append(acts, list);
       let skills;
       try {
@@ -469,23 +469,42 @@ window.HubAgent = (() => {
         list.replaceWith(say("bad", "Could not load the skills.", [e.message]));
         return;
       }
+      // Skills that live in a project come from the project-memory plugin. A server
+      // without it has none, and says so with a 404; any other failure is shown.
+      const { groups, errs } = await projectSkillGroups(backend());
+      const toggleFor = (s, sn) => {
+        const t = toggle(s.enabled, false, sn);
+        t.onchange = async () => {
+          t.disabled = true;
+          try {
+            const a = await api("PUT", base() + "/skills/" + enc(s.name), { enabled: t.checked });
+            s.enabled = t.checked;
+            result(box, say("good", liveLine(sn, t.checked, a.applied_live)));
+          } catch (e) { t.checked = !t.checked; result(box, say("bad", sn + " was not changed.", [e.message])); }
+          t.disabled = false;
+        };
+        return t;
+      };
+      const group = (title, count, hint, cls) => {
+        const g = el("section", "skgroup");
+        const h = el("div", "skhead");
+        h.append(el("h3", "", title), el("span", cls ? "skpill " + cls : "skpill", String(count)));
+        g.append(h);
+        if (hint) g.append(el("p", "hint", hint));
+        const rows = el("div", "lst");
+        g.append(rows);
+        return { g, rows };
+      };
       const draw = () => {
         list.replaceChildren();
-        for (const s of splitSkills(skills, filter.value)) {
+        const mine = splitSkills(skills, filter.value);
+        const gl = group("Global", filter.value ? mine.length + " of " + skills.length : skills.length, "Apply in every chat. Written for generic use, with no project names, paths or hosts.", "");
+        for (const s of mine) {
           const r = el("div", "");
           const sn = s.label || s.name;
           const tx = el("span", "tx");
           tx.append(el("b", "", sn), el("span", "", (s.description || "") + (origin[s.provenance] ? " · " + origin[s.provenance] : "")));
-          const t = toggle(s.enabled, false, sn);
-          t.onchange = async () => {
-            t.disabled = true;
-            try {
-              const a = await api("PUT", base() + "/skills/" + enc(s.name), { enabled: t.checked });
-              s.enabled = t.checked;
-              result(box, say("good", liveLine(sn, t.checked, a.applied_live)));
-            } catch (e) { t.checked = !t.checked; result(box, say("bad", sn + " was not changed.", [e.message])); }
-            t.disabled = false;
-          };
+          const t = toggleFor(s, sn);
           r.append(tx);
           if (s.provenance === "hub") r.append(btn("ghost ib", "", async () => {
             result(box, say("warn", "Removing " + sn + "...", []));
@@ -499,12 +518,48 @@ window.HubAgent = (() => {
           }, "trash"));
           r.lastChild.setAttribute?.("aria-label", "Remove " + sn);
           r.append(t);
-          list.append(r);
+          gl.rows.append(r);
         }
-        if (!list.children.length) list.append(el("p", "none", filter.value ? "No skill matches." : "No skills yet."));
+        if (!mine.length) gl.rows.append(el("p", "none", filter.value ? "No global skill matches." : "No global skills yet."));
+        list.append(gl.g);
+        for (const pg of groups) {
+          const ps = splitSkills(pg.skills, filter.value);
+          if (filter.value && !ps.length && !pg.err) continue;
+          const p = pg.project;
+          const g = group("Project: " + (p.name || p.identity), filter.value ? ps.length + " of " + pg.skills.length : pg.skills.length, "Only in chats bound to " + p.identity + ".", "proj");
+          g.g.dataset.project = p.id;
+          if (pg.err) g.rows.append(say("bad", "Could not load the skills of this project.", [pg.err]));
+          for (const s of ps) {
+            const r = el("div", "");
+            r.append(el("span", "tx"));
+            r.firstChild.append(el("b", "", s.name), el("span", "", s.description || ""));
+            r.append(toggleFor(s, s.name));
+            g.rows.append(r);
+          }
+          list.append(g.g);
+        }
+        for (const e of errs) list.append(say("bad", e));
       };
       filter.oninput = draw;
       draw();
+    }
+
+    // projectSkillGroups lists the skills of each project that has some, for the groups under Global.
+    async function projectSkillGroups(b) {
+      let ps;
+      try {
+        ps = await api("GET", "/api/memory/" + enc(b) + "/projects");
+      } catch (e) {
+        return { groups: [], errs: e.status === 404 ? [] : ["Could not load the projects: " + e.message] };
+      }
+      const groups = await Promise.all(ps.filter((p) => p.skills > 0).map(async (p) => {
+        try {
+          return { project: p, skills: (await api("GET", "/api/memory/" + enc(b) + "/projects/" + enc(p.id) + "/skills")).skills };
+        } catch (e) {
+          return { project: p, skills: [], err: e.message };
+        }
+      }));
+      return { groups, errs: [] };
     }
 
     function addSkill(box) {

@@ -16,6 +16,7 @@ window.HubMemory = (ctx) => {
   ];
   const copy = {
     notes: "Talaria reads these notes at the start of every chat. Keep them short. Changes apply to new chats.",
+    skills: "Skills that belong to this project. Talaria loads them only in chats bound to this project and in their subagents. They win over a global skill of the same name here.",
     project: "Talaria's notes about one project. It reads them in chats that work in this project, on any device. Keep them short. Changes apply to new chats.",
     you: "What Talaria knows about you as a person. It reads this in every chat, on every device and in Telegram. Changes apply to new chats.",
     learned: "Facts Talaria picked up from your chats over time. It looks these up when they seem relevant. Delete anything wrong or out of date.",
@@ -33,6 +34,11 @@ window.HubMemory = (ctx) => {
   let projects = null;
   let projectsErr = "";
   let project = "";
+  // psub is the part of a project in view: its notes or its skills.
+  let psub = "notes";
+  let skills = null;
+  let skillsErr = "";
+  let skillsFor = "";
   let ui = { edit: null, adding: false, raw: false, confirm: null, more: null, help: false, busy: false, note: "", bad: false };
   let learned = null;
 
@@ -60,7 +66,7 @@ window.HubMemory = (ctx) => {
 
   function setHash() {
     let h = "#/memory/" + encodeURIComponent(backend) + "/" + tab;
-    if (tab === "notes" && project) h += "/" + encodeURIComponent(project);
+    if (tab === "notes" && project) h += "/" + encodeURIComponent(project) + (psub === "skills" ? "/skills" : "");
     if (location.hash !== h) history.replaceState(null, "", h);
   }
 
@@ -68,7 +74,7 @@ window.HubMemory = (ctx) => {
     shown = true;
     root.hidden = false;
     nav.classList.add("on");
-    const [b, t, pr] = (rest || "").split("/").map((x) => decodeURIComponent(x || ""));
+    const [b, t, pr, sub] = (rest || "").split("/").map((x) => decodeURIComponent(x || ""));
     await refresh();
     if (!shown) return;
     const pick = backends.find((x) => x.id === b) || backends.find((x) => x.id === backend) ||
@@ -76,7 +82,8 @@ window.HubMemory = (ctx) => {
     if (pick && pick.id !== backend) { backend = pick.id; notes = null; learned = null; project = ""; }
     projects = null;
     tab = tabs.some((x) => x.id === t) ? t : tab;
-    if (t === "notes" && (pr || "") !== project) { project = pr || ""; notes = null; }
+    if (t === "notes" && (pr || "") !== project) { project = pr || ""; notes = null; skills = null; }
+    psub = t === "notes" && project && sub === "skills" ? "skills" : "notes";
     if (!tabOK(tab)) tab = tabs.find((x) => tabOK(x.id)).id;
     resetUI();
     if (backend) setHash();
@@ -102,6 +109,7 @@ window.HubMemory = (ctx) => {
   // backend's own.
   function scope() { return project ? "/projects/" + encodeURIComponent(project) : ""; }
   function projectView() { return tab === "notes" && !!project; }
+  function skillsView() { return projectView() && psub === "skills"; }
 
   async function load() {
     if (!backend) return;
@@ -110,6 +118,7 @@ window.HubMemory = (ctx) => {
       return;
     }
     if (tab === "notes" && !projects) loadProjects();
+    if (skillsView()) { loadSkills(); return; }
     await loadNotes();
   }
 
@@ -145,6 +154,8 @@ window.HubMemory = (ctx) => {
     }
     if (project && !projectsErr && !projects.some((x) => x.id === project)) {
       project = "";
+      psub = "notes";
+      skills = null;
       notes = null;
       resetUI();
       if (tab === "notes") { setHash(); loadNotes(); }
@@ -201,7 +212,7 @@ window.HubMemory = (ctx) => {
         o.selected = b.id === backend;
         sel.append(o);
       }
-      sel.onchange = () => { backend = sel.value; notes = null; learned = null; projects = null; project = ""; resetUI(); if (!tabOK(tab)) tab = tabs.find((x) => tabOK(x.id)).id; setHash(); draw(); load(); };
+      sel.onchange = () => { backend = sel.value; notes = null; learned = null; projects = null; project = ""; skills = null; psub = "notes"; resetUI(); if (!tabOK(tab)) tab = tabs.find((x) => tabOK(x.id)).id; setHash(); draw(); load(); };
       head.append(sel);
     }
     head.append(el("span", "grow"));
@@ -215,7 +226,7 @@ window.HubMemory = (ctx) => {
       b.setAttribute("role", "tab");
       b.setAttribute("aria-selected", x.id === tab ? "true" : "false");
       if (x.id === "learned" && learned && learned.info) b.append(" ", el("span", "mem-n", "(" + fmt(learned.info.total) + ")"));
-      b.onclick = () => { if (tab === x.id) return; if (project && (tab === "notes" || x.id === "notes")) notes = null; tab = x.id; resetUI(); setHash(); draw(); load(); };
+      b.onclick = () => { if (tab === x.id) return; if (project && (tab === "notes" || x.id === "notes")) { notes = null; skills = null; } tab = x.id; resetUI(); setHash(); draw(); load(); };
       bar.append(b);
     }
     const body = el("div", "mem-body");
@@ -270,6 +281,7 @@ window.HubMemory = (ctx) => {
 
   function drawNotes(body, t) {
     if (t.id === "notes") projectPicker(body);
+    if (skillsView()) { drawSkills(body); return; }
     const inProject = projectView();
     body.append(el("p", "mem-hint", copy[inProject ? "project" : t.id]));
     if (!notes) {
@@ -323,7 +335,7 @@ window.HubMemory = (ctx) => {
       sel.append(o);
     }
     sel.value = project;
-    sel.onchange = () => { project = sel.value; notes = null; notesErr = ""; resetUI(); setHash(); draw(); loadNotes(); };
+    sel.onchange = () => { project = sel.value; notes = null; notesErr = ""; skills = null; psub = "notes"; resetUI(); setHash(); draw(); loadNotes(); };
     box.append(sel);
     const cur = projects.find((x) => x.id === project);
     if (cur) {
@@ -342,8 +354,159 @@ window.HubMemory = (ctx) => {
         return (f.device || f.device_id) + ": " + f.dir + (when ? " (" + when + ")" : "");
       }));
       box.append(dl);
+      box.append(subTabs(cur));
     }
     body.append(box);
+  }
+
+  // subTabs switches a project between its notes and its skills.
+  function subTabs(cur) {
+    const bar = el("div", "mem-subtabs");
+    bar.setAttribute("role", "tablist");
+    bar.setAttribute("aria-label", "Part of the project");
+    const nSkills = skills && skillsFor === backend + "/" + project ? skills.length : cur.skills || 0;
+    const nNotes = notes && notes.project && notes.project.id === project ? notes.targets.memory.entries.length : cur.count || 0;
+    for (const [id, label, n] of [["notes", "Notes", nNotes], ["skills", "Skills", nSkills]]) {
+      const b = el("button", "mem-subtab", label);
+      b.type = "button";
+      b.dataset.k = "sub-" + id;
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-selected", psub === id ? "true" : "false");
+      b.append(" ", el("span", "mem-n", "(" + fmt(n) + ")"));
+      b.onclick = () => {
+        if (psub === id) return;
+        psub = id;
+        resetUI();
+        setHash();
+        draw();
+        if (id === "skills") loadSkills(); else if (!notes) loadNotes();
+      };
+      bar.append(b);
+    }
+    return bar;
+  }
+
+  // loadSkills reads the skills of the project in view.
+  async function loadSkills() {
+    const at = backend + "/" + project;
+    if (!project || (skills && skillsFor === at)) return;
+    skills = null;
+    skillsErr = "";
+    try {
+      const l = await api("GET", path("/projects/" + encodeURIComponent(project) + "/skills"));
+      if (at !== backend + "/" + project) return;
+      skills = l.skills;
+      skillsFor = at;
+      syncSkillCount();
+    } catch (e) {
+      if (at !== backend + "/" + project) return;
+      skillsErr = e.message;
+    }
+    if (shown) draw();
+  }
+
+  // syncSkillCount keeps the project list's count in step with the skills read.
+  function syncSkillCount() {
+    if (projects) projects = projects.map((x) => (x.id === project ? { ...x, skills: skills.length } : x));
+  }
+
+  // drawSkills lists the project's skills: name, where it lives, what it is
+  // for, and View and Delete. View reads the SKILL.md in place; Delete asks first.
+  function drawSkills(body) {
+    body.append(el("p", "mem-hint", copy.skills));
+    status(body);
+    if (!skills || skillsFor !== backend + "/" + project) {
+      body.append(el("p", skillsErr ? "mem-note bad" : "mem-hint", skillsErr ? "Could not load the skills: " + skillsErr : "Loading."));
+      return;
+    }
+    const list = el("div", "mem-skills");
+    for (const s of skills) list.append(skillRow(s));
+    if (!skills.length) list.append(el("p", "mem-hint", "This project has no skills yet."));
+    body.append(list);
+  }
+
+  function skillRow(s) {
+    const row = el("div", "mem-skill");
+    row.dataset.skill = s.name;
+    const top = el("div", "mem-skill-top");
+    top.append(el("span", "mem-skill-name", s.name), el("span", "mem-pill proj", "project"));
+    if (!s.enabled) top.append(el("span", "mem-pill", "off"));
+    top.append(el("span", "grow"));
+    const acts = el("span", "mem-skill-acts");
+    if (ui.confirm === s.name) {
+      top.classList.add("asking");
+      acts.append(el("span", "mem-ask", "Delete this skill?"), btn("ghost", "Cancel", () => { ui.confirm = null; draw(); }),
+        btn("danger", "Delete", () => deleteSkill(s)));
+    } else {
+      const open = ui.viewing === s.name;
+      const v = btn("", open ? "Hide" : "View", () => viewSkill(s));
+      v.setAttribute("aria-expanded", open ? "true" : "false");
+      acts.append(v, btn("ghost danger-text", "Delete", () => { ui.confirm = s.name; draw(); }));
+    }
+    top.append(acts);
+    row.append(top);
+    if (s.description) row.append(el("div", "mem-skill-desc", s.description));
+    if (ui.viewing === s.name) row.append(skillDoc(s));
+    return row;
+  }
+
+  function skillDoc(s) {
+    const box = el("div", "mem-skill-doc");
+    const d = ui.docs && ui.docs[s.name];
+    if (!d) {
+      box.append(el("p", "mem-hint", "Loading."));
+    } else if (d.err) {
+      box.append(el("p", "mem-note bad", "Could not read the skill: " + d.err));
+    } else {
+      const pre = el("pre", "mem-skill-text", d.content);
+      pre.tabIndex = 0;
+      pre.setAttribute("aria-label", "SKILL.md of " + s.name);
+      box.append(pre);
+      if (d.truncated) box.append(el("p", "mem-hint", "The text is cut here. The skill is longer."));
+      if (d.files && d.files.length) box.append(el("p", "mem-hint", "Also in its folder: " + d.files.join(", ")));
+    }
+    return box;
+  }
+
+  async function viewSkill(s) {
+    if (ui.viewing === s.name) { ui.viewing = null; draw(); return; }
+    ui.viewing = s.name;
+    ui.docs = ui.docs || {};
+    draw();
+    if (ui.docs[s.name] && !ui.docs[s.name].err) return;
+    const at = backend + "/" + project;
+    const docs = ui.docs;
+    try {
+      docs[s.name] = await api("GET", path("/projects/" + encodeURIComponent(project) + "/skills/" + encodeURIComponent(s.name)));
+    } catch (e) {
+      docs[s.name] = { err: e.message };
+    }
+    if (at === backend + "/" + project && shown) draw();
+  }
+
+  async function deleteSkill(s) {
+    if (ui.busy) return;
+    ui.busy = true;
+    ui.note = "";
+    draw();
+    const at = backend + "/" + project;
+    try {
+      const l = await api("DELETE", path("/projects/" + encodeURIComponent(project) + "/skills/" + encodeURIComponent(s.name)));
+      if (at !== backend + "/" + project) return;
+      skills = l.skills;
+      skillsFor = at;
+      syncSkillCount();
+      ui.confirm = null;
+      if (ui.viewing === s.name) ui.viewing = null;
+      ui.note = s.name + " is deleted. Chats that are already open lose it from their next message.";
+      ui.bad = false;
+    } catch (e) {
+      ui.note = e.message;
+      ui.bad = true;
+    } finally {
+      ui.busy = false;
+    }
+    draw();
   }
 
   function changeWord(c) {

@@ -586,22 +586,24 @@ func TestBacklog(t *testing.T) {
 	}
 }
 
+const skillLayout = "demo-layout"
+
 func TestProjectSkills(t *testing.T) {
 	t.Parallel()
 	e := setup(t)
 	ctx := context.Background()
 	e.pc.AddProject(demoProject(), "Run make check.")
-	e.pc.AddProjectSkill(demoID, hub.ProjectSkillDoc{ProjectSkill: hub.ProjectSkill{Name: "demo-layout", Path: "demo-layout", Enabled: true}, Content: "# layout"})
+	e.pc.AddProjectSkill(demoID, hub.ProjectSkillDoc{ProjectSkill: hub.ProjectSkill{Name: skillLayout, Path: skillLayout, Enabled: true}, Content: "# layout"})
 	ps, err := e.svc.ProjectSkills(ctx, alice, pcID, demoID)
-	if err != nil || len(ps.Skills) != 1 || ps.Skills[0].Name != "demo-layout" || ps.Project.Name != "demo" {
+	if err != nil || len(ps.Skills) != 1 || ps.Skills[0].Name != skillLayout || ps.Project.Name != demoProject().Name {
 		t.Fatalf("skills = %+v, %v", ps, err)
 	}
-	doc, err := e.svc.ProjectSkill(ctx, alice, pcID, demoID, "demo-layout")
+	doc, err := e.svc.ProjectSkill(ctx, alice, pcID, demoID, skillLayout)
 	if err != nil || doc.Content != "# layout" || doc.Files == nil {
 		t.Fatalf("skill = %+v, %v", doc, err)
 	}
 	before := len(e.pc.Requests())
-	for _, bad := range []struct{ id, name string }{{"..", "demo-layout"}, {demoID, ".."}, {demoID, "a/b"}, {demoID, "-x"}, {demoID, strings.Repeat("a", 200)}} {
+	for _, bad := range []struct{ id, name string }{{"..", skillLayout}, {demoID, ".."}, {demoID, "a/b"}, {demoID, "-x"}, {demoID, strings.Repeat("a", 200)}} {
 		if _, err := e.svc.ProjectSkill(ctx, alice, pcID, bad.id, bad.name); status(err) != http.StatusNotFound {
 			t.Fatalf("bad skill %+v: %v", bad, err)
 		}
@@ -615,13 +617,13 @@ func TestProjectSkills(t *testing.T) {
 	if _, err := e.svc.ProjectSkills(ctx, bob, pcID, demoID); !errors.Is(err, hub.ErrForbidden) {
 		t.Fatalf("bob skills on pc: %v", err)
 	}
-	if _, err := e.svc.DeleteProjectSkill(ctx, bob, pcID, demoID, "demo-layout"); !errors.Is(err, hub.ErrForbidden) {
+	if _, err := e.svc.DeleteProjectSkill(ctx, bob, pcID, demoID, skillLayout); !errors.Is(err, hub.ErrForbidden) {
 		t.Fatalf("bob delete on pc: %v", err)
 	}
-	if ps, err = e.svc.DeleteProjectSkill(ctx, alice, pcID, demoID, "demo-layout"); err != nil || len(ps.Skills) != 0 || ps.Skills == nil {
+	if ps, err = e.svc.DeleteProjectSkill(ctx, alice, pcID, demoID, skillLayout); err != nil || len(ps.Skills) != 0 || ps.Skills == nil {
 		t.Fatalf("delete = %+v, %v", ps, err)
 	}
-	if _, err := e.svc.ProjectSkill(ctx, alice, pcID, demoID, "demo-layout"); status(err) != http.StatusNotFound {
+	if _, err := e.svc.ProjectSkill(ctx, alice, pcID, demoID, skillLayout); status(err) != http.StatusNotFound {
 		t.Fatalf("skill after delete: %v", err)
 	}
 	e.pc.NoProjects = true
