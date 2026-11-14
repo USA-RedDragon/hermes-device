@@ -34,7 +34,7 @@ func TestPublishedPageCardOpens(t *testing.T) {
 	e.gw.AddSession(&gatewaytest.Session{ID: "pp1", Title: "Published page", Live: true, StartedAt: 900, Messages: []map[string]any{
 		{kRole: roleUser, kText: "make me a tracker page"},
 		{kRole: roleAssistant, kText: "", kCalls: []map[string]any{{"id": "c1", fnKey: map[string]any{fieldName: "page_publish", ilArgs: `{"path": "/home/u/tracker.html"}`}}}},
-		{kRole: stepTool, kCallID: "c1", "content": result},
+		{kRole: stepTool, kCallID: "c1", fieldContent: result},
 		{kRole: roleAssistant, kText: "Done.\nMEDIA:" + file},
 	}})
 	prof, err := os.MkdirTemp("", "pagepub-profile-")
