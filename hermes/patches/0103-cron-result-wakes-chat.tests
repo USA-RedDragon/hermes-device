@@ -1,0 +1,12 @@
+# New: a cron result for a chat starts a turn when the job wakes it (tests/gateway/test_cron_wake.py)
+# The cron result note path, the local delivery and the completion producers it shares a FIFO with
+tests/gateway/test_unviewed_completion_notes.py
+tests/gateway/test_unviewed_completion_turns.py
+tests/gateway/test_session_cron.py
+tests/gateway/test_detached_conversation_results.py
+tests/gateway/test_detached_conversation_lifecycle.py
+tests/gateway/test_cron_delivery_housekeeping.py
+# The job record and the cronjob tool
+tests/cron/test_jobs.py
+tests/tools/test_cronjob_tools.py
+tests/tools/test_cronjob_job_args.py

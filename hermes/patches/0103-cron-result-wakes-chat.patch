@@ -1,0 +1,396 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 04:35:48 -0600
+Subject: [PATCH] feat(cron): a cron result delivered into a chat starts a turn
+ there
+
+A cron result for a local chat was always written as a note, so a job an agent created in a chat and delivered back to it sat unread until the user wrote (the agent never saw "the blended-temperature automation did not hold 73" until the user asked "so?").
+
+A job now carries `wake`. A result for a chat of this app starts a turn there when the job's `wake` is true, or when it is unset and the result goes back to the chat the job was created in (deliver `origin`). `wake: false` keeps the note, as does a job delivering to another chat of the app or a script-made job with no origin. A failure notice is always a note. The result is an admission in the chat's FIFO as before, so a running turn finishes first and the result then runs as the next turn; nothing is dropped and one delivery starts one turn.
+
+`wake` is a cronjob_manage argument on create and update, shown in the job's listing, and part of the job definition.
+---
+ cron/job_definition.py              |   2 +-
+ cron/jobs.py                        |  26 +++++-
+ cron/scheduler_delivery.py          |   4 +-
+ gateway/session_automation.py       |   6 +-
+ gateway/session_completion_notes.py |   5 +-
+ gateway/session_cron.py             |   7 +-
+ tests/gateway/test_cron_wake.py     | 126 ++++++++++++++++++++++++++++
+ tools/cronjob_job_args.py           |   3 +
+ tools/cronjob_tools.py              |  11 ++-
+ 9 files changed, 181 insertions(+), 9 deletions(-)
+ create mode 100644 tests/gateway/test_cron_wake.py
+
+diff --git a/cron/job_definition.py b/cron/job_definition.py
+index 14bc0c41..1be3e7d2 100644
+--- a/cron/job_definition.py
++++ b/cron/job_definition.py
+@@ -15,7 +15,7 @@ JOB_DEFINITION_FIELDS = frozenset({
+     "script", "no_agent", "monitor_script", "monitor_url", "context_from",
+     "schedule", "schedule_display", "deliver", "origin", "enabled_toolsets",
+     "workdir", "attach_to_session", "reasoning_effort", "failure_deliver",
+-    "timezone", "grace_minutes", "catch_up",
++    "timezone", "grace_minutes", "catch_up", "wake",
+ })
+ 
+ 
+diff --git a/cron/jobs.py b/cron/jobs.py
+index 1809214b..0069c277 100644
+--- a/cron/jobs.py
++++ b/cron/jobs.py
+@@ -1751,6 +1751,27 @@ def _normalize_catch_up(value: Any) -> Optional[bool]:
+     raise ValueError("catch_up must be true, false, or null (use the default).")
+ 
+ 
++def _normalize_wake(value: Any) -> Optional[bool]:
++    """``wake``: True starts a turn in the chat a result is delivered to, False leaves the result as a
++    note there, None = the default (``job_wakes``)."""
++    if value is None or isinstance(value, bool):
++        return value
++    raise ValueError("wake must be true, false, or null (use the default).")
++
++
++def job_wakes(job: dict[str, Any], resolved_from: Optional[str] = None) -> bool:
++    """Whether a result delivered into a chat of this app starts a turn there. The job's own ``wake``
++    wins; else it does when the result goes back to the chat the job was created in (deliver ``origin``,
++    ``resolved_from`` as ``_resolve_single_delivery_target`` tags it), and is a note anywhere else."""
++    if isinstance(job.get("wake"), bool):
++        return job["wake"]
++    if resolved_from is None:
++        origin = job.get("origin") or {}
++        tokens = [t.strip().lower() for t in str(job.get("deliver") or "").split(",")]
++        resolved_from = "origin" if origin.get("platform") == "local" and "origin" in tokens else ""
++    return resolved_from == "origin"
++
++
+ _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
+     "model": _normalize_job_optional_text,
+     "provider": _normalize_job_optional_text,
+@@ -1767,6 +1788,7 @@ _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
+     "timezone": jobs_time.normalize_timezone,
+     "grace_minutes": jobs_time.normalize_grace_minutes,
+     "catch_up": _normalize_catch_up,
++    "wake": _normalize_wake,
+ }
+ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
+     # [] is an explicit zero-tool allowlist and must survive the update path as [] too (#82010).
+@@ -1781,6 +1803,7 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
+     "timezone": jobs_time.normalize_timezone,
+     "grace_minutes": jobs_time.normalize_grace_minutes,
+     "catch_up": _normalize_catch_up,
++    "wake": _normalize_wake,
+ }
+ 
+ 
+@@ -1829,6 +1852,7 @@ def create_job(
+     reasoning_effort: Optional[str] = None,
+     failure_deliver: Optional[str] = None,
+     catch_up: Optional[bool] = None,
++    wake: Optional[bool] = None,
+     paused: bool = False,
+     paused_reason: Optional[str] = None,
+     pinned: bool = False,
+@@ -1938,7 +1962,7 @@ def create_job(
+         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
+         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
+         ("timezone", f["timezone"]), ("grace_minutes", f["grace_minutes"]),
+-        ("catch_up", f["catch_up"]),
++        ("catch_up", f["catch_up"]), ("wake", f["wake"]),
+     ):
+         if value is not None:
+             job[key] = value
+diff --git a/cron/scheduler_delivery.py b/cron/scheduler_delivery.py
+index 463fa1c4..07ffb192 100644
+--- a/cron/scheduler_delivery.py
++++ b/cron/scheduler_delivery.py
+@@ -1955,10 +1955,12 @@ def _deliver_result(
+                 delivery_errors.append(room_error)
+             continue
+         if target["platform"] == "local":
++            from cron.jobs import job_wakes
+             from gateway.session_cron import deliver_to_local_chat
+             from hermes_constants import get_hermes_home
+             local_error = deliver_to_local_chat(get_hermes_home(), target["chat_id"],
+-                                                cleaned_delivery_content, diagnostic=for_failure)
++                                                cleaned_delivery_content, diagnostic=for_failure,
++                                                wake=not for_failure and job_wakes(job, target.get("_resolved_from") or ""))
+             if local_error:
+                 delivery_errors.append(local_error)
+             continue
+diff --git a/gateway/session_automation.py b/gateway/session_automation.py
+index 04b7e062..22ea5001 100644
+--- a/gateway/session_automation.py
++++ b/gateway/session_automation.py
+@@ -428,7 +428,7 @@ def automation_display_metadata(metadata):
+ # proof at execution from the target the pre-claim check validated, and the turn's resolver reads it.
+ _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
+     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
+-    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick'})
++    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick', 'cron_wake'})
+ 
+ 
+ def admission_display(payload):
+@@ -553,6 +553,8 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
+     descriptor.update(automation_notification_metadata(event.metadata))
+     descriptor.update(automation_display_metadata(event.metadata))
+     descriptor.update(_tick_metadata(event.metadata))
++    if event.metadata.get('cron_wake') is True:
++        descriptor['wake'] = True  # a cron result that runs as a turn, not a note (session_completion_notes)
+     if event.metadata.get('turn_author') is not None:
+         from agent.turn_author import parse_turn_author
+         descriptor['turn_author'] = parse_turn_author(event.metadata['turn_author'])
+@@ -595,6 +597,8 @@ def restore_local_automation(authority, ref, row):
+             'gateway_session_id': entry.session_id})
+     event.metadata.update(automation_notification_metadata(descriptor))
+     event.metadata.update(automation_display_metadata(descriptor))
++    if descriptor.get('wake') is True:
++        event.metadata['cron_wake'] = True
+     if descriptor.get('turn_author') is not None:
+         event.metadata['turn_author'] = deepcopy(descriptor['turn_author'])
+     if descriptor.get('heartbeat'):
+diff --git a/gateway/session_completion_notes.py b/gateway/session_completion_notes.py
+index 32ef5528..a1581b4b 100644
+--- a/gateway/session_completion_notes.py
++++ b/gateway/session_completion_notes.py
+@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
+ # and its watch-pattern notices.
+ _NOTED_PRODUCERS = frozenset({'async_delegation', 'completion', 'watch_match', 'watch_disabled'})
+ # A cron result for a local chat (``session_cron.deliver_to_local_chat``) is finished text: a note
+-# with or without a viewer, since a turn over it would only spend a model call (#143547 CRON-11).
++# with or without a viewer (#143547 CRON-11), unless its job wakes the chat (``wake``): then it is the
++# chat's turn, so the agent reads the result and acts or reports without waiting for the user.
+ _ALWAYS_NOTED = frozenset({'cron'})
+ # What ``sessions.unviewed_completion_turns`` runs as a turn with no viewer: a ``notify_on_complete``
+ # process's exit and a background subagent's result (a batch's early failure notice too, as a viewer gets
+@@ -46,6 +47,8 @@ def _producer(identity):
+ def noted_completion(row):
+     """*row* is a local completion admission: a note when it runs with no viewer attached."""
+     descriptor = (row or {}).get('payload', {}).get('local_automation_v1')
++    if descriptor is not None and descriptor.get('wake') is True:
++        return False  # a cron job's own ``wake: true``: its result is the chat's turn
+     return descriptor is not None and _producer(descriptor['identity']) in _NOTED_PRODUCERS | _ALWAYS_NOTED
+ 
+ 
+diff --git a/gateway/session_cron.py b/gateway/session_cron.py
+index 78a1ca40..e6ffd7eb 100644
+--- a/gateway/session_cron.py
++++ b/gateway/session_cron.py
+@@ -60,9 +60,10 @@ async def _admit_local_delivery(authority, chat_id, text, metadata):
+         return await admit_route_wake(authority.runner, adapter, source, text, 'cron', metadata)
+ 
+ 
+-def deliver_to_local_chat(home, chat_id, text, *, diagnostic=False):
++def deliver_to_local_chat(home, chat_id, text, *, diagnostic=False, wake=False):
+     """Admit a cron result into local chat *chat_id*'s FIFO; at the head it is written into the chat's
+-    history as a note, never a turn (``session_completion_notes``). A local chat has no push transport
++    history as a note (``session_completion_notes``), or with *wake* (the job's own ``wake: true``) it
++    runs as the chat's turn, queued behind a turn that is running. A local chat has no push transport
+     (``LocalSessionAdapter.send`` only acknowledges a turn's own output), so only the owner in this
+     process can deliver. Called off the owner loop; None once admitted, else the error."""
+     owner = owner_for_home(home)
+@@ -70,6 +71,8 @@ def deliver_to_local_chat(home, chat_id, text, *, diagnostic=False):
+         return f"local chat {chat_id}: no gateway in this process owns its session"
+     authority, loop = owner
+     metadata = {'notification_category': 'diagnostic'} if diagnostic else {}
++    if wake:
++        metadata['cron_wake'] = True
+     try:
+         admitted = asyncio.run_coroutine_threadsafe(
+             _admit_local_delivery(authority, chat_id, text, metadata), loop).result(timeout=60)
+diff --git a/tests/gateway/test_cron_wake.py b/tests/gateway/test_cron_wake.py
+new file mode 100644
+index 00000000..81fefbc1
+--- /dev/null
++++ b/tests/gateway/test_cron_wake.py
+@@ -0,0 +1,126 @@
++"""A cron result delivered into a chat starts that chat's turn when the job wakes it.
++
++A job created by an agent in a chat and delivering back to it (deliver ``origin``) wakes the chat; a
++job with ``wake: false``, one delivering elsewhere, and a failure notice leave the result a note. The
++result rides the chat's FIFO, so a running turn finishes first and nothing is dropped.
++"""
++import json
++
++import pytest
++
++from tests.gateway.test_session_end_delegations import _admissions, _local, _record_turns
++
++_ORIGIN = {'platform': 'local', 'chat_id': 'chat-1', 'chat_name': None, 'thread_id': None}
++
++
++async def _deliver_cron(authority, ref, text, **kw):
++    from gateway.session_cron import _admit_local_delivery
++    metadata = {'cron_wake': True} if kw.get('wake') else {}
++    assert await _admit_local_delivery(authority, ref.session_id, text, metadata) is True
++
++
++def _human(authority, ref, request_id, text):
++    from hermes_state_runtime import admit_session_input
++    return admit_session_input(authority.db, epoch=authority.epoch, principal_id='test-owner',
++                               session_id=ref.session_id, request_id=request_id, payload={'text': text})
++
++
++def _notes_of(authority, runner, ref, marker):
++    target = runner.session_store.lookup_by_session_key(authority.sessions[ref.session_id].route).session_id
++    return [m for m in authority.db.get_messages(target) if marker in str(m.get('content'))]
++
++
++@pytest.mark.asyncio
++async def test_a_waking_cron_result_starts_exactly_one_turn(tmp_path, monkeypatch):
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        seen = _record_turns(runner)
++        await _deliver_cron(authority, ref, 'Cronjob Response: RESULT_wake', wake=True)
++        await authority._drain(ref)
++        await authority._drain(ref)
++        assert seen == ['Cronjob Response: RESULT_wake']
++        assert _notes_of(authority, runner, ref, 'RESULT_wake') == []
++        assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed']
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_a_cron_result_without_wake_is_a_note_and_starts_no_turn(tmp_path, monkeypatch):
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        async def no_turn(event):
++            raise AssertionError('wake is off: the result must not start a turn')
++        runner._handle_message = no_turn
++        await _deliver_cron(authority, ref, 'Cronjob Response: RESULT_quiet', wake=False)
++        await authority._drain(ref)
++        assert len(_notes_of(authority, runner, ref, 'RESULT_quiet')) == 1
++    finally:
++        authority.db.close()
++
++
++@pytest.mark.asyncio
++async def test_a_waking_result_behind_a_running_turn_is_queued_then_runs(tmp_path, monkeypatch):
++    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
++    try:
++        _human(authority, ref, 'human', 'FIRST')
++        await _deliver_cron(authority, ref, 'Cronjob Response: RESULT_late', wake=True)
++        assert [r['status'] for r in _admissions(authority, ref)] == ['queued']  # queued behind the user's input
++        seen = _record_turns(runner)
++        await authority._drain(ref)
++        await authority._drain(ref)
++        assert seen == ['FIRST', 'Cronjob Response: RESULT_late']
++        assert _notes_of(authority, runner, ref, 'RESULT_late') == []
++    finally:
++        authority.db.close()
++
++
++def test_the_wake_rule():
++    from cron.jobs import job_wakes
++    assert job_wakes({'origin': _ORIGIN, 'deliver': 'origin'}) is True
++    assert job_wakes({'origin': _ORIGIN, 'deliver': 'origin,telegram'}) is True
++    assert job_wakes({'origin': _ORIGIN, 'deliver': 'origin', 'wake': False}) is False
++    assert job_wakes({'origin': _ORIGIN, 'deliver': 'local:other'}) is False
++    assert job_wakes({'origin': _ORIGIN, 'deliver': 'telegram'}) is False
++    assert job_wakes({'deliver': 'local:other', 'wake': True}) is True
++    assert job_wakes({'deliver': 'origin'}) is False  # created by a script: no chat to wake
++    assert job_wakes({'origin': dict(_ORIGIN, platform='telegram'), 'deliver': 'origin'}) is False
++    assert job_wakes({'deliver': 'origin'}, 'origin') is True
++
++
++def test_wake_is_stored_listed_and_updated(tmp_path, monkeypatch):
++    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
++    from cron import jobs
++    from tools import cronjob_tools
++
++    job = jobs.create_job(prompt='check', schedule='every 1h', origin=_ORIGIN, wake=False)
++    assert job['wake'] is False
++    assert 'wake' not in jobs.create_job(prompt='x', schedule='every 1h')
++    with pytest.raises(ValueError):
++        jobs.create_job(prompt='x', schedule='every 1h', wake='yes')
++    listed = json.loads(cronjob_tools.cronjob(action='list'))['jobs']
++    assert [j['wake'] for j in listed if j['job_id'] == job['id']] == [False]
++    json.loads(cronjob_tools.cronjob(action='update', job_id=job['id'], wake=True))
++    assert jobs.get_job(job['id'])['wake'] is True
++    plain = jobs.create_job(prompt='from chat', schedule='every 1h', origin=_ORIGIN)
++    assert 'wake' not in plain
++    listed = json.loads(cronjob_tools.cronjob(action='list'))['jobs']
++    assert [j['wake'] for j in listed if j['job_id'] == plain['id']] == [True]
++    assert 'wake' in cronjob_tools.CRONJOB_SCHEMA['parameters']['properties']
++
++
++@pytest.mark.parametrize('job, failure, expected', [
++    ({'origin': _ORIGIN, 'deliver': 'origin'}, False, True),
++    ({'origin': _ORIGIN, 'deliver': 'origin', 'wake': False}, False, False),
++    ({'origin': _ORIGIN, 'deliver': 'origin'}, True, False),
++    ({'deliver': 'local:chat-1'}, False, False),
++])
++def test_the_delivery_passes_wake_to_the_local_chat(tmp_path, monkeypatch, job, failure, expected):
++    from cron import scheduler_delivery
++    calls = []
++    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
++    monkeypatch.setattr('gateway.session_cron.deliver_to_local_chat',
++                        lambda home, chat_id, text, **kw: calls.append((chat_id, kw)))
++    job = dict({'id': 'j', 'name': 'j'}, **job)
++    scheduler_delivery._deliver_result(job, 'ping', for_failure=failure)
++    assert calls and calls[0][1]['wake'] is expected
+diff --git a/tools/cronjob_job_args.py b/tools/cronjob_job_args.py
+index 5069a90a..39821ee9 100644
+--- a/tools/cronjob_job_args.py
++++ b/tools/cronjob_job_args.py
+@@ -523,6 +523,9 @@ def _format_job(job: dict[str, Any]) -> dict[str, Any]:
+         result["context_from"] = external_refs
+     if isinstance(job.get("attach_to_session"), bool):
+         result["attach_to_session"] = job["attach_to_session"]
++    from cron.jobs import job_wakes
++    if job.get("origin") or isinstance(job.get("wake"), bool):
++        result["wake"] = job_wakes(job)
+     return result
+ 
+ 
+diff --git a/tools/cronjob_tools.py b/tools/cronjob_tools.py
+index ac1ab8ab..f64968a6 100644
+--- a/tools/cronjob_tools.py
++++ b/tools/cronjob_tools.py
+@@ -731,7 +731,7 @@ def _action_create(a: dict[str, Any]) -> str:
+             grace_minutes=a["grace_minutes"],
+             pinned=bool(a["pinned"]),
+             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
+-            catch_up=a["catch_up"],
++            catch_up=a["catch_up"], wake=a["wake"],
+             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
+                if a["paused"] is not False or a["paused_reason"] is not None else {}))
+     except CronSchedulerRegistrationError as exc:
+@@ -876,6 +876,8 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
+         updates["failure_deliver"] = _norm_fd
+     if a["catch_up"] is not None:
+         updates["catch_up"] = a["catch_up"]
++    if a["wake"] is not None:
++        updates["wake"] = a["wake"]
+     if skills is not None or skill is not None:
+         canonical_skills = _canonical_skills(skill, skills)
+         updates["skills"] = canonical_skills
+@@ -1069,6 +1071,7 @@ def cronjob(
+     reasoning_effort: Optional[str] = None,
+     failure_deliver: Optional[str | list[str]] = None,
+     catch_up: Optional[bool] = None,
++    wake: Optional[bool] = None,
+     task_id: str | None = None,
+     session_id: Optional[str] = None,
+     paused: bool = False,
+@@ -1171,6 +1174,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
+                 "type": "boolean",
+                 "description": "Runs missed while the machine was off: true = run once on return, false = skip. Omit for the default (recurring run once, one-shots skip)."
+             },
++            "wake": {
++                "type": "boolean",
++                "description": "Whether a result delivered into a chat of this app starts a turn there, so the chat's agent reads it and acts or reports by itself (true), or only lands as a note the agent reads on the user's next message (false). Matters only when deliver reaches a chat of this app, such as origin from a chat; a result sent to Telegram or another platform never starts a turn. Omit it and a result delivered back to the chat the job was created in (deliver origin) starts a turn, and any other chat of this app gets a note. Set false for a job whose result only the user reads. Shown in the job's listing as wake.",
++            },
+             "script": {
+                 "type": "string",
+                 "description": _script_description("the profile HERMES_HOME")
+@@ -1238,7 +1245,7 @@ def check_cronjob_requirements() -> bool:
+ _HANDLER_FORWARDED_ARGS = (
+     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
+     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
+-    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up")
++    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wake")
+ 
+ 
+ def _cronjob_handler(args, **kw):
