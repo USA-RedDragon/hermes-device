@@ -15,7 +15,7 @@ const (
 )
 
 func (s *System) removeNoCapDropIn() {
-	if s.GOOS != "linux" {
+	if s.GOOS != goosLinux {
 		return
 	}
 	dir := filepath.Join(s.Home, ".config", "systemd", "user", noCapDropInDir)

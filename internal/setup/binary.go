@@ -35,6 +35,8 @@ func ExeName(goos string) string {
 // goosWindows is GOOS on Windows.
 const goosWindows = "windows"
 
+const goosLinux = "linux"
+
 // LegacyBinDir and LegacyBinaryName are where releases before the rename to
 // talaria installed the binary. Migrate moves it and leaves a link there.
 const (

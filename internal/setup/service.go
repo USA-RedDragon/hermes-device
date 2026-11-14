@@ -87,7 +87,7 @@ type Service interface {
 // NewService returns the service for s.GOOS.
 func (s *System) NewService() (Service, error) {
 	switch s.GOOS {
-	case "linux":
+	case goosLinux:
 		return &systemdService{s: s}, nil
 	case darwin:
 		return &launchdService{s: s}, nil

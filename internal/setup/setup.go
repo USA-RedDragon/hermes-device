@@ -672,7 +672,7 @@ func (s *System) uninstallService(ctx context.Context, st *State, r *Report) err
 		}
 	}
 	st.Service, st.ServiceSHA256, st.ServiceBackup = "", "", ""
-	if s.GOOS == "linux" {
+	if s.GOOS == goosLinux {
 		_, _ = s.Run.Output(ctx, nil, "systemctl", "--user", "daemon-reload")
 	}
 	return nil
