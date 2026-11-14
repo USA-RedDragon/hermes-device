@@ -70,18 +70,22 @@ func (ew *eventWriter) write(w io.Writer, e hub.Event) bool {
 	}
 	// The page asks for the text of a cut tool output when a card opens;
 	// the fingerprint above is of the whole rows.
-	e.Data = trimToolRows(e.Data)
 	if !ew.split && !e.Provisional {
+		e.Data = trimToolRows(e.Data)
 		return ew.s.writeEventFP(w, e, fp)
 	}
 	head, older, ok := splitSnapshot(e.Data)
 	if !ok {
+		e.Data = trimToolRows(e.Data)
 		if e.Provisional {
 			return ew.s.writeEvent(w, hub.Event{Kind: e.Kind, Data: e.Data, At: e.At, Provisional: true})
 		}
 		ew.split = false
 		return ew.s.writeEventFP(w, e, fp)
 	}
+	// Only the head is cut before the first bytes go out; the older rows
+	// are cut after the flush, so the first rows do not wait for them.
+	head = trimToolRows(head)
 	if !ew.s.writeEventFP(w, hub.Event{Kind: e.Kind, Data: head, At: e.At, Provisional: e.Provisional}, fp) {
 		return false
 	}
@@ -93,7 +97,7 @@ func (ew *eventWriter) write(w io.Writer, e hub.Event) bool {
 	if f, ok := w.(interface{ Flush() }); ok {
 		f.Flush()
 	}
-	data, err := json.Marshal(sseEvent{Kind: kindSnapshotOlder, Data: older})
+	data, err := json.Marshal(sseEvent{Kind: kindSnapshotOlder, Data: trimToolRows(older)})
 	if err != nil {
 		return true
 	}

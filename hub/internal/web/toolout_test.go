@@ -129,3 +129,66 @@ func mustJSON(t *testing.T, s string) string {
 func jsonNum(f float64) string {
 	return strconv.FormatInt(int64(f), 10)
 }
+
+// The first rows of a chat are the newest turns up to a byte budget; the
+// budget counts the rows as the gateway has them, so cutting the outputs
+// must not let more turns into the first rows (the page draws them all
+// before it shows anything).
+func TestCutOutputsDoNotWidenTheFirstRows(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	big := strings.Repeat("line of build output\n", 1500)
+	call := func(id string) map[string]any {
+		return map[string]any{"id": id, fnKey: map[string]any{fieldName: toolTerminal, ilArgs: "{}"}}
+	}
+	var msgs []map[string]any
+	for i := range 60 {
+		id := "w" + strconv.Itoa(i)
+		msgs = append(msgs,
+			map[string]any{kRole: roleUser, kText: "go " + id},
+			map[string]any{kRole: roleAssistant, kText: "", kCalls: []any{call(id)}},
+			map[string]any{kRole: stepTool, kCallID: id, fieldName: toolTerminal, kText: `{"output": ` + mustJSON(t, big) + `, "exit_code": 0}`},
+			map[string]any{kRole: roleAssistant, kText: "done " + id})
+	}
+	e.gw.AddSession(&gatewaytest.Session{ID: "wide", Title: "Wide", Live: true, StartedAt: 310, Messages: msgs})
+	c := client(t)
+	login(t, e, c)
+	r, stop := stream(t, c, e.url+toolOutBase+"wide/events", "")
+	defer stop()
+	evs := readEvents(t, r, "snapshot")
+	var snap struct {
+		Messages []json.RawMessage `json:"messages"`
+		Older    int               `json:"older"`
+	}
+	if err := json.Unmarshal(evs[len(evs)-1].data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if snap.Older == 0 {
+		t.Fatal("the snapshot was not split")
+	}
+	// 32 KB a tool row: the 96 KB budget holds a dozen rows. Cut
+	// first, the 40-row limit would be the one that applies.
+	if n := len(snap.Messages); n > 30 {
+		t.Fatalf("first rows = %d, want the budget of the whole rows (about 14)", n)
+	}
+}
+
+// Markdown export reads the transcript, not the cut snapshot: a long tool
+// output is in it whole.
+func TestTranscriptKeepsWholeToolOutputs(t *testing.T) {
+	t.Parallel()
+	e := setup(t)
+	big := strings.Repeat("line of build output\n", 4000)
+	call := map[string]any{"id": "x1", fnKey: map[string]any{fieldName: toolTerminal, ilArgs: "{}"}}
+	e.gw.AddSession(&gatewaytest.Session{ID: "export", Title: "Export", Live: true, StartedAt: 320, Messages: []map[string]any{
+		{kRole: roleUser, kText: "go"},
+		{kRole: roleAssistant, kText: "", kCalls: []any{call}},
+		{kRole: stepTool, kCallID: "x1", fieldName: toolTerminal, kText: big},
+	}})
+	c := client(t)
+	login(t, e, c)
+	_, body := get(t, c, e.url+"/api/sessions/pc/export/transcript")
+	if !strings.Contains(body, strings.Repeat("line of build output\\n", 4000)) {
+		t.Fatalf("transcript is %d bytes, want the whole output", len(body))
+	}
+}
