@@ -1262,7 +1262,8 @@
       if (!this.known) this.known = window.HubToolCard.memory();
       const call = { name: name || "tool", args, res: null, out: "", done: false, failed: false, startedAt: this.at, endedAt: 0,
         duration: undefined, computer: this.computerName(), mem: this.known };
-      const view = window.HubToolCard.create({ el, toast, highlight: highlightBash, diff: diffView, page: (p) => this.publishedPage(p) }, call);
+      const view = window.HubToolCard.create({ el, toast, highlight: highlightBash, diff: diffView, page: (p) => this.publishedPage(p),
+        image: (p) => (mediaPath(p) && imagePath(p) ? mediaURL(this.base, p) : ""), zoom: openImage }, call);
       card = view.node;
       card.view = view;
       card.call = call;

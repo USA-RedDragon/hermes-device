@@ -564,6 +564,50 @@ window.HubToolCard = (() => {
     return out;
   }
 
+  // vision is vision_analyze and browser_vision: the card shows the image the
+  // call looked at (d.vision) with the question as a plain line. A path the
+  // hub may serve is a thumbnail, a data: URL is shown as it is, a web link
+  // is a link and never loaded, and the rest is a placeholder. The generic
+  // "Image loaded into your context" output is dropped; any other stays.
+  const dataImage = /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/i;
+  const imageExt = /\.(png|jpe?g|gif|webp)$/i;
+  function imageFile(p) {
+    return p.length > 1 && p.length < 4096 && p[0] === "/" && !/[\x00-\x1f\x7f]/.test(p) && imageExt.test(p) &&
+      !p.slice(1).split("/").some((x) => x === "" || x === "." || x === "..");
+  }
+  function visionSource(a, res) {
+    let u = str(a.image_url).trim();
+    if (!u && Array.isArray(res.content)) {
+      for (const part of res.content) {
+        const v = isObj(part) ? (isObj(part.image_url) ? part.image_url.url : part.image_url) : "";
+        if (typeof v === "string" && dataImage.test(v)) {
+          u = v;
+          break;
+        }
+      }
+    }
+    if (dataImage.test(u)) return { kind: "data", url: u };
+    if (/^https?:\/\//i.test(u)) return { kind: "link", url: u };
+    if (imageFile(u)) return { kind: "file", path: u };
+    return { kind: "none", path: u[0] === "/" ? u : "" };
+  }
+  function vision(c) {
+    const a = isObj(c.args) ? c.args : {};
+    const res = isObj(c.res) ? c.res : {};
+    const page = c.name === "browser_vision";
+    const out = { icon: "eye", blocks: [], status: "Done" };
+    out.title = page ? verb(c, "Looked at", "Looking at") + " the page" : verb(c, "Looked at", "Looking at") + " an image";
+    const q = str(a.question).trim();
+    out.vision = Object.assign(visionSource(a, res), { question: q });
+    if (q) out.blocks.push({ label: "Question", text: q, plain: true });
+    const shown = Object.assign({}, a);
+    if (dataImage.test(str(shown.image_url))) shown.image_url = "data:" + shown.image_url.slice(5, shown.image_url.indexOf(";")) + " (image data)";
+    if (Object.keys(shown).length) out.blocks.push({ label: "Call", text: JSON.stringify(shown, null, 2), pre: true });
+    const text = c.out || "";
+    if (text && !/^Image loaded into your context/.test(text) && !text.includes("data:image/")) out.blocks.push({ label: "Output", text, pre: true });
+    return out;
+  }
+
   function generic(c) {
     const a = isObj(c.args) ? c.args : {};
     const out = { icon: "tool", blocks: [] };
@@ -600,7 +644,7 @@ window.HubToolCard = (() => {
   }
 
   const handlers = {
-    page_publish: pagePublish, terminal, process_manage: pm, delegate_task: delegate, agent_send: send, agent_peers: agentPeers, agent_set_name: agentName, search_files: search,
+    page_publish: pagePublish, vision_analyze: vision, browser_vision: vision, terminal, process_manage: pm, delegate_task: delegate, agent_send: send, agent_peers: agentPeers, agent_set_name: agentName, search_files: search,
     read_file: read, write_file: edit, patch: edit, web_search: web, web_extract: web,
     memory: memoryTool, project_memory: projectMemory, skills_list: skill, skill_view: skill, skill_manage: skill,
     session_search: sessionSearch, browser_vault: vault, mcp_device_call: mcpCall, mcp_device_servers: mcpCall, mcp_device_tools: mcpCall,
@@ -778,15 +822,20 @@ window.HubToolCard = (() => {
     const blocks = el("div", "notice-body");
     const extra = el("div", "tool-extra");
     const live = el("div", "tool-live");
-    wrap.append(blocks, extra);
+    const visBig = el("div", "notice-sec vis-sec");
+    visBig.hidden = true;
+    wrap.append(visBig, blocks, extra);
     const chev = window.HubIcons.icon("chev");
     chev.classList.add("notice-chev");
     head.onclick = () => {
       const open = head.getAttribute("aria-expanded") !== "true";
       head.setAttribute("aria-expanded", open ? "true" : "false");
       wrap.hidden = !open;
+      if (view.derived) drawVision(view.derived);
     };
-    box.append(head, live, wrap);
+    const vis = el("div", "vis");
+    vis.hidden = true;
+    box.append(head, vis, live, wrap);
     const view = { node: box, body: extra, live, derived: null };
     // A page_publish card that made a page shows the page card in place of
     // the usual card, so the page opens from the chat. It is not a step
@@ -841,7 +890,9 @@ window.HubToolCard = (() => {
       const sec = el("div", "notice-sec tool-sec");
       sec.append(el("b", "", b.label));
       let body;
-      if (b.kind === "diff") {
+      if (b.plain) {
+        body = el("div", "tool-q", b.text);
+      } else if (b.kind === "diff") {
         body = ctx.diff(b.text);
         body.classList.add("tool-box");
       } else {
@@ -858,6 +909,97 @@ window.HubToolCard = (() => {
       }
       sec.append(body, copyButton(b.text));
       return sec;
+    }
+
+    // drawVision shows the image of a vision call: a thumbnail beside the
+    // question while the card is closed, the image (tap for full screen) and
+    // its path when it is open. An image that cannot be shown, or that fails
+    // to load, is a dashed placeholder, never a broken image.
+    let seen = { key: "", broken: false };
+    function gone() {
+      const g = el("div", "vis-gone");
+      g.setAttribute("aria-hidden", "true");
+      g.append(window.HubIcons.icon("noimg"));
+      return g;
+    }
+    function picture(src, name, cls, onBroken) {
+      const b = el("button", cls);
+      b.type = "button";
+      b.setAttribute("aria-label", "Open image full screen");
+      const img = el("img");
+      img.alt = name;
+      img.loading = "lazy";
+      img.onerror = onBroken;
+      img.src = src;
+      b.append(img);
+      b.onclick = () => ctx.zoom(src, name);
+      return b;
+    }
+    function drawVision(d) {
+      const v = d.vision;
+      const open = head.getAttribute("aria-expanded") === "true";
+      if (!v) {
+        vis.hidden = visBig.hidden = true;
+        return;
+      }
+      let src = "";
+      if (v.kind === "data") src = v.url;
+      else if (v.kind === "file" && ctx.image) src = ctx.image(v.path) || "";
+      const key = v.kind + "|" + (v.path || "") + "|" + src.length + "|" + v.question + "|" + open + "|" + d.state;
+      if (key === seen.key) return;
+      const keep = seen.broken && seen.src === src;
+      seen = { key, broken: keep, src };
+      const broken = () => {
+        seen.broken = true;
+        seen.key = "";
+        drawVision(d);
+      };
+      const shown = src && !seen.broken && !!ctx.zoom;
+      const name = v.path ? base(v.path) : "image";
+      const q = el("div", "vis-q");
+      if (v.question) q.append(el("span", "qt", v.question));
+      const path = v.path ? el("span", "vis-path", v.path) : null;
+      vis.replaceChildren();
+      visBig.replaceChildren();
+      if (open) {
+        vis.hidden = true;
+        visBig.hidden = false;
+        if (shown) {
+          visBig.append(picture(src, name, "vis-big", broken));
+          if (path) visBig.append(path);
+        } else if (v.kind === "link") {
+          visBig.append(link(v.url));
+        } else {
+          visBig.append(el("span", "vis-note", "Image not available here"));
+          if (path) visBig.append(path);
+        }
+        return;
+      }
+      visBig.hidden = true;
+      vis.hidden = false;
+      if (shown) {
+        vis.append(picture(src, name, "vis-thumb", broken), q);
+      } else {
+        vis.append(gone(), q);
+        if (v.kind === "link") q.append(link(v.url));
+        else {
+          q.append(el("small", "", "Image not available here"));
+          if (path) q.append(path);
+        }
+      }
+    }
+    function link(u) {
+      const a = el("a", "vis-link");
+      a.href = u;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer nofollow";
+      let t = u;
+      try {
+        const x = new URL(u);
+        t = x.host + (x.pathname === "/" ? "" : x.pathname);
+      } catch (_) { /* the whole link */ }
+      a.textContent = cut(t, 80);
+      return a;
     }
 
     function drawMeta(d, c) {
@@ -889,6 +1031,7 @@ window.HubToolCard = (() => {
       drawMeta(d, c);
       blocks.replaceChildren(...d.blocks.map(drawBlock));
       drawPage(d);
+      drawVision(d);
       return d;
     };
     view.update(c0);

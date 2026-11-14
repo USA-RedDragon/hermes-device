@@ -1524,3 +1524,21 @@ button.link svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; s
 }
 .tool-page { margin: .3rem 0; }
 .tool-page .media { margin: 0; }
+
+/* The image card of vision_analyze and browser_vision. */
+.vis { display: flex; gap: .6rem; align-items: center; padding: 0 .75rem .65rem; min-width: 0; }
+.vis-thumb { flex: none; width: 5.2rem; height: 3.6rem; border-radius: 8px; border: 1px solid var(--line); overflow: hidden; background: var(--code); display: block; padding: 0; cursor: zoom-in; }
+.vis-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.vis-q { min-width: 0; font-size: .9rem; overflow-wrap: anywhere; }
+.vis-q > span.qt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.vis-q small { display: block; color: var(--muted); font-size: .75rem; }
+.vis-big { display: block; padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: zoom-in; background: var(--code); max-width: 100%; }
+.vis-big img { display: block; max-width: 100%; max-height: 14rem; }
+.vis-gone { flex: none; width: 5.2rem; height: 3.6rem; border-radius: 8px; border: 1px dashed var(--line); display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--code); }
+.vis-gone .ico { width: 1.4rem; height: 1.4rem; }
+.vis-note { font-size: .85rem; color: var(--muted); display: block; }
+.vis-path { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .72rem; color: var(--muted); overflow-wrap: anywhere; }
+.vis-big + .vis-path { margin-top: .3rem; }
+.vis-link { display: block; font-size: .75rem; color: var(--accent); overflow-wrap: anywhere; }
+.tool-q { overflow-wrap: anywhere; }
+.vis[hidden], .vis-sec[hidden] { display: none; }
