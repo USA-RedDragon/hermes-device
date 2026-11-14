@@ -33,8 +33,8 @@ func TestPublishedPageCardOpens(t *testing.T) {
 	result := `{"ok": true, "path": "` + file + `", "bytes": 49, "title": "Tracker", "show_user": "MEDIA:` + file + `"}`
 	e.gw.AddSession(&gatewaytest.Session{ID: "pp1", Title: "Published page", Live: true, StartedAt: 900, Messages: []map[string]any{
 		{kRole: roleUser, kText: "make me a tracker page"},
-		{kRole: roleAssistant, kText: "", "tool_calls": []map[string]any{{"id": "c1", "function": map[string]any{"name": "page_publish", "arguments": `{"path": "/home/u/tracker.html"}`}}}},
-		{kRole: "tool", "tool_call_id": "c1", "content": result},
+		{kRole: roleAssistant, kText: "", kCalls: []map[string]any{{"id": "c1", fnKey: map[string]any{fieldName: "page_publish", ilArgs: `{"path": "/home/u/tracker.html"}`}}}},
+		{kRole: stepTool, kCallID: "c1", "content": result},
 		{kRole: roleAssistant, kText: "Done.\nMEDIA:" + file},
 	}})
 	prof, err := os.MkdirTemp("", "pagepub-profile-")
