@@ -326,7 +326,7 @@ func TestMediaNamedByVisionCall(t *testing.T) {
 	}
 	e.gw.SetFile(notImage, []byte("key: value"))
 	call := func(id, name, args string) map[string]any {
-		return map[string]any{kRole: roleAssistant, kText: "", "tool_calls": []map[string]any{{"id": id, "function": map[string]any{"name": name, "arguments": args}}}}
+		return map[string]any{kRole: roleAssistant, kText: "", kCalls: []map[string]any{{"id": id, fnKey: map[string]any{fieldName: name, ilArgs: args}}}}
 	}
 	e.gw.AddSession(&gatewaytest.Session{ID: "m1", Title: titleMedia, Live: true, StartedAt: 200, Messages: []map[string]any{
 		call("c1", "vision_analyze", `{"image_url":"`+seen+`","question":"what is it?"}`),
@@ -335,7 +335,7 @@ func TestMediaNamedByVisionCall(t *testing.T) {
 		call("c4", "vision_analyze", `{"image_url":"`+notImage+`"}`),
 		call("c5", "terminal", `{"command":"cat `+unnamed+`","image_url":"`+unnamed+`"}`),
 	}})
-	e.gw.AddSession(&gatewaytest.Session{ID: "m2", Title: "Other", Live: true, StartedAt: 100, Messages: []map[string]any{
+	e.gw.AddSession(&gatewaytest.Session{ID: "m2", Title: "Elsewhere", Live: true, StartedAt: 100, Messages: []map[string]any{
 		call("d1", "vision_analyze", `{"image_url":"`+other+`"}`),
 	}})
 	c := client(t)

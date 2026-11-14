@@ -53,8 +53,8 @@ async function run(c, w, h, touch, dark) {
   await c.send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 1, mobile: touch });
   await c.send("Emulation.setTouchEmulationEnabled", { enabled: touch, maxTouchPoints: 5 });
   await c.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: dark ? "dark" : "light" }] });
-  await c.load(url + "/auth/login?next=/", `[...document.querySelectorAll("#sessions *")].some((x) => x.children.length < 4 && x.textContent.trim().startsWith("Work"))`, "the Work session is listed");
-  await ev(`[...document.querySelectorAll("#sessions *")].filter((x) => x.children.length < 4 && x.textContent.trim().startsWith("Work")).pop().click()`);
+  await c.load(url + "/auth/login?next=/", `[...document.querySelectorAll("#sessions *")].some((x) => x.children.length < 4 && x.textContent.trim().startsWith("Vision"))`, "the Vision session is listed");
+  await ev(`[...document.querySelectorAll("#sessions *")].filter((x) => x.children.length < 4 && x.textContent.trim().startsWith("Vision")).pop().click()`);
   await until(ev, `document.querySelectorAll('.tool[data-tool="vision_analyze"]').length === 4`, "four vision cards");
   // Runs of finished cards fold into a group: open them all.
   await ev(`document.querySelectorAll("details.toolgroup").forEach((d) => { d.open = true; })`);

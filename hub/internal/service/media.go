@@ -318,9 +318,11 @@ func screenshotNames(result, p string) bool {
 	return json.Unmarshal([]byte(result), &m) == nil && hub.ScreenshotPath(m) == p
 }
 
-// visionTools are the tools that look at an image named by an image_url
+// isVisionTool is true for the tools that look at an image named by an image_url
 // argument.
-var visionTools = []string{"vision_analyze", "browser_vision"}
+func isVisionTool(name string) bool { return name == "vision_analyze" || name == "browser_vision" }
+
+const toolBatch = "tool_call"
 
 // visionNames reports whether a call of a vision tool, or a batch of calls
 // (tool_call) that holds one, looks at the image p. The arguments are a JSON
@@ -330,7 +332,7 @@ func visionNames(name string, args json.RawMessage, p string) bool {
 	if !hub.ImagePath(p) || len(args) == 0 {
 		return false
 	}
-	if name != "tool_call" && !slices.Contains(visionTools, name) {
+	if name != toolBatch && !isVisionTool(name) {
 		return false
 	}
 	var s string
@@ -347,11 +349,11 @@ func visionNames(name string, args json.RawMessage, p string) bool {
 	if json.Unmarshal(args, &a) != nil {
 		return false
 	}
-	if name != "tool_call" {
+	if name != toolBatch {
 		return a.ImageURL == p
 	}
 	for _, c := range a.Calls {
-		if c.Name != "tool_call" && visionNames(c.Name, c.Arguments, p) {
+		if c.Name != toolBatch && visionNames(c.Name, c.Arguments, p) {
 			return true
 		}
 	}

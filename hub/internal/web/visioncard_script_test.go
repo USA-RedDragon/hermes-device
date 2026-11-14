@@ -63,13 +63,13 @@ func TestVisionCardShowsTheImage(t *testing.T) {
 	e.gw.SetCapabilities(gateway.CapTranscriptToolDetails)
 	e.gw.SetFile(seen, shotPicture(t))
 	call := func(id, args string) map[string]any {
-		return map[string]any{kRole: roleAssistant, kText: "Looking.", kCalls: []any{map[string]any{"id": id, "function": map[string]any{fieldName: "vision_analyze", "arguments": args}}}}
+		return map[string]any{kRole: roleAssistant, kText: "Looking.", kCalls: []any{map[string]any{"id": id, fnKey: map[string]any{fieldName: "vision_analyze", ilArgs: args}}}}
 	}
 	result := func(id string) map[string]any {
 		return map[string]any{kRole: stepTool, kCallID: id, fieldName: "vision_analyze", kText: "Image loaded into your context \u2014 you can see it natively now. Use your built-in vision to answer the user.\n\nQuestion: q",
 			kTimestamp: 1763000000.0, "display_metadata": map[string]any{"tool_outcome": map[string]any{"duration_ms": 309}}}
 	}
-	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Work", Live: true, StartedAt: 900, Messages: []map[string]any{
+	e.gw.AddSession(&gatewaytest.Session{ID: "s9", Title: "Vision", Live: true, StartedAt: 900, Messages: []map[string]any{
 		{kRole: roleUser, kText: "what is on screen?"},
 		call("c1", `{"image_url":"`+seen+`","question":"What is on screen? Describe the window title, any error text and which button looks focused."}`), result("c1"),
 		call("c2", `{"image_url":"`+gone+`","question":"What is on screen?"}`), result("c2"),
