@@ -19,7 +19,7 @@ Subagents can read project memory but not write it, as they cannot write the glo
 
 ## Project skills
 
-With the Talaria Hermes patch `0093-project-skills`, the project also has skills, kept next to its notes in
+With the Talaria Hermes patch `0094-project-skills`, the project also has skills, kept next to its notes in
 `$HERMES_HOME/project-memories/<slug>/skills/` (same slug, so clones, worktrees and mirrors share them). The plugin
 registers the project of each session with Hermes; `skill_manage` then takes `scope: project` or `scope: global`.
 

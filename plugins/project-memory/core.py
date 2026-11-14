@@ -631,7 +631,7 @@ def skill_count(slug: str) -> int:
 
 
 def register_skills_provider() -> bool:
-    """Tell this Hermes where a chat's project skills live (Talaria Hermes patch 0093); False on a Hermes
+    """Tell this Hermes where a chat's project skills live (Talaria Hermes patch 0094); False on a Hermes
     without it, where skills stay global."""
     try:
         from agent.skill_utils import register_project_skills_provider
