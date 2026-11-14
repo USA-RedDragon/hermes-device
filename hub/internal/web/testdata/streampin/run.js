@@ -28,7 +28,9 @@ const { proc, connect } = require("../cdp.js").launch(bin, dir);
   // The first segment is 150 words, then a pause: wait for the pause.
   await c.until(`/tok149 /.test(document.getElementById("log").textContent)`, "the first segment");
   await c.frames(6);
-  const same = `(() => { const nodes = document.querySelectorAll("#log .msg.assistant.md"); const n = nodes[nodes.length - 1]; const d = document.createElement("div"); window.hubMarkdown.render(d, n.raw); return { live: n.innerHTML === d.innerHTML, inc: !!n.mdInc, kids: n.childNodes.length, raw: n.raw.length }; })()`;
+  const same = `(() => { const nodes = document.querySelectorAll("#log .msg.assistant.md"); const n = nodes[nodes.length - 1]; const d = document.createElement("div"); window.hubMarkdown.render(d, n.raw); const plain = (x) => { const c = x.cloneNode(true); c.querySelectorAll("code.hljs").forEach((k) => { k.textContent = k.textContent; k.removeAttribute("class"); }); return c.innerHTML; }; return { live: plain(n) === plain(d), inc: !!n.mdInc, kids: n.childNodes.length, raw: n.raw.length }; })()`;
+  // Under load the frame that draws the last words can come late: wait for it.
+  await c.until(`${same}.live`, "the streamed block to match a full render").catch(() => {});
   let s = await ev(same);
   assert.ok(s.live, "mid-stream block differs from a full render: " + JSON.stringify(s));
   assert.ok(s.inc && s.kids > 3, "the stream drew incrementally: " + JSON.stringify(s));
