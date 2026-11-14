@@ -3,7 +3,6 @@ package web
 import (
 	"bytes"
 	"errors"
-	"io/fs"
 	"net/http"
 	"strconv"
 
@@ -21,9 +20,9 @@ const pageChatCSP = "default-src 'self'; img-src 'self' data: blob:; object-src 
 // in the Firefox extension's toolbar popup and sidebar. It is the hub's
 // own page and scripts; the class on <html> switches app.js to the page
 // chat layout.
-func (s *Server) handlePageChatView(static fs.FS) http.HandlerFunc {
+func (s *Server) handlePageChatView(static *assets) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		page, err := fs.ReadFile(static, "index.html")
+		page, _, err := static.page("index.html")
 		if err != nil {
 			http.Error(w, "missing page", http.StatusInternalServerError)
 			return

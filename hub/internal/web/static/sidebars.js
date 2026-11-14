@@ -76,9 +76,14 @@
     if (!app || !hs.left || !hs.right) return null;
     const mq = { left: win.matchMedia("(max-width: 760px)"), right: win.matchMedia("(max-width: 900px)") };
     const act = () => !app.classList.contains("act-closed");
+    // The layout's width is read once and again after it changes: a read
+    // right after the page wrote to the DOM forces a layout.
+    let cw = -1;
+    if (typeof win.ResizeObserver === "function") new win.ResizeObserver(() => { cw = -1; }).observe(app);
+    else if (win.addEventListener) win.addEventListener("resize", () => { cw = -1; });
     const ctl = create({
       storage: win.localStorage,
-      width: () => app.clientWidth,
+      width: () => (cw >= 0 ? cw : (cw = app.clientWidth)),
       shown: (s) => (s === "left" ? !mq.left.matches : !mq.right.matches && act()),
     });
     function paint() {

@@ -130,6 +130,7 @@ type Options struct {
 // Server is the web front end.
 type Server struct {
 	last         lastAnswers
+	listFPs      listFingerprints
 	svc          hub.Service
 	links        hub.Links
 	tokens       hub.TokenStore
@@ -390,19 +391,23 @@ func (s *Server) Drain() { s.drainOnce.Do(func() { close(s.draining) }) }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	static, _ := fs.Sub(staticFiles, "static")
-	files := http.FileServerFS(static)
-	mux.Handle("GET /static/", http.StripPrefix("/static/", files))
+	assets := newAssets(static)
+	mux.Handle("GET /static/", assets.handler())
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		if s.needsSetup(r.Context()) {
 			http.Redirect(w, r, "/setup", http.StatusFound)
 			return
 		}
-		w.Header().Set("Cache-Control", "no-cache")
-		http.ServeFileFS(w, r, static, "index.html")
+		page, etag, err := assets.page("index.html")
+		if err != nil {
+			http.Error(w, "missing page", http.StatusInternalServerError)
+			return
+		}
+		servePage(w, r, page, etag, "no-cache")
 	})
-	mux.HandleFunc("GET /pagechat", s.handlePageChatView(static))
-	mux.HandleFunc("GET /login", s.handleLoginPage(static))
-	mux.HandleFunc("GET /setup", s.handleSetupPage(static))
+	mux.HandleFunc("GET /pagechat", s.handlePageChatView(assets))
+	mux.HandleFunc("GET /login", s.handleLoginPage(assets))
+	mux.HandleFunc("GET /setup", s.handleSetupPage(assets))
 	for _, f := range []struct{ path, file, mime string }{
 		{"/manifest.webmanifest", "manifest.webmanifest", "application/manifest+json"},
 		{"/sw.js", "sw.js", "text/javascript; charset=utf-8"},

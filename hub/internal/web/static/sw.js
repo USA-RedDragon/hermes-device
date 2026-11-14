@@ -31,7 +31,7 @@ async function prefetch() {
   if (!page.ok) return;
   const html = await page.clone().text();
   await c.put("/", page);
-  const urls = [...new Set([...html.matchAll(/(?:src|href)="(\/static\/[^"?#]+)"/g)].map((m) => m[1]))];
+  const urls = [...new Set([...html.matchAll(/(?:src|href)="(\/static\/[^"?#]+)(?:\?v=[0-9a-f]+)?"/g)].map((m) => m[1]))];
   await Promise.all(urls.map((u) => fetch(u, { cache: "no-store", credentials: "same-origin" }).then((r) => (r.ok ? c.put(u, r) : null))));
   for (const k of await caches.keys()) if (k.startsWith("hub-static-") && k !== name) await caches.delete(k);
   warm = { name, until: Date.now() + 60000 };
@@ -46,7 +46,7 @@ self.addEventListener("message", (event) => {
 function fromWarm(req) {
   if (!warm || Date.now() > warm.until || req.method !== "GET") return null;
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin || url.search || (url.pathname !== "/" && !url.pathname.startsWith("/static/"))) return null;
+  if (url.origin !== self.location.origin || (url.search && !/^\?v=[0-9a-f]+$/.test(url.search)) || (url.pathname !== "/" && !url.pathname.startsWith("/static/"))) return null;
   const name = warm.name;
   return caches.open(name).then((c) => c.match(url.pathname)).then((r) => r || fetch(req));
 }

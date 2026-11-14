@@ -2,7 +2,6 @@ package web
 
 import (
 	"html/template"
-	"io/fs"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -46,15 +45,21 @@ func loginInfo(cfg *config.Config, mode string, trusted []netip.Prefix) map[stri
 
 // serveAuthPage sends one of the static pages of the login and setup
 // flow. They hold no data: their script asks /auth/info.
-func serveAuthPage(w http.ResponseWriter, r *http.Request, static fs.FS, file string) {
+func serveAuthPage(w http.ResponseWriter, r *http.Request, static *assets, file string) {
+	page, _, err := static.page(file)
+	if err != nil {
+		http.Error(w, "missing page", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	http.ServeFileFS(w, r, static, file)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(page)
 }
 
 // handleLoginPage is the login page of auth.mode local. In the other
 // modes the login starts at /auth/login; with no account yet the person
 // has to set the hub up first.
-func (s *Server) handleLoginPage(static fs.FS) http.HandlerFunc {
+func (s *Server) handleLoginPage(static *assets) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		next := safeNext(r.URL.Query().Get("next"))
 		switch {
@@ -74,7 +79,7 @@ func (s *Server) handleLoginPage(static fs.FS) http.HandlerFunc {
 
 // handleSetupPage is the first-user page of auth.mode local. Once the hub
 // has an account its script says so.
-func (s *Server) handleSetupPage(static fs.FS) http.HandlerFunc {
+func (s *Server) handleSetupPage(static *assets) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.mode != config.AuthLocal {
 			http.Redirect(w, r, "/", http.StatusFound)

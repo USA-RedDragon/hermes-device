@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,7 +92,30 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, s.marked(r.Context(), user, ss, ue == nil))
+	body := s.marked(r.Context(), user, ss, ue == nil)
+	if ue != nil {
+		writeJSON(w, http.StatusOK, body)
+		return
+	}
+	// A list the page has already is answered with 304: the list is the
+	// same for the minutes at a time that nothing changes.
+	data, err := json.Marshal(body)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	sum := sha256.Sum256(data)
+	etag := `"` + hex.EncodeToString(sum[:10]) + `"`
+	h := w.Header()
+	h.Set("ETag", etag)
+	h.Set("Cache-Control", "private, no-cache")
+	h.Add("Vary", "Cookie")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	h.Set("Content-Type", "application/json")
+	_, _ = w.Write(append(data, '\n'))
 }
 
 // UnreachableHeader names, comma separated and query-escaped, the backends
@@ -568,10 +593,22 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	out.Flush()
 	tick := time.NewTicker(s.keepAlive)
 	defer tick.Stop()
+	// The page learns of a change to its chat list here, rather than by
+	// asking for the list every few seconds.
+	listChanged := make(chan struct{}, 1)
+	wctx, stopWatch := context.WithCancel(r.Context())
+	defer stopWatch()
+	go s.watchList(wctx, userFrom(r), listChanged)
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-listChanged:
+			if writeListChanged(out) != nil {
+				ended = "write failed"
+				return
+			}
+			out.Flush()
 		case <-s.draining:
 			ended = "hub draining"
 			s.flushEvents(out, ch)

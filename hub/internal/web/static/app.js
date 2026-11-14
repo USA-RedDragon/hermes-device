@@ -151,6 +151,14 @@
     const sent = new Set(got.map((s) => s.backend_id));
     return got.concat(prev.sessions.filter((s) => down.has(s.backend_id) && !sent.has(s.backend_id)));
   }
+  // refreshListSoon is for the hub's word that the list changed: one fetch
+  // for the changes of the next second.
+  let listSoon = 0;
+  function refreshListSoon() {
+    if (listSoon || document.hidden) return;
+    listSoon = setTimeout(() => { listSoon = 0; refreshList(); }, 1000);
+  }
+
   async function refreshList() {
     if (listing) return;
     listing = true;
@@ -3383,6 +3391,7 @@
         // the chat already would swap it for an older one.
         if (e.provisional && chat.loaded) return;
         if (e.kind === "snapshot.same") return;
+        if (e.kind === "sessions.changed") { refreshListSoon(); return; }
         if (e.kind === "snapshot") fp = e.fp || "";
         else if (e.kind !== "snapshot.older" && e.kind !== "backend.status") fp = "";
         if (first) mark("parsed");
@@ -4174,7 +4183,9 @@
         return false;
       } });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshList(); });
-    setInterval(() => { if (!document.hidden) refreshList(); }, 20000);
+    // The hub says when the list changes (sessions.changed on a chat's event
+    // stream); this poll is the safety net for a page with no stream open.
+    setInterval(() => { if (!document.hidden) refreshList(); }, 60000);
     window.onhashchange = route;
     if (me.scheduled) {
       scheduled.refresh();
