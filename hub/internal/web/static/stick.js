@@ -114,7 +114,9 @@ window.HubStick = (log, o) => {
   function scrollSoon() {
     if (scrollQueued) return;
     scrollQueued = true;
-    frame(() => { scrollQueued = false; scrolled(); });
+    // After the frame is drawn, when the layout is clean again: a scroll event
+    // comes before the frame's writes, and what it reads would lay them out.
+    frame(() => later(() => { scrollQueued = false; scrolled(); }));
   }
 
   // heard says the reader is scrolling, for ms (default hold) from now.
@@ -131,6 +133,8 @@ window.HubStick = (log, o) => {
     else if (typeof requestAnimationFrame === "function") requestAnimationFrame(fn);
     else fn();
   };
+
+  const later = (fn) => (o.raf || typeof setTimeout !== "function" ? fn() : setTimeout(fn, 0));
 
   // pinSoon is pin() for a write that streams in: a pinned log is put at its
   // end at the start of the next frame, not right after the write, which
