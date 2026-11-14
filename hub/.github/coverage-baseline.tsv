@@ -43,7 +43,7 @@ internal/device/rpc.go	229	210
 internal/device/sessioncheck.go	23	22
 internal/device/usage.go	50	40
 internal/device/views.go	17	17
-internal/gateway/client.go	248	207
+internal/gateway/client.go	248	208
 internal/gateway/gatewaytest/activity.go	106	88
 internal/gateway/gatewaytest/compose.go	184	159
 internal/gateway/gatewaytest/fake.go	744	683
@@ -95,7 +95,7 @@ internal/pdf/pdftest/pdftest.go	32	32
 internal/scheduled/client.go	110	88
 internal/scheduled/clock.go	75	66
 internal/scheduled/scheduledtest/scheduledtest.go	178	166
-internal/scheduled/service.go	478	416
+internal/scheduled/service.go	478	414
 internal/secretbox/secretbox.go	37	31
 internal/server/server.go	40	0
 internal/service/activity.go	144	123
@@ -108,7 +108,7 @@ internal/service/live.go	370	326
 internal/service/manage.go	159	145
 internal/service/media.go	139	115
 internal/service/observe.go	61	50
-internal/service/outcome.go	95	88
+internal/service/outcome.go	95	90
 internal/service/page.go	63	57
 internal/service/pdf.go	74	56
 internal/service/rows.go	22	21
@@ -116,7 +116,7 @@ internal/service/service.go	925	844
 internal/service/stopsend.go	93	77
 internal/service/subagentlog.go	178	146
 internal/service/turn.go	79	72
-internal/service/views.go	145	128
+internal/service/views.go	145	127
 internal/store/accounts.go	187	156
 internal/store/agents.go	83	70
 internal/store/answers.go	22	20
@@ -140,7 +140,7 @@ internal/telegram/api.go	192	152
 internal/telegram/bot.go	666	543
 internal/telegram/budget.go	23	20
 internal/telegram/claude.go	107	89
-internal/telegram/commands.go	245	203
+internal/telegram/commands.go	245	202
 internal/telegram/computers.go	186	146
 internal/telegram/config.go	18	18
 internal/telegram/dmtopics.go	105	86
@@ -166,7 +166,7 @@ internal/web/auth.go	143	110
 internal/web/authpages.go	39	37
 internal/web/claude.go	83	58
 internal/web/claudecode.go	30	19
-internal/web/compose.go	241	197
+internal/web/compose.go	241	195
 internal/web/computers.go	85	58
 internal/web/cookies.go	49	43
 internal/web/devices.go	178	125
