@@ -20,7 +20,7 @@ Dispatch stamps each child's session with the record a rebuild needs, and its
 finish adds where it ended. It lasts as long as the session: sessions.retention_days
 when sessions.auto_prune is on, otherwise until the parent chat is deleted.
 ---
- tests/tools/test_delegate_resume_action.py | 366 +++++++++++++++++++++
+ tests/tools/test_delegate_resume_action.py | 368 +++++++++++++++++++++
  tools/async_delegation.py                  |   3 +-
  tools/delegate_tool.py                     |  12 +-
  tools/delegate_tool_child_run.py           |   3 +
@@ -37,7 +37,7 @@ new file mode 100644
 index 00000000..3c40bb63
 --- /dev/null
 +++ b/tests/tools/test_delegate_resume_action.py
-@@ -0,0 +1,366 @@
+@@ -0,0 +1,368 @@
 +"""delegate_task(action='resume'): a finished background subagent gets a second round of work with its full context.
 +
 +The child is rebuilt from its stored transcript the way a restart handoff rebuilds one, so the stored sessions are real
@@ -233,6 +233,8 @@ index 00000000..3c40bb63
 +    seams(_fake_child())
 +    handle = _call(_Parent(db), delegation_id="deleg_call", task_index=0, message="again")
 +    assert handle["status"] == "dispatched" and handle["subagent_id"] == SID
++    # The run is real background work: let it finish, or it still holds the subagent id when the next test starts.
++    wait_until(lambda: _completions(handle["run_id"]), what="the resumed child's completion")
 +
 +
 +def test_running_child_cannot_be_resumed(seams):
