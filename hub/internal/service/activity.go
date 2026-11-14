@@ -112,7 +112,7 @@ func deref[T any](p *T) T {
 func subagent(r gateway.SubagentRow) hub.Subagent {
 	return hub.Subagent{ID: r.SubagentID, ParentID: deref(r.ParentID), Depth: deref(r.Depth), Goal: r.Goal,
 		Model: deref(r.Model), StartedAt: deref(r.StartedAt), Status: deref(r.Status), ToolCount: deref(r.ToolCount),
-		LastTool: deref(r.LastTool), AcceptingSteer: deref(r.AcceptingSteer), ChildSessionID: deref(r.ChildSessionID)}
+		LastTool: deref(r.LastTool), LastPreview: deref(r.LastPreview), AcceptingSteer: deref(r.AcceptingSteer), ChildSessionID: deref(r.ChildSessionID)}
 }
 
 func process(p gateway.ProcessRow) hub.Process {

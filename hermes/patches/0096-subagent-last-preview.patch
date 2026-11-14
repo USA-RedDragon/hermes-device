@@ -1,0 +1,139 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 21:01:20 -0600
+Subject: [PATCH] fix(delegate): subagent.list says what the last tool was
+ given
+
+subagent.list had the name of a subagent's last tool and nothing else, so a
+viewer that joined after the tool started (a reload, a restart) could only
+show "terminal", not the command. The row now has last_preview: the same
+preview subagent.tool carries (a terminal's command), cut to 400 characters.
+---
+ apps/shared/src/gateway-contract.generated.ts |  1 +
+ apps/shared/src/gateway-contract.openrpc.json | 12 +++++++++
+ tests/tui_gateway/test_subagent_snapshot.py   | 26 ++++++++++++++++++-
+ tools/delegate_tool_progress.py               |  2 ++
+ ...ofiles_vault_complete_foreign_subagents.py |  2 ++
+ tui_gateway/methods_subagents.py              |  2 +-
+ 6 files changed, 43 insertions(+), 2 deletions(-)
+
+diff --git a/apps/shared/src/gateway-contract.generated.ts b/apps/shared/src/gateway-contract.generated.ts
+index 5b8460d0..3a4c6127 100644
+--- a/apps/shared/src/gateway-contract.generated.ts
++++ b/apps/shared/src/gateway-contract.generated.ts
+@@ -2456,6 +2456,7 @@ export interface SubagentSnapshot {
+   status?: SubagentStatus | null
+   tool_count?: number | null
+   last_tool?: string | null
++  last_preview?: string | null
+   accepting_steer?: boolean | null
+   waiting_on?: string[] | null
+   child_session_id?: string | null
+diff --git a/apps/shared/src/gateway-contract.openrpc.json b/apps/shared/src/gateway-contract.openrpc.json
+index 963664e5..41d07647 100644
+--- a/apps/shared/src/gateway-contract.openrpc.json
++++ b/apps/shared/src/gateway-contract.openrpc.json
+@@ -44588,6 +44588,18 @@
+             "default": null,
+             "title": "Last Tool"
+           },
++          "last_preview": {
++            "anyOf": [
++              {
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null,
++            "title": "Last Preview"
++          },
+           "accepting_steer": {
+             "anyOf": [
+               {
+diff --git a/tests/tui_gateway/test_subagent_snapshot.py b/tests/tui_gateway/test_subagent_snapshot.py
+index d3615b80..bd340d41 100644
+--- a/tests/tui_gateway/test_subagent_snapshot.py
++++ b/tests/tui_gateway/test_subagent_snapshot.py
+@@ -65,12 +65,14 @@ def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
+                          owner_transport=transport, owner_session_record={})
+     progress = _build_child_progress_callback(0, "owned task",
+         SimpleNamespace(tool_progress_callback=lambda *a, **kw: None), subagent_id="child")
+-    progress("tool.started", "read_file")
++    progress("tool.started", "read_file", "src/app.py", {"path": "src/app.py"})
+     progress("tool.completed", "read_file")
+     try:
+         snapshot = call("subagent.list")["result"]
+         assert [s["subagent_id"] for s in snapshot["subagents"]] == ["child"]
+         assert snapshot["subagents"][0]["last_tool"] == "read_file"
++        # A viewer that joins late shows what the tool was given, not only its name.
++        assert snapshot["subagents"][0]["last_preview"] == "src/app.py"
+         assert snapshot["delegations"] == []
+         assert snapshot["subagents"][0]["tool_count"] == 1
+         wire = json.dumps(snapshot)
+@@ -323,3 +325,25 @@ def test_list_surfaces_failed_delegations_that_outlived_the_live_roster(runtime)
+     assert snapshot["subagents"] == []
+     assert [(d["delegation_id"], d["goal"], d["status"]) for d in snapshot["delegations"]] == [
+         ("d-mine", "d-mine goal", "error")]
++
++
++def test_snapshot_last_preview_is_cut_and_follows_the_latest_tool(runtime):
++    from tools.delegate_tool_child_run import _register_child
++    from tools.delegate_tool_registry import _unregister_subagent
++    from tools.delegate_tool_progress import _build_child_progress_callback
++
++    server, owner, transport, call = runtime
++    child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, model="test")
++    _register_child(child, None, "task", owner_session_id="ui-owner",
++                    owner_transport=transport, owner_session_record=owner)
++    progress = _build_child_progress_callback(0, "task",
++        SimpleNamespace(tool_progress_callback=lambda *a, **kw: None), subagent_id="child")
++    try:
++        progress("tool.started", "terminal", "make test " + "x" * 1000, {})
++        row = call("subagent.list")["result"]["subagents"][0]
++        assert row["last_tool"] == "terminal" and row["last_preview"].startswith("make test x")
++        assert len(row["last_preview"]) <= 403
++        progress("tool.started", "todo", None, {})
++        assert call("subagent.list")["result"]["subagents"][0]["last_preview"] == ""
++    finally:
++        _unregister_subagent("child")
+diff --git a/tools/delegate_tool_progress.py b/tools/delegate_tool_progress.py
+index 0b04f142..45cc5ba1 100644
+--- a/tools/delegate_tool_progress.py
++++ b/tools/delegate_tool_progress.py
+@@ -418,6 +418,8 @@ class _ChildProgressRelay:
+                 if rec is not None:
+                     rec["tool_count"] = self.tool_count
+                     rec["last_tool"] = tool_name or ""
++                    # What the tool was given (a terminal's command), so a viewer that joins later can show it.
++                    rec["last_preview"] = _short(preview, 400) if preview else ""
+         if self.spinner:
+             from agent.display import get_tool_emoji
+             line = f"{get_tool_emoji(tool_name or '')} {tool_name}"
+diff --git a/tui_gateway/contracts/profiles_vault_complete_foreign_subagents.py b/tui_gateway/contracts/profiles_vault_complete_foreign_subagents.py
+index 435f18a4..d6ea3cee 100644
+--- a/tui_gateway/contracts/profiles_vault_complete_foreign_subagents.py
++++ b/tui_gateway/contracts/profiles_vault_complete_foreign_subagents.py
+@@ -670,6 +670,8 @@ class SubagentSnapshot(Result):
+     status: SubagentStatus | None = None
+     tool_count: int | None = None
+     last_tool: str | None = None
++    #: What the last started tool was given (a terminal's command), as ``subagent.tool`` carries it; cut to 400 characters.
++    last_preview: str | None = None
+     accepting_steer: bool | None = None
+     #: Commands of the background processes a ``waiting`` child will be resumed by.
+     waiting_on: list[str] | None = None
+diff --git a/tui_gateway/methods_subagents.py b/tui_gateway/methods_subagents.py
+index 691e1380..1056a2f9 100644
+--- a/tui_gateway/methods_subagents.py
++++ b/tui_gateway/methods_subagents.py
+@@ -11,7 +11,7 @@ method = _registry.method
+ 
+ _SUBAGENT_SNAPSHOT_FIELDS = (
+     "subagent_id", "parent_id", "depth", "goal", "delegation_id", "model",
+-    "started_at", "status", "tool_count", "last_tool", "accepting_steer", "waiting_on",
++    "started_at", "status", "tool_count", "last_tool", "last_preview", "accepting_steer", "waiting_on",
+ )
+ _SUBAGENT_TAIL_BYTES = 16384
+ 

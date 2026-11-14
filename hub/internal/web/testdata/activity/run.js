@@ -96,9 +96,9 @@ assert.ok(!body().querySelector(".row.open"), "the row did not open");
 line = body().querySelector("button.now2");
 assert.strictEqual(line.getAttribute("aria-expanded"), "true");
 const raw = body().querySelector(".rawbox");
-assert.ok(raw && raw.textContent === "process_manage  wait proc_283637f9d51 180s", raw && raw.textContent);
+assert.ok(raw && raw.textContent === "wait proc_283637f9d51 180s", raw && raw.textContent);
 raw.querySelector("button").onclick(tap);
-assert.deepStrictEqual(copied, ["process_manage  wait proc_283637f9d51 180s"]);
+assert.deepStrictEqual(copied, ["wait proc_283637f9d51 180s"]);
 // It stays open through the redraw every second, and a tap closes it.
 act.event("subagent.progress", { subagent_id: "sa-1", text: "" });
 assert.ok(body().querySelector(".rawbox"));
@@ -208,5 +208,25 @@ list = [{ id: "sa-6", goal: "Sixth", status: "running", started_at: (now - 5000)
 await round();
 assert.strictEqual(rowTime("sa-6"), "18:00");
 assert.ok(rowTools("sa-6").includes("41 tools"), rowTools("sa-6"));
+// A page that missed the tool's event has only the list: it names the tool and what it was given.
+// With the command, the line opens to it; with the name alone there is no box and no raw tool name.
+const rowOf = (id) => body().querySelectorAll(".row").find((x) => x.dataset.act === id);
+const nowText = (id) => body().querySelectorAll(".row").find((x) => x.dataset.act === id).textContent;
+list = [{ id: "sa-7", goal: "Seventh", status: "running", started_at: now / 1000, tool_count: 15, last_tool: "terminal", last_preview: "make test ARGS=-race" }];
+await round();
+let l7 = rowOf("sa-7").querySelector("button.now2");
+assert.ok(l7, "the line opens when the command is known");
+assert.match(l7.textContent, /^Running make test/);
+l7.onclick({ stopPropagation() {} });
+assert.strictEqual(rowOf("sa-7").querySelector(".rawbox").textContent, "make test ARGS=-race");
+list = [{ id: "sa-8", goal: "Eighth", status: "running", started_at: now / 1000, tool_count: 15, last_tool: "terminal" }];
+await round();
+assert.ok(!rowOf("sa-8").querySelector("button.now2"), "no button without a command");
+assert.ok(!rowOf("sa-8").querySelector(".rawbox"), "no empty box");
+assert.ok(nowText("sa-8").includes("Running a command") && !nowText("sa-8").includes("terminal"), nowText("sa-8"));
+// The command arrives in a later list: the same row gets it.
+list = [{ id: "sa-8", goal: "Eighth", status: "running", started_at: now / 1000, tool_count: 15, last_tool: "terminal", last_preview: "ls -la" }];
+await round();
+assert.match(rowOf("sa-8").querySelector("button.now2").textContent, /^Running ls -la/);
 console.log("ok");
 })().catch((e) => { console.error(e); process.exit(1); });

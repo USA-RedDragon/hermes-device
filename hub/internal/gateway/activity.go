@@ -52,6 +52,7 @@ type SubagentRow struct {
 	Status         *string  `json:"status"`
 	ToolCount      *int     `json:"tool_count"`
 	LastTool       *string  `json:"last_tool"`
+	LastPreview    *string  `json:"last_preview"`
 	AcceptingSteer *bool    `json:"accepting_steer"`
 	ChildSessionID *string  `json:"child_session_id"`
 }

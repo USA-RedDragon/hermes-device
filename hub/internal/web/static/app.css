@@ -871,6 +871,8 @@ a.mem-button { border: 1px solid var(--line); background: var(--card); color: va
 .act .row-head .now2 { grid-column: 2 / 4; display: flex; align-items: center; gap: .4rem; min-width: 0; font: inherit; font-size: .82rem; color: var(--fg);
   background: none; border: 0; padding: .2rem .3rem; margin: 0 -.3rem; border-radius: 6px; cursor: pointer; text-align: left; min-height: 32px; width: calc(100% + .6rem); }
 .act .row-head .now2:hover { background: var(--hover, rgba(127, 127, 127, .12)); }
+.act .row-head div.now2 { cursor: default; }
+.act .row-head div.now2:hover { background: none; }
 .act .row-head .now2 .ico { width: 1rem; height: 1rem; color: var(--accent); }
 .act .row-head .now2 .lbl { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .act .row-head .now2 .ago { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }

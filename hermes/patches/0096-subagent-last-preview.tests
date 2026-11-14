@@ -1,0 +1,2 @@
+# The snapshot rows and the contract files that list their fields
+tests/tui_gateway/contracts/test_generated.py

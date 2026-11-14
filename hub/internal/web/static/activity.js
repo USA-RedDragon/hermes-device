@@ -302,7 +302,10 @@ window.HubActivity = (ctx) => {
           r.now = r.now || stateWord[want];
         }
       }
-      if (!r.now && !r.tool && s.last_tool) r.tool = { name: s.last_tool, preview: "", at: 0 };
+      // The list names the last tool and what it was given. A page that missed the event has only this.
+      const lastPreview = window.HubToolCard.plain(s.last_preview || "");
+      if (!r.now && !r.tool && s.last_tool) r.tool = { name: s.last_tool, preview: lastPreview, at: 0 };
+      else if (r.tool && !r.tool.preview && lastPreview && r.tool.name === s.last_tool) r.tool.preview = lastPreview;
     }
     // One answer without a subagent proves nothing. After two, verify() asks
     // Hermes whether it still runs before the row says it ended.
@@ -609,8 +612,16 @@ window.HubActivity = (ctx) => {
     if (!(r.kind === "sub" && r.tool && live.has(r.state) && r.state !== "wait")) return [el("div", "now", r.now || "")];
     const m = S.minis.get(r.id);
     const line = window.HubToolCard.statusLine(r.tool.name, r.tool.preview, m ? m.view.memory() : null);
-    const raw = (r.tool.name + "  " + r.tool.preview).trim();
+    const raw = r.tool.preview; // what the tool was given (the command), never its name
     const open = S.raw.has(r.id);
+    // With only the tool's name there is no raw text worth showing: no box to open.
+    if (!r.tool.preview) {
+      const d = el("div", "now2");
+      d.append(window.HubIcons.icon(line.icon), el("span", "lbl", line.text));
+      const w = r.tool.at ? ago((Date.now() - r.tool.at) / 1000) : "";
+      if (w) d.append(el("span", "ago", w));
+      return [d];
+    }
     const b = el("button", "now2");
     b.type = "button";
     b.setAttribute("aria-expanded", String(open));

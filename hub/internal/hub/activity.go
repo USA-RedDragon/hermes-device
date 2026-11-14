@@ -84,17 +84,19 @@ type ActivityState struct {
 // Subagent is one running subagent, from subagent.list. Finished
 // subagents are known only from their subagent.complete events.
 type Subagent struct {
-	ID             string  `json:"id"`
-	ParentID       string  `json:"parent_id,omitempty"`
-	Depth          int     `json:"depth"`
-	Goal           string  `json:"goal"`
-	Model          string  `json:"model,omitempty"`
-	StartedAt      float64 `json:"started_at,omitempty"`
-	Status         string  `json:"status"`
-	ToolCount      int     `json:"tool_count"`
-	LastTool       string  `json:"last_tool,omitempty"`
-	AcceptingSteer bool    `json:"accepting_steer"`
-	ChildSessionID string  `json:"child_session_id,omitempty"`
+	ID        string  `json:"id"`
+	ParentID  string  `json:"parent_id,omitempty"`
+	Depth     int     `json:"depth"`
+	Goal      string  `json:"goal"`
+	Model     string  `json:"model,omitempty"`
+	StartedAt float64 `json:"started_at,omitempty"`
+	Status    string  `json:"status"`
+	ToolCount int     `json:"tool_count"`
+	LastTool  string  `json:"last_tool,omitempty"`
+	// LastPreview is what that tool was given, such as a terminal's command.
+	LastPreview    string `json:"last_preview,omitempty"`
+	AcceptingSteer bool   `json:"accepting_steer"`
+	ChildSessionID string `json:"child_session_id,omitempty"`
 }
 
 // Process is one background command of a session, running or ended.
