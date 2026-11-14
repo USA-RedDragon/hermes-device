@@ -1,5 +1,8 @@
 """Mirror every skill_manage change into a git repository on a device, so skills have history.
 
+Project skills (``scope: project``) go to ``projects/<slug>/<skill>`` in the same repository, ``<slug>`` being the
+project-memory slug of the project, so every skill an agent writes is kept in one place.
+
 After a successful ``skill_manage`` call (create, patch, write_file, remove_file, delete; single or
 batch) the changed skill is copied into the repository and committed there, by a script that runs on
 the device through the same exec leg as every other device command. The device's own git identity
@@ -36,6 +39,8 @@ RETRY_SECONDS = 30.0
 RUN_TIMEOUT_S = 60.0
 ORIGIN = "made by agents in Hermes"
 _NAME = re.compile(r"[a-z0-9][a-z0-9._-]*")
+_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9.~-]{0,159}")
+PROJECTS_DIR = "projects"
 
 _lock = threading.RLock()
 _worker: Optional[threading.Thread] = None
@@ -71,7 +76,11 @@ def _load() -> list[dict[str, Any]]:
         return []
     entries = data.get("entries") if isinstance(data, dict) else None
     return [e for e in entries or [] if isinstance(e, dict) and e.get("action") in ACTIONS
-            and _NAME.fullmatch(str(e.get("name") or ""))]
+            and _NAME.fullmatch(str(e.get("name") or "")) and _project_ok(e.get("project"))]
+
+
+def _project_ok(project: Any) -> bool:
+    return project is None or (isinstance(project, str) and bool(_SLUG.fullmatch(project)) and ".." not in project)
 
 
 def _save(entries: list[dict[str, Any]]) -> None:
@@ -87,15 +96,19 @@ def pending() -> list[dict[str, Any]]:
         return _load()
 
 
-def enqueue(action: str, name: str) -> None:
-    """Add one change to the queue and wake the worker. Never raises."""
+def enqueue(action: str, name: str, project: Optional[str] = None) -> None:
+    """Add one change to the queue and wake the worker. ``project`` is the slug of the project a project
+    skill belongs to. Never raises."""
     try:
         name = Path(str(name)).name
-        if action not in ACTIONS or not _NAME.fullmatch(name):
+        if action not in ACTIONS or not _NAME.fullmatch(name) or not _project_ok(project):
             return
         with _lock:
             entries = _load()
-            entries.append({"action": action, "name": name, "at": time.strftime("%Y-%m-%d")})
+            entry = {"action": action, "name": name, "at": time.strftime("%Y-%m-%d")}
+            if project:
+                entry["project"] = project
+            entries.append(entry)
             _save(entries)
         _ensure_worker()
         _wake.set()
@@ -106,20 +119,26 @@ def enqueue(action: str, name: str) -> None:
 def merge(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """One entry per skill, in order of first appearance. A skill created in the batch stays a
     create unless it was deleted again; otherwise the newest action names the commit."""
-    merged: dict[str, dict[str, Any]] = {}
+    merged: dict[tuple, dict[str, Any]] = {}
     for e in entries:
-        old = merged.get(e["name"])
+        key = _key(e)
+        old = merged.get(key)
         if old is None:
-            merged[e["name"]] = dict(e)
+            merged[key] = dict(e)
         elif e["action"] == "delete" or old["action"] != "create":
-            merged[e["name"]] = {**e, "at": old["at"] if old["action"] == "create" else e["at"]}
+            merged[key] = {**e, "at": old["at"] if old["action"] == "create" else e["at"]}
     return list(merged.values())
+
+
+def _key(entry: dict[str, Any]) -> tuple:
+    """A project skill and a global skill of one name are two skills."""
+    return (entry.get("project") or "", entry["name"])
 
 
 # --- hook ---------------------------------------------------------------------------------------
 
-def _changes(args: Any, result: Any) -> list[tuple[str, str]]:
-    """``(action, name)`` for each op of a skill_manage call that landed."""
+def _changes(args: Any, result: Any) -> list[tuple[str, str, Optional[str]]]:
+    """``(action, name, project slug or None)`` for each op of a skill_manage call that landed."""
     if not isinstance(args, dict):
         return []
     try:
@@ -131,10 +150,13 @@ def _changes(args: Any, result: Any) -> list[tuple[str, str]]:
     ops = args.get("operations")
     if not isinstance(ops, list):
         ops = [args]
+    rows = res.get("results") if isinstance(res.get("results"), list) and len(res["results"]) == len(ops) else None
     found = []
-    for op in ops:
+    for i, op in enumerate(ops):
         if isinstance(op, dict) and op.get("action") in ACTIONS and op.get("name"):
-            found.append((op["action"], op["name"]))
+            row = rows[i] if rows and isinstance(rows[i], dict) else res
+            project = row.get("project") if row.get("scope") == "project" else None
+            found.append((op["action"], op["name"], project if _project_ok(project) else None))
     return found
 
 
@@ -144,8 +166,8 @@ def post_tool_call(tool_name: str = "", args: Any = None, result: Any = None, **
     try:
         if config() is None:
             return
-        for action, name in _changes(args, result):
-            enqueue(action, name)
+        for action, name, project in _changes(args, result):
+            enqueue(action, name, project)
     except Exception:
         logger.warning("device: skill mirror hook failed", exc_info=True)
 
@@ -169,10 +191,22 @@ def _skill_roots() -> list[Path]:
     return roots
 
 
-def locate(name: str) -> Optional[tuple[Path, str]]:
-    """``(skill dir, path relative to its skills root)`` of an installed skill, or None."""
+def locate(name: str, project: Optional[str] = None) -> Optional[tuple[Path, str]]:
+    """``(skill dir, path relative to the repository root)`` of an installed skill, or None. A project skill
+    sits under ``projects/<slug>/``."""
     from tools.skill_manager_tool import _find_skill
-    found = _find_skill(name)
+    if project:
+        from agent.skill_utils import project_skills_project, session_project_skills_dir
+        with project_skills_project(project):
+            found, root = _find_skill(name, scope="project"), session_project_skills_dir()
+        if not found or root is None:
+            return None
+        skill_dir = Path(found["path"]).resolve()
+        try:
+            return skill_dir, f"{PROJECTS_DIR}/{project}/" + skill_dir.relative_to(root.resolve()).as_posix()
+        except ValueError:
+            return None
+    found = _find_skill(name, scope="global")
     if not found:
         return None
     skill_dir = Path(found["path"]).resolve()
@@ -199,7 +233,8 @@ def pack(skill_dir: Path) -> bytes:
     return buf.getvalue()
 
 
-# $1 repo, $2 mode (put or delete), $3 path of the skill in the repo (put) or its name (delete),
+# $1 repo, $2 mode (put or delete), $3 path of the skill in the repo (put) or, for a delete, the folder of its
+# project (projects/<slug>/) or empty for a global skill,
 # $4 commit subject, $5 README row to add (put), $6 name. A put replaces the skill's directory
 # with the archive on stdin. Local edits there are committed first, so nothing is lost. Prints the
 # new commit or "nochange".
@@ -209,7 +244,11 @@ repo=$1; mode=$2; rel=$3; msg=$4; row=$5; name=$6
 cd "$repo"
 git rev-parse --git-dir >/dev/null
 if [ "$mode" = delete ]; then
-  rel=$(git ls-files | grep -E "(^|/)$name/SKILL\.md\$" | head -n 1 | sed 's#/SKILL\.md$##' || true)
+  if [ -n "$rel" ]; then
+    rel=$(git ls-files -- "$rel" | grep -E "^$rel(.*/)?$name/SKILL\.md\$" | head -n 1 | sed 's#/SKILL\.md$##' || true)
+  else
+    rel=$(git ls-files | grep -v '^projects/' | grep -E "(^|/)$name/SKILL\.md\$" | head -n 1 | sed 's#/SKILL\.md$##' || true)
+  fi
   [ -n "$rel" ] || { echo nochange; exit 0; }
 fi
 if [ -n "$(git status --porcelain -- "$rel")" ]; then
@@ -254,15 +293,19 @@ def _send(device_id: str, repo: str, mode: str, rel: str, subject: str, row: str
 
 def _row(name: str, rel: str, day: str) -> str:
     category = rel.rsplit("/", 1)[0] if "/" in rel else ""
+    if rel.startswith(f"{PROJECTS_DIR}/"):
+        category = "project: " + rel.split("/")[1]
     return f"| {name} | {category or '(top level)'} | {ORIGIN} ({day}) |"
 
 
 def sync_one(entry: dict[str, Any], device_id: str, repo: str) -> bool:
     """Mirror one skill. True when it is done (committed, or nothing to commit)."""
-    name, action = entry["name"], entry["action"]
-    where = None if action == "delete" else locate(name)
+    name, action, project = entry["name"], entry["action"], entry.get("project")
+    where = None if action == "delete" else (locate(name, project) if project else locate(name))
+    label = f"{name} ({project})" if project else name
     if where is None:  # deleted, or gone since it was queued: the repository follows the pod
-        code, out, err = _send(device_id, repo, "delete", "", f"{name}: delete", "", name, "")
+        code, out, err = _send(device_id, repo, "delete", f"{PROJECTS_DIR}/{project}/" if project else "",
+                               f"{label}: delete", "", name, "")
     else:
         skill_dir, rel = where
         payload = base64.b64encode(pack(skill_dir)).decode("ascii")
@@ -270,7 +313,7 @@ def sync_one(entry: dict[str, Any], device_id: str, repo: str) -> bool:
             logger.warning("device: skill mirror skips %s: %d bytes is over the limit", name, len(payload))
             return True
         row = _row(name, rel, entry.get("at") or time.strftime("%Y-%m-%d")) if action == "create" else ""
-        subject = f"{name}: {action}"
+        subject = f"{label}: {action}"
         code, out, err = _send(device_id, repo, "put", rel, subject, row, name, payload)
     if code == 0 and err == "":
         logger.info("device: skill mirror %s %s: %s", action, name, out.strip() or "done")
@@ -290,9 +333,9 @@ def drain_once() -> bool:
         return not pending()
     with _lock:
         taken = _load()
-    counts: dict[str, int] = {}
+    counts: dict[tuple, int] = {}
     for e in taken:
-        counts[e["name"]] = counts.get(e["name"], 0) + 1
+        counts[_key(e)] = counts.get(_key(e), 0) + 1
     for entry in merge(taken):
         try:
             ok = sync_one(entry, device_id, repo)
@@ -302,9 +345,9 @@ def drain_once() -> bool:
         if not ok:
             continue
         with _lock:  # drop only what was sent: a change queued meanwhile stays for the next round
-            skip, kept = counts[entry["name"]], []
+            skip, kept = counts[_key(entry)], []
             for e in _load():
-                if e["name"] == entry["name"] and skip > 0:
+                if _key(e) == _key(entry) and skip > 0:
                     skip -= 1
                 else:
                     kept.append(e)

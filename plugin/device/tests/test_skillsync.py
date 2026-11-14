@@ -48,9 +48,10 @@ class MirrorBase(Base):
             p.start()
             self.addCleanup(p.stop)
 
-    def locate(self, name):
-        for path in self.pod.rglob("SKILL.md"):
-            if path.parent.name == name:
+    def locate(self, name, project=None):
+        base = self.pod / "projects" / project if project else self.pod
+        for path in base.rglob("SKILL.md"):
+            if path.parent.name == name and (project or "projects" not in path.relative_to(self.pod).parts):
                 return path.parent, path.parent.relative_to(self.pod).as_posix()
         return None
 
@@ -174,6 +175,52 @@ class MirrorTests(MirrorBase):
         self.assertEqual([x["action"] for x in skillsync.merge([e("patch", "a"), e("write_file", "a")])], ["write_file"])
         self.assertEqual([x["action"] for x in skillsync.merge([e("create", "a"), e("delete", "a")])], ["delete"])
         self.assertEqual([x["name"] for x in skillsync.merge([e("patch", "b"), e("patch", "a"), e("patch", "b")])], ["b", "a"])
+
+
+class ProjectSkillTests(MirrorBase):
+    """The pod keeps a project skill at projects/<slug>/<skill>, which is also its path in the repository."""
+
+    def hook_project(self, action, name, slug, **extra):
+        args = {"operations": [{"action": action, "name": name, "scope": "project", **extra}]}
+        result = json.dumps({"success": True, "results": [{"name": name, "action": action, "scope": "project",
+                                                           "project": slug}]})
+        skillsync.post_tool_call(tool_name="skill_manage", args=args, result=result)
+
+    def test_a_project_skill_is_committed_under_projects_slug(self):
+        self.skill("projects/github.com-alice-demo/layout")
+        self.hook_project("create", "layout", "github.com-alice-demo")
+        skillsync.drain_once()
+        self.assertTrue((self.repo / "projects/github.com-alice-demo/layout/SKILL.md").is_file())
+        self.assertEqual(self.subjects()[0], "layout (github.com-alice-demo): create")
+        self.assertIn("| layout | project: github.com-alice-demo |", (self.repo / "README.md").read_text())
+
+    def test_project_and_global_skills_of_one_name_are_two_entries(self):
+        self.skill("projects/p1/same", "project body")
+        self.skill("devops/same", "global body")
+        self.hook_project("create", "same", "p1")
+        self.hook("create", "same")
+        self.assertEqual(len(skillsync.merge(skillsync.pending())), 2)
+        skillsync.drain_once()
+        self.assertIn("project body", (self.repo / "projects/p1/same/SKILL.md").read_text())
+        self.assertIn("global body", (self.repo / "devops/same/SKILL.md").read_text())
+
+    def test_deleting_a_project_skill_leaves_the_global_one(self):
+        self.skill("projects/p1/same", "project body")
+        self.skill("devops/same", "global body")
+        self.hook_project("create", "same", "p1")
+        self.hook("create", "same")
+        skillsync.drain_once()
+        import shutil
+        shutil.rmtree(self.pod / "projects/p1/same")
+        self.hook_project("delete", "same", "p1")
+        skillsync.drain_once()
+        self.assertFalse((self.repo / "projects/p1/same").exists())
+        self.assertTrue((self.repo / "devops/same/SKILL.md").is_file())
+
+    def test_a_hostile_project_slug_is_not_queued(self):
+        for slug in ("../x", "a/b", "x y", ""):
+            skillsync.enqueue("create", "s", slug) if slug else None
+        self.assertEqual(skillsync.pending(), [])
 
 
 class QueueTests(MirrorBase):
