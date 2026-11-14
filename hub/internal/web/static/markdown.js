@@ -226,27 +226,61 @@ window.hubMarkdown = (() => {
 
   const indentOf = (l) => l.length - l.trimStart().length;
 
+  let seen = null;
+  function lazy() {
+    if (seen === null) {
+      seen = typeof IntersectionObserver === "function"
+        ? new IntersectionObserver((list) => {
+          for (const e of list) {
+            if (!e.isIntersecting) continue;
+            seen.unobserve(e.target);
+            if (e.target.hubPaint) { const f = e.target.hubPaint; e.target.hubPaint = null; f(); }
+          }
+        }, { rootMargin: "800px 0px" })
+        : false;
+    }
+    return seen || null;
+  }
+
+  // One listener serves every code block's Copy button.
+  if (typeof document !== "undefined" && document.addEventListener) {
+    document.addEventListener("click", (e) => {
+      const b = e.target && e.target.closest && e.target.closest("button.copy");
+      if (b && b.hubCopy !== undefined) copy(b.hubCopy, b);
+    });
+  }
+
   function codeBlock(lang, text) {
     const box = el("div", "codeblock");
     const head = el("div", "codehead");
     head.append(el("span", "lang", lang || "code"));
     const btn = el("button", "copy", "Copy");
     btn.type = "button";
-    btn.onclick = () => copy(text, btn);
+    btn.hubCopy = text;
     head.append(btn);
     const pre = el("pre");
     const code = el("code");
+    code.textContent = text;
     const hl = window.hljs;
     const name = lang && hl && hl.getLanguage(lang) ? lang : "";
     if (name && text.length <= MAX_HIGHLIGHT) {
-      try {
-        code.innerHTML = hl.highlight(text, { language: name, ignoreIllegals: true }).value;
-        code.className = "hljs language-" + name;
-      } catch (_) {
-        code.textContent = text;
+      const paint = () => {
+        try {
+          code.innerHTML = hl.highlight(text, { language: name, ignoreIllegals: true }).value;
+          code.className = "hljs language-" + name;
+        } catch (_) {
+          code.textContent = text;
+        }
+      };
+      // Highlight when the block comes near the screen, not when it is built:
+      // a long chat has hundreds of blocks and shows a few.
+      const io = lazy();
+      if (io) {
+        code.hubPaint = paint;
+        io.observe(code);
+      } else {
+        paint();
       }
-    } else {
-      code.textContent = text;
     }
     pre.append(code);
     box.append(head, pre);

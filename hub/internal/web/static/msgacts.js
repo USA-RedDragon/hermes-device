@@ -40,18 +40,14 @@ window.HubMsgActions = (ctx) => {
         acts.owner = b;
         acts.dataset.state = "-";
         b.after(acts);
-        b.addEventListener("click", (e) => {
-          if (!coarse() || e.target.closest("a, button, details, summary, pre, img")) return;
-          for (const x of log.querySelectorAll(".acts.show")) if (x !== acts) x.classList.remove("show");
-          acts.classList.toggle("show");
-        });
+        b.acts = acts;
       }
       if (acts.dataset.state === state) continue;
       acts.dataset.state = state;
       acts.replaceChildren();
       const add = (name, label, fn) => {
         const x = I.button(name, label, "");
-        x.onclick = (e) => { e.stopPropagation(); fn(x); };
+        x.hubAct = fn;
         acts.append(x);
       };
       add("copy", "Copy", () => copy(textOf(b)));
@@ -62,6 +58,23 @@ window.HubMsgActions = (ctx) => {
     const shown = new Set(all);
     for (const a of log.querySelectorAll(":scope > .acts, :scope > .older > .part > .acts")) if (!a.owner || !a.owner.isConnected || !shown.has(a.owner)) { if (a.owner !== editing) a.remove(); }
   }
+
+  // One listener on the log serves every message: a tap on a bubble shows
+  // its actions (on a touch screen), a tap on an action runs it.
+  log.addEventListener("click", (e) => {
+    const t = e.target;
+    if (!t || !t.closest) return;
+    const act = t.closest(".acts > button");
+    if (act && act.hubAct) {
+      e.stopPropagation();
+      act.hubAct(act);
+      return;
+    }
+    const b = t.closest(".msg");
+    if (!b || !b.acts || !coarse() || t.closest("a, button, details, summary, pre, img")) return;
+    for (const x of log.querySelectorAll(".acts.show")) if (x !== b.acts) x.classList.remove("show");
+    b.acts.classList.toggle("show");
+  });
 
   let queued = false;
   const soon = () => {
