@@ -77,7 +77,7 @@ type Browser interface {
 var BrowserOps = map[string]bool{ //nolint:gochecknoglobals // fixed table
 	"tabs_list": true, "tab_open": true, "tab_close": true, "navigate": true, "back": true,
 	"read_text": true, "snapshot": true, "inspect": true, "click": true, "type": true, "screenshot": true,
-	"press": true, "hover": true, "scroll": true, "wait": true, "eval": true, "login": true, "check": true,
+	"press": true, "select": true, "hover": true, "scroll": true, "wait": true, "eval": true, "login": true, "check": true,
 }
 
 // Options configure a Client. Zero durations take the protocol defaults.

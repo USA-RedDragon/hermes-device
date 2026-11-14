@@ -1535,6 +1535,29 @@ function pageAct(action, ref, text, submit, guard) {
     }
     return { typed: ref, submitted: Boolean(submit) };
   }
+  if (action === "select") {
+    if (el.tagName !== "SELECT") {
+      throw new Error("ref " + ref + " is not a select box; use browser_click on a custom menu, then click its option");
+    }
+    const want = String(text);
+    const options = [...el.options];
+    const norm = (t) => String(t).replace(/\s+/g, " ").trim().toLowerCase();
+    const opt = options.find((o) => o.value === want) || options.find((o) => o.label === want || norm(o.text) === norm(want)) ||
+      options.find((o) => norm(o.text).startsWith(norm(want)) && norm(want) !== "");
+    if (!opt || opt.disabled) {
+      const names = options.filter((o) => !o.disabled).slice(0, 20).map((o) => JSON.stringify(norm(o.text).slice(0, 60)));
+      throw new Error("no option " + JSON.stringify(want.slice(0, 60)) + " in " + ref + "; options: " + names.join(", "));
+    }
+    el.focus();
+    if (el.multiple) {
+      opt.selected = true;
+    } else {
+      el.value = opt.value;
+    }
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { selected: ref, option: opt.text.replace(/\s+/g, " ").trim().slice(0, 80) };
+  }
   throw new Error("unknown action " + action);
 }
 
@@ -1831,6 +1854,14 @@ const OPS = {
   async type({ tab_id, ref, text, submit, guard }) {
     const { frameId, local } = await prepare(tab_id, String(ref), submit ? "submit" : "type", guard);
     const res = await inFrame(tab_id, frameId, pageAct, ["type", local, String(text), Boolean(submit), pageGuard(guard)], true);
+    if (res.refused) {
+      throw new Refused(res.refused);
+    }
+    return Object.assign(res, tabInfo(await settle(tab_id)));
+  },
+  async select({ tab_id, ref, value, guard }) {
+    const { frameId, local } = await prepare(tab_id, String(ref), "type", guard);
+    const res = await inFrame(tab_id, frameId, pageAct, ["select", local, String(value), false, pageGuard(guard)], true);
     if (res.refused) {
       throw new Refused(res.refused);
     }
