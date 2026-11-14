@@ -69,35 +69,23 @@ func (ew *eventWriter) write(w io.Writer, e hub.Event) bool {
 	if e.Kind != hub.KindSnapshot {
 		return ew.emit(w, e, "")
 	}
-	var fp string
-	if !e.Provisional {
-		fp = snapFP(e.Data)
-		if ew.fp != "" && fp == ew.fp {
-			// The page shows this transcript already, as it was when it
-			// reconnected to a replica that did not know its event id.
-			ew.fp, ew.split = "", false
-			return ew.emit(w, hub.Event{Seq: e.Seq, Kind: kindSnapshotSame, Data: json.RawMessage("{}")}, fp)
-		}
+	p := ew.s.snaps.prepared(e)
+	if !e.Provisional && ew.fp != "" && p.fp == ew.fp {
+		// The page shows this transcript already, as it was when it
+		// reconnected to a replica that did not know its event id.
+		ew.fp, ew.split = "", false
+		return ew.emit(w, hub.Event{Seq: e.Seq, Kind: kindSnapshotSame, Data: json.RawMessage("{}")}, p.fp)
 	}
 	// The page asks for the text of a cut tool output when a card opens;
 	// the fingerprint above is of the whole rows.
-	if !ew.split && !e.Provisional {
-		e.Data = trimToolRows(e.Data)
-		return ew.emit(w, e, fp)
-	}
-	head, older, ok := splitSnapshot(e.Data)
-	if !ok {
-		e.Data = trimToolRows(e.Data)
-		if e.Provisional {
-			return ew.emit(w, hub.Event{Kind: e.Kind, Data: e.Data, At: e.At, Provisional: true}, "")
+	if (!ew.split && !e.Provisional) || p.head == nil {
+		if !e.Provisional {
+			ew.split = false
 		}
-		ew.split = false
-		return ew.emit(w, e, fp)
+		return ew.frame(w, p.whole(ew.s, e))
 	}
-	// Only the head is cut before the first bytes go out; the older rows
-	// are cut after the flush, so the first rows do not wait for them.
-	head = trimToolRows(head)
-	if !ew.emit(w, hub.Event{Kind: e.Kind, Data: head, At: e.At, Provisional: e.Provisional}, fp) {
+	// The newest rows go first; the older rows follow after the flush.
+	if !ew.frame(w, p.headFrame(ew.s, e)) {
 		return false
 	}
 	if e.Provisional {
@@ -108,11 +96,19 @@ func (ew *eventWriter) write(w io.Writer, e hub.Event) bool {
 	if f, ok := w.(interface{ Flush() }); ok {
 		f.Flush()
 	}
-	data, err := json.Marshal(sseEvent{Kind: kindSnapshotOlder, Data: trimToolRows(older)})
-	if err != nil {
+	return ew.frame(w, p.olderFrame(ew.s, e))
+}
+
+// frame writes one event's bytes, after before.
+func (ew *eventWriter) frame(w io.Writer, b []byte) bool {
+	if f := ew.before; f != nil {
+		ew.before = nil
+		f()
+	}
+	if b == nil {
 		return true
 	}
-	_, err = fmt.Fprintf(w, "id: %s.%d\ndata: %s\n\n", ew.s.instance, e.Seq, data)
+	_, err := w.Write(b)
 	return err == nil
 }
 

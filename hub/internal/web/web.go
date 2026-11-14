@@ -129,8 +129,12 @@ type Options struct {
 
 // Server is the web front end.
 type Server struct {
-	last         lastAnswers
-	listFPs      listFingerprints
+	last    lastAnswers
+	listFPs listFingerprints
+	// wrote is when each user last changed something (time.Time by user).
+	wrote sync.Map
+	// snaps keeps what the event stream made of recent snapshots.
+	snaps        snapCache
 	svc          hub.Service
 	links        hub.Links
 	tokens       hub.TokenStore

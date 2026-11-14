@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"slices"
@@ -25,9 +26,11 @@ type live struct {
 	opMu   sync.Mutex
 	client *gateway.Client
 
-	mu      sync.Mutex
-	stale   bool
-	retired bool
+	mu sync.Mutex
+	// withPrompts is the last snapshot with prompts made (ls.mu).
+	withPrompts promptedSnapshot
+	stale       bool
+	retired     bool
 	// gone is closed when a retired session has left the map, after the
 	// gateway was told it is detached; nil when it was not retired by an idle detach.
 	gone       chan struct{}
@@ -712,10 +715,6 @@ func (ls *live) snapshotWithPrompts() hub.Event {
 	if ev.Kind != hub.KindSnapshot {
 		return ev
 	}
-	var m map[string]json.RawMessage
-	if json.Unmarshal(ev.Data, &m) != nil || m == nil {
-		return ev
-	}
 	ids := make([]string, 0, len(ls.prompts))
 	for id := range ls.prompts {
 		ids = append(ids, id)
@@ -729,13 +728,39 @@ func (ls *live) snapshotWithPrompts() hub.Event {
 	if err != nil {
 		return ev
 	}
+	// A big chat's snapshot is megabytes: it is taken apart and put
+	// together again once per snapshot and prompt list, not per viewer, so
+	// opening a chat costs the hub no JSON work. The same bytes also let
+	// the event stream keep what it made of them (see web).
+	if c := ls.withPrompts; c.ok && sameBytes(c.src, ev.Data) && bytes.Equal(c.prompts, raw) {
+		ev.Data = c.out
+		return ev
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(ev.Data, &m) != nil || m == nil {
+		return ev
+	}
 	m["prompts"] = raw
 	data, err := json.Marshal(m)
 	if err != nil {
 		return ev
 	}
+	ls.withPrompts = promptedSnapshot{ok: true, src: ev.Data, prompts: raw, out: data}
 	ev.Data = data
 	return ev
+}
+
+// promptedSnapshot is the last snapshotWithPrompts made: from src and the
+// prompts list, out.
+type promptedSnapshot struct {
+	ok           bool
+	src, prompts []byte
+	out          json.RawMessage
+}
+
+// sameBytes is whether a and b are the same slice of memory.
+func sameBytes(a, b []byte) bool {
+	return len(a) == len(b) && (len(a) == 0 || &a[0] == &b[0])
 }
 
 // turnStartSeq is the seq of the last turn end in the buffer, so the
