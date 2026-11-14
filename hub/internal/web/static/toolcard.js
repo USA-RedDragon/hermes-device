@@ -173,7 +173,7 @@ window.HubToolCard = (() => {
       case "log": {
         out.icon = "list";
         out.title = verb(c, "Read the output of", "Reading the output of") + " background command " + cmd;
-        const n = typeof res.total_lines === "number" ? res.total_lines : lines(str(res.output));
+        const n = typeof res.total_lines === "number" ? res.total_lines : c.partial && c.partial.lines ? c.partial.lines : lines(str(res.output));
         out.status = plural(n, "line");
         break;
       }
@@ -291,7 +291,7 @@ window.HubToolCard = (() => {
     const out = { icon: "file", blocks: [] };
     const path = str(a.path) || str(a.file_path);
     out.title = verb(c, "Read", "Reading") + " " + (base(path) || "a file");
-    const n = typeof res.content === "string" ? lines(res.content) : lines(c.out);
+    const n = c.partial && c.partial.lines ? c.partial.lines : typeof res.content === "string" ? lines(res.content) : lines(c.out);
     out.status = plural(n, "line");
     out.blocks.push({ label: "Call", text: JSON.stringify(a, null, 2), pre: true });
     if (c.out) out.blocks.push({ label: "Output", text: typeof res.content === "string" ? res.content : c.out, pre: true });

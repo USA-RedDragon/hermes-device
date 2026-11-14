@@ -1760,7 +1760,7 @@
         const card = this.toolCard(m.tool_call_id && !call.unwrapped ? m.tool_call_id : "row" + m.row_id, m.name || m.tool_name || call.name, m.args || call.args);
         if (call.batch) this.tagBatch(card, call.batch);
         this.at = at;
-        const cut = m.output_size ? { row: Number.isInteger(m.row_id) ? m.row_id : 0, call: m.tool_call_id || "", size: m.output_size } : null;
+        const cut = m.output_size ? { row: Number.isInteger(m.row_id) ? m.row_id : 0, call: m.tool_call_id || "", size: m.output_size, lines: m.output_lines || 0 } : null;
         this.toolDone(card, { result: m.content != null ? m.content : text, cut });
         return;
       }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/USA-RedDragon/talaria/hub/internal/hub"
@@ -16,9 +17,9 @@ import (
 // the tool text was most of a big chat's bytes.
 const (
 	// outputKeep is the size from which a row's output is cut.
-	outputKeep = 4096
+	outputKeep = 1024
 	// cutString is the longest string a cut output keeps, in bytes.
-	cutString = 600
+	cutString = 400
 	// A row that carries an image as a data: URL is never cut: its card
 	// shows the image.
 	imageMark = "data:image/"
@@ -96,7 +97,7 @@ func trimRow(raw json.RawMessage) json.RawMessage {
 	if keepWhole[name] || keepWhole[tool] {
 		return raw
 	}
-	size := 0
+	size, lines := 0, 0
 	for _, k := range []string{"content", "text"} {
 		var s string
 		if json.Unmarshal(m[k], &s) != nil || len(s) < outputKeep {
@@ -108,11 +109,13 @@ func trimRow(raw json.RawMessage) json.RawMessage {
 		}
 		m[k] = b
 		size = max(size, len(s))
+		lines = max(lines, strings.Count(s, "\n")+1)
 	}
 	if size == 0 {
 		return raw
 	}
 	m["output_size"] = json.RawMessage(strconv.Itoa(size))
+	m["output_lines"] = json.RawMessage(strconv.Itoa(lines))
 	out, err := json.Marshal(m)
 	if err != nil {
 		return raw

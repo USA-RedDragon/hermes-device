@@ -74,6 +74,9 @@ func TestSnapshotCutsToolOutputs(t *testing.T) {
 	if n, _ := cut["output_size"].(float64); int(n) != len(whole) {
 		t.Fatalf("output_size = %v, want %d", cut["output_size"], len(whole))
 	}
+	if n, _ := cut["output_lines"].(float64); int(n) != strings.Count(whole, "\n")+1 {
+		t.Fatalf("output_lines = %v", cut["output_lines"])
+	}
 	if byCall["t2"][kText] != small || byCall["t2"]["output_size"] != nil {
 		t.Fatalf("a short output changed: %v", byCall["t2"])
 	}
