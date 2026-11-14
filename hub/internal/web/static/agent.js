@@ -9,8 +9,29 @@
 window.HubAgent = (() => {
   const modes = [["manual", "Ask every time"], ["smart", "Ask only when a command looks risky"], ["off", "Never ask"]];
   const shortModes = { manual: "Ask every time", smart: "Ask when risky", off: "Never ask" };
-  const thresholds = [0.4, 0.5, 0.7, 0.85];
+  // The summary point is a slider: 30% to 90% in steps of 5%.
+  const sumMin = 30, sumMax = 90, sumStep = 5, sumDefault = 50;
+  // Models with a window under this many tokens summarize at 75% at the earliest.
+  const smallWindow = 512000, smallFloor = 75;
   const lockText = "Set in the deployment config.";
+
+  // snapPercent is a saved fraction (0.5) as the slider's percent, moved to
+  // the nearest step inside the range. It is for display only; the saved
+  // value stays until the user moves the slider.
+  function snapPercent(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return sumDefault;
+    const p = Math.round(n * 100 / sumStep) * sumStep;
+    return Math.min(sumMax, Math.max(sumMin, p));
+  }
+
+  // floorLine is the one line under the slider when the model will summarize
+  // later than the chosen percent, or "" (also when the window is unknown).
+  function floorLine(info, pct) {
+    const n = info && Number(info.effective_context_length);
+    if (!n || n >= smallWindow || pct >= smallFloor || !info.model) return "";
+    return "With " + info.model + ", summarizing starts at " + smallFloor + "% at the earliest.";
+  }
 
   function modeLabel(m, short) {
     return (short ? shortModes : Object.fromEntries(modes))[m] || "";
@@ -325,11 +346,56 @@ window.HubAgent = (() => {
       const sw = switchRow("Summarize older messages when a chat gets long", "Keeps long chats working. The agent writes a short summary and drops the details it summarized.",
         st.compression_enabled, { disabled: locked("compression.enabled") });
       const th = el("div", "field");
-      th.append(el("span", "", "Start when the chat fills this much of what the model can read at once"));
-      th.append(seg(thresholds.map((t) => [t, Math.round(t * 100) + "%"]), st.compression_threshold, "When to summarize", async (v) => {
+      const thLab = el("span", "title", "Summarize older messages when the chat is this full");
+      thLab.id = "sum-label";
+      const srow = el("div", "slider-row");
+      const rg = el("input", "range");
+      rg.type = "range";
+      rg.id = "sum-range";
+      rg.min = String(sumMin); rg.max = String(sumMax); rg.step = String(sumStep);
+      rg.value = String(snapPercent(st.compression_threshold));
+      rg.disabled = locked("compression.threshold");
+      rg.setAttribute("aria-labelledby", "sum-label");
+      const out = el("output", "val", "");
+      out.id = "sum-value";
+      out.setAttribute("for", "sum-range");
+      srow.append(rg, out);
+      const sends = el("div", "ends");
+      sends.append(el("span", "", sumMin + "%"), el("span", "def", "Default " + sumDefault + "%"), el("span", "", sumMax + "%"));
+      const sHint = el("small", "", "Lower keeps chats faster and cheaper; higher keeps more detail before summarizing.");
+      const sFloor = el("small", "floor", "");
+      sFloor.id = "sum-floor";
+      sFloor.hidden = true;
+      let winInfo = null;
+      let savedPct = Number(rg.value);
+      const paint = () => {
+        const v = Number(rg.value);
+        out.textContent = v + "%";
+        rg.style.setProperty("--fill", ((v - sumMin) / (sumMax - sumMin) * 100) + "%");
+        rg.setAttribute("aria-valuetext", v + " percent");
+        const line = floorLine(winInfo, v);
+        sFloor.textContent = line;
+        sFloor.hidden = !line;
+      };
+      paint();
+      // The value shows while dragging; it is saved once, on release.
+      rg.addEventListener("input", paint);
+      rg.addEventListener("change", async () => {
+        const v = Number(rg.value);
         note(lc);
-        try { await api("PUT", base() + "/settings", { compression_threshold: v }); note(lc, say("good", "Saved. New chats use it.")); } catch (e) { note(lc, say("bad", "Not saved.", [e.message])); }
-      }, locked("compression.threshold")));
+        try {
+          await api("PUT", base() + "/settings", { compression_threshold: v / 100 });
+          savedPct = v;
+          note(lc, say("good", "Saved. New chats use it."));
+        } catch (e) {
+          rg.value = String(savedPct);
+          paint();
+          note(lc, say("bad", "Not saved.", [e.message]));
+        }
+      });
+      th.append(thLab, srow, sends, sHint, sFloor);
+      // The model's window is a hint only: no line when it cannot be read.
+      api("GET", "/api/models/" + enc(backend()) + "/info").then((i) => { winInfo = i; paint(); }, () => {});
       th.hidden = !st.compression_enabled;
       sw.t.onchange = async () => {
         note(lc);
@@ -1012,5 +1078,5 @@ window.HubAgent = (() => {
     return { agentPane, toolsPane, diagnosticsPane, backupPane, telegramAdmin, updateBanner, quick };
   }
 
-  return { create, doctorSummary, reportText, optionalText, logTone, modeLabel, bannerText, updateSteps, liveLine, zones, splitSkills };
+  return { create, doctorSummary, reportText, optionalText, logTone, modeLabel, bannerText, updateSteps, liveLine, zones, splitSkills, snapPercent, floorLine };
 })();

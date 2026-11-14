@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -206,8 +207,13 @@ const (
 // ApprovalModes are the agent's approvals.mode values.
 func ApprovalModes() []string { return []string{"manual", "smart", "off"} }
 
-// Thresholds are the long-chat summary points the hub offers.
-func Thresholds() []float64 { return []float64{0.4, 0.5, 0.7, 0.85} }
+// ValidThreshold reports whether v is a long-chat summary point the hub
+// accepts: 30% to 90% in steps of 5%.
+func ValidThreshold(v float64) bool {
+	pct := v * 100
+	n := math.Round(pct)
+	return math.Abs(pct-n) < 1e-6 && n >= 30 && n <= 90 && int(n)%5 == 0
+}
 
 // Settings is Settings, Agent.
 type Settings struct {
@@ -333,8 +339,8 @@ func (s *Service) SaveSettings(ctx context.Context, user, backendID string, u Se
 		}
 	}
 	if u.CompressionThreshold != nil {
-		if !slices.Contains(Thresholds(), *u.CompressionThreshold) {
-			return bad("Unknown point for long chats.")
+		if !ValidThreshold(*u.CompressionThreshold) {
+			return bad("Pick a point from 30% to 90%, in steps of 5%.")
 		}
 		if err := set(KeyThreshold, "compression", "threshold", *u.CompressionThreshold); err != nil {
 			return err

@@ -72,3 +72,21 @@ console.log("ok");
 
 // Ids in a line to look at show as words.
 eq(A.doctorSummary(["⚠ image_gen provider failed"]).look, ["image gen provider failed"]);
+
+// The summary slider: a saved value outside the steps is shown at the nearest step (display only).
+assert.strictEqual(A.snapPercent(0.5), 50);
+assert.strictEqual(A.snapPercent(0.85), 85);
+assert.strictEqual(A.snapPercent(0.4), 40);
+assert.strictEqual(A.snapPercent(0.33), 35);
+assert.strictEqual(A.snapPercent(0.1), 30);
+assert.strictEqual(A.snapPercent(0.99), 90);
+assert.strictEqual(A.snapPercent(undefined), 50);
+assert.strictEqual(A.snapPercent("x"), 50);
+// A small window summarizes at 75% at the earliest: say so only below that, and only when the window is known.
+assert.strictEqual(A.floorLine({ model: "gpt-x", effective_context_length: 128000 }, 50), "With gpt-x, summarizing starts at 75% at the earliest.");
+assert.strictEqual(A.floorLine({ model: "gpt-x", effective_context_length: 128000 }, 75), "");
+assert.strictEqual(A.floorLine({ model: "gpt-x", effective_context_length: 128000 }, 90), "");
+assert.strictEqual(A.floorLine({ model: "big", effective_context_length: 1000000 }, 30), "");
+assert.strictEqual(A.floorLine({ model: "big", effective_context_length: 512000 }, 30), "");
+assert.strictEqual(A.floorLine({ model: "x", effective_context_length: 0 }, 30), "");
+assert.strictEqual(A.floorLine(null, 30), "");

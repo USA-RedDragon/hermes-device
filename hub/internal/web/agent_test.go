@@ -28,6 +28,7 @@ const (
 	pSettings    = "/settings"
 	pCalendar    = "/connections/home-calendar"
 	keyTZ        = "timezone"
+	keyThreshold = "compression_threshold"
 	keyURL       = "url"
 )
 
@@ -134,7 +135,17 @@ func TestAgentAdminRoutes(t *testing.T) {
 	if !strings.Contains(e.pc.Bodies[len(e.pc.Bodies)-1], `"approvals":{"mode":"manual"}`) || strings.Contains(e.pc.Bodies[len(e.pc.Bodies)-1], "compression") {
 		t.Fatalf("PUT body = %s", e.pc.Bodies[len(e.pc.Bodies)-1])
 	}
-	for _, bad := range []map[string]any{{keyApprovals: "yolo"}, {keyTZ: "Mars/Base"}, {"compression_threshold": 0.33}} {
+	// Any 5% step from 30% to 90% saves; others are refused with a plain message.
+	if code, _, text := call(t, c, http.MethodPut, base+pSettings, m.CSRF, map[string]any{keyThreshold: 0.35}); code != http.StatusOK {
+		t.Fatalf("0.35 = %d %s", code, text)
+	}
+	if cm, _ := e.pc.Config["compression"].(map[string]any); cm["threshold"] != 0.35 {
+		t.Fatalf("compression = %v", e.pc.Config["compression"])
+	}
+	if code, _, text := call(t, c, http.MethodPut, base+pSettings, m.CSRF, map[string]any{keyThreshold: 0.95}); code != http.StatusBadRequest || !strings.Contains(text, "30% to 90%") {
+		t.Fatalf("0.95 = %d %s", code, text)
+	}
+	for _, bad := range []map[string]any{{keyApprovals: "yolo"}, {keyTZ: "Mars/Base"}, {keyThreshold: 0.33}, {keyThreshold: 0.95}} {
 		if code, _, _ := call(t, c, http.MethodPut, base+pSettings, m.CSRF, bad); code != http.StatusBadRequest {
 			t.Fatalf("%v = %d", bad, code)
 		}
