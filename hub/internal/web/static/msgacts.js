@@ -84,7 +84,16 @@ window.HubMsgActions = (ctx) => {
     queued = true;
     requestAnimationFrame(() => { queued = false; decorate(); });
   };
-  new MutationObserver(soon).observe(log, { childList: true });
+  // Only a change of the messages themselves needs a pass: a tool card, a
+  // status line or the actions this very code adds do not, and a streamed
+  // reply adds none of its own after the first.
+  const mine = (n) => n.nodeType !== 1 || n.classList.contains("acts") || !(n.classList.contains("msg") || n.classList.contains("older") || n.classList.contains("part") || n.classList.contains("queued") || n.classList.contains("lost"));
+  new MutationObserver((list) => {
+    for (const m of list) {
+      for (const n of m.addedNodes) if (!mine(n)) { soon(); return; }
+      for (const n of m.removedNodes) if (!mine(n) || (n.nodeType === 1 && n.classList.contains("acts"))) { soon(); return; }
+    }
+  }).observe(log, { childList: true });
 
   async function copy(text) {
     try {
