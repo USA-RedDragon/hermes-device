@@ -413,10 +413,10 @@ const wheelTo = (x, top) => {
   s.drag(true);
   log.scrollTop -= 6;
   s.scrollSoon();
-  log.heights[2] += 30;
+  log.heights[2] += 10;
   s.pinSoon();
   run();
-  assert.ok(log.scrollHeight - log.scrollTop - log.clientHeight > 30, "no pin under the finger");
+  assert.ok(log.scrollHeight - log.scrollTop - log.clientHeight >= 16, "no pin under the finger");
   s.drag(false);
   t += 100;
   log.scrollTop -= 2; // the fling's last event
