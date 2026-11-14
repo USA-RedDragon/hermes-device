@@ -1063,7 +1063,7 @@ window.HubToolCard = (() => {
       if (!t || !t.closest) return;
       const copy = t.closest(".tool-copy");
       if (copy && copy.hubText !== undefined) {
-        navigator.clipboard.writeText(copy.hubText).then(() => copy.hubToast("Copied"), () => copy.hubToast("The browser did not allow copying"));
+        navigator.clipboard.writeText(copy.hubText).then(() => copy.hubToast("Copied"), () => copy.hubToast("Could not copy: the browser did not allow it", { bad: true }));
         return;
       }
       const head = t.closest(".notice-head");
