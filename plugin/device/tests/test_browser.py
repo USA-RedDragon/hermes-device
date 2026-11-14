@@ -2105,6 +2105,40 @@ class BatchTool(BrowserBase):
         self.assertIn("page", out)
         self.assertTrue(self.last("snapshot")["args"]["interactive_only"])
 
+    def test_every_element_tool_names_its_target(self):
+        self.snapshot()
+        out = self.run_tool("browser_type", tab_id=7, ref="e1", text="hunter2 secret")
+        self.assertEqual(out["target"], {"role": "textbox", "name": "Email"})
+        self.assertNotIn("hunter2", json.dumps(out["target"]))
+        self.assertEqual(self.run_tool("browser_click", tab_id=7, ref="@e4")["target"], {"role": "button", "name": "Save"})
+        self.assertEqual(self.run_tool("browser_hover", tab_id=7, ref="e3")["target"], {"role": "combobox", "name": "Color"})
+        self.assertEqual(self.run_tool("browser_scroll", tab_id=7, ref="e2")["target"], {"role": "textbox", "name": "Name"})
+        self.assertEqual(self.run_tool("browser_press", tab_id=7, key="Tab", ref="e2")["target"]["name"], "Name")
+        self.assertNotIn("target", self.run_tool("browser_press", tab_id=7, key="Tab"))
+        self.assertNotIn("target", self.run_tool("browser_click", tab_id=7, ref="e99"), "a ref no snapshot gave out")
+
+    def test_target_of_a_failed_action_and_after_a_rerender(self):
+        self.snapshot()
+        self.fake.fail["click"] = ("failed", "the element is hidden")
+        out = self.run_tool("browser_click", tab_id=7, ref="e4")
+        self.assertIn("error", out)
+        self.assertEqual(out["target"]["name"], "Save")
+
+    def test_batch_steps_carry_state_and_target(self):
+        self.snapshot()
+        out = self.run_tool("browser_batch", tab_id=7, snapshot="none", steps=[
+            {"action": "type", "ref": "e1", "text": "hunter2"}, {"action": "select", "name": "Color", "value": "Red"},
+            {"action": "click", "name": "Nope"}, {"action": "press", "key": "Enter"}])
+        d = out["details"]
+        self.assertEqual([x["state"] for x in d], ["done", "done", "failed", "not_run"])
+        self.assertEqual(d[0]["text"], 'Typed into "Email"')
+        self.assertEqual(d[0]["target"], {"role": "textbox", "name": "Email"})
+        self.assertEqual(d[1]["target"], {"role": "combobox", "name": "Color"})
+        self.assertIn("Nope", d[2]["error"])
+        self.assertEqual(d[2]["target"], {"role": "", "name": "Nope"})
+        self.assertEqual(d[3]["text"], "Pressed Enter")
+        self.assertNotIn("hunter2", json.dumps(d))
+
     def test_snapshot_none_and_mode(self):
         self.snapshot()
         self.fake.requests.clear()

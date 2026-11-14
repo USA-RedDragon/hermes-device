@@ -229,6 +229,24 @@ def labels(device_id: str, tab: int) -> dict:
         return {"url": entry["url"], "refs": dict(entry["refs"])} if entry else {"url": "", "refs": {}}
 
 
+def target_dict(role: Any, name: Any) -> Optional[dict]:
+    """The element a step or a single tool acted on, for the hub: ``{"role", "name"}``. It is the
+    label the page gave the element, never anything typed into it."""
+    role = " ".join(str(role or "").split())[:40]
+    name = short(name or "", 80)
+    return {"role": role, "name": name} if role or name else None
+
+
+def ref_target(device_id: str, tab: Optional[int], ref: Any) -> Optional[dict]:
+    """The role and label of ``ref``, from the snapshot that gave it out. None when no snapshot did."""
+    ref = str(ref or "").strip().lstrip("@")
+    if not ref or tab is None:
+        return None
+    held = agent_labels(device_id, tab) or labels(device_id, tab)
+    label = held["refs"].get(ref)
+    return target_dict(label[0], label[1]) if label else None
+
+
 def page_key(url: str) -> str:
     """The part of a URL that says which page it is: scheme, host and path."""
     parts = urlsplit(url or "")
@@ -444,6 +462,9 @@ class Runner:
         self.opened_tab = False
         self.refreshes = 0
         self.last: dict = {}
+        self.who: Optional[dict] = None       # the element of the step that runs now
+        self.details: list[dict] = []         # one entry per step, for the hub's card
+        self.covered_used = False             # the step needed an approval that the batch asked for
 
     # refs
 
@@ -518,6 +539,8 @@ class Runner:
             if approval.get("action") == "block":
                 raise StepError(approval["message"])
             key = str(approval.get("rule_key") or "")
+            if key in self.covered:
+                self.covered_used = True
             if key not in self.covered and not b.approved(key):
                 raise StepError(f"needs the user's approval, which the batch did not ask for because the page was not "
                                 f"known when it started ({rule_words(key)}). Run this step with its own tool, then "
@@ -528,6 +551,18 @@ class Runner:
             if not b._confirm(grant.get("confirm_text") or "Allow this browser action?"):
                 raise StepError("the user did not allow this action", "declined")
         return grant
+
+    def _who(self, step: dict, ref: str = "") -> Optional[dict]:
+        """Role and label of a step's element: what the agent's snapshot called its ref, else the
+        live outline's entry for the ref, else the name and role the step gave."""
+        label = self.orig.get(self._norm(step["ref"])) if step.get("ref") else None
+        if label:
+            return target_dict(label[0], label[1])
+        if ref and self.entries:
+            for role, name, entry_ref in self.entries:
+                if entry_ref == ref:
+                    return target_dict(role, name)
+        return target_dict(step.get("role"), step.get("name"))
 
     def element_step(self, step: dict) -> dict:
         action = step["action"]
@@ -548,6 +583,7 @@ class Runner:
             self.refresh()
             ref = self.locate(step)
         b = self.b
+        self.who = self._who(step, ref)
         if action in ("hover", "scroll"):
             return self.plain(step, ref)
         grant = self.allow(sub, sub_args(step, self.tab, ref), info)
@@ -659,27 +695,50 @@ class Runner:
                 self.refresh()  # plan numbered the page again: map the agent's refs onto the new numbers
             except (StepError, self.b._core().BrowserError):
                 pass
+        self.details = []
         for i, step in enumerate(self.steps, 1):
             label = self.orig.get(self._norm(step["ref"])) if step.get("ref") else None
+            self.who, self.covered_used = None, False
+            detail: dict = {"step": i, "action": step["action"], "state": "done"}
+
+            def settle(state: str, error: str = "") -> None:
+                detail["state"] = state
+                detail["text"] = detail.get("text") or step_words(step, label, past=True)
+                who = self.who or self._who(step)
+                if who:
+                    detail["target"] = who
+                if error:
+                    detail["error"] = short(error, 300)
+                self.details.append(detail)
+
             if time.monotonic() - started > MAX_BATCH_S:
                 lines.append(f"{i}. Not run: the batch ran out of time ({MAX_BATCH_S} seconds)")
                 failed = failed or {"step": i, "error": "the batch ran out of time", "code": "timeout"}
+                settle("not_run")
                 continue
             if failed and stop_on_error:
                 lines.append(f"{i}. Not run: {step_words(step, label)}")
+                settle("not_run")
                 continue
             try:
                 res = self.run_step(step)
                 self.last = res if res.get("url") else self.last
-                lines.append(f"{i}. {self.outcome(step, res)}")
+                text = self.outcome(step, res)
+                lines.append(f"{i}. {text}")
+                detail["text"] = text
+                if self.covered_used:
+                    detail["approved"] = "once for the batch"
+                settle("done")
             except StepError as exc:
                 lines.append(f"{i}. Failed: {step_words(step, label)}: {exc}")
                 failed = failed or {"step": i, "error": str(exc), "code": exc.code}
+                settle("failed", str(exc))
                 if exc.code == "declined":
                     stop_on_error = True
             except self.b._core().BrowserError as exc:
                 lines.append(f"{i}. Failed: {step_words(step, label)}: {exc}")
                 failed = failed or {"step": i, "error": f"browser: {exc}", "code": exc.code}
+                settle("failed", f"browser: {exc}")
                 if exc.code in ("not_connected", "timeout", "cancelled"):
                     stop_on_error = True
         return lines, failed
@@ -700,7 +759,7 @@ def run(b: Any, args: dict, conn: Any, sid: str) -> str:
     lines, failed = runner.go(stop)
     out: dict = {"tab_id": runner.tab, "ok": failed is None, "steps": lines,
                  "completed": sum(1 for ln in lines if not ln.split(". ", 1)[1].startswith(("Failed", "Not run")))
-                 if lines else 0, "total": len(steps)}
+                 if lines else 0, "total": len(steps), "details": runner.details}
     if runner.opened_tab:
         out["opened_tab"] = True
     if failed:

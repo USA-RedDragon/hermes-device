@@ -173,6 +173,8 @@ class PluginEndToEnd(unittest.TestCase):
         self.tool("browser_navigate", None, tab_id=tab, url=FORM + "/two")
         snap = self.tool("browser_snapshot", tab_id=tab, interactive_only=True)["snapshot"]
         first, last = self.ref(snap, 'textbox "First name"'), self.ref(snap, 'textbox "Last name"')
+        typed = self.tool("browser_type", None, tab_id=tab, ref=first, text="Zed")
+        self.assertEqual(typed["target"], {"role": "textbox", "name": "First name"})
         steps = [{"action": "type", "ref": first, "text": "Ada"},
                  {"action": "type", "ref": last, "text": "Lovelace"},
                  {"action": "select", "name": "Color", "value": "Green"},
@@ -184,6 +186,11 @@ class PluginEndToEnd(unittest.TestCase):
         self.assertEqual(len(out["steps"]), 5)
         self.assertIn("saved: Ada Lovelace g", out["page"]["text"])
         self.assertNotIn("Ada", " ".join(out["steps"]), "typed text is not repeated in the step lines")
+        det = out["details"]
+        self.assertEqual([d["state"] for d in det], ["done"] * 5)
+        self.assertEqual(det[0]["target"], {"role": "textbox", "name": "First name"})
+        self.assertEqual(det[2]["target"]["name"], "Color")
+        self.assertNotIn("Ada", json.dumps(det), "typed text is not in the step details")
         # Without the approval the extension still refuses the submit.
         self.tool("browser_navigate", None, tab_id=tab, url=FORM + "/two")
         snap = self.tool("browser_snapshot", tab_id=tab, interactive_only=True)["snapshot"]

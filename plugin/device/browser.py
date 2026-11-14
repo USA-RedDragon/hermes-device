@@ -1522,6 +1522,23 @@ def _record_tabs(name: str, args: dict, out: Optional[dict], sid: str, device: s
         led.keep(sid, device, used, "waits on the user to sign in")
 
 
+# The single tools that act on an element by ref: their results say which element it was.
+TARGET_TOOLS = frozenset({"browser_click", "browser_type", "browser_press", "browser_hover", "browser_scroll"})
+
+
+def _with_target(result: Any, who: Optional[dict]) -> Any:
+    """``result`` (a JSON string) with ``target``: ``{"role", "name"}``, the element's label from
+    the snapshot that gave its ref. The hub's cards read it instead of the ref; it never holds
+    what was typed."""
+    if not who or not isinstance(result, str):
+        return result
+    out = _parsed(result)
+    if out is None or "target" in out:
+        return result
+    out["target"] = who
+    return json.dumps(out, ensure_ascii=False)
+
+
 def _tool(fn: Callable[[dict, Any, str], Any], name: str) -> Callable[..., Any]:
     def handler(args: dict, task_id: str = "", session_id: str = "", **_kwargs) -> Any:
         args = args if isinstance(args, dict) else {}
@@ -1529,11 +1546,14 @@ def _tool(fn: Callable[[dict, Any, str], Any], name: str) -> Callable[..., Any]:
         sid = _session(session_id)
         device = ""
         counted = False
+        who: Optional[dict] = None
         try:
             _, conn = target(session_id)
             device = conn.device_id
             args = with_default_tab(name, args, session_id, conn)
             tab = _tab_id(args)
+            if name in TARGET_TOOLS:
+                who = _batch().ref_target(device, tab, args.get("ref"))
             if cleanup_enabled():
                 ledger().begin_call(sid, device, tab)
                 counted = True
@@ -1553,15 +1573,15 @@ def _tool(fn: Callable[[dict, Any, str], Any], name: str) -> Callable[..., Any]:
                     start_reaper()
             if name in _CHANGES_PAGE and tab is not None:
                 forget_snapshot(conn.device_id, tab)
-            return result
+            return _with_target(result, who)
         except Started as exc:
             return _err(str(exc), "started")
         except Unavailable as exc:
             return _err(str(exc), "unavailable")
         except _core().BrowserError as exc:
-            return _fail(name, f"browser: {exc}", exc.code, tab)
+            return _with_target(_fail(name, f"browser: {exc}", exc.code, tab), who)
         except ValueError as exc:
-            return _fail(name, str(exc), "bad_arguments", tab)
+            return _with_target(_fail(name, str(exc), "bad_arguments", tab), who)
         finally:
             if counted:
                 ledger().end_call(sid, device, tab)
