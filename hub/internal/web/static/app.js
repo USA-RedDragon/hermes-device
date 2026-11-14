@@ -1263,7 +1263,8 @@
       const call = { name: name || "tool", args, res: null, out: "", done: false, failed: false, startedAt: this.at, endedAt: 0,
         duration: undefined, computer: this.computerName(), mem: this.known };
       const view = window.HubToolCard.create({ el, toast, highlight: highlightBash, diff: diffView, page: (p) => this.publishedPage(p),
-        image: (p) => (mediaPath(p) && imagePath(p) ? mediaURL(this.base, p) : ""), zoom: openImage }, call);
+        image: (p) => (mediaPath(p) && imagePath(p) ? mediaURL(this.base, p) : ""), zoom: openImage,
+        more: () => this.loadOutput(card) }, call);
       card = view.node;
       card.view = view;
       card.call = call;
@@ -1273,7 +1274,10 @@
       if (activity.opens(name, args)) {
         const open = el("button", "link tool-open", "Show in Activity");
         open.type = "button";
-        open.onclick = () => activity.fromTool(name, args, card.result);
+        open.onclick = async () => {
+          await this.loadOutput(card);
+          activity.fromTool(name, args, card.result);
+        };
         view.body.append(open);
       }
       if (name === "terminal" && args && typeof args.command === "string" && this.canBackground && !args.background) {
@@ -1290,6 +1294,27 @@
       tn.reasoning = null;
       this.add(card);
       return card;
+    }
+
+    // loadOutput fetches the rest of a tool output that the snapshot cut, and
+    // draws the card again with it.
+    async loadOutput(card) {
+      const cut = card.call.partial;
+      if (!cut) return;
+      const q = cut.row > 0 ? "row=" + cut.row : "call=" + encodeURIComponent(cut.call);
+      try {
+        const r = await api("GET", this.base + "/tool-output?" + q);
+        const full = r && r.content != null ? r.content : r && r.text;
+        if (full == null || !card.call.partial) return;
+        const o = window.HubToolCard.outcome(card.toolName, { result: full });
+        card.result = full;
+        card.call.partial = null;
+        card.call.res = o.res;
+        card.call.out = o.out;
+        card.view.update(card.call);
+      } catch (e) {
+        toast("Could not load the output: " + e.message);
+      }
     }
 
     // publishedPage is the card of a page the agent published. The reply
@@ -1385,6 +1410,7 @@
       card.failed = failed;
       if (failed) card.classList.add("failed");
       call.done = true;
+      call.partial = p.cut && (p.cut.row > 0 || p.cut.call) ? p.cut : null;
       call.res = res;
       call.failed = failed;
       call.error = typeof p.error === "string" ? p.error : "";
@@ -1726,7 +1752,8 @@
         const card = this.toolCard(m.tool_call_id && !call.unwrapped ? m.tool_call_id : "row" + m.row_id, m.name || m.tool_name || call.name, m.args || call.args);
         if (call.batch) this.tagBatch(card, call.batch);
         this.at = at;
-        this.toolDone(card, { result: m.content != null ? m.content : text });
+        const cut = m.output_size ? { row: Number.isInteger(m.row_id) ? m.row_id : 0, call: m.tool_call_id || "", size: m.output_size } : null;
+        this.toolDone(card, { result: m.content != null ? m.content : text, cut });
         return;
       }
       if (text) this.add(el("div", "note", text));

@@ -68,6 +68,9 @@ func (ew *eventWriter) write(w io.Writer, e hub.Event) bool {
 			return ew.s.writeEventFP(w, hub.Event{Seq: e.Seq, Kind: kindSnapshotSame, Data: json.RawMessage("{}")}, fp)
 		}
 	}
+	// The page asks for the text of a cut tool output when a card opens;
+	// the fingerprint above is of the whole rows.
+	e.Data = trimToolRows(e.Data)
 	if !ew.split && !e.Provisional {
 		return ew.s.writeEventFP(w, e, fp)
 	}

@@ -105,3 +105,33 @@ assert.strictEqual(wrapped("tool_call", "x"), null);
   assert.strictEqual(split("not json", 2), null);
   assert.strictEqual(split(undefined, 2), null);
 }
+
+// A card builds its output blocks when it first opens, and asks for the rest
+// of a cut output once, as it opens.
+(async () => {
+  const { el } = require("../fakedom.js");
+  const box = { window: { HubIcons: { icon: () => el("span"), button: () => el("button") } } };
+  vm.runInNewContext(fs.readFileSync(script, "utf8"), box);
+  const asked = [];
+  const call = { name: "terminal", args: { command: "make" }, res: null, out: "start of it\u2026", done: true, failed: false, partial: { row: 7, call: "c1", size: 90000 }, mem: box.window.HubToolCard.memory() };
+  const view = box.window.HubToolCard.create({ el, toast() {}, diff: () => el("pre"), more: (c) => { asked.push(c.partial.row); } }, call);
+  const body = view.node.querySelector(".notice-body");
+  assert.strictEqual(body.children.length, 0, "a closed card builds no blocks");
+  view.toggle();
+  assert.ok(body.children.length > 0, "an opened card has its blocks");
+  assert.deepStrictEqual(asked, [7], "the cut output is asked for once, as the card opens");
+  view.toggle();
+  view.toggle();
+  assert.strictEqual(asked.length, 1, "not asked again while the first request runs");
+  await new Promise((r) => setTimeout(r, 5));
+  view.toggle();
+  view.toggle();
+  assert.strictEqual(asked.length, 2, "asked again while the call is still cut (the page clears it when it arrives)");
+  if (view.node.querySelector(".notice-head").getAttribute("aria-expanded") !== "true") view.toggle();
+  view.update(Object.assign({}, call, { out: "all of it", partial: null }));
+  assert.ok(view.node.querySelectorAll(".tool-box").pop().textContent.includes("all of it"), "an opened card redraws with the full output");
+  view.toggle();
+  assert.strictEqual(view.node.querySelector(".notice-head").getAttribute("aria-expanded"), "false");
+  view.update(Object.assign({}, call, { out: "changed", partial: null }));
+  assert.strictEqual(body.children.length, 0, "a closed card drops its blocks on an update and builds them again on opening");
+})().catch((e) => { console.error(e); process.exit(1); });

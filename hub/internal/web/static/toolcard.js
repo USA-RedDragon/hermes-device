@@ -827,16 +827,34 @@ window.HubToolCard = (() => {
     wrap.append(visBig, blocks, extra);
     const chev = window.HubIcons.icon("chev");
     chev.classList.add("notice-chev");
-    head.onclick = () => {
+    // The click on a head or a copy button is handled once for the page (see
+    // the end of this file), not by a listener on each card.
+    let pending = false;
+    function toggle() {
       const open = head.getAttribute("aria-expanded") !== "true";
       head.setAttribute("aria-expanded", open ? "true" : "false");
       wrap.hidden = !open;
+      if (open && !built) build();
       if (view.derived) drawVision(view.derived);
-    };
+      // A snapshot sent only the start of a long output: fetch the rest as
+      // the card opens.
+      if (open && view.cur && view.cur.partial && ctx.more && !pending) {
+        pending = true;
+        Promise.resolve(ctx.more(view.cur)).catch(() => {}).finally(() => { pending = false; });
+      }
+    }
     const vis = el("div", "vis");
     vis.hidden = true;
     box.append(head, vis, live, wrap);
-    const view = { node: box, body: extra, live, derived: null };
+    const view = { node: box, body: extra, live, derived: null, cur: null, toggle };
+    box.hubCard = view;
+    // The blocks of a card (and the code highlighting in them) are built when
+    // the card first opens, not when it is created.
+    let built = false;
+    function build() {
+      built = true;
+      blocks.replaceChildren(...(view.derived ? view.derived.blocks : []).map(drawBlock));
+    }
     // A page_publish card that made a page shows the page card in place of
     // the usual card, so the page opens from the chat. It is not a step
     // that folds into a group.
@@ -875,14 +893,8 @@ window.HubToolCard = (() => {
 
     function copyButton(text) {
       const b = window.HubIcons.button("copy", "Copy", "ghost ib tool-copy");
-      b.onclick = async () => {
-        try {
-          await navigator.clipboard.writeText(text);
-          ctx.toast("Copied");
-        } catch (_) {
-          ctx.toast("The browser did not allow copying");
-        }
-      };
+      b.hubText = text;
+      b.hubToast = ctx.toast;
       return b;
     }
 
@@ -1023,19 +1035,38 @@ window.HubToolCard = (() => {
     view.update = (c) => {
       const d = derive(c);
       view.derived = d;
+      view.cur = c;
       box.dataset.state = d.state;
       box.dataset.tool = c.name || "tool";
       head.replaceChildren(window.HubIcons.icon(d.icon), title, chev, meta);
       title.textContent = d.title;
       title.title = d.title;
       drawMeta(d, c);
-      blocks.replaceChildren(...d.blocks.map(drawBlock));
+      built = false;
+      if (head.getAttribute("aria-expanded") === "true") build();
+      else blocks.replaceChildren();
       drawPage(d);
       drawVision(d);
       return d;
     };
     view.update(c0);
     return view;
+  }
+
+  // One listener serves every card's head and copy buttons.
+  if (typeof document !== "undefined" && document.addEventListener) {
+    document.addEventListener("click", (e) => {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      const copy = t.closest(".tool-copy");
+      if (copy && copy.hubText !== undefined) {
+        navigator.clipboard.writeText(copy.hubText).then(() => copy.hubToast("Copied"), () => copy.hubToast("The browser did not allow copying"));
+        return;
+      }
+      const head = t.closest(".notice-head");
+      const card = head && head.parentNode && head.parentNode.hubCard;
+      if (card) card.toggle();
+    });
   }
 
   return { derive, memory, create, wrapped, take, calls, split, parse, outcome, statusLine, plain, batch };
