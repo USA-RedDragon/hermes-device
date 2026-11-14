@@ -198,10 +198,12 @@ func scopeIn(bin string) *executor.Scope {
 	return &executor.Scope{SystemdRun: filepath.Join(bin, "systemd-run"), Systemctl: filepath.Join(bin, "systemctl"), MemoryMax: 64 << 20}
 }
 
+const killSelf = "kill -KILL $$"
+
 func TestScopeReportsOOM(t *testing.T) {
 	t.Parallel()
 	bin, args := fakeSystemd(t, "", `ActiveState=failed\nResult=oom-kill\n`)
-	res, _ := run(t, executor.Request{Cmd: "kill -KILL $$", Cwd: t.TempDir(), Env: os.Environ(), Scope: scopeIn(bin)})
+	res, _ := run(t, executor.Request{Cmd: killSelf, Cwd: t.TempDir(), Env: os.Environ(), Scope: scopeIn(bin)})
 	if !res.OOM || res.MemoryMax != 64<<20 || res.Signal != syscall.SIGKILL || res.Code != 137 || res.Killed {
 		t.Errorf("result %+v", res)
 	}
@@ -222,7 +224,7 @@ func TestScopeReportsOOMWithoutCap(t *testing.T) {
 	bin, args := fakeSystemd(t, "", `ActiveState=failed\nResult=oom-kill\n`)
 	s := scopeIn(bin)
 	s.MemoryMax = 0
-	res, _ := run(t, executor.Request{Cmd: "kill -KILL $$", Cwd: t.TempDir(), Env: os.Environ(), Scope: s})
+	res, _ := run(t, executor.Request{Cmd: killSelf, Cwd: t.TempDir(), Env: os.Environ(), Scope: s})
 	if !res.OOM || res.MemoryMax != 0 || res.Code != 137 {
 		t.Errorf("result %+v", res)
 	}
@@ -234,7 +236,7 @@ func TestScopeReportsOOMWithoutCap(t *testing.T) {
 func TestScopeSignalWithoutOOM(t *testing.T) {
 	t.Parallel()
 	bin, _ := fakeSystemd(t, "", `ActiveState=inactive\nResult=success\n`)
-	res, _ := run(t, executor.Request{Cmd: "kill -KILL $$", Cwd: t.TempDir(), Env: os.Environ(), Scope: scopeIn(bin)})
+	res, _ := run(t, executor.Request{Cmd: killSelf, Cwd: t.TempDir(), Env: os.Environ(), Scope: scopeIn(bin)})
 	if res.OOM || res.Signal != syscall.SIGKILL || res.Code != 137 {
 		t.Errorf("result %+v", res)
 	}

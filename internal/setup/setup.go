@@ -449,6 +449,7 @@ func (s *System) serviceStep(ctx context.Context, o *Options, st *State, r *Repo
 	if err != nil {
 		return false, err
 	}
+	s.removeNoCapDropIn()
 	if res.Wrote {
 		st.Service, st.ServiceSHA256 = svc.Path(), sha256Hex(svc.Content(bin, o.ConfigFile))
 		if res.Backup != "" && st.ServiceBackup == "" {

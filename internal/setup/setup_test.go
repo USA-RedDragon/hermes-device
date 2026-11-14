@@ -436,6 +436,30 @@ func TestUninstallRemovesCacheAndLaunchdLog(t *testing.T) {
 	}
 }
 
+func TestSetupRemovesNoCapDropIn(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.opts.NoShell, f.opts.NoBrowser = true, true
+	dir := filepath.Join(f.sys.Home, ".config", "systemd", "user", "talaria-cmd-.scope.d")
+	mine := filepath.Join(dir, "50-no-memory-cap.conf")
+	other := filepath.Join(dir, "60-user.conf")
+	writeFile(t, mine, "[Scope]\nMemoryMax=infinity\nMemoryHigh=infinity\n")
+	writeFile(t, other, "[Scope]\nTasksMax=99\n")
+	if _, err := f.sys.Setup(t.Context(), f.opts); err != nil {
+		t.Fatal(err)
+	}
+	if exists(mine) || !exists(other) {
+		t.Errorf("stopgap drop-in exists %v, user's drop-in exists %v", exists(mine), exists(other))
+	}
+	writeFile(t, mine, "[Scope]\nMemoryMax=8G\n")
+	if _, err := f.sys.Setup(t.Context(), f.opts); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(mine) {
+		t.Error("setup removed a drop-in with other content")
+	}
+}
+
 // An earlier release wrote MemoryMax=2G and TasksMax=512 into the unit.
 // Setup replaces that unit with one that has neither, and leaves a drop-in
 // with the user's own MemoryMax alone.
