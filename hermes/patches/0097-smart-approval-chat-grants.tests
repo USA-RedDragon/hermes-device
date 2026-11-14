@@ -1,0 +1,10 @@
+# The provenance review, the approval gate and wait it adds to, and the pending prompt controls
+tests/tools/test_smart_provenance.py
+tests/tools/test_smart_provenance_live_root.py
+tests/tools/test_smart_provenance_local_judge.py
+tests/tools/test_smart_approval_false_positives.py
+tests/tools/test_approval_provenance.py
+tests/tools/test_approval_plugin_hooks.py
+tests/tools/test_approval_cancelled_attribution.py
+tests/gateway/test_shared_clarify.py
+tests/gateway/test_local_viewer_events_turn.py

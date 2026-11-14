@@ -72,6 +72,8 @@ func approvalLabel(choice string) string {
 		return "This chat"
 	case hub.ChoiceAlways:
 		return "Always"
+	case hub.ChoiceSource:
+		return "This source in this chat"
 	case hub.ChoiceDeny:
 		return "Deny"
 	}
@@ -87,6 +89,8 @@ func approvalVerdict(choice string) string {
 		return "Approved for this chat"
 	case hub.ChoiceAlways:
 		return "Always approved"
+	case hub.ChoiceSource:
+		return "Approved code from this source in this chat"
 	case hub.ChoiceDeny:
 		return "Denied"
 	}
@@ -107,6 +111,8 @@ func outcomeHead(o hub.ApprovalOutcome) string {
 		head = "Allowed for this chat"
 	case o.Choice == hub.ChoiceAlways:
 		head = "Allowed always"
+	case o.Choice == hub.ChoiceSource:
+		head = "Allowed for this source in this chat"
 	}
 	switch o.Via {
 	case hub.AnsweredInHub:

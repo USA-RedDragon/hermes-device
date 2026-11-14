@@ -385,6 +385,9 @@ const (
 	ChoiceSession = "session"
 	ChoiceAlways  = "always"
 	ChoiceDeny    = "deny"
+	// ChoiceSource is smart approval's "Always allow code from this source
+	// in this chat": a grant kept with the chat that covers its subagents.
+	ChoiceSource = "source"
 )
 
 // PromptInfo is a pending approval or question. Choices are the approval

@@ -104,7 +104,7 @@ window.HubApprovals = (() => {
       if (!clarify && !choices.length) {
         actions.append(button("primary", words("allow"), { allow: true }), button("danger", words("deny"), { allow: false }));
       } else if (!clarify) {
-        const names = { once: words("allow"), session: "Allow in this chat", always: "Always allow", deny: words("deny") };
+        const names = { once: words("allow"), session: "Allow in this chat", always: "Always allow", source: "Always allow code from this source in this chat", deny: words("deny") };
         for (const c of choices) actions.append(button(c === "deny" ? "danger" : c === "once" ? "primary" : "", names[c] || c, { choice: c }));
       } else {
         const picks = [];
