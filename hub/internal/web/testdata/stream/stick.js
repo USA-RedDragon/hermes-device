@@ -1,4 +1,5 @@
 "use strict";
+(async () => {
 const assert = require("assert");
 const fs = require("fs");
 const vm = require("vm");
@@ -347,4 +348,29 @@ const wheelTo = (x, top) => {
   assert.strictEqual(x.s.pinned(), false, "the reader's own wheel right after the open counts");
   assert.strictEqual(x.s.acted(), true);
 }
+
+// Writes that stream in put a pinned log at its end once, after the last write, and a log
+// whose reader moved away is left where it is.
+{
+  const rafs = [];
+  const log = new Log([500, 500, 500], 600);
+  let reads = 0;
+  Object.defineProperty(log, "scrollHeight", { get() { reads++; return this.heights.reduce((a, b) => a + b, 0); } });
+  const s = HubStick(log, { probe: () => null, place: () => null, now: () => 0, raf: (f) => rafs.push(f) });
+  s.pin();
+  reads = 0;
+  for (let i = 0; i < 50; i++) { log.heights[2] += 10; s.pinSoon(); }
+  assert.strictEqual(reads, 0, "no layout read after a streamed write");
+  assert.strictEqual(rafs.length, 1, "fifty writes queue one pin");
+  rafs.shift()();
+  assert.strictEqual(log.scrollTop, log.heights.reduce((a, b) => a + b, 0) - 600, "the log is at its end after the writes");
+  assert.ok(reads < 6, "one pin read the layout a few times, not per write: " + reads);
+  s.release();
+  const top = log.scrollTop = 300;
+  log.heights[2] += 100;
+  s.pinSoon();
+  assert.strictEqual(rafs.length, 0, "a released log queues no pin");
+  assert.strictEqual(log.scrollTop, top, "a released log is not moved by a streamed write");
+}
 console.log("ok");
+})();

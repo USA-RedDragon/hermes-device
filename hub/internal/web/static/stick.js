@@ -113,6 +113,28 @@ window.HubStick = (log, o) => {
     acted = true;
   }
 
+  // frame runs fn at the start of the next frame, where the layout of the
+  // last one is clean, so what it reads costs no layout of its own.
+  const frame = (fn) => {
+    if (o.raf) o.raf(fn);
+    else if (typeof requestAnimationFrame === "function") requestAnimationFrame(fn);
+    else fn();
+  };
+
+  // pinSoon is pin() for a write that streams in: a pinned log is put at its
+  // end at the start of the next frame, not right after the write, which
+  // would lay the page out again for each write. The ResizeObserver of the
+  // page has already moved the log within the frame that drew the write.
+  let pinQueued = false;
+  function pinSoon() {
+    if (pinQueued || !pinned) return;
+    pinQueued = true;
+    frame(() => {
+      pinQueued = false;
+      if (pinned && gap() >= 1) pin();
+    });
+  }
+
   function pin() {
     pinned = true;
     anchor = null;
@@ -159,6 +181,6 @@ window.HubStick = (log, o) => {
   // change is recent, so a scroll now is the reader's.
   const settled = () => log.clientHeight === rec.c && now() - resized >= settle && now() >= fresh;
 
-  return { settled, sync, scrolled, heard, pin, release, look, reset, drawn, refresh: changed, pinned: () => pinned,
+  return { settled, sync, scrolled, heard, pin, pinSoon, release, look, reset, drawn, refresh: changed, pinned: () => pinned,
     acted: () => acted, trail: () => trail.slice() };
 };

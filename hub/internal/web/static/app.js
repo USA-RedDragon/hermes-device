@@ -715,10 +715,15 @@
         if (s.pinned()) unseen = 0;
         else viewLeft();
         // A chat that is still loading has no latest to jump to.
-        jump.hidden = s.pinned() || log.hidden || !!(view && !view.loaded);
+        const hide = s.pinned() || log.hidden || !!(view && !view.loaded);
+        if (jump.hidden !== hide) jump.hidden = hide;
         const label = unseen ? (unseen === 1 ? t("newone") : t("newmany").replace("%d", unseen)) : t("tobottom");
-        jump.querySelector(".lbl").textContent = label;
-        jump.title = label;
+        // Written only when it changes: a write each streamed frame would
+        // dirty the style the next read has to settle.
+        if (jump.title !== label) {
+          jump.querySelector(".lbl").textContent = label;
+          jump.title = label;
+        }
       },
     });
     let queued = false;
@@ -890,7 +895,7 @@
       const follow = this.stick();
       if (this.status && this.status.parentNode === this.log) this.log.insertBefore(node, this.status);
       else this.log.append(node);
-      if (follow) this.bottom();
+      if (follow) stick.pinSoon();
       else if (!this.filling && view === this) {
         if (node.classList.contains("msg")) unseen++;
         stick.refresh();
@@ -901,7 +906,7 @@
     follow(fn) {
       const follow = this.stick();
       fn();
-      if (follow) this.bottom();
+      if (follow) stick.pinSoon();
     }
 
     // when puts the time ms under a message, after the buttons that sit
