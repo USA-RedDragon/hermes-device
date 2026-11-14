@@ -1,0 +1,9 @@
+# The delegation, restart handoff and process code a wait builds on
+tests/tools/test_delegate_resume_action.py
+tests/tools/test_delegation_restart_handoff.py
+tests/tools/test_delegate_control_actions.py
+tests/tools/test_delegate.py
+tests/tools/test_async_delegation.py
+tests/tools/test_subagent_process_handoff.py
+tests/tools/test_process_registry.py
+tests/tui_gateway/contracts/test_generated.py

@@ -1,0 +1,700 @@
+From 98d7b9c325f4d0d06de530271755961cd8bce3f3 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 20:53:47 -0600
+Subject: [PATCH] feat(delegate): a subagent can end its turn waiting on a
+ background job
+
+A subagent with a job that runs for hours had to poll, quit with "resume
+later", or hand duplicate watchers to its parent. process_manage handoff now
+takes resume_on_exit=true: the process stays the subagent's, the subagent ends
+its turn, and its unit stays open. It shows as "waiting" (with waiting_on) in
+delegate_task list and subagent.list. When a watched process exits, the
+subagent continues its conversation with the exit code and output tail; after
+delegation.max_wait_hours (24) it is resumed with a timeout notice. The parent
+gets one result, when the subagent really finishes.
+
+Handing off the same command again returns the first watch, and a subagent
+holds at most eight. A restart hands the waiting subagent to the next gateway
+with its watches; it reattaches the processes and goes on waiting. The
+subagent prompt and the background-process note say to end the turn waiting.
+---
+ apps/shared/src/gateway-contract.generated.ts |   3 +-
+ apps/shared/src/gateway-contract.openrpc.json |  16 ++
+ hermes_cli/config_defaults.py                 |   3 +
+ tests/tools/test_delegate_child_wait.py       | 172 ++++++++++++++++++
+ tools/delegate_tool.py                        |   8 +-
+ tools/delegate_tool_child_run.py              |  36 +++-
+ tools/delegate_tool_config.py                 |   9 +
+ tools/delegate_tool_handoff.py                |   5 +
+ tools/delegate_tool_progress.py               |   2 +
+ tools/delegate_tool_registry.py               |   1 +
+ tools/delegate_tool_wait.py                   | 137 ++++++++++++++
+ tools/process_registry.py                     |  28 ++-
+ tools/terminal_tool_background.py             |   6 +-
+ tui_gateway/contracts/common.py               |   1 +
+ ...ofiles_vault_complete_foreign_subagents.py |   2 +
+ tui_gateway/methods_subagents.py              |   2 +-
+ 16 files changed, 424 insertions(+), 7 deletions(-)
+ create mode 100644 tests/tools/test_delegate_child_wait.py
+ create mode 100644 tools/delegate_tool_wait.py
+
+diff --git a/apps/shared/src/gateway-contract.generated.ts b/apps/shared/src/gateway-contract.generated.ts
+index c614daaf..5b8460d0 100644
+--- a/apps/shared/src/gateway-contract.generated.ts
++++ b/apps/shared/src/gateway-contract.generated.ts
+@@ -2457,10 +2457,11 @@ export interface SubagentSnapshot {
+   tool_count?: number | null
+   last_tool?: string | null
+   accepting_steer?: boolean | null
++  waiting_on?: string[] | null
+   child_session_id?: string | null
+ }
+ /** Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
+-export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'
++export type SubagentStatus = 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'
+ /** ``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation. */
+ export interface FailedDelegation {
+   delegation_id: string
+diff --git a/apps/shared/src/gateway-contract.openrpc.json b/apps/shared/src/gateway-contract.openrpc.json
+index d5304125..963664e5 100644
+--- a/apps/shared/src/gateway-contract.openrpc.json
++++ b/apps/shared/src/gateway-contract.openrpc.json
+@@ -44600,6 +44600,21 @@
+             "default": null,
+             "title": "Accepting Steer"
+           },
++          "waiting_on": {
++            "anyOf": [
++              {
++                "items": {
++                  "type": "string"
++                },
++                "type": "array"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null,
++            "title": "Waiting On"
++          },
+           "child_session_id": {
+             "anyOf": [
+               {
+@@ -44624,6 +44639,7 @@
+         "enum": [
+           "queued",
+           "running",
++          "waiting",
+           "completed",
+           "failed",
+           "error",
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index 77646374..eeec5266 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1437,6 +1437,9 @@ DEFAULT_CONFIG = {
+         # process_manage handoff does) instead of being killed: tracked, readable and stoppable there, and
+         # out of agent-lifecycle cleanup. Only an explicit kill or deleting the parent's session stops them.
+         "keep_child_processes": False,
++        # A subagent may end its turn waiting on a background process it handed off with resume_on_exit; Hermes
++        # resumes it when the process exits, or with a timeout notice after this many hours.
++        "max_wait_hours": 24,
+         # A subagent that holds agent_send is told it can answer its parent mid-run with
+         # agent_send(to="parent", ...), in its system prompt and in each steer sent through delegate_task.
+         "parent_reply_guidance": False,
+diff --git a/tests/tools/test_delegate_child_wait.py b/tests/tools/test_delegate_child_wait.py
+new file mode 100644
+index 00000000..cc641cdf
+--- /dev/null
++++ b/tests/tools/test_delegate_child_wait.py
+@@ -0,0 +1,172 @@
++"""A subagent ends its turn waiting on a background process and is woken with its result.
++
++Built on the resume test's seams: real stored sessions, real async-delegation registry and process registry, fake
++child agents.
++"""
++
++import threading
++import time
++
++import pytest
++
++from tests.tools.test_delegate_resume_action import (  # noqa: F401  (fixtures)
++    CHILD, PARENT, SID, _Parent, _call, _clean_state, _completions, _db, _fake_child, _finished_child, seams,
++)
++from tests.waiting import wait_until
++from tools import async_delegation as ad
++from tools import delegate_tool_handoff as handoff
++from tools import delegate_tool_wait as wait
++from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, _list_payload
++from tools.process_registry import _handle_process, process_registry
++import json
++
++
++def _handoff(session_id, data="build", task_id=SID):
++    return json.loads(_handle_process(
++        {"action": "handoff", "session_id": session_id, "data": data, "resume_on_exit": True}, task_id=task_id))
++
++
++def _waiting_child(command, handoffs=1, second=None):
++    """A child whose first round starts ``command`` and hands it off (``handoffs`` times), then ends its turn."""
++    child = _fake_child()
++    seen = {"handoffs": [], "listed": None}
++
++    def converse(**kwargs):
++        child.conversations.append(kwargs)
++        if len(child.conversations) == 1:
++            session = process_registry.spawn_local(command, task_id=SID, owner_task_id=SID)
++            seen["session"] = session
++            for _ in range(handoffs):
++                seen["handoffs"].append(_handoff(session.id))
++            return {"final_response": "waiting for the build", "completed": True, "interrupted": False,
++                    "api_calls": 1, "messages": [{"role": "user", "content": "go"},
++                                                 {"role": "assistant", "content": "waiting for the build"}]}
++        return {"final_response": second or "Build finished: done", "completed": True, "interrupted": False,
++                "api_calls": 2, "messages": []}
++
++    child.run_conversation.side_effect = converse
++    child.seen = seen
++    return child
++
++
++def test_child_ends_its_turn_waiting_is_resumed_with_the_result_and_reports_once(seams):
++    db = _db()
++    _finished_child(db)
++    child = _waiting_child("sleep 5; echo done")
++    seams(child)
++    handle = _call(_Parent(db), subagent_id=SID, message="build it and wait")
++    run_id = handle["run_id"]
++
++    wait_until(lambda: len(child.conversations) == 1 and child.seen["handoffs"], what="the first round")
++    # While the job runs the child is waiting, not done, and nothing reaches the parent.
++    wait_until(lambda: any(r.get("status") == "waiting" for r in _active_subagents.values()), what="waiting status")
++    listed = _list_payload(_Parent(db))
++    assert listed["subagents"][0]["status"] == "waiting" and "sleep 5" in listed["subagents"][0]["waiting_on"][0]
++    assert _completions(run_id) == []
++    assert child.seen["handoffs"][0]["status"] == "watching"
++
++    event = wait_until(lambda: _completions(run_id), timeout=30, what="the child's final result")[0]
++    second = child.conversations[1]
++    assert "done" in second["user_message"] and "exited with code 0" in second["user_message"]
++    assert second["conversation_history"][-1]["content"] == "waiting for the build"
++    assert [r["summary"] for r in event["results"]] == ["Build finished: done"]
++    time.sleep(0.5)
++    assert _completions(run_id) == []  # delivered once
++
++
++def test_handing_off_the_same_command_again_returns_the_first_watch(seams):
++    db = _db()
++    _finished_child(db)
++    child = _waiting_child("sleep 2; echo done", handoffs=2)
++    seams(child)
++    handle = _call(_Parent(db), subagent_id=SID, message="go")
++    wait_until(lambda: len(child.seen["handoffs"]) == 2, what="both handoffs")
++    first, again = child.seen["handoffs"]
++    assert first["status"] == "watching" and again["status"] == "already_watched"
++    assert first["session_id"] == again["session_id"]
++    assert len(wait.waits_of(child)) <= 1
++    wait_until(lambda: _completions(handle["run_id"]), timeout=30, what="completion")
++
++
++def test_a_second_session_with_the_same_command_is_deduped():
++    child = _fake_child()
++    one = process_registry.spawn_local("sleep 3", task_id=SID, owner_task_id=SID)
++    two = process_registry.spawn_local("sleep 3", task_id=SID, owner_task_id=SID)
++    try:
++        a = wait.watch(child, one, "x", 24)
++        b = wait.watch(child, two, "x", 24)
++        assert a["created"] and not b["created"] and b["session_id"] == one.id
++        assert len(wait.waits_of(child)) == 1
++    finally:
++        process_registry.kill_process(one.id)
++        process_registry.kill_process(two.id)
++
++
++def test_wait_limit_resumes_with_a_timeout_notice():
++    child = _fake_child()
++    session = process_registry.spawn_local("sleep 30", task_id=SID, owner_task_id=SID)
++    try:
++        wait.watch(child, session, "x", 0.0)  # the limit has passed at once
++        message = wait.await_exit(child, None, lambda: False)
++        assert "Wait limit reached" in message and "still running" in message
++        assert wait.waits_of(child) == []
++    finally:
++        process_registry.kill_process(session.id)
++
++
++def test_stopping_a_waiting_child_ends_the_wait():
++    child = _fake_child()
++    session = process_registry.spawn_local("sleep 30", task_id=SID, owner_task_id=SID)
++    try:
++        wait.watch(child, session, "x", 24)
++        stop = threading.Timer(0.3, lambda: None)
++        flag = {"stop": False}
++        threading.Timer(0.3, lambda: flag.update(stop=True)).start()
++        assert wait.await_exit(child, None, lambda: flag["stop"]) is None
++    finally:
++        process_registry.kill_process(session.id)
++
++
++def test_restart_rearms_a_waiting_child(seams):
++    db = _db()
++    _finished_child(db)
++    child = _waiting_child("sleep 8; echo rearmed")
++    seams(child)
++    handle = _call(_Parent(db), subagent_id=SID, message="go")
++    run_id = handle["run_id"]
++    wait_until(lambda: any(r.get("status") == "waiting" for r in _active_subagents.values()), what="waiting")
++
++    # The old gateway stops the waiting child at a clean point; the unit and the process outlive it.
++    assert ad.hand_off_for_restart(2.0, 8.0) == 1
++    assert _completions(run_id) == []
++    row = json.loads(_row(run_id))
++    waits = row["handoff"]["children"]["0"]["waits"]
++    assert len(waits) == 1 and "sleep 8" in waits[0]["command"]
++    session = child.seen["session"]
++    assert not session.exited  # the job kept running
++
++    # The next gateway rebuilds the child; it goes on waiting instead of starting a conversation.
++    ad._reset_for_tests()
++    with _active_subagents_lock:
++        _active_subagents.clear()
++    second = _fake_child()
++    seams(second)
++    assert ad.adopt_handed_off_delegations(handoff._resume_unit) == 1
++    event = wait_until(lambda: _completions(run_id), timeout=30, what="the re-armed child's result")[0]
++    assert len(second.conversations) == 1  # one round only: the wake-up with the result
++    assert "rearmed" in second.conversations[0]["user_message"]
++    assert event["status"] == "completed"
++
++
++def _row(delegation_id):
++    from tests.tools.test_delegate_resume_action import _row_json
++    return _row_json(delegation_id)
++
++
++def test_the_child_prompt_and_tool_notes_name_the_wait():
++    from tools.delegate_tool_progress import _build_child_system_prompt
++    from tools.process_registry import PROCESS_SCHEMA
++    from tools.terminal_tool_background import _SUBAGENT_NOTIFY_NOTE
++    assert "resume_on_exit=true" in _build_child_system_prompt("g")
++    assert "resume_on_exit" in _SUBAGENT_NOTIFY_NOTE
++    assert "resume_on_exit" in PROCESS_SCHEMA["parameters"]["properties"]
+diff --git a/tools/delegate_tool.py b/tools/delegate_tool.py
+index 546ffcf0..a86acbdd 100644
+--- a/tools/delegate_tool.py
++++ b/tools/delegate_tool.py
+@@ -476,7 +476,13 @@ def _run_single_child(
+         heartbeat.start()
+         _safe_progress(child_progress_cb, "subagent.start", preview=goal)
+         run.seed_workspace()
+-        result, failure_entry, _child_close_deferred = run.await_child()
++        restored = run.restored_wait()
++        if restored is not None:
++            result, failure_entry, _child_close_deferred = restored, None, False
++        else:
++            result, failure_entry, _child_close_deferred = run.await_child()
++        result, failure_entry, _child_close_deferred = run.continue_while_waiting(
++            result, failure_entry, _child_close_deferred)
+         if failure_entry is not None:
+             return failure_entry
+ 
+diff --git a/tools/delegate_tool_child_run.py b/tools/delegate_tool_child_run.py
+index 0cf23860..776a67ec 100644
+--- a/tools/delegate_tool_child_run.py
++++ b/tools/delegate_tool_child_run.py
+@@ -921,6 +921,36 @@ class _ChildRun:
+         _append_missed_steer(entry, late_steer)
+         return self.attach_worktree(entry)
+ 
++    def restored_wait(self) -> Optional[dict[str, Any]]:
++        """A child the previous gateway stopped while it waited on background processes: its stored conversation
++        stands in for a first round, and it goes straight back to waiting."""
++        from tools.delegate_tool_wait import waits_of
++        resume = getattr(self.child, "_delegate_resume", None)
++        if isinstance(resume, dict) and waits_of(self.child):
++            return {"final_response": "", "completed": True, "interrupted": False, "api_calls": 0,
++                    "messages": list(resume.get("history") or [])}
++        return None
++
++    def continue_while_waiting(self, result, failure_entry, close_deferred):
++        """While the child ended its turn waiting on background processes (``delegate_tool_wait``), keep its unit open
++        and resume its conversation with each process result. A stop while waiting is an interrupted child."""
++        from tools.delegate_tool_wait import await_exit, waits_of
++        child = self.child
++
++        def stopped() -> bool:
++            return (getattr(child, "_interrupt_requested", False) is True
++                    or getattr(child, "_delegate_restart_handoff", False) is True)
++
++        while failure_entry is None and waits_of(child):
++            message = await_exit(child, self.subagent_id, stopped)
++            if message is None:
++                entry = _fabricated_entry(self.task_index, "interrupted", "Stopped while waiting on a background process",
++                                          child, self.elapsed())
++                return None, self.finish_failed(entry, self.close_steering(), preview="Stopped while waiting"), close_deferred
++            result, failure_entry, close_deferred = self.await_child(
++                message=message, history=(result or {}).get("messages"))
++        return result, failure_entry, close_deferred
++
+     def close_steering(self) -> Optional[str]:
+         """Close steer acceptance (see ``_merge_late_steer``); returns late steer text, if any."""
+         return _close_subagent_steering(self.subagent_id, self.child) if self.subagent_id else None
+@@ -963,7 +993,8 @@ class _ChildRun:
+                 warned = True
+                 _warn_child_budget(self.child, child_timeout - (deadline - time.monotonic()), child_timeout)
+ 
+-    def await_child(self) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], bool]:
++    def await_child(self, message: Optional[str] = None, history: Optional[list] = None,
++                    ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], bool]:
+         """Run the child's conversation on a daemon worker: ``(result, None, False)`` or ``(None, error_entry,
+         close_deferred)`` on timeout/exception.
+ 
+@@ -996,6 +1027,8 @@ class _ChildRun:
+         history_kwargs = {"conversation_history": resume["history"]} if resume.get("history") else {}
+         if history_kwargs:
+             user_message = resume["message"]
++        if message is not None:  # woken from a wait: continue this conversation with the process result
++            user_message, history_kwargs = message, {"conversation_history": history} if history else {}
+ 
+         def _run_with_thread_capture():
+             worker_thread_holder["t"] = threading.current_thread()
+@@ -1015,6 +1048,7 @@ class _ChildRun:
+         # one-shot) turn — and its session lease — forever, since that runtime has no gateway
+         # inactivity watchdog (#109749). The configured cap bounds INACTIVITY (see wait_liveness_aware).
+         settled = self.heartbeat.settled if self.heartbeat is not None else threading.Event()
++        settled.clear()  # a second round after a wait reuses the heartbeat's event
+         future.add_done_callback(lambda _f: settled.set())
+         # Set when the stale verdict — not the configured cap — ended the wait; the entry must name that cause.
+         stale_after: Optional[float] = None
+diff --git a/tools/delegate_tool_config.py b/tools/delegate_tool_config.py
+index dd339f4f..b16775c9 100644
+--- a/tools/delegate_tool_config.py
++++ b/tools/delegate_tool_config.py
+@@ -197,6 +197,15 @@ def _get_keep_child_processes() -> bool:
+     child's teardown kills them and the parent's result lists them as ``orphaned_processes``."""
+     return is_truthy_value(_cfg().get("keep_child_processes", False))
+ 
++def _get_max_wait_hours() -> float:
++    """delegation.max_wait_hours (default 24): the longest a subagent that ended its turn waiting on a background
++    process (``process_manage`` handoff with ``resume_on_exit``) waits before it is resumed with a timeout notice."""
++    try:
++        hours = float(_cfg().get("max_wait_hours", 24))
++    except (TypeError, ValueError):
++        return 24.0
++    return hours if hours > 0 else 24.0
++
+ def _get_parent_reply_guidance() -> bool:
+     """delegation.parent_reply_guidance (bool, default False): a subagent that holds ``agent_send`` is told it can
+     answer its parent mid-run with ``agent_send(to="parent", ...)``, in its system prompt and in each steer the parent
+diff --git a/tools/delegate_tool_handoff.py b/tools/delegate_tool_handoff.py
+index e0cbc966..b691a922 100644
+--- a/tools/delegate_tool_handoff.py
++++ b/tools/delegate_tool_handoff.py
+@@ -257,7 +257,10 @@ def _registry_progress(child: Any) -> dict[str, Any]:
+ 
+ def _child_state(child: Any) -> dict[str, Any]:
+     """What the child reached that only this process knows: its working directory and current session id."""
++    from tools.delegate_tool_wait import state_waits
+     state: dict[str, Any] = {"session_id": getattr(child, "session_id", None), **_registry_progress(child)}
++    if waits := state_waits(child):
++        state["waits"] = waits  # the next gateway goes on waiting for these processes
+     try:
+         from tools.delegate_tool_routes import child_profile_scope
+         from tools.terminal_tool import get_session_cwd
+@@ -529,6 +532,8 @@ class _ResumedUnit:
+         # No stored turn means the child never started its conversation: it starts on its goal.
+         child._delegate_resume = {"cwd": spec.get("cwd"), **({"history": history, "message": self.message or RESUME_MESSAGE}
+                                                               if history else {})}
++        from tools.delegate_tool_wait import restore
++        restore(child, spec.get("waits"))
+         return child
+ 
+     def _carry_progress(self, child: Any, spec: dict, history: list) -> None:
+diff --git a/tools/delegate_tool_progress.py b/tools/delegate_tool_progress.py
+index 11f60bd8..0b04f142 100644
+--- a/tools/delegate_tool_progress.py
++++ b/tools/delegate_tool_progress.py
+@@ -209,6 +209,8 @@ def _build_child_system_prompt(
+         if _ctx_files.strip():
+             parts.append(_CONTEXT_FILES_INTRO + _ctx_files.strip())
+     parts.append(_COMPLETION_INSTRUCTIONS)
++    from tools.delegate_tool_wait import WAIT_NOTE
++    parts.append("\n" + WAIT_NOTE)
+     if role == "orchestrator":
+         child_note = _LEAF_CHILDREN_NOTE if child_depth + 1 >= max_spawn_depth else _NESTED_CHILDREN_NOTE
+         parts.append(
+diff --git a/tools/delegate_tool_registry.py b/tools/delegate_tool_registry.py
+index 493b7931..ce75a735 100644
+--- a/tools/delegate_tool_registry.py
++++ b/tools/delegate_tool_registry.py
+@@ -291,6 +291,7 @@ def _list_payload(parent_agent: Any) -> dict[str, Any]:
+             "status": r.get("status"),
+             "running_seconds": round(time.time() - started, 1) if isinstance(started, (int, float)) else None,
+             "accepting_steer": bool(r.get("accepting_steer", False)),
++            **({"waiting_on": r["waiting_on"]} if r.get("waiting_on") else {}),
+             "live_transcript": getattr(r.get("agent"), "_live_transcript_path", None),
+         })
+     payload: dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries}
+diff --git a/tools/delegate_tool_wait.py b/tools/delegate_tool_wait.py
+new file mode 100644
+index 00000000..94a6fa2c
+--- /dev/null
++++ b/tools/delegate_tool_wait.py
+@@ -0,0 +1,137 @@
++"""A subagent waits on a long background process and is woken with its result.
++
++``process_manage(action='handoff', session_id=..., data=..., resume_on_exit=true)`` registers a process the subagent
++started as a watch instead of giving it to the parent. When the subagent ends its turn with a watch open, its unit
++does not finish: the processes keep running, the subagent shows as ``waiting`` (``delegate_task(action='list')``,
++``subagent.list``), and when a watched process exits (or ``delegation.max_wait_hours`` pass) the subagent continues its
++conversation with the exit code and output tail as the next user message. Only its real final result reaches the parent.
++
++A watch is recorded on the subagent's resume state, so a gateway restart hands the waiting subagent to the next gateway,
++which reattaches the processes (checkpoint recovery) and goes on waiting.
++"""
++
++from __future__ import annotations
++
++import threading
++import time
++from typing import Any, Callable, Optional
++
++WAITS_ATTR = "_child_waits"
++MAX_WAITS = 8
++_POLL_SECONDS = 0.5
++_TOUCH_SECONDS = 30.0
++_TAIL_CHARS = 2000
++
++WAIT_NOTE = (
++    "To wait for a long background job (hours), start it with terminal(background=true), then call "
++    "process_manage(action='handoff', session_id=..., data='<what it is for>', resume_on_exit=true) and END YOUR TURN "
++    "with a one-line status. Hermes keeps the process running and wakes you with its exit code and output tail when it "
++    "exits (or after the wait limit); your parent sees you as waiting, not done, and gets your result only when you "
++    "finish. Do not poll in a loop, do not quit while the job runs, and do not hand it to your parent. Handing off the "
++    "same command twice returns the first watch."
++)
++
++
++def waits_of(child: Any) -> list[dict[str, Any]]:
++    return vars(child).setdefault(WAITS_ATTR, [])
++
++
++def watch(child: Any, session: Any, note: str, max_hours: float) -> dict[str, Any]:
++    """Register ``session`` as a watch of ``child``; ``(entry, created)`` as a dict with ``created``."""
++    waits = waits_of(child)
++    for existing in waits:
++        if existing["command"] == session.command or existing["session_id"] == session.id:
++            return {**existing, "created": False}
++    if len(waits) >= MAX_WAITS:
++        return {"error": f"wait cap reached ({MAX_WAITS} watched processes per subagent); kill or wait on the rest."}
++    now = time.time()
++    entry = {"session_id": session.id, "command": session.command, "note": note, "since": now,
++             "deadline": now + max(float(max_hours), 0.0) * 3600.0}
++    waits.append(entry)
++    return {**entry, "created": True}
++
++
++def state_waits(child: Any) -> list[dict[str, Any]]:
++    """The watches a restart handoff carries to the next gateway."""
++    return [dict(w) for w in vars(child).get(WAITS_ATTR) or []]
++
++
++def restore(child: Any, waits: Any) -> None:
++    if isinstance(waits, list):
++        vars(child)[WAITS_ATTR] = [dict(w) for w in waits if isinstance(w, dict) and w.get("session_id")]
++
++
++def _set_status(subagent_id: Optional[str], status: str, commands: list[str]) -> None:
++    if not subagent_id:
++        return
++    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
++    with _active_subagents_lock:
++        record = _active_subagents.get(subagent_id)
++        if record is not None:
++            record["status"] = status
++            record["waiting_on"] = commands or None
++
++
++def _session(sid: str) -> Any:
++    from tools.process_registry import process_registry
++    return process_registry.get(sid)
++
++
++def _exited(session: Any) -> bool:
++    return session is None or bool(getattr(session, "exited", False))
++
++
++def _describe(entry: dict[str, Any], session: Any, timed_out: bool) -> str:
++    from tools.process_registry import _output_tail, process_registry
++    command = str(entry.get("command", ""))[:200]
++    if timed_out:
++        return (f"Wait limit reached for `{command}` ({entry['session_id']}): still running. It stays running and "
++                "is no longer watched. Check it with process_manage (poll/log), kill it, or report it as still running.")
++    if session is None:
++        return (f"`{command}` ({entry['session_id']}) is gone: Hermes has no record of it (lost in a restart?). Its "
++                "result is unknown; re-run it or report that.")
++    process_registry.poll(session.id)  # marks the result read, so it is not reported again as unread
++    tail = _output_tail(session, _TAIL_CHARS).strip()
++    return (f"`{command}` ({entry['session_id']}) exited with code {session.exit_code} "
++            f"({getattr(session, 'completion_reason', 'exited')}).\nOutput tail:\n{tail or '(no output)'}")
++
++
++def await_exit(child: Any, subagent_id: Optional[str], stopped: Callable[[], bool]) -> Optional[str]:
++    """Block until a watched process exits or its wait limit passes; the message that resumes the subagent, or None
++    when the subagent was stopped first. The subagent shows as ``waiting`` meanwhile and its activity clock keeps
++    ticking so the stale monitor does not take it for wedged."""
++    waits = waits_of(child)
++    _set_status(subagent_id, "waiting", [w["command"][:120] for w in waits])
++    last_touch = 0.0
++    pause = threading.Event()
++    try:
++        while True:
++            if stopped():
++                return None
++            now = time.time()
++            ready = []
++            for entry in list(waits):
++                session = _session(entry["session_id"])
++                if _exited(session):
++                    ready.append((entry, session, False))
++                elif now >= entry.get("deadline", now + 1):
++                    ready.append((entry, session, True))
++            if ready:
++                for entry, _s, _t in ready:
++                    waits.remove(entry)
++                lines = [_describe(*item) for item in ready]
++                return ("A process you were waiting on finished. Continue your task with its result.\n\n"
++                        + "\n\n".join(lines)
++                        + (f"\n\nStill watching {len(waits)} other process(es); end your turn again to keep waiting."
++                           if waits else ""))
++            if now - last_touch >= _TOUCH_SECONDS:
++                last_touch = now
++                touch = getattr(child, "_touch_activity", None)
++                if callable(touch):
++                    try:
++                        touch("waiting on a background process")
++                    except Exception:
++                        pass
++            pause.wait(_POLL_SECONDS)
++    finally:
++        _set_status(subagent_id, "running", [])
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+index ce372544..c7981535 100644
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -2698,7 +2698,9 @@ PROCESS_SCHEMA = {
+         "submit: submit appends Enter — use it to answer prompts; write "
+         "sends raw bytes, no newline. close: EOF stdin. kill: terminate. "
+         "handoff (subagents only): transfer a running process you started to your parent agent, which then "
+-        "receives its completion; `data` = one sentence on its purpose. Subagent-owned processes are otherwise "
++        "receives its completion; `data` = one sentence on its purpose. With resume_on_exit=true the process stays "
++        "yours instead: end your turn and Hermes wakes you with its exit code and output tail when it exits (waiting "
++        "for hours is fine; do not poll). Subagent-owned processes are otherwise "
+         "killed when the subagent finishes and their notifications never reach the parent."
+     ),
+     "parameters": {
+@@ -2729,6 +2731,10 @@ PROCESS_SCHEMA = {
+                 "type": "integer",
+                 "description": "Max log lines.",
+                 "minimum": 1
++            },
++            "resume_on_exit": {
++                "type": "boolean",
++                "description": "handoff (subagents only): keep the process and be resumed with its exit code and output when it exits."
+             }
+         },
+         "required": ["action"]
+@@ -2810,6 +2816,8 @@ def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dic
+     with _active_subagents_lock:
+         record = _active_subagents.get(str(task_id or ""))
+     child = record.get("agent") if record else None
++    if args.get("resume_on_exit"):
++        return _watch_process(session_id, args, str(task_id or ""), child)
+     parent_ref = getattr(child, "_delegate_parent_ref", None)
+     parent = parent_ref() if callable(parent_ref) else None
+     if parent is None:
+@@ -2841,6 +2849,24 @@ def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dic
+ _MAX_HANDOFFS_PER_CHILD = 3
+ 
+ 
++def _watch_process(session_id: str, args: dict, task_id: str, child: Any) -> dict:
++    """Subagent-only ``handoff`` with ``resume_on_exit``: keep the process and have Hermes resume the subagent with
++    its result when it exits. The same command handed off twice returns the first watch."""
++    if child is None:
++        return {"error": "resume_on_exit is only available to a running subagent; you are not one."}
++    from tools.delegate_tool_config import _get_max_wait_hours
++    from tools.delegate_tool_wait import WAIT_NOTE, watch
++    session = process_registry.get(session_id)
++    if session is None or session.exited or session.owner_task_id != task_id:
++        return {"error": f"cannot watch {session_id}: not a running process you own (already exited? read its result "
++                         "with poll/log instead)."}
++    entry = watch(child, session, str(args.get("data") or "").strip(), _get_max_wait_hours())
++    if entry.get("error"):
++        return entry
++    return {"status": "watching" if entry["created"] else "already_watched", "session_id": entry["session_id"],
++            "command": entry["command"], "max_wait_hours": _get_max_wait_hours(), "note": WAIT_NOTE}
++
++
+ def _handle_process(args, **kw):
+     action = args.get("action", "")
+     # Coerce to string — some models send session_id as an integer
+diff --git a/tools/terminal_tool_background.py b/tools/terminal_tool_background.py
+index 54debb2f..1b9def38 100644
+--- a/tools/terminal_tool_background.py
++++ b/tools/terminal_tool_background.py
+@@ -237,8 +237,10 @@ def spawn_background_process(
+ _SUBAGENT_NOTIFY_NOTE = (
+     "You are a subagent: this process's completion notice will NOT reach your parent, and the process is killed when "
+     "you finish. Before you finish, either wait for it (process_manage wait), kill it, or hand it to your parent with "
+-    "process_manage(action='handoff', session_id=..., data='<purpose>') so the parent receives its completion. For CI "
+-    "watchers prefer returning the fact (PR number, SHA) and letting the parent watch."
++    "process_manage(action='handoff', session_id=..., data='<purpose>') so the parent receives its completion. For a "
++    "job that takes hours, call process_manage(action='handoff', session_id=..., data='<purpose>', resume_on_exit=true) "
++    "and end your turn: you are woken with its exit code and output when it exits, and your parent sees you as waiting. "
++    "For CI watchers prefer returning the fact (PR number, SHA) and letting the parent watch."
+ )
+ 
+ _YIELDED_NOTE = (
+diff --git a/tui_gateway/contracts/common.py b/tui_gateway/contracts/common.py
+index 3a6aaad8..0be3e070 100644
+--- a/tui_gateway/contracts/common.py
++++ b/tui_gateway/contracts/common.py
+@@ -192,6 +192,7 @@ class SubagentStatus(WireEnum):
+ 
+     queued = "queued"
+     running = "running"
++    waiting = "waiting"
+     completed = "completed"
+     failed = "failed"
+     error = "error"
+diff --git a/tui_gateway/contracts/profiles_vault_complete_foreign_subagents.py b/tui_gateway/contracts/profiles_vault_complete_foreign_subagents.py
+index c3e04975..435f18a4 100644
+--- a/tui_gateway/contracts/profiles_vault_complete_foreign_subagents.py
++++ b/tui_gateway/contracts/profiles_vault_complete_foreign_subagents.py
+@@ -671,6 +671,8 @@ class SubagentSnapshot(Result):
+     tool_count: int | None = None
+     last_tool: str | None = None
+     accepting_steer: bool | None = None
++    #: Commands of the background processes a ``waiting`` child will be resumed by.
++    waiting_on: list[str] | None = None
+     #: The child's own stored session (``session.transcript`` reads it by ``subagent_id``); None until it has one.
+     child_session_id: str | None = None
+ 
+diff --git a/tui_gateway/methods_subagents.py b/tui_gateway/methods_subagents.py
+index 9942ec31..691e1380 100644
+--- a/tui_gateway/methods_subagents.py
++++ b/tui_gateway/methods_subagents.py
+@@ -11,7 +11,7 @@ method = _registry.method
+ 
+ _SUBAGENT_SNAPSHOT_FIELDS = (
+     "subagent_id", "parent_id", "depth", "goal", "delegation_id", "model",
+-    "started_at", "status", "tool_count", "last_tool", "accepting_steer",
++    "started_at", "status", "tool_count", "last_tool", "accepting_steer", "waiting_on",
+ )
+ _SUBAGENT_TAIL_BYTES = 16384
+ 
+-- 
+2.56.0
+
