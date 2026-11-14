@@ -41,9 +41,10 @@ func (d dialer) DialLeg(ctx context.Context, path string) (*websocket.Conn, erro
 // relay here plays the hub and the plugin's exec route: it answers hello
 // with a welcome that accepts the browser capability, then copies every
 // message between the leg and the Python test as JSON lines.
-func pluginLayer(ctx context.Context, t *testing.T, b *broker.Broker, formURL, pagesURL string, rec *recorder) {
-	if _, err := exec.LookPath("hermes"); err != nil {
-		t.Skip("hermes is not on PATH; the plugin layer needs the Hermes runtime")
+func pluginLayer(ctx context.Context, t *testing.T, b *broker.Broker, formURL, pagesURL string, rec *recorder, only ...string) {
+	_, err := exec.LookPath("hermes")
+	if err != nil && (os.Getenv("HERMES_PYTHON") == "" || os.Getenv("HERMES_AGENT_SRC") == "") {
+		t.Skip("hermes is not on PATH and HERMES_PYTHON and HERMES_AGENT_SRC are not set; the plugin layer needs the Hermes runtime")
 	}
 	dir, err := os.MkdirTemp("", "hbplug")
 	if err != nil {
@@ -99,8 +100,11 @@ func pluginLayer(ctx context.Context, t *testing.T, b *broker.Broker, formURL, p
 	if err != nil {
 		t.Fatal(err)
 	}
-	py := exec.CommandContext(ctx, "sh", "scripts/test-plugin.sh",
-		"-s", "plugin/device/tests", "-t", "plugin/device/tests", "-p", "test_browser_e2e.py", "-v")
+	args := []string{"scripts/test-plugin.sh", "-s", "plugin/device/tests", "-t", "plugin/device/tests", "-p", "test_browser_e2e.py", "-v"}
+	for _, name := range only {
+		args = append(args, "-k", name)
+	}
+	py := exec.CommandContext(ctx, "sh", args...)
 	py.Dir = repo
 	py.Env = append(os.Environ(), "HERMES_BROWSER_E2E_SOCKET="+sock, "HERMES_BROWSER_E2E_FORM_URL="+formURL,
 		"HERMES_BROWSER_E2E_PAGES_URL="+pagesURL,
@@ -109,6 +113,9 @@ func pluginLayer(ctx context.Context, t *testing.T, b *broker.Broker, formURL, p
 	t.Logf("plugin layer:\n%s", out)
 	if err != nil {
 		t.Fatalf("plugin layer test failed: %v", err)
+	}
+	if rec == nil {
+		return
 	}
 	if puts, leaks := rec.counts(); puts != 2 || leaks != 0 || !strings.Contains(rec.puts[1], `"from":"plugin"`) {
 		t.Errorf("after the plugin layer: PUTs %q, leaks %d", rec.puts, leaks)
@@ -175,4 +182,18 @@ func relay(ctx context.Context, t *testing.T, w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+}
+
+// TestFirefoxBatchFlow runs only the plugin layer's browser_batch test (batch_flow in
+// docs/browser.md) against pages this process serves, so it needs no public internet.
+func TestFirefoxBatchFlow(t *testing.T) { //nolint:paralleltest // one Firefox at a time
+	if os.Getenv("HERMES_BROWSER_E2E") != "1" {
+		t.Skip("set HERMES_BROWSER_E2E=1 to drive a throwaway headless Firefox")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	b, _ := startFirefox(ctx, t)
+	srv := httptest.NewServer(http.HandlerFunc(formPage))
+	defer srv.Close()
+	pluginLayer(ctx, t, b, srv.URL, srv.URL, nil, "test_batch_drives_firefox")
 }

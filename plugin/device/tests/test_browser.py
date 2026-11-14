@@ -2062,6 +2062,17 @@ class BatchSteps(unittest.TestCase):
         self.assertEqual(batch.step_words({"action": "type", "ref": "e1", "text": "secret"}, label, past=True), 'Typed into "Search"')
         self.assertEqual(batch.step_words({"action": "press", "key": "Enter"}, None, past=True), "Pressed Enter")
 
+    def test_internal_read_keeps_the_agents_labels(self):
+        """plan reads the full outline to find a step by name; that numbers the page again, and
+        the agent's refs must still map to the elements the agent saw."""
+        batch.remember("d", 1, "http://x/two", '- textbox "First name" [ref=e1]\n- button "Save" [ref=e2]')
+        batch.remember("d", 1, "http://x/two", '- form "F" [ref=e1]\n- textbox "First name" [ref=e2]\n- button "Save" [ref=e3]',
+                       internal=True)
+        held = batch.agent_labels("d", 1)
+        self.assertEqual(held["refs"]["e1"][:2], ("textbox", "First name"))
+        batch.remember("d", 1, "http://x/two", '- textbox "First name" [ref=e1]')
+        self.assertIsNone(batch.agent_labels("d", 1))
+
 
 class BatchTool(BrowserBase):
     def setUp(self):

@@ -186,13 +186,24 @@ _LABELS_LOCK = threading.Lock()
 _MAX_LABELS = 64
 
 
-def remember(device_id: str, tab: int, url: str, snapshot: str, scoped: bool = False) -> None:
+# What the agent's refs were before the batch itself read the page. The extension numbers refs
+# again on every full read, so once ``plan`` has read the outline (to find a step by name) the
+# agent's refs no longer match the page; the runner maps them from these labels instead.
+_AGENT_LABELS: dict[tuple[str, int], dict] = {}
+
+
+def remember(device_id: str, tab: int, url: str, snapshot: str, scoped: bool = False, internal: bool = False) -> None:
     """Keep what the refs of a snapshot are. A full snapshot replaces the refs of the page (the
     extension numbers them again); a scoped one keeps the old refs and adds new ones, whose counts
-    are not known (None)."""
+    are not known (None). ``internal`` is a read the batch made for itself, not one the agent saw."""
     refs = _positions(parse_outline(snapshot))
     with _LABELS_LOCK:
         old = _LABELS.pop((device_id, tab), None)
+        if internal:
+            if old and old["refs"] and (device_id, tab) not in _AGENT_LABELS:
+                _AGENT_LABELS[(device_id, tab)] = old
+        else:
+            _AGENT_LABELS.pop((device_id, tab), None)
         if scoped and old:
             merged = dict(old["refs"])
             for ref, (role, name, nth, _count) in refs.items():
@@ -203,6 +214,13 @@ def remember(device_id: str, tab: int, url: str, snapshot: str, scoped: bool = F
         _LABELS[(device_id, tab)] = {"url": url, "refs": refs}
         while len(_LABELS) > _MAX_LABELS:
             del _LABELS[next(iter(_LABELS))]
+
+
+def agent_labels(device_id: str, tab: int) -> Optional[dict]:
+    """The labels of the refs the agent holds, when a read of the batch's own has numbered the page again."""
+    with _LABELS_LOCK:
+        entry = _AGENT_LABELS.get((device_id, tab))
+        return {"url": entry["url"], "refs": dict(entry["refs"])} if entry else None
 
 
 def labels(device_id: str, tab: int) -> dict:
@@ -401,7 +419,7 @@ def _outline_entries(b: Any, conn: Any, tab: int, sid: str = "") -> list:
     snap = b.call(conn, "snapshot", {"tab_id": tab, "interactive_only": False, "sessions": b.page_sessions(sid)})
     snap = snap if isinstance(snap, dict) else {}
     text = str(snap.get("snapshot") or "")
-    remember(conn.device_id, tab, str(snap.get("url") or ""), text)
+    remember(conn.device_id, tab, str(snap.get("url") or ""), text, internal=True)
     return parse_outline(text)
 
 
@@ -413,6 +431,10 @@ class Runner:
         self.tab = b._tab_id(args)
         self.covered = set(grant.get("batch_rules") or [])
         stored = labels(conn.device_id, self.tab) if self.tab is not None else {"url": "", "refs": {}}
+        self.pending_refresh = False
+        held = agent_labels(conn.device_id, self.tab) if self.tab is not None else None
+        if held:
+            stored, self.pending_refresh = held, True
         self.orig: dict[str, tuple] = stored["refs"]
         self.orig_url = stored["url"]
         self.live: dict[str, str] = {}        # the agent's ref -> the ref on the page now
@@ -632,6 +654,11 @@ class Runner:
         lines: list[str] = []
         failed: Optional[dict] = None
         started = time.monotonic()
+        if self.pending_refresh and self.orig:
+            try:
+                self.refresh()  # plan numbered the page again: map the agent's refs onto the new numbers
+            except (StepError, self.b._core().BrowserError):
+                pass
         for i, step in enumerate(self.steps, 1):
             label = self.orig.get(self._norm(step["ref"])) if step.get("ref") else None
             if time.monotonic() - started > MAX_BATCH_S:
