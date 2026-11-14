@@ -1,0 +1,10 @@
+# New: a restart starts the re-placed queued message's turn once; ACP runs a handed-back steer
+tests/tui_gateway/test_requeued_prompt_starts_turn.py
+tests/acp_adapter/test_failed_turn_keeps_message.py
+# The restart re-place, the mount recovery and the Stop path it changes
+tests/tui_gateway/test_queued_prompt_restart_retire.py
+tests/tui_gateway/test_queued_prompt_persistence.py
+tests/tui_gateway/test_auto_continue.py
+tests/tui_gateway/test_busy_interrupt_keeps_message.py
+tests/tui_gateway/test_retirement_continuations.py
+tests/acp_adapter/test_failed_turn_closure.py

@@ -1,0 +1,411 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: USA-RedDragon <USA-RedDragon@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 03:03:50 -0600
+Subject: [PATCH] fix(turns): a restart starts the turn of a re-placed queued
+ message, and ACP runs a handed-back steer
+
+Patch 0098 kept a queued message across a failed turn and a restart, and handed a steer back as result["pending_steer"]. Two of its paths still waited for the user. After a restart the never-drained queue row is re-placed at the transcript end as an open user turn, and nothing started it: it was read with the next user message or an auto-continue, though the hub had told the user it would run. And the ACP surface ignored pending_steer, so a steer handed back from a failed turn was in no queue (the hub and the messaging gateway run it as the next turn).
+
+The re-placed copy now carries display_metadata._requeued_prompt. The mount hook that already recovers a crash-interrupted turn (_maybe_schedule_auto_continue, with no crash marker) starts the turn of a re-placed prompt once the chat is mounted idle. It takes the same admissions as the auto-continue turn: no running turn, no Stop, no other live owner of the session lease. The claim (SessionDB.claim_requeued_prompts) clears the marker in one transaction and only looks at the trailing run of marked user rows, so a second mount, a sibling backend or a later restart finds nothing, and a message that already has a reply after it is never rerun. Stop now deactivates the accept rows of the prompts it cancels (SessionDB.drop_cancelled_queue_rows), so a cancelled message is never re-placed or started. The turn replaces the hydrated copy of the message in history, so the model sees it once.
+
+ACP _finish_turn appends result["pending_steer"] to the session queue before it drains, so the steer runs as the next turn through the same drain the queued prompts use.
+---
+ acp_adapter/server.py                         |   5 +
+ hermes_state_common.py                        |   3 +
+ hermes_state_sessions.py                      |  54 ++++++++-
+ .../test_failed_turn_keeps_message.py         |  19 +++
+ .../test_requeued_prompt_starts_turn.py       | 111 ++++++++++++++++++
+ tui_gateway/session_auto_continue.py          |  92 ++++++++++++++-
+ tui_gateway/session_lifecycle.py              |  11 ++
+ 7 files changed, 293 insertions(+), 2 deletions(-)
+ create mode 100644 tests/tui_gateway/test_requeued_prompt_starts_turn.py
+
+diff --git a/acp_adapter/server.py b/acp_adapter/server.py
+index 135bf559..4eea8c63 100644
+--- a/acp_adapter/server.py
++++ b/acp_adapter/server.py
+@@ -1055,6 +1055,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
+             with state.runtime_lock:
+                 state.is_running = False
+                 state.current_prompt_text = ""
++                # A steer the turn never applied (it failed or ended first) is handed back in the result.
++                # Like the hub and the messaging gateway, run it as the next turn rather than drop it.
++                steer = result.get("pending_steer") if isinstance(result, dict) else None
++                if isinstance(steer, str) and steer.strip():
++                    state.queued_prompts.append(steer)
+             await self._drain_queued_prompts(state, session_id, conn)
+ 
+         usage = None
+diff --git a/hermes_state_common.py b/hermes_state_common.py
+index 47642b7f..d2dc8b1e 100644
+--- a/hermes_state_common.py
++++ b/hermes_state_common.py
+@@ -79,6 +79,9 @@ def _sql_literal(text: str) -> str:
+ # is exactly what distinguishes a never-drained accept row from a dispatched-then-interrupted
+ # turn's row (which #123532 deliberately keeps active).
+ QUEUED_PROMPT_METADATA_KEY = "_queued_prompt"
++# On the copy a restart re-places at the transcript end: set until the resume path claims it and starts
++# the turn that reads it (claim_requeued_prompts), so a re-placed message starts exactly one turn.
++REQUEUED_PROMPT_METADATA_KEY = "_requeued_prompt"
+ 
+ 
+ # ``display_metadata = <this>`` merges a JSON object parameter into the column (its keys win, a null value
+diff --git a/hermes_state_sessions.py b/hermes_state_sessions.py
+index a0680437..18b2f638 100644
+--- a/hermes_state_sessions.py
++++ b/hermes_state_sessions.py
+@@ -19,7 +19,7 @@ from hermes_state_trash import TRASH_PREFIX, not_trashed_sql
+ from hermes_state_common import (
+     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
+     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
+-    _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
++    _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY, REQUEUED_PROMPT_METADATA_KEY,
+     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
+     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
+     _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
+@@ -513,6 +513,7 @@ class SessionSessionsMixin:
+         for _row_id, content, api_content, display_kind, raw_metadata in marked:
+             metadata = dict(self._decode_display_metadata(raw_metadata) or {})
+             metadata.pop(QUEUED_PROMPT_METADATA_KEY, None)
++            metadata[REQUEUED_PROMPT_METADATA_KEY] = True
+             copy = {"role": "user", "content": self._decode_content(content), "timestamp": time.time()}
+             if api_content is not None:
+                 copy["api_content"] = api_content
+@@ -534,6 +535,57 @@ class SessionSessionsMixin:
+             conn.execute("RELEASE requeue_undrained")
+         return len(marked)
+ 
++    def _requeued_tail_rows(self, conn, session_id: str) -> list:
++        """The trailing run of active user rows that still carry the re-placed marker (oldest first).
++        Only the transcript tail counts: once any row follows (the turn's reply, a failed-turn
++        boundary, a later message) the message has been read and must never start a turn again."""
++        tail = conn.execute(
++            "SELECT id, role, content, display_metadata FROM messages "
++            "WHERE session_id = ? AND active = 1 ORDER BY id DESC LIMIT 50", (session_id,)).fetchall()
++        rows = []
++        for row in tail:
++            meta = self._decode_display_metadata(row[3]) or {}
++            if row[1] != "user" or not meta.get(REQUEUED_PROMPT_METADATA_KEY):
++                break
++            rows.append(row)
++        return list(reversed(rows))
++
++    def has_requeued_prompt(self, session_id: str) -> bool:
++        """Cheap read: does the transcript end in a re-placed queued prompt nobody has started yet?"""
++        def _read(conn):
++            return bool(self._requeued_tail_rows(conn, session_id))
++        return bool(self._execute_write(_read))
++
++    def claim_requeued_prompts(self, session_id: str) -> list[dict]:
++        """Claim, exactly once, the re-placed queued prompts at the transcript tail: clears the marker
++        in one transaction (a second caller, or a later restart, finds nothing) and returns
++        ``[{"id", "content"}]`` oldest first. The rows stay active: if the process dies before the
++        started turn writes its own row, the message is still the open tail the next message reads."""
++        def _claim(conn):
++            rows = self._requeued_tail_rows(conn, session_id)
++            claimed = []
++            for row_id, _role, content, raw_meta in rows:
++                meta = dict(self._decode_display_metadata(raw_meta) or {})
++                meta.pop(REQUEUED_PROMPT_METADATA_KEY, None)
++                conn.execute("UPDATE messages SET display_metadata = ? WHERE id = ?",
++                             (self._encode_display_metadata(meta) if meta else None, row_id))
++                claimed.append({"id": row_id, "content": self._decode_content(content)})
++            return claimed
++        return self._execute_write(_claim)
++
++    def drop_cancelled_queue_rows(self, session_id: str) -> int:
++        """The user pressed Stop: the in-memory queue is gone, so the accept rows of the prompts it held
++        (still marked as queued) must not be re-placed and run after a restart. Deactivated (kept as
++        history, never deleted), like the drain's early row. Returns how many were dropped."""
++        def _drop(conn):
++            rows = conn.execute(
++                "SELECT id FROM messages WHERE session_id = ? AND role = 'user' AND active = 1 "
++                f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1",
++                (session_id,)).fetchall()
++            conn.executemany("UPDATE messages SET active = 0 WHERE id = ?", [(r[0],) for r in rows])
++            return len(rows)
++        return self._execute_write(_drop)
++
+     def retire_undrained_queue_rows(self, session_id: str) -> int:
+         """Re-place busy-queue accept rows that never drained (#125577): a restart discarded the
+         in-memory queue, so nothing re-placed/deactivated the row written at accept time, and it
+diff --git a/tests/acp_adapter/test_failed_turn_keeps_message.py b/tests/acp_adapter/test_failed_turn_keeps_message.py
+index f2b4c499..a7bd3eb1 100644
+--- a/tests/acp_adapter/test_failed_turn_keeps_message.py
++++ b/tests/acp_adapter/test_failed_turn_keeps_message.py
+@@ -75,3 +75,22 @@ def test_steer_accepted_during_a_failed_turn_is_handed_back(acp):
+     assert result.get("completed") is not True
+     assert result.get("pending_steer") == "steer: also bump the version"
+     assert not getattr(agent, "_pending_steer", None)  # handed back once, not also left buffered
++
++
++def test_acp_runs_a_handed_back_steer_as_the_next_turn(acp):
++    """The hub and the gateway run ``pending_steer`` as the next turn; ACP dropped it on the floor."""
++    provider, prompt, rows, _db, sid, _conn, server = acp
++    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
++    prompt("hello")
++    agent = server.session_manager.get_session(sid).agent
++
++    provider.script = _HookedScript(
++        [_fail(), {"finish_reason": "stop", "content": "Bumped."}],
++        hook=lambda: agent.steer("steer: also bump the version") if len(provider.script) == 2 else None)
++    prompt(_QUEUED)
++
++    tail = rows()[-4:]
++    assert ("user", "steer: also bump the version") in tail
++    assert tail[-1] == ("assistant", "Bumped.")
++    state = server.session_manager.get_session(sid)
++    assert state.queued_prompts == []
+diff --git a/tests/tui_gateway/test_requeued_prompt_starts_turn.py b/tests/tui_gateway/test_requeued_prompt_starts_turn.py
+new file mode 100644
+index 00000000..e17bb815
+--- /dev/null
++++ b/tests/tui_gateway/test_requeued_prompt_starts_turn.py
+@@ -0,0 +1,111 @@
++"""After a restart, a queued message the hub accepted is re-placed at the transcript end as an open user
++turn (#125577). Nothing started it: it waited for the next user message or auto-continue. The mount hook
++now starts that turn once, never reruns a message that already ran, and never starts one the user cancelled."""
++
++from hermes_state import SessionDB
++from tests.tui_gateway.test_queued_prompt_restart_retire import (
++    _accept_busy_prompt_a_concludes, _busy, _desktop_session)
++from tui_gateway import server
++
++_TEXT = "queued prompt B START-MARKER"
++
++
++def _stub_turn(monkeypatch):
++    runs = []
++    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
++    monkeypatch.setattr(server, "_wait_agent", lambda session, rid, timeout=30.0: None)
++    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda sid, session: None)
++    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
++    monkeypatch.setattr(server, "_start_session_work", lambda target, **kw: (target(), True)[1])
++    monkeypatch.setattr(server, "_run_prompt_submit", lambda rid, sid, sess, text, **kw: runs.append(text))
++    return runs
++
++
++def _restart(tmp_path, key):
++    fresh = SessionDB(db_path=tmp_path / "state.db")
++    fresh.reopen_session(key)  # the cold mount's re-place
++    return fresh
++
++
++def _mount(sid, key):
++    session = server._sessions[sid]
++    session["queued_prompt"] = None  # the restart discarded the in-memory queue
++    session.pop("queued_prompts", None)
++    session["running"] = False
++    session.pop("_requeued_turn_scheduled", None)
++    return server._maybe_schedule_auto_continue(sid, session, key)
++
++
++def test_restart_with_a_queued_message_starts_exactly_one_turn(monkeypatch, tmp_path):
++    db = SessionDB(db_path=tmp_path / "state.db")
++    sid, key = _desktop_session(monkeypatch, db)
++    runs = _stub_turn(monkeypatch)
++    try:
++        _accept_busy_prompt_a_concludes(db, sid, key, _TEXT)
++        fresh = _restart(tmp_path, key)
++        fresh.close()
++        _mount(sid, key)
++        assert runs == [_TEXT]
++        # A second mount (reconnect, sibling backend, another restart) finds nothing to start.
++        _mount(sid, key)
++        server._sessions[sid]["_requeued_turn_scheduled"] = False
++        _mount(sid, key)
++        assert runs == [_TEXT]
++    finally:
++        server._sessions.pop(sid, None)
++        db.close()
++
++
++def test_a_message_that_already_ran_is_not_rerun(monkeypatch, tmp_path):
++    db = SessionDB(db_path=tmp_path / "state.db")
++    sid, key = _desktop_session(monkeypatch, db)
++    runs = _stub_turn(monkeypatch)
++    try:
++        _accept_busy_prompt_a_concludes(db, sid, key, _TEXT)
++        _restart(tmp_path, key).close()
++        db.append_message(key, "assistant", content="reply B")  # the re-placed message was read and answered
++        _mount(sid, key)
++        assert runs == []
++    finally:
++        server._sessions.pop(sid, None)
++        db.close()
++
++
++def test_a_message_the_user_cancelled_is_not_started(monkeypatch, tmp_path):
++    db = SessionDB(db_path=tmp_path / "state.db")
++    sid, key = _desktop_session(monkeypatch, db)
++    runs = _stub_turn(monkeypatch)
++    try:
++        server._ensure_session_db_row(server._sessions[sid])
++        db.append_message(key, "user", content="prompt A")
++        session = server._sessions[sid]
++        _busy(session)
++        assert server._handle_busy_submit("r1", sid, session, _TEXT, "ws-1", queued=True,
++                                          display_kind=None)["result"]["status"] == "queued"
++        db.append_message(key, "assistant", content="reply A")
++        server._interrupt_session_turn(sid, session)  # Stop clears the queue
++        _restart(tmp_path, key).close()
++        _mount(sid, key)
++        assert runs == []
++        assert _TEXT not in [r["content"] for r in db.get_messages(key) if r["active"]]
++    finally:
++        server._sessions.pop(sid, None)
++        db.close()
++
++
++def test_a_running_turn_is_left_alone(monkeypatch, tmp_path):
++    db = SessionDB(db_path=tmp_path / "state.db")
++    sid, key = _desktop_session(monkeypatch, db)
++    runs = _stub_turn(monkeypatch)
++    try:
++        _accept_busy_prompt_a_concludes(db, sid, key, _TEXT)
++        _restart(tmp_path, key).close()
++        session = server._sessions[sid]
++        session["queued_prompt"] = None
++        session["running"] = True
++        server._maybe_schedule_auto_continue(sid, session, key)
++        assert runs == []  # the live turn wins; the message stays the open tail it reads
++        assert db.has_requeued_prompt(key)
++    finally:
++        server._sessions.pop(sid, None)
++        db.close()
+diff --git a/tui_gateway/session_auto_continue.py b/tui_gateway/session_auto_continue.py
+index 3d9efffa..79517444 100644
+--- a/tui_gateway/session_auto_continue.py
++++ b/tui_gateway/session_auto_continue.py
+@@ -56,8 +56,97 @@ def _auto_continue_note(prompt: str) -> str:
+             f"finish the task. The interrupted request was:]\n\n{prompt}")
+ 
+ 
++def _requeued_prompt_pending(session: dict, session_key: str) -> bool:
++    try:
++        with _session_db(session) as db:
++            check = getattr(db, "has_requeued_prompt", None)
++            return bool(callable(check) and check(session_key))
++    except Exception:
++        logger.debug("requeued-prompt probe failed for %s", session_key, exc_info=True)
++        return False
++
++
++def _maybe_start_requeued_turn(sid: str, session: dict, session_key: str) -> bool:
++    """A restart discards the busy-queue; the never-drained prompt is re-placed at the transcript end
++    (``retire_undrained_queue_rows``) as an open user turn. Left alone it waits for the user's next message,
++    though the user was told it would run. Start its turn once, when the chat is mounted idle.
++
++    Exactly once: the copy's marker is claimed in one DB transaction after the same admission checks the
++    auto-continue turn uses (no running turn, no Stop, the session lease), so a second mount, a sibling
++    backend or a later restart finds nothing to claim. A message that already ran has a reply after it and
++    never counts; a message the user cancelled (Stop) was dropped from the queue rows, so it is never
++    re-placed. Returns whether a turn was scheduled."""
++    if session.get("source") == "bot_room" or session.get("_requeued_turn_scheduled"):
++        return False
++    if not _requeued_prompt_pending(session, session_key):
++        return False
++    session["_requeued_turn_scheduled"] = True
++
++    def kickoff() -> None:
++        rid = f"__requeued_prompt__{int(time.time() * 1000)}"
++        try:
++            _start_agent_build(sid, session)
++            err = _wait_agent(session, rid, timeout=120.0)
++        except Exception:
++            logger.warning("requeued-prompt agent build failed for %s", sid, exc_info=True)
++            err = {"error": {"message": "agent build failed"}}
++        if err:  # nothing claimed: the next mount retries
++            session["_requeued_turn_scheduled"] = False
++            return
++        with session["history_lock"]:
++            if session.get("running") or session.get("_turn_cancel_requested") or session.get("_finalized"):
++                session["_requeued_turn_scheduled"] = False  # the user's own turn wins; it reads the message
++                return
++            session["running"] = True
++            session["last_active"] = time.time()
++        if _ensure_active_session_slot(sid, session) is not None:
++            logger.info("requeued prompt for %s not started: session has another live owner", session_key)
++            with session["history_lock"]:
++                session["running"] = False
++                session["_requeued_turn_scheduled"] = False
++            return
++        claimed: list = []
++        try:
++            with _session_db(session) as db:
++                claim = getattr(db, "claim_requeued_prompts", None)
++                claimed = claim(session_key) if callable(claim) else []
++            texts = [str(c["content"]) for c in claimed if isinstance(c.get("content"), str) and c["content"].strip()]
++            if not texts:
++                with session["history_lock"]:
++                    session["running"] = False
++                return
++            text = "\n\n".join(texts)
++            # The turn writes its own row at the end (staged, adopted by the turn); the claimed copies are kept
++            # as history, so the transcript holds the message once as an active row.
++            staged = _write_submit_user_row(session, text, None)
++            with _session_db(session) as db:
++                for c in claimed:
++                    db.deactivate_message(_submit_row_target_key(session), c["id"])
++            with session["history_lock"]:
++                # The hydrated history already ends in the re-placed copy; the turn appends the message itself.
++                hist = session.get("history")
++                while isinstance(hist, list) and hist and isinstance(hist[-1], dict) and hist[-1].get("role") == "user" \
++                        and str(hist[-1].get("content") or "") in texts:
++                    hist.pop()
++                session["_submit_user_row"] = staged
++                if staged is None:
++                    session.pop("_submit_user_row", None)
++            with _session_profile_runtime_scope(session):
++                _emit("message.start", sid)
++                _run_prompt_submit(rid, sid, session, text)
++        except Exception as exc:
++            _notif_log_failure("requeued prompt dispatch failed", exc)
++            _notif_release_turn(session)
++    if _start_session_work(kickoff, name=f"requeued-prompt-{sid}") is None:
++        session["_requeued_turn_scheduled"] = False
++        return False
++    logger.info("requeued prompt turn scheduled for session %s", session_key)
++    return True
++
++
+ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> dict | None:
+-    """Kick off a continuation turn for a crash-interrupted session (session.resume cold paths). Returns a descriptor
++    """Kick off a continuation turn for a crash-interrupted session (session.resume cold paths); with no crash
++    marker, start the turn of a queued message a restart re-placed (_maybe_start_requeued_turn). Returns a descriptor
+     for the resume payload when scheduled, else None. The turn runs on a background thread after the deferred agent
+     build via _run_prompt_submit, so the client that just resumed streams it."""
+     # Hosted room turns are recovered by their durable task/lease state machine; generic auto-continue would bypass
+@@ -66,6 +155,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) ->
+         return None
+     home = _session_home(session)
+     if (marker := read_turn_marker(home, session_key)) is None:
++        _maybe_start_requeued_turn(sid, session, session_key)
+         return None
+     if not marker.get("auto_continue", True):
+         return None  # The mailbox owns recovery and receipt identity for imported turns.
+diff --git a/tui_gateway/session_lifecycle.py b/tui_gateway/session_lifecycle.py
+index 32af1407..8779e62b 100644
+--- a/tui_gateway/session_lifecycle.py
++++ b/tui_gateway/session_lifecycle.py
+@@ -792,9 +792,20 @@ def _interrupt_session_turn(
+         run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
+     with session["history_lock"]:
+         session["_turn_cancel_requested"] = True
++        had_queue = bool(session.get("queued_prompt") or session.get("queued_prompts"))
+         session["queued_prompt"] = None
+         session.pop("queued_prompts", None)
+         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
++    if had_queue:
++        # The user cancelled these prompts: their accept rows (still marked as queued) must not be re-placed and
++        # started by a restart. Kept as inactive history.
++        try:
++            with _session_db(session) as db:
++                drop = getattr(db, "drop_cancelled_queue_rows", None)
++                if callable(drop):
++                    drop(_submit_row_target_key(session))
++        except Exception:
++            logger.debug("dropping the cancelled queue rows failed", exc_info=True)
+     if should_interrupt:
+         # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
+         # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
