@@ -510,6 +510,16 @@ func (s *Service) Attach(ctx context.Context, user, backendID, sessionID string,
 		res <- attached{ls: ls, offline: offline, err: err}
 	}()
 	var r attached
+	if hub.Cached(ctx) && sinceSeq == 0 && !b.isLive(sessionID) {
+		// A chat the hub does not follow now opens from Hermes: a resume
+		// and a transcript, hundreds of milliseconds for a big chat. The
+		// page gets the hub's copy at once and the chat as Hermes has it
+		// after.
+		if data := b.cachedSnapshot(ctx, sessionID); data != nil {
+			ch, stop := s.attachLater(ctx, b, sinceSeq, data, res)
+			return ch, stop, nil
+		}
+	}
 	if hub.Cached(ctx) && sinceSeq == 0 {
 		// A page that opens the chat: while the backend is slow to answer
 		// it shows the hub's copy, and the chat as it is when it answers.
@@ -1362,6 +1372,19 @@ func (b *backend) create(ctx context.Context, cwd, rowCWD string) (hub.Session, 
 // known pins and returns the hub's subscription to a session when it has
 // a snapshot to show, so a viewer can attach while the backend is away.
 // It returns nil otherwise.
+// isLive is whether the hub follows the session now, with a snapshot.
+func (b *backend) isLive(id string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ls := b.sessions[id]
+	if ls == nil {
+		return false
+	}
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	return !ls.retired && ls.snapshot.Seq != 0
+}
+
 func (b *backend) known(id string) *live {
 	b.mu.Lock()
 	defer b.mu.Unlock()
