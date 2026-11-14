@@ -203,7 +203,8 @@ const { proc, connect } = driver();
       await sleep(pick([0, 50, 200, 600]));
     } else {
       await until(drawn(to), `switch ${i} to ${to}: the chat drawn`);
-      if (how === "settled") await until(`window.__kinds.some((k) => k.k === "snapshot")`, `switch ${i} to ${to}: its own snapshot`, 30000);
+      // A chat the page kept gets snapshot.same when nothing changed.
+      if (how === "settled") await until(`window.__kinds.some((k) => k.k === "snapshot" || k.k === "snapshot.same")`, `switch ${i} to ${to}: its own snapshot`, 30000);
       await sleep(pick([300, 900, 1500]));
     }
     await ev(`(() => { window.__stop = true; return 1; })()`);

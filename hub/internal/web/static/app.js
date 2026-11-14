@@ -846,6 +846,44 @@
   // later runs fn when the page is idle, soon in any case.
   const later = (fn) => (window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 100 }) : setTimeout(fn, 16));
 
+  // ready keeps the chats opened last in this page, most recent last, with
+  // their log as it was (Chat.park), so going back to one shows it at once;
+  // its stream then sends only what changed since (snapshot.same when
+  // nothing did). Bounded by readyMax chats and readyNodes nodes, dropped
+  // on logout.
+  const ready = new Map();
+  const readyMax = 8;
+  const readyNodes = 150000;
+  const readyKey = (b, s) => b + "\n" + s;
+  function parkView() {
+    const v = view;
+    if (!v || pageMode || !v.loaded || v.dead || v.parked) return;
+    const nodes = v.log.getElementsByTagName("*").length;
+    if (nodes > readyNodes / 2) return;
+    v.park(nodes);
+    const key = readyKey(v.backend, v.session);
+    ready.delete(key);
+    ready.set(key, v);
+    let total = 0;
+    for (const c of ready.values()) total += c.parkedNodes;
+    for (const [k, c] of ready) {
+      if (ready.size <= readyMax && total <= readyNodes) break;
+      ready.delete(k);
+      total -= c.parkedNodes;
+      c.drop();
+    }
+  }
+  function takeReady(b, s) {
+    const key = readyKey(b, s);
+    const c = ready.get(key);
+    if (c) ready.delete(key);
+    return c || null;
+  }
+  function dropReady() {
+    for (const c of ready.values()) c.drop();
+    ready.clear();
+  }
+
   class Chat {
     constructor(backend, session) {
       this.backend = backend;
@@ -856,6 +894,47 @@
       // shows a loading state, not an empty chat.
       this.loaded = false;
       this.reset();
+    }
+
+    // park takes the chat's log out of the page as it is, for unpark to
+    // put back.
+    park(nodes) {
+      const log = this.log;
+      this.parkedView = { title: $("title").textContent, doc: document.title };
+      const frag = document.createDocumentFragment();
+      frag.append(...log.childNodes);
+      this.parked = frag;
+      this.parkedNodes = nodes;
+    }
+
+    // unpark shows a parked chat again, at its newest message.
+    unpark() {
+      const p = this.parkedView;
+      this.log.replaceChildren(this.parked);
+      this.parked = null;
+      this.parkedView = null;
+      $("title").textContent = p.title;
+      document.title = p.doc;
+      this.setRunning(this.running);
+      if (this.running) activity.running(true);
+      drawInfo(this.info);
+      // A chat opens at its newest message, as one drawn afresh does.
+      this.bottom();
+      this.jumpTo();
+      stick.drawn();
+      msgActs.decorate();
+      this.topUp();
+    }
+
+    // drop is for a parked chat that is not kept.
+    drop() {
+      this.parked = null;
+      this.parkedView = null;
+      this.older = [];
+      for (const u of this.urls || []) URL.revokeObjectURL(u);
+      this.urls = [];
+      if (this.cards) this.cards.dispose();
+      this.cards = null;
     }
 
     reset() {
@@ -1493,6 +1572,7 @@
     }
 
     deleted() {
+      this.dead = true;
       if (view !== this) return;
       notice = "This chat was deleted.";
       closeStream();
@@ -3278,6 +3358,7 @@
   // longer exists.
   let gone = false;
   function showGone() {
+    if (view) view.dead = true;
     showWelcome();
     gone = true;
     $("welcome").classList.remove("first-run");
@@ -3289,6 +3370,7 @@
 
   function showWelcome() {
     gone = false;
+    parkView();
     pagesView.destroy();
     memory.hide();
     usage.hide();
@@ -3347,6 +3429,7 @@
 
   function showChat(backend, session) {
     mark("open");
+    parkView();
     pagesView.destroy();
     memory.hide();
     usage.hide();
@@ -3379,9 +3462,10 @@
     settings.reset();
     unseen = 0;
     stick.reset();
-    view = new Chat(backend, session);
+    const kept = takeReady(backend, session);
+    view = kept || new Chat(backend, session);
     view.openedAt = Date.now();
-    view.log.append(loadingRows());
+    if (!kept) view.log.append(loadingRows());
     msgActs.reset();
     composer.open(view);
     composer.setRunning(false);
@@ -3401,7 +3485,7 @@
     // fp names the transcript this page shows, while nothing has changed it
     // since the snapshot: a reconnect to a replica that cannot resume from
     // the event id then gets "snapshot.same" instead of the whole chat.
-    let fp = "";
+    let fp = (kept && kept.fp) || "";
     const follow = window.HubStream(view.base + "/events", {
       message: (m) => {
         if (first) mark("event");
@@ -3415,6 +3499,7 @@
         if (e.kind === "sessions.changed") { refreshListSoon(); return; }
         if (e.kind === "snapshot") fp = e.fp || "";
         else if (e.kind !== "snapshot.older" && e.kind !== "backend.status") fp = "";
+        chat.fp = fp;
         if (first) mark("parsed");
         (chat.kinds = chat.kinds || []).push(Math.round(Date.now() - chat.openedAt) + ":" + e.kind + (e.provisional ? "*" : ""));
         if (chat.kinds.length > 40) chat.kinds.shift();
@@ -3434,6 +3519,11 @@
       },
     }, { query: () => (fp ? "fp=" + encodeURIComponent(fp) : "") });
     stream = follow;
+    // A chat kept from before shows at once, as the reader left it.
+    if (kept) {
+      kept.unpark();
+      mark("painted-kept");
+    }
     focusInput();
     if (page) {
       page.remember(backend, session);
@@ -3443,6 +3533,7 @@
 
   // showMemory opens the Memory page in place of the chat.
   function showMemory(rest) {
+    parkView();
     pagesView.destroy();
     usage.hide();
     scheduled.hide();
@@ -3467,6 +3558,7 @@
 
   // showUsage opens the Usage page in place of the chat.
   function showUsage(rest) {
+    parkView();
     pagesView.destroy();
     memory.hide();
     scheduled.hide();
@@ -3488,6 +3580,7 @@
 
   // showScheduled opens the Scheduled page in place of the chat.
   function showScheduled() {
+    parkView();
     pagesView.destroy();
     memory.hide();
     usage.hide();
@@ -4125,6 +4218,7 @@
   }
 
   async function logout() {
+    dropReady();
     await notices.logout();
     try { await api("POST", "/auth/logout"); } catch (_) { /* ignore */ }
     closeStream();
