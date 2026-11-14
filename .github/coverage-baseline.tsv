@@ -29,7 +29,7 @@ internal/acphost/acphost.go	291	231
 internal/acphost/proc_unix.go	3	1
 internal/acphost/rewrite.go	260	237
 internal/acphost/sweep.go	30	28
-internal/acphost/sweep_linux.go	49	35
+internal/acphost/sweep_linux.go	49	36
 internal/allowlist/allowlist.go	27	26
 internal/attest/attest.go	141	123
 internal/attest/bundle.go	248	212
@@ -73,7 +73,7 @@ internal/hermesbuild/launch.go	65	62
 internal/hermesbuild/relocate.go	38	31
 internal/hubapi/hubapi.go	80	71
 internal/legacy/legacy.go	8	8
-internal/mcp/mcp.go	519	453
+internal/mcp/mcp.go	519	451
 internal/mcp/mcptest/fake.go	136	113
 internal/oci/extract.go	130	106
 internal/oci/ocitest/ocitest.go	127	118
