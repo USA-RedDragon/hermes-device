@@ -22,7 +22,7 @@ const { proc, connect } = require("../cdp.js").launch(bin, dir);
   await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
   await c.load(url + "/auth/login?next=/", `document.getElementById("sessions").children.length > 0`, "the chat list");
   await ev(`location.hash = "#/s/pc/ts"; 1`);
-  await c.until(`document.querySelectorAll("#log .msg").length >= 100 && !document.querySelector("#log .loading") && !document.getElementById("log").hidden`, "the chat");
+  await c.until(`document.getElementById("log").textContent.includes("Answer 59 fills") && document.querySelectorAll("#log .msg").length >= 20 && !document.querySelector("#log .loading") && !document.getElementById("log").hidden`, "the chat");
   await c.until(`window.HubLogSettled()`, "the log to settle");
   const gap = `(() => { const l = document.getElementById("log"); return Math.round(l.scrollHeight - l.scrollTop - l.clientHeight); })()`;
   assert.ok((await ev(gap)) < 2, "the chat opens at its end");
